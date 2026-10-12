@@ -53,8 +53,10 @@ async def handle_work(work, work_api, dispatcher: sandbox.Dispatcher, failures: 
         log.exception("dispatch %d of %d failed for session %s",
                       failures[session_id], dispatcher.max_redispatch, session_id)
         if failures[session_id] >= dispatcher.max_redispatch:
-            del failures[session_id]
             await _stop(work_api, work, f"{dispatcher.max_redispatch} dispatches failed")
+            # Only once the stop went through: if it raised, the count stays and
+            # the next offer of this session is stopped again after one try.
+            del failures[session_id]
         return
     failures.pop(session_id, None)
     if not dispatched:
