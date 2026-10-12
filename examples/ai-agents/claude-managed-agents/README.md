@@ -290,20 +290,23 @@ virtio disks. The last line of the report is `0`: the agent's `bash` tool runs w
 itself holds no key to find: its only credential is this session's token, which arrived in
 the dispatch rather than in an environment variable.
 
-In the cluster, the poller created one `SandboxClaim` for the session, and the claimed
-sandbox's log shows each tool call it ran (timestamps trimmed):
+In the cluster, the poller's log names the `SandboxClaim` it created for the session and
+the sandbox that claim adopted, and that sandbox's log shows each tool call it ran (dates
+trimmed from the poller's lines, timestamps from the sandbox's):
 
 ```bash
-kubectl get sandboxclaims
-kubectl logs <SANDBOX>     # the SANDBOX column; the pod has the same name
+kubectl logs deploy/claude-poller | grep -E 'SandboxClaim|claim Ready|-> sandbox='
+kubectl logs <SANDBOX>     # the sandbox named in the poller's log; the pod has the same name
 ```
 
 ```text
-NAME                     READY   SANDBOX                       REASON         AGE
-sandbox-claim-3c315992   False   claude-sandbox-worker-zcw2b   PodSucceeded   2m12s
+22:34:59,040 INFO root Creating SandboxClaim 'sandbox-claim-3c315992' in namespace 'claude-managed-agents' using warm pool 'claude-sandbox-worker'...
+22:34:59,090 INFO root Resolved sandbox name 'claude-sandbox-worker-zcw2b' from claim status (claim Ready)
+22:34:59,114 INFO worker.sandbox session=sesn_... work=sesn_... -> sandbox=claude-sandbox-worker-zcw2b
 
 INFO worker.serve waiting for a dispatch on :8080
 INFO worker.serve serving session sesn_... in /workspace
+INFO anthropic.lib.tools._beta_session_runner session tool runner starting session_id=sesn_...
 INFO anthropic.lib.tools._beta_session_runner executing tool tool=bash tool_use_id=sevt_...
 INFO anthropic.lib.tools._beta_session_runner executing tool tool=read tool_use_id=sevt_...
 INFO anthropic.lib.tools._beta_session_runner session idle for 60s after its turn ended; stopping
