@@ -58,7 +58,8 @@ async def _run() -> None:
                     # A session that keeps failing would otherwise be offered forever.
                     await work_api.stop(work.id, environment_id=work.environment_id, force=True)
             except Exception:
-                log.exception("work item %s failed (session=%s)", work.id, work.data.id)
+                # Health-check items are not modelled and may have no id.
+                log.exception("work item %s failed (session=%s)", work.id, getattr(work.data, "id", None))
 
 
 def main() -> None:
