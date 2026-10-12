@@ -130,8 +130,10 @@ class Dispatcher:
         except Exception:
             sandbox.terminate()
             raise
-        # The sandbox now owns the session. Drop the client-side handle; the
-        # claim's deadline removes the claim and its pod.
-        sandbox.close_connection()
-        self.client.list_active_sandboxes()  # prunes closed handles
+        finally:
+            # Success or failure, this process is done with the handle: on success
+            # the sandbox owns the session and the claim's deadline removes the
+            # claim and its pod. Close it and prune closed handles from the client.
+            sandbox.close_connection()
+            self.client.list_active_sandboxes()
         return True
