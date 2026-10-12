@@ -4,10 +4,10 @@ Every interval it reads the environment's ``work.stats`` and sets the warm
 pool's replicas, through its ``/scale`` subresource, to
 ``clamp(depth + pending, WARMPOOL_MIN, WARMPOOL_MAX)``. ``depth`` counts work
 waiting to be picked up and ``pending`` work polled but not yet acknowledged;
-the poller acknowledges at once, so in practice this keeps WARMPOOL_MIN
-sandboxes warm plus one for each session waiting in the queue. A session that
-is already running counts in neither. It reads the stats with the environment
-key, as the poller does.
+the poller acknowledges at once, so in practice this keeps one warm sandbox
+for each session waiting in the queue, never fewer than WARMPOOL_MIN. A
+session that is already running counts in neither. It reads the stats with
+the environment key, as the poller does.
 """
 
 from __future__ import annotations

@@ -338,11 +338,11 @@ sts.us-west-2.amazonaws.com TimeoutError timed out
 ```
 
 **Optional: size the pool from the queue.** [`autoscaler.yaml`](deploy/autoscaler.yaml)
-reads the environment's queue every 15 seconds and sets the pool to 1 warm sandbox plus
-one for each session waiting in the queue, up to 10. The poller acknowledges a session as
-soon as it claims it, so a running session no longer counts: the pool grows when sessions
-arrive faster than the poller hands them out. The autoscaler uses the environment key too,
-and may only resize this one pool:
+reads the environment's queue every 15 seconds and sets the pool to one warm sandbox for
+each session waiting in the queue, at least 1 and at most 10. The poller acknowledges a
+session as soon as it claims it, so a running session no longer counts: the pool grows when
+sessions arrive faster than the poller hands them out. The autoscaler uses the environment
+key too, and may only resize this one pool:
 
 ```bash
 sed -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|" -e "s|<AWS_REGION>|$AWS_REGION|" deploy/autoscaler.yaml | kubectl apply -f -
