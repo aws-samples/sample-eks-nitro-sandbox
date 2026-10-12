@@ -68,8 +68,11 @@ class Dispatcher:
         self.shutdown_after_seconds = config.optional_int(
             config.ENV_SHUTDOWN_AFTER_SECONDS, config.DEFAULT_SHUTDOWN_AFTER_SECONDS
         )
-        # In-cluster: the poller reaches the sandbox at its pod IP directly.
-        # The client loads the pod's ServiceAccount credentials itself.
+        # dispatch() POSTs to the pod IP itself, so this connection config is only
+        # used by the client's own command and file helpers, which this sample
+        # does not call. It is set so the client never falls back to its default,
+        # a kubectl port-forward tunnel. The client loads the pod's ServiceAccount
+        # credentials for the Kubernetes API itself.
         self.client = SandboxClient(
             connection_config=SandboxInClusterConnectionConfig(server_port=self.dispatch_port)
         )
