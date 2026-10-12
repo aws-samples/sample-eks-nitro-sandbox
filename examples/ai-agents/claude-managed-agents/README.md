@@ -416,5 +416,11 @@ rm -rf .venv
 ```
 
 Keep `.env` if you will run the sample again; otherwise delete it, and revoke the
-environment key in the Claude Console. agent-sandbox stays installed for other samples; the
-[warm pool](../../getting-started/warm-pool/README.md#clean-up) clean up removes it.
+environment key in the Claude Console.
+
+agent-sandbox stays installed for other samples. To remove it as well, which deletes its
+CRDs and every Sandbox resource in the cluster, delete the release you installed in step 1:
+
+```bash
+kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
+```
