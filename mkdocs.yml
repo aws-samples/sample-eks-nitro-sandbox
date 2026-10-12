@@ -74,10 +74,12 @@ markdown_extensions:
       permalink: true
 
 # The menu mirrors examples/'s own directory layout: a path on the site is the path in
-# the repo. "Getting started" is a collapsible section (twisty) holding the three samples.
+# the repo. Each section is a collapsible twisty holding its samples.
 nav:
   - Home: README.md
   - Getting started:
       - Hello sandbox: getting-started/hello-sandbox/README.md
       - Coding agent: getting-started/coding-agent/README.md
       - Warm pool: getting-started/warm-pool/README.md
+  - AI agents:
+      - Claude Managed Agents: ai-agents/claude-managed-agents/README.md

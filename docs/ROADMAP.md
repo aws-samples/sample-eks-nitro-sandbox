@@ -1,6 +1,6 @@
 # Roadmap
 
-These samples show Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandbox`) running AI agents and untrusted code. Getting started is available now, and the rest of the samples below are planned.
+These samples show Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandbox`) running AI agents and untrusted code. Getting started and Claude Managed Agents are available now, and the rest of the samples below are planned.
 
 ## Layout
 
@@ -130,7 +130,7 @@ Agent platforms:
 - claude-code-driver: an agent outside drives a warm, network-isolated sandbox that it claims from a pool.
 - mcp-server: an untrusted MCP server in a sandbox with no network, driven by a trusted client outside it.
 - kagent: Kagent's agent pods placed in sandboxes.
-- claude-managed-agents: a Claude Managed Agents self-hosted sandbox where every tool call runs in the guest and the organization API key never enters it.
+- [claude-managed-agents](../examples/ai-agents/claude-managed-agents/README.md) (available now): a Claude Managed Agents self-hosted sandbox where every tool call runs in the guest and the organization API key never enters it.
 - strands-decider: Strands Decider choosing where each piece of generated code should run.
 
 ### Agent guardrails (`agent-guardrails`)
