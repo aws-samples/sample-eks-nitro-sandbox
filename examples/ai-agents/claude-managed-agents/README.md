@@ -308,10 +308,11 @@ The claim was Ready about 50 ms after the poller created it, because it adopted 
 that was already running; the pool booted a replacement in the background. When the
 session went idle the worker stopped its work item and exited, and the pod completed.
 
-To see the fence, run this in a warm sandbox. The Claude API connects; the other two do
-not:
+To see the fence, run this in a warm sandbox. The session may have used the pod from
+Step 7, so pick a running one again. The Claude API connects; the other two do not:
 
 ```bash
+POD=$(kubectl get pods -l app=claude-sandbox-worker --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
 kubectl exec $POD -- python -c "
 import socket
 for host in ('api.anthropic.com', 'example.com', 'sts.us-west-2.amazonaws.com'):
