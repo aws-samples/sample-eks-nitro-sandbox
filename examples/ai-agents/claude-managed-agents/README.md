@@ -396,7 +396,7 @@ The commands use the variables from the walkthrough. In a new shell, set them ag
 with the values you used:
 
 ```bash
-export AWS_REGION=us-west-2 NAMESPACE=nitro-sandboxes-demo
+export AWS_REGION=us-west-2
 export REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com
 ```
 
