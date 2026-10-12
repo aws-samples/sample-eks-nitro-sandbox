@@ -13,11 +13,11 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 ## Preview the site locally
 
 ```bash
-pip install -r requirements-docs.txt
+pip install -r requirements.txt
 mkdocs serve
 ```
 
-See [ROADMAP.md](ROADMAP.md) for the samples planned next.
+See [ROADMAP.md](docs/ROADMAP.md) for the samples planned next.
 
 ## Security
 
