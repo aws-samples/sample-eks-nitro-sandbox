@@ -22,11 +22,12 @@ Nitro sandbox:
   a `SandboxWarmPool` and hands it the session. The sandbox's `SandboxTemplate` sets
   `runtimeClassName: isolated-sandbox`, so the commands run on a kernel no other pod
   shares, and the VM is gone when the session ends.
-- **Two keys, kept apart.** Your organization API key, which can create agents and read
-  every session, stays on your machine. The pods get only the environment key, which can
-  claim work and post results for this one environment, and each sandbox also gets the
-  short-lived secret for its own session. The worker refuses to start if it finds the
-  organization key.
+- **Three credentials, each in one place.** Your organization API key, which can create
+  agents and read every session, stays on your machine. The environment key, which can
+  claim any session in this environment's queue, is held only by the poller (and the
+  optional autoscaler). Each work item carries a secret with a token for that one session;
+  the poller hands it to the session's sandbox, and the sandbox runs on that token alone.
+  The sandbox holds neither key and refuses to start if it finds one.
 - **The sandbox can reach the Claude API and nothing else.** An `ApplicationNetworkPolicy`
   lets only the poller in, and lets the sandbox out only to CoreDNS and
   `api.anthropic.com`.
@@ -34,7 +35,7 @@ Nitro sandbox:
 *Figure 1: Claude reasons on Anthropic's side and the poller claims the session. A warm
 Nitro sandbox runs the session's tool calls and talks only to the Claude API.*
 
-![The operator starts a session on the Anthropic control plane with the organization API key. In the EKS cluster, an ordinary poller pod holding only the environment key polls the work queue, creates a SandboxClaim that adopts a booted VM from a SandboxWarmPool of two, and posts the session id and its secret to the claimed VM. The claimed VM, an isolated-sandbox Nitro sandbox, runs bash, read, write, edit, glob and grep, and exchanges tool calls and results with api.anthropic.com only; its egress policy refuses the internet, AWS APIs and other pods. The pool refills with a new warm VM.](images/claude-managed-agents.png)
+![The operator starts a session on the Anthropic control plane with the organization API key. In the EKS cluster, an ordinary poller pod holding only the environment key polls the work queue, creates a SandboxClaim that adopts a booted VM from a SandboxWarmPool of two, and posts the session id and its secret to the claimed VM. The claimed VM, an isolated-sandbox Nitro sandbox that holds only that session's token, runs bash, read, write, edit, glob and grep, and exchanges tool calls and results with api.anthropic.com only; its egress policy refuses the internet, AWS APIs and other pods. The pool refills with a new warm VM.](images/claude-managed-agents.png)
 
 This folder was built against these releases:
 
@@ -49,7 +50,7 @@ The files:
 | File | What it is |
 |---|---|
 | [`Dockerfile`](Dockerfile), [`pyproject.toml`](pyproject.toml) | The `claude-sandbox-worker` image: one image for the poller, the sandbox and the optional autoscaler |
-| [`src/worker/`](src/worker/) | The worker: [`poller.py`](src/worker/poller.py), [`sandbox.py`](src/worker/sandbox.py) (claim and dispatch), [`serve.py`](src/worker/serve.py) (runs one session), [`guard.py`](src/worker/guard.py) (refuses the organization key) |
+| [`src/worker/`](src/worker/) | The worker: [`poller.py`](src/worker/poller.py), [`sandbox.py`](src/worker/sandbox.py) (claim and dispatch), [`serve.py`](src/worker/serve.py) (runs one session), [`guard.py`](src/worker/guard.py) (refuses any key a role must not hold) |
 | [`deploy/sandbox-template.yaml`](deploy/sandbox-template.yaml) | The `SandboxTemplate` that runs tool calls, and a `SandboxWarmPool` of two |
 | [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The network fence: the poller in, DNS and `api.anthropic.com` out |
 | [`deploy/poller.yaml`](deploy/poller.yaml), [`deploy/rbac.yaml`](deploy/rbac.yaml) | The poller Deployment, and what it may do: manage `SandboxClaims` and read `Sandboxes` |
@@ -112,8 +113,9 @@ docker push $REGISTRY/claude-sandbox-worker:latest
 docker logout $REGISTRY
 ```
 
-**Step 4: Give the cluster the environment key.** Only the environment key and the
-environment id go in, read from `.env` so the key never appears on a command line:
+**Step 4: Give the cluster the environment key.** The poller needs the environment key;
+the sandboxes get only the environment id. Both are read from `.env`, so the key never
+appears on a command line:
 
 ```bash
 kubectl create secret generic anthropic-env-key \
@@ -179,10 +181,10 @@ spec:
         - name: worker
           image: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/claude-sandbox-worker:latest
           args: ["serve"]
-          env:
-            - name: ANTHROPIC_ENVIRONMENT_KEY
+          env:                          # no Anthropic key: the session's token arrives in the dispatch
+            - name: ANTHROPIC_ENVIRONMENT_ID
               valueFrom:
-                secretKeyRef: { name: anthropic-env-key, key: ANTHROPIC_ENVIRONMENT_KEY }
+                configMapKeyRef: { name: anthropic-env, key: ANTHROPIC_ENVIRONMENT_ID }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -226,20 +228,18 @@ kubectl exec $POD -- sh -c 'env | cut -d= -f1 | grep ^ANTHROPIC_'
 
 ```text
 isolated-sandbox
-6.18.48 #1 SMP PREEMPT_DYNAMIC Thu Sep 24 03:12:09 UTC 2026
-923.98
+6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
+25.01
 dm-0 vda vdb vdc
 ANTHROPIC_ENVIRONMENT_ID
-ANTHROPIC_ENVIRONMENT_KEY
 ```
 
-The sandbox runs its own kernel. Its uptime matches the pod's age, about 15 minutes here,
+The sandbox runs its own kernel. Its uptime matches the pod's age, about 25 seconds here,
 because the VM booted with the pod, and it sees virtio disks (`vda`, `vdb`, `vdc`). On the
-same node, an ordinary pod reported the node's kernel build, `#2 SMP PREEMPT_DYNAMIC Thu
-Sep 24 03:13:36 UTC 2026`, an uptime of 716825 seconds (about 8 days) and the instance's
-`nvme` disks. The version string `6.18.48` was the same for both; the build and the boot
-are not. The pod holds the environment key and the environment id, and no
-`ANTHROPIC_API_KEY`.
+same node, an ordinary pod reported the node's kernel build, `#2 SMP PREEMPT_DYNAMIC Wed
+Oct  7 22:33:11 UTC 2026`, and the instance's `nvme` disks. The version string `6.18.51`
+was the same for both; the build and the boot are not. The only Anthropic variable in the
+pod is the environment id: no `ANTHROPIC_API_KEY` and no `ANTHROPIC_ENVIRONMENT_KEY`.
 
 **Step 8: Run a session.** Start one from your machine. The script sends the task when it
 creates the session, sets a spend ceiling of $1.00 (`--budget-cents` changes it), follows
@@ -277,8 +277,9 @@ Session sesn_... created; waiting for the cluster to pick it up...
 
 The commands ran in a sandbox: the guest's kernel build, an uptime of about a minute and
 virtio disks. The last line of the report is `0`: the agent's `bash` tool runs with every
-`ANTHROPIC_*` variable removed from its environment, so the model's commands cannot read
-the environment key even though the worker holds it.
+`ANTHROPIC_*` variable removed from its environment. Beyond that, the sandbox process
+itself holds no key to find: its only credential is this session's token, which arrived in
+the dispatch rather than in an environment variable.
 
 In the cluster, the poller created one `SandboxClaim` for the session, and the claimed
 sandbox's log shows each tool call it ran (timestamps trimmed):
@@ -350,10 +351,11 @@ start-up. Instead:
    from `k8s-agent-sandbox`. It creates the `SandboxClaim`, waits until the claim is
    Ready, and returns a handle with the sandbox's pod IP.
 3. The poller POSTs the session id, the work item id and the work item's `secret` to the
-   sandbox's dispatch port. The secret carries a token for this one session, which the
-   worker prefers over the environment key for the session's calls and needs to mount any
-   memory stores the session attaches. It goes only to the sandbox serving that session and
-   is never logged.
+   sandbox's dispatch port. The secret carries a token for this one session, and it is the
+   sandbox's only credential: the worker uses it for every call the session needs,
+   including mounting any memory stores the session attaches. It goes only to the sandbox
+   serving that session and is never logged. A work item without a secret is stopped
+   instead of dispatched, and the sandbox refuses a dispatch that does not carry one.
 4. [`serve.py`](src/worker/serve.py) hands the session to
    `EnvironmentWorker.handle_item()`. It heartbeats the work item's lease, downloads the
    agent's skills into `/workspace/skills/`, runs each tool call and posts its result, and
