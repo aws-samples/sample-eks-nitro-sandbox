@@ -195,4 +195,4 @@ The first eight cover four sections with two samples each. Every one builds on a
 
 ## Not planned for this repo
 
-Cluster setup, AMI builds and benchmark comparisons stay out of this repo; the samples assume a cluster with the Nitro sandbox RuntimeClasses already in place.
+Beyond the cluster that Getting started creates, cluster setup guides, AMI builds and benchmark comparisons stay out of this repo.
