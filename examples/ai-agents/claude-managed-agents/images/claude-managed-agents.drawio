@@ -118,7 +118,7 @@
             <mxPoint x="-60" y="-18" as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="e8" value="5. tool calls in, results out&lt;br&gt;(api.anthropic.com only)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;endArrow=block;endFill=1;endSize=10;startArrow=block;startFill=1;startSize=10;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;align=right;" edge="1" parent="1">
+        <mxCell id="e8" value="5. tool calls in, results out&lt;br&gt;(egress allowed: api.anthropic.com)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;endArrow=block;endFill=1;endSize=10;startArrow=block;startFill=1;startSize=10;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;align=right;" edge="1" parent="1">
           <mxGeometry relative="1" as="geometry">
             <mxPoint x="1880" y="955" as="sourcePoint" />
             <mxPoint x="2060" y="150" as="targetPoint" />
