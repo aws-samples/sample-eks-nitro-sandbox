@@ -46,6 +46,7 @@ spec:
         app: claude-autoscaler
     spec:
       serviceAccountName: claude-autoscaler
+      enableServiceLinks: false   # keeps injected <SERVICE>_* names out of the guard's way
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

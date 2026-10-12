@@ -16,6 +16,7 @@ spec:
         app: claude-poller
     spec:
       serviceAccountName: claude-poller
+      enableServiceLinks: false   # keeps injected <SERVICE>_* names out of the guard's way
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

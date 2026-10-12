@@ -23,6 +23,9 @@ spec:
       runtimeClassName: isolated-sandbox
       serviceAccountName: claude-sandbox-worker
       automountServiceAccountToken: false
+      # No <SERVICE>_HOST/_PORT variables: a Service whose name starts with
+      # "anthropic" would otherwise inject ANTHROPIC_* names the guard refuses.
+      enableServiceLinks: false
       # One session, then exit. The pod completes instead of restarting.
       restartPolicy: Never
       securityContext:

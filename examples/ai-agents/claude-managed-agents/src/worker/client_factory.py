@@ -28,6 +28,7 @@ def make_session_client() -> AsyncAnthropic:
     EnvironmentWorker never sends a request with this client directly. For the
     session it builds Bearer-only copies carrying the session's token from the
     work secret, and clears any credential the parent has. guard.assert_safe has
-    already refused the organization key and the environment key in this pod.
+    already refused every ANTHROPIC_* variable the SDK could read a credential
+    from in this pod.
     """
     return AsyncAnthropic(**_base_url())
