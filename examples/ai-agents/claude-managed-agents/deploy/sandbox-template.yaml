@@ -28,6 +28,10 @@ spec:
       enableServiceLinks: false
       # One session, then exit. The pod completes instead of restarting.
       restartPolicy: Never
+      # On SIGTERM (for example at the claim's 30-minute deadline) the worker
+      # stops its work item after a final memory sync and flush, each bounded at
+      # 30 s by the SDK. The default 30 s grace would cut that short.
+      terminationGracePeriodSeconds: 90
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
