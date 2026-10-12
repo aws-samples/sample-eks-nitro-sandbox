@@ -39,10 +39,13 @@ WORKDIR = "/workspace"
 DEFAULT_NAMESPACE = "default"
 DEFAULT_WARMPOOL = "claude-sandbox-worker"
 DEFAULT_DISPATCH_PORT = 8080
-# Nothing heartbeats a work item between the poller's ack and the sandbox's first
-# heartbeat, and the SDK assumes a 90 s lease until the server reports one. Give
-# up on a slow claim before then, so a sandbox never starts on a session whose
-# lease has already lapsed.
+# Bounds only the wait for a claim to become Ready (k8s-agent-sandbox's
+# claim-ready watch). The reap of earlier claims, the claim create, the pod IP
+# lookup and the dispatch POST run outside it, so it does not bound the whole
+# hand-off. Nothing heartbeats the work item between the poller's ack and the
+# sandbox's first heartbeat, and the SDK assumes a 90 s lease TTL until a
+# heartbeat reply reports the real one (it is the SDK's assumption, not the
+# server's lease). 75 s keeps the claim wait inside that assumed TTL.
 DEFAULT_SANDBOX_READY_TIMEOUT = 75
 DEFAULT_MAX_REDISPATCH = 3
 # The controller deletes a claim, and its sandbox, at creation + this many
