@@ -9,9 +9,10 @@ this folder.
 an agent's loop for you: Claude, the conversation and the session state stay on
 Anthropic's side. With a
 [self-hosted sandbox](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes),
-the other half, the agent's tool calls, runs on infrastructure you control. Every `bash`,
-`read`, `write`, `edit`, `glob` and `grep` call Claude decides to make arrives as a work
-item, and a worker of yours runs it and posts the result back.
+the other half, the agent's tool calls, runs on infrastructure you control. Each session
+arrives as a work item; a worker of yours claims it, runs every `bash`, `read`, `write`,
+`edit`, `glob` and `grep` call Claude decides to make in that session, and posts each
+result back.
 
 Those tool calls are code the model chose to run, so this sample gives each session its own
 Nitro sandbox:
