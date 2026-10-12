@@ -21,8 +21,8 @@ def main() -> None:
         sys.exit("Set ANTHROPIC_API_KEY and ANTHROPIC_ENVIRONMENT_ID (see .env.example).")
     stats = Anthropic().beta.environments.work.stats(environment_id)
     print(f"workers_polling: {stats.workers_polling}")
-    print(f"depth:           {stats.depth}  (queued, not yet claimed)")
-    print(f"pending:         {stats.pending}  (claimed, in progress)")
+    print(f"depth:           {stats.depth}  (waiting to be picked up)")
+    print(f"pending:         {stats.pending}  (polled, not yet acknowledged)")
     if not stats.workers_polling:
         print("\nNo worker is polling. Check the poller: kubectl logs deploy/claude-poller")
 

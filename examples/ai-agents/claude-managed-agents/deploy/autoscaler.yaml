@@ -1,9 +1,10 @@
 # Optional: size the warm pool from the work queue.
 #
 # Every 15 seconds the autoscaler reads the environment's queue stats and sets
-# the pool's replicas to one per queued or running session, between WARMPOOL_MIN
-# and WARMPOOL_MAX. It reads the stats with the environment key and may only
-# resize this one pool.
+# the pool's replicas to WARMPOOL_MIN plus one for each session waiting in the
+# queue, up to WARMPOOL_MAX. A session that is already running is not in the
+# queue, so it does not count. It reads the stats with the environment key and
+# may only resize this one pool.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
