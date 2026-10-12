@@ -1,0 +1,406 @@
+# Claude Managed Agents with tool calls in a Nitro sandbox
+
+Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
+on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
+sample first so you have a cluster with the runtime classes. Run the commands below from
+this folder.
+
+[Claude Managed Agents](https://platform.claude.com/docs/en/managed-agents/overview) runs
+an agent's loop for you: Claude, the conversation and the session state stay on
+Anthropic's side. With a
+[self-hosted sandbox](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes),
+the other half, the agent's tool calls, runs on infrastructure you control. Every `bash`,
+`read`, `write`, `edit`, `glob` and `grep` call Claude decides to make arrives as a work
+item, and a worker of yours runs it and posts the result back.
+
+Those tool calls are code the model chose to run, so this sample gives each session its own
+Nitro sandbox:
+
+- **Claude reasons on Anthropic's side; the tools run in your cluster.** An ordinary poller
+  Deployment claims work from the environment's queue. It runs no tool calls itself.
+- **Each session gets its own VM.** The poller claims a sandbox that is already booted from
+  a `SandboxWarmPool` and hands it the session. The sandbox's `SandboxTemplate` sets
+  `runtimeClassName: isolated-sandbox`, so the commands run on a kernel no other pod
+  shares, and the VM is gone when the session ends.
+- **Two keys, kept apart.** Your organization API key, which can create agents and read
+  every session, stays on your machine. The pods get only the environment key, which can
+  claim work and post results for this one environment, and each sandbox also gets the
+  short-lived secret for its own session. The worker refuses to start if it finds the
+  organization key.
+- **The sandbox can reach the Claude API and nothing else.** An `ApplicationNetworkPolicy`
+  lets only the poller in, and lets the sandbox out only to CoreDNS and
+  `api.anthropic.com`.
+
+*Figure 1: Claude reasons on Anthropic's side and the poller claims the session. A warm
+Nitro sandbox runs the session's tool calls and talks only to the Claude API.*
+
+![The operator starts a session on the Anthropic control plane with the organization API key. In the EKS cluster, an ordinary poller pod holding only the environment key polls the work queue, creates a SandboxClaim that adopts a booted VM from a SandboxWarmPool of two, and posts the session id and its secret to the claimed VM. The claimed VM, an isolated-sandbox Nitro sandbox, runs bash, read, write, edit, glob and grep, and exchanges tool calls and results with api.anthropic.com only; its egress policy refuses the internet, AWS APIs and other pods. The pool refills with a new warm VM.](images/claude-managed-agents.png)
+
+This folder was built against these releases:
+
+| Component | Version |
+|---|---|
+| Anthropic Python SDK (`anthropic`) | 1.13.0 |
+| agent-sandbox Python client (`k8s-agent-sandbox`) | 1.0.6 |
+| agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.6 |
+
+The files:
+
+| File | What it is |
+|---|---|
+| [`Dockerfile`](Dockerfile), [`pyproject.toml`](pyproject.toml) | The `claude-sandbox-worker` image: one image for the poller, the sandbox and the optional autoscaler |
+| [`src/worker/`](src/worker/) | The worker: [`poller.py`](src/worker/poller.py), [`sandbox.py`](src/worker/sandbox.py) (claim and dispatch), [`serve.py`](src/worker/serve.py) (runs one session), [`guard.py`](src/worker/guard.py) (refuses the organization key) |
+| [`deploy/sandbox-template.yaml`](deploy/sandbox-template.yaml) | The `SandboxTemplate` that runs tool calls, and a `SandboxWarmPool` of two |
+| [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The network fence: the poller in, DNS and `api.anthropic.com` out |
+| [`deploy/poller.yaml`](deploy/poller.yaml), [`deploy/rbac.yaml`](deploy/rbac.yaml) | The poller Deployment, and what it may do: manage `SandboxClaims` and read `Sandboxes` |
+| [`deploy/autoscaler.yaml`](deploy/autoscaler.yaml) | Optional: sizes the warm pool from the work queue |
+| [`scripts/`](scripts/) | Run on your machine with the organization key: create the agent and environment, start a session, read the queue stats |
+| `.env.example` | The four values the sample needs; copy it to `.env`, which git ignores |
+
+**Step 1: Install agent-sandbox and turn on network policy.** Install the controller with
+its extensions (`SandboxTemplate`, `SandboxWarmPool`, `SandboxClaim`). If you ran the warm
+pool sample, this upgrades it in place:
+
+```bash
+kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
+kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller
+```
+
+EKS Auto Mode accepts network policies without enforcing them until the Network Policy
+Controller is enabled, once per cluster. If you have not run the coding agent sample:
+
+```bash
+kubectl apply -f ../../getting-started/coding-agent/enable-network-policy.yaml
+```
+
+**Step 2: Create the agent and the self-hosted environment.** On your machine, with your
+organization API key in `.env`:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install anthropic==1.13.0
+cp .env.example .env     # fill in ANTHROPIC_API_KEY
+set -a; . ./.env; set +a
+.venv/bin/python scripts/setup_agent.py
+```
+
+```text
+Created agent agent_... (claude-sonnet-5-5)
+Created self-hosted environment env_...
+
+Add these to .env:
+  AGENT_ID=agent_...
+  ANTHROPIC_ENVIRONMENT_ID=env_...
+Then, in the Claude Console, open Workspace > Environments > your
+environment > Generate environment key, and add it as
+  ANTHROPIC_ENVIRONMENT_KEY=...
+```
+
+The agent uses the built-in `agent_toolset_20260401` tools. There is no API that creates
+an environment key, so generate it in the Console as the script says, put the three values
+in `.env`, and load the file again with `set -a; . ./.env; set +a`.
+
+**Step 3: Build and push the image.**
+
+```bash
+export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+export REGISTRY=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+aws ecr create-repository --repository-name claude-sandbox-worker --region $AWS_REGION
+aws ecr get-login-password --region $AWS_REGION \
+  | docker login --username AWS --password-stdin $REGISTRY
+docker build --platform linux/amd64 -t $REGISTRY/claude-sandbox-worker:latest .
+docker push $REGISTRY/claude-sandbox-worker:latest
+docker logout $REGISTRY
+```
+
+**Step 4: Give the cluster the environment key.** Only the environment key and the
+environment id go in, read from `.env` so the key never appears on a command line:
+
+```bash
+kubectl create secret generic anthropic-env-key \
+  --from-env-file=<(grep '^ANTHROPIC_ENVIRONMENT_KEY=' .env)
+kubectl create configmap anthropic-env \
+  --from-env-file=<(grep '^ANTHROPIC_ENVIRONMENT_ID=' .env)
+```
+
+**Step 5: Fence the network.** [`egress-policy.yaml`](deploy/egress-policy.yaml) selects
+the sandbox pods. It lets in only the poller, on the dispatch port, and lets out only DNS
+and HTTPS to the Claude API:
+
+```yaml
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: claude-poller
+      ports:
+        - { protocol: TCP, port: 8080 }
+  egress:
+    - to:
+        - ipBlock: { cidr: <COREDNS_IP>/32 }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - domainNames:
+            - api.anthropic.com
+      ports:
+        - { protocol: TCP, port: 443 }
+```
+
+Fill in your CoreDNS address, apply it, and wait for its `PolicyEndpoint`, which shows the
+controller has handed the policy to the nodes:
+
+```bash
+COREDNS_IP=$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')
+sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f -
+until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/claude-sandbox-worker-egress-'; do sleep 2; done
+```
+
+**Step 6: Deploy the sandbox and the poller.** Here is the part of
+[`sandbox-template.yaml`](deploy/sandbox-template.yaml) that matters. The pool keeps two of
+these booted:
+
+```yaml
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: claude-sandbox-worker
+spec:
+  networkPolicyManagement: Unmanaged   # egress-policy.yaml is the policy for these pods
+  podTemplate:
+    metadata:
+      labels:
+        app: claude-sandbox-worker
+    spec:
+      runtimeClassName: isolated-sandbox
+      automountServiceAccountToken: false
+      restartPolicy: Never              # one session, then the pod completes
+      containers:
+        - name: worker
+          image: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/claude-sandbox-worker:latest
+          args: ["serve"]
+          env:
+            - name: ANTHROPIC_ENVIRONMENT_KEY
+              valueFrom:
+                secretKeyRef: { name: anthropic-env-key, key: ANTHROPIC_ENVIRONMENT_KEY }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits:   { cpu: "1", memory: 2Gi }
+```
+
+The pod runs as a non-root user with its own empty `/workspace`, and has no ServiceAccount
+token, so a command the model runs cannot reach the Kubernetes API. Apply the RBAC, the
+template and pool, and the poller:
+
+```bash
+kubectl apply -f deploy/rbac.yaml
+sed "s|<ACCOUNT_ID>|$ACCOUNT_ID|" deploy/sandbox-template.yaml | kubectl apply -f -
+sed "s|<ACCOUNT_ID>|$ACCOUNT_ID|" deploy/poller.yaml | kubectl apply -f -
+kubectl wait sandboxwarmpool/claude-sandbox-worker --for=jsonpath='{.status.readyReplicas}'=2 --timeout=600s
+kubectl rollout status deploy/claude-poller
+.venv/bin/python scripts/stats.py
+```
+
+```text
+workers_polling: 1
+depth:           0  (queued, not yet claimed)
+pending:         0  (claimed, in progress)
+```
+
+`workers_polling: 1` is the poller, connected to the queue with the environment key.
+
+**Step 7: Look inside a warm sandbox.** Check its runtime class, the kernel and disks it
+sees, and which Anthropic credentials it holds. The last command prints variable names
+only, never values:
+
+```bash
+POD=$(kubectl get pods -l app=claude-sandbox-worker --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+kubectl get pod $POD -o jsonpath='{.spec.runtimeClassName}{"\n"}'
+kubectl exec $POD -- sh -c 'uname -rv; cut -d" " -f1 /proc/uptime; ls /sys/block | tr "\n" " "; echo'
+kubectl exec $POD -- sh -c 'env | cut -d= -f1 | grep ^ANTHROPIC_'
+```
+
+```text
+isolated-sandbox
+6.18.48 #1 SMP PREEMPT_DYNAMIC Thu Sep 24 03:12:09 UTC 2026
+923.98
+dm-0 vda vdb vdc
+ANTHROPIC_ENVIRONMENT_ID
+ANTHROPIC_ENVIRONMENT_KEY
+```
+
+The sandbox runs its own kernel. Its uptime matches the pod's age, about 15 minutes here,
+because the VM booted with the pod, and it sees virtio disks (`vda`, `vdb`, `vdc`). On the
+same node, an ordinary pod reported the node's kernel build, `#2 SMP PREEMPT_DYNAMIC Thu
+Sep 24 03:13:36 UTC 2026`, an uptime of 716825 seconds (about 8 days) and the instance's
+`nvme` disks. The version string `6.18.48` was the same for both; the build and the boot
+are not. The pod holds the environment key and the environment id, and no
+`ANTHROPIC_API_KEY`.
+
+**Step 8: Run a session.** Start one from your machine. The script sends the task when it
+creates the session, sets a spend ceiling of $1.00 (`--budget-cents` changes it), follows
+the session until it settles and prints each tool call with its result:
+
+```bash
+.venv/bin/python scripts/submit.py "Run these commands with your bash tool: uname -rv; cat /proc/uptime; ls /sys/block; env | grep -c '^ANTHROPIC_' || true. Write their combined output to report.txt in your working directory, then read report.txt back to me."
+```
+
+Abridged; your text will differ:
+
+```text
+Session sesn_... created; waiting for the cluster to pick it up...
+  -> bash
+  -> read
+
+[tool] bash: mkdir -p /workspace && cd /workspace && { uname -rv; cat /proc/uptime; ls /sys/block; env | grep -c '^ANTHROPIC_' || true; } > report.txt 2>&1; echo done
+[result:ok] done
+
+[tool] read: /workspace/report.txt
+[result:ok] 6.18.48 #1 SMP PREEMPT_DYNAMIC Thu Sep 24 03:12:09 UTC 2026
+         68.84 63.75
+         dm-0
+         vda
+         vdb
+         vdc
+         0
+
+[agent] I ran the four commands and saved their combined output to `/workspace/report.txt`. [...]
+
+[idle] end_turn
+
+2 tool calls, 0 errors, list cost 0.01 USD
+```
+
+The commands ran in a sandbox: the guest's kernel build, an uptime of about a minute and
+virtio disks. The last line of the report is `0`: the agent's `bash` tool runs with every
+`ANTHROPIC_*` variable removed from its environment, so the model's commands cannot read
+the environment key even though the worker holds it.
+
+In the cluster, the poller created one `SandboxClaim` for the session, and the claimed
+sandbox's log shows each tool call it ran (timestamps trimmed):
+
+```bash
+kubectl get sandboxclaims
+kubectl logs <SANDBOX>     # the SANDBOX column; the pod has the same name
+```
+
+```text
+NAME                     READY   SANDBOX                       REASON         AGE
+sandbox-claim-d52f58f2   False   claude-sandbox-worker-mhcvf   PodSucceeded   14m
+
+INFO worker.serve waiting for a dispatch on :8080
+INFO worker.serve serving session sesn_... in /workspace
+INFO anthropic.lib.tools._beta_session_runner executing tool tool=bash tool_use_id=sevt_...
+INFO anthropic.lib.tools._beta_session_runner executing tool tool=read tool_use_id=sevt_...
+INFO anthropic.lib.tools._beta_session_runner session idle for 60s after its turn ended; stopping
+INFO worker.serve session sesn_... finished
+```
+
+The claim was Ready about 50 ms after the poller created it, because it adopted a sandbox
+that was already running; the pool booted a replacement in the background. When the
+session went idle the worker stopped its work item and exited, and the pod completed.
+
+To see the fence, run this in a warm sandbox. The Claude API connects; anything else does
+not:
+
+```bash
+kubectl exec $POD -- python -c "
+import socket
+for host in ('api.anthropic.com', 'example.com', 'sts.us-west-2.amazonaws.com'):
+    try:
+        socket.create_connection((host, 443), timeout=5).close(); print(host, 'connected')
+    except OSError as e:
+        print(host, type(e).__name__, e)"
+```
+
+```text
+api.anthropic.com connected
+example.com OSError [Errno 101] Network is unreachable
+sts.us-west-2.amazonaws.com TimeoutError timed out
+```
+
+**Optional: size the pool from the queue.** [`autoscaler.yaml`](deploy/autoscaler.yaml)
+reads the environment's queue every 15 seconds and sets the pool to one warm sandbox per
+queued or running session, between 1 and 10. It uses the environment key too, and may only
+resize this one pool:
+
+```bash
+sed "s|<ACCOUNT_ID>|$ACCOUNT_ID|" deploy/autoscaler.yaml | kubectl apply -f -
+kubectl logs deploy/claude-autoscaler
+```
+
+```text
+INFO worker.stats_adapter environment=env_... warm pool=.../claude-sandbox-worker replicas in [1, 10] every 15s
+INFO worker.stats_adapter depth=0 pending=0 -> claude-sandbox-worker replicas None -> 1
+```
+
+## How the hand-off works
+
+A warm sandbox boots before its session exists, so it cannot be given the session at
+start-up. Instead:
+
+1. The poller's `client.beta.environments.work.poller(..., auto_stop=False)` claims a work
+   item. `auto_stop=False` means the poller does not stop the item when it moves on; the
+   sandbox does, when the session ends.
+2. [`sandbox.py`](src/worker/sandbox.py) calls `SandboxClient.create_sandbox(warmpool=...)`
+   from `k8s-agent-sandbox`. It creates the `SandboxClaim`, waits until the claim is
+   Ready, and returns a handle with the sandbox's pod IP.
+3. The poller POSTs the session id, the work item id and the work item's `secret` to the
+   sandbox's dispatch port. The secret carries a token for this one session, which the
+   worker prefers over the environment key for the session's calls and needs to mount any
+   memory stores the session attaches. It goes only to the sandbox serving that session and
+   is never logged.
+4. [`serve.py`](src/worker/serve.py) hands the session to
+   `EnvironmentWorker.handle_item()`. It heartbeats the work item's lease, downloads the
+   agent's skills into `/workspace/skills/`, runs each tool call and posts its result, and
+   stops the work item when the session goes idle. Then the process exits.
+
+Because the poller only claims and dispatches, sessions run in parallel, one VM each.
+
+## Good to know
+
+- **The file tools' path checks are not a sandbox.** The SDK confines `read`, `write` and
+  `edit` to the working directory, but `bash` can run anything. The VM is what bounds it.
+- **Use one environment per trust boundary.** An environment key reaches every session in
+  its environment. Give separate users or tenants separate environments and keys.
+- **Each claim has a deadline.** The poller creates claims with a 30-minute lifetime
+  (`SHUTDOWN_AFTER_SECONDS`), after which the controller deletes the claim and its pod.
+  That is also the longest a session can run; raise it for longer tasks.
+- **Set a budget.** A session's `budget` caps its list cost, so a runaway loop stops
+  issuing model requests.
+- **Size requests honestly.** Each sandbox reserves its full memory request, and the VM is
+  sized to its limits. Size `replicas` to how many sessions start at once, not to your total
+  session count.
+
+## Clean up
+
+The commands use the variables from the walkthrough. In a new shell, set them again first,
+with the values you used:
+
+```bash
+export AWS_REGION=us-west-2 NAMESPACE=nitro-sandboxes-demo
+export REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com
+```
+
+Remove the sample's objects, the image and its repository:
+
+```bash
+kubectl delete -f deploy/autoscaler.yaml --ignore-not-found
+kubectl delete -f deploy/poller.yaml --ignore-not-found
+kubectl delete -f deploy/sandbox-template.yaml --ignore-not-found
+kubectl delete sandboxclaims -l anthropic.com/session-id
+kubectl delete -f deploy/egress-policy.yaml -f deploy/rbac.yaml --ignore-not-found
+kubectl delete secret anthropic-env-key --ignore-not-found
+kubectl delete configmap anthropic-env --ignore-not-found
+aws ecr delete-repository --repository-name claude-sandbox-worker --region $AWS_REGION --force
+docker image rm $REGISTRY/claude-sandbox-worker:latest
+rm -rf .venv
+```
+
+Keep `.env` if you will run the sample again; otherwise delete it, and revoke the
+environment key in the Claude Console. agent-sandbox stays installed for other samples; the
+[warm pool](../../getting-started/warm-pool/README.md#clean-up) clean up removes it.
