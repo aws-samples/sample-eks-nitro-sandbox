@@ -81,7 +81,7 @@ examples/
 
 ## Planned samples by section
 
-Samples marked ★ are the first eight to be added after Getting started.
+Samples marked ★ are the next eight to be added.
 
 ### Getting started (`getting-started`, available now)
 
@@ -182,7 +182,7 @@ These samples use `runtimeClassName: confidential-sandbox`.
 
 ## Starting with these 8, and why
 
-The first eight cover four sections with two samples each. Every one builds on a cluster that has finished Getting started, and each runs on standard EKS Auto Mode with no extra platform to install beyond what the sample states.
+The eight cover four sections with two samples each. Every one builds on a cluster that has finished Getting started, and each runs on standard EKS Auto Mode with no extra platform to install beyond what the sample states.
 
 - **host-escape**: the clearest picture of the boundary. The same privileged pod owns a node without a sandbox, and only its own VM with one.
 - **multi-tenant-saas**: the most common production question, how to keep tenants apart, answered with the sandbox, Pod Identity and network policy together.
