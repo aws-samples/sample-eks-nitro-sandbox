@@ -19,6 +19,49 @@ from . import client_factory, config, guard, sandbox
 log = logging.getLogger(__name__)
 
 
+async def _stop(work_api, work, why: str) -> None:
+    log.warning("stopping work item %s: %s", work.id, why)
+    await work_api.stop(work.id, environment_id=work.environment_id, force=True)
+
+
+async def handle_work(work, work_api, dispatcher: sandbox.Dispatcher, failures: dict[str, int]) -> None:
+    """Dispatch one claimed work item, or stop it if it cannot or should not run.
+
+    ``failures`` counts failed dispatches per session id in this process. A
+    failed dispatch deletes its claim, so the claims cannot carry the count;
+    without this a session that always fails would claim a warm sandbox every
+    time it is offered again, forever.
+    """
+    # The queue also sends non-session items (health checks). Nothing else
+    # will stop them, so stop them here instead of letting the lease run out.
+    if work.data.type != "session":
+        await _stop(work_api, work, f"not a session (type={work.data.type})")
+        return
+    if not work.secret:
+        # The sandbox's only credential is the session's token in this
+        # secret. Without it there is nothing safe to hand over.
+        await _stop(work_api, work, "no per-session secret")
+        return
+
+    session_id = work.data.id
+    try:
+        dispatched = await asyncio.to_thread(
+            dispatcher.dispatch, session_id=session_id, work_id=work.id, work_secret=work.secret
+        )
+    except Exception:
+        failures[session_id] = failures.get(session_id, 0) + 1
+        log.exception("dispatch %d of %d failed for session %s",
+                      failures[session_id], dispatcher.max_redispatch, session_id)
+        if failures[session_id] >= dispatcher.max_redispatch:
+            del failures[session_id]
+            await _stop(work_api, work, f"{dispatcher.max_redispatch} dispatches failed")
+        return
+    failures.pop(session_id, None)
+    if not dispatched:
+        # Its sandboxes kept dying after hand-off; see Dispatcher.dispatch.
+        await _stop(work_api, work, f"handed to {dispatcher.max_redispatch} sandboxes already")
+
+
 async def _run() -> None:
     guard.assert_safe(guard.ROLE_POLL)
     environment_id = config.require(config.ENV_ENVIRONMENT_ID)
@@ -27,6 +70,7 @@ async def _run() -> None:
     log.info("polling environment %s; claiming from warm pool %s/%s",
              environment_id, dispatcher.namespace, dispatcher.warmpool)
 
+    failures: dict[str, int] = {}
     async with client_factory.make_async_client() as client:
         work_api = client.beta.environments.work
         async for work in work_api.poller(
@@ -35,28 +79,7 @@ async def _run() -> None:
             auto_stop=False,  # the sandbox serving the session owns the stop call
         ):
             try:
-                # The queue also sends non-session items (health checks).
-                # Nothing else will stop them, so stop them here instead of
-                # letting the lease run out.
-                if work.data.type != "session":
-                    log.info("stopping non-session work item %s (type=%s)", work.id, work.data.type)
-                    await work_api.stop(work.id, environment_id=work.environment_id, force=True)
-                    continue
-                if not work.secret:
-                    # The sandbox's only credential is the session's token in
-                    # this secret. Without it there is nothing safe to hand over.
-                    log.warning("work item %s carries no per-session secret; stopping it", work.id)
-                    await work_api.stop(work.id, environment_id=work.environment_id, force=True)
-                    continue
-                dispatched = await asyncio.to_thread(
-                    dispatcher.dispatch,
-                    session_id=work.data.id,
-                    work_id=work.id,
-                    work_secret=work.secret,
-                )
-                if not dispatched:
-                    # A session that keeps failing would otherwise be offered forever.
-                    await work_api.stop(work.id, environment_id=work.environment_id, force=True)
+                await handle_work(work, work_api, dispatcher, failures)
             except Exception:
                 # Health-check items are not modelled and may have no id.
                 log.exception("work item %s failed (session=%s)", work.id, getattr(work.data, "id", None))

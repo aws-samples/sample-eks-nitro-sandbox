@@ -77,8 +77,10 @@ class Dispatcher:
     def reap_stale_claims(self, session_id: str) -> int:
         """Delete earlier claims for this session and return the highest dispatch count seen.
 
-        A session can be offered again after its sandbox died. The new dispatch gets
-        a fresh sandbox, so the old claim is removed rather than left running.
+        A session can be offered again after a sandbox it was handed to died. The
+        new dispatch gets a fresh sandbox, so the old claim is removed rather than
+        left running. Only dispatches that reached a sandbox leave a claim behind;
+        the poller counts failed ones itself.
         """
         k8s = self.client.k8s_helper
         names = self.client.list_all_sandboxes(
@@ -97,8 +99,9 @@ class Dispatcher:
     def dispatch(self, *, session_id: str, work_id: str, work_secret: str) -> bool:
         """Claim a warm sandbox and POST the session to it.
 
-        Returns False when the session has been dispatched too many times and the
-        caller should stop its work item instead. Blocking: run it in a thread.
+        Returns False when the session has already been handed to max_redispatch
+        sandboxes, so the caller should stop its work item instead. Raises if the
+        dispatch fails; the poller counts those. Blocking: run it in a thread.
         """
         attempt = self.reap_stale_claims(session_id) + 1
         if attempt > self.max_redispatch:
