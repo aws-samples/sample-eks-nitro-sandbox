@@ -27,10 +27,20 @@ async def _stop(work_api, work, why: str) -> None:
 async def handle_work(work, work_api, dispatcher: sandbox.Dispatcher, failures: dict[str, int]) -> None:
     """Dispatch one claimed work item, or stop it if it cannot or should not run.
 
-    ``failures`` counts failed dispatches per session id in this process. A
-    failed dispatch deletes its claim, so the claims cannot carry the count;
-    without this a session that always fails would claim a warm sandbox every
-    time it is offered again, forever.
+    ``failures`` counts failed dispatches per session id. A failed dispatch
+    deletes its claim, so the claims cannot carry the count; without this a
+    session that always fails would claim a warm sandbox every time it is
+    offered again, forever. Its limits:
+
+    - It lives in this poller process only. A restart starts it empty, and a
+      second poller replica would keep its own.
+    - A successful dispatch clears a session's entry. A session whose
+      dispatches alternate between failing and succeeding (its sandbox dying
+      after each hand-off) therefore starts from zero after each success and
+      never reaches the limit.
+    - An entry is removed only on success or once its stop goes through. A
+      session that fails once or twice and is never offered again keeps its
+      small entry until the process restarts.
     """
     # The queue also sends non-session items (health checks). Nothing else
     # will stop them, so stop them here instead of letting the lease run out.
