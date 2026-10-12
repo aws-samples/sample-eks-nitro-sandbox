@@ -212,8 +212,8 @@ kubectl rollout status deploy/claude-poller
 
 ```text
 workers_polling: 1
-depth:           0  (queued, not yet claimed)
-pending:         0  (claimed, in progress)
+depth:           0  (waiting to be picked up)
+pending:         0  (polled, not yet acknowledged)
 ```
 
 `workers_polling: 1` is the poller, connected to the queue with the environment key.
@@ -328,9 +328,11 @@ sts.us-west-2.amazonaws.com TimeoutError timed out
 ```
 
 **Optional: size the pool from the queue.** [`autoscaler.yaml`](deploy/autoscaler.yaml)
-reads the environment's queue every 15 seconds and sets the pool to one warm sandbox per
-queued or running session, between 1 and 10. It uses the environment key too, and may only
-resize this one pool:
+reads the environment's queue every 15 seconds and sets the pool to 1 warm sandbox plus
+one for each session waiting in the queue, up to 10. The poller acknowledges a session as
+soon as it claims it, so a running session no longer counts: the pool grows when sessions
+arrive faster than the poller hands them out. The autoscaler uses the environment key too,
+and may only resize this one pool:
 
 ```bash
 sed "s|<ACCOUNT_ID>|$ACCOUNT_ID|" deploy/autoscaler.yaml | kubectl apply -f -
@@ -339,8 +341,11 @@ kubectl logs deploy/claude-autoscaler
 
 ```text
 INFO worker.stats_adapter environment=env_... warm pool=.../claude-sandbox-worker replicas in [1, 10] every 15s
-INFO worker.stats_adapter depth=0 pending=0 -> claude-sandbox-worker replicas None -> 1
+INFO worker.stats_adapter depth=0 pending=0 -> claude-sandbox-worker replicas None -> 1 (pool has 2)
 ```
+
+It sets the replicas on every tick, so if anything else changes them, re-applying
+`sandbox-template.yaml` for example, the next tick puts the target back.
 
 ## How the hand-off works
 
