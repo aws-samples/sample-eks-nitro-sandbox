@@ -415,8 +415,10 @@ docker image rm $REGISTRY/claude-sandbox-worker:latest
 rm -rf .venv
 ```
 
-Keep `.env` if you will run the sample again; otherwise delete it, and revoke the
-environment key in the Claude Console.
+Keep `.env` if you will run the sample again. Otherwise delete it, and in the Claude Console
+revoke the environment key, archive the agent and delete the self-hosted environment that
+step 2 created (the SDK's `client.beta.agents.archive` and
+`client.beta.environments.delete` do the last two).
 
 agent-sandbox stays installed for other samples. To remove it as well, which deletes its
 CRDs and every Sandbox resource in the cluster, delete the release you installed in step 1:
