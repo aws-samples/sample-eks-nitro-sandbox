@@ -389,7 +389,9 @@ Because the poller only claims and dispatches, sessions run in parallel, one VM 
   and the sandbox refuses a dispatch that does not carry the session's secret.
 - **Each claim has a deadline.** The poller creates claims with a 30-minute lifetime
   (`SHUTDOWN_AFTER_SECONDS`), after which the controller deletes the claim and its pod.
-  That is also the longest a session can run; raise it for longer tasks.
+  That is also the longest a session can run; raise it for longer tasks. The sandbox then
+  gets 90 seconds (`terminationGracePeriodSeconds`) to stop its work item and save any
+  memory store changes before the pod is killed.
 - **Set a budget.** A session's `budget` caps its list cost, so a runaway loop stops
   issuing model requests.
 - **Size requests honestly.** Each sandbox reserves its full memory request, and the VM is
