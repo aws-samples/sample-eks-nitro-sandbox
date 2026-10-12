@@ -46,18 +46,26 @@ def main() -> None:
         try:
             stats = client.beta.environments.work.stats(environment_id)
             target = max(low, min(high, stats.depth + stats.pending))
+            # Patch every tick, not only when the target changes: if anything
+            # else set the pool's replicas (re-applying sandbox-template.yaml,
+            # say), the next tick puts the target back. Setting the same value
+            # again changes nothing, and the Role needs only `patch` this way.
+            scale = custom.patch_namespaced_custom_object_scale(
+                group=WARMPOOL_GROUP,
+                version=WARMPOOL_VERSION,
+                namespace=namespace,
+                plural=WARMPOOL_PLURAL,
+                name=warmpool,
+                body={"spec": {"replicas": target}},
+            )
+            current = ((scale or {}).get("status") or {}).get("replicas")
             if target != last:
-                custom.patch_namespaced_custom_object_scale(
-                    group=WARMPOOL_GROUP,
-                    version=WARMPOOL_VERSION,
-                    namespace=namespace,
-                    plural=WARMPOOL_PLURAL,
-                    name=warmpool,
-                    body={"spec": {"replicas": target}},
-                )
-                log.info("depth=%d pending=%d -> %s replicas %s -> %d",
-                         stats.depth, stats.pending, warmpool, last, target)
+                log.info("depth=%d pending=%d -> %s replicas %s -> %d (pool has %s)",
+                         stats.depth, stats.pending, warmpool, last, target, current)
                 last = target
+            else:
+                log.debug("depth=%d pending=%d -> %s replicas %d (pool has %s)",
+                          stats.depth, stats.pending, warmpool, target, current)
         except Exception as exc:  # noqa: BLE001 - keep the loop alive
             log.warning("tick failed: %s", exc)
         time.sleep(interval)
