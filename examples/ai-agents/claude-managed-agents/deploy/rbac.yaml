@@ -1,0 +1,41 @@
+# Identities for the poller and the sandboxes, and what the poller may do.
+#
+# The poller creates a SandboxClaim per session, watches it until it is Ready,
+# reads the claimed Sandbox's pod IP and deletes claims it no longer needs. The
+# CRDs span two API groups. It cannot create, read or exec into pods.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: claude-poller
+---
+# The sandboxes run as this ServiceAccount with no token mounted: they reach
+# Anthropic with the environment key and need nothing from the Kubernetes API.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: claude-sandbox-worker
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: claude-poller
+rules:
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: claude-poller
+subjects:
+  - kind: ServiceAccount
+    name: claude-poller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: claude-poller

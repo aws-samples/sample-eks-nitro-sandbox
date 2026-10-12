@@ -1,0 +1,41 @@
+# The sandboxes' network: the poller in, the Claude API out, nothing else.
+#
+# An EKS Auto Mode ApplicationNetworkPolicy is a NetworkPolicy that also accepts
+# hostnames (domainNames) in an egress rule. For the sandbox pods it allows:
+#   - ingress from the poller, on the dispatch port only;
+#   - egress to CoreDNS for name lookups and to HTTPS on api.anthropic.com,
+#     where the worker fetches tool calls and posts their results.
+# Every other address, inside the cluster or out, is refused, so a command the
+# model runs cannot reach other pods, AWS APIs or the internet.
+#
+# <COREDNS_IP> is your cluster's CoreDNS Service address:
+#   kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ApplicationNetworkPolicy
+metadata:
+  name: claude-sandbox-worker-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: claude-sandbox-worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: claude-poller
+      ports:
+        - { protocol: TCP, port: 8080 }
+  egress:
+    - to:
+        - ipBlock: { cidr: <COREDNS_IP>/32 }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - domainNames:
+            - api.anthropic.com
+      ports:
+        - { protocol: TCP, port: 443 }

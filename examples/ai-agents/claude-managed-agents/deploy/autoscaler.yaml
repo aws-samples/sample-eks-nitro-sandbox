@@ -1,0 +1,84 @@
+# Optional: size the warm pool from the work queue.
+#
+# Every 15 seconds the autoscaler reads the environment's queue stats and sets
+# the pool's replicas to one per queued or running session, between WARMPOOL_MIN
+# and WARMPOOL_MAX. It reads the stats with the environment key and may only
+# resize this one pool.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: claude-autoscaler
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: claude-autoscaler
+rules:
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxwarmpools/scale"]
+    resourceNames: ["claude-sandbox-worker"]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: claude-autoscaler
+subjects:
+  - kind: ServiceAccount
+    name: claude-autoscaler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: claude-autoscaler
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: claude-autoscaler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: claude-autoscaler
+  template:
+    metadata:
+      labels:
+        app: claude-autoscaler
+    spec:
+      serviceAccountName: claude-autoscaler
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: autoscaler
+          image: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/claude-sandbox-worker:latest
+          args: ["stats"]
+          env:
+            - name: ANTHROPIC_ENVIRONMENT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: anthropic-env-key
+                  key: ANTHROPIC_ENVIRONMENT_KEY
+            - name: ANTHROPIC_ENVIRONMENT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: anthropic-env
+                  key: ANTHROPIC_ENVIRONMENT_ID
+            - name: SANDBOX_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: SANDBOX_WARMPOOL
+              value: claude-sandbox-worker
+            - { name: WARMPOOL_MIN, value: "1" }
+            - { name: WARMPOOL_MAX, value: "10" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits:   { memory: 256Mi }

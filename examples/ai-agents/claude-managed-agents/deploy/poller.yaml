@@ -1,0 +1,52 @@
+# The poller: claims sessions from the environment's work queue and hands each
+# one to a warm sandbox. It runs first-party code and no tool calls, so it is an
+# ordinary pod. It holds the environment key only.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: claude-poller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: claude-poller
+  template:
+    metadata:
+      labels:
+        app: claude-poller
+    spec:
+      serviceAccountName: claude-poller
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: poller
+          image: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/claude-sandbox-worker:latest
+          args: ["poll"]
+          env:
+            - name: ANTHROPIC_ENVIRONMENT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: anthropic-env-key
+                  key: ANTHROPIC_ENVIRONMENT_KEY
+            - name: ANTHROPIC_ENVIRONMENT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: anthropic-env
+                  key: ANTHROPIC_ENVIRONMENT_ID
+            - name: SANDBOX_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: SANDBOX_WARMPOOL
+              value: claude-sandbox-worker
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { memory: 512Mi }
