@@ -5,6 +5,12 @@ on the home page, and run the [hello sandbox](../../getting-started/hello-sandbo
 sample first so you have a cluster with the runtime classes. Run the commands below from
 this folder.
 
+For this sample you also need [Docker](https://docs.docker.com/get-docker/), Python 3 with
+`venv`, and a Claude organization with access to
+[Claude Managed Agents](https://platform.claude.com/docs/en/managed-agents/overview), where
+you can create a self-hosted environment and generate its environment key in the Claude
+Console. A session uses Claude API credit; the one in step 8 cost $0.02.
+
 [Claude Managed Agents](https://platform.claude.com/docs/en/managed-agents/overview) runs
 an agent's loop for you: Claude, the conversation and the session state stay on
 Anthropic's side. With a
