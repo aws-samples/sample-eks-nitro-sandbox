@@ -1,0 +1,28 @@
+[project]
+name = "claude-managed-agents-eks-worker"
+version = "0.1.0"
+description = "Claude Managed Agents self-hosted sandbox worker for Amazon EKS Nitro sandboxes"
+requires-python = ">=3.12"
+license = { text = "MIT-0" }
+dependencies = [
+    # EnvironmentWorker, the work poller and work.stats.
+    "anthropic==1.13.0",
+    # The agent-sandbox client: SandboxClaim create, wait-until-Ready, pod IP,
+    # list and delete. Keep it on the same release as the controller.
+    "k8s-agent-sandbox==1.0.6",
+    # The autoscaler patches the SandboxWarmPool /scale subresource directly.
+    "kubernetes==37.0.1",
+]
+
+[project.scripts]
+worker = "worker.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
