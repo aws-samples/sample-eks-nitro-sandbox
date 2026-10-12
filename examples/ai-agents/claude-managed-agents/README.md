@@ -403,11 +403,11 @@ Because the poller only claims and dispatches, sessions run in parallel, one VM 
 
 ## Clean up
 
-The commands use the variables from the walkthrough. In a new shell, set them again first,
-with the values you used:
+The commands use `AWS_REGION` and `REGISTRY` from the walkthrough. In a new shell, set them
+again first, replacing `<AWS_REGION>` with the Region you deployed to:
 
 ```bash
-export AWS_REGION=us-west-2
+export AWS_REGION=<AWS_REGION>
 export REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com
 ```
 
