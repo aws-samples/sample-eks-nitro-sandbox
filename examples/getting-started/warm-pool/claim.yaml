@@ -1,0 +1,7 @@
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxClaim                  # created per user session / per task
+metadata:
+  name: session-7f3a
+spec:
+  warmPoolRef:
+    name: nitro-agent-pool

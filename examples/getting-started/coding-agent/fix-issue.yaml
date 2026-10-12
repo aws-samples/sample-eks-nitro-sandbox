@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fix-issue-<ISSUE_NUMBER>
+  labels: { app: coding-agent }
+spec:
+  runtimeClassName: isolated-sandbox
+  serviceAccountName: coding-agent          # Pod Identity -> bedrock:InvokeModel*
+  restartPolicy: Never
+  containers:
+    - name: claude
+      image: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/coding-agent:latest
+      env:
+        - { name: CLAUDE_CODE_USE_BEDROCK, value: "1" }
+        - { name: AWS_REGION,              value: us-west-2 }
+        - { name: ANTHROPIC_MODEL,         value: "us.anthropic.claude-sonnet-5-5" }
+        - { name: REPO_URL,                value: https://github.com/<GITHUB_OWNER>/<GITHUB_REPO> }
+        - { name: ISSUE_NUMBER,            value: "<ISSUE_NUMBER>" }
+      volumeMounts:
+        - { name: git-token, mountPath: /var/run/secrets/git, readOnly: true }
+      command: ["/entrypoint.sh"]
+      args:
+        - |
+          Read GitHub issue #$(ISSUE_NUMBER) in this repository. Reproduce the bug
+          with a failing test, fix it with the smallest change that makes the
+          test pass, run the full test suite, then commit on a branch named
+          agent/issue-$(ISSUE_NUMBER) and open a pull request that references
+          the issue and explains the root cause.
+      resources:
+        requests: { cpu: "2", memory: 4Gi }
+        limits:   { cpu: "2", memory: 4Gi }
+  volumes:
+    - name: git-token
+      secret: { secretName: coding-agent-git-token }

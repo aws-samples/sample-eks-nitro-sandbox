@@ -1,0 +1,36 @@
+# Egress for the coding agent: DNS, Bedrock and GitHub, nothing else.
+#
+# An EKS Auto Mode ApplicationNetworkPolicy is a NetworkPolicy that also accepts
+# hostnames (domainNames) in an egress rule. For the pods it selects, all ingress
+# and all egress are denied except DNS to CoreDNS and HTTPS to the three names below.
+#
+# <COREDNS_IP> is your cluster's CoreDNS Service address:
+#   kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'
+# If you run in a Region other than us-west-2, change the Bedrock hostname to match.
+#
+# There is no rule for the Pod Identity credential address (169.254.170.23): in a
+# Nitro sandbox it is served inside the VM itself, so it never reaches this policy.
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ApplicationNetworkPolicy
+metadata:
+  name: coding-agent-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: coding-agent
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - to:
+        - ipBlock: { cidr: <COREDNS_IP>/32 }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - domainNames:
+            - bedrock-runtime.us-west-2.amazonaws.com   # the model
+            - github.com                                # git clone and push
+            - api.github.com                            # read the issue, open the PR
+      ports:
+        - { protocol: TCP, port: 443 }

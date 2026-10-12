@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="kirocrew" type="device" generator="svg2drawio">
+  <diagram id="svg2drawio" name="Diagram">
+    <mxGraphModel dx="0" dy="0" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="2000" pageHeight="1080" math="0" shadow="0" background="#ffffff">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" style="drawPath=1;" />
+        <mxCell id="cloud" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;AWS Cloud&lt;/div&gt;" style="shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_aws_cloud_alt;grStroke=1;grIconSize=48;html=1;whiteSpace=nowrap;container=1;collapsible=0;expand=0;recursiveResize=0;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=6.417;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="520" y="40" width="1080" height="1000" as="geometry" />
+        </mxCell>
+        <mxCell id="cluster" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;EKS Auto Mode cluster&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;container=1;collapsible=0;expand=0;recursiveResize=0;strokeColor=#ED7100;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=6.417;fontSize=14;fontStyle=1;fontColor=#ED7100;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="cloud">
+          <mxGeometry x="30" y="80" width="750" height="640" as="geometry" />
+        </mxCell>
+        <mxCell id="tab-cluster" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.eks;movable=0;resizable=0;rotatable=0;deletable=0;connectable=0;editable=0;" vertex="1" parent="cluster">
+          <mxGeometry x="0" y="0" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="sandbox" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;Nitro sandbox&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:20.37px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;runtimeClassName: isolated-sandbox&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;container=1;collapsible=0;expand=0;recursiveResize=0;strokeColor=#DD344C;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=-5.583;fontSize=14;fontStyle=1;fontColor=#DD344C;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="cluster">
+          <mxGeometry x="60" y="80" width="650" height="290" as="geometry" />
+        </mxCell>
+        <mxCell id="tab-sandbox" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;movable=0;resizable=0;rotatable=0;deletable=0;connectable=0;editable=0;" vertex="1" parent="sandbox">
+          <mxGeometry x="0" y="0" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="e-issue-watcher" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=-3.64;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="issue" target="watcher">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-watcher-sandbox" value="creates" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.25;exitDx=3.64;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.4828;entryDx=0;entryDy=0;entryPerimeter=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;align=center;verticalAlign=middle;spacing=0;labelBackgroundColor=none;" edge="1" parent="1" source="watcher" target="sandbox">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="-45.0" y="-15.0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-claude-token" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.25;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="sandbox" source="claude" target="token">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-token-repo" value="clone / push with token" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=-9.09;entryDy=0;entryPerimeter=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;align=center;verticalAlign=middle;spacing=0;labelBackgroundColor=none;" edge="1" parent="1" source="token" target="repo">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="30.0" y="-15.0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-repo-pr" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.5;exitDx=9.09;exitDy=0;exitPerimeter=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="repo" target="pr">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1940" y="320" />
+              <mxPoint x="1940" y="600" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-claude-podid" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.75;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="cluster" source="claude" target="podid">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="380" y="220" />
+              <mxPoint x="380" y="440" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-podid-bedrock" value="InvokeModel" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;align=center;verticalAlign=middle;spacing=0;labelBackgroundColor=none;" edge="1" parent="cloud" source="podid" target="bedrock">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="-50.0" y="-15.0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-netpol-sandbox" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=none;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=0.75;exitY=0;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.2615;entryY=1;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="cluster" source="netpol" target="sandbox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-claude-denied" value="denied" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#DD344C;strokeWidth=2.5;dashed=1;dashPattern=8 6;fixDash=1;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=0;exitY=0.875;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;align=center;verticalAlign=middle;spacing=0;labelBackgroundColor=none;" edge="1" parent="cloud" source="claude" target="denied">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="60" y="310" />
+              <mxPoint x="60" y="800" />
+            </Array>
+            <mxPoint x="90.0" y="230.0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="issue" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;GitHub issue #42&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;label: agent&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.document;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="120" y="320" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="watcher" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;You, or a watcher&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;one pod per issue&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.user;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="320" y="320" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="claude" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Claude Code&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;shell + repo checkout&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.generic_application;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="sandbox">
+          <mxGeometry x="150" y="80" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="token" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Scoped GitHub token&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;Kubernetes Secret&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.credentials;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="sandbox">
+          <mxGeometry x="430" y="80" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="netpol" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;ApplicationNetworkPolicy&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;egress: DNS + Bedrock&lt;/div&gt;&lt;div style=&quot;line-height:28.80px&quot;&gt;+ GitHub only&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#DD344C;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.filtering_rule;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="cluster">
+          <mxGeometry x="170" y="400" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="podid" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;EKS Pod Identity&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;role allows&lt;/div&gt;&lt;div style=&quot;line-height:28.80px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;bedrock:InvokeModel* only&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#DD344C;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.role;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="cluster">
+          <mxGeometry x="530" y="400" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="bedrock" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Amazon Bedrock&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;Claude model&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fillColor=#01A88D;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="cloud">
+          <mxGeometry x="880" y="480" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="repo" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;GitHub&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;example-org/example-app&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.git_repository;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1720" y="280" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="pr" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Pull request opened&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;branch agent/issue-42&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.source_code;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1720" y="560" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="denied" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Everything else:&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;other AWS APIs, other&lt;/div&gt;&lt;div style=&quot;line-height:28.80px&quot;&gt;hosts, neighbor pods&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#DD344C;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.internet_alt1;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="cloud">
+          <mxGeometry x="240" y="760" width="80" height="80" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
