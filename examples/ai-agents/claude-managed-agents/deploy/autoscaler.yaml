@@ -14,10 +14,11 @@ kind: Role
 metadata:
   name: claude-autoscaler
 rules:
+  # The autoscaler only ever sends a patch to the pool's /scale subresource.
   - apiGroups: ["extensions.agents.x-k8s.io"]
     resources: ["sandboxwarmpools/scale"]
     resourceNames: ["claude-sandbox-worker"]
-    verbs: ["get", "patch", "update"]
+    verbs: ["patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
