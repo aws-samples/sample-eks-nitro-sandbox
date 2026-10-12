@@ -1,0 +1,83 @@
+site_name: Amazon EKS Nitro sandbox samples
+site_description: Runnable samples for Nitro Sandboxes on Amazon EKS
+repo_url: https://github.com/aws-samples/sample-eks-nitro-sandbox
+repo_name: aws-samples/sample-eks-nitro-sandbox
+# docs_dir is examples/, so the "edit this page" pencil points there.
+edit_uri: edit/main/examples/
+
+# No site_url on purpose: it makes mkdocs-material emit absolute canonical/og URLs.
+
+# The examples/ folder IS the docs tree: every README.md is a page, and a path on the
+# site is the path in the repo.
+docs_dir: examples
+site_dir: site
+
+# Plain static output: emit foo.html rather than foo/index.html so no directory-index
+# resolution is needed.
+use_directory_urls: false
+
+extra_css:
+  - assets/extra.css     # Amazon brand orange on top of Material's orange palette
+
+theme:
+  name: material
+  icon:
+    logo: material/cube-outline
+    repo: fontawesome/brands/github
+  features:
+    # Left vertical menu only. navigation.tabs / navigation.sections are deliberately
+    # off so sections render as collapsible twisties, and navigation.expand is off so
+    # the menu shows section names collapsed as the catalog grows (the section holding
+    # the current page opens itself). navigation.indexes is off on purpose too: it folds
+    # a section's first page into the heading and drops it from the menu.
+    - content.code.copy
+    - navigation.top
+    - navigation.tracking
+    - toc.follow
+    - search.highlight
+    - search.suggest
+  palette:
+    # Amazon orange. Material's built-in "orange" is #ff9800 and, being a light colour,
+    # it automatically switches the header text to dark for contrast. assets/extra.css
+    # pins the exact brand hex.
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: orange
+      accent: deep orange
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: orange
+      accent: orange
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        # ```mermaid blocks -> client-side diagrams. GitHub renders the same fences
+        # natively, so diagrams work both on the site and when browsing the repo.
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+
+# The menu mirrors examples/'s own directory layout: a path on the site is the path in
+# the repo. "Getting started" is a collapsible section (twisty) holding the three samples.
+nav:
+  - Home: README.md
+  - Getting started:
+      - Hello sandbox: getting-started/hello-sandbox/README.md
+      - Coding agent: getting-started/coding-agent/README.md
+      - Warm pool: getting-started/warm-pool/README.md

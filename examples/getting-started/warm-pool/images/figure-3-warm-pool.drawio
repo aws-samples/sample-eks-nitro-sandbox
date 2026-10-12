@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="kirocrew" type="device" generator="svg2drawio">
+  <diagram id="svg2drawio" name="Diagram">
+    <mxGraphModel dx="0" dy="0" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="2280" pageHeight="1160" math="0" shadow="0" background="#ffffff">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" style="drawPath=1;" />
+        <mxCell id="cloud" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;AWS Cloud&lt;/div&gt;" style="shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_aws_cloud_alt;grStroke=1;grIconSize=48;html=1;whiteSpace=nowrap;container=1;collapsible=0;expand=0;recursiveResize=0;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=6.417;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="240" y="40" width="1960" height="1080" as="geometry" />
+        </mxCell>
+        <mxCell id="cluster" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;Amazon EKS cluster&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;container=1;collapsible=0;expand=0;recursiveResize=0;strokeColor=#ED7100;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=6.417;fontSize=14;fontStyle=1;fontColor=#ED7100;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="cloud">
+          <mxGeometry x="40" y="80" width="1890" height="720" as="geometry" />
+        </mxCell>
+        <mxCell id="tab-cluster" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.eks;movable=0;resizable=0;rotatable=0;deletable=0;connectable=0;editable=0;" vertex="1" parent="cluster">
+          <mxGeometry x="0" y="0" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="driver" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;Driver pod (the brain)&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:20.37px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;regular pod, no shell tool&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;container=1;collapsible=0;expand=0;recursiveResize=0;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=-5.583;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="cluster">
+          <mxGeometry x="40" y="80" width="320" height="330" as="geometry" />
+        </mxCell>
+        <mxCell id="controller" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;agent-sandbox controller&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;container=1;collapsible=0;expand=0;recursiveResize=0;strokeColor=#7D8998;fillColor=none;strokeWidth=2;dashed=1;dashPattern=8 5;fixDash=1;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=6.417;fontSize=14;fontStyle=1;fontColor=#5A6B86;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="cluster">
+          <mxGeometry x="550" y="80" width="730" height="330" as="geometry" />
+        </mxCell>
+        <mxCell id="sandboxes" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;Nitro sandboxes (the hands)&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:20.37px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;isolated-sandbox + network-isolated&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;container=1;collapsible=0;expand=0;recursiveResize=0;strokeColor=#DD344C;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=-5.583;fontSize=14;fontStyle=1;fontColor=#DD344C;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="cluster">
+          <mxGeometry x="610" y="440" width="1240" height="240" as="geometry" />
+        </mxCell>
+        <mxCell id="tab-sandboxes" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;movable=0;resizable=0;rotatable=0;deletable=0;connectable=0;editable=0;" vertex="1" parent="sandboxes">
+          <mxGeometry x="0" y="0" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="claimed" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;claimed VM&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:20.37px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;runs the generated code,&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:23.63px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;no network besides loopback&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;container=1;collapsible=0;expand=0;recursiveResize=0;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=-5.583;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="sandboxes">
+          <mxGeometry x="40" y="80" width="380" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="vm1" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;warm VM&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;container=1;collapsible=0;expand=0;recursiveResize=0;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=6.417;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="sandboxes">
+          <mxGeometry x="640" y="80" width="160" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="vm2" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;warm VM&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;container=1;collapsible=0;expand=0;recursiveResize=0;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=6.417;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="sandboxes">
+          <mxGeometry x="840" y="80" width="160" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="vm3" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;warm VM&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;container=1;collapsible=0;expand=0;recursiveResize=0;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=6.417;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="sandboxes">
+          <mxGeometry x="1040" y="80" width="160" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="e-user-agent" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.5;exitDx=3.64;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="user" target="agent">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-agent-bedrock" value="reason" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=block;startFill=1;startSize=10;exitX=0.25;exitY=1;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;align=center;verticalAlign=middle;spacing=0;labelBackgroundColor=none;" edge="1" parent="cloud" source="agent" target="bedrock">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="220" y="840" />
+              <mxPoint x="360" y="840" />
+            </Array>
+            <mxPoint x="70.0" y="115.0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-agent-claim" value="1. claim a sandbox" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;align=center;verticalAlign=middle;spacing=0;labelBackgroundColor=none;" edge="1" parent="cluster" source="agent" target="claim">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="15.0" y="-15.0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-claim-pool" value="~2 s: hand over a pre-booted VM" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.25;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.25;entryDx=-7.16;entryDy=0;entryPerimeter=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;align=center;verticalAlign=middle;spacing=0;labelBackgroundColor=none;" edge="1" parent="controller" source="claim" target="pool">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="0.0" y="-15.0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-pool-vm1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.875;exitDx=7.16;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="cluster" source="pool" target="vm1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1330" y="310" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-pool-vm2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.5;exitDx=7.16;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="cluster" source="pool" target="vm2">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1530" y="280" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-pool-vm3" value="refill: boot replacement (~5-6 s, off the critical path)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.125;exitDx=7.16;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;align=center;verticalAlign=middle;spacing=0;labelBackgroundColor=none;" edge="1" parent="cluster" source="pool" target="vm3">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1730" y="250" />
+            </Array>
+            <mxPoint x="-75.0" y="-15.0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-claim-claimed" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.75;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.9211;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="cluster" source="claim" target="claimed">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1000" y="300" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-agent-claimed" value="2. exec / cp / logs via the Kubernetes API" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=block;startFill=1;startSize=10;exitX=0.75;exitY=1;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;align=center;verticalAlign=middle;spacing=0;labelBackgroundColor=none;" edge="1" parent="cluster" source="agent" target="claimed">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="220" y="580" />
+            </Array>
+            <mxPoint x="110.0" y="-15.0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-claimed-internet" value="no route out" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#DD344C;strokeWidth=2.5;dashed=1;dashPattern=8 6;fixDash=1;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=0.1842;exitY=1;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0;entryDx=0;entryDy=-14.1;entryPerimeter=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;align=center;verticalAlign=middle;spacing=0;labelBackgroundColor=none;" edge="1" parent="cloud" source="claimed" target="internet">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="760" y="840" />
+              <mxPoint x="920" y="840" />
+            </Array>
+            <mxPoint x="40.0" y="-15.0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="user" value="User / task" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.user;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="80" y="360" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="agent" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.generic_application;fontSize=24;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="driver">
+          <mxGeometry x="120" y="160" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="claim" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;SandboxClaim&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;session-7f3a&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.document;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="controller">
+          <mxGeometry x="90" y="160" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="pool" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;SandboxWarmPool&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;replicas: 5&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.documents;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="controller">
+          <mxGeometry x="530" y="160" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="bedrock" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Amazon Bedrock&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;via Pod Identity&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fillColor=#01A88D;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="cloud">
+          <mxGeometry x="320" y="880" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="internet" value="Internet / VPC / IMDS" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#DD344C;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.internet_alt1;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="cloud">
+          <mxGeometry x="880" y="880" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="t-agent" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Agent loop&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;Claude Code / Strands&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="text;html=1;whiteSpace=nowrap;overflow=visible;align=center;verticalAlign=top;spacing=0;spacingTop=1.564;fontSize=24;fontStyle=0;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;strokeColor=none;fillColor=none;" vertex="1" parent="agent">
+          <mxGeometry x="-100" y="-70" width="280" height="70" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

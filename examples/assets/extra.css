@@ -1,0 +1,31 @@
+/* Amazon orange chrome. Material's built-in "orange" palette gets the shape right but
+   sets white header text (#fff on #ff9900 is 2.1:1 -- fails WCAG AA), so the header
+   foreground is overridden to Amazon "Squid Ink" (6.3:1). */
+:root {
+  --md-primary-fg-color:        #ff9900;  /* Amazon orange */
+  --md-primary-fg-color--light: #ffac31;
+  --md-primary-fg-color--dark:  #ec7211;  /* AWS console orange */
+  --md-primary-bg-color:        #232f3e;  /* Squid Ink: header text + icons */
+  --md-primary-bg-color--light: #232f3ebb;
+  --md-accent-fg-color:         #ec7211;
+}
+
+/* Brand orange is only 2.1:1 on white, so body links use the darker console orange
+   (4.5:1) and #ff9900 is reserved for chrome. */
+[data-md-color-scheme="default"] {
+  --md-typeset-a-color:         #c7511f;
+}
+
+/* On the dark scheme the full brand orange has plenty of contrast (7.5:1). */
+[data-md-color-scheme="slate"] {
+  --md-typeset-a-color:         #ff9900;
+  --md-accent-fg-color:         #ffac31;
+}
+
+/* Keep the search field legible against the orange header. */
+.md-search__form {
+  background-color: #232f3e26;
+}
+.md-search__form:hover {
+  background-color: #232f3e40;
+}
