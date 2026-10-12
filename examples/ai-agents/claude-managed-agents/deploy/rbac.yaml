@@ -9,7 +9,7 @@ metadata:
   name: claude-poller
 ---
 # The sandboxes run as this ServiceAccount with no token mounted: they reach
-# Anthropic with the environment key and need nothing from the Kubernetes API.
+# Anthropic with their session's own token and need nothing from the Kubernetes API.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

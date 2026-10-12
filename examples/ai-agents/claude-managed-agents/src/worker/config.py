@@ -10,8 +10,9 @@ import os
 
 # --- Anthropic ---------------------------------------------------------------
 ENV_ENVIRONMENT_ID = "ANTHROPIC_ENVIRONMENT_ID"
-# The environment key: polls one environment's queue and posts tool results for
-# its sessions. The only Anthropic credential any pod in this sample holds.
+# The environment key: polls and claims this environment's whole work queue.
+# Only the poller and the autoscaler hold it; a sandbox runs on its session's
+# own token from the work item's secret.
 ENV_ENVIRONMENT_KEY = "ANTHROPIC_ENVIRONMENT_KEY"
 ENV_BASE_URL = "ANTHROPIC_BASE_URL"  # optional endpoint override
 # The organization API key. It creates agents, environments and sessions, so it

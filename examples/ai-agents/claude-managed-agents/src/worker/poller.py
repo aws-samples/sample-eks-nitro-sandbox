@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 
 
 async def _run() -> None:
-    guard.assert_safe()
+    guard.assert_safe(guard.ROLE_POLL)
     environment_id = config.require(config.ENV_ENVIRONMENT_ID)
     environment_key = config.require(config.ENV_ENVIRONMENT_KEY)
     dispatcher = sandbox.Dispatcher()
@@ -40,6 +40,12 @@ async def _run() -> None:
                 # letting the lease run out.
                 if work.data.type != "session":
                     log.info("stopping non-session work item %s (type=%s)", work.id, work.data.type)
+                    await work_api.stop(work.id, environment_id=work.environment_id, force=True)
+                    continue
+                if not work.secret:
+                    # The sandbox's only credential is the session's token in
+                    # this secret. Without it there is nothing safe to hand over.
+                    log.warning("work item %s carries no per-session secret; stopping it", work.id)
                     await work_api.stop(work.id, environment_id=work.environment_id, force=True)
                     continue
                 dispatched = await asyncio.to_thread(

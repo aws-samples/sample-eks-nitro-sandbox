@@ -94,7 +94,7 @@ class Dispatcher:
             k8s.delete_sandbox_claim(name, self.namespace)
         return prev
 
-    def dispatch(self, *, session_id: str, work_id: str, work_secret: str | None) -> bool:
+    def dispatch(self, *, session_id: str, work_id: str, work_secret: str) -> bool:
         """Claim a warm sandbox and POST the session to it.
 
         Returns False when the session has been dispatched too many times and the
@@ -119,13 +119,10 @@ class Dispatcher:
             host = sandbox.get_pod_ip()
             if not host:
                 raise RuntimeError(f"claimed sandbox {sandbox.sandbox_id} reports no pod IP")
-            log.info("session=%s work=%s -> sandbox=%s (per-session secret forwarded: %s)",
-                     session_id, work_id, sandbox.sandbox_id, "yes" if work_secret else "no")
-            body = {"session_id": session_id, "work_id": work_id}
-            if work_secret:
-                # The per-session secret goes only to the sandbox serving this
-                # session. Never logged.
-                body["work_secret"] = work_secret
+            log.info("session=%s work=%s -> sandbox=%s", session_id, work_id, sandbox.sandbox_id)
+            # The per-session secret goes only to the sandbox serving this
+            # session, and is its only credential. Never logged.
+            body = {"session_id": session_id, "work_id": work_id, "work_secret": work_secret}
             post_with_retry(f"http://{host}:{self.dispatch_port}/", json.dumps(body).encode())
         except Exception:
             sandbox.terminate()

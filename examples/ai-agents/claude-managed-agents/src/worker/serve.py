@@ -12,6 +12,10 @@ port instead. When the poller claims this sandbox it POSTs
     grep) in ``/workspace`` and posts each result back,
   * stops the work item when the session goes idle, and returns.
 
+Every one of those calls uses the session's own token from ``work_secret``. The
+sandbox holds no API key and no environment key, so a command the model runs
+here cannot claim another session's work.
+
 Then the process exits and the pod completes. The warm pool has already booted
 a replacement.
 """
@@ -49,10 +53,12 @@ class _Handler(BaseHTTPRequestHandler):
                 raise ValueError("bad length")
             body = json.loads(self.rfile.read(length))
             session_id, work_id = body["session_id"], body["work_id"]
-            work_secret = body.get("work_secret")
+            # Required: the session's token is the only credential this sandbox
+            # gets. A dispatch without it is refused.
+            work_secret = body["work_secret"]
             if not (ID_RE.match(session_id) and ID_RE.match(work_id)):
                 raise ValueError("invalid id")
-            if work_secret is not None and not SECRET_RE.match(work_secret):
+            if not (isinstance(work_secret, str) and SECRET_RE.match(work_secret)):
                 raise ValueError("invalid secret")
         except Exception:
             self.send_response(400)
@@ -70,7 +76,7 @@ class _Handler(BaseHTTPRequestHandler):
         """No per-request access log."""
 
 
-def _wait_for_dispatch(port: int) -> dict[str, str | None]:
+def _wait_for_dispatch(port: int) -> dict[str, str]:
     """Block until the poller POSTs a session, then return it."""
     httpd = HTTPServer(("0.0.0.0", port), _Handler)
     httpd.dispatch = None  # type: ignore[attr-defined]
@@ -81,21 +87,18 @@ def _wait_for_dispatch(port: int) -> dict[str, str | None]:
     return httpd.dispatch  # type: ignore[attr-defined]
 
 
-async def _handle(dispatch: dict[str, str | None]) -> None:
+async def _handle(dispatch: dict[str, str]) -> None:
     environment_id = config.require(config.ENV_ENVIRONMENT_ID)
-    async with client_factory.make_async_client() as client:
-        worker = EnvironmentWorker(
-            client,
-            environment_key=config.require(config.ENV_ENVIRONMENT_KEY),
-            workdir=config.WORKDIR,
-        )
+    async with client_factory.make_session_client() as client:
+        # No environment_key: handle_item then authenticates every call for
+        # this item (heartbeat, stop, skills, tool events) with the sessions
+        # token in work_secret, and fails the item if the secret has none.
+        worker = EnvironmentWorker(client, workdir=config.WORKDIR)
         task = asyncio.create_task(
             worker.handle_item(
                 work_id=dispatch["work_id"],
                 environment_id=environment_id,
                 session_id=dispatch["session_id"],
-                # Preferred over the environment key for this session's calls,
-                # and needed to mount memory stores the session attaches.
                 work_secret=dispatch["work_secret"],
             )
         )
@@ -110,7 +113,7 @@ async def _handle(dispatch: dict[str, str | None]) -> None:
 
 def main() -> None:
     config.setup_logging()
-    guard.assert_safe()
+    guard.assert_safe(guard.ROLE_SERVE)
     os.makedirs(config.WORKDIR, exist_ok=True)
     port = config.optional_int(config.ENV_DISPATCH_PORT, config.DEFAULT_DISPATCH_PORT)
     dispatch = _wait_for_dispatch(port)

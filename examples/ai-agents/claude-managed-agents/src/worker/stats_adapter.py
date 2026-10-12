@@ -4,7 +4,7 @@ Every interval it reads the environment's ``work.stats`` and sets the warm
 pool's replicas, through its ``/scale`` subresource, to
 ``clamp(depth + pending, WARMPOOL_MIN, WARMPOOL_MAX)``: one warm sandbox per
 session that is queued or running. It reads the stats with the environment key,
-like every other pod in this sample.
+as the poller does.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ WARMPOOL_PLURAL = "sandboxwarmpools"
 
 def main() -> None:
     config.setup_logging()
-    guard.assert_safe()
+    guard.assert_safe(guard.ROLE_STATS)
 
     environment_id = config.require(config.ENV_ENVIRONMENT_ID)
     namespace = config.optional(config.ENV_SANDBOX_NAMESPACE, config.DEFAULT_NAMESPACE)

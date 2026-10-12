@@ -45,13 +45,9 @@ spec:
               port: dispatch
             periodSeconds: 1
           env:
-            # The environment key: claims work and posts tool results for this
-            # one environment. The organization API key is never set here.
-            - name: ANTHROPIC_ENVIRONMENT_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: anthropic-env-key
-                  key: ANTHROPIC_ENVIRONMENT_KEY
+            # No Anthropic key here. The sandbox gets its session's own token in
+            # the dispatch POST and refuses to start if it finds the
+            # environment key or the organization API key.
             - name: ANTHROPIC_ENVIRONMENT_ID
               valueFrom:
                 configMapKeyRef:
