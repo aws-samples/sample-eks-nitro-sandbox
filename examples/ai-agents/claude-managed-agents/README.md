@@ -182,7 +182,7 @@ spec:
       restartPolicy: Never              # one session, then the pod completes
       containers:
         - name: worker
-          image: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/claude-sandbox-worker:latest
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/claude-sandbox-worker:latest
           args: ["serve"]
           env:                          # no Anthropic key: the session's token arrives in the dispatch
             - name: ANTHROPIC_ENVIRONMENT_ID
@@ -203,8 +203,8 @@ template and pool, and the poller:
 
 ```bash
 kubectl apply -f deploy/rbac.yaml
-sed "s|<ACCOUNT_ID>|$ACCOUNT_ID|" deploy/sandbox-template.yaml | kubectl apply -f -
-sed "s|<ACCOUNT_ID>|$ACCOUNT_ID|" deploy/poller.yaml | kubectl apply -f -
+sed -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|" -e "s|<AWS_REGION>|$AWS_REGION|" deploy/sandbox-template.yaml | kubectl apply -f -
+sed -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|" -e "s|<AWS_REGION>|$AWS_REGION|" deploy/poller.yaml | kubectl apply -f -
 kubectl wait sandboxwarmpool/claude-sandbox-worker --for=jsonpath='{.status.readyReplicas}'=2 --timeout=600s
 kubectl rollout status deploy/claude-poller
 .venv/bin/python scripts/stats.py
@@ -336,7 +336,7 @@ arrive faster than the poller hands them out. The autoscaler uses the environmen
 and may only resize this one pool:
 
 ```bash
-sed "s|<ACCOUNT_ID>|$ACCOUNT_ID|" deploy/autoscaler.yaml | kubectl apply -f -
+sed -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|" -e "s|<AWS_REGION>|$AWS_REGION|" deploy/autoscaler.yaml | kubectl apply -f -
 kubectl logs deploy/claude-autoscaler
 ```
 

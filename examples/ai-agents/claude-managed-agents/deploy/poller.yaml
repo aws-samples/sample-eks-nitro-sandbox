@@ -24,7 +24,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: poller
-          image: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/claude-sandbox-worker:latest
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/claude-sandbox-worker:latest
           args: ["poll"]
           env:
             - name: ANTHROPIC_ENVIRONMENT_KEY
