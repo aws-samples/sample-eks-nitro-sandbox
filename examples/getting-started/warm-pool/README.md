@@ -16,10 +16,10 @@ a Nitro Sandbox is a RuntimeClass on a pod template, agent-sandbox works with it
 unchanged.
 
 **Step 1: Install agent-sandbox** with its extensions (`SandboxTemplate`,
-`SandboxWarmPool`, `SandboxClaim`). This folder was built against v1.0.1:
+`SandboxWarmPool`, `SandboxClaim`). This folder was built against v1.0.6:
 
 ```bash
-kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.1/sandbox-with-extensions.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
 kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller
 ```
 
@@ -172,7 +172,7 @@ agent-sandbox, including its CRDs and every Sandbox resource in the cluster:
 
 ```bash
 kubectl delete -f warm-pool.yaml --ignore-not-found
-kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.1/sandbox-with-extensions.yaml
+kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
 rm -f /tmp/hands.py
 ```
 
