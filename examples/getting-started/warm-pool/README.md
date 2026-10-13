@@ -93,9 +93,9 @@ sandboxclaim.extensions.agents.x-k8s.io/session-7f3a condition met
 real    0m1.928s
 ```
 
-The claim is handed a VM that was already running, so it is Ready in about two seconds as
-seen from your terminal, kubectl's own round trips included. The pool boots a replacement
-in the background and is back to five.
+The claim adopts a VM that was already running, so it is Ready in under 1 second. The
+`time` above is a little longer because it includes kubectl's own round trips. The pool
+boots a replacement in the background and is back to five.
 
 **Step 4: Use it.** Your application talks to the claimed sandbox as it would to any pod:
 `kubectl exec` to run code, `kubectl cp` to move files, `kubectl logs` to read output.
@@ -141,10 +141,10 @@ exec uses the VM's internal control channel, as step 4 showed.
 to Bedrock; the claimed sandbox runs code with no network besides loopback; the Kubernetes API is
 the only wire between them.*
 
-![A driver pod, the brain, reasons by calling Amazon Bedrock and claims a sandbox from the agent-sandbox controller's SandboxWarmPool, which hands over an already-booted warm VM in about two seconds and refills itself in the background; the claimed VM, one of the Nitro sandboxes, the hands, runs the generated code with no network besides loopback while the driver pod talks to it only through the Kubernetes API.](images/figure-3-warm-pool.png)
+![A driver pod, the brain, reasons by calling Amazon Bedrock and claims a sandbox from the agent-sandbox controller's SandboxWarmPool; the claim adopts an already-booted warm VM in under 1 second and the pool refills itself in the background; the claimed VM, one of the Nitro sandboxes, the hands, runs the generated code with no network besides loopback while the driver pod talks to it only through the Kubernetes API.](images/figure-3-warm-pool.png)
 
 *Figure 4: Time to first command. A cold start pays for partition creation and image
-pull; a warm-pool claim hands over a sandbox that is already running.*
+pull; a warm-pool claim adopts a sandbox that is already running, in under 1 second.*
 
 ```mermaid
 gantt
@@ -156,7 +156,7 @@ gantt
     pull image, start containers :a2, after a1, 3s
     first command runs           :milestone, m1, after a2, 0s
     section Warm pool claim
-    hand over pre-booted VM      :b1, 0, 2s
+    adopt pre-booted VM, under 1 s :b1, 0, 1s
     first command runs           :milestone, m2, after b1, 0s
 ```
 

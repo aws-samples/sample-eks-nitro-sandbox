@@ -6,7 +6,7 @@ Runnable samples for Nitro Sandboxes on Amazon EKS: hardware-enforced workload i
 
 - [Hello sandbox](examples/getting-started/hello-sandbox/README.md): a plain pod that opts into a sandbox with one line, and a variant with no network.
 - [Coding agent](examples/getting-started/coding-agent/README.md): Claude Code in a sandbox that reads a GitHub issue, fixes it and opens a pull request.
-- [Warm pool](examples/getting-started/warm-pool/README.md): a pool of pre-booted sandboxes and a claim that is served in about two seconds.
+- [Warm pool](examples/getting-started/warm-pool/README.md): a pool of pre-booted sandboxes and a claim that adopts one in under 1 second.
 
 Start from the [site home page](examples/README.md) for what a Nitro sandbox is and the prerequisites the samples share.
 

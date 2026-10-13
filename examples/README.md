@@ -7,7 +7,7 @@ The Getting started samples build on each other:
 
 - [Hello sandbox](getting-started/hello-sandbox/README.md): a plain pod that opts into a sandbox with one line, and a variant with no network.
 - [Coding agent](getting-started/coding-agent/README.md): Claude Code in a sandbox that reads a GitHub issue, fixes it and opens a pull request.
-- [Warm pool](getting-started/warm-pool/README.md): a pool of pre-booted sandboxes and a claim that is served in about two seconds.
+- [Warm pool](getting-started/warm-pool/README.md): a pool of pre-booted sandboxes and a claim that adopts one in under 1 second.
 
 The hello sandbox sample is all you need to see the isolation boundary. The coding agent
 and warm pool samples each start from a cluster that has finished the hello sandbox sample,
