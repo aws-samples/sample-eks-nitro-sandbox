@@ -1,6 +1,7 @@
 # The poller: claims sessions from the environment's work queue and hands each
 # one to a warm sandbox. It runs first-party code and no tool calls, so it is an
-# ordinary pod. It holds the environment key only.
+# ordinary pod. It holds the environment key only (on Claude Platform on AWS, a
+# Pod Identity role instead).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -32,11 +33,23 @@ spec:
                 secretKeyRef:
                   name: anthropic-env-key
                   key: ANTHROPIC_ENVIRONMENT_KEY
+                  optional: true   # Claude Platform on AWS has no environment key
             - name: ANTHROPIC_ENVIRONMENT_ID
               valueFrom:
                 configMapKeyRef:
                   name: anthropic-env
                   key: ANTHROPIC_ENVIRONMENT_ID
+            # Claude Platform on AWS only. Each is set when the anthropic-env
+            # ConfigMap has the key, and left out when it does not.
+            - name: ANTHROPIC_PLATFORM
+              valueFrom:
+                configMapKeyRef: { name: anthropic-env, key: ANTHROPIC_PLATFORM, optional: true }
+            - name: ANTHROPIC_AWS_WORKSPACE_ID
+              valueFrom:
+                configMapKeyRef: { name: anthropic-env, key: ANTHROPIC_AWS_WORKSPACE_ID, optional: true }
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef: { name: anthropic-env, key: AWS_REGION, optional: true }
             - name: SANDBOX_NAMESPACE
               valueFrom:
                 fieldRef:

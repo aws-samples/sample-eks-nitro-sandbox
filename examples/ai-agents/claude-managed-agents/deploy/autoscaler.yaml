@@ -4,7 +4,8 @@
 # the pool's replicas to the number of sessions waiting in the queue, at least
 # WARMPOOL_MIN and at most WARMPOOL_MAX. A session that is already running is
 # not in the queue, so it does not count. It reads the stats with the
-# environment key and may only resize this one pool.
+# environment key (on Claude Platform on AWS, a Pod Identity role) and may only
+# resize this one pool.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -64,11 +65,23 @@ spec:
                 secretKeyRef:
                   name: anthropic-env-key
                   key: ANTHROPIC_ENVIRONMENT_KEY
+                  optional: true   # Claude Platform on AWS has no environment key
             - name: ANTHROPIC_ENVIRONMENT_ID
               valueFrom:
                 configMapKeyRef:
                   name: anthropic-env
                   key: ANTHROPIC_ENVIRONMENT_ID
+            # Claude Platform on AWS only. Each is set when the anthropic-env
+            # ConfigMap has the key, and left out when it does not.
+            - name: ANTHROPIC_PLATFORM
+              valueFrom:
+                configMapKeyRef: { name: anthropic-env, key: ANTHROPIC_PLATFORM, optional: true }
+            - name: ANTHROPIC_AWS_WORKSPACE_ID
+              valueFrom:
+                configMapKeyRef: { name: anthropic-env, key: ANTHROPIC_AWS_WORKSPACE_ID, optional: true }
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef: { name: anthropic-env, key: AWS_REGION, optional: true }
             - name: SANDBOX_NAMESPACE
               valueFrom:
                 fieldRef:

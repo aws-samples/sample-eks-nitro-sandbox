@@ -60,6 +60,17 @@ spec:
                 configMapKeyRef:
                   name: anthropic-env
                   key: ANTHROPIC_ENVIRONMENT_ID
+            # Claude Platform on AWS only. Each is set when the anthropic-env
+            # ConfigMap has the key, and left out when it does not.
+            - name: ANTHROPIC_PLATFORM
+              valueFrom:
+                configMapKeyRef: { name: anthropic-env, key: ANTHROPIC_PLATFORM, optional: true }
+            - name: ANTHROPIC_AWS_WORKSPACE_ID
+              valueFrom:
+                configMapKeyRef: { name: anthropic-env, key: ANTHROPIC_AWS_WORKSPACE_ID, optional: true }
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef: { name: anthropic-env, key: AWS_REGION, optional: true }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

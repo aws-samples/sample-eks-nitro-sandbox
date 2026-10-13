@@ -12,14 +12,14 @@ from __future__ import annotations
 import os
 import sys
 
-from anthropic import Anthropic
+from _client import make_client
 
 
 def main() -> None:
     environment_id = os.environ.get("ANTHROPIC_ENVIRONMENT_ID")
-    if not environment_id or not os.environ.get("ANTHROPIC_API_KEY"):
-        sys.exit("Set ANTHROPIC_API_KEY and ANTHROPIC_ENVIRONMENT_ID (see .env.example).")
-    stats = Anthropic().beta.environments.work.stats(environment_id)
+    if not environment_id:
+        sys.exit("Set ANTHROPIC_ENVIRONMENT_ID (see .env.example).")
+    stats = make_client().beta.environments.work.stats(environment_id)
     print(f"workers_polling: {stats.workers_polling}")
     print(f"depth:           {stats.depth}  (waiting to be picked up)")
     print(f"pending:         {stats.pending}  (polled, not yet acknowledged)")

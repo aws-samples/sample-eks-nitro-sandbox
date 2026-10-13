@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Create the agent and the self-hosted environment. Run once, on your machine.
 
-Uses your organization API key (ANTHROPIC_API_KEY). Creates whichever of the
+Uses your organization API key (ANTHROPIC_API_KEY), or on Claude Platform on AWS
+your AWS credentials. Creates whichever of the
 two is not in your environment yet, so it is safe to run again:
 
   * an agent: a model, a system prompt and the built-in agent_toolset_20260401
@@ -9,7 +10,9 @@ two is not in your environment yet, so it is safe to run again:
   * a self-hosted environment: the work queue your cluster serves.
 
 Then generate an environment key for the environment in the Claude Console;
-there is no API that creates one.
+there is no API that creates one. On Claude Platform on AWS (ANTHROPIC_PLATFORM=aws)
+the script uses your AWS credentials instead of an API key, and there is no
+environment key to generate.
 
   set -a; . ./.env; set +a
   python scripts/setup_agent.py
@@ -18,9 +21,8 @@ there is no API that creates one.
 from __future__ import annotations
 
 import os
-import sys
 
-from anthropic import Anthropic
+from _client import make_client, on_aws
 
 MODEL = "claude-sonnet-5-5"
 AGENT_NAME = "EKS sandbox coding assistant"
@@ -32,9 +34,7 @@ ENVIRONMENT_NAME = "eks-nitro-sandbox"
 
 
 def main() -> None:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        sys.exit("Set ANTHROPIC_API_KEY to your organization API key (on this machine only).")
-    client = Anthropic()
+    client = make_client()
 
     agent_id = os.environ.get("AGENT_ID")
     if agent_id:
@@ -64,7 +64,7 @@ def main() -> None:
     print("Add these to .env:")
     print(f"  AGENT_ID={agent_id}")
     print(f"  ANTHROPIC_ENVIRONMENT_ID={environment_id}")
-    if not os.environ.get("ANTHROPIC_ENVIRONMENT_KEY"):
+    if not on_aws() and not os.environ.get("ANTHROPIC_ENVIRONMENT_KEY"):
         print("Then, in the Claude Console, open Workspace > Environments > your")
         print("environment > Generate environment key, and add it as")
         print("  ANTHROPIC_ENVIRONMENT_KEY=...")

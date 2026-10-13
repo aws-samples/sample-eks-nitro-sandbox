@@ -10,6 +10,8 @@ metadata:
 ---
 # The sandboxes run as this ServiceAccount with no token mounted: they reach
 # Anthropic with their session's own token and need nothing from the Kubernetes API.
+# (On Claude Platform on AWS this ServiceAccount also gets a Pod Identity role, and
+# EKS then mounts that role's token, audience pods.eks.amazonaws.com, into the pod.)
 apiVersion: v1
 kind: ServiceAccount
 metadata:

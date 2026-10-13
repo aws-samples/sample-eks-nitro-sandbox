@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Start a session on the self-hosted environment and print what the agent did.
 
-Run on your machine with your organization API key. The session waits in the
+Run on your machine with your organization API key (on Claude Platform on AWS,
+your AWS credentials). The session waits in the
 environment's queue until the poller in your cluster claims it and hands it to a
 warm sandbox. This script then follows the session until it settles and prints
 each tool call, its result and the agent's replies.
@@ -19,6 +20,8 @@ import sys
 import time
 
 from anthropic import Anthropic
+
+from _client import make_client
 
 DEFAULT_TASK = (
     "Write a Python script that prints the first 20 Fibonacci numbers, save it as "
@@ -105,9 +108,7 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=600, help="seconds to wait for the session")
     args = parser.parse_args()
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        sys.exit("Set ANTHROPIC_API_KEY to your organization API key (on this machine only).")
-    client = Anthropic()
+    client = make_client()
 
     if args.session_id:
         sys.exit(1 if print_session(client, args.session_id) else 0)
