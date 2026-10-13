@@ -68,7 +68,7 @@ The files:
 | [`Dockerfile`](Dockerfile), [`pyproject.toml`](pyproject.toml) | The `claude-sandbox-worker` image: one image for the poller, the sandbox and the optional autoscaler |
 | `src/worker/` | The worker: [`poller.py`](src/worker/poller.py), [`sandbox.py`](src/worker/sandbox.py) (claim and dispatch), [`serve.py`](src/worker/serve.py) (runs one session), [`guard.py`](src/worker/guard.py) (refuses any key a role must not hold) |
 | [`deploy/sandbox-template.yaml`](deploy/sandbox-template.yaml) | The `SandboxTemplate` that runs tool calls, and a `SandboxWarmPool` of two |
-| [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The network fence: the poller in, DNS and `api.anthropic.com` out |
+| [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The network policy: the poller in, DNS and `api.anthropic.com` out |
 | [`deploy/poller.yaml`](deploy/poller.yaml), [`deploy/rbac.yaml`](deploy/rbac.yaml) | The poller Deployment, and what it may do: manage `SandboxClaims` and read `Sandboxes` |
 | [`deploy/autoscaler.yaml`](deploy/autoscaler.yaml) | Optional: sizes the warm pool from the work queue |
 | [`scripts/setup_agent.py`](scripts/setup_agent.py), [`submit.py`](scripts/submit.py), [`stats.py`](scripts/stats.py) | Run on your machine with the organization key: create the agent and environment, start a session, read the queue stats |
@@ -140,11 +140,24 @@ kubectl create configmap anthropic-env \
   --from-env-file=<(grep '^ANTHROPIC_ENVIRONMENT_ID=' .env)
 ```
 
-**Step 5: Fence the network.** [`egress-policy.yaml`](deploy/egress-policy.yaml) selects
-the sandbox pods. It admits the poller on the dispatch port, and lets out DNS and HTTPS to
-the Claude API:
+**Step 5: Apply the network policy.** [`egress-policy.yaml`](deploy/egress-policy.yaml)
+is an `ApplicationNetworkPolicy` that selects the sandbox pods. It admits the poller on the
+dispatch port, and lets out DNS and HTTPS to the Claude API. Here it is in full, without its
+header comment; [How the network policy works](#how-the-network-policy-works) explains each
+rule:
 
 ```yaml
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ApplicationNetworkPolicy
+metadata:
+  name: claude-sandbox-worker-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: claude-sandbox-worker
+  policyTypes:
+    - Ingress
+    - Egress
   ingress:
     - from:
         - podSelector:
@@ -324,7 +337,7 @@ The claim was Ready about 50 ms after the poller created it, because it adopted 
 that was already running; the pool booted a replacement in the background. When the
 session went idle the worker stopped its work item and exited, and the pod completed.
 
-To see the fence, run this in a warm sandbox. The session may have used the pod from
+To see the network policy at work, run this in a warm sandbox. The session may have used the pod from
 Step 7, so pick a running one again. The Claude API connects; the other two do not:
 
 ```bash
@@ -346,7 +359,7 @@ sts.us-west-2.amazonaws.com TimeoutError timed out
 
 The two refused hosts report different errors (`example.com` is unreachable,
 `sts.us-west-2.amazonaws.com` times out), but they are blocked the same way.
-[How the fence works](#how-the-fence-works), below, explains the policy, where it is
+[How the network policy works](#how-the-network-policy-works), below, explains the policy, where it is
 enforced, and why the messages differ.
 
 **Optional: size the pool from the queue.** [`autoscaler.yaml`](deploy/autoscaler.yaml)
@@ -369,22 +382,57 @@ INFO worker.stats_adapter depth=0 pending=0 -> claude-sandbox-worker replicas No
 It sets the replicas on every tick, so if anything else changes them, re-applying
 `sandbox-template.yaml` for example, the next tick puts the target back.
 
-## How the fence works
+## How the network policy works
 
-The egress policy from step 5 is an `ApplicationNetworkPolicy`. It selects the sandbox
-pods (`app: claude-sandbox-worker`) and declares both `Ingress` and `Egress`, so the pods
-are default-deny in both directions. Inbound, the policy allows the poller on TCP 8080.
-Outbound, it allows CoreDNS on 53 and `api.anthropic.com` on 443. The public internet, AWS
-service endpoints such as STS, and other pods are refused. (One carve-out sits above the
-policy: Kubernetes always allows traffic to and from a pod's own node, covered under *No
-reusable credential* below.)
+The policy from step 5 is an EKS Auto Mode `ApplicationNetworkPolicy`: a Kubernetes
+`NetworkPolicy` that also accepts hostnames (`domainNames`) in an egress rule. Each part of
+its YAML does one job:
 
-*Figure 2: The egress fence around one sandbox pod. The policy admits the poller inbound
+| In the YAML | What it does |
+|---|---|
+| `podSelector`, `app: claude-sandbox-worker` | Selects the sandbox pods. The poller and the autoscaler are not selected. |
+| `policyTypes`, `Ingress` and `Egress` | Makes the selected pods default-deny in both directions, so only the rules below are allowed. |
+| `ingress`, from `app: claude-poller` on TCP 8080 | Lets the poller reach the dispatch port. No other pod can. |
+| `egress`, to `<COREDNS_IP>/32` on UDP and TCP 53 | Lets the sandbox look up names with CoreDNS. |
+| `egress`, to `domainNames: api.anthropic.com` on TCP 443 | Lets the sandbox fetch tool calls from the Claude API and post their results. |
+
+Anything that matches no rule is refused: the public internet, AWS service endpoints such
+as STS, and other pods. (One carve-out sits above the policy: Kubernetes always allows
+traffic to and from a pod's own node, covered under *No reusable credential* below.)
+
+Two other settings make the policy hold. The ConfigMap that step 1 applies turns on
+enforcement, once per cluster. Until it exists, EKS Auto Mode accepts network policies
+without enforcing them:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: amazon-vpc-cni
+  namespace: kube-system
+data:
+  enable-network-policy-controller: "true"
+```
+
+And the `SandboxTemplate` from step 6 tells the agent-sandbox controller to leave these
+pods' network policy to `egress-policy.yaml`:
+
+```yaml
+spec:
+  networkPolicyManagement: Unmanaged
+```
+
+With the default, `Managed`, the controller creates its own `NetworkPolicy` for the
+template's pods, and with no rules of your own that policy allows the public internet.
+Kubernetes network policies are additive, so a second policy allowing the internet would
+undo this one's refusals.
+
+*Figure 2: The network policy around one sandbox pod. The policy admits the poller inbound
 and allows egress to CoreDNS for name lookups and the Claude API; the public internet, AWS
 APIs such as STS, and other pods are refused. The policy is enforced on the node, outside
 the sandbox.*
 
-![A focused view of the egress fence. Inside an EKS Auto Mode node, a red Nitro sandbox pod labeled claude-sandbox-worker (isolated-sandbox) runs the tool calls. The policy admits the poller inbound, reaching the pod on TCP 8080. An ApplicationNetworkPolicy, drawn as a filter that the node's network policy agent enforces in eBPF on the pod's host-side interface outside the guest, governs the pod. Two egress paths are allowed, in green: CoreDNS for name lookups on UDP and TCP 53, and api.anthropic.com, the Claude API, on TCP 443. A red dashed path marks the refused traffic: the internet, AWS APIs such as STS, and other pods. A caveat notes that the rule allows the IP addresses api.anthropic.com resolves to, so another name served from those same addresses would also be reachable.](images/claude-managed-agents-fence.png)
+![A focused view of the network policy. Inside an EKS Auto Mode node, a red Nitro sandbox pod labeled claude-sandbox-worker (isolated-sandbox) runs the tool calls. The policy admits the poller inbound, reaching the pod on TCP 8080. An ApplicationNetworkPolicy, drawn as a filter that the node's network policy agent enforces in eBPF on the pod's host-side interface outside the guest, governs the pod. Two egress paths are allowed, in green: CoreDNS for name lookups on UDP and TCP 53, and api.anthropic.com, the Claude API, on TCP 443. A red dashed path marks the refused traffic: the internet, AWS APIs such as STS, and other pods. A caveat notes that the rule allows the IP addresses api.anthropic.com resolves to, so another name served from those same addresses would also be reachable.](images/claude-managed-agents-network-policy.png)
 
 **Where it is enforced.** On EKS Auto Mode, a network policy agent on each node turns the
 policy into eBPF programs attached to the pod's host-side virtual interface: on the node,
@@ -411,7 +459,7 @@ with all Linux capabilities dropped and a read-only root filesystem, sets
 `automountServiceAccountToken: false`, and holds no AWS credentials and no reusable
 Anthropic key: only this one session's token, delivered in the dispatch and scoped to that
 session. A request that reached some other host would carry no AWS credential and no durable
-key to replay. The one carve-out from the fence is the pod's own node, which Kubernetes
+key to replay. The one carve-out from the policy is the pod's own node, which Kubernetes
 always allows the pod to reach; that is not a path to the internet. A link-local metadata
 service at `169.254.169.254` also answers inside the sandbox, with placement and service
 details only. Its `iam/` paths return 404 and the pod has no Pod Identity, so there is no
