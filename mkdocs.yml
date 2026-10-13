@@ -25,12 +25,13 @@ theme:
     logo: material/cube-outline
     repo: fontawesome/brands/github
   features:
-    # Left vertical menu only. navigation.tabs / navigation.sections are deliberately
-    # off so sections render as collapsible twisties, and navigation.expand is off so
-    # the menu shows section names collapsed as the catalog grows (the section holding
-    # the current page opens itself). navigation.indexes is off on purpose too: it folds
-    # a section's first page into the heading and drops it from the menu.
+    # Left vertical menu only, with navigation.sections on: each top-level nav entry
+    # (Getting started, AI agents) renders as a section heading with its pages always
+    # listed under it, instead of a collapsible twisty. navigation.tabs stays off so
+    # the sections are not moved into a top bar. navigation.indexes is off on purpose:
+    # it folds a section's first page into the heading and drops it from the menu.
     - content.code.copy
+    - navigation.sections
     - navigation.top
     - navigation.tracking
     - toc.follow
@@ -74,7 +75,7 @@ markdown_extensions:
       permalink: true
 
 # The menu mirrors examples/'s own directory layout: a path on the site is the path in
-# the repo. Each section is a collapsible twisty holding its samples.
+# the repo. Each section is a heading with its samples listed under it.
 nav:
   - Home: README.md
   - Getting started:
