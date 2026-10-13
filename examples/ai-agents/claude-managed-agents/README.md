@@ -71,8 +71,9 @@ The files:
 | [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The network policy: the poller in, DNS and `api.anthropic.com` out |
 | [`deploy/poller.yaml`](deploy/poller.yaml), [`deploy/rbac.yaml`](deploy/rbac.yaml) | The poller Deployment, and what it may do: manage `SandboxClaims` and read `Sandboxes` |
 | [`deploy/autoscaler.yaml`](deploy/autoscaler.yaml) | Optional: sizes the warm pool from the work queue |
-| [`scripts/setup_agent.py`](scripts/setup_agent.py), [`submit.py`](scripts/submit.py), [`stats.py`](scripts/stats.py) | Run on your machine with the organization key: create the agent and environment, start a session, read the queue stats |
-| `.env.example` | The four values the sample needs; copy it to `.env`, which git ignores |
+| [`deploy/claude-platform-aws/`](deploy/claude-platform-aws/egress-policy.yaml) | Optional, for [Claude Platform on AWS](#optional-run-it-on-claude-platform-on-aws): that mode's network policy, and the trust and STS policies for its Pod Identity role |
+| [`scripts/setup_agent.py`](scripts/setup_agent.py), [`submit.py`](scripts/submit.py), [`stats.py`](scripts/stats.py) | Run on your machine with the organization key (on Claude Platform on AWS, your AWS credentials): create the agent and environment, start a session, read the queue stats |
+| `.env.example` | The four values the sample needs on the Claude API; copy it to `.env`, which git ignores |
 
 **Step 1: Install agent-sandbox and turn on network policy.** Install the controller with
 its extensions (`SandboxTemplate`, `SandboxWarmPool`, `SandboxClaim`). If you ran the warm
@@ -465,6 +466,13 @@ service at `169.254.169.254` also answers inside the sandbox, with placement and
 details only. Its `iam/` paths return 404 and the pod has no Pod Identity, so there is no
 role to assume.
 
+That is the Claude API path. On [Claude Platform on AWS](#optional-run-it-on-claude-platform-on-aws)
+it is different: the sandbox pod's ServiceAccount has a Pod Identity role, and its
+credentials come from the Pod Identity endpoint inside the sandbox's VM, so the network
+policy needs no rule for them. A command the sandbox runs can use that role for what it
+allows, including claiming other sessions' work in its environment;
+[What the sandbox's role may do](#what-the-sandboxs-role-may-do) lists it.
+
 <details>
 <summary>Reading the enforcement on a node</summary>
 
@@ -493,6 +501,8 @@ start-up. Instead:
    including mounting any memory stores the session attaches. It goes only to the sandbox
    serving that session and is never logged. A work item without a secret is stopped
    instead of dispatched, and the sandbox refuses a dispatch that does not carry one.
+   (On Claude Platform on AWS the POST carries no secret: the sandbox signs its calls with
+   its Pod Identity role, and refuses a dispatch that does carry one.)
 4. [`serve.py`](src/worker/serve.py) hands the session to
    `EnvironmentWorker.handle_item()`. It heartbeats the work item's lease, downloads the
    agent's skills into `/workspace/skills/`, runs each tool call and posts its result, and
@@ -500,16 +510,214 @@ start-up. Instead:
 
 Because the poller only claims and dispatches, sessions run in parallel, one pod each.
 
+## Optional: run it on Claude Platform on AWS
+
+[Claude Platform on AWS](https://platform.claude.com/docs/en/build-with-claude/claude-platform-on-aws)
+is the Claude API, operated by Anthropic and reached through your AWS account: requests are
+signed with AWS IAM (SigV4), name your workspace, and are billed through AWS Marketplace.
+Claude Managed Agents and self-hosted sandboxes work the same way there, so the same image,
+manifests and scripts run in this mode. What changes is how each part authenticates:
+
+| | Claude API (the walkthrough above) | Claude Platform on AWS |
+|---|---|---|
+| Your machine | Organization API key | Your own AWS credentials |
+| Poller and autoscaler | Environment key | A Pod Identity role |
+| Sandbox | The session's token, from the dispatch | The same Pod Identity role; the dispatch carries no token |
+| Sandbox egress | `api.anthropic.com` | `aws-external-anthropic.<region>.api.aws` |
+
+`ANTHROPIC_PLATFORM=aws` selects the mode. Each pod then builds the SDK's `AnthropicAWS`
+client ([`client_factory.py`](src/worker/client_factory.py)), which signs every request with
+the pod's AWS credentials, sends it to your workspace's Region and adds the
+`anthropic-workspace-id` header. There is no environment key on this path, and
+[`guard.py`](src/worker/guard.py) refuses to start a pod that holds one.
+
+Before you start, sign up for Claude Platform on AWS on its page in the AWS Console, create a
+workspace in your cluster's Region (`$AWS_REGION`) and note its id (`wrkspc_...`), and enable
+outbound web identity federation once for the account; the
+[setup guide](https://platform.claude.com/docs/en/build-with-claude/claude-platform-on-aws#set-up-your-account)
+covers each step. Your own AWS identity needs Managed Agents permissions, which the
+`AnthropicLimitedAccess` managed policy grants. Use a namespace where the Claude API
+walkthrough is not deployed, or run its [clean up](#clean-up) first.
+
+**Create the agent and environment in your workspace.** In place of step 2, add these lines
+to `.env`. This path uses neither `ANTHROPIC_API_KEY` nor `ANTHROPIC_ENVIRONMENT_KEY`:
+
+```bash
+ANTHROPIC_PLATFORM=aws
+ANTHROPIC_AWS_WORKSPACE_ID=wrkspc_...
+```
+
+Install the SDK with its `aws` extra, which adds the SigV4 signer, and run the setup script.
+It signs with your AWS credentials, creates the agent and a self-hosted environment in the
+workspace, and prints the `AGENT_ID` and `ANTHROPIC_ENVIRONMENT_ID` to add to `.env`. There is
+no environment key to generate. Then build and push the image as in step 3.
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install 'anthropic[aws]==1.13.0'
+set -a; . ./.env; set +a
+.venv/bin/python scripts/setup_agent.py
+```
+
+**Give the three ServiceAccounts a Pod Identity role.** The role trusts EKS Pod Identity. It
+gets the `AnthropicSelfHostedEnvironmentAccess` managed policy, and
+[`web-identity-token-policy.json`](deploy/claude-platform-aws/web-identity-token-policy.json),
+the STS permission Claude Platform on AWS uses to federate each request to Anthropic, limited
+to that use the way AWS's own Anthropic policies limit it. EKS adds credentials to a pod when
+the pod starts, so create the associations before step 6, and give them about a minute to
+take effect; a pod started earlier gets no credentials until it is recreated:
+
+```bash
+aws iam create-role --role-name claude-platform-worker \
+  --assume-role-policy-document file://deploy/claude-platform-aws/pod-identity-trust.json
+aws iam attach-role-policy --role-name claude-platform-worker \
+  --policy-arn arn:aws:iam::aws:policy/AnthropicSelfHostedEnvironmentAccess
+aws iam put-role-policy --role-name claude-platform-worker --policy-name web-identity-token \
+  --policy-document file://deploy/claude-platform-aws/web-identity-token-policy.json
+for sa in claude-poller claude-autoscaler claude-sandbox-worker; do
+  aws eks create-pod-identity-association --cluster-name $CLUSTER_NAME --region $AWS_REGION \
+    --namespace $NAMESPACE --service-account $sa \
+    --role-arn arn:aws:iam::$ACCOUNT_ID:role/claude-platform-worker
+done
+```
+
+**Give the cluster the platform settings.** In place of step 4, create only the ConfigMap;
+there is no Secret on this path. The sandbox template, the poller and the autoscaler each
+read these keys when the ConfigMap has them, and leave the variables out when it does not.
+From [`sandbox-template.yaml`](deploy/sandbox-template.yaml):
+
+```yaml
+            - name: ANTHROPIC_PLATFORM
+              valueFrom:
+                configMapKeyRef: { name: anthropic-env, key: ANTHROPIC_PLATFORM, optional: true }
+            - name: ANTHROPIC_AWS_WORKSPACE_ID
+              valueFrom:
+                configMapKeyRef: { name: anthropic-env, key: ANTHROPIC_AWS_WORKSPACE_ID, optional: true }
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef: { name: anthropic-env, key: AWS_REGION, optional: true }
+```
+
+```bash
+kubectl create configmap anthropic-env --from-env-file=<(
+  grep -E '^(ANTHROPIC_ENVIRONMENT_ID|ANTHROPIC_PLATFORM|ANTHROPIC_AWS_WORKSPACE_ID)=' .env
+  echo "AWS_REGION=$AWS_REGION")
+```
+
+**Apply this mode's network policy.** In place of step 5, apply
+[`claude-platform-aws/egress-policy.yaml`](deploy/claude-platform-aws/egress-policy.yaml). It
+has the same name as step 5's policy and one different rule: HTTPS goes to your Region's
+Claude Platform on AWS endpoint instead of `api.anthropic.com`. It has no rule for the Pod
+Identity credential address, `169.254.170.23`: in a Nitro sandbox that address is served
+inside the VM itself, so the traffic never reaches the policy. Here it is without its header
+comment:
+
+```yaml
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ApplicationNetworkPolicy
+metadata:
+  name: claude-sandbox-worker-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: claude-sandbox-worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: claude-poller
+      ports:
+        - { protocol: TCP, port: 8080 }
+  egress:
+    - to:
+        - ipBlock: { cidr: <COREDNS_IP>/32 }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - domainNames:
+            - aws-external-anthropic.<AWS_REGION>.api.aws
+      ports:
+        - { protocol: TCP, port: 443 }
+```
+
+```bash
+COREDNS_IP=$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')
+sed -e "s|<COREDNS_IP>|$COREDNS_IP|" -e "s|<AWS_REGION>|$AWS_REGION|" \
+  deploy/claude-platform-aws/egress-policy.yaml | kubectl apply -f -
+until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/claude-sandbox-worker-egress-'; do sleep 2; done
+```
+
+**Deploy and run a session.** Continue with steps 6 to 8 as written; the optional autoscaler
+works the same way. `stats.py` and `submit.py` sign with your AWS credentials because
+`ANTHROPIC_PLATFORM=aws` is set in your shell. What to look for:
+
+- `stats.py` reports `workers_polling: 1` once the poller is polling with its role. If the
+  poller's log shows a 403 that names `sts:GetWebIdentityToken`, the role is missing
+  `web-identity-token-policy.json` or federation is not enabled for the account.
+- In step 7, with the last command's `grep` changed to `grep -E '^(ANTHROPIC|AWS)_'`, the
+  sandbox's Anthropic variables are the environment id, `ANTHROPIC_PLATFORM`
+  and `ANTHROPIC_AWS_WORKSPACE_ID`; there is still no `ANTHROPIC_API_KEY` and no
+  `ANTHROPIC_ENVIRONMENT_KEY`. Among its `AWS_` variables are `AWS_REGION` and the two that
+  EKS Pod Identity adds, `AWS_CONTAINER_CREDENTIALS_FULL_URI` and
+  `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`.
+- In step 8, the session's tool calls run in the sandbox as before. To include the new
+  endpoint in the network check, add `aws-external-anthropic.$AWS_REGION.api.aws` to the
+  hosts it tries: it should connect, while `example.com` and STS stay refused.
+  `api.anthropic.com` is not in this mode's policy.
+
+### What the sandbox's role may do
+
+On this path the sandbox does not run on one session's token. Its ServiceAccount has the
+same Pod Identity role as the poller, and the commands the model runs can use it: the `bash`
+tool removes only `ANTHROPIC_*` variables from their environment, so they see the credential
+endpoint and the role's token file that EKS adds to the pod. The role may do what
+`AnthropicSelfHostedEnvironmentAccess` allows, on every workspace in your account:
+`GetEnvironment`, `GetSession`, `UpdateSession`, `GetSkill`, `CallWithBearerToken`, and
+`ProcessEnvironmentWork`, which polls for, acknowledges, heartbeats, stops and posts results
+for work items. It may also get the STS token Claude Platform on AWS uses for federation.
+
+So a command in one session's sandbox can poll this environment's queue and claim other
+sessions waiting in it, which a session's token on the Claude API path cannot do. Two things
+still bound it: the network policy lets the sandbox reach only DNS and the Claude Platform on
+AWS endpoint, so STS and every other AWS API stay refused; and the role's policies allow only
+Claude Platform on AWS actions and its federation token. Give each trust boundary its own
+workspace and a role scoped to that workspace's ARN, as in the
+[per-customer workspace isolation](https://platform.claude.com/docs/en/api/claude-platform-on-aws-iam-actions#per-customer-workspace-isolation)
+example.
+
+<details>
+<summary>Clean up this mode</summary>
+
+The walkthrough's [clean up](#clean-up) removes the Kubernetes objects, including this
+mode's network policy, which has the same name. Then remove the associations and the role:
+
+```bash
+for id in $(aws eks list-pod-identity-associations --cluster-name $CLUSTER_NAME --region $AWS_REGION \
+    --namespace $NAMESPACE --query "associations[?starts_with(serviceAccount, 'claude-')].associationId" --output text); do
+  aws eks delete-pod-identity-association --cluster-name $CLUSTER_NAME --region $AWS_REGION --association-id $id
+done
+aws iam delete-role-policy --role-name claude-platform-worker --policy-name web-identity-token
+aws iam detach-role-policy --role-name claude-platform-worker \
+  --policy-arn arn:aws:iam::aws:policy/AnthropicSelfHostedEnvironmentAccess
+aws iam delete-role --role-name claude-platform-worker
+```
+
+</details>
+
 ## Good to know
 
 - **The file tools' path checks are not a sandbox.** The SDK confines `read`, `write` and
   `edit` to the working directory, but `bash` can run anything. The sandboxed pod is what bounds it.
 - **Use one environment per trust boundary.** An environment key reaches every session in
-  its environment. Give separate users or tenants separate environments and keys.
+  its environment. Give separate users or tenants separate environments and keys. On Claude
+  Platform on AWS, give them separate workspaces and roles.
 - **The dispatch port has no authentication of its own.** A warm sandbox accepts the first
   well-formed POST on port 8080. The network policy is what keeps other pods and the
-  internet from reaching it, and the sandbox refuses a dispatch that does not carry the
-  session's secret.
+  internet from reaching it, and on the Claude API the sandbox refuses a dispatch that does
+  not carry the session's secret.
 - **Each claim has a deadline.** The poller creates claims with a 30-minute lifetime
   (`SHUTDOWN_AFTER_SECONDS`), after which the controller deletes the claim and its pod.
   That is also the longest a session can run; raise it for longer tasks. The sandbox then
