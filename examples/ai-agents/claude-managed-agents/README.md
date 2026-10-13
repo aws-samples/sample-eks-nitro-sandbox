@@ -135,8 +135,8 @@ kubectl create configmap anthropic-env \
 ```
 
 **Step 5: Fence the network.** [`egress-policy.yaml`](deploy/egress-policy.yaml) selects
-the sandbox pods. It lets in only the poller, on the dispatch port, and lets out only DNS
-and HTTPS to the Claude API:
+the sandbox pods. It admits the poller on the dispatch port, and lets out DNS and HTTPS to
+the Claude API:
 
 ```yaml
   ingress:
@@ -464,8 +464,9 @@ Because the poller only claims and dispatches, sessions run in parallel, one pod
 - **Use one environment per trust boundary.** An environment key reaches every session in
   its environment. Give separate users or tenants separate environments and keys.
 - **The dispatch port has no authentication of its own.** A warm sandbox accepts the first
-  well-formed POST on port 8080. The network policy is what lets only the poller reach it,
-  and the sandbox refuses a dispatch that does not carry the session's secret.
+  well-formed POST on port 8080. The network policy is what keeps other pods and the
+  internet from reaching it, and the sandbox refuses a dispatch that does not carry the
+  session's secret.
 - **Each claim has a deadline.** The poller creates claims with a 30-minute lifetime
   (`SHUTDOWN_AFTER_SECONDS`), after which the controller deletes the claim and its pod.
   That is also the longest a session can run; raise it for longer tasks. The sandbox then
