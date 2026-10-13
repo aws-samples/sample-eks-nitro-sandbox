@@ -2,12 +2,26 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "ClaudePlatformOnAwsWebIdentityToken",
+      "Sid": "ClaudePlatformOnAwsGetToken",
       "Effect": "Allow",
-      "Action": [
-        "sts:GetWebIdentityToken",
-        "sts:TagGetWebIdentityToken"
-      ],
+      "Action": "sts:GetWebIdentityToken",
+      "Resource": "*",
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "sts:IdentityTokenAudience": [
+            "https://api.anthropic.com",
+            "https://platform.claude.com"
+          ]
+        },
+        "StringEquals": {
+          "aws:CalledViaLast": "aws-external-anthropic.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "ClaudePlatformOnAwsTagToken",
+      "Effect": "Allow",
+      "Action": "sts:TagGetWebIdentityToken",
       "Resource": "*"
     }
   ]
