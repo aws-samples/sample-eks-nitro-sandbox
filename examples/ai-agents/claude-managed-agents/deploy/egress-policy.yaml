@@ -1,4 +1,4 @@
-# The sandboxes' network: the poller in, the Claude API out, nothing else.
+# The sandboxes' network: the poller in, the Claude API out.
 #
 # An EKS Auto Mode ApplicationNetworkPolicy is a NetworkPolicy that also accepts
 # hostnames (domainNames) in an egress rule. For the sandbox pods it allows:

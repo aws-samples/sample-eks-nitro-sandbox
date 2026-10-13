@@ -36,9 +36,10 @@ Nitro sandbox:
   the poller hands it to the session's sandbox, and the sandbox runs on that token alone.
   The sandbox holds neither key and refuses to start if it finds one.
 - **The sandbox can reach the Claude API and its DNS; the internet, AWS APIs and other
-  pods are refused.** An `ApplicationNetworkPolicy` lets only the poller in, and lets the
-  sandbox out only to CoreDNS and `api.anthropic.com`. (The policy allows the addresses that
-  name resolves to, so another name served from the same addresses would also be reachable.)
+  pods are refused.** An `ApplicationNetworkPolicy` admits the poller inbound, and allows
+  the sandbox egress to CoreDNS and `api.anthropic.com`. (The policy allows the addresses
+  that name resolves to, so another name served from the same addresses would also be
+  reachable.)
 
 *Figure 1: Claude reasons on Anthropic's side and the poller claims the session. A warm
 Nitro sandbox runs the session's tool calls, and its egress policy allows only the Claude
@@ -372,12 +373,12 @@ service endpoints such as STS, and other pods are refused. (One carve-out sits a
 policy: Kubernetes always allows traffic to and from a pod's own node, covered under *No
 reusable credential* below.)
 
-*Figure 2: The egress fence around one sandbox pod. The poller is the only allowed inbound
-source; the only egress the policy allows is CoreDNS for name lookups and the Claude API;
-the public internet, AWS APIs such as STS, and other pods are refused. The policy is
-enforced on the node, outside the sandbox.*
+*Figure 2: The egress fence around one sandbox pod. The policy admits the poller inbound
+and allows egress to CoreDNS for name lookups and the Claude API; the public internet, AWS
+APIs such as STS, and other pods are refused. The policy is enforced on the node, outside
+the sandbox.*
 
-![A focused view of the egress fence. Inside an EKS Auto Mode node, a red Nitro sandbox pod labeled claude-sandbox-worker (isolated-sandbox) runs the tool calls. The poller is the only allowed inbound source and reaches the pod on TCP 8080. An ApplicationNetworkPolicy, drawn as a filter that the node's network policy agent enforces in eBPF on the pod's host-side interface outside the guest, governs the pod. Two egress paths are allowed, in green: CoreDNS for name lookups on UDP and TCP 53, and api.anthropic.com, the Claude API, on TCP 443. A red dashed path marks everything refused: the internet, AWS APIs such as STS, and other pods. A caveat notes that the rule allows the IP addresses api.anthropic.com resolves to, so another name served from those same addresses would also be reachable.](images/claude-managed-agents-fence.png)
+![A focused view of the egress fence. Inside an EKS Auto Mode node, a red Nitro sandbox pod labeled claude-sandbox-worker (isolated-sandbox) runs the tool calls. The policy admits the poller inbound, reaching the pod on TCP 8080. An ApplicationNetworkPolicy, drawn as a filter that the node's network policy agent enforces in eBPF on the pod's host-side interface outside the guest, governs the pod. Two egress paths are allowed, in green: CoreDNS for name lookups on UDP and TCP 53, and api.anthropic.com, the Claude API, on TCP 443. A red dashed path marks the refused traffic: the internet, AWS APIs such as STS, and other pods. A caveat notes that the rule allows the IP addresses api.anthropic.com resolves to, so another name served from those same addresses would also be reachable.](images/claude-managed-agents-fence.png)
 
 **Where it is enforced.** On EKS Auto Mode, a network policy agent on each node turns the
 policy into eBPF programs attached to the pod's host-side virtual interface — on the node,
