@@ -337,6 +337,11 @@ example.com OSError [Errno 101] Network is unreachable
 sts.us-west-2.amazonaws.com TimeoutError timed out
 ```
 
+The two refused hosts report different errors — `example.com` is unreachable,
+`sts.us-west-2.amazonaws.com` times out — but they are blocked the same way.
+[How the fence works](#how-the-fence-works), below, explains the policy, where it is
+enforced, and why the messages differ.
+
 **Optional: size the pool from the queue.** [`autoscaler.yaml`](deploy/autoscaler.yaml)
 reads the environment's queue every 15 seconds and sets the pool to one warm sandbox for
 each session waiting in the queue, at least 1 and at most 10. The poller acknowledges a
@@ -356,6 +361,66 @@ INFO worker.stats_adapter depth=0 pending=0 -> claude-sandbox-worker replicas No
 
 It sets the replicas on every tick, so if anything else changes them, re-applying
 `sandbox-template.yaml` for example, the next tick puts the target back.
+
+## How the fence works
+
+The egress policy from step 5 is an `ApplicationNetworkPolicy`. It selects the sandbox
+pods (`app: claude-sandbox-worker`) and declares both `Ingress` and `Egress`, so the pods
+are default-deny in both directions: only what the policy names is allowed. Inbound, that
+is the poller on TCP 8080. Outbound, it is CoreDNS on 53 and `api.anthropic.com` on 443.
+The public internet, AWS service endpoints such as STS, and other pods are refused.
+
+*Figure 2: The egress fence around one sandbox pod. The poller is the only allowed inbound
+source; the only egress is CoreDNS for name lookups and the Claude API; everything else is
+refused. The policy is enforced on the node, outside the sandbox.*
+
+![A focused view of the egress fence. Inside an EKS Auto Mode node, a red Nitro sandbox pod labeled claude-sandbox-worker (isolated-sandbox) runs the tool calls. The poller is the only allowed inbound source and reaches the pod on TCP 8080. An ApplicationNetworkPolicy, drawn as a filter that the node's network policy agent enforces in eBPF on the pod's host-side interface outside the guest, governs the pod. Two egress paths are allowed, in green: CoreDNS for name lookups on UDP and TCP 53, and api.anthropic.com, the Claude API, on TCP 443. A red dashed path marks everything refused: the internet, AWS APIs such as STS, and other pods. A caveat notes that the rule allows the IP addresses api.anthropic.com resolves to, so another name served from those same addresses would also be reachable.](images/claude-managed-agents-fence.png)
+
+**Where it is enforced.** On EKS Auto Mode, a network policy agent on each node turns the
+policy into eBPF programs attached to the pod's host-side virtual interface — on the node,
+outside the sandbox's guest. AWS's documentation describes it this way: "The eBPF probes
+attached to the Pod veth interface will then filter egress traffic ... based on the rules
+in place. This ensures pods can only send cluster-external traffic to the IPs of allow
+listed domains."
+([EKS network policy documentation](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html).)
+Because the filtering lives on the node rather than in the guest, a command the model runs
+inside the sandbox — even as root — cannot see or change it.
+
+**Why the two refused hosts fail differently.** Both `example.com` and
+`sts.us-west-2.amazonaws.com` are refused the same way: their addresses are not in the
+allow list, so a connection attempt gets no reply and times out. The messages differ only
+because of the hosts' DNS records. `example.com` also publishes IPv6 (AAAA) addresses, and
+the sandbox has no IPv6 route, so an IPv6 attempt fails immediately with "Network is
+unreachable"; `socket.create_connection` tries the IPv4 addresses first (they time out),
+then the IPv6 address, and raises the last error it saw — the IPv6 one.
+`sts.us-west-2.amazonaws.com` publishes only IPv4 addresses, so its single attempt times
+out. The block is identical; only the message differs.
+
+**No credential to use even if a request left.** The sandbox runs as a non-root user with
+all Linux capabilities dropped and a read-only root filesystem, sets
+`automountServiceAccountToken: false`, and holds no AWS credentials and no Anthropic key —
+only the one session token delivered in the dispatch. A request that did escape would
+carry nothing to authenticate with.
+
+<details>
+<summary>Reading the enforcement, and the IPv4/IPv6 detail</summary>
+
+Once the controller hands the policy to the nodes it appears as the `PolicyEndpoint` object
+that step 5 waits for. On each node the network policy agent attaches the eBPF programs and
+holds the resolved allow list for these pods: egress to CoreDNS on 53 and to the addresses
+`api.anthropic.com` resolves to on 443, and ingress from the poller on 8080 — the policy's
+rules and nothing more.
+
+The different error messages are a name-resolution artifact, not a difference in how
+strongly each host is blocked. `example.com` resolves to both IPv4 and IPv6 addresses;
+`sts.us-west-2.amazonaws.com` resolves to IPv4 only. The sandbox has an IPv4 default route
+but no IPv6 route, so an IPv6 connection attempt returns "Network is unreachable" at once,
+while an IPv4 attempt to a non-allowed address runs to the connect timeout.
+`socket.create_connection` works through the resolved addresses in order and raises the
+error from the last one it tried, so a host with a trailing IPv6 address reports
+"unreachable" and an IPv4-only host reports "timed out".
+
+</details>
 
 ## How the hand-off works
 
