@@ -338,8 +338,8 @@ example.com OSError [Errno 101] Network is unreachable
 sts.us-west-2.amazonaws.com TimeoutError timed out
 ```
 
-The two refused hosts report different errors — `example.com` is unreachable,
-`sts.us-west-2.amazonaws.com` times out — but they are blocked the same way.
+The two refused hosts report different errors (`example.com` is unreachable,
+`sts.us-west-2.amazonaws.com` times out), but they are blocked the same way.
 [How the fence works](#how-the-fence-works), below, explains the policy, where it is
 enforced, and why the messages differ.
 
@@ -381,14 +381,14 @@ the sandbox.*
 ![A focused view of the egress fence. Inside an EKS Auto Mode node, a red Nitro sandbox pod labeled claude-sandbox-worker (isolated-sandbox) runs the tool calls. The policy admits the poller inbound, reaching the pod on TCP 8080. An ApplicationNetworkPolicy, drawn as a filter that the node's network policy agent enforces in eBPF on the pod's host-side interface outside the guest, governs the pod. Two egress paths are allowed, in green: CoreDNS for name lookups on UDP and TCP 53, and api.anthropic.com, the Claude API, on TCP 443. A red dashed path marks the refused traffic: the internet, AWS APIs such as STS, and other pods. A caveat notes that the rule allows the IP addresses api.anthropic.com resolves to, so another name served from those same addresses would also be reachable.](images/claude-managed-agents-fence.png)
 
 **Where it is enforced.** On EKS Auto Mode, a network policy agent on each node turns the
-policy into eBPF programs attached to the pod's host-side virtual interface — on the node,
+policy into eBPF programs attached to the pod's host-side virtual interface: on the node,
 outside the sandbox's guest. AWS's documentation describes it this way: "The eBPF probes
 attached to the Pod veth interface will then filter egress traffic ... based on the rules
 in place. This ensures pods can only send cluster-external traffic to the IPs of allow
 listed domains."
 ([EKS network policy documentation](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html).)
 Because the filtering lives on the node rather than in the guest, a command the model runs
-inside the sandbox — even as root — cannot see or change it.
+inside the sandbox, even as root, cannot change it.
 
 **Why the two refused hosts fail differently.** Both hosts are refused the same way: their
 IPv4 addresses are not in the allow list, so an IPv4 connection attempt gets no reply and
@@ -396,40 +396,29 @@ runs to the timeout. The messages differ only because of the hosts' DNS records.
 `example.com` also publishes IPv6 (AAAA) addresses, and the sandbox has no route to global
 IPv6 addresses, so an IPv6 attempt fails immediately with "Network is unreachable";
 `socket.create_connection` tries the IPv4 addresses first (they time out), then the IPv6
-address, and raises the last error it saw — the IPv6 one. `sts.us-west-2.amazonaws.com`
+address, and raises the last error it saw, the IPv6 one. `sts.us-west-2.amazonaws.com`
 publishes only IPv4 addresses, so its single attempt times out. The IPv4 block is identical
 for both; only the surfaced message differs.
 
 **No reusable credential, even if a request left.** The sandbox runs as a non-root user
 with all Linux capabilities dropped and a read-only root filesystem, sets
 `automountServiceAccountToken: false`, and holds no AWS credentials and no reusable
-Anthropic key — only this one session's token, delivered in the dispatch and scoped to that
+Anthropic key: only this one session's token, delivered in the dispatch and scoped to that
 session. A request that reached some other host would carry no AWS credential and no durable
-key to replay. The one carve-out from the fence is node-local traffic, which Kubernetes
-always allows: the pod can reach its own node and the node's link-local metadata service,
-but that is not a path to the internet, and the metadata service exposes no IAM role to the
-pod (its `iam/` paths return 404) while the pod has no Pod Identity — so there is nothing to
-assume there either.
+key to replay. The one carve-out from the fence is the pod's own node, which Kubernetes
+always allows the pod to reach; that is not a path to the internet. A link-local metadata
+service at `169.254.169.254` also answers inside the sandbox, with placement and service
+details only. Its `iam/` paths return 404 and the pod has no Pod Identity, so there is no
+role to assume.
 
 <details>
-<summary>Reading the enforcement, and the IPv4/IPv6 detail</summary>
+<summary>Reading the enforcement on a node</summary>
 
 Once the controller hands the policy to the nodes it appears as the `PolicyEndpoint` object
 that step 5 waits for. On each node the network policy agent attaches the eBPF programs and
 holds the resolved allow list for these pods: egress to CoreDNS on 53 and to the addresses
-`api.anthropic.com` resolves to on 443, ingress from the poller on 8080, and — as the
-always-allowed node carve-out — the pod's own node. That is the policy's rules plus the
-node Kubernetes always permits.
-
-The different error messages are a name-resolution artifact, not a difference in how
-strongly each host is blocked. `example.com` resolves to both IPv4 and IPv6 addresses;
-`sts.us-west-2.amazonaws.com` resolves to IPv4 only. The sandbox has an IPv4 default route
-but no route to global IPv6 addresses, so an IPv6 connection attempt returns "Network is
-unreachable" at once,
-while an IPv4 attempt to a non-allowed address runs to the connect timeout.
-`socket.create_connection` works through the resolved addresses in order and raises the
-error from the last one it tried, so a host with a trailing IPv6 address reports
-"unreachable" and an IPv4-only host reports "timed out".
+`api.anthropic.com` resolves to on 443, ingress from the poller on 8080, and the pod's own
+node, which Kubernetes always permits. That is the policy's rules plus the node.
 
 </details>
 
