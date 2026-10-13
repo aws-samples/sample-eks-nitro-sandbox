@@ -25,10 +25,10 @@ Nitro sandbox:
 
 - **Claude reasons on Anthropic's side; the tools run in your cluster.** An ordinary poller
   Deployment claims work from the environment's queue. It runs no tool calls itself.
-- **Each session gets its own VM.** The poller claims a sandbox that is already booted from
+- **Each session gets its own pod.** The poller claims a sandbox that is already booted from
   a `SandboxWarmPool` and hands it the session. The sandbox's `SandboxTemplate` sets
   `runtimeClassName: isolated-sandbox`, so the commands run on a kernel no other pod
-  shares, and the VM is gone when the session ends.
+  shares, and the pod is gone when the session ends.
 - **Three credentials, each in one place.** Your organization API key, which can create
   agents and read every session, stays on your machine. The environment key, which can
   claim any session in this environment's queue, is held only by the poller (and the
@@ -44,7 +44,7 @@ Nitro sandbox:
 Nitro sandbox runs the session's tool calls, and its egress policy allows only the Claude
 API's hostname.*
 
-![The operator starts a session on the Anthropic control plane with the organization API key. In the EKS cluster, an ordinary poller pod holding only the environment key polls the work queue, creates a SandboxClaim that adopts a booted VM from a SandboxWarmPool of two, and posts the session id and its secret to the claimed VM. The claimed VM, an isolated-sandbox Nitro sandbox that holds only that session's token, runs bash, read, write, edit, glob and grep, and exchanges tool calls and results with api.anthropic.com, the one hostname its egress policy allows besides DNS; the policy refuses the internet, AWS APIs and other pods. The pool refills with a new warm VM.](images/claude-managed-agents.png)
+![The operator starts a session on the Anthropic control plane with the organization API key. In the EKS cluster, an ordinary poller pod holding only the environment key polls the work queue, creates a SandboxClaim that adopts a booted pod from a SandboxWarmPool of two, and posts the session id and its secret to the claimed pod. The claimed pod, an isolated-sandbox Nitro sandbox that holds only that session's token, runs bash, read, write, edit, glob and grep, and exchanges tool calls and results with api.anthropic.com, the one hostname its egress policy allows besides DNS; the policy refuses the internet, AWS APIs and other pods. The pool refills with a new warm pod.](images/claude-managed-agents.png)
 
 This folder was built against these releases:
 
@@ -244,7 +244,7 @@ ANTHROPIC_ENVIRONMENT_ID
 ```
 
 The sandbox runs its own kernel. Its uptime matches the pod's age, about 25 seconds here,
-because the VM booted with the pod, and it sees virtio disks (`vda`, `vdb`, `vdc`). On the
+because the sandbox booted with the pod, and it sees virtio disks (`vda`, `vdb`, `vdc`). On the
 same node, an ordinary pod reported the node's kernel build, `#2 SMP PREEMPT_DYNAMIC Wed
 Oct  7 22:33:11 UTC 2026`, and the instance's `nvme` disks. The version string `6.18.51`
 was the same for both; the build and the boot are not. The only Anthropic variable in the
@@ -379,12 +379,12 @@ start-up. Instead:
    agent's skills into `/workspace/skills/`, runs each tool call and posts its result, and
    stops the work item when the session goes idle. Then the process exits.
 
-Because the poller only claims and dispatches, sessions run in parallel, one VM each.
+Because the poller only claims and dispatches, sessions run in parallel, one pod each.
 
 ## Good to know
 
 - **The file tools' path checks are not a sandbox.** The SDK confines `read`, `write` and
-  `edit` to the working directory, but `bash` can run anything. The VM is what bounds it.
+  `edit` to the working directory, but `bash` can run anything. The sandboxed pod is what bounds it.
 - **Use one environment per trust boundary.** An environment key reaches every session in
   its environment. Give separate users or tenants separate environments and keys.
 - **The dispatch port has no authentication of its own.** A warm sandbox accepts the first
@@ -397,8 +397,8 @@ Because the poller only claims and dispatches, sessions run in parallel, one VM 
   memory store changes before the pod is killed.
 - **Set a budget.** A session's `budget` caps its list cost, so a runaway loop stops
   issuing model requests.
-- **Size requests honestly.** Each sandbox reserves its full memory request, and the VM is
-  sized to its limits. Size `replicas` to how many sessions start at once, not to your total
+- **Size requests honestly.** Each sandbox reserves its full memory request, and the sandbox is
+  sized to the pod's limits. Size `replicas` to how many sessions start at once, not to your total
   session count.
 
 ## Clean up
