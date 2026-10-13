@@ -5,8 +5,9 @@
 #   - ingress from the poller, on the dispatch port only;
 #   - egress to CoreDNS for name lookups and to HTTPS on api.anthropic.com,
 #     where the worker fetches tool calls and posts their results.
-# Every other address, inside the cluster or out, is refused, so a command the
-# model runs cannot reach other pods, AWS APIs or the internet.
+# Every other address the policy is asked about is refused, so a command the
+# model runs cannot reach other pods, AWS APIs or the internet. (Kubernetes always
+# allows a pod to reach its own node; the node exposes no credential to this pod.)
 #
 # <COREDNS_IP> is your cluster's CoreDNS Service address:
 #   kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'

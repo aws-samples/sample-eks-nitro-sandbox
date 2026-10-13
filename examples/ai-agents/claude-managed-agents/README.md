@@ -35,10 +35,10 @@ Nitro sandbox:
   optional autoscaler). Each work item carries a secret with a token for that one session;
   the poller hands it to the session's sandbox, and the sandbox runs on that token alone.
   The sandbox holds neither key and refuses to start if it finds one.
-- **The sandbox can reach the Claude API and its DNS, nothing more.** An
-  `ApplicationNetworkPolicy` lets only the poller in, and lets the sandbox out only to
-  CoreDNS and `api.anthropic.com`. (The policy allows the addresses that name resolves to,
-  so another name served from the same addresses would also be reachable.)
+- **The sandbox can reach the Claude API and its DNS; the internet, AWS APIs and other
+  pods are refused.** An `ApplicationNetworkPolicy` lets only the poller in, and lets the
+  sandbox out only to CoreDNS and `api.anthropic.com`. (The policy allows the addresses that
+  name resolves to, so another name served from the same addresses would also be reachable.)
 
 *Figure 1: Claude reasons on Anthropic's side and the poller claims the session. A warm
 Nitro sandbox runs the session's tool calls, and its egress policy allows only the Claude
@@ -366,13 +366,16 @@ It sets the replicas on every tick, so if anything else changes them, re-applyin
 
 The egress policy from step 5 is an `ApplicationNetworkPolicy`. It selects the sandbox
 pods (`app: claude-sandbox-worker`) and declares both `Ingress` and `Egress`, so the pods
-are default-deny in both directions: only what the policy names is allowed. Inbound, that
-is the poller on TCP 8080. Outbound, it is CoreDNS on 53 and `api.anthropic.com` on 443.
-The public internet, AWS service endpoints such as STS, and other pods are refused.
+are default-deny in both directions. Inbound, the policy allows the poller on TCP 8080.
+Outbound, it allows CoreDNS on 53 and `api.anthropic.com` on 443. The public internet, AWS
+service endpoints such as STS, and other pods are refused. (One carve-out sits above the
+policy: Kubernetes always allows traffic to and from a pod's own node, covered under *No
+reusable credential* below.)
 
 *Figure 2: The egress fence around one sandbox pod. The poller is the only allowed inbound
-source; the only egress is CoreDNS for name lookups and the Claude API; everything else is
-refused. The policy is enforced on the node, outside the sandbox.*
+source; the only egress the policy allows is CoreDNS for name lookups and the Claude API;
+the public internet, AWS APIs such as STS, and other pods are refused. The policy is
+enforced on the node, outside the sandbox.*
 
 ![A focused view of the egress fence. Inside an EKS Auto Mode node, a red Nitro sandbox pod labeled claude-sandbox-worker (isolated-sandbox) runs the tool calls. The poller is the only allowed inbound source and reaches the pod on TCP 8080. An ApplicationNetworkPolicy, drawn as a filter that the node's network policy agent enforces in eBPF on the pod's host-side interface outside the guest, governs the pod. Two egress paths are allowed, in green: CoreDNS for name lookups on UDP and TCP 53, and api.anthropic.com, the Claude API, on TCP 443. A red dashed path marks everything refused: the internet, AWS APIs such as STS, and other pods. A caveat notes that the rule allows the IP addresses api.anthropic.com resolves to, so another name served from those same addresses would also be reachable.](images/claude-managed-agents-fence.png)
 
@@ -386,21 +389,26 @@ listed domains."
 Because the filtering lives on the node rather than in the guest, a command the model runs
 inside the sandbox — even as root — cannot see or change it.
 
-**Why the two refused hosts fail differently.** Both `example.com` and
-`sts.us-west-2.amazonaws.com` are refused the same way: their addresses are not in the
-allow list, so a connection attempt gets no reply and times out. The messages differ only
-because of the hosts' DNS records. `example.com` also publishes IPv6 (AAAA) addresses, and
-the sandbox has no IPv6 route, so an IPv6 attempt fails immediately with "Network is
-unreachable"; `socket.create_connection` tries the IPv4 addresses first (they time out),
-then the IPv6 address, and raises the last error it saw — the IPv6 one.
-`sts.us-west-2.amazonaws.com` publishes only IPv4 addresses, so its single attempt times
-out. The block is identical; only the message differs.
+**Why the two refused hosts fail differently.** Both hosts are refused the same way: their
+IPv4 addresses are not in the allow list, so an IPv4 connection attempt gets no reply and
+runs to the timeout. The messages differ only because of the hosts' DNS records.
+`example.com` also publishes IPv6 (AAAA) addresses, and the sandbox has no route to global
+IPv6 addresses, so an IPv6 attempt fails immediately with "Network is unreachable";
+`socket.create_connection` tries the IPv4 addresses first (they time out), then the IPv6
+address, and raises the last error it saw — the IPv6 one. `sts.us-west-2.amazonaws.com`
+publishes only IPv4 addresses, so its single attempt times out. The IPv4 block is identical
+for both; only the surfaced message differs.
 
-**No credential to use even if a request left.** The sandbox runs as a non-root user with
-all Linux capabilities dropped and a read-only root filesystem, sets
-`automountServiceAccountToken: false`, and holds no AWS credentials and no Anthropic key —
-only the one session token delivered in the dispatch. A request that did escape would
-carry nothing to authenticate with.
+**No reusable credential, even if a request left.** The sandbox runs as a non-root user
+with all Linux capabilities dropped and a read-only root filesystem, sets
+`automountServiceAccountToken: false`, and holds no AWS credentials and no reusable
+Anthropic key — only this one session's token, delivered in the dispatch and scoped to that
+session. A request that reached some other host would carry no AWS credential and no durable
+key to replay. The one carve-out from the fence is node-local traffic, which Kubernetes
+always allows: the pod can reach its own node and the node's link-local metadata service,
+but that is not a path to the internet, and the metadata service exposes no IAM role to the
+pod (its `iam/` paths return 404) while the pod has no Pod Identity — so there is nothing to
+assume there either.
 
 <details>
 <summary>Reading the enforcement, and the IPv4/IPv6 detail</summary>
@@ -408,13 +416,15 @@ carry nothing to authenticate with.
 Once the controller hands the policy to the nodes it appears as the `PolicyEndpoint` object
 that step 5 waits for. On each node the network policy agent attaches the eBPF programs and
 holds the resolved allow list for these pods: egress to CoreDNS on 53 and to the addresses
-`api.anthropic.com` resolves to on 443, and ingress from the poller on 8080 — the policy's
-rules and nothing more.
+`api.anthropic.com` resolves to on 443, ingress from the poller on 8080, and — as the
+always-allowed node carve-out — the pod's own node. That is the policy's rules plus the
+node Kubernetes always permits.
 
 The different error messages are a name-resolution artifact, not a difference in how
 strongly each host is blocked. `example.com` resolves to both IPv4 and IPv6 addresses;
 `sts.us-west-2.amazonaws.com` resolves to IPv4 only. The sandbox has an IPv4 default route
-but no IPv6 route, so an IPv6 connection attempt returns "Network is unreachable" at once,
+but no route to global IPv6 addresses, so an IPv6 connection attempt returns "Network is
+unreachable" at once,
 while an IPv4 attempt to a non-allowed address runs to the connect timeout.
 `socket.create_connection` works through the resolved addresses in order and raises the
 error from the last one it tried, so a host with a trailing IPv6 address reports
