@@ -6,7 +6,8 @@ running guest instead of waiting for a VM to boot and an image to pull.
 A warm sandbox exists before its session does, so it cannot be given the session
 id at start-up. Instead it runs a small HTTP server on its dispatch port (see
 ``serve.py``). The poller claims a sandbox, reads its pod IP and POSTs
-``{session_id, work_id, work_secret}`` to it.
+``{session_id, work_id, work_secret}`` to it (no ``work_secret`` on Claude
+Platform on AWS).
 
 The Kubernetes side (create the SandboxClaim, wait until it is Ready, read the
 pod IP, list and delete claims) goes through the agent-sandbox Python client,
@@ -99,8 +100,12 @@ class Dispatcher:
             k8s.delete_sandbox_claim(name, self.namespace)
         return prev
 
-    def dispatch(self, *, session_id: str, work_id: str, work_secret: str) -> bool:
+    def dispatch(self, *, session_id: str, work_id: str, work_secret: str | None) -> bool:
         """Claim a warm sandbox and POST the session to it.
+
+        ``work_secret`` is the work item's secret on the first-party Claude API,
+        and None on Claude Platform on AWS, where the sandbox signs with its own
+        Pod Identity role and the dispatch carries no secret.
 
         Returns False when the session has already been handed to max_redispatch
         sandboxes, so the caller should stop its work item instead. Raises if the
@@ -128,7 +133,9 @@ class Dispatcher:
             log.info("session=%s work=%s -> sandbox=%s", session_id, work_id, sandbox.sandbox_id)
             # The per-session secret goes only to the sandbox serving this
             # session, and is its only credential. Never logged.
-            body = {"session_id": session_id, "work_id": work_id, "work_secret": work_secret}
+            body = {"session_id": session_id, "work_id": work_id}
+            if work_secret is not None:
+                body["work_secret"] = work_secret
             post_with_retry(f"http://{host}:{self.dispatch_port}/", json.dumps(body).encode())
         except Exception:
             sandbox.terminate()

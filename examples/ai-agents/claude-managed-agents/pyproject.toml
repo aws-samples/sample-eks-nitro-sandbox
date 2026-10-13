@@ -5,8 +5,9 @@ description = "Claude Managed Agents self-hosted sandbox worker for Amazon EKS N
 requires-python = ">=3.12"
 license = { text = "MIT-0" }
 dependencies = [
-    # EnvironmentWorker, the work poller and work.stats.
-    "anthropic==1.13.0",
+    # EnvironmentWorker, the work poller and work.stats. The aws extra adds
+    # boto3, which AnthropicAWS uses to sign requests on Claude Platform on AWS.
+    "anthropic[aws]==1.13.0",
     # The agent-sandbox client: SandboxClaim create, wait-until-Ready, pod IP,
     # list and delete. Keep it on the same release as the controller.
     "k8s-agent-sandbox==1.0.6",

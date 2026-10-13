@@ -16,6 +16,11 @@ Every one of those calls uses the session's own token from ``work_secret``. The
 sandbox holds no API key and no environment key, so a command the model runs
 here cannot claim another session's work.
 
+On Claude Platform on AWS the dispatch carries no ``work_secret``. Every call
+is signed with SigV4 using the AWS credentials EKS Pod Identity gives this
+pod's ServiceAccount instead, so on that path the sandbox's commands can reach
+whatever that role allows.
+
 Then the process exits and the pod completes. The warm pool has already booted
 a replacement.
 """
@@ -53,13 +58,20 @@ class _Handler(BaseHTTPRequestHandler):
                 raise ValueError("bad length")
             body = json.loads(self.rfile.read(length))
             session_id, work_id = body["session_id"], body["work_id"]
-            # Required: the session's token is the only credential this sandbox
-            # gets. A dispatch without it is refused.
-            work_secret = body["work_secret"]
+            if config.on_aws():
+                # This sandbox signs with its Pod Identity role. The poller
+                # sends no secret on this path, so a dispatch with one is refused.
+                if "work_secret" in body:
+                    raise ValueError("unexpected secret")
+                work_secret = None
+            else:
+                # Required: the session's token is the only credential this
+                # sandbox gets. A dispatch without it is refused.
+                work_secret = body["work_secret"]
+                if not (isinstance(work_secret, str) and SECRET_RE.match(work_secret)):
+                    raise ValueError("invalid secret")
             if not (ID_RE.match(session_id) and ID_RE.match(work_id)):
                 raise ValueError("invalid id")
-            if not (isinstance(work_secret, str) and SECRET_RE.match(work_secret)):
-                raise ValueError("invalid secret")
         except Exception:
             self.send_response(400)
             self.end_headers()
@@ -87,19 +99,33 @@ def _wait_for_dispatch(port: int) -> dict[str, str]:
     return httpd.dispatch  # type: ignore[attr-defined]
 
 
-async def _handle(dispatch: dict[str, str]) -> None:
+# handle_item needs an environment key or a work secret. On Claude Platform on
+# AWS there is neither, so it gets this placeholder. The SDK only puts it in the
+# Bearer header of its per-item copies of the client. Those copies are still
+# AsyncAnthropicAWS and sign every request with SigV4, and the SigV4 signer
+# removes any existing Authorization header before it writes its own, so the
+# placeholder is never sent.
+SIGV4_PLACEHOLDER_KEY = "sigv4-signed"
+
+
+async def _handle(dispatch: dict[str, str | None]) -> None:
     environment_id = config.require(config.ENV_ENVIRONMENT_ID)
-    async with client_factory.make_session_client() as client:
+    if config.on_aws():
+        # Claude Platform on AWS: every call is signed with the pod's own role.
+        credential = {"environment_key": SIGV4_PLACEHOLDER_KEY}
+    else:
         # No environment_key: handle_item then authenticates every call for
         # this item (heartbeat, stop, skills, tool events) with the sessions
         # token in work_secret, and fails the item if the secret has none.
+        credential = {"work_secret": dispatch["work_secret"]}
+    async with client_factory.make_session_client() as client:
         worker = EnvironmentWorker(client, workdir=config.WORKDIR)
         task = asyncio.create_task(
             worker.handle_item(
                 work_id=dispatch["work_id"],
                 environment_id=environment_id,
                 session_id=dispatch["session_id"],
-                work_secret=dispatch["work_secret"],
+                **credential,
             )
         )
         # Cancelling (rather than killing) on SIGTERM lets the worker stop the

@@ -19,6 +19,17 @@ ENV_BASE_URL = "ANTHROPIC_BASE_URL"  # optional endpoint override
 # stays on the operator's machine; guard.py refuses to run if a pod has it.
 ENV_API_KEY = "ANTHROPIC_API_KEY"
 
+# --- Claude Platform on AWS (optional) ---------------------------------------
+# ANTHROPIC_PLATFORM=aws switches every role to the SDK's AnthropicAWS client,
+# which signs each request with SigV4 using the pod's AWS credentials (EKS Pod
+# Identity), sends it to aws-external-anthropic.<AWS_REGION>.api.aws and adds
+# the anthropic-workspace-id header. That path has no environment key. Unset,
+# the sample uses the first-party Claude API.
+ENV_PLATFORM = "ANTHROPIC_PLATFORM"
+PLATFORM_AWS = "aws"
+ENV_AWS_WORKSPACE_ID = "ANTHROPIC_AWS_WORKSPACE_ID"  # read by AnthropicAWS itself
+ENV_AWS_REGION = "AWS_REGION"  # the workspace's Region; read by AnthropicAWS itself
+
 # --- This sample -------------------------------------------------------------
 ENV_SANDBOX_NAMESPACE = "SANDBOX_NAMESPACE"  # where the warm pool and claims live
 ENV_SANDBOX_WARMPOOL = "SANDBOX_WARMPOOL"  # the SandboxWarmPool to claim from
@@ -72,6 +83,14 @@ def optional(name: str, default: str | None = None) -> str | None:
 
 def optional_int(name: str, default: int) -> int:
     return int(optional(name, str(default)))
+
+
+def on_aws() -> bool:
+    """True when ANTHROPIC_PLATFORM selects Claude Platform on AWS.
+
+    guard.assert_safe refuses any other non-empty value before this is read.
+    """
+    return optional(ENV_PLATFORM) == PLATFORM_AWS
 
 
 def setup_logging() -> None:
