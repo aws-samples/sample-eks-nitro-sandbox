@@ -47,15 +47,18 @@ Partition; the node's kubelet still sees an ordinary pod.*
   configured for it.
 - [`eksctl`](https://eksctl.io/installation/) and
   [`kubectl`](https://kubernetes.io/docs/tasks/tools/).
-- For the coding agent sample: [Docker](https://docs.docker.com/get-docker/), [Git](https://git-scm.com/downloads)
+- [Git](https://git-scm.com/downloads), to clone this repository: each sample applies
+  manifests and builds images from files in its folder.
+- For the coding agent sample: [Docker](https://docs.docker.com/get-docker/), Git
   with `user.name` and `user.email` set, a GitHub account with the
   [GitHub CLI](https://cli.github.com/) (`gh`) signed in, and access to an Anthropic Claude
   model in [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html)
   in your Region. The pod uses `us.anthropic.claude-sonnet-5-5`; change
   `ANTHROPIC_MODEL` in the coding agent sample's `fix-issue.yaml` to use another.
 
-Run each sample's commands from that sample's folder. They use these values; change them
-if you like:
+Clone this repository and run each sample's commands from that sample's folder; each
+sample's page starts with the `git clone` and `cd` for its folder. They use these values;
+change them if you like:
 
 ```bash
 export CLUSTER_NAME=sandbox-demo

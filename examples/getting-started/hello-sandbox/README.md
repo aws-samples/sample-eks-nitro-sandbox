@@ -1,7 +1,13 @@
 # Hello sandbox
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
-on the home page. Run the commands below from this folder.
+on the home page. The commands below use files from this repository, so clone it and run
+them from this sample's folder:
+
+```bash
+git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
+cd sample-eks-nitro-sandbox/examples/getting-started/hello-sandbox
+```
 
 The fastest path is EKS Auto Mode: the runtime classes are present on every cluster, and
 Auto Mode provisions sandbox-capable nodes on demand. On standard EKS with your own node

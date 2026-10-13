@@ -2,7 +2,13 @@
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and run the [hello sandbox](../hello-sandbox/README.md) sample first so
-you have a cluster with the runtime classes. Run the commands below from this folder.
+you have a cluster with the runtime classes. The commands below use files from this
+repository, so clone it if you have not already, and run them from this sample's folder:
+
+```bash
+git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
+cd sample-eks-nitro-sandbox/examples/getting-started/warm-pool
+```
 
 A sandboxed pod does more work at startup than a regular pod: EC2 creates the Nitro
 Partition and boots the pod's sandbox before the containers start. That adds about 5 to 6 seconds
