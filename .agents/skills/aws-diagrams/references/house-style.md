@@ -32,7 +32,7 @@ change as little as you can. Do not invent a new colour, font size or arrow styl
 | Frame title | 22 px | bold | the frame's colour | 26.4 px | all 25 frames |
 | Frame sub line | 18 px | normal | `#5F6B7A` | 20 to 24 px | F1, F2, F3, CMA, NP |
 | Icon label, first line | 24 px | regular | `#232F3E` | 28.8 px | F1, F2, F3, most of CMA (NP uses 22 px) |
-| Icon label, detail line | 24 px | italic | `#5F6B7A` | 27.2 px | F1, F2, F3, CMA, NP |
+| Icon label, detail line | 24 px | italic | `#5F6B7A` | 27.2 px | F1, F2, F3, most of CMA (NP uses 22 px) |
 | Edge label | 18 px | italic (`fontStyle=2`) | `#414D5C` | default | all 26 labelled edges |
 | Note under a figure | 16 px | first words bold | `#5F6B7A` | 20 px | NP |
 
@@ -63,8 +63,10 @@ destination, orange `#ED7100` for a container.
 
 All frames: `strokeWidth=2`, `fillColor=none`, `rounded=0`, `verticalAlign=top`, `align=left`,
 `spacing=0`, `whiteSpace=nowrap`, `fontStyle=1`, `fontSize=14` on the cell with the real sizes in
-the value's HTML. `spacingTop=6` for a title alone and `4` when a sub line follows (CMA, NP), so
-both fit beside the 48 px tab.
+the value's HTML. `spacingTop` sets where the title starts. A title alone uses 6.417 in every
+figure; a title with sub lines uses -5.583 (F1, F2, F3), 4 or 8 (CMA, NP). For a new figure use
+the template's values, 6 for a title alone and 4 with a sub line, which keep both lines beside
+the 48 px tab.
 
 | Kind | Outline and title | Tab | Text starts | Source |
 |---|---|---|---|---|
@@ -139,7 +141,9 @@ Colour and dash carry meaning, so use them only as the table says.
 
 **Routing:** segments are horizontal or vertical. Anchor both ends (`exitX`, `exitY`, `entryX`,
 `entryY`, plus `exitDx`/`entryDx` for a few pixels' nudge) and give every bend as a waypoint in
-`<Array as="points">`, so draw.io draws the route you planned instead of inventing one. Two edges
+`<Array as="points">`, so draw.io draws the route you planned instead of inventing one. NP's
+`e-dns` and `e-api` have no waypoints, which is why `check_drawio.py` warns on them; do not copy
+that. Two edges
 on one side of an icon sit at `0.25` and `0.75` (F1, F2); three at `0.125`, `0.5`, `0.875` (F3).
 Do not leave an icon through its bottom: its label is there. Edges never pass through an icon or a
 label.
