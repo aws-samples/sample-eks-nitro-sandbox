@@ -86,7 +86,9 @@ outside AWS (CMA).
 **Spacing:** a child frame's top is 80 px below its parent's top (100 when the parent has a sub
 line, NP), inset 30 to 60 px from its left edge (usually 40). The first row of icons in a frame has
 its icon tops 80 px below the frame top. Keep 40 px or more between a frame edge and anything in
-it, measured from the icon's label, not the icon.
+it, measured from the icon's label, not the icon, and not much more: a frame is its content plus
+that padding. A frame holding one small row should not be a tall empty box; shrink it, and let a
+parent frame shrink with it.
 
 **Title width:** the title and every sub line must fit: text start (62 with a tab, 16 without)
 plus the measured width plus 16 px ≤ frame width. Too wide: shorten, move words to a sub line, or

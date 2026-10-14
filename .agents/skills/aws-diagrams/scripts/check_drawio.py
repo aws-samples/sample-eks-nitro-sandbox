@@ -515,7 +515,8 @@ def main(argv=None):
     except Exception as exc:  # the shape check is optional
         print(f"note: shape names not verified ({exc})", file=sys.stderr)
     if names is None:
-        print("note: draw.io library not found, AWS shape names not verified; render and look", file=sys.stderr)
+        print("note: draw.io library not found, AWS shape names NOT verified; run "
+              "'drawio_shapes.py fetch' or install draw.io desktop", file=sys.stderr)
     worst = 0
     for path in a.figures:
         try:

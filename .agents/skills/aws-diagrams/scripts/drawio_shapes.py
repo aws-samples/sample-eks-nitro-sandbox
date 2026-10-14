@@ -6,13 +6,15 @@ the XML tells you. So never guess a name: search the library that ships with
 draw.io and copy the style it returns.
 
 The library is read from one of:
+  * a copy fetched from the export image: run `drawio_shapes.py fetch` once
+    (needs docker or podman; it lands in ~/.cache/drawio-aws-library/);
   * a draw.io desktop install (its resources/app.asar), found automatically
     in the usual places, or named with --library;
   * draw.io's public sidebar source, Sidebar-AWS4.js, downloaded from
-    https://github.com/jgraph/drawio (src/main/webapp/js/diagramly/sidebar/);
-  * the export container: docker cp the app.asar out of it (see export.md).
+    https://github.com/jgraph/drawio (src/main/webapp/js/diagramly/sidebar/).
 
 Usage:
+    drawio_shapes.py fetch
     drawio_shapes.py search "bedrock" "network policy" "user"
     drawio_shapes.py search --style "eks"       # also print each full style
     drawio_shapes.py check mxgraph.aws4.bedrock mxgraph.aws4.user
@@ -33,6 +35,9 @@ CANDIDATES = [
     os.path.expandvars(r"%LOCALAPPDATA%\Programs\draw.io\resources\app.asar"),
     r"C:\Program Files\draw.io\resources\app.asar",
 ]
+# Where `fetch` puts the library it copies out of the export image.
+CACHED = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"),
+                      "drawio-aws-library", "app.asar")
 
 _STR = r"""(?:'[^'\n]*'|"[^"\n]*")"""
 _TERM = r"(?:%s|[A-Za-z_$][\w$.]*)" % _STR
@@ -71,10 +76,29 @@ def _evaluate(expr, env):
 
 
 def find_library(explicit=None):
-    for p in [explicit, os.environ.get("DRAWIO_LIBRARY")] + CANDIDATES:
+    for p in [explicit, os.environ.get("DRAWIO_LIBRARY"), CACHED] + CANDIDATES:
         if p and os.path.isfile(p):
             return p
     return None
+
+
+def fetch_library():
+    """Copy draw.io's app.asar out of the pinned export image into the user cache."""
+    import shutil
+    import subprocess
+
+    from export_png import IMAGE
+
+    runtime = shutil.which("docker") or shutil.which("podman")
+    if not runtime:
+        raise SystemExit("fetch needs docker or podman; or install draw.io desktop, or pass --library")
+    os.makedirs(os.path.dirname(CACHED), exist_ok=True)
+    cid = subprocess.run([runtime, "create", IMAGE], check=True, capture_output=True, text=True).stdout.strip()
+    try:
+        subprocess.run([runtime, "cp", f"{cid}:/opt/drawio/resources/app.asar", CACHED], check=True)
+    finally:
+        subprocess.run([runtime, "rm", cid], check=False, capture_output=True)
+    return CACHED
 
 
 def load_entries(path):
@@ -150,12 +174,16 @@ def main(argv=None):
     s.add_argument("query", nargs="+")
     c = sub.add_parser("check", help="exit 1 unless every name is in the library")
     c.add_argument("name", nargs="+")
+    sub.add_parser("fetch", help=f"copy the library out of the export image into {CACHED}")
     a = p.parse_args(argv)
 
+    if a.cmd == "fetch":
+        print(f"library copied to {fetch_library()}")
+        return 0
     lib = find_library(a.library)
     if not lib:
-        print("draw.io library not found: install draw.io desktop, pass --library, or download "
-              "Sidebar-AWS4.js from github.com/jgraph/drawio", file=sys.stderr)
+        print("draw.io library not found: run 'drawio_shapes.py fetch' (needs docker or podman), "
+              "install draw.io desktop, or pass --library", file=sys.stderr)
         return 2
     entries = load_entries(lib)
     if not entries:

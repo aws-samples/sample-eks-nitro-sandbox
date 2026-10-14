@@ -72,9 +72,11 @@ reading as well.
    python3 scripts/drawio_shapes.py search --style "eks"
    ```
 
-   It reads the library from an installed draw.io desktop, from `--library` pointing at a
-   draw.io `app.asar` (`docker cp` one out of the export image: it is at
-   `/opt/drawio/resources/app.asar`), or from draw.io's public `Sidebar-AWS4.js`. Prefer a shape
+   It reads draw.io's library from a copy it fetches once out of the export image
+   (`python3 scripts/drawio_shapes.py fetch`, needs Docker or Podman), from an installed draw.io
+   desktop, or from `--library` pointing at draw.io's public `Sidebar-AWS4.js`. Run `fetch`
+   first if you have no desktop install: `check_drawio.py` uses the same library to refuse
+   unknown shape names. Prefer a shape
    the existing figures already use for the same meaning (listed in the house style). Keep the
    library's `shape`, `resIcon` and category `fillColor`; replace its font and label settings
    with the house ones.
@@ -107,7 +109,8 @@ reading as well.
    ```
 
    Fix every `ERROR`. Fix each `WARN` too, unless it is deliberate and you can say why (an icon
-   straddling a frame edge on purpose, say). `INFO` lines need no action. Fix only the element a
+   straddling a frame edge on purpose, say). `INFO` lines need no action. If it prints "AWS shape
+   names NOT verified", run `drawio_shapes.py fetch` and check again. Fix only the element a
    finding names; do not re-plan the figure to clear one finding. Never drop a part of the
    architecture to make a finding go away: move it, re-route it or resize its frame.
 
@@ -117,9 +120,13 @@ reading as well.
    python3 scripts/export_png.py path/to/images/figure.drawio --border 20
    ```
 
-8. **Look at the PNG.** Open it at full size next to an existing figure's PNG and go through the
-   list at the end of `references/export.md`. If you cannot view images, say so plainly and ask
-   someone to look; do not describe a figure you have not seen.
+8. **Look at the PNG.** Open the PNG file itself with your image-viewing tool, so you see its
+   pixels: Claude Code's `Read`, Codex's `view_image`, Kiro's image read, or your client's
+   equivalent. The checker's output, the export log and the XML are not looking. Compare it with
+   an existing figure's PNG and go through the list at the end of `references/export.md`; fix
+   what you see, export again and look again. If your tools cannot show you an image, write "I
+   could not view the PNG" in your reply and ask someone to look. Never describe a figure you have
+   not seen.
 
 9. **Caption and alt text.** On the page, right above the image:
 
@@ -132,7 +139,8 @@ reading as well.
 
    The caption names the idea in a few words, then says what to notice. The alt text walks the
    figure in reading order (each boundary, what runs in it, each connection with its label, what
-   is refused) so a reader who cannot see the image gets the same facts.
+   is refused) so a reader who cannot see the image gets the same facts. Write both as plain
+   sentences, as the pages do: no em dashes.
 
 ## Edit an existing figure
 
