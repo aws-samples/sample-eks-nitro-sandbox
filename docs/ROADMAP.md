@@ -5,7 +5,7 @@ These samples show Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandb
 ## Layout
 
 - Folders are named, not numbered: `examples/<section>/<sample>/`. Each sample folder holds its website page as `README.md`, the files the sample applies, and an `images/` folder when it has diagrams.
-- The website's left menu has one collapsible section per folder, in the order below.
+- The website's left menu has one section per folder, in the order below: a heading with its pages always listed under it.
 
 ```text
 examples/
