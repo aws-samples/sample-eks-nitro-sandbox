@@ -194,6 +194,7 @@ pause-resume), and the upstream `Sandbox` API provides both fields.
 - Do not say "strongest" isolation. Say hardware-level isolation.
 - Do not claim a limit, size, density, throttle, region or instance type that the pages and
   the public AWS documentation do not state.
-- Do not state a minimum CPU or memory request; show the sample's actual requests instead.
+- Do not state a minimum CPU or memory request unless you cite the Amazon EKS documentation
+  for it, and never on slides or in videos; show the sample's actual requests instead.
 - Do not describe confidential-mode policy generation or attestation from memory; point to
   the Amazon EKS User Guide.
