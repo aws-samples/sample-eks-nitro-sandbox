@@ -42,14 +42,16 @@ _ALLOWED_AWS = {config.ENV_ENVIRONMENT_ID, config.ENV_PLATFORM, config.ENV_AWS_W
 
 # What EKS Pod Identity puts in a pod, and the AWS credential sources botocore's
 # default chain tries before it (environment keys, profiles and their files, web
-# identity, the ECS-style relative URI). Any of the latter would replace the
-# pod's role, so they are refused on Claude Platform on AWS, and the sandbox
-# refuses all of them on the Claude API, where it holds no AWS credentials.
+# identity, the legacy credential and boto files, the ECS-style relative URI).
+# Any of the latter could replace the pod's role, so their presence is refused
+# on Claude Platform on AWS, and the sandbox refuses all of them on the Claude
+# API, where it holds no AWS credentials.
 _POD_IDENTITY = ("AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE")
 _AWS_EARLIER_SOURCES = (
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
     "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE",
-    "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_CREDENTIAL_FILE", "BOTO_CONFIG",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
 )
 
 
@@ -108,7 +110,7 @@ def _assert_safe_aws(role: str) -> None:
     earlier = _present(_AWS_EARLIER_SOURCES)
     if earlier:
         raise RuntimeError(
-            f"AWS credential variables that would take the place of this pod's Pod "
+            f"AWS credential variables that could take the place of this pod's Pod "
             f"Identity role: {', '.join(earlier)}; refusing to start."
         )
     missing = [k for k in _POD_IDENTITY if not os.environ.get(k)]
@@ -131,7 +133,8 @@ def _assert_safe_aws(role: str) -> None:
 
 
 def _present(names: tuple[str, ...]) -> list[str]:
-    return [k for k in names if os.environ.get(k)]
+    # Presence, not truthiness: botocore acts on some of these even when empty.
+    return [k for k in names if k in os.environ]
 
 
 def _refuse_extra(role: str, allowed: set[str]) -> None:
