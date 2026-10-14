@@ -34,8 +34,36 @@ kubectl create namespace $NAMESPACE
 kubectl config set-context --current --namespace=$NAMESPACE
 ```
 
-**Step 3: Run your first sandboxed pod.** [`hello-sandbox.yaml`](hello-sandbox.yaml)
-is an ordinary pod with one extra line. There is no node selector, toleration or sidecar;
+**Step 3: Start by creating a regular (non-sandboxed) pod.** [`hello-default.yaml`](hello-default.yaml)
+is an regular pod without node selector, toleration or sidecar.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hello-sandbox
+spec:
+  containers:
+    - name: hello
+      image: public.ecr.aws/docker/library/alpine:3.20
+      command: ["sh", "-c"]
+      args:
+        - |
+          echo "kernel:  $(uname -r)"
+          echo "disks:   $(ls /sys/block | tr '\n' ' ')"
+          sleep infinity
+      resources:
+        requests: { cpu: "1", memory: 768Mi }
+        limits:   { cpu: "1", memory: 768Mi }
+```
+
+```bash
+kubectl apply -f hello-default.yaml
+kubectl wait pod/hello-default --for=condition=Ready --timeout=300s
+```
+
+**Step 4: Run your first sandboxed pod.** [`hello-sandbox.yaml`](hello-sandbox.yaml)
+is the same regular pod from the last step, with one extra line. There is no node selector, toleration or sidecar;
 the RuntimeClass carries the scheduling constraints, and Auto Mode brings up a
 sandbox-capable node if none is available.
 
@@ -60,19 +88,43 @@ spec:
         limits:   { cpu: "1", memory: 768Mi }
 ```
 
-**Step 4: Prove it landed in a VM.** The pod's own logs are the evidence:
-
 ```bash
 kubectl apply -f hello-sandbox.yaml
 kubectl wait pod/hello-sandbox --for=condition=Ready --timeout=300s
+```
+
+**Step 5: Prove it landed in a VM (sandbox).** The pod's own logs are the evidence:
+
+```bash
 kubectl logs hello-sandbox
 kubectl exec hello-sandbox -- uname -r
+kubectl exec hello-sandbox -- cat /sys/class/dmi/id/product_name
+kubectl exec hello-sandbox -- grep -i vmmcall /proc/cpuinfo
 ```
 
 ```text
 kernel:  6.18.48
 disks:   dm-0 vda vdb vdc
 6.18.48
+m8a.enclave
+flags           : fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid extd_apicid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm cr8_legacy abm sse4a misalignsse 3dnowprefetch topoext ssbd ibrs ibpb stibp ibrs_enhanced vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid avx512f avx512dq adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx_vnni avx512_bf16 clzero xsaveerptr wbnoinvd arat avx512vbmi pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid movdiri movdir64b fsrm avx512_vp2intersect flush_l1d
+```
+
+Compare the outputs with the `default` pod.
+
+```bash
+kubectl logs hello-default
+kubectl exec hello-default -- uname -r
+kubectl exec hello-default -- cat /sys/class/dmi/id/product_name
+kubectl exec hello-default -- grep -i vmmcall /proc/cpuinfo
+```
+
+```text
+kernel:  6.18.48
+disks:   dm-0 vda vdb vdc
+6.18.48
+c6i.large                           # Standard instance type
+command terminated with exit code 1 # Doesn't have vmmcall, share the host kernel via namespaces, so they cannot invoke hypervisor calls
 ```
 
 Your kernel version may differ. The disk list is what shows you are in a VM: the
