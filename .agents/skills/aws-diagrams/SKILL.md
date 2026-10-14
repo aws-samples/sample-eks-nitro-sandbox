@@ -18,7 +18,7 @@ or as draw.io desktop. Nothing else: the scripts here use only Python's standard
 | `references/house-style.md` | Every number, colour and style string, and which figure it came from. Read it before drawing. |
 | `references/export.md` | Export engines and commands, the border each figure uses, the control render. |
 | `assets/figure-template.drawio` | A small figure with one of each house element, to copy cells from. |
-| `scripts/drawio_shapes.py` | Search draw.io's own AWS icon library for exact shape names and styles. |
+| `scripts/drawio_shapes.py` | Search draw.io's own AWS icon library for exact shape names and styles (`fetch` gets the library once). |
 | `scripts/measure_text.py` | Width in px of a label at a font size, to size boxes and spacing. |
 | `scripts/check_drawio.py` | Checks a `.drawio`: overlaps, clipped labels, edges through icons, wording, palette. |
 | `scripts/export_png.py` | Exports the PNG with the repository's settings. |
