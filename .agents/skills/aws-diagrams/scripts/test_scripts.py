@@ -203,8 +203,10 @@ class CheckDrawio(unittest.TestCase):
                     "the &lt;span&gt;strong&lt;/span&gt;est isolation"):
             with self.subTest(bad=bad):
                 self.assertIn("wording", errors(broken("&gt;starts a task&lt;", f"&gt;{bad}&lt;")))
-        # a line break or a block still separates two words
-        for good in ("strong&lt;br&gt;est", "network&lt;br&gt;policy"):
+        # a line break or a block still separates two words, including draw.io's
+        # "Preformatted" and "Blockquote" text formats
+        for good in ("strong&lt;br&gt;est", "network&lt;br&gt;policy",
+                     "strong&lt;/pre&gt;&lt;pre&gt;est", "fen&lt;/blockquote&gt;&lt;blockquote&gt;ce"):
             with self.subTest(good=good):
                 self.assertNotIn("wording", errors(broken("&gt;starts a task&lt;", f"&gt;{good}&lt;")))
 

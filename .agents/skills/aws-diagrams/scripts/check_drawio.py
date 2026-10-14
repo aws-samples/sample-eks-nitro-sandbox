@@ -352,7 +352,8 @@ class Figure:
         if html_mode:
             # A line break or a block starts a new word; an inline tag (b, i, span,
             # font) renders inside one, so "fen<b>ce</b>" must read as "fence".
-            text = re.sub(r"<\s*/?\s*(br|div|p|li|tr|td|th|hr|h[1-6])\b[^>]*>", " ", text, flags=re.I)
+            text = re.sub(r"<\s*/?\s*(br|div|p|pre|blockquote|li|tr|td|th|hr|h[1-6])\b[^>]*>", " ",
+                          text, flags=re.I)
             text = html.unescape(re.sub(r"<[^>]+>", "", text))
         for pat, msg in WORD_RULES:
             if re.search(pat, text, re.I):
