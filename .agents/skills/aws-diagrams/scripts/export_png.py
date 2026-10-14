@@ -89,6 +89,9 @@ def main(argv=None):
     out = os.path.abspath(a.out or os.path.splitext(src)[0] + ".png")
     if not os.path.isfile(src):
         raise SystemExit(f"no such figure: {src}")
+    if not src.lower().endswith(".drawio"):
+        # anything else could default --out to the figure itself and replace it
+        raise SystemExit(f"the figure must be a .drawio file, not {src}")
     if not out.lower().endswith(".png"):
         raise SystemExit(f"--out must be a .png path, not {out}")
     if not os.path.isdir(os.path.dirname(out)):

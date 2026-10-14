@@ -18,6 +18,7 @@ import sys
 import tempfile
 import unittest
 import zlib
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.dont_write_bytecode = True  # leave no __pycache__ in the skill folder
@@ -25,6 +26,7 @@ sys.path.insert(0, HERE)
 import check_drawio  # noqa: E402
 import compare_png  # noqa: E402
 import drawio_shapes  # noqa: E402
+import export_png  # noqa: E402
 from measure_text import text_width  # noqa: E402
 
 TEMPLATE = os.path.join(HERE, "..", "assets", "figure-template.drawio")
@@ -327,6 +329,56 @@ class ComparePng(unittest.TestCase):
 
     def test_size_difference(self):
         self.assertEqual(self._cmp(_png(1, 1, 2, [1, 2, 3]), _png(2, 1, 2, [1, 2, 3, 1, 2, 3])), 1)
+
+
+class ExportPng(unittest.TestCase):
+    """The refusals export_png.main makes before any engine runs. Both engines are replaced
+    by a stand-in that records the call and writes a PNG to the output, so nothing renders."""
+
+    def _export(self, folder, figure, *args):
+        calls = []
+
+        def engine(*a):  # run_container(runtime, src, out, border) / run_desktop(src, out, border)
+            src, out = a[-3], a[-2]
+            calls.append((src, out))
+            with open(out, "wb") as f:
+                f.write(_png(1, 1, 2, [0, 0, 0]))
+
+        path = os.path.join(folder, figure)
+        with mock.patch.object(export_png, "run_container", engine), \
+                mock.patch.object(export_png, "run_desktop", engine), \
+                contextlib.redirect_stdout(io.StringIO()):
+            try:
+                rc = export_png.main([path, *args])
+            except SystemExit as exc:
+                return calls, exc
+        return calls, rc
+
+    def test_a_drawio_figure_reaches_the_engine(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "figure.drawio"), "w").close()
+            calls, result = self._export(d, "figure.drawio", "--border", "0")
+            self.assertEqual(result, 0)
+            self.assertEqual(calls, [(os.path.join(d, "figure.drawio"), os.path.join(d, "figure.png"))])
+
+    def test_a_figure_that_is_not_a_drawio_is_refused(self):
+        # figure.png would default --out to itself: the export would replace its own input
+        with tempfile.TemporaryDirectory() as d:
+            png = _png(1, 1, 2, [255, 255, 255])
+            with open(os.path.join(d, "figure.png"), "wb") as f:
+                f.write(png)
+            calls, result = self._export(d, "figure.png")
+            self.assertIsInstance(result, SystemExit)
+            self.assertEqual(calls, [])
+            with open(os.path.join(d, "figure.png"), "rb") as f:
+                self.assertEqual(f.read(), png)
+
+    def test_out_on_the_drawio_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "figure.drawio"), "w").close()
+            calls, result = self._export(d, "figure.drawio", "--out", os.path.join(d, "figure.drawio"))
+            self.assertIsInstance(result, SystemExit)
+            self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":
