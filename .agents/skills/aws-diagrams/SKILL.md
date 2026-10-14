@@ -151,11 +151,14 @@ The prime rule: **change only what you were asked to change.** Styles, waypoints
 offsets, ids, the coordinate scheme and the export border stay exactly as they were. If
 something else looks wrong, mention it instead of fixing it in the same change.
 
-1. **Control render first.** Export the unchanged `.drawio` with the figure's own border (the
-   table in `references/export.md`) and compare it with the committed PNG:
+1. **Control render first.** Export the unchanged `.drawio` with the figure's own border and
+   compare it with the committed PNG. Set `BORDER` from the table in `references/export.md`:
+   0 for the three Getting started figures, 20 for `claude-managed-agents`, 15 for
+   `claude-managed-agents-network-policy`.
 
    ```bash
-   python3 .agents/skills/aws-diagrams/scripts/export_png.py path/to/images/figure.drawio --out /tmp/control.png --border 0
+   BORDER=0   # this figure's own border, from the table in references/export.md
+   python3 .agents/skills/aws-diagrams/scripts/export_png.py path/to/images/figure.drawio --out /tmp/control.png --border "$BORDER"
    python3 .agents/skills/aws-diagrams/scripts/compare_png.py path/to/images/figure.png /tmp/control.png
    ```
 
