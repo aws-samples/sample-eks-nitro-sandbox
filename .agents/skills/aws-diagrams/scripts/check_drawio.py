@@ -51,8 +51,10 @@ WORD_RULES = [
     (r"\bip-\d{1,3}-\d{1,3}-\d{1,3}-\d{1,3}\b", "looks like a real node name"),
     (r"[\w.+-]+@[\w-]+\.[\w.]+|\b[\w-]+\.(corp|internal)\.[\w.-]+|\b[\w-]+\.(internal|local)\b",
      "looks like an email address or an internal hostname"),
-    (r"(\b(minimum|at least|no less than)\b|\bmin\b\.?)[^.]{0,40}\b(v?cpus?|memory|mib|gib|mi|gi)\b"
-     r"|\b\d+(\.\d+)?\s*(v?cpus?|m|mi|gi|mib|gib)\b[^.]{0,20}\bmin(imum)?\b",
+    # A "min" right after a number is minutes ("idle after 5 min"), not "minimum": the bare
+    # "min" may not follow a number, and no number may sit between a quantity and its "min".
+    (r"(\b(minimum|at least|no less than)\b|(?<!\d)(?<!\d\s)\bmin\b\.?)[^.]{0,40}\b(v?cpus?|memory|mib|gib|mi|gi)\b"
+     r"|\b\d+(\.\d+)?\s*(v?cpus?|m|mi|gi|mib|gib)\b[^.\d]{0,20}\bmin(imum)?\b",
      "never state a minimum CPU or memory request on a figure"),
     (r"\b(warm|claimed|pooled|pre-booted)\s+(micro)?vms?\b"
      r"|\bclaim(s|ed|ing)?\s+(a|an|the|one|each)?\s*(warm\s+)?(micro)?vms?\b",
