@@ -20,6 +20,7 @@ import unittest
 import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.dont_write_bytecode = True  # leave no __pycache__ in the skill folder
 sys.path.insert(0, HERE)
 import check_drawio  # noqa: E402
 import compare_png  # noqa: E402

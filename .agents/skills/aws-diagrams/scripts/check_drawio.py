@@ -27,6 +27,7 @@ import sys
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 
+sys.dont_write_bytecode = True  # leave no __pycache__ in the skill folder
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from measure_text import text_width  # noqa: E402
 

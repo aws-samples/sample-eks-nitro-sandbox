@@ -27,6 +27,8 @@ import os
 import re
 import sys
 
+sys.dont_write_bytecode = True  # `fetch` imports export_png; leave no __pycache__ behind
+
 CANDIDATES = [
     "/opt/drawio/resources/app.asar",
     "/usr/lib/drawio/resources/app.asar",
