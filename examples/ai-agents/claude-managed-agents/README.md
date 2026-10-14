@@ -695,9 +695,11 @@ The walkthrough's [clean up](#clean-up) removes the Kubernetes objects, includin
 mode's network policy, which has the same name. Then remove the associations and the role:
 
 ```bash
-for id in $(aws eks list-pod-identity-associations --cluster-name $CLUSTER_NAME --region $AWS_REGION \
-    --namespace $NAMESPACE --query "associations[?starts_with(serviceAccount, 'claude-')].associationId" --output text); do
-  aws eks delete-pod-identity-association --cluster-name $CLUSTER_NAME --region $AWS_REGION --association-id $id
+for sa in claude-poller claude-autoscaler claude-sandbox-worker; do
+  for id in $(aws eks list-pod-identity-associations --cluster-name $CLUSTER_NAME --region $AWS_REGION \
+      --namespace $NAMESPACE --service-account $sa --query 'associations[].associationId' --output text); do
+    aws eks delete-pod-identity-association --cluster-name $CLUSTER_NAME --region $AWS_REGION --association-id $id
+  done
 done
 aws iam delete-role-policy --role-name claude-platform-worker --policy-name web-identity-token
 aws iam detach-role-policy --role-name claude-platform-worker \
