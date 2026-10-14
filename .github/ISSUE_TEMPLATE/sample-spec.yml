@@ -1,0 +1,91 @@
+name: Sample spec
+description: Propose a new sample. Implementation starts once this spec is agreed.
+title: "Add sample: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A new sample starts here. Write its spec in this issue; the pull request that implements it says `Closes #<this issue>`.
+
+        Issue #2 is a complete example, and the `sample-spec` skill in `.agents/skills/` explains each section. Do not include account IDs, keys, cluster names or other values from your own account.
+  - type: input
+    id: folder
+    attributes:
+      label: Sample folder
+      description: A named folder (not numbered) in one of the sections of docs/ROADMAP.md.
+      placeholder: examples/isolation-and-security/host-escape/
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What runs, which part runs in a Nitro sandbox (name the runtime class), and which part stays an ordinary pod. Link the upstream project's documentation and say where the sample sits on the roadmap.
+    validations:
+      required: true
+  - type: textarea
+    id: shows
+    attributes:
+      label: What the sample shows
+      description: Three to five bullets, each led by a bold claim the page will show with output from a real run.
+      placeholder: |
+        - **Claim.** How the page shows it.
+    validations:
+      required: true
+  - type: textarea
+    id: layout
+    attributes:
+      label: Proposed layout
+      description: The folder tree, following docs/ROADMAP.md, plus the mkdocs.yml nav section the page goes in.
+      render: text
+      placeholder: |
+        examples/<section>/<sample>/
+        ├── README.md          # the website page
+        ├── deploy/            # manifests the sample applies
+        ├── scripts/           # operator-side scripts
+        └── images/            # diagrams (.drawio and .png)
+    validations:
+      required: true
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions
+      description: Every pinned component, with a link, its pin and the latest release on the date you checked. Call out major-version jumps.
+      value: |
+        | Component | Pin | Latest (YYYY-MM-DD) |
+        |---|---|---|
+        |  |  |  |
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Keep the usual criteria below and add the sample's own.
+      value: |
+        - [ ] Sample folder at `examples/<section>/<sample>/`, laid out as above.
+        - [ ] Pinned versions stated in the README.
+        - [ ] Runs end to end on a cluster that has finished Getting started, from a fresh run.
+        - [ ] The README shows the sandbox pod running in a sandbox (a guest kernel build that differs from the node's), plus the sample's own claims, each with output from the run.
+        - [ ] No Ingress, LoadBalancer or NodePort. Sandbox egress is restricted by network policy, and the page shows the complete policy.
+        - [ ] No account-specific values (account ID, keys, cluster names, hostnames) in tracked files. Local values come from a gitignored env file.
+        - [ ] A clean-up section removes everything the sample created.
+        - [ ] Added to the `mkdocs.yml` nav, and `mkdocs build --strict` passes.
+        - [ ] `docs/ROADMAP.md` lists the sample as available.
+    validations:
+      required: true
+  - type: textarea
+    id: cost
+    attributes:
+      label: Cost note
+      description: What a run costs beyond the cluster (model tokens, API credit, large instances), or "No cost beyond the cluster".
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before you submit
+      options:
+        - label: I checked docs/ROADMAP.md and the open issues for this sample.
+          required: true
+        - label: This spec contains no account IDs, keys, cluster names or other values from my account.
+          required: true
