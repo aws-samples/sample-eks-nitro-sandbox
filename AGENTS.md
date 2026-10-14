@@ -43,13 +43,16 @@ Issue #2 is the model spec.
 - **No Ingress, LoadBalancer or NodePort.** Reach a service with ClusterIP and
   `kubectl port-forward`. Why: a sample must never put a public endpoint on a reader's
   account.
-- **Restrict sandbox egress with a network policy, and show the whole policy on the
-  page.** Why: the policy is what limits where code in the sandbox can connect, so a
-  reader needs to see every rule.
-- **No account values in tracked files**: no account IDs, keys, tokens, cluster names,
-  hostnames, user names or internal URLs. Use placeholders such as `<ACCOUNT_ID>` and a
-  gitignored local env file. Why: the repository is public, so anything committed is
-  published.
+- **Restrict the egress of every sandbox that has a network with a network policy, and
+  show the whole policy on the page.** Why: the policy is what limits where code in the
+  sandbox can connect, so a reader needs to see every rule. A sandbox booted with
+  `sandbox.amazonaws.com/network-isolated: "true"` has no network to restrict; show that
+  instead.
+- **No values from your own account or environment in tracked files**: no account IDs,
+  keys, tokens, names of your clusters or hosts, user names or internal URLs. Use
+  placeholders such as `<ACCOUNT_ID>` and a gitignored local env file; the shared defaults
+  on the home page (`sandbox-demo`, `us-west-2`, `nitro-sandboxes-demo`) are fine. Why:
+  the repository is public, so anything committed is published.
 - **Never put a secret on a command line.** Read it from a file or standard input, as the
   coding agent and Claude Managed Agents samples do. Why: a command line is visible to
   other processes and lands in shell history.

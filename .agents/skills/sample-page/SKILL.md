@@ -66,8 +66,8 @@ Follow this order. `references/page-skeleton.md` has it as a starting file.
    overview figure.
 4. **Versions** table when anything is pinned, and a **files** table linking each file.
 5. **Steps.** `**Step N: <Action>.**` leads each one, as on the existing pages.
-6. **How the network policy works**: the complete policy YAML, a table that explains each
-   part, where it is enforced, and its limits.
+6. **How the network policy works**, when the sandbox has a network: the complete policy
+   YAML, a table that explains each part, where it is enforced, and its limits.
 7. **Optional variants** as `## Optional: <variant>` sections.
 8. **Good to know**: the limits that change what a reader can rely on, kept visible.
 9. **Clean up.**
@@ -98,7 +98,8 @@ Each step is one small unit, in this order:
 
 ## The network policy section
 
-Every sample whose sandbox has a network ships an egress policy and explains it:
+Every sample whose sandbox has a network ships an egress policy and explains it in a "How
+the network policy works" section:
 
 - the complete policy YAML, without its header comment;
 - a table with one row per part (`podSelector`, `policyTypes`, each rule) and what it does;
@@ -110,6 +111,10 @@ Every sample whose sandbox has a network ships an egress policy and explains it:
 - `networkPolicyManagement: Unmanaged` on any `SandboxTemplate`, and why.
 
 Show it working: one allowed connection that connects and one refused that does not.
+
+A sandbox booted with `sandbox.amazonaws.com/network-isolated: "true"` has no network to
+restrict, so it needs no policy. Show that instead: only `lo` has an address, there is no
+route, and a lookup fails, as the hello sandbox page does.
 
 ## Clean up
 
@@ -150,7 +155,7 @@ Show it working: one allowed connection that connects and one refused that does 
 - **Run it live, fresh, end to end**, on a cluster that has finished Getting started, in a
   new namespace or project. A resumed run cannot prove what a fresh one does.
 - **Take every output block from that run.** Do not edit output beyond trimming it, and
-  replace account values with placeholders.
+  replace values from your own account or environment with placeholders.
 - **Check each claim on the live cluster**: read the running pod's runtime class, kernel,
   environment variable names and connections, not only the manifest.
 - **Keep local values in a gitignored env file** (`.env`, from `.env.example`). Read
@@ -166,12 +171,16 @@ Show it working: one allowed connection that connects and one refused that does 
 - [ ] The page opens with the prerequisites link and the `git clone` and `cd` block.
 - [ ] Each stage pairs an explanation, the real config verbatim and output from a fresh run.
 - [ ] Each figure has a `.drawio` source, a `.png`, a caption and full alt text.
-- [ ] "How the network policy works" shows the complete policy; the page shows one allowed
-      and one refused connection.
+- [ ] For a sandbox with a network: "How the network policy works" shows the complete
+      policy, and the page shows one allowed and one refused connection. For a
+      network-isolated sandbox: the page shows it has only loopback.
 - [ ] Every `SandboxTemplate` with its own policy sets `networkPolicyManagement: Unmanaged`.
 - [ ] No Ingress, LoadBalancer or NodePort anywhere in the folder.
-- [ ] No account IDs, keys, cluster names, hostnames, user names or internal URLs in any
-      tracked file, including output blocks and diagrams.
+- [ ] No values from your own account or environment (account IDs, keys, tokens, names of
+      your clusters or hosts, user names, internal URLs) in any tracked file, including
+      output blocks and diagrams. The shared defaults on the home page are fine.
+- [ ] The page proves the pod ran in a sandbox: its own kernel build, boot and virtio
+      disks, compared with an ordinary pod on the same node.
 - [ ] The clean up removes everything the sample created.
 - [ ] `nav` entry added, roadmap and root README updated.
 - [ ] `mkdocs build --strict` passes, and `./scripts/check-agent-files.sh` passes.

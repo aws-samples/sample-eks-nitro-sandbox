@@ -24,11 +24,11 @@ instance's CPU and memory, boots a lightweight VM inside it and starts the conta
 that VM. The pod's containers share a kernel with each other, and that kernel belongs to the
 pod alone. (`examples/README.md`, "How it works", and Figure 1.)
 
-| Runs in the guest VM | Stays on the node |
+| Runs in the guest VM | Stays outside the guest |
 |---|---|
-| The pod's containers and their own kernel (`examples/README.md`) | The kubelet and containerd, which still see an ordinary pod (`examples/README.md`, Figure 1) |
-| The endpoints that serve instance metadata and Pod Identity credentials, when the pod has a network (`examples/getting-started/hello-sandbox/README.md`) | Network policy enforcement: eBPF programs on the pod's host-side interface (`examples/ai-agents/claude-managed-agents/README.md`, "Where it is enforced") |
-| The internal control channel that `exec`, `cp` and `logs` use, which works even with no network (`examples/README.md`) | Scheduling, VPC addressing and the CSI drivers that mount volumes (`examples/README.md`) |
+| The pod's containers and their own kernel (`examples/README.md`) | The kubelet and containerd on the node, which still see an ordinary pod (`examples/README.md`, Figure 1) |
+| The endpoints that serve instance metadata and Pod Identity credentials, when the pod has a network (`examples/getting-started/hello-sandbox/README.md`) | Network policy enforcement: eBPF programs on the pod's host-side interface on the node (`examples/ai-agents/claude-managed-agents/README.md`, "Where it is enforced") |
+| The internal control channel that `exec`, `cp` and `logs` use, which works even with no network (`examples/README.md`) | Scheduling, the pod's VPC address and the CSI drivers that mount its volumes, which work as they do for any pod (`examples/README.md`) |
 
 ## Two runtime classes
 
@@ -73,8 +73,9 @@ VM's internal control channel. (`examples/README.md`;
 
 ## How a sample proves it ran in a sandbox
 
-Show at least one of these with output from the run, and compare it with an ordinary pod on
-the same node where the page makes the comparison:
+Show these three together, with output from the run, and compare them with an ordinary pod
+on the same node, as the hello sandbox page does. Together they show the pod's containers
+ran in a VM of their own:
 
 - **Its own kernel.** `uname -rv` in the sandbox shows the guest's kernel build; an ordinary
   pod on the same node shows the node's. The version string can match; the build and the
@@ -84,7 +85,11 @@ the same node where the page makes the comparison:
   (`examples/getting-started/hello-sandbox/README.md`.)
 - **Virtio disks.** `ls /sys/block` shows `vda`, `vdb` and so on, where an ordinary pod sees
   the instance's `nvme` devices. (`examples/getting-started/hello-sandbox/README.md`.)
-- **The runtime class.** `kubectl get pod <pod> -o jsonpath='{.spec.runtimeClassName}'`.
+
+These support a claim but do not prove the pod ran in a sandbox on their own:
+
+- **The runtime class**, `kubectl get pod <pod> -o jsonpath='{.spec.runtimeClassName}'`,
+  shows what was asked for, not what ran.
   (`examples/ai-agents/claude-managed-agents/README.md`, step 7.)
 - **No network, when isolated.** Only `lo` has an address, there is no route, and a lookup
   fails with `bad address`. (`examples/getting-started/hello-sandbox/README.md`.)
@@ -106,6 +111,8 @@ the same node where the page makes the comparison:
   (`examples/getting-started/coding-agent/README.md`, step 5.)
 - **Allow DNS explicitly.** The samples allow egress to the CoreDNS ClusterIP on UDP and TCP
   53, filled in at apply time from `kubectl get svc -n kube-system kube-dns`.
+  (`examples/getting-started/coding-agent/egress-policy.yaml` and
+  `examples/ai-agents/claude-managed-agents/deploy/egress-policy.yaml`, each page's step 5.)
 - **Wait for the `PolicyEndpoint`.** It shows the controller has handed the policy to the
   nodes; start the workload after it appears. (Coding agent, step 5; Claude Managed Agents,
   step 5.)
@@ -144,9 +151,11 @@ the same node where the page makes the comparison:
 
 ## Sizing and start-up
 
-- Set requests equal to limits, as every sample does. The VM is sized to the pod's limits,
-  so the hypervisor bounds the CPU and memory the pod can use: with 2 CPU and 4 GiB,
-  `nproc` reports 2 and memory is about 4 GiB inside.
+- Set requests equal to limits, as every sandboxed pod on this site does
+  (`hello-sandbox.yaml`, `hello-network-isolated.yaml`, `fix-issue.yaml`, `warm-pool.yaml`,
+  `sandbox-template.yaml`). The
+  VM is sized to the pod's limits, so the hypervisor bounds the CPU and memory the pod can
+  use: with 2 CPU and 4 GiB, `nproc` reports 2 and memory is about 4 GiB inside.
   (`examples/getting-started/coding-agent/README.md`.)
 - Each sandbox reserves its full memory request up front, so bin-packing is by reservation,
   not usage: size requests honestly and expect fewer, larger pods per node than with
@@ -162,9 +171,10 @@ the same node where the page makes the comparison:
 
 [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) is a Kubernetes SIG
 project. A Nitro sandbox is a RuntimeClass on a pod template, so it works with agent-sandbox
-unchanged; put `runtimeClassName` in the template's `podTemplate.spec`. The samples pin
-v1.0.6 and install it with `sandbox-with-extensions.yaml`.
-(`examples/getting-started/warm-pool/README.md`.)
+unchanged; put `runtimeClassName` in the template's `podTemplate.spec`.
+(`examples/getting-started/warm-pool/README.md`.) The warm pool and Claude Managed Agents
+samples both pin v1.0.6 and install it with `sandbox-with-extensions.yaml` (each page's
+step 1).
 
 | Resource | API group | What it is | Source |
 |---|---|---|---|
@@ -174,7 +184,9 @@ v1.0.6 and install it with `sandbox-with-extensions.yaml`.
 | `SandboxClaim` | `extensions.agents.x-k8s.io/v1beta1` | Created per session or task with a `warmPoolRef`; adopts a warm pod. `status.sandbox.name` names it. Setting `env` or `volumeClaimTemplates` on a claim forces a cold start. | Warm pool page; upstream API reference |
 
 For an agent workspace with a persistent home, use a `Sandbox` with `volumeClaimTemplates`
-and suspend it with `operatingMode`, not a bare pod with a hand-made PVC.
+and suspend it with `operatingMode`, not a bare pod with a hand-made PVC: that is the shape
+the roadmap gives the workspace samples (`docs/ROADMAP.md`, kiro-cli-workspace and
+pause-resume), and the upstream `Sandbox` API provides both fields.
 
 ## Claims to avoid
 

@@ -39,8 +39,8 @@ ordinary pod. Link the upstream project's own documentation. Say where the sampl
 the roadmap, or that it is new.
 
 **What the sample shows.** Three to five bullets, each led by a short bold claim. Every
-claim must be something the page will show with real output from a run: a guest kernel
-that differs from the node's, a key that is absent, a connection that is refused. Leave out
+claim must be something the page will show with real output from a run: the pod's own
+kernel, boot and disks, a key that is absent, a connection that is refused. Leave out
 claims the sample cannot demonstrate. Mark optional variants as optional.
 
 **Proposed layout.** A text tree under `examples/<section>/<sample>/`, following
@@ -49,7 +49,9 @@ claims the sample cannot demonstrate. Mark optional variants as optional.
 Comment each entry. Then say which `mkdocs.yml` nav section the page goes in and that the
 roadmap is updated.
 
-**Versions.** A table of every pinned component, with a link to each:
+**Versions.** When the sample pins anything beyond the cluster (a controller, an SDK, a
+client library, a chart), a table of every pinned component with a link to each; otherwise
+say "Nothing pinned beyond the images in the manifests":
 
 | Component | Pin | Latest (YYYY-MM-DD) |
 |---|---|---|
@@ -62,9 +64,9 @@ only version strings).
 - [ ] Sample folder at `examples/<section>/<sample>/`, laid out as above.
 - [ ] Pinned versions stated in the README.
 - [ ] Runs end to end on a cluster that has finished Getting started, from a fresh run.
-- [ ] The README shows the sandbox pod running in a sandbox (a guest kernel build that differs from the node's), plus the sample's own claims, each with output from the run.
-- [ ] No Ingress, LoadBalancer or NodePort. Sandbox egress is restricted by network policy, and the page shows the complete policy.
-- [ ] No account-specific values (account ID, keys, cluster names, hostnames) in tracked files. Local values come from a gitignored env file.
+- [ ] The README shows the sandbox pod running in a sandbox (its own kernel build, boot and virtio disks, compared with an ordinary pod on the same node), plus the sample's own claims, each with output from the run.
+- [ ] No Ingress, LoadBalancer or NodePort. Sandbox egress is restricted by network policy and the page shows the complete policy, or the sandbox boots with no network and the page shows that.
+- [ ] No values from your own account or environment (account ID, keys, tokens, names of your clusters or hosts, user names, internal URLs) in tracked files. Local values come from a gitignored env file.
 - [ ] A clean-up section removes everything the sample created.
 - [ ] Added to the `mkdocs.yml` nav, and `mkdocs build --strict` passes.
 - [ ] `docs/ROADMAP.md` lists the sample as available.
@@ -74,7 +76,8 @@ credit, a NAT gateway, a large instance. Say "No cost beyond the cluster" when t
 
 ## What a spec leaves out
 
-- Account values of any kind, including in example output. Use placeholders.
+- Values from your own account or environment, including in example output. Use
+  placeholders.
 - Implementation detail that belongs in the pull request: file contents, code.
 - Product details that the site's pages and the public AWS documentation do not state.
   The `nitro-sandbox-pods` skill lists what is safe to rely on.

@@ -96,7 +96,7 @@ uptime, virtio disks, credential variable names without values.>
 ## Clean up
 
 The commands use the variables from the walkthrough. In a new shell, set them again first,
-with the values you used:
+with the values you used (these are the shared defaults from the home page):
 
 ```bash
 export CLUSTER_NAME=sandbox-demo AWS_REGION=us-west-2 NAMESPACE=nitro-sandboxes-demo
