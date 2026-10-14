@@ -291,8 +291,11 @@ class ComparePng(unittest.TestCase):
                 f.write(data)
                 paths.append(f.name)
         try:
-            with contextlib.redirect_stdout(io.StringIO()):
-                return compare_png.main(paths)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = compare_png.main(paths)
+            self.out = buf.getvalue()
+            return rc
         finally:
             for p in paths:
                 os.unlink(p)
@@ -301,6 +304,15 @@ class ComparePng(unittest.TestCase):
         rgba = _png(2, 1, 6, [0, 0, 0, 0, 200, 0, 0, 255])
         rgb = _png(2, 1, 2, [255, 255, 255, 200, 0, 0])
         self.assertEqual(self._cmp(rgba, rgb), 0)
+
+    def test_byte_identical_means_the_same_bytes(self):
+        png = _png(2, 1, 2, [255, 255, 255, 200, 0, 0])
+        self.assertEqual(self._cmp(png, png), 0)
+        self.assertIn("byte-identical", self.out)
+        # same pixels, one extra byte after IEND: identical on white, never "byte-identical"
+        self.assertEqual(self._cmp(png, png + b"\x00"), 0)
+        self.assertNotIn("byte-identical", self.out)
+        self.assertIn("identical on white", self.out)
 
     def test_colour_change_with_same_alpha_is_caught(self):
         # same alpha everywhere: an alpha-only comparison would call these equal

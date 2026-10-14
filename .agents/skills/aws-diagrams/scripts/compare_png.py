@@ -101,13 +101,14 @@ def main(argv=None):
         return 2
     a, b = argv
     try:
-        digests = []
+        blobs = []
         for p in (a, b):
             with open(p, "rb") as f:
-                digests.append(hashlib.sha256(f.read()).hexdigest()[:16])
-        ha, hb = digests
-        if ha == hb:
-            print(f"byte-identical ({ha})")
+                blobs.append(f.read())
+        # the short digests are only for the reader; identity is decided on the whole bytes
+        ha, hb = (hashlib.sha256(x).hexdigest()[:16] for x in blobs)
+        if blobs[0] == blobs[1]:
+            print(f"byte-identical (sha256 {ha}...)")
             return 0
         (sa, ra), (sb, rb) = _decode(a), _decode(b)
     except (OSError, ValueError, zlib.error) as exc:
