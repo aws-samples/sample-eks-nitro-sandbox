@@ -312,6 +312,16 @@ mkdir -p "$d/.agents/skills/alpha/inner"
 cp "$d/.agents/skills/alpha/SKILL.md" "$d/.agents/skills/alpha/inner/SKILL.md"
 expect_findings "reject: a skill nested inside another" "$d" "alpha/inner/SKILL.md is nested"
 
+d=$(new_repo reject-broken-link-in-skill)
+ln -s missing.md "$d/.agents/skills/beta-two/references/gone.md"
+expect_findings "reject: a broken link inside a skill" "$d" \
+  ".agents/skills/beta-two/references/gone.md is a symbolic link inside a skill"
+
+d=$(new_repo reject-working-link-in-skill)
+ln -s notes.md "$d/.agents/skills/beta-two/references/alias.md"
+expect_findings "reject: a working link inside a skill" "$d" \
+  ".agents/skills/beta-two/references/alias.md is a symbolic link inside a skill"
+
 d=$(new_repo reject-linked-skill-folder)
 mkdir -p "$d/vendor"
 mv "$d/.agents/skills/beta-two" "$d/vendor/beta-two"

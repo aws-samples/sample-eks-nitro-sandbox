@@ -17,6 +17,7 @@
 #     top of the repo) is a relative symbolic link that resolves to .agents/skills.
 #   - No SKILL.md that git tracks or would commit (untracked and not ignored) exists
 #     outside .agents/skills/<name>/, so no skill has a second copy in the repository.
+#   - Nothing inside a skill folder is a symbolic link, working or broken.
 #   - Each skill is one folder below .agents/skills with a valid skill name (lowercase
 #     letters, digits and single hyphens, at most 64 characters), and its SKILL.md starts
 #     with frontmatter whose name equals the folder name and whose description is not
@@ -171,6 +172,21 @@ while IFS= read -r -d '' f; do
       ;;
     *)
       finding "$f is a skill outside $skills_rel; keep the one copy in $skills_rel and reach it through a link"
+      ;;
+  esac
+done <"$listing_file"
+
+# --- no link inside a skill folder ------------------------------------------------------
+# A skill holds real files. git lists a link as itself, so a broken one shows up here too;
+# the tool folders already reach the skills through one link each, and a link inside a skill
+# becomes a small text file in a Windows checkout without symlinks.
+
+while IFS= read -r -d '' f; do
+  case "$f" in
+    "$skills_rel"/*/*)
+      if [ -L "$root/$f" ]; then
+        finding "$f is a symbolic link inside a skill; put the real file there instead"
+      fi
       ;;
   esac
 done <"$listing_file"
