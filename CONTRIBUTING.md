@@ -40,6 +40,13 @@ GitHub provides additional document on [forking a repository](https://help.githu
 [creating a pull request](https://help.github.com/articles/creating-a-pull-request/).
 
 
+## Adding a sample
+A new sample starts as a spec in a GitHub issue: open one with the **Sample spec** issue form. Implementation starts
+once the spec is agreed, and the pull request that implements it says `Closes #<issue>`. [AGENTS.md](AGENTS.md) lists
+the rules every sample follows, for you and for any coding agent you use, and the agent skills in `.agents/skills/`
+walk through writing the spec, the sample and its page.
+
+
 ## Finding contributions to work on
 Looking at the existing issues is a great way to find something to contribute on. As our projects, by default, use the default GitHub issue labels (enhancement/bug/duplicate/help wanted/invalid/question/wontfix), looking at any 'help wanted' issues is a great place to start.
 
