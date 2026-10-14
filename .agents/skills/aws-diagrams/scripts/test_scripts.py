@@ -67,6 +67,21 @@ class CheckDrawio(unittest.TestCase):
     def test_template_is_clean(self):
         self.assertEqual(errors(template(), NAMES), set())
 
+    def test_template_icon_centres_on_the_40px_grid(self):
+        # SKILL.md and the template's own comment put icon centres on a 40 px grid
+        fig = check_drawio.Figure(TEMPLATE)
+        for cid, c in fig.cells.items():
+            st = check_drawio.parse_style(c.get("style"))
+            g = c.find("mxGeometry")
+            if c.get("vertex") != "1" or g is None or not st.get("shape", "").startswith("mxgraph.aws4."):
+                continue
+            if (g.get("width"), g.get("height")) != ("80", "80"):
+                continue
+            with self.subTest(cell=cid):
+                cx = float(g.get("x")) + 40
+                cy = float(g.get("y")) + 40
+                self.assertEqual((cx % 40, cy % 40), (0, 0))
+
     def test_repo_figures_have_no_errors(self):
         if not REPO_FIGURES:
             self.skipTest("not inside the repository")
@@ -90,14 +105,14 @@ class CheckDrawio(unittest.TestCase):
 
     def test_edge_through_icon(self):
         # the policy icon moved onto the user-to-agent line
-        xml = broken('<mxGeometry x="620" y="520" width="80" height="80"',
+        xml = broken('<mxGeometry x="600" y="520" width="80" height="80"',
                      '<mxGeometry x="440" y="280" width="80" height="80"')
         self.assertIn("edge-icon", errors(xml))
 
     def test_edge_through_label(self):
         # the refused route's vertical leg moved under the agent's label
         xml = broken('<mxPoint x="400" y="340" />\n              <mxPoint x="400" y="800" />',
-                     '<mxPoint x="660" y="340" />\n              <mxPoint x="660" y="800" />')
+                     '<mxPoint x="640" y="340" />\n              <mxPoint x="640" y="800" />')
         self.assertIn("edge-text", errors(xml))
 
     def test_label_over_frame_border(self):

@@ -29,7 +29,7 @@
 
         <!-- Nitro sandbox frame: red #DD344C, EC2 tab icon, title plus one grey sub line -->
         <mxCell id="sandbox" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;Nitro sandbox pod&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;runtimeClassName: isolated-sandbox&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#DD344C;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#DD344C;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
-          <mxGeometry x="360" y="200" width="600" height="280" as="geometry" />
+          <mxGeometry x="360" y="200" width="560" height="280" as="geometry" />
         </mxCell>
         <mxCell id="tab-sandbox" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalAlign=top;align=center;html=1;fontSize=12;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;" vertex="1" parent="1">
           <mxGeometry x="360" y="200" width="48" height="48" as="geometry" />
@@ -37,12 +37,12 @@
 
         <!-- The workload inside the sandbox -->
         <mxCell id="app" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Agent&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;runs the tool calls&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.generic_application;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
-          <mxGeometry x="620" y="280" width="80" height="80" as="geometry" />
+          <mxGeometry x="600" y="280" width="80" height="80" as="geometry" />
         </mxCell>
 
         <!-- A security control drawn in red, attached to the frame it governs (no arrowhead) -->
         <mxCell id="policy" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;ApplicationNetworkPolicy&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;egress: DNS + Bedrock only&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#DD344C;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.filtering_rule;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
-          <mxGeometry x="620" y="520" width="80" height="80" as="geometry" />
+          <mxGeometry x="600" y="520" width="80" height="80" as="geometry" />
         </mxCell>
 
         <!-- An AWS service: a resource icon keeps the category fill draw.io's library gives it -->
