@@ -667,9 +667,10 @@ until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.
 works the same way. `stats.py` and `submit.py` sign with your AWS credentials because
 `ANTHROPIC_PLATFORM=aws` is set in your shell. What to look for:
 
-- `stats.py` reports `workers_polling: 1` once the poller is polling with its role. If the
-  poller's log shows a 403 that names `sts:GetWebIdentityToken`, the role is missing
-  `web-identity-token-policy.json` or federation is not enabled for the account.
+- `stats.py` reports `workers_polling: 1` once the poller is polling with its role. Two
+  errors in the poller's log point at setup: a 403 that names `sts:GetWebIdentityToken` means
+  the role is missing `web-identity-token-policy.json`, and "Outbound web identity federation
+  is disabled for your account" means the account's one-time federation step is not done.
 - In step 7, with the last command's `grep` changed to `grep -E '^(ANTHROPIC|AWS)_'`, the
   sandbox's Anthropic variables are the environment id, `ANTHROPIC_PLATFORM`
   and `ANTHROPIC_AWS_WORKSPACE_ID`; there is still no `ANTHROPIC_API_KEY` and no
