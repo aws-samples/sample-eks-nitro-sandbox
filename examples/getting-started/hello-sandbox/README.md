@@ -11,7 +11,7 @@ see *Building your AMI for Nitro Sandboxes* in the user guide.
 **Step 1: Create an Auto Mode cluster.** This takes about 15 minutes.
 
 ```bash
-eksctl create cluster --name $CLUSTER_NAME --region $AWS_REGION --enable-auto-mode
+eksctl create cluster --name $CLUSTER_NAME --version 1.36 --region $AWS_REGION --enable-auto-mode
 ```
 
 **Step 2: Confirm the runtime classes are there.** Nothing to install:
