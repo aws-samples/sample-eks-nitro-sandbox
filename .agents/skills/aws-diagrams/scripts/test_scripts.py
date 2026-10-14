@@ -128,6 +128,18 @@ class CheckDrawio(unittest.TestCase):
             with self.subTest(good=good):
                 self.assertNotIn("wording", errors(broken("&gt;starts a task&lt;", f"&gt;{good}&lt;")))
 
+    def test_wording_split_by_inline_tags(self):
+        # an inline tag inside a word renders as one word, so the rule must see one word
+        for bad in ("egress fen&lt;b&gt;ce&lt;/b&gt;",
+                    "account " + "1234" + "&lt;b&gt;" + "5678" + "&lt;/b&gt;" + "9012",
+                    "the &lt;span&gt;strong&lt;/span&gt;est isolation"):
+            with self.subTest(bad=bad):
+                self.assertIn("wording", errors(broken("&gt;starts a task&lt;", f"&gt;{bad}&lt;")))
+        # a line break or a block still separates two words
+        for good in ("strong&lt;br&gt;est", "network&lt;br&gt;policy"):
+            with self.subTest(good=good):
+                self.assertNotIn("wording", errors(broken("&gt;starts a task&lt;", f"&gt;{good}&lt;")))
+
     def test_vm_for_the_claimed_pod_is_a_warning(self):
         codes = {(lvl, code) for lvl, code, _, _ in findings(broken("&gt;starts a task&lt;", "&gt;claims a warm VM&lt;"))}
         self.assertIn(("WARN", "wording"), codes)

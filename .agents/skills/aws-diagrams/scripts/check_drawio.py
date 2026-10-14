@@ -340,7 +340,12 @@ class Figure:
                 self.add("WARN", "palette", [cid], f"inline color {v} is outside the house palette")
 
     def _words(self, cid, value, html_mode):
-        text = html.unescape(re.sub(r"<[^>]+>", " ", value)) if html_mode else value
+        text = value
+        if html_mode:
+            # A line break or a block starts a new word; an inline tag (b, i, span,
+            # font) renders inside one, so "fen<b>ce</b>" must read as "fence".
+            text = re.sub(r"<\s*/?\s*(br|div|p|li|tr|td|th|hr|h[1-6])\b[^>]*>", " ", text, flags=re.I)
+            text = html.unescape(re.sub(r"<[^>]+>", "", text))
         for pat, msg in WORD_RULES:
             if re.search(pat, text, re.I):
                 self.add("ERROR", "wording", [cid], f"{msg}: {text.strip()[:60]!r}")
