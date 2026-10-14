@@ -48,8 +48,9 @@ These rules apply to every label, title and note on a figure, and to its caption
 - **Only facts the page shows or AWS documentation states.** If the figure needs a claim the page
   does not make, add it to the page with its evidence first, or leave it off the figure.
 
-`check_drawio.py` refuses most of these mechanically; the "pod" versus "VM" rule needs your
-reading as well.
+`check_drawio.py` refuses the common forms of these (fence, superlatives, tooling words, account
+IDs, ARNs, node names, emails, internal hostnames, a stated minimum, a claimed "VM"). It cannot
+know your cluster names, user names or what the page states, so read every label for those too.
 
 ## Make a new figure
 

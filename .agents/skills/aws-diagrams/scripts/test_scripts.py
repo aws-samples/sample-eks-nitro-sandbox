@@ -119,11 +119,13 @@ class CheckDrawio(unittest.TestCase):
     def test_wording(self):
         for bad in ("egress fence", "the strongest isolation", "run test.sh first",
                     "account " + "123456" + "789012",  # split so a repository scan does not flag the fixture
-                    "minimum 1 vCPU", "at least 768Mi of memory",
+                    "minimum 1 vCPU", "at least 768Mi of memory", "min. 1 vCPU", "4 GiB minimum",
+                    "the most secure isolation", "the safest sandbox",
                     "node ip-192-168-10-20", "owner@example.com", "git.corp.example.net"):
             with self.subTest(bad=bad):
                 self.assertIn("wording", errors(broken("&gt;starts a task&lt;", f"&gt;{bad}&lt;")))
         for good in ("network policy", "hardware-level isolation", "Requests equal limits: 1 vCPU",
+                     "requests: 1 vCPU, 2 GiB", "most agents run here",
                      "api.anthropic.com", "example-org/example-app"):
             with self.subTest(good=good):
                 self.assertNotIn("wording", errors(broken("&gt;starts a task&lt;", f"&gt;{good}&lt;")))

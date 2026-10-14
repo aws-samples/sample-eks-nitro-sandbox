@@ -40,7 +40,8 @@ ICON_FILLS = {"#C925D1", "#7AA116", "#8C4FFF", "#E7157B", "#01A88D", "#ED7100", 
 
 WORD_RULES = [
     (r"\bfence[sd]?\b", "say 'network policy', not 'fence'"),
-    (r"\bstrongest\b", "say 'hardware-level isolation', not 'strongest'"),
+    (r"\bstrongest\b|\bsafest\b|\bmost\s+(secure|isolated)\b",
+     "say 'hardware-level isolation', not a superlative"),
     (r"\b(test|setup|clean)\.sh\b|\bassert\w*\b|\bpytest\b|\b(smoke|unit)[- ]tests?\b|\bchecks? passed\b",
      "no tooling or testing words on a figure"),
     (r"(?<!\d)\d{12}(?!\d)", "looks like an AWS account ID"),
@@ -49,7 +50,8 @@ WORD_RULES = [
     (r"\bip-\d{1,3}-\d{1,3}-\d{1,3}-\d{1,3}\b", "looks like a real node name"),
     (r"[\w.+-]+@[\w-]+\.[\w.]+|\b[\w-]+\.(corp|internal)\.[\w.-]+|\b[\w-]+\.(internal|local)\b",
      "looks like an email address or an internal hostname"),
-    (r"\b(minimum|min\.?|at least|no less than)\b[^.]{0,40}\b(v?cpus?|memory|mib|gib|mi|gi)\b",
+    (r"(\b(minimum|at least|no less than)\b|\bmin\b\.?)[^.]{0,40}\b(v?cpus?|memory|mib|gib|mi|gi)\b"
+     r"|\b\d+(\.\d+)?\s*(v?cpus?|m|mi|gi|mib|gib)\b[^.]{0,20}\bmin(imum)?\b",
      "never state a minimum CPU or memory request on a figure"),
     (r"\b(warm|claimed|pooled|pre-booted)\s+(micro)?vms?\b"
      r"|\bclaim(s|ed|ing)?\s+(a|an|the|one|each)?\s*(warm\s+)?(micro)?vms?\b",
