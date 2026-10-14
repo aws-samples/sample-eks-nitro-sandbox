@@ -64,8 +64,14 @@ def broken(old, new):
 
 
 class CheckDrawio(unittest.TestCase):
+    def assertFinding(self, xml, level, code, cells, names=None):
+        """The finding must name exactly these cells, so it fired for the reason the test means."""
+        found = {(lvl, c, frozenset(cs)) for lvl, c, cs, _ in findings(xml, names)}
+        self.assertIn((level, code, frozenset(cells)), found)
+
     def test_template_is_clean(self):
-        self.assertEqual(errors(template(), NAMES), set())
+        # no finding at any level, so every rule below is also proved on input it must accept
+        self.assertEqual(findings(template(), NAMES), [])
 
     def test_template_icon_centres_on_the_40px_grid(self):
         # SKILL.md and the template's own comment put icon centres on a 40 px grid
@@ -91,46 +97,87 @@ class CheckDrawio(unittest.TestCase):
                 self.assertEqual(found, [])
 
     def test_transparent_background(self):
-        self.assertIn("background", errors(broken('background="#ffffff"', 'background="none"')))
+        self.assertFinding(broken('background="#ffffff"', 'background="none"'), "ERROR", "background", [])
 
     def test_icons_overlap(self):
         xml = broken('<mxGeometry x="1160" y="280" width="80" height="80"',
                      '<mxGeometry x="660" y="300" width="80" height="80"')
-        self.assertIn("overlap", errors(xml))
+        self.assertFinding(xml, "ERROR", "overlap", ["app", "bedrock"])
 
     def test_frame_title_too_wide(self):
-        self.assertIn("frame-title", errors(broken(
+        self.assertFinding(broken(
             "&gt;Amazon EKS cluster&lt;",
-            "&gt;Amazon EKS cluster with a title far too long for this frame to hold&lt;")))
+            "&gt;Amazon EKS cluster with a title far too long for this frame to hold&lt;"),
+            "ERROR", "frame-title", ["cluster"])
 
     def test_edge_through_icon(self):
         # the policy icon moved onto the user-to-agent line
         xml = broken('<mxGeometry x="600" y="520" width="80" height="80"',
                      '<mxGeometry x="440" y="280" width="80" height="80"')
-        self.assertIn("edge-icon", errors(xml))
+        self.assertFinding(xml, "ERROR", "edge-icon", ["e-user-app", "policy"])
 
     def test_edge_through_label(self):
         # the refused route's vertical leg moved under the agent's label
         xml = broken('<mxPoint x="400" y="340" />\n              <mxPoint x="400" y="800" />',
                      '<mxPoint x="640" y="340" />\n              <mxPoint x="640" y="800" />')
-        self.assertIn("edge-text", errors(xml))
+        self.assertFinding(xml, "ERROR", "edge-text", ["e-app-denied", "app"])
 
     def test_label_over_frame_border(self):
         # the refused destination moved so its label hangs below the AWS Cloud frame
         xml = broken('<mxGeometry x="1160" y="760" width="80" height="80"',
                      '<mxGeometry x="1160" y="830" width="80" height="80"')
-        self.assertIn("label-border", errors(xml))
+        self.assertFinding(xml, "ERROR", "label-border", ["denied", "cloud"])
 
     def test_unknown_shape(self):
         xml = broken("shape=mxgraph.aws4.filtering_rule;", "shape=mxgraph.aws4.firewall;")
-        self.assertIn("unknown-shape", errors(xml, NAMES))
+        self.assertFinding(xml, "ERROR", "unknown-shape", ["policy"], NAMES)
         self.assertNotIn("unknown-shape", errors(template(), NAMES))
 
     def test_implicit_bend_is_reported(self):
         xml = broken('<mxPoint x="400" y="340" />\n              <mxPoint x="400" y="800" />', "")
-        codes = {code for _, code, _, _ in findings(xml)}
-        self.assertIn("edge-route", codes)
-        self.assertNotIn("edge-route", {code for _, code, _, _ in findings(template())})
+        self.assertFinding(xml, "WARN", "edge-route", ["e-app-denied"])
+
+    # Each rule below had no rejecting case; the template (no finding at all) is the accepting one.
+    USER_STYLE = "shape=mxgraph.aws4.user;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;" \
+                 "fontFamily=Arial,Helvetica,sans-serif;"
+
+    def test_font(self):
+        xml = broken(self.USER_STYLE, self.USER_STYLE.replace("Arial,Helvetica,sans-serif", "Comic Sans MS"))
+        self.assertFinding(xml, "WARN", "font", ["user"])
+
+    def test_palette(self):
+        xml = broken(self.USER_STYLE, self.USER_STYLE.replace("fontColor=#232F3E", "fontColor=#FF00FF"))
+        self.assertFinding(xml, "WARN", "palette", ["user"])
+
+    def test_icon_size(self):
+        xml = broken('<mxGeometry x="40" y="280" width="80" height="80"',
+                     '<mxGeometry x="40" y="280" width="64" height="64"')
+        self.assertFinding(xml, "WARN", "icon-size", ["user"])
+
+    def test_icon_over_frame_border(self):
+        # Amazon Bedrock moved onto the AWS Cloud frame's right edge
+        xml = broken('<mxGeometry x="1160" y="280" width="80" height="80"',
+                     '<mxGeometry x="1320" y="280" width="80" height="80"')
+        self.assertFinding(xml, "WARN", "icon-border", ["bedrock", "cloud"])
+
+    def test_frames_cross(self):
+        # the Nitro sandbox frame moved so it sticks out of the EKS cluster frame
+        xml = broken('<mxGeometry x="360" y="200" width="560" height="280"',
+                     '<mxGeometry x="800" y="200" width="560" height="280"')
+        self.assertFinding(xml, "ERROR", "frames-cross", ["cluster", "sandbox"])
+
+    def test_edge_label_into_icon(self):
+        # "2. InvokeModel" slid along its line onto the Bedrock icon
+        xml = broken('<mxPoint x="150" y="-15" as="offset" />', '<mxPoint x="280" y="-15" as="offset" />')
+        self.assertFinding(xml, "ERROR", "edge-label", ["e-app-bedrock", "bedrock"])
+
+    def test_edge_end_missing(self):
+        xml = broken('source="user" target="app"', 'source="nobody" target="app"')
+        self.assertFinding(xml, "WARN", "edge-end", ["e-user-app"])
+
+    def test_edge_anchor_missing(self):
+        xml = broken("exitX=0.5;exitY=0;", "")
+        self.assertFinding(xml, "INFO", "edge-anchor", ["e-policy-sandbox"])
 
     def test_wording(self):
         for bad in ("egress fence", "the strongest isolation", "run test.sh first",
