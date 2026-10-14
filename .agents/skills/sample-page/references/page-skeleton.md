@@ -27,9 +27,9 @@ a Nitro sandbox.>
 - **<Bold claim>.** <What runs where.>
 - **<Bold claim>.** <What each part can reach, and what is refused.>
 
-*Figure 1: <One sentence on what the figure shows.>*
+*Figure 1: <Title>. <One or two sentences on what the reader should notice.>*
 
-![<Full-sentence alt text that describes every part of the figure and how they connect.>](images/<name>.png)
+![<Alt text in reading order: each boundary, what runs inside it, each connection with its label, and what is refused.>](images/<name>.png)
 
 This folder was built against these releases:
 
