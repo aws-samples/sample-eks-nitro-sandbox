@@ -178,7 +178,8 @@ done <"$listing_file"
 # --- each skill's frontmatter -----------------------------------------------------------
 # Prints one key=value line per fact; the shell decides what is a finding. This is not a
 # YAML parser: it reads the top-level name and description lines, plain, quoted or as a
-# block scalar, and flags the plain values that YAML would not read as written.
+# block scalar, and flags the plain values that YAML would not read as written. A block
+# description's length is its lines' text joined by single spaces, as a folded block reads.
 
 read_frontmatter() {
   awk '
@@ -204,7 +205,7 @@ read_frontmatter() {
       v = substr(line, length(key) + 2)
       if (v != "" && v !~ /^[ \t]/) print key "_trouble=nospace"
       v = trim(v)
-      if (key == "description" && v ~ /^[>|][-+]?$/) { block = 1; blen = 0; return }
+      if (key == "description" && v ~ /^[>|][-+0-9]*([ \t]+#.*)?$/) { block = 1; blen = 0; return }
       t = plain_trouble(v)
       if (t != "") print key "_trouble=" t
       v = clean(v)
@@ -355,6 +356,8 @@ else
       if (c != "`" && c != "~") return 0
       n = fence_run(s, c)
       if (n < 3) return 0
+      # A backtick fence cannot have a backtick in its info string; such a line is text.
+      if (c == "`" && index(substr(s, n + 1), "`") > 0) return 0
       fchar = c
       flen = n
       return 1

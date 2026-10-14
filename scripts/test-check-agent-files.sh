@@ -152,6 +152,7 @@ d=$(new_repo "accept with spaces")
 expect_ok "accept: a repository path with spaces" "OK, 2 skill(s)" "$d"
 
 d=$(new_repo accept-comments-and-fences)
+write_skill "$d" gamma gamma "Use for gamma work."
 after_beta_row "$d" \
   '<!-- | `ghost-one` | a commented-out row is not a skill | -->' \
   '<!--' \
@@ -163,13 +164,21 @@ after_beta_row "$d" \
   '````text' \
   '```' \
   '| `ghost-four` | three backticks do not close a four-backtick fence |' \
-  '````' \
+  '   `````' \
   '~~~' \
   '```' \
   '| `ghost-five` | backticks do not close a tilde fence |' \
+  '~~~ not a closer' \
+  '| `ghost-six` | nor does a closing run with text after it |' \
   '~~~' \
-  '    | `ghost-six` | an indented row is not a table row |'
-expect_ok "accept: rows in comments, code blocks and nested fences are ignored" "OK, 2 skill(s)" "$d"
+  '    | `ghost-seven` | an indented row is not a table row |' \
+  '| `gamma` | a real row after all of them still counts |'
+expect_ok "accept: rows in comments, code blocks and nested fences are ignored" "OK, 3 skill(s)" "$d"
+
+d=$(new_repo accept-not-a-fence)
+write_skill "$d" gamma gamma "Use for gamma work."
+after_beta_row "$d" '```not`a`fence' '| `gamma` | listed after a line that only looks like a fence |'
+expect_ok "accept: a backtick run with a backtick after it does not open a fence" "OK, 3 skill(s)" "$d"
 
 d=$(new_repo accept-table-spacing)
 awk '{ sub(/^[|] `alpha` [|]/, "|`alpha`|"); sub(/^[|] `beta-two` [|]/, "|   `beta-two`\t|"); print }' \
@@ -182,6 +191,13 @@ printf -- '---\nname: "alpha"\ndescription: "Quoted: a colon and issue #2 are fi
 printf -- '---\nname: beta-two\ndescription: >\n\n  A folded block description that starts\n  after a blank line.\nlicense: MIT-0\n---\n' \
   >"$d/.agents/skills/beta-two/SKILL.md"
 expect_ok "accept: quoted values, and a block description after a blank line" "OK, 2 skill(s)" "$d"
+
+d=$(new_repo accept-block-indicators)
+printf -- '---\nname: alpha\ndescription: |2\n    Literal block with an indentation indicator.\n---\n' \
+  >"$d/.agents/skills/alpha/SKILL.md"
+printf -- '---\nname: beta-two\ndescription: >- # folded, and a comment after the indicator\n  Folded block text.\n---\n' \
+  >"$d/.agents/skills/beta-two/SKILL.md"
+expect_ok "accept: block indicators with an indentation digit or a comment" "OK, 2 skill(s)" "$d"
 
 d=$(new_repo accept-crlf)
 printf -- '---\r\nname: alpha\r\ndescription: Written on Windows.\r\n---\r\n' \
@@ -392,6 +408,11 @@ d=$(new_repo reject-long-block-description)
 half=$(printf '%0600d' 0 | sed 's/0/y/g')
 printf -- '---\nname: alpha\ndescription: >\n  %s\n\n  %s\n---\n' "$half" "$half" >"$d/.agents/skills/alpha/SKILL.md"
 expect_findings "reject: a block description over 1024 characters" "$d" "description is 1201 characters"
+
+d=$(new_repo reject-long-indicator-block)
+long=$(printf '%01100d' 0 | sed 's/0/z/g')
+printf -- '---\nname: alpha\ndescription: |2\n    %s\n---\n' "$long" >"$d/.agents/skills/alpha/SKILL.md"
+expect_findings "reject: an over-long block that has an indentation indicator" "$d" "description is 1100 characters"
 
 d=$(new_repo reject-folder-without-skill)
 mkdir -p "$d/.agents/skills/gamma"
