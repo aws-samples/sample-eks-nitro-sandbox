@@ -64,7 +64,7 @@ only version strings).
 - [ ] Sample folder at `examples/<section>/<sample>/`, laid out as above.
 - [ ] Pinned versions stated in the README.
 - [ ] Runs end to end on a cluster that has finished Getting started, from a fresh run.
-- [ ] The README shows the sandbox pod running in a sandbox (its own kernel build, boot and virtio disks, compared with an ordinary pod on the same node), plus the sample's own claims, each with output from the run.
+- [ ] The README shows the sandbox pod running in a sandbox (its own kernel build, boot and virtio disks, each with what an ordinary pod shows instead), plus the sample's own claims, each with output from the run.
 - [ ] No Ingress, LoadBalancer or NodePort. Sandbox egress is restricted by network policy and the page shows the complete policy, or the sandbox boots with no network and the page shows that.
 - [ ] No values from your own account or environment (account ID, keys, tokens, names of your clusters or hosts, user names, internal URLs) in tracked files. Local values come from a gitignored env file.
 - [ ] A clean-up section removes everything the sample created.

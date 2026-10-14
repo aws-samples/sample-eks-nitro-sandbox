@@ -180,7 +180,7 @@ route, and a lookup fails, as the hello sandbox page does.
       your clusters or hosts, user names, internal URLs) in any tracked file, including
       output blocks and diagrams. The shared defaults on the home page are fine.
 - [ ] The page proves the pod ran in a sandbox: its own kernel build, boot and virtio
-      disks, compared with an ordinary pod on the same node.
+      disks, each with what an ordinary pod shows instead.
 - [ ] The clean up removes everything the sample created.
 - [ ] `nav` entry added, roadmap and root README updated.
 - [ ] `mkdocs build --strict` passes, and `./scripts/check-agent-files.sh` passes.

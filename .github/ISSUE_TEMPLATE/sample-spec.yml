@@ -8,7 +8,7 @@ body:
       value: |
         A new sample starts here. Write its spec in this issue; the pull request that implements it says `Closes #<this issue>`.
 
-        Issue #2 is a complete example, and the `sample-spec` skill in `.agents/skills/` explains each section. Do not include account IDs, keys, the names of your clusters or hosts, or other values from your own account.
+        Issue #2 is a complete example, and the `sample-spec` skill in `.agents/skills/` explains each section. Do not include values from your own account or environment: account IDs, keys, tokens, names of your clusters or hosts, user names or internal URLs.
   - type: input
     id: folder
     attributes:
@@ -56,6 +56,8 @@ body:
         | Component | Pin | Latest (YYYY-MM-DD) |
         |---|---|---|
         |  |  |  |
+    validations:
+      required: true
   - type: textarea
     id: acceptance
     attributes:
@@ -65,7 +67,7 @@ body:
         - [ ] Sample folder at `examples/<section>/<sample>/`, laid out as above.
         - [ ] Pinned versions stated in the README.
         - [ ] Runs end to end on a cluster that has finished Getting started, from a fresh run.
-        - [ ] The README shows the sandbox pod running in a sandbox (its own kernel build, boot and virtio disks, compared with an ordinary pod on the same node), plus the sample's own claims, each with output from the run.
+        - [ ] The README shows the sandbox pod running in a sandbox (its own kernel build, boot and virtio disks, each with what an ordinary pod shows instead), plus the sample's own claims, each with output from the run.
         - [ ] No Ingress, LoadBalancer or NodePort. Sandbox egress is restricted by network policy and the page shows the complete policy, or the sandbox boots with no network and the page shows that.
         - [ ] No values from your own account or environment (account ID, keys, tokens, names of your clusters or hosts, user names, internal URLs) in tracked files. Local values come from a gitignored env file.
         - [ ] A clean-up section removes everything the sample created.
@@ -87,5 +89,5 @@ body:
       options:
         - label: I checked docs/ROADMAP.md and the open issues for this sample.
           required: true
-        - label: This spec contains no account IDs, keys, names of my clusters or hosts, or other values from my account.
+        - label: This spec contains no values from my own account or environment (account IDs, keys, tokens, names of my clusters or hosts, user names, internal URLs).
           required: true

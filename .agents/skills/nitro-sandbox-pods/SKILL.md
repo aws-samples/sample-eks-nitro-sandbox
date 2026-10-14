@@ -28,7 +28,8 @@ pod alone. (`examples/README.md`, "How it works", and Figure 1.)
 |---|---|
 | The pod's containers and their own kernel (`examples/README.md`) | The kubelet and containerd on the node, which still see an ordinary pod (`examples/README.md`, Figure 1) |
 | The endpoints that serve instance metadata and Pod Identity credentials, when the pod has a network (`examples/getting-started/hello-sandbox/README.md`) | Network policy enforcement: eBPF programs on the pod's host-side interface on the node (`examples/ai-agents/claude-managed-agents/README.md`, "Where it is enforced") |
-| The internal control channel that `exec`, `cp` and `logs` use, which works even with no network (`examples/README.md`) | Scheduling, the pod's VPC address and the CSI drivers that mount its volumes, which work as they do for any pod (`examples/README.md`) |
+| The pod's network interface: an `eth0` with a VPC address and a default route, unless the pod is network-isolated (`examples/getting-started/hello-sandbox/README.md`) | Scheduling, and the CSI drivers that mount the pod's volumes, which work as they do for any pod (`examples/README.md`) |
+| The internal control channel that `exec`, `cp` and `logs` use, which works even with no network (`examples/README.md`) | |
 
 ## Two runtime classes
 
@@ -73,9 +74,9 @@ VM's internal control channel. (`examples/README.md`;
 
 ## How a sample proves it ran in a sandbox
 
-Show these three together, with output from the run, and compare them with an ordinary pod
-on the same node, as the hello sandbox page does. Together they show the pod's containers
-ran in a VM of their own:
+Show these three together, with output from the run, and say what an ordinary pod shows
+for each, as the hello sandbox and Claude Managed Agents pages do between them. Together
+they show the pod's containers ran in a VM of their own:
 
 - **Its own kernel.** `uname -rv` in the sandbox shows the guest's kernel build; an ordinary
   pod on the same node shows the node's. The version string can match; the build and the
