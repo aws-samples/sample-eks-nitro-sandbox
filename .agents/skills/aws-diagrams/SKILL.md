@@ -25,7 +25,8 @@ or as draw.io desktop. Nothing else: the scripts here use only Python's standard
 | `scripts/compare_png.py` | Compares two PNGs on a white background, for the control render. |
 | `scripts/test_scripts.py` | Proves the checks both ways; run it after changing a script. |
 
-From the repository root these are under `.agents/skills/aws-diagrams/`.
+Run every command below from the repository root, where these files are under
+`.agents/skills/aws-diagrams/`.
 
 ## What a figure may say
 
@@ -70,15 +71,15 @@ know your cluster names, user names or what the page states, so read every label
    the XML says so. Search all of them at once and copy the style the library returns:
 
    ```bash
-   python3 scripts/drawio_shapes.py search "bedrock" "user" "filtering rule" "internet"
-   python3 scripts/drawio_shapes.py search --style "eks"
+   python3 .agents/skills/aws-diagrams/scripts/drawio_shapes.py search "bedrock" "user" "filtering rule" "internet"
+   python3 .agents/skills/aws-diagrams/scripts/drawio_shapes.py search --style "eks"
    ```
 
    It reads draw.io's library from a copy it fetches once out of the export image
-   (`python3 scripts/drawio_shapes.py fetch`, needs Docker or Podman), from an installed draw.io
-   desktop, or from `--library` pointing at draw.io's public `Sidebar-AWS4.js`. Run `fetch`
-   first if you have no desktop install: `check_drawio.py` uses the same library to refuse
-   unknown shape names. Prefer a shape
+   (`drawio_shapes.py fetch`, needs Docker or Podman), from an installed draw.io desktop, or
+   from `--library` pointing at draw.io's public `Sidebar-AWS4.js`. Run `fetch` first if you
+   have no desktop install: `check_drawio.py` uses the same library to refuse unknown shape
+   names. Prefer a shape
    the existing figures already use for the same meaning (listed in the house style). Keep the
    library's `shape`, `resIcon` and category `fillColor`; replace its font and label settings
    with the house ones.
@@ -86,9 +87,9 @@ know your cluster names, user names or what the page states, so read every label
 4. **Measure every string you will draw**, at the size it will have:
 
    ```bash
-   python3 scripts/measure_text.py --size 24 "Amazon Bedrock" "Claude model"
-   python3 scripts/measure_text.py --size 22 --bold "Nitro sandbox pod"
-   python3 scripts/measure_text.py --size 18 "clone / push with token"
+   python3 .agents/skills/aws-diagrams/scripts/measure_text.py --size 24 "Amazon Bedrock" "Claude model"
+   python3 .agents/skills/aws-diagrams/scripts/measure_text.py --size 22 --bold "Nitro sandbox pod"
+   python3 .agents/skills/aws-diagrams/scripts/measure_text.py --size 18 "clone / push with token"
    ```
 
    From the widths: neighbours on a row need centre pitch ≥ (wA + wB) / 2 + 24, and at least
@@ -107,7 +108,7 @@ know your cluster names, user names or what the page states, so read every label
 6. **Check it.**
 
    ```bash
-   python3 scripts/check_drawio.py path/to/images/figure.drawio
+   python3 .agents/skills/aws-diagrams/scripts/check_drawio.py path/to/images/figure.drawio
    ```
 
    Fix every `ERROR`. Fix each `WARN` too, unless it is deliberate and you can say why (an icon
@@ -119,7 +120,7 @@ know your cluster names, user names or what the page states, so read every label
 7. **Export** with border 20 (see `references/export.md` for the engines):
 
    ```bash
-   python3 scripts/export_png.py path/to/images/figure.drawio --border 20
+   python3 .agents/skills/aws-diagrams/scripts/export_png.py path/to/images/figure.drawio --border 20
    ```
 
 8. **Look at the PNG.** Open the PNG file itself with your image-viewing tool, so you see its
@@ -154,8 +155,8 @@ something else looks wrong, mention it instead of fixing it in the same change.
    table in `references/export.md`) and compare it with the committed PNG:
 
    ```bash
-   python3 scripts/export_png.py images/figure.drawio --out /tmp/control.png --border 0
-   python3 scripts/compare_png.py images/figure.png /tmp/control.png
+   python3 .agents/skills/aws-diagrams/scripts/export_png.py path/to/images/figure.drawio --out /tmp/control.png --border 0
+   python3 .agents/skills/aws-diagrams/scripts/compare_png.py path/to/images/figure.png /tmp/control.png
    ```
 
    Byte-identical means your engine matches the one that made the committed PNG. If it differs,
