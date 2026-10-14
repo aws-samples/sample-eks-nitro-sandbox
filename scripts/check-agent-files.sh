@@ -197,6 +197,9 @@ read_frontmatter() {
     function plain_trouble(v,   q) {
       q = substr(v, 1, 1)
       if (q == "\"" || q == "\047" || q == "#") return ""
+      # A plain value cannot start with a block indicator; one that reaches here is a
+      # malformed block header such as "|0" or ">9000".
+      if (q == "|" || q == ">") return "indicator"
       if (index(v, ": ") > 0) return "colon"
       if (index(v, " #") > 0) return "hash"
       return ""
@@ -205,7 +208,7 @@ read_frontmatter() {
       v = substr(line, length(key) + 2)
       if (v != "" && v !~ /^[ \t]/) print key "_trouble=nospace"
       v = trim(v)
-      if (key == "description" && v ~ /^[>|][-+0-9]*([ \t]+#.*)?$/) { block = 1; blen = 0; return }
+      if (key == "description" && v ~ /^[>|]([1-9][-+]?|[-+][1-9]?)?([ \t]+#.*)?$/) { block = 1; blen = 0; return }
       t = plain_trouble(v)
       if (t != "") print key "_trouble=" t
       v = clean(v)
@@ -285,6 +288,7 @@ check_skill() {
       colon) finding "$rel_file ${key%_trouble} contains ': ', which breaks YAML; quote the value" ;;
       hash) finding "$rel_file ${key%_trouble} contains ' #', and YAML drops everything after it as a comment; quote the value" ;;
       nospace) finding "$rel_file ${key%_trouble} has no space after the colon, so YAML does not read it as a field" ;;
+      indicator) finding "$rel_file ${key%_trouble} starts with '|' or '>' but is not a valid block indicator; quote the value or fix the indicator" ;;
     esac
   done
 }

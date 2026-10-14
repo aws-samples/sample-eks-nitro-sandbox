@@ -414,6 +414,15 @@ long=$(printf '%01100d' 0 | sed 's/0/z/g')
 printf -- '---\nname: alpha\ndescription: |2\n    %s\n---\n' "$long" >"$d/.agents/skills/alpha/SKILL.md"
 expect_findings "reject: an over-long block that has an indentation indicator" "$d" "description is 1100 characters"
 
+d=$(new_repo reject-bad-indicators)
+printf -- '---\nname: alpha\ndescription: |0\n  Zero is not an indentation indicator.\n---\n' \
+  >"$d/.agents/skills/alpha/SKILL.md"
+printf -- '---\nname: beta-two\ndescription: >9000\n  Nor is a four-digit number.\n---\n' \
+  >"$d/.agents/skills/beta-two/SKILL.md"
+expect_findings "reject: block headers YAML cannot read" "$d" \
+  "alpha/SKILL.md description starts with '|' or '>' but is not a valid block indicator" \
+  "beta-two/SKILL.md description starts with '|' or '>' but is not a valid block indicator"
+
 d=$(new_repo reject-folder-without-skill)
 mkdir -p "$d/.agents/skills/gamma"
 printf 'not a skill\n' >"$d/.agents/skills/gamma/notes.md"
