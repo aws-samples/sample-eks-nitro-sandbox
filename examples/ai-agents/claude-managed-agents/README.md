@@ -541,8 +541,16 @@ workspace in your cluster's Region (`$AWS_REGION`) and note its id (`wrkspc_...`
 outbound web identity federation once for the account; the
 [setup guide](https://platform.claude.com/docs/en/build-with-claude/claude-platform-on-aws#set-up-your-account)
 covers each step. Your own AWS identity needs Managed Agents permissions, which the
-`AnthropicLimitedAccess` managed policy grants. Use a namespace where the Claude API
-walkthrough is not deployed, or run its [clean up](#clean-up) first.
+`AnthropicLimitedAccess` managed policy grants. The commands below associate the role in
+`$NAMESPACE` and apply everything else to kubectl's current namespace, which the hello
+sandbox sample set to `$NAMESPACE`. Run the Claude API walkthrough's [clean up](#clean-up)
+first if it is deployed there, or set `NAMESPACE` to a new namespace and switch to it:
+
+```bash
+export NAMESPACE=claude-platform-aws
+kubectl create namespace $NAMESPACE
+kubectl config set-context --current --namespace=$NAMESPACE
+```
 
 **Create the agent and environment in your workspace.** In place of step 2, add these lines
 to `.env`. This path uses neither `ANTHROPIC_API_KEY` nor `ANTHROPIC_ENVIRONMENT_KEY`:
@@ -697,7 +705,8 @@ example.
 <summary>Clean up this mode</summary>
 
 The walkthrough's [clean up](#clean-up) removes the Kubernetes objects, including this
-mode's network policy, which has the same name. Then remove the associations and the role:
+mode's network policy, which has the same name. Then remove the associations and the role,
+with `NAMESPACE` set to the namespace you used:
 
 ```bash
 for sa in claude-poller claude-autoscaler claude-sandbox-worker; do
@@ -710,6 +719,13 @@ aws iam delete-role-policy --role-name claude-platform-worker --policy-name web-
 aws iam detach-role-policy --role-name claude-platform-worker \
   --policy-arn arn:aws:iam::aws:policy/AnthropicSelfHostedEnvironmentAccess
 aws iam delete-role --role-name claude-platform-worker
+```
+
+If you created a namespace for this mode, switch back to the shared one and delete it:
+
+```bash
+kubectl config set-context --current --namespace=nitro-sandboxes-demo
+kubectl delete namespace claude-platform-aws
 ```
 
 </details>
