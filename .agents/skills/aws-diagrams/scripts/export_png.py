@@ -25,6 +25,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 
 IMAGE = ("docker.io/rlespinasse/drawio-desktop-headless:v1.75.0"
          "@sha256:e1727782c9ea6a6e19793ac2ec89642a2f2e485c783ba4e989151ec26c130897")
@@ -43,16 +44,25 @@ def png_size(path):
 
 
 def run_container(runtime, src, out, border):
+    # The figure's folder is mounted read-only, and the PNG is written into a fresh
+    # folder beside the output, so the export can change nothing but --out.
     folder = os.path.dirname(src)
-    tmp_name = os.path.splitext(os.path.basename(src))[0] + ".export-tmp.png"
-    cmd = [runtime, "run", "--rm", "--network", "none", "--shm-size=1g", "-e", "HOME=/tmp",
-           "-v", f"{folder}:/data"]
-    if hasattr(os, "getuid"):
-        cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
-    cmd += [IMAGE, "-x", "-f", "png", "-s", "2", "--border", str(border),
-            "-o", f"/data/{tmp_name}", f"/data/{os.path.basename(src)}"]
-    subprocess.run(cmd, check=True)
-    shutil.move(os.path.join(folder, tmp_name), out)
+    name = os.path.splitext(os.path.basename(src))[0] + ".png"
+    work = tempfile.mkdtemp(prefix=".export-", dir=os.path.dirname(out))
+    try:
+        cmd = [runtime, "run", "--rm", "--network", "none", "--shm-size=1g", "-e", "HOME=/tmp",
+               "-v", f"{folder}:/data:ro", "-v", f"{work}:/out"]
+        if hasattr(os, "getuid"):
+            cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
+        cmd += [IMAGE, "-x", "-f", "png", "-s", "2", "--border", str(border),
+                "-o", f"/out/{name}", f"/data/{os.path.basename(src)}"]
+        subprocess.run(cmd, check=True)
+        produced = os.path.join(work, name)
+        if not os.path.isfile(produced):
+            raise SystemExit("the export container wrote no PNG")
+        os.replace(produced, out)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def run_desktop(src, out, border):
@@ -77,6 +87,12 @@ def main(argv=None):
     a = p.parse_args(argv)
     src = os.path.abspath(a.figure)
     out = os.path.abspath(a.out or os.path.splitext(src)[0] + ".png")
+    if not os.path.isfile(src):
+        raise SystemExit(f"no such figure: {src}")
+    if not out.lower().endswith(".png"):
+        raise SystemExit(f"--out must be a .png path, not {out}")
+    if not os.path.isdir(os.path.dirname(out)):
+        raise SystemExit(f"the output folder does not exist: {os.path.dirname(out)}")
     runtime = shutil.which("docker") or shutil.which("podman")
     engine = a.engine if a.engine != "auto" else ("container" if runtime else "desktop")
     if engine == "container":
