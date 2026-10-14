@@ -16,18 +16,24 @@ pinned by digest. Tag `v1.75.0` carries draw.io desktop 32.4.1 and renders
 full image, not the `minimal` variant, which ships fewer fonts.
 
 ```bash
-docker run --rm --network none --shm-size=1g --user "$(id -u):$(id -g)" -e HOME=/tmp \
-  -v "$PWD/examples/getting-started/hello-sandbox/images:/data" \
+FIG_DIR="$PWD/examples/<section>/<sample>/images"   # the folder that holds your .drawio
+FIG="<name>"                                        # its file name without .drawio
+test -f "$FIG_DIR/$FIG.drawio" && docker run --rm --network none --shm-size=1g \
+  --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$FIG_DIR:/data" \
   docker.io/rlespinasse/drawio-desktop-headless:v1.75.0@sha256:e1727782c9ea6a6e19793ac2ec89642a2f2e485c783ba4e989151ec26c130897 \
-  -x -f png -s 2 --border 20 -o /data/figure.png /data/figure.drawio
+  -x -f png -s 2 --border 20 -o "/data/$FIG.png" "/data/$FIG.drawio"
 ```
 
+- `test -f` first: Docker creates a missing host folder for `-v`, so a mistyped path would
+  otherwise leave an empty folder behind (and the placeholders above, left unedited, run nothing).
 - `--network none`: the export needs no network, so give it none.
 - `--shm-size=1g`: without it Electron's renderer can crash on large figures.
 - `--user` and `HOME=/tmp`: the PNG is owned by you, not root.
 - Podman takes the same arguments.
+- `export_png.py` goes one step further: it mounts the figure's folder read-only and writes
+  the PNG into a temporary folder beside `--out`, so an export can change nothing but `--out`.
 - Lines about D-Bus and `sqlite_persistent_store` in the output are noise from Electron; the
-  export succeeded if it prints `/data/figure.drawio -> /data/figure.png`.
+  export succeeded if it prints `/data/<name>.drawio -> /data/<name>.png`.
 
 **draw.io desktop CLI.** Install [draw.io desktop](https://github.com/jgraph/drawio-desktop/releases)
 and run the same flags:
