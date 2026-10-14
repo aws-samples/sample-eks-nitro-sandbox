@@ -515,8 +515,13 @@ Because the poller only claims and dispatches, sessions run in parallel, one pod
 [Claude Platform on AWS](https://platform.claude.com/docs/en/build-with-claude/claude-platform-on-aws)
 is the Claude API, operated by Anthropic and reached through your AWS account: requests are
 signed with AWS IAM (SigV4), name your workspace, and are billed through AWS Marketplace.
-Claude Managed Agents and self-hosted sandboxes work the same way there, so the same image,
-manifests and scripts run in this mode. What changes is how each part authenticates:
+Claude Managed Agents, including self-hosted sandboxes, is available there, and the same
+image, manifests and scripts run in this mode. Two session differences apply on that
+platform ([details](https://platform.claude.com/docs/en/build-with-claude/claude-platform-on-aws#claude-managed-agents)):
+a session on a self-hosted environment cannot attach memory stores (it is rejected when it
+is created), so the sandbox never mounts one; and a session that runs for 6 hours without a
+user event needs one to continue, which is longer than this sample's 30-minute claim deadline.
+What changes in the sample is how each part authenticates:
 
 | | Claude API (the walkthrough above) | Claude Platform on AWS |
 |---|---|---|
