@@ -51,9 +51,12 @@ WORD_RULES = [
      "looks like an email address or an internal hostname"),
     (r"\b(minimum|min\.?|at least|no less than)\b[^.]{0,40}\b(v?cpus?|memory|mib|gib|mi|gi)\b",
      "never state a minimum CPU or memory request on a figure"),
+    (r"\b(warm|claimed|pooled|pre-booted)\s+(micro)?vms?\b"
+     r"|\bclaim(s|ed|ing)?\s+(a|an|the|one|each)?\s*(warm\s+)?(micro)?vms?\b",
+     "call what a reader pools or claims a 'pod' (or a 'sandbox', the agent-sandbox resource), never a 'VM'"),
 ]
 WORD_WARNINGS = [
-    (r"\b(warm|claimed|pooled|booted|pre-booted)\s+(micro)?vms?\b|\b(micro)?vms?\s+per\b|\bper\s+(micro)?vm\b",
+    (r"(?<!-)\bbooted\s+(micro)?vms?\b|\b(micro)?vms?\s+per\b|\bper\s+(micro)?vm\b",
      "call the thing that is pooled, claimed or deleted a 'pod'; 'VM' only for the isolation boundary"),
 ]
 

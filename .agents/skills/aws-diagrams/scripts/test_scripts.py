@@ -140,11 +140,21 @@ class CheckDrawio(unittest.TestCase):
             with self.subTest(good=good):
                 self.assertNotIn("wording", errors(broken("&gt;starts a task&lt;", f"&gt;{good}&lt;")))
 
-    def test_vm_for_the_claimed_pod_is_a_warning(self):
-        codes = {(lvl, code) for lvl, code, _, _ in findings(broken("&gt;starts a task&lt;", "&gt;claims a warm VM&lt;"))}
-        self.assertIn(("WARN", "wording"), codes)
-        codes = {(lvl, code) for lvl, code, _, _ in findings(broken("&gt;starts a task&lt;", "&gt;claims a warm pod&lt;"))}
-        self.assertNotIn(("WARN", "wording"), codes)
+    def test_vm_for_the_claimed_pod(self):
+        def wording(label):
+            return {lvl for lvl, code, _, _ in findings(broken("&gt;starts a task&lt;", f"&gt;{label}&lt;"))
+                    if code == "wording"}
+        # a VM is never the thing a reader pools or claims
+        for bad in ("claims a warm VM", "1. claim a VM", "a pooled microVM", "pre-booted VMs"):
+            with self.subTest(bad=bad):
+                self.assertIn("ERROR", wording(bad))
+        # the claimed pod, and the agent-sandbox Sandbox resource, are named as the pages name them
+        for good in ("claims a warm pod", "1. claim a sandbox", "3. claim a warm sandbox",
+                     "runs in a lightweight VM"):
+            with self.subTest(good=good):
+                self.assertEqual(wording(good), set())
+        # ambiguous: may describe the boundary, so it is a warning for the author to read
+        self.assertEqual(wording("one kernel per VM"), {"WARN"})
 
 
 class MeasureText(unittest.TestCase):

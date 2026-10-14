@@ -11,8 +11,10 @@ needs something these sources do not state, look it up in the Amazon EKS User Gu
 (<https://docs.aws.amazon.com/eks/latest/userguide/>) and cite that page; do not fill the
 gap from memory or from unpublished material.
 
-The pages call the thing you create, pool, claim and delete a **pod**. They say **VM** or
-**sandbox** only for the isolation boundary around it.
+The pages call the running unit you pool, claim, exec into and delete a **pod**. They say
+**sandbox** for the agent-sandbox resources (`Sandbox`, `SandboxClaim`, `SandboxWarmPool`)
+and for the isolation boundary around the pod, and never **VM** or **microVM** for the
+claimed thing; **VM** appears only where they explain how the boundary works.
 
 ## What changes and what does not
 

@@ -137,9 +137,12 @@ route, and a lookup fails, as the hello sandbox page does.
 
 ## Wording
 
-- **pod** for the thing you create, pool, claim, adopt or delete: "a warm pod", "each
-  session gets its own pod". **VM** or **sandbox** only for the isolation boundary: "the
-  pod's containers run in a lightweight VM", "EC2 boots the pod's sandbox".
+- **pod** for the running unit you pool, claim, adopt, exec into or delete: "a warm pod",
+  "each session gets its own pod". **sandbox** for the agent-sandbox resources (`Sandbox`,
+  `SandboxClaim`, `SandboxWarmPool`: "claim a warm sandbox") and for the isolation
+  boundary: "EC2 boots the pod's sandbox". Never **VM** or **microVM** for the claimed
+  thing; **VM** only to explain how the boundary works: "the pod's containers run in a
+  lightweight VM".
 - **network policy**, never "fence".
 - **hardware-level isolation**, never "strongest".
 - No testing, tooling or how-it-was-built talk on a page: no test scripts, check counts,

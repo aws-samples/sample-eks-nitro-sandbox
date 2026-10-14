@@ -31,10 +31,11 @@ From the repository root these are under `.agents/skills/aws-diagrams/`.
 
 These rules apply to every label, title and note on a figure, and to its caption and alt text.
 
-- **"pod" for the thing a reader creates, pools, claims, execs into or deletes:** a warm pod, the
-  claimed pod, one pod per session. Say **"VM"** or **"sandbox"** only for the isolation
-  boundary itself: the pod's containers run in a lightweight VM with its own kernel; exec uses the
-  sandbox's control channel.
+- **"pod" for the running unit a reader pools, claims, execs into or deletes:** a warm pod, the
+  claimed pod, one pod per session. **"sandbox"** names the agent-sandbox resources (`Sandbox`,
+  `SandboxClaim`, `SandboxWarmPool`: "1. claim a sandbox", "claim a warm sandbox") and the
+  isolation boundary. **Never "VM" or "microVM" for the claimed thing**; say "VM" only to explain
+  how the boundary works: the pod's containers run in a lightweight VM with its own kernel.
 - **"network policy"**, never "fence".
 - **"hardware-level isolation"**, never "strongest" or another superlative.
 - **No tooling or testing words:** a figure shows what the feature does, not how the sample was
