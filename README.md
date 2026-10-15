@@ -21,7 +21,7 @@ pip install -r requirements.txt
 mkdocs serve
 ```
 
-See [ROADMAP.md](docs/ROADMAP.md) for the samples planned next.
+See [ROADMAP.md](docs/ROADMAP.md) for the samples planned next. To add one, start with [CONTRIBUTING](CONTRIBUTING.md#adding-a-sample) and [AGENTS.md](AGENTS.md).
 
 ## Security
 
