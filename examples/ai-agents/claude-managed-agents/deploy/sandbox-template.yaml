@@ -1,0 +1,98 @@
+# The sandbox that runs the agent's tool calls, and a pool that keeps two booted.
+#
+# Every bash, read, write, edit, glob and grep call Claude makes runs in a pod
+# stamped from this template, one session per pod. runtimeClassName gives each
+# pod its own VM in a Nitro Partition, so the commands the model chose run on a
+# kernel no other pod shares.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: claude-sandbox-worker
+spec:
+  # egress-policy.yaml is the network policy for these pods, so the controller
+  # does not add its own.
+  networkPolicyManagement: Unmanaged
+  podTemplate:
+    metadata:
+      labels:
+        app: claude-sandbox-worker
+      annotations:
+        # Keep consolidation from moving a sandbox in the middle of a session.
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      runtimeClassName: isolated-sandbox
+      serviceAccountName: claude-sandbox-worker
+      automountServiceAccountToken: false
+      # No <SERVICE>_HOST/_PORT variables: a Service whose name starts with
+      # "anthropic" would otherwise inject ANTHROPIC_* names the guard refuses.
+      enableServiceLinks: false
+      # One session, then exit. The pod completes instead of restarting.
+      restartPolicy: Never
+      # On SIGTERM (for example at the claim's 30-minute deadline) the worker
+      # stops its work item after a final memory sync and flush, each bounded at
+      # 30 s by the SDK. The default 30 s grace would cut that short.
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/claude-sandbox-worker:latest
+          args: ["serve"]
+          ports:
+            - name: dispatch
+              containerPort: 8080
+          # Ready, and so claimable, only once the dispatch server listens.
+          readinessProbe:
+            tcpSocket:
+              port: dispatch
+            periodSeconds: 1
+          env:
+            # No Anthropic key here. The sandbox gets its session's own token in
+            # the dispatch POST and refuses to start if it finds the
+            # environment key or the organization API key.
+            - name: ANTHROPIC_ENVIRONMENT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: anthropic-env
+                  key: ANTHROPIC_ENVIRONMENT_ID
+            # Claude Platform on AWS only. Each is set when the anthropic-env
+            # ConfigMap has the key, and left out when it does not.
+            - name: ANTHROPIC_PLATFORM
+              valueFrom:
+                configMapKeyRef: { name: anthropic-env, key: ANTHROPIC_PLATFORM, optional: true }
+            - name: ANTHROPIC_AWS_WORKSPACE_ID
+              valueFrom:
+                configMapKeyRef: { name: anthropic-env, key: ANTHROPIC_AWS_WORKSPACE_ID, optional: true }
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef: { name: anthropic-env, key: AWS_REGION, optional: true }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }   # tool calls and skills
+            - { name: memory, mountPath: /mnt/memory }     # memory stores, when attached
+            - { name: tmp, mountPath: /tmp }
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits:   { cpu: "1", memory: 2Gi }
+      volumes:
+        - { name: workspace, emptyDir: {} }
+        - { name: memory, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: claude-sandbox-worker
+spec:
+  replicas: 2                       # booted and waiting for a session
+  sandboxTemplateRef:
+    name: claude-sandbox-worker

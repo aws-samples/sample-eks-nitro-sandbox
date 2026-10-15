@@ -1,0 +1,100 @@
+# Optional: size the warm pool from the work queue.
+#
+# Every 15 seconds the autoscaler reads the environment's queue stats and sets
+# the pool's replicas to the number of sessions waiting in the queue, at least
+# WARMPOOL_MIN and at most WARMPOOL_MAX. A session that is already running is
+# not in the queue, so it does not count. It reads the stats with the
+# environment key (on Claude Platform on AWS, a Pod Identity role) and may only
+# resize this one pool.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: claude-autoscaler
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: claude-autoscaler
+rules:
+  # The autoscaler only ever sends a patch to the pool's /scale subresource.
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxwarmpools/scale"]
+    resourceNames: ["claude-sandbox-worker"]
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: claude-autoscaler
+subjects:
+  - kind: ServiceAccount
+    name: claude-autoscaler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: claude-autoscaler
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: claude-autoscaler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: claude-autoscaler
+  template:
+    metadata:
+      labels:
+        app: claude-autoscaler
+    spec:
+      serviceAccountName: claude-autoscaler
+      enableServiceLinks: false   # keeps injected <SERVICE>_* names out of the guard's way
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: autoscaler
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/claude-sandbox-worker:latest
+          args: ["stats"]
+          env:
+            - name: ANTHROPIC_ENVIRONMENT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: anthropic-env-key
+                  key: ANTHROPIC_ENVIRONMENT_KEY
+                  optional: true   # Claude Platform on AWS has no environment key
+            - name: ANTHROPIC_ENVIRONMENT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: anthropic-env
+                  key: ANTHROPIC_ENVIRONMENT_ID
+            # Claude Platform on AWS only. Each is set when the anthropic-env
+            # ConfigMap has the key, and left out when it does not.
+            - name: ANTHROPIC_PLATFORM
+              valueFrom:
+                configMapKeyRef: { name: anthropic-env, key: ANTHROPIC_PLATFORM, optional: true }
+            - name: ANTHROPIC_AWS_WORKSPACE_ID
+              valueFrom:
+                configMapKeyRef: { name: anthropic-env, key: ANTHROPIC_AWS_WORKSPACE_ID, optional: true }
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef: { name: anthropic-env, key: AWS_REGION, optional: true }
+            - name: SANDBOX_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: SANDBOX_WARMPOOL
+              value: claude-sandbox-worker
+            - { name: WARMPOOL_MIN, value: "1" }
+            - { name: WARMPOOL_MAX, value: "10" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits:   { memory: 256Mi }

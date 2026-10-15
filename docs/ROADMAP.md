@@ -1,11 +1,11 @@
 # Roadmap
 
-These samples show Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandbox`) running AI agents and untrusted code. Getting started is available now, and the rest of the samples below are planned.
+These samples show Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandbox`) running AI agents and untrusted code. Getting started and Claude Managed Agents are available now, and the rest of the samples below are planned.
 
 ## Layout
 
 - Folders are named, not numbered: `examples/<section>/<sample>/`. Each sample folder holds its website page as `README.md`, the files the sample applies, and an `images/` folder when it has diagrams.
-- The website's left menu has one collapsible section per folder, in the order below.
+- The website's left menu has one section per folder, in the order below: a heading with its pages always listed under it.
 
 ```text
 examples/
@@ -81,7 +81,7 @@ examples/
 
 ## Planned samples by section
 
-Samples marked ★ are the first eight to be added after Getting started.
+Samples marked ★ are the next eight to be added.
 
 ### Getting started (`getting-started`, available now)
 
@@ -130,7 +130,7 @@ Agent platforms:
 - claude-code-driver: an agent outside drives a warm, network-isolated sandbox that it claims from a pool.
 - mcp-server: an untrusted MCP server in a sandbox with no network, driven by a trusted client outside it.
 - kagent: Kagent's agent pods placed in sandboxes.
-- claude-managed-agents: a Claude Managed Agents self-hosted sandbox where every tool call runs in the guest and the organization API key never enters it.
+- [claude-managed-agents](../examples/ai-agents/claude-managed-agents/README.md) (available now): a Claude Managed Agents self-hosted sandbox where every tool call runs in the guest and the organization API key never enters it.
 - strands-decider: Strands Decider choosing where each piece of generated code should run.
 
 ### Agent guardrails (`agent-guardrails`)
@@ -182,7 +182,7 @@ These samples use `runtimeClassName: confidential-sandbox`.
 
 ## Starting with these 8, and why
 
-The first eight cover four sections with two samples each. Every one builds on a cluster that has finished Getting started, and each runs on standard EKS Auto Mode with no extra platform to install beyond what the sample states.
+The eight cover four sections with two samples each. Every one builds on a cluster that has finished Getting started, and each runs on standard EKS Auto Mode with no extra platform to install beyond what the sample states.
 
 - **host-escape**: the clearest picture of the boundary. The same privileged pod owns a node without a sandbox, and only its own VM with one.
 - **multi-tenant-saas**: the most common production question, how to keep tenants apart, answered with the sandbox, Pod Identity and network policy together.
