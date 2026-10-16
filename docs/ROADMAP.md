@@ -99,7 +99,7 @@ Agent services that run the agent loop for you and send its tool calls to comput
 
 - [claude-managed-agents](../examples/managed-agents/claude-managed-agents/README.md) (available now): a Claude Managed Agents self-hosted sandbox where every tool call runs in the guest and the organization API key never enters it.
 - openai-managed-agents: an OpenAI Managed Agents self-hosted sandbox, with each session's tool calls running in a Nitro sandbox. Spec: [#9](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/9).
-- bedrock-managed-agents: Bedrock Managed Agents, powered by OpenAI, with the agent's tool calls running in a Nitro sandbox on EKS.
+- bedrock-managed-agents: Bedrock Managed Agents, powered by OpenAI, with the agent's tool calls running in a Nitro sandbox on EKS. Spec: [#40](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/40).
 - cursor-cloud-agents: Cursor Cloud Agents on self-hosted machines, with each agent's tool execution in a Nitro sandbox on EKS. Spec: [#39](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/39).
 - agentcore-mcp: an Amazon Bedrock AgentCore agent that uses EKS as its sandbox through MCP. An MCP server runs each code-execution tool call in a Nitro sandbox.
 
