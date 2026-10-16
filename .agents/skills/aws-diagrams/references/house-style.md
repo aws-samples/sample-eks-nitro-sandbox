@@ -7,8 +7,8 @@ Every value below was read from the five committed figures. The source column na
 | F1 | `examples/images/figure-1-isolation-boundary.drawio` |
 | F2 | `examples/getting-started/coding-agent/images/figure-2-coding-agent-egress.drawio` |
 | F3 | `examples/getting-started/warm-pool/images/figure-3-warm-pool.drawio` |
-| CMA | `examples/ai-agents/claude-managed-agents/images/claude-managed-agents.drawio` |
-| NP | `examples/ai-agents/claude-managed-agents/images/claude-managed-agents-network-policy.drawio` |
+| CMA | `examples/managed-agents/claude-managed-agents/images/claude-managed-agents.drawio` |
+| NP | `examples/managed-agents/claude-managed-agents/images/claude-managed-agents-network-policy.drawio` |
 
 When a new figure needs something these figures never show, take the closest existing element and
 change as little as you can. Do not invent a new colour, font size or arrow style.

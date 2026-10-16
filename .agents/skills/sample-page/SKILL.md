@@ -20,7 +20,7 @@ Paths below are relative to the repository root. Before you start:
      file, and an egress network policy with hostnames.
    - `examples/getting-started/warm-pool/README.md`: agent-sandbox `SandboxTemplate`,
      `SandboxWarmPool` and `SandboxClaim`.
-   - `examples/ai-agents/claude-managed-agents/README.md`: the full layout (`deploy/`,
+   - `examples/managed-agents/claude-managed-agents/README.md`: the full layout (`deploy/`,
      `scripts/`, `src/`), a versions table, "How the network policy works", an optional
      mode, "Good to know" and a thorough clean up.
 3. **Use the `nitro-sandbox-pods` skill** for every statement about how the sandbox works,
