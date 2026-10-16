@@ -16,7 +16,7 @@ examples/
 ├── isolation/
 │   ├── network-policy/
 │   └── sandbox-limits/
-├── policy-enforcement/
+├── policy/
 │   ├── image-signing/
 │   └── cedar-policy/
 ├── ai-agents/
@@ -68,7 +68,7 @@ Samples marked ★ are the next six to be added.
 - network-policy: a standard egress NetworkPolicy enforced on a sandboxed pod, side by side with an ordinary pod.
 - sandbox-limits: the per-sandbox DNS query and connection-tracking limits, and how to recognise each one when a workload reaches it.
 
-### Policy enforcement (`policy-enforcement`)
+### Policy (`policy`)
 
 Checks that run inside the guest and decide what the pod may run.
 

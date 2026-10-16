@@ -42,7 +42,7 @@ pod alone. (`examples/README.md`, "How it works", and Figure 1.)
 | Extra setup | None | KMS attestation conditions |
 
 Source: `examples/README.md`. The samples available today all use `isolated-sandbox`. The
-roadmap plans `confidential-sandbox` samples too: cedar-policy under Policy enforcement, and
+roadmap plans `confidential-sandbox` samples too: cedar-policy under Policy, and
 the Confidential section (`docs/ROADMAP.md`). For confidential-mode
 policy generation and attestation conditions, follow the Amazon EKS User Guide rather than
 this skill.
