@@ -14,30 +14,22 @@ examples/
 │   ├── coding-agent/
 │   └── warm-pool/
 ├── isolation-and-security/
-│   ├── host-escape/
-│   ├── multi-tenant-saas/
 │   ├── network-policy/
 │   ├── image-signing/
-│   ├── observability/
 │   └── sandbox-limits/
 ├── ai-agents/
 │   ├── coding-agents-for-developers/
 │   ├── agent-frameworks/
 │   ├── agent-harnesses/
 │   ├── claude-code-driver/
-│   ├── mcp-server/
-│   ├── kagent/
-│   ├── claude-managed-agents/
-│   └── strands-decider/
+│   └── claude-managed-agents/
 ├── agent-guardrails/
 │   ├── nono-nested-subagents/
 │   ├── nono-procurement-agent/
 │   ├── openshell-composed-isolation/
 │   ├── openshell-procurement-agent/
 │   ├── openshell-helm-lab/
-│   ├── bubblewrap-analyst-lab/
-│   ├── strands-shell/
-│   └── strands-box/
+│   └── bubblewrap-analyst-lab/
 ├── workspaces-and-scaling/
 │   ├── pause-resume/
 │   ├── warm-pool-autoscaling/
@@ -46,19 +38,13 @@ examples/
 │   ├── storage-ebs/
 │   ├── storage-efs/
 │   ├── storage-s3-files/
-│   ├── checkpoint-restore/
-│   ├── checkpointable-agent-platform/
 │   └── cold-start-and-density/
 ├── ci-cd-and-platforms/
 │   ├── docker-builds/
 │   ├── github-actions-runners/
 │   ├── gitlab-ci/
-│   ├── software-factory/
 │   ├── temporal/
-│   ├── istio/
-│   ├── opensandbox/
-│   ├── agent-substrate/
-│   └── gardener/
+│   └── opensandbox/
 └── confidential/
     ├── policy-enforcement/
     ├── encrypted-image/
@@ -68,7 +54,7 @@ examples/
 
 ## Planned samples by section
 
-Samples marked ★ are the next eight to be added.
+Samples marked ★ are the next six to be added.
 
 ### Getting started (`getting-started`, available now)
 
@@ -78,11 +64,8 @@ Samples marked ★ are the next eight to be added.
 
 ### Isolation and security (`isolation-and-security`)
 
-- **host-escape ★**: the same node-takeover pod run with and without a sandbox. Without one it reaches the node; with one it reaches only its own VM.
-- **multi-tenant-saas ★**: two tenants, each in its own sandbox with its own Pod Identity role and network policy. Cross-tenant access is denied.
 - network-policy: a standard egress NetworkPolicy enforced on a sandboxed pod, side by side with an ordinary pod.
 - image-signing: an image signed with AWS Signer and verified inside the guest, while an unsigned image is rejected.
-- observability: which signals still reach you from a sandbox, and what a node-level monitoring agent sees when it runs inside one.
 - sandbox-limits: the per-sandbox DNS query and connection-tracking limits, and how to recognise each one when a workload reaches it.
 
 ### AI agents (`ai-agents`)
@@ -102,10 +85,6 @@ Agent harnesses:
 Agent platforms:
 
 - claude-code-driver: an agent outside drives a warm, network-isolated sandbox that it claims from a pool.
-- mcp-server: an untrusted MCP server in a sandbox with no network, driven by a trusted client outside it.
-- kagent: Kagent's agent pods placed in sandboxes.
-- [claude-managed-agents](../examples/ai-agents/claude-managed-agents/README.md) (available now): a Claude Managed Agents self-hosted sandbox where every tool call runs in the guest and the organization API key never enters it.
-- strands-decider: Strands Decider choosing where each piece of generated code should run.
 
 ### Agent guardrails (`agent-guardrails`)
 
@@ -117,8 +96,6 @@ A second policy layer running inside the VM, on top of the sandbox.
 - openshell-procurement-agent: a procurement analyst confined by OpenShell, whose supervisor holds the real credentials in its own pod outside the guest.
 - openshell-helm-lab: OpenShell's gateway and workspace Helm charts on EKS, with a procurement analyst working in a sandbox.
 - bubblewrap-analyst-lab: a procurement analyst whose tool processes are confined by bubblewrap inside one guest, with no network for the restricted tools.
-- strands-shell: Strands Shell, a virtual shell that runs inside the agent's own process, in a sandbox.
-- strands-box: Strands Box and its deny-by-default Dogwood policy in a sandbox on a Graviton node.
 
 ### Workspaces and scaling (`workspaces-and-scaling`)
 
@@ -129,8 +106,6 @@ A second policy layer running inside the VM, on top of the sandbox.
 - storage-ebs: EBS volumes for sandboxed pods.
 - storage-efs: an EFS file system shared by two sandboxed pods.
 - storage-s3-files: an S3 Files access point shared by two sandboxed pods and kept in sync with its S3 bucket.
-- checkpoint-restore: save a running agent and its tools, release the compute, and continue in a fresh sandbox.
-- checkpointable-agent-platform: deploy an ordinary HTTP agent and let the platform handle checkpoint, wake and fork.
 - cold-start-and-density: measure time to Ready, sandboxes per node and the per-sandbox overhead on your own cluster.
 
 ### CI/CD and platforms (`ci-cd-and-platforms`)
@@ -138,12 +113,8 @@ A second policy layer running inside the VM, on top of the sandbox.
 - **docker-builds ★**: privileged `docker build` and `docker run` inside a sandbox, without exposing the node.
 - **github-actions-runners ★**: GitHub Actions Runner Controller with each untrusted pull request job in its own sandbox, deleted when the job ends.
 - gitlab-ci: a self-hosted GitLab whose CI jobs each run in a sandbox, including a privileged `docker build`.
-- software-factory: a human-gated GitLab loop from issue to merge request to deploy, where every CI job runs in its own sandbox.
 - temporal: Temporal workflows that create, drive, suspend, resume and remove sandboxes.
-- istio: a sandboxed pod in an Istio mesh with strict mTLS, behaving like an ordinary meshed pod.
 - opensandbox: Nitro sandboxes added as a runtime for OpenSandbox.
-- agent-substrate: Agent Substrate on EKS, with each warm worker in a sandbox and agent state checkpointed to S3.
-- gardener: Gardener on EKS creating self-managed Kubernetes clusters on EC2, with an optional worker that runs sandboxes.
 
 ### Confidential (`confidential`, later)
 
@@ -154,18 +125,16 @@ These samples use `runtimeClassName: confidential-sandbox`.
 - secrets-manager-secret: an AWS Secrets Manager secret released only to an approved sandbox.
 - s3-encrypted-file: a file encrypted before upload to Amazon S3 and decrypted only inside an approved sandbox.
 
-## Starting with these 8, and why
+## Starting with these 6, and why
 
-The eight cover four sections with two samples each. Every one builds on a cluster that has finished Getting started, and each runs on standard EKS Auto Mode with no extra platform to install beyond what the sample states.
+The six cover three sections with two samples each. Every one builds on a cluster that has finished Getting started, and each runs on standard EKS Auto Mode with no extra platform to install beyond what the sample states.
 
-- **host-escape**: the clearest picture of the boundary. The same privileged pod owns a node without a sandbox, and only its own VM with one.
-- **multi-tenant-saas**: the most common production question, how to keep tenants apart, answered with the sandbox, Pod Identity and network policy together.
-- **coding-agents-for-developers**: one app for any coding agent. Each session is an agent-sandbox `Sandbox` whose workspace survives suspend and resume.
+- **coding-agents-for-developers**: one app for any coding agent. Each session is claimed from a warm pool and keeps its workspace on S3 Files after its pod is gone.
 - **agent-frameworks**: ten agent frameworks calling Amazon Bedrock with no stored keys, through EKS Pod Identity, with the code each model writes running in the sandbox.
 - **pause-resume**: stop paying for idle sandboxes and pick up the same workspace later.
 - **warm-pool-autoscaling**: extends the warm pool from Getting started, so the pool grows and shrinks with demand.
 - **docker-builds**: privileged `docker build` and `docker run` without exposing the node, the CI case that used to need workarounds.
-- **github-actions-runners**: untrusted pull request jobs, each in its own VM that is deleted when the job ends.
+- **github-actions-runners**: untrusted pull request jobs, each in its own sandboxed pod that is deleted when the job ends.
 
 ## Not planned for this repo
 
