@@ -100,7 +100,7 @@ Agent services that run the agent loop for you and send its tool calls to comput
 - [claude-managed-agents](../examples/managed-agents/claude-managed-agents/README.md) (available now): a Claude Managed Agents self-hosted sandbox where every tool call runs in the guest and the organization API key never enters it.
 - openai-managed-agents: an OpenAI Managed Agents self-hosted sandbox, with each session's tool calls running in a Nitro sandbox. Spec: [#9](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/9).
 - bedrock-managed-agents: Bedrock Managed Agents, powered by OpenAI, with the agent's tool calls running in a Nitro sandbox on EKS.
-- cursor-cloud-agents: Cursor Cloud Agents on self-hosted machines, with each agent's tool execution in a Nitro sandbox on EKS.
+- cursor-cloud-agents: Cursor Cloud Agents on self-hosted machines, with each agent's tool execution in a Nitro sandbox on EKS. Spec: [#39](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/39).
 - agentcore-mcp: an Amazon Bedrock AgentCore agent that uses EKS as its sandbox through MCP. An MCP server runs each code-execution tool call in a Nitro sandbox.
 
 ### Subagent security (`subagent-security`)
@@ -119,7 +119,7 @@ The [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) resources,
 - **warm-pool-autoscaling-keda ★**: KEDA scales a warm pool up and down with claim demand. Spec: [#31](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/31).
 - ide: VS Code in the browser on a persistent EBS workspace. Spec: [#32](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/32).
 - argo-rollouts: rolling a `SandboxTemplate` change through a warm pool with Argo Rollouts, replacing the warm sandboxes built from the old template. Spec: [#33](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/33).
-- brain-and-hands: the agent (the brain) runs on an ordinary pod with model access and no local shell. Each command it runs goes to a warm, network-isolated sandbox (the hands) that it claims from a pool and drives with `kubectl exec`.
+- brain-and-hands: the agent (the brain) runs on an ordinary pod with model access and no local shell. Each command it runs goes to a warm, network-isolated sandbox (the hands) that it claims from a pool and drives with `kubectl exec`. Spec: [#38](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/38).
 
 ### Storage (`storage`)
 
