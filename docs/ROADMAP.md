@@ -13,67 +13,45 @@ examples/
 │   ├── hello-sandbox/
 │   ├── coding-agent/
 │   └── warm-pool/
-├── isolation-and-security/
-│   ├── host-escape/
-│   ├── multi-tenant-saas/
+├── isolation/
 │   ├── network-policy/
-│   ├── image-signing/
-│   ├── observability/
 │   └── sandbox-limits/
+├── policy/
+│   ├── image-signing/
+│   └── cedar-policy/
 ├── ai-agents/
-│   ├── claude-code-workspace/
-│   ├── opencode-workspace/
-│   ├── codex-workspace/
-│   ├── kiro-cli-workspace/
-│   ├── strands-bedrock/
-│   ├── claude-agent-sdk/
-│   ├── google-adk/
-│   ├── crewai/
-│   ├── spring-ai/
-│   ├── langgraph/
-│   ├── strands-harness/
-│   ├── strands-token-efficiency/
-│   ├── openclaw/
-│   ├── hermes/
-│   ├── deep-agents/
-│   ├── pi/
-│   ├── claude-code-driver/
-│   ├── mcp-server/
-│   ├── kagent/
+│   ├── coding-agents-for-developers/
+│   ├── agent-frameworks/
+│   └── agent-harnesses/
+├── managed-agents/
 │   ├── claude-managed-agents/
-│   └── strands-decider/
-├── agent-guardrails/
-│   ├── nono-nested-subagents/
-│   ├── nono-procurement-agent/
-│   ├── openshell-composed-isolation/
-│   ├── openshell-procurement-agent/
-│   ├── openshell-helm-lab/
-│   ├── bubblewrap-analyst-lab/
-│   ├── strands-shell/
-│   └── strands-box/
-├── workspaces-and-scaling/
+│   ├── openai-managed-agents/
+│   ├── bedrock-managed-agents/
+│   ├── cursor-cloud-agents/
+│   └── agentcore-mcp/
+├── subagent-security/
+│   ├── nono/
+│   ├── bubblewrap/
+│   └── openshell/
+├── agent-sandbox/
 │   ├── pause-resume/
-│   ├── warm-pool-autoscaling/
-│   ├── vscode/
-│   ├── template-rollouts/
-│   ├── storage-ebs/
-│   ├── storage-efs/
-│   ├── storage-s3-files/
-│   ├── checkpoint-restore/
-│   ├── checkpointable-agent-platform/
-│   └── cold-start-and-density/
-├── ci-cd-and-platforms/
+│   ├── warm-pool-autoscaling-keda/
+│   ├── ide/
+│   ├── argo-rollouts/
+│   └── brain-and-hands/
+├── storage/
+│   ├── ebs/
+│   ├── efs/
+│   └── s3-files/
+├── ci-cd/
 │   ├── docker-builds/
-│   ├── github-actions-runners/
-│   ├── gitlab-ci/
-│   ├── software-factory/
+│   ├── github-actions/
+│   └── gitlab-ci/
+├── integrations/
 │   ├── temporal/
-│   ├── istio/
-│   ├── opensandbox/
-│   ├── agent-substrate/
-│   └── gardener/
+│   ├── openshell-kubernetes/
+│   └── opensandbox/
 └── confidential/
-    ├── policy-enforcement/
     ├── encrypted-image/
     ├── secrets-manager-secret/
     └── s3-encrypted-file/
@@ -81,7 +59,7 @@ examples/
 
 ## Planned samples by section
 
-Samples marked ★ are the next eight to be added.
+Samples marked ★ are the next six to be added.
 
 ### Getting started (`getting-started`, available now)
 
@@ -89,110 +67,84 @@ Samples marked ★ are the next eight to be added.
 - [coding-agent](../examples/getting-started/coding-agent/README.md): Claude Code in a sandbox that reads a GitHub issue, fixes it and opens a pull request.
 - [warm-pool](../examples/getting-started/warm-pool/README.md): a pool of pre-booted sandboxes, ready for a claim to pick one up.
 
-### Isolation and security (`isolation-and-security`)
+### Isolation (`isolation`)
 
-- **host-escape ★**: the same node-takeover pod run with and without a sandbox. Without one it reaches the node; with one it reaches only its own VM.
-- **multi-tenant-saas ★**: two tenants, each in its own sandbox with its own Pod Identity role and network policy. Cross-tenant access is denied.
-- network-policy: a standard egress NetworkPolicy enforced on a sandboxed pod, side by side with an ordinary pod.
-- image-signing: an image signed with AWS Signer and verified inside the guest, while an unsigned image is rejected.
-- observability: which signals still reach you from a sandbox, and what a node-level monitoring agent sees when it runs inside one.
-- sandbox-limits: the per-sandbox DNS query and connection-tracking limits, and how to recognise each one when a workload reaches it.
+- network-policy: a standard egress NetworkPolicy enforced on a sandboxed pod, side by side with an ordinary pod. Spec: [#15](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/15).
+- sandbox-limits: the per-sandbox DNS query and connection-tracking limits, and how to recognise each one when a workload reaches it. Spec: [#16](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/16).
+
+### Policy (`policy`)
+
+Checks that run inside the guest and decide what the pod may run.
+
+- image-signing: an image signed with AWS Signer and verified inside the guest, while an unsigned image is rejected. Uses `isolated-sandbox`. Spec: [#17](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/17).
+- cedar-policy: a Cedar policy generated for a workload and enforced inside the guest, which refuses an operator's exec. Uses `confidential-sandbox`. Spec: [#18](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/18).
 
 ### AI agents (`ai-agents`)
 
 Coding agents:
 
-- claude-code-workspace: the Claude Code CLI with a persistent EBS workspace that is kept across suspend and resume.
-- opencode-workspace: OpenCode with a persistent EBS workspace and an optional Amazon Bedrock turn.
-- codex-workspace: the Codex CLI with a persistent EBS workspace that is kept across suspend and resume.
-- **kiro-cli-workspace ★**: Kiro CLI with a persistent EBS workspace that is kept across suspend and resume.
+- **coding-agents-for-developers ★**: a web app where a developer starts Claude Code, Codex, Kiro CLI, OpenCode, pi or oh-my-pi in a browser terminal. Each session runs in its own sandbox, claimed from a warm pool, and can open only its own workspace folder on S3 Files. Spec: [#12](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/12).
 
 Agent frameworks on Amazon Bedrock:
 
-- **strands-bedrock ★**: a Strands Agents agent on Amazon Bedrock, with credentials from EKS Pod Identity and its memory on EBS.
-- claude-agent-sdk: the Claude Agent SDK running inside the sandbox, so every command its Bash tool runs stays in the guest.
-- google-adk: a Google ADK agent that reaches Amazon Bedrock through LiteLLM and Pod Identity.
-- crewai: a CrewAI crew, a researcher and a writer, on Amazon Bedrock, placed in a sandbox with one line.
-- spring-ai: a Spring AI application whose JVM calls Amazon Bedrock through the AWS SDK for Java and Pod Identity.
-- langgraph: a LangGraph agent on Amazon Bedrock, placed in a sandbox with one line.
-- strands-harness: the Strands harness with its real shell and file tools, so every command it generates runs in the guest.
-- strands-token-efficiency: the same task on the same model with the Strands harness's context management on and off, and the token count of each run.
+- **agent-frameworks ★**: one web app that runs the same agent in Strands Agents, LangGraph, Deep Agents, CrewAI, Google ADK, OpenAI Agents SDK, Pydantic AI, LlamaIndex, the Claude Agent SDK and Spring AI, each run in a fresh sandbox where the code the model writes executes. Spec: [#13](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/13).
 
 Agent harnesses:
 
-- openclaw: an OpenClaw harness with full privileges, boxed in a guest, beside the same harness on an ordinary pod.
-- hermes: a long-lived Hermes harness whose state on EBS is kept across suspend and resume, plus a variant with no network.
-- deep-agents: LangChain Deep Agents Code in a sandbox, compared with the same harness on an ordinary pod.
-- pi: the pi coding agent in a sandbox, with an optional Amazon Bedrock tool turn.
+- agent-harnesses: OpenClaw, Hermes and NVIDIA NemoClaw, each always on in its own sandbox with root inside it, memory on EBS kept across suspend and resume, and only Amazon Bedrock reachable. Spec: [#14](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/14).
 
-Agent platforms:
+### Managed agents (`managed-agents`)
 
-- claude-code-driver: an agent outside drives a warm, network-isolated sandbox that it claims from a pool.
-- mcp-server: an untrusted MCP server in a sandbox with no network, driven by a trusted client outside it.
-- kagent: Kagent's agent pods placed in sandboxes.
-- [claude-managed-agents](../examples/ai-agents/claude-managed-agents/README.md) (available now): a Claude Managed Agents self-hosted sandbox where every tool call runs in the guest and the organization API key never enters it.
-- strands-decider: Strands Decider choosing where each piece of generated code should run.
+Agent services that run the agent loop for you and send its tool calls to compute you host. Each sample runs those tool calls in a Nitro sandbox on EKS.
 
-### Agent guardrails (`agent-guardrails`)
+- [claude-managed-agents](../examples/managed-agents/claude-managed-agents/README.md) (available now): a Claude Managed Agents self-hosted sandbox where every tool call runs in the guest and the organization API key never enters it.
+- openai-managed-agents: an OpenAI Managed Agents self-hosted sandbox, with each session's tool calls running in a Nitro sandbox. Spec: [#9](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/9).
+- bedrock-managed-agents: Bedrock Managed Agents, powered by OpenAI, with the agent's tool calls running in a Nitro sandbox on EKS. Spec: [#40](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/40).
+- cursor-cloud-agents: Cursor Cloud Agents on self-hosted machines, with each agent's tool execution in a Nitro sandbox on EKS. Spec: [#39](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/39).
+- agentcore-mcp: an Amazon Bedrock AgentCore agent that uses EKS as its sandbox through MCP. An MCP server runs each code-execution tool call in a Nitro sandbox. Spec: [#41](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/41).
 
-A second policy layer running inside the VM, on top of the sandbox.
+### Subagent security (`subagent-security`)
 
-- nono-nested-subagents: several nono-wrapped sub-agents in one sandbox, with nono restricting each process.
-- nono-procurement-agent: a procurement analyst agent that does useful work with bounded access, confined by nono.
-- openshell-composed-isolation: OpenShell's file, system call and network policy composed with a sandbox.
-- openshell-procurement-agent: a procurement analyst confined by OpenShell, whose supervisor holds the real credentials in its own pod outside the guest.
-- openshell-helm-lab: OpenShell's gateway and workspace Helm charts on EKS, with a procurement analyst working in a sandbox.
-- bubblewrap-analyst-lab: a procurement analyst whose tool processes are confined by bubblewrap inside one guest, with no network for the restricted tools.
-- strands-shell: Strands Shell, a virtual shell that runs inside the agent's own process, in a sandbox.
-- strands-box: Strands Box and its deny-by-default Dogwood policy in a sandbox on a Graviton node.
+The same procurement analyst agent three ways. Inside its sandbox, a second policy layer confines the tools and subagents it runs, each with only the files, processes and network it needs.
 
-### Workspaces and scaling (`workspaces-and-scaling`)
+- nono: the analyst confined by nono, doing useful work with bounded access. Spec: [#34](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/34).
+- bubblewrap: the analyst whose tool processes are confined by bubblewrap, with no network for the restricted tools. Spec: [#35](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/35).
+- openshell: the analyst confined by OpenShell, whose supervisor holds the real credentials in its own pod outside the sandbox. Spec: [#36](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/36).
 
-- **pause-resume ★**: suspend a sandbox and resume it into a new guest VM with its EBS data intact.
-- **warm-pool-autoscaling ★**: KEDA scales a warm pool up and down with claim demand.
-- vscode: VS Code in the browser on a persistent EBS workspace.
-- template-rollouts: rolling a `SandboxTemplate` change through a warm pool with Argo Rollouts, replacing the warm sandboxes built from the old template.
-- storage-ebs: EBS volumes for sandboxed pods.
-- storage-efs: an EFS file system shared by two sandboxed pods.
-- storage-s3-files: an S3 Files access point shared by two sandboxed pods and kept in sync with its S3 bucket.
-- checkpoint-restore: save a running agent and its tools, release the compute, and continue in a fresh sandbox.
-- checkpointable-agent-platform: deploy an ordinary HTTP agent and let the platform handle checkpoint, wake and fork.
-- cold-start-and-density: measure time to Ready, sandboxes per node and the per-sandbox overhead on your own cluster.
+### Agent sandbox (`agent-sandbox`)
 
-### CI/CD and platforms (`ci-cd-and-platforms`)
+The [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) resources, `Sandbox`, `SandboxTemplate`, `SandboxWarmPool` and `SandboxClaim`, with Nitro sandboxes.
 
-- **docker-builds ★**: privileged `docker build` and `docker run` inside a sandbox, without exposing the node.
-- **github-actions-runners ★**: GitHub Actions Runner Controller with each untrusted pull request job in its own sandbox, deleted when the job ends.
-- gitlab-ci: a self-hosted GitLab whose CI jobs each run in a sandbox, including a privileged `docker build`.
-- software-factory: a human-gated GitLab loop from issue to merge request to deploy, where every CI job runs in its own sandbox.
-- temporal: Temporal workflows that create, drive, suspend, resume and remove sandboxes.
-- istio: a sandboxed pod in an Istio mesh with strict mTLS, behaving like an ordinary meshed pod.
-- opensandbox: Nitro sandboxes added as a runtime for OpenSandbox.
-- agent-substrate: Agent Substrate on EKS, with each warm worker in a sandbox and agent state checkpointed to S3.
-- gardener: Gardener on EKS creating self-managed Kubernetes clusters on EC2, with an optional worker that runs sandboxes.
+- **pause-resume ★**: suspend a sandbox and resume it into a new guest VM with its EBS data intact. Spec: [#30](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/30).
+- **warm-pool-autoscaling-keda ★**: KEDA scales a warm pool up and down with claim demand. Spec: [#31](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/31).
+- ide: VS Code in the browser on a persistent EBS workspace. Spec: [#32](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/32).
+- argo-rollouts: rolling a `SandboxTemplate` change through a warm pool with Argo Rollouts, replacing the warm sandboxes built from the old template. Spec: [#33](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/33).
+- brain-and-hands: the agent (the brain) runs on an ordinary pod with model access and no local shell. Each command it runs goes to a warm, network-isolated sandbox (the hands) that it claims from a pool and drives with `kubectl exec`. Spec: [#38](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/38).
 
-### Confidential (`confidential`, later)
+### Storage (`storage`)
+
+- ebs: EBS volumes for sandboxed pods. Spec: [#27](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/27).
+- efs: an EFS file system shared by two sandboxed pods. Spec: [#28](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/28).
+- s3-files: an S3 Files access point shared by two sandboxed pods and kept in sync with its S3 bucket. Spec: [#29](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/29).
+
+### CI/CD (`ci-cd`)
+
+- **docker-builds ★**: privileged `docker build` and `docker run` inside a sandbox, without exposing the node. Spec: [#23](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/23).
+- **github-actions ★**: GitHub Actions Runner Controller with each untrusted pull request job in its own sandbox, deleted when the job ends. Spec: [#24](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/24).
+- gitlab-ci: a self-hosted GitLab whose CI jobs each run in a sandbox, including a privileged `docker build`. Spec: [#25](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/25).
+
+### Integrations (`integrations`)
+
+Other platforms that create and manage sandboxes.
+
+- temporal: Temporal workflows that create, drive, suspend, resume and remove sandboxes. Spec: [#26](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/26).
+- openshell-kubernetes: OpenShell installed on EKS with its Helm charts. Each OpenShell sandbox's workload pod runs in a Nitro sandbox, and its supervisor, which holds the credentials, stays an ordinary pod. Spec: [#37](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/37).
+- opensandbox (blocked until GA): Nitro sandboxes as a secure runtime for OpenSandbox. Waits for Nitro sandboxes to be generally available and the runtime to be added upstream in OpenSandbox. Spec: [#22](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/22).
+
+### Confidential (`confidential`)
 
 These samples use `runtimeClassName: confidential-sandbox`.
 
-- policy-enforcement: a Cedar policy generated for a workload and enforced inside the guest, which refuses an operator's exec.
-- encrypted-image: encrypted image layers in Amazon ECR, decrypted inside the sandbox after AWS KMS checks its attested policy.
-- secrets-manager-secret: an AWS Secrets Manager secret released only to an approved sandbox.
-- s3-encrypted-file: a file encrypted before upload to Amazon S3 and decrypted only inside an approved sandbox.
-
-## Starting with these 8, and why
-
-The eight cover four sections with two samples each. Every one builds on a cluster that has finished Getting started, and each runs on standard EKS Auto Mode with no extra platform to install beyond what the sample states.
-
-- **host-escape**: the clearest picture of the boundary. The same privileged pod owns a node without a sandbox, and only its own VM with one.
-- **multi-tenant-saas**: the most common production question, how to keep tenants apart, answered with the sandbox, Pod Identity and network policy together.
-- **kiro-cli-workspace**: a coding agent's workspace as an agent-sandbox `Sandbox`, with a persistent home that survives suspend and resume.
-- **strands-bedrock**: an agent framework calling Amazon Bedrock with no stored keys, through EKS Pod Identity, with its memory kept on EBS.
-- **pause-resume**: stop paying for idle sandboxes and pick up the same workspace later.
-- **warm-pool-autoscaling**: extends the warm pool from Getting started, so the pool grows and shrinks with demand.
-- **docker-builds**: privileged `docker build` and `docker run` without exposing the node, the CI case that used to need workarounds.
-- **github-actions-runners**: untrusted pull request jobs, each in its own VM that is deleted when the job ends.
-
-## Not planned for this repo
-
-Beyond the cluster that Getting started creates, cluster setup guides, AMI builds and benchmark comparisons stay out of this repo.
+- encrypted-image: encrypted image layers in Amazon ECR, decrypted inside the sandbox after AWS KMS checks its attested policy. Spec: [#19](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/19).
+- secrets-manager-secret: an AWS Secrets Manager secret released only to an approved sandbox. Spec: [#20](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/20).
+- s3-encrypted-file: a file encrypted before upload to Amazon S3 and decrypted only inside an approved sandbox. Spec: [#21](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/21).

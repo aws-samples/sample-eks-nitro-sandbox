@@ -10,9 +10,9 @@ Runnable samples for Nitro Sandboxes on Amazon EKS: hardware-enforced workload i
 
 Start from the [site home page](examples/README.md) for what a Nitro sandbox is and the prerequisites the samples share.
 
-## AI agents
+## Managed agents
 
-- [Claude Managed Agents](examples/ai-agents/claude-managed-agents/README.md): a Claude Managed Agents self-hosted sandbox where each session's tool calls run in a sandbox of their own and the organization API key stays off the cluster.
+- [Claude Managed Agents](examples/managed-agents/claude-managed-agents/README.md): a Claude Managed Agents self-hosted sandbox where each session's tool calls run in a sandbox of their own and the organization API key stays off the cluster.
 
 ## Preview the site locally
 

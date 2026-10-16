@@ -29,7 +29,7 @@ pod alone. (`examples/README.md`, "How it works", and Figure 1.)
 | Runs in the guest VM | Stays outside the guest |
 |---|---|
 | The pod's containers and their own kernel (`examples/README.md`) | The kubelet and containerd on the node, which still see an ordinary pod (`examples/README.md`, Figure 1) |
-| The endpoints that serve instance metadata and Pod Identity credentials, when the pod has a network (`examples/getting-started/hello-sandbox/README.md`) | Network policy enforcement: eBPF programs on the pod's host-side interface on the node (`examples/ai-agents/claude-managed-agents/README.md`, "Where it is enforced") |
+| The endpoints that serve instance metadata and Pod Identity credentials, when the pod has a network (`examples/getting-started/hello-sandbox/README.md`) | Network policy enforcement: eBPF programs on the pod's host-side interface on the node (`examples/managed-agents/claude-managed-agents/README.md`, "Where it is enforced") |
 | The pod's network interface: an `eth0` with a VPC address and a default route, unless the pod is network-isolated (`examples/getting-started/hello-sandbox/README.md`) | Scheduling, and the CSI drivers that mount the pod's volumes, which work as they do for any pod (`examples/README.md`) |
 | The internal control channel that `exec`, `cp` and `logs` use, which works even with no network (`examples/README.md`) | |
 
@@ -41,8 +41,9 @@ pod alone. (`examples/README.md`, "How it works", and Figure 1.)
 | Policy | A Cedar policy is generated for you | Needs a Cedar policy that pins down what the pod may run; it becomes part of what the sandbox attests to |
 | Extra setup | None | KMS attestation conditions |
 
-Source: `examples/README.md`. The samples available today all use `isolated-sandbox`; the
-confidential samples on the roadmap come later (`docs/ROADMAP.md`). For confidential-mode
+Source: `examples/README.md`. The samples available today all use `isolated-sandbox`. The
+roadmap plans `confidential-sandbox` samples too: cedar-policy under Policy, and
+the Confidential section (`docs/ROADMAP.md`). For confidential-mode
 policy generation and attestation conditions, follow the Amazon EKS User Guide rather than
 this skill.
 
@@ -82,7 +83,7 @@ they show the pod's containers ran in a VM of their own:
 
 - **Its own kernel.** `uname -rv` in the sandbox shows the guest's kernel build; an ordinary
   pod on the same node shows the node's. The version string can match; the build and the
-  boot do not. (`examples/ai-agents/claude-managed-agents/README.md`, step 7.)
+  boot do not. (`examples/managed-agents/claude-managed-agents/README.md`, step 7.)
 - **Its own boot.** `cat /proc/uptime` matches the pod's age, because the VM booted with the
   pod; an ordinary pod reports the node's uptime.
   (`examples/getting-started/hello-sandbox/README.md`.)
@@ -93,12 +94,12 @@ These support a claim but do not prove the pod ran in a sandbox on their own:
 
 - **The runtime class**, `kubectl get pod <pod> -o jsonpath='{.spec.runtimeClassName}'`,
   shows what was asked for, not what ran.
-  (`examples/ai-agents/claude-managed-agents/README.md`, step 7.)
+  (`examples/managed-agents/claude-managed-agents/README.md`, step 7.)
 - **No network, when isolated.** Only `lo` has an address, there is no route, and a lookup
   fails with `bad address`. (`examples/getting-started/hello-sandbox/README.md`.)
 - **Credentials by name, not value.** `env | cut -d= -f1 | grep ^PREFIX_` shows which
   variables exist without printing a secret.
-  (`examples/ai-agents/claude-managed-agents/README.md`, step 7.)
+  (`examples/managed-agents/claude-managed-agents/README.md`, step 7.)
 
 ## Network policy
 
@@ -115,14 +116,14 @@ These support a claim but do not prove the pod ran in a sandbox on their own:
 - **Allow DNS explicitly.** The samples allow egress to the CoreDNS ClusterIP on UDP and TCP
   53, filled in at apply time from `kubectl get svc -n kube-system kube-dns`.
   (`examples/getting-started/coding-agent/egress-policy.yaml` and
-  `examples/ai-agents/claude-managed-agents/deploy/egress-policy.yaml`, each page's step 5.)
+  `examples/managed-agents/claude-managed-agents/deploy/egress-policy.yaml`, each page's step 5.)
 - **Wait for the `PolicyEndpoint`.** It shows the controller has handed the policy to the
   nodes; start the workload after it appears. (Coding agent, step 5; Claude Managed Agents,
   step 5.)
 - **It is enforced on the node, outside the guest.** The node's network policy agent
   attaches eBPF programs to the pod's host-side interface, so a command inside the sandbox,
   even as root, cannot change the policy. Kubernetes always allows traffic between a pod and
-  its own node. (`examples/ai-agents/claude-managed-agents/README.md`, "How the network
+  its own node. (`examples/managed-agents/claude-managed-agents/README.md`, "How the network
   policy works".)
 - **Refusals can look different.** A blocked host can time out on IPv4 or fail at once with
   "Network is unreachable" when it also publishes IPv6 addresses; both are the same block.
@@ -131,7 +132,7 @@ These support a claim but do not prove the pod ran in a sandbox on their own:
   `Managed`, the agent-sandbox controller creates its own `NetworkPolicy` for the template's
   pods, which with no rules of your own allows the public internet. Network policies are
   additive, so that policy would undo yours. Set `Unmanaged` when the sample ships its own
-  policy. (`examples/ai-agents/claude-managed-agents/README.md`; upstream
+  policy. (`examples/managed-agents/claude-managed-agents/README.md`; upstream
   [API reference](https://github.com/kubernetes-sigs/agent-sandbox/blob/v1.0.6/docs/api.md#networkpolicymanagement).)
 
 ## Pod Identity and the metadata service
@@ -145,10 +146,10 @@ These support a claim but do not prove the pod ran in a sandbox on their own:
   (`examples/getting-started/hello-sandbox/README.md`). The Pod Identity address,
   `169.254.170.23`, is answered inside the VM itself, so the traffic never reaches the
   network policy and the policy needs no rule for it
-  (`examples/ai-agents/claude-managed-agents/README.md`, Claude Platform on AWS).
+  (`examples/managed-agents/claude-managed-agents/README.md`, Claude Platform on AWS).
 - **The metadata service holds no role.** At `169.254.169.254` it answers with placement and
   service details only, and its `iam/` paths return 404, so a pod with no Pod Identity
-  association has no role to assume. (`examples/ai-agents/claude-managed-agents/README.md`,
+  association has no role to assume. (`examples/managed-agents/claude-managed-agents/README.md`,
   "No reusable credential".)
 - **A network-isolated pod has neither endpoint.** (`examples/README.md`.)
 
@@ -188,7 +189,7 @@ step 1).
 
 For an agent workspace with a persistent home, use a `Sandbox` with `volumeClaimTemplates`
 and suspend it with `operatingMode`, not a bare pod with a hand-made PVC: that is the shape
-the roadmap gives the workspace samples (`docs/ROADMAP.md`, kiro-cli-workspace and
+the roadmap gives the workspace samples (`docs/ROADMAP.md`, coding-agents-for-developers and
 pause-resume), and the upstream `Sandbox` API provides both fields.
 
 ## Claims to avoid

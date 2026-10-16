@@ -41,13 +41,13 @@ kubectl config set-context --current --namespace=$NAMESPACE
 ```
 
 **Step 3: Start by creating a regular (non-sandboxed) pod.** [`hello-default.yaml`](hello-default.yaml)
-is an regular pod without node selector, toleration or sidecar.
+is a regular pod without node selector, toleration or sidecar.
 
 ```yaml
 apiVersion: v1
 kind: Pod
 metadata:
-  name: hello-sandbox
+  name: hello-default
 spec:
   containers:
     - name: hello
@@ -200,6 +200,7 @@ command terminated with exit code 1
 Delete the pods from this sample:
 
 ```bash
+kubectl delete -f hello-default.yaml --ignore-not-found
 kubectl delete -f hello-sandbox.yaml --ignore-not-found
 kubectl delete -f hello-network-isolated.yaml --ignore-not-found
 ```

@@ -26,7 +26,7 @@ theme:
     repo: fontawesome/brands/github
   features:
     # Left vertical menu only, with navigation.sections on: each top-level nav entry
-    # (Getting started, AI agents) renders as a section heading with its pages always
+    # (Getting started, Managed agents) renders as a section heading with its pages always
     # listed under it, instead of a collapsible twisty. navigation.tabs stays off so
     # the sections are not moved into a top bar. navigation.indexes is off on purpose:
     # it folds a section's first page into the heading and drops it from the menu.
@@ -82,5 +82,5 @@ nav:
       - Hello sandbox: getting-started/hello-sandbox/README.md
       - Coding agent: getting-started/coding-agent/README.md
       - Warm pool: getting-started/warm-pool/README.md
-  - AI agents:
-      - Claude Managed Agents: ai-agents/claude-managed-agents/README.md
+  - Managed agents:
+      - Claude Managed Agents: managed-agents/claude-managed-agents/README.md

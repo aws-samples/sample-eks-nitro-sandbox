@@ -8,7 +8,7 @@ folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
-cd sample-eks-nitro-sandbox/examples/ai-agents/claude-managed-agents
+cd sample-eks-nitro-sandbox/examples/managed-agents/claude-managed-agents
 ```
 
 For this sample you also need [Docker](https://docs.docker.com/get-docker/), Python 3 with
