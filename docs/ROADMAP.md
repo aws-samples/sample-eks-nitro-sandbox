@@ -23,7 +23,6 @@ examples/
 │   ├── coding-agents-for-developers/
 │   ├── agent-frameworks/
 │   ├── agent-harnesses/
-│   ├── claude-code-driver/
 │   └── claude-managed-agents/
 ├── subagent-security/
 │   ├── nono/
@@ -33,7 +32,8 @@ examples/
 │   ├── pause-resume/
 │   ├── warm-pool-autoscaling-keda/
 │   ├── ide/
-│   └── argo-rollouts/
+│   ├── argo-rollouts/
+│   └── brain-and-hands/
 ├── storage/
 │   ├── ebs/
 │   ├── efs/
@@ -88,10 +88,6 @@ Agent harnesses:
 
 - agent-harnesses: OpenClaw, Hermes and NVIDIA NemoClaw, each always on in its own sandbox with root inside it, memory on EBS kept across suspend and resume, and only Amazon Bedrock reachable. Spec: [#14](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/14).
 
-Agent platforms:
-
-- claude-code-driver: an agent outside drives a warm, network-isolated sandbox that it claims from a pool.
-
 ### Subagent security (`subagent-security`)
 
 The same procurement analyst agent three ways. Inside its sandbox, a second policy layer confines the tools and subagents it runs, each with only the files, processes and network it needs.
@@ -108,6 +104,7 @@ The [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) resources,
 - **warm-pool-autoscaling-keda ★**: KEDA scales a warm pool up and down with claim demand. Spec: [#31](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/31).
 - ide: VS Code in the browser on a persistent EBS workspace. Spec: [#32](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/32).
 - argo-rollouts: rolling a `SandboxTemplate` change through a warm pool with Argo Rollouts, replacing the warm sandboxes built from the old template. Spec: [#33](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/33).
+- brain-and-hands: the agent (the brain) runs on an ordinary pod with model access and no local shell. Each command it runs goes to a warm, network-isolated sandbox (the hands) that it claims from a pool and drives with `kubectl exec`.
 
 ### Storage (`storage`)
 
