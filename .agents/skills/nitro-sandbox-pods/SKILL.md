@@ -41,8 +41,9 @@ pod alone. (`examples/README.md`, "How it works", and Figure 1.)
 | Policy | A Cedar policy is generated for you | Needs a Cedar policy that pins down what the pod may run; it becomes part of what the sandbox attests to |
 | Extra setup | None | KMS attestation conditions |
 
-Source: `examples/README.md`. The samples available today all use `isolated-sandbox`; the
-confidential samples on the roadmap come later (`docs/ROADMAP.md`). For confidential-mode
+Source: `examples/README.md`. The samples available today all use `isolated-sandbox`. The
+roadmap plans `confidential-sandbox` samples too: cedar-policy under Policy enforcement, and
+the Confidential section (`docs/ROADMAP.md`). For confidential-mode
 policy generation and attestation conditions, follow the Amazon EKS User Guide rather than
 this skill.
 

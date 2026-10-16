@@ -123,7 +123,7 @@ A second policy layer running inside the VM, on top of the sandbox.
 - temporal: Temporal workflows that create, drive, suspend, resume and remove sandboxes.
 - opensandbox: Nitro sandboxes added as a runtime for OpenSandbox.
 
-### Confidential (`confidential`, later)
+### Confidential (`confidential`)
 
 These samples use `runtimeClassName: confidential-sandbox`.
 
