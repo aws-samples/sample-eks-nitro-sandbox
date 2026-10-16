@@ -188,7 +188,7 @@ step 1).
 
 For an agent workspace with a persistent home, use a `Sandbox` with `volumeClaimTemplates`
 and suspend it with `operatingMode`, not a bare pod with a hand-made PVC: that is the shape
-the roadmap gives the workspace samples (`docs/ROADMAP.md`, kiro-cli-workspace and
+the roadmap gives the workspace samples (`docs/ROADMAP.md`, coding-agents-for-developers and
 pause-resume), and the upstream `Sandbox` API provides both fields.
 
 ## Claims to avoid

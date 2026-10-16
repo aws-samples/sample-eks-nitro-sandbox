@@ -21,10 +21,7 @@ examples/
 │   ├── observability/
 │   └── sandbox-limits/
 ├── ai-agents/
-│   ├── claude-code-workspace/
-│   ├── opencode-workspace/
-│   ├── codex-workspace/
-│   ├── kiro-cli-workspace/
+│   ├── coding-agents-for-developers/
 │   ├── strands-bedrock/
 │   ├── claude-agent-sdk/
 │   ├── google-adk/
@@ -36,7 +33,6 @@ examples/
 │   ├── openclaw/
 │   ├── hermes/
 │   ├── deep-agents/
-│   ├── pi/
 │   ├── claude-code-driver/
 │   ├── mcp-server/
 │   ├── kagent/
@@ -102,10 +98,7 @@ Samples marked ★ are the next eight to be added.
 
 Coding agents:
 
-- claude-code-workspace: the Claude Code CLI with a persistent EBS workspace that is kept across suspend and resume.
-- opencode-workspace: OpenCode with a persistent EBS workspace and an optional Amazon Bedrock turn.
-- codex-workspace: the Codex CLI with a persistent EBS workspace that is kept across suspend and resume.
-- **kiro-cli-workspace ★**: Kiro CLI with a persistent EBS workspace that is kept across suspend and resume.
+- **coding-agents-for-developers ★**: a web app where a developer starts Claude Code, Codex, Kiro CLI, OpenCode, pi or oh-my-pi in a browser terminal, each session in its own sandbox with a workspace kept on S3 Files. Spec: [#12](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/12).
 
 Agent frameworks on Amazon Bedrock:
 
@@ -123,7 +116,6 @@ Agent harnesses:
 - openclaw: an OpenClaw harness with full privileges, boxed in a guest, beside the same harness on an ordinary pod.
 - hermes: a long-lived Hermes harness whose state on EBS is kept across suspend and resume, plus a variant with no network.
 - deep-agents: LangChain Deep Agents Code in a sandbox, compared with the same harness on an ordinary pod.
-- pi: the pi coding agent in a sandbox, with an optional Amazon Bedrock tool turn.
 
 Agent platforms:
 
@@ -186,7 +178,7 @@ The eight cover four sections with two samples each. Every one builds on a clust
 
 - **host-escape**: the clearest picture of the boundary. The same privileged pod owns a node without a sandbox, and only its own VM with one.
 - **multi-tenant-saas**: the most common production question, how to keep tenants apart, answered with the sandbox, Pod Identity and network policy together.
-- **kiro-cli-workspace**: a coding agent's workspace as an agent-sandbox `Sandbox`, with a persistent home that survives suspend and resume.
+- **coding-agents-for-developers**: one app for any coding agent. Each session is an agent-sandbox `Sandbox` whose workspace survives suspend and resume.
 - **strands-bedrock**: an agent framework calling Amazon Bedrock with no stored keys, through EKS Pod Identity, with its memory kept on EBS.
 - **pause-resume**: stop paying for idle sandboxes and pick up the same workspace later.
 - **warm-pool-autoscaling**: extends the warm pool from Getting started, so the pool grows and shrinks with demand.
