@@ -25,13 +25,10 @@ examples/
 │   ├── agent-harnesses/
 │   ├── claude-code-driver/
 │   └── claude-managed-agents/
-├── agent-guardrails/
-│   ├── nono-nested-subagents/
-│   ├── nono-procurement-agent/
-│   ├── openshell-composed-isolation/
-│   ├── openshell-procurement-agent/
-│   ├── openshell-helm-lab/
-│   └── bubblewrap-analyst-lab/
+├── subagent-security/
+│   ├── nono/
+│   ├── bubblewrap/
+│   └── openshell/
 ├── agent-sandbox/
 │   ├── pause-resume/
 │   ├── warm-pool-autoscaling-keda/
@@ -47,6 +44,7 @@ examples/
 │   └── gitlab-ci/
 ├── integrations/
 │   ├── temporal/
+│   ├── openshell-kubernetes/
 │   └── opensandbox/
 └── confidential/
     ├── encrypted-image/
@@ -94,16 +92,13 @@ Agent platforms:
 
 - claude-code-driver: an agent outside drives a warm, network-isolated sandbox that it claims from a pool.
 
-### Agent guardrails (`agent-guardrails`)
+### Subagent security (`subagent-security`)
 
-A second policy layer running inside the VM, on top of the sandbox.
+The same procurement analyst agent three ways. Inside its sandbox, a second policy layer confines the tools and subagents it runs, each with only the files, processes and network it needs.
 
-- nono-nested-subagents: several nono-wrapped sub-agents in one sandbox, with nono restricting each process.
-- nono-procurement-agent: a procurement analyst agent that does useful work with bounded access, confined by nono.
-- openshell-composed-isolation: OpenShell's file, system call and network policy composed with a sandbox.
-- openshell-procurement-agent: a procurement analyst confined by OpenShell, whose supervisor holds the real credentials in its own pod outside the guest.
-- openshell-helm-lab: OpenShell's gateway and workspace Helm charts on EKS, with a procurement analyst working in a sandbox.
-- bubblewrap-analyst-lab: a procurement analyst whose tool processes are confined by bubblewrap inside one guest, with no network for the restricted tools.
+- nono: the analyst confined by nono, doing useful work with bounded access.
+- bubblewrap: the analyst whose tool processes are confined by bubblewrap, with no network for the restricted tools.
+- openshell: the analyst confined by OpenShell, whose supervisor holds the real credentials in its own pod outside the sandbox.
 
 ### Agent sandbox (`agent-sandbox`)
 
@@ -131,6 +126,7 @@ The [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) resources,
 Other platforms that create and manage sandboxes.
 
 - temporal: Temporal workflows that create, drive, suspend, resume and remove sandboxes. Spec: [#26](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/26).
+- openshell-kubernetes: OpenShell installed on EKS with its Helm charts. Each OpenShell sandbox's workload pod runs in a Nitro sandbox, and its supervisor, which holds the credentials, stays an ordinary pod.
 - opensandbox (blocked until GA): Nitro sandboxes as a secure runtime for OpenSandbox. Waits for Nitro sandboxes to be generally available and the runtime to be added upstream in OpenSandbox. Spec: [#22](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/22).
 
 ### Confidential (`confidential`)
