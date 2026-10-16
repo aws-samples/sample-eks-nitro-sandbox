@@ -32,15 +32,15 @@ examples/
 │   ├── openshell-procurement-agent/
 │   ├── openshell-helm-lab/
 │   └── bubblewrap-analyst-lab/
-├── workspaces-and-scaling/
+├── agent-sandbox/
 │   ├── pause-resume/
-│   ├── warm-pool-autoscaling/
-│   ├── vscode/
-│   ├── template-rollouts/
-│   ├── storage-ebs/
-│   ├── storage-efs/
-│   ├── storage-s3-files/
-│   └── cold-start-and-density/
+│   ├── warm-pool-autoscaling-keda/
+│   ├── ide/
+│   └── argo-rollouts/
+├── storage/
+│   ├── ebs/
+│   ├── efs/
+│   └── s3-files/
 ├── ci-cd/
 │   ├── docker-builds/
 │   ├── github-actions/
@@ -105,16 +105,20 @@ A second policy layer running inside the VM, on top of the sandbox.
 - openshell-helm-lab: OpenShell's gateway and workspace Helm charts on EKS, with a procurement analyst working in a sandbox.
 - bubblewrap-analyst-lab: a procurement analyst whose tool processes are confined by bubblewrap inside one guest, with no network for the restricted tools.
 
-### Workspaces and scaling (`workspaces-and-scaling`)
+### Agent sandbox (`agent-sandbox`)
+
+The [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) resources, `Sandbox`, `SandboxTemplate`, `SandboxWarmPool` and `SandboxClaim`, with Nitro sandboxes.
 
 - **pause-resume ★**: suspend a sandbox and resume it into a new guest VM with its EBS data intact.
-- **warm-pool-autoscaling ★**: KEDA scales a warm pool up and down with claim demand.
-- vscode: VS Code in the browser on a persistent EBS workspace.
-- template-rollouts: rolling a `SandboxTemplate` change through a warm pool with Argo Rollouts, replacing the warm sandboxes built from the old template.
-- storage-ebs: EBS volumes for sandboxed pods.
-- storage-efs: an EFS file system shared by two sandboxed pods.
-- storage-s3-files: an S3 Files access point shared by two sandboxed pods and kept in sync with its S3 bucket.
-- cold-start-and-density: measure time to Ready, sandboxes per node and the per-sandbox overhead on your own cluster.
+- **warm-pool-autoscaling-keda ★**: KEDA scales a warm pool up and down with claim demand.
+- ide: VS Code in the browser on a persistent EBS workspace.
+- argo-rollouts: rolling a `SandboxTemplate` change through a warm pool with Argo Rollouts, replacing the warm sandboxes built from the old template.
+
+### Storage (`storage`)
+
+- ebs: EBS volumes for sandboxed pods.
+- efs: an EFS file system shared by two sandboxed pods.
+- s3-files: an S3 Files access point shared by two sandboxed pods and kept in sync with its S3 bucket.
 
 ### CI/CD (`ci-cd`)
 
@@ -144,7 +148,7 @@ The six cover three sections with two samples each. Every one builds on a cluste
 - **coding-agents-for-developers**: one app for any coding agent. Each session is claimed from a warm pool and keeps its workspace on S3 Files after its pod is gone.
 - **agent-frameworks**: ten agent frameworks calling Amazon Bedrock with no stored keys, through EKS Pod Identity, with the code each model writes running in the sandbox.
 - **pause-resume**: stop paying for idle sandboxes and pick up the same workspace later.
-- **warm-pool-autoscaling**: extends the warm pool from Getting started, so the pool grows and shrinks with demand.
+- **warm-pool-autoscaling-keda**: extends the warm pool from Getting started, so the pool grows and shrinks with demand.
 - **docker-builds**: privileged `docker build` and `docker run` without exposing the node, the CI case that used to need workarounds.
 - **github-actions**: untrusted pull request jobs, each in its own sandboxed pod that is deleted when the job ends.
 
