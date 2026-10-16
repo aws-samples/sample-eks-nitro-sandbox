@@ -127,9 +127,9 @@ A second policy layer running inside the VM, on top of the sandbox.
 
 These samples use `runtimeClassName: confidential-sandbox`.
 
-- encrypted-image: encrypted image layers in Amazon ECR, decrypted inside the sandbox after AWS KMS checks its attested policy.
-- secrets-manager-secret: an AWS Secrets Manager secret released only to an approved sandbox.
-- s3-encrypted-file: a file encrypted before upload to Amazon S3 and decrypted only inside an approved sandbox.
+- encrypted-image: encrypted image layers in Amazon ECR, decrypted inside the sandbox after AWS KMS checks its attested policy. Spec: [#19](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/19).
+- secrets-manager-secret: an AWS Secrets Manager secret released only to an approved sandbox. Spec: [#20](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/20).
+- s3-encrypted-file: a file encrypted before upload to Amazon S3 and decrypted only inside an approved sandbox. Spec: [#21](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/21).
 
 ## Starting with these 6, and why
 
