@@ -118,8 +118,8 @@ A second policy layer running inside the VM, on top of the sandbox.
 
 ### CI/CD (`ci-cd`)
 
-- **docker-builds ★**: privileged `docker build` and `docker run` inside a sandbox, without exposing the node.
-- **github-actions ★**: GitHub Actions Runner Controller with each untrusted pull request job in its own sandbox, deleted when the job ends.
+- **docker-builds ★**: privileged `docker build` and `docker run` inside a sandbox, without exposing the node. Spec: [#23](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/23).
+- **github-actions ★**: GitHub Actions Runner Controller with each untrusted pull request job in its own sandbox, deleted when the job ends. Spec: [#24](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/24).
 - gitlab-ci: a self-hosted GitLab whose CI jobs each run in a sandbox, including a privileged `docker build`.
 
 ### Integrations (`integrations`)
