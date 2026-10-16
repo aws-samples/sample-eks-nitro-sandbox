@@ -13,10 +13,12 @@ examples/
 │   ├── hello-sandbox/
 │   ├── coding-agent/
 │   └── warm-pool/
-├── isolation-and-security/
+├── isolation/
 │   ├── network-policy/
-│   ├── image-signing/
 │   └── sandbox-limits/
+├── policy-enforcement/
+│   ├── image-signing/
+│   └── cedar-policy/
 ├── ai-agents/
 │   ├── coding-agents-for-developers/
 │   ├── agent-frameworks/
@@ -46,7 +48,6 @@ examples/
 │   ├── temporal/
 │   └── opensandbox/
 └── confidential/
-    ├── policy-enforcement/
     ├── encrypted-image/
     ├── secrets-manager-secret/
     └── s3-encrypted-file/
@@ -62,11 +63,17 @@ Samples marked ★ are the next six to be added.
 - [coding-agent](../examples/getting-started/coding-agent/README.md): Claude Code in a sandbox that reads a GitHub issue, fixes it and opens a pull request.
 - [warm-pool](../examples/getting-started/warm-pool/README.md): a pool of pre-booted sandboxes, ready for a claim to pick one up.
 
-### Isolation and security (`isolation-and-security`)
+### Isolation (`isolation`)
 
 - network-policy: a standard egress NetworkPolicy enforced on a sandboxed pod, side by side with an ordinary pod.
-- image-signing: an image signed with AWS Signer and verified inside the guest, while an unsigned image is rejected.
 - sandbox-limits: the per-sandbox DNS query and connection-tracking limits, and how to recognise each one when a workload reaches it.
+
+### Policy enforcement (`policy-enforcement`)
+
+Checks that run inside the guest and decide what the pod may run.
+
+- image-signing: an image signed with AWS Signer and verified inside the guest, while an unsigned image is rejected. Uses `isolated-sandbox`.
+- cedar-policy: a Cedar policy generated for a workload and enforced inside the guest, which refuses an operator's exec. Uses `confidential-sandbox`.
 
 ### AI agents (`ai-agents`)
 
@@ -120,7 +127,6 @@ A second policy layer running inside the VM, on top of the sandbox.
 
 These samples use `runtimeClassName: confidential-sandbox`.
 
-- policy-enforcement: a Cedar policy generated for a workload and enforced inside the guest, which refuses an operator's exec.
 - encrypted-image: encrypted image layers in Amazon ECR, decrypted inside the sandbox after AWS KMS checks its attested policy.
 - secrets-manager-secret: an AWS Secrets Manager secret released only to an approved sandbox.
 - s3-encrypted-file: a file encrypted before upload to Amazon S3 and decrypted only inside an approved sandbox.
