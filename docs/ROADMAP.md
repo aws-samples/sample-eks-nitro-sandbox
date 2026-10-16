@@ -120,13 +120,13 @@ A second policy layer running inside the VM, on top of the sandbox.
 
 - **docker-builds ★**: privileged `docker build` and `docker run` inside a sandbox, without exposing the node. Spec: [#23](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/23).
 - **github-actions ★**: GitHub Actions Runner Controller with each untrusted pull request job in its own sandbox, deleted when the job ends. Spec: [#24](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/24).
-- gitlab-ci: a self-hosted GitLab whose CI jobs each run in a sandbox, including a privileged `docker build`.
+- gitlab-ci: a self-hosted GitLab whose CI jobs each run in a sandbox, including a privileged `docker build`. Spec: [#25](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/25).
 
 ### Integrations (`integrations`)
 
 Other platforms that create and manage sandboxes.
 
-- temporal: Temporal workflows that create, drive, suspend, resume and remove sandboxes.
+- temporal: Temporal workflows that create, drive, suspend, resume and remove sandboxes. Spec: [#26](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/26).
 - opensandbox (blocked until GA): Nitro sandboxes as a secure runtime for OpenSandbox. Waits for Nitro sandboxes to be generally available and the runtime to be added upstream in OpenSandbox. Spec: [#22](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/22).
 
 ### Confidential (`confidential`)
