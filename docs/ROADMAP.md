@@ -23,8 +23,7 @@ examples/
 ├── ai-agents/
 │   ├── coding-agents-for-developers/
 │   ├── agent-frameworks/
-│   ├── openclaw/
-│   ├── hermes/
+│   ├── agent-harnesses/
 │   ├── claude-code-driver/
 │   ├── mcp-server/
 │   ├── kagent/
@@ -98,8 +97,7 @@ Agent frameworks on Amazon Bedrock:
 
 Agent harnesses:
 
-- openclaw: an OpenClaw harness with full privileges, boxed in a guest, beside the same harness on an ordinary pod.
-- hermes: a long-lived Hermes harness whose state on EBS is kept across suspend and resume, plus a variant with no network.
+- agent-harnesses: OpenClaw, Hermes and NVIDIA NemoClaw, each always on in its own sandbox with root inside it, memory on EBS kept across suspend and resume, and only Amazon Bedrock reachable. Spec: [#14](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/14).
 
 Agent platforms:
 
