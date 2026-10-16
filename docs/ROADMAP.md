@@ -41,10 +41,11 @@ examples/
 │   ├── storage-efs/
 │   ├── storage-s3-files/
 │   └── cold-start-and-density/
-├── ci-cd-and-platforms/
+├── ci-cd/
 │   ├── docker-builds/
-│   ├── github-actions-runners/
-│   ├── gitlab-ci/
+│   ├── github-actions/
+│   └── gitlab-ci/
+├── integrations/
 │   ├── temporal/
 │   └── opensandbox/
 └── confidential/
@@ -115,13 +116,18 @@ A second policy layer running inside the VM, on top of the sandbox.
 - storage-s3-files: an S3 Files access point shared by two sandboxed pods and kept in sync with its S3 bucket.
 - cold-start-and-density: measure time to Ready, sandboxes per node and the per-sandbox overhead on your own cluster.
 
-### CI/CD and platforms (`ci-cd-and-platforms`)
+### CI/CD (`ci-cd`)
 
 - **docker-builds ★**: privileged `docker build` and `docker run` inside a sandbox, without exposing the node.
-- **github-actions-runners ★**: GitHub Actions Runner Controller with each untrusted pull request job in its own sandbox, deleted when the job ends.
+- **github-actions ★**: GitHub Actions Runner Controller with each untrusted pull request job in its own sandbox, deleted when the job ends.
 - gitlab-ci: a self-hosted GitLab whose CI jobs each run in a sandbox, including a privileged `docker build`.
+
+### Integrations (`integrations`)
+
+Other platforms that create and manage sandboxes.
+
 - temporal: Temporal workflows that create, drive, suspend, resume and remove sandboxes.
-- opensandbox: Nitro sandboxes added as a runtime for OpenSandbox.
+- opensandbox (blocked until GA): Nitro sandboxes as a secure runtime for OpenSandbox. Waits for Nitro sandboxes to be generally available and the runtime to be added upstream in OpenSandbox. Spec: [#22](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/22).
 
 ### Confidential (`confidential`)
 
@@ -140,7 +146,7 @@ The six cover three sections with two samples each. Every one builds on a cluste
 - **pause-resume**: stop paying for idle sandboxes and pick up the same workspace later.
 - **warm-pool-autoscaling**: extends the warm pool from Getting started, so the pool grows and shrinks with demand.
 - **docker-builds**: privileged `docker build` and `docker run` without exposing the node, the CI case that used to need workarounds.
-- **github-actions-runners**: untrusted pull request jobs, each in its own sandboxed pod that is deleted when the job ends.
+- **github-actions**: untrusted pull request jobs, each in its own sandboxed pod that is deleted when the job ends.
 
 ## Not planned for this repo
 
