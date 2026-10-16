@@ -22,17 +22,9 @@ examples/
 │   └── sandbox-limits/
 ├── ai-agents/
 │   ├── coding-agents-for-developers/
-│   ├── strands-bedrock/
-│   ├── claude-agent-sdk/
-│   ├── google-adk/
-│   ├── crewai/
-│   ├── spring-ai/
-│   ├── langgraph/
-│   ├── strands-harness/
-│   ├── strands-token-efficiency/
+│   ├── agent-frameworks/
 │   ├── openclaw/
 │   ├── hermes/
-│   ├── deep-agents/
 │   ├── claude-code-driver/
 │   ├── mcp-server/
 │   ├── kagent/
@@ -102,20 +94,12 @@ Coding agents:
 
 Agent frameworks on Amazon Bedrock:
 
-- **strands-bedrock ★**: a Strands Agents agent on Amazon Bedrock, with credentials from EKS Pod Identity and its memory on EBS.
-- claude-agent-sdk: the Claude Agent SDK running inside the sandbox, so every command its Bash tool runs stays in the guest.
-- google-adk: a Google ADK agent that reaches Amazon Bedrock through LiteLLM and Pod Identity.
-- crewai: a CrewAI crew, a researcher and a writer, on Amazon Bedrock, placed in a sandbox with one line.
-- spring-ai: a Spring AI application whose JVM calls Amazon Bedrock through the AWS SDK for Java and Pod Identity.
-- langgraph: a LangGraph agent on Amazon Bedrock, placed in a sandbox with one line.
-- strands-harness: the Strands harness with its real shell and file tools, so every command it generates runs in the guest.
-- strands-token-efficiency: the same task on the same model with the Strands harness's context management on and off, and the token count of each run.
+- **agent-frameworks ★**: one web app that runs the same agent in Strands Agents, LangGraph, Deep Agents, CrewAI, Google ADK, OpenAI Agents SDK, Pydantic AI, LlamaIndex, the Claude Agent SDK and Spring AI, each run in a fresh sandbox where the code the model writes executes. Spec: [#13](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/13).
 
 Agent harnesses:
 
 - openclaw: an OpenClaw harness with full privileges, boxed in a guest, beside the same harness on an ordinary pod.
 - hermes: a long-lived Hermes harness whose state on EBS is kept across suspend and resume, plus a variant with no network.
-- deep-agents: LangChain Deep Agents Code in a sandbox, compared with the same harness on an ordinary pod.
 
 Agent platforms:
 
@@ -179,7 +163,7 @@ The eight cover four sections with two samples each. Every one builds on a clust
 - **host-escape**: the clearest picture of the boundary. The same privileged pod owns a node without a sandbox, and only its own VM with one.
 - **multi-tenant-saas**: the most common production question, how to keep tenants apart, answered with the sandbox, Pod Identity and network policy together.
 - **coding-agents-for-developers**: one app for any coding agent. Each session is an agent-sandbox `Sandbox` whose workspace survives suspend and resume.
-- **strands-bedrock**: an agent framework calling Amazon Bedrock with no stored keys, through EKS Pod Identity, with its memory kept on EBS.
+- **agent-frameworks**: ten agent frameworks calling Amazon Bedrock with no stored keys, through EKS Pod Identity, with the code each model writes running in the sandbox.
 - **pause-resume**: stop paying for idle sandboxes and pick up the same workspace later.
 - **warm-pool-autoscaling**: extends the warm pool from Getting started, so the pool grows and shrinks with demand.
 - **docker-builds**: privileged `docker build` and `docker run` without exposing the node, the CI case that used to need workarounds.
