@@ -22,8 +22,13 @@ examples/
 ├── ai-agents/
 │   ├── coding-agents-for-developers/
 │   ├── agent-frameworks/
-│   ├── agent-harnesses/
-│   └── claude-managed-agents/
+│   └── agent-harnesses/
+├── managed-agents/
+│   ├── claude-managed-agents/
+│   ├── openai-managed-agents/
+│   ├── bedrock-managed-agents/
+│   ├── cursor-cloud-agents/
+│   └── agentcore-mcp/
 ├── subagent-security/
 │   ├── nono/
 │   ├── bubblewrap/
@@ -88,6 +93,16 @@ Agent harnesses:
 
 - agent-harnesses: OpenClaw, Hermes and NVIDIA NemoClaw, each always on in its own sandbox with root inside it, memory on EBS kept across suspend and resume, and only Amazon Bedrock reachable. Spec: [#14](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/14).
 
+### Managed agents (`managed-agents`)
+
+Agent services that run the agent loop for you and send its tool calls to compute you host. Each sample runs those tool calls in a Nitro sandbox on EKS.
+
+- [claude-managed-agents](../examples/managed-agents/claude-managed-agents/README.md) (available now): a Claude Managed Agents self-hosted sandbox where every tool call runs in the guest and the organization API key never enters it.
+- openai-managed-agents: an OpenAI Managed Agents self-hosted sandbox, with each session's tool calls running in a Nitro sandbox. Spec: [#9](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/9).
+- bedrock-managed-agents: Bedrock Managed Agents, powered by OpenAI, with the agent's tool calls running in a Nitro sandbox on EKS.
+- cursor-cloud-agents: Cursor Cloud Agents on self-hosted machines, with each agent's tool execution in a Nitro sandbox on EKS.
+- agentcore-mcp: an Amazon Bedrock AgentCore agent that uses EKS as its sandbox through MCP. An MCP server runs each code-execution tool call in a Nitro sandbox.
+
 ### Subagent security (`subagent-security`)
 
 The same procurement analyst agent three ways. Inside its sandbox, a second policy layer confines the tools and subagents it runs, each with only the files, processes and network it needs.
@@ -133,18 +148,3 @@ These samples use `runtimeClassName: confidential-sandbox`.
 - encrypted-image: encrypted image layers in Amazon ECR, decrypted inside the sandbox after AWS KMS checks its attested policy. Spec: [#19](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/19).
 - secrets-manager-secret: an AWS Secrets Manager secret released only to an approved sandbox. Spec: [#20](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/20).
 - s3-encrypted-file: a file encrypted before upload to Amazon S3 and decrypted only inside an approved sandbox. Spec: [#21](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/21).
-
-## Starting with these 6, and why
-
-The six cover three sections with two samples each. Every one builds on a cluster that has finished Getting started, and each runs on standard EKS Auto Mode with no extra platform to install beyond what the sample states.
-
-- **coding-agents-for-developers**: one app for any coding agent. Each session is claimed from a warm pool and keeps its workspace on S3 Files after its pod is gone.
-- **agent-frameworks**: ten agent frameworks calling Amazon Bedrock with no stored keys, through EKS Pod Identity, with the code each model writes running in the sandbox.
-- **pause-resume**: stop paying for idle sandboxes and pick up the same workspace later.
-- **warm-pool-autoscaling-keda**: extends the warm pool from Getting started, so the pool grows and shrinks with demand.
-- **docker-builds**: privileged `docker build` and `docker run` without exposing the node, the CI case that used to need workarounds.
-- **github-actions**: untrusted pull request jobs, each in its own sandboxed pod that is deleted when the job ends.
-
-## Not planned for this repo
-
-Beyond the cluster that Getting started creates, cluster setup guides, AMI builds and benchmark comparisons stay out of this repo.
