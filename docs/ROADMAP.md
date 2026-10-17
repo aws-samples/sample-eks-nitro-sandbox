@@ -33,6 +33,9 @@ examples/
 │   ├── nono/
 │   ├── bubblewrap/
 │   └── openshell/
+├── openshell/
+│   ├── kubernetes/
+│   └── nemoclaw/
 ├── agent-sandbox/
 │   ├── pause-resume/
 │   ├── warm-pool-autoscaling-keda/
@@ -49,7 +52,6 @@ examples/
 │   └── gitlab-ci/
 ├── integrations/
 │   ├── temporal/
-│   ├── openshell-kubernetes/
 │   └── opensandbox/
 └── confidential/
     ├── encrypted-image/
@@ -91,7 +93,7 @@ Agent frameworks on Amazon Bedrock:
 
 Agent harnesses:
 
-- agent-harnesses: OpenClaw, Hermes and NVIDIA NemoClaw, each always on in its own sandbox with root inside it, memory on EBS kept across suspend and resume, and only Amazon Bedrock reachable. Spec: [#14](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/14).
+- agent-harnesses: OpenClaw and Hermes, each always on in its own sandbox with root inside it, memory on EBS kept across suspend and resume, and only Amazon Bedrock reachable. Spec: [#14](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/14).
 
 ### Managed agents (`managed-agents`)
 
@@ -110,6 +112,13 @@ The same procurement analyst agent three ways. Inside its sandbox, a second poli
 - nono: the analyst confined by nono, doing useful work with bounded access. Spec: [#34](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/34).
 - bubblewrap: the analyst whose tool processes are confined by bubblewrap, with no network for the restricted tools. Spec: [#35](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/35).
 - openshell: the analyst confined by OpenShell, whose supervisor holds the real credentials in its own pod outside the sandbox. Spec: [#36](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/36).
+
+### OpenShell (`openshell`)
+
+[NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell), and the NemoClaw reference stack built on it, with Nitro sandboxes.
+
+- kubernetes: OpenShell installed on EKS with its Helm charts. Each OpenShell sandbox's workload pod runs in a Nitro sandbox, and its supervisor, which holds the credentials, stays an ordinary pod. Spec: [#37](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/37).
+- nemoclaw: NVIDIA NemoClaw, with OpenClaw, inside one Nitro sandbox pod. NemoClaw supports only a single Docker host today, so the whole stack runs in the sandbox: OpenShell's controls inside, the Nitro sandbox around it. Spec: [#43](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/43).
 
 ### Agent sandbox (`agent-sandbox`)
 
@@ -138,7 +147,6 @@ The [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) resources,
 Other platforms that create and manage sandboxes.
 
 - temporal: Temporal workflows that create, drive, suspend, resume and remove sandboxes. Spec: [#26](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/26).
-- openshell-kubernetes: OpenShell installed on EKS with its Helm charts. Each OpenShell sandbox's workload pod runs in a Nitro sandbox, and its supervisor, which holds the credentials, stays an ordinary pod. Spec: [#37](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/37).
 - opensandbox (blocked until GA): Nitro sandboxes as a secure runtime for OpenSandbox. Waits for Nitro sandboxes to be generally available and the runtime to be added upstream in OpenSandbox. Spec: [#22](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/22).
 
 ### Confidential (`confidential`)
