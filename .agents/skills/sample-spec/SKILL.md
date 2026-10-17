@@ -25,7 +25,8 @@ follow its shape and its level of detail. Paths below are relative to the reposi
 3. **Write the spec** with the sections below.
 4. **File it** with the **Sample spec** issue form (`.github/ISSUE_TEMPLATE/sample-spec.yml`)
    or with `gh`, as shown at the end.
-5. **Agree it.** Implementation starts once the maintainers accept the spec.
+5. **Agree it.** Implementation starts once the maintainers accept the spec and the issue
+   is not labeled `blocked` (see [When a spec is blocked](#when-a-spec-is-blocked)).
 6. **Branch and build.** Use a branch named after the sample, follow the `sample-page`
    skill, and open a pull request whose description starts with `Closes #<issue>`.
 
@@ -93,6 +94,26 @@ gh issue create --repo aws-samples/sample-eks-nitro-sandbox \
 ```
 
 `gh` prints the issue URL; the number at its end is what the pull request closes.
+
+## When a spec is blocked
+
+Label an issue `blocked` when it waits on something outside this repository and its
+maintainers: a product launch, an upstream release, or a feature another project has not
+shipped. Issue #22 is the model: it waits for general availability and for a change in
+upstream OpenSandbox.
+
+- **File the spec anyway**, so the sample is on the roadmap and ready to start. Open the
+  body with a warning that says what it waits for, and make `Unblocked: <condition>` the
+  first acceptance criterion.
+- **Add the label** when you file it (`--label enhancement --label blocked`), or later with
+  `gh issue edit <number> --repo aws-samples/sample-eks-nitro-sandbox --add-label blocked`.
+- **Mark the roadmap entry** `(blocked until <condition>)`.
+- **Do not implement a `blocked` issue.** Remove the label and the roadmap marker only once
+  the condition is met, and say in an issue comment what changed.
+
+A prove-first item still to be tried is not a block; the spec says to try it first. If it
+fails because of something outside the repository, update the issue with what failed and
+add the label then.
 
 ## Body template
 
