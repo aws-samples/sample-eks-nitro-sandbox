@@ -24,6 +24,12 @@ server it allows and both are refused the server it denies: the policy holds on 
 pod's path exactly as it does on the ordinary pod's. The ordinary pod is the control, so the
 result cannot be read any other way.
 
+EKS Auto Mode supports two kinds of network policy, and a sandboxed pod uses both exactly as an
+ordinary pod does: the standard Kubernetes `NetworkPolicy` that filters egress by IP, pod and
+namespace (the main walkthrough), and the Auto Mode `ApplicationNetworkPolicy` that adds egress
+by hostname with `domainNames` (the [optional variant](#optional-egress-by-hostname)). This page
+shows a sandboxed and an ordinary pod leveraging each of the two, on Auto Mode.
+
 - **The same NetworkPolicy, enforced on the sandboxed path and the ordinary path alike.** Two
   clients, identical in every field a policy could select on and differing only in
   `runtimeClassName`, both lose exactly the one egress the policy denies and both keep the one
@@ -348,6 +354,26 @@ ordinary path -- both keep sts.us-west-2.amazonaws.com and are refused kms.us-we
 Before the policy both clients reach both endpoints; after it, the allowed name connects and the
 other is refused, on the ordinary and the sandboxed path alike — name-based egress is enforced on
 the sandboxed pod exactly as address-based egress is.
+
+!!! note "Egress by hostname on standard EKS"
+    DNS/FQDN egress rules (`domainNames`) are a feature of EKS Auto Mode: the AWS documentation
+    states that
+    [DNS-based `ApplicationNetworkPolicy` rules apply only to workloads on Auto Mode-launched EC2
+    instances](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html#using-dns-based-policies-in-eks).
+    The standard Kubernetes `NetworkPolicy` from the main walkthrough (egress by IP, pod and
+    namespace) works on both Auto Mode and standard EKS; hostname-based egress is available today
+    on Auto Mode and is a future feature on standard EKS. If you need an allow-by-hostname rule on
+    standard EKS now, implement it with one of these patterns instead, each of which filters egress
+    by name outside the NetworkPolicy API:
+
+    - a **sidecar egress proxy**, such as an Istio sidecar with a `ServiceEntry` and egress gateway,
+      which resolves and allows traffic by hostname at the proxy;
+    - a **per-process egress wrapper** around the workload's tools (the approach the
+      subagent-security samples use), which confines what hosts each process may reach;
+    - a **CNI with built-in FQDN policy**, such as [Cilium's `toFQDNs`](https://docs.cilium.io/en/stable/security/policy/language/#dns-based) egress rules.
+
+    This sample does not deploy those; the note is a pointer for implementing hostname-based egress
+    on standard EKS, where `domainNames` is not yet available.
 
 ## Clean up
 
