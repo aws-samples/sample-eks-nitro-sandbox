@@ -94,7 +94,8 @@ Each step is one small unit, in this order:
    of `sandbox-template.yaml` that matters"). Never show a fragment as a complete policy.
 5. **The command, then the observed result** in a `text` block, from a real run. Say
    "Abridged" or "your text will differ" when it is. Follow it with a sentence on what to
-   look at in the output.
+   look at in the output. Until you have run it, the block holds only
+   `TODO: output from the fresh run`, never output you wrote yourself.
 
 ## The network policy section
 
@@ -158,7 +159,8 @@ route, and a lookup fails, as the hello sandbox page does.
 - **Run it live, fresh, end to end**, on a cluster that has finished Getting started, in a
   new namespace or project. A resumed run cannot prove what a fresh one does.
 - **Take every output block from that run.** Do not edit output beyond trimming it, and
-  replace values from your own account or environment with placeholders.
+  replace values from your own account or environment with placeholders. Replace every
+  `TODO: output from the fresh run` marker, and search the page for any you missed.
 - **Check each claim on the live cluster**: read the running pod's runtime class, kernel,
   environment variable names and connections, not only the manifest.
 - **Keep local values in a gitignored env file** (`.env`, from `.env.example`). Read
@@ -169,6 +171,9 @@ route, and a lookup fails, as the hello sandbox page does.
 - **Run the clean up** and confirm nothing the sample created is left.
 
 ## Before the pull request
+
+Open the pull request as a draft (`gh pr create --draft`) if the fresh run is still to do,
+and mark it ready only when every box below is true.
 
 - [ ] The spec issue exists, and the description starts with `Closes #<issue>`.
 - [ ] The page opens with the prerequisites link and the `git clone` and `cd` block.

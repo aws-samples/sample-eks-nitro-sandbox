@@ -4,3 +4,6 @@ site/
 # Python
 __pycache__/
 .venv/
+
+# Local scratch: review notes, run captures, build logs
+tmp/
