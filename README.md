@@ -10,6 +10,10 @@ Runnable samples for Nitro Sandboxes on Amazon EKS: hardware-enforced workload i
 
 Start from the [site home page](examples/README.md) for what a Nitro sandbox is and the prerequisites the samples share.
 
+## Isolation
+
+- [Sandbox limits (DNS)](examples/isolation/sandbox-limits/README.md): the per-sandbox DNS query-rate limit made visible on your own cluster, side by side with an ordinary pod, and how to recognise it.
+
 ## Managed agents
 
 - [Claude Managed Agents](examples/managed-agents/claude-managed-agents/README.md): a Claude Managed Agents self-hosted sandbox where each session's tool calls run in a sandbox of their own and the organization API key stays off the cluster.
