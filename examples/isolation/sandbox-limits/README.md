@@ -1,0 +1,427 @@
+# A per-sandbox DNS query-rate limit you can see
+
+Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
+on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
+sample first so you have a cluster with the runtime classes. This sample also uses the
+once-per-cluster network policy enforcement that
+[Getting started > Coding agent](../../getting-started/coding-agent/README.md) turns on. The
+commands below use files from this repository, so clone it if you have not already, and run
+them from this sample's folder:
+
+```bash
+git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
+cd sample-eks-nitro-sandbox/examples/isolation/sandbox-limits
+```
+
+A Nitro sandbox applies a per-pod limit on how many DNS queries a second the pod may send to
+the cluster resolver. It is on by default and stays invisible until a workload crosses it, at
+which point a fraction of lookups simply go unanswered. That reads as intermittent resolution
+timeouts, which looks like a flaky application or a slow resolver rather than a limit doing its
+job. This sample makes the limit visible on your own cluster and teaches the symptom, so a team
+recognises it instead of debugging it as an application bug.
+
+It runs the same DNS probe twice, side by side, differing only in
+`runtimeClassName: isolated-sandbox` versus an ordinary pod. Below the limit both answer every
+query. Above it, the sandboxed pod's answered throughput plateaus near the documented limit
+while the identical ordinary pod keeps answering the full offered rate. The ordinary pod is the
+control, so the result cannot be read any other way: same image, same resolver, same offered
+load, and the only pod that plateaus is the sandboxed one.
+
+- **A limit you can measure.** The sandboxed probe raises its offered DNS rate past the limit
+  and its answered rate stops climbing, while the ordinary probe answers everything it offers.
+- **The ordinary pod is the control that makes the result mean something.** If the resolver or
+  the offered burst were the bottleneck, the ordinary pod would plateau too. It does not, so the
+  cause is the sandbox path.
+- **It sits on the sandbox network path, not in the network policy.** The probe pods carry an
+  egress policy that allows only DNS to CoreDNS; the policy scopes where the pod may connect and
+  does not change the query-rate limit being measured.
+- **It opts in with one line.** `runtimeClassName: isolated-sandbox` is the only spec field that
+  differs between the two probes.
+
+*Figure 1: The same DNS probe on two pods under one egress NetworkPolicy. `probe-sandboxed` runs
+in a lightweight VM in a Nitro sandbox; `probe-standard` is an ordinary pod. Both offer the same
+DNS rate to CoreDNS through the policy; the ordinary pod answers the full rate while the
+sandboxed pod's answered rate plateaus at the per-sandbox DNS limit.*
+
+![An EKS Auto Mode node holds two pods. probe-standard is an ordinary pod, labelled the control, drawn at the top. probe-sandboxed is inside a Nitro sandbox pod frame with runtimeClassName isolated-sandbox, whose containers run in a lightweight VM, drawn below. Both pods send DNS queries through one NetworkPolicy egress filter to CoreDNS, the cluster resolver, on UDP and TCP 53. The ordinary pod's edge is green and labelled about 400 offered and about 400 answered; the sandboxed pod's edge is red and labelled about 400 offered and about 100 answered. A note says the same DNS probe runs on both pods under one egress NetworkPolicy, runtimeClassName isolated-sandbox is the only field that differs, and the limit sits on the sandbox network path and not in the policy.](images/sandbox-limits-dns.png)
+
+The files:
+
+| File | What it is |
+|---|---|
+| [`deploy/namespace.yaml`](deploy/namespace.yaml) | The `sandbox-limits` namespace this sample owns |
+| [`deploy/probe-standard.yaml`](deploy/probe-standard.yaml) | The ordinary probe pod: the control |
+| [`deploy/probe-sandboxed.yaml`](deploy/probe-sandboxed.yaml) | The sandboxed probe pod: identical but for `runtimeClassName: isolated-sandbox` |
+| [`deploy/probe-sandboxed-raised.yaml`](deploy/probe-sandboxed-raised.yaml) | The optional variant: a sandboxed probe with the limit raised by annotation |
+| [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The egress `NetworkPolicy` that selects every probe pod and allows only DNS to CoreDNS |
+| [`scripts/probe-dns-rate.py`](scripts/probe-dns-rate.py) | The DNS probe: offers a fixed query rate for a fixed window and reports how many were answered |
+| [`scripts/run-comparison.sh`](scripts/run-comparison.sh) | Deploys everything, runs the below-limit, control and symptom probes, prints a verdict |
+| [`scripts/show-sandbox.sh`](scripts/show-sandbox.sh) | Shows the sandboxed probe running in a sandbox, next to the ordinary probe |
+
+You can run the whole walkthrough with [`scripts/run-comparison.sh`](scripts/run-comparison.sh),
+which does steps 1 through 4 and prints a verdict. The steps below are what it does, so you can
+follow each one and read its output.
+
+## The limit, and where the number comes from
+
+The Amazon EKS User Guide documents this limit in *Isolated and confidential pods limitations*,
+section "Per-pod DNS query rate limit": each pod that uses the `isolated-sandbox` runtime class
+has a DNS query-rate limit to the cluster resolver, with a short burst allowance, and excess
+queries are dropped. **The default is 100 queries per second per family.** It protects the
+per-ENI VPC resolver budget shared by pods on the same ENI. The guide names the same symptom
+this sample shows: workloads that resolve a large number of unique hostnames per second "hit the
+limit and see intermittent DNS resolution failures."
+
+This page shows the measured plateau from a fresh run and that it sits near that documented 100
+queries per second; the number itself is the User Guide's, not this sample's. The short burst
+allowance the guide notes is why the measured plateau reads a little above 100 over a short
+window.
+
+## Versions
+
+Nothing is pinned beyond the image in the manifests: the probe pods use a stock image, pinned by
+tag, and the sample installs no controller, SDK, client library or chart of its own. Network
+policy enforcement is a cluster feature turned on with the `amazon-vpc-cni` ConfigMap (step 1).
+
+| Component | Pin | Latest (2026-10-18) |
+|---|---|---|
+| Probe image ([`python`](https://gallery.ecr.aws/docker/library/python)) | `public.ecr.aws/docker/library/python:3.12-slim` | 3.12-slim |
+
+**Step 1: Turn on network policy enforcement.** EKS Auto Mode accepts network policies without
+enforcing them until the Network Policy Controller is enabled, once per cluster, through the
+`amazon-vpc-cni` ConfigMap in `kube-system`. This affects the whole cluster; pods that no policy
+selects are unaffected. If you have run the
+[coding agent](../../getting-started/coding-agent/README.md) sample this is already on;
+otherwise:
+
+```bash
+kubectl get configmap -n kube-system amazon-vpc-cni \
+  -o jsonpath='{.data.enable-network-policy-controller}{"\n"}'
+```
+
+If that prints `true`, enforcement is on. If it prints nothing, turn it on, once per cluster
+([EKS network policy documentation](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html)):
+
+```bash
+kubectl patch configmap -n kube-system amazon-vpc-cni --type merge \
+  -p '{"data":{"enable-network-policy-controller":"true"}}'
+```
+
+The comparison script checks this setting rather than changing this shared setting for you.
+
+**Step 2: Deploy the namespace, the egress policy and the two probe pods.** The probe pods are
+identical but for one line: `probe-sandboxed` sets `runtimeClassName: isolated-sandbox`,
+`probe-standard` does not. The egress policy selects both and allows only DNS to CoreDNS. Fill in
+`<COREDNS_IP>` with your cluster's CoreDNS address (the script does this for you):
+
+```bash
+kubectl apply -f deploy/namespace.yaml
+COREDNS_IP=$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')
+sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f -
+kubectl apply -f deploy/probe-standard.yaml
+kubectl apply -f deploy/probe-sandboxed.yaml
+for p in probe-standard probe-sandboxed; do
+  kubectl -n sandbox-limits wait pod/$p --for=condition=Ready --timeout=300s
+done
+```
+
+Here are the two probe specs side by side. Every field the measurement could depend on is the
+same; the highlighted line is the only difference.
+
+```yaml
+# probe-standard.yaml                        # probe-sandboxed.yaml
+apiVersion: v1                              apiVersion: v1
+kind: Pod                                   kind: Pod
+metadata:                                   metadata:
+  name: probe-standard                        name: probe-sandboxed
+  namespace: sandbox-limits                   namespace: sandbox-limits
+  labels:                                     labels:
+    app: dns-probe                              app: dns-probe
+spec:                                       spec:
+                                              runtimeClassName: isolated-sandbox   # <-- only this
+  containers:                                 containers:
+    - name: probe                               - name: probe
+      image: .../python:3.12-slim                 image: .../python:3.12-slim
+      resources:                                  resources:
+        requests: { cpu: "1", memory: 768Mi }       requests: { cpu: "1", memory: 768Mi }
+        limits:   { cpu: "1", memory: 768Mi }       limits:   { cpu: "1", memory: 768Mi }
+```
+
+The first sandboxed pod on a new cluster waits for Auto Mode to launch a sandbox-capable node;
+after that a new one is Ready in about 5 to 6 seconds.
+
+**Step 3: Below the limit, the sandboxed pod answers every query.** The probe offers a fixed DNS
+rate to the pod's own resolver for a fixed window and counts how many are answered. Run it below
+the limit first, so you have the same probe with the limit not yet reached. It is driven from the
+operator side with `kubectl exec -i ... -- python3 -`, so there is nothing to build or copy into
+the pod:
+
+```bash
+kubectl -n sandbox-limits exec -i probe-sandboxed -- env OFFERED_QPS=50 python3 - \
+  < scripts/probe-dns-rate.py
+```
+
+```text
+offered~50qps window=5.0s drain=1.0s nameserver=10.100.0.10 qname=kubernetes.default.svc.cluster.local
+sent=250 answered=250 elapsed=6.00s answered_rate=50.0qps (over the 5.0s offer window)
+RESULT offered=250 answered=250 elapsed=6.00 rate=50.0
+```
+
+At 50 queries a second, below the limit, the sandboxed pod answers all 250 of them: 50 answered a
+second.
+
+**Step 4: Above the limit, only the sandboxed pod plateaus.** Offer a high rate, well above the
+limit, first on the ordinary control and then on the sandboxed pod:
+
+```bash
+echo "control  (probe-standard)  @ 400 qps:"
+kubectl -n sandbox-limits exec -i probe-standard  -- env OFFERED_QPS=400 python3 - < scripts/probe-dns-rate.py
+echo "symptom  (probe-sandboxed) @ 400 qps:"
+kubectl -n sandbox-limits exec -i probe-sandboxed -- env OFFERED_QPS=400 python3 - < scripts/probe-dns-rate.py
+```
+
+```text
+control  (probe-standard)  @ 400 qps:
+offered~400qps window=5.0s drain=1.0s nameserver=10.100.0.10 qname=kubernetes.default.svc.cluster.local
+sent=2000 answered=2000 elapsed=6.00s answered_rate=400.0qps (over the 5.0s offer window)
+RESULT offered=2000 answered=2000 elapsed=6.00 rate=400.0
+symptom  (probe-sandboxed) @ 400 qps:
+offered~400qps window=5.0s drain=1.0s nameserver=10.100.0.10 qname=kubernetes.default.svc.cluster.local
+sent=2000 answered=599 elapsed=6.00s answered_rate=119.8qps (over the 5.0s offer window)
+RESULT offered=2000 answered=599 elapsed=6.00 rate=119.8
+```
+
+Offered the same 400 queries a second, the ordinary pod answers all 2000 (400 a second) while the
+sandboxed pod answers 599 of them, plateauing at 119.8 a second. That plateau is near the
+documented 100 queries per second per family (the extra reflects the burst allowance the User
+Guide notes over this short window). The ordinary pod answering the full rate against the same
+resolver rules out the cluster DNS and the offered burst as the cause, so the plateau is the
+per-sandbox limit on the sandbox path.
+
+The whole comparison, with its verdict, is one command:
+
+```bash
+scripts/run-comparison.sh
+```
+
+```text
+=== Results ===
+sandbox  @ 50 qps (below the limit)        50.0 qps answered
+standard @ 400 qps (control)               400.0 qps answered
+sandbox  @ 400 qps (symptom)               119.8 qps answered
+
+=== Verdict ===
+RESULT: the per-sandbox DNS query-rate limit bites on the sandbox path and not on the
+ordinary path. Below the limit the sandboxed probe answered 50.0 qps; at 400
+qps offered it plateaued at 119.8 qps while the ordinary control answered 400.0
+qps. The measured plateau is near the documented 100 qps per family (EKS User Guide).
+```
+
+## How the network policy works
+
+The probe pods have a network, so the sample restricts their egress with a standard
+`networking.k8s.io/v1` `NetworkPolicy` and shows the whole policy here. It allows only DNS to
+CoreDNS, which is all the probe needs, and denies everything else. `<COREDNS_IP>` is filled in at
+apply time from `kubectl get svc -n kube-system kube-dns`:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dns-probe-egress
+  namespace: sandbox-limits
+spec:
+  podSelector:
+    matchLabels:
+      app: dns-probe
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - to:
+        - ipBlock: { cidr: <COREDNS_IP>/32 }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+```
+
+| Part | What it does |
+|---|---|
+| `podSelector: app: dns-probe` | Selects every probe pod, the sandboxed and the ordinary one alike |
+| `policyTypes: [Ingress, Egress]` | Makes both directions default-deny for the selected pods, so anything not allowed below is refused |
+| no `ingress:` rule | Denies all ingress to the probe pods |
+| `egress` to the CoreDNS `ipBlock` on UDP and TCP 53 | The one allowed egress: DNS to the cluster resolver. EKS Auto Mode runs CoreDNS locally on each node and the Network Policy Controller matches DNS by that fixed Service IP, the same way [Getting started > Coding agent](../../getting-started/coding-agent/README.md) allows it |
+
+The policy is enforced on the node, outside the guest: the node's network policy agent attaches
+the enforcement to the pod's host-side interface, so a command run inside the sandbox, even as
+root, is subject to it. A `domainNames` rule, where a sample uses one, allows the addresses a
+name resolves to, so other names on the same addresses are reachable too; this policy allows
+CoreDNS by its fixed Service IP and needs no name rule. A pod can always reach its own node.
+
+Apply the policy and wait for its `PolicyEndpoint` before relying on enforcement: it shows the
+controller has handed the policy to the nodes.
+
+```bash
+kubectl -n sandbox-limits get networkpolicies,policyendpoints
+```
+
+```text
+NAME                                               POD-SELECTOR    AGE
+networkpolicy.networking.k8s.io/dns-probe-egress   app=dns-probe   3m3s
+
+NAME                                                      AGE
+policyendpoint.networking.k8s.aws/dns-probe-egress-ttrfn  3m4s
+```
+
+Show it working, one allowed and one refused. DNS to CoreDNS on 53 is allowed; the same host on
+port 80, which no rule allows, is refused and the connection runs to a timeout:
+
+```bash
+# allowed: a DNS query to CoreDNS on 53 is answered
+kubectl -n sandbox-limits exec -i probe-sandboxed -- env OFFERED_QPS=50 WINDOW=1 python3 - \
+  < scripts/probe-dns-rate.py | tail -1
+# refused: a TCP connection to the same host on port 80 (no rule allows it) times out
+kubectl -n sandbox-limits exec probe-sandboxed -- python3 -c \
+  'import socket; s=socket.socket(); s.settimeout(6)
+try: s.connect(("<COREDNS_IP>",80)); print("reached")
+except Exception as e: print("refused:", type(e).__name__)'
+```
+
+```text
+RESULT offered=50 answered=50 elapsed=2.00 rate=50.0
+refused: TimeoutError
+```
+
+The query-rate limit sits on the sandbox network path, not in this policy: the policy only scopes
+which destinations the probe may reach. Keeping egress to the in-cluster resolver also means the
+sample needs no internet egress.
+
+## Optional: raise the limit and watch the plateau move
+
+The User Guide documents a per-pod annotation that sets the limit,
+`sandbox.amazonaws.com/dns-packets-per-second` (values above 512 are clamped to 512, `"disabled"`
+turns the throttle off). [`deploy/probe-sandboxed-raised.yaml`](deploy/probe-sandboxed-raised.yaml)
+is `probe-sandboxed` with that annotation set to `300`:
+
+```yaml
+metadata:
+  name: probe-sandboxed-raised
+  annotations:
+    sandbox.amazonaws.com/dns-packets-per-second: "300"
+spec:
+  runtimeClassName: isolated-sandbox
+```
+
+Run the comparison with the raised variant added:
+
+```bash
+scripts/run-comparison.sh --raised
+```
+
+```text
+=== Results ===
+sandbox  @ 50 qps (below the limit)        50.0 qps answered
+standard @ 400 qps (control)               400.0 qps answered
+sandbox  @ 400 qps (symptom)               119.8 qps answered
+sandbox  @ 400 qps, limit raised 300       319.8 qps answered
+
+=== Verdict ===
+RESULT: the per-sandbox DNS query-rate limit bites on the sandbox path and not on the
+ordinary path. Below the limit the sandboxed probe answered 50.0 qps; at 400
+qps offered it plateaued at 119.8 qps while the ordinary control answered 400.0
+qps. The measured plateau is near the documented 100 qps per family (EKS User Guide).
+With the limit raised to 300, the plateau moved to 319.8 qps: direct evidence the plateau is that limit.
+```
+
+With the annotation at 300, the plateau moves from about 100 to about 300 (again a little above,
+by the same burst allowance), while the default-limit pod still plateaus near 100. The plateau
+tracks the configured limit, which is direct evidence that the plateau is this limit and not some
+other bottleneck.
+
+## Recognising the DNS limit
+
+When a sandboxed pod shows intermittent DNS resolution timeouts, this is the two-minute check
+before chasing it as an application bug:
+
+- **The shape:** a sandboxed pod (`runtimeClassName: isolated-sandbox`) doing many DNS lookups a
+  second, with a fraction of lookups timing out while the rest resolve fine. It reads as a flaky
+  resolver or a slow network, but established lookups are healthy and only the rate is the
+  problem.
+- **The fix is DNS-side, not application-side:** cache lookups, pool and reuse connections so each
+  request does not do a fresh lookup, or resolve a name once and reuse the address. The User
+  Guide suggests adding a DNS cache to the pod (for example `dnsmasq`, or CoreDNS as a cache
+  container) so repeated lookups do not each generate an outbound query.
+- **Raising the limit** is an option only because the User Guide documents the
+  `sandbox.amazonaws.com/dns-packets-per-second` annotation for it, as the optional variant above
+  shows. Where a limit is fixed, the fix is to design under it.
+
+## Reading the result
+
+The ordinary control is what makes this a result rather than a coincidence. It runs the same
+probe on the node's normal path, so the two high-rate readings together classify any outcome, and
+this page reads them this way:
+
+| ordinary pod | sandboxed pod | Meaning |
+|---|---|---|
+| answers the full rate | plateaus | The per-sandbox DNS limit bites on the sandbox path, as this sample claims. |
+| answers the full rate | also answers the full rate | The limit did not show on this cluster under this load, so the build is not enforcing it here. That is a runtime fact, not a sandbox defect, and the page states no number in that case. |
+| plateaus | either | The cluster DNS or the offered load is the bottleneck, not the sandbox. The result cannot be attributed, so the comparison says so rather than blaming the sandbox. |
+
+The comparison script applies exactly this reading and refuses to report a limit unless the
+control answered the full rate and only the sandboxed pod plateaued.
+
+## The sandboxed probe is really in a sandbox
+
+The same evidence [Hello sandbox](../../getting-started/hello-sandbox/README.md) shows: the
+sandboxed probe runs its own kernel build, its uptime matches the pod's age because the VM booted
+with the pod, and it sees virtio disks. Run
+[`scripts/show-sandbox.sh`](scripts/show-sandbox.sh), or by hand:
+
+```bash
+for p in probe-sandboxed probe-standard; do
+  echo "# $p"
+  kubectl -n sandbox-limits exec $p -- sh -c 'uname -rv; cut -d" " -f1 /proc/uptime; ls /sys/block | tr "\n" " "; echo'
+done
+```
+
+```text
+# probe-sandboxed
+6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
+52.54
+dm-0 vda vdb vdc
+# probe-standard
+6.18.51 #2 SMP PREEMPT_DYNAMIC Wed Oct  7 22:33:11 UTC 2026
+160685.39
+dm-0 nvme0n1 nvme1n1 nvme2n1 nvme3n1 zram0
+```
+
+The sandboxed probe's uptime (about 53 seconds) matches its pod's age, because the VM booted with
+the pod, and it sees virtio disks (`vda`, `vdb`, `vdc`); the ordinary probe reports the node's
+uptime (about 45 hours) and the instance's `nvme` disks. The kernel version string is the same
+for both, `6.18.51`; the build (`#1` versus `#2`, and the date) and the boot are not.
+
+## Clean up
+
+Remove the pods, the policy and the namespace this sample created. This does not touch the
+cluster-wide enforcement setting from step 1.
+
+```bash
+scripts/run-comparison.sh --cleanup
+```
+
+Or by hand:
+
+```bash
+kubectl delete -f deploy/egress-policy.yaml --ignore-not-found
+kubectl delete -f deploy/probe-sandboxed-raised.yaml --ignore-not-found
+kubectl delete -f deploy/probe-sandboxed.yaml -f deploy/probe-standard.yaml --ignore-not-found
+kubectl delete -f deploy/namespace.yaml --ignore-not-found
+```
+
+The network policy enforcement is cluster-wide, and if you enabled it in step 1 this sample does
+not turn it back off. On a cluster you keep, leave it on (it only enforces policies that select a
+pod), or, if nothing else relies on it, turn it off by setting the `amazon-vpc-cni` ConfigMap's
+`enable-network-policy-controller` back to `"false"`. If it was already on before you started,
+leave it. Deleting the cluster removes everything; see the
+[hello sandbox](../../getting-started/hello-sandbox/README.md) clean up for removing the namespace
+and the cluster.
