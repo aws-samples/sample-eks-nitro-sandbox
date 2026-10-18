@@ -6,7 +6,9 @@ Closes #
 
 ## How it was checked
 
-- [ ] For a sample: ran it end to end from a fresh run on a live cluster, and every output block on the page comes from that run
+<!-- For a sample: open this pull request as a draft (gh pr create --draft) until the fresh-run box below is true, then mark it ready. -->
+
+- [ ] For a sample: ran it end to end from a fresh run on a live cluster, every output block on the page comes from that run, and no `TODO: output from the fresh run` marker is left
 - [ ] For a sample: the page shows the pod's own kernel build, boot and virtio disks, each with what an ordinary pod shows instead
 - [ ] For a sample: the page shows its network policy at work (one allowed and one refused connection), or that a network-isolated sandbox has only loopback, no route and no DNS
 - [ ] For a sample: added to the `mkdocs.yml` nav (`--strict` does not catch a missing entry), and `docs/ROADMAP.md` and the root `README.md` updated

@@ -63,6 +63,9 @@ Issue #2 is the model spec.
 
 - **Show only output from a real run**, and say when it is abridged. Why: readers compare
   their own output with the page.
+- **Until that run, put `TODO: output from the fresh run` in each output block**, never
+  output you wrote yourself. Why: written output reads like a real run, so neither you nor a
+  reviewer can tell later which blocks were run.
 - **Check each claim on a live cluster**, not only in the manifests. Why: a static check
   passes on things that are wrong at runtime.
 - **Prove a sample with a fresh run**, not by resuming an earlier one. Why: a resumed run
@@ -78,6 +81,9 @@ Issue #2 is the model spec.
 - **Get a second reviewer, a person or another agent, for any change to a check, a
   credential path or a security claim.** Why: those fail silently; the sample still runs
   and the page still reads well.
+- **Open a sample's pull request as a draft until its fresh run is on the page**
+  (`gh pr create --draft`), then mark it ready. Why: a ready pull request invites review
+  and merge of output that has not been run yet.
 - **Do not force-push a shared branch.** Why: it rewrites history other people have built
   on.
 - Write commit messages that say what was wrong and how the fix was proved. Why: the next
