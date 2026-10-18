@@ -138,8 +138,9 @@ if [[ "$below" == error || "$control" == error || "$symptom" == error ]]; then
   exit 5
 elif ! ge "$control" "$UNCAPPED_MIN"; then
   line "RESULT: the ordinary control answered only ${control} qps (needs >= ${UNCAPPED_MIN})."
-  line "The cluster resolver or the offered load is the bottleneck, not the sandbox, so the"
-  line "comparison cannot attribute anything. Re-run when the cluster DNS is quiet."
+  line "The bottleneck is the cluster resolver, the offered load, or the control pod's own CPU,"
+  line "not the sandbox, so the comparison cannot attribute anything. Investigate the control"
+  line "pod's performance (and re-run when the cluster DNS is quiet) before reading the result."
   exit 3
 elif ge "$symptom" "$UNCAPPED_MIN"; then
   line "RESULT: both the control (${control} qps) and the sandboxed probe (${symptom} qps) ran"
