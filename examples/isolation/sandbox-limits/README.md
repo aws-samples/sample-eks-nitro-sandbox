@@ -86,7 +86,7 @@ You can run each walkthrough with its script,
 limit, each of which prints a verdict. The steps below are what they do, so you can follow each
 one and read its output.
 
-## The limit, and where the number comes from
+### The DNS limit, and where the number comes from
 
 The Amazon EKS User Guide documents this limit in *Isolated and confidential pods limitations*,
 section "Per-pod DNS query rate limit": each pod that uses the `isolated-sandbox` runtime class
