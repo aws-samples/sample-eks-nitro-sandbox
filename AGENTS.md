@@ -97,6 +97,7 @@ Issue #2 is the model spec.
 | `sample-page` | Build the sample and write its page: layout, stages, network policy section, clean up, nav entry and roadmap update. |
 | `nitro-sandbox-pods` | Get the facts right about how a Nitro sandbox pod works, in `isolated-sandbox` and `confidential-sandbox` mode, and how a sample proves it ran in one. |
 | `aws-diagrams` | Draw draw.io architecture diagrams in the style of the existing figures, exported to PNG. |
+| `slack-updates` | Post a status update to the maintainers' Slack channel, checked and confirmed, using the local settings a maintainer gives you. |
 
 Edit skills only in `.agents/skills/`. Then run `./scripts/check-agent-files.sh`, which
 fails on a broken link, a second copy of a skill, or a skill this table does not list.
