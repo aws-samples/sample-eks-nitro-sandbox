@@ -259,7 +259,8 @@ name resolves to, so other names on the same addresses are reachable too; this p
 CoreDNS by its fixed Service IP and needs no name rule. A pod can always reach its own node.
 
 Apply the policy and wait for its `PolicyEndpoint` before relying on enforcement: it shows the
-controller has handed the policy to the nodes.
+controller has handed the policy to the nodes. The `PolicyEndpoint` name ends in a random suffix,
+so yours will differ:
 
 ```bash
 kubectl -n sandbox-limits get networkpolicies,policyendpoints
