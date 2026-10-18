@@ -151,10 +151,10 @@ done
 ```
 
 ```text
-client-standard  -> web-allowed (10.0.14.9): reached
-client-standard  -> web-blocked (10.0.21.7): reached
-client-sandboxed -> web-allowed (10.0.14.9): reached
-client-sandboxed -> web-blocked (10.0.21.7): reached
+client-standard  -> web-allowed (192.168.165.37): reached
+client-standard  -> web-blocked (192.168.165.36): reached
+client-sandboxed -> web-allowed (192.168.165.37): reached
+client-sandboxed -> web-blocked (192.168.165.36): reached
 ```
 
 **Step 4: Apply the policy and wait for its `PolicyEndpoint`.**
@@ -211,11 +211,11 @@ done
 kubectl get networkpolicies,policyendpoints
 
 ```text
-NAME                                               POD-SELECTOR         AGE
+NAME                                                   POD-SELECTOR        AGE
 networkpolicy.networking.k8s.io/netpol-client-egress   app=netpol-client   12s
 
-NAME                                                                AGE
-policyendpoint.networking.k8s.aws/netpol-client-egress-x7k2p        6s
+NAME                                                           AGE
+policyendpoint.networking.k8s.aws/netpol-client-egress-m7bn4   6s
 ```
 
 **Step 5: After the policy, each client keeps `web-allowed` and loses `web-blocked`.** Run the
@@ -293,17 +293,17 @@ done
 ```text
 # client-sandboxed
 6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-41.90
+71.71
 dm-0 vda vdb vdc
 # client-standard
 6.18.51 #2 SMP PREEMPT_DYNAMIC Wed Oct  7 22:33:11 UTC 2026
-59191.99
-nvme0n1
+155191.57
+dm-0 nvme0n1 nvme1n1 nvme2n1 nvme3n1 zram0
 ```
 
-The sandboxed client's uptime (about 42 seconds) matches its pod's age, and it sees virtio disks
-(`vda`, `vdb`, `vdc`); the ordinary client reports the node's uptime (about 16 hours) and the
-instance's `nvme` disk. The kernel version string is the same for both, `6.18.51`; the build
+The sandboxed client's uptime (about 72 seconds) matches its pod's age, and it sees virtio disks
+(`vda`, `vdb`, `vdc`); the ordinary client reports the node's uptime (about 43 hours) and the
+instance's `nvme` disks. The kernel version string is the same for both, `6.18.51`; the build
 (`#1` versus `#2`, and the date) and the boot are not.
 
 ## Optional: egress by hostname
