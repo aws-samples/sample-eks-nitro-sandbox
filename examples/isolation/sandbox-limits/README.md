@@ -463,7 +463,8 @@ nor port exhaustion is the limit (4096 is far below the roughly 28000 ephemeral 
 The sandboxed pod plateaus at exactly 4096 established flows, which matches the documented 4096
 per family; the 4097th connection times out rather than being refused, the dropped-packet shape
 the User Guide describes; and the guest's own connection-tracking count reads 4097 at that moment,
-so the table is provably at its limit, not merely one failed connection.
+sitting at the limit (4097 against the documented 4096) as the next connection times out. That
+reads as a full connection-tracking table, not as one connection that happened to fail.
 
 ## Optional: raise the connection limit
 
