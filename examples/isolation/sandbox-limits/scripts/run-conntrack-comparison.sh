@@ -144,10 +144,10 @@ elif [[ "$c_err" != NONE ]] || ! ge "$c_est" "$CONTROL_MIN"; then
   line "drop) before failing with ${c_err}. The sink or the path is the bottleneck, not the"
   line "sandbox, so the comparison cannot attribute anything. Re-run with a fresh sink."
   exit 3
-elif [[ "$s_err" == NONE ]] || ge "$s_est" "$CONTROL_MIN"; then
+elif [[ "$s_err" == NONE ]] && ge "$s_est" "$CONTROL_MIN"; then
   line "RESULT: both the control (${c_est}) and the sandboxed probe (${s_est}) opened the full"
-  line "budget. This cluster build is not enforcing the outbound connection limit: a runtime"
-  line "fact, not a sandbox defect, and no number is invented. Nothing to report as a limit."
+  line "budget with no drop. This cluster build is not enforcing the outbound connection limit: a"
+  line "runtime fact, not a sandbox defect, and no number is invented. Nothing to report as a limit."
   exit 4
 elif ge "$s_est" "$SYM_LO" && le "$s_est" "$SYM_HI" && [[ "$s_err" == ETIMEDOUT ]] && ge "$s_ct" "$CT_MIN"; then
   line "RESULT: the per-pod outbound connection limit bites on the sandbox path and not on the"

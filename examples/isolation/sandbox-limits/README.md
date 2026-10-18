@@ -244,9 +244,10 @@ qps. The measured plateau is near the documented 100 qps per family (EKS User Gu
 ## How the network policy works
 
 The probe pods have a network, so the sample restricts their egress with a standard
-`networking.k8s.io/v1` `NetworkPolicy` and shows the whole policy here. It allows only DNS to
-CoreDNS, which is all the probe needs, and denies everything else. `<COREDNS_IP>` is filled in at
-apply time from `kubectl get svc -n kube-system kube-dns`:
+`networking.k8s.io/v1` `NetworkPolicy` and shows the whole policy here. It allows just two things,
+the DNS the DNS probe needs and the TCP egress to the sink the connection probe needs, and denies
+everything else. `<COREDNS_IP>` is filled in at apply time from
+`kubectl get svc -n kube-system kube-dns`:
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -267,6 +268,12 @@ spec:
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
+    - to:
+        - podSelector:
+            matchLabels:
+              app: conntrack-sink
+      ports:
+        - { protocol: TCP, port: 9000 }
 ```
 
 | Part | What it does |
@@ -274,7 +281,8 @@ spec:
 | `podSelector: app: dns-probe` | Selects every probe pod, the sandboxed and the ordinary one alike |
 | `policyTypes: [Ingress, Egress]` | Makes both directions default-deny for the selected pods, so anything not allowed below is refused |
 | no `ingress:` rule | Denies all ingress to the probe pods |
-| `egress` to the CoreDNS `ipBlock` on UDP and TCP 53 | The one allowed egress: DNS to the cluster resolver. EKS Auto Mode runs CoreDNS locally on each node and the Network Policy Controller matches DNS by that fixed Service IP, the same way [Getting started > Coding agent](../../getting-started/coding-agent/README.md) allows it |
+| `egress` to the CoreDNS `ipBlock` on UDP and TCP 53 | DNS to the cluster resolver, which the DNS probe needs. EKS Auto Mode runs CoreDNS locally on each node and the Network Policy Controller matches DNS by that fixed Service IP, the same way [Getting started > Coding agent](../../getting-started/coding-agent/README.md) allows it |
+| `egress` to the `conntrack-sink` pod on TCP 9000 | The connection sink, which the connection-limit probe opens held-open outbound flows to. Nothing else is reachable, so the probe cannot leave the cluster |
 
 The policy is enforced on the node, outside the guest: the node's network policy agent attaches
 the enforcement to the pod's host-side interface, so a command run inside the sandbox, even as
@@ -488,11 +496,12 @@ sandbox,  limit raised to 8192                 established=6000 new-conn=NONE ct
 ```
 
 The default-limit pod still plateaus at 4096, while the pod with the limit raised to 8192 opens
-the full 6000 flows the probe offers with no drop, so its limit is above the offered budget and
-out of the way. Raising the annotation moves the plateau, which is direct evidence that the
-plateau is this limit and not some other bottleneck. To see it plateau at exactly 8192, raise the
-probe's offered budget with `MAX_CONN=9000`, which opens over eight thousand sockets and takes
-longer to run.
+the full 6000 flows the probe offers with no drop (`new-conn=NONE`), so its limit is above the
+offered budget and out of the way. The `ct=-1` on that line means no plateau was reached, so there
+is no connection-tracking count at a plateau to report. Raising the annotation moves the plateau,
+which is direct evidence that the plateau is this limit and not some other bottleneck. To see it
+plateau at exactly 8192, raise the probe's offered budget with `MAX_CONN=9000`, which opens over
+eight thousand sockets and takes longer to run.
 
 ## Recognising the connection limit
 
