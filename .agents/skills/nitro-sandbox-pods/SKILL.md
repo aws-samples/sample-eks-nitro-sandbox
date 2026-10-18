@@ -9,7 +9,9 @@ Every fact here comes from this site's pages or from public AWS or upstream docu
 and each one names its source. Paths are relative to the repository root. When a sample
 needs something these sources do not state, look it up in the Amazon EKS User Guide
 (<https://docs.aws.amazon.com/eks/latest/userguide/>) and cite that page; do not fill the
-gap from memory or from unpublished material.
+gap from memory or from unpublished material. Until Nitro sandboxes are generally
+available, the guide's pages for them are not public yet: "The Amazon EKS User Guide before
+general availability" in `AGENTS.md` says where they are and how to cite them.
 
 The pages call the running unit you pool, claim, exec into and delete a **pod**. They say
 **sandbox** for the agent-sandbox resources (`Sandbox`, `SandboxClaim`, `SandboxWarmPool`)

@@ -58,8 +58,32 @@ repository, `git@ssh.gitlab.aws.dev:carrlos/eks-nitro-sandbox-testing.git`.
   sample with a fresh run here. Why: output copied from the internal demo did not come from
   this sample.
 
-The internal repository's URL is the one internal value this file holds, at the
-maintainers' choice. Remove it before this repository is made public.
+### The Amazon EKS User Guide before general availability
+
+Until Nitro sandboxes are generally available, the public Amazon EKS User Guide has no page
+for them. The pages that will be published are kept as AsciiDoc in the service team's
+package, `ssh://git.amazon.com/pkg/EKSPodIsolationRuntime`, under `docs/eks-user-guide/`.
+Clone only that folder, next to this repository:
+
+```bash
+git clone --depth 1 --filter=blob:none --sparse ssh://git.amazon.com/pkg/EKSPodIsolationRuntime
+git -C EKSPodIsolationRuntime sparse-checkout set docs/eks-user-guide
+```
+
+- **Treat those pages as the Amazon EKS User Guide** wherever this file, a skill or a spec
+  asks whether the guide states something, such as a limit value. Start with
+  `isolated-confidential-pods.adoc`, which links the rest; limits are in
+  `isolated-confidential-pods-limitations.adoc`. Why: the public guide does not have them
+  yet, so a check against it finds nothing and reads as "not documented".
+- **On a page, cite the guide by page title** ("Amazon EKS User Guide, *Isolated and
+  confidential pods limitations*") with no link until the public page exists, and never the
+  package path. Why: the package is internal, and a link to a page that does not exist yet
+  is broken.
+
+The internal repository's and the package's URLs are the only internal values this file
+holds, at the maintainers' choice. Remove them before this repository is made public, which
+needs Nitro sandboxes to be generally available first: until then the pages above, and any
+sample that quotes them, describe an unreleased feature.
 
 ## Security rules
 
@@ -72,8 +96,8 @@ maintainers' choice. Remove it before this repository is made public.
   `sandbox.amazonaws.com/network-isolated: "true"` has no network to restrict; show that
   instead.
 - **No values from your own account or environment in tracked files**: no account IDs,
-  keys, tokens, names of your clusters or hosts, user names or internal URLs. The one
-  exception is the repository URL in
+  keys, tokens, names of your clusters or hosts, user names or internal URLs. The only
+  exceptions are the two repository URLs in
   [Start from an internal demo](#start-from-an-internal-demo). Use
   placeholders such as `<ACCOUNT_ID>` and a gitignored local env file; the shared defaults
   on the home page (`sandbox-demo`, `us-west-2`, `nitro-sandboxes-demo`) are fine. Why:
