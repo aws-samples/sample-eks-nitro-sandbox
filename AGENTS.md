@@ -38,6 +38,29 @@ but has no entry in the left menu, so add the `nav` line yourself.
 
 Issue #2 is the model spec.
 
+## Start from an internal demo
+
+Many samples on the roadmap already have a working demo in the maintainers' internal
+repository, `git@ssh.gitlab.aws.dev:carrlos/eks-nitro-sandbox-testing.git`.
+
+- **Before you implement a sample, clone the internal repository and search it for the same
+  or a close implementation.** Clone it next to this repository, not inside it, and look
+  under its `examples/` (`isolated/`, `confidential/`, `integrations/`) and the rest of the
+  tree. Reuse and adjust what you find instead of starting over, and say in the pull request
+  which internal demo the sample came from. Why: a ported demo starts from something that
+  already ran, with its findings and fixes.
+- **Treat the internal clone as read-only reference, and do the work in this repository.**
+  Bring over manifests, scripts and findings; leave behind its `AGENTS.md`, skills, review
+  tooling and publishing steps, and follow this file instead. Why: the internal repository
+  has its own conventions, internal values and rules that do not apply here.
+- **Port it to this repository's rules**: its layout, its page structure, and placeholders in
+  place of every value from the internal repository's account and cluster. Then prove the
+  sample with a fresh run here. Why: output copied from the internal demo did not come from
+  this sample.
+
+The internal repository's URL is the one internal value this file holds, at the
+maintainers' choice. Remove it before this repository is made public.
+
 ## Security rules
 
 - **No Ingress, LoadBalancer or NodePort.** Reach a service with ClusterIP and
@@ -49,7 +72,9 @@ Issue #2 is the model spec.
   `sandbox.amazonaws.com/network-isolated: "true"` has no network to restrict; show that
   instead.
 - **No values from your own account or environment in tracked files**: no account IDs,
-  keys, tokens, names of your clusters or hosts, user names or internal URLs. Use
+  keys, tokens, names of your clusters or hosts, user names or internal URLs. The one
+  exception is the repository URL in
+  [Start from an internal demo](#start-from-an-internal-demo). Use
   placeholders such as `<ACCOUNT_ID>` and a gitignored local env file; the shared defaults
   on the home page (`sandbox-demo`, `us-west-2`, `nitro-sandboxes-demo`) are fine. Why:
   the repository is public, so anything committed is published.
