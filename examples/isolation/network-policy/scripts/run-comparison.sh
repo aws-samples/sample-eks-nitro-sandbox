@@ -190,8 +190,9 @@ elif [[ "$a_std_allowed" == reached && "$a_box_allowed" == reached ]] \
   line "path -- both clients keep web-allowed and are refused web-blocked."
   exit 0
 elif refused "$a_std_blocked" && [[ "$a_box_blocked" == reached ]]; then
-  line "RESULT: the policy holds on the ordinary path but NOT on the sandboxed one."
-  line "Stop and report this before writing the page."
+  line "RESULT: the policy was enforced on the ordinary path but NOT on the sandboxed one."
+  line "This contradicts the sample's claim -- do not report success; investigate the"
+  line "cluster's network-policy enforcement on sandbox pods."
   exit 4
 else
   line "RESULT: unexpected combination -- inspect the readings above."

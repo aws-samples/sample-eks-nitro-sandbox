@@ -257,23 +257,25 @@ timed out (refused)
 
 ## Reading the result
 
-Because the ordinary client makes the same request on the node's normal path, the two results
-together tell the outcomes apart. Read them with this table:
+The ordinary client is what makes this a result rather than a coincidence. It issues the same
+request on the node's normal path, so the two readings are directly comparable. In the run above:
 
-| `client-standard` → blocked | `client-sandboxed` → blocked | Meaning |
-|---|---|---|
-| refused | refused | The policy is enforced on the sandboxed path, as on the ordinary path. This is the result above. |
-| refused | reached | The policy holds on the ordinary path but not on the sandboxed one. Stop and report it before writing the page. |
-| reached | either | Enforcement is not on for the cluster (step 1); the comparison shows nothing about the sandbox. |
+- **Before the policy, both clients reached `web-blocked`.** The connection the policy denies was
+  genuinely open to begin with, on both paths, so the refusal after the policy is the policy's
+  doing and not some unrelated outage.
+- **After the policy, both clients were refused `web-blocked` and both kept `web-allowed`.** The
+  sandboxed path behaved identically to the ordinary control path.
 
-**Naming the refusal shapes, so a block is not mistaken for a broken cluster.** A refused egress
-to a pod IP is a connection that gets no reply and runs to the timeout — what you see above, and
-the shape this sample demonstrates. One other shape is worth knowing about so it is not misread:
-when the denied target is a *name* that also publishes IPv6 (AAAA) records, a client that tries
-the IPv6 address can fail at once with `Network is unreachable`, because the sandbox has no route
-to global IPv6, rather than timing out on IPv4. The scripts here do not capture that message (the
-probe tools report only reached-or-not), so treat it as background: both shapes mean the same
-thing — the address is not in the allow list.
+Together those two facts show the standard NetworkPolicy is enforced on the Nitro sandbox pod
+exactly as it is on an ordinary pod. The ordinary control also rules out the one reading that
+would say nothing about the sandbox: if the ordinary client had still reached `web-blocked` after
+the policy, enforcement would simply be off for the cluster (step 1). It was on, and the ordinary
+client was refused, so the sandboxed client's refusal is a real enforcement result.
+
+**What a refused egress looks like here.** A refused egress to a pod IP is a connection that gets
+no reply and runs to the `wget -T 8` timeout — the `timed out (refused)` lines above. That is the
+shape this sample produces on a live cluster, so a timeout against `web-blocked` is the policy
+working, not a broken cluster.
 
 ## The sandboxed client is really in a sandbox
 
