@@ -12,7 +12,7 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 
 ## Isolation
 
-- [Sandbox limits (DNS)](examples/isolation/sandbox-limits/README.md): the per-sandbox DNS query-rate limit made visible on your own cluster, side by side with an ordinary pod, and how to recognise it.
+- [Sandbox limits](examples/isolation/sandbox-limits/README.md): the per-sandbox DNS query-rate limit and the per-pod outbound connection limit, made visible on your own cluster side by side with an ordinary pod, and how to recognise each one.
 
 ## Managed agents
 

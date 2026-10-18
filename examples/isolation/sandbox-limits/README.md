@@ -1,4 +1,4 @@
-# A per-sandbox DNS query-rate limit you can see
+# Per-sandbox limits you can see
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
@@ -13,12 +13,30 @@ git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/isolation/sandbox-limits
 ```
 
+A Nitro sandbox applies per-pod limits so no single sandboxed pod can exhaust a resource the
+whole node shares. Two are easy to reach by accident: a limit on how many DNS queries a second
+the pod may send to the cluster resolver, and a limit on how many simultaneous outbound
+connections the pod may hold. Both are on by default and stay invisible until a workload crosses
+one, at which point the symptom looks like an application bug. This sample makes each limit
+visible on your own cluster and teaches its symptom, so a team recognises it instead of debugging
+it blind.
+
+Each is shown the same honest way: run the same probe twice, side by side, differing only in
+`runtimeClassName: isolated-sandbox` versus an ordinary pod, and watch only the sandboxed pod
+reach the limit while the identical ordinary pod sails past it. The ordinary pod is the control,
+so the result cannot be read any other way: same image, same target, same offered load, and the
+only pod that reaches the limit is the sandboxed one.
+
+The page covers the [DNS query-rate limit](#the-dns-query-rate-limit) first, then the
+[outbound connection limit](#the-outbound-connection-limit).
+
+## The DNS query-rate limit
+
 A Nitro sandbox applies a per-pod limit on how many DNS queries a second the pod may send to
 the cluster resolver. It is on by default and stays invisible until a workload crosses it, at
 which point a fraction of lookups simply go unanswered. That reads as intermittent resolution
 timeouts, which looks like a flaky application or a slow resolver rather than a limit doing its
-job. This sample makes the limit visible on your own cluster and teaches the symptom, so a team
-recognises it instead of debugging it as an application bug.
+job.
 
 It runs the same DNS probe twice, side by side, differing only in
 `runtimeClassName: isolated-sandbox` versus an ordinary pod. Below the limit both answer every
@@ -52,15 +70,21 @@ The files:
 | [`deploy/namespace.yaml`](deploy/namespace.yaml) | The `sandbox-limits` namespace this sample owns |
 | [`deploy/probe-standard.yaml`](deploy/probe-standard.yaml) | The ordinary probe pod: the control |
 | [`deploy/probe-sandboxed.yaml`](deploy/probe-sandboxed.yaml) | The sandboxed probe pod: identical but for `runtimeClassName: isolated-sandbox` |
-| [`deploy/probe-sandboxed-raised.yaml`](deploy/probe-sandboxed-raised.yaml) | The optional variant: a sandboxed probe with the limit raised by annotation |
-| [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The egress `NetworkPolicy` that selects every probe pod and allows only DNS to CoreDNS |
+| [`deploy/probe-sandboxed-raised.yaml`](deploy/probe-sandboxed-raised.yaml) | The optional DNS variant: a sandboxed probe with the DNS limit raised by annotation |
+| [`deploy/sink.yaml`](deploy/sink.yaml) | The connection sink: an ordinary pod that accepts and holds every inbound TCP connection open, for the connection-limit probe |
+| [`deploy/probe-sandboxed-conntrack-raised.yaml`](deploy/probe-sandboxed-conntrack-raised.yaml) | The optional connection variant: a sandboxed probe with the connection limit raised by annotation |
+| [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The egress `NetworkPolicy` that selects every probe pod and allows DNS to CoreDNS and TCP to the sink |
 | [`scripts/probe-dns-rate.py`](scripts/probe-dns-rate.py) | The DNS probe: offers a fixed query rate for a fixed window and reports how many were answered |
-| [`scripts/run-comparison.sh`](scripts/run-comparison.sh) | Deploys everything, runs the below-limit, control and symptom probes, prints a verdict |
+| [`scripts/probe-conntrack.py`](scripts/probe-conntrack.py) | The connection probe: opens held-open outbound TCP flows to the sink by raw IP and reports the plateau |
+| [`scripts/run-comparison.sh`](scripts/run-comparison.sh) | The DNS comparison: runs the below-limit, control and symptom probes, prints a verdict |
+| [`scripts/run-conntrack-comparison.sh`](scripts/run-conntrack-comparison.sh) | The connection comparison: runs the control and symptom probes against the sink, prints a verdict |
 | [`scripts/show-sandbox.sh`](scripts/show-sandbox.sh) | Shows the sandboxed probe running in a sandbox, next to the ordinary probe |
 
-You can run the whole walkthrough with [`scripts/run-comparison.sh`](scripts/run-comparison.sh),
-which does steps 1 through 4 and prints a verdict. The steps below are what it does, so you can
-follow each one and read its output.
+You can run each walkthrough with its script,
+[`scripts/run-comparison.sh`](scripts/run-comparison.sh) for DNS and
+[`scripts/run-conntrack-comparison.sh`](scripts/run-conntrack-comparison.sh) for the connection
+limit, each of which prints a verdict. The steps below are what they do, so you can follow each
+one and read its output.
 
 ## The limit, and where the number comes from
 
@@ -297,7 +321,7 @@ The query-rate limit sits on the sandbox network path, not in this policy: the p
 which destinations the probe may reach. Keeping egress to the in-cluster resolver also means the
 sample needs no internet egress.
 
-## Optional: raise the limit and watch the plateau move
+## Optional: raise the DNS limit and watch the plateau move
 
 The User Guide documents a per-pod annotation that sets the limit,
 `sandbox.amazonaws.com/dns-packets-per-second` (values above 512 are clamped to 512, `"disabled"`
@@ -356,7 +380,7 @@ before chasing it as an application bug:
   `sandbox.amazonaws.com/dns-packets-per-second` annotation for it, as the optional variant above
   shows. Where a limit is fixed, the fix is to design under it.
 
-## Reading the result
+## Reading the DNS result
 
 The ordinary control is what makes this a result rather than a coincidence. It runs the same
 probe on the node's normal path, so the two high-rate readings together classify any outcome, and
@@ -370,6 +394,134 @@ this page reads them this way:
 
 The comparison script applies exactly this reading and refuses to report a limit unless the
 control answered the full rate and only the sandboxed pod plateaued.
+
+## The outbound connection limit
+
+A Nitro sandbox also applies a per-pod limit on how many simultaneous outbound connections the
+pod may hold. It has the same side-by-side shape as the DNS limit: the same probe runs on the
+sandboxed pod and an identical ordinary pod, and only the sandboxed one reaches the limit.
+
+The Amazon EKS User Guide documents it in *Isolated and confidential pods limitations*, section
+"Per-pod outbound connection limit": each pod that uses the `isolated-sandbox` runtime class
+**can hold at most 4096 simultaneous outbound connections per IP address family** (IPv4 and IPv6
+are counted independently). An `iptables` rule on the parent instance enforces it by dropping
+connection-initiating packets when the pod is at its limit, which stops one pod from filling the
+node's connection-tracking table and denying network access to the other pods on the instance.
+The guide names the same symptom this sample shows: "new connections timing out during traffic
+spikes while existing connections continue to work."
+
+The probe opens concurrent outbound TCP connections to an in-cluster sink and holds each open,
+pinning one tracked flow per connection. It connects by raw IP and does no name lookup, so it
+cannot reach the DNS limit; the only thing it exercises is outbound flows. It reports the
+plateau: the count at which new connections stop completing. A refused connection is instant
+(`ECONNREFUSED`); a dropped connection-initiating packet hangs and times out (`ETIMEDOUT`), so the
+timeout is the shape of the limit. The probe raises its own open-file limit first, so
+file-descriptor exhaustion cannot be mistaken for the connection limit, and it reads the guest's
+own connection-tracking count so the plateau can be shown as a table at its limit.
+
+**Step C1: Deploy the sink and run the comparison.** The sink is an ordinary pod that accepts and
+holds every inbound TCP connection open, so a client's concurrent established-connection count is
+bounded by the client side, the connection limit on the sandboxed probe, and never by the sink.
+The egress policy already allows the probe pods to reach the sink on TCP 9000. Run the whole
+comparison:
+
+```bash
+scripts/run-conntrack-comparison.sh
+```
+
+```text
+sink pod IP: 192.168.103.243
+
+=== CONTROL: ordinary probe opens up to 6000 outbound flows to the sink ===
+established=6000 first-fail-errno=NONE
+
+=== SYMPTOM: sandboxed probe opens up to 6000 outbound flows to the sink ===
+established=4096 first-fail-errno=ETIMEDOUT conntrack-count-at-plateau=4097
+
+=== Results ===
+standard, up to 6000 flows (control)           established=6000 new-conn=NONE
+sandbox,  up to 6000 flows (symptom)           established=4096 new-conn=ETIMEDOUT ct=4097
+
+=== Verdict ===
+RESULT: the per-pod outbound connection limit bites on the sandbox path and not on the
+ordinary path. The ordinary control opened 6000 flows with no drop; the sandboxed
+probe plateaued at 4096 established flows, the next connection timed out (ETIMEDOUT),
+and the guest connection-tracking count read 4097 at the plateau, near the documented
+4096 per family (EKS User Guide).
+```
+
+The ordinary control opens all 6000 flows against the same sink with no drop, so neither the sink
+nor port exhaustion is the limit (4096 is far below the roughly 28000 ephemeral ports available).
+The sandboxed pod plateaus at exactly 4096 established flows, which matches the documented 4096
+per family; the 4097th connection times out rather than being refused, the dropped-packet shape
+the User Guide describes; and the guest's own connection-tracking count reads 4097 at that moment,
+so the table is provably at its limit, not merely one failed connection.
+
+## Optional: raise the connection limit
+
+The User Guide documents a per-pod annotation that sets this limit,
+`sandbox.amazonaws.com/conntrack-limit` (an integer between 64 and 65536; unlike the other
+throttles it has no off switch).
+[`deploy/probe-sandboxed-conntrack-raised.yaml`](deploy/probe-sandboxed-conntrack-raised.yaml) is
+`probe-sandboxed` with that annotation set to `8192`:
+
+```yaml
+metadata:
+  name: probe-sandboxed-conntrack-raised
+  annotations:
+    sandbox.amazonaws.com/conntrack-limit: "8192"
+spec:
+  runtimeClassName: isolated-sandbox
+```
+
+Run the comparison with the raised variant added:
+
+```bash
+scripts/run-conntrack-comparison.sh --raised
+```
+
+```text
+=== Results ===
+standard, up to 6000 flows (control)           established=6000 new-conn=NONE
+sandbox,  up to 6000 flows (symptom)           established=4096 new-conn=ETIMEDOUT ct=4097
+sandbox,  limit raised to 8192                 established=6000 new-conn=NONE ct=-1
+```
+
+The default-limit pod still plateaus at 4096, while the pod with the limit raised to 8192 opens
+the full 6000 flows the probe offers with no drop, so its limit is above the offered budget and
+out of the way. Raising the annotation moves the plateau, which is direct evidence that the
+plateau is this limit and not some other bottleneck. To see it plateau at exactly 8192, raise the
+probe's offered budget with `MAX_CONN=9000`, which opens over eight thousand sockets and takes
+longer to run.
+
+## Recognising the connection limit
+
+When a sandboxed pod shows new connections timing out while established ones stay healthy, this
+is the check before chasing it as the far end refusing traffic:
+
+- **The shape:** a sandboxed pod (`runtimeClassName: isolated-sandbox`) holding many concurrent
+  outbound connections, where new connections hang and time out while existing connections keep
+  working. A workload that pools and reuses connections is fine; one that opens a fresh
+  connection per request, or a connection-pooling proxy fanning out, reaches it.
+- **The fix is to hold fewer connections, or raise the limit:** add connection pooling, lower
+  idle timeouts, coalesce requests, or shard the workload across more pods. The User Guide
+  documents the `sandbox.amazonaws.com/conntrack-limit` annotation to raise the limit per pod,
+  as the optional variant above shows.
+
+## Reading the connection result
+
+As with DNS, the ordinary control classifies any outcome, and the comparison script reads it this
+way:
+
+| ordinary pod | sandboxed pod | Meaning |
+|---|---|---|
+| opens the full budget, no drop | plateaus near 4096, new connections time out | The per-pod connection limit bites on the sandbox path, as this sample claims. |
+| opens the full budget | also opens the full budget | The limit did not show on this cluster under this load, so the build is not enforcing it here. That is a runtime fact, not a sandbox defect, and the page states no number in that case. |
+| cannot clear the cap | either | The sink or the path is the bottleneck, not the sandbox. The result cannot be attributed, so the comparison says so rather than blaming the sandbox. |
+
+The comparison script applies exactly this reading and refuses to report a limit unless the
+control opened the full budget with no drop and the sandboxed pod plateaued near the cap with a
+connection timeout and the connection-tracking count at its limit.
 
 ## The sandboxed probe is really in a sandbox
 
@@ -403,19 +555,21 @@ for both, `6.18.51`; the build (`#1` versus `#2`, and the date) and the boot are
 
 ## Clean up
 
-Remove the pods, the policy and the namespace this sample created. This does not touch the
-cluster-wide enforcement setting from step 1.
+Remove the pods, the sink, the policy and the namespace this sample created. Either cleanup flag
+deletes the whole namespace, so one is enough. This does not touch the cluster-wide enforcement
+setting from step 1.
 
 ```bash
-scripts/run-comparison.sh --cleanup
+scripts/run-comparison.sh --cleanup            # DNS walkthrough
+scripts/run-conntrack-comparison.sh --cleanup  # connection walkthrough
 ```
 
 Or by hand:
 
 ```bash
 kubectl delete -f deploy/egress-policy.yaml --ignore-not-found
-kubectl delete -f deploy/probe-sandboxed-raised.yaml --ignore-not-found
-kubectl delete -f deploy/probe-sandboxed.yaml -f deploy/probe-standard.yaml --ignore-not-found
+kubectl delete -f deploy/probe-sandboxed-raised.yaml -f deploy/probe-sandboxed-conntrack-raised.yaml --ignore-not-found
+kubectl delete -f deploy/probe-sandboxed.yaml -f deploy/probe-standard.yaml -f deploy/sink.yaml --ignore-not-found
 kubectl delete -f deploy/namespace.yaml --ignore-not-found
 ```
 

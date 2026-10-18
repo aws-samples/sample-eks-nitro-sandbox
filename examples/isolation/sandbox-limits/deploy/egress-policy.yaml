@@ -4,8 +4,9 @@
 #
 # It selects every probe pod (app: dns-probe) and governs their egress:
 #
-#   - allow egress to CoreDNS on UDP and TCP 53, which is the only traffic the DNS
-#     probe needs;
+#   - allow egress to CoreDNS on UDP and TCP 53, which the DNS probe needs;
+#   - allow egress to the conntrack sink on TCP 9000, which the connection-limit
+#     probe needs (it connects to the sink by raw IP, so it uses no DNS);
 #   - deny everything else, which is the default for the selected pods once
 #     policyTypes lists Egress;
 #   - deny all ingress (policyTypes lists Ingress with no ingress rule).
@@ -43,3 +44,11 @@ spec:
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
+    # Allow: the conntrack sink, by its pod label, on TCP 9000. The
+    # connection-limit probe opens held-open TCP flows to it by raw IP.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: conntrack-sink
+      ports:
+        - { protocol: TCP, port: 9000 }

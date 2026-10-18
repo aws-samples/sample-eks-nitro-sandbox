@@ -83,6 +83,6 @@ nav:
       - Coding agent: getting-started/coding-agent/README.md
       - Warm pool: getting-started/warm-pool/README.md
   - Isolation:
-      - Sandbox limits (DNS): isolation/sandbox-limits/README.md
+      - Sandbox limits: isolation/sandbox-limits/README.md
   - Managed agents:
       - Claude Managed Agents: managed-agents/claude-managed-agents/README.md
