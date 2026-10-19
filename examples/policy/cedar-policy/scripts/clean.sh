@@ -42,41 +42,63 @@ command -v kubectl >/dev/null 2>&1 || { echo "ERROR: kubectl is required" >&2; e
 failed=0
 note_fail() { echo "INCOMPLETE: $*" >&2; failed=1; }
 
-echo "Deleting pod $NAMESPACE/$POD_NAME..."
-kc delete pod "$POD_NAME" -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=5m \
-  || note_fail "could not delete pod $POD_NAME"
-kc delete networkpolicy cedar-policy-deny-egress -n "$NAMESPACE" --ignore-not-found \
-  || note_fail "could not delete the egress network policy"
+# Check who owns the namespace BEFORE deleting anything inside it. A lookup that cannot
+# run is "could not determine", a failure, never "gone": we must not delete objects in a
+# namespace we did not create. ns_state is one of: absent, owned, foreign, unknown.
+ns_label="$(kc get namespace "$NAMESPACE" --ignore-not-found \
+  -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null)"
+ns_lookup_rc=$?
+ns_exists="$(kc get namespace "$NAMESPACE" --ignore-not-found -o name 2>/dev/null)"
+ns_exists_rc=$?
+if [[ "$ns_lookup_rc" != 0 || "$ns_exists_rc" != 0 ]]; then
+  ns_state=unknown
+elif [[ -z "$ns_exists" ]]; then
+  ns_state=absent
+elif [[ "$ns_label" == "cedar-policy-sample" ]]; then
+  ns_state=owned
+else
+  ns_state=foreign
+fi
+
+case "$ns_state" in
+  unknown)
+    note_fail "could not determine whether namespace $NAMESPACE is this sample's (kubectl lookup failed); deleted nothing"
+    ;;
+  absent)
+    echo "Namespace $NAMESPACE is already gone; nothing to delete."
+    ;;
+  foreign)
+    note_fail "namespace $NAMESPACE is not this sample's (managed-by='$ns_label'); deleted nothing in it"
+    ;;
+  owned)
+    echo "Deleting pod $NAMESPACE/$POD_NAME..."
+    kc delete pod "$POD_NAME" -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=5m \
+      || note_fail "could not delete pod $POD_NAME"
+    kc delete networkpolicy cedar-policy-deny-egress -n "$NAMESPACE" --ignore-not-found \
+      || note_fail "could not delete the egress network policy"
+    if [[ "$keep_namespace" == true ]]; then
+      echo "Kept the $NAMESPACE namespace."
+    else
+      echo "Deleting namespace $NAMESPACE (carries $MANAGED_BY_LABEL)..."
+      kc delete namespace "$NAMESPACE" --wait=true --timeout=5m \
+        || note_fail "could not delete namespace $NAMESPACE"
+      # Confirm it is gone. --ignore-not-found -o name prints nothing when absent and
+      # fails only on a real lookup error, which is "could not confirm", not "gone".
+      still="$(kc get namespace "$NAMESPACE" --ignore-not-found -o name 2>/dev/null)"
+      still_rc=$?
+      if [[ "$still_rc" != 0 ]]; then
+        note_fail "could not confirm namespace $NAMESPACE was deleted"
+      elif [[ -n "$still" ]]; then
+        note_fail "namespace $NAMESPACE still present after delete"
+      fi
+    fi
+    ;;
+esac
 
 echo "Deleting the generated policy files under $TMP_DIR..."
 rm -f \
   "$TMP_DIR/policy.b64" "$TMP_DIR/policy.raw" "$TMP_DIR/policy.json" \
   "$TMP_DIR/policy.yaml" "$TMP_DIR/rendered-pod.json" "$TMP_DIR/genpolicy.log"
-
-if [[ "$keep_namespace" == true ]]; then
-  echo "Kept the $NAMESPACE namespace."
-else
-  # A lookup that fails means "could not determine", which is a failure, not "gone".
-  label="$(kc get namespace "$NAMESPACE" \
-    -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null)"
-  lookup_rc=$?
-  if [[ "$lookup_rc" != 0 ]]; then
-    if kc get namespace "$NAMESPACE" >/dev/null 2>&1; then
-      note_fail "could not read the managed-by label on namespace $NAMESPACE; left it in place"
-    else
-      echo "Namespace $NAMESPACE is already gone."
-    fi
-  elif [[ "$label" == "cedar-policy-sample" ]]; then
-    echo "Deleting namespace $NAMESPACE (carries $MANAGED_BY_LABEL)..."
-    kc delete namespace "$NAMESPACE" --wait=true --timeout=5m \
-      || note_fail "could not delete namespace $NAMESPACE"
-    if kc get namespace "$NAMESPACE" >/dev/null 2>&1; then
-      note_fail "namespace $NAMESPACE still present after delete"
-    fi
-  else
-    note_fail "namespace $NAMESPACE is not this sample's (managed-by='$label'); left it in place"
-  fi
-fi
 
 if [[ "$failed" == 0 ]]; then
   echo "Clean up complete."

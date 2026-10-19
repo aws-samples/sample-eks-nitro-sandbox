@@ -91,14 +91,18 @@ That policy is the subject of this sample.
 **A reduced confidential profile.** The generator ships a built-in `confidential` profile, and
 the Amazon EKS User Guide also documents custom profiles: a YAML file passed to `--profile`
 where omitted fields take their defaults. This sample ships a custom profile,
-[`policy/confidential-profile.yaml`](policy/confidential-profile.yaml), equal to the built-in
-confidential posture, every admission field pinned and exec and stdin denied, but with the few
-fields omitted that the current preview guest schema does not yet define. On this preview
-guest the built-in `confidential` profile's policy is rejected at sandbox set-up, before any
-container starts; the reduced profile is accepted. When the preview guest schema defines those
-fields, generate with `--profile confidential` and the sample's behaviour is unchanged. The
-workload has a deny-all egress policy and no Pod Identity association, so the fields the
-profile omits change nothing it relies on.
+[`policy/confidential-profile.yaml`](policy/confidential-profile.yaml). It pins the container
+admission fields (the image digest, process arguments, environment, working directory,
+hostname, mounts, identity, capabilities, security settings, masked and read-only paths,
+seccomp, AppArmor, namespaces and sysctls) and denies exec and stdin, as the built-in
+confidential profile does. It differs from the built-in profile in omitting the fields the
+current preview guest schema does not define yet: the OCI-hardening attributes are not pinned,
+and encrypted ephemeral-layer enforcement is not required. On this preview guest the built-in
+`confidential` profile's policy is rejected at sandbox set-up, before any container starts; the
+reduced profile is accepted. When the preview guest schema defines those fields, generate with
+`--profile confidential` to pin them too; the exec and admission behaviour this sample shows is
+unchanged. The workload has a deny-all egress policy and no Pod Identity association, so the
+fields the profile omits change nothing it relies on.
 
 **Step 1: Describe the workload.** [`deploy/pod.yaml`](deploy/pod.yaml) chooses the confidential
 runtime and the container settings the guest should accept. Explicit numeric user and group IDs
@@ -132,11 +136,25 @@ The complete manifest requests 1 vCPU and 1 GiB, with requests equal to limits a
 sandboxed pod on this site does. These settings become the inputs to the generated admission
 policy.
 
-**Step 2: Generate the policy, attach it and start the pod.** `scripts/setup.sh` runs the
+**Step 2: Turn on network policy enforcement, once per cluster.** EKS Auto Mode accepts network
+policies without enforcing them until the shared `amazon-vpc-cni` ConfigMap in `kube-system`
+turns the controller on. This is a cluster-wide setting, so you apply it knowingly rather than
+letting the sample change a shared resource for you:
+
+```bash
+kubectl apply -f deploy/enable-network-policy.yaml
+```
+
+If your cluster already has it on (from another sample, say), this is a no-op. `setup.sh`
+checks it is on and stops with this command if it is not.
+
+**Step 3: Generate the policy, attach it and start the pod.** `scripts/setup.sh` runs the
 generator with the profile above, decodes the policy envelope into a readable form under the
 repository's `tmp/`, renders the pod with the encoded policy in its
-`sandbox.amazonaws.com/policy` annotation, turns on network policy enforcement, applies the
-deny-all egress policy, and applies the pod.
+`sandbox.amazonaws.com/policy` annotation, applies the deny-all egress policy, and applies the
+pod. It creates the `cedar-policy-sample` namespace only if it does not already exist, and
+reuses it only when it carries this sample's managed-by label, so it never adopts a namespace
+another demo owns.
 
 ```bash
 ./scripts/setup.sh
@@ -151,8 +169,8 @@ info: wrote base64 envelope to .../tmp/cedar-policy/policy.b64
 == 3/4 render the pod with its policy annotation ==
 == 4/4 apply the pod and wait for the guest to admit it ==
 namespace/cedar-policy-sample created
-pod/cedar-policy-demo created
 networkpolicy.networking.k8s.io/cedar-policy-deny-egress created
+pod/cedar-policy-demo created
 pod/cedar-policy-demo condition met
 
 cedar-policy-demo is Ready and enforcing its generated Cedar policy.
@@ -163,7 +181,7 @@ check; this sample does not use it. The policy travels to the guest as the gzipp
 base64-encoded JSON envelope in the annotation, which is not readable by eye, so setup also
 leaves a decoded copy under `tmp/` and the sample commits a readable copy, shown below.
 
-**Step 3: What the generated policy pins.** The generated admission policy permits creating the
+**Step 4: What the generated policy pins.** The generated admission policy permits creating the
 `main` container only when the container matches the settings from the pod spec. Here is the
 start of the admission rule from
 [`policy/policy.generated.yaml`](policy/policy.generated.yaml), the committed readable copy:
@@ -205,7 +223,7 @@ permit(
 The complete policy, admission and runtime, is in
 [`policy/policy.generated.yaml`](policy/policy.generated.yaml).
 
-**Step 4: The pod opted into the confidential sandbox.** The pod runs
+**Step 5: The pod opted into the confidential sandbox.** The pod runs
 `runtimeClassName: confidential-sandbox`, and carries the encoded policy in its annotation:
 
 ```bash
@@ -220,7 +238,7 @@ confidential-sandbox
 2944
 ```
 
-**Step 5: Prove the pod ran in a sandbox, from its logs.** The policy refuses exec, so the
+**Step 6: Prove the pod ran in a sandbox, from its logs.** The policy refuses exec, so the
 sandbox proof is read a different way: the container prints its kernel build, its uptime and its
 block devices when it starts, and the page reads them with `kubectl logs`, which the policy
 permits.
@@ -252,7 +270,7 @@ matches the just-started pod, because the VM booted with the pod; the ordinary p
 `/proc/uptime` reports the node's uptime, over 20 hours. The last line, `confidential-policy-ready`,
 is the marker that shows the expected container started.
 
-**Step 6: An operator's exec is refused inside the guest.** The caller is allowed to
+**Step 7: An operator's exec is refused inside the guest.** The caller is allowed to
 `create pods/exec` in the namespace, so an exec failure is the guest's policy and not RBAC:
 
 ```bash
@@ -280,7 +298,7 @@ Cedar action, `Agent::Action::"Exec"`, so a generic exec failure (RBAC, a dead p
 blip) cannot pass as policy enforcement. This is the whole point of the sample: the check runs
 inside the guest, below the operator.
 
-**Step 7: A changed spec, without a regenerated policy, is refused.** Change one pinned setting
+**Step 8: A changed spec, without a regenerated policy, is refused.** Change one pinned setting
 in the workload, here the container's command, and apply it with the policy generated for the
 original spec. The guest refuses to start the container, because it no longer matches the
 admission policy:
@@ -373,9 +391,12 @@ connections, and the `PolicyEndpoint` above shows the controller has handed it t
 - **The policy and the workload travel together.** The policy annotation is immutable on a
   running pod, so `setup.sh` recreates the pod to apply a regenerated policy. A pod left from an
   earlier run keeps enforcing the earlier policy.
-- **A reduced profile on the preview guest.** The sample's profile omits the fields the current
-  preview guest schema does not yet define. Generate with the built-in `--profile confidential`
-  once the guest schema supports them; the sample's checks hold either way.
+- **A reduced profile on the preview guest.** The sample's profile pins the container
+  admission fields and denies exec and stdin, but omits the fields the current preview guest
+  schema does not define yet: the OCI-hardening attributes are not pinned, and encrypted
+  ephemeral-layer enforcement is not required. Generate with the built-in `--profile
+  confidential` to pin those too once the guest schema supports them; the exec and admission
+  behaviour the sample shows holds either way.
 
 ## Clean up
 

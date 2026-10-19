@@ -6,12 +6,15 @@
 # Why a custom profile here, and not the built-in "confidential":
 #   The built-in confidential profile emits Cedar attributes and actions the preview
 #   guest's policy schema does not define yet, and the guest rejects the whole policy
-#   when it meets one, before any container starts. The reduced settings below keep
-#   the full confidential posture a reader cares about -- every admission field is
-#   pinned, and exec and stdin are denied -- while omitting:
-#     * pin_oci_hardening: emits has_zos / linux_net_devices attributes;
+#   when it meets one, before any container starts. The reduced settings below pin the
+#   admission fields listed under `admission:` (image, args, env, working dir, hostname,
+#   mounts, identity, capabilities, security settings, masked/readonly paths, seccomp,
+#   apparmor, namespaces, sysctls) and deny exec and stdin, while omitting the fields the
+#   preview guest does not define:
+#     * pin_oci_hardening: emits has_zos / linux_net_devices attributes, so the OCI
+#       hardening fields are NOT pinned here;
 #     * require_encrypted_ephemeral_layer: emits the encrypted_ephemeral_layer
-#       attribute;
+#       attribute, so encrypted-overlay enforcement is NOT required by this policy;
 #     * deliver_pod_identity_credentials and deliver_ntp: emit the
 #       Agent::Action::"DeliverCredentials" and "DeliverNtp" actions.
 #   The workload here has a deny-all egress policy and no Pod Identity association,

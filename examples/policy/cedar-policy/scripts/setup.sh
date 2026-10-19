@@ -63,8 +63,9 @@ for arg in "$@"; do
   esac
 done
 
-require_commands base64 gzip jq "$GENPOLICY"
-[[ "$policy_only" == true ]] || require_commands kubectl
+# kubectl is needed in both modes: --policy-only renders the pod with a client-side
+# dry-run, which still invokes kubectl.
+require_commands base64 gzip jq kubectl "$GENPOLICY"
 command -v "$GENPOLICY" >/dev/null 2>&1 \
   || die "$GENPOLICY is not on PATH. The Amazon EKS User Guide, \"Cedar policies\", names the generator; set GENPOLICY to your copy if it is named differently."
 
@@ -131,13 +132,38 @@ if [[ "$policy_only" == true ]]; then
 fi
 
 echo "== 4/4 apply the pod and wait for the guest to admit it =="
-kc apply -f "$SAMPLE_DIR/deploy/namespace.yaml"
+# Create the namespace only if it does not exist; reuse it only when it already carries
+# this sample's managed-by label; never adopt a same-named namespace another demo owns.
+# Why: the label is the ownership mark, and applying over a foreign namespace would add
+# the mark and then let the pod delete below act in a namespace this sample does not own.
+ns_label="$(kc get namespace "$NAMESPACE" --ignore-not-found \
+  -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null)"
+ns_lookup_rc=$?
+ns_exists="$(kc get namespace "$NAMESPACE" --ignore-not-found -o name 2>/dev/null)"
+ns_exists_rc=$?
+[[ "$ns_lookup_rc" == 0 && "$ns_exists_rc" == 0 ]] \
+  || die "could not determine whether namespace $NAMESPACE already exists; created nothing"
+if [[ -z "$ns_exists" ]]; then
+  kc apply -f "$SAMPLE_DIR/deploy/namespace.yaml"
+elif [[ "$ns_label" != "cedar-policy-sample" ]]; then
+  die "namespace $NAMESPACE already exists and is not this sample's (managed-by='$ns_label'); created nothing. Delete it or set NAMESPACE to an unused name."
+else
+  echo "  reusing namespace $NAMESPACE (carries this sample's managed-by label)"
+fi
+# Network policy enforcement is a cluster-wide prerequisite the reader turns on knowingly
+# (see the README and deploy/enable-network-policy.yaml); setup.sh does not mutate the
+# shared kube-system amazon-vpc-cni ConfigMap. Confirm it is on, and stop with the command
+# to turn it on if it is not.
+npc="$(kc get configmap amazon-vpc-cni -n kube-system \
+  -o jsonpath='{.data.enable-network-policy-controller}' 2>/dev/null)"
+if [[ "$npc" != "true" ]]; then
+  die "network policy enforcement is not on for this cluster (amazon-vpc-cni enable-network-policy-controller is '${npc:-unset}'). Turn it on once per cluster with: kubectl apply -f deploy/enable-network-policy.yaml, then re-run."
+fi
 # Replace instead of apply-over: a pod's policy annotation is immutable, so a pod
 # left from an earlier run would keep enforcing the earlier policy.
 kc delete pod "$POD_NAME" -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=5m >/dev/null
-# Turn on network policy enforcement once per cluster, then apply the deny-all
-# egress policy before the pod, so the pod never has a window with open egress.
-kc apply -f "$SAMPLE_DIR/deploy/enable-network-policy.yaml"
+# Apply the deny-all egress policy before the pod, so the pod never has a window with
+# open egress.
 kc apply -f "$SAMPLE_DIR/deploy/egress-policy.yaml"
 kc apply -f "$RENDERED"
 if ! kc wait "pod/$POD_NAME" -n "$NAMESPACE" --for=condition=Ready --timeout=15m; then
