@@ -34,8 +34,16 @@ STATE_FILE="$OPT_DIR/.image-signing-offline.state"
 # same way setup.sh does.
 SIGNING_PROFILE="${SIGNING_PROFILE:-nitro_sample_image_signing}"
 
-for c in aws docker kubectl; do command -v "$c" >/dev/null 2>&1 || { echo "ERROR: $c is required" >&2; exit 2; }; done
+for c in aws docker kubectl jq; do command -v "$c" >/dev/null 2>&1 || { echo "ERROR: $c is required" >&2; exit 2; }; done
 case "$(uname -m)" in x86_64|amd64) ARCH=amd64 ;; aarch64|arm64) ARCH=arm64 ;; *) echo "ERROR: unsupported arch" >&2; exit 2 ;; esac
+
+# Pin the kube context for this run so the pod never lands on the shared current
+# context. Set KUBE_CONTEXT=<name>; leave empty to use the current context.
+KUBE_CONTEXT="${KUBE_CONTEXT:-}"
+kc() { if [[ -n "$KUBE_CONTEXT" ]]; then kubectl --context "$KUBE_CONTEXT" "$@"; else kubectl "$@"; fi; }
+ctx_now="$(kc config current-context 2>/dev/null || true)"
+[[ -n "$ctx_now" ]] || { echo "ERROR: no kube context (set KUBE_CONTEXT or a current context)." >&2; exit 2; }
+echo "kube context: $ctx_now"
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
@@ -105,8 +113,8 @@ OFFLINE_IMAGE_URI="$REGISTRY/${ECR_REPO_OFFLINE}@${off_digest}"
 
 echo "=== launch the network-isolated offline verifier pod ==="
 sed -e "s|OFFLINE_IMAGE_URI|$OFFLINE_IMAGE_URI|g" \
-  "$OPT_DIR/deploy/verify-offline.yaml" | kubectl apply -f -
-kubectl -n "$NAMESPACE" wait pod/verify-offline --for=condition=Ready --timeout=300s
+  "$OPT_DIR/deploy/verify-offline.yaml" | kc apply -f -
+kc -n "$NAMESPACE" wait pod/verify-offline --for=condition=Ready --timeout=300s
 
 echo
 echo "Offline verifier pod is Ready. Verify with no network:"

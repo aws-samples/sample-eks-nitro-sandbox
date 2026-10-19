@@ -34,7 +34,10 @@ signed in to the account that holds the cluster. The optional offline variant al
 [`oras`](https://oras.land/). A run stores two small images and one signature in Amazon
 ECR, billed as ECR storage; there is no additional charge for AWS Signer used with Amazon
 ECR ([AWS Signer](https://docs.aws.amazon.com/signer/latest/developerguide/Welcome.html)).
-Copy `.env.example` to `.env` (git ignores it) and set your cluster name and Region.
+Copy `.env.example` to `.env` (git ignores it) and set your cluster name and Region. The
+scripts run against your current `kubectl` context; on a machine whose context may point
+elsewhere, set `KUBE_CONTEXT=<your cluster's context>` in the environment and the scripts
+pass `--context` on every `kubectl` call (they never change your current context).
 
 ## Overview
 

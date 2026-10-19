@@ -54,7 +54,15 @@ ECR_CRED_HELPER_VERSION="${ECR_CRED_HELPER_VERSION:-0.12.0}"
 for c in aws docker notation kubectl jq curl; do
   command -v "$c" >/dev/null 2>&1 || { echo "ERROR: $c is required" >&2; exit 2; }
 done
-kubectl get runtimeclass isolated-sandbox >/dev/null 2>&1 \
+# Pin the kube context for this run so a kubectl call never lands on whatever the
+# shared current context happens to be. Set KUBE_CONTEXT=<name>; leave empty to use
+# the current context. Every kubectl call below goes through kc().
+KUBE_CONTEXT="${KUBE_CONTEXT:-}"
+kc() { if [[ -n "$KUBE_CONTEXT" ]]; then kubectl --context "$KUBE_CONTEXT" "$@"; else kubectl "$@"; fi; }
+ctx_now="$(kc config current-context 2>/dev/null || true)"
+[[ -n "$ctx_now" ]] || { echo "ERROR: no kube context (set KUBE_CONTEXT or a current context)." >&2; exit 2; }
+echo "kube context: $ctx_now"
+kc get runtimeclass isolated-sandbox >/dev/null 2>&1 \
   || { echo "ERROR: runtimeclass isolated-sandbox not found on this cluster" >&2; exit 2; }
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
@@ -232,8 +240,8 @@ inline="$(aws iam list-role-policies --role-name "$ROLE_NAME" --query 'PolicyNam
 write_state
 
 ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
-kubectl apply -f deploy/namespace.yaml
-kubectl apply -f deploy/service-account.yaml
+kc apply -f deploy/namespace.yaml
+kc apply -f deploy/service-account.yaml
 existing_assoc="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" \
   --namespace "$NAMESPACE" --service-account "$SERVICE_ACCOUNT" --region "$AWS_REGION" \
   --query 'associations[0].associationId' --output text 2>/dev/null)"
@@ -255,8 +263,8 @@ fi
 
 # --- 6/8 network policy enforcement + egress policy ------------------------
 step "6/8 turn on network policy enforcement and apply the egress policy"
-kubectl apply -f deploy/enable-network-policy.yaml
-COREDNS_IP="$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')"
+kc apply -f deploy/enable-network-policy.yaml
+COREDNS_IP="$(kc get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')"
 # ECR serves image layers and the Notation signature blob from Amazon S3 through a
 # presigned URL whose host rotates across the whole S3 regional range, which a
 # domainNames rule cannot pin. Allow S3 by its AWS-managed prefix list CIDRs.
@@ -271,10 +279,10 @@ s3_cidrs="$(aws ec2 get-managed-prefix-list-entries --region "$AWS_REGION" \
 # of the command line and lets the reader see what was applied).
 awk -v cidrs="$s3_cidrs" '{ if ($0=="<S3_CIDRS>") print cidrs; else print }' deploy/egress-policy.yaml \
   | sed -e "s|<COREDNS_IP>|$COREDNS_IP|" -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" \
-  | kubectl apply -f -
+  | kc apply -f -
 echo "waiting for the egress PolicyEndpoint..."
-until kubectl -n "$NAMESPACE" get policyendpoints -o name 2>/dev/null | grep -q 'image-signing-egress'; do sleep 2; done
-kubectl -n "$NAMESPACE" get applicationnetworkpolicies,policyendpoints
+until kc -n "$NAMESPACE" get policyendpoints -o name 2>/dev/null | grep -q 'image-signing-egress'; do sleep 2; done
+kc -n "$NAMESPACE" get applicationnetworkpolicies,policyendpoints
 
 # --- 7/8 render and apply the workloads ------------------------------------
 step "7/8 apply the three pods"
@@ -283,13 +291,13 @@ sed -e "s|POSITIVE_IMAGE_URI|$SIGNED_IMAGE_URI|g" \
     -e "s|NEGATIVE_IMAGE_URI|$UNSIGNED_IMAGE_URI|g" \
     -e "s|DEMO_AWS_REGION|$AWS_REGION|g" \
     deploy/workloads.yaml > "$rendered"
-kubectl apply -f "$rendered"
+kc apply -f "$rendered"
 
 # --- 8/8 wait --------------------------------------------------------------
 step "8/8 wait for all three guest VMs to boot"
 for p in "${PODS[@]}"; do
-  kubectl -n "$NAMESPACE" wait "pod/$p" --for=condition=Ready --timeout=300s \
-    || { echo "ERROR: pod/$p never became Ready; check 'kubectl -n $NAMESPACE describe pod $p'" >&2; exit 1; }
+  kc -n "$NAMESPACE" wait "pod/$p" --for=condition=Ready --timeout=300s \
+    || { echo "ERROR: pod/$p never became Ready; check 'kc -n $NAMESPACE describe pod $p'" >&2; exit 1; }
 done
 
 printf '\nimage-signing sample is up in namespace %s.\n' "$NAMESPACE"
