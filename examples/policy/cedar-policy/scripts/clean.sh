@@ -98,7 +98,9 @@ esac
 echo "Deleting the generated policy files under $TMP_DIR..."
 rm -f \
   "$TMP_DIR/policy.b64" "$TMP_DIR/policy.raw" "$TMP_DIR/policy.json" \
-  "$TMP_DIR/policy.yaml" "$TMP_DIR/rendered-pod.json" "$TMP_DIR/genpolicy.log"
+  "$TMP_DIR/policy.yaml" "$TMP_DIR/rendered-pod.json" \
+  "$TMP_DIR/rendered-namespace.json" "$TMP_DIR/rendered-egress.json" \
+  "$TMP_DIR/genpolicy.log"
 
 if [[ "$failed" == 0 ]]; then
   echo "Clean up complete."
