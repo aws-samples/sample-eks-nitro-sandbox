@@ -70,12 +70,23 @@ assoc_id="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME
 if [[ -n "$assoc_id" && "$assoc_id" != "None" ]]; then
   aws eks delete-pod-identity-association --cluster-name "$CLUSTER_NAME" \
     --association-id "$assoc_id" --region "$AWS_REGION" >/dev/null 2>&1 || true
+  # Verify it is gone: a fresh list for this namespace/service-account must be empty.
+  still="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" \
+    --namespace "$NAMESPACE" --service-account "$SERVICE_ACCOUNT" --region "$AWS_REGION" \
+    --query 'associations[0].associationId' --output text 2>/dev/null || true)"
+  if [[ -z "$still" || "$still" == "None" ]]; then echo "confirmed gone: Pod Identity association $assoc_id"
+  else echo "STILL PRESENT: Pod Identity association ($still)"; FAIL=1; fi
 fi
 kubectl -n "$NAMESPACE" delete applicationnetworkpolicy image-signing-egress --ignore-not-found >/dev/null 2>&1 || true
 for p in "${PODS[@]}"; do kubectl -n "$NAMESPACE" delete pod "$p" --ignore-not-found >/dev/null 2>&1 || true; done
 kubectl -n "$NAMESPACE" delete serviceaccount "$SERVICE_ACCOUNT" --ignore-not-found >/dev/null 2>&1 || true
 kubectl delete namespace "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
-echo "deleted the namespace $NAMESPACE and everything in it."
+# Verify the namespace is gone (terminating counts as not-yet-gone).
+if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+  echo "STILL PRESENT: namespace $NAMESPACE (may be Terminating; re-run clean.sh)"; FAIL=1
+else
+  echo "confirmed gone: namespace $NAMESPACE and everything in it"
+fi
 
 if [[ "$delete_aws_resources" == "true" ]]; then
   step "delete the AWS resources this sample created"

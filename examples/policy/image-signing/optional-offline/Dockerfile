@@ -49,7 +49,11 @@ RUN set -eux; \
 
 # The pre-staged OCI layout: the signed image and its signature, copied from ECR
 # on a networked host by scripts/build-offline.sh. This is the only thing the pod
-# reads at verify time.
+# reads at verify time. Baking the SIGNATURE in is deliberate and is the whole point
+# of this variant: a signature is public verification material, not a secret, and
+# staging it on disk is what lets a network-isolated pod verify with no registry
+# pull. No private key and no credential is baked in; the trust still comes from the
+# AWS Signer root cert and the trust policy below.
 COPY layout /var/lib/image-signing/layout
 
 # Trust policy pinned to this sample's signing profile, with revocation skipped so

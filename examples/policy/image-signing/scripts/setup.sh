@@ -202,22 +202,37 @@ sed -e "s|<AWS_REGION>|$AWS_REGION|g" -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" \
   iam/ecr-read-policy.json > "$tmp_dir/ecr-read.json"
 aws iam put-role-policy --role-name "$ROLE_NAME" \
   --policy-name "$ECR_POLICY_NAME" --policy-document "file://$tmp_dir/ecr-read.json" >/dev/null
+# Keep least privilege even when the role was adopted: it must carry EXACTLY our one
+# inline policy and NO attached managed policies. An adopted role could otherwise keep
+# a pre-existing inline policy (for example signer:*), which would silently break the
+# "the role holds no AWS Signer permissions" claim. Fail closed if anything else is there.
 attached="$(aws iam list-attached-role-policies --role-name "$ROLE_NAME" --query 'length(AttachedPolicies)' --output text)"
-[[ "$attached" == "0" ]] || { echo "ERROR: $ROLE_NAME must have no attached managed policies" >&2; exit 1; }
+[[ "$attached" == "0" ]] || { echo "ERROR: $ROLE_NAME must have no attached managed policies (found $attached)" >&2; exit 1; }
+inline="$(aws iam list-role-policies --role-name "$ROLE_NAME" --query 'PolicyNames' --output json | jq -r 'join(",")')"
+[[ "$inline" == "$ECR_POLICY_NAME" ]] \
+  || { echo "ERROR: $ROLE_NAME must carry exactly one inline policy ($ECR_POLICY_NAME); found: [$inline]" >&2; exit 1; }
 write_state
 
 ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
 kubectl apply -f deploy/namespace.yaml
 kubectl apply -f deploy/service-account.yaml
-if ! aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" \
-      --namespace "$NAMESPACE" --service-account "$SERVICE_ACCOUNT" --region "$AWS_REGION" \
-      --query 'associations[0].associationId' --output text 2>/dev/null | grep -qE '^[a-z0-9-]+$'; then
+existing_assoc="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" \
+  --namespace "$NAMESPACE" --service-account "$SERVICE_ACCOUNT" --region "$AWS_REGION" \
+  --query 'associations[0].associationId' --output text 2>/dev/null)"
+if [[ -z "$existing_assoc" || "$existing_assoc" == "None" ]]; then
   aws eks create-pod-identity-association --cluster-name "$CLUSTER_NAME" \
     --namespace "$NAMESPACE" --service-account "$SERVICE_ACCOUNT" \
     --role-arn "$ROLE_ARN" --region "$AWS_REGION" >/dev/null
   echo "created Pod Identity association for $SERVICE_ACCOUNT."
 else
-  echo "Pod Identity association already present for $SERVICE_ACCOUNT."
+  # Adopt only an association that points at OUR role, so clean.sh never deletes
+  # one some other owner created for this namespace and service account.
+  bound_arn="$(aws eks describe-pod-identity-association --cluster-name "$CLUSTER_NAME" \
+    --association-id "$existing_assoc" --region "$AWS_REGION" \
+    --query 'association.roleArn' --output text 2>/dev/null)"
+  [[ "$bound_arn" == "$ROLE_ARN" ]] \
+    || { echo "ERROR: a Pod Identity association for $NAMESPACE/$SERVICE_ACCOUNT already exists ($existing_assoc) bound to $bound_arn, not this sample's role $ROLE_ARN; refusing to adopt it" >&2; exit 1; }
+  echo "Pod Identity association already present for $SERVICE_ACCOUNT (bound to this sample's role)."
 fi
 
 # --- 6/8 network policy enforcement + egress policy ------------------------

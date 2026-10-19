@@ -54,8 +54,10 @@ each verifies its own image reference in-guest with `notation verify`, driven by
   workload runs, not a gate outside the sandbox.
 - **Least-privilege pull.** The verifier's pod gets a role through EKS Pod Identity that
   may pull only this sample's two repositories, and holds no AWS Signer permissions.
-  Revocation checking is turned off in the trust policy, so the only verify-time egress is
-  the signature pull from the registry.
+  Verifying a registry reference reaches DNS, the Pod Identity credential endpoint and the
+  Amazon ECR and S3 endpoints the image and signature pull needs. Revocation checking is
+  turned off in the trust policy, so the guest never calls the AWS Signer revocation
+  endpoint: no verify-time egress leaves for AWS Signer.
 
 The three pods differ by a single line: which repository's reference they verify, and
 whether they carry the no-network annotation.
@@ -427,8 +429,10 @@ and cannot run under a plain `network-isolated`.
   admission-time verifier as well.
 - **The role holds no AWS Signer permissions.** The verifier pulls from the registry with an
   ECR-read role and checks the signature against the baked-in root certificate, so the guest
-  never calls AWS Signer. Revocation is skipped in the trust policy, which is why the only
-  verify-time egress is the registry pull.
+  never calls AWS Signer. `setup.sh` fails closed if the role carries any policy beyond the
+  one inline ECR-read policy, so an adopted role cannot keep a stray `signer:*`. Revocation
+  is skipped in the trust policy, so no verify-time egress leaves for AWS Signer; the pull
+  itself still reaches DNS, the Pod Identity endpoint, and the ECR and S3 endpoints.
 - **The ECR repositories are `IMMUTABLE`.** A re-run adopts the existing `:v1` images rather
   than rebuilding, which is what keeps the signed and unsigned copies identical across runs.
 
