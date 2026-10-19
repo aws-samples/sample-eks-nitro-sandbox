@@ -98,6 +98,9 @@ git clone --depth 1 --filter=blob:none --sparse ssh://git.amazon.com/pkg/EKSPodI
 git -C EKSPodIsolationRuntime sparse-checkout set docs/eks-user-guide
 ```
 
+If ssh prints `no such identity` for a key file during either clone, it is skipping a key
+you do not have; the clone worked if git reports no error after it.
+
 - **Treat those pages as the Amazon EKS User Guide** wherever this file, a skill or a spec
   asks whether the guide states something, such as a limit value. Start with
   `isolated-confidential-pods.adoc`, which links the rest; limits are in
@@ -128,12 +131,27 @@ setsid nohup env AWS_REGION=us-east-2 AWS_DEFAULT_REGION=us-east-2 \
 - **Do not change the wrapper or `~/.codex/config.toml`** to make it start. Why: the
   wrapper's profile setting decides which account the review bills.
 - **It takes 10 to 25 minutes.** `review.out` is written only at the end; check that it is
-  still running with `pgrep -f openai.gpt-5.6-sol`. Read `review.err` only with `tail` or a
-  targeted search, and never paste it anywhere: it logs credential details.
+  still running with `pgrep -f '[o]penai.gpt-5.6-sol'`. Read `review.err` only with `tail`
+  or a targeted search, and never paste it anywhere: it logs credential details. Why the
+  brackets: without them the pattern can also match the shell that runs `pgrep`, so a
+  review that has exited still looks alive.
 
-The two repository URLs and this reviewer command are the only internal values this file
-holds, at the maintainers' choice. Remove them before this repository is made public, which
-needs Nitro sandboxes to be generally available first: until then the pages above, and any
+### Other tools on the maintainers' workstation
+
+- **The Cedar policy generator.** The Amazon EKS User Guide names it
+  `eks-nitro-sandbox-genpolicy` but does not yet say where to get it. On the workstation
+  the preview build is on `PATH` as `eks-cc-genpolicy`; elsewhere, the internal
+  repository's `eks-cc-genpolicy` skill builds it from source. Have a sample's script take
+  the command from a variable (`GENPOLICY`) that defaults to the published name, and pass
+  the preview name when you run it. Do not link or rename it in a shared folder. Why: the
+  page must name the published command, and the shared `PATH` is other people's too.
+- **Write stub tools with your agent's file tool**, not a heredoc in a shell command, then
+  `chmod +x` the file by its path alone. Why: the agent host on this workstation blocks
+  some commands by pattern, and a heredoc holding `/usr/bin/env` trips its `chmod` rule.
+
+The two repository URLs, this reviewer command and the preview generator's name are the
+only internal values this file holds, at the maintainers' choice. Remove them before this
+repository is made public, which needs Nitro sandboxes to be generally available first: until then the pages above, and any
 sample that quotes them, describe an unreleased feature.
 
 ## Security rules
@@ -171,9 +189,20 @@ people's demos use at the same time.
   AWS resource the sample creates `ManagedBy=<sample>` and label its namespace. A script
   reuses or deletes only a resource that carries the mark, checks the namespace's label
   before deleting anything inside it, and stops with a clear message otherwise. A resource
-  with the mark counts as the sample's, whichever run created it. Why: other demos in the
-  account use similar names, and three review rounds of one sample each found a script
-  that could reuse or delete something it did not own.
+  with the mark counts as the sample's, whichever run created it. Applying a manifest over
+  an existing object counts as reusing it, so create a namespace only when it is absent.
+  Why: other demos in the account use similar names, and three review rounds of one sample
+  each found a script that could reuse or delete something it did not own.
+- **A name the reader can change reaches every object that uses it.** If a script takes a
+  name from a variable (`NAMESPACE=...`), render each manifest it applies with that name,
+  and never apply one that hard-codes the default. Why: in one sample the override still
+  applied the default-named namespace manifest, which put the sample's label on a namespace
+  another demo owned, so the next clean up would have deleted it.
+- **Leave cluster-wide settings to the reader.** A script never changes something every
+  workload on the cluster shares, such as a ConfigMap in `kube-system`. The page has the
+  reader make that change as a step, as the coding agent page does for network policy
+  enforcement, and the script checks it and stops with the command when it is off. Why:
+  other workloads depend on it, and one setup script changed `amazon-vpc-cni` for everyone.
 - **A clean up says what it could not do.** A lookup that fails means "could not
   determine", which is a failure, never "gone"; a resource skipped because it is not the
   sample's leaves the clean up incomplete, and the script exits non-zero. Why: a lookup
@@ -191,6 +220,9 @@ people's demos use at the same time.
   AWS deletes first and the namespace last, with the Region or `--context` named on each,
   and say in the pull request what is left. Why: a step that fails stops the ones after
   it, and a command without a context runs against whatever context is current.
+- **Run the clean up when you finish**, after the last run the page uses, and say in the
+  pull request what is left. Why: a sandbox pod left running holds capacity other demos on
+  the cluster share.
 - **Do not change global tool configuration** (shell profiles, files under `~/.config`,
   version managers) to run a sample. Install what it needs under `tmp/`, or say what is
   missing. Why: the machine is shared, and a reader needs the same tools, so the page's
@@ -198,21 +230,30 @@ people's demos use at the same time.
 
 ## Verification rules
 
-- **Show only output from a real run**, and say when it is abridged. Why: readers compare
-  their own output with the page.
+- **Show only output from a real run**, and say when it is abridged. Save each run's
+  output under `tmp/` (`./scripts/setup.sh 2>&1 | tee tmp/<sample>/setup.log`) and copy the
+  blocks from that file. If the run used a different name from the one the page shows,
+  keep the run's name or say beside the block that you changed it. Why: readers compare
+  their own output with the page, and one page showed a line that none of its runs had
+  printed.
 - **Until that run, put `TODO: output from the fresh run` in each output block**, never
   output you wrote yourself. Why: written output reads like a real run, so neither you nor a
   reviewer can tell later which blocks were run.
 - **Check each claim on a live cluster**, not only in the manifests. Why: a static check
   passes on things that are wrong at runtime.
-- **Prove a sample with a fresh run**, not by resuming an earlier one. Why: a resumed run
-  can skip the very steps whose output the page shows.
+- **Prove a sample with a fresh run**, not by resuming an earlier one. A fresh run starts
+  with none of the sample's resources present: run the clean up first, or point the run at
+  new names. Why: a resumed run can skip the very steps whose output the page shows. In one
+  sample every run started with its namespace already there, so the step that creates it
+  never ran live.
 - **Prove every check both ways**: one input it must accept, one it must reject. Why: a
   check run only on good input cannot be told apart from one that accepts everything.
 - **Prove the check in the script itself, not in a copy.** For an input you cannot create,
   run the real script with a stub command first on `PATH` (a fake `aws` in `tmp/` that
-  prints the case you need). Why: a pasted copy of the check stops matching the script at
-  its next edit, and the test keeps passing.
+  prints the case you need). Make the stub fail only the call the check makes. Why: a
+  pasted copy of the check stops matching the script at its next edit, and the test keeps
+  passing. A stub that fails every call stops the script at its first call, before the
+  check you meant to prove.
 - **Anchor search patterns (`^`) and strip comments before matching.** Why: an unanchored
   pattern can match its own explanatory comment, as in `# type: ClusterIP` written above
   `type: LoadBalancer`.

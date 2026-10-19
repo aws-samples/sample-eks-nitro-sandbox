@@ -87,7 +87,9 @@ you do with the answer.
 - **Fix the real must-fix findings as new commits** whose messages say what was wrong and
   how the fix was proved. No force-push.
 - **A fix to a check is a change to a check.** Prove it both ways in the script itself (see
-  `AGENTS.md`, Verification rules), and get it reviewed again, scoped to the fix.
+  `AGENTS.md`, Verification rules), and get it reviewed again, scoped to the fix. Repeat
+  until the last commit that changes a check has been reviewed. Why: in one sample the
+  second round found that the fixes from the first could skip their own error messages.
 - **Stop when no must-fix finding remains.** Optional findings go in the pull request as
   notes. Why: each round should check the fixes, not widen the assignment.
 
@@ -95,5 +97,6 @@ you do with the answer.
 
 Fill in the pull request's second-reviewer box with: who or what reviewed it (a person, or
 the agent and model), which commit, what it found, what was fixed and in which commit, and
-which findings were false positives and why. A box ticked with no account of the review
-does not count.
+which findings were false positives and why. Name any commit that changes a check and was
+not reviewed. Describe each proof as it ran: which stub cases reached which message, and
+which paths no case reached. A box ticked with no account of the review does not count.
