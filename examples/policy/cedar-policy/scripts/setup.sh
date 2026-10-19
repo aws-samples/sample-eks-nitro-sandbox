@@ -136,13 +136,22 @@ echo "== 4/4 apply the pod and wait for the guest to admit it =="
 # this sample's managed-by label; never adopt a same-named namespace another demo owns.
 # Why: the label is the ownership mark, and applying over a foreign namespace would add
 # the mark and then let the pod delete below act in a namespace this sample does not own.
-ns_label="$(kc get namespace "$NAMESPACE" --ignore-not-found \
-  -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null)"
-ns_lookup_rc=$?
-ns_exists="$(kc get namespace "$NAMESPACE" --ignore-not-found -o name 2>/dev/null)"
-ns_exists_rc=$?
+# Capture inside `if` so `set -e` does not abort on a failed lookup before the die
+# below can explain it: a lookup that cannot run is "could not determine", a failure,
+# and we must stop with the reason rather than exit on a bare error.
+if ns_label="$(kc get namespace "$NAMESPACE" --ignore-not-found \
+  -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null)"; then
+  ns_lookup_rc=0
+else
+  ns_lookup_rc=$?
+fi
+if ns_exists="$(kc get namespace "$NAMESPACE" --ignore-not-found -o name 2>/dev/null)"; then
+  ns_exists_rc=0
+else
+  ns_exists_rc=$?
+fi
 [[ "$ns_lookup_rc" == 0 && "$ns_exists_rc" == 0 ]] \
-  || die "could not determine whether namespace $NAMESPACE already exists; created nothing"
+  || die "could not determine whether namespace $NAMESPACE already exists (kubectl lookup failed; check the context and permissions); created nothing"
 if [[ -z "$ns_exists" ]]; then
   kc apply -f "$SAMPLE_DIR/deploy/namespace.yaml"
 elif [[ "$ns_label" != "cedar-policy-sample" ]]; then
@@ -154,8 +163,12 @@ fi
 # (see the README and deploy/enable-network-policy.yaml); setup.sh does not mutate the
 # shared kube-system amazon-vpc-cni ConfigMap. Confirm it is on, and stop with the command
 # to turn it on if it is not.
-npc="$(kc get configmap amazon-vpc-cni -n kube-system \
-  -o jsonpath='{.data.enable-network-policy-controller}' 2>/dev/null)"
+# Capture inside `if` so a ConfigMap that cannot be read fails closed with the reason
+# rather than aborting under `set -e` before the die runs.
+if ! npc="$(kc get configmap amazon-vpc-cni -n kube-system \
+  -o jsonpath='{.data.enable-network-policy-controller}' 2>/dev/null)"; then
+  die "could not read the amazon-vpc-cni ConfigMap in kube-system (check the context and permissions); did not start the pod."
+fi
 if [[ "$npc" != "true" ]]; then
   die "network policy enforcement is not on for this cluster (amazon-vpc-cni enable-network-policy-controller is '${npc:-unset}'). Turn it on once per cluster with: kubectl apply -f deploy/enable-network-policy.yaml, then re-run."
 fi
