@@ -37,7 +37,8 @@ done
 
 NAMESPACE="image-signing-sample"
 SERVICE_ACCOUNT="image-signing-verifier"
-SIGNING_PROFILE="nitro_sample_image_signing"
+# Must match the name setup.sh used (it reads SIGNING_PROFILE from .env too).
+SIGNING_PROFILE="${SIGNING_PROFILE:-nitro_sample_image_signing}"
 ECR_REPO_SIGNED="nitro-sample-image-signing-signed"
 ECR_REPO_UNSIGNED="nitro-sample-image-signing-unsigned"
 ROLE_NAME="nitro-sample-image-signing-verify"

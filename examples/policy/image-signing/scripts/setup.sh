@@ -27,7 +27,13 @@ cd "$SAMPLE_DIR"
 MANAGED_BY="eks-nitro-sandbox-image-signing-sample"
 NAMESPACE="image-signing-sample"
 SERVICE_ACCOUNT="image-signing-verifier"
-SIGNING_PROFILE="nitro_sample_image_signing"
+# AWS Signer keeps a CANCELED signing profile until its signatures expire (about
+# 141 months by default; see the AWS Signer developer guide, "Data retention") and
+# refuses put-signing-profile on a name that still exists in any state. So the
+# profile name comes from .env: if you run clean.sh --delete-aws-resources (which
+# cancels the profile) and then setup.sh again, pick a NEW SIGNING_PROFILE in .env,
+# because the canceled name cannot be reused.
+SIGNING_PROFILE="${SIGNING_PROFILE:-nitro_sample_image_signing}"
 SIGNING_PLATFORM_ID="Notation-OCI-SHA384-ECDSA"
 SIGNER_PLUGIN_ID="com.amazonaws.signer.notation.plugin"
 ECR_REPO_SIGNED="nitro-sample-image-signing-signed"
@@ -79,13 +85,22 @@ step() { printf '\n=== %s ===\n' "$*"; }
 
 # --- 1/8 signing profile ---------------------------------------------------
 step "1/8 ensure the AWS Signer signing profile"
-if aws signer get-signing-profile --profile-name "$SIGNING_PROFILE" --region "$AWS_REGION" \
-     --query 'status' --output text 2>/dev/null | grep -q '^Active$'; then
+profile_status="$(aws signer get-signing-profile --profile-name "$SIGNING_PROFILE" \
+  --region "$AWS_REGION" --query 'status' --output text 2>/dev/null || true)"
+if [[ "$profile_status" == "Active" ]]; then
   managed="$(aws signer list-tags-for-resource --resource-arn "$SIGNING_PROFILE_ARN" \
     --region "$AWS_REGION" 2>/dev/null | jq -r --arg m "$MANAGED_BY" '.tags.ManagedBy == $m')"
   [[ "$managed" == "true" ]] || { echo "ERROR: signing profile $SIGNING_PROFILE exists but is not tagged ManagedBy=$MANAGED_BY" >&2; exit 1; }
   CREATED_SIGNING_PROFILE=true
   echo "signing profile $SIGNING_PROFILE already active (owned by this sample)."
+elif [[ -n "$profile_status" && "$profile_status" != "None" ]]; then
+  # The name exists in a non-Active state (e.g. Canceled). AWS Signer keeps a
+  # canceled profile until its signatures expire and refuses put-signing-profile
+  # on a name that still exists, so this name cannot be reused.
+  echo "ERROR: signing profile $SIGNING_PROFILE already exists with status '$profile_status' and cannot be reused." >&2
+  echo "       AWS Signer keeps a canceled profile until its signatures expire. Set a new" >&2
+  echo "       SIGNING_PROFILE in .env (a name not used before) and run setup.sh again." >&2
+  exit 1
 else
   aws signer put-signing-profile --profile-name "$SIGNING_PROFILE" \
     --platform-id "$SIGNING_PLATFORM_ID" \
@@ -164,7 +179,10 @@ if ! notation plugin ls 2>/dev/null | grep -q "$SIGNER_PLUGIN_ID"; then
   curl -fsSL -o "$tmp_dir/signer-plugin.zip" "$SIGNER_PLUGIN_URL"
   notation plugin install --file "$tmp_dir/signer-plugin.zip" --force
 fi
-SIGNER_PLUGIN_VERSION="$(notation plugin ls 2>/dev/null | awk -v id="$SIGNER_PLUGIN_ID" '$1==id {print $(NF-1)}')"
+# The plugin version is column 3 (after NAME and the two-word DESCRIPTION the CLI
+# pads to a fixed width); the trailing CAPABILITIES column contains spaces, so take
+# the first dotted-version token on the plugin's row rather than a column offset.
+SIGNER_PLUGIN_VERSION="$(notation plugin ls 2>/dev/null | awk -v id="$SIGNER_PLUGIN_ID" '$1==id {for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+$/) {print $i; exit}}')"
 echo "AWS Signer plugin version: ${SIGNER_PLUGIN_VERSION:-unknown}"
 sig_listing=""
 if sig_listing="$(notation ls "$SIGNED_IMAGE_URI" 2>/dev/null)" \

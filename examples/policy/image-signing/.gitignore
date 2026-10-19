@@ -8,6 +8,3 @@
 
 # Live-run logs captured as evidence during a real run. Machine-local; never committed.
 *.log
-
-# Local teardown helper written after a run for the operator. Machine-local.
-FINISH-CLEANUP.sh

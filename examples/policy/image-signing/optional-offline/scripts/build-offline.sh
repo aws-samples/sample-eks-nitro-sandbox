@@ -29,13 +29,17 @@ NAMESPACE="image-signing-sample"
 ECR_REPO_OFFLINE="nitro-sample-image-signing-offline"
 ORAS_VERSION="${ORAS_VERSION:-1.3.0}"
 STATE_FILE="$OPT_DIR/.image-signing-offline.state"
+# Must match the profile setup.sh signed with, which comes from .env. Pinning the
+# wrong name here bakes a trust policy that rejects the signature, so read it the
+# same way setup.sh does.
+SIGNING_PROFILE="${SIGNING_PROFILE:-nitro_sample_image_signing}"
 
 for c in aws docker kubectl; do command -v "$c" >/dev/null 2>&1 || { echo "ERROR: $c is required" >&2; exit 2; }; done
 case "$(uname -m)" in x86_64|amd64) ARCH=amd64 ;; aarch64|arm64) ARCH=arm64 ;; *) echo "ERROR: unsupported arch" >&2; exit 2 ;; esac
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-SIGNING_PROFILE_ARN="arn:aws:signer:${AWS_REGION}:${ACCOUNT_ID}:/signing-profiles/nitro_sample_image_signing"
+SIGNING_PROFILE_ARN="arn:aws:signer:${AWS_REGION}:${ACCOUNT_ID}:/signing-profiles/${SIGNING_PROFILE}"
 SCOPE="${REGISTRY}/nitro-sample-image-signing-signed"
 DIGEST="${SIGNED_IMAGE_URI##*@}"
 
@@ -74,8 +78,14 @@ printf '{"credHelpers":{"%s":"ecr-login"}}\n' "$REGISTRY" > "$tmp_dir/docker/con
 # it to a tmp dir, but here fall back to a short-lived password login.
 aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "$REGISTRY" >/dev/null 2>&1
-off_tag="$REGISTRY/${ECR_REPO_OFFLINE}:v1"
-if ! aws ecr describe-images --repository-name "$ECR_REPO_OFFLINE" --image-ids imageTag=v1 --region "$AWS_REGION" >/dev/null 2>&1; then
+# Tag by the signed image's digest, not a fixed :v1. The repository is IMMUTABLE,
+# so a fixed tag could never be rebuilt after a change (for example a new signing
+# profile in the trust policy); a digest-derived tag is unique per signed image and
+# lets a re-run push a fresh image that bakes the current trust policy.
+off_tag_name="sig-${DIGEST#sha256:}"
+off_tag_name="${off_tag_name:0:20}"
+off_tag="$REGISTRY/${ECR_REPO_OFFLINE}:${off_tag_name}"
+if ! aws ecr describe-images --repository-name "$ECR_REPO_OFFLINE" --image-ids "imageTag=$off_tag_name" --region "$AWS_REGION" >/dev/null 2>&1; then
   DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
     --build-arg "SIGNING_PROFILE_ARN=$SIGNING_PROFILE_ARN" \
     --build-arg "LAYOUT_SCOPE=$SCOPE" \
@@ -83,7 +93,7 @@ if ! aws ecr describe-images --repository-name "$ECR_REPO_OFFLINE" --image-ids i
   docker push "$off_tag"
 fi
 docker logout "$REGISTRY" >/dev/null 2>&1 || true
-off_digest="$(aws ecr describe-images --repository-name "$ECR_REPO_OFFLINE" --image-ids imageTag=v1 --region "$AWS_REGION" --query 'imageDetails[0].imageDigest' --output text)"
+off_digest="$(aws ecr describe-images --repository-name "$ECR_REPO_OFFLINE" --image-ids "imageTag=$off_tag_name" --region "$AWS_REGION" --query 'imageDetails[0].imageDigest' --output text)"
 OFFLINE_IMAGE_URI="$REGISTRY/${ECR_REPO_OFFLINE}@${off_digest}"
 
 echo "=== launch the network-isolated offline verifier pod ==="

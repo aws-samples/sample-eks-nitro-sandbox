@@ -126,8 +126,8 @@ Identity: account <ACCOUNT_ID>, region us-west-2, cluster <CLUSTER_NAME>
 
 === 4/8 sign the image in nitro-sample-image-signing-signed with AWS Signer ===
 AWS Signer plugin version: 1.0.2292
-Successfully signed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-image-signing-signed@sha256:8c5a9fa10d38558efb2d37c78c7410a2983d136e1e5b977a33e9e8162b7f9a60
-signed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-image-signing-signed@sha256:8c5a9fa10d38...b7f9a60 (the nitro-sample-image-signing-unsigned copy is deliberately left unsigned).
+Successfully signed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-image-signing-signed@sha256:017d6f786bf74112ebfda095ea566249a5ab62e2ab371297833999c71ada9766
+signed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-image-signing-signed@sha256:017d6f786bf7...ada9766 (the nitro-sample-image-signing-unsigned copy is deliberately left unsigned).
 
 === 8/8 wait for all three guest VMs to boot ===
 pod/verify-signed condition met
@@ -171,9 +171,9 @@ kubectl -n image-signing-sample get pod verify-signed
 ```text
 6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
 dm-0 vda vdb vdc
-1059.50 1053.33
+65.98 63.94
 NAME            READY   STATUS    RESTARTS   AGE
-verify-signed   1/1     Running   0          17m
+verify-signed   1/1     Running   0          69s
 ```
 
 An ordinary pod on the same cluster shows, instead:
@@ -181,16 +181,16 @@ An ordinary pod on the same cluster shows, instead:
 ```text
 6.18.51 #2 SMP PREEMPT_DYNAMIC Wed Oct  7 22:33:11 UTC 2026
 dm-0 nvme0n1 nvme1n1 zram0
-7137.61 56289.84
+64066.25 510583.69
 NAME           READY   STATUS    RESTARTS   AGE
-ordinary-ref   1/1     Running   0          9s
+ordinary-ref   1/1     Running   0          7s
 ```
 
 The kernel version string matches, but the build does not (`#1 ... Oct 1` against
 `#2 ... Oct 7`): the guest runs its own kernel. The disk list is `vda vdb vdc`, the guest's
 virtio devices, where the ordinary pod sees the instance's `nvme`. And the guest's uptime,
-1059 seconds, matches the 17-minute-old pod, because the VM booted with the pod; the ordinary
-pod's `/proc/uptime` reports the node's uptime, over 15 hours.
+66 seconds, matches the just-started pod, because the VM booted with the pod; the ordinary
+pod's `/proc/uptime` reports the node's uptime, over 17 hours.
 
 **Step 4: Verify the signed image in-guest.** The caller must be allowed to `create
 pods/exec` in the namespace, so a verify failure is Notation's and not RBAC:
@@ -206,12 +206,12 @@ yes
 Run `notation verify` inside the signed pod, over the control channel:
 
 ```bash
-SIGNED=<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-image-signing-signed@sha256:8c5a9fa10d38...b7f9a60
+SIGNED=<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-image-signing-signed@sha256:017d6f786bf7...ada9766
 kubectl -n image-signing-sample exec verify-signed -c main -- notation verify "$SIGNED"
 ```
 
 ```text
-Successfully verified signature for <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-image-signing-signed@sha256:8c5a9fa10d38558efb2d37c78c7410a2983d136e1e5b977a33e9e8162b7f9a60
+Successfully verified signature for <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-image-signing-signed@sha256:017d6f786bf74112ebfda095ea566249a5ab62e2ab371297833999c71ada9766
 ```
 
 The signature was pulled from the registry and checked against the AWS Signer root
@@ -222,12 +222,12 @@ copy fails, and the failure names the missing signature, not a network problem. 
 negative case, kept permanently:
 
 ```bash
-UNSIGNED=<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-image-signing-unsigned@sha256:8c5a9fa10d38...b7f9a60
+UNSIGNED=<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-image-signing-unsigned@sha256:017d6f786bf7...ada9766
 kubectl -n image-signing-sample exec verify-unsigned -c main -- notation verify "$UNSIGNED"
 ```
 
 ```text
-Error: signature verification failed: no signature is associated with "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-image-signing-unsigned@sha256:8c5a9fa10d38558efb2d37c78c7410a2983d136e1e5b977a33e9e8162b7f9a60", make sure the artifact was signed successfully
+Error: signature verification failed: no signature is associated with "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-image-signing-unsigned@sha256:017d6f786bf74112ebfda095ea566249a5ab62e2ab371297833999c71ada9766", make sure the artifact was signed successfully
 ```
 
 Both repositories hold the same image bytes at the same digest, so the only difference is
@@ -242,7 +242,7 @@ kubectl -n image-signing-sample exec verify-signed-denied -c main -- notation ve
 ```
 
 ```text
-Error: failed to get manifest descriptor: Head "https://<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/v2/nitro-sample-image-signing-signed/manifests/sha256:8c5a9fa10d38558efb2d37c78c7410a2983d136e1e5b977a33e9e8162b7f9a60": dial tcp: lookup <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com on 10.100.0.10:53: dial udp 10.100.0.10:53: connect: network is unreachable
+Error: failed to get manifest descriptor: Head "https://<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/v2/nitro-sample-image-signing-signed/manifests/sha256:017d6f786bf74112ebfda095ea566249a5ab62e2ab371297833999c71ada9766": dial tcp: lookup <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com on 10.100.0.10:53: dial udp 10.100.0.10:53: connect: network is unreachable
 ```
 
 The error is `network is unreachable`, not `no signature is associated`, so a network
@@ -392,7 +392,7 @@ kubectl -n image-signing-sample exec verify-offline -c main -- \
   curl -sS -m 5 -o /dev/null https://api.ecr.us-west-2.amazonaws.com
 SCOPE=<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-image-signing-signed
 kubectl -n image-signing-sample exec verify-offline -c main -- sh -c \
-  "cd /var/lib/image-signing/layout && notation verify --oci-layout --scope '$SCOPE' 'nitro-sample-image-signing-signed@sha256:8c5a9fa10d38...b7f9a60'"
+  "cd /var/lib/image-signing/layout && notation verify --oci-layout --scope '$SCOPE' 'nitro-sample-image-signing-signed@sha256:017d6f786bf7...ada9766'"
 ```
 
 ```text
@@ -401,7 +401,7 @@ dummy0
 curl: (6) Could not resolve host: api.ecr.us-west-2.amazonaws.com
 command terminated with exit code 6
 Warning: This feature is experimental and may not be fully tested or completed and may be deprecated. Report any issues to "https://github/notaryproject/notation"
-Successfully verified signature for nitro-sample-image-signing-signed@sha256:8c5a9fa10d38558efb2d37c78c7410a2983d136e1e5b977a33e9e8162b7f9a60
+Successfully verified signature for nitro-sample-image-signing-signed@sha256:017d6f786bf74112ebfda095ea566249a5ab62e2ab371297833999c71ada9766
 ```
 
 The pod has only `lo` and `dummy0`, cannot resolve the ECR host, and still verifies the
@@ -453,7 +453,11 @@ aws ecr delete-repository --repository-name nitro-sample-image-signing-offline -
 
 `clean.sh` verifies each deletion and exits non-zero if anything it was asked to remove is
 still there. AWS Signer has no hard delete, so `--delete-aws-resources` cancels the signing
-profile and confirms its status reads `Canceled`. Network policy enforcement is cluster-wide;
+profile and confirms its status reads `Canceled`. A canceled profile lingers until its
+signatures expire (about 141 months by default) and AWS Signer refuses to reuse the name, so
+to set the sample up again after `--delete-aws-resources`, set a new `SIGNING_PROFILE` in
+`.env` first; `setup.sh` stops with that instruction if the old name is still present.
+Network policy enforcement is cluster-wide;
 deleting the cluster removes it, or delete the `amazon-vpc-cni` ConfigMap in `kube-system` if
 nothing else relies on it. To remove the namespace and the cluster, follow the
 [hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up).
