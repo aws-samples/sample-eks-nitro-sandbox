@@ -95,6 +95,9 @@ Post when something the maintainers can act on happens: a pull request opened fo
 pull request merged, a sample available, a blocker that needs someone. Not for each commit or
 check run. One message per event.
 
+Not when you start work. Comment on the spec issue instead, so the plan is recorded where
+the review happens, and post when there is a pull request to look at.
+
 ## The settings file
 
 | Key | What it holds |

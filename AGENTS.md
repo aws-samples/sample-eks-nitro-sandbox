@@ -35,6 +35,10 @@ but has no entry in the left menu, so add the `nav` line yourself.
   and acceptance criteria are agreed, before anyone spends cluster time or reviewer time.
 - **The pull request that implements a sample says `Closes #<issue>`.** Why: it ties the
   work to the criteria it must meet, and closes the spec when it merges.
+- **One pull request implements the whole issue.** If an issue is too big for one pull
+  request, split the spec into separate issues before you start, rather than opening a pull
+  request for part of one. Why: a reviewer checks one complete sample against all of its
+  criteria, and a partial sample on `main` shows readers something unfinished.
 
 Issue #2 is the model spec.
 
@@ -80,7 +84,30 @@ git -C EKSPodIsolationRuntime sparse-checkout set docs/eks-user-guide
   package path. Why: the package is internal, and a link to a page that does not exist yet
   is broken.
 
-The internal repository's and the package's URLs are the only internal values this file
+### The agent reviewer on the maintainers' workstation
+
+On the maintainers' shared workstation, the Codex reviewer for a second review (see the
+`second-review` skill) runs through a wrapper that bills the team's builder account. Run it
+from the folder under review, with the brief and output in the repository's `tmp/`:
+
+```bash
+setsid nohup env AWS_REGION=us-east-2 AWS_DEFAULT_REGION=us-east-2 \
+  ~/.kiro/crew/codex/codex-builder exec --skip-git-repo-check --sandbox read-only \
+  -c model_provider="amazon-bedrock" -c model="openai.gpt-5.6-sol" \
+  - < tmp/review/brief.md > tmp/review/review.out 2> tmp/review/review.err &
+```
+
+- **Use it exactly as written.** Without an `exec -c` option, Codex refuses to load its
+  configuration ("aws.credential_export cannot be combined with aws.profile"); `--sandbox
+  read-only` keeps the reviewer from editing the tree; the brief goes on standard input.
+  Why: each of these was dropped once, and each time the review failed or ran unconfined.
+- **Do not change the wrapper or `~/.codex/config.toml`** to make it start. Why: the
+  wrapper's profile setting decides which account the review bills.
+- **It takes 10 to 25 minutes.** `review.out` is written only at the end; check that it is
+  still running with `pgrep -f openai.gpt-5.6-sol`. Read `review.err` only with `tail` or a
+  targeted search, and never paste it anywhere: it logs credential details.
+
+The two repository URLs and this reviewer command are the only internal values this file
 holds, at the maintainers' choice. Remove them before this repository is made public, which
 needs Nitro sandboxes to be generally available first: until then the pages above, and any
 sample that quotes them, describe an unreleased feature.
@@ -97,7 +124,7 @@ sample that quotes them, describe an unreleased feature.
   instead.
 - **No values from your own account or environment in tracked files**: no account IDs,
   keys, tokens, names of your clusters or hosts, user names or internal URLs. The only
-  exceptions are the two repository URLs in
+  exceptions are the internal values in
   [Start from an internal demo](#start-from-an-internal-demo). Use
   placeholders such as `<ACCOUNT_ID>` and a gitignored local env file; the shared defaults
   on the home page (`sandbox-demo`, `us-west-2`, `nitro-sandboxes-demo`) are fine. Why:
@@ -107,6 +134,43 @@ sample that quotes them, describe an unreleased feature.
   other processes and lands in shell history.
 - **Give each IAM role only what the sample needs**, through EKS Pod Identity. Why: the
   role is what code inside the sandbox can use.
+
+## Shared accounts, clusters and machines
+
+You will often verify a sample in an AWS account, a cluster and on a workstation that other
+people's demos use at the same time.
+
+- **Name every resource for the sample**, and take from `.env` any name AWS will not let
+  you reuse after deletion. Why: an AWS Signer profile name stays taken for years after the
+  profile is canceled, so a second run with the same name fails.
+- **Mark what the sample creates, and check the mark before touching anything.** Tag every
+  AWS resource the sample creates `ManagedBy=<sample>` and label its namespace. A script
+  reuses or deletes only a resource that carries the mark, checks the namespace's label
+  before deleting anything inside it, and stops with a clear message otherwise. A resource
+  with the mark counts as the sample's, whichever run created it. Why: other demos in the
+  account use similar names, and three review rounds of one sample each found a script
+  that could reuse or delete something it did not own.
+- **A clean up says what it could not do.** A lookup that fails means "could not
+  determine", which is a failure, never "gone"; a resource skipped because it is not the
+  sample's leaves the clean up incomplete, and the script exits non-zero. Why: a lookup
+  against the wrong cluster once reported a namespace that still existed as deleted.
+- **Name the cluster you mean.** Pin the kube context for your own shell, with
+  `kubectl --context <name>` or a `KUBECONFIG` whose first file sets only
+  `current-context`, check `kubectl config current-context` before a run, and never run
+  `kubectl config use-context` on a shared machine. Why: another session changed the
+  shared context in the middle of a run.
+- **Keep local files in the repository's `tmp/`**, which git ignores: logs, captured
+  output, copies of state files, review briefs and output, stub tools, hand-off scripts.
+  Never put them in a sample folder or its `.gitignore`. Why: anything in a sample folder is
+  one `git add` from being published, and the sample's `.gitignore` is published with it.
+- **If your environment blocks a delete, leave the rest as a script in `tmp/`.** List the
+  AWS deletes first and the namespace last, with the Region or `--context` named on each,
+  and say in the pull request what is left. Why: a step that fails stops the ones after
+  it, and a command without a context runs against whatever context is current.
+- **Do not change global tool configuration** (shell profiles, files under `~/.config`,
+  version managers) to run a sample. Install what it needs under `tmp/`, or say what is
+  missing. Why: the machine is shared, and a reader needs the same tools, so the page's
+  prerequisites list them with their versions.
 
 ## Verification rules
 
@@ -121,6 +185,10 @@ sample that quotes them, describe an unreleased feature.
   can skip the very steps whose output the page shows.
 - **Prove every check both ways**: one input it must accept, one it must reject. Why: a
   check run only on good input cannot be told apart from one that accepts everything.
+- **Prove the check in the script itself, not in a copy.** For an input you cannot create,
+  run the real script with a stub command first on `PATH` (a fake `aws` in `tmp/` that
+  prints the case you need). Why: a pasted copy of the check stops matching the script at
+  its next edit, and the test keeps passing.
 - **Anchor search patterns (`^`) and strip comments before matching.** Why: an unanchored
   pattern can match its own explanatory comment, as in `# type: ClusterIP` written above
   `type: LoadBalancer`.
@@ -128,8 +196,9 @@ sample that quotes them, describe an unreleased feature.
 ## Review
 
 - **Get a second reviewer, a person or another agent, for any change to a check, a
-  credential path or a security claim.** Why: those fail silently; the sample still runs
-  and the page still reads well.
+  credential path or a security claim.** The `second-review` skill says how to brief one,
+  run it and record the result. Why: those fail silently; the sample still runs and the
+  page still reads well.
 - **Open a sample's pull request as a draft until its fresh run is on the page**
   (`gh pr create --draft`), then mark it ready. Why: a ready pull request invites review
   and merge of output that has not been run yet.
@@ -147,6 +216,7 @@ sample that quotes them, describe an unreleased feature.
 | `nitro-sandbox-pods` | Get the facts right about how a Nitro sandbox pod works, in `isolated-sandbox` and `confidential-sandbox` mode, and how a sample proves it ran in one. |
 | `aws-diagrams` | Draw draw.io architecture diagrams in the style of the existing figures, exported to PNG. |
 | `slack-updates` | Post a status update to the maintainers' Slack channel, checked and confirmed, using the local settings a maintainer gives you. |
+| `second-review` | Get the second review a change to a check, a credential path or a security claim needs: brief the reviewer, run it without write access, triage what it finds, and record it in the pull request. |
 
 Edit skills only in `.agents/skills/`. Then run `./scripts/check-agent-files.sh`, which
 fails on a broken link, a second copy of a skill, or a skill this table does not list.

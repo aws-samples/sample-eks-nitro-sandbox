@@ -60,7 +60,9 @@ Follow this order. `references/page-skeleton.md` has it as a starting file.
    cd sample-eks-nitro-sandbox/examples/<section>/<sample>
    ```
 
-   Then anything extra this sample needs, and what a run costs beyond the cluster.
+   Then anything extra this sample needs, including each command-line tool its scripts
+   call on the reader's machine (for example `notation` or `oras`) with the version the
+   run used and where to get it, and what a run costs beyond the cluster.
 3. **Overview.** Two or three short paragraphs and a few bullets, each led by a bold claim:
    what runs in the sandbox, what stays an ordinary pod, what each part can reach. Then the
    overview figure.
@@ -102,7 +104,9 @@ Each step is one small unit, in this order:
 Every sample whose sandbox has a network ships an egress policy and explains it in a "How
 the network policy works" section:
 
-- the complete policy YAML, without its header comment;
+- the complete policy YAML, without its header comment. When a script fills values in at
+  apply time (the CoreDNS address, a list of AWS address ranges), show the file as it is,
+  placeholders included, and say which script fills each one and from where;
 - a table with one row per part (`podSelector`, `policyTypes`, each rule) and what it does;
 - that enforcement is turned on once per cluster with the `amazon-vpc-cni` ConfigMap, and
   how the page waits for the `PolicyEndpoint`;
@@ -124,6 +128,10 @@ route, and a lookup fails, as the hello sandbox page does.
   (a warm pool, a Deployment).
 - Remove every AWS resource the sample created: IAM roles and policies, Pod Identity
   associations (only this sample's), ECR repositories, local images.
+- A clean-up script deletes only what carries the sample's `ManagedBy` tag or namespace
+  label, checks the label before deleting anything inside the namespace, and exits
+  non-zero when it skipped something or could not check it ("Shared accounts, clusters and
+  machines" in `AGENTS.md`).
 - Say what stays and why: cluster-wide settings such as network policy enforcement, and
   shared installs such as agent-sandbox, with the command to remove them.
 - Link the hello sandbox clean up for removing the namespace and the cluster.
@@ -165,8 +173,10 @@ route, and a lookup fails, as the hello sandbox page does.
   environment variable names and connections, not only the manifest.
 - **Keep local values in a gitignored env file** (`.env`, from `.env.example`). Read
   secrets from a file or standard input, never from a command line.
-- **Tag every AWS resource you create while verifying with `auto-delete=no`**, so an
-  account clean-up job does not remove it in the middle of a run.
+- **Tag every AWS resource the sample creates `ManagedBy=<sample>`**, label its namespace,
+  and give every name to the sample. Pin the kube context for the run, and keep logs and
+  state copies in the repository's `tmp/`. "Shared accounts, clusters and machines" in
+  `AGENTS.md` has the rules and why.
 - **Use ClusterIP and `kubectl port-forward`.** No Ingress, LoadBalancer or NodePort.
 - **Run the clean up** and confirm nothing the sample created is left.
 
@@ -189,7 +199,9 @@ and mark it ready only when every box below is true.
       output blocks and diagrams. The shared defaults on the home page are fine.
 - [ ] The page proves the pod ran in a sandbox: its own kernel build, boot and virtio
       disks, each with what an ordinary pod shows instead.
-- [ ] The clean up removes everything the sample created.
+- [ ] The clean up removes everything the sample created, and only that.
+- [ ] No local files (logs, state copies, helpers) in the sample folder; they are in the
+      repository's `tmp/`.
 - [ ] `nav` entry added, roadmap and root README updated.
 - [ ] `mkdocs build --strict` passes, and `./scripts/check-agent-files.sh` passes.
 - [ ] Wording rules above hold, including no em dash (U+2014) characters and no "fence"
