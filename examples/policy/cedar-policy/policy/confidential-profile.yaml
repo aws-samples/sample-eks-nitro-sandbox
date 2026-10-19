@@ -1,0 +1,52 @@
+# A custom generator profile, equal to the built-in confidential profile except
+# for the fields the current preview guest schema does not yet define. The Amazon
+# EKS User Guide, "Cedar policies", documents custom profiles: a YAML file passed to
+# the generator's --profile flag, where omitted fields take their defaults.
+#
+# Why a custom profile here, and not the built-in "confidential":
+#   The built-in confidential profile emits Cedar attributes and actions the preview
+#   guest's policy schema does not define yet, and the guest rejects the whole policy
+#   when it meets one, before any container starts. The reduced settings below keep
+#   the full confidential posture a reader cares about -- every admission field is
+#   pinned, and exec and stdin are denied -- while omitting:
+#     * pin_oci_hardening: emits has_zos / linux_net_devices attributes;
+#     * require_encrypted_ephemeral_layer: emits the encrypted_ephemeral_layer
+#       attribute;
+#     * deliver_pod_identity_credentials and deliver_ntp: emit the
+#       Agent::Action::"DeliverCredentials" and "DeliverNtp" actions.
+#   The workload here has a deny-all egress policy and no Pod Identity association,
+#   so denying credential and NTP delivery changes nothing it relies on.
+#
+# When the preview guest schema defines these, generate with --profile confidential
+# instead and the sample's checks still hold. Until then the built-in profile's
+# policy will not start on the preview guest.
+admission:
+  pin_image: true
+  pin_args: true
+  pin_env: true
+  pin_working_dir: true
+  pin_hostname: true
+  pin_mounts: true
+  pin_identity: true
+  pin_capabilities: true
+  pin_security: true
+  pin_masked_paths: true
+  pin_seccomp: true
+  pin_apparmor: true
+  pin_namespaces: true
+  pin_sysctls: true
+  pin_oci_hardening: false
+runtime:
+  exec: deny
+  logs: allow
+  stdin: deny
+  stats: allow
+  termination_logs: allow
+  imds: allow
+  oom: allow
+  sa_token: infer
+  mount_host_image: deny
+  stream_agent_logs: deny
+  deliver_pod_identity_credentials: deny
+  deliver_ntp: deny
+  require_encrypted_ephemeral_layer: false

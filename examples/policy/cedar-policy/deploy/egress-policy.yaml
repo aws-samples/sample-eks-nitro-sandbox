@@ -1,0 +1,21 @@
+# The workload makes no outbound connections, so its egress is denied in full. A
+# NetworkPolicy with an empty egress rule set and Egress in policyTypes selects the
+# pod and allows nothing out. This is a standard Kubernetes NetworkPolicy, not the
+# Auto Mode ApplicationNetworkPolicy, because there are no allow rules to express.
+#
+# Enforcement is turned on once per cluster with the amazon-vpc-cni ConfigMap (see
+# enable-network-policy.yaml) and happens on the node, outside the guest: the node's
+# network policy agent attaches eBPF programs to the pod's host-side interface, so a
+# command inside the sandbox, even as root, cannot change it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cedar-policy-deny-egress
+  namespace: cedar-policy-sample
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cedar-policy-demo
+  policyTypes:
+    - Egress
+  egress: []

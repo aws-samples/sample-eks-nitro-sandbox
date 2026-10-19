@@ -79,7 +79,7 @@ Samples marked ★ are the next six to be added.
 Checks that run inside the guest and decide what the pod may run.
 
 - image-signing: an image signed with AWS Signer and verified inside the guest, while an unsigned image is rejected. Uses `isolated-sandbox`. Spec: [#17](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/17).
-- cedar-policy: a Cedar policy generated for a workload and enforced inside the guest, which refuses an operator's exec. Uses `confidential-sandbox`. Spec: [#18](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/18).
+- [cedar-policy](../examples/policy/cedar-policy/README.md) (available now): a Cedar policy generated for a workload and enforced inside the guest, which refuses an operator's exec. Uses `confidential-sandbox`. Spec: [#18](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/18).
 
 ### AI agents (`ai-agents`)
 
