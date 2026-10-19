@@ -82,5 +82,7 @@ nav:
       - Hello sandbox: getting-started/hello-sandbox/README.md
       - Coding agent: getting-started/coding-agent/README.md
       - Warm pool: getting-started/warm-pool/README.md
+  - Policy:
+      - Image signing: policy/image-signing/README.md
   - Managed agents:
       - Claude Managed Agents: managed-agents/claude-managed-agents/README.md
