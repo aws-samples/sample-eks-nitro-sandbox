@@ -166,7 +166,7 @@ info: wrote base64 envelope to .../tmp/cedar-policy/policy.b64
 --- Predicted PCR17 ---
 04d9658a1753a730560d47023403d89dae79e83a1c54fb6615c7a28944cdc51cbd5196a941e8a7c74d392c59cfadce47
 == 2/4 decode the policy envelope into readable form ==
-== 3/4 render the pod with its policy annotation ==
+== 3/4 render the pod, namespace and egress policy with the chosen NAMESPACE ==
 == 4/4 apply the pod and wait for the guest to admit it ==
 namespace/cedar-policy-sample created
 networkpolicy.networking.k8s.io/cedar-policy-deny-egress created
@@ -177,9 +177,11 @@ cedar-policy-demo is Ready and enforcing its generated Cedar policy.
 ```
 
 Abridged. The generator prints a predicted PCR17, the measurement an external verifier would
-check; this sample does not use it. The policy travels to the guest as the gzipped,
-base64-encoded JSON envelope in the annotation, which is not readable by eye, so setup also
-leaves a decoded copy under `tmp/` and the sample commits a readable copy, shown below.
+check; this sample does not use it. This capture was taken from a fresh run into a namespace
+that did not exist, so it shows the `namespace/... created` line; a re-run into an existing
+sample namespace shows `reusing namespace ...` instead. The policy travels to the guest as the
+gzipped, base64-encoded JSON envelope in the annotation, which is not readable by eye, so setup
+also leaves a decoded copy under `tmp/` and the sample commits a readable copy, shown below.
 
 **Step 4: What the generated policy pins.** The generated admission policy permits creating the
 `main` container only when the container matches the settings from the pod spec. Here is the
@@ -249,7 +251,7 @@ kubectl -n cedar-policy-sample logs cedar-policy-demo -c main
 
 ```text
 kernel:  6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-uptime:  3.37s
+uptime:  3.48s
 disks:   dm-0 dm-1 dm-2 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 vda vdb vdc
 confidential-policy-ready
 ```
@@ -258,7 +260,7 @@ An ordinary (non-sandbox) pod started on the same cluster shows, instead:
 
 ```text
 kernel:  6.18.51 #2 SMP PREEMPT_DYNAMIC Wed Oct  7 22:33:11 UTC 2026
-uptime:  74984.35s
+uptime:  82970.46s
 disks:   dm-0 nvme0n1 nvme1n1 zram0
 ```
 
@@ -289,7 +291,7 @@ kubectl -n cedar-policy-sample exec cedar-policy-demo -c main -- /bin/true
 
 ```text
 error: Internal error occurred: Internal error occurred: error executing command in
-container: failed to exec in container: failed to create exec "a4b9...8272": policy denied
+container: failed to exec in container: failed to create exec "3ce2...b28c5": policy denied
 Agent::Action::"Exec" on container "main" reasons=[] errors=[]
 ```
 

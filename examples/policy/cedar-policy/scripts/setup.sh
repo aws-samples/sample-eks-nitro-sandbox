@@ -33,6 +33,8 @@ POLICY_RAW="$TMP_DIR/policy.raw"
 POLICY_JSON="$TMP_DIR/policy.json"
 POLICY_YAML="$TMP_DIR/policy.yaml"
 RENDERED="$TMP_DIR/rendered-pod.json"
+RENDERED_NS="$TMP_DIR/rendered-namespace.json"
+RENDERED_EGRESS="$TMP_DIR/rendered-egress.json"
 GENPOLICY_LOG="$TMP_DIR/genpolicy.log"
 
 # The context is named on every kubectl call, never switched with use-context, so a
@@ -108,22 +110,34 @@ jq -r '
 echo "  machine-readable envelope: $POLICY_JSON"
 echo "  readable Cedar document:   $POLICY_YAML"
 
-echo "== 3/4 render the pod with its policy annotation =="
+echo "== 3/4 render the pod, namespace and egress policy with the chosen NAMESPACE =="
 # Render locally (--dry-run=client contacts no cluster), so --policy-only stops
-# after this step. Keeping the rendered pod on disk shows exactly what was applied.
+# after this step. Keeping the rendered objects on disk shows exactly what was applied.
+#
+# All three objects are rendered with $NAMESPACE so an override never touches the
+# default name: the committed manifests hard-code the default (so they read cleanly on
+# the page), and these renders put the chosen namespace into each. The namespace's
+# managed-by label stays "cedar-policy-sample" (the ownership mark names the SAMPLE, not
+# the namespace), so clean.sh still recognises an overridden namespace as owned.
 policy_b64="$(tr -d '\r\n' < "$POLICY_B64")"
-# --validate=false keeps this render offline: client-side validation would otherwise
-# fetch the cluster's OpenAPI schema, which --policy-only must not need.
-kubectl create --dry-run=client --validate=false -o json -f "$MANIFEST" |
-  jq \
-    --arg namespace "$NAMESPACE" \
-    --arg name "$POD_NAME" \
-    --arg policy "$policy_b64" \
-    '.metadata.namespace = $namespace
-     | .metadata.name = $name
-     | .metadata.annotations["sandbox.amazonaws.com/policy"] = $policy' \
-    > "$RENDERED"
-echo "  rendered pod: $RENDERED"
+render() {  # render <manifest> <jq-filter> <out>
+  # --validate=false keeps this offline: client-side validation would otherwise fetch
+  # the cluster's OpenAPI schema, which --policy-only must not need.
+  kubectl create --dry-run=client --validate=false -o json -f "$1" | jq "$2" > "$3"
+}
+render "$MANIFEST" \
+  "$(printf '.metadata.namespace = %s | .metadata.name = %s | .metadata.annotations["sandbox.amazonaws.com/policy"] = %s' \
+     "$(jq -n --arg v "$NAMESPACE" '$v')" "$(jq -n --arg v "$POD_NAME" '$v')" "$(jq -n --arg v "$policy_b64" '$v')")" \
+  "$RENDERED"
+render "$SAMPLE_DIR/deploy/namespace.yaml" \
+  "$(printf '.metadata.name = %s' "$(jq -n --arg v "$NAMESPACE" '$v')")" \
+  "$RENDERED_NS"
+render "$SAMPLE_DIR/deploy/egress-policy.yaml" \
+  "$(printf '.metadata.namespace = %s' "$(jq -n --arg v "$NAMESPACE" '$v')")" \
+  "$RENDERED_EGRESS"
+echo "  rendered pod:       $RENDERED"
+echo "  rendered namespace: $RENDERED_NS"
+echo "  rendered egress:    $RENDERED_EGRESS"
 
 if [[ "$policy_only" == true ]]; then
   echo
@@ -153,9 +167,9 @@ fi
 [[ "$ns_lookup_rc" == 0 && "$ns_exists_rc" == 0 ]] \
   || die "could not determine whether namespace $NAMESPACE already exists (kubectl lookup failed; check the context and permissions); created nothing"
 if [[ -z "$ns_exists" ]]; then
-  kc apply -f "$SAMPLE_DIR/deploy/namespace.yaml"
+  kc apply -f "$RENDERED_NS"
 elif [[ "$ns_label" != "cedar-policy-sample" ]]; then
-  die "namespace $NAMESPACE already exists and is not this sample's (managed-by='$ns_label'); created nothing. Delete it or set NAMESPACE to an unused name."
+  die "namespace $NAMESPACE already exists and is not this sample's (managed-by='$ns_label'); created nothing. Delete it, or re-run with NAMESPACE set to a name no other workload uses."
 else
   echo "  reusing namespace $NAMESPACE (carries this sample's managed-by label)"
 fi
@@ -177,7 +191,7 @@ fi
 kc delete pod "$POD_NAME" -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=5m >/dev/null
 # Apply the deny-all egress policy before the pod, so the pod never has a window with
 # open egress.
-kc apply -f "$SAMPLE_DIR/deploy/egress-policy.yaml"
+kc apply -f "$RENDERED_EGRESS"
 kc apply -f "$RENDERED"
 if ! kc wait "pod/$POD_NAME" -n "$NAMESPACE" --for=condition=Ready --timeout=15m; then
   kc get pod "$POD_NAME" -n "$NAMESPACE" -o wide 2>/dev/null || true
