@@ -26,8 +26,8 @@ pod spec:
   describes a watcher that starts one pod per issue labeled `agent`; here you start the
   pod yourself.)
 - **Everything else is off.** An `ApplicationNetworkPolicy` denies all ingress, and
-  allows egress only to CoreDNS for name lookups and to HTTPS on the Bedrock and GitHub
-  hostnames. Other AWS APIs, other internet hosts and other pods are refused. (The
+  allows egress only to CoreDNS for name lookups, to the Pod Identity credential address,
+  and to HTTPS on the Bedrock and GitHub hostnames. Other AWS APIs, other internet hosts and other pods are refused. (The
   policy allows the addresses those names resolve to, so another name served from the
   same addresses would also be reachable.) The VM is sized to the pod's limits (inside
   it, `nproc` reports 2 and memory is about 4 GiB), so the hypervisor bounds the CPU and
@@ -46,7 +46,7 @@ The files:
 | [`Dockerfile`](Dockerfile), [`entrypoint.sh`](entrypoint.sh) | The `coding-agent` image: a stock Node base with Claude Code, git, the GitHub CLI and pytest |
 | [`iam/`](iam/) | The Pod Identity trust policy and the Bedrock-only permissions policy |
 | [`service-account.yaml`](service-account.yaml) | The `coding-agent` ServiceAccount the role is associated with |
-| [`egress-policy.yaml`](egress-policy.yaml) | The egress fence: DNS, Bedrock, `github.com` and `api.github.com` only |
+| [`egress-policy.yaml`](egress-policy.yaml) | The egress network policy: DNS, Pod Identity, Bedrock, `github.com` and `api.github.com` only |
 | [`fix-issue.yaml`](fix-issue.yaml) | The agent pod from the post |
 | [`sample-app/`](sample-app/) | A small Python app with a known bug, for the agent to fix |
 
@@ -118,7 +118,7 @@ unset GITHUB_TOKEN
 
 **Step 5: Fence the egress.** [`egress-policy.yaml`](egress-policy.yaml)
 selects pods labeled `app: coding-agent`. It denies all ingress, and allows egress only
-to CoreDNS and to HTTPS on three hostnames:
+to CoreDNS, to the Pod Identity credential address, and to HTTPS on three hostnames:
 
 ```yaml
   egress:
@@ -128,6 +128,10 @@ to CoreDNS and to HTTPS on three hostnames:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
     - to:
+        - ipBlock: { cidr: 169.254.170.23/32 }   # EKS Pod Identity credentials
+      ports:
+        - { protocol: TCP, port: 80 }
+    - to:
         - domainNames:
             - bedrock-runtime.us-west-2.amazonaws.com   # the model
             - github.com                                # git clone and push
@@ -135,6 +139,11 @@ to CoreDNS and to HTTPS on three hostnames:
       ports:
         - { protocol: TCP, port: 443 }
 ```
+
+The Pod Identity rule is what lets the agent get its Bedrock credentials. The sandbox
+passes credential requests to `169.254.170.23` on to the Pod Identity Agent on the node,
+and the policy applies to them: without the rule they time out, from a sandboxed pod as
+from an ordinary one.
 
 A standard Kubernetes `NetworkPolicy` can only allow addresses; the Auto Mode
 `ApplicationNetworkPolicy` accepts the same fields plus `domainNames`. Fill in your

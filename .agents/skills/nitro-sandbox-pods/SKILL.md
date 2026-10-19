@@ -143,12 +143,15 @@ These support a claim but do not prove the pod ran in a sandbox on their own:
   association with a role scoped to what the sample needs.
   (`examples/getting-started/coding-agent/README.md`, step 3;
   <https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html>.)
-- **Both endpoints are served inside the VM.** With a network, the pod gets the in-guest
-  endpoints that serve instance metadata and Pod Identity credentials
-  (`examples/getting-started/hello-sandbox/README.md`). The Pod Identity address,
-  `169.254.170.23`, is answered inside the VM itself, so the traffic never reaches the
-  network policy and the policy needs no rule for it
-  (`examples/managed-agents/claude-managed-agents/README.md`, Claude Platform on AWS).
+- **The pod gets both endpoints.** With a network, the pod gets the in-guest endpoints that
+  serve instance metadata and Pod Identity credentials
+  (`examples/getting-started/hello-sandbox/README.md`).
+- **Pod Identity requests go through the network policy.** The sandbox passes credential
+  requests to `169.254.170.23` on to the Pod Identity Agent on the node (Amazon EKS User
+  Guide, *Security model and parent instance trust assumptions*), and an egress policy
+  applies to them: without a rule allowing `169.254.170.23` on TCP 80 they time out, from a
+  sandboxed pod as from an ordinary one. Every egress policy for a pod with a Pod Identity
+  association needs that rule. (`examples/getting-started/coding-agent/egress-policy.yaml`.)
 - **The metadata service holds no role.** At `169.254.169.254` it answers with placement and
   service details only, and its `iam/` paths return 404, so a pod with no Pod Identity
   association has no role to assume. (`examples/managed-agents/claude-managed-agents/README.md`,
