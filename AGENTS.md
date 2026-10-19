@@ -33,6 +33,30 @@ but has no entry in the left menu, so add the `nav` line yourself.
 - **No sample implementation starts before a GitHub issue holds its spec.** Write it with
   the `sample-spec` skill or the **Sample spec** issue form. Why: the issue is where scope
   and acceptance criteria are agreed, before anyone spends cluster time or reviewer time.
+- **Pick an issue nobody has claimed.** Skip any issue that is assigned, labeled
+  `in progress`, or labeled `blocked`:
+
+  ```bash
+  gh issue list --repo aws-samples/sample-eks-nitro-sandbox --state open \
+    --search 'no:assignee -label:"in progress" -label:blocked'
+  ```
+
+- **Claim the issue before you start work.** Comment on it that you are starting, with a
+  line on your plan, then assign it to yourself and add the `in progress` label:
+
+  ```bash
+  gh issue comment <issue> --repo aws-samples/sample-eks-nitro-sandbox --body-file tmp/claim.md
+  gh issue edit <issue> --repo aws-samples/sample-eks-nitro-sandbox \
+    --add-assignee @me --add-label "in progress"
+  ```
+
+  If `gh issue edit` is refused because you lack permission, say so in your comment and
+  ask a maintainer to assign the issue to you and add the label. Start once the comment is
+  posted. Why: the assignee and the label are how the next collaborator knows to pick
+  another issue, and the comment is where your plan is recorded.
+- **Release the claim if you stop.** Comment on where you stopped, remove yourself and the
+  label (`--remove-assignee @me --remove-label "in progress"`), or ask a maintainer to.
+  Why: a stale claim keeps everyone else off the issue.
 - **The pull request that implements a sample says `Closes #<issue>`.** Why: it ties the
   work to the criteria it must meet, and closes the spec when it merges.
 - **One pull request implements the whole issue.** If an issue is too big for one pull
