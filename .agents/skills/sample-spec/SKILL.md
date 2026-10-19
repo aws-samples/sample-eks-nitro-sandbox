@@ -27,8 +27,13 @@ follow its shape and its level of detail. Paths below are relative to the reposi
    or with `gh`, as shown at the end.
 5. **Agree it.** Implementation starts once the maintainers accept the spec and the issue
    is not labeled `blocked` (see [When a spec is blocked](#when-a-spec-is-blocked)).
+   Whoever implements it claims it first, as "A sample starts as a spec in a GitHub issue"
+   in `AGENTS.md` describes: a comment, the assignee and the `in progress` label. An issue
+   that is assigned or labeled `in progress` belongs to someone else.
 6. **Branch and build.** Use a branch named after the sample, follow the `sample-page`
-   skill, and open a pull request whose description starts with `Closes #<issue>`.
+   skill, and open one pull request for the whole issue, whose description starts with
+   `Closes #<issue>`. A spec too big for one pull request is split into separate issues
+   before anyone starts, not delivered in parts.
 
 ## The sections
 

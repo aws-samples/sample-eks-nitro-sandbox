@@ -467,9 +467,10 @@ details only. Its `iam/` paths return 404 and the pod has no Pod Identity, so th
 role to assume.
 
 That is the Claude API path. On [Claude Platform on AWS](#optional-run-it-on-claude-platform-on-aws)
-it is different: the sandbox pod's ServiceAccount has a Pod Identity role, and its
-credentials come from the Pod Identity endpoint inside the sandbox's VM, so the network
-policy needs no rule for them. A command the sandbox runs can use that role for what it
+it is different: the sandbox pod's ServiceAccount has a Pod Identity role. The sandbox
+passes its credential requests, to `169.254.170.23`, on to the Pod Identity Agent on the
+node, and the network policy applies to them, so that mode's policy has a rule allowing
+that address. A command the sandbox runs can use that role for what it
 allows, including claiming other sessions' work in its environment;
 [What the sandbox's role may do](#what-the-sandboxs-role-may-do) lists it.
 
@@ -618,11 +619,11 @@ kubectl create configmap anthropic-env --from-env-file=<(
 
 **Apply this mode's network policy.** In place of step 5, apply
 [`claude-platform-aws/egress-policy.yaml`](deploy/claude-platform-aws/egress-policy.yaml). It
-has the same name as step 5's policy and one different rule: HTTPS goes to your Region's
-Claude Platform on AWS endpoint instead of `api.anthropic.com`. It has no rule for the Pod
-Identity credential address, `169.254.170.23`: in a Nitro sandbox that address is served
-inside the VM itself, so the traffic never reaches the policy. Here it is without its header
-comment:
+has the same name as step 5's policy and two different rules: HTTPS goes to your Region's
+Claude Platform on AWS endpoint instead of `api.anthropic.com`, and egress is allowed to the
+Pod Identity credential address, `169.254.170.23`, on TCP 80. The sandbox passes its
+credential requests to that address on to the Pod Identity Agent on the node, and the policy
+applies to them, so without the rule they time out. Here it is without its header comment:
 
 ```yaml
 apiVersion: networking.k8s.aws/v1alpha1
@@ -649,6 +650,10 @@ spec:
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
+    - to:
+        - ipBlock: { cidr: 169.254.170.23/32 }   # EKS Pod Identity credentials
+      ports:
+        - { protocol: TCP, port: 80 }
     - to:
         - domainNames:
             - aws-external-anthropic.<AWS_REGION>.api.aws

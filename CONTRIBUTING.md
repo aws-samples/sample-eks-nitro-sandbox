@@ -50,6 +50,8 @@ walk through writing the spec, the sample and its page.
 ## Finding contributions to work on
 Looking at the existing issues is a great way to find something to contribute on. As our projects, by default, use the default GitHub issue labels (enhancement/bug/duplicate/help wanted/invalid/question/wontfix), looking at any 'help wanted' issues is a great place to start.
 
+Skip issues that are assigned or labeled `in progress` (someone is working on them) or `blocked` (waiting on something outside this repository). Before you start on an issue, comment on it, then assign it to yourself and add the `in progress` label; if you cannot, ask a maintainer in your comment to do it for you. [AGENTS.md](AGENTS.md) has the commands.
+
 
 ## Code of Conduct
 This project has adopted the [Amazon Open Source Code of Conduct](https://aws.github.io/code-of-conduct).
