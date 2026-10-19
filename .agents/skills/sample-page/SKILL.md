@@ -115,7 +115,10 @@ the network policy works" section:
   are reachable, and a pod can always reach its own node;
 - `networkPolicyManagement: Unmanaged` on any `SandboxTemplate`, and why.
 
-Show it working: one allowed connection that connects and one refused that does not.
+Show it working: one allowed connection that connects and one refused that does not. When
+the pod refuses exec, as a `confidential-sandbox` pod does under a policy that denies it,
+put the probes in the container's own command and read the results from its logs. If the
+sample cannot show a connection either way, say on the page what it shows instead and why.
 
 A sandbox booted with `sandbox.amazonaws.com/network-isolated: "true"` has no network to
 restrict, so it needs no policy. Show that instead: only `lo` has an address, there is no
@@ -200,6 +203,10 @@ and mark it ready only when every box below is true.
 - [ ] The page proves the pod ran in a sandbox: its own kernel build, boot and virtio
       disks, each with what an ordinary pod shows instead.
 - [ ] The clean up removes everything the sample created, and only that.
+- [ ] The setup script changes nothing cluster-wide, and an overridable name such as
+      `NAMESPACE` reaches every object it applies.
+- [ ] The clean up ran after the last run the page uses, and the description lists anything
+      it could not remove.
 - [ ] No local files (logs, state copies, helpers) in the sample folder; they are in the
       repository's `tmp/`.
 - [ ] `nav` entry added, roadmap and root README updated.
