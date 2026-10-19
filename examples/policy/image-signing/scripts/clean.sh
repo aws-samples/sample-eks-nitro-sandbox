@@ -130,7 +130,7 @@ ns_json="$(kc get namespace "$NAMESPACE" -o jsonpath='{.status.phase}|{.metadata
 if (( ns_rc != 0 )); then
   # Only the explicit "not found" error from the API server means absent; any other
   # failure (bad kubeconfig, unreachable server, missing cert) is "could not determine".
-  if printf '%s' "$ns_json" | grep -qE 'Error from server \(NotFound\)'; then
+  if printf '%s' "$ns_json" | grep -qE '^Error from server \(NotFound\)'; then
     echo "confirmed gone: namespace $NAMESPACE"
   else
     echo "COULD NOT DETERMINE: namespace $NAMESPACE ($ns_json)"; FAIL=1
@@ -148,7 +148,7 @@ else
     # not-yet-gone); a NotFound means gone; any other failure is unknown.
     chk="$(kc get namespace "$NAMESPACE" -o jsonpath='{.status.phase}' 2>&1)"; chk_rc=$?
     if (( chk_rc == 0 )); then echo "STILL PRESENT: namespace $NAMESPACE (phase ${chk:-unknown}; may be Terminating, re-run clean.sh)"; FAIL=1
-    elif printf '%s' "$chk" | grep -qE 'Error from server \(NotFound\)'; then echo "confirmed gone: namespace $NAMESPACE and everything in it"
+    elif printf '%s' "$chk" | grep -qE '^Error from server \(NotFound\)'; then echo "confirmed gone: namespace $NAMESPACE and everything in it"
     else echo "COULD NOT DETERMINE: namespace $NAMESPACE after delete ($chk)"; FAIL=1; fi
   fi
 fi
