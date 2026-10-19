@@ -28,7 +28,9 @@ follow its shape and its level of detail. Paths below are relative to the reposi
 5. **Agree it.** Implementation starts once the maintainers accept the spec and the issue
    is not labeled `blocked` (see [When a spec is blocked](#when-a-spec-is-blocked)).
 6. **Branch and build.** Use a branch named after the sample, follow the `sample-page`
-   skill, and open a pull request whose description starts with `Closes #<issue>`.
+   skill, and open one pull request for the whole issue, whose description starts with
+   `Closes #<issue>`. A spec too big for one pull request is split into separate issues
+   before anyone starts, not delivered in parts.
 
 ## The sections
 
