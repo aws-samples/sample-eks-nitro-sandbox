@@ -46,9 +46,9 @@ STATE_FILE="$SAMPLE_DIR/.image-signing.state"
 PODS=(verify-signed verify-unsigned verify-signed-denied)
 
 # Pin the kube context for this run so a kubectl call never lands on whatever the
-# shared current context happens to be. Set KUBE_CONTEXT=<name> (for example
-# KUBE_CONTEXT=carrlos-piso-prod); leave it empty to use the current context after
-# confirming it below. Every kubectl call goes through kc().
+# shared current context happens to be. Set KUBE_CONTEXT=<context-name>; leave it
+# empty to use the current context after confirming it below. Every kubectl call
+# goes through kc().
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 kc() { if [[ -n "$KUBE_CONTEXT" ]]; then kubectl --context "$KUBE_CONTEXT" "$@"; else kubectl "$@"; fi; }
 ctx_now="$(kc config current-context 2>/dev/null || true)"
@@ -128,7 +128,9 @@ step "delete the Kubernetes objects"
 # Separate "absent" (NotFound) from "could not determine" (any other failure).
 ns_json="$(kc get namespace "$NAMESPACE" -o jsonpath='{.status.phase}|{.metadata.labels.sample}' 2>&1)"; ns_rc=$?
 if (( ns_rc != 0 )); then
-  if printf '%s' "$ns_json" | grep -qE 'NotFound|not found'; then
+  # Only the explicit "not found" error from the API server means absent; any other
+  # failure (bad kubeconfig, unreachable server, missing cert) is "could not determine".
+  if printf '%s' "$ns_json" | grep -qE 'Error from server \(NotFound\)'; then
     echo "confirmed gone: namespace $NAMESPACE"
   else
     echo "COULD NOT DETERMINE: namespace $NAMESPACE ($ns_json)"; FAIL=1
@@ -146,7 +148,7 @@ else
     # not-yet-gone); a NotFound means gone; any other failure is unknown.
     chk="$(kc get namespace "$NAMESPACE" -o jsonpath='{.status.phase}' 2>&1)"; chk_rc=$?
     if (( chk_rc == 0 )); then echo "STILL PRESENT: namespace $NAMESPACE (phase ${chk:-unknown}; may be Terminating, re-run clean.sh)"; FAIL=1
-    elif printf '%s' "$chk" | grep -qE 'NotFound|not found'; then echo "confirmed gone: namespace $NAMESPACE and everything in it"
+    elif printf '%s' "$chk" | grep -qE 'Error from server \(NotFound\)'; then echo "confirmed gone: namespace $NAMESPACE and everything in it"
     else echo "COULD NOT DETERMINE: namespace $NAMESPACE after delete ($chk)"; FAIL=1; fi
   fi
 fi
