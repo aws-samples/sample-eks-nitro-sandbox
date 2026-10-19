@@ -63,7 +63,14 @@ aws ecr get-login-password --region "$AWS_REGION" \
 "$ORAS" cp --recursive "$SIGNED_IMAGE_URI" --to-oci-layout "layout/nitro-sample-image-signing-signed:v1"
 
 echo "=== ensure the offline ECR repository ==="
-if ! aws ecr describe-repositories --repository-names "$ECR_REPO_OFFLINE" --region "$AWS_REGION" >/dev/null 2>&1; then
+if aws ecr describe-repositories --repository-names "$ECR_REPO_OFFLINE" --region "$AWS_REGION" >/dev/null 2>&1; then
+  # Adopt only a repository this sample owns, so a run never pushes into one
+  # another owner created with the same name (the main setup.sh does the same).
+  managed="$(aws ecr list-tags-for-resource \
+    --resource-arn "arn:aws:ecr:${AWS_REGION}:${ACCOUNT_ID}:repository/${ECR_REPO_OFFLINE}" --region "$AWS_REGION" \
+    | jq -r --arg m "$MANAGED_BY" 'any(.tags[]?; .Key=="ManagedBy" and .Value==$m)')"
+  [[ "$managed" == "true" ]] || { echo "ERROR: ECR repository $ECR_REPO_OFFLINE exists but is not tagged ManagedBy=$MANAGED_BY; refusing to use it" >&2; exit 1; }
+else
   aws ecr create-repository --repository-name "$ECR_REPO_OFFLINE" \
     --image-tag-mutability IMMUTABLE --image-scanning-configuration scanOnPush=true \
     --encryption-configuration encryptionType=AES256 \

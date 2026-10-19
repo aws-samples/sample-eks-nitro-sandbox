@@ -65,9 +65,23 @@ verify_absent() {  # verify_absent <label> <notfound-regex> -- <cmd...>
 }
 
 step "delete the Pod Identity association and Kubernetes objects"
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)"
+OUR_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
 assoc_id="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" \
   --namespace "$NAMESPACE" --service-account "$SERVICE_ACCOUNT" --region "$AWS_REGION" \
   --query 'associations[0].associationId' --output text 2>/dev/null || true)"
+# Delete the association only when it is bound to THIS sample's role, so clean.sh
+# never removes one another owner created for the same namespace/service-account.
+assoc_role=""
+if [[ -n "$assoc_id" && "$assoc_id" != "None" ]]; then
+  assoc_role="$(aws eks describe-pod-identity-association --cluster-name "$CLUSTER_NAME" \
+    --association-id "$assoc_id" --region "$AWS_REGION" \
+    --query 'association.roleArn' --output text 2>/dev/null || true)"
+fi
+if [[ -n "$assoc_id" && "$assoc_id" != "None" && "$assoc_role" != "$OUR_ROLE_ARN" ]]; then
+  echo "SKIP: Pod Identity association $assoc_id is bound to $assoc_role, not this sample's role $OUR_ROLE_ARN; leaving it"
+  assoc_id=""
+fi
 if [[ -n "$assoc_id" && "$assoc_id" != "None" ]]; then
   aws eks delete-pod-identity-association --cluster-name "$CLUSTER_NAME" \
     --association-id "$assoc_id" --region "$AWS_REGION" >/dev/null 2>&1 || true
@@ -81,12 +95,22 @@ fi
 kubectl -n "$NAMESPACE" delete applicationnetworkpolicy image-signing-egress --ignore-not-found >/dev/null 2>&1 || true
 for p in "${PODS[@]}"; do kubectl -n "$NAMESPACE" delete pod "$p" --ignore-not-found >/dev/null 2>&1 || true; done
 kubectl -n "$NAMESPACE" delete serviceaccount "$SERVICE_ACCOUNT" --ignore-not-found >/dev/null 2>&1 || true
-kubectl delete namespace "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
-# Verify the namespace is gone (terminating counts as not-yet-gone).
-if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
-  echo "STILL PRESENT: namespace $NAMESPACE (may be Terminating; re-run clean.sh)"; FAIL=1
-else
+# Delete the namespace only when it carries this sample's label (set in
+# deploy/namespace.yaml), so clean.sh never removes a namespace of the same name
+# that something else created.
+ns_owned="$(kubectl get namespace "$NAMESPACE" -o jsonpath='{.metadata.labels.sample}' 2>/dev/null || true)"
+if ! kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
   echo "confirmed gone: namespace $NAMESPACE and everything in it"
+elif [[ "$ns_owned" != "image-signing" ]]; then
+  echo "SKIP: namespace $NAMESPACE is not labelled sample=image-signing; leaving it"
+else
+  kubectl delete namespace "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
+  # Verify the namespace is gone (terminating counts as not-yet-gone).
+  if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+    echo "STILL PRESENT: namespace $NAMESPACE (may be Terminating; re-run clean.sh)"; FAIL=1
+  else
+    echo "confirmed gone: namespace $NAMESPACE and everything in it"
+  fi
 fi
 
 if [[ "$delete_aws_resources" == "true" ]]; then
