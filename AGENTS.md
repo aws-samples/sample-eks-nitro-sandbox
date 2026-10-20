@@ -4,6 +4,8 @@ This repository holds runnable samples for Nitro Sandboxes on Amazon EKS, publis
 documentation site. These rules apply to everyone who changes it, people and coding agents
 alike. Each rule says why it exists, so you can tell when a case is new.
 
+Questions and review pings go to the internal Slack channel `#eks-nitro-sandbox-interest`.
+
 ## Layout
 
 | Path | What it is |
@@ -41,6 +43,14 @@ but has no entry in the left menu, so add the `nav` line yourself.
     --search 'no:assignee -label:"in progress" -label:blocked'
   ```
 
+- **Read the issue with its comments**, not only its body:
+  `gh issue view <issue> --repo aws-samples/sample-eks-nitro-sandbox --comments`. Why:
+  maintainers correct or narrow a spec in a comment, and plain `gh issue view` does not show
+  comments. One sample was built on an assumption a scope comment had already corrected.
+- **If the spec looks wrong, ask on the issue before working around it.** A criterion
+  the platform or this file makes impossible to meet is a question for the maintainers, not
+  a box to leave unticked. Why: one spec gave a workload that uses no network a deny-all
+  egress policy while refusing exec, so no run could ever show the policy working.
 - **Claim the issue before you start work.** Comment on it that you are starting, with a
   line on your plan, then assign it to yourself and add the `in progress` label:
 
@@ -145,9 +155,19 @@ setsid nohup env AWS_REGION=us-east-2 AWS_DEFAULT_REGION=us-east-2 \
   the command from a variable (`GENPOLICY`) that defaults to the published name, and pass
   the preview name when you run it. Do not link or rename it in a shared folder. Why: the
   page must name the published command, and the shared `PATH` is other people's too.
+- **The preview generator can be older than its source.** If its output disagrees with
+  the source or the User Guide, build your own copy from the source, read-only, with
+  `CARGO_TARGET_DIR` under the repository's `tmp/`, and pass it as `GENPOLICY`. Never
+  rebuild the shared one, and say in the pull request which source commit you built. Why:
+  the shared build once predated the handling of `network-isolated`, so the guest refused
+  the pod; and other demos' policies, and the PCR17 a key is released to, come from it.
 - **Write stub tools with your agent's file tool**, not a heredoc in a shell command, then
   `chmod +x` the file by its path alone. Why: the agent host on this workstation blocks
   some commands by pattern, and a heredoc holding `/usr/bin/env` trips its `chmod` rule.
+- **Do not reword a command the agent host blocked to get it past the block.** Files in
+  `tmp/` can stay where they are, and a blocked delete is handed off as "Shared accounts,
+  clusters and machines" says. Why: the blocks are the host owner's policy, and getting
+  around one hides from them that an agent needed it.
 
 The two repository URLs, this reviewer command and the preview generator's name are the
 only internal values this file holds, at the maintainers' choice. Remove them before this
@@ -193,6 +213,17 @@ people's demos use at the same time.
   an existing object counts as reusing it, so create a namespace only when it is absent.
   Why: other demos in the account use similar names, and three review rounds of one sample
   each found a script that could reuse or delete something it did not own.
+- **Inside the sample's own namespace, the namespace check is enough.** Once a script has
+  confirmed the namespace carries the sample's label, everything in it is the sample's: do
+  not add an ownership check for each object. A volume a CSI driver provisions for a claim
+  belongs to the claim, so do not tag it in AWS yourself; the clean up confirms it is gone.
+  Why: one sample's review rounds added a check for every object until its helper scripts
+  ran to about 300 lines around two patches and a delete, and its setup wrote tags to the
+  reader's account that the page never mentioned.
+- **Delete what you made for yourself by its exact name.** A helper pod (`kubectl debug
+  node/...`, a probe pod) is removed with `kubectl delete pod <name> -n <namespace>`, never
+  with a label selector. Why: a selector meant for one helper pod deleted another demo's
+  pod on the shared cluster.
 - **A name the reader can change reaches every object that uses it.** If a script takes a
   name from a variable (`NAMESPACE=...`), render each manifest it applies with that name,
   and never apply one that hard-codes the default. Why: in one sample the override still
@@ -203,6 +234,13 @@ people's demos use at the same time.
   reader make that change as a step, as the coding agent page does for network policy
   enforcement, and the script checks it and stops with the command when it is off. Why:
   other workloads depend on it, and one setup script changed `amazon-vpc-cni` for everyone.
+- **A StorageClass is chosen, never changed.** Setup uses the cluster's default class when
+  it fits the sample (provisioner `ebs.csi.eks.amazonaws.com`, and the type and encryption
+  the sample needs), and otherwise creates its own class: named for the sample, not the
+  default, marked as the sample's, and created with `kubectl create` only when absent. The
+  claims always name the class they use. Never `kubectl apply` a manifest over an existing
+  class. Why: applying over a class that was created with `kubectl apply` can remove its
+  default annotation, which changes how every other claim on the cluster is provisioned.
 - **A clean up says what it could not do.** A lookup that fails means "could not
   determine", which is a failure, never "gone"; a resource skipped because it is not the
   sample's leaves the clean up incomplete, and the script exits non-zero. Why: a lookup
@@ -233,9 +271,9 @@ people's demos use at the same time.
 - **Show only output from a real run**, and say when it is abridged. Save each run's
   output under `tmp/` (`./scripts/setup.sh 2>&1 | tee tmp/<sample>/setup.log`) and copy the
   blocks from that file. If the run used a different name from the one the page shows,
-  keep the run's name or say beside the block that you changed it. Why: readers compare
-  their own output with the page, and one page showed a line that none of its runs had
-  printed.
+  keep the run's name or say on the page, beside the block, that you changed it; a note in
+  the pull request is not enough. Why: readers compare their own output with the page, and
+  one page showed a line that none of its runs had printed.
 - **Until that run, put `TODO: output from the fresh run` in each output block**, never
   output you wrote yourself. Why: written output reads like a real run, so neither you nor a
   reviewer can tell later which blocks were run.

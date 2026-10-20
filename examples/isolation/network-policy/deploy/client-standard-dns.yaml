@@ -1,0 +1,16 @@
+# OPTIONAL variant control: an ordinary pod for the hostname-egress (ApplicationNetworkPolicy)
+# comparison. Identical to client-sandboxed-dns except it sets no runtimeClassName.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client-standard-dns
+  labels:
+    app: netpol-client-dns      # the ApplicationNetworkPolicy selects this label
+spec:
+  containers:
+    - name: client
+      image: public.ecr.aws/docker/library/alpine:3.20
+      command: ["sh", "-c", "sleep infinity"]
+      resources:
+        requests: { cpu: "250m", memory: 128Mi }
+        limits:   { cpu: "500m", memory: 256Mi }

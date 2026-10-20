@@ -1,0 +1,43 @@
+# probe-standard: the CONTROL. An ordinary pod (no runtimeClassName) that runs the
+# same DNS query-rate probe as probe-sandboxed. The egress NetworkPolicy selects it
+# by the app: dns-probe label, exactly as it selects the sandboxed probe.
+#
+# This pod is identical to probe-sandboxed in every field that could affect the
+# measurement (image, command, resources, the app label). The ONLY difference
+# between the two probes is that probe-sandboxed sets
+# runtimeClassName: isolated-sandbox and this one does not, so any difference in how
+# a per-sandbox limit affects them is attributable to the sandbox path and nothing
+# else.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: probe-standard
+  namespace: sandbox-limits
+  labels:
+    app: dns-probe            # the egress NetworkPolicy selects this label
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"   # keep consolidation from evicting this bare pod mid-run
+spec:
+  containers:
+    - name: probe
+      image: public.ecr.aws/docker/library/python:3.12-slim
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          touch /tmp/ready
+          exec sleep infinity
+      readinessProbe:
+        exec:
+          command: ["cat", "/tmp/ready"]
+        initialDelaySeconds: 2
+        periodSeconds: 3
+        failureThreshold: 40
+      resources:
+        # requests == limits => Guaranteed QoS. probe-sandboxed carries the same
+        # block so the two pods differ only in runtimeClassName.
+        requests:
+          cpu: "1"
+          memory: 768Mi
+        limits:
+          cpu: "1"
+          memory: 768Mi

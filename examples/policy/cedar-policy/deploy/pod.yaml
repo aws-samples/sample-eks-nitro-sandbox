@@ -1,0 +1,69 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cedar-policy-demo
+  # setup.sh fills in the namespace and the sandbox.amazonaws.com/policy annotation
+  # at apply time. The policy annotation is a single long base64 string, so it is
+  # never kept in this file; the rendered pod it applies is written to tmp/.
+  labels:
+    app.kubernetes.io/name: cedar-policy-demo
+  annotations:
+    # Pin the node while this long-lived demo pod runs. Auto Mode's node
+    # consolidation would otherwise remove the node, and nothing recreates a bare
+    # pod. This also keeps the node from consolidating while the demo is up.
+    karpenter.sh/do-not-disrupt: "true"
+    # The workload makes no network connections, so the guest boots with no network
+    # interface besides loopback: no route out, no DNS, no metadata and no Pod
+    # Identity. kubectl logs still works (it uses the VM's internal control channel).
+    sandbox.amazonaws.com/network-isolated: "true"
+spec:
+  runtimeClassName: confidential-sandbox
+  hostname: cedar-policy-demo
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsUser: 65534
+    runAsGroup: 65534
+    runAsNonRoot: true
+    supplementalGroupsPolicy: Strict
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: main
+      # Pinned by digest below at apply time is not needed: the generated policy
+      # pins the digest the tag resolves to at generation time, and the guest
+      # enforces that digest. The tag is the amazonlinux minimal image.
+      image: public.ecr.aws/amazonlinux/amazonlinux:minimal
+      # Exec is refused by the generated policy, so the pod prints its proof to the
+      # logs at start-up instead. Two things: that it ran in a sandbox (the guest's
+      # own kernel build, its uptime because the VM booted with the pod, and its
+      # virtio block devices), and that it is network-isolated (its interfaces, the
+      # number of routes, and a name lookup that fails). getent, ls and cat are what
+      # the amazonlinux minimal image ships.
+      command:
+        - /bin/sh
+        - -c
+        - >-
+          echo "kernel:  $(uname -rv)";
+          echo "uptime:  $(cut -d' ' -f1 /proc/uptime)s";
+          echo "disks:   $(ls /sys/block | tr '\n' ' ')";
+          echo "ifaces:  $(ls /sys/class/net | tr '\n' ' ')";
+          echo "addrs:   $(grep -oE '([0-9]+\.){3}[0-9]+' /proc/net/fib_trie | grep -vE '^127\.|^0\.0\.0\.0$' | sort -u | tr '\n' ' ')";
+          echo "routes:  $(($(wc -l < /proc/net/route) - 1))";
+          echo "dns:     $(getent hosts aws.amazon.com >/dev/null 2>&1 && echo answer || echo 'no answer')";
+          echo confidential-policy-ready;
+          exec sleep 3600
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      resources:
+        requests:
+          cpu: "1"
+          memory: 1Gi
+        limits:
+          cpu: "1"
+          memory: 1Gi

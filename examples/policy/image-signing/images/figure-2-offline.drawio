@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="kirocrew" type="device" generator="svg2drawio">
+  <diagram id="svg2drawio" name="Diagram">
+    <mxGraphModel dx="0" dy="0" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="2280" pageHeight="680" math="0" shadow="0" background="#ffffff">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" style="drawPath=1;" />
+        <mxCell id="ecr" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Amazon ECR&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;signed image + signature&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=24;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecr;spacing=0;spacingTop=-0.436;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="120" y="260" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="host" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Operator host&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;oras cp, then bake&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.user;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="440" y="260" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="layout" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;OCI layout on disk&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;image + signature&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.disk;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="760" y="260" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="sb-offline" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;verify-offline&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:20.37px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;isolated-sandbox, network-isolated&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;container=1;collapsible=0;expand=0;recursiveResize=0;strokeColor=#DD344C;fillColor=none;strokeWidth=2;dashed=1;dashPattern=8 6;fixDash=1;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=-5.583;fontSize=14;fontStyle=1;fontColor=#DD344C;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="160" width="700" height="280" as="geometry" />
+        </mxCell>
+        <mxCell id="tab-offline" value="" style="sketch=0;points=[];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;movable=0;resizable=0;rotatable=0;deletable=0;connectable=0;editable=0;" vertex="1" parent="sb-offline">
+          <mxGeometry x="0" y="0" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="layoutbaked" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Baked-in layout&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;read at verify time&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.disk;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="sb-offline">
+          <mxGeometry x="100" y="90" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="notation-o" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;notation verify&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;--oci-layout&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.generic_application;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="sb-offline">
+          <mxGeometry x="440" y="90" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="ok" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Verified&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;no network at all&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#1D8102;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.generic_application;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1940" y="260" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="e-ecr-host" value="oras cp" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;align=center;verticalAlign=middle;spacing=0;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="ecr" target="host">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="0.0" y="-15.0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-host-layout" value="stage" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;align=center;verticalAlign=middle;spacing=0;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="host" target="layout">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="0.0" y="-15.0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-layout-pod" value="bake into image, node pulls it" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;align=center;verticalAlign=middle;spacing=0;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="layout" target="layoutbaked">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="0.0" y="-15.0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-notation-layout" value="reads from disk" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=0;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;align=center;verticalAlign=middle;spacing=0;labelBackgroundColor=#ffffff;" edge="1" parent="sb-offline" source="notation-o" target="layoutbaked">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="0.0" y="-15.0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-pod-ok" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="sb-offline" target="ok">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
