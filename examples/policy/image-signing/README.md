@@ -449,13 +449,14 @@ the offline variant first if you ran it, then the main sample:
 kubectl -n image-signing-sample delete pod verify-offline --ignore-not-found
 aws ecr delete-repository --repository-name nitro-sample-image-signing-offline --region "$AWS_REGION" --force
 
-# the main sample:
+# the main sample (set KUBE_CONTEXT if your current kubectl context may point elsewhere):
 ./scripts/clean.sh                      # pods, ServiceAccount, namespace, egress policy, Pod Identity association
 ./scripts/clean.sh --delete-aws-resources   # also the two ECR repositories, the IAM role, and CANCEL the signing profile
 ```
 
 `clean.sh` verifies each deletion and exits non-zero if anything it was asked to remove is
-still there. AWS Signer has no hard delete, so `--delete-aws-resources` cancels the signing
+still there, including when it only found a resource it does not own or a lookup it could not
+complete. AWS Signer has no hard delete, so `--delete-aws-resources` cancels the signing
 profile and confirms its status reads `Canceled`. A canceled profile lingers until its
 signatures expire (about 141 months by default) and AWS Signer refuses to reuse the name, so
 to set the sample up again after `--delete-aws-resources`, set a new `SIGNING_PROFILE` in
