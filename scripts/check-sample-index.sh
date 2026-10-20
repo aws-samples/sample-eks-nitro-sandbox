@@ -148,11 +148,14 @@ nav_problems() {
         s = substr(s, 2, length(s) - 2)
       return s
     }
-    # Drops a YAML comment: a "#" after a space or tab, outside quotes.
+    # Drops a YAML comment: a "#" after a space or tab, outside quotes. Inside double
+    # quotes a backslash escapes the next character; inside single quotes '' is a quote.
     function uncomment(s,   i, c, inq) {
       inq = ""
       for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
+        if (inq == "\"" && c == "\\") { i++; continue }
+        if (inq == q && c == q && substr(s, i + 1, 1) == q) { i++; continue }
         if (inq != "") { if (c == inq) inq = ""; continue }
         # A quote opens a quoted scalar only at its start, as in "Title": or : "path".
         if ((c == "\"" || c == q) && (i == 1 || substr(s, i - 2, 2) == ": ")) { inq = c; continue }

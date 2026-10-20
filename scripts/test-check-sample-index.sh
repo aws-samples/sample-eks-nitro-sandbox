@@ -240,6 +240,13 @@ replace_line "$d/mkdocs.yml" "Hello: getting-started" \
 replace_line "$d/mkdocs.yml" "Signing: policy" "      - \"Signing #1\": policy/signing/README.md"
 expect_ok "accept: an apostrophe inside a title, and ' #' inside a quoted title" "OK, 2 sample(s)" "$d"
 
+d=$(new_repo accept-nav-escaped-quotes)
+replace_line "$d/mkdocs.yml" "Hello: getting-started" \
+  "      - 'It''s # one': getting-started/hello/README.md  # a doubled single quote"
+replace_line "$d/mkdocs.yml" "Signing: policy" \
+  "      - \"A \\\" # b\": policy/signing/README.md  # an escaped double quote"
+expect_ok "accept: ' #' after an escaped quote inside a quoted title" "OK, 2 sample(s)" "$d"
+
 d=$(new_repo accept-nav-bare-path)
 replace_line "$d/mkdocs.yml" "Signing: policy" "      - policy/signing/README.md"
 expect_ok "accept: a nav page given as a bare path, which mkdocs also lists" "OK, 2 sample(s)" "$d"
