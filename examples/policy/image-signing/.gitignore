@@ -1,0 +1,10 @@
+# Local values the sample needs. Machine-local; never committed.
+.env
+
+# State file scripts/setup.sh writes to record resource IDs and which ones this
+# run created, so clean.sh removes only what setup.sh made. Contains this
+# account's ARNs; never committed.
+.image-signing.state
+
+# Live-run logs captured as evidence during a real run. Machine-local; never committed.
+*.log
