@@ -29,6 +29,8 @@ mkdocs build --strict        # must pass before a pull request
 `mkdocs build --strict` turns a broken link into an error, which is what a reader would
 otherwise hit first. It does not catch a page missing from `nav`: that page still builds
 but has no entry in the left menu, so add the `nav` line yourself.
+`./scripts/check-sample-index.sh` does catch it, and a sample missing from
+`docs/ROADMAP.md` or the root `README.md`, and a conflict marker left in any tracked file.
 
 ## A sample starts as a spec in a GitHub issue
 
@@ -328,6 +330,68 @@ people's demos use at the same time.
   on.
 - Write commit messages that say what was wrong and how the fix was proved. Why: the next
   reader should not have to work it out again.
+
+## Keep a pull request current with `main`
+
+Every sample pull request adds a line to the same three files: the `mkdocs.yml` nav,
+`docs/ROADMAP.md` and the root `README.md`. So once one sample merges, the next one
+usually conflicts in those files.
+
+- **Merge `main` into your branch. Do not rebase or force-push.**
+
+  ```bash
+  git fetch origin
+  git merge origin/main
+  ```
+
+  Do it before you mark the pull request ready, and again when GitHub says it has
+  conflicts. Why: a rebase rewrites the commits a reviewer already read, and pushing it
+  needs a force-push. Maintainers squash-merge, so your merge commits never reach `main`.
+- **In the three index files, keep both sides.** A conflict there is nearly always two
+  samples added to the same list. Keep both entries, in roadmap order. Keep each section
+  heading once, with a blank line before and after it. Do not resolve an index file with
+  `git checkout --ours` or `--theirs`. Why: picking one side drops the other sample from
+  the menu or the list, and `mkdocs build --strict` does not notice.
+- **Anywhere else, read both sides before you choose.** If the other side is someone
+  else's sample or a rule change, keep their change and fit yours around it, or ask on the
+  pull request.
+- **Check the merge before you commit it:**
+
+  ```bash
+  ./scripts/check-sample-index.sh   # every sample in the nav, the roadmap and README.md; no conflict markers
+  ./scripts/check-agent-files.sh
+  mkdocs build --strict
+  git commit --no-edit
+  git push
+  ```
+
+  The two scripts exit 1 on a finding and 2 when they could not check; treat 2 as not
+  checked. Why: a merge commit is new code, and checks that passed on your old head say
+  nothing about it.
+- **Wait for the checks on the new head** (`gh pr checks <pr> --watch`) before you say it
+  is ready. If the merge changed a file your sample reads or runs, check again the boxes
+  that depend on it.
+
+### Merging (maintainers)
+
+- **Merge one pull request at a time, oldest first.** After each merge, the next pull
+  request is brought up to date as above, by its author or by you, before it merges.
+- **Merge only when every check has passed on the current head**, and pin that head:
+
+  ```bash
+  gh pr checks <pr>
+  gh pr merge <pr> --squash --match-head-commit <sha>
+  ```
+
+  Why: `--match-head-commit` refuses the merge if someone pushed after you looked. One
+  pull request was merged a minute before CodeQL had run on its new merge-commit head.
+- **Check `main` after the merge** with `./scripts/check-sample-index.sh`, and fix any
+  finding in a follow-up pull request. Why: two samples merged without their `README.md`
+  line or their `(available now)` marker, and no conflict showed it.
+- **Take the `in progress` label off the closed issue**:
+  `gh issue edit <issue> --repo aws-samples/sample-eks-nitro-sandbox --remove-label "in progress"`.
+  Why: closing an issue keeps its labels, so the board shows finished work as in progress.
+- Post the merge with the `slack-updates` skill.
 
 ## Skills
 
