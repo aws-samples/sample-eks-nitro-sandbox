@@ -74,8 +74,6 @@ case "$ns_state" in
     echo "Deleting pod $NAMESPACE/$POD_NAME..."
     kc delete pod "$POD_NAME" -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=5m \
       || note_fail "could not delete pod $POD_NAME"
-    kc delete networkpolicy cedar-policy-deny-egress -n "$NAMESPACE" --ignore-not-found \
-      || note_fail "could not delete the egress network policy"
     if [[ "$keep_namespace" == true ]]; then
       echo "Kept the $NAMESPACE namespace."
     else
@@ -99,7 +97,7 @@ echo "Deleting the generated policy files under $TMP_DIR..."
 rm -f \
   "$TMP_DIR/policy.b64" "$TMP_DIR/policy.raw" "$TMP_DIR/policy.json" \
   "$TMP_DIR/policy.yaml" "$TMP_DIR/rendered-pod.json" \
-  "$TMP_DIR/rendered-namespace.json" "$TMP_DIR/rendered-egress.json" \
+  "$TMP_DIR/rendered-namespace.json" \
   "$TMP_DIR/genpolicy.log"
 
 if [[ "$failed" == 0 ]]; then

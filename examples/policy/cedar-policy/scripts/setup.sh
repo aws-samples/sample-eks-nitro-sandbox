@@ -34,7 +34,6 @@ POLICY_JSON="$TMP_DIR/policy.json"
 POLICY_YAML="$TMP_DIR/policy.yaml"
 RENDERED="$TMP_DIR/rendered-pod.json"
 RENDERED_NS="$TMP_DIR/rendered-namespace.json"
-RENDERED_EGRESS="$TMP_DIR/rendered-egress.json"
 GENPOLICY_LOG="$TMP_DIR/genpolicy.log"
 
 # The context is named on every kubectl call, never switched with use-context, so a
@@ -110,13 +109,13 @@ jq -r '
 echo "  machine-readable envelope: $POLICY_JSON"
 echo "  readable Cedar document:   $POLICY_YAML"
 
-echo "== 3/4 render the pod, namespace and egress policy with the chosen NAMESPACE =="
+echo "== 3/4 render the pod and namespace with the chosen NAMESPACE =="
 # Render locally (--dry-run=client contacts no cluster), so --policy-only stops
 # after this step. Keeping the rendered objects on disk shows exactly what was applied.
 #
-# All three objects are rendered with $NAMESPACE so an override never touches the
-# default name: the committed manifests hard-code the default (so they read cleanly on
-# the page), and these renders put the chosen namespace into each. The namespace's
+# Both objects are rendered with $NAMESPACE so an override never touches the default
+# name: the committed manifests hard-code the default (so they read cleanly on the
+# page), and these renders put the chosen namespace into each. The namespace's
 # managed-by label stays "cedar-policy-sample" (the ownership mark names the SAMPLE, not
 # the namespace), so clean.sh still recognises an overridden namespace as owned.
 policy_b64="$(tr -d '\r\n' < "$POLICY_B64")"
@@ -132,12 +131,8 @@ render "$MANIFEST" \
 render "$SAMPLE_DIR/deploy/namespace.yaml" \
   "$(printf '.metadata.name = %s' "$(jq -n --arg v "$NAMESPACE" '$v')")" \
   "$RENDERED_NS"
-render "$SAMPLE_DIR/deploy/egress-policy.yaml" \
-  "$(printf '.metadata.namespace = %s' "$(jq -n --arg v "$NAMESPACE" '$v')")" \
-  "$RENDERED_EGRESS"
 echo "  rendered pod:       $RENDERED"
 echo "  rendered namespace: $RENDERED_NS"
-echo "  rendered egress:    $RENDERED_EGRESS"
 
 if [[ "$policy_only" == true ]]; then
   echo
@@ -173,25 +168,12 @@ elif [[ "$ns_label" != "cedar-policy-sample" ]]; then
 else
   echo "  reusing namespace $NAMESPACE (carries this sample's managed-by label)"
 fi
-# Network policy enforcement is a cluster-wide prerequisite the reader turns on knowingly
-# (see the README and deploy/enable-network-policy.yaml); setup.sh does not mutate the
-# shared kube-system amazon-vpc-cni ConfigMap. Confirm it is on, and stop with the command
-# to turn it on if it is not.
-# Capture inside `if` so a ConfigMap that cannot be read fails closed with the reason
-# rather than aborting under `set -e` before the die runs.
-if ! npc="$(kc get configmap amazon-vpc-cni -n kube-system \
-  -o jsonpath='{.data.enable-network-policy-controller}' 2>/dev/null)"; then
-  die "could not read the amazon-vpc-cni ConfigMap in kube-system (check the context and permissions); did not start the pod."
-fi
-if [[ "$npc" != "true" ]]; then
-  die "network policy enforcement is not on for this cluster (amazon-vpc-cni enable-network-policy-controller is '${npc:-unset}'). Turn it on once per cluster with: kubectl apply -f deploy/enable-network-policy.yaml, then re-run."
-fi
+# This workload boots network-isolated, so it has no network and needs no network
+# policy: there is no cluster-wide enforcement prerequisite to check and nothing to
+# apply before the pod.
 # Replace instead of apply-over: a pod's policy annotation is immutable, so a pod
 # left from an earlier run would keep enforcing the earlier policy.
 kc delete pod "$POD_NAME" -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=5m >/dev/null
-# Apply the deny-all egress policy before the pod, so the pod never has a window with
-# open egress.
-kc apply -f "$RENDERED_EGRESS"
 kc apply -f "$RENDERED"
 if ! kc wait "pod/$POD_NAME" -n "$NAMESPACE" --for=condition=Ready --timeout=15m; then
   kc get pod "$POD_NAME" -n "$NAMESPACE" -o wide 2>/dev/null || true

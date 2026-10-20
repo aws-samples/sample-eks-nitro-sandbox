@@ -13,12 +13,18 @@ explicit `permit` and `forbid` rules ([cedar-policy/cedar](https://github.com/ce
 Here the generated policy is the check that runs inside the guest and decides what the pod
 may run.
 
+The workload makes no network connections, so it boots network-isolated
+(`sandbox.amazonaws.com/network-isolated: "true"`): the guest comes up with no network device
+besides loopback, no route out and no DNS. `kubectl logs` keeps working, because it uses the
+VM's internal control channel, not the network.
+
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
 sample first so you have a cluster with the runtime classes. This sample swaps
-`isolated-sandbox` for `confidential-sandbox` and reads the sandbox proof from the pod's logs,
-because the generated policy refuses exec. The commands below use files from this repository,
-so clone it if you have not already, and run them from this sample's folder:
+`isolated-sandbox` for `confidential-sandbox`, and like hello sandbox's network-isolated
+variant it reads its proof from the pod's logs, because the generated policy refuses exec. The
+commands below use files from this repository, so clone it if you have not already, and run
+them from this sample's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
@@ -54,6 +60,10 @@ reading the pod's logs, and nothing else. Setup attaches the policy to the pod a
   and is still refused inside the guest, because the generated policy has no exec permit. This
   is enforcement that sits below the operator, not in an admission controller outside the
   sandbox.
+- **No network at all.** The pod boots network-isolated, so the guest has no network device
+  besides loopback, no route and no DNS. The generator sees the annotation and leaves the
+  guest-metadata and credential permits out of the policy. There is no network to restrict and
+  so no network policy.
 
 *Figure 1: A Cedar policy generated from the pod spec and enforced inside the confidential
 guest. The operator generates the policy from the pod spec with the generator's confidential
@@ -74,11 +84,10 @@ such as AWS KMS would check before releasing a secret, but this sample does not 
 |---|---|
 | [`deploy/pod.yaml`](deploy/pod.yaml) | The workload: a confidential-sandbox pod with pinned identity, filesystem and capabilities |
 | [`deploy/namespace.yaml`](deploy/namespace.yaml) | The `cedar-policy-sample` namespace, labelled as the sample's own |
-| [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml), [`deploy/enable-network-policy.yaml`](deploy/enable-network-policy.yaml) | The deny-all egress network policy and the cluster-wide enforcement switch |
 | [`policy/confidential-profile.yaml`](policy/confidential-profile.yaml) | The generator profile: the confidential posture, reduced for the preview guest schema |
 | [`policy/policy.generated.yaml`](policy/policy.generated.yaml) | The generated Cedar policy, committed so the page can show it without a run |
 | [`scripts/setup.sh`](scripts/setup.sh) | Generate the policy, attach it, apply the pod, wait for Ready |
-| [`scripts/clean.sh`](scripts/clean.sh) | Delete the pod, the egress policy and the namespace, and verify they are gone |
+| [`scripts/clean.sh`](scripts/clean.sh) | Delete the pod and the namespace, and verify they are gone |
 
 ## How it works
 
@@ -101,15 +110,20 @@ and encrypted ephemeral-layer enforcement is not required. On this preview guest
 `confidential` profile's policy is rejected at sandbox set-up, before any container starts; the
 reduced profile is accepted. When the preview guest schema defines those fields, generate with
 `--profile confidential` to pin them too; the exec and admission behaviour this sample shows is
-unchanged. The workload has a deny-all egress policy and no Pod Identity association, so the
-fields the profile omits change nothing it relies on.
+unchanged. The workload boots network-isolated, so the guest has no network, no Pod Identity
+and no NTP, and the fields the profile omits change nothing it relies on.
 
 **Step 1: Describe the workload.** [`deploy/pod.yaml`](deploy/pod.yaml) chooses the confidential
-runtime and the container settings the guest should accept. Explicit numeric user and group IDs
-make the intended identity clear. The exec-refusing policy means the sandbox proof is read from
-the pod's logs, so the container prints it at start-up.
+runtime, the `network-isolated` annotation, and the container settings the guest should accept.
+Explicit numeric user and group IDs make the intended identity clear. The exec-refusing policy
+means the proof is read from the pod's logs, so the container prints it at start-up: its kernel
+build, uptime and disks (that it ran in a sandbox) and its interfaces, routes and a name lookup
+(that it has no network).
 
 ```yaml
+metadata:
+  annotations:
+    sandbox.amazonaws.com/network-isolated: "true"
 spec:
   runtimeClassName: confidential-sandbox
   hostname: cedar-policy-demo
@@ -136,25 +150,14 @@ The complete manifest requests 1 vCPU and 1 GiB, with requests equal to limits a
 sandboxed pod on this site does. These settings become the inputs to the generated admission
 policy.
 
-**Step 2: Turn on network policy enforcement, once per cluster.** EKS Auto Mode accepts network
-policies without enforcing them until the shared `amazon-vpc-cni` ConfigMap in `kube-system`
-turns the controller on. This is a cluster-wide setting, so you apply it knowingly rather than
-letting the sample change a shared resource for you:
-
-```bash
-kubectl apply -f deploy/enable-network-policy.yaml
-```
-
-If your cluster already has it on (from another sample, say), this is a no-op. `setup.sh`
-checks it is on and stops with this command if it is not.
-
-**Step 3: Generate the policy, attach it and start the pod.** `scripts/setup.sh` runs the
+**Step 2: Generate the policy, attach it and start the pod.** `scripts/setup.sh` runs the
 generator with the profile above, decodes the policy envelope into a readable form under the
 repository's `tmp/`, renders the pod with the encoded policy in its
-`sandbox.amazonaws.com/policy` annotation, applies the deny-all egress policy, and applies the
-pod. It creates the `cedar-policy-sample` namespace only if it does not already exist, and
-reuses it only when it carries this sample's managed-by label, so it never adopts a namespace
-another demo owns.
+`sandbox.amazonaws.com/policy` annotation, and applies the pod. It creates the
+`cedar-policy-sample` namespace only if it does not already exist, and reuses it only when it
+carries this sample's managed-by label, so it never adopts a namespace another demo owns. The
+pod boots network-isolated, so there is no network policy to apply and no cluster-wide
+enforcement to turn on.
 
 ```bash
 ./scripts/setup.sh
@@ -164,12 +167,11 @@ another demo owns.
 == 1/4 generate the confidential Cedar policy from deploy/pod.yaml ==
 info: wrote base64 envelope to .../tmp/cedar-policy/policy.b64
 --- Predicted PCR17 ---
-04d9658a1753a730560d47023403d89dae79e83a1c54fb6615c7a28944cdc51cbd5196a941e8a7c74d392c59cfadce47
+d796ae705c4e1bd0ace22196943f5d59afb032c929483d5b2b5ba0acbe2e97bc801823307e5f7cbb6dee6d5589e352cf
 == 2/4 decode the policy envelope into readable form ==
-== 3/4 render the pod, namespace and egress policy with the chosen NAMESPACE ==
+== 3/4 render the pod and namespace with the chosen NAMESPACE ==
 == 4/4 apply the pod and wait for the guest to admit it ==
 namespace/cedar-policy-sample created
-networkpolicy.networking.k8s.io/cedar-policy-deny-egress created
 pod/cedar-policy-demo created
 pod/cedar-policy-demo condition met
 
@@ -183,7 +185,7 @@ sample namespace shows `reusing namespace ...` instead. The policy travels to th
 gzipped, base64-encoded JSON envelope in the annotation, which is not readable by eye, so setup
 also leaves a decoded copy under `tmp/` and the sample commits a readable copy, shown below.
 
-**Step 4: What the generated policy pins.** The generated admission policy permits creating the
+**Step 3: What the generated policy pins.** The generated admission policy permits creating the
 `main` container only when the container matches the settings from the pod spec. Here is the
 start of the admission rule from
 [`policy/policy.generated.yaml`](policy/policy.generated.yaml), the committed readable copy:
@@ -225,25 +227,30 @@ permit(
 The complete policy, admission and runtime, is in
 [`policy/policy.generated.yaml`](policy/policy.generated.yaml).
 
-**Step 5: The pod opted into the confidential sandbox.** The pod runs
-`runtimeClassName: confidential-sandbox`, and carries the encoded policy in its annotation:
+**Step 4: The pod opted into the confidential sandbox, network-isolated.** The pod runs
+`runtimeClassName: confidential-sandbox`, carries the `network-isolated` annotation, and holds
+the encoded policy in its annotation:
 
 ```bash
 kubectl -n cedar-policy-sample get pod cedar-policy-demo \
   -o jsonpath='{.spec.runtimeClassName}{"\n"}'
+kubectl -n cedar-policy-sample get pod cedar-policy-demo \
+  -o jsonpath='{.metadata.annotations.sandbox\.amazonaws\.com/network-isolated}{"\n"}'
 kubectl -n cedar-policy-sample get pod cedar-policy-demo \
   -o jsonpath='{.metadata.annotations.sandbox\.amazonaws\.com/policy}' | wc -c
 ```
 
 ```text
 confidential-sandbox
-2944
+true
+3148
 ```
 
-**Step 6: Prove the pod ran in a sandbox, from its logs.** The policy refuses exec, so the
-sandbox proof is read a different way: the container prints its kernel build, its uptime and its
-block devices when it starts, and the page reads them with `kubectl logs`, which the policy
-permits.
+**Step 5: Prove the pod ran in a sandbox, and has no network, from its logs.** The policy
+refuses exec, so the proof is read a different way: the container prints its kernel build,
+uptime and block devices (that it ran in a sandbox) and its interfaces, route count and a name
+lookup (that it has no network) when it starts, and the page reads them with `kubectl logs`,
+which the policy permits.
 
 ```bash
 kubectl -n cedar-policy-sample logs cedar-policy-demo -c main
@@ -251,8 +258,11 @@ kubectl -n cedar-policy-sample logs cedar-policy-demo -c main
 
 ```text
 kernel:  6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-uptime:  3.48s
+uptime:  5.25s
 disks:   dm-0 dm-1 dm-2 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 vda vdb vdc
+ifaces:  dummy0 lo
+routes:  0
+dns:     no answer
 confidential-policy-ready
 ```
 
@@ -260,19 +270,29 @@ An ordinary (non-sandbox) pod started on the same cluster shows, instead:
 
 ```text
 kernel:  6.18.51 #2 SMP PREEMPT_DYNAMIC Wed Oct  7 22:33:11 UTC 2026
-uptime:  82970.46s
-disks:   dm-0 nvme0n1 nvme1n1 zram0
+uptime:  310726.21s
+disks:   dm-0 nvme0n1 nvme1n1 nvme2n1 nvme3n1 zram0
+ifaces:  eth0 lo
+routes:  2
+dns:     answer
 ```
 
 The kernel version string matches, but the build does not (`#1 ... Oct 1` against
 `#2 ... Oct 7`): the guest runs its own kernel. The disk list carries `vda vdb vdc`, the
 guest's virtio devices, where the ordinary pod sees the instance's `nvme`; confidential mode's
-encrypted overlay adds the `dm-` and `loop` devices. And the guest's uptime, about 3 seconds,
+encrypted overlay adds the `dm-` and `loop` devices. The guest's uptime, about 5 seconds,
 matches the just-started pod, because the VM booted with the pod; the ordinary pod's
-`/proc/uptime` reports the node's uptime, over 20 hours. The last line, `confidential-policy-ready`,
-is the marker that shows the expected container started.
+`/proc/uptime` reports the node's uptime, over 80 hours.
 
-**Step 7: An operator's exec is refused inside the guest.** The caller is allowed to
+The network lines are the network-isolation proof. The guest has only `lo` and a `dummy0`
+placeholder interface, no real network device like the ordinary pod's `eth0`; `routes: 0` means
+no route table entry at all, where the ordinary pod has a default route and its VPC route; and
+the name lookup gets `no answer` because there is no DNS, where the ordinary pod resolves. The
+`dummy0` interface carries no address and no route: it is a stand-in the guest creates so
+loopback-only software still finds a non-loopback device, not a path off the pod. The last
+line, `confidential-policy-ready`, is the marker that shows the expected container started.
+
+**Step 6: An operator's exec is refused inside the guest.** The caller is allowed to
 `create pods/exec` in the namespace, so an exec failure is the guest's policy and not RBAC:
 
 ```bash
@@ -291,7 +311,7 @@ kubectl -n cedar-policy-sample exec cedar-policy-demo -c main -- /bin/true
 
 ```text
 error: Internal error occurred: Internal error occurred: error executing command in
-container: failed to exec in container: failed to create exec "3ce2...b28c5": policy denied
+container: failed to exec in container: failed to create exec "5051...ddd34": policy denied
 Agent::Action::"Exec" on container "main" reasons=[] errors=[]
 ```
 
@@ -300,7 +320,7 @@ Cedar action, `Agent::Action::"Exec"`, so a generic exec failure (RBAC, a dead p
 blip) cannot pass as policy enforcement. This is the whole point of the sample: the check runs
 inside the guest, below the operator.
 
-**Step 8: A changed spec, without a regenerated policy, is refused.** Change one pinned setting
+**Step 7: A changed spec, without a regenerated policy, is refused.** Change one pinned setting
 in the workload, here the container's command, and apply it with the policy generated for the
 original spec. The guest refuses to start the container, because it no longer matches the
 admission policy:
@@ -324,65 +344,34 @@ different container to the policy, and the guest denies `Agent::Action::"CreateC
 Regenerating the policy from the changed spec would let it start again. The policy and the
 workload travel together: change one without the other and the pod does not run.
 
-## How the network policy works
+## No network to reach
 
-The workload makes no outbound connections, so its egress is denied in full. The pod runs under
-`confidential-sandbox` with a network (it is not network-isolated), and a deny-all egress policy
-selects it and allows nothing out.
-
-Network policy enforcement is turned on once per cluster. EKS Auto Mode accepts network policies
-without enforcing them until the `amazon-vpc-cni` ConfigMap in `kube-system` sets
-`enable-network-policy-controller: "true"`
-([`deploy/enable-network-policy.yaml`](deploy/enable-network-policy.yaml)). This affects the
-whole cluster; pods that no policy selects are unaffected.
-
-Here is the whole egress policy
-([`deploy/egress-policy.yaml`](deploy/egress-policy.yaml)), without its header comment:
+The workload makes no network connections, so it needs no network policy. Instead of
+restricting egress with a policy, the pod removes the network entirely: it carries one
+annotation, and the guest boots with no network device besides loopback.
 
 ```yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
 metadata:
-  name: cedar-policy-deny-egress
-  namespace: cedar-policy-sample
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: cedar-policy-demo
-  policyTypes:
-    - Egress
-  egress: []
+  annotations:
+    sandbox.amazonaws.com/network-isolated: "true"
 ```
 
-| Part | What it does |
-|---|---|
-| `podSelector` | Selects the workload pod by `app.kubernetes.io/name: cedar-policy-demo`. |
-| `policyTypes: [Egress]` | Brings the pod's egress under policy. |
-| `egress: []` | No egress rule, so nothing out is allowed. |
+With the annotation, the guest comes up with no route out, no DNS, no instance metadata and no
+Pod Identity credentials (Amazon EKS User Guide, *Isolated and confidential pods*, *Services*).
+The annotation works in either runtime class. `kubectl logs`, `cp` and `exec` keep using the
+VM's internal control channel, which is why this page can read the proof from the logs even
+though the pod has no network, and the generator leaves the guest-metadata and credential
+permits out of the policy for a network-isolated pod.
 
-A standard Kubernetes `NetworkPolicy` with an empty egress rule set and `Egress` in
-`policyTypes` is a deny-all: there are no addresses to allow, so no Auto Mode
-`ApplicationNetworkPolicy` with `domainNames` is needed. The policy is enforced on the node,
-outside the guest: the node's network policy agent attaches eBPF programs to the pod's
-host-side interface, so a command inside the sandbox, even as root, could not change it. The
-controller hands the policy to the nodes as a `PolicyEndpoint`:
+Step 5 shows the proof, read from the logs: the net-isolated guest has `ifaces: dummy0 lo`,
+`routes: 0` and `dns: no answer`, where an ordinary pod on the same cluster has `ifaces:
+eth0 lo`, `routes: 2` and `dns: answer`. The only interfaces are loopback and a `dummy0`
+placeholder that carries no address and no route; there is no route table entry and no name
+resolution. This is removal of the network, not a policy over it: there is no
+`NetworkPolicy`, no `PolicyEndpoint`, and no cluster-wide network policy enforcement to turn on.
 
-```bash
-kubectl -n cedar-policy-sample get networkpolicy,policyendpoints
-```
-
-```text
-NAME                                                 POD-SELECTOR                               AGE
-networkpolicy.networking.k8s.io/cedar-policy-deny-egress   app.kubernetes.io/name=cedar-policy-demo   4m
-
-NAME                             AGE
-cedar-policy-deny-egress-kttst   4m
-```
-
-This sample does not probe egress from inside the pod, because the generated policy refuses
-exec: the guest denies `Agent::Action::"Exec"`, so there is no way to run a connection test in
-the guest. The deny-all egress is the correct posture for a workload that makes no outbound
-connections, and the `PolicyEndpoint` above shows the controller has handed it to the nodes.
+A sample whose sandbox does need a network restricts its egress with a network policy instead;
+the [coding agent](../../getting-started/coding-agent/README.md) sample shows that shape.
 
 ## Good to know
 
@@ -399,19 +388,22 @@ connections, and the `PolicyEndpoint` above shows the controller has handed it t
   ephemeral-layer enforcement is not required. Generate with the built-in `--profile
   confidential` to pin those too once the guest schema supports them; the exec and admission
   behaviour the sample shows holds either way.
+- **`dummy0` is not a way out.** The network-isolated guest shows a `dummy0` interface beside
+  `lo`. It is a placeholder with no address and no route, there so loopback-only software finds
+  a non-loopback device; it carries no traffic off the pod. The proof that the pod has no
+  network is `routes: 0` and the failed name lookup, not the absence of `dummy0`.
 
 ## Clean up
 
 Set the variables again in a new shell if needed, then remove the sample:
 
 ```bash
-./scripts/clean.sh                   # delete the pod, the egress policy and the namespace
-./scripts/clean.sh --keep-namespace  # delete the pod and egress policy, keep the namespace
+./scripts/clean.sh                   # delete the pod and the namespace
+./scripts/clean.sh --keep-namespace  # delete the pod, keep the namespace
 ```
 
 `clean.sh` deletes the namespace only after confirming it carries this sample's managed-by
 label, verifies each deletion, and exits non-zero if anything it was asked to remove is still
-there. The sample creates no AWS resources, so there is nothing to delete in the account.
-Network policy enforcement is cluster-wide; deleting the cluster removes it, or delete the
-`amazon-vpc-cni` ConfigMap in `kube-system` if nothing else relies on it. To remove the cluster,
-follow the [hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up).
+there. The sample creates no AWS resources, so there is nothing to delete in the account, and
+no cluster-wide setting to undo. To remove the cluster, follow the
+[hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up).

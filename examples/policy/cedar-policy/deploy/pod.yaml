@@ -12,6 +12,10 @@ metadata:
     # consolidation would otherwise remove the node, and nothing recreates a bare
     # pod. This also keeps the node from consolidating while the demo is up.
     karpenter.sh/do-not-disrupt: "true"
+    # The workload makes no network connections, so the guest boots with no network
+    # interface besides loopback: no route out, no DNS, no metadata and no Pod
+    # Identity. kubectl logs still works (it uses the VM's internal control channel).
+    sandbox.amazonaws.com/network-isolated: "true"
 spec:
   runtimeClassName: confidential-sandbox
   hostname: cedar-policy-demo
@@ -31,9 +35,12 @@ spec:
       # pins the digest the tag resolves to at generation time, and the guest
       # enforces that digest. The tag is the amazonlinux minimal image.
       image: public.ecr.aws/amazonlinux/amazonlinux:minimal
-      # Exec is refused by the generated policy, so the pod prints the sandbox
-      # proof to its logs at start-up instead: the guest's own kernel build, its
-      # uptime (the VM booted with the pod), and its block devices (virtio).
+      # Exec is refused by the generated policy, so the pod prints its proof to the
+      # logs at start-up instead. Two things: that it ran in a sandbox (the guest's
+      # own kernel build, its uptime because the VM booted with the pod, and its
+      # virtio block devices), and that it is network-isolated (its interfaces, the
+      # number of routes, and a name lookup that fails). getent, ls and cat are what
+      # the amazonlinux minimal image ships.
       command:
         - /bin/sh
         - -c
@@ -41,6 +48,9 @@ spec:
           echo "kernel:  $(uname -rv)";
           echo "uptime:  $(cut -d' ' -f1 /proc/uptime)s";
           echo "disks:   $(ls /sys/block | tr '\n' ' ')";
+          echo "ifaces:  $(ls /sys/class/net | tr '\n' ' ')";
+          echo "routes:  $(($(wc -l < /proc/net/route) - 1))";
+          echo "dns:     $(getent hosts aws.amazon.com >/dev/null 2>&1 && echo answer || echo 'no answer')";
           echo confidential-policy-ready;
           exec sleep 3600
       securityContext:

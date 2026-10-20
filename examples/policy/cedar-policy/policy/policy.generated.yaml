@@ -82,7 +82,7 @@ admission_policy: |+
       // WARNING: only the default action is checked; individual syscall rules vary by architecture and kernel version and are confined to the guest
       context.linux_seccomp_default_action == "SCMP_ACT_ERRNO" &&
       context.apparmor_profile == "" &&
-      context.process_args == "[\"/bin/sh\",\"-c\",\"echo \\\"kernel:  $(uname -rv)\\\"; echo \\\"uptime:  $(cut -d' ' -f1 /proc/uptime)s\\\"; echo \\\"disks:   $(ls /sys/block | tr '\\\\n' ' ')\\\"; echo confidential-policy-ready; exec sleep 3600\"]" &&
+      context.process_args == "[\"/bin/sh\",\"-c\",\"echo \\\"kernel:  $(uname -rv)\\\"; echo \\\"uptime:  $(cut -d' ' -f1 /proc/uptime)s\\\"; echo \\\"disks:   $(ls /sys/block | tr '\\\\n' ' ')\\\"; echo \\\"ifaces:  $(ls /sys/class/net | tr '\\\\n' ' ')\\\"; echo \\\"routes:  $(($(wc -l < /proc/net/route) - 1))\\\"; echo \\\"dns:     $(getent hosts aws.amazon.com >/dev/null 2>&1 && echo answer || echo 'no answer')\\\"; echo confidential-policy-ready; exec sleep 3600\"]" &&
       // Guest networking: the VM owns the network stack, so no network namespace
       // exists in the OCI spec. The pod hostNetwork setting has no effect.
       context.host_network == true &&
@@ -145,9 +145,8 @@ runtime_policy: |+
   // Blocks: kubectl attach -i, kubectl exec -i, kubectl cp (to pod)
   // Runtime: exec is denied (no permit policy)
   // Blocks: kubectl exec, kubectl cp
+  // Runtime: guest metadata surrogates disabled (deny-all-egress annotation): no permit policy for InitGuestMetadata or UpdateGuestMetadata
   // Runtime: agent log streaming is disabled (no permit policy)
-  // Runtime: credential delivery is disabled (no permit policy)
-  // Runtime: NTP delivery is disabled (no permit policy)
   // Runtime: SetupVolume is denied (no CSI volumes)
   
   // Runtime: allow log reading
@@ -179,18 +178,6 @@ runtime_policy: |+
       action == Agent::Action::"Stats",
       resource
   );
-  // Runtime: allow guest metadata init
-  permit(
-      principal,
-      action == Agent::Action::"InitGuestMetadata",
-      resource
-  );
-  // Runtime: allow guest metadata update
-  permit(
-      principal,
-      action == Agent::Action::"UpdateGuestMetadata",
-      resource
-  );
   // Runtime: allow sandbox setup
   permit(
       principal,
@@ -201,14 +188,22 @@ runtime_policy: |+
       context.sysctls.isEmpty() &&
       context.fsgroup == -1 &&
       context.host_entries.isEmpty() &&
-      context.deny_all_egress == false &&
-      context.hostname == "cedar-policy-demo"
+      context.deny_all_egress == true &&
+      context.hostname == "cedar-policy-demo" &&
+      // the agent creates exactly the pod's mounted emptyDir volumes
+      context.volume_paths.isEmpty()
   };
   
   // Runtime: allow OOM event watching
   permit(
       principal,
       action == Agent::Action::"WatchOomEvents",
+      resource
+  );
+  // Runtime: allow guest container resource reclamation on removal
+  permit(
+      principal,
+      action == Agent::Action::"RemoveContainer",
       resource
   );
   // Runtime: allow task creation (no binary logger)
