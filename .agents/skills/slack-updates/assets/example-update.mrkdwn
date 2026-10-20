@@ -1,4 +1,4 @@
-<@UEXAMPLE01> <@UEXAMPLE02> *roadmap update: new OpenShell section*, merged in <https://github.com/aws-samples/sample-eks-nitro-sandbox/pull/44|PR #44>.
+*Roadmap update: new OpenShell section*, merged in <https://github.com/aws-samples/sample-eks-nitro-sandbox/pull/44|PR #44>.
 
 • *OpenShell on Kubernetes* <https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/37|#37>: moved here from Integrations. OpenShell installed on EKS with its Helm charts; each workload pod runs in a Nitro sandbox, and the supervisor that holds the credentials stays an ordinary pod. New folder: `examples/openshell/kubernetes/`.
 • *NemoClaw* <https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/43|#43>, new: NemoClaw with OpenClaw, inside one Nitro sandbox pod. OpenShell's controls apply inside, and the Nitro sandbox is around the whole stack.
