@@ -185,10 +185,21 @@ route, and a lookup fails, as the hello sandbox page does.
 
 ## Before the pull request
 
-Open the pull request as a draft (`gh pr create --draft`) if the fresh run is still to do,
-and mark it ready only when every box below is true.
+Write the description from the repository's template, so it carries the checklist
+reviewers read:
 
-- [ ] The spec issue exists, and the description starts with `Closes #<issue>`.
+```bash
+cp .github/pull_request_template.md tmp/pr-body.md   # then fill it in
+gh pr create --draft --body-file tmp/pr-body.md
+```
+
+`--body-file` does not apply the template by itself, so start from the copy. Keep its
+checklist and its last line, and tick a template box only when it is true. Open the pull
+request as a draft if the fresh run is still to do, and mark it ready only when every box
+below is true. The boxes below are for you; the template's are the ones a reviewer sees.
+
+- [ ] The spec issue exists, and the description is the filled-in template, starting with
+      `Closes #<issue>` and ending with the template's last line.
 - [ ] The page opens with the prerequisites link and the `git clone` and `cd` block.
 - [ ] Each stage pairs an explanation, the real config verbatim and output from a fresh run.
 - [ ] Each figure has a `.drawio` source, a `.png`, a caption and full alt text.

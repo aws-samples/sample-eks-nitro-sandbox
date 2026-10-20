@@ -264,6 +264,13 @@ people's demos use at the same time.
   credential path or a security claim.** The `second-review` skill says how to brief one,
   run it and record the result. Why: those fail silently; the sample still runs and the
   page still reads well.
+- **Write the pull request description from the template.** Copy
+  `.github/pull_request_template.md` to `tmp/pr-body.md`, fill it in, and pass it with
+  `--body-file`. Keep its checklist and its last line, and tick a box only when it is
+  true. Update the description by editing the same file (`gh pr edit --body-file`). Why:
+  `gh pr create --body-file` and `--body` skip the template, so a description written from
+  scratch loses the checklist reviewers read and the contribution statement the last line
+  makes.
 - **Open a sample's pull request as a draft until its fresh run is on the page**
   (`gh pr create --draft`), then mark it ready. Why: a ready pull request invites review
   and merge of output that has not been run yet.
