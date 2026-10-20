@@ -85,5 +85,7 @@ nav:
   - Isolation:
       - Network policy: isolation/network-policy/README.md
       - Sandbox limits: isolation/sandbox-limits/README.md
+  - Policy:
+      - Image signing: policy/image-signing/README.md
   - Managed agents:
       - Claude Managed Agents: managed-agents/claude-managed-agents/README.md
