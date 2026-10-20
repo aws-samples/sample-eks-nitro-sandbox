@@ -65,6 +65,7 @@ command -v "${KUBECTL%% *}" >/dev/null 2>&1 || { printf 'error: %s not on PATH\n
 # the clean up must never do.
 cleanup_sample_class() {
   local sc_mark sc_mark_rc sc_mark_msg sc_exist sc_exist_rc sc_exist_msg sc_mark_err sc_exist_err
+  local sc_def sc_def_rc sc_def_msg sc_def_err
   sc_mark_err="$(mktemp)"
   if sc_mark="$($KUBECTL get storageclass "$SAMPLE_CLASS" --ignore-not-found \
         -o "jsonpath={.metadata.labels.$SAMPLE_LABEL_JSONPATH}" 2>"$sc_mark_err")"; then
@@ -88,9 +89,31 @@ ${sc_exist_msg:-}${sc_mark_msg:-}"
   elif [[ -z "$sc_exist" ]]; then
     echo "The sample's StorageClass '$SAMPLE_CLASS' is not present (setup used the cluster default, or it was never created). Nothing to delete; the cluster default is untouched."
   elif [[ "$sc_mark" == "$SAMPLE_LABEL_VALUE" ]]; then
-    echo "Deleting the sample's own StorageClass '$SAMPLE_CLASS' (it carries the sample's mark)..."
-    $KUBECTL delete storageclass "$SAMPLE_CLASS" --ignore-not-found \
-      || warn "could not confirm the sample's StorageClass '$SAMPLE_CLASS' was deleted"
+    # The class is ours to delete, but one invariant overrides that: never remove the
+    # cluster default. setup creates this class from a manifest with no default annotation,
+    # so normally it is not the default; but if someone annotated it default afterwards,
+    # deleting it would remove the cluster's default class. Read the annotation first and,
+    # when it is "true", leave the class and mark the clean up incomplete. A failed read is
+    # "could not determine", which also leaves it.
+    sc_def_err="$(mktemp)"
+    if sc_def="$($KUBECTL get storageclass "$SAMPLE_CLASS" --ignore-not-found \
+          -o 'jsonpath={.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}' 2>"$sc_def_err")"; then
+      sc_def_rc=0
+    else
+      sc_def_rc=$?
+    fi
+    sc_def_msg="$(sed 's/^/    /' "$sc_def_err")"; rm -f "$sc_def_err"
+    if [[ $sc_def_rc -ne 0 ]]; then
+      warn "could not read whether the sample's StorageClass '$SAMPLE_CLASS' is the cluster default; leaving it untouched rather than risk deleting the default:
+${sc_def_msg:-}"
+    elif [[ "$sc_def" == "true" ]]; then
+      warn "the sample's StorageClass '$SAMPLE_CLASS' is marked as this sample's but is currently the CLUSTER DEFAULT (something annotated it after setup created it). Leaving it untouched: deleting it would remove the cluster's default class. Clear the default annotation first if you want it gone:
+  $KUBECTL annotate storageclass $SAMPLE_CLASS storageclass.kubernetes.io/is-default-class-"
+    else
+      echo "Deleting the sample's own StorageClass '$SAMPLE_CLASS' (it carries the sample's mark and is not the cluster default)..."
+      $KUBECTL delete storageclass "$SAMPLE_CLASS" --ignore-not-found \
+        || warn "could not confirm the sample's StorageClass '$SAMPLE_CLASS' was deleted"
+    fi
   else
     warn "a StorageClass named '$SAMPLE_CLASS' exists but is not marked $SAMPLE_LABEL_KEY=$SAMPLE_LABEL_VALUE, so this sample did not create it; leaving it untouched."
   fi
