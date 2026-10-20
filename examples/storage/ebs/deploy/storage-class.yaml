@@ -1,26 +1,30 @@
-# The StorageClass the reader applies once per cluster. It is the Auto Mode class from
-# the Amazon EKS User Guide, "Create a storage class": the EBS CSI driver built into EKS
-# Auto Mode provisions an encrypted gp3 volume in the pod's Availability Zone after the
-# pod is scheduled.
+# The sample's own StorageClass, used only when the cluster's default class does not fit
+# (see setup.sh). It follows the Amazon EKS User Guide, "Create a storage class": the EBS
+# CSI driver built into EKS Auto Mode provisions an encrypted gp3 volume in the pod's
+# Availability Zone after the pod is scheduled.
 #
-# A StorageClass is a cluster-wide object, so this sample's scripts never create, change
-# or delete it: the reader applies this file once, setup.sh checks it is present with the
-# right provisioner, and the clean up leaves it. If auto-ebs-sc already exists on your
-# cluster (another workload may have created it), setup.sh reuses it.
+# A StorageClass is a cluster-wide object, so this sample CHOOSES a class and never changes
+# one. setup.sh uses the cluster's default class when it fits, and otherwise creates THIS
+# class with `kubectl create` only when it is absent. It is never applied with
+# `kubectl apply` over an existing class: on a cluster whose class was created with
+# `kubectl apply` (as the AWS guide does), applying a manifest that omits the default-class
+# annotation strips that annotation from the live class and changes how every other claim on
+# the cluster is provisioned.
 #
-# THIS CLASS IS DELIBERATELY NOT THE CLUSTER DEFAULT. There is no
-# storageclass.kubernetes.io/is-default-class annotation here, and there must never be
-# one: applying this file must not change what every other workload on the cluster
-# provisions through. Every claim in this sample names storageClassName explicitly, so it
-# binds to this class whether or not the cluster has a default. Which class, if any, is
-# the default is the cluster operator's decision.
+# THIS CLASS IS NOT THE CLUSTER DEFAULT. There is no
+# storageclass.kubernetes.io/is-default-class annotation here, and there must never be one.
+#
+# It carries the sample's mark as a label, so the clean up can tell a class this sample
+# created from one that already existed under the same name, and deletes only its own.
 #
 # StorageClass parameters are immutable: to change type or encryption you delete and
 # recreate the class, which does not affect volumes already provisioned.
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: auto-ebs-sc
+  name: nitro-sandbox-ebs
+  labels:
+    app.kubernetes.io/part-of: nitro-sandbox-ebs
 allowedTopologies:
   - matchLabelExpressions:
       - key: eks.amazonaws.com/compute-type

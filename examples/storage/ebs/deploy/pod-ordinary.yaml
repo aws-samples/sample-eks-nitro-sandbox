@@ -1,8 +1,9 @@
 # An ordinary (non-sandboxed) pod with its own EBS volume, for the side-by-side in Step 3:
-# it mounts the same kind of auto-ebs-sc volume and sees it as an nvme device, where the
-# sandboxed pod sees a virtio /dev/vd* device for the same kind of volume. It has its own
-# claim so it does not contend with the sandboxed pod's ReadWriteOncePod volume. Apply it
-# only for the comparison, and delete it and its claim afterwards:
+# it mounts the same kind of volume and sees it as an nvme device, where the sandboxed pod
+# sees a virtio /dev/vd* device for the same kind of volume. It has its own claim so it does
+# not contend with the sandboxed pod's ReadWriteOncePod volume. Bind it through the same
+# class the run used (the page fills <STORAGE_CLASS> in with sed). Apply it only for the
+# comparison, and delete it and its claim afterwards:
 #   kubectl delete -f deploy/pod-ordinary.yaml -n "$NAMESPACE"
 #   kubectl delete pvc ordinary-ebs-data -n "$NAMESPACE"
 ---
@@ -13,7 +14,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOncePod
-  storageClassName: auto-ebs-sc
+  storageClassName: <STORAGE_CLASS>
   resources:
     requests:
       storage: 10Gi

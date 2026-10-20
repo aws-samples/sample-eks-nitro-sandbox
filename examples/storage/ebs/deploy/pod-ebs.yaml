@@ -20,7 +20,9 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOncePod
-  storageClassName: auto-ebs-sc
+  # setup.sh renders <STORAGE_CLASS> with the class it chose (the cluster's default when it
+  # fits, else the sample's own nitro-sandbox-ebs), so every claim names that one class.
+  storageClassName: <STORAGE_CLASS>
   resources:
     requests:
       storage: 10Gi

@@ -15,7 +15,7 @@ set -uo pipefail
 
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 NAMESPACE="${NAMESPACE:-nitro-ebs-sample}"
-STORAGE_CLASS="${STORAGE_CLASS:-auto-ebs-sc}"
+STORAGE_CLASS="${STORAGE_CLASS:-}"   # empty: let setup choose; a value forces a class
 KUBECTL="${KUBECTL:-kubectl}"
 AWS="${AWS:-aws}"
 
@@ -59,6 +59,10 @@ mount_owner="$($KUBECTL exec "$POD" -n "$NAMESPACE" -- sh -c 'ls -ld /data' )"
 run_uid="$($KUBECTL exec "$POD" -n "$NAMESPACE" -- id -u | tr -d '[:space:]')"
 pv_before="$($KUBECTL get pvc "$PVC" -n "$NAMESPACE" -o jsonpath='{.spec.volumeName}')"
 pvc_modes="$($KUBECTL get pvc "$PVC" -n "$NAMESPACE" -o jsonpath='{.spec.accessModes[*]}')"
+# The class the run used: read it off the live claim, not from an assumed default. This is
+# what setup chose (the cluster default when it fits, else the sample's own class), so the
+# page can say which class the run used.
+chosen_class="$($KUBECTL get pvc "$PVC" -n "$NAMESPACE" -o jsonpath='{.spec.storageClassName}')"
 boots_before="$($KUBECTL exec "$POD" -n "$NAMESPACE" -- sh -c 'grep -c booted /data/boot-log.txt' | tr -d '[:space:]')"
 echo "  runtimeClassName:  $rc"
 echo "  guest kernel:      $kernel"
@@ -69,6 +73,7 @@ echo "  /data ownership:   $mount_owner"
 echo "  process uid:       $run_uid"
 echo "  PersistentVolume:  $pv_before"
 echo "  PVC access modes:  ${pvc_modes:-<none>}"
+echo "  StorageClass used: ${chosen_class:-<none>}"
 echo "  boot log lines:    $boots_before"
 
 echo "== 3/6 the network-isolated pod has only loopback =="
@@ -92,7 +97,11 @@ echo "  deleting $POD (the PVC and its EBS volume are left alone)..."
 $KUBECTL delete pod "$POD" -n "$NAMESPACE" --wait=true
 phase_after_delete="$($KUBECTL get pvc "$PVC" -n "$NAMESPACE" -o jsonpath='{.status.phase}')"
 echo "  PVC phase with no pod: $phase_after_delete"
-NAMESPACE="$NAMESPACE" STORAGE_CLASS="$STORAGE_CLASS" KUBECTL="$KUBECTL" \
+# Recreate against the SAME class this run used, so the replacement binds the same PV. If
+# the first run forced the sample's own class but the cluster default also fits, a recreate
+# that let setup re-choose would pick the default instead and bind a different volume,
+# breaking the durability check below. Pass the chosen class explicitly.
+NAMESPACE="$NAMESPACE" STORAGE_CLASS="$chosen_class" KUBECTL="$KUBECTL" \
   "$SAMPLE_DIR/scripts/setup.sh" >/dev/null || die "recreating the pod failed; run ./scripts/setup.sh to see why"
 $KUBECTL wait -n "$NAMESPACE" --for=condition=Ready pod/"$POD" --timeout=5m >/dev/null \
   || die "recreated pod never became Ready"
@@ -154,6 +163,7 @@ echo "  default class: ${default_after}"
 echo "== assertions =="
 [[ "$rc" == "isolated-sandbox" ]]; assert "pod opted into the isolated-sandbox runtime class" $?
 [[ "$pvc_modes" == "ReadWriteOncePod" ]]; assert "the claim is ReadWriteOncePod (${pvc_modes:-none}), one pod not just one node" $?
+[[ -n "$chosen_class" ]]; assert "the claim is bound through the class setup chose (${chosen_class:-<none>})" $?
 [[ "$data_dev" == /dev/vd* ]]; assert "/data is a virtio device ($data_dev), not the node's nvme*" $?
 [[ -n "$disks" && "$disks" != *nvme* ]]; assert "the guest sees virtio disks ($disks), no nvme device" $?
 [[ "$run_uid" != "0" ]]; assert "the writer runs as a non-root uid ($run_uid)" $?

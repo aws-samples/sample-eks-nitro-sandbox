@@ -26,8 +26,16 @@ POD=ebs-sandbox
 SECOND_POD=ebs-sandbox-second
 PVC=ebs-sandbox-data
 SET=ebs-sandbox-set
+# The sample's own StorageClass. The clean up deletes it ONLY when it exists AND carries the
+# mark below, so a class the sample created is removed and the cluster default (or any class
+# another workload owns) is never touched.
+SAMPLE_CLASS=nitro-sandbox-ebs
 SAMPLE_LABEL_KEY="app.kubernetes.io/part-of"
 SAMPLE_LABEL_VALUE="nitro-sandbox-ebs"
+# The same key with its dots backslash-escaped, for use inside a jsonpath expression: an
+# unescaped dot is a field separator there, so {.metadata.labels.app.kubernetes.io/part-of}
+# would look for nested fields and return empty, reading a marked object as unmarked.
+SAMPLE_LABEL_JSONPATH='app\.kubernetes\.io/part-of'
 # Select the StatefulSet's pods and per-replica claims on BOTH the app label AND this
 # sample's part-of label, so an unrelated object that merely carries app=ebs-sandbox-set is
 # never recorded or deleted. The StatefulSet stamps both labels on its pod template and its
@@ -153,7 +161,7 @@ $KUBECTL delete pod -l "$SET_SELECTOR" -n "$NAMESPACE" --ignore-not-found --wait
 if [[ "$keep_data" == true ]]; then
   echo "Kept every PVC and its EBS volume (--keep-data):"
   echo "  pvc/$PVC and any data-$SET-* per-replica claims."
-  echo "Left the StorageClass in place."
+  echo "Left any StorageClass in place too (a class is not data; re-run setup to land back on the kept volumes)."
   # The workload deletes above still had to succeed. If one of them could not be confirmed,
   # say so and exit non-zero rather than reporting a clean "data kept".
   if [[ "$incomplete" -ne 0 ]]; then
@@ -215,11 +223,46 @@ else
   echo "No sample PVCs were present, so there were no EBS volumes to confirm."
 fi
 
-echo "Left the StorageClass in place (cluster-wide and shared). To remove it, see the page's clean up."
+# Delete the sample's OWN StorageClass, and only that. The rule is strict: delete
+# nitro-sandbox-ebs only when it exists AND carries this sample's mark. A class that does
+# not exist is nothing to do; a class that exists without the mark is not ours (setup would
+# have refused to use it), so we must not delete it; and the cluster default is never named
+# here, so it is never touched. A read that fails is "could not determine", which marks the
+# clean up incomplete rather than guessing.
+sc_mark_err="$(mktemp)"
+if sc_mark="$($KUBECTL get storageclass "$SAMPLE_CLASS" --ignore-not-found \
+      -o "jsonpath={.metadata.labels.$SAMPLE_LABEL_JSONPATH}" 2>"$sc_mark_err")"; then
+  sc_mark_rc=0
+else
+  sc_mark_rc=$?
+fi
+sc_mark_msg="$(sed 's/^/    /' "$sc_mark_err")"; rm -f "$sc_mark_err"
+# Does the class exist at all? --ignore-not-found makes an absent class an empty-but-success
+# read of the label too, so distinguish "exists" with a separate name read.
+sc_exist_err="$(mktemp)"
+if sc_exist="$($KUBECTL get storageclass "$SAMPLE_CLASS" --ignore-not-found -o name 2>"$sc_exist_err")"; then
+  sc_exist_rc=0
+else
+  sc_exist_rc=$?
+fi
+sc_exist_msg="$(sed 's/^/    /' "$sc_exist_err")"; rm -f "$sc_exist_err"
+if [[ $sc_exist_rc -ne 0 || $sc_mark_rc -ne 0 ]]; then
+  warn "could not determine whether the sample's StorageClass '$SAMPLE_CLASS' exists or is marked; leaving it untouched:
+${sc_exist_msg:-}${sc_mark_msg:-}"
+elif [[ -z "$sc_exist" ]]; then
+  echo "The sample's StorageClass '$SAMPLE_CLASS' is not present (setup used the cluster default, or it was never created). Nothing to delete; the cluster default is untouched."
+elif [[ "$sc_mark" == "$SAMPLE_LABEL_VALUE" ]]; then
+  echo "Deleting the sample's own StorageClass '$SAMPLE_CLASS' (it carries the sample's mark)..."
+  $KUBECTL delete storageclass "$SAMPLE_CLASS" --ignore-not-found \
+    || warn "could not confirm the sample's StorageClass '$SAMPLE_CLASS' was deleted"
+else
+  warn "a StorageClass named '$SAMPLE_CLASS' exists but is not marked $SAMPLE_LABEL_KEY=$SAMPLE_LABEL_VALUE, so this sample did not create it; leaving it untouched."
+fi
+echo "The cluster's default StorageClass was never touched."
 
 if [[ "$incomplete" -ne 0 ]]; then
   printf '\nClean up INCOMPLETE: something above could not be deleted or confirmed. See the warnings.\n' >&2
   exit 1
 fi
 echo
-echo "Clean up complete: every pod, the StatefulSet, the Service and every PVC this sample created are gone, and their EBS volumes are confirmed deleted."
+echo "Clean up complete: every pod, the StatefulSet, the Service and every PVC this sample created are gone, their EBS volumes are confirmed deleted, and the sample's own StorageClass (if it created one) is removed."

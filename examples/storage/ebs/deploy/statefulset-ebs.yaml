@@ -78,7 +78,9 @@ spec:
       spec:
         accessModes:
           - ReadWriteOncePod
-        storageClassName: auto-ebs-sc
+        # setup.sh renders <STORAGE_CLASS> with the class it chose, so the replicas bind
+        # through the same class as the single pod.
+        storageClassName: <STORAGE_CLASS>
         resources:
           requests:
             storage: 10Gi
