@@ -17,6 +17,7 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 
 ## Policy
 
+- [Image signing](examples/policy/image-signing/README.md): an image signed with AWS Signer and verified with Notation inside the guest, while an unsigned image is rejected, with an optional variant that verifies with no network at all.
 - [Cedar policy](examples/policy/cedar-policy/README.md): a Cedar policy generated from a workload's pod spec and enforced inside a confidential sandbox guest, which admits the expected container and refuses an operator's exec.
 
 ## Managed agents
