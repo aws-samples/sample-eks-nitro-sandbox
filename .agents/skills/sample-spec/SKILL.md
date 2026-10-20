@@ -65,6 +65,26 @@ say "Nothing pinned beyond the images in the manifests":
 Call out major-version jumps and what must be re-checked because of them (API calls, not
 only version strings).
 
+**Network.** Decide whether the sandbox needs a network, and write the criterion to match:
+
+- A workload that connects nowhere boots with
+  `sandbox.amazonaws.com/network-isolated: "true"`, and the page shows it has only
+  loopback, no route and no DNS.
+- A workload that does connect gets an egress network policy, and the spec names one
+  allowed and one refused connection the page will show.
+- If the pod's policy refuses exec, as a confidential policy usually does, say how the page
+  shows either one: from probes in the container's own command, read from its logs.
+
+Why: one spec gave a workload that connects nowhere a deny-all egress policy while refusing
+exec, so no run could ever show the policy working.
+
+**Cluster prerequisites.** Name anything cluster-wide the sample needs, such as a
+StorageClass, network policy enforcement or a controller, and make it a step the reader runs
+once, which the sample's setup checks rather than performs. Check each one against the
+Amazon EKS User Guide rather than assuming the platform provides it: EKS Auto Mode does not
+create a StorageClass, for example. Why: one spec said Auto Mode supplied the class, and a
+test cluster that happened to have one hid the mistake.
+
 **Acceptance criteria.** A checklist. Start from these and add the sample's own:
 
 - [ ] Sample folder at `examples/<section>/<sample>/`, laid out as above.
