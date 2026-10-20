@@ -12,7 +12,7 @@ git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/agent-sandbox/pause-resume
 ```
 
-An idle agent session costs you nothing if you can throw away its compute and keep its
+An idle agent session costs you no compute if you can throw away its compute and keep its
 disk, then bring the session back later with its workspace intact. That is what suspend and
 resume do for a sandbox: `operatingMode: Suspended` terminates the pod and its guest, so you
 stop paying for the compute, while the controller keeps the `Sandbox` and its EBS volume;
@@ -161,12 +161,12 @@ kc exec pause-resume -- sh -c 'awk "\$2==\"/workspace\"{print \$1}" /proc/mounts
 ```
 
 ```text
-boot at 2026-10-20T02:41:03Z on kernel 6.18.51, hostname pause-resume
-uid=4fab4f17-1395-4cc4-a53c-1995e57d9d6e
+boot at 2026-10-20T02:59:43Z on kernel 6.18.51, hostname pause-resume
+uid=63aaeb66-3d0d-4a94-b35e-19283400a56a
 NAME                     STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
-workspace-pause-resume   Bound    pvc-5623e21b-7518-4777-8301-a1406616aace   10Gi       RWOP           auto-ebs-sc    36s
+workspace-pause-resume   Bound    pvc-8fd30514-9d0d-4d13-8c5e-18eee71249c2   10Gi       RWOP           auto-ebs-sc    33s
 6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-28.26 26.22
+28.60 26.46
 dm-0
 vda
 vdb
@@ -177,7 +177,7 @@ vdd
 
 One line in the file; one pod UID; the claim `Bound` with access mode `RWOP`
 (`ReadWriteOncePod`). The guest runs its own kernel, built for the VM: the version string
-here matches the node's (`6.18.51`), but the uptime is the pod's, about 28 seconds, where an
+here matches the node's (`6.18.51`), but the uptime is the pod's, about 29 seconds, where an
 ordinary pod would report the node's uptime, hours or days. The block devices are virtio
 `vd*`, and `/workspace` is one of them (`/dev/vdd`), where an ordinary pod would see the
 instance's `nvme*` devices. Together they show the containers ran in a VM of their own.
@@ -216,13 +216,13 @@ sandbox.agents.x-k8s.io/pause-resume patched
 sandbox.agents.x-k8s.io/pause-resume condition met
 
 The pod is gone (you stop paying for the guest); the EBS volume is kept:
-  Error from server (NotFound): pods "pause-resume" not found
+  pod/pause-resume: NotFound (deleted)
   NAME                     STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
-  workspace-pause-resume   Bound    pvc-5623e21b-7518-4777-8301-a1406616aace   10Gi       RWOP           auto-ebs-sc    2m48s
+  workspace-pause-resume   Bound    pvc-8fd30514-9d0d-4d13-8c5e-18eee71249c2   10Gi       RWOP           auto-ebs-sc    98s
 ```
 
 The pod is `NotFound`: suspend deleted it, so you stop paying for the guest. The PVC is
-still `Bound` on the same PV (`pvc-5623e21b...`), so the EBS volume was not reclaimed. The
+still `Bound` on the same PV (`pvc-8fd30514...`), so the EBS volume was not reclaimed. The
 `Sandbox` reports why it is not Ready, so a caller can tell "parked on purpose" from
 "broken":
 
@@ -232,7 +232,7 @@ kc get sandbox pause-resume
 
 ```text
 NAME           READY   REASON             AGE
-pause-resume   False   SandboxSuspended   3m1s
+pause-resume   False   SandboxSuspended   100s
 ```
 
 **Step 5: Resume.** `operatingMode: Running` schedules a new pod that mounts the same
@@ -250,8 +250,8 @@ sandbox.agents.x-k8s.io/pause-resume patched
 sandbox.agents.x-k8s.io/pause-resume condition met
 
 The workspace came back on a new pod, with its history intact:
-  boot at 2026-10-20T02:41:03Z on kernel 6.18.51, hostname pause-resume
-  boot at 2026-10-20T02:44:05Z on kernel 6.18.51, hostname pause-resume
+  boot at 2026-10-20T02:59:43Z on kernel 6.18.51, hostname pause-resume
+  boot at 2026-10-20T03:01:27Z on kernel 6.18.51, hostname pause-resume
 ```
 
 The file has both lines now: the one from before the suspend, and a new one from this
@@ -263,16 +263,18 @@ and the three signals again:
 ```bash
 kc get pod pause-resume -o jsonpath='uid={.metadata.uid}{"\n"}'
 kc get pvc workspace-pause-resume -o jsonpath='phase={.status.phase}{"\n"}pv={.spec.volumeName}{"\n"}'
+kc exec pause-resume -- uname -rv
 kc exec pause-resume -- cat /proc/uptime
 kc exec pause-resume -- ls /sys/block
 kc exec pause-resume -- sh -c 'awk "\$2==\"/workspace\"{print \$1}" /proc/mounts'
 ```
 
 ```text
-uid=3aae1262-a9c4-4932-be06-166892fd534f
+uid=06a3dd8b-af40-4561-a5cd-adc523eb96fa
 phase=Bound
-pv=pvc-5623e21b-7518-4777-8301-a1406616aace
-20.26 18.50
+pv=pvc-8fd30514-9d0d-4d13-8c5e-18eee71249c2
+6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
+17.72 15.96
 dm-0
 vda
 vdb
@@ -281,11 +283,11 @@ vdd
 /dev/vdd
 ```
 
-The pod UID changed (`4fab4f17...` to `3aae1262...`): this is a new pod, not the old one
-restarted. The PV is the same (`pvc-5623e21b...`), so the workspace was re-attached, not
-recreated. The uptime is this pod's, about 20 seconds, so the guest booted with the pod,
-and the block devices are virtio `vd*` with `/workspace` on `/dev/vdd`: the thing that
-re-attached the volume is a new sandbox guest.
+The pod UID changed (`63aaeb66...` to `06a3dd8b...`): this is a new pod, not the old one
+restarted. The PV is the same (`pvc-8fd30514...`), so the workspace was re-attached, not
+recreated. The guest kernel build is read again here; the uptime is this pod's, about 18
+seconds, so the guest booted with the pod; and the block devices are virtio `vd*` with
+`/workspace` on `/dev/vdd`: the thing that re-attached the volume is a new sandbox guest.
 
 ## Good to know
 
@@ -322,11 +324,13 @@ cp .env.example .env    # if you have not already; set KUBE_CONTEXT and NAMESPAC
 context: sandbox-demo (pinned)   namespace: pause-resume
 
 == 1/3 delete sandbox/pause-resume (and, by ownerReference, pvc/workspace-pause-resume + its EBS volume) ==
-sandbox.agents.x-k8s.io "pause-resume" deleted
+sandbox.agents.x-k8s.io "pause-resume" deleted from pause-resume namespace
 == 2/3 confirm the workspace PVC and its EBS volume are gone ==
-  pvc/workspace-pause-resume not present
-  pv pvc-5623e21b-7518-4777-8301-a1406616aace: gone
+persistentvolumeclaim "workspace-pause-resume" deleted from pause-resume namespace
+persistentvolume/pvc-8fd30514-9d0d-4d13-8c5e-18eee71249c2 condition met
+  pv pvc-8fd30514-9d0d-4d13-8c5e-18eee71249c2: gone
 == 3/3 delete namespace pause-resume ==
+namespace "pause-resume" deleted
   namespace pause-resume deleted
 
 clean up complete: the Sandbox, its PVC, the EBS volume and the namespace are gone.

@@ -14,8 +14,15 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 require_commands kubectl
 show_context
 
-kc get sandbox "$SANDBOX" >/dev/null 2>&1 \
-  || die "sandbox/$SANDBOX not found in namespace $NAMESPACE; run ./scripts/setup.sh first"
+# Only act when this sample owns the namespace.
+require_our_namespace
+
+rc=0; resource_exists kc "sandbox/$SANDBOX" || rc=$?
+case $rc in
+  0) : ;;
+  1) die "sandbox/$SANDBOX not found in namespace $NAMESPACE; run ./scripts/setup.sh first" ;;
+  2) die "could not read sandbox/$SANDBOX in namespace $NAMESPACE; stopping rather than patch something I cannot verify" ;;
+esac
 
 step "resume sandbox/$SANDBOX"
 kc patch "sandbox/$SANDBOX" --type=merge -p '{"spec":{"operatingMode":"Running"}}'

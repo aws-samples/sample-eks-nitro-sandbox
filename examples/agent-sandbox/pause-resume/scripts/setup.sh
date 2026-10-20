@@ -33,8 +33,10 @@ step "1/3 namespace $NAMESPACE"
 # it is the sample's. Applying over an existing namespace counts as reusing it,
 # which would put our label on a namespace another demo owns, so check first. A
 # read that fails is never read as "absent": we stop rather than create over it.
-namespace_is_ours
-ns_rc=$?
+# namespace_is_ours returns non-zero for cases 1-3, so capture it without letting
+# set -e abort the script before the case runs.
+ns_rc=0
+namespace_is_ours || ns_rc=$?
 case $ns_rc in
   0) echo "namespace $NAMESPACE already exists and is the sample's; reusing it" ;;
   1) die "namespace $NAMESPACE exists but is not labelled $NS_LABEL_KEY=$NS_LABEL_VAL; it belongs to something else. Set NAMESPACE to a free name in .env and re-run." ;;
@@ -79,9 +81,14 @@ kc wait --for=condition=Ready "sandbox/$SANDBOX" --timeout=10m \
 tag_ebs_volume() {
   command -v aws >/dev/null 2>&1 || { echo "note: aws CLI not found; skipping the ManagedBy tag on the EBS volume"; return 0; }
   local pv volid
-  pv="$(kc get pvc "$PVC" -o jsonpath='{.spec.volumeName}' 2>/dev/null)"
-  [[ -n "$pv" ]] || { echo "note: could not read the PV name; skipping the ManagedBy tag"; return 0; }
-  volid="$(kc_cluster get pv "$pv" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null)"
+  # Guard each read so set -e does not abort setup on a failed kubectl: the tag
+  # is best effort and setup must still succeed without it.
+  if ! pv="$(kc get pvc "$PVC" -o jsonpath='{.spec.volumeName}' 2>/dev/null)" || [[ -z "$pv" ]]; then
+    echo "note: could not read the PV name; skipping the ManagedBy tag"; return 0
+  fi
+  if ! volid="$(kc_cluster get pv "$pv" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null)"; then
+    echo "note: could not read the EBS volume id; skipping the ManagedBy tag"; return 0
+  fi
   case "$volid" in
     vol-*) ;;
     *) echo "note: PV $pv has no EBS volume id yet; skipping the ManagedBy tag"; return 0 ;;

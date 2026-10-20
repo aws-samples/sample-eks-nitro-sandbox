@@ -107,3 +107,33 @@ namespace_is_ours() {
   local label="${out%%|*}"
   [[ "$label" == "$NS_LABEL_VAL" ]]
 }
+
+# resource_exists <kind/name...> : a failure-aware existence check, so a failed
+# read is never mistaken for "absent" or "gone". Uses --ignore-not-found so a
+# genuinely missing object is a clean empty result (rc 0), distinct from an API
+# error (rc != 0). Pass kc or kc_cluster as the first argument.
+#   0  the resource exists
+#   1  the resource does not exist
+#   2  the read failed (could not determine)
+resource_exists() {
+  local runner=$1; shift
+  local out rc
+  out="$("$runner" get "$@" --ignore-not-found -o name 2>/dev/null)"
+  rc=$?
+  [[ $rc -ne 0 ]] && return 2
+  [[ -n "$out" ]]
+}
+
+# require_our_namespace : stop unless this sample owns the namespace, so suspend,
+# resume and any other mutating script never touch a same-named object in a
+# namespace that belongs to something else. A failed read stops too.
+require_our_namespace() {
+  local rc=0
+  namespace_is_ours || rc=$?
+  case $rc in
+    0) return 0 ;;
+    1) die "namespace $NAMESPACE is not the sample's ($NS_LABEL_KEY=$NS_LABEL_VAL); refusing to touch anything in it. Set NAMESPACE in .env to the one you ran ./scripts/setup.sh with." ;;
+    2) die "could not read namespace $NAMESPACE; stopping rather than act on a namespace I cannot verify" ;;
+    3) die "namespace $NAMESPACE does not exist; run ./scripts/setup.sh first" ;;
+  esac
+}

@@ -80,6 +80,9 @@ spec:
   volumeClaimTemplates:
     - metadata:
         name: workspace
+        labels:
+          app.kubernetes.io/name: pause-resume
+          ManagedBy: pause-resume
       spec:
         accessModes:
           # ReadWriteOncePod, not ReadWriteOnce: only one pod may mount the

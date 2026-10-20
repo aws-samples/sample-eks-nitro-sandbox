@@ -42,38 +42,57 @@ esac
 # would skip the check that the EBS volume is really gone. A failed read here is
 # recorded as a cleanup failure, not read as "no volume".
 pv=""
-if kc get pvc "$PVC" >/dev/null 2>&1; then
-  pv="$(kc get pvc "$PVC" -o jsonpath='{.spec.volumeName}' 2>/dev/null)"
-  if [[ -z "$pv" ]]; then
-    note_fail "could not read the bound PV of pvc/$PVC; cannot confirm the EBS volume is deleted"
-  fi
-fi
+pvc_rc=0; resource_exists kc "pvc/$PVC" || pvc_rc=$?
+case $pvc_rc in
+  0) pv="$(kc get pvc "$PVC" -o jsonpath='{.spec.volumeName}' 2>/dev/null)"
+     [[ -z "$pv" ]] && note_fail "could not read the bound PV of pvc/$PVC; cannot confirm the EBS volume is deleted" ;;
+  1) : ;;  # no PVC: nothing to record
+  2) note_fail "could not read pvc/$PVC; cannot determine its EBS volume (a failed read is not 'gone')" ;;
+esac
 
 step "1/3 delete sandbox/$SANDBOX (and, by ownerReference, pvc/$PVC + its EBS volume)"
-if kc get sandbox "$SANDBOX" >/dev/null 2>&1; then
-  kc delete sandbox "$SANDBOX" --wait=true --timeout=120s || note_fail "sandbox/$SANDBOX did not delete cleanly"
-else
-  echo "  sandbox/$SANDBOX not present"
-fi
+sb_rc=0; resource_exists kc "sandbox/$SANDBOX" || sb_rc=$?
+case $sb_rc in
+  0) # Confirm this Sandbox carries the sample's mark before deleting it. The
+     # namespace is already confirmed ours, so this is belt and braces against a
+     # same-named object another tool created in it.
+     label="$(kc get sandbox "$SANDBOX" -o "jsonpath={.metadata.labels.ManagedBy}" 2>/dev/null)"
+     lrc=$?
+     if [[ $lrc -ne 0 ]]; then
+       note_fail "could not read the labels on sandbox/$SANDBOX; not deleting something I cannot verify"
+     elif [[ "$label" != "$SAMPLE" ]]; then
+       note_fail "sandbox/$SANDBOX does not carry ManagedBy=$SAMPLE; not deleting it (it is not the sample's)"
+     else
+       kc delete sandbox "$SANDBOX" --wait=true --timeout=120s || note_fail "sandbox/$SANDBOX did not delete cleanly"
+     fi ;;
+  1) echo "  sandbox/$SANDBOX not present" ;;
+  2) note_fail "could not read sandbox/$SANDBOX; not reporting it gone" ;;
+esac
 
 step "2/3 confirm the workspace PVC and its EBS volume are gone"
 # Belt and braces: if the Sandbox was already gone while the PVC remained (for
 # example deleted by hand mid-suspend), there is no owner to GC the claim, so it
 # would sit there holding an EBS volume.
-if kc get pvc "$PVC" >/dev/null 2>&1; then
-  kc delete pvc "$PVC" --wait=true --timeout=120s || note_fail "pvc/$PVC did not delete cleanly"
-else
-  echo "  pvc/$PVC not present"
-fi
+pvc_rc=0; resource_exists kc "pvc/$PVC" || pvc_rc=$?
+case $pvc_rc in
+  0) kc delete pvc "$PVC" --wait=true --timeout=120s || note_fail "pvc/$PVC did not delete cleanly" ;;
+  1) echo "  pvc/$PVC not present" ;;
+  2) note_fail "could not read pvc/$PVC; not reporting it gone" ;;
+esac
 if [[ -n "$pv" ]]; then
   # The PV is cluster-scoped. Delete reclaims the EBS volume (auto-ebs-sc is
   # Delete reclaim policy). Wait for it to be gone so a still-billing volume is
-  # never reported as cleaned up.
-  if kc_cluster get pv "$pv" >/dev/null 2>&1; then
-    kc_cluster wait --for=delete "pv/$pv" --timeout=120s \
-      || note_fail "pv/$pv (the EBS volume) is still present; it may still be billing"
-  fi
-  echo "  pv $pv: $(kc_cluster get pv "$pv" >/dev/null 2>&1 && echo 'still present' || echo 'gone')"
+  # never reported as cleaned up. A read that fails is a failure, never "gone".
+  pv_rc=0; resource_exists kc_cluster "pv/$pv" || pv_rc=$?
+  case $pv_rc in
+    0) if kc_cluster wait --for=delete "pv/$pv" --timeout=120s; then
+         echo "  pv $pv: gone"
+       else
+         note_fail "pv/$pv (the EBS volume) is still present; it may still be billing"
+       fi ;;
+    1) echo "  pv $pv: gone" ;;
+    2) note_fail "could not read pv/$pv; cannot confirm the EBS volume is deleted (a failed read is not 'gone')" ;;
+  esac
 fi
 
 step "3/3 delete namespace $NAMESPACE"
