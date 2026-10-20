@@ -186,7 +186,7 @@ route, and a lookup fails, as the hello sandbox page does.
 ## Before the pull request
 
 The description's checklist is the spec issue's own acceptance criteria, followed by the
-template's short list for every pull request:
+repository's quality bar from the template:
 
 ```bash
 cp .github/pull_request_template.md tmp/pr-body.md
@@ -199,13 +199,16 @@ gh pr create --draft --body-file tmp/pr-body.md
 Copy the criteria word for word: no dropping, merging or rewording. Tick each one only
 when it is met, and point to the evidence after it (the page section, the log under
 `tmp/`, the commit). If one is not met, leave it unticked and say why under it. Keep the
-template's last line. Open the pull request as a draft if the fresh run is still to do,
-and mark it ready when every box from the issue is ticked, or a maintainer has agreed to
-the ones that are not, and every box below is true. The boxes below are your own check;
-they are not copied into the description.
+template's "Quality bar" list whole, even where an issue box says the same thing, and
+tick those boxes the same way. Keep the template's last line.
+
+Open the pull request as a draft if the fresh run is still to do. Mark it ready when every
+box from the issue and the quality bar is ticked, or a maintainer has agreed to the ones
+that are not, and every box below is true. The boxes below are your own check; they are
+not copied into the description.
 
 - [ ] The spec issue exists, and the description starts with `Closes #<issue>` and carries
-      every box from the issue's acceptance criteria.
+      every box from the issue's acceptance criteria and the template's quality bar.
 - [ ] The page opens with the prerequisites link and the `git clone` and `cd` block.
 - [ ] Each stage pairs an explanation, the real config verbatim and output from a fresh run.
 - [ ] Each figure has a `.drawio` source, a `.png`, a caption and full alt text.

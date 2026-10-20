@@ -95,8 +95,8 @@ you do with the answer.
 
 ## Record it
 
-Tick the second-reviewer box in the description's "Every pull request" list, and write
-under its "Second review" heading: who or what reviewed it (a person, or the agent and
+Tick the second-reviewer box in the description's "Quality bar" list, and write under its
+"Second review" heading: who or what reviewed it (a person, or the agent and
 model), which commit, what it found, what was fixed and in which
 commit, and which findings were false positives and why. Name any commit that changes a
 check and was not reviewed. Describe each proof as it ran: which stub cases reached which message, and

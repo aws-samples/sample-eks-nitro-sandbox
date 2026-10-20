@@ -264,22 +264,25 @@ people's demos use at the same time.
   credential path or a security claim.** The `second-review` skill says how to brief one,
   run it and record the result. Why: those fail silently; the sample still runs and the
   page still reads well.
-- **The pull request's checklist is the issue's acceptance criteria.** Copy
-  `.github/pull_request_template.md` to `tmp/pr-body.md`, and paste every box from the
-  issue's *Acceptance criteria* under "From the issue", word for word:
+- **The pull request's checklist is the issue's acceptance criteria plus this
+  repository's quality bar.** Copy `.github/pull_request_template.md` to
+  `tmp/pr-body.md`, and paste every box from the issue's *Acceptance criteria* under "From
+  the issue", word for word:
 
   ```bash
   gh issue view <issue> --repo aws-samples/sample-eks-nitro-sandbox --json body --jq .body \
     | tr -d '\r' | awk '/^## Acceptance criteria/{f=1; next} /^## /{f=0} f && /^- \[ \]/'
   ```
 
-  Tick a box only when it is met, with a pointer to the evidence. Keep the template's short
-  "Every pull request" list and its last line, then pass the file with `--body-file` and
-  update it the same way (`gh pr edit --body-file`). For an issue with no checkboxes, turn
-  what it says must be true into boxes. Why: the criteria are what the issue agreed the
-  change must do, so a reviewer checks the pull request against them; and `--body-file`
-  skips the template, so a description written from scratch loses both lists and the
-  contribution statement on the last line.
+  Keep the template's "Quality bar" list whole, even where an issue box says the same
+  thing, and keep its last line. Tick a box only when it is met, with a pointer to the
+  evidence; leave one that does not apply unticked and say why. Pass the file with
+  `--body-file` and update it the same way (`gh pr edit --body-file`). For an issue with no
+  checkboxes, turn what it says must be true into boxes. Why: the issue's criteria are what
+  this change agreed to do, and the quality bar is what every change here must meet, so a
+  reviewer checks the pull request against both; and `--body-file` skips the template, so
+  a description written from scratch loses both lists and the contribution statement on
+  the last line.
 - **Open a sample's pull request as a draft until its fresh run is on the page**
   (`gh pr create --draft`), then mark it ready. Why: a ready pull request invites review
   and merge of output that has not been run yet.

@@ -6,13 +6,21 @@ Closes #
 
 ## From the issue
 
-<!-- Paste every box from the issue's "Acceptance criteria" section here, word for word (the command is in AGENTS.md, Review). Tick a box only when it is met, and add a pointer to the evidence after it: the page section, the log under tmp/, the commit. If one is not met, leave it unticked and say why. For a sample, open this pull request as a draft (gh pr create --draft) until the fresh-run box is true. -->
+<!-- Paste every box from the issue's "Acceptance criteria" section here, word for word (the command is in AGENTS.md, Review). Tick a box only when it is met, and add a pointer to the evidence after it: the page section, the log under tmp/, the commit. If one is not met, leave it unticked and say why. -->
 
-## Every pull request
+## Quality bar
 
+<!-- This repository's bar for every pull request (AGENTS.md). Keep the whole list, even where an issue box above says the same thing. Tick a box only when it is true; leave one that does not apply unticked and say why. For a sample, open this pull request as a draft (gh pr create --draft) until the fresh-run box is true. -->
+
+- [ ] For a sample: ran it end to end from a fresh run on a live cluster, every output block on the page comes from that run, and no `TODO: output from the fresh run` marker is left
+- [ ] For a sample: the page shows the pod's own kernel build, boot and virtio disks, each with what an ordinary pod shows instead
+- [ ] For a sample: the page shows its network policy at work (one allowed and one refused connection), or that a network-isolated sandbox has only loopback, no route and no DNS
+- [ ] For a sample: the clean up ran after the last run, and anything it could not remove is listed in this description
+- [ ] For a sample: added to the `mkdocs.yml` nav (`--strict` does not catch a missing entry), and `docs/ROADMAP.md` and the root `README.md` updated
 - [ ] `mkdocs build --strict` and `./scripts/check-agent-files.sh` pass
 - [ ] Only the files this pull request means to change are changed; logs, captured output, stubs and hand-off scripts stay in `tmp/`
 - [ ] No values from your own account or environment (account IDs, keys, tokens, names of your clusters or hosts, user names, internal URLs) in the changed files
+- [ ] No Ingress, LoadBalancer or NodePort; sandbox egress is restricted by network policy, or the sandbox has no network
 - [ ] Any check added or changed is proved both ways: an input it must accept, and an input it must reject
 - [ ] A second reviewer looked at any change to a check, a credential path or a security claim (see "Second review")
 
