@@ -108,8 +108,12 @@ record_volume() { # record_volume <pvc-name>
   rm -f "$e1"
   # Absent claim, or bound-but-not-yet-provisioned: nothing to record, not a failure.
   [[ -z "$pv" ]] && return 0
+  # No --ignore-not-found here: an absent PVC is legitimate (handled above by the empty
+  # pv), but a bound PVC that names a PV which is MISSING is an unsuccessful lookup, not
+  # "no volume". Let NotFound exit non-zero so it reaches the warn path and marks the clean
+  # up incomplete, rather than silently recording nothing and deleting the claim anyway.
   e2="$(mktemp)"
-  vid="$($KUBECTL get pv "$pv" --ignore-not-found -o jsonpath='{.spec.csi.volumeHandle}' 2>"$e2")"
+  vid="$($KUBECTL get pv "$pv" -o jsonpath='{.spec.csi.volumeHandle}' 2>"$e2")"
   if [[ $? -ne 0 ]]; then
     warn "could not read pv/$pv (claim $pvc) to record its volume id: $(sed 's/^/    /' "$e2")"
     rm -f "$e2"; return 0

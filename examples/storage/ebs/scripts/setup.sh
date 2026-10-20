@@ -46,8 +46,14 @@ echo "Step 1/3: confirm the '$STORAGE_CLASS' StorageClass exists with the Auto M
 # a real read failure (throttle, apiserver restart, RBAC denial). So: non-zero means the
 # read failed (fail closed), empty output means absent, non-empty means it exists.
 sc_get_err="$(mktemp)"
-sc_name="$($KUBECTL get storageclass "$STORAGE_CLASS" --ignore-not-found -o name 2>"$sc_get_err")"
-sc_get_rc=$?
+# Guard the assignment with `if`: under `set -e` a bare `sc_name="$(... )"` whose command
+# substitution exits non-zero aborts the script at this line, so the fail-closed handling
+# below would never run on exactly the read failure it exists to catch.
+if sc_name="$($KUBECTL get storageclass "$STORAGE_CLASS" --ignore-not-found -o name 2>"$sc_get_err")"; then
+  sc_get_rc=0
+else
+  sc_get_rc=$?
+fi
 sc_msg="$(sed 's/^/  /' "$sc_get_err")"; rm -f "$sc_get_err"
 if [[ $sc_get_rc -ne 0 ]]; then
   # Fail closed: do not fall through and provision against a class whose state is unknown.
