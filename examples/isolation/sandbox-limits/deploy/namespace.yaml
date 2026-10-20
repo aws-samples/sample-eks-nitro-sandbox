@@ -1,0 +1,8 @@
+# A namespace this sample owns outright. The clean up deletes it, taking both
+# probe pods with it, so the sample cannot perturb anything else on the cluster.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sandbox-limits
+  labels:
+    app.kubernetes.io/part-of: eks-nitro-sandbox-demos

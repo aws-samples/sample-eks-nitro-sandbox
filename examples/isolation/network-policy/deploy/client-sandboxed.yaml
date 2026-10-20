@@ -1,0 +1,29 @@
+# client-sandboxed: the sandboxed client. Identical to client-standard in every field
+# the egress NetworkPolicy could select on, differing only in the one line below.
+#
+#   runtimeClassName: isolated-sandbox
+#
+# That line makes the pod's containers run inside a lightweight VM of their own, with
+# their own kernel, carved from a Nitro Partition. There is no node selector, toleration
+# or sidecar: the RuntimeClass carries the scheduling constraints, and Auto Mode brings
+# up a sandbox-capable node if none is available.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client-sandboxed
+  labels:
+    app: netpol-client        # the SAME label the policy selects on client-standard
+spec:
+  runtimeClassName: isolated-sandbox   # <-- the only field that differs from client-standard
+  containers:
+    - name: client
+      image: public.ecr.aws/docker/library/alpine:3.20
+      command: ["sh", "-c"]
+      args:
+        - |
+          echo "kernel:  $(uname -r)"
+          echo "disks:   $(ls /sys/block | tr '\n' ' ')"
+          sleep infinity
+      resources:
+        requests: { cpu: "250m", memory: 128Mi }
+        limits:   { cpu: "500m", memory: 256Mi }

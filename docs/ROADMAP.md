@@ -1,6 +1,6 @@
 # Roadmap
 
-These samples show Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandbox`) running AI agents and untrusted code. Getting started and Claude Managed Agents are available now, and the rest of the samples below are planned.
+These samples show Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandbox`) running AI agents and untrusted code. Getting started, Isolation > network-policy and Claude Managed Agents are available now, and the rest of the samples below are planned.
 
 ## Layout
 
@@ -71,8 +71,8 @@ Samples marked ★ are the next six to be added.
 
 ### Isolation (`isolation`)
 
-- network-policy: a standard egress NetworkPolicy enforced on a sandboxed pod, side by side with an ordinary pod. Spec: [#15](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/15).
-- sandbox-limits: the per-sandbox DNS query and connection-tracking limits, and how to recognise each one when a workload reaches it. Spec: [#16](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/16).
+- [network-policy](../examples/isolation/network-policy/README.md) (available now): a standard egress NetworkPolicy enforced on a sandboxed pod, side by side with an ordinary pod. Spec: [#15](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/15).
+- [sandbox-limits](../examples/isolation/sandbox-limits/README.md): the per-sandbox DNS query-rate limit and the per-pod outbound connection limit, and how to recognise each one when a workload reaches it. Spec: [#16](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/16).
 
 ### Policy (`policy`)
 
