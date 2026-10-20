@@ -109,6 +109,7 @@ still run on a cluster that has no suitable default.
 - [ ] A clean-up section removes everything the sample created.
 - [ ] Added to the `mkdocs.yml` nav, and `mkdocs build --strict` passes.
 - [ ] `docs/ROADMAP.md` lists the sample as available.
+- [ ] Listed in the root `README.md`, and `./scripts/check-sample-index.sh` passes.
 
 **Cost note.** One or two lines on what a run costs beyond the cluster: model tokens, API
 credit, a NAT gateway, a large instance. Say "No cost beyond the cluster" when that is true.

@@ -17,11 +17,20 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 
 ## Policy
 
+- [Image signing](examples/policy/image-signing/README.md): an image signed with AWS Signer and verified with Notation inside the guest, while an unsigned image is rejected, with an optional variant that verifies with no network at all.
 - [Cedar policy](examples/policy/cedar-policy/README.md): a Cedar policy generated from a workload's pod spec and enforced inside a confidential sandbox guest, which admits the expected container and refuses an operator's exec.
 
 ## Managed agents
 
 - [Claude Managed Agents](examples/managed-agents/claude-managed-agents/README.md): a Claude Managed Agents self-hosted sandbox where each session's tool calls run in a sandbox of their own and the organization API key stays off the cluster.
+
+## Agent sandbox
+
+- [Pause and resume](examples/agent-sandbox/pause-resume/README.md): suspend a sandbox to release its compute and keep its EBS workspace, then resume onto a new guest with the data intact.
+
+## Storage
+
+- [EBS volumes](examples/storage/ebs/README.md): a sandboxed pod and a StatefulSet backed by dynamically provisioned, encrypted EBS volumes that outlive the pod, seen inside the guest as virtio devices.
 
 ## Preview the site locally
 

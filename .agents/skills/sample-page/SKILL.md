@@ -144,8 +144,14 @@ route, and a lookup fails, as the hello sandbox page does.
 - Add the page to `nav` in `mkdocs.yml`, under its section heading and in roadmap order.
   Add the section heading if this is its first sample. `mkdocs build --strict` does not
   fail on a page missing from `nav`; the page just has no menu entry.
-- In `docs/ROADMAP.md`, link the entry and mark it available.
-- Add it to the root `README.md` list for its section.
+- In `docs/ROADMAP.md`, link the entry to `../examples/<section>/<sample>/README.md` and
+  add `(available now)` after the link.
+- Add it to the root `README.md` list for its section, in roadmap order. Add the section
+  heading if this is its first sample.
+- Run `./scripts/check-sample-index.sh`. It fails when any sample is missing from one of
+  the three, or a conflict marker is left in a tracked file.
+- When `main` has moved, merge it in and resolve the index files by keeping both sides
+  ("Keep a pull request current with `main`" in `AGENTS.md`).
 
 ## Wording
 
@@ -229,8 +235,11 @@ not copied into the description.
       it could not remove.
 - [ ] No local files (logs, state copies, helpers) in the sample folder; they are in the
       repository's `tmp/`.
-- [ ] `nav` entry added, roadmap and root README updated.
+- [ ] `nav` entry added, roadmap and root README updated, and
+      `./scripts/check-sample-index.sh` passes.
 - [ ] `mkdocs build --strict` passes, and `./scripts/check-agent-files.sh` passes.
+- [ ] The branch has the latest `main` merged in, with no rebase or force-push, and the
+      checks pass on its current head.
 - [ ] Wording rules above hold, including no em dash (U+2014) characters and no "fence"
       or "strongest" on the page.
 - [ ] A second reviewer has looked at any check, credential path or security claim.
