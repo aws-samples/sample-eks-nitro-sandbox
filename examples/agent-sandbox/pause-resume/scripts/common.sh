@@ -137,3 +137,35 @@ require_our_namespace() {
     3) die "namespace $NAMESPACE does not exist; run ./scripts/setup.sh first" ;;
   esac
 }
+
+# resource_is_ours <runner> <kind/name> : does the resource carry ManagedBy=pause-resume?
+# A failed read is "could not determine", never a pass. Same code meanings as
+# namespace_is_ours: 0 ours, 1 not ours, 2 could not read, 3 absent.
+resource_is_ours() {
+  local runner=$1 ref=$2
+  local ex=0
+  resource_exists "$runner" "$ref" || ex=$?
+  case $ex in
+    1) return 3 ;;   # absent
+    2) return 2 ;;   # could not read existence
+  esac
+  local label rc
+  label="$("$runner" get "$ref" -o "jsonpath={.metadata.labels.ManagedBy}" 2>/dev/null)"
+  rc=$?
+  [[ $rc -ne 0 ]] && return 2
+  [[ "$label" == "$SAMPLE" ]]
+}
+
+# require_our_sandbox : stop unless the Sandbox exists in our namespace AND carries
+# the sample's mark, so a mutating script never patches a same-named object that
+# belongs to something else, even inside a namespace we own.
+require_our_sandbox() {
+  local rc=0
+  resource_is_ours kc "sandbox/$SANDBOX" || rc=$?
+  case $rc in
+    0) return 0 ;;
+    1) die "sandbox/$SANDBOX exists but does not carry ManagedBy=$SAMPLE; refusing to touch it (it is not the sample's)" ;;
+    2) die "could not read sandbox/$SANDBOX; stopping rather than patch something I cannot verify" ;;
+    3) die "sandbox/$SANDBOX not found in namespace $NAMESPACE; run ./scripts/setup.sh first" ;;
+  esac
+}

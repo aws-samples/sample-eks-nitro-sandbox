@@ -51,33 +51,28 @@ case $pvc_rc in
 esac
 
 step "1/3 delete sandbox/$SANDBOX (and, by ownerReference, pvc/$PVC + its EBS volume)"
-sb_rc=0; resource_exists kc "sandbox/$SANDBOX" || sb_rc=$?
+# Delete the Sandbox only when it carries the sample's mark. The namespace is
+# already confirmed ours; this is the per-resource check, so a same-named object
+# another tool put in the namespace is never deleted (and, below, the namespace
+# is not deleted either while such a resource is present).
+sb_rc=0; resource_is_ours kc "sandbox/$SANDBOX" || sb_rc=$?
 case $sb_rc in
-  0) # Confirm this Sandbox carries the sample's mark before deleting it. The
-     # namespace is already confirmed ours, so this is belt and braces against a
-     # same-named object another tool created in it.
-     label="$(kc get sandbox "$SANDBOX" -o "jsonpath={.metadata.labels.ManagedBy}" 2>/dev/null)"
-     lrc=$?
-     if [[ $lrc -ne 0 ]]; then
-       note_fail "could not read the labels on sandbox/$SANDBOX; not deleting something I cannot verify"
-     elif [[ "$label" != "$SAMPLE" ]]; then
-       note_fail "sandbox/$SANDBOX does not carry ManagedBy=$SAMPLE; not deleting it (it is not the sample's)"
-     else
-       kc delete sandbox "$SANDBOX" --wait=true --timeout=120s || note_fail "sandbox/$SANDBOX did not delete cleanly"
-     fi ;;
-  1) echo "  sandbox/$SANDBOX not present" ;;
-  2) note_fail "could not read sandbox/$SANDBOX; not reporting it gone" ;;
+  0) kc delete sandbox "$SANDBOX" --wait=true --timeout=120s || note_fail "sandbox/$SANDBOX did not delete cleanly" ;;
+  1) note_fail "sandbox/$SANDBOX does not carry ManagedBy=$SAMPLE; not deleting it (it is not the sample's)" ;;
+  2) note_fail "could not read sandbox/$SANDBOX; not deleting something I cannot verify" ;;
+  3) echo "  sandbox/$SANDBOX not present" ;;
 esac
 
 step "2/3 confirm the workspace PVC and its EBS volume are gone"
 # Belt and braces: if the Sandbox was already gone while the PVC remained (for
 # example deleted by hand mid-suspend), there is no owner to GC the claim, so it
-# would sit there holding an EBS volume.
-pvc_rc=0; resource_exists kc "pvc/$PVC" || pvc_rc=$?
+# would sit there holding an EBS volume. Delete it only when it carries the mark.
+pvc_rc=0; resource_is_ours kc "pvc/$PVC" || pvc_rc=$?
 case $pvc_rc in
   0) kc delete pvc "$PVC" --wait=true --timeout=120s || note_fail "pvc/$PVC did not delete cleanly" ;;
-  1) echo "  pvc/$PVC not present" ;;
-  2) note_fail "could not read pvc/$PVC; not reporting it gone" ;;
+  1) note_fail "pvc/$PVC does not carry ManagedBy=$SAMPLE; not deleting it (it is not the sample's)" ;;
+  2) note_fail "could not read pvc/$PVC; not deleting something I cannot verify" ;;
+  3) echo "  pvc/$PVC not present" ;;
 esac
 if [[ -n "$pv" ]]; then
   # The PV is cluster-scoped. Delete reclaims the EBS volume (auto-ebs-sc is
@@ -96,9 +91,14 @@ if [[ -n "$pv" ]]; then
 fi
 
 step "3/3 delete namespace $NAMESPACE"
-# Safe because we confirmed the label above. This removes the namespace and
-# anything left in it.
-if kc_cluster delete namespace "$NAMESPACE" --wait=true --timeout=120s; then
+# Delete the namespace only when everything above succeeded. If an ownership or
+# read check failed, something in the namespace is unverified or not the
+# sample's, and deleting the namespace would destroy it through the back door,
+# which is exactly what the per-resource checks above exist to prevent. Leave the
+# namespace for the reader to resolve instead.
+if [[ $failures -ne 0 ]]; then
+  echo "  SKIPPED: not deleting namespace $NAMESPACE while $failures item(s) above are unverified or not the sample's; deleting it would remove them too." >&2
+elif kc_cluster delete namespace "$NAMESPACE" --wait=true --timeout=120s; then
   echo "  namespace $NAMESPACE deleted"
 else
   note_fail "namespace $NAMESPACE did not delete cleanly"
