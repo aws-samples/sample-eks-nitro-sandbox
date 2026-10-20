@@ -232,6 +232,13 @@ people's demos use at the same time.
   reader make that change as a step, as the coding agent page does for network policy
   enforcement, and the script checks it and stops with the command when it is off. Why:
   other workloads depend on it, and one setup script changed `amazon-vpc-cni` for everyone.
+- **A StorageClass is chosen, never changed.** Setup uses the cluster's default class when
+  it fits the sample (provisioner `ebs.csi.eks.amazonaws.com`, and the type and encryption
+  the sample needs), and otherwise creates its own class: named for the sample, not the
+  default, marked as the sample's, and created with `kubectl create` only when absent. The
+  claims always name the class they use. Never `kubectl apply` a manifest over an existing
+  class. Why: applying over a class that was created with `kubectl apply` can remove its
+  default annotation, which changes how every other claim on the cluster is provisioned.
 - **A clean up says what it could not do.** A lookup that fails means "could not
   determine", which is a failure, never "gone"; a resource skipped because it is not the
   sample's leaves the clean up incomplete, and the script exits non-zero. Why: a lookup

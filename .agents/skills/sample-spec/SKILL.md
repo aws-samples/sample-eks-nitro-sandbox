@@ -78,12 +78,25 @@ only version strings).
 Why: one spec gave a workload that connects nowhere a deny-all egress policy while refusing
 exec, so no run could ever show the policy working.
 
-**Cluster prerequisites.** Name anything cluster-wide the sample needs, such as a
-StorageClass, network policy enforcement or a controller, and make it a step the reader runs
-once, which the sample's setup checks rather than performs. Check each one against the
-Amazon EKS User Guide rather than assuming the platform provides it: EKS Auto Mode does not
-create a StorageClass, for example. Why: one spec said Auto Mode supplied the class, and a
-test cluster that happened to have one hid the mistake.
+**Cluster prerequisites.** Name anything cluster-wide the sample needs, such as network
+policy enforcement or a controller, and make it a step the reader runs once, which the
+sample's setup checks rather than performs. Check each one against the Amazon EKS User Guide
+rather than assuming the platform provides it: EKS Auto Mode does not create a StorageClass,
+for example. Why: one spec said Auto Mode supplied the class, and a test cluster that
+happened to have one hid the mistake.
+
+**Storage class.** A sample that provisions EBS volumes says which class its claims use, and
+its setup chooses it:
+
+- If the cluster's default StorageClass fits (provisioner `ebs.csi.eks.amazonaws.com`, and
+  the type and encryption the sample needs), the claims name that class and setup creates
+  nothing.
+- Otherwise setup creates the sample's own class: named for the sample, not the default,
+  marked as the sample's, created only when absent. The claims name it, and the clean up
+  deletes it when it carries the mark.
+
+Why: a sample must not change the class every other workload provisions through, and must
+still run on a cluster that has no suitable default.
 
 **Acceptance criteria.** A checklist. Start from these and add the sample's own:
 
