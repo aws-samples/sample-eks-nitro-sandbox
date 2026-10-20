@@ -1,13 +1,13 @@
 ---
 name: slack-updates
-description: Post a status update about this repository to the maintainers' Slack channel - a pull request opened or merged, a sample available, a blocker - with mentions that notify, issue numbers that stay links, and a check that the post landed. Use when asked to tell the team, post an update, or notify a maintainer. Needs the local settings file a maintainer gives you; without it, comment on the GitHub issue instead.
+description: Post a status update about this repository to the maintainers' Slack channel - a pull request opened or merged, a sample available, a blocker - with no mentions, issue numbers that stay links, and a check that the post landed. Use when asked to tell the team or post an update. Needs the local settings file a maintainer gives you; without it, comment on the GitHub issue instead.
 ---
 
 # Post a status update to the maintainers' Slack channel
 
 The maintainers follow this repository in a Slack channel. This skill writes an update,
 checks it, posts it with your own Slack command-line tool and confirms it landed. The
-channel, the people and the commands are in a local settings file, because they belong to
+channel and the commands are in a local settings file, because they belong to
 your Slack workspace and the repository must not hold them (see the security rules in
 `AGENTS.md`).
 
@@ -15,9 +15,10 @@ No settings file? Then you are not set up to post: comment on the spec issue wit
 `gh issue comment <number> --repo aws-samples/sample-eks-nitro-sandbox --body-file <file>`
 instead, and stop here.
 
-`assets/example-update.mrkdwn` is the model: a first line that mentions the reviewers and
-says what happened with a link, bullets with one bold lead each, and a short paragraph for
-the reason behind a decision.
+`assets/example-update.mrkdwn` is the model: a first line that says what happened, with a
+link, bullets with one bold lead each, and a short paragraph for
+the reason behind a decision. A merge announcement also ends its bullets with a *Review*
+line ("What a message may say").
 
 | File (in this skill's folder) | What it is for |
 |---|---|
@@ -42,7 +43,7 @@ cp .agents/skills/slack-updates/assets/slack.env.example ~/.config/sample-eks-ni
 python3 .agents/skills/slack-updates/scripts/post.py --show-config
 ```
 
-`--show-config` prints the channel and each person as the `<@ID>` to write. Put the file
+`--show-config` prints the channel it posts to. Put the file
 somewhere else with `SLACK_UPDATES_CONFIG=<path>`.
 
 **Post an update** with this loop:
@@ -61,10 +62,11 @@ For a one-line update, leave out the file: `post.py --text "<message>"`.
 
 ## What a message may say
 
-`check_message.py` catches the first five of these.
+`check_message.py` catches the first five of these, except a `<@ID>` mention: check for
+that yourself.
 
-- **Mention as `<@ID>`**, from `--show-config`, never `@name`. Why: a plain `@name` is only
-  text and notifies nobody.
+- **Mention nobody.** Write a name as plain text, with no `<@ID>` and no `@name`. Why: the
+  maintainers follow the channel and asked for updates without mentions.
 - **Write issue and pull request numbers as links**:
   `<https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/15|#15>`. Why: Slack turns a
   bare `#9` into a link to any channel whose name is `9`; one update linked two unrelated
@@ -75,7 +77,15 @@ For a one-line update, leave out the file: `post.py --text "<message>"`.
   account's owners.
 - **No em dashes.** Use a colon, a comma or two sentences, as on the site.
 - **Say what happened and what you need**, with the link. Leave out how the work was done:
-  check counts, review rounds, retries.
+  check counts, retries, commit-by-commit history.
+- **In a merge announcement, say how much review it took**, as the last bullet:
+  `• *Review*: 5 agent review rounds and 2 maintainer reviews.` Count the agent rounds from
+  the pull request's "Second review" section. Count as maintainer reviews the comments from a
+  maintainer that asked for changes. When a maintainer review changed the spec, add one
+  sentence on what it changed. When there was no review, say so and why: "no agent review
+  rounds, because it changes no check, credential path or security claim." Why: the
+  maintainers asked to see how much review each change needed before it merged, and a spec
+  change from review is a decision the rest of the team should know about.
 
 ## Post
 
@@ -104,7 +114,7 @@ the review happens, and post when there is a pull request to look at.
 |---|---|
 | `SLACK_CHANNEL_NAME` | The channel's name, for people reading `--show-config`. |
 | `SLACK_CHANNEL_ID` | The channel's ID, which the commands use. |
-| `SLACK_PEOPLE` | Who may be mentioned, as `Name=SlackUserID` pairs separated by commas. |
+| `SLACK_PEOPLE` | Leave it empty: posts mention nobody. |
 | `SLACK_POST_COMMAND` | Your Slack tool's post command, with `{channel}`, `{text}` and `{blocks}`. |
 | `SLACK_HISTORY_COMMAND` | Its command that prints the channel's newest message as JSON, with `{channel}`. |
 
