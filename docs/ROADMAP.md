@@ -72,7 +72,7 @@ Samples marked ★ are the next six to be added.
 ### Isolation (`isolation`)
 
 - [network-policy](../examples/isolation/network-policy/README.md) (available now): a standard egress NetworkPolicy enforced on a sandboxed pod, side by side with an ordinary pod. Spec: [#15](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/15).
-- sandbox-limits: the per-sandbox DNS query and connection-tracking limits, and how to recognise each one when a workload reaches it. Spec: [#16](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/16).
+- [sandbox-limits](../examples/isolation/sandbox-limits/README.md): the per-sandbox DNS query-rate limit and the per-pod outbound connection limit, and how to recognise each one when a workload reaches it. Spec: [#16](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/16).
 
 ### Policy (`policy`)
 

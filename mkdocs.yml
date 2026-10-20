@@ -84,5 +84,6 @@ nav:
       - Warm pool: getting-started/warm-pool/README.md
   - Isolation:
       - Network policy: isolation/network-policy/README.md
+      - Sandbox limits: isolation/sandbox-limits/README.md
   - Managed agents:
       - Claude Managed Agents: managed-agents/claude-managed-agents/README.md

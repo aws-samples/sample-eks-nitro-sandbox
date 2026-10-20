@@ -1,0 +1,44 @@
+# probe-sandboxed: the sandboxed probe. Identical to probe-standard in every field
+# the measurement or the egress NetworkPolicy could depend on, differing only in the
+# one line below.
+#
+#   runtimeClassName: isolated-sandbox
+#
+# That line makes the pod's containers run inside a lightweight VM of their own, with
+# their own kernel, carved from a Nitro Partition. There is no node selector,
+# toleration or sidecar: the RuntimeClass carries the scheduling constraints, and
+# Auto Mode brings up a sandbox-capable node if none is available. The pod's DNS
+# traffic leaves through the sandbox network path, which is where the per-sandbox
+# query-rate limit sits, so this is the pod that reaches the limit.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: probe-sandboxed
+  namespace: sandbox-limits
+  labels:
+    app: dns-probe            # the SAME label the policy selects on probe-standard
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"   # keep consolidation from evicting this bare pod mid-run
+spec:
+  runtimeClassName: isolated-sandbox   # <-- the only field that differs from probe-standard
+  containers:
+    - name: probe
+      image: public.ecr.aws/docker/library/python:3.12-slim
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          touch /tmp/ready
+          exec sleep infinity
+      readinessProbe:
+        exec:
+          command: ["cat", "/tmp/ready"]
+        initialDelaySeconds: 2
+        periodSeconds: 3
+        failureThreshold: 40
+      resources:
+        requests:
+          cpu: "1"
+          memory: 768Mi
+        limits:
+          cpu: "1"
+          memory: 768Mi
