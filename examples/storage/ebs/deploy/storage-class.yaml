@@ -1,0 +1,33 @@
+# The StorageClass the reader applies once per cluster. It is the Auto Mode class from
+# the Amazon EKS User Guide, "Create a storage class": the EBS CSI driver built into EKS
+# Auto Mode provisions an encrypted gp3 volume in the pod's Availability Zone after the
+# pod is scheduled.
+#
+# A StorageClass is a cluster-wide object, so this sample's scripts never create, change
+# or delete it: the reader applies this file once, setup.sh checks it is present with the
+# right provisioner, and the clean up leaves it. If auto-ebs-sc already exists on your
+# cluster (another workload may have created it), setup.sh reuses it.
+#
+# THIS CLASS IS DELIBERATELY NOT THE CLUSTER DEFAULT. There is no
+# storageclass.kubernetes.io/is-default-class annotation here, and there must never be
+# one: applying this file must not change what every other workload on the cluster
+# provisions through. Every claim in this sample names storageClassName explicitly, so it
+# binds to this class whether or not the cluster has a default. Which class, if any, is
+# the default is the cluster operator's decision.
+#
+# StorageClass parameters are immutable: to change type or encryption you delete and
+# recreate the class, which does not affect volumes already provisioned.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: auto-ebs-sc
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: eks.amazonaws.com/compute-type
+        values:
+          - auto
+provisioner: ebs.csi.eks.amazonaws.com
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  type: gp3
+  encrypted: "true"

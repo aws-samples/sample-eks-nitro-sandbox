@@ -14,6 +14,10 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 
 - [Claude Managed Agents](examples/managed-agents/claude-managed-agents/README.md): a Claude Managed Agents self-hosted sandbox where each session's tool calls run in a sandbox of their own and the organization API key stays off the cluster.
 
+## Storage
+
+- [EBS volumes](examples/storage/ebs/README.md): a sandboxed pod and a StatefulSet backed by dynamically provisioned, encrypted EBS volumes that outlive the pod, seen inside the guest as virtio devices.
+
 ## Preview the site locally
 
 ```bash

@@ -1,0 +1,71 @@
+# One isolated-sandbox pod backed by a dynamically provisioned EBS volume.
+#
+# The claim is ReadWriteOncePod, not ReadWriteOnce: ReadWriteOnce restricts a volume to
+# one node, so two pods on the same node could both claim it, which a single-attach block
+# device cannot honour; ReadWriteOncePod restricts it to one pod cluster-wide, so a second
+# pod claiming the same volume stays Pending.
+#
+# The pod boots network-isolated: the EBS data path needs no pod network, because the
+# volume is attached to the node by the CSI driver and passed into the guest as a block
+# device. The container runs as a non-root user with fsGroup set, so Kubernetes makes the
+# mounted volume group-owned and group-writable and the unprivileged process writes /data
+# without root.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ebs-sandbox-data
+spec:
+  accessModes:
+    - ReadWriteOncePod
+  storageClassName: auto-ebs-sc
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ebs-sandbox
+  annotations:
+    # The EBS data path needs no pod network, so boot the guest with only loopback.
+    sandbox.amazonaws.com/network-isolated: "true"
+    # A single-attach EBS volume attaches to exactly one node. Pin the node while the
+    # pod runs, so Auto Mode does not consolidate it out from under the attachment.
+    karpenter.sh/do-not-disrupt: "true"
+spec:
+  runtimeClassName: isolated-sandbox   # the one-line opt-in; the RuntimeClass carries the scheduling constraints
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    # Kubernetes applies fsGroup as the group owner of the volume and makes it
+    # group-writable at mount time, so the non-root process can write /data.
+    fsGroup: 2000
+  containers:
+    - name: writer
+      image: public.ecr.aws/docker/library/busybox:1.37
+      command:
+        - sh
+        - -c
+        - |
+          echo "booted $(date -u +%Y-%m-%dT%H:%M:%SZ) as uid $(id -u)" >> /data/boot-log.txt
+          echo "--- whoami ---"
+          id
+          echo "--- /data boot log ---"
+          cat /data/boot-log.txt
+          echo "--- device and ownership of /data ---"
+          df -hT /data
+          ls -ld /data
+          while true; do sleep 3600; done
+      resources:
+        # Requests equal limits: the VM is sized to the pod's limits.
+        requests: { cpu: "1", memory: 1Gi }
+        limits:   { cpu: "1", memory: 1Gi }
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: ebs-sandbox-data

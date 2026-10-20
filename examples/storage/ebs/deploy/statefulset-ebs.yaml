@@ -1,0 +1,82 @@
+# Per-replica EBS volumes for sandboxed pods, and proof that data outlives the pod.
+#
+# volumeClaimTemplates gives every replica its own ReadWriteOncePod volume, which is what
+# EBS under a sandbox requires: a block device attaches to exactly one guest, so replicas
+# cannot share one claim. A bare pod is not recreated when its node is removed, so anything
+# expected to survive node churn uses a controller, as this StatefulSet does.
+#
+# Deleting the StatefulSet leaves its volumeClaimTemplates claims behind by default (the
+# default persistentVolumeClaimRetentionPolicy is Retain), so each is still a billed EBS
+# volume until deleted. Clean up with:  kubectl delete pvc -l app=ebs-sandbox-set
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ebs-sandbox-set
+  labels:
+    app: ebs-sandbox-set
+spec:
+  clusterIP: None
+  selector:
+    app: ebs-sandbox-set
+  ports:
+    - port: 80
+      name: http
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ebs-sandbox-set
+spec:
+  serviceName: ebs-sandbox-set
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ebs-sandbox-set
+  template:
+    metadata:
+      annotations:
+        sandbox.amazonaws.com/network-isolated: "true"
+        # Pin the node while a single-attach volume is attached, so Auto Mode does not
+        # consolidate it out from under the attachment.
+        karpenter.sh/do-not-disrupt: "true"
+      labels:
+        app: ebs-sandbox-set
+    spec:
+      runtimeClassName: isolated-sandbox
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 2000
+      containers:
+        - name: writer
+          image: public.ecr.aws/docker/library/busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              echo "booted $(date -u +%Y-%m-%dT%H:%M:%SZ) as $HOSTNAME" >> /data/boot-log.txt
+              echo "--- /data/boot-log.txt ---"
+              cat /data/boot-log.txt
+              echo "--- device backing /data ---"
+              df -hT /data
+              while true; do sleep 3600; done
+          resources:
+            requests: { cpu: "1", memory: 1Gi }
+            limits:   { cpu: "1", memory: 1Gi }
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app: ebs-sandbox-set
+      spec:
+        accessModes:
+          - ReadWriteOncePod
+        storageClassName: auto-ebs-sc
+        resources:
+          requests:
+            storage: 10Gi
