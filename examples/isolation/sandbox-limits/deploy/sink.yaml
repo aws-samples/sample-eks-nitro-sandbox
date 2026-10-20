@@ -1,0 +1,81 @@
+# The connection sink for the conntrack probe: an ordinary pod (no
+# runtimeClassName) that accepts every inbound TCP connection and holds it open
+# while the client keeps it open. A client's concurrent established-connection
+# count is then bounded by the client side, which is the per-pod outbound
+# connection limit on the sandboxed probe, and never by the sink.
+#
+# It is a standard pod on purpose: its own capacity must not be the limit, and
+# the ordinary control opening past the cap against this same sink is what
+# certifies the sink is not the bottleneck. It raises its own open-file limit so
+# tens of thousands of held sockets are not file-descriptor bound, and a reaper
+# closes sockets whose peer has closed so held sockets do not leak across runs.
+#
+# karpenter.sh/do-not-disrupt keeps consolidation from evicting this bare pod
+# mid-run.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sink
+  namespace: sandbox-limits
+  labels:
+    app: conntrack-sink
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"
+spec:
+  containers:
+    - name: sink
+      image: public.ecr.aws/docker/library/python:3.12-slim
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          touch /tmp/ready
+          exec python3 -c '
+          import socket, resource, threading, select, time
+          hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+          resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+          s = socket.socket()
+          s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          s.bind(("0.0.0.0", 9000))
+          s.listen(4096)
+          held = {}
+          lock = threading.Lock()
+          def reaper():
+              # poll() has no FD_SETSIZE limit (unlike select), so this scales to
+              # the tens of thousands of held sockets a run can create.
+              while True:
+                  with lock:
+                      fds = list(held)
+                  if not fds:
+                      time.sleep(0.2); continue
+                  p = select.poll()
+                  for fd in fds:
+                      try: p.register(fd, select.POLLIN | select.POLLHUP)
+                      except (OSError, ValueError): pass
+                  for fd, _ev in p.poll(200):
+                      with lock:
+                          c = held.get(fd)
+                      if c is None: continue
+                      try: data = c.recv(65536)
+                      except OSError: data = b""
+                      if not data:  # peer closed (EOF) or errored -> reap
+                          with lock: held.pop(fd, None)
+                          try: c.close()
+                          except OSError: pass
+          threading.Thread(target=reaper, daemon=True).start()
+          while True:
+              c, _ = s.accept()
+              with lock: held[c.fileno()] = c
+          '
+      readinessProbe:
+        exec:
+          command: ["cat", "/tmp/ready"]
+        initialDelaySeconds: 2
+        periodSeconds: 3
+        failureThreshold: 40
+      resources:
+        requests:
+          cpu: "1"
+          memory: 768Mi
+        limits:
+          cpu: "1"
+          memory: 768Mi

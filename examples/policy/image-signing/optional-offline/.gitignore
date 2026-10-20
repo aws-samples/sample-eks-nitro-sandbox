@@ -1,0 +1,6 @@
+# The staged OCI layout (signed image + signature), copied from ECR by
+# build-offline.sh. Machine-local; rebuilt on each run; never committed.
+layout/
+
+# State file for the offline ECR repository. Machine-local; never committed.
+.image-signing-offline.state

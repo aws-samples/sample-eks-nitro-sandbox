@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="kirocrew" type="device" generator="svg2drawio">
+  <diagram id="svg2drawio" name="Diagram">
+    <mxGraphModel dx="0" dy="0" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="1500" pageHeight="900" math="0" shadow="0" background="#ffffff">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" style="drawPath=1;" />
+        <mxCell id="node" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;EKS Auto Mode node&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;container=1;collapsible=0;expand=0;recursiveResize=0;strokeColor=#ED7100;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=6.417;fontSize=14;fontStyle=1;fontColor=#ED7100;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="80" y="80" width="760" height="740" as="geometry" />
+        </mxCell>
+        <mxCell id="node-tab" value="" style="sketch=0;outlineConnect=0;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.eks;" vertex="1" parent="1">
+          <mxGeometry x="80" y="80" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="probe-standard" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;probe-standard&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;ordinary pod, the control&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.container_1;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="node">
+          <mxGeometry x="160" y="120" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="sandbox" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;Nitro sandbox pod&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;runtimeClassName: isolated-sandbox&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;container=1;collapsible=0;expand=0;recursiveResize=0;strokeColor=#DD344C;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#DD344C;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="node">
+          <mxGeometry x="80" y="400" width="440" height="300" as="geometry" />
+        </mxCell>
+        <mxCell id="sandbox-tab" value="" style="sketch=0;outlineConnect=0;fillColor=#DD344C;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;" vertex="1" parent="node">
+          <mxGeometry x="80" y="420" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="vm" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;lightweight VM&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;container=1;collapsible=0;expand=0;recursiveResize=0;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=6.417;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="sandbox">
+          <mxGeometry x="40" y="90" width="340" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="probe-sandboxed" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;probe-sandboxed&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;DNS probe&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.container_1;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="vm">
+          <mxGeometry x="130" y="40" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="netpol" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;NetworkPolicy&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;egress filter&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fillColor=#DD344C;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.network_firewall;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="960" y="300" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="coredns" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;CoreDNS&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;cluster resolver (kube-dns)&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.container_1;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1280" y="300" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="e-standard-netpol" value="~400 offered, ~400 answered" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1D8102;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;entryPerimeter=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;align=center;verticalAlign=middle;spacing=0;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="probe-standard" target="netpol">
+          <mxGeometry relative="1" x="-0.55" as="geometry">
+            <Array as="points">
+              <mxPoint x="895" y="240" />
+              <mxPoint x="895" y="320" />
+            </Array>
+            <mxPoint x="0.0" y="-15.0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-sandboxed-netpol" value="~400 offered, ~100 answered" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#DD344C;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;align=left;verticalAlign=middle;spacing=0;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="sandbox" target="netpol">
+          <mxGeometry relative="1" x="0" as="geometry">
+            <Array as="points">
+              <mxPoint x="895" y="630" />
+              <mxPoint x="895" y="340" />
+            </Array>
+            <mxPoint x="12.0" y="0.0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-netpol-coredns" value="UDP/TCP 53" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;align=center;verticalAlign=middle;spacing=0;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="netpol" target="coredns">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="0.0" y="-15.0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="d-plateau" value="" style="text;html=1;shape=partialRectangle;top=0;left=0;right=0;bottom=1;fillColor=none;strokeColor=#DD344C;strokeWidth=2;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="150" y="850" width="60" height="10" as="geometry" />
+        </mxCell>
+        <mxCell id="txt-plateau" value="sandboxed path: answered rate plateaus at the per-sandbox DNS limit" style="text;html=1;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=top;spacing=0;spacingTop=23.576;fontSize=16;fontStyle=0;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;strokeColor=none;fillColor=none;spacingLeft=18;" vertex="1" parent="1">
+          <mxGeometry x="200" y="820" width="560" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="d-full" value="" style="text;html=1;shape=partialRectangle;top=0;left=0;right=0;bottom=1;fillColor=none;strokeColor=#1D8102;strokeWidth=2;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="820" y="850" width="60" height="10" as="geometry" />
+        </mxCell>
+        <mxCell id="txt-full" value="ordinary path: answers the full offered rate" style="text;html=1;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=top;spacing=0;spacingTop=23.576;fontSize=16;fontStyle=0;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;strokeColor=none;fillColor=none;spacingLeft=18;" vertex="1" parent="1">
+          <mxGeometry x="880" y="820" width="420" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="footer" value="Note: the same DNS probe runs on both pods under one egress NetworkPolicy; runtimeClassName: isolated-sandbox is the only field that differs. The limit sits on the sandbox network path, not in the policy." style="text;html=1;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=top;spacing=0;spacingTop=0.523;fontSize=18;fontStyle=0;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;strokeColor=none;fillColor=none;spacingLeft=0;" vertex="1" parent="1">
+          <mxGeometry x="80" y="880" width="1510" height="30" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
