@@ -6,6 +6,8 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: ebs-sandbox-second
+  labels:
+    app.kubernetes.io/part-of: nitro-sandbox-ebs
   annotations:
     sandbox.amazonaws.com/network-isolated: "true"
     karpenter.sh/do-not-disrupt: "true"

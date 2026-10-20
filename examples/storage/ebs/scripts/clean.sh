@@ -26,9 +26,13 @@ POD=ebs-sandbox
 SECOND_POD=ebs-sandbox-second
 PVC=ebs-sandbox-data
 SET=ebs-sandbox-set
-SET_SELECTOR="app=$SET"
 SAMPLE_LABEL_KEY="app.kubernetes.io/part-of"
 SAMPLE_LABEL_VALUE="nitro-sandbox-ebs"
+# Select the StatefulSet's pods and per-replica claims on BOTH the app label AND this
+# sample's part-of label, so an unrelated object that merely carries app=ebs-sandbox-set is
+# never recorded or deleted. The StatefulSet stamps both labels on its pod template and its
+# volumeClaimTemplates.
+SET_SELECTOR="app=$SET,$SAMPLE_LABEL_KEY=$SAMPLE_LABEL_VALUE"
 
 keep_data=false
 for arg in "$@"; do
@@ -42,47 +46,85 @@ incomplete=0
 warn() { printf 'warning: %s\n' "$*" >&2; incomplete=1; }
 command -v "${KUBECTL%% *}" >/dev/null 2>&1 || { printf 'error: %s not on PATH\n' "$KUBECTL" >&2; exit 2; }
 
-# Never delete anything inside a namespace this sample did not create. Read the label we
-# stamp in setup.sh; a namespace that lacks it (or an unreadable read) means we do not own
-# it, so touch nothing and exit non-zero rather than deleting another demo's objects.
-if ! $KUBECTL get namespace "$NAMESPACE" >/dev/null 2>&1; then
+# Never delete anything inside a namespace this sample did not create. Three outcomes, kept
+# apart so a failed read is never mistaken for "absent" (fail open) or "ours" (unsafe):
+# the namespace exists, it does not exist, or the read itself failed. `get -o name` prints
+# the object when it exists and nothing when it does not; `--ignore-not-found` turns the
+# NotFound case into a clean exit 0 with empty output, so a non-zero status or non-empty
+# stderr is a real read failure. Fail closed on that: refuse rather than guess.
+ns_exist_err="$(mktemp)"
+ns_name="$($KUBECTL get namespace "$NAMESPACE" --ignore-not-found -o name 2>"$ns_exist_err")"
+ns_exist_rc=$?
+ns_exist_msg="$(sed 's/^/  /' "$ns_exist_err")"; rm -f "$ns_exist_err"
+if [[ $ns_exist_rc -ne 0 ]]; then
+  printf 'error: could not determine whether namespace %s exists (the read failed, not a
+report that it is absent). Refusing to clean up on an unknown state. kubectl said:\n%s\n' \
+    "$NAMESPACE" "$ns_exist_msg" >&2
+  exit 2
+fi
+if [[ -z "$ns_name" ]]; then
   echo "Namespace '$NAMESPACE' does not exist; nothing to clean up."
   exit 0
 fi
-# Read the whole labels map rather than a single dotted-key jsonpath, which is fiddly to
-# escape; match the key/value pair in it below.
+# Read the exact label value, not the whole labels map: the map's jsonpath serialization
+# varies by kubectl version (a Go map[...] string on some, JSON on others), and a substring
+# match against either is fragile and can be fooled by a prefix. The dotted key is escaped
+# with backslashes. A failed read is kept distinct from an absent label.
 ns_label_err="$(mktemp)"
-ns_labels="$($KUBECTL get namespace "$NAMESPACE" -o jsonpath='{.metadata.labels}' 2>"$ns_label_err")"
-ns_read_rc=$?
-ns_msg="$(sed 's/^/  /' "$ns_label_err")"; rm -f "$ns_label_err"
-if [[ $ns_read_rc -ne 0 ]]; then
-  printf 'error: could not read the labels of namespace %s (the read failed, not a report
+ns_label="$($KUBECTL get namespace "$NAMESPACE" \
+  -o "jsonpath={.metadata.labels.app\.kubernetes\.io/part-of}" 2>"$ns_label_err")"
+ns_label_rc=$?
+ns_label_msg="$(sed 's/^/  /' "$ns_label_err")"; rm -f "$ns_label_err"
+if [[ $ns_label_rc -ne 0 ]]; then
+  printf 'error: could not read the %s label of namespace %s (the read failed, not a report
 that it is unlabelled). Refusing to delete anything inside it. kubectl said:\n%s\n' \
-    "$NAMESPACE" "$ns_msg" >&2
+    "$SAMPLE_LABEL_KEY" "$NAMESPACE" "$ns_label_msg" >&2
   exit 2
 fi
-if [[ "$ns_labels" != *"\"$SAMPLE_LABEL_KEY\":\"$SAMPLE_LABEL_VALUE\""* ]]; then
-  printf 'error: namespace %s is not labelled %s=%s, so this sample did not create it.
-Refusing to delete objects inside a namespace another demo may own. If you ran the sample
-in a namespace you own, set NAMESPACE to it and ensure it carries that label.\n' \
-    "$NAMESPACE" "$SAMPLE_LABEL_KEY" "$SAMPLE_LABEL_VALUE" >&2
+if [[ "$ns_label" != "$SAMPLE_LABEL_VALUE" ]]; then
+  printf 'error: namespace %s is not labelled %s=%s (found %s=%s), so this sample did not
+create it. Refusing to delete objects inside a namespace another demo may own. If you ran
+the sample in a namespace you own, set NAMESPACE to it and ensure it carries that label.\n' \
+    "$NAMESPACE" "$SAMPLE_LABEL_KEY" "$SAMPLE_LABEL_VALUE" "$SAMPLE_LABEL_KEY" "${ns_label:-<unset>}" >&2
   exit 2
 fi
 echo "Namespace '$NAMESPACE' is this sample's (labelled $SAMPLE_LABEL_KEY=$SAMPLE_LABEL_VALUE)."
 
 # Collect every volume ID this sample's claims hold, BEFORE deleting anything, so the
 # confirmation at the end can look each one up in EC2. Record the claim name too, for the
-# messages.
+# messages. A read that FAILS here (as opposed to a claim that is simply absent or not yet
+# bound) must not be mistaken for "no volume": a claim could then be deleted and its EBS
+# volume never confirmed, with the clean up still reporting success. So warn on a failed
+# read and mark the clean up incomplete.
 declare -a vol_ids=() vol_claims=()
 record_volume() { # record_volume <pvc-name>
-  local pvc="$1" pv vid
-  pv="$($KUBECTL get pvc "$pvc" -n "$NAMESPACE" -o jsonpath='{.spec.volumeName}' 2>/dev/null)"
+  local pvc="$1" pv vid e1 e2
+  e1="$(mktemp)"
+  pv="$($KUBECTL get pvc "$pvc" -n "$NAMESPACE" --ignore-not-found -o jsonpath='{.spec.volumeName}' 2>"$e1")"
+  if [[ $? -ne 0 ]]; then
+    warn "could not read pvc/$pvc to record its volume before deleting it: $(sed 's/^/    /' "$e1")"
+    rm -f "$e1"; return 0
+  fi
+  rm -f "$e1"
+  # Absent claim, or bound-but-not-yet-provisioned: nothing to record, not a failure.
   [[ -z "$pv" ]] && return 0
-  vid="$($KUBECTL get pv "$pv" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null)"
+  e2="$(mktemp)"
+  vid="$($KUBECTL get pv "$pv" --ignore-not-found -o jsonpath='{.spec.csi.volumeHandle}' 2>"$e2")"
+  if [[ $? -ne 0 ]]; then
+    warn "could not read pv/$pv (claim $pvc) to record its volume id: $(sed 's/^/    /' "$e2")"
+    rm -f "$e2"; return 0
+  fi
+  rm -f "$e2"
   [[ -n "$vid" ]] && { vol_ids+=("$vid"); vol_claims+=("$pvc"); }
 }
 record_volume "$PVC"
-for c in $($KUBECTL get pvc -n "$NAMESPACE" -l "$SET_SELECTOR" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+set_claim_err="$(mktemp)"
+set_claims="$($KUBECTL get pvc -n "$NAMESPACE" -l "$SET_SELECTOR" -o jsonpath='{.items[*].metadata.name}' 2>"$set_claim_err")"
+if [[ $? -ne 0 ]]; then
+  warn "could not list the StatefulSet's per-replica claims to record their volumes: $(sed 's/^/    /' "$set_claim_err")"
+fi
+rm -f "$set_claim_err"
+for c in $set_claims; do
   record_volume "$c"
 done
 
@@ -107,7 +149,14 @@ $KUBECTL delete pod -l "$SET_SELECTOR" -n "$NAMESPACE" --ignore-not-found --wait
 if [[ "$keep_data" == true ]]; then
   echo "Kept every PVC and its EBS volume (--keep-data):"
   echo "  pvc/$PVC and any data-$SET-* per-replica claims."
-  echo "Done (data kept). The StorageClass was left in place."
+  echo "Left the StorageClass in place."
+  # The workload deletes above still had to succeed. If one of them could not be confirmed,
+  # say so and exit non-zero rather than reporting a clean "data kept".
+  if [[ "$incomplete" -ne 0 ]]; then
+    printf '\nClean up INCOMPLETE: a workload delete above could not be confirmed. See the warnings.\n' >&2
+    exit 1
+  fi
+  echo "Done (data kept)."
   exit 0
 fi
 

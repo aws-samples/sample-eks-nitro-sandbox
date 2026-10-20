@@ -116,15 +116,28 @@ echo "  ebs-sandbox-second phase:  ${second_phase:-<none>}"
 echo "  PodScheduled:              ${second_reason:-<none>}"
 
 echo "== what AWS says about the provisioned volume =="
-vol_id=""; vol_encrypted=""; vol_type=""
+# aws_available distinguishes the two reasons the EC2 checks might not produce a value:
+# aws is not installed (a genuine SKIP), versus aws is installed but the lookup failed (a
+# FAIL, not a skip). ec2_ok is set only when the describe-volumes call actually succeeded.
+vol_id=""; vol_encrypted=""; vol_type=""; aws_available=no; ec2_ok=no
 if command -v "${AWS%% *}" >/dev/null 2>&1; then
+  aws_available=yes
   vol_id="$($KUBECTL get pv "$pv_after" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null)"
   vol_zone="$($KUBECTL get pv "$pv_after" \
     -o jsonpath='{.spec.nodeAffinity.required.nodeSelectorTerms[*].matchExpressions[?(@.key=="topology.kubernetes.io/zone")].values[0]}' 2>/dev/null)"
   vol_region="${AWS_REGION:-${vol_zone%[a-z]}}"
-  read -r vol_encrypted vol_type < <($AWS ec2 describe-volumes \
-    --volume-ids "$vol_id" --region "$vol_region" \
-    --query 'Volumes[0].[Encrypted,VolumeType]' --output text 2>/dev/null)
+  # Capture the command's output AND its exit status (process substitution with read drops
+  # the status, turning a failed lookup into a silent skip). On success parse the fields; on
+  # failure leave ec2_ok=no so the assertion FAILS rather than skips.
+  ec2_err="$(mktemp)"
+  if ec2_out="$($AWS ec2 describe-volumes --volume-ids "$vol_id" --region "$vol_region" \
+      --query 'Volumes[0].[Encrypted,VolumeType]' --output text 2>"$ec2_err")"; then
+    read -r vol_encrypted vol_type <<<"$ec2_out"
+    ec2_ok=yes
+  else
+    echo "  describe-volumes failed: $(sed 's/^/    /' "$ec2_err")"
+  fi
+  rm -f "$ec2_err"
   echo "  EC2 volume:   ${vol_id:-<unknown>} in ${vol_region:-<unknown>}"
   echo "  Encrypted:    ${vol_encrypted:-<unknown>}"
   echo "  VolumeType:   ${vol_type:-<unknown>}"
@@ -157,8 +170,13 @@ case "$addrs" in *"eth0"*) n=1;; *"lo=127.0.0.1/8"*) n=0;; *) n=1;; esac; assert
 [[ "$second_phase" == "Pending" ]]; assert "the second ReadWriteOncePod claimant stays Pending ($second_phase)" $?
 [[ "$shipped_default" != "true" ]]; assert "deploy/storage-class.yaml carries no default-class annotation (is-default-class='${shipped_default:-<none>}')" $?
 [[ "$default_after" == "$default_before" ]]; assert "the cluster default class is unchanged across the run ($default_before -> $default_after)" $?
-if [[ -z "$vol_id" || -z "$vol_type" ]]; then
+if [[ "$aws_available" == no ]]; then
+  # aws genuinely absent: this check cannot run, so skip it rather than fail it.
   skip "the provisioned EC2 volume is an encrypted gp3 (needs the aws CLI and ec2:DescribeVolumes)"
+elif [[ "$ec2_ok" != yes ]]; then
+  # aws IS installed but the lookup failed: that is a failure to verify the claim, not a
+  # skip. Report it as a FAIL so a broken read cannot pass as "not checked".
+  assert "the provisioned EC2 volume could be read back (describe-volumes succeeded)" 1
 else
   [[ "${vol_encrypted,,}" == "true" ]]; assert "AWS reports the provisioned volume $vol_id as encrypted (Encrypted=${vol_encrypted:-unknown})" $?
   [[ "$vol_type" == "gp3" ]]; assert "AWS reports it as gp3 ($vol_type), the StorageClass request reached the volume" $?

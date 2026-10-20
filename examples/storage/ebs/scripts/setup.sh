@@ -40,28 +40,24 @@ apply_hint="Apply the StorageClass once per cluster, then re-run this script:
   $KUBECTL apply -f $SAMPLE_DIR/deploy/storage-class.yaml"
 
 echo "Step 1/3: confirm the '$STORAGE_CLASS' StorageClass exists with the Auto Mode EBS provisioner"
-# Does the class exist at all? Distinguish three outcomes: it exists, it does not exist,
-# and the read itself failed. `kubectl get` exits 0 when the object exists, and non-zero
-# for both "NotFound" and a transient API error, so look at stderr to tell them apart
-# rather than treating every non-zero as "missing".
+# Does the class exist at all? Distinguish three outcomes structurally rather than by
+# reading human-readable stderr: `get --ignore-not-found -o name` prints the object's name
+# when it exists, prints nothing and exits 0 when it is NotFound, and exits non-zero only on
+# a real read failure (throttle, apiserver restart, RBAC denial). So: non-zero means the
+# read failed (fail closed), empty output means absent, non-empty means it exists.
 sc_get_err="$(mktemp)"
-if $KUBECTL get storageclass "$STORAGE_CLASS" >/dev/null 2>"$sc_get_err"; then
-  sc_exists=yes
-elif grep -q 'NotFound\|not found' "$sc_get_err"; then
-  sc_exists=no
-else
-  # Any other failure (throttle, apiserver restart, RBAC denial) is not evidence the
-  # class is missing. Fail closed: do not fall through and provision against a class
-  # whose state is unknown.
-  sc_msg="$(sed 's/^/  /' "$sc_get_err")"; rm -f "$sc_get_err"
+sc_name="$($KUBECTL get storageclass "$STORAGE_CLASS" --ignore-not-found -o name 2>"$sc_get_err")"
+sc_get_rc=$?
+sc_msg="$(sed 's/^/  /' "$sc_get_err")"; rm -f "$sc_get_err"
+if [[ $sc_get_rc -ne 0 ]]; then
+  # Fail closed: do not fall through and provision against a class whose state is unknown.
   die "could not read StorageClass '$STORAGE_CLASS' (the read itself failed, which is not
 a report that it is missing). kubectl said:
 $sc_msg
 Re-run once the cluster reads cleanly."
 fi
-rm -f "$sc_get_err"
 
-if [[ "$sc_exists" == no ]]; then
+if [[ -z "$sc_name" ]]; then
   die "StorageClass '$STORAGE_CLASS' does not exist on this cluster.
 $apply_hint"
 fi
