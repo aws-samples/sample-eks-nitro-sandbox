@@ -1,0 +1,99 @@
+# One agent-sandbox Sandbox with an EBS workspace, used to show suspend and resume.
+#
+# The container appends one line to /workspace/boots.log on every boot, so the
+# file is a running record: one line per guest the workspace has been attached
+# to. Suspending the sandbox (operatingMode: Suspended) terminates the pod while
+# the controller keeps the Sandbox and its volume; resuming it (Running) brings
+# up a new pod on the same volume, so the earlier lines are still there with a
+# new one appended.
+#
+# The pod boots network-isolated: sandbox.amazonaws.com/network-isolated: "true"
+# gives the guest no network besides loopback, so there is no egress to restrict
+# and no network policy to ship. It still mounts its EBS workspace, which the
+# node-side CSI driver attaches from outside the guest, before and after resume.
+#
+# __NAMESPACE__ is filled in at apply time by the scripts from the NAMESPACE
+# variable, so an overridden name reaches this object too.
+apiVersion: agents.x-k8s.io/v1beta1
+kind: Sandbox
+metadata:
+  name: pause-resume
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: pause-resume
+    ManagedBy: pause-resume
+spec:
+  # Running is the default; named here so the suspend/resume cycle reads from one
+  # field. Setting it to Suspended terminates the pod and keeps the volume;
+  # setting it back to Running brings a new pod onto the same volume.
+  operatingMode: Running
+  podTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pause-resume
+        ManagedBy: pause-resume
+      annotations:
+        # No network besides loopback: no route out, no DNS, no instance
+        # metadata and no Pod Identity credentials. kubectl exec, cp and logs
+        # keep working, because they use the guest's internal control channel.
+        sandbox.amazonaws.com/network-isolated: "true"
+        # The workspace claim is ReadWriteOncePod, so the EBS volume is attached
+        # to one node at a time. Pin the node while the pod runs: if the cluster
+        # consolidated this node with the volume still attached, the detach could
+        # stall. The controller re-creates the pod on resume, so this does not
+        # prevent the suspend/resume cycle.
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      # The one line that puts the pod in a Nitro sandbox. No node selector,
+      # toleration or sidecar: the RuntimeClass carries the scheduling
+      # constraints, and EKS Auto Mode brings up a sandbox-capable node.
+      runtimeClassName: isolated-sandbox
+      containers:
+        - name: workspace
+          image: public.ecr.aws/docker/library/busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              # Append one line per boot. Surviving a suspend/resume cycle means
+              # this file keeps its history across two different guest VMs.
+              mkdir -p /workspace
+              echo "boot at $(date -u +%Y-%m-%dT%H:%M:%SZ) on kernel $(uname -r), hostname $(hostname)" >> /workspace/boots.log
+              echo "--- /workspace/boots.log ---"
+              cat /workspace/boots.log
+              exec sleep infinity
+          volumeMounts:
+            # This name matches the volumeClaimTemplates entry below. The
+            # controller synthesizes the pod volume; do not add a matching
+            # spec.volumes entry yourself.
+            - name: workspace
+              mountPath: /workspace
+          resources:
+            # Requests equal limits, as every sandboxed pod on this site does:
+            # the guest is sized to the pod's limits.
+            requests: { cpu: "1", memory: 768Mi }
+            limits:   { cpu: "1", memory: 768Mi }
+  # volumeClaimTemplates is immutable after the Sandbox is created (CEL-validated
+  # on the CRD). Changing the size, class or access mode means deleting and
+  # recreating the Sandbox, which deletes the workspace. Suspend is what
+  # preserves data; delete never does.
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+      spec:
+        accessModes:
+          # ReadWriteOncePod, not ReadWriteOnce: only one pod may mount the
+          # workspace at a time. Plain ReadWriteOnce promises only one node, so
+          # two pods on that node could mount the same workspace together.
+          - ReadWriteOncePod
+        # Named explicitly rather than relying on a cluster default. EKS Auto
+        # Mode supplies auto-ebs-sc; a fresh cluster has no default class, so the
+        # sample does not depend on one.
+        storageClassName: auto-ebs-sc
+        resources:
+          requests:
+            storage: 10Gi
+# The resulting PVC is named "<template name>-<sandbox name>", that is
+# workspace-pause-resume, and carries the Sandbox as its ownerReference. So
+# deleting the Sandbox deletes the PVC and the EBS volume behind it. Suspend is
+# what preserves the workspace; delete does not.

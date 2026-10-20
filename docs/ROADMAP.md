@@ -124,7 +124,7 @@ The same procurement analyst agent three ways. Inside its sandbox, a second poli
 
 The [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) resources, `Sandbox`, `SandboxTemplate`, `SandboxWarmPool` and `SandboxClaim`, with Nitro sandboxes.
 
-- **pause-resume ★**: suspend a sandbox and resume it into a new guest VM with its EBS data intact. Spec: [#30](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/30).
+- [pause-resume](../examples/agent-sandbox/pause-resume/README.md) (available now): suspend a sandbox and resume it into a new guest VM with its EBS data intact. Spec: [#30](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/30).
 - **warm-pool-autoscaling-keda ★**: KEDA scales a warm pool up and down with claim demand. Spec: [#31](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/31).
 - ide: VS Code in the browser on a persistent EBS workspace. Spec: [#32](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/32).
 - argo-rollouts: rolling a `SandboxTemplate` change through a warm pool with Argo Rollouts, replacing the warm sandboxes built from the old template. Spec: [#33](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/33).
