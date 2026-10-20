@@ -1,0 +1,52 @@
+# A custom generator profile, equal to the built-in confidential profile except
+# for the fields the current preview guest schema does not yet define. The Amazon
+# EKS User Guide, "Cedar policies", documents custom profiles: a YAML file passed to
+# the generator's --profile flag, where omitted fields take their defaults.
+#
+# Why a custom profile here, and not the built-in "confidential":
+#   The built-in confidential profile emits Cedar attributes the preview guest's
+#   policy schema does not define yet, and the guest rejects the whole policy when it
+#   meets one, before any container starts. The reduced settings below pin the
+#   admission fields listed under `admission:` (image, args, env, working dir, hostname,
+#   mounts, identity, capabilities, security settings, masked/readonly paths, seccomp,
+#   apparmor, namespaces, sysctls) and deny exec and stdin, while omitting the fields the
+#   preview guest does not define:
+#     * pin_oci_hardening: emits has_zos / linux_net_devices / linux_intel_rdt
+#       attributes, so the OCI hardening fields are NOT pinned here;
+#     * required_ephemeral_layer: left out (which means "none"), so encrypted-overlay
+#       enforcement is NOT required by this policy, avoiding the
+#       encrypted_ephemeral_layer attribute the preview guest lacks.
+#   Credential and NTP delivery are not configured here either: this workload boots
+#   network-isolated, so the guest has no network, no Pod Identity and no NTP, and the
+#   generator omits those permits for a network-isolated pod on its own.
+#
+# When the preview guest schema defines the omitted fields, generate with
+# --profile confidential instead and the sample's checks still hold. Until then the
+# built-in profile's policy will not start on the preview guest.
+admission:
+  pin_image: true
+  pin_args: true
+  pin_env: true
+  pin_working_dir: true
+  pin_hostname: true
+  pin_mounts: true
+  pin_identity: true
+  pin_capabilities: true
+  pin_security: true
+  pin_masked_paths: true
+  pin_seccomp: true
+  pin_apparmor: true
+  pin_namespaces: true
+  pin_sysctls: true
+  pin_oci_hardening: false
+runtime:
+  exec: deny
+  logs: allow
+  stdin: deny
+  stats: allow
+  termination_logs: allow
+  imds: allow
+  oom: allow
+  sa_token: infer
+  mount_host_image: deny
+  stream_agent_logs: deny
