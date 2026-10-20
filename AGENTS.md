@@ -244,6 +244,24 @@ people's demos use at the same time.
   claims always name the class they use. Never `kubectl apply` a manifest over an existing
   class. Why: applying over a class that was created with `kubectl apply` can remove its
   default annotation, which changes how every other claim on the cluster is provisioned.
+- **A shared install is reused as it is, never changed.** A controller, operator, CSI driver
+  or EKS add-on the sample needs (KEDA, Argo Rollouts, the GitHub Actions Runner Controller,
+  the EFS CSI driver, a Helm chart's cluster-wide parts) may already be on the cluster,
+  installed by someone else. Check for it before the run: its CRDs, its namespace, its Helm
+  release or its add-on.
+  - **Present:** use it as it is. No `helm upgrade`, no reinstall, and no change to its
+    values, its service accounts, or their IAM roles and Pod Identity associations.
+  - **Absent:** the page has the reader install it as a step, at a pinned version, and the
+    setup script checks for it and stops with the command, as for a cluster-wide setting.
+  - **Present, but set up differently from what the sample needs:** the script stops and says
+    what it found. That is a question for the spec, not something to change.
+
+  Put the sample's own objects in the sample's own namespace, not the controller's, and never
+  create an object at a fixed upstream name (such as the controller's namespace) unless the
+  install is absent. The clean up never removes a shared install; the page says what stays
+  and how to remove it. Why: other workloads use the same controller. On the maintainers' test
+  cluster the EFS CSI driver already carries the Pod Identity roles another demo's mounts
+  depend on, so a sample that set its own role on it would cut those mounts off.
 - **A clean up says what it could not do.** A lookup that fails means "could not
   determine", which is a failure, never "gone"; a resource skipped because it is not the
   sample's leaves the clean up incomplete, and the script exits non-zero. Why: a lookup

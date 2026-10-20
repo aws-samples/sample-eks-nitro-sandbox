@@ -85,6 +85,13 @@ rather than assuming the platform provides it: EKS Auto Mode does not create a S
 for example. Why: one spec said Auto Mode supplied the class, and a test cluster that
 happened to have one hid the mistake.
 
+For a controller, CSI driver or add-on, say what the sample does when it is already
+installed: it reuses it as it is ("A shared install is reused as it is, never changed" in
+`AGENTS.md`). A spec never asks the sample to change a shared install's values, service
+accounts, IAM roles or Pod Identity associations. If the sample needs a change like that, the
+spec makes it a reader step and says what it does to the install's other users. Why: an
+install already on the cluster belongs to whoever put it there.
+
 **Storage class.** A sample that provisions EBS volumes says which class its claims use, and
 its setup chooses it:
 
