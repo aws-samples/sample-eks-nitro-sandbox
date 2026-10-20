@@ -17,7 +17,8 @@ instead, and stop here.
 
 `assets/example-update.mrkdwn` is the model: a first line that mentions the reviewers and
 says what happened with a link, bullets with one bold lead each, and a short paragraph for
-the reason behind a decision.
+the reason behind a decision. A merge announcement also ends its bullets with a *Review*
+line ("What a message may say").
 
 | File (in this skill's folder) | What it is for |
 |---|---|
@@ -75,7 +76,15 @@ For a one-line update, leave out the file: `post.py --text "<message>"`.
   account's owners.
 - **No em dashes.** Use a colon, a comma or two sentences, as on the site.
 - **Say what happened and what you need**, with the link. Leave out how the work was done:
-  check counts, review rounds, retries.
+  check counts, retries, commit-by-commit history.
+- **In a merge announcement, say how much review it took**, as the last bullet:
+  `• *Review*: 5 agent review rounds and 2 maintainer reviews.` Count the agent rounds from
+  the pull request's "Second review" section. Count as maintainer reviews the comments from a
+  maintainer that asked for changes. When a maintainer review changed the spec, add one
+  sentence on what it changed. When there was no review, say so and why: "no agent review
+  rounds, because it changes no check, credential path or security claim." Why: the
+  maintainers asked to see how much review each change needed before it merged, and a spec
+  change from review is a decision the rest of the team should know about.
 
 ## Post
 
