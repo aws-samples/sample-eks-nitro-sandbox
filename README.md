@@ -24,6 +24,10 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 
 - [Claude Managed Agents](examples/managed-agents/claude-managed-agents/README.md): a Claude Managed Agents self-hosted sandbox where each session's tool calls run in a sandbox of their own and the organization API key stays off the cluster.
 
+## Agent sandbox
+
+- [Pause and resume](examples/agent-sandbox/pause-resume/README.md): suspend a sandbox to release its compute and keep its EBS workspace, then resume onto a new guest with the data intact.
+
 ## Preview the site locally
 
 ```bash

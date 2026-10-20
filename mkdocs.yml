@@ -90,3 +90,5 @@ nav:
       - Cedar policy: policy/cedar-policy/README.md
   - Managed agents:
       - Claude Managed Agents: managed-agents/claude-managed-agents/README.md
+  - Agent sandbox:
+      - Pause and resume: agent-sandbox/pause-resume/README.md

@@ -1,0 +1,32 @@
+# The sample's own StorageClass, used only when the cluster has no default class
+# that fits (EBS CSI, gp3, encrypted). EKS Auto Mode does not create a
+# StorageClass for you (Amazon EKS User Guide, Create a storage class).
+#
+# setup.sh creates this with `kubectl create` only when it is absent, and never
+# changes a class that already exists: a StorageClass is chosen, never changed.
+# It is NEVER applied with `kubectl apply` -- on a cluster whose class was created
+# with `kubectl apply` (as the AWS guide does), applying a manifest without the
+# default annotation would strip that annotation from the live class and change
+# how every other claim on the cluster is provisioned.
+#
+# It is named for the sample (not auto-ebs-sc), is not the cluster default (no
+# storageclass.kubernetes.io/is-default-class annotation), and carries the
+# sample's mark so clean up can tell it is the sample's and remove it.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: pause-resume-gp3
+  labels:
+    app.kubernetes.io/managed-by: pause-resume
+# Keep a pod that needs this volume on Auto Mode nodes, which matters on a cluster
+# that has both Auto Mode and other nodes.
+allowedTopologies:
+- matchLabelExpressions:
+  - key: eks.amazonaws.com/compute-type
+    values:
+    - auto
+provisioner: ebs.csi.eks.amazonaws.com
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  type: gp3
+  encrypted: "true"
