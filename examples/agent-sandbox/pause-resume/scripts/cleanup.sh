@@ -49,8 +49,17 @@ esac
 pv=""
 pvc_rc=0; resource_exists kc "pvc/$PVC" || pvc_rc=$?
 case $pvc_rc in
-  0) pv="$(kc get pvc "$PVC" -o jsonpath='{.spec.volumeName}' 2>/dev/null)"
-     [[ -z "$pv" ]] && note_fail "could not read the bound PV of pvc/$PVC; cannot confirm the EBS volume is deleted" ;;
+  0) # Capture the read's status: a failed kubectl can print nonempty output, so
+     # a non-zero status must be a failure, not taken as a valid PV name. Only
+     # test for an empty result after a successful read.
+     pv_read_rc=0
+     pv="$(kc get pvc "$PVC" -o jsonpath='{.spec.volumeName}' 2>/dev/null)" || pv_read_rc=$?
+     if [[ $pv_read_rc -ne 0 ]]; then
+       pv=""
+       note_fail "could not read the bound PV of pvc/$PVC; cannot confirm the EBS volume is deleted (a failed read is not 'gone')"
+     elif [[ -z "$pv" ]]; then
+       note_fail "pvc/$PVC has no bound PV; cannot confirm the EBS volume is deleted"
+     fi ;;
   1) : ;;  # no PVC: nothing to record
   2) note_fail "could not read pvc/$PVC; cannot determine its EBS volume (a failed read is not 'gone')" ;;
 esac

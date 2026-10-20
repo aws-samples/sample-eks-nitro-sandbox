@@ -151,10 +151,11 @@ require_our_namespace() {
 # settings to the reader); the scripts never create, patch or label one. A read
 # that fails is a failure, never "absent". Run this before setup creates anything.
 require_storage_class() {
-  local prov rc
+  local prov rc=0
+  # Capture the read's status without letting set -e abort on a failed read, so a
+  # real API error dies with its own message rather than aborting silently.
   prov="$(kc_cluster get storageclass "$STORAGE_CLASS" --ignore-not-found \
-    -o jsonpath='{.provisioner}' 2>/dev/null)"
-  rc=$?
+    -o jsonpath='{.provisioner}' 2>/dev/null)" || rc=$?
   if [[ $rc -ne 0 ]]; then
     die "could not read storageclass/$STORAGE_CLASS; stopping rather than guess (a failed read is not 'absent')"
   fi
