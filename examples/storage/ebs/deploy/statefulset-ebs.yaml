@@ -42,7 +42,6 @@ spec:
         karpenter.sh/do-not-disrupt: "true"
       labels:
         app: ebs-sandbox-set
-        app.kubernetes.io/part-of: nitro-sandbox-ebs
     spec:
       runtimeClassName: isolated-sandbox
       securityContext:
@@ -74,7 +73,6 @@ spec:
         name: data
         labels:
           app: ebs-sandbox-set
-          app.kubernetes.io/part-of: nitro-sandbox-ebs
       spec:
         accessModes:
           - ReadWriteOncePod

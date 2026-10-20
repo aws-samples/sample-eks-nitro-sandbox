@@ -36,11 +36,12 @@ SAMPLE_LABEL_VALUE="nitro-sandbox-ebs"
 # unescaped dot is a field separator there, so {.metadata.labels.app.kubernetes.io/part-of}
 # would look for nested fields and return empty, reading a marked object as unmarked.
 SAMPLE_LABEL_JSONPATH='app\.kubernetes\.io/part-of'
-# Select the StatefulSet's pods and per-replica claims on BOTH the app label AND this
-# sample's part-of label, so an unrelated object that merely carries app=ebs-sandbox-set is
-# never recorded or deleted. The StatefulSet stamps both labels on its pod template and its
-# volumeClaimTemplates.
-SET_SELECTOR="app=$SET,$SAMPLE_LABEL_KEY=$SAMPLE_LABEL_VALUE"
+# Select the StatefulSet's pods and per-replica claims by the label its template stamps.
+# This runs only after the namespace below is confirmed to carry the sample's mark, and
+# inside the sample's own namespace that check is enough (AGENTS.md, "Shared accounts,
+# clusters and machines"): everything in it is the sample's, so the selector need not also
+# re-assert ownership per object.
+SET_SELECTOR="app=$SET"
 
 keep_data=false
 for arg in "$@"; do
@@ -120,12 +121,15 @@ ${sc_def_msg:-}"
   echo "The cluster's default StorageClass was never touched."
 }
 
-# Never delete anything inside a namespace this sample did not create. Three outcomes, kept
-# apart so a failed read is never mistaken for "absent" (fail open) or "ours" (unsafe):
-# the namespace exists, it does not exist, or the read itself failed. `get -o name` prints
-# the object when it exists and nothing when it does not; `--ignore-not-found` turns the
-# NotFound case into a clean exit 0 with empty output, so a non-zero status or non-empty
-# stderr is a real read failure. Fail closed on that: refuse rather than guess.
+# Never delete anything inside a namespace this sample did not create. The namespace's
+# label is the ownership mark: once it is confirmed, everything in the namespace is the
+# sample's and the deletes below need no per-object ownership check (AGENTS.md, "Shared
+# accounts, clusters and machines"). Three outcomes, kept apart so a failed read is never
+# mistaken for "absent" (fail open) or "ours" (unsafe): the namespace exists, it does not
+# exist, or the read itself failed. `get -o name` prints the object when it exists and
+# nothing when it does not; `--ignore-not-found` turns the NotFound case into a clean exit 0
+# with empty output, so a non-zero status or non-empty stderr is a real read failure. Fail
+# closed on that: refuse rather than guess.
 ns_exist_err="$(mktemp)"
 ns_name="$($KUBECTL get namespace "$NAMESPACE" --ignore-not-found -o name 2>"$ns_exist_err")"
 ns_exist_rc=$?

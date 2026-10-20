@@ -312,7 +312,6 @@ claim. Each claim names the same class the run used (render `<STORAGE_CLASS>` wi
         name: data
         labels:
           app: ebs-sandbox-set
-          app.kubernetes.io/part-of: nitro-sandbox-ebs
       spec:
         accessModes:
           - ReadWriteOncePod
