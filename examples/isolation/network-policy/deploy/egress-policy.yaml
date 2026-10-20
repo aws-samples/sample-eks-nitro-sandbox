@@ -1,0 +1,49 @@
+# A standard Kubernetes NetworkPolicy -- the kind platform teams already use, with no
+# sandbox-specific fields. It selects BOTH clients (app: netpol-client) and governs
+# their egress:
+#
+#   - allow egress to the web-allowed server on TCP 8080
+#   - allow egress to CoreDNS on UDP and TCP 53, so name lookups keep working
+#   - deny everything else, which is the default for the selected pods once policyTypes
+#     lists Egress
+#
+# Egress to web-blocked matches no allow rule, so it is refused. The same policy applies
+# to client-standard (an ordinary pod) and client-sandboxed (runtimeClassName:
+# isolated-sandbox): the ordinary client is the control that shows the result means what
+# the page says it means.
+#
+# This is networking.k8s.io/v1, not the Auto Mode ApplicationNetworkPolicy. It selects
+# by pod and never by hostname; the optional variant in app-egress-policy.yaml shows the
+# hostname form.
+#
+# <COREDNS_IP> is your cluster's CoreDNS Service address, filled in by the script (or by
+# hand):
+#   kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'
+# EKS Auto Mode runs CoreDNS locally on each node and the Network Policy Controller
+# matches DNS by that fixed Service IP, so DNS egress is allowed with an ipBlock on it,
+# the same way Getting started > Coding agent allows CoreDNS.
+# https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: netpol-client-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: netpol-client
+  policyTypes:
+    - Egress
+  egress:
+    # Allow: the web-allowed server, by its pod label, on its port.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: web-allowed
+      ports:
+        - { protocol: TCP, port: 8080 }
+    # Allow: CoreDNS, so the clients can resolve names.
+    - to:
+        - ipBlock: { cidr: <COREDNS_IP>/32 }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }

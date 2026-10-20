@@ -4,6 +4,8 @@ This repository holds runnable samples for Nitro Sandboxes on Amazon EKS, publis
 documentation site. These rules apply to everyone who changes it, people and coding agents
 alike. Each rule says why it exists, so you can tell when a case is new.
 
+Questions and review pings go to the internal Slack channel `#eks-nitro-sandbox-interest`.
+
 ## Layout
 
 | Path | What it is |

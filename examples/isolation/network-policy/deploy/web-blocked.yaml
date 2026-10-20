@@ -1,0 +1,30 @@
+# web-blocked: a stock HTTP server, identical to web-allowed, that the egress policy
+# will NOT allow the clients to reach. It is an ordinary pod reached by its pod IP on
+# the ClusterIP Service's port.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-blocked
+  labels:
+    app: web-blocked
+spec:
+  containers:
+    - name: web
+      image: public.ecr.aws/docker/library/python:3.12-alpine
+      command: ["python3", "-m", "http.server", "8080"]
+      workingDir: /srv
+      ports:
+        - { containerPort: 8080 }
+      resources:
+        requests: { cpu: "100m", memory: 64Mi }
+        limits:   { cpu: "250m", memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-blocked
+spec:
+  selector:
+    app: web-blocked
+  ports:
+    - { protocol: TCP, port: 8080, targetPort: 8080 }
