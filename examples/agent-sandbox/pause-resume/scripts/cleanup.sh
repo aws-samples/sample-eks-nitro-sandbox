@@ -36,81 +36,89 @@ failures=0
 note_fail() { echo "  INCOMPLETE: $*" >&2; failures=$((failures + 1)); }
 
 # The namespace must be the sample's before we delete anything inside it. A read
-# that fails is a failure, never "gone".
+# that fails is a failure, never "gone". When it is absent we skip the
+# namespace-scoped steps but STILL run step 4 (the StorageClass): setup creates
+# the sample's class before the namespace, so a run that failed early can leave
+# the class with no namespace, and exiting here would strand it.
+ns_absent=0
 namespace_is_ours
 ns_rc=$?
 case $ns_rc in
   0) : ;;  # ours: go on and clean up
   1) die "namespace $NAMESPACE exists but is not the sample's ($NS_LABEL_KEY=$NS_LABEL_VAL); refusing to touch it" ;;
   2) die "could not read namespace $NAMESPACE; refusing to delete anything (a failed read is not 'gone')" ;;
-  3) echo "namespace $NAMESPACE does not exist; nothing to clean up."; exit 0 ;;
+  3) ns_absent=1; echo "namespace $NAMESPACE does not exist; skipping the namespace-scoped steps, still checking the sample's StorageClass." ;;
 esac
 
-# Record the bound PV BEFORE deleting the Sandbox. GC removes the PVC as soon as
-# its owner goes, so a volumeName read after the delete comes back empty, which
-# would skip the check that the EBS volume is really gone. A failed read here is
-# recorded as a cleanup failure, not read as "no volume". Everything in the
-# sample's namespace is the sample's, so this is a plain failure-aware read.
-pv=""
-pvc_rc=0; resource_exists kc "pvc/$PVC" || pvc_rc=$?
-case $pvc_rc in
-  0) # Capture the read's status: a failed kubectl can print nonempty output, so
-     # a non-zero status must be a failure, not taken as a valid PV name. Only
-     # test for an empty result after a successful read.
-     pv_read_rc=0
-     pv="$(kc get pvc "$PVC" -o jsonpath='{.spec.volumeName}' 2>/dev/null)" || pv_read_rc=$?
-     if [[ $pv_read_rc -ne 0 ]]; then
-       pv=""
-       note_fail "could not read the bound PV of pvc/$PVC; cannot confirm the EBS volume is deleted (a failed read is not 'gone')"
-     elif [[ -z "$pv" ]]; then
-       note_fail "pvc/$PVC has no bound PV; cannot confirm the EBS volume is deleted"
-     fi ;;
-  1) : ;;  # no PVC: nothing to record
-  2) note_fail "could not read pvc/$PVC; cannot determine its EBS volume (a failed read is not 'gone')" ;;
-esac
-
-step "1/4 delete sandbox/$SANDBOX (and, by ownerReference, pvc/$PVC + its EBS volume)"
-# The namespace is confirmed the sample's, so the Sandbox in it is the sample's.
-# Deleting it garbage-collects the PVC and the EBS volume through the
-# ownerReference.
-sb_rc=0; resource_exists kc "sandbox/$SANDBOX" || sb_rc=$?
-case $sb_rc in
-  0) kc delete sandbox "$SANDBOX" --wait=true --timeout=120s || note_fail "sandbox/$SANDBOX did not delete cleanly" ;;
-  1) echo "  sandbox/$SANDBOX not present" ;;
-  2) note_fail "could not read sandbox/$SANDBOX; not reporting it gone" ;;
-esac
-
-step "2/4 confirm the workspace PVC and its EBS volume are gone"
-# Belt and braces: if the Sandbox was already gone while the PVC remained (for
-# example deleted by hand mid-suspend), there is no owner to GC the claim, so it
-# would sit there holding an EBS volume.
-pvc_rc=0; resource_exists kc "pvc/$PVC" || pvc_rc=$?
-case $pvc_rc in
-  0) kc delete pvc "$PVC" --wait=true --timeout=120s || note_fail "pvc/$PVC did not delete cleanly" ;;
-  1) echo "  pvc/$PVC not present" ;;
-  2) note_fail "could not read pvc/$PVC; not reporting it gone" ;;
-esac
-if [[ -n "$pv" ]]; then
-  # The PV is cluster-scoped. Delete reclaims the EBS volume (the sample's class
-  # uses reclaimPolicy Delete). Wait for it to be gone so a still-billing volume
-  # is never reported as cleaned up. A read that fails is a failure, never "gone".
-  pv_rc=0; resource_exists kc_cluster "pv/$pv" || pv_rc=$?
-  case $pv_rc in
-    0) if kc_cluster wait --for=delete "pv/$pv" --timeout=120s; then
-         echo "  pv $pv: gone"
-       else
-         note_fail "pv/$pv (the EBS volume) is still present; it may still be billing"
+if [[ $ns_absent -eq 0 ]]; then
+  # Record the bound PV BEFORE deleting the Sandbox. GC removes the PVC as soon as
+  # its owner goes, so a volumeName read after the delete comes back empty, which
+  # would skip the check that the EBS volume is really gone. A failed read here is
+  # recorded as a cleanup failure, not read as "no volume". Everything in the
+  # sample's namespace is the sample's, so this is a plain failure-aware read.
+  pv=""
+  pvc_rc=0; resource_exists kc "pvc/$PVC" || pvc_rc=$?
+  case $pvc_rc in
+    0) # Capture the read's status: a failed kubectl can print nonempty output, so
+       # a non-zero status must be a failure, not taken as a valid PV name. Only
+       # test for an empty result after a successful read.
+       pv_read_rc=0
+       pv="$(kc get pvc "$PVC" -o jsonpath='{.spec.volumeName}' 2>/dev/null)" || pv_read_rc=$?
+       if [[ $pv_read_rc -ne 0 ]]; then
+         pv=""
+         note_fail "could not read the bound PV of pvc/$PVC; cannot confirm the EBS volume is deleted (a failed read is not 'gone')"
+       elif [[ -z "$pv" ]]; then
+         note_fail "pvc/$PVC has no bound PV; cannot confirm the EBS volume is deleted"
        fi ;;
-    1) echo "  pv $pv: gone" ;;
-    2) note_fail "could not read pv/$pv; cannot confirm the EBS volume is deleted (a failed read is not 'gone')" ;;
+    1) : ;;  # no PVC: nothing to record
+    2) note_fail "could not read pvc/$PVC; cannot determine its EBS volume (a failed read is not 'gone')" ;;
   esac
+
+  step "1/4 delete sandbox/$SANDBOX (and, by ownerReference, pvc/$PVC + its EBS volume)"
+  # The namespace is confirmed the sample's, so the Sandbox in it is the sample's.
+  # Deleting it garbage-collects the PVC and the EBS volume through the
+  # ownerReference.
+  sb_rc=0; resource_exists kc "sandbox/$SANDBOX" || sb_rc=$?
+  case $sb_rc in
+    0) kc delete sandbox "$SANDBOX" --wait=true --timeout=120s || note_fail "sandbox/$SANDBOX did not delete cleanly" ;;
+    1) echo "  sandbox/$SANDBOX not present" ;;
+    2) note_fail "could not read sandbox/$SANDBOX; not reporting it gone" ;;
+  esac
+
+  step "2/4 confirm the workspace PVC and its EBS volume are gone"
+  # Belt and braces: if the Sandbox was already gone while the PVC remained (for
+  # example deleted by hand mid-suspend), there is no owner to GC the claim, so it
+  # would sit there holding an EBS volume.
+  pvc_rc=0; resource_exists kc "pvc/$PVC" || pvc_rc=$?
+  case $pvc_rc in
+    0) kc delete pvc "$PVC" --wait=true --timeout=120s || note_fail "pvc/$PVC did not delete cleanly" ;;
+    1) echo "  pvc/$PVC not present" ;;
+    2) note_fail "could not read pvc/$PVC; not reporting it gone" ;;
+  esac
+  if [[ -n "$pv" ]]; then
+    # The PV is cluster-scoped. Delete reclaims the EBS volume (the sample's class
+    # uses reclaimPolicy Delete). Wait for it to be gone so a still-billing volume
+    # is never reported as cleaned up. A read that fails is a failure, never "gone".
+    pv_rc=0; resource_exists kc_cluster "pv/$pv" || pv_rc=$?
+    case $pv_rc in
+      0) if kc_cluster wait --for=delete "pv/$pv" --timeout=120s; then
+           echo "  pv $pv: gone"
+         else
+           note_fail "pv/$pv (the EBS volume) is still present; it may still be billing"
+         fi ;;
+      1) echo "  pv $pv: gone" ;;
+      2) note_fail "could not read pv/$pv; cannot confirm the EBS volume is deleted (a failed read is not 'gone')" ;;
+    esac
+  fi
 fi
 
 step "3/4 delete namespace $NAMESPACE"
 # Delete the namespace only when everything above succeeded. If a delete failed
 # or a read could not be confirmed, something may still be in the namespace, so
 # deleting it would hide an incomplete clean up. Leave it for the reader instead.
-if [[ $failures -ne 0 ]]; then
+if [[ $ns_absent -eq 1 ]]; then
+  echo "  namespace $NAMESPACE not present"
+elif [[ $failures -ne 0 ]]; then
   echo "  SKIPPED: not deleting namespace $NAMESPACE while $failures item(s) above are unconfirmed; resolve them first." >&2
 elif kc_cluster delete namespace "$NAMESPACE" --wait=true --timeout=120s; then
   echo "  namespace $NAMESPACE deleted"
@@ -149,4 +157,8 @@ if [[ $failures -ne 0 ]]; then
   echo "Check with: kubectl get sandbox,pvc -n $NAMESPACE  and  kubectl get ns $NAMESPACE" >&2
   exit 1
 fi
-echo "clean up complete: the Sandbox, its PVC, the EBS volume and the namespace are gone; the sample's own StorageClass is removed if it made one, and the cluster default is untouched."
+if [[ $ns_absent -eq 1 ]]; then
+  echo "clean up complete: the namespace was already gone; the sample's own StorageClass is removed if it made one, and the cluster default is untouched."
+else
+  echo "clean up complete: the Sandbox, its PVC, the EBS volume and the namespace are gone; the sample's own StorageClass is removed if it made one, and the cluster default is untouched."
+fi

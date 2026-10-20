@@ -87,11 +87,11 @@ spec:
           # workspace at a time. Plain ReadWriteOnce promises only one node, so
           # two pods on that node could mount the same workspace together.
           - ReadWriteOncePod
-        # Named explicitly. EKS Auto Mode does not create a StorageClass for you
-        # (Amazon EKS User Guide, Create a storage class), so the reader applies
-        # deploy/storage-class.yaml once per cluster and setup.sh checks it is
-        # present with the ebs.csi.eks.amazonaws.com provisioner. The name comes
-        # from STORAGE_CLASS (default auto-ebs-sc), rendered in here at apply time.
+        # The class setup chose, rendered in here at apply time. setup.sh picks it
+        # (choose_storage_class): the cluster's default class when exactly one fits
+        # (ebs.csi.eks.amazonaws.com, gp3, encrypted), otherwise the sample's own
+        # class pause-resume-gp3 from deploy/storage-class.yaml. STORAGE_CLASS
+        # overrides the choice. A StorageClass is chosen, never changed.
         storageClassName: __STORAGE_CLASS__
         resources:
           requests:
