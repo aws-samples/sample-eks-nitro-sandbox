@@ -287,14 +287,14 @@ matches the just-started pod, because the VM booted with the pod, where an ordin
 `/proc/uptime` reports the uptime of the node it runs on.
 
 The `addrs`, `routes` and `dns` lines are the network-isolation proof. The guest's only
-interfaces are `lo` and a `dummy0` placeholder, with no routable address at all (`addrs` is
-empty, read from `/proc/net/fib_trie` with the loopback entries filtered out), where the
-ordinary pod has an `eth0` with its `169.254.1.1` and VPC `192.168.x.x` addresses. `routes: 0`
-means no route table entry, where the ordinary pod has a default route and its VPC route. And
-the name lookup gets `no answer` because there is no DNS, where the ordinary pod resolves. The
-`dummy0` interface is a stand-in the guest creates so loopback-only software still finds a
-non-loopback device; the empty `addrs` line shows it carries no address, and `routes: 0` that
-it carries no route, so it is not a path off the pod. The last line,
+interfaces are `lo` and a `dummy0` placeholder, with no non-loopback IPv4 address (`addrs` is
+empty: it lists the non-loopback IPv4 addresses from `/proc/net/fib_trie`), where the ordinary
+pod has an `eth0` with its `169.254.1.1` and VPC `192.168.x.x` addresses. `routes: 0` means no
+route table entry at all, for any address family, where the ordinary pod has a default route
+and its VPC route. And the name lookup gets `no answer` because there is no DNS, where the
+ordinary pod resolves. The `dummy0` interface is a stand-in the guest creates so loopback-only
+software still finds a non-loopback device; the empty `addrs` line shows it has no IPv4 address,
+and `routes: 0` that nothing has a route, so it is not a path off the pod. The last line,
 `confidential-policy-ready`, is the marker that shows the expected container started.
 
 **Step 6: An operator's exec is refused inside the guest.** The caller is allowed to
@@ -371,10 +371,10 @@ permits out of the policy for a network-isolated pod.
 Step 5 shows the proof, read from the logs: the net-isolated guest has `ifaces: dummy0 lo`, an
 empty `addrs`, `routes: 0` and `dns: no answer`, where an ordinary pod on the same cluster has
 `ifaces: eth0 lo`, `addrs` with its link-local and VPC addresses, `routes: 2` and `dns: answer`.
-The only interfaces are loopback and a `dummy0` placeholder that carries no address and no
-route; there is no route table entry and no name resolution. This is removal of the network,
-not a policy over it: there is no `NetworkPolicy`, no `PolicyEndpoint`, and no cluster-wide
-network policy enforcement to turn on.
+The only interfaces are loopback and a `dummy0` placeholder with no non-loopback IPv4 address;
+there is no route table entry, for any address family, and no name resolution. This is removal
+of the network, not a policy over it: there is no `NetworkPolicy`, no `PolicyEndpoint`, and no
+cluster-wide network policy enforcement to turn on.
 
 A sample whose sandbox does need a network restricts its egress with a network policy instead;
 the [coding agent](../../getting-started/coding-agent/README.md) sample shows that shape.
@@ -396,9 +396,10 @@ the [coding agent](../../getting-started/coding-agent/README.md) sample shows th
   behaviour the sample shows holds either way.
 - **`dummy0` is not a way out.** The network-isolated guest shows a `dummy0` interface beside
   `lo`, there so loopback-only software finds a non-loopback device. The empty `addrs` line
-  shows it carries no routable address and `routes: 0` that it carries no route, so it is not a
-  path off the pod. The proof that the pod has no network is the empty `addrs`, `routes: 0` and
-  the failed name lookup, not the absence of `dummy0`.
+  shows it has no non-loopback IPv4 address and `routes: 0` that nothing has a route, so it is
+  not a path off the pod. The proof that the pod has no network is the empty `addrs`,
+  `routes: 0` and the failed name lookup, not the absence of `dummy0`. `addrs` reads IPv4 from
+  `/proc/net/fib_trie`; the stronger signal, `routes: 0`, covers every address family.
 
 ## Clean up
 
