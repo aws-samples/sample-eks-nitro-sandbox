@@ -132,7 +132,7 @@ The [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) resources,
 
 ### Storage (`storage`)
 
-- ebs: EBS volumes for sandboxed pods. Spec: [#27](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/27).
+- [ebs](../examples/storage/ebs/README.md) (available now): EBS volumes for sandboxed pods, a single pod and a StatefulSet whose replicas each get their own volume. Spec: [#27](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/27).
 - efs: an EFS file system shared by two sandboxed pods. Spec: [#28](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/28).
 - s3-files: an S3 Files access point shared by two sandboxed pods and kept in sync with its S3 bucket. Spec: [#29](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/29).
 
