@@ -213,8 +213,8 @@ kc exec pause-resume -- sh -c 'awk "\$2==\"/workspace\"{print \$1}" /proc/mounts
 ```text
 boot at 2026-10-20T14:16:16Z on kernel 6.18.51, hostname pause-resume
 uid=216ece6e-5371-48bc-bb9d-59c31e8cfe25
-NAME                     STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
-workspace-pause-resume   Bound    pvc-fc116ab0-e6e4-4c5f-9147-c8521feaddcd   10Gi       RWOP           auto-ebs-sc    36s
+NAME                     STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+workspace-pause-resume   Bound    pvc-fc116ab0-e6e4-4c5f-9147-c8521feaddcd   10Gi       RWOP           auto-ebs-sc    <unset>                 36s
 6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
 32.83 31.11
 dm-0
@@ -268,8 +268,8 @@ sandbox.agents.x-k8s.io/pause-resume condition met
 
 The pod is gone (you stop paying for the guest); the EBS volume is kept:
   pod/pause-resume: NotFound (deleted)
-  NAME                     STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
-  workspace-pause-resume   Bound    pvc-fc116ab0-e6e4-4c5f-9147-c8521feaddcd   10Gi       RWOP           auto-ebs-sc    108s
+  NAME                     STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+  workspace-pause-resume   Bound    pvc-fc116ab0-e6e4-4c5f-9147-c8521feaddcd   10Gi       RWOP           auto-ebs-sc    <unset>                 108s
 ```
 
 The pod is `NotFound`: suspend deleted it, so you stop paying for the guest. The PVC is
