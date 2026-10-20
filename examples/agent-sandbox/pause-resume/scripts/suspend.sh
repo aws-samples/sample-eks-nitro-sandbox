@@ -14,11 +14,17 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 require_commands kubectl
 show_context
 
-# Only act when this sample owns the namespace AND the Sandbox itself carries the
-# sample's mark, so a same-named object that belongs to something else is never
-# patched, even inside a namespace we own.
+# Only act when this sample owns the namespace. Everything in a namespace the
+# sample created and labelled is the sample's, so the namespace check covers the
+# Sandbox too. A failure-aware existence check then tells "run setup first" apart
+# from a read that failed.
 require_our_namespace
-require_our_sandbox
+sb_rc=0; resource_exists kc "sandbox/$SANDBOX" || sb_rc=$?
+case $sb_rc in
+  0) : ;;
+  1) die "sandbox/$SANDBOX not found in namespace $NAMESPACE; run ./scripts/setup.sh first" ;;
+  2) die "could not read sandbox/$SANDBOX in namespace $NAMESPACE; stopping rather than patch something I cannot verify" ;;
+esac
 
 step "suspend sandbox/$SANDBOX"
 kc patch "sandbox/$SANDBOX" --type=merge -p '{"spec":{"operatingMode":"Suspended"}}'

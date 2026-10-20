@@ -22,15 +22,22 @@ SAMPLE_DIR="$(cd "$HERE/.." && pwd)"
 if [[ -f "$SAMPLE_DIR/.env" ]]; then
   while IFS='=' read -r _k _v; do
     case "$_k" in
-      NAMESPACE)     NAMESPACE="${NAMESPACE:-$_v}" ;;
-      AWS_REGION)    AWS_REGION="${AWS_REGION:-$_v}" ;;
-      KUBE_CONTEXT)  KUBE_CONTEXT="${KUBE_CONTEXT:-$_v}" ;;
+      NAMESPACE)      NAMESPACE="${NAMESPACE:-$_v}" ;;
+      STORAGE_CLASS)  STORAGE_CLASS="${STORAGE_CLASS:-$_v}" ;;
+      AWS_REGION)     AWS_REGION="${AWS_REGION:-$_v}" ;;
+      KUBE_CONTEXT)   KUBE_CONTEXT="${KUBE_CONTEXT:-$_v}" ;;
     esac
-  done < <(grep -E '^[[:space:]]*(NAMESPACE|AWS_REGION|KUBE_CONTEXT)[[:space:]]*=' "$SAMPLE_DIR/.env" \
+  done < <(grep -E '^[[:space:]]*(NAMESPACE|STORAGE_CLASS|AWS_REGION|KUBE_CONTEXT)[[:space:]]*=' "$SAMPLE_DIR/.env" \
              | sed -E 's/^[[:space:]]*//; s/[[:space:]]*=[[:space:]]*/=/')
 fi
 
 NAMESPACE="${NAMESPACE:-pause-resume}"
+# The StorageClass the workspace claim uses. EKS Auto Mode does not create one, so
+# the reader applies deploy/storage-class.yaml once per cluster; the scripts only
+# check it is present with the right provisioner (require_storage_class).
+STORAGE_CLASS="${STORAGE_CLASS:-auto-ebs-sc}"
+# The provisioner the class must use for the EBS CSI driver.
+EBS_PROVISIONER="ebs.csi.eks.amazonaws.com"
 AWS_REGION="${AWS_REGION:-us-west-2}"
 # The context the run pins. Set KUBE_CONTEXT to the name of the kube context for
 # the cluster you ran Getting started on. Empty means "use the current context",
@@ -138,34 +145,26 @@ require_our_namespace() {
   esac
 }
 
-# resource_is_ours <runner> <kind/name> : does the resource carry ManagedBy=pause-resume?
-# A failed read is "could not determine", never a pass. Same code meanings as
-# namespace_is_ours: 0 ours, 1 not ours, 2 could not read, 3 absent.
-resource_is_ours() {
-  local runner=$1 ref=$2
-  local ex=0
-  resource_exists "$runner" "$ref" || ex=$?
-  case $ex in
-    1) return 3 ;;   # absent
-    2) return 2 ;;   # could not read existence
-  esac
-  local label rc
-  label="$("$runner" get "$ref" -o "jsonpath={.metadata.labels.ManagedBy}" 2>/dev/null)"
+# require_storage_class : stop unless the StorageClass named by STORAGE_CLASS
+# exists and uses the EBS CSI provisioner. A StorageClass is cluster-wide, so the
+# reader applies deploy/storage-class.yaml once (AGENTS.md leaves cluster-wide
+# settings to the reader); the scripts never create, patch or label one. A read
+# that fails is a failure, never "absent". Run this before setup creates anything.
+require_storage_class() {
+  local prov rc
+  prov="$(kc_cluster get storageclass "$STORAGE_CLASS" --ignore-not-found \
+    -o jsonpath='{.provisioner}' 2>/dev/null)"
   rc=$?
-  [[ $rc -ne 0 ]] && return 2
-  [[ "$label" == "$SAMPLE" ]]
-}
-
-# require_our_sandbox : stop unless the Sandbox exists in our namespace AND carries
-# the sample's mark, so a mutating script never patches a same-named object that
-# belongs to something else, even inside a namespace we own.
-require_our_sandbox() {
-  local rc=0
-  resource_is_ours kc "sandbox/$SANDBOX" || rc=$?
-  case $rc in
-    0) return 0 ;;
-    1) die "sandbox/$SANDBOX exists but does not carry ManagedBy=$SAMPLE; refusing to touch it (it is not the sample's)" ;;
-    2) die "could not read sandbox/$SANDBOX; stopping rather than patch something I cannot verify" ;;
-    3) die "sandbox/$SANDBOX not found in namespace $NAMESPACE; run ./scripts/setup.sh first" ;;
-  esac
+  if [[ $rc -ne 0 ]]; then
+    die "could not read storageclass/$STORAGE_CLASS; stopping rather than guess (a failed read is not 'absent')"
+  fi
+  if [[ -z "$prov" ]]; then
+    die "storageclass/$STORAGE_CLASS not found. EKS Auto Mode does not create one; apply the sample's class once per cluster:
+         kubectl apply -f deploy/storage-class.yaml
+       Or set STORAGE_CLASS in .env to a class that uses $EBS_PROVISIONER."
+  fi
+  if [[ "$prov" != "$EBS_PROVISIONER" ]]; then
+    die "storageclass/$STORAGE_CLASS uses provisioner '$prov', not '$EBS_PROVISIONER'; its volumes are not EBS CSI volumes. Apply the sample's class under a free name, or set STORAGE_CLASS to one that uses $EBS_PROVISIONER:
+         kubectl apply -f deploy/storage-class.yaml"
+  fi
 }

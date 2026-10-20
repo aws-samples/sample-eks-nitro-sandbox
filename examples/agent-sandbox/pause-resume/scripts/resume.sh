@@ -14,10 +14,16 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 require_commands kubectl
 show_context
 
-# Only act when this sample owns the namespace AND the Sandbox carries the
-# sample's mark.
+# Only act when this sample owns the namespace. Everything in a namespace the
+# sample created and labelled is the sample's, so the namespace check covers the
+# Sandbox too.
 require_our_namespace
-require_our_sandbox
+sb_rc=0; resource_exists kc "sandbox/$SANDBOX" || sb_rc=$?
+case $sb_rc in
+  0) : ;;
+  1) die "sandbox/$SANDBOX not found in namespace $NAMESPACE; run ./scripts/setup.sh first" ;;
+  2) die "could not read sandbox/$SANDBOX in namespace $NAMESPACE; stopping rather than patch something I cannot verify" ;;
+esac
 
 step "resume sandbox/$SANDBOX"
 kc patch "sandbox/$SANDBOX" --type=merge -p '{"spec":{"operatingMode":"Running"}}'

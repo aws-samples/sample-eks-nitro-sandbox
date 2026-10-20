@@ -54,16 +54,18 @@ Nothing else is pinned beyond the image in the manifest
 
 | File | What it is |
 |---|---|
+| [`deploy/storage-class.yaml`](deploy/storage-class.yaml) | The EBS `StorageClass` the workspace claim uses. The reader applies it once per cluster. |
 | [`deploy/sandbox.yaml`](deploy/sandbox.yaml) | The `Sandbox` with its EBS `volumeClaimTemplates`. Its container appends one line to `/workspace/boots.log` per boot. |
-| [`scripts/setup.sh`](scripts/setup.sh) | Create the namespace and the `Sandbox`, and wait for the guest to boot with `/workspace` mounted. |
+| [`scripts/setup.sh`](scripts/setup.sh) | Check the prerequisites, create the namespace and the `Sandbox`, and wait for the guest to boot with `/workspace` mounted. |
 | [`scripts/suspend.sh`](scripts/suspend.sh) | Suspend the sandbox and show the pod gone and the volume kept. |
 | [`scripts/resume.sh`](scripts/resume.sh) | Resume the sandbox and show the workspace back on a new pod. |
-| [`scripts/cleanup.sh`](scripts/cleanup.sh) | Delete the `Sandbox`, its PVC, the EBS volume and the namespace. |
+| [`scripts/cleanup.sh`](scripts/cleanup.sh) | Delete the `Sandbox`, its PVC, the EBS volume and the namespace. It leaves the `StorageClass`. |
 | [`.env.example`](.env.example) | The local values the sample needs, with no secrets. |
 
 The scripts read `.env` (copy it from `.env.example`). `NAMESPACE` defaults to
-`pause-resume`; set `KUBE_CONTEXT` to the context of the cluster you ran Getting started on,
-so a run never depends on the machine's current context.
+`pause-resume` and `STORAGE_CLASS` to `auto-ebs-sc`; set `KUBE_CONTEXT` to the context of
+the cluster you ran Getting started on, so a run never depends on the machine's current
+context.
 
 **Step 1: Install agent-sandbox**, if you have not already from the warm pool sample. This
 folder was built against v1.0.6:
@@ -73,7 +75,47 @@ kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/downl
 kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller
 ```
 
-**Step 2: Create the Sandbox and wait for the guest.** [`deploy/sandbox.yaml`](deploy/sandbox.yaml)
+**Step 2: Create the StorageClass, once per cluster.** EKS Auto Mode does not create a
+`StorageClass` for you (Amazon EKS User Guide, *Create a storage class*), so the sample
+ships one and you apply it once. [`deploy/storage-class.yaml`](deploy/storage-class.yaml)
+references the EBS CSI driver (`provisioner: ebs.csi.eks.amazonaws.com`), keeps the volume
+on Auto Mode nodes with `allowedTopologies`, and binds on first use:
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: auto-ebs-sc
+allowedTopologies:
+- matchLabelExpressions:
+  - key: eks.amazonaws.com/compute-type
+    values:
+    - auto
+provisioner: ebs.csi.eks.amazonaws.com
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  type: gp3
+  encrypted: "true"
+```
+
+It is not marked the cluster default: the workspace claim names it explicitly, and marking
+a class default would change every claim on your cluster that names none. If you already
+have a class that uses `ebs.csi.eks.amazonaws.com`, set `STORAGE_CLASS` in `.env` to its
+name and skip this step.
+
+```bash
+kubectl apply -f deploy/storage-class.yaml
+```
+
+```text
+storageclass.storage.k8s.io/auto-ebs-sc created
+```
+
+`setup.sh` checks this class is present with the right provisioner before it creates
+anything, and stops with this command if it is missing. It never creates or changes a
+`StorageClass` itself: a `StorageClass` is cluster-wide, so it is yours to manage.
+
+**Step 3: Create the Sandbox and wait for the guest.** [`deploy/sandbox.yaml`](deploy/sandbox.yaml)
 is one `Sandbox` on `isolated-sandbox`, booted network-isolated, with a 10Gi EBS workspace
 from `volumeClaimTemplates`. Its container appends one line to `/workspace/boots.log` on
 every boot, so the file is a running record: one line per guest the workspace has been
@@ -127,6 +169,7 @@ spec:
 
 ```text
 context: sandbox-demo (pinned)   namespace: pause-resume
+storageclass auto-ebs-sc is present with provisioner ebs.csi.eks.amazonaws.com
 
 == 1/3 namespace pause-resume ==
 namespace/pause-resume created
@@ -145,7 +188,11 @@ sandbox/pause-resume is Running with /workspace mounted.
 The first sandboxed pod on a cold cluster waits for Auto Mode to launch a node; after that
 a new one is Ready in about 5 to 6 seconds.
 
-**Step 3: Record the running guest, and prove it is a sandbox.** Read the boot log, the pod
+The `context:` line above and in the blocks below shows `sandbox-demo`, the shared default
+cluster name from the home page; the run that produced this output used a different context
+name, changed here to the default.
+
+**Step 4: Record the running guest, and prove it is a sandbox.** Read the boot log, the pod
 UID and the PV, then the three signals that show the pod ran in a sandbox of its own. The
 context and namespace are pinned, shown here as `kc`:
 
@@ -161,12 +208,12 @@ kc exec pause-resume -- sh -c 'awk "\$2==\"/workspace\"{print \$1}" /proc/mounts
 ```
 
 ```text
-boot at 2026-10-20T02:59:43Z on kernel 6.18.51, hostname pause-resume
-uid=63aaeb66-3d0d-4a94-b35e-19283400a56a
+boot at 2026-10-20T11:22:38Z on kernel 6.18.51, hostname pause-resume
+uid=f8e474e8-6043-4e52-b04a-996c63eb61ef
 NAME                     STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
-workspace-pause-resume   Bound    pvc-8fd30514-9d0d-4d13-8c5e-18eee71249c2   10Gi       RWOP           auto-ebs-sc    33s
+workspace-pause-resume   Bound    pvc-baab0893-51d9-46ff-9014-cbe0ca9c4564   10Gi       RWOP           auto-ebs-sc    31s
 6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-28.60 26.46
+19.36 17.33
 dm-0
 vda
 vdb
@@ -177,7 +224,7 @@ vdd
 
 One line in the file; one pod UID; the claim `Bound` with access mode `RWOP`
 (`ReadWriteOncePod`). The guest runs its own kernel, built for the VM: the version string
-here matches the node's (`6.18.51`), but the uptime is the pod's, about 29 seconds, where an
+here matches the node's (`6.18.51`), but the uptime is the pod's, about 19 seconds, where an
 ordinary pod would report the node's uptime, hours or days. The block devices are virtio
 `vd*`, and `/workspace` is one of them (`/dev/vdd`), where an ordinary pod would see the
 instance's `nvme*` devices. Together they show the containers ran in a VM of their own.
@@ -200,7 +247,7 @@ command terminated with exit code 1
 `ip route show default` prints nothing: there is no default route. `kubectl exec` still
 works, because it uses the guest's internal control channel, not the network.
 
-**Step 4: Suspend.** `operatingMode: Suspended` tells the controller to delete the pod and
+**Step 5: Suspend.** `operatingMode: Suspended` tells the controller to delete the pod and
 keep the `Sandbox` and its volume. No `sync` is needed first: the platform flushes and
 releases the CSI mount before killing the guest.
 
@@ -218,11 +265,11 @@ sandbox.agents.x-k8s.io/pause-resume condition met
 The pod is gone (you stop paying for the guest); the EBS volume is kept:
   pod/pause-resume: NotFound (deleted)
   NAME                     STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
-  workspace-pause-resume   Bound    pvc-8fd30514-9d0d-4d13-8c5e-18eee71249c2   10Gi       RWOP           auto-ebs-sc    98s
+  workspace-pause-resume   Bound    pvc-baab0893-51d9-46ff-9014-cbe0ca9c4564   10Gi       RWOP           auto-ebs-sc    89s
 ```
 
 The pod is `NotFound`: suspend deleted it, so you stop paying for the guest. The PVC is
-still `Bound` on the same PV (`pvc-8fd30514...`), so the EBS volume was not reclaimed. The
+still `Bound` on the same PV (`pvc-baab0893...`), so the EBS volume was not reclaimed. The
 `Sandbox` reports why it is not Ready, so a caller can tell "parked on purpose" from
 "broken":
 
@@ -232,10 +279,10 @@ kc get sandbox pause-resume
 
 ```text
 NAME           READY   REASON             AGE
-pause-resume   False   SandboxSuspended   100s
+pause-resume   False   SandboxSuspended   90s
 ```
 
-**Step 5: Resume.** `operatingMode: Running` schedules a new pod that mounts the same
+**Step 6: Resume.** `operatingMode: Running` schedules a new pod that mounts the same
 volume.
 
 ```bash
@@ -250,14 +297,14 @@ sandbox.agents.x-k8s.io/pause-resume patched
 sandbox.agents.x-k8s.io/pause-resume condition met
 
 The workspace came back on a new pod, with its history intact:
-  boot at 2026-10-20T02:59:43Z on kernel 6.18.51, hostname pause-resume
-  boot at 2026-10-20T03:01:27Z on kernel 6.18.51, hostname pause-resume
+  boot at 2026-10-20T11:22:38Z on kernel 6.18.51, hostname pause-resume
+  boot at 2026-10-20T11:24:11Z on kernel 6.18.51, hostname pause-resume
 ```
 
 The file has both lines now: the one from before the suspend, and a new one from this
 boot. Disk state survived; process memory did not.
 
-**Step 6: Prove the resumed pod is a new sandbox, same volume.** Read the pod UID, the PV
+**Step 7: Prove the resumed pod is a new sandbox, same volume.** Read the pod UID, the PV
 and the three signals again:
 
 ```bash
@@ -270,11 +317,11 @@ kc exec pause-resume -- sh -c 'awk "\$2==\"/workspace\"{print \$1}" /proc/mounts
 ```
 
 ```text
-uid=06a3dd8b-af40-4561-a5cd-adc523eb96fa
+uid=d61bf5fd-8c28-4313-b3b8-2acefe5f859c
 phase=Bound
-pv=pvc-8fd30514-9d0d-4d13-8c5e-18eee71249c2
+pv=pvc-baab0893-51d9-46ff-9014-cbe0ca9c4564
 6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-17.72 15.96
+9.16 7.39
 dm-0
 vda
 vdb
@@ -283,9 +330,9 @@ vdd
 /dev/vdd
 ```
 
-The pod UID changed (`63aaeb66...` to `06a3dd8b...`): this is a new pod, not the old one
-restarted. The PV is the same (`pvc-8fd30514...`), so the workspace was re-attached, not
-recreated. The guest kernel build is read again here; the uptime is this pod's, about 18
+The pod UID changed (`f8e474e8...` to `d61bf5fd...`): this is a new pod, not the old one
+restarted. The PV is the same (`pvc-baab0893...`), so the workspace was re-attached, not
+recreated. The guest kernel build is read again here; the uptime is this pod's, about 9
 seconds, so the guest booted with the pod; and the block devices are virtio `vd*` with
 `/workspace` on `/dev/vdd`: the thing that re-attached the volume is a new sandbox guest.
 
@@ -327,8 +374,8 @@ context: sandbox-demo (pinned)   namespace: pause-resume
 sandbox.agents.x-k8s.io "pause-resume" deleted from pause-resume namespace
 == 2/3 confirm the workspace PVC and its EBS volume are gone ==
 persistentvolumeclaim "workspace-pause-resume" deleted from pause-resume namespace
-persistentvolume/pvc-8fd30514-9d0d-4d13-8c5e-18eee71249c2 condition met
-  pv pvc-8fd30514-9d0d-4d13-8c5e-18eee71249c2: gone
+persistentvolume/pvc-baab0893-51d9-46ff-9014-cbe0ca9c4564 condition met
+  pv pvc-baab0893-51d9-46ff-9014-cbe0ca9c4564: gone
 == 3/3 delete namespace pause-resume ==
 namespace "pause-resume" deleted
   namespace pause-resume deleted
@@ -336,14 +383,19 @@ namespace "pause-resume" deleted
 clean up complete: the Sandbox, its PVC, the EBS volume and the namespace are gone.
 ```
 
-The clean up deletes a resource only when it carries the sample's label, checks the
-namespace label before deleting anything inside it, and exits non-zero if it skipped
-something or could not confirm the EBS volume is gone, so an incomplete clean up is never
-reported as done.
+The clean up checks the namespace carries the sample's label before it deletes anything
+inside it, confirms each delete with a lookup that reads a failed read as a failure rather
+than "gone", and exits non-zero if it skipped something or could not confirm the EBS volume
+is gone, so an incomplete clean up is never reported as done.
 
-The agent-sandbox controller is shared with the warm pool sample and other agent-sandbox
-samples, so this clean up leaves it installed. To remove it, follow the
-[warm pool clean up](../../getting-started/warm-pool/README.md#clean-up). If this is the only
-sample you ran, follow the
+It leaves two things in place, both cluster-wide and yours to manage:
+
+- **The `StorageClass`** (`deploy/storage-class.yaml`): other workloads may use it. Remove
+  it with `kubectl delete -f deploy/storage-class.yaml` when nothing else needs it.
+- **The agent-sandbox controller**, shared with the warm pool sample and other agent-sandbox
+  samples. To remove it, follow the
+  [warm pool clean up](../../getting-started/warm-pool/README.md#clean-up).
+
+If this is the only sample you ran, follow the
 [hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up) to remove
 the cluster.

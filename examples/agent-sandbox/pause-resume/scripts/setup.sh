@@ -19,6 +19,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 require_commands kubectl sed
 show_context
 
+# Check the three cluster prerequisites BEFORE creating anything (including the
+# namespace), so a missing prerequisite stops the run clean with no leftovers.
+
 # The runtime class must be present. On EKS Auto Mode it always is; on standard
 # EKS the nodes need a sandbox-enabled AMI (see Hello sandbox).
 kc_cluster get runtimeclass isolated-sandbox >/dev/null 2>&1 \
@@ -27,6 +30,12 @@ kc_cluster get runtimeclass isolated-sandbox >/dev/null 2>&1 \
 # The agent-sandbox controller must be installed (Getting started > Warm pool).
 kc_cluster get crd sandboxes.agents.x-k8s.io >/dev/null 2>&1 \
   || die "the agent-sandbox Sandbox CRD is not installed; run the Warm pool sample's install step first"
+
+# The StorageClass must exist with the EBS CSI provisioner. EKS Auto Mode does not
+# create one, so the reader applies deploy/storage-class.yaml once per cluster.
+# This never creates or changes a StorageClass; it only checks and stops.
+require_storage_class
+echo "storageclass $STORAGE_CLASS is present with provisioner $EBS_PROVISIONER"
 
 step "1/3 namespace $NAMESPACE"
 # Create the namespace only when it is absent, and label it so clean up can tell
@@ -61,46 +70,18 @@ if [[ -n "$live_access" && "$live_access" != "$want_access" ]]; then
        That DELETES the workspace and its EBS volume (boots.log included). Suspend preserves data; delete does not."
 fi
 
-# Render the manifest with this run's namespace, so an overridden NAMESPACE
-# reaches the object. Never apply the file with its __NAMESPACE__ placeholder.
-sed "s/__NAMESPACE__/$NAMESPACE/g" "$SAMPLE_DIR/deploy/sandbox.yaml" | kc apply -f -
+# Render the manifest with this run's namespace and StorageClass, so an
+# overridden NAMESPACE or STORAGE_CLASS reaches the object. Never apply the file
+# with its __NAMESPACE__ / __STORAGE_CLASS__ placeholders.
+sed -e "s/__NAMESPACE__/$NAMESPACE/g" -e "s/__STORAGE_CLASS__/$STORAGE_CLASS/g" \
+  "$SAMPLE_DIR/deploy/sandbox.yaml" | kc apply -f -
 
 step "3/3 wait for the guest to boot and mount the EBS workspace"
 # Ready on a Sandbox means its pod is Ready, which also covers the CSI attach of
-# the 10Gi auto-ebs-sc volume. The first sandboxed pod on a cold cluster waits
-# for Auto Mode to launch a node, so the first run can take minutes.
+# the 10Gi EBS volume. The first sandboxed pod on a cold cluster waits for Auto
+# Mode to launch a node, so the first run can take minutes.
 kc wait --for=condition=Ready "sandbox/$SANDBOX" --timeout=10m \
   || die "sandbox never became Ready; check 'kubectl -n $NAMESPACE describe sandbox $SANDBOX' and 'kubectl -n $NAMESPACE describe pod $SANDBOX' (a stuck EBS attach shows up as FailedAttachVolume)"
-
-# Tag the EBS volume the sample created ManagedBy=pause-resume, so it carries the
-# sample's mark like every other AWS resource a sample makes. The namespace and
-# the Sandbox's ownerReference are what the clean up uses; this tag is the mark a
-# person or another script can filter on. Best effort: it needs the AWS CLI and
-# credentials for the cluster's account, and the run does not depend on it, so a
-# missing CLI or a denied call prints a note and the setup still succeeds.
-tag_ebs_volume() {
-  command -v aws >/dev/null 2>&1 || { echo "note: aws CLI not found; skipping the ManagedBy tag on the EBS volume"; return 0; }
-  local pv volid
-  # Guard each read so set -e does not abort setup on a failed kubectl: the tag
-  # is best effort and setup must still succeed without it.
-  if ! pv="$(kc get pvc "$PVC" -o jsonpath='{.spec.volumeName}' 2>/dev/null)" || [[ -z "$pv" ]]; then
-    echo "note: could not read the PV name; skipping the ManagedBy tag"; return 0
-  fi
-  if ! volid="$(kc_cluster get pv "$pv" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null)"; then
-    echo "note: could not read the EBS volume id; skipping the ManagedBy tag"; return 0
-  fi
-  case "$volid" in
-    vol-*) ;;
-    *) echo "note: PV $pv has no EBS volume id yet; skipping the ManagedBy tag"; return 0 ;;
-  esac
-  if aws ec2 create-tags --region "$AWS_REGION" --resources "$volid" \
-       --tags "Key=ManagedBy,Value=$SAMPLE" >/dev/null 2>&1; then
-    echo "tagged EBS volume $volid with ManagedBy=$SAMPLE"
-  else
-    echo "note: could not tag EBS volume $volid (missing or insufficient AWS credentials for $AWS_REGION); the volume is still tracked by its namespace and the Sandbox ownerReference"
-  fi
-}
-tag_ebs_volume
 
 echo
 echo "sandbox/$SANDBOX is Running with /workspace mounted."

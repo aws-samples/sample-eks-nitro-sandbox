@@ -12,8 +12,9 @@
 # and no network policy to ship. It still mounts its EBS workspace, which the
 # node-side CSI driver attaches from outside the guest, before and after resume.
 #
-# __NAMESPACE__ is filled in at apply time by the scripts from the NAMESPACE
-# variable, so an overridden name reaches this object too.
+# __NAMESPACE__ and __STORAGE_CLASS__ are filled in at apply time by the scripts
+# from the NAMESPACE and STORAGE_CLASS variables, so an overridden name reaches
+# this object too. Never apply this file with the placeholders in place.
 apiVersion: agents.x-k8s.io/v1beta1
 kind: Sandbox
 metadata:
@@ -21,7 +22,6 @@ metadata:
   namespace: __NAMESPACE__
   labels:
     app.kubernetes.io/name: pause-resume
-    ManagedBy: pause-resume
 spec:
   # Running is the default; named here so the suspend/resume cycle reads from one
   # field. Setting it to Suspended terminates the pod and keeps the volume;
@@ -31,7 +31,6 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: pause-resume
-        ManagedBy: pause-resume
       annotations:
         # No network besides loopback: no route out, no DNS, no instance
         # metadata and no Pod Identity credentials. kubectl exec, cp and logs
@@ -82,17 +81,18 @@ spec:
         name: workspace
         labels:
           app.kubernetes.io/name: pause-resume
-          ManagedBy: pause-resume
       spec:
         accessModes:
           # ReadWriteOncePod, not ReadWriteOnce: only one pod may mount the
           # workspace at a time. Plain ReadWriteOnce promises only one node, so
           # two pods on that node could mount the same workspace together.
           - ReadWriteOncePod
-        # Named explicitly rather than relying on a cluster default. EKS Auto
-        # Mode supplies auto-ebs-sc; a fresh cluster has no default class, so the
-        # sample does not depend on one.
-        storageClassName: auto-ebs-sc
+        # Named explicitly. EKS Auto Mode does not create a StorageClass for you
+        # (Amazon EKS User Guide, Create a storage class), so the reader applies
+        # deploy/storage-class.yaml once per cluster and setup.sh checks it is
+        # present with the ebs.csi.eks.amazonaws.com provisioner. The name comes
+        # from STORAGE_CLASS (default auto-ebs-sc), rendered in here at apply time.
+        storageClassName: __STORAGE_CLASS__
         resources:
           requests:
             storage: 10Gi

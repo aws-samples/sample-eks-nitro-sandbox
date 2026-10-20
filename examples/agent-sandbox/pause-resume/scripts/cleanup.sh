@@ -8,10 +8,14 @@
 # deleting the Sandbox garbage-collects workspace-pause-resume and the 10Gi EBS
 # volume. Suspending preserves a workspace; deleting never does.
 #
-# The script touches a resource only when it carries the sample's mark, checks
-# the namespace label before deleting anything inside it, and exits non-zero when
-# it skipped something or could not check, so an incomplete clean up is never
-# reported as done. Safe to run at any time, including when nothing was set up.
+# The script checks the namespace label before deleting anything inside it: the
+# namespace was created and labelled by setup.sh, so everything in it is the
+# sample's, and the namespace check covers its contents. It uses failure-aware
+# lookups so a read that fails is never mistaken for "gone", and it exits
+# non-zero when it skipped something or could not confirm a delete, so an
+# incomplete clean up is never reported as done. Safe to run at any time,
+# including when nothing was set up. It never touches the StorageClass, which is
+# cluster-wide and the reader's.
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "$HERE/common.sh"
@@ -40,58 +44,42 @@ esac
 # Record the bound PV BEFORE deleting the Sandbox. GC removes the PVC as soon as
 # its owner goes, so a volumeName read after the delete comes back empty, which
 # would skip the check that the EBS volume is really gone. A failed read here is
-# recorded as a cleanup failure, not read as "no volume".
-#
-# Determine the PVC's ownership NOW, before anything is deleted. Deleting the
-# Sandbox garbage-collects its PVC through the ownerReference, so if the PVC
-# ownership were only checked afterwards a foreign or unreadable PVC could be
-# destroyed before it was ever verified. So: read PVC ownership and its bound PV
-# first, and only let the Sandbox delete proceed when the PVC is ours or absent.
+# recorded as a cleanup failure, not read as "no volume". Everything in the
+# sample's namespace is the sample's, so this is a plain failure-aware read.
 pv=""
-pvc_own=0; resource_is_ours kc "pvc/$PVC" || pvc_own=$?
-case $pvc_own in
+pvc_rc=0; resource_exists kc "pvc/$PVC" || pvc_rc=$?
+case $pvc_rc in
   0) pv="$(kc get pvc "$PVC" -o jsonpath='{.spec.volumeName}' 2>/dev/null)"
      [[ -z "$pv" ]] && note_fail "could not read the bound PV of pvc/$PVC; cannot confirm the EBS volume is deleted" ;;
-  1) note_fail "pvc/$PVC does not carry ManagedBy=$SAMPLE; it is not the sample's" ;;
-  2) note_fail "could not read pvc/$PVC; cannot verify it is the sample's (a failed read is not 'gone')" ;;
-  3) : ;;  # no PVC: nothing to record
+  1) : ;;  # no PVC: nothing to record
+  2) note_fail "could not read pvc/$PVC; cannot determine its EBS volume (a failed read is not 'gone')" ;;
 esac
 
 step "1/3 delete sandbox/$SANDBOX (and, by ownerReference, pvc/$PVC + its EBS volume)"
-# Delete the Sandbox only when it carries the sample's mark AND its PVC is ours or
-# absent, because deleting the Sandbox GC-deletes that PVC. The namespace is
-# already confirmed ours; these are the per-resource checks, so a same-named
-# object another tool put in the namespace is never deleted directly or through
-# the Sandbox's ownerReference (and, below, the namespace is not deleted either
-# while such a resource is present).
-sb_own=0; resource_is_ours kc "sandbox/$SANDBOX" || sb_own=$?
-if [[ $pvc_own -eq 1 || $pvc_own -eq 2 ]]; then
-  note_fail "not deleting sandbox/$SANDBOX: it would garbage-collect pvc/$PVC, which is not verified as the sample's"
-else
-  case $sb_own in
-    0) kc delete sandbox "$SANDBOX" --wait=true --timeout=120s || note_fail "sandbox/$SANDBOX did not delete cleanly" ;;
-    1) note_fail "sandbox/$SANDBOX does not carry ManagedBy=$SAMPLE; not deleting it (it is not the sample's)" ;;
-    2) note_fail "could not read sandbox/$SANDBOX; not deleting something I cannot verify" ;;
-    3) echo "  sandbox/$SANDBOX not present" ;;
-  esac
-fi
+# The namespace is confirmed the sample's, so the Sandbox in it is the sample's.
+# Deleting it garbage-collects the PVC and the EBS volume through the
+# ownerReference.
+sb_rc=0; resource_exists kc "sandbox/$SANDBOX" || sb_rc=$?
+case $sb_rc in
+  0) kc delete sandbox "$SANDBOX" --wait=true --timeout=120s || note_fail "sandbox/$SANDBOX did not delete cleanly" ;;
+  1) echo "  sandbox/$SANDBOX not present" ;;
+  2) note_fail "could not read sandbox/$SANDBOX; not reporting it gone" ;;
+esac
 
 step "2/3 confirm the workspace PVC and its EBS volume are gone"
 # Belt and braces: if the Sandbox was already gone while the PVC remained (for
 # example deleted by hand mid-suspend), there is no owner to GC the claim, so it
-# would sit there holding an EBS volume. Re-read ownership (the direct delete
-# above may have removed it) and delete it only when it carries the mark.
-pvc_rc=0; resource_is_ours kc "pvc/$PVC" || pvc_rc=$?
+# would sit there holding an EBS volume.
+pvc_rc=0; resource_exists kc "pvc/$PVC" || pvc_rc=$?
 case $pvc_rc in
   0) kc delete pvc "$PVC" --wait=true --timeout=120s || note_fail "pvc/$PVC did not delete cleanly" ;;
-  1) note_fail "pvc/$PVC does not carry ManagedBy=$SAMPLE; not deleting it (it is not the sample's)" ;;
-  2) note_fail "could not read pvc/$PVC; not deleting something I cannot verify" ;;
-  3) echo "  pvc/$PVC not present" ;;
+  1) echo "  pvc/$PVC not present" ;;
+  2) note_fail "could not read pvc/$PVC; not reporting it gone" ;;
 esac
 if [[ -n "$pv" ]]; then
-  # The PV is cluster-scoped. Delete reclaims the EBS volume (auto-ebs-sc is
-  # Delete reclaim policy). Wait for it to be gone so a still-billing volume is
-  # never reported as cleaned up. A read that fails is a failure, never "gone".
+  # The PV is cluster-scoped. Delete reclaims the EBS volume (the sample's class
+  # uses reclaimPolicy Delete). Wait for it to be gone so a still-billing volume
+  # is never reported as cleaned up. A read that fails is a failure, never "gone".
   pv_rc=0; resource_exists kc_cluster "pv/$pv" || pv_rc=$?
   case $pv_rc in
     0) if kc_cluster wait --for=delete "pv/$pv" --timeout=120s; then
@@ -105,13 +93,11 @@ if [[ -n "$pv" ]]; then
 fi
 
 step "3/3 delete namespace $NAMESPACE"
-# Delete the namespace only when everything above succeeded. If an ownership or
-# read check failed, something in the namespace is unverified or not the
-# sample's, and deleting the namespace would destroy it through the back door,
-# which is exactly what the per-resource checks above exist to prevent. Leave the
-# namespace for the reader to resolve instead.
+# Delete the namespace only when everything above succeeded. If a delete failed
+# or a read could not be confirmed, something may still be in the namespace, so
+# deleting it would hide an incomplete clean up. Leave it for the reader instead.
 if [[ $failures -ne 0 ]]; then
-  echo "  SKIPPED: not deleting namespace $NAMESPACE while $failures item(s) above are unverified or not the sample's; deleting it would remove them too." >&2
+  echo "  SKIPPED: not deleting namespace $NAMESPACE while $failures item(s) above are unconfirmed; resolve them first." >&2
 elif kc_cluster delete namespace "$NAMESPACE" --wait=true --timeout=120s; then
   echo "  namespace $NAMESPACE deleted"
 else
