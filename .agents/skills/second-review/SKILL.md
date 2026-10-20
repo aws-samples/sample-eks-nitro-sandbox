@@ -95,9 +95,9 @@ you do with the answer.
 
 ## Record it
 
-Tick the pull request's second-reviewer box (the last box in the template's checklist) and
-write, under a "Second review" heading below the checklist: who or what reviewed it (a
-person, or the agent and model), which commit, what it found, what was fixed and in which
+Tick the second-reviewer box in the description's "Every pull request" list, and write
+under its "Second review" heading: who or what reviewed it (a person, or the agent and
+model), which commit, what it found, what was fixed and in which
 commit, and which findings were false positives and why. Name any commit that changes a
 check and was not reviewed. Describe each proof as it ran: which stub cases reached which message, and
 which paths no case reached. A box ticked with no account of the review does not count.

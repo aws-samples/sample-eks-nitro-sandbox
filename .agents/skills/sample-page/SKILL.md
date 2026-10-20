@@ -185,21 +185,27 @@ route, and a lookup fails, as the hello sandbox page does.
 
 ## Before the pull request
 
-Write the description from the repository's template, so it carries the checklist
-reviewers read:
+The description's checklist is the spec issue's own acceptance criteria, followed by the
+template's short list for every pull request:
 
 ```bash
-cp .github/pull_request_template.md tmp/pr-body.md   # then fill it in
+cp .github/pull_request_template.md tmp/pr-body.md
+gh issue view <issue> --repo aws-samples/sample-eks-nitro-sandbox --json body --jq .body \
+  | tr -d '\r' | awk '/^## Acceptance criteria/{f=1; next} /^## /{f=0} f && /^- \[ \]/'
+# paste those lines under "From the issue" in tmp/pr-body.md, then fill in the rest
 gh pr create --draft --body-file tmp/pr-body.md
 ```
 
-`--body-file` does not apply the template by itself, so start from the copy. Keep its
-checklist and its last line, and tick a template box only when it is true. Open the pull
-request as a draft if the fresh run is still to do, and mark it ready only when every box
-below is true. The boxes below are for you; the template's are the ones a reviewer sees.
+Copy the criteria word for word: no dropping, merging or rewording. Tick each one only
+when it is met, and point to the evidence after it (the page section, the log under
+`tmp/`, the commit). If one is not met, leave it unticked and say why under it. Keep the
+template's last line. Open the pull request as a draft if the fresh run is still to do,
+and mark it ready when every box from the issue is ticked, or a maintainer has agreed to
+the ones that are not, and every box below is true. The boxes below are your own check;
+they are not copied into the description.
 
-- [ ] The spec issue exists, and the description is the filled-in template, starting with
-      `Closes #<issue>` and ending with the template's last line.
+- [ ] The spec issue exists, and the description starts with `Closes #<issue>` and carries
+      every box from the issue's acceptance criteria.
 - [ ] The page opens with the prerequisites link and the `git clone` and `cd` block.
 - [ ] Each stage pairs an explanation, the real config verbatim and output from a fresh run.
 - [ ] Each figure has a `.drawio` source, a `.png`, a caption and full alt text.

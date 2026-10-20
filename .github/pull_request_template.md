@@ -1,22 +1,23 @@
 Closes #
 
-<!-- For a new sample, the number of its spec issue. For a fix with no issue, replace the line above with what it fixes. -->
+<!-- The issue this pull request implements. For a change with no issue, replace the line above with what it changes, and delete the "From the issue" section. -->
 
 ## What this changes
 
-## How it was checked
+## From the issue
 
-<!-- For a sample: open this pull request as a draft (gh pr create --draft) until the fresh-run box below is true, then mark it ready. -->
+<!-- Paste every box from the issue's "Acceptance criteria" section here, word for word (the command is in AGENTS.md, Review). Tick a box only when it is met, and add a pointer to the evidence after it: the page section, the log under tmp/, the commit. If one is not met, leave it unticked and say why. For a sample, open this pull request as a draft (gh pr create --draft) until the fresh-run box is true. -->
 
-- [ ] For a sample: ran it end to end from a fresh run on a live cluster, every output block on the page comes from that run, and no `TODO: output from the fresh run` marker is left
-- [ ] For a sample: the page shows the pod's own kernel build, boot and virtio disks, each with what an ordinary pod shows instead
-- [ ] For a sample: the page shows its network policy at work (one allowed and one refused connection), or that a network-isolated sandbox has only loopback, no route and no DNS
-- [ ] For a sample: added to the `mkdocs.yml` nav (`--strict` does not catch a missing entry), and `docs/ROADMAP.md` and the root `README.md` updated
-- [ ] `mkdocs build --strict` passes, and nothing under `examples/` changed that this pull request does not mean to change
-- [ ] `./scripts/check-agent-files.sh` passes
-- [ ] Any check added or changed is proved both ways: an input it must accept, and an input it must reject
+## Every pull request
+
+- [ ] `mkdocs build --strict` and `./scripts/check-agent-files.sh` pass
+- [ ] Only the files this pull request means to change are changed; logs, captured output, stubs and hand-off scripts stay in `tmp/`
 - [ ] No values from your own account or environment (account IDs, keys, tokens, names of your clusters or hosts, user names, internal URLs) in the changed files
-- [ ] No Ingress, LoadBalancer or NodePort; sandbox egress is restricted by network policy, or the sandbox has no network
-- [ ] A second reviewer looked at any change to a check, a credential path or a security claim
+- [ ] Any check added or changed is proved both ways: an input it must accept, and an input it must reject
+- [ ] A second reviewer looked at any change to a check, a credential path or a security claim (see "Second review")
+
+## Second review
+
+<!-- Who or what reviewed it, which commit, what it found, what was fixed and where, and which findings were false positives and why (the second-review skill says how). If the change needed none, say why. -->
 
 By submitting this pull request, I confirm that you can use, modify, copy, and redistribute this contribution, under the terms of your choice.
