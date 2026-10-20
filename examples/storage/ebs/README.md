@@ -63,7 +63,6 @@ The files:
 | [`deploy/pod-ordinary.yaml`](deploy/pod-ordinary.yaml) | An ordinary (non-sandboxed) pod with its own EBS volume, for the virtio-vs-nvme comparison in Step 2. |
 | [`deploy/statefulset-ebs.yaml`](deploy/statefulset-ebs.yaml) | A StatefulSet whose replicas each get their own volume via `volumeClaimTemplates`, with a headless Service. |
 | [`scripts/setup.sh`](scripts/setup.sh) | Chooses the StorageClass, then applies the PVC and pod and waits for the volume to attach. |
-| [`scripts/test.sh`](scripts/test.sh) | Checks the claims: the sandbox, the virtio device, the non-root write, data surviving the pod, the `Pending` second pod, and the volume read back from EC2. |
 | [`scripts/clean.sh`](scripts/clean.sh) | Deletes the pods, the StatefulSet and the Service, every PVC this sample creates and its EBS volume, and the sample's own StorageClass if setup created it. |
 
 The walkthrough uses the shared Region default from the home page, and a namespace of its
@@ -86,7 +85,7 @@ non-root user with `fsGroup` set, and boots network-isolated.
 
 ```yaml
 spec:
-  runtimeClassName: isolated-sandbox   # the one-line opt-in
+  runtimeClassName: isolated-sandbox   # the one-line opt-in; the RuntimeClass carries the scheduling constraints
   securityContext:
     runAsNonRoot: true
     runAsUser: 1000
@@ -429,7 +428,8 @@ kubectl get storageclass
 ```text
 NAME                    PROVISIONER                 RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
 auto-ebs-sc (default)   ebs.csi.eks.amazonaws.com   Delete          WaitForFirstConsumer   false                  60d
-nitro-sandbox-ebs       ebs.csi.eks.amazonaws.com   Delete          WaitForFirstConsumer   false                  11s
+gp2                     kubernetes.io/aws-ebs       Delete          WaitForFirstConsumer   false                  77d
+nitro-sandbox-ebs       ebs.csi.eks.amazonaws.com   Delete          WaitForFirstConsumer   false                  10s
 ```
 
 `auto-ebs-sc` keeps its `(default)` marker; `nitro-sandbox-ebs` has none. `clean.sh` for
