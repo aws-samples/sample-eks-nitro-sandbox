@@ -566,8 +566,11 @@ for both, `6.18.51`; the build (`#1` versus `#2`, and the date) and the boot are
 ## Clean up
 
 Remove the pods, the sink, the policy and the namespace this sample created. Either cleanup flag
-deletes the whole namespace, so one is enough. This does not touch the cluster-wide enforcement
-setting from step 1.
+deletes the whole namespace, so one is enough; each first confirms the namespace carries this
+sample's `sample: sandbox-limits` label and refuses to delete one that does not. This does not
+touch the cluster-wide enforcement setting from step 1. If you ran an earlier version of this
+sample, its `sandbox-limits` namespace predates that label, so delete it once by hand
+(`kubectl delete namespace sandbox-limits`) before running the scripts again.
 
 ```bash
 scripts/run-comparison.sh --cleanup            # DNS walkthrough

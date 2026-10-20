@@ -61,6 +61,10 @@ each verifies its own image reference in-guest with `notation verify`, driven by
   Amazon ECR and S3 endpoints the image and signature pull needs. Revocation checking is
   turned off in the trust policy, so the guest never calls the AWS Signer revocation
   endpoint: no verify-time egress leaves for AWS Signer.
+- **This demonstrates the mechanism; it is not a control against a malicious image.** The
+  verifier (Notation, the trust policy and the root certificate) ships inside the very image
+  it verifies, so a tampered image could carry a verifier rigged to always pass. To enforce
+  signatures, verify at admission time, outside the workload, as well.
 
 The three pods differ by a single line: which repository's reference they verify, and
 whether they carry the no-network annotation.
@@ -103,7 +107,7 @@ The AWS Signer signing platform for Notation/OCI signing is `Notation-OCI-SHA384
 | File | What it is |
 |---|---|
 | [`Dockerfile`](Dockerfile) | The verifier image: Notation, the AWS Signer plugin, the AWS Signer root cert in a trust store, and a trust policy pinned to the signing profile |
-| [`scripts/setup.sh`](scripts/setup.sh) | Build and push to two repositories, sign one copy, create the role, turn on and apply the network policy, launch the three pods |
+| [`scripts/setup.sh`](scripts/setup.sh) | Build and push to two repositories, sign one copy, create the role, check that network policy enforcement is on and apply the egress policy, launch the three pods |
 | [`scripts/clean.sh`](scripts/clean.sh) | Delete what `setup.sh` created, and verify it is gone |
 | [`deploy/namespace.yaml`](deploy/namespace.yaml), [`deploy/service-account.yaml`](deploy/service-account.yaml) | The `image-signing-sample` namespace and the verifier ServiceAccount |
 | [`deploy/workloads.yaml`](deploy/workloads.yaml) | The three pods |
@@ -111,13 +115,35 @@ The AWS Signer signing platform for Notation/OCI signing is `Notation-OCI-SHA384
 | [`iam/`](iam/) | The Pod Identity trust policy and the least-privilege ECR-read policy |
 | [`optional-offline/`](optional-offline/) | The optional variant: verify with no network at all |
 
-**Step 1: Sign the image and launch the pods.** `scripts/setup.sh` reads `.env`, builds one
+**Step 1: Turn on network policy enforcement.** EKS Auto Mode accepts network policies
+without enforcing them until the Network Policy Controller is enabled, once per cluster,
+through the `amazon-vpc-cni` ConfigMap in `kube-system`. This affects the whole cluster;
+pods that no policy selects are unaffected. If you have run the
+[coding agent](../../getting-started/coding-agent/README.md) sample this is already on;
+otherwise:
+
+```bash
+kubectl get configmap -n kube-system amazon-vpc-cni \
+  -o jsonpath='{.data.enable-network-policy-controller}{"\n"}'
+```
+
+If that prints `true`, enforcement is on. If it prints nothing, turn it on, once per cluster
+([EKS network policy documentation](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html)):
+
+```bash
+kubectl apply -f deploy/enable-network-policy.yaml
+```
+
+`setup.sh` checks this setting and stops, pointing you here, if it is off, rather than
+changing this shared setting for you.
+
+**Step 2: Sign the image and launch the pods.** `scripts/setup.sh` reads `.env`, builds one
 image, pushes the same bytes to two ECR repositories, signs only the signed copy with AWS
-Signer, creates the verifier's Pod Identity role, turns on network policy enforcement,
-applies the egress policy, and launches the three pods. Each resource it creates is tagged
-`ManagedBy` and `auto-delete=no`, and only resources carrying that `ManagedBy` tag are
-adopted on a re-run, so the sample never touches image-signing resources other demos may
-already have in the account.
+Signer, creates the verifier's Pod Identity role, checks that network policy enforcement is
+on (from step 1) and applies the egress policy, and launches the three pods. Each resource
+it creates is tagged `ManagedBy` and `auto-delete=no`, and only resources carrying that
+`ManagedBy` tag are adopted on a re-run, so the sample never touches image-signing resources
+other demos may already have in the account.
 
 ```bash
 cp .env.example .env     # then edit CLUSTER_NAME and AWS_REGION
@@ -143,7 +169,7 @@ image-signing sample is up in namespace image-signing-sample.
 Abridged. The signed image's digest is the same in both repositories, because both copies
 come from one build; only the signed copy gets a signature.
 
-**Step 2: Confirm each pod opted into the sandbox.** All three run `isolated-sandbox`, and
+**Step 3: Confirm each pod opted into the sandbox.** All three run `isolated-sandbox`, and
 only the network-isolated pod carries the annotation:
 
 ```bash
@@ -160,7 +186,7 @@ verify-unsigned: rc=isolated-sandbox netiso=
 verify-signed-denied: rc=isolated-sandbox netiso=true
 ```
 
-**Step 3: Prove the pod ran in a sandbox.** As in the hello sandbox sample, the guest has
+**Step 4: Prove the pod ran in a sandbox.** As in the hello sandbox sample, the guest has
 its own kernel build, its own boot and virtio disks. Compare the signed pod with an ordinary
 (non-sandbox) pod on the same cluster:
 
@@ -195,7 +221,7 @@ virtio devices, where the ordinary pod sees the instance's `nvme`. And the guest
 66 seconds, matches the just-started pod, because the VM booted with the pod; the ordinary
 pod's `/proc/uptime` reports the node's uptime, over 17 hours.
 
-**Step 4: Verify the signed image in-guest.** The caller must be allowed to `create
+**Step 5: Verify the signed image in-guest.** The caller must be allowed to `create
 pods/exec` in the namespace, so a verify failure is Notation's and not RBAC:
 
 ```bash
@@ -220,7 +246,7 @@ Successfully verified signature for <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com
 The signature was pulled from the registry and checked against the AWS Signer root
 certificate and the trust policy baked into the image, inside the guest.
 
-**Step 5: The unsigned image is refused in-guest.** The same command against the unsigned
+**Step 6: The unsigned image is refused in-guest.** The same command against the unsigned
 copy fails, and the failure names the missing signature, not a network problem. This is the
 negative case, kept permanently:
 
@@ -236,7 +262,7 @@ Error: signature verification failed: no signature is associated with "<ACCOUNT_
 Both repositories hold the same image bytes at the same digest, so the only difference is
 the signature the signed repository carries and the unsigned one does not.
 
-**Step 6: Registry-backed verification needs a network.** The third pod runs the signed
+**Step 7: Registry-backed verification needs a network.** The third pod runs the signed
 reference under `sandbox.amazonaws.com/network-isolated: "true"`. The verify fails, but for
 a different reason: it cannot reach the registry to pull the signature.
 
@@ -276,11 +302,12 @@ ingress and all egress except DNS, the Pod Identity credential endpoint, Amazon 
 the Amazon S3 range ECR serves its layers and signature blobs from. `verify-signed-denied`
 is network-isolated and is not selected: it has no network to restrict.
 
-Network policy enforcement is turned on once per cluster. EKS Auto Mode accepts network
-policies without enforcing them until the `amazon-vpc-cni` ConfigMap in `kube-system` sets
-`enable-network-policy-controller: "true"`
+Network policy enforcement is turned on once per cluster, by the reader in step 1. EKS Auto
+Mode accepts network policies without enforcing them until the `amazon-vpc-cni` ConfigMap in
+`kube-system` sets `enable-network-policy-controller: "true"`
 ([`deploy/enable-network-policy.yaml`](deploy/enable-network-policy.yaml)). This affects the
-whole cluster; pods that no policy selects are unaffected.
+whole cluster; pods that no policy selects are unaffected, so `setup.sh` only checks the
+setting and stops if it is off rather than changing it.
 
 Here is the whole egress policy
 ([`deploy/egress-policy.yaml`](deploy/egress-policy.yaml)), without its header comment.
@@ -428,8 +455,10 @@ and cannot run under a plain `network-isolated`.
 
 - **Verification here is a post-start check, not an admission gate.** The pod is already
   running when `notation verify` runs in its guest. That is the point of the sample: the
-  check runs where the workload runs. To stop an unverified pod from starting at all, add an
-  admission-time verifier as well.
+  check runs where the workload runs. Because the verifier is baked into the image it
+  verifies, it is not a defense against a malicious image: a tampered image could ship a
+  verifier that always passes. To actually enforce signatures, and to stop an unverified pod
+  from starting at all, add an admission-time verifier outside the workload as well.
 - **The role holds no AWS Signer permissions.** The verifier pulls from the registry with an
   ECR-read role and checks the signature against the baked-in root certificate, so the guest
   never calls AWS Signer. `setup.sh` fails closed if the role carries any policy beyond the

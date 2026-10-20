@@ -49,7 +49,26 @@ CAPPED_MAX=$(( CAP_QPS * 3 / 2 )) # symptom must stay at/below this (<= 150 qps 
 say()  { printf '\n=== %s ===\n' "$*"; }
 line() { printf '%s\n' "$*"; }
 
+# Read the namespace and classify it: "absent", "owned" (carries this sample's
+# label), or "foreign". A lookup that cannot run is a failure, not "absent": it
+# prints "error" so the caller stops rather than acting on an unknown namespace.
+ns_state() {
+  local out
+  out="$(kubectl get namespace "$NS" --ignore-not-found \
+    -o jsonpath='{.metadata.name}/{.metadata.labels.sample}' 2>/dev/null)" || { printf 'error'; return; }
+  case "$out" in
+    /*|'')              printf 'absent'  ;;  # no name returned: namespace does not exist
+    */sandbox-limits)   printf 'owned'   ;;  # carries this sample's label
+    *)                  printf 'foreign' ;;  # exists without this sample's label
+  esac
+}
+
 cleanup() {
+  case "$(ns_state)" in
+    error)   line "ERROR: could not determine whether namespace $NS is this sample's (kubectl lookup failed); deleted nothing."; exit 1 ;;
+    foreign) line "ERROR: namespace $NS exists but is not this sample's (missing label sample=sandbox-limits); deleted nothing."; exit 1 ;;
+    absent)  say "Nothing to clean up: namespace $NS is absent"; return 0 ;;
+  esac
   say "Cleaning up this sample's objects"
   kubectl delete -f "$DEPLOY/egress-policy.yaml"           --ignore-not-found
   kubectl delete -f "$DEPLOY/probe-sandboxed-raised.yaml"  --ignore-not-found
@@ -83,13 +102,27 @@ ge() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0 >= b+0)}'; }
 le() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0 <= b+0)}'; }
 
 # --- 1. Deploy from a clean slate ------------------------------------------------------
+# Check who owns the namespace BEFORE deleting or creating anything. A foreign
+# namespace (or a lookup that cannot run) stops the run here, so the clean-slate
+# deletes below never act in a namespace this sample does not own.
+case "$(ns_state)" in
+  error)   line "ERROR: could not determine whether namespace $NS is this sample's (kubectl lookup failed); did nothing."; exit 1 ;;
+  foreign) line "ERROR: namespace $NS exists but is not this sample's (missing label sample=sandbox-limits)."; line "Delete it, or run on a cluster without it, then re-run."; exit 1 ;;
+esac
+
 say "Start from a clean slate (delete any leftover pods and policy from a prior run)"
 kubectl delete -f "$DEPLOY/probe-sandboxed-raised.yaml" --ignore-not-found --wait=true
 kubectl delete -f "$DEPLOY/probe-sandboxed.yaml"        --ignore-not-found --wait=true
 kubectl delete -f "$DEPLOY/probe-standard.yaml"         --ignore-not-found --wait=true
 
 say "Deploy the namespace, the egress NetworkPolicy and the two probe pods"
-kubectl apply -f "$DEPLOY/namespace.yaml"
+# Create the namespace only when absent; when it already carries this sample's label,
+# reuse it without re-applying the manifest.
+if [[ "$(ns_state)" == absent ]]; then
+  kubectl create -f "$DEPLOY/namespace.yaml"
+else
+  line "reusing namespace $NS (carries this sample's label)"
+fi
 COREDNS_IP="$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')"
 line "CoreDNS Service IP: $COREDNS_IP"
 sed "s|<COREDNS_IP>|$COREDNS_IP|" "$DEPLOY/egress-policy.yaml" | kubectl apply -f -
