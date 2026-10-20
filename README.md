@@ -15,6 +15,10 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 - [Network policy](examples/isolation/network-policy/README.md): a standard egress NetworkPolicy enforced on a sandboxed pod, side by side with an ordinary pod that is the control.
 - [Sandbox limits](examples/isolation/sandbox-limits/README.md): the per-sandbox DNS query-rate limit and the per-pod outbound connection limit, made visible on your own cluster side by side with an ordinary pod, and how to recognise each one.
 
+## Policy
+
+- [Cedar policy](examples/policy/cedar-policy/README.md): a Cedar policy generated from a workload's pod spec and enforced inside a confidential sandbox guest, which admits the expected container and refuses an operator's exec.
+
 ## Managed agents
 
 - [Claude Managed Agents](examples/managed-agents/claude-managed-agents/README.md): a Claude Managed Agents self-hosted sandbox where each session's tool calls run in a sandbox of their own and the organization API key stays off the cluster.

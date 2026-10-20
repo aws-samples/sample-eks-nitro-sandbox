@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cedar-policy-sample
+  labels:
+    # The mark that makes this namespace the sample's own. clean.sh checks for this
+    # label before it deletes anything inside the namespace, so it never touches a
+    # namespace another demo created with a name that happens to match.
+    app.kubernetes.io/managed-by: cedar-policy-sample
