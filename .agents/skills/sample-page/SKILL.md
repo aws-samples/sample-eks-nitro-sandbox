@@ -231,6 +231,8 @@ not copied into the description.
 - [ ] The clean up removes everything the sample created, and only that.
 - [ ] The setup script changes nothing cluster-wide, and an overridable name such as
       `NAMESPACE` reaches every object it applies.
+- [ ] A controller, CSI driver or add-on the sample needs is checked for, reused as it is
+      when present, and a reader step when absent. The scripts never upgrade or reconfigure it.
 - [ ] The clean up ran after the last run the page uses, and the description lists anything
       it could not remove.
 - [ ] No local files (logs, state copies, helpers) in the sample folder; they are in the
