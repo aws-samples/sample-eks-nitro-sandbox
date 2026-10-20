@@ -167,7 +167,7 @@ enforcement to turn on.
 == 1/4 generate the confidential Cedar policy from deploy/pod.yaml ==
 info: wrote base64 envelope to .../tmp/cedar-policy/policy.b64
 --- Predicted PCR17 ---
-d796ae705c4e1bd0ace22196943f5d59afb032c929483d5b2b5ba0acbe2e97bc801823307e5f7cbb6dee6d5589e352cf
+d748a7bde04e75e1f69c3ba4009d3c6831b7f911ae5f49ca7629aa8195869f9496c3aa66ee6fd18b50fc42ad053f5194
 == 2/4 decode the policy envelope into readable form ==
 == 3/4 render the pod and namespace with the chosen NAMESPACE ==
 == 4/4 apply the pod and wait for the guest to admit it ==
@@ -243,7 +243,7 @@ kubectl -n cedar-policy-sample get pod cedar-policy-demo \
 ```text
 confidential-sandbox
 true
-3148
+3240
 ```
 
 **Step 5: Prove the pod ran in a sandbox, and has no network, from its logs.** The policy
@@ -258,9 +258,10 @@ kubectl -n cedar-policy-sample logs cedar-policy-demo -c main
 
 ```text
 kernel:  6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-uptime:  5.25s
+uptime:  3.43s
 disks:   dm-0 dm-1 dm-2 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 vda vdb vdc
 ifaces:  dummy0 lo
+addrs:
 routes:  0
 dns:     no answer
 confidential-policy-ready
@@ -270,9 +271,10 @@ An ordinary (non-sandbox) pod started on the same cluster shows, instead:
 
 ```text
 kernel:  6.18.51 #2 SMP PREEMPT_DYNAMIC Wed Oct  7 22:33:11 UTC 2026
-uptime:  310726.21s
-disks:   dm-0 nvme0n1 nvme1n1 nvme2n1 nvme3n1 zram0
+uptime:  166.49s
+disks:   dm-0 nvme0n1 nvme1n1 zram0
 ifaces:  eth0 lo
+addrs:   169.254.1.1 192.168.162.177
 routes:  2
 dns:     answer
 ```
@@ -280,17 +282,20 @@ dns:     answer
 The kernel version string matches, but the build does not (`#1 ... Oct 1` against
 `#2 ... Oct 7`): the guest runs its own kernel. The disk list carries `vda vdb vdc`, the
 guest's virtio devices, where the ordinary pod sees the instance's `nvme`; confidential mode's
-encrypted overlay adds the `dm-` and `loop` devices. The guest's uptime, about 5 seconds,
-matches the just-started pod, because the VM booted with the pod; the ordinary pod's
-`/proc/uptime` reports the node's uptime, over 80 hours.
+encrypted overlay adds the `dm-` and `loop` devices. The guest's uptime, about 3 seconds,
+matches the just-started pod, because the VM booted with the pod, where an ordinary pod's
+`/proc/uptime` reports the uptime of the node it runs on.
 
-The network lines are the network-isolation proof. The guest has only `lo` and a `dummy0`
-placeholder interface, no real network device like the ordinary pod's `eth0`; `routes: 0` means
-no route table entry at all, where the ordinary pod has a default route and its VPC route; and
+The `addrs`, `routes` and `dns` lines are the network-isolation proof. The guest's only
+interfaces are `lo` and a `dummy0` placeholder, with no routable address at all (`addrs` is
+empty, read from `/proc/net/fib_trie` with the loopback entries filtered out), where the
+ordinary pod has an `eth0` with its `169.254.1.1` and VPC `192.168.x.x` addresses. `routes: 0`
+means no route table entry, where the ordinary pod has a default route and its VPC route. And
 the name lookup gets `no answer` because there is no DNS, where the ordinary pod resolves. The
-`dummy0` interface carries no address and no route: it is a stand-in the guest creates so
-loopback-only software still finds a non-loopback device, not a path off the pod. The last
-line, `confidential-policy-ready`, is the marker that shows the expected container started.
+`dummy0` interface is a stand-in the guest creates so loopback-only software still finds a
+non-loopback device; the empty `addrs` line shows it carries no address, and `routes: 0` that
+it carries no route, so it is not a path off the pod. The last line,
+`confidential-policy-ready`, is the marker that shows the expected container started.
 
 **Step 6: An operator's exec is refused inside the guest.** The caller is allowed to
 `create pods/exec` in the namespace, so an exec failure is the guest's policy and not RBAC:
@@ -311,7 +316,7 @@ kubectl -n cedar-policy-sample exec cedar-policy-demo -c main -- /bin/true
 
 ```text
 error: Internal error occurred: Internal error occurred: error executing command in
-container: failed to exec in container: failed to create exec "5051...ddd34": policy denied
+container: failed to exec in container: failed to create exec "66eb...7dc3d": policy denied
 Agent::Action::"Exec" on container "main" reasons=[] errors=[]
 ```
 
@@ -363,12 +368,13 @@ VM's internal control channel, which is why this page can read the proof from th
 though the pod has no network, and the generator leaves the guest-metadata and credential
 permits out of the policy for a network-isolated pod.
 
-Step 5 shows the proof, read from the logs: the net-isolated guest has `ifaces: dummy0 lo`,
-`routes: 0` and `dns: no answer`, where an ordinary pod on the same cluster has `ifaces:
-eth0 lo`, `routes: 2` and `dns: answer`. The only interfaces are loopback and a `dummy0`
-placeholder that carries no address and no route; there is no route table entry and no name
-resolution. This is removal of the network, not a policy over it: there is no
-`NetworkPolicy`, no `PolicyEndpoint`, and no cluster-wide network policy enforcement to turn on.
+Step 5 shows the proof, read from the logs: the net-isolated guest has `ifaces: dummy0 lo`, an
+empty `addrs`, `routes: 0` and `dns: no answer`, where an ordinary pod on the same cluster has
+`ifaces: eth0 lo`, `addrs` with its link-local and VPC addresses, `routes: 2` and `dns: answer`.
+The only interfaces are loopback and a `dummy0` placeholder that carries no address and no
+route; there is no route table entry and no name resolution. This is removal of the network,
+not a policy over it: there is no `NetworkPolicy`, no `PolicyEndpoint`, and no cluster-wide
+network policy enforcement to turn on.
 
 A sample whose sandbox does need a network restricts its egress with a network policy instead;
 the [coding agent](../../getting-started/coding-agent/README.md) sample shows that shape.
@@ -389,9 +395,10 @@ the [coding agent](../../getting-started/coding-agent/README.md) sample shows th
   confidential` to pin those too once the guest schema supports them; the exec and admission
   behaviour the sample shows holds either way.
 - **`dummy0` is not a way out.** The network-isolated guest shows a `dummy0` interface beside
-  `lo`. It is a placeholder with no address and no route, there so loopback-only software finds
-  a non-loopback device; it carries no traffic off the pod. The proof that the pod has no
-  network is `routes: 0` and the failed name lookup, not the absence of `dummy0`.
+  `lo`, there so loopback-only software finds a non-loopback device. The empty `addrs` line
+  shows it carries no routable address and `routes: 0` that it carries no route, so it is not a
+  path off the pod. The proof that the pod has no network is the empty `addrs`, `routes: 0` and
+  the failed name lookup, not the absence of `dummy0`.
 
 ## Clean up
 

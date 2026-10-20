@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Delete everything setup.sh created for the cedar-policy sample.
 #
-#   ./scripts/clean.sh                   # delete the pod, egress policy and namespace, and the tmp files
-#   ./scripts/clean.sh --keep-namespace  # delete the pod and egress policy, keep the namespace
+#   ./scripts/clean.sh                   # delete the pod and namespace, and the tmp files
+#   ./scripts/clean.sh --keep-namespace  # delete the pod, keep the namespace
 #
 # This sample creates no AWS resources, so there is nothing to delete in the
 # account. clean.sh deletes the namespace only after confirming it carries this

@@ -82,7 +82,7 @@ admission_policy: |+
       // WARNING: only the default action is checked; individual syscall rules vary by architecture and kernel version and are confined to the guest
       context.linux_seccomp_default_action == "SCMP_ACT_ERRNO" &&
       context.apparmor_profile == "" &&
-      context.process_args == "[\"/bin/sh\",\"-c\",\"echo \\\"kernel:  $(uname -rv)\\\"; echo \\\"uptime:  $(cut -d' ' -f1 /proc/uptime)s\\\"; echo \\\"disks:   $(ls /sys/block | tr '\\\\n' ' ')\\\"; echo \\\"ifaces:  $(ls /sys/class/net | tr '\\\\n' ' ')\\\"; echo \\\"routes:  $(($(wc -l < /proc/net/route) - 1))\\\"; echo \\\"dns:     $(getent hosts aws.amazon.com >/dev/null 2>&1 && echo answer || echo 'no answer')\\\"; echo confidential-policy-ready; exec sleep 3600\"]" &&
+      context.process_args == "[\"/bin/sh\",\"-c\",\"echo \\\"kernel:  $(uname -rv)\\\"; echo \\\"uptime:  $(cut -d' ' -f1 /proc/uptime)s\\\"; echo \\\"disks:   $(ls /sys/block | tr '\\\\n' ' ')\\\"; echo \\\"ifaces:  $(ls /sys/class/net | tr '\\\\n' ' ')\\\"; echo \\\"addrs:   $(grep -oE '([0-9]+\\\\.){3}[0-9]+' /proc/net/fib_trie | grep -vE '^127\\\\.|^0\\\\.0\\\\.0\\\\.0$' | sort -u | tr '\\\\n' ' ')\\\"; echo \\\"routes:  $(($(wc -l < /proc/net/route) - 1))\\\"; echo \\\"dns:     $(getent hosts aws.amazon.com >/dev/null 2>&1 && echo answer || echo 'no answer')\\\"; echo confidential-policy-ready; exec sleep 3600\"]" &&
       // Guest networking: the VM owns the network stack, so no network namespace
       // exists in the OCI spec. The pod hostNetwork setting has no effect.
       context.host_network == true &&
