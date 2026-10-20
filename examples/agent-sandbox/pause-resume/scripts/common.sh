@@ -32,11 +32,17 @@ if [[ -f "$SAMPLE_DIR/.env" ]]; then
 fi
 
 NAMESPACE="${NAMESPACE:-pause-resume}"
-# The StorageClass the workspace claim uses. EKS Auto Mode does not create one, so
-# the reader applies deploy/storage-class.yaml once per cluster; the scripts only
-# check it is present with the right provisioner (require_storage_class).
-STORAGE_CLASS="${STORAGE_CLASS:-auto-ebs-sc}"
-# The provisioner the class must use for the EBS CSI driver.
+# STORAGE_CLASS, when set, names a specific class for the workspace claim and
+# overrides the choice; setup then only checks that class's provisioner. When it
+# is unset (the default), setup CHOOSES the class: the cluster's default class if
+# exactly one fits (EBS CSI, gp3, encrypted), otherwise the sample's own class.
+# choose_storage_class fills CHOSEN_STORAGE_CLASS with the name the claim uses.
+STORAGE_CLASS="${STORAGE_CLASS:-}"
+CHOSEN_STORAGE_CLASS=""
+# The sample's own class: named for the sample, not the cluster default, created
+# only when no fitting default exists. Its manifest is deploy/storage-class.yaml.
+SAMPLE_STORAGE_CLASS="pause-resume-gp3"
+# The provisioner a class must use for the EBS CSI driver.
 EBS_PROVISIONER="ebs.csi.eks.amazonaws.com"
 AWS_REGION="${AWS_REGION:-us-west-2}"
 # The context the run pins. Set KUBE_CONTEXT to the name of the kube context for
@@ -145,27 +151,120 @@ require_our_namespace() {
   esac
 }
 
-# require_storage_class : stop unless the StorageClass named by STORAGE_CLASS
-# exists and uses the EBS CSI provisioner. A StorageClass is cluster-wide, so the
-# reader applies deploy/storage-class.yaml once (AGENTS.md leaves cluster-wide
-# settings to the reader); the scripts never create, patch or label one. A read
-# that fails is a failure, never "absent". Run this before setup creates anything.
-require_storage_class() {
+# sc_field <class> <jsonpath-after-metadata> : read one field of a StorageClass.
+# Prints the value (empty when the field or the class is absent). Returns non-zero
+# only when the read itself fails, so a caller can tell "absent" from "could not
+# read". Pass the jsonpath body, e.g. '{.provisioner}'.
+sc_field() {
+  local class=$1 path=$2 out rc=0
+  out="$(kc_cluster get storageclass "$class" --ignore-not-found -o "jsonpath=$path" 2>/dev/null)" || rc=$?
+  printf '%s' "$out"
+  return $rc
+}
+
+# sc_fits <class> : does this class fit the sample? EBS CSI provisioner, type gp3
+# (or unset, which is gp3), and encrypted "true". Returns 0 when it fits, 1 when
+# it does not, 2 when a read failed. Never treats a failed read as a fit.
+sc_fits() {
+  local class=$1 prov type enc rc=0
+  prov="$(sc_field "$class" '{.provisioner}')" || rc=$?
+  type="$(sc_field "$class" '{.parameters.type}')" || rc=$?
+  enc="$(sc_field "$class" '{.parameters.encrypted}')" || rc=$?
+  [[ $rc -ne 0 ]] && return 2
+  [[ "$prov" == "$EBS_PROVISIONER" ]] || return 1
+  [[ -z "$type" || "$type" == "gp3" ]] || return 1
+  [[ "$enc" == "true" ]] || return 1
+  return 0
+}
+
+# choose_storage_class : decide which StorageClass the workspace claim names, and
+# create the sample's own class only if needed. Sets CHOSEN_STORAGE_CLASS. Runs
+# before setup creates anything. A StorageClass is chosen, never changed: this
+# never patches a class and never `kubectl apply`s one (which, on a class created
+# with apply, would strip its default annotation).
+#
+#   STORAGE_CLASS set   -> use it, after checking its provisioner is EBS CSI.
+#   STORAGE_CLASS unset -> use the one default class that fits, if exactly one
+#                          does; otherwise the sample's own class (create it from
+#                          deploy/storage-class.yaml when absent, reuse it only
+#                          when it carries the sample's mark and the right
+#                          provisioner, stop otherwise).
+choose_storage_class() {
+  if [[ -n "$STORAGE_CLASS" ]]; then
+    # Naming the sample's OWN class means "use the sample's class": ensure it
+    # exists (create from the manifest when absent, reuse only when marked and
+    # right-provisioned). Naming any OTHER class is a check-only override: setup
+    # uses it as is and only checks its provisioner, never creating it.
+    if [[ "$STORAGE_CLASS" == "$SAMPLE_STORAGE_CLASS" ]]; then
+      echo "STORAGE_CLASS names the sample's own class $SAMPLE_STORAGE_CLASS"
+      ensure_sample_storage_class
+      CHOSEN_STORAGE_CLASS="$SAMPLE_STORAGE_CLASS"
+      return 0
+    fi
+    local prov rc=0
+    prov="$(sc_field "$STORAGE_CLASS" '{.provisioner}')" || rc=$?
+    [[ $rc -ne 0 ]] && die "could not read storageclass/$STORAGE_CLASS; stopping rather than guess (a failed read is not 'absent')"
+    [[ -z "$prov" ]] && die "storageclass/$STORAGE_CLASS (from STORAGE_CLASS) not found. Set STORAGE_CLASS to a class that uses $EBS_PROVISIONER, or unset it to let setup choose."
+    [[ "$prov" != "$EBS_PROVISIONER" ]] && die "storageclass/$STORAGE_CLASS (from STORAGE_CLASS) uses provisioner '$prov', not '$EBS_PROVISIONER'; its volumes are not EBS CSI volumes."
+    CHOSEN_STORAGE_CLASS="$STORAGE_CLASS"
+    echo "using storageclass $CHOSEN_STORAGE_CLASS (from STORAGE_CLASS), provisioner $prov"
+    return 0
+  fi
+
+  # Auto-choose. List the default classes (a read failure stops the run).
+  local defaults rc=0
+  defaults="$(kc_cluster get storageclass \
+    -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{"\n"}{end}' 2>/dev/null)" || rc=$?
+  [[ $rc -ne 0 ]] && die "could not list StorageClasses; stopping rather than guess"
+
+  # Of the default classes, keep the ones that fit.
+  local fitting=() name f
+  while IFS= read -r name; do
+    [[ -z "$name" ]] && continue
+    f=0; sc_fits "$name" || f=$?
+    case $f in
+      0) fitting+=("$name") ;;
+      2) die "could not read the default storageclass/$name; stopping rather than guess" ;;
+    esac
+  done <<< "$defaults"
+
+  if [[ ${#fitting[@]} -eq 1 ]]; then
+    CHOSEN_STORAGE_CLASS="${fitting[0]}"
+    echo "using the cluster default storageclass ${CHOSEN_STORAGE_CLASS} (it fits: $EBS_PROVISIONER, gp3, encrypted); creating no class"
+    return 0
+  fi
+
+  # No single fitting default: use the sample's own class.
+  if [[ ${#fitting[@]} -gt 1 ]]; then
+    echo "note: ${#fitting[@]} default StorageClasses fit; not guessing which. Using the sample's own class ${SAMPLE_STORAGE_CLASS}."
+  else
+    echo "note: no default StorageClass fits ($EBS_PROVISIONER, gp3, encrypted). Using the sample's own class ${SAMPLE_STORAGE_CLASS}."
+  fi
+  ensure_sample_storage_class
+  CHOSEN_STORAGE_CLASS="$SAMPLE_STORAGE_CLASS"
+}
+
+# ensure_sample_storage_class : make SAMPLE_STORAGE_CLASS available. Create it from
+# the manifest with `kubectl create` only when absent; reuse an existing one only
+# when it carries the sample's mark AND the right provisioner; stop otherwise.
+# Never `kubectl apply` (which would change an existing class).
+ensure_sample_storage_class() {
   local prov rc=0
-  # Capture the read's status without letting set -e abort on a failed read, so a
-  # real API error dies with its own message rather than aborting silently.
-  prov="$(kc_cluster get storageclass "$STORAGE_CLASS" --ignore-not-found \
-    -o jsonpath='{.provisioner}' 2>/dev/null)" || rc=$?
-  if [[ $rc -ne 0 ]]; then
-    die "could not read storageclass/$STORAGE_CLASS; stopping rather than guess (a failed read is not 'absent')"
-  fi
+  prov="$(sc_field "$SAMPLE_STORAGE_CLASS" '{.provisioner}')" || rc=$?
+  [[ $rc -ne 0 ]] && die "could not read storageclass/$SAMPLE_STORAGE_CLASS; stopping rather than guess"
   if [[ -z "$prov" ]]; then
-    die "storageclass/$STORAGE_CLASS not found. EKS Auto Mode does not create one; apply the sample's class once per cluster:
-         kubectl apply -f deploy/storage-class.yaml
-       Or set STORAGE_CLASS in .env to a class that uses $EBS_PROVISIONER."
+    # Absent: create it from the manifest. kubectl create (not apply) fails if it
+    # races into existence, which is the safe outcome.
+    echo "creating storageclass/$SAMPLE_STORAGE_CLASS from deploy/storage-class.yaml"
+    kc_cluster create -f "$SAMPLE_DIR/deploy/storage-class.yaml" \
+      || die "could not create storageclass/$SAMPLE_STORAGE_CLASS"
+    return 0
   fi
-  if [[ "$prov" != "$EBS_PROVISIONER" ]]; then
-    die "storageclass/$STORAGE_CLASS uses provisioner '$prov', not '$EBS_PROVISIONER'; its volumes are not EBS CSI volumes. Apply the sample's class under a free name, or set STORAGE_CLASS to one that uses $EBS_PROVISIONER:
-         kubectl apply -f deploy/storage-class.yaml"
-  fi
+  # Present: reuse only when it is the sample's and uses the EBS CSI provisioner.
+  local mark mrc=0
+  mark="$(sc_field "$SAMPLE_STORAGE_CLASS" '{.metadata.labels.app\.kubernetes\.io/managed-by}')" || mrc=$?
+  [[ $mrc -ne 0 ]] && die "could not read the labels on storageclass/$SAMPLE_STORAGE_CLASS; stopping rather than guess"
+  [[ "$mark" != "$SAMPLE" ]] && die "storageclass/$SAMPLE_STORAGE_CLASS already exists without the sample's mark (app.kubernetes.io/managed-by=$SAMPLE); it belongs to something else. Remove it or set STORAGE_CLASS to a class that uses $EBS_PROVISIONER."
+  [[ "$prov" != "$EBS_PROVISIONER" ]] && die "storageclass/$SAMPLE_STORAGE_CLASS exists with provisioner '$prov', not '$EBS_PROVISIONER'; not reusing it."
+  echo "reusing storageclass/$SAMPLE_STORAGE_CLASS (carries the sample's mark, provisioner $prov)"
 }

@@ -31,11 +31,13 @@ kc_cluster get runtimeclass isolated-sandbox >/dev/null 2>&1 \
 kc_cluster get crd sandboxes.agents.x-k8s.io >/dev/null 2>&1 \
   || die "the agent-sandbox Sandbox CRD is not installed; run the Warm pool sample's install step first"
 
-# The StorageClass must exist with the EBS CSI provisioner. EKS Auto Mode does not
-# create one, so the reader applies deploy/storage-class.yaml once per cluster.
-# This never creates or changes a StorageClass; it only checks and stops.
-require_storage_class
-echo "storageclass $STORAGE_CLASS is present with provisioner $EBS_PROVISIONER"
+# Choose the StorageClass the workspace claim will name: the cluster's default
+# when exactly one fits (EBS CSI, gp3, encrypted), otherwise the sample's own
+# class, created from deploy/storage-class.yaml only when absent. A StorageClass
+# is chosen, never changed: this never patches a class and never `kubectl apply`s
+# one. It runs before the namespace so the choice is settled first; the sample's
+# own class is the one thing it may create here, and the clean up removes it.
+choose_storage_class
 
 step "1/3 namespace $NAMESPACE"
 # Create the namespace only when it is absent, and label it so clean up can tell
@@ -70,10 +72,10 @@ if [[ -n "$live_access" && "$live_access" != "$want_access" ]]; then
        That DELETES the workspace and its EBS volume (boots.log included). Suspend preserves data; delete does not."
 fi
 
-# Render the manifest with this run's namespace and StorageClass, so an
-# overridden NAMESPACE or STORAGE_CLASS reaches the object. Never apply the file
-# with its __NAMESPACE__ / __STORAGE_CLASS__ placeholders.
-sed -e "s/__NAMESPACE__/$NAMESPACE/g" -e "s/__STORAGE_CLASS__/$STORAGE_CLASS/g" \
+# Render the manifest with this run's namespace and the chosen StorageClass, so
+# the claim names the class choose_storage_class picked. Never apply the file with
+# its __NAMESPACE__ / __STORAGE_CLASS__ placeholders.
+sed -e "s/__NAMESPACE__/$NAMESPACE/g" -e "s/__STORAGE_CLASS__/$CHOSEN_STORAGE_CLASS/g" \
   "$SAMPLE_DIR/deploy/sandbox.yaml" | kc apply -f -
 
 step "3/3 wait for the guest to boot and mount the EBS workspace"

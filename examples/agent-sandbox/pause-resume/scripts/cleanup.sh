@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Delete everything the sample created: the Sandbox, its PVC and the EBS volume
-# behind it, and the sample's namespace.
+# behind it, the sample's namespace, and the sample's own StorageClass when it
+# made one.
 #
 #   ./scripts/cleanup.sh
 #
@@ -14,8 +15,12 @@
 # lookups so a read that fails is never mistaken for "gone", and it exits
 # non-zero when it skipped something or could not confirm a delete, so an
 # incomplete clean up is never reported as done. Safe to run at any time,
-# including when nothing was set up. It never touches the StorageClass, which is
-# cluster-wide and the reader's.
+# including when nothing was set up.
+#
+# For the StorageClass it removes only the sample's own class (pause-resume-gp3),
+# and only when that class carries the sample's mark. When setup used the
+# cluster's default class instead, there is nothing to remove and the default is
+# never touched.
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "$HERE/common.sh"
@@ -64,7 +69,7 @@ case $pvc_rc in
   2) note_fail "could not read pvc/$PVC; cannot determine its EBS volume (a failed read is not 'gone')" ;;
 esac
 
-step "1/3 delete sandbox/$SANDBOX (and, by ownerReference, pvc/$PVC + its EBS volume)"
+step "1/4 delete sandbox/$SANDBOX (and, by ownerReference, pvc/$PVC + its EBS volume)"
 # The namespace is confirmed the sample's, so the Sandbox in it is the sample's.
 # Deleting it garbage-collects the PVC and the EBS volume through the
 # ownerReference.
@@ -75,7 +80,7 @@ case $sb_rc in
   2) note_fail "could not read sandbox/$SANDBOX; not reporting it gone" ;;
 esac
 
-step "2/3 confirm the workspace PVC and its EBS volume are gone"
+step "2/4 confirm the workspace PVC and its EBS volume are gone"
 # Belt and braces: if the Sandbox was already gone while the PVC remained (for
 # example deleted by hand mid-suspend), there is no owner to GC the claim, so it
 # would sit there holding an EBS volume.
@@ -101,7 +106,7 @@ if [[ -n "$pv" ]]; then
   esac
 fi
 
-step "3/3 delete namespace $NAMESPACE"
+step "3/4 delete namespace $NAMESPACE"
 # Delete the namespace only when everything above succeeded. If a delete failed
 # or a read could not be confirmed, something may still be in the namespace, so
 # deleting it would hide an incomplete clean up. Leave it for the reader instead.
@@ -113,10 +118,35 @@ else
   note_fail "namespace $NAMESPACE did not delete cleanly"
 fi
 
+step "4/4 delete the sample's own StorageClass, if the sample made it"
+# Delete pause-resume-gp3 only when it exists AND carries the sample's mark. Never
+# touch the cluster default (setup used it without creating anything), and never
+# touch a class with this name that something else owns. A failed read is a
+# failure, never "gone".
+sc_prov="$(sc_field "$SAMPLE_STORAGE_CLASS" '{.provisioner}')" ; sc_rc=$?
+if [[ $sc_rc -ne 0 ]]; then
+  note_fail "could not read storageclass/$SAMPLE_STORAGE_CLASS; not reporting it gone"
+elif [[ -z "$sc_prov" ]]; then
+  echo "  storageclass/$SAMPLE_STORAGE_CLASS not present (setup used the cluster default, or it was already removed)"
+else
+  sc_mark="$(sc_field "$SAMPLE_STORAGE_CLASS" '{.metadata.labels.app\.kubernetes\.io/managed-by}')" ; scm_rc=$?
+  if [[ $scm_rc -ne 0 ]]; then
+    note_fail "could not read the labels on storageclass/$SAMPLE_STORAGE_CLASS; not deleting something I cannot verify"
+  elif [[ "$sc_mark" != "$SAMPLE" ]]; then
+    note_fail "storageclass/$SAMPLE_STORAGE_CLASS exists without the sample's mark; leaving it (it is not the sample's)"
+  else
+    if kc_cluster delete storageclass "$SAMPLE_STORAGE_CLASS" --wait=true --timeout=60s; then
+      echo "  storageclass/$SAMPLE_STORAGE_CLASS deleted"
+    else
+      note_fail "storageclass/$SAMPLE_STORAGE_CLASS did not delete cleanly"
+    fi
+  fi
+fi
+
 echo
 if [[ $failures -ne 0 ]]; then
   echo "clean up INCOMPLETE: $failures item(s) could not be removed or confirmed (see above)." >&2
   echo "Check with: kubectl get sandbox,pvc -n $NAMESPACE  and  kubectl get ns $NAMESPACE" >&2
   exit 1
 fi
-echo "clean up complete: the Sandbox, its PVC, the EBS volume and the namespace are gone."
+echo "clean up complete: the Sandbox, its PVC, the EBS volume and the namespace are gone; the sample's own StorageClass is removed if it made one, and the cluster default is untouched."
