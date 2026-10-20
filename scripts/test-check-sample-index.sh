@@ -25,6 +25,7 @@ trap cleanup EXIT
 passed=0
 failed=0
 check_cmd=$CHECK # the copy under test; two cases run a copy placed elsewhere
+want_stderr=     # set by the one case where the check is expected to write to stderr
 
 # --- fixtures ---------------------------------------------------------------------------
 
@@ -82,6 +83,7 @@ EOF
 
 # Replace the first line matching a fixed string in a file with the given lines (none to
 # delete it). Plain shell rather than awk -v, which some awks refuse for multi-line values.
+# Stops the whole test when no line matches, so a case cannot pass on an unchanged fixture.
 replace_line() { # file match line...
   local f=$1 match=$2 line done=0
   shift 2
@@ -95,7 +97,19 @@ replace_line() { # file match line...
         fi ;;
     esac
     printf '%s\n' "$line"
-  done <"$f" >"$f.new" && mv "$f.new" "$f"
+  done <"$f" >"$f.new" || { echo "fixture error: cannot rewrite $f" >&2; exit 1; }
+  if [ "$done" -eq 0 ]; then
+    echo "fixture error: no line in $f matches: $match" >&2
+    exit 1
+  fi
+  mv "$f.new" "$f"
+}
+
+# Append lines to a file.
+append_lines() { # file line...
+  local f=$1
+  shift
+  printf '%s\n' "$@" >>"$f"
 }
 
 # --- assertions -------------------------------------------------------------------------
@@ -136,7 +150,9 @@ expect_findings() { # label repo text... (one text per expected FINDING line)
   run_check "$repo"
   if [ "$rc" -ne 1 ]; then report_fail "$label: exit $rc, want 1"; return; fi
   if [ "$nfind" -ne "$#" ]; then report_fail "$label: $nfind finding(s), want $#"; return; fi
-  if [ -s "$work/err" ]; then report_fail "$label: wrote to stderr"; return; fi
+  if [ -n "$want_stderr" ]; then
+    if ! grep -Fq -- "$want_stderr" "$work/err"; then report_fail "$label: stderr lacks: $want_stderr"; return; fi
+  elif [ -s "$work/err" ]; then report_fail "$label: wrote to stderr"; return; fi
   if ! tail -n 1 "$work/out" | grep -q "^check-sample-index: $# finding(s) in "; then
     report_fail "$label: no '$# finding(s)' footer"
     return
@@ -201,6 +217,33 @@ git -C "$d" add CONTRIBUTING.md
 printf '<<<<<<< HEAD\n' >"$d/untracked-notes.txt"
 expect_ok "accept: marker text inside a line, an ===== underline, and an untracked file" "no conflict markers" "$d"
 
+d=$(new_repo accept-nav-forms)
+cat >"$d/mkdocs.yml" <<'EOF'
+site_name: Test
+nav:
+- Home: README.md
+- "Getting started":
+  - "Hello: the first one": getting-started/hello/README.md
+- Policy:  # one section
+  - Signing: "policy/signing/README.md"
+markdown_extensions:
+  - toc:
+      permalink: true
+EOF
+git -C "$d" add mkdocs.yml
+expect_ok "accept: a nav at column 0, quoted titles and paths, a title with ': ', a key after it" \
+  "OK, 2 sample(s)" "$d"
+
+d=$(new_repo accept-entry-after-nested-fence)
+replace_line "$d/README.md" "](examples/policy/signing/README.md)" \
+  '````markdown' '```' '- [Example](examples/policy/example/README.md): an example.' '```' '````' \
+  "- [Signing](examples/policy/signing/README.md): a signed image."
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '~~~text' '```' '~~~' \
+  "- [signing](../examples/policy/signing/README.md) (available now): a signed image."
+expect_ok "accept: an entry after a fence that holds a shorter fence or the other fence character" \
+  "OK, 2 sample(s)" "$d"
+
 d=$(new_repo accept-default-root)
 mkdir -p "$d/scripts"
 cp "$CHECK" "$d/scripts/check-sample-index.sh"
@@ -222,6 +265,46 @@ d=$(new_repo reject-nav-after-comment)
 replace_line "$d/mkdocs.yml" "Signing: policy" "      - Old: legacy.md  # was - Signing: policy/signing/README.md"
 expect_findings "reject: a nav path only in the comment after another entry" "$d" \
   "policy/signing is not in the mkdocs.yml nav"
+
+d=$(new_repo reject-nav-outside-nav)
+replace_line "$d/mkdocs.yml" "Signing: policy"
+append_lines "$d/mkdocs.yml" "extra:" "  pages:" "    - Signing: policy/signing/README.md"
+expect_findings "reject: a nav-like line after the nav block has ended" "$d" \
+  "policy/signing is not in the mkdocs.yml nav"
+
+d=$(new_repo reject-no-nav-block)
+replace_line "$d/mkdocs.yml" "nav:" "plugins:"
+expect_findings "reject: no nav: block at all" "$d" "mkdocs.yml has no top-level nav: block"
+
+d=$(new_repo reject-nav-top-level)
+replace_line "$d/mkdocs.yml" "Signing: policy"
+replace_line "$d/mkdocs.yml" "Home: README.md" "  - Home: README.md" "  - Signing: policy/signing/README.md"
+expect_findings "reject: a sample in the nav but not under a section heading" "$d" \
+  "policy/signing is in the mkdocs.yml nav but not under a section heading"
+
+d=$(new_repo reject-nav-top-level-after-section)
+replace_line "$d/mkdocs.yml" "Signing: policy" "  - Signing: policy/signing/README.md"
+expect_findings "reject: a top-level nav page after the last section, not inside it" "$d" \
+  "policy/signing is in the mkdocs.yml nav but not under a section heading"
+
+d=$(new_repo reject-nav-duplicate)
+replace_line "$d/mkdocs.yml" "Signing: policy" \
+  "      - Signing: policy/signing/README.md" "      - Signing: policy/signing/README.md"
+expect_findings "reject: the same nav entry twice, as a keep-both merge can leave it" "$d" \
+  "policy/signing is in the mkdocs.yml nav 2 times"
+
+d=$(new_repo reject-nav-wrong-heading)
+mkdir -p "$d/examples/policy/cedar"
+printf '# Cedar\n' >"$d/examples/policy/cedar/README.md"
+git -C "$d" add examples/policy/cedar/README.md
+replace_line "$d/mkdocs.yml" "Signing: policy" "      - Cedar: policy/cedar/README.md"
+replace_line "$d/mkdocs.yml" "Hello: getting-started" \
+  "      - Hello: getting-started/hello/README.md" "      - Signing: policy/signing/README.md"
+append_lines "$d/docs/ROADMAP.md" "- [cedar](../examples/policy/cedar/README.md) (available now): a Cedar policy."
+append_lines "$d/README.md" "- [Cedar](examples/policy/cedar/README.md): a Cedar policy."
+expect_findings "reject: a sample under another section's nav heading" "$d" \
+  "mkdocs.yml nav heading 'Getting started' holds samples from more than one section folder: getting-started, policy" \
+  "the policy/ samples are under more than one mkdocs.yml nav heading: 'Getting started', 'Policy'"
 
 d=$(new_repo reject-nav-other-path)
 replace_line "$d/mkdocs.yml" "Signing: policy" "      - Signing: old/policy/signing/README.md"
@@ -252,7 +335,31 @@ replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
 expect_findings "reject: a roadmap link only inside a multi-line HTML comment" "$d" \
   "policy/signing is not linked in docs/ROADMAP.md"
 
+d=$(new_repo reject-roadmap-in-fence)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '~~~' "- [signing](../examples/policy/signing/README.md) (available now): a signed image." '~~~'
+expect_findings "reject: a roadmap link only inside a fenced code block" "$d" \
+  "policy/signing is not linked in docs/ROADMAP.md"
+
+d=$(new_repo reject-heading-ends-at-h2)
+replace_line "$d/docs/ROADMAP.md" "](../examples/getting-started/hello/README.md)" \
+  "## Elsewhere" "" "- [hello](../examples/getting-started/hello/README.md): the first sample."
+expect_findings "reject: a '## ' heading ends the available '### ' section" "$d" \
+  "getting-started/hello is linked in docs/ROADMAP.md but not marked '(available now)'"
+
 # --- must reject: README.md ----------------------------------------------------------------
+
+d=$(new_repo reject-readme-in-fence)
+replace_line "$d/README.md" "](examples/policy/signing/README.md)" \
+  '```markdown' "- [Signing](examples/policy/signing/README.md): a signed image." '```'
+expect_findings "reject: a README.md entry only inside a fenced code block" "$d" \
+  "policy/signing is not listed in README.md"
+
+d=$(new_repo reject-readme-in-long-fence)
+replace_line "$d/README.md" "](examples/policy/signing/README.md)" \
+  '````markdown' '```' "- [Signing](examples/policy/signing/README.md): a signed image." '````'
+expect_findings "reject: an entry inside a four-backtick fence, after a three-backtick line" "$d" \
+  "policy/signing is not listed in README.md"
 
 d=$(new_repo reject-no-readme)
 replace_line "$d/README.md" "](examples/policy/signing/README.md)"
@@ -302,6 +409,42 @@ printf 'text\n>>>>>>>\n' >"$d/notes.txt"
 git -C "$d" add notes.txt
 expect_findings "reject: a bare closing marker in another tracked file" "$d" \
   "merge conflict marker left at notes.txt:2"
+
+# --- must reject: the nav could not be read ----------------------------------------------------
+
+# A stub awk on PATH fails only the nav reader (its program is the one that mentions
+# sawnav) and runs the real awk for every other call, so the check gets past its own
+# command checks and reaches the guard.
+stub="$work/stub-bin"
+mkdir -p "$stub"
+real_awk=$(command -v awk)
+{
+  printf '#!/bin/sh\n'
+  printf 'case "$*" in *sawnav*) echo "awk: simulated failure" >&2; exit 3 ;; esac\n'
+  printf 'exec "%s" "$@"\n' "$real_awk"
+} >"$stub/awk"
+chmod +x "$stub/awk"
+d=$(new_repo reject-nav-reader-fails)
+saved_path=$PATH
+PATH="$stub:$PATH"
+want_stderr="awk: simulated failure"
+expect_findings "reject: a nav reader that fails is a finding, not a pass" "$d" \
+  "could not read the mkdocs.yml nav (awk exit 3)"
+want_stderr=
+PATH=$saved_path
+
+# --- the fixture helper itself ---------------------------------------------------------------
+
+d=$(new_repo fixture-replace-line)
+if (replace_line "$d/README.md" "no line has this text" "x") 2>"$work/err"; then
+  failed=$((failed + 1))
+  echo "FAIL fixture: replace_line carried on when nothing matched"
+elif ! grep -q '^fixture error: no line in ' "$work/err"; then
+  failed=$((failed + 1))
+  echo "FAIL fixture: replace_line stopped without saying why"
+else
+  pass "fixture: replace_line stops the test when nothing matches"
+fi
 
 # --- must refuse ----------------------------------------------------------------------------------
 

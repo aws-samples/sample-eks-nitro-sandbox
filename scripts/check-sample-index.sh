@@ -14,12 +14,15 @@
 # A sample is a tracked examples/<section>/<sample>/README.md, exactly two folders below
 # examples/ (a README.md deeper inside a sample, such as an app's, is not a sample). For
 # each sample <s> = <section>/<sample> it checks:
-#   - mkdocs.yml has a nav entry "- <Title>: <s>/README.md".
+#   - mkdocs.yml has exactly one page "- <Title>: <s>/README.md" in its nav: block, under
+#     a section heading ("- <Section>:"). Each nav heading holds the samples of one
+#     <section> folder, and each folder's samples sit under one heading.
 #   - docs/ROADMAP.md has a list item linking ../examples/<s>/README.md, marked
 #     "(available now)" on that line or in the "### " heading of the section it is under.
 #   - README.md at the top of the repository has a list item linking examples/<s>/README.md.
-# A line in a YAML comment (#) or an HTML comment does not count. It also checks that no
-# tracked text file has a line starting with a conflict marker, "<<<<<<< " or ">>>>>>> ".
+# A list item starts with "- ", as in every index file here. A YAML comment (#), an HTML
+# comment or a fenced code block does not count. It also checks that no tracked text file
+# has a line starting with a conflict marker, "<<<<<<< " or ">>>>>>> ".
 #
 # Written for bash 3.2 and POSIX awk, so it runs on macOS as well as Linux.
 
@@ -62,7 +65,7 @@ done
 
 # Everything that can refuse runs before the first check, so exit 2 always means that
 # nothing was checked.
-samples=$(git -C "$root" ls-files -- 'examples/*/*/README.md' 2>/dev/null) ||
+samples=$(git -C "$root" -c core.quotePath=false ls-files -- 'examples/*/*/README.md' 2>/dev/null) ||
   refuse "git ls-files failed in $root"
 samples=$(printf '%s\n' "$samples" | awk -F/ 'NF == 4 && $4 == "README.md" { print $2 "/" $3 }')
 [ -n "$samples" ] || refuse "no samples found under examples/<section>/<sample>/README.md"
@@ -73,48 +76,141 @@ finding() {
   findings=$((findings + 1))
 }
 
-# Prints the file with HTML comments removed, so a commented-out entry does not count.
-strip_html_comments() {
+# Prints a Markdown file with HTML comments removed and fenced code blocks blanked, line for
+# line, so a commented-out entry or an example in a code block does not count. A fence
+# closes only on the same character repeated at least as many times as it opened with, as
+# in CommonMark (and as in check-agent-files.sh).
+markdown_text() { # file
   awk '
-    BEGIN { incomment = 0 }
-    { sub(/\r$/, ""); line = $0
+    function fence_run(s, c,   n) {
+      n = 0
+      while (substr(s, n + 1, 1) == c) n++
+      return n
+    }
+    function unindent(s) { sub(/^ ? ? ?/, "", s); return s }
+    function fence_opens(s,   c, n) {
+      s = unindent(s)
+      c = substr(s, 1, 1)
+      if (c != "`" && c != "~") return 0
+      n = fence_run(s, c)
+      if (n < 3) return 0
+      # A backtick fence cannot have a backtick in its info string; such a line is text.
+      if (c == "`" && index(substr(s, n + 1), "`") > 0) return 0
+      fchar = c
+      flen = n
+      return 1
+    }
+    function fence_closes(s,   n) {
+      s = unindent(s)
+      n = fence_run(s, fchar)
+      if (n < flen) return 0
+      return (substr(s, n + 1) ~ /^[ \t]*$/)
+    }
+    BEGIN { fence = 0; incomment = 0 }
+    { sub(/\r$/, "") }
+    fence {
+      if (fence_closes($0)) fence = 0
+      print ""
+      next
+    }
+    {
+      line = $0
       if (incomment) {
         e = index(line, "-->")
         if (e == 0) { print ""; next }
-        line = substr(line, e + 3); incomment = 0
+        line = substr(line, e + 3)
+        incomment = 0
       }
       while ((s = index(line, "<!--")) > 0) {
-        rest = substr(line, s + 4); e = index(rest, "-->")
+        rest = substr(line, s + 4)
+        e = index(rest, "-->")
         if (e == 0) { line = substr(line, 1, s - 1); incomment = 1; break }
         line = substr(line, 1, s - 1) substr(rest, e + 3)
       }
+      if (fence_opens(line)) { fence = 1; print ""; next }
       print line
     }
   ' "$1"
 }
 
-# 0 when mkdocs.yml has "- <Title>: <path>" for this path, outside a YAML comment.
-in_nav() { # path
-  awk -v want="$1" '
-    { sub(/\r$/, "") }
-    {
-      line = $0
-      sub(/^[ \t]+/, "", line)
-      if (substr(line, 1, 2) != "- ") next # also skips a whole-line comment, "# - ..."
-      sub(/[ \t]+#.*$/, "", line)
-      sub(/[ \t]+$/, "", line)
-      n = length(line); w = length(want)
-      if (n > w + 2 && substr(line, n - w - 1) == ": " want) { found = 1; exit }
+# Prints one line per nav problem. Reads the sample list on standard input, then the
+# top-level nav: block of mkdocs.yml, where a "- <Section>:" item is a heading and a
+# "- <Title>: <path>" item is a page under the nearest heading indented less than it.
+nav_problems() {
+  printf '%s\n' "$samples" | awk '
+    function unquote(s,   c) {
+      c = substr(s, 1, 1)
+      if ((c == "\"" || c == q) && length(s) >= 2 && substr(s, length(s), 1) == c)
+        s = substr(s, 2, length(s) - 2)
+      return s
     }
-    END { exit (found ? 0 : 1) }
-  ' "$root/mkdocs.yml"
+    BEGIN { q = sprintf("%c", 39); innav = 0; sawnav = 0; nh = 0; ns = 0; nhead = 0; nsec = 0 }
+    FNR == NR { if ($0 != "") { ns++; order[ns] = $0; is_sample[$0] = 1 }; next }
+    { sub(/\r$/, "") }
+    !innav { if ($0 ~ /^nav:[ \t]*(#.*)?$/) { innav = 1; sawnav = 1 }; next }
+    /^[^ \t#-]/ { innav = 0; next } # the next top-level key ends the nav
+    {
+      match($0, /^[ \t]*/)
+      ind = RLENGTH
+      rest = substr($0, ind + 1)
+      if (substr(rest, 1, 2) != "- ") next # also skips a whole-line comment, "# - ..."
+      rest = substr(rest, 3)
+      sub(/[ \t]+#.*$/, "", rest)
+      sub(/[ \t]+$/, "", rest)
+      while (nh > 0 && hind[nh] >= ind) nh--
+      if (rest ~ /:$/) {
+        nh++
+        hind[nh] = ind
+        htitle[nh] = unquote(substr(rest, 1, length(rest) - 1))
+        next
+      }
+      path = rest
+      for (i = length(rest) - 1; i > 0; i--)
+        if (substr(rest, i, 2) == ": ") { path = substr(rest, i + 2); break }
+      path = unquote(path)
+      if (length(path) <= 10 || substr(path, length(path) - 9) != "/README.md") next
+      s = substr(path, 1, length(path) - 10)
+      if (!(s in is_sample)) next
+      n[s]++
+      h = (nh > 0 ? htitle[nh] : "")
+      head[s] = h
+      if (h == "") next
+      sec = s
+      sub(/\/.*/, "", sec)
+      if ((h SUBSEP sec) in pair) next
+      pair[h, sec] = 1
+      if (!(h in hcount)) { nhead++; horder[nhead] = h; hsecs[h] = sec }
+      else hsecs[h] = hsecs[h] ", " sec
+      hcount[h]++
+      if (!(sec in scount)) { nsec++; sorder[nsec] = sec; sheads[sec] = q h q }
+      else sheads[sec] = sheads[sec] ", " q h q
+      scount[sec]++
+    }
+    END {
+      if (!sawnav) { print "mkdocs.yml has no top-level nav: block"; exit 0 }
+      for (i = 1; i <= ns; i++) {
+        s = order[i]
+        if (!(s in n))
+          print s " is not in the mkdocs.yml nav; add " q "- <Title>: " s "/README.md" q " under its section heading"
+        else if (n[s] > 1) print s " is in the mkdocs.yml nav " n[s] " times; keep one entry"
+        else if (head[s] == "") print s " is in the mkdocs.yml nav but not under a section heading"
+      }
+      for (i = 1; i <= nhead; i++)
+        if (hcount[horder[i]] > 1)
+          print "mkdocs.yml nav heading " q horder[i] q " holds samples from more than one section folder: " hsecs[horder[i]]
+      for (i = 1; i <= nsec; i++)
+        if (scount[sorder[i]] > 1)
+          print "the " sorder[i] "/ samples are under more than one mkdocs.yml nav heading: " sheads[sorder[i]]
+    }
+  ' - "$root/mkdocs.yml"
 }
 
 # Prints "linked", "available" (linked and marked available now) or nothing, for the
-# roadmap list item that links this sample.
+# roadmap list item that links this sample. A "# " or "## " heading ends a "### " section.
 roadmap_state() { # sample
-  strip_html_comments "$root/docs/ROADMAP.md" | awk -v link="](../examples/$1/README.md)" '
+  markdown_text "$root/docs/ROADMAP.md" | awk -v link="](../examples/$1/README.md)" '
     /^### / { heading = $0; next }
+    /^##? / { heading = ""; next }
     /^[ \t]*- / && index($0, link) > 0 {
       if (index($0, "(available now)") > 0 || index(heading, "available now") > 0) { state = "available" }
       else if (state == "") { state = "linked" }
@@ -125,18 +221,24 @@ roadmap_state() { # sample
 
 # 0 when the root README.md has a list item linking this sample.
 in_readme() { # sample
-  strip_html_comments "$root/README.md" | awk -v link="](examples/$1/README.md)" '
+  markdown_text "$root/README.md" | awk -v link="](examples/$1/README.md)" '
     /^[ \t]*- / && index($0, link) > 0 { found = 1; exit }
     END { exit (found ? 0 : 1) }
   '
 }
 
+if navout=$(nav_problems); then
+  while IFS= read -r m; do
+    [ -z "$m" ] || finding "$m"
+  done <<<"$navout"
+else
+  finding "could not read the mkdocs.yml nav (awk exit $?)"
+fi
+
 count=0
 while IFS= read -r s; do
   [ -n "$s" ] || continue
   count=$((count + 1))
-  in_nav "$s/README.md" ||
-    finding "$s is not in the mkdocs.yml nav; add '- <Title>: $s/README.md' under its section heading"
   case "$(roadmap_state "$s")" in
     available) ;;
     linked) finding "$s is linked in docs/ROADMAP.md but not marked '(available now)'" ;;
