@@ -76,27 +76,34 @@ kget_field() {
   KGET_ERR="$(sed 's/^/  /' "$errf")"; rm -f "$errf"; KGET_FIELD=""; return 1
 }
 
-# sc_fits <class> : return 0 when the named StorageClass fits (Auto Mode provisioner, type
-# gp3 or unset, encrypted "true"). Returns non-zero on any read failure (fail closed: a
-# class we cannot fully read does not "fit"), printing why to stderr. Does not exit.
+# sc_fits <class> : decide whether the named StorageClass fits (Auto Mode provisioner, type
+# gp3 or unset, encrypted "true"). Three outcomes, kept apart so a transient read failure is
+# never mistaken for a genuine mismatch (which would silently fall through to creating the
+# sample's class instead of failing closed):
+#   0 = fits; 1 = a field was read successfully and does not match; 2 = a read itself failed.
+# The caller treats 2 as fatal. SC_FITS_WHY carries a human reason for 1 or 2.
+SC_FITS_WHY=""
 sc_fits() {
-  local sc="$1" prov typ enc
+  local sc="$1"
   if ! kget_field storageclass "$sc" '{.provisioner}'; then
-    printf '  could not read provisioner of %s: %s\n' "$sc" "$KGET_ERR" >&2; return 1
+    SC_FITS_WHY="could not read provisioner of $sc: $KGET_ERR"; return 2
   fi
-  prov="$KGET_FIELD"
-  [[ "$prov" == "$WANT_PROVISIONER" ]] || return 1
+  if [[ "$KGET_FIELD" != "$WANT_PROVISIONER" ]]; then
+    SC_FITS_WHY="provisioner is '${KGET_FIELD:-<unset>}', not $WANT_PROVISIONER"; return 1
+  fi
   if ! kget_field storageclass "$sc" '{.parameters.type}'; then
-    printf '  could not read parameters.type of %s: %s\n' "$sc" "$KGET_ERR" >&2; return 1
+    SC_FITS_WHY="could not read parameters.type of $sc: $KGET_ERR"; return 2
   fi
-  typ="$KGET_FIELD"
-  [[ "$typ" == "gp3" || -z "$typ" ]] || return 1
+  if [[ "$KGET_FIELD" != "gp3" && -n "$KGET_FIELD" ]]; then
+    SC_FITS_WHY="type is '$KGET_FIELD', not gp3 (or unset)"; return 1
+  fi
   if ! kget_field storageclass "$sc" '{.parameters.encrypted}'; then
-    printf '  could not read parameters.encrypted of %s: %s\n' "$sc" "$KGET_ERR" >&2; return 1
+    SC_FITS_WHY="could not read parameters.encrypted of $sc: $KGET_ERR"; return 2
   fi
-  enc="$KGET_FIELD"
-  [[ "$enc" == "true" ]] || return 1
-  return 0
+  if [[ "$KGET_FIELD" != "true" ]]; then
+    SC_FITS_WHY="encrypted is '${KGET_FIELD:-<unset>}', not true"; return 1
+  fi
+  SC_FITS_WHY=""; return 0
 }
 
 # CHOSEN_CLASS is set by the choice below; every claim is rendered with it.
@@ -199,18 +206,27 @@ Re-run once the cluster reads cleanly."
   mapfile -t default_list < <(printf '%s\n' "$default_classes" | sed '/^$/d')
   default_count="${#default_list[@]}"
 
-  if [[ "$default_count" -eq 1 ]] && sc_fits "${default_list[0]}"; then
-    CHOSEN_CLASS="${default_list[0]}"
-    echo "  the cluster default StorageClass '$CHOSEN_CLASS' fits (Auto Mode provisioner, gp3, encrypted). Using it and creating nothing."
+  if [[ "$default_count" -eq 1 ]]; then
+    # Exactly one default: does it fit? Evaluate sc_fits in an `if` so its non-zero return
+    # (1 mismatch, 2 read-failure) does not trip `set -e` before fits_rc is captured.
+    if sc_fits "${default_list[0]}"; then fits_rc=0; else fits_rc=$?; fi
+    if [[ $fits_rc -eq 0 ]]; then
+      CHOSEN_CLASS="${default_list[0]}"
+      echo "  the cluster default StorageClass '$CHOSEN_CLASS' fits (Auto Mode provisioner, gp3, encrypted). Using it and creating nothing."
+    elif [[ $fits_rc -eq 2 ]]; then
+      die "could not determine whether the cluster default StorageClass '${default_list[0]}'
+fits ($SC_FITS_WHY). The read failed, which is not a report that it does not fit, so refusing
+to fall through to creating the sample's class. Re-run once the cluster reads cleanly."
+    else
+      echo "  the cluster default StorageClass '${default_list[0]}' does not fit ($SC_FITS_WHY); using the sample's own '$SAMPLE_CLASS'."
+      use_sample_class
+    fi
   else
-    # (2) The default does not fit (or there is no default, or more than one): use the
-    # sample's own non-default class.
+    # (2) No default, or more than one: use the sample's own non-default class.
     if [[ "$default_count" -eq 0 ]]; then
       echo "  the cluster has no default StorageClass; using the sample's own '$SAMPLE_CLASS'."
-    elif [[ "$default_count" -gt 1 ]]; then
-      echo "  the cluster has $default_count default StorageClasses, so none can be chosen unambiguously; using the sample's own '$SAMPLE_CLASS'."
     else
-      echo "  the cluster default StorageClass '${default_list[0]}' does not fit (needs Auto Mode provisioner, gp3, encrypted); using the sample's own '$SAMPLE_CLASS'."
+      echo "  the cluster has $default_count default StorageClasses, so none can be chosen unambiguously; using the sample's own '$SAMPLE_CLASS'."
     fi
     use_sample_class
   fi

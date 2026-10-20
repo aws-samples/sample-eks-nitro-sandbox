@@ -34,12 +34,27 @@ command -v "${KUBECTL%% *}" >/dev/null 2>&1 || die "'$KUBECTL' is not on PATH"
 $KUBECTL get pod "$POD" -n "$NAMESPACE" >/dev/null 2>&1 \
   || die "pod/$POD not found in namespace '$NAMESPACE'. Run ./scripts/setup.sh first."
 
+# read_default_class: set DEFAULT_CLASS to the names of the classes carrying the
+# is-default-class annotation ("none" when there are none), and return non-zero when the
+# read itself failed. A suppressed read that returned empty would make "none" and let two
+# failed reads satisfy the "unchanged" assertion vacuously, so the status is checked.
+DEFAULT_CLASS=""
+read_default_class() {
+  local errf out rc
+  errf="$(mktemp)"
+  out="$($KUBECTL get storageclass \
+    -o 'jsonpath={range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{" "}{end}' 2>"$errf")"
+  rc=$?
+  rm -f "$errf"
+  [[ $rc -ne 0 ]] && { DEFAULT_CLASS=""; return 1; }
+  DEFAULT_CLASS="${out:-none}"
+  return 0
+}
+
 echo "== the cluster default StorageClass before the run =="
 # Record whatever class (if any) carries the default annotation, so the end of the run
-# can show it is unchanged. "none" is a valid answer.
-default_before="$($KUBECTL get storageclass \
-  -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{" "}{end}' 2>/dev/null)"
-default_before="${default_before:-none}"
+# can show it is unchanged. "none" is a valid answer; a failed read is not.
+if read_default_class; then default_before="$DEFAULT_CLASS"; else default_before="<read-failed>"; fi
 echo "  default class: ${default_before}"
 # This sample's shipped manifest must carry no default annotation.
 shipped_default="$($KUBECTL create --dry-run=client -f "$SAMPLE_DIR/deploy/storage-class.yaml" \
@@ -63,6 +78,7 @@ pvc_modes="$($KUBECTL get pvc "$PVC" -n "$NAMESPACE" -o jsonpath='{.spec.accessM
 # what setup chose (the cluster default when it fits, else the sample's own class), so the
 # page can say which class the run used.
 chosen_class="$($KUBECTL get pvc "$PVC" -n "$NAMESPACE" -o jsonpath='{.spec.storageClassName}')"
+pvc_phase_before="$($KUBECTL get pvc "$PVC" -n "$NAMESPACE" -o jsonpath='{.status.phase}')"
 boots_before="$($KUBECTL exec "$POD" -n "$NAMESPACE" -- sh -c 'grep -c booted /data/boot-log.txt' | tr -d '[:space:]')"
 echo "  runtimeClassName:  $rc"
 echo "  guest kernel:      $kernel"
@@ -155,15 +171,14 @@ else
 fi
 
 echo "== the cluster default StorageClass after the run =="
-default_after="$($KUBECTL get storageclass \
-  -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{" "}{end}' 2>/dev/null)"
-default_after="${default_after:-none}"
+if read_default_class; then default_after="$DEFAULT_CLASS"; else default_after="<read-failed>"; fi
 echo "  default class: ${default_after}"
 
 echo "== assertions =="
 [[ "$rc" == "isolated-sandbox" ]]; assert "pod opted into the isolated-sandbox runtime class" $?
 [[ "$pvc_modes" == "ReadWriteOncePod" ]]; assert "the claim is ReadWriteOncePod (${pvc_modes:-none}), one pod not just one node" $?
-[[ -n "$chosen_class" ]]; assert "the claim is bound through the class setup chose (${chosen_class:-<none>})" $?
+[[ -n "$chosen_class" && "$pvc_phase_before" == "Bound" && -n "$pv_before" ]]
+assert "the claim is Bound (phase=${pvc_phase_before:-<none>}) through the class setup chose (${chosen_class:-<none>}) on PV ${pv_before:-<none>}" $?
 [[ "$data_dev" == /dev/vd* ]]; assert "/data is a virtio device ($data_dev), not the node's nvme*" $?
 [[ -n "$disks" && "$disks" != *nvme* ]]; assert "the guest sees virtio disks ($disks), no nvme device" $?
 [[ "$run_uid" != "0" ]]; assert "the writer runs as a non-root uid ($run_uid)" $?
@@ -179,7 +194,10 @@ case "$addrs" in *"eth0"*) n=1;; *"lo=127.0.0.1/8"*) n=0;; *) n=1;; esac; assert
 [[ "$marker_after" == "$marker" ]]; assert "the marker written by the previous guest is still readable" $?
 [[ "$second_phase" == "Pending" ]]; assert "the second ReadWriteOncePod claimant stays Pending ($second_phase)" $?
 [[ "$shipped_default" != "true" ]]; assert "deploy/storage-class.yaml carries no default-class annotation (is-default-class='${shipped_default:-<none>}')" $?
-[[ "$default_after" == "$default_before" ]]; assert "the cluster default class is unchanged across the run ($default_before -> $default_after)" $?
+# Fail if EITHER read failed (both would be "<read-failed>" and compare equal, passing the
+# assertion on evidence that does not exist), as well as on a genuine change.
+[[ "$default_before" != "<read-failed>" && "$default_after" != "<read-failed>" && "$default_after" == "$default_before" ]]
+assert "the cluster default class is unchanged across the run ($default_before -> $default_after)" $?
 if [[ "$aws_available" == no ]]; then
   # aws genuinely absent: this check cannot run, so skip it rather than fail it.
   skip "the provisioned EC2 volume is an encrypted gp3 (needs the aws CLI and ec2:DescribeVolumes)"

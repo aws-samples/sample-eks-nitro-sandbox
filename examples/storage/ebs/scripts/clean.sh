@@ -54,6 +54,49 @@ incomplete=0
 warn() { printf 'warning: %s\n' "$*" >&2; incomplete=1; }
 command -v "${KUBECTL%% *}" >/dev/null 2>&1 || { printf 'error: %s not on PATH\n' "$KUBECTL" >&2; exit 2; }
 
+# Delete the sample's OWN StorageClass, and only that. The rule is strict: delete
+# nitro-sandbox-ebs only when it exists AND carries this sample's mark. A class that does
+# not exist is nothing to do; a class that exists without the mark is not ours (setup would
+# have refused to use it), so we must not delete it; and the cluster default is never named
+# here, so it is never touched. A read that fails is "could not determine", which marks the
+# clean up incomplete rather than guessing. This is a function because it must run whether or
+# not the sample's namespace still exists: setup can create the class on a run whose
+# namespace was later removed separately, and leaving a marked class behind is the one thing
+# the clean up must never do.
+cleanup_sample_class() {
+  local sc_mark sc_mark_rc sc_mark_msg sc_exist sc_exist_rc sc_exist_msg sc_mark_err sc_exist_err
+  sc_mark_err="$(mktemp)"
+  if sc_mark="$($KUBECTL get storageclass "$SAMPLE_CLASS" --ignore-not-found \
+        -o "jsonpath={.metadata.labels.$SAMPLE_LABEL_JSONPATH}" 2>"$sc_mark_err")"; then
+    sc_mark_rc=0
+  else
+    sc_mark_rc=$?
+  fi
+  sc_mark_msg="$(sed 's/^/    /' "$sc_mark_err")"; rm -f "$sc_mark_err"
+  # Does the class exist at all? --ignore-not-found makes an absent class an empty-but-success
+  # read of the label too, so distinguish "exists" with a separate name read.
+  sc_exist_err="$(mktemp)"
+  if sc_exist="$($KUBECTL get storageclass "$SAMPLE_CLASS" --ignore-not-found -o name 2>"$sc_exist_err")"; then
+    sc_exist_rc=0
+  else
+    sc_exist_rc=$?
+  fi
+  sc_exist_msg="$(sed 's/^/    /' "$sc_exist_err")"; rm -f "$sc_exist_err"
+  if [[ $sc_exist_rc -ne 0 || $sc_mark_rc -ne 0 ]]; then
+    warn "could not determine whether the sample's StorageClass '$SAMPLE_CLASS' exists or is marked; leaving it untouched:
+${sc_exist_msg:-}${sc_mark_msg:-}"
+  elif [[ -z "$sc_exist" ]]; then
+    echo "The sample's StorageClass '$SAMPLE_CLASS' is not present (setup used the cluster default, or it was never created). Nothing to delete; the cluster default is untouched."
+  elif [[ "$sc_mark" == "$SAMPLE_LABEL_VALUE" ]]; then
+    echo "Deleting the sample's own StorageClass '$SAMPLE_CLASS' (it carries the sample's mark)..."
+    $KUBECTL delete storageclass "$SAMPLE_CLASS" --ignore-not-found \
+      || warn "could not confirm the sample's StorageClass '$SAMPLE_CLASS' was deleted"
+  else
+    warn "a StorageClass named '$SAMPLE_CLASS' exists but is not marked $SAMPLE_LABEL_KEY=$SAMPLE_LABEL_VALUE, so this sample did not create it; leaving it untouched."
+  fi
+  echo "The cluster's default StorageClass was never touched."
+}
+
 # Never delete anything inside a namespace this sample did not create. Three outcomes, kept
 # apart so a failed read is never mistaken for "absent" (fail open) or "ours" (unsafe):
 # the namespace exists, it does not exist, or the read itself failed. `get -o name` prints
@@ -71,7 +114,15 @@ report that it is absent). Refusing to clean up on an unknown state. kubectl sai
   exit 2
 fi
 if [[ -z "$ns_name" ]]; then
-  echo "Namespace '$NAMESPACE' does not exist; nothing to clean up."
+  echo "Namespace '$NAMESPACE' does not exist; no namespaced objects to clean up."
+  # The namespace may have been removed separately while the sample's own StorageClass (a
+  # cluster-scoped object) is still present, so still run the class cleanup rather than
+  # leaving a marked class behind.
+  cleanup_sample_class
+  if [[ "$incomplete" -ne 0 ]]; then
+    printf '\nClean up INCOMPLETE: the StorageClass cleanup could not be confirmed. See the warnings.\n' >&2
+    exit 1
+  fi
   exit 0
 fi
 # Read the exact label value, not the whole labels map: the map's jsonpath serialization
@@ -223,42 +274,7 @@ else
   echo "No sample PVCs were present, so there were no EBS volumes to confirm."
 fi
 
-# Delete the sample's OWN StorageClass, and only that. The rule is strict: delete
-# nitro-sandbox-ebs only when it exists AND carries this sample's mark. A class that does
-# not exist is nothing to do; a class that exists without the mark is not ours (setup would
-# have refused to use it), so we must not delete it; and the cluster default is never named
-# here, so it is never touched. A read that fails is "could not determine", which marks the
-# clean up incomplete rather than guessing.
-sc_mark_err="$(mktemp)"
-if sc_mark="$($KUBECTL get storageclass "$SAMPLE_CLASS" --ignore-not-found \
-      -o "jsonpath={.metadata.labels.$SAMPLE_LABEL_JSONPATH}" 2>"$sc_mark_err")"; then
-  sc_mark_rc=0
-else
-  sc_mark_rc=$?
-fi
-sc_mark_msg="$(sed 's/^/    /' "$sc_mark_err")"; rm -f "$sc_mark_err"
-# Does the class exist at all? --ignore-not-found makes an absent class an empty-but-success
-# read of the label too, so distinguish "exists" with a separate name read.
-sc_exist_err="$(mktemp)"
-if sc_exist="$($KUBECTL get storageclass "$SAMPLE_CLASS" --ignore-not-found -o name 2>"$sc_exist_err")"; then
-  sc_exist_rc=0
-else
-  sc_exist_rc=$?
-fi
-sc_exist_msg="$(sed 's/^/    /' "$sc_exist_err")"; rm -f "$sc_exist_err"
-if [[ $sc_exist_rc -ne 0 || $sc_mark_rc -ne 0 ]]; then
-  warn "could not determine whether the sample's StorageClass '$SAMPLE_CLASS' exists or is marked; leaving it untouched:
-${sc_exist_msg:-}${sc_mark_msg:-}"
-elif [[ -z "$sc_exist" ]]; then
-  echo "The sample's StorageClass '$SAMPLE_CLASS' is not present (setup used the cluster default, or it was never created). Nothing to delete; the cluster default is untouched."
-elif [[ "$sc_mark" == "$SAMPLE_LABEL_VALUE" ]]; then
-  echo "Deleting the sample's own StorageClass '$SAMPLE_CLASS' (it carries the sample's mark)..."
-  $KUBECTL delete storageclass "$SAMPLE_CLASS" --ignore-not-found \
-    || warn "could not confirm the sample's StorageClass '$SAMPLE_CLASS' was deleted"
-else
-  warn "a StorageClass named '$SAMPLE_CLASS' exists but is not marked $SAMPLE_LABEL_KEY=$SAMPLE_LABEL_VALUE, so this sample did not create it; leaving it untouched."
-fi
-echo "The cluster's default StorageClass was never touched."
+cleanup_sample_class
 
 if [[ "$incomplete" -ne 0 ]]; then
   printf '\nClean up INCOMPLETE: something above could not be deleted or confirmed. See the warnings.\n' >&2
