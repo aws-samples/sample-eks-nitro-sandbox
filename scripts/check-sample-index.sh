@@ -14,15 +14,19 @@
 # A sample is a tracked examples/<section>/<sample>/README.md, exactly two folders below
 # examples/ (a README.md deeper inside a sample, such as an app's, is not a sample). For
 # each sample <s> = <section>/<sample> it checks:
-#   - mkdocs.yml has exactly one page "- <Title>: <s>/README.md" in its nav: block, under
-#     a section heading ("- <Section>:"). Each nav heading holds the samples of one
-#     <section> folder, and each folder's samples sit under one heading.
+#   - mkdocs.yml has exactly one page "- <Title>: <s>/README.md" (or a bare "- <path>",
+#     which mkdocs also shows in the menu) in its nav: block, under a section heading
+#     ("- <Section>:"). Each nav heading title holds the samples of one <section> folder,
+#     each folder's samples sit under one heading title, and no heading title appears
+#     twice under one parent.
 #   - docs/ROADMAP.md has a list item linking ../examples/<s>/README.md, marked
 #     "(available now)" on that line or in the "### " heading of the section it is under.
 #   - README.md at the top of the repository has a list item linking examples/<s>/README.md.
-# A list item starts with "- ", as in every index file here. A YAML comment (#), an HTML
-# comment or a fenced code block does not count. It also checks that no tracked text file
-# has a line starting with a conflict marker, "<<<<<<< " or ">>>>>>> ".
+# A list item starts with "- ", indented at most three spaces, as in every index file here.
+# A YAML comment (#), an HTML comment or a fenced code block does not count. It also checks
+# that no "## " heading in README.md and no "### " heading in docs/ROADMAP.md appears
+# twice, and that no tracked text file has a line starting with a conflict marker,
+# "<<<<<<< " or ">>>>>>> ".
 #
 # Written for bash 3.2 and POSIX awk, so it runs on macOS as well as Linux.
 
@@ -144,7 +148,19 @@ nav_problems() {
         s = substr(s, 2, length(s) - 2)
       return s
     }
-    BEGIN { q = sprintf("%c", 39); innav = 0; sawnav = 0; nh = 0; ns = 0; nhead = 0; nsec = 0 }
+    # Drops a YAML comment: a "#" after a space or tab, outside quotes.
+    function uncomment(s,   i, c, inq) {
+      inq = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (inq != "") { if (c == inq) inq = ""; continue }
+        # A quote opens a quoted scalar only at its start, as in "Title": or : "path".
+        if ((c == "\"" || c == q) && (i == 1 || substr(s, i - 2, 2) == ": ")) { inq = c; continue }
+        if (c == "#" && i > 1 && substr(s, i - 1, 1) ~ /[ \t]/) return substr(s, 1, i - 1)
+      }
+      return s
+    }
+    BEGIN { q = sprintf("%c", 39); innav = 0; sawnav = 0; nh = 0; ns = 0; nhead = 0; nsec = 0; ndup = 0 }
     FNR == NR { if ($0 != "") { ns++; order[ns] = $0; is_sample[$0] = 1 }; next }
     { sub(/\r$/, "") }
     !innav { if ($0 ~ /^nav:[ \t]*(#.*)?$/) { innav = 1; sawnav = 1 }; next }
@@ -154,14 +170,21 @@ nav_problems() {
       ind = RLENGTH
       rest = substr($0, ind + 1)
       if (substr(rest, 1, 2) != "- ") next # also skips a whole-line comment, "# - ..."
-      rest = substr(rest, 3)
-      sub(/[ \t]+#.*$/, "", rest)
+      rest = uncomment(substr(rest, 3))
       sub(/[ \t]+$/, "", rest)
       while (nh > 0 && hind[nh] >= ind) nh--
       if (rest ~ /:$/) {
         nh++
         hind[nh] = ind
+        hline[nh] = FNR
         htitle[nh] = unquote(substr(rest, 1, length(rest) - 1))
+        # Two headings with one title under one parent: what a keep-both merge leaves
+        # when two pull requests each added the section.
+        k = (nh > 1 ? hline[nh - 1] : 0) SUBSEP htitle[nh]
+        if (k in hfirst) {
+          if (!(k in hdup)) { ndup++; duporder[ndup] = k; hdup[k] = htitle[nh] }
+          hlines[k] = hlines[k] ", " FNR
+        } else { hfirst[k] = FNR; hlines[k] = FNR }
         next
       }
       path = rest
@@ -188,6 +211,8 @@ nav_problems() {
     }
     END {
       if (!sawnav) { print "mkdocs.yml has no top-level nav: block"; exit 0 }
+      for (i = 1; i <= ndup; i++)
+        print "mkdocs.yml nav has the heading " q hdup[duporder[i]] q " more than once (lines " hlines[duporder[i]] "); merge them into one"
       for (i = 1; i <= ns; i++) {
         s = order[i]
         if (!(s in n))
@@ -211,7 +236,7 @@ roadmap_state() { # sample
   markdown_text "$root/docs/ROADMAP.md" | awk -v link="](../examples/$1/README.md)" '
     /^### / { heading = $0; next }
     /^##? / { heading = ""; next }
-    /^[ \t]*- / && index($0, link) > 0 {
+    /^ ? ? ?- / && index($0, link) > 0 {
       if (index($0, "(available now)") > 0 || index(heading, "available now") > 0) { state = "available" }
       else if (state == "") { state = "linked" }
     }
@@ -222,17 +247,50 @@ roadmap_state() { # sample
 # 0 when the root README.md has a list item linking this sample.
 in_readme() { # sample
   markdown_text "$root/README.md" | awk -v link="](examples/$1/README.md)" '
-    /^[ \t]*- / && index($0, link) > 0 { found = 1; exit }
+    /^ ? ? ?- / && index($0, link) > 0 { found = 1; exit }
     END { exit (found ? 0 : 1) }
   '
 }
 
-if navout=$(nav_problems); then
+# Prints one line per heading of one level that appears more than once in a Markdown
+# file: what a keep-both merge leaves when two pull requests each added the section.
+duplicate_headings() { # file marker ("## " or "### ")
+  markdown_text "$root/$1" | awk -v marker="$2" -v file="$1" '
+    BEGIN { q = sprintf("%c", 39); nd = 0 }
+    { sub(/[ \t]+$/, "") }
+    substr($0, 1, length(marker)) == marker {
+      if ($0 in first) {
+        if (!($0 in dup)) { nd++; order[nd] = $0; dup[$0] = first[$0] }
+        dup[$0] = dup[$0] ", " FNR
+      } else first[$0] = FNR
+    }
+    END {
+      for (i = 1; i <= nd; i++)
+        print file " has the heading " q order[i] q " more than once (lines " dup[order[i]] "); merge them into one"
+    }
+  '
+}
+
+emit() { # lines -> one finding each
   while IFS= read -r m; do
     [ -z "$m" ] || finding "$m"
-  done <<<"$navout"
+  done <<<"$1"
+}
+
+if navout=$(nav_problems); then
+  emit "$navout"
 else
   finding "could not read the mkdocs.yml nav (awk exit $?)"
+fi
+if dupout=$(duplicate_headings README.md '## '); then
+  emit "$dupout"
+else
+  finding "could not read the README.md headings (awk exit $?)"
+fi
+if dupout=$(duplicate_headings docs/ROADMAP.md '### '); then
+  emit "$dupout"
+else
+  finding "could not read the docs/ROADMAP.md headings (awk exit $?)"
 fi
 
 count=0

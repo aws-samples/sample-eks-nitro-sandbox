@@ -234,9 +234,19 @@ git -C "$d" add mkdocs.yml
 expect_ok "accept: a nav at column 0, quoted titles and paths, a title with ': ', a key after it" \
   "OK, 2 sample(s)" "$d"
 
+d=$(new_repo accept-nav-titles)
+replace_line "$d/mkdocs.yml" "Hello: getting-started" \
+  "      - Hello, it's here: getting-started/hello/README.md  # an apostrophe, then a comment"
+replace_line "$d/mkdocs.yml" "Signing: policy" "      - \"Signing #1\": policy/signing/README.md"
+expect_ok "accept: an apostrophe inside a title, and ' #' inside a quoted title" "OK, 2 sample(s)" "$d"
+
+d=$(new_repo accept-nav-bare-path)
+replace_line "$d/mkdocs.yml" "Signing: policy" "      - policy/signing/README.md"
+expect_ok "accept: a nav page given as a bare path, which mkdocs also lists" "OK, 2 sample(s)" "$d"
+
 d=$(new_repo accept-entry-after-nested-fence)
 replace_line "$d/README.md" "](examples/policy/signing/README.md)" \
-  '````markdown' '```' '- [Example](examples/policy/example/README.md): an example.' '```' '````' \
+  '````markdown' '```' '## Policy' '- [Example](examples/policy/example/README.md): an example.' '```' '````' \
   "- [Signing](examples/policy/signing/README.md): a signed image."
 replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
   '~~~text' '```' '~~~' \
@@ -306,6 +316,16 @@ expect_findings "reject: a sample under another section's nav heading" "$d" \
   "mkdocs.yml nav heading 'Getting started' holds samples from more than one section folder: getting-started, policy" \
   "the policy/ samples are under more than one mkdocs.yml nav heading: 'Getting started', 'Policy'"
 
+d=$(new_repo reject-nav-heading-twice)
+mkdir -p "$d/examples/policy/cedar"
+printf '# Cedar\n' >"$d/examples/policy/cedar/README.md"
+git -C "$d" add examples/policy/cedar/README.md
+append_lines "$d/mkdocs.yml" "  - Policy:" "      - Cedar: policy/cedar/README.md"
+append_lines "$d/docs/ROADMAP.md" "- [cedar](../examples/policy/cedar/README.md) (available now): a Cedar policy."
+append_lines "$d/README.md" "- [Cedar](examples/policy/cedar/README.md): a Cedar policy."
+expect_findings "reject: one nav heading twice, as a keep-both merge of two new sections leaves it" "$d" \
+  "mkdocs.yml nav has the heading 'Policy' more than once (lines 7, 9)"
+
 d=$(new_repo reject-nav-other-path)
 replace_line "$d/mkdocs.yml" "Signing: policy" "      - Signing: old/policy/signing/README.md"
 expect_findings "reject: a nav entry for a longer path that ends the same way" "$d" \
@@ -341,6 +361,17 @@ replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
 expect_findings "reject: a roadmap link only inside a fenced code block" "$d" \
   "policy/signing is not linked in docs/ROADMAP.md"
 
+d=$(new_repo reject-roadmap-indented-code)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  "    - [signing](../examples/policy/signing/README.md) (available now): indented four spaces, so code."
+expect_findings "reject: a roadmap entry indented as code" "$d" \
+  "policy/signing is not linked in docs/ROADMAP.md"
+
+d=$(new_repo reject-roadmap-heading-twice)
+append_lines "$d/docs/ROADMAP.md" "" "### Policy (\`policy\`)"
+expect_findings "reject: a roadmap section heading twice" "$d" \
+  "docs/ROADMAP.md has the heading '### Policy (\`policy\`)' more than once (lines 9, 16)"
+
 d=$(new_repo reject-heading-ends-at-h2)
 replace_line "$d/docs/ROADMAP.md" "](../examples/getting-started/hello/README.md)" \
   "## Elsewhere" "" "- [hello](../examples/getting-started/hello/README.md): the first sample."
@@ -353,6 +384,17 @@ d=$(new_repo reject-readme-in-fence)
 replace_line "$d/README.md" "](examples/policy/signing/README.md)" \
   '```markdown' "- [Signing](examples/policy/signing/README.md): a signed image." '```'
 expect_findings "reject: a README.md entry only inside a fenced code block" "$d" \
+  "policy/signing is not listed in README.md"
+
+d=$(new_repo reject-readme-heading-twice)
+append_lines "$d/README.md" "## Policy"
+expect_findings "reject: a README.md section heading twice" "$d" \
+  "README.md has the heading '## Policy' more than once (lines 7, 10)"
+
+d=$(new_repo reject-readme-indented-code)
+replace_line "$d/README.md" "](examples/policy/signing/README.md)" \
+  "    - [Signing](examples/policy/signing/README.md): indented four spaces, so code."
+expect_findings "reject: a README.md entry indented as code" "$d" \
   "policy/signing is not listed in README.md"
 
 d=$(new_repo reject-readme-in-long-fence)

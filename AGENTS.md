@@ -29,8 +29,9 @@ mkdocs build --strict        # must pass before a pull request
 `mkdocs build --strict` turns a broken link into an error, which is what a reader would
 otherwise hit first. It does not catch a page missing from `nav`: that page still builds
 but has no entry in the left menu, so add the `nav` line yourself.
-`./scripts/check-sample-index.sh` does catch it, and a sample missing from
-`docs/ROADMAP.md` or the root `README.md`, and a conflict marker left in any tracked file.
+`./scripts/check-sample-index.sh` does catch it. It also catches a sample missing from
+`docs/ROADMAP.md` or the root `README.md`, a section heading left twice, and a conflict
+marker left in any tracked file.
 
 ## A sample starts as a spec in a GitHub issue
 
