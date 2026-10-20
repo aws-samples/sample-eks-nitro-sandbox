@@ -14,11 +14,7 @@ and warm pool samples each start from a cluster that has finished the hello sand
 and do not depend on each other. The coding agent sample needs Amazon Bedrock, a container
 registry and a GitHub repository; the warm pool sample needs the agent-sandbox controller.
 
-The Policy samples run a check inside the guest that decides what the pod may run:
-
-- [Image signing](policy/image-signing/README.md): an image signed with AWS Signer and
-  verified with Notation inside the guest, while an unsigned image is rejected, with an
-  optional variant that verifies with no network at all.
+The other samples are in the left menu, one section each.
 
 ## How it works
 
