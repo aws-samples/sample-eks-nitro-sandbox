@@ -60,7 +60,9 @@ Follow this order. `references/page-skeleton.md` has it as a starting file.
    cd sample-eks-nitro-sandbox/examples/<section>/<sample>
    ```
 
-   Then anything extra this sample needs, and what a run costs beyond the cluster.
+   Then anything extra this sample needs, including each command-line tool its scripts
+   call on the reader's machine (for example `notation` or `oras`) with the version the
+   run used and where to get it, and what a run costs beyond the cluster.
 3. **Overview.** Two or three short paragraphs and a few bullets, each led by a bold claim:
    what runs in the sandbox, what stays an ordinary pod, what each part can reach. Then the
    overview figure.
@@ -102,7 +104,9 @@ Each step is one small unit, in this order:
 Every sample whose sandbox has a network ships an egress policy and explains it in a "How
 the network policy works" section:
 
-- the complete policy YAML, without its header comment;
+- the complete policy YAML, without its header comment. When a script fills values in at
+  apply time (the CoreDNS address, a list of AWS address ranges), show the file as it is,
+  placeholders included, and say which script fills each one and from where;
 - a table with one row per part (`podSelector`, `policyTypes`, each rule) and what it does;
 - that enforcement is turned on once per cluster with the `amazon-vpc-cni` ConfigMap, and
   how the page waits for the `PolicyEndpoint`;
@@ -111,7 +115,10 @@ the network policy works" section:
   are reachable, and a pod can always reach its own node;
 - `networkPolicyManagement: Unmanaged` on any `SandboxTemplate`, and why.
 
-Show it working: one allowed connection that connects and one refused that does not.
+Show it working: one allowed connection that connects and one refused that does not. When
+the pod refuses exec, as a `confidential-sandbox` pod does under a policy that denies it,
+put the probes in the container's own command and read the results from its logs. If the
+sample cannot show a connection either way, say on the page what it shows instead and why.
 
 A sandbox booted with `sandbox.amazonaws.com/network-isolated: "true"` has no network to
 restrict, so it needs no policy. Show that instead: only `lo` has an address, there is no
@@ -124,6 +131,10 @@ route, and a lookup fails, as the hello sandbox page does.
   (a warm pool, a Deployment).
 - Remove every AWS resource the sample created: IAM roles and policies, Pod Identity
   associations (only this sample's), ECR repositories, local images.
+- A clean-up script deletes only what carries the sample's `ManagedBy` tag or namespace
+  label, checks the label before deleting anything inside the namespace, and exits
+  non-zero when it skipped something or could not check it ("Shared accounts, clusters and
+  machines" in `AGENTS.md`).
 - Say what stays and why: cluster-wide settings such as network policy enforcement, and
   shared installs such as agent-sandbox, with the command to remove them.
 - Link the hello sandbox clean up for removing the namespace and the cluster.
@@ -165,17 +176,39 @@ route, and a lookup fails, as the hello sandbox page does.
   environment variable names and connections, not only the manifest.
 - **Keep local values in a gitignored env file** (`.env`, from `.env.example`). Read
   secrets from a file or standard input, never from a command line.
-- **Tag every AWS resource you create while verifying with `auto-delete=no`**, so an
-  account clean-up job does not remove it in the middle of a run.
+- **Tag every AWS resource the sample creates `ManagedBy=<sample>`**, label its namespace,
+  and give every name to the sample. Pin the kube context for the run, and keep logs and
+  state copies in the repository's `tmp/`. "Shared accounts, clusters and machines" in
+  `AGENTS.md` has the rules and why.
 - **Use ClusterIP and `kubectl port-forward`.** No Ingress, LoadBalancer or NodePort.
 - **Run the clean up** and confirm nothing the sample created is left.
 
 ## Before the pull request
 
-Open the pull request as a draft (`gh pr create --draft`) if the fresh run is still to do,
-and mark it ready only when every box below is true.
+The description's checklist is the spec issue's own acceptance criteria, followed by the
+repository's quality bar from the template:
 
-- [ ] The spec issue exists, and the description starts with `Closes #<issue>`.
+```bash
+cp .github/pull_request_template.md tmp/pr-body.md
+gh issue view <issue> --repo aws-samples/sample-eks-nitro-sandbox --json body --jq .body \
+  | tr -d '\r' | awk '/^## Acceptance criteria/{f=1; next} /^## /{f=0} f && /^- \[ \]/'
+# paste those lines under "From the issue" in tmp/pr-body.md, then fill in the rest
+gh pr create --draft --body-file tmp/pr-body.md
+```
+
+Copy the criteria word for word: no dropping, merging or rewording. Tick each one only
+when it is met, and point to the evidence after it (the page section, the log under
+`tmp/`, the commit). If one is not met, leave it unticked and say why under it. Keep the
+template's "Quality bar" list whole, even where an issue box says the same thing, and
+tick those boxes the same way. Keep the template's last line.
+
+Open the pull request as a draft if the fresh run is still to do. Mark it ready when every
+box from the issue and the quality bar is ticked, or a maintainer has agreed to the ones
+that are not, and every box below is true. The boxes below are your own check; they are
+not copied into the description.
+
+- [ ] The spec issue exists, and the description starts with `Closes #<issue>` and carries
+      every box from the issue's acceptance criteria and the template's quality bar.
 - [ ] The page opens with the prerequisites link and the `git clone` and `cd` block.
 - [ ] Each stage pairs an explanation, the real config verbatim and output from a fresh run.
 - [ ] Each figure has a `.drawio` source, a `.png`, a caption and full alt text.
@@ -189,7 +222,13 @@ and mark it ready only when every box below is true.
       output blocks and diagrams. The shared defaults on the home page are fine.
 - [ ] The page proves the pod ran in a sandbox: its own kernel build, boot and virtio
       disks, each with what an ordinary pod shows instead.
-- [ ] The clean up removes everything the sample created.
+- [ ] The clean up removes everything the sample created, and only that.
+- [ ] The setup script changes nothing cluster-wide, and an overridable name such as
+      `NAMESPACE` reaches every object it applies.
+- [ ] The clean up ran after the last run the page uses, and the description lists anything
+      it could not remove.
+- [ ] No local files (logs, state copies, helpers) in the sample folder; they are in the
+      repository's `tmp/`.
 - [ ] `nav` entry added, roadmap and root README updated.
 - [ ] `mkdocs build --strict` passes, and `./scripts/check-agent-files.sh` passes.
 - [ ] Wording rules above hold, including no em dash (U+2014) characters and no "fence"
