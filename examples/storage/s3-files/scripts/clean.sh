@@ -139,9 +139,11 @@ s3files_gone() {
   local out rc
   out="$(aws_r "$@" 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && return 1
-  # Match only the service's explicit not-found error codes, so an unrelated error that merely
-  # contains "not found" prose is NOT read as confirmed gone.
-  grep -qE 'ResourceNotFoundException|AccessPointNotFoundException|AccessPointNotFound|FileSystemNotFound' <<<"$out" && return 0
+  # Match only the service's explicit not-found error CODE, bounded to the parenthesised code
+  # field of the AWS CLI error line ("An error occurred (<Code>) when calling ..."), so an
+  # unrelated error whose text merely contains "NotFound" as a substring (e.g.
+  # "FileSystemNotFoundational") is NOT read as confirmed gone.
+  grep -qE '\((ResourceNotFoundException|AccessPointNotFoundException|AccessPointNotFound|FileSystemNotFound)\)' <<<"$out" && return 0
   return 2
 }
 
