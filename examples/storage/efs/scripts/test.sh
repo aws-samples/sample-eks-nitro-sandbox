@@ -38,13 +38,13 @@ assert() { if [[ "$2" -eq 0 ]]; then printf '  PASS  %s\n' "$1"; pass=$((pass+1)
 
 command -v "${KUBECTL%% *}" >/dev/null 2>&1 || die "'$KUBECTL' is not on PATH"
 
-# Build the AWS side AND deploy the Kubernetes side if they are not already up: setup.sh now
-# does both (its Step 5 deploys the egress policy and the pods). This keeps the deploy logic in
-# one place; test.sh only asserts.
-if [[ ! -f "$ENV_FILE" ]] || ! $KUBECTL get pod "$WRITER" "$READER" -n "$NAMESPACE" >/dev/null 2>&1; then
-  echo "Running ./scripts/setup.sh to build and deploy the sample first."
-  NAMESPACE="$NAMESPACE" ENV_FILE="$ENV_FILE" "$SAMPLE_DIR/scripts/setup.sh"
-fi
+# Build the AWS side AND deploy the Kubernetes side: setup.sh does both (its Step 5 deploys the
+# egress policy and the pods) and is idempotent. Run it UNCONDITIONALLY, so the live state the
+# assertions inspect always matches what .env describes: a shortcut that skipped setup when the
+# pods merely existed could assert against a stale deployment (old pods) while the AWS-side
+# assertions read the resources in the current .env.
+echo "Running ./scripts/setup.sh to build and deploy the sample (idempotent)."
+NAMESPACE="$NAMESPACE" ENV_FILE="$ENV_FILE" "$SAMPLE_DIR/scripts/setup.sh"
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 [[ -n "${EFS_FILE_SYSTEM_ID:-}" && -n "${EFS_ACCESS_POINT_ID:-}" ]] \
