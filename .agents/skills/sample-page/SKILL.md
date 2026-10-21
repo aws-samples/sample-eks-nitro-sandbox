@@ -94,6 +94,9 @@ Each step is one small unit, in this order:
 4. **The real code or configuration, verbatim.** Copy the excerpt from the file in the
    folder, keep real field names and values, and say when it is trimmed ("Here is the part
    of `sandbox-template.yaml` that matters"). Never show a fragment as a complete policy.
+   The sample's pods set no CPU or memory requests or limits unless the sample cannot run
+   without them; when they do, the page says why, and the requests and limits do not need
+   to match ("Sizing and start-up" in the `nitro-sandbox-pods` skill).
 5. **The command, then the observed result** in a `text` block, from a real run. Say
    "Abridged" or "your text will differ" when it is. Follow it with a sentence on what to
    look at in the output. Until you have run it, the block holds only
@@ -167,7 +170,7 @@ route, and a lookup fails, as the hello sandbox page does.
   reviews or history. The word "agent" is fine; these samples are about AI agents.
 - No em dashes. Use a colon, a comma or two sentences.
 - Do not state a minimum CPU or memory request on slides or in videos. A page shows the
-  sample's actual requests.
+  sample's actual requests, or that it sets none.
 - Name the runtime class and annotation exactly: `runtimeClassName: isolated-sandbox`,
   `sandbox.amazonaws.com/network-isolated: "true"`.
 
