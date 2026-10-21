@@ -756,7 +756,7 @@ kubectl delete namespace claude-platform-aws
 - **Set a budget.** A session's `budget` caps its list cost, so a runaway loop stops
   issuing model requests.
 - **Size requests honestly.** Each sandbox reserves its full memory request, and the sandbox is
-  sized to the pod's limits. Size `replicas` to how many sessions start at once, not to your total
+  sized from the pod's requests. Size `replicas` to how many sessions start at once, not to your total
   session count.
 
 ## Clean up

@@ -167,17 +167,27 @@ These support a claim but do not prove the pod ran in a sandbox on their own:
 
 ## Sizing and start-up
 
-- For a pod that runs a workload, set requests equal to limits, as the samples that run one
-  do (`fix-issue.yaml`, `warm-pool.yaml`, `sandbox-template.yaml`). The
-  VM is sized to the pod's limits, so the hypervisor bounds the CPU and memory the pod can
-  use: with 2 CPU and 4 GiB, `nproc` reports 2 and memory is about 4 GiB inside.
-  (`examples/getting-started/coding-agent/README.md`.)
-- The hello sandbox pods set no requests or limits, and their VM got a small default size:
-  one vCPU and about 130 MiB of memory on its run. That is enough for a pod that prints and
-  sleeps, not for a workload. (`examples/getting-started/hello-sandbox/README.md`, step 5.)
-- Each sandbox reserves its full memory request up front, so bin-packing is by reservation,
-  not usage: size requests honestly and expect fewer, larger pods per node than with
-  ordinary containers. (`examples/getting-started/warm-pool/README.md`, "Sizing".)
+- **A sample sets no CPU or memory requests or limits.** A customer sizes a pod for their own
+  workload in production; a sample that sets a size reads as if a sandbox needs it. With
+  none, the VM gets a small default size: the hello sandbox pods got one vCPU and about
+  130 MiB of memory, enough for a pod that prints and sleeps.
+  (`examples/getting-started/hello-sandbox/README.md`, step 5.)
+- **Set them only when the sample cannot run without them**, such as an agent that needs more
+  memory than the default VM has, or when sizing is what the sample shows. Then the page says
+  why it sets them. A pod with no requests is `BestEffort`, which the kubelet evicts first
+  when a node runs short of resources: fine for a sample, and one reason production sets
+  requests.
+- **Requests and limits do not need to match.** A sandboxed pod whose requests are below its
+  limits is admitted and boots. Its VM is sized from the requests: the sandbox's memory
+  follows `resources.requests.memory` (Amazon EKS User Guide, *Limitations*, the memory
+  overhead and sandbox kernel sections), and a limit above the request does not make the VM
+  bigger. Measured on the maintainers' cluster on 2026-10-21: requests of 500m and 256Mi with
+  limits of 2 CPU and 1Gi booted with one vCPU and `MemTotal: 390040 kB`, while requests of
+  2 CPU and 1Gi, with or without equal limits, booted with two vCPUs and
+  `MemTotal: 1161132 kB`.
+- In production, each sandbox reserves its full memory request up front, so bin-packing is by
+  reservation, not usage: expect fewer, larger pods per node than with ordinary containers.
+  (`examples/getting-started/warm-pool/README.md`, "Sizing".)
 - After the first node is up, a new sandboxed pod is Ready in about 5 to 6 seconds, most of
   it EC2 creating the partition. A warm-pool claim adopts a pod that is already running and
   is Ready in under 1 second. (`examples/getting-started/hello-sandbox/README.md`;
@@ -212,6 +222,9 @@ pause-resume), and the upstream `Sandbox` API provides both fields.
 - Do not claim a limit, size, density, throttle, region or instance type that the pages and
   the public AWS documentation do not state.
 - Do not state a minimum CPU or memory request unless you cite the Amazon EKS documentation
-  for it, and never on slides or in videos; show the sample's actual requests instead.
+  for it, and never on slides or in videos; show the sample's actual requests, or that it
+  sets none, instead.
+- Do not say requests must equal limits, or that the VM is sized to the pod's limits. It is
+  sized from the requests (see "Sizing and start-up").
 - Do not describe confidential-mode policy generation or attestation from memory; point to
   the Amazon EKS User Guide.

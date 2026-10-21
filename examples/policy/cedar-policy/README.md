@@ -146,8 +146,8 @@ spec:
           drop: [ALL]
 ```
 
-The complete manifest requests 1 vCPU and 1 GiB, with requests equal to limits as every
-sandboxed pod on this site does. These settings become the inputs to the generated admission
+The complete manifest requests 1 vCPU and 1 GiB, with requests equal to limits. These
+settings become the inputs to the generated admission
 policy.
 
 **Step 2: Generate the policy, attach it and start the pod.** `scripts/setup.sh` runs the

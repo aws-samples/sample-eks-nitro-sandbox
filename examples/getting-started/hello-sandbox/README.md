@@ -155,8 +155,8 @@ kubectl exec hello-sandbox -- grep MemTotal /proc/meminfo
 MemTotal:         132568 kB
 ```
 
-That is enough for these pods. For a real workload, set requests equal to limits: the VM is
-sized to the pod's limits, as the [coding agent](../coding-agent/README.md) sample shows.
+That is enough for these pods. A real workload sets the CPU and memory requests it needs:
+the VM is sized from them, as the [coding agent](../coding-agent/README.md) sample shows.
 
 **Optional: no network besides loopback.** [`hello-network-isolated.yaml`](hello-network-isolated.yaml)
 is the same pod with one annotation, and prints its IPv4 addresses and default route:
