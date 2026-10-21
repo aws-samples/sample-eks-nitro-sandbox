@@ -1,0 +1,16 @@
+{
+  "Comment": "The trust policy for the sample's own S3 Files synchronization role. setup.sh renders <ACCOUNT_ID> and <S3_FILES_FILE_SYSTEM_ARN> and applies it with `aws iam update-assume-role-policy`. It is created first allowing any file system in the account (aws:SourceArn arn:aws:s3files:<region>:<account>:file-system/*, needed because the role must exist before the file system is created), then narrowed to the exact file system once it exists. Only the S3 Files service, acting for this account and this file system, may assume it.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowS3FilesAssumeRole",
+      "Effect": "Allow",
+      "Principal": { "Service": "elasticfilesystem.amazonaws.com" },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": { "aws:SourceAccount": "<ACCOUNT_ID>" },
+        "ArnLike": { "aws:SourceArn": "<S3_FILES_FILE_SYSTEM_ARN>" }
+      }
+    }
+  ]
+}
