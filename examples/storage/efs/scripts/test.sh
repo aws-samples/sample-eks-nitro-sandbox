@@ -12,10 +12,10 @@
 #
 #   NAMESPACE=<ns> ./scripts/test.sh
 #
-# Runs ./scripts/setup.sh for the AWS side if .env is missing. Renders the manifests from
-# the recorded IDs and addresses (it does not modify the checked-in files), applies the
-# egress policy and waits for its PolicyEndpoint, deploys the pods, and asserts. It leaves
-# the pods running; tear down with ./scripts/clean.sh.
+# This is the maintainers' own end-to-end check; it is NOT part of the published page (the
+# page shows the plain kubectl/aws commands for each stage). It runs ./scripts/setup.sh to
+# build and deploy the sample if it is not already up, then asserts every claim on the live
+# pods. It leaves the pods running; tear down with ./scripts/clean.sh.
 #
 # Overridable: NAMESPACE, ENV_FILE, KUBECTL, AWS (e.g. AWS="aws --profile my-profile").
 set -uo pipefail
@@ -38,107 +38,24 @@ assert() { if [[ "$2" -eq 0 ]]; then printf '  PASS  %s\n' "$1"; pass=$((pass+1)
 
 command -v "${KUBECTL%% *}" >/dev/null 2>&1 || die "'$KUBECTL' is not on PATH"
 
-# Build the AWS side if it has not been built, then load the record.
-if [[ ! -f "$ENV_FILE" ]]; then
-  echo "No $ENV_FILE yet; running ./scripts/setup.sh first."
+# Build the AWS side AND deploy the Kubernetes side if they are not already up: setup.sh now
+# does both (its Step 5 deploys the egress policy and the pods). This keeps the deploy logic in
+# one place; test.sh only asserts.
+if [[ ! -f "$ENV_FILE" ]] || ! $KUBECTL get pod "$WRITER" "$READER" -n "$NAMESPACE" >/dev/null 2>&1; then
+  echo "Running ./scripts/setup.sh to build and deploy the sample first."
   NAMESPACE="$NAMESPACE" ENV_FILE="$ENV_FILE" "$SAMPLE_DIR/scripts/setup.sh"
 fi
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 [[ -n "${EFS_FILE_SYSTEM_ID:-}" && -n "${EFS_ACCESS_POINT_ID:-}" ]] \
   || die "$ENV_FILE is missing the EFS IDs; run ./scripts/setup.sh"
-[[ -n "${COREDNS_IP:-}" && -n "${MOUNT_TARGET_IPS:-}" ]] \
-  || die "$ENV_FILE is missing the network addresses; re-run ./scripts/setup.sh"
 
 AWS_REGION="${AWS_REGION:-us-west-2}"
 aws_r() { $AWS "$@" --region "$AWS_REGION"; }
 
-# --- Deploy: render manifests from the record and apply. ---
-echo "== deploy the pods and the egress policy =="
-# Create the namespace only when absent; when it exists, require this sample's label before
-# applying anything into it, so the run never puts objects in a namespace another demo owns.
-ns_errf="$(mktemp)"
-if $KUBECTL get namespace "$NAMESPACE" -o name >/dev/null 2>"$ns_errf"; then
-  ns_label="$($KUBECTL get namespace "$NAMESPACE" -o "jsonpath={.metadata.labels.app\.kubernetes\.io/part-of}" 2>/dev/null)" \
-    || die "could not read the labels of namespace '$NAMESPACE'; refusing to apply into it."
-  [[ "$ns_label" == "$SAMPLE_LABEL_VALUE" ]] \
-    || die "namespace '$NAMESPACE' exists but is not labelled $SAMPLE_LABEL_KEY=$SAMPLE_LABEL_VALUE (found '${ns_label:-<none>}'); refusing to apply into a namespace this sample did not create. Choose a different NAMESPACE."
-  echo "  namespace '$NAMESPACE' already exists and is this sample's; reusing it."
-elif grep -qi 'notfound\|not found' "$ns_errf"; then
-  $KUBECTL create namespace "$NAMESPACE" || die "could not create namespace '$NAMESPACE'"
-  $KUBECTL label namespace "$NAMESPACE" "$SAMPLE_LABEL_KEY=$SAMPLE_LABEL_VALUE" --overwrite \
-    || die "could not label namespace '$NAMESPACE'"
-  echo "  created namespace '$NAMESPACE' and labelled it this sample's."
-else
-  rm -f "$ns_errf"; die "could not read namespace '$NAMESPACE' (the lookup failed). Re-run once the cluster reads cleanly."
-fi
-rm -f "$ns_errf"
-
-# The egress policy: render the checked-in deploy/egress-policy.yaml so the file the page
-# shows is the file that is applied. Substitute <COREDNS_IP> and expand <MOUNT_TARGET_BLOCK>
-# into one `- ipBlock: { cidr: <ip>/32 }` line per mount-target IP, preserving the block's
-# indentation. COREDNS_IP and MOUNT_TARGET_IPS come from .env. Done in Python so neither the
-# shell word-splits the IP list nor the placeholder in a comment line is corrupted.
-python3 - "$SAMPLE_DIR/deploy/egress-policy.yaml" "$COREDNS_IP" $MOUNT_TARGET_IPS <<'PY' | $KUBECTL apply -n "$NAMESPACE" -f -
-import re, sys
-path, coredns = sys.argv[1], sys.argv[2]
-mt_ips = sys.argv[3:]
-with open(path) as f:
-    out = []
-    for line in f.read().splitlines():
-        m = re.match(r'^(\s*)<MOUNT_TARGET_BLOCK>\s*$', line)
-        if m:
-            indent = m.group(1)
-            out.extend(f"{indent}- ipBlock: {{ cidr: {ip}/32 }}" for ip in mt_ips)
-        else:
-            out.append(line.replace("<COREDNS_IP>", coredns))
-text = "\n".join(out)
-# Drop the leading comment block so only the resource is applied.
-text = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
-sys.stdout.write(text + "\n")
-PY
-[[ ${PIPESTATUS[0]} -eq 0 && ${PIPESTATUS[1]} -eq 0 ]] || die "could not render or apply the egress policy"
-
-# Wait for the PolicyEndpoint so the rule is programmed before the pods start. A timeout here
-# must stop the run: starting the pods with no policy programmed would not restrict egress.
-echo "  waiting for the PolicyEndpoint to be programmed..."
-pe=0
-for _ in $(seq 1 30); do
-  n="$($KUBECTL get policyendpoints -n "$NAMESPACE" -o name 2>/dev/null | wc -l | tr -d ' ')"
-  [[ "$n" -gt 0 ]] && { pe="$n"; break; }
-  sleep 2
-done
-[[ "$pe" -gt 0 ]] || die "no PolicyEndpoint appeared for the egress policy within the timeout; the policy is not programmed, so the pods were not started. Check that network policy enforcement is enabled on the cluster (the amazon-vpc-cni ConfigMap), as the coding agent page describes."
-
-# The StorageClass (cluster-scoped, create only if absent; never apply over an existing
-# one), then the PV, PVC, ServiceAccount and pods. efs.yaml is one multi-document file;
-# split it so the StorageClass is created separately and everything else is applied with
-# the namespace and the recorded IDs rendered in.
-render_efs() {
-  sed -e "s|<NAMESPACE>|$NAMESPACE|g" \
-      -e "s|<EFS_FILE_SYSTEM_ID>|$EFS_FILE_SYSTEM_ID|g" \
-      -e "s|<EFS_ACCESS_POINT_ID>|$EFS_ACCESS_POINT_ID|g" \
-      "$SAMPLE_DIR/deploy/efs.yaml"
-}
-if ! $KUBECTL get storageclass nitro-sandbox-efs >/dev/null 2>&1; then
-  render_efs | python3 -c 'import sys
-docs = sys.stdin.read().split("\n---\n")
-for d in docs:
-    if "kind: StorageClass" in d:
-        sys.stdout.write(d.strip() + "\n")' | $KUBECTL create -f -
-  [[ ${PIPESTATUS[0]} -eq 0 && ${PIPESTATUS[1]} -eq 0 && ${PIPESTATUS[2]} -eq 0 ]] \
-    || die "could not create the StorageClass nitro-sandbox-efs"
-fi
-render_efs | python3 -c 'import sys
-docs = sys.stdin.read().split("\n---\n")
-out = [d for d in docs if d.strip() and "kind: StorageClass" not in d]
-sys.stdout.write("\n---\n".join(out))' | $KUBECTL apply -n "$NAMESPACE" -f -
-[[ ${PIPESTATUS[0]} -eq 0 && ${PIPESTATUS[1]} -eq 0 && ${PIPESTATUS[2]} -eq 0 ]] \
-  || die "could not render or apply the PV, PVC, ServiceAccount and pods"
-
-echo "  waiting for both pods to become Ready (sandbox VM boot + NFS mount)..."
+echo "  confirming both pods are Ready..."
 $KUBECTL wait -n "$NAMESPACE" --for=condition=Ready pod/$WRITER pod/$READER --timeout=5m \
-  || die "the pods did not become Ready. Check:
+  || die "the pods are not Ready. Run ./scripts/setup.sh, or check:
   $KUBECTL describe pod $WRITER -n $NAMESPACE
   $KUBECTL logs -n kube-system daemonset/efs-csi-node -c efs-plugin --tail=100"
 

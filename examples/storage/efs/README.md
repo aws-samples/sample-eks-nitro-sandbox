@@ -66,8 +66,7 @@ The files:
 | [`deploy/efs.yaml`](deploy/efs.yaml) | The sample's non-default `nitro-sandbox-efs` StorageClass, a static access-point PV (mount options `tls,iam`), its `ReadWriteMany` PVC, a workload ServiceAccount with no identity, and the writer and reader `isolated-sandbox` pods. |
 | [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The egress `ApplicationNetworkPolicy`: DNS to CoreDNS and NFS (TCP 2049) to the mount targets, deny all ingress. |
 | [`iam/file-system-policy.json`](iam/file-system-policy.json) | The EFS file system policy template: TLS required, this access point only, `ClientMount`/`ClientWrite` only, the CSI node principal only. |
-| [`scripts/setup.sh`](scripts/setup.sh) | Checks the EFS CSI driver (shared, reused, never changed), creates the NFS security group, file system, mount targets and access point, and applies the file system policy. |
-| [`scripts/test.sh`](scripts/test.sh) | Renders and applies the manifests and the network policy, then asserts the sample's claims on the live pods. |
+| [`scripts/setup.sh`](scripts/setup.sh) | Checks the EFS CSI driver (shared, reused, never changed); creates the NFS security group, file system, mount targets and access point; applies the file system policy; then deploys the namespace, the egress policy, the StorageClass, the PV, the PVC and the two pods. |
 | [`scripts/clean.sh`](scripts/clean.sh) | Deletes the Kubernetes objects; `--delete-aws-resources` also releases the access point, mount targets, file system and security group. |
 
 The walkthrough uses the shared Region default from the home page, a cluster of your own, and
@@ -80,53 +79,23 @@ export AWS_REGION=us-west-2
 export NAMESPACE=nitro-efs-sample
 ```
 
-## Create the storage
+## Create the storage and deploy the pods
 
-**Step 1: Create the file system, access point and file system policy.**
-[`scripts/setup.sh`](scripts/setup.sh) first confirms the Amazon EFS CSI driver is installed
-at 2.0.0 or newer and reads, without changing it, which IAM role the driver's node service
-account uses. It then creates the sample's own resources, each tagged `ManagedBy=storage-efs`
-and `auto-delete=no`: an NFS security group that admits TCP 2049 from the cluster security
-group only, an encrypted EFS file system, one mount target per cluster Availability Zone, and
-an access point that pins UID/GID 1000 under `/storage-efs`. Finally it applies a file system
-policy that requires TLS, confines access to this access point reached through a mount
-target, grants only `ClientMount` and `ClientWrite`, and allows only the CSI node principal.
+**Step 1: Run setup.** [`scripts/setup.sh`](scripts/setup.sh) does everything the walkthrough
+below needs. It first confirms the Amazon EFS CSI driver is installed at 2.0.0 or newer and
+reads, without changing it, which IAM role the driver's node service account uses. It creates
+the sample's own resources, each tagged `ManagedBy=storage-efs` and `auto-delete=no`: an NFS
+security group that admits TCP 2049 from the cluster security group only, an encrypted EFS
+file system, one mount target per cluster Availability Zone, and an access point that pins
+UID/GID 1000 under `/storage-efs`. It applies a file system policy that requires TLS, confines
+access to this access point reached through a mount target, grants only `ClientMount` and
+`ClientWrite`, and allows only the CSI node principal. Finally it deploys the Kubernetes side:
+the namespace, the egress `ApplicationNetworkPolicy` (waiting for its `PolicyEndpoint` before
+the pods start), the StorageClass, the static PV, the `ReadWriteMany` PVC, and the writer and
+reader pods, and waits for both to become Ready.
 
-```bash
-./scripts/setup.sh
-```
-
-```text
-Step 1/4: check the Amazon EFS CSI driver (a shared install; reused, never changed)
-  found aws-efs-csi-driver v3.5.1-eksbuild.1 (>= 2.0.0).
-  CSI node principal (read, not changed): arn:aws:iam::<ACCOUNT_ID>:role/AmazonEKS_EFS_CSI_NodeRole
-Step 2/4: create the sample's security group, file system, mount targets and access point
-  created NFS security group sg-EXAMPLE (TCP 2049 from sg-CLUSTER only).
-  creating an encrypted EFS file system...
-  ensuring one mount target per cluster Availability Zone...
-  creating the EFS access point (uid/gid 1000, root /storage-efs)...
-Step 3/4: apply the EFS file system policy (TLS required, this access point only, CSI node principal only)
-  file system policy applied.
-Step 4/4: record the CoreDNS and mount-target addresses for the network policy
-  CoreDNS: <COREDNS_IP>
-  mount targets: <MOUNT_TARGET_IP> <MOUNT_TARGET_IP> <MOUNT_TARGET_IP>
-
-EFS storage is ready. Resource IDs and addresses: .../examples/storage/efs/.env
-```
-
-Setup writes the resource IDs and the CoreDNS and mount-target addresses to a gitignored
-`.env` so the next step can render them into the manifests. The EFS CSI driver, its service
-accounts, their IAM roles and their Pod Identity associations are a shared install and are
-not touched.
-
-## Run the pods
-
-**Step 2: Deploy the egress policy and the two pods.** [`scripts/test.sh`](scripts/test.sh)
-applies the egress `ApplicationNetworkPolicy` and waits for its `PolicyEndpoint`, creates the
-sample's StorageClass if it is absent, and applies the static PV, the `ReadWriteMany` PVC and
-the two pods, rendering the file system and access point IDs and the namespace in from `.env`.
-The PV mounts the access point with `tls,iam`; the pods run as a non-root user with `fsGroup`
-so the unprivileged process can write the shared directory.
+The PV mounts the access point with `tls,iam`, and the pods run as a non-root user with
+`fsGroup` so the unprivileged process can write the shared directory:
 
 ```yaml
 spec:
@@ -151,12 +120,29 @@ spec:
 ```
 
 ```bash
-NAMESPACE="$NAMESPACE" ./scripts/test.sh
+./scripts/setup.sh
 ```
 
+The run below started on a cluster with none of the sample's AWS resources present. The
+`nitro-efs-sample` namespace already existed, empty, from an earlier run (the sample never
+deletes the namespace, only what is inside it), so setup reused it rather than creating it:
+
 ```text
-== deploy the pods and the egress policy ==
-  created namespace 'nitro-efs-sample' and labelled it this sample's.
+Step 1/5: check the Amazon EFS CSI driver (a shared install; reused, never changed)
+  found aws-efs-csi-driver v3.5.1-eksbuild.1 (>= 2.0.0).
+  CSI node principal (read, not changed): arn:aws:iam::<ACCOUNT_ID>:role/AmazonEKS_EFS_CSI_NodeRole
+Step 2/5: create the sample's security group, file system, mount targets and access point
+  created NFS security group sg-EXAMPLE (TCP 2049 from sg-CLUSTER only).
+  creating an encrypted EFS file system...
+  ensuring one mount target per cluster Availability Zone...
+  creating the EFS access point (uid/gid 1000, root /storage-efs)...
+Step 3/5: apply the EFS file system policy (TLS required, this access point only, CSI node principal only)
+  file system policy applied.
+Step 4/5: record the CoreDNS and mount-target addresses for the network policy
+  CoreDNS: <COREDNS_IP>
+  mount targets: <MOUNT_TARGET_IP> <MOUNT_TARGET_IP> <MOUNT_TARGET_IP>
+Step 5/5: deploy the egress policy and the two sandbox pods
+  namespace 'nitro-efs-sample' already exists and is this sample's; reusing it.
 applicationnetworkpolicy.networking.k8s.aws/efs-shared-egress created
   waiting for the PolicyEndpoint to be programmed...
 storageclass.storage.k8s.io/nitro-sandbox-efs created
@@ -168,17 +154,28 @@ pod/efs-reader created
   waiting for both pods to become Ready (sandbox VM boot + NFS mount)...
 pod/efs-writer condition met
 pod/efs-reader condition met
+
+EFS storage is ready and both pods are Running. Resource IDs and addresses: .../examples/storage/efs/.env
 ```
 
-The claim binds `ReadWriteMany` and both pods become Ready once their guests boot and mount:
+Setup writes the resource IDs and the CoreDNS and mount-target addresses to a gitignored
+`.env`, which it uses to render the manifests. The EFS CSI driver, its service accounts, their
+IAM roles and their Pod Identity associations are a shared install and are not touched.
+
+**Step 2: The claim is bound and both pods are Running.** The claim binds `ReadWriteMany`, so
+both pods mount the same volume.
+
+```bash
+kubectl get pods,pvc -n "$NAMESPACE"
+```
 
 ```text
 NAME             READY   STATUS    RESTARTS   AGE
-pod/efs-reader   1/1     Running   0          3m59s
-pod/efs-writer   1/1     Running   0          3m59s
+pod/efs-reader   1/1     Running   0          23s
+pod/efs-writer   1/1     Running   0          23s
 
-NAME                                       STATUS   VOLUME               CAPACITY   ACCESS MODES   STORAGECLASS        AGE
-persistentvolumeclaim/storage-efs-shared   Bound    storage-efs-shared   5Gi        RWX            nitro-sandbox-efs   3m59s
+NAME                                       STATUS   VOLUME               CAPACITY   ACCESS MODES   STORAGECLASS        VOLUMEATTRIBUTESCLASS   AGE
+persistentvolumeclaim/storage-efs-shared   Bound    storage-efs-shared   5Gi        RWX            nitro-sandbox-efs   <unset>                 23s
 ```
 
 **Step 3: Prove each pod ran in a sandbox.** Each pod's own view is the evidence: its kernel
@@ -191,6 +188,7 @@ kubectl exec efs-writer -n "$NAMESPACE" -- sh -c 'ls /sys/block'
 
 ```text
 6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
+dm-0
 vda
 vdb
 vdc
@@ -209,10 +207,10 @@ kubectl exec efs-writer -n "$NAMESPACE" -- grep ' /shared ' /proc/mounts
 ```
 
 ```text
-127.0.0.1:/ /shared nfs4 rw,relatime,vers=4.1,rsize=1048576,wsize=1048576,namlen=255,hard,noresvport,fatal_neterrors=none,proto=tcp,port=38285,timeo=600,retrans=2,sec=sys,clientaddr=127.0.0.1,local_lock=none,addr=127.0.0.1 0 0
+127.0.0.1:/ /shared nfs4 rw,relatime,vers=4.1,rsize=1048576,wsize=1048576,namlen=255,hard,noresvport,fatal_neterrors=none,proto=tcp,port=46195,timeo=600,retrans=2,sec=sys,clientaddr=127.0.0.1,local_lock=none,addr=127.0.0.1 0 0
 ```
 
-The server is `127.0.0.1` and the connection runs over a local port (`port=38285`): the guest
+The server is `127.0.0.1` and the connection runs over a local port (`port=46195`): the guest
 terminates its own TLS to the mount target. The node holds no NFS mount for these pods, so the
 plaintext file traffic does not traverse the node.
 
@@ -230,7 +228,7 @@ kubectl exec efs-writer -n "$NAMESPACE" -- ls -ln /shared
 ```text
 uid=1000 gid=1000 groups=1000
 total 4
--rw-r--r--    1 1000     1000            18 Oct 21 02:23 from-writer
+-rw-r--r--    1 1000     1000            18 Oct 21 13:16 from-writer
 ```
 
 The file is owned by UID/GID 1000, the identity the access point enforces, and the uid-1000
@@ -326,9 +324,9 @@ would remove the device used to reach the mount target.
 
 [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) allows DNS to CoreDNS and NFS to the
 mount targets, and denies everything else, including all ingress. It is shown here as it is
-in the repository, with its placeholders: `test.sh` fills in `<COREDNS_IP>` from the CoreDNS
-Service address and expands `<MOUNT_TARGET_BLOCK>` into one `ipBlock` line per mount-target
-IP, both from the addresses `setup.sh` recorded in `.env`.
+in the repository, with its placeholders: `setup.sh` (Step 5, the deploy) fills in
+`<COREDNS_IP>` from the CoreDNS Service address and expands `<MOUNT_TARGET_BLOCK>` into one
+`ipBlock` line per mount-target IP, both from the addresses it recorded in `.env`.
 
 ```yaml
 spec:
@@ -354,11 +352,11 @@ spec:
 | --- | --- |
 | `podSelector: app=efs-shared` | Selects the writer and reader pods. |
 | `policyTypes: [Ingress, Egress]` | Governs both directions; with no ingress rule, all ingress is denied. |
-| First egress rule, `<COREDNS_IP>` | DNS to the CoreDNS Service address on UDP and TCP 53. `test.sh` reads the address with `kubectl get svc -n kube-system kube-dns`. |
-| Second egress rule, `<MOUNT_TARGET_BLOCK>` | NFS (TCP 2049) to each EFS mount-target IP, one per Availability Zone. `test.sh` expands one `- ipBlock: { cidr: <ip>/32 }` line per address from `aws efs describe-mount-targets`. |
+| First egress rule, `<COREDNS_IP>` | DNS to the CoreDNS Service address on UDP and TCP 53. `setup.sh` reads the address with `kubectl get svc -n kube-system kube-dns`. |
+| Second egress rule, `<MOUNT_TARGET_BLOCK>` | NFS (TCP 2049) to each EFS mount-target IP, one per Availability Zone. `setup.sh` expands one `- ipBlock: { cidr: <ip>/32 }` line per address from `aws efs describe-mount-targets`. |
 
 Network policy is turned on once per cluster through the `amazon-vpc-cni` ConfigMap, as the
-[coding agent](../../getting-started/coding-agent/README.md) page describes; `test.sh` waits
+[coding agent](../../getting-started/coding-agent/README.md) page describes; `setup.sh` waits
 for the policy's `PolicyEndpoint` to appear before it starts the pods. The policy is enforced
 on the node, outside the guest, so a command inside the sandbox cannot change it. Its limit:
 an `ipBlock` rule allows addresses, so anything else on the same addresses is reachable, and a

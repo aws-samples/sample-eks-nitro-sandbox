@@ -22,9 +22,12 @@
 #   4. Records the resource IDs and the CoreDNS and mount-target addresses in a local
 #      env file (.env, gitignored) so test.sh can render the manifests.
 #
-# It does NOT apply the Kubernetes manifests or run the pods; that is test.sh. Idempotent:
-# .env records what already exists, so a re-run resumes instead of creating a second file
-# system. Tear down with clean.sh.
+#   5. Deploys the Kubernetes side: the namespace (labelled this sample's), the egress
+#      ApplicationNetworkPolicy (waiting for its PolicyEndpoint), the StorageClass, the static
+#      PV and PVC, and the writer and reader pods, then waits for both to become Ready.
+#
+# Idempotent: .env records what already exists, so a re-run resumes instead of creating a
+# second file system, and re-applies the Kubernetes side. Tear down with clean.sh.
 #
 # Overridable (defaults match the page):
 #   NAMESPACE        the namespace to run in                 (default nitro-efs-sample)
@@ -110,7 +113,7 @@ write_env() {
 }
 
 # ---- 1. The EFS CSI driver is a shared install: check it, reuse it, never change it. ----
-echo "Step 1/4: check the Amazon EFS CSI driver (a shared install; reused, never changed)"
+echo "Step 1/5: check the Amazon EFS CSI driver (a shared install; reused, never changed)"
 addon_version="$(aws_r eks describe-addon --cluster-name "$CLUSTER_NAME" \
   --addon-name aws-efs-csi-driver --query 'addon.addonVersion' --output text 2>/dev/null || true)"
 driver_image="$($KUBECTL get daemonset efs-csi-node -n kube-system \
@@ -141,7 +144,7 @@ echo "  CSI node principal (read, not changed): $EFS_CSI_NODE_ROLE_ARN"
 write_env
 
 # ---- 2. The sample's own AWS resources. ----
-echo "Step 2/4: create the sample's security group, file system, mount targets and access point"
+echo "Step 2/5: create the sample's security group, file system, mount targets and access point"
 VPC_ID="$(aws_r eks describe-cluster --name "$CLUSTER_NAME" \
   --query 'cluster.resourcesVpcConfig.vpcId' --output text)"
 CLUSTER_SG="$(aws_r eks describe-cluster --name "$CLUSTER_NAME" \
@@ -304,7 +307,7 @@ aws_r ec2 create-tags --resources "$EFS_SECURITY_GROUP_ID" \
   --tags Key=ManagedBy,Value=$SAMPLE Key=auto-delete,Value=no
 
 # ---- 3. The file system policy: allow only the CSI node principal, require TLS. ----
-echo "Step 3/4: apply the EFS file system policy (TLS required, this access point only, CSI node principal only)"
+echo "Step 3/5: apply the EFS file system policy (TLS required, this access point only, CSI node principal only)"
 FS_ARN="arn:aws:elasticfilesystem:$AWS_REGION:$ACCOUNT_ID:file-system/$EFS_FILE_SYSTEM_ID"
 AP_ARN="arn:aws:elasticfilesystem:$AWS_REGION:$ACCOUNT_ID:access-point/$EFS_ACCESS_POINT_ID"
 policy_file="$(mktemp)"
@@ -334,7 +337,7 @@ aws_r efs put-file-system-policy --file-system-id "$EFS_FILE_SYSTEM_ID" \
 echo "  file system policy applied."
 
 # ---- 4. Record the addresses the network policy needs. ----
-echo "Step 4/4: record the CoreDNS and mount-target addresses for the network policy"
+echo "Step 4/5: record the CoreDNS and mount-target addresses for the network policy"
 COREDNS_IP="$($KUBECTL get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
 [[ -n "$COREDNS_IP" ]] || die "could not read the CoreDNS Service address (kube-dns in kube-system)"
 MOUNT_TARGET_IPS="$(aws_r efs describe-mount-targets --file-system-id "$EFS_FILE_SYSTEM_ID" \
@@ -344,8 +347,95 @@ write_env
 echo "  CoreDNS: $COREDNS_IP"
 echo "  mount targets: $MOUNT_TARGET_IPS"
 
+# ---- 5. Deploy: the namespace, the egress policy, the StorageClass, the PV/PVC and the pods. ----
+echo "Step 5/5: deploy the egress policy and the two sandbox pods"
+# Create the namespace only when absent; when it exists, require this sample's label before
+# applying anything into it, so the run never puts objects in a namespace another demo owns.
+ns_errf="$(mktemp)"
+if $KUBECTL get namespace "$NAMESPACE" -o name >/dev/null 2>"$ns_errf"; then
+  ns_label="$($KUBECTL get namespace "$NAMESPACE" -o "jsonpath={.metadata.labels.app\.kubernetes\.io/part-of}" 2>/dev/null)" \
+    || die "could not read the labels of namespace '$NAMESPACE'; refusing to apply into it."
+  [[ "$ns_label" == "$SAMPLE" ]] \
+    || die "namespace '$NAMESPACE' exists but is not labelled app.kubernetes.io/part-of=$SAMPLE (found '${ns_label:-<none>}'); refusing to apply into a namespace this sample did not create. Choose a different NAMESPACE."
+  echo "  namespace '$NAMESPACE' already exists and is this sample's; reusing it."
+elif grep -qi 'notfound\|not found' "$ns_errf"; then
+  $KUBECTL create namespace "$NAMESPACE" || die "could not create namespace '$NAMESPACE'"
+  $KUBECTL label namespace "$NAMESPACE" "app.kubernetes.io/part-of=$SAMPLE" --overwrite \
+    || die "could not label namespace '$NAMESPACE'"
+  echo "  created namespace '$NAMESPACE' and labelled it this sample's."
+else
+  rm -f "$ns_errf"; die "could not read namespace '$NAMESPACE' (the lookup failed). Re-run once the cluster reads cleanly."
+fi
+rm -f "$ns_errf"
+
+# The egress policy: render the checked-in deploy/egress-policy.yaml so the file the page shows
+# is the file that is applied. Substitute <COREDNS_IP> and expand <MOUNT_TARGET_BLOCK> into one
+# `- ipBlock: { cidr: <ip>/32 }` line per mount-target IP, preserving the block's indentation.
+# Done in Python so neither the shell word-splits the IP list nor a placeholder in a comment is
+# corrupted.
+python3 - "$SAMPLE_DIR/deploy/egress-policy.yaml" "$COREDNS_IP" $MOUNT_TARGET_IPS <<'PY' | $KUBECTL apply -n "$NAMESPACE" -f -
+import re, sys
+path, coredns = sys.argv[1], sys.argv[2]
+mt_ips = sys.argv[3:]
+with open(path) as f:
+    out = []
+    for line in f.read().splitlines():
+        m = re.match(r'^(\s*)<MOUNT_TARGET_BLOCK>\s*$', line)
+        if m:
+            indent = m.group(1)
+            out.extend(f"{indent}- ipBlock: {{ cidr: {ip}/32 }}" for ip in mt_ips)
+        else:
+            out.append(line.replace("<COREDNS_IP>", coredns))
+text = "\n".join(out)
+text = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
+sys.stdout.write(text + "\n")
+PY
+[[ ${PIPESTATUS[0]} -eq 0 && ${PIPESTATUS[1]} -eq 0 ]] || die "could not render or apply the egress policy"
+
+# Wait for the PolicyEndpoint so the rule is programmed before the pods start. A timeout here
+# must stop the run: starting the pods with no policy programmed would not restrict egress.
+echo "  waiting for the PolicyEndpoint to be programmed..."
+pe=0
+for _ in $(seq 1 30); do
+  n="$($KUBECTL get policyendpoints -n "$NAMESPACE" -o name 2>/dev/null | wc -l | tr -d ' ')"
+  [[ "$n" -gt 0 ]] && { pe="$n"; break; }
+  sleep 2
+done
+[[ "$pe" -gt 0 ]] || die "no PolicyEndpoint appeared for the egress policy within the timeout; the policy is not programmed, so the pods were not started. Turn on network policy enforcement (the amazon-vpc-cni ConfigMap), as the coding agent page describes."
+
+# The StorageClass (cluster-scoped, create only if absent; never apply over an existing one),
+# then the PV, PVC, ServiceAccount and pods, rendered with the namespace and recorded IDs.
+render_efs() {
+  sed -e "s|<NAMESPACE>|$NAMESPACE|g" \
+      -e "s|<EFS_FILE_SYSTEM_ID>|$EFS_FILE_SYSTEM_ID|g" \
+      -e "s|<EFS_ACCESS_POINT_ID>|$EFS_ACCESS_POINT_ID|g" \
+      "$SAMPLE_DIR/deploy/efs.yaml"
+}
+if ! $KUBECTL get storageclass nitro-sandbox-efs >/dev/null 2>&1; then
+  render_efs | python3 -c 'import sys
+docs = sys.stdin.read().split("\n---\n")
+for d in docs:
+    if "kind: StorageClass" in d:
+        sys.stdout.write(d.strip() + "\n")' | $KUBECTL create -f -
+  [[ ${PIPESTATUS[0]} -eq 0 && ${PIPESTATUS[1]} -eq 0 && ${PIPESTATUS[2]} -eq 0 ]] \
+    || die "could not create the StorageClass nitro-sandbox-efs"
+fi
+render_efs | python3 -c 'import sys
+docs = sys.stdin.read().split("\n---\n")
+out = [d for d in docs if d.strip() and "kind: StorageClass" not in d]
+sys.stdout.write("\n---\n".join(out))' | $KUBECTL apply -n "$NAMESPACE" -f -
+[[ ${PIPESTATUS[0]} -eq 0 && ${PIPESTATUS[1]} -eq 0 && ${PIPESTATUS[2]} -eq 0 ]] \
+  || die "could not render or apply the PV, PVC, ServiceAccount and pods"
+
+echo "  waiting for both pods to become Ready (sandbox VM boot + NFS mount)..."
+$KUBECTL wait -n "$NAMESPACE" --for=condition=Ready pod/efs-writer pod/efs-reader --timeout=5m \
+  || die "the pods did not become Ready. Check:
+  $KUBECTL describe pod efs-writer -n $NAMESPACE
+  $KUBECTL logs -n kube-system daemonset/efs-csi-node -c efs-plugin --tail=100"
+
 echo
-echo "EFS storage is ready. Resource IDs and addresses: $ENV_FILE"
-echo "Next:  NAMESPACE=$NAMESPACE ./scripts/test.sh    # deploy the pods and assert"
+echo "EFS storage is ready and both pods are Running. Resource IDs and addresses: $ENV_FILE"
+echo "$KUBECTL get pods,pvc -n $NAMESPACE"
+echo
 echo "Clean: NAMESPACE=$NAMESPACE ./scripts/clean.sh                        # Kubernetes objects"
 echo "       NAMESPACE=$NAMESPACE ./scripts/clean.sh --delete-aws-resources  # ...and the EFS resources"
