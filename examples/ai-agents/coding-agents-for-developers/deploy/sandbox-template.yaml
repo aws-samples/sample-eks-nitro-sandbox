@@ -1,0 +1,56 @@
+# One SandboxTemplate + SandboxWarmPool per CLI. setup.sh renders this once for each
+# CLI in the agent list, substituting <CLI> (claude-code, codex, kiro-cli, opencode,
+# pi, oh-my-pi), <ACCOUNT_ID>, <AWS_REGION> and <POOL_REPLICAS>.
+#
+# The pods boot warm with NO workspace: a SandboxClaim that adds a volume forces a cold
+# start, so the session folder is mounted inside the guest after the claim instead (see
+# the app and the base image's session-entrypoint.sh). The template ships its own egress
+# policy, so it sets networkPolicyManagement: Unmanaged.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: agent-<CLI>
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+spec:
+  networkPolicyManagement: Unmanaged   # egress-policy.yaml is the policy for these pods
+  podTemplate:
+    metadata:
+      labels:
+        app: agent-session
+        agent-cli: <CLI>
+        app.kubernetes.io/part-of: coding-agents-for-developers
+    spec:
+      runtimeClassName: isolated-sandbox
+      # The pod holds no AWS identity of its own: the mount credential arrives per
+      # session through exec, and the model credential (for the Bedrock CLIs) comes
+      # from the serviceAccount's Pod Identity role, which may only invoke models.
+      serviceAccountName: agent-session
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      containers:
+        - name: agent
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/coding-agents-for-developers-<CLI>:latest
+          # The mount inside the guest needs root + SYS_ADMIN; the CLI then runs as the
+          # unprivileged dev user. runAsNonRoot is intentionally not set: the entrypoint
+          # mounts as root, then setpriv drops to uid 1000 for the CLI.
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["SYS_ADMIN"]
+          resources:
+            requests: { cpu: "2", memory: 4Gi }
+            limits:   { cpu: "2", memory: 4Gi }
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: agent-<CLI>
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+spec:
+  replicas: <POOL_REPLICAS>
+  sandboxTemplateRef:
+    name: agent-<CLI>

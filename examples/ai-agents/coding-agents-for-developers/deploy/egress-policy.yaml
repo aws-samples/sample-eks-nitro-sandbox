@@ -1,0 +1,54 @@
+# Egress policy for the session sandbox pods, one per CLI. setup.sh renders it for each
+# CLI, filling <CLI>, <MOUNT_TARGET_CIDRS> (the S3 Files mount-target IPs, one ipBlock
+# each) and <AWS_REGION>. All ingress is denied: the app reaches the pod only through the
+# Kubernetes exec API, which is not pod network traffic.
+#
+# S3 Files cannot be used on a network-isolated pod (the mount needs a network), so these
+# pods have a network and this policy is what limits where code in the sandbox can connect.
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ApplicationNetworkPolicy
+metadata:
+  name: agent-<CLI>-egress
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+spec:
+  podSelector:
+    matchLabels:
+      agent-cli: <CLI>
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []                              # deny all ingress; exec is not pod traffic
+  egress:
+    # DNS, to resolve every host below. Allowed to any address: a name lookup carries no
+    # data out, so the sample treats DNS as safe to allow broadly rather than pinning the
+    # CoreDNS ClusterIP.
+    - to:
+        - ipBlock: { cidr: 0.0.0.0/0 }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # The S3 Files mount targets, NFS over TLS. One ipBlock per mount-target IP.
+    - to: <MOUNT_TARGET_CIDRS>
+      ports:
+        - { protocol: TCP, port: 2049 }
+    # The Pod Identity agent on the node, for the model role (Bedrock CLIs). Kubernetes
+    # always allows a pod to reach its own node; this rule is explicit for clarity.
+    - to:
+        - ipBlock: { cidr: 169.254.170.23/32 }
+      ports:
+        - { protocol: TCP, port: 80 }
+    # The S3 endpoint the mount helper reads objects from, the Bedrock runtime endpoint,
+    # and the short list of developer hosts the agents fetch from.
+    - to:
+        - domainNames:
+            - s3.<AWS_REGION>.amazonaws.com
+            - bedrock-runtime.<AWS_REGION>.amazonaws.com
+            - github.com
+            - codeload.github.com
+            - objects.githubusercontent.com
+            - registry.npmjs.org
+            - pypi.org
+            - files.pythonhosted.org
+      ports:
+        - { protocol: TCP, port: 443 }

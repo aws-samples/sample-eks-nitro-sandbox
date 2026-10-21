@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Coding agents for developers</title>
+    <link rel="stylesheet" href="/vendor/xterm.css" />
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <!-- Sign in: a demo picker, NOT authentication. -->
+    <div id="signin" class="signin">
+      <div class="card">
+        <h1>Coding agents</h1>
+        <p class="muted">
+          Pick a demo developer. This is a picker, not authentication: the app is
+          reachable only through <code>kubectl port-forward</code> on your own machine.
+        </p>
+        <label>Developer
+          <select id="developer">
+            <option value="carlos">Carlos</option>
+            <option value="priya">Priya</option>
+            <option value="sam">Sam</option>
+          </select>
+        </label>
+        <label>Password
+          <input type="password" value="demo-password" disabled />
+        </label>
+        <button id="signin-btn">Sign in</button>
+      </div>
+    </div>
+
+    <!-- Workspace -->
+    <div id="workspace" class="workspace hidden">
+      <header>
+        <span class="brand">Coding agents</span>
+        <span class="spacer"></span>
+        <span id="who" class="muted"></span>
+        <button id="signout-btn" class="link">Sign out</button>
+      </header>
+
+      <section class="launcher">
+        <h2>Start an agent</h2>
+        <div id="tiles" class="tiles"></div>
+      </section>
+
+      <section class="sessions">
+        <h2>Your sessions</h2>
+        <table>
+          <thead><tr><th>Name</th><th>Agent</th><th>Last used</th><th></th></tr></thead>
+          <tbody id="session-rows"></tbody>
+        </table>
+      </section>
+
+      <div id="dock" class="dock"></div>
+      <div id="windows"></div>
+    </div>
+
+    <script src="/vendor/xterm.js"></script>
+    <script src="/vendor/xterm-addon-fit.js"></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

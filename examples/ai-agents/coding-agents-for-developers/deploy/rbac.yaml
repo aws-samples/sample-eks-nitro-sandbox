@@ -1,0 +1,90 @@
+# Service accounts and RBAC for the sample.
+#
+# - agent-app     the web app. Its Pod Identity role (the App role) manages per-session
+#                 access points and assumes the Mount role. In the cluster its RBAC is
+#                 limited to SandboxClaims, reading pods, and pods/exec.
+# - agent-session the session pods. Its Pod Identity role (the Bedrock role) may only
+#                 invoke models. It has no S3 Files access: the mount credential arrives
+#                 per session through exec, not from this role.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-app
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-session
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-app
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+rules:
+  # Claim and release warm pods, one SandboxClaim per session.
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # Read the claim's resolved sandbox and the pool status.
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxwarmpools"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get", "list", "watch"]
+  # Find the claimed pod, read its node (for the AZ id), and drive the terminal.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-app
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agent-app
+subjects:
+  - kind: ServiceAccount
+    name: agent-app
+---
+# The app reads node labels to resolve each claimed pod's AZ id for the mount. Nodes are
+# cluster-scoped, so this is a narrow ClusterRole granting only get/list on nodes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: coding-agents-for-developers-node-reader
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: coding-agents-for-developers-node-reader
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: coding-agents-for-developers-node-reader
+subjects:
+  - kind: ServiceAccount
+    name: agent-app
+    namespace: <NAMESPACE>

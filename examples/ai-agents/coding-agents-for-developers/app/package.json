@@ -1,0 +1,19 @@
+{
+  "name": "coding-agents-for-developers-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Web app that runs a coding agent in a per-session Nitro sandbox with an S3 Files workspace",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sts": "3.1100.0",
+    "@aws-sdk/client-s3": "3.1100.0",
+    "@aws-sdk/client-s3files": "3.1100.0",
+    "@kubernetes/client-node": "2.0.1",
+    "ws": "8.22.0",
+    "@xterm/xterm": "6.0.0",
+    "@xterm/addon-fit": "0.11.0"
+  }
+}
