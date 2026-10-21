@@ -237,37 +237,53 @@ sys.exit(0 if ok else 1)' <<<"$pol"; assert "the file system policy: exactly one
   # role and fail if any grants an s3files: action or names an S3 Files resource. A lookup
   # failure fails the assertion (could not prove the absence), never passes it.
   node_role_name="${S3_FILES_CSI_NODE_ROLE_ARN##*/}"
-  nr_ok=0
-  inline_list="$(aws_r iam list-role-policies --role-name "$node_role_name" --query 'PolicyNames' --output text 2>/dev/null)" || nr_ok=1
-  attached_list="$(aws_r iam list-attached-role-policies --role-name "$node_role_name" --query 'AttachedPolicies[].PolicyName' --output text 2>/dev/null)" || nr_ok=1
-  if [[ "$nr_ok" -ne 0 ]]; then
-    assert "the CSI node role has no S3 Files identity permission (could not read the role's policies)" 1
-  else
-    s3files_grant_found=0
-    for pn in $inline_list; do
-      [[ "$pn" == "None" ]] && continue
-      doc="$(aws_r iam get-role-policy --role-name "$node_role_name" --policy-name "$pn" --query 'PolicyDocument' --output json 2>/dev/null)" || { s3files_grant_found=2; break; }
-      printf '%s' "$doc" | python3 -c 'import json,sys
+  # s3files_grant <policy-doc-json> on stdin: exit 1 if any Allow grants an s3files: action, a
+  # wildcard action, or names an S3 Files resource; exit 0 if none does; exit 2 if the doc could
+  # not be parsed. Only Effect:Allow statements count (a Deny is not a grant).
+  s3files_grant() {
+    python3 -c 'import json,sys
 try: d=json.load(sys.stdin)
 except Exception: sys.exit(2)
-if isinstance(d,str): d=json.loads(d)
+if isinstance(d,str):
+    try: d=json.loads(d)
+    except Exception: sys.exit(2)
 st=d.get("Statement",[])
 if isinstance(st,dict): st=[st]
 def L(x): return x if isinstance(x,list) else [x]
 for s in st:
+    if s.get("Effect")!="Allow": continue
     acts=[str(a).lower() for a in L(s.get("Action",[]))]
     res=[str(r).lower() for r in L(s.get("Resource",[]))]
     if any(a.startswith("s3files:") or a=="*" for a in acts) or any("s3files" in r for r in res):
         sys.exit(1)
-sys.exit(0)' || { rc=$?; [[ $rc -eq 1 ]] && s3files_grant_found=1 || s3files_grant_found=2; break; }
+sys.exit(0)'
+  }
+  nr_ok=0
+  inline_list="$(aws_r iam list-role-policies --role-name "$node_role_name" --query 'PolicyNames' --output text 2>/dev/null)" || nr_ok=1
+  attached_arns="$(aws_r iam list-attached-role-policies --role-name "$node_role_name" --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null)" || nr_ok=1
+  if [[ "$nr_ok" -ne 0 ]]; then
+    assert "the CSI node role has no S3 Files identity permission (could not read the role's policies)" 1
+  else
+    s3files_grant_found=0  # 0 none, 1 grant found, 2 a read/parse failed
+    # Inline policies: inspect each document.
+    for pn in $inline_list; do
+      [[ "$pn" == "None" || "$s3files_grant_found" -ne 0 ]] && continue
+      doc="$(aws_r iam get-role-policy --role-name "$node_role_name" --policy-name "$pn" --query 'PolicyDocument' --output json 2>/dev/null)" || { s3files_grant_found=2; continue; }
+      printf '%s' "$doc" | s3files_grant || { rc=$?; [[ $rc -eq 1 ]] && s3files_grant_found=1 || s3files_grant_found=2; }
     done
-    # Any broad managed policy that could grant S3 Files access counts as a grant we must flag.
-    for ap in $attached_list; do
-      case "$ap" in
-        AmazonS3FilesClientFullAccess|AmazonS3FilesClientReadOnlyAccess|AdministratorAccess) s3files_grant_found=1 ;;
-      esac
+    # Attached managed policies: fetch each one's DEFAULT VERSION document and inspect it, rather
+    # than matching by name (an arbitrarily named customer-managed policy could grant s3files).
+    for arn in $attached_arns; do
+      [[ "$arn" == "None" || "$s3files_grant_found" -ne 0 ]] && continue
+      ver="$(aws_r iam get-policy --policy-arn "$arn" --query 'Policy.DefaultVersionId' --output text 2>/dev/null)" || { s3files_grant_found=2; continue; }
+      adoc="$(aws_r iam get-policy-version --policy-arn "$arn" --version-id "$ver" --query 'PolicyVersion.Document' --output json 2>/dev/null)" || { s3files_grant_found=2; continue; }
+      printf '%s' "$adoc" | s3files_grant || { rc=$?; [[ $rc -eq 1 ]] && s3files_grant_found=1 || s3files_grant_found=2; }
     done
-    [[ "$s3files_grant_found" -eq 0 ]]; assert "the CSI node role has no S3 Files identity permission, so the file system resource policy alone authorizes the mount" $?
+    if [[ "$s3files_grant_found" -eq 2 ]]; then
+      assert "the CSI node role has no S3 Files identity permission (a policy document could not be read)" 1
+    else
+      [[ "$s3files_grant_found" -eq 0 ]]; assert "the CSI node role has no S3 Files identity permission, so the file system resource policy alone authorizes the mount" $?
+    fi
   fi
 
   # The bucket policy: TLS-only deny, and an EC2-node-role deny.

@@ -139,7 +139,9 @@ s3files_gone() {
   local out rc
   out="$(aws_r "$@" 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && return 1
-  grep -qiE 'ResourceNotFound|AccessPointNotFound|NotFound|does not exist' <<<"$out" && return 0
+  # Match only the service's explicit not-found error codes, so an unrelated error that merely
+  # contains "not found" prose is NOT read as confirmed gone.
+  grep -qE 'ResourceNotFoundException|AccessPointNotFoundException|AccessPointNotFound|FileSystemNotFound' <<<"$out" && return 0
   return 2
 }
 
@@ -192,8 +194,28 @@ if [[ -n "${S3_FILES_FILE_SYSTEM_ID:-}" ]]; then
   fi
 fi
 
-# The S3 Files access point (only when the file system it is on is proven this sample's).
+# The S3 Files access point (only when the file system it is on is proven this sample's AND the
+# recorded access point is confirmed to be on that proven file system). A stale foreign access
+# point ID alongside an owned file system must not be deleted: read the access point's live
+# fileSystemId and require it to equal the proven one; any read failure leaves it unconfirmed
+# and untouched.
+ap_owned=false
 if [[ "$fs_owned" == true && -n "${S3_FILES_ACCESS_POINT_ID:-}" ]]; then
+  ap_fs="$(aws_r s3files get-access-point --access-point-id "$S3_FILES_ACCESS_POINT_ID" \
+    --query 'fileSystemId' --output text 2>/dev/null)"; ap_read_rc=$?
+  if [[ $ap_read_rc -ne 0 ]]; then
+    s3files_gone s3files get-access-point --access-point-id "$S3_FILES_ACCESS_POINT_ID" --query status
+    case $? in
+      0) echo "S3 Files access point $S3_FILES_ACCESS_POINT_ID is already gone." ;;
+      *) warn "could not read S3 Files access point $S3_FILES_ACCESS_POINT_ID to prove it is on this sample's file system; leaving it. Re-run --delete-aws-resources." ;;
+    esac
+  elif [[ "$ap_fs" == "$S3_FILES_FILE_SYSTEM_ID" ]]; then
+    ap_owned=true
+  else
+    warn "refusing to delete S3 Files access point $S3_FILES_ACCESS_POINT_ID: it is on file system $ap_fs, not this sample's proven $S3_FILES_FILE_SYSTEM_ID. Leaving it."
+  fi
+fi
+if [[ "$ap_owned" == true ]]; then
   echo "Deleting S3 Files access point $S3_FILES_ACCESS_POINT_ID..."
   aws_r s3files delete-access-point --access-point-id "$S3_FILES_ACCESS_POINT_ID" >/dev/null 2>&1 || true
   ap_rc=1  # 0 gone, 1 present, 2 unconfirmed
