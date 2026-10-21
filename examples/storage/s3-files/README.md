@@ -493,10 +493,17 @@ the mount targets.
   Public documentation describes the node role with the broad `AmazonS3FilesClientFullAccess`
   managed policy; this sample grants the same mount actions from the resource side instead,
   scoped to this one file system.
-- **The workload has no AWS identity.** The pods' ServiceAccount has no Pod Identity association
-  and mounts no API token. What authorizes the mount is the CSI driver's identity and the file
-  system policy, so giving an application pod its own role would not change how the volume is
-  mounted.
+- **The pods have no AWS identity of their own, but their mount uses a shared one.** The pods'
+  ServiceAccount has no Pod Identity association and mounts no API token. The mount is signed
+  with the CSI driver's node role, the same role every mount through the driver on the cluster
+  uses. What bounds these pods' use of it is the egress policy, which lets them reach only this
+  file system's mount targets, and the file system policy, which allows that role only on this
+  file system.
+- **What else the shared node role can mount is the cluster owner's choice.** If you own the
+  cluster, check the role's own IAM policies: a broad client policy such as
+  `AmazonS3FilesClientFullAccess` is not limited to one file system. To narrow it, scope the
+  role's mount permissions to named file systems or to a resource tag. The sample does not
+  change the role, because other workloads' mounts depend on it.
 - **The backing bucket is versioned and encrypted.** S3 Files requires S3 Versioning and
   server-side encryption to synchronize; the sample also turns on Block Public Access and a
   TLS-only bucket policy. The clean up deletes only a bucket this sample created and tagged.
