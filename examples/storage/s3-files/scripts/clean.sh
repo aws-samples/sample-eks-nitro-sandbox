@@ -130,6 +130,30 @@ bucket_owner_marker() {
   printf '%s' "$value"
 }
 
+# s3files_gone <get-command...>: 0 the resource is CONFIRMED gone (the error names the
+# service's not-found token), 1 it is present, 2 the read failed for another reason. Lets a
+# teardown tell "deleted" from "could not tell", so a throttle or credential error is never
+# read as success. The S3 Files errors are ResourceNotFoundException and (for an access point)
+# AccessPointNotFound/NotFound.
+s3files_gone() {
+  local out rc
+  out="$(aws_r "$@" 2>&1)"; rc=$?
+  [[ $rc -eq 0 ]] && return 1
+  grep -qiE 'ResourceNotFound|AccessPointNotFound|NotFound|does not exist' <<<"$out" && return 0
+  return 2
+}
+
+# head_bucket_status <bucket>: 0 present, 1 confirmed absent (404/NoSuchBucket), 2 the read
+# failed for another reason (403, throttle, networking). A failed head-bucket is NEVER read as
+# "gone" unless it is specifically a not-found.
+head_bucket_status() {
+  local out rc
+  out="$(aws_r s3api head-bucket --bucket "$1" 2>&1)"; rc=$?
+  [[ $rc -eq 0 ]] && return 0
+  grep -qiE '\(404\)|Not Found|NoSuchBucket' <<<"$out" && return 1
+  return 2
+}
+
 # Wait for the PV to be gone so no NFS client holds the mount targets. A timeout here means an
 # NFS client may still hold a mount target, so do NOT start AWS teardown.
 if ! $KUBECTL wait --for=delete pv/storage-s3-files-shared --timeout=3m >/dev/null 2>&1; then
@@ -140,63 +164,133 @@ if ! $KUBECTL wait --for=delete pv/storage-s3-files-shared --timeout=3m >/dev/nu
   esac
 fi
 
-# The S3 Files access point.
-if [[ -n "${S3_FILES_ACCESS_POINT_ID:-}" ]]; then
-  echo "Deleting S3 Files access point $S3_FILES_ACCESS_POINT_ID..."
-  aws_r s3files delete-access-point --access-point-id "$S3_FILES_ACCESS_POINT_ID" >/dev/null 2>&1 || true
-  ap_state="unknown"
-  for _ in $(seq 1 60); do
-    ap_state="$(aws_r s3files get-access-point --access-point-id "$S3_FILES_ACCESS_POINT_ID" \
-      --query status --output text 2>/dev/null || echo DELETED)"
-    ap_state="${ap_state^^}"
-    [[ "$ap_state" == "DELETED" ]] && break
-    sleep 5
-  done
-  [[ "$ap_state" == "DELETED" ]] || warn "S3 Files access point still present or unconfirmed; re-run --delete-aws-resources."
-fi
-
-# The mount targets and the file system.
+# Prove the recorded file system is this sample's before deleting it or its access point: its
+# `bucket` must be the recorded bucket, and that bucket must carry ManagedBy=storage-s3-files.
+# A stale .env pointing at another sample's file system is refused here. The bucket tag gate is
+# the same evidence the bucket delete uses, so the whole S3 Files chain is proven as one.
+# A read that fails leaves ownership unproven, so the FS/AP deletes are skipped (never forced).
+fs_owned=false
 if [[ -n "${S3_FILES_FILE_SYSTEM_ID:-}" ]]; then
-  echo "Deleting S3 Files mount targets..."
-  mts="$(aws_r s3files list-mount-targets --file-system-id "$S3_FILES_FILE_SYSTEM_ID" \
-    --query 'mountTargets[].mountTargetId' --output text 2>/dev/null || true)"
-  for mt in $mts; do
-    [[ "$mt" == None ]] && continue
-    aws_r s3files delete-mount-target --mount-target-id "$mt" >/dev/null 2>&1 || true
-  done
-  remaining="unknown"
-  for _ in $(seq 1 90); do
-    statuses="$(aws_r s3files list-mount-targets --file-system-id "$S3_FILES_FILE_SYSTEM_ID" \
-      --query 'mountTargets[].status' --output text 2>/dev/null || true)"
-    remaining=0
-    for st in $statuses; do [[ "${st^^}" == "DELETED" || "$st" == "None" ]] || remaining=$((remaining+1)); done
-    [[ "$remaining" == 0 ]] && break
-    sleep 5
-  done
-  [[ "$remaining" == 0 ]] || warn "S3 Files mount targets still present or unconfirmed; re-run --delete-aws-resources."
-
-  if [[ "$remaining" == 0 ]]; then
-    echo "Deleting S3 Files file system $S3_FILES_FILE_SYSTEM_ID..."
-    fs_state="unknown"
-    for _ in $(seq 1 90); do
-      fs_state="$(aws_r s3files get-file-system --file-system-id "$S3_FILES_FILE_SYSTEM_ID" \
-        --query status --output text 2>/dev/null || echo DELETED)"
-      fs_state="${fs_state^^}"
-      [[ "$fs_state" == "DELETED" ]] && break
-      [[ "$fs_state" != "DELETING" ]] && aws_r s3files delete-file-system --file-system-id "$S3_FILES_FILE_SYSTEM_ID" >/dev/null 2>&1 || true
-      sleep 5
-    done
-    [[ "$fs_state" == "DELETED" ]] || warn "S3 Files file system still present or unconfirmed; re-run --delete-aws-resources before deleting the bucket."
+  fs_bucket="$(aws_r s3files get-file-system --file-system-id "$S3_FILES_FILE_SYSTEM_ID" \
+    --query 'bucket' --output text 2>/dev/null)"; fs_read_rc=$?
+  if [[ $fs_read_rc -ne 0 ]]; then
+    # Could the file system already be gone? s3files_gone tells "deleted" from "unreadable".
+    s3files_gone s3files get-file-system --file-system-id "$S3_FILES_FILE_SYSTEM_ID" --query status
+    case $? in
+      0) echo "S3 Files file system $S3_FILES_FILE_SYSTEM_ID is already gone." ;;
+      *) warn "could not read S3 Files file system $S3_FILES_FILE_SYSTEM_ID to prove ownership; leaving it and its access point. Re-run --delete-aws-resources." ;;
+    esac
+  elif [[ -n "${S3_BUCKET_NAME:-}" && "$fs_bucket" == "arn:aws:s3:::$S3_BUCKET_NAME" ]]; then
+    marker="$(bucket_owner_marker "$S3_BUCKET_NAME")"
+    if [[ "$marker" == "$SAMPLE" ]]; then
+      fs_owned=true
+    else
+      warn "refusing to delete S3 Files file system $S3_FILES_FILE_SYSTEM_ID: its bucket $S3_BUCKET_NAME is not tagged $BUCKET_OWNER_TAG_KEY=$SAMPLE on the live bucket (found '${marker:-no marker}'). Leaving the file system and access point."
+    fi
+  else
+    warn "refusing to delete S3 Files file system $S3_FILES_FILE_SYSTEM_ID: it is attached to '$fs_bucket', not this sample's recorded bucket arn:aws:s3:::${S3_BUCKET_NAME:-<unset>}. Leaving the file system and access point."
   fi
 fi
 
-# The synchronization role (only one this sample created).
+# The S3 Files access point (only when the file system it is on is proven this sample's).
+if [[ "$fs_owned" == true && -n "${S3_FILES_ACCESS_POINT_ID:-}" ]]; then
+  echo "Deleting S3 Files access point $S3_FILES_ACCESS_POINT_ID..."
+  aws_r s3files delete-access-point --access-point-id "$S3_FILES_ACCESS_POINT_ID" >/dev/null 2>&1 || true
+  ap_rc=1  # 0 gone, 1 present, 2 unconfirmed
+  for _ in $(seq 1 60); do
+    s3files_gone s3files get-access-point --access-point-id "$S3_FILES_ACCESS_POINT_ID" --query status; ap_rc=$?
+    [[ "$ap_rc" != 1 ]] && break
+    sleep 5
+  done
+  case $ap_rc in
+    0) : ;;
+    *) warn "S3 Files access point still present or could not be confirmed deleted; re-run --delete-aws-resources." ;;
+  esac
+fi
+
+# The mount targets and the file system (only when the file system is proven this sample's).
+mt_confirmed_empty=false
+if [[ "$fs_owned" == true && -n "${S3_FILES_FILE_SYSTEM_ID:-}" ]]; then
+  echo "Deleting S3 Files mount targets..."
+  # A listing failure is NEVER read as "no mount targets"; it leaves the count unknown so the
+  # file system is not deleted while a mount target may still hold a network interface.
+  mts_errf="$(mktemp)"
+  mts="$(aws_r s3files list-mount-targets --file-system-id "$S3_FILES_FILE_SYSTEM_ID" \
+    --query 'mountTargets[].mountTargetId' --output text 2>"$mts_errf")"
+  if [[ $? -ne 0 ]]; then
+    warn "could not list S3 Files mount targets of $S3_FILES_FILE_SYSTEM_ID; leaving the file system. Re-run --delete-aws-resources."
+    rm -f "$mts_errf"
+  else
+    rm -f "$mts_errf"
+    for mt in $mts; do
+      [[ "$mt" == None ]] && continue
+      aws_r s3files delete-mount-target --mount-target-id "$mt" >/dev/null 2>&1 || true
+    done
+    remaining="unknown"
+    for _ in $(seq 1 90); do
+      statuses="$(aws_r s3files list-mount-targets --file-system-id "$S3_FILES_FILE_SYSTEM_ID" \
+        --query 'mountTargets[].status' --output text 2>/dev/null)"
+      [[ $? -ne 0 ]] && { remaining="unknown"; sleep 5; continue; }
+      remaining=0
+      for st in $statuses; do [[ "${st^^}" == "DELETED" || "$st" == "None" ]] || remaining=$((remaining+1)); done
+      [[ "$remaining" == 0 ]] && break
+      sleep 5
+    done
+    if [[ "$remaining" == 0 ]]; then
+      mt_confirmed_empty=true
+    else
+      warn "S3 Files mount targets still present or could not be confirmed deleted; re-run --delete-aws-resources."
+    fi
+  fi
+
+  # Delete the file system only once the mount targets are CONFIRMED gone.
+  if $mt_confirmed_empty; then
+    echo "Deleting S3 Files file system $S3_FILES_FILE_SYSTEM_ID..."
+    fs_rc=1  # 0 gone, 1 present, 2 unconfirmed
+    for _ in $(seq 1 90); do
+      s3files_gone s3files get-file-system --file-system-id "$S3_FILES_FILE_SYSTEM_ID" --query status; fs_rc=$?
+      [[ "$fs_rc" == 0 ]] && break
+      if [[ "$fs_rc" == 1 ]]; then
+        # present: read its state and (re)issue the delete unless it is already deleting.
+        fs_state="$(aws_r s3files get-file-system --file-system-id "$S3_FILES_FILE_SYSTEM_ID" --query status --output text 2>/dev/null || true)"
+        [[ "${fs_state^^}" != "DELETING" ]] && aws_r s3files delete-file-system --file-system-id "$S3_FILES_FILE_SYSTEM_ID" >/dev/null 2>&1 || true
+      fi
+      sleep 5
+    done
+    [[ "$fs_rc" == 0 ]] || warn "S3 Files file system still present or could not be confirmed deleted; re-run --delete-aws-resources before deleting the bucket."
+  fi
+fi
+
+# The synchronization role (only one this sample created). Re-prove ownership against the live
+# role tag before deleting, not from CREATED_SYNC_ROLE alone: .env can go stale, and the role
+# name is deterministic, so a differently-owned role could carry the same name. setup.sh tags
+# every role it creates ManagedBy=storage-s3-files.
 if [[ "${CREATED_SYNC_ROLE:-false}" == "true" && -n "${S3_FILES_SYNC_ROLE_NAME:-}" ]]; then
-  echo "Deleting synchronization role $S3_FILES_SYNC_ROLE_NAME..."
-  aws_r iam delete-role-policy --role-name "$S3_FILES_SYNC_ROLE_NAME" --policy-name S3FilesSync >/dev/null 2>&1 || true
-  aws_r iam delete-role --role-name "$S3_FILES_SYNC_ROLE_NAME" >/dev/null 2>&1 || true
-  if aws_r iam get-role --role-name "$S3_FILES_SYNC_ROLE_NAME" >/dev/null 2>&1; then
-    warn "synchronization role $S3_FILES_SYNC_ROLE_NAME still present; re-run --delete-aws-resources."
+  role_errf="$(mktemp)"
+  role_owner="$(aws_r iam list-role-tags --role-name "$S3_FILES_SYNC_ROLE_NAME" \
+    --query "Tags[?Key=='ManagedBy'].Value | [0]" --output text 2>"$role_errf")"
+  role_rc=$?
+  if [[ $role_rc -ne 0 ]] && grep -qi 'NoSuchEntity' "$role_errf"; then
+    rm -f "$role_errf"  # already gone
+  elif [[ $role_rc -ne 0 ]]; then
+    rm -f "$role_errf"
+    warn "could not read ownership tags of synchronization role $S3_FILES_SYNC_ROLE_NAME; leaving it. Re-run --delete-aws-resources."
+  else
+    rm -f "$role_errf"
+    if [[ "$role_owner" != "$SAMPLE" ]]; then
+      warn "synchronization role $S3_FILES_SYNC_ROLE_NAME is not tagged ManagedBy=$SAMPLE (found '${role_owner:-<none>}'); leaving it."
+    else
+      echo "Deleting synchronization role $S3_FILES_SYNC_ROLE_NAME..."
+      aws_r iam delete-role-policy --role-name "$S3_FILES_SYNC_ROLE_NAME" --policy-name S3FilesSync >/dev/null 2>&1 || true
+      aws_r iam delete-role --role-name "$S3_FILES_SYNC_ROLE_NAME" >/dev/null 2>&1 || true
+      del_errf="$(mktemp)"
+      if aws_r iam get-role --role-name "$S3_FILES_SYNC_ROLE_NAME" >"$del_errf" 2>&1; then
+        warn "synchronization role $S3_FILES_SYNC_ROLE_NAME still present; re-run --delete-aws-resources."
+      elif ! grep -qi 'NoSuchEntity' "$del_errf"; then
+        warn "could not confirm synchronization role $S3_FILES_SYNC_ROLE_NAME was deleted; re-run --delete-aws-resources."
+      fi
+      rm -f "$del_errf"
+    fi
   fi
 fi
 
@@ -236,33 +330,46 @@ fi
 # because .env can go stale; the tag lives on the bucket, so when the two disagree the
 # bucket wins and nothing is deleted.
 if [[ "${CREATED_BUCKET:-false}" == "true" && -n "${S3_BUCKET_NAME:-}" ]]; then
-  if ! aws_r s3api head-bucket --bucket "$S3_BUCKET_NAME" >/dev/null 2>&1; then
-    echo "Bucket $S3_BUCKET_NAME is already gone; nothing to delete there."
-  else
-    marker="$(bucket_owner_marker "$S3_BUCKET_NAME")"
-    if [[ "$marker" != "$SAMPLE" ]]; then
-      warn "refusing to delete s3://$S3_BUCKET_NAME: it is not tagged $BUCKET_OWNER_TAG_KEY=$SAMPLE on the live bucket (found '${marker:-no marker}'). Nothing in the bucket was touched."
-    else
-      echo "Deleting all object versions from s3://$S3_BUCKET_NAME..."
-      del_ok=true
-      while IFS=$'\t' read -r key version_id; do
-        [[ -z "$key" || "$key" == "None" ]] && continue
-        aws_r s3api delete-object --bucket "$S3_BUCKET_NAME" --key "$key" --version-id "$version_id" >/dev/null 2>&1 || del_ok=false
-      done < <(aws_r s3api list-object-versions --bucket "$S3_BUCKET_NAME" --query 'Versions[].[Key,VersionId]' --output text 2>/dev/null)
-      while IFS=$'\t' read -r key version_id; do
-        [[ -z "$key" || "$key" == "None" ]] && continue
-        aws_r s3api delete-object --bucket "$S3_BUCKET_NAME" --key "$key" --version-id "$version_id" >/dev/null 2>&1 || del_ok=false
-      done < <(aws_r s3api list-object-versions --bucket "$S3_BUCKET_NAME" --query 'DeleteMarkers[].[Key,VersionId]' --output text 2>/dev/null)
-      $del_ok || warn "could not delete every object version in s3://$S3_BUCKET_NAME; leaving the bucket. Re-run --delete-aws-resources."
-      if $del_ok; then
-        echo "Deleting bucket s3://$S3_BUCKET_NAME..."
-        aws_r s3api delete-bucket --bucket "$S3_BUCKET_NAME" >/dev/null 2>&1 || true
-        if aws_r s3api head-bucket --bucket "$S3_BUCKET_NAME" >/dev/null 2>&1; then
-          warn "bucket $S3_BUCKET_NAME still present after delete; re-run --delete-aws-resources."
+  head_bucket_status "$S3_BUCKET_NAME"; hb_rc=$?
+  case $hb_rc in
+    1) echo "Bucket $S3_BUCKET_NAME is confirmed gone (404); nothing to delete there." ;;
+    2) warn "could not read bucket $S3_BUCKET_NAME (the head-bucket lookup failed, not a 404); refusing to treat it as gone. Nothing was touched. Re-run --delete-aws-resources once S3 reads cleanly." ;;
+    0)
+      marker="$(bucket_owner_marker "$S3_BUCKET_NAME")"
+      if [[ "$marker" != "$SAMPLE" ]]; then
+        warn "refusing to delete s3://$S3_BUCKET_NAME: it is not tagged $BUCKET_OWNER_TAG_KEY=$SAMPLE on the live bucket (found '${marker:-no marker}'). Nothing in the bucket was touched."
+      else
+        echo "Deleting all object versions from s3://$S3_BUCKET_NAME..."
+        del_ok=true
+        # List each page to a file with an explicitly checked command, so a listing FAILURE is
+        # visible (a process substitution's exit status is not), and never read as "no objects".
+        for sel in Versions DeleteMarkers; do
+          verf="$(mktemp)"
+          if ! aws_r s3api list-object-versions --bucket "$S3_BUCKET_NAME" \
+               --query "${sel}[].[Key,VersionId]" --output text >"$verf" 2>/dev/null; then
+            warn "could not list $sel of s3://$S3_BUCKET_NAME; leaving the bucket. Re-run --delete-aws-resources."
+            del_ok=false; rm -f "$verf"; continue
+          fi
+          while IFS=$'\t' read -r key version_id; do
+            [[ -z "$key" || "$key" == "None" ]] && continue
+            aws_r s3api delete-object --bucket "$S3_BUCKET_NAME" --key "$key" --version-id "$version_id" >/dev/null 2>&1 || del_ok=false
+          done < "$verf"
+          rm -f "$verf"
+        done
+        $del_ok || warn "could not delete every object version in s3://$S3_BUCKET_NAME; leaving the bucket. Re-run --delete-aws-resources."
+        if $del_ok; then
+          echo "Deleting bucket s3://$S3_BUCKET_NAME..."
+          aws_r s3api delete-bucket --bucket "$S3_BUCKET_NAME" >/dev/null 2>&1 || true
+          head_bucket_status "$S3_BUCKET_NAME"; hb2=$?
+          case $hb2 in
+            1) : ;;  # confirmed 404: gone
+            0) warn "bucket $S3_BUCKET_NAME still present after delete; re-run --delete-aws-resources." ;;
+            2) warn "could not confirm bucket $S3_BUCKET_NAME was deleted (the head-bucket lookup failed); re-run --delete-aws-resources." ;;
+          esac
         fi
       fi
-    fi
-  fi
+      ;;
+  esac
 fi
 
 if [[ "$fail" -eq 0 ]]; then

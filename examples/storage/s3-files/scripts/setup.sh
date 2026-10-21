@@ -343,6 +343,17 @@ if [[ -z "$S3_FILES_FILE_SYSTEM_ID" || "$S3_FILES_FILE_SYSTEM_ID" == "None" ]]; 
   write_env
 fi
 wait_for_s3_files
+# Prove the file system is this sample's before mutating it (applying its policy, narrowing the
+# role trust) or, later, letting clean.sh delete it. Its identity is the bucket it is attached
+# to: that bucket is already proven this sample's by the ManagedBy tag gate above, so a file
+# system whose `bucket` is that bucket is this sample's too. A file system ID loaded from a
+# stale .env that points at another bucket is refused here rather than adopted. A read that
+# fails is fatal (could not determine ownership), never treated as owned.
+fs_bucket="$(aws_r s3files get-file-system --file-system-id "$S3_FILES_FILE_SYSTEM_ID" \
+  --query 'bucket' --output text 2>/dev/null)" \
+  || die "could not read the S3 Files file system $S3_FILES_FILE_SYSTEM_ID to verify it is this sample's; refusing to use it until the read succeeds."
+[[ "$fs_bucket" == "arn:aws:s3:::$S3_BUCKET_NAME" ]] \
+  || die "the S3 Files file system $S3_FILES_FILE_SYSTEM_ID is attached to '$fs_bucket', not this sample's bucket arn:aws:s3:::$S3_BUCKET_NAME; refusing to adopt a file system this sample did not create. Run './scripts/clean.sh --delete-aws-resources' to clear a stale .env, or set ENV_FILE to a different file."
 S3_FILES_ARN="arn:aws:s3files:$AWS_REGION:$ACCOUNT_ID:file-system/$S3_FILES_FILE_SYSTEM_ID"
 
 # Narrow the synchronization role's trust to exactly this file system.
@@ -456,6 +467,15 @@ for _ in $(seq 1 60); do
   sleep 5
 done
 [[ "$st" == "AVAILABLE" ]] || die "timed out waiting for the S3 Files access point"
+
+# Prove the access point is on this sample's file system before using it (and before clean.sh
+# deletes it). An access point ID loaded from a stale .env could point at another file system;
+# the file system itself is already proven this sample's above. A read that fails is fatal.
+ap_fs="$(aws_r s3files get-access-point --access-point-id "$S3_FILES_ACCESS_POINT_ID" \
+  --query 'fileSystemId' --output text 2>/dev/null)" \
+  || die "could not read the S3 Files access point $S3_FILES_ACCESS_POINT_ID to verify it is this sample's; refusing to use it until the read succeeds."
+[[ "$ap_fs" == "$S3_FILES_FILE_SYSTEM_ID" ]] \
+  || die "the S3 Files access point $S3_FILES_ACCESS_POINT_ID is on file system $ap_fs, not this sample's $S3_FILES_FILE_SYSTEM_ID; refusing to adopt an access point this sample did not create. Run './scripts/clean.sh --delete-aws-resources' to clear a stale .env, or set ENV_FILE to a different file."
 
 # ---- 3. The file system policy: allow only the CSI node principal, deny the EC2 node role. ----
 echo "Step 3/6: apply the S3 Files file system policy (this file system, CSI node principal only, deny EC2 node role)"

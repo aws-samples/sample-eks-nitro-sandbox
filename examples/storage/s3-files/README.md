@@ -313,8 +313,9 @@ mount, not to objects synchronized in from S3.
 **Step 9: IAM authorizes the mount.** The pods mount with `tls,iam`, so the mount helper signs
 the connection with the CSI driver's node identity, and the file system policy decides by
 principal. For a principal in the same account, an `Allow` in this resource policy is enough to
-authorize the mount, so the sample adds nothing to the shared CSI node role. Read the policy back
-from S3 Files:
+authorize the mount, so the sample adds nothing to the shared CSI node role. On the run below the
+node role carried no S3 Files identity permission at all, neither an inline nor an attached
+policy, so the mount succeeded on the resource policy alone. Read the policy back from S3 Files:
 
 ```bash
 aws s3files get-file-system-policy --file-system-id "$S3_FILES_FILE_SYSTEM_ID" \

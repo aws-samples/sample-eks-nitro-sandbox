@@ -143,10 +143,18 @@ for pod in "$WRITER" "$READER"; do
   tok="$($KUBECTL get pod "$pod" -n "$NAMESPACE" -o jsonpath='{.spec.automountServiceAccountToken}')"
   [[ "$tok" == "false" ]]; assert "$pod does not mount a Kubernetes API token" $?
 done
+# A FAILED lookup must fail this assertion, never pass as "no association": capture status
+# separately, so only a successful response that contains no association passes.
+wl_errf="$(mktemp)"
 wl_assoc="$(aws_r eks list-pod-identity-associations --cluster-name "${CLUSTER_NAME:-}" \
   --namespace "$NAMESPACE" --service-account s3-files-workload \
-  --query 'associations[0].associationId' --output text 2>/dev/null || true)"
-[[ -z "$wl_assoc" || "$wl_assoc" == "None" ]]; assert "the workload ServiceAccount has no Pod Identity association" $?
+  --query 'associations[0].associationId' --output text 2>"$wl_errf")"; wl_rc=$?
+rm -f "$wl_errf"
+if [[ $wl_rc -ne 0 ]]; then
+  assert "the workload ServiceAccount has no Pod Identity association (lookup failed)" 1
+else
+  [[ -z "$wl_assoc" || "$wl_assoc" == "None" ]]; assert "the workload ServiceAccount has no Pod Identity association" $?
+fi
 
 echo "== 7/10 cross-pod visibility both ways =="
 run_id="$(cut -d. -f1 /proc/uptime 2>/dev/null)-$$"
@@ -212,16 +220,56 @@ def allow_ok(s):
     if not (isinstance(pr,dict) and list(pr.keys())==["AWS"] and pr["AWS"]==node): return False
     if listify(s.get("Resource"))!=[fs]: return False
     acts=set(listify(s.get("Action")))
-    if not acts or not acts<= {"s3files:ClientMount","s3files:ClientWrite"}: return False
-    return True
+    # Require EXACTLY both mount actions: a policy granting only one must not pass an assertion
+    # that claims both, and ClientRootAccess must not appear.
+    return acts == {"s3files:ClientMount","s3files:ClientWrite"}
 def ec2_deny_ok(s):
     pr=s.get("Principal")
     if not (isinstance(pr,dict) and pr.get("AWS")==ec2): return False
     if listify(s.get("Resource"))!=[fs]: return False
     acts=set(listify(s.get("Action")))
     return {"s3files:ClientMount","s3files:ClientWrite"}<=acts
-ok=(len(allows)>=1 and all(allow_ok(s) for s in allows) and any(ec2_deny_ok(s) for s in denies))
-sys.exit(0 if ok else 1)' <<<"$pol"; assert "the file system policy: every Allow is the CSI node principal only (ClientMount/ClientWrite, no ClientRootAccess) on this file system, plus a Deny of the EC2 node role" $?
+# Exactly one Allow (the CSI node principal), and at least one EC2-node-role Deny.
+ok=(len(allows)==1 and allow_ok(allows[0]) and any(ec2_deny_ok(s) for s in denies))
+sys.exit(0 if ok else 1)' <<<"$pol"; assert "the file system policy: exactly one Allow, the CSI node principal with exactly ClientMount+ClientWrite (no ClientRootAccess) on this file system, plus a Deny of the EC2 node role" $?
+  # The CSI node role carries NO S3 Files identity permission, so the mount is authorized by
+  # the file system resource policy ALONE. Read every inline and attached policy on the node
+  # role and fail if any grants an s3files: action or names an S3 Files resource. A lookup
+  # failure fails the assertion (could not prove the absence), never passes it.
+  node_role_name="${S3_FILES_CSI_NODE_ROLE_ARN##*/}"
+  nr_ok=0
+  inline_list="$(aws_r iam list-role-policies --role-name "$node_role_name" --query 'PolicyNames' --output text 2>/dev/null)" || nr_ok=1
+  attached_list="$(aws_r iam list-attached-role-policies --role-name "$node_role_name" --query 'AttachedPolicies[].PolicyName' --output text 2>/dev/null)" || nr_ok=1
+  if [[ "$nr_ok" -ne 0 ]]; then
+    assert "the CSI node role has no S3 Files identity permission (could not read the role's policies)" 1
+  else
+    s3files_grant_found=0
+    for pn in $inline_list; do
+      [[ "$pn" == "None" ]] && continue
+      doc="$(aws_r iam get-role-policy --role-name "$node_role_name" --policy-name "$pn" --query 'PolicyDocument' --output json 2>/dev/null)" || { s3files_grant_found=2; break; }
+      printf '%s' "$doc" | python3 -c 'import json,sys
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(2)
+if isinstance(d,str): d=json.loads(d)
+st=d.get("Statement",[])
+if isinstance(st,dict): st=[st]
+def L(x): return x if isinstance(x,list) else [x]
+for s in st:
+    acts=[str(a).lower() for a in L(s.get("Action",[]))]
+    res=[str(r).lower() for r in L(s.get("Resource",[]))]
+    if any(a.startswith("s3files:") or a=="*" for a in acts) or any("s3files" in r for r in res):
+        sys.exit(1)
+sys.exit(0)' || { rc=$?; [[ $rc -eq 1 ]] && s3files_grant_found=1 || s3files_grant_found=2; break; }
+    done
+    # Any broad managed policy that could grant S3 Files access counts as a grant we must flag.
+    for ap in $attached_list; do
+      case "$ap" in
+        AmazonS3FilesClientFullAccess|AmazonS3FilesClientReadOnlyAccess|AdministratorAccess) s3files_grant_found=1 ;;
+      esac
+    done
+    [[ "$s3files_grant_found" -eq 0 ]]; assert "the CSI node role has no S3 Files identity permission, so the file system resource policy alone authorizes the mount" $?
+  fi
+
   # The bucket policy: TLS-only deny, and an EC2-node-role deny.
   bpol="$(aws_r s3api get-bucket-policy --bucket "$S3_BUCKET_NAME" --query 'Policy' --output text 2>/dev/null)"
   EC2="$EC2_NODE_ROLE_ARN" python3 -c 'import json,sys,os
