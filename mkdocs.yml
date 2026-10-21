@@ -94,3 +94,4 @@ nav:
       - Pause and resume: agent-sandbox/pause-resume/README.md
   - Storage:
       - EBS volumes: storage/ebs/README.md
+      - Shared EFS storage: storage/efs/README.md
