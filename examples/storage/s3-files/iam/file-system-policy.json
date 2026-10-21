@@ -1,0 +1,27 @@
+{
+  "Comment": "The S3 Files file system policy this sample applies. setup.sh renders <S3_FILES_FILE_SYSTEM_ARN>, <S3_FILES_CSI_NODE_ROLE_ARN> and <EC2_NODE_ROLE_ARN> from the live cluster before applying it with `aws s3files put-file-system-policy`. It allows ONLY the EFS CSI driver's node principal s3files:ClientMount and s3files:ClientWrite on this file system (never ClientRootAccess), and explicitly denies the EC2 node role every client action. The least privilege lives here, on the sample's own file system, not on the shared CSI node role. For a same-account principal, an Allow in a resource policy is sufficient to authorize the mount, so no identity policy is added to the shared node role.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowCSINodePrincipal",
+      "Effect": "Allow",
+      "Principal": { "AWS": "<S3_FILES_CSI_NODE_ROLE_ARN>" },
+      "Action": [
+        "s3files:ClientMount",
+        "s3files:ClientWrite"
+      ],
+      "Resource": "<S3_FILES_FILE_SYSTEM_ARN>"
+    },
+    {
+      "Sid": "DenyEC2NodeRole",
+      "Effect": "Deny",
+      "Principal": { "AWS": "<EC2_NODE_ROLE_ARN>" },
+      "Action": [
+        "s3files:ClientMount",
+        "s3files:ClientWrite",
+        "s3files:ClientRootAccess"
+      ],
+      "Resource": "<S3_FILES_FILE_SYSTEM_ARN>"
+    }
+  ]
+}

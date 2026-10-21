@@ -1,0 +1,4 @@
+# Local values from your own account and cluster. Never commit these.
+.env
+.efs.env
+*.local

@@ -1,0 +1,32 @@
+{
+  "Comment": "The S3 bucket policy this sample applies to its own backing bucket. setup.sh renders <S3_BUCKET_ARN> and <EC2_NODE_ROLE_ARN> before applying it with `aws s3api put-bucket-policy`. It denies any access that is not over TLS, and denies the EC2 node role every S3 action on this bucket, so the plaintext node cannot reach the backing objects. The sample does not grant the optional direct read-from-S3 optimization, which would otherwise be an Allow here; the mount and all reads still work over NFS without it.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyInsecureTransport",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": [
+        "<S3_BUCKET_ARN>",
+        "<S3_BUCKET_ARN>/*"
+      ],
+      "Condition": {
+        "Bool": { "aws:SecureTransport": "false" }
+      }
+    },
+    {
+      "Sid": "DenyEC2NodeRoleDataAccess",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": [
+        "<S3_BUCKET_ARN>",
+        "<S3_BUCKET_ARN>/*"
+      ],
+      "Condition": {
+        "ArnEquals": { "aws:PrincipalArn": "<EC2_NODE_ROLE_ARN>" }
+      }
+    }
+  ]
+}
