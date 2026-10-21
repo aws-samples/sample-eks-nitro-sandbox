@@ -88,6 +88,8 @@ nav:
   - Policy:
       - Image signing: policy/image-signing/README.md
       - Cedar policy: policy/cedar-policy/README.md
+  - AI agents:
+      - Coding agents for developers: ai-agents/coding-agents-for-developers/README.md
   - Managed agents:
       - Claude Managed Agents: managed-agents/claude-managed-agents/README.md
   - Agent sandbox:

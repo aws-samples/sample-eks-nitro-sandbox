@@ -85,7 +85,7 @@ Checks that run inside the guest and decide what the pod may run.
 
 Coding agents:
 
-- **coding-agents-for-developers ★**: a web app where a developer starts Claude Code, Codex, Kiro CLI, OpenCode, pi or oh-my-pi in a browser terminal. Each session runs in its own sandbox, claimed from a warm pool, and can open only its own workspace folder on S3 Files. Spec: [#12](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/12).
+- [coding-agents-for-developers](../examples/ai-agents/coding-agents-for-developers/README.md) (available now): a web app where a developer starts Claude Code, Codex, Kiro CLI, OpenCode, pi or oh-my-pi in a browser terminal. Each session runs in its own sandbox, claimed from a warm pool, and can open only its own workspace folder on S3 Files. Spec: [#12](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/12).
 
 Agent frameworks on Amazon Bedrock:
 
