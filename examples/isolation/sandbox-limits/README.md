@@ -535,7 +535,8 @@ connection timeout and the connection-tracking count at its limit.
 
 ## The sandboxed probe is really in a sandbox
 
-The same evidence [Hello sandbox](../../getting-started/hello-sandbox/README.md) shows: the
+The evidence is the pod's own view, as on the
+[Hello sandbox](../../getting-started/hello-sandbox/README.md) page: the
 sandboxed probe runs its own kernel build, its uptime matches the pod's age because the VM booted
 with the pod, and it sees virtio disks. Run
 [`scripts/show-sandbox.sh`](scripts/show-sandbox.sh), or by hand:

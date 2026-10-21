@@ -92,6 +92,12 @@ they show the pod's containers ran in a VM of their own:
 - **Virtio disks.** `ls /sys/block` shows `vda`, `vdb` and so on, where an ordinary pod sees
   the instance's `nvme` devices. (`examples/getting-started/hello-sandbox/README.md`.)
 
+The hello sandbox page shows a fourth, the **product name**:
+`cat /sys/class/dmi/id/product_name` reads the VM in the sandbox (`m8i.enclave` on its run),
+where an ordinary pod reads the EC2 instance type (`m8a.xlarge`). `uname -r` alone is not
+evidence: the guest's kernel version can match the node's.
+(`examples/getting-started/hello-sandbox/README.md`, step 5.)
+
 These support a claim but do not prove the pod ran in a sandbox on their own:
 
 - **The runtime class**, `kubectl get pod <pod> -o jsonpath='{.spec.runtimeClassName}'`,
@@ -160,12 +166,14 @@ These support a claim but do not prove the pod ran in a sandbox on their own:
 
 ## Sizing and start-up
 
-- Set requests equal to limits, as every sandboxed pod on this site does
-  (`hello-sandbox.yaml`, `hello-network-isolated.yaml`, `fix-issue.yaml`, `warm-pool.yaml`,
-  `sandbox-template.yaml`). The
+- For a pod that runs a workload, set requests equal to limits, as the samples that run one
+  do (`fix-issue.yaml`, `warm-pool.yaml`, `sandbox-template.yaml`). The
   VM is sized to the pod's limits, so the hypervisor bounds the CPU and memory the pod can
   use: with 2 CPU and 4 GiB, `nproc` reports 2 and memory is about 4 GiB inside.
   (`examples/getting-started/coding-agent/README.md`.)
+- The hello sandbox pods set no requests or limits, and their VM got a small default size:
+  one vCPU and about 130 MiB of memory on its run. That is enough for a pod that prints and
+  sleeps, not for a workload. (`examples/getting-started/hello-sandbox/README.md`, step 5.)
 - Each sandbox reserves its full memory request up front, so bin-packing is by reservation,
   not usage: size requests honestly and expect fewer, larger pods per node than with
   ordinary containers. (`examples/getting-started/warm-pool/README.md`, "Sizing".)
