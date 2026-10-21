@@ -1,0 +1,153 @@
+# Shared S3 Files access point mounted by two sandboxed pods over TLS with IAM
+# authorization. A static PersistentVolume names the file system and access point
+# with an s3files:-prefixed volume handle; the PVC binds to it; a writer and a
+# reader pod mount it ReadWriteMany at /shared. The access point is backed by a
+# versioned S3 bucket, so a file on /shared is also an object in the bucket.
+#
+# setup.sh renders <S3_FILES_FILE_SYSTEM_ID> and <S3_FILES_ACCESS_POINT_ID> from
+# the local env file at apply time. No account-specific ID is committed.
+---
+# A non-default StorageClass for static S3 Files binding. It is named for the
+# sample, carries the sample's mark, and provisions nothing (static PV). setup.sh
+# creates it with `kubectl create` only when it is absent, and never applies over it.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: nitro-sandbox-s3-files
+  labels:
+    app.kubernetes.io/part-of: storage-s3-files
+provisioner: efs.csi.aws.com
+volumeBindingMode: Immediate
+---
+# The workload ServiceAccount has no AWS identity and mounts no API token. What
+# authorizes the mount is the CSI driver's node identity and the file system
+# policy, never the workload's own identity.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: s3-files-workload
+  namespace: <NAMESPACE>
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: storage-s3-files-shared
+spec:
+  capacity:
+    # S3 Files is elastic. Kubernetes requires this field but does not enforce it.
+    storage: 5Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nitro-sandbox-s3-files
+  mountOptions:
+    # tls encrypts the NFS connection; iam signs it with the CSI driver's identity
+    # so the file system policy decides by principal. The connection is terminated
+    # inside each guest. S3 Files always mounts with iam.
+    - tls
+    - iam
+  csi:
+    driver: efs.csi.aws.com
+    # The s3files: prefix on the volume handle selects an S3 Files file system. The
+    # access point enforces uid/gid 1000, so ClientRootAccess is not needed.
+    volumeHandle: s3files:<S3_FILES_FILE_SYSTEM_ID>::<S3_FILES_ACCESS_POINT_ID>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: storage-s3-files-shared
+  namespace: <NAMESPACE>
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nitro-sandbox-s3-files
+  volumeName: storage-s3-files-shared
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s3-files-writer
+  namespace: <NAMESPACE>
+  labels:
+    app: s3-files-shared
+spec:
+  runtimeClassName: isolated-sandbox
+  serviceAccountName: s3-files-workload
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: shell
+      image: public.ecr.aws/docker/library/busybox:1.37
+      command: ["sh", "-c", "while true; do sleep 3600; done"]
+      resources:
+        requests:
+          cpu: "1"
+          memory: 1Gi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: shared
+          mountPath: /shared
+  volumes:
+    - name: shared
+      persistentVolumeClaim:
+        claimName: storage-s3-files-shared
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s3-files-reader
+  namespace: <NAMESPACE>
+  labels:
+    app: s3-files-shared
+spec:
+  runtimeClassName: isolated-sandbox
+  serviceAccountName: s3-files-workload
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: shell
+      image: public.ecr.aws/docker/library/busybox:1.37
+      command: ["sh", "-c", "while true; do sleep 3600; done"]
+      resources:
+        requests:
+          cpu: "1"
+          memory: 1Gi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: shared
+          mountPath: /shared
+  volumes:
+    - name: shared
+      persistentVolumeClaim:
+        claimName: storage-s3-files-shared
