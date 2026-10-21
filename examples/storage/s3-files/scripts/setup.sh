@@ -21,7 +21,7 @@
 #      s3files:ClientMount/ClientWrite on this file system and denies the EC2 node
 #      role. For a same-account principal an Allow in this resource policy is enough
 #      to authorize the mount, so nothing is added to the shared CSI node role.
-#   4. Records the resource IDs and the CoreDNS and mount-target addresses in a local
+#   4. Records the resource IDs and the mount-target addresses in a local
 #      env file (.env, gitignored) so test.sh can render the manifests.
 #   5. Deploys the Kubernetes side: the namespace (labelled this sample's), the egress
 #      ApplicationNetworkPolicy (waiting for its PolicyEndpoint), the StorageClass, the
@@ -125,7 +125,6 @@ write_env() {
     printf 'export CREATED_BUCKET=%q\n' "$CREATED_BUCKET"
     printf 'export CREATED_SYNC_ROLE=%q\n' "$CREATED_SYNC_ROLE"
     printf 'export CREATED_SECURITY_GROUP=%q\n' "$CREATED_SECURITY_GROUP"
-    printf 'export COREDNS_IP=%q\n' "${COREDNS_IP:-}"
     printf 'export MOUNT_TARGET_IPS=%q\n' "${MOUNT_TARGET_IPS:-}"
   } > "$ENV_FILE"
 }
@@ -500,14 +499,14 @@ aws_r s3files put-file-system-policy --file-system-id "$S3_FILES_FILE_SYSTEM_ID"
 echo "  file system policy applied."
 
 # ---- 4. Record the addresses the network policy needs. ----
-echo "Step 4/6: record the CoreDNS and mount-target addresses for the network policy"
-COREDNS_IP="$($KUBECTL get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
-[[ -n "$COREDNS_IP" ]] || die "could not read the CoreDNS Service address (kube-dns in kube-system)"
+echo "Step 4/6: record the mount-target addresses for the network policy"
+# DNS egress is allowed to any address (the policy opens only port 53), because on EKS Auto
+# Mode CoreDNS runs as a per-node systemd service rather than a pod behind a ClusterIP, so the
+# resolver a pod reaches is node-local. Only the mount-target IPs need recording.
 MOUNT_TARGET_IPS="$(aws_r s3files list-mount-targets --file-system-id "$S3_FILES_FILE_SYSTEM_ID" \
   --query 'mountTargets[].ipv4Address' --output text | tr '\t' ' ')"
 [[ -n "$MOUNT_TARGET_IPS" ]] || die "could not read the mount-target IP addresses"
 write_env
-echo "  CoreDNS: $COREDNS_IP"
 echo "  mount targets: $MOUNT_TARGET_IPS"
 
 # ---- 5. Deploy: the namespace, the egress policy, the StorageClass, the PV/PVC and the pods. ----
@@ -530,12 +529,13 @@ fi
 rm -f "$ns_errf"
 
 # The egress policy: render deploy/egress-policy.yaml so the file the page shows is the file
-# that is applied. Substitute <COREDNS_IP> and expand <MOUNT_TARGET_BLOCK> into one
+# that is applied. The DNS rule is already a literal 0.0.0.0/0 in the file (DNS is allowed to
+# any address), so the only thing to render is <MOUNT_TARGET_BLOCK>, expanded into one
 # `- ipBlock: { cidr: <ip>/32 }` line per mount-target IP, preserving indentation.
-python3 - "$SAMPLE_DIR/deploy/egress-policy.yaml" "$COREDNS_IP" $MOUNT_TARGET_IPS <<'PY' | $KUBECTL apply -n "$NAMESPACE" -f -
+python3 - "$SAMPLE_DIR/deploy/egress-policy.yaml" $MOUNT_TARGET_IPS <<'PY' | $KUBECTL apply -n "$NAMESPACE" -f -
 import re, sys
-path, coredns = sys.argv[1], sys.argv[2]
-mt_ips = sys.argv[3:]
+path = sys.argv[1]
+mt_ips = sys.argv[2:]
 with open(path) as f:
     out = []
     for line in f.read().splitlines():
@@ -544,7 +544,7 @@ with open(path) as f:
             indent = m.group(1)
             out.extend(f"{indent}- ipBlock: {{ cidr: {ip}/32 }}" for ip in mt_ips)
         else:
-            out.append(line.replace("<COREDNS_IP>", coredns))
+            out.append(line)
 text = "\n".join(out)
 text = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
 sys.stdout.write(text + "\n")

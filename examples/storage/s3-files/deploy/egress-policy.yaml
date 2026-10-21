@@ -2,12 +2,16 @@
 #
 # An EKS Auto Mode ApplicationNetworkPolicy is a NetworkPolicy enforced on the node,
 # outside the guest, so a command inside the sandbox cannot change it. For the pods it
-# selects (app: s3-files-shared), all ingress and all egress are denied except DNS to
-# CoreDNS and NFS (TCP 2049) to the S3 Files mount-target addresses.
+# selects (app: s3-files-shared), all ingress and all egress are denied except DNS on
+# UDP and TCP 53 and NFS (TCP 2049) to the S3 Files mount-target addresses.
+#
+# DNS is allowed to any address (0.0.0.0/0 on port 53), not pinned to the CoreDNS
+# Service IP. On EKS Auto Mode CoreDNS runs as a per-node systemd service rather than a
+# pod behind a ClusterIP, so the resolver a pod actually reaches is node-local; allowing
+# port 53 to any address keeps name resolution working wherever Auto Mode places it. The
+# rule is still narrow: it opens only the DNS ports, and everything else stays denied.
 #
 # setup.sh renders this file before applying it:
-#   <COREDNS_IP>          the CoreDNS Service address:
-#                         kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'
 #   <MOUNT_TARGET_BLOCK>  one `- ipBlock: { cidr: <ip>/32 }` line per S3 Files mount-target
 #                         IP, one per cluster Availability Zone:
 #                         aws s3files list-mount-targets --file-system-id <fs> \
@@ -32,7 +36,7 @@ spec:
     - Egress
   egress:
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }
+        - ipBlock: { cidr: 0.0.0.0/0 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
