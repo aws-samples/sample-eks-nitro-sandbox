@@ -116,11 +116,24 @@ printf %s "$GITHUB_TOKEN" \
 unset GITHUB_TOKEN
 ```
 
-**Step 5: Fence the egress.** [`egress-policy.yaml`](egress-policy.yaml)
-selects pods labeled `app: coding-agent`. It denies all ingress, and allows egress only
-to CoreDNS, to the Pod Identity credential address, and to HTTPS on three hostnames:
+**Step 5: Apply the network policy.** [`egress-policy.yaml`](egress-policy.yaml)
+selects pods labeled `app: coding-agent`. Listing both `Ingress` and `Egress` under
+`policyTypes` denies the pod all traffic in both directions except what the rules allow:
+no ingress at all, and egress only to CoreDNS, to the Pod Identity credential address,
+and to HTTPS on three hostnames. Here it is without its header comment:
 
 ```yaml
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ApplicationNetworkPolicy
+metadata:
+  name: coding-agent-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: coding-agent
+  policyTypes:
+    - Ingress
+    - Egress
   egress:
     - to:
         - ipBlock: { cidr: <COREDNS_IP>/32 }
@@ -206,8 +219,8 @@ spec:
       secret: { secretName: coding-agent-git-token }
 ```
 
-The [entrypoint](entrypoint.sh) first checks that the egress fence is
-up, then clones the repository with the mounted token, runs
+The [entrypoint](entrypoint.sh) first checks that the network policy is
+in effect, then clones the repository with the mounted token, runs
 `claude -p "$1" --allowedTools "Bash,Edit,Read,Write"` non-interactively, and finally
 pushes the branch and opens the pull request if the agent has not. Fill in the
 placeholders, start it, and follow its log:
@@ -228,7 +241,7 @@ did, and ends with the pull request. Abridged; your summary text and numbers wil
 differ:
 
 ```text
-Egress fence is up: https://example.com is dropped, https://api.github.com answers
+Network policy is in effect: https://example.com is dropped, https://api.github.com answers
 Cloning your-github-user/example-app ...
 Reading issue #1: "date parser drops timezone on ISO-8601 input"
 Running Claude Code ...
@@ -252,7 +265,7 @@ model. From the platform team's point of view, the shell runs on a kernel no oth
 shares, model access is an IAM role, git access is one scoped token, and when the pod
 exits the VM is gone.
 
-To see the fence from inside the pod, run this in a second terminal while the agent is
+To see the network policy from inside the pod, run this in a second terminal while the agent is
 still working. Hosts the policy does not list time out:
 
 ```bash

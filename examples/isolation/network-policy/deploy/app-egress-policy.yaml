@@ -6,7 +6,7 @@
 # pair of identical clients (app: netpol-client-dns) and allows egress only to CoreDNS
 # and to one AWS endpoint by name; a second AWS endpoint, allowed by no rule, is refused.
 #
-# This reuses the pattern from Getting started > Coding agent, which fences a coding
+# This reuses the pattern from Getting started > Coding agent, which restricts a coding
 # agent's egress to Bedrock and GitHub by name. It is marked optional because it needs
 # the same cluster-wide enforcement, and shows name-based egress rather than the
 # pod-to-pod egress the main sample shows.
