@@ -1,0 +1,49 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ManageSessionAccessPoints",
+      "Effect": "Allow",
+      "Action": [
+        "s3files:CreateAccessPoint",
+        "s3files:DeleteAccessPoint",
+        "s3files:GetAccessPoint",
+        "s3files:ListAccessPoints",
+        "s3files:TagResource",
+        "s3files:UntagResource",
+        "s3files:ListTagsForResource"
+      ],
+      "Resource": "arn:aws:s3files:<AWS_REGION>:<ACCOUNT_ID>:file-system/<S3_FILES_FS_ID>",
+      "Condition": {
+        "StringEquals": { "aws:ResourceAccount": "<ACCOUNT_ID>" }
+      }
+    },
+    {
+      "Sid": "DeleteSessionObjects",
+      "Effect": "Allow",
+      "Action": ["s3:DeleteObject", "s3:DeleteObjectVersion", "s3:ListBucket", "s3:ListBucketVersions"],
+      "Resource": [
+        "arn:aws:s3:::<S3_BUCKET_NAME>",
+        "arn:aws:s3:::<S3_BUCKET_NAME>/<S3_PREFIX>/*"
+      ],
+      "Condition": {
+        "StringEquals": { "aws:ResourceAccount": "<ACCOUNT_ID>" }
+      }
+    },
+    {
+      "Sid": "CreateSessionFolders",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject"],
+      "Resource": "arn:aws:s3:::<S3_BUCKET_NAME>/<S3_PREFIX>/*",
+      "Condition": {
+        "StringEquals": { "aws:ResourceAccount": "<ACCOUNT_ID>" }
+      }
+    },
+    {
+      "Sid": "AssumeTheMountRole",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "arn:aws:iam::<ACCOUNT_ID>:role/<MOUNT_ROLE_NAME>"
+    }
+  ]
+}
