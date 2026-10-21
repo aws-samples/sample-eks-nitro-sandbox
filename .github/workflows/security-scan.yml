@@ -8,6 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read  # upload-sarif reads the workflow run; required in a private repository
   contents: read
   security-events: write
 
