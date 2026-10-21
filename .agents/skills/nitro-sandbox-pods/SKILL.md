@@ -103,8 +103,9 @@ These support a claim but do not prove the pod ran in a sandbox on their own:
 - **The runtime class**, `kubectl get pod <pod> -o jsonpath='{.spec.runtimeClassName}'`,
   shows what was asked for, not what ran.
   (`examples/managed-agents/claude-managed-agents/README.md`, step 7.)
-- **No network, when isolated.** Only `lo` has an address, there is no route, and a lookup
-  fails with `bad address`. (`examples/getting-started/hello-sandbox/README.md`.)
+- **No network, when isolated.** Only `127.0.0.1` has an address, there is no route, and a
+  request fails to resolve the host (`curl: (6) Could not resolve host`).
+  (`examples/getting-started/hello-sandbox/README.md`.)
 - **Credentials by name, not value.** `env | cut -d= -f1 | grep ^PREFIX_` shows which
   variables exist without printing a secret.
   (`examples/managed-agents/claude-managed-agents/README.md`, step 7.)
