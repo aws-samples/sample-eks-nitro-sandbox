@@ -139,11 +139,12 @@ s3files_gone() {
   local out rc
   out="$(aws_r "$@" 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && return 1
-  # Match only the service's explicit not-found error CODE, bounded to the AWS CLI error line's
-  # own structure ("An error occurred (<Code>) when calling the <Op> operation"), so neither a
-  # code that merely contains a not-found token as a substring (e.g. "FileSystemNotFoundational")
-  # nor arbitrary prose that happens to contain "(FileSystemNotFound)" is read as confirmed gone.
-  grep -qE 'An error occurred \((ResourceNotFoundException|AccessPointNotFoundException|AccessPointNotFound|FileSystemNotFound)\) when calling ' <<<"$out" && return 0
+  # Match only the service's explicit not-found error CODE, and only in a COMPLETE AWS CLI error
+  # line anchored at line start ("An error occurred (<Code>) when calling the <Op> operation:"),
+  # so none of these is read as confirmed gone: a code that merely contains a not-found token as
+  # a substring ("FileSystemNotFoundational"), arbitrary prose that embeds "(FileSystemNotFound)",
+  # or a truncated line. grep is line-oriented, so ^ anchors each line of the captured output.
+  grep -qE '^An error occurred \((ResourceNotFoundException|AccessPointNotFoundException|AccessPointNotFound|FileSystemNotFound)\) when calling the [^[:space:]]+ operation:' <<<"$out" && return 0
   return 2
 }
 
