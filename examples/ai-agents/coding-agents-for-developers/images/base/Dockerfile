@@ -39,8 +39,9 @@ RUN set -eu; \
 
 COPY --chmod=0755 session-entrypoint.sh /usr/local/bin/session-entrypoint.sh
 
-# The container starts as root so the entrypoint can mount the access point (the mount
-# needs root + SYS_ADMIN inside the guest); it then drops to the dev user to run tmux
-# and the CLI. The guest kernel belongs to the pod, so this root is the pod's own, not
-# the node's.
-ENTRYPOINT ["/usr/local/bin/session-entrypoint.sh"]
+# A warm pod boots with NO session: it just idles here. When the app claims the pod it
+# runs session-entrypoint.sh through `kubectl exec`, passing the session parameters and
+# the mount credential, and that script mounts the access point (as root, with SYS_ADMIN
+# inside the guest) and starts tmux + the CLI as the dev user. The guest kernel belongs
+# to the pod, so the root the mount uses is the pod's own, not the node's.
+CMD ["sleep", "infinity"]

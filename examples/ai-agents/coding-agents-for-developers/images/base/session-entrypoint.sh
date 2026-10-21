@@ -53,18 +53,18 @@ mount.s3files "$S3_FILES_FS_ID" "$MOUNT" \
 mountpoint -q "$MOUNT"
 
 # The CLI's home lives inside /workspace, so its settings, sign-in and conversation
-# history persist with the code and come back on restore.
-chown dev:dev "$MOUNT" 2>/dev/null || true
-install -d -o dev -g dev "$MOUNT/home"
+# history persist with the code and come back on restore. The access point pins POSIX
+# uid/gid 1000 and owns new directories as 1000, so create home as the dev user rather
+# than chowning (the access point maps every client to 1000, so root cannot chown here).
+setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
+  /bin/sh -c "mkdir -p '$MOUNT/home'"
 
 # 3. Drop to the dev user and start the CLI inside a tmux session. Closing the browser
 #    only detaches tmux, so the CLI keeps running. The app re-attaches on reconnect.
 #    Pass through only what the CLI needs; the mount credential stays with root.
-exec setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
-  env HOME="$MOUNT/home" \
-      AWS_REGION="$AWS_REGION" \
-      TMUX_SESSION=agent \
-      /bin/bash -lc '
-        cd "$HOME"
-        exec tmux new-session -s "$TMUX_SESSION" "$CLI_CMD"
-      '
+# Start tmux DETACHED so this exec returns while the CLI keeps running in the pod. The
+# app attaches a browser terminal to the tmux session over a second exec; closing the
+# browser only detaches, so the CLI runs on.
+setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
+  env HOME="$MOUNT/home" AWS_REGION="$AWS_REGION" CLI_CMD="$CLI_CMD" \
+      /bin/bash -lc 'cd "$HOME" && exec tmux new-session -d -s agent "$CLI_CMD"'
