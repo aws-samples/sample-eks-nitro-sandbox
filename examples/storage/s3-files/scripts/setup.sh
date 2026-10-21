@@ -10,22 +10,28 @@
 #      associations are a SHARED INSTALL: this sample reads them and never changes
 #      them (no role created, no policy attached, no association touched). It only
 #      reads which role the CSI node service account uses, so the file system policy
-#      can allow that principal, and the EC2 node role, so both policies can deny it.
+#      can allow that principal. The managed EC2 node instance-profile role is neither
+#      read nor named: it keeps what Auto Mode ships with.
 #   2. Creates the sample's own resources, each tagged ManagedBy=storage-s3-files and
 #      auto-delete=no: a versioned, encrypted S3 bucket with Block Public Access and a
-#      TLS-only + deny-EC2-node-role bucket policy; a synchronization role scoped to
-#      this bucket; an S3 Files file system on that bucket; an NFS security group
-#      (TCP 2049 from the cluster security group only); one mount target per cluster
-#      Availability Zone; and an access point (fixed UID/GID 1000, root /storage-s3-files).
-#   3. Applies a file system policy that allows ONLY the CSI node principal
-#      s3files:ClientMount/ClientWrite on this file system and denies the EC2 node
-#      role. For a same-account principal an Allow in this resource policy is enough
-#      to authorize the mount, so nothing is added to the shared CSI node role.
+#      TLS-only bucket policy; a synchronization role scoped to this bucket; an S3 Files
+#      file system on that bucket; an NFS security group (TCP 2049 from the cluster
+#      security group only); one mount target per cluster Availability Zone; and TWO
+#      access points, both fixed UID/GID 1000 and rooted at the SAME directory
+#      (/storage-s3-files) so they share one dataset: a writer access point and a
+#      reader access point.
+#   3. Applies a file system policy that gives the SAME CSI node principal different
+#      access per access point, using the s3files:AccessPointArn condition: read-write
+#      through the writer access point, read-only through the reader access point (with
+#      an explicit deny of ClientWrite there). For a same-account principal an Allow in
+#      this resource policy is enough to authorize the mount, so nothing is added to the
+#      shared CSI node role and the EC2 node role is not involved at all.
 #   4. Records the resource IDs and the mount-target addresses in a local
 #      env file (.env, gitignored) so test.sh can render the manifests.
 #   5. Deploys the Kubernetes side: the namespace (labelled this sample's), the egress
 #      ApplicationNetworkPolicy (waiting for its PolicyEndpoint), the StorageClass, the
-#      static PV and PVC, and the writer and reader pods, then waits for both Ready.
+#      two static PVs and PVCs (writer and reader), and the writer and reader pods, then
+#      waits for both Ready.
 #
 # Idempotent: .env records what already exists, so a re-run resumes instead of creating
 # a second bucket or file system, and re-applies the Kubernetes side. Tear down with
@@ -87,16 +93,19 @@ S3_BUCKET_NAME="${S3_BUCKET_NAME:-${bucket_prefix,,}-${ACCOUNT_ID}-${AWS_REGION}
 S3_BUCKET_NAME="${S3_BUCKET_NAME//_/-}"
 
 S3_FILES_FILE_SYSTEM_ID="${S3_FILES_FILE_SYSTEM_ID:-}"
-S3_FILES_ACCESS_POINT_ID="${S3_FILES_ACCESS_POINT_ID:-}"
+S3_FILES_WRITER_AP_ID="${S3_FILES_WRITER_AP_ID:-}"
+S3_FILES_READER_AP_ID="${S3_FILES_READER_AP_ID:-}"
 S3_FILES_SECURITY_GROUP_ID="${S3_FILES_SECURITY_GROUP_ID:-}"
 S3_FILES_CSI_NODE_ROLE_ARN="${S3_FILES_CSI_NODE_ROLE_ARN:-}"
-EC2_NODE_ROLE_ARN="${EC2_NODE_ROLE_ARN:-}"
 S3_FILES_SYNC_ROLE_NAME="${S3_FILES_SYNC_ROLE_NAME:-}"
 S3_FILES_SYNC_ROLE_ARN="${S3_FILES_SYNC_ROLE_ARN:-}"
 CREATED_BUCKET="${CREATED_BUCKET:-false}"
 CREATED_SYNC_ROLE="${CREATED_SYNC_ROLE:-false}"
 CREATED_SECURITY_GROUP="${CREATED_SECURITY_GROUP:-false}"
-NODE_CLASS_NAME="${NODE_CLASS_NAME:-default}"
+
+# The access point's root directory: both access points share it, so the two pods
+# see the same data. The writer access point is read-write, the reader read-only.
+AP_ROOT="/storage-s3-files"
 
 aws_r() { aws "$@" --region "$AWS_REGION"; }
 
@@ -116,10 +125,10 @@ write_env() {
     printf 'export RESOURCE_PREFIX=%q\n' "$RESOURCE_PREFIX"
     printf 'export S3_BUCKET_NAME=%q\n' "$S3_BUCKET_NAME"
     printf 'export S3_FILES_FILE_SYSTEM_ID=%q\n' "$S3_FILES_FILE_SYSTEM_ID"
-    printf 'export S3_FILES_ACCESS_POINT_ID=%q\n' "$S3_FILES_ACCESS_POINT_ID"
+    printf 'export S3_FILES_WRITER_AP_ID=%q\n' "$S3_FILES_WRITER_AP_ID"
+    printf 'export S3_FILES_READER_AP_ID=%q\n' "$S3_FILES_READER_AP_ID"
     printf 'export S3_FILES_SECURITY_GROUP_ID=%q\n' "$S3_FILES_SECURITY_GROUP_ID"
     printf 'export S3_FILES_CSI_NODE_ROLE_ARN=%q\n' "$S3_FILES_CSI_NODE_ROLE_ARN"
-    printf 'export EC2_NODE_ROLE_ARN=%q\n' "$EC2_NODE_ROLE_ARN"
     printf 'export S3_FILES_SYNC_ROLE_NAME=%q\n' "$S3_FILES_SYNC_ROLE_NAME"
     printf 'export S3_FILES_SYNC_ROLE_ARN=%q\n' "$S3_FILES_SYNC_ROLE_ARN"
     printf 'export CREATED_BUCKET=%q\n' "$CREATED_BUCKET"
@@ -179,18 +188,13 @@ S3_FILES_CSI_NODE_ROLE_ARN="$(aws_r eks describe-pod-identity-association --clus
 [[ "$S3_FILES_CSI_NODE_ROLE_ARN" == arn:aws:iam::"$ACCOUNT_ID":role/* ]] \
   || die "unexpected CSI node role ARN: $S3_FILES_CSI_NODE_ROLE_ARN"
 echo "  CSI node principal (read, not changed): $S3_FILES_CSI_NODE_ROLE_ARN"
-
-# Read the EC2 node role from the Auto Mode NodeClass, so both policies can deny it.
-ec2_node_role_name="$($KUBECTL get nodeclass "$NODE_CLASS_NAME" -o jsonpath='{.spec.role}' 2>/dev/null || true)"
-[[ -n "$ec2_node_role_name" ]] || die "could not resolve the EC2 node role from NodeClass $NODE_CLASS_NAME"
-EC2_NODE_ROLE_ARN="$(aws_r iam get-role --role-name "$ec2_node_role_name" --query 'Role.Arn' --output text)"
-[[ "$S3_FILES_CSI_NODE_ROLE_ARN" != "$EC2_NODE_ROLE_ARN" ]] \
-  || die "efs-csi-node-sa must not use the EC2 node role; this sample relies on the two being distinct"
-echo "  EC2 node role (read, not changed): $EC2_NODE_ROLE_ARN"
+# The managed Auto Mode EC2 node instance-profile role is deliberately NOT read or named:
+# it must keep what it ships with, and the file system is already default-deny, authorized
+# only through the sample's own per-access-point file system policy below.
 write_env
 
 # ---- 2. The sample's own AWS resources. ----
-echo "Step 2/6: create the sample's bucket, synchronization role, file system, security group, mount targets and access point"
+echo "Step 2/6: create the sample's bucket, synchronization role, file system, security group, mount targets and the writer and reader access points"
 VPC_ID="$(aws_r eks describe-cluster --name "$CLUSTER_NAME" \
   --query 'cluster.resourcesVpcConfig.vpcId' --output text)"
 CLUSTER_SG="$(aws_r eks describe-cluster --name "$CLUSTER_NAME" \
@@ -246,16 +250,16 @@ aws_r s3api put-public-access-block --bucket "$S3_BUCKET_NAME" \
 aws_r s3api put-bucket-tagging --bucket "$S3_BUCKET_NAME" \
   --tagging "TagSet=[{Key=$BUCKET_OWNER_TAG_KEY,Value=$SAMPLE},{Key=auto-delete,Value=no}]"
 
-# The bucket policy: deny insecure transport, deny the EC2 node role.
-echo "  applying the bucket policy (TLS-only, deny the EC2 node role)..."
+# The bucket policy: deny insecure transport (TLS-only).
+echo "  applying the bucket policy (TLS-only)..."
 bucket_policy_file="$(mktemp)"
 trap 'rm -f "$bucket_policy_file" "${sync_perm_file:-}" "${sync_trust_file:-}" "${fs_policy_file:-}"' EXIT
-python3 - "$SAMPLE_DIR/iam/bucket-policy.json" "arn:aws:s3:::$S3_BUCKET_NAME" "$EC2_NODE_ROLE_ARN" > "$bucket_policy_file" <<'PY'
+python3 - "$SAMPLE_DIR/iam/bucket-policy.json" "arn:aws:s3:::$S3_BUCKET_NAME" > "$bucket_policy_file" <<'PY'
 import json, sys
-tmpl, bucket_arn, ec2_role = sys.argv[1:4]
+tmpl, bucket_arn = sys.argv[1:3]
 with open(tmpl) as f: doc = json.load(f)
 doc.pop("Comment", None)
-repl = {"<S3_BUCKET_ARN>": bucket_arn, "<EC2_NODE_ROLE_ARN>": ec2_role}
+repl = {"<S3_BUCKET_ARN>": bucket_arn}
 def sub(x):
     if isinstance(x, str):
         for k, v in repl.items(): x = x.replace(k, v)
@@ -426,65 +430,83 @@ for _ in $(seq 1 90); do
 done
 [[ "$pending" == 0 && "$count" -eq "${#SUBNET_BY_AZ[@]}" ]] || die "timed out waiting for the S3 Files mount targets"
 
-# Access point: fixed UID/GID 1000, root /storage-s3-files.
-if [[ -z "$S3_FILES_ACCESS_POINT_ID" || "$S3_FILES_ACCESS_POINT_ID" == "None" ]]; then
-  S3_FILES_ACCESS_POINT_ID="$(aws_r s3files list-access-points --file-system-id "$S3_FILES_FILE_SYSTEM_ID" \
-    --query "accessPoints[?name=='${RESOURCE_PREFIX}-ap' && status!='deleted'].accessPointId | [0]" --output text 2>/dev/null || true)"
-  [[ "$S3_FILES_ACCESS_POINT_ID" == "None" ]] && S3_FILES_ACCESS_POINT_ID=""
-  if [[ -n "$S3_FILES_ACCESS_POINT_ID" ]]; then
-    echo "  adopting the S3 Files access point from a previous run: $S3_FILES_ACCESS_POINT_ID"
-  else
-    echo "  creating the S3 Files access point (uid/gid 1000, root /storage-s3-files)..."
-    ap_input="$(mktemp)"
-    cat > "$ap_input" <<JSON
+# Two access points, both fixed UID/GID 1000 and rooted at the SAME directory ($AP_ROOT), so
+# they expose one shared dataset; the file system policy makes one read-write and one read-only.
+# ensure_access_point <name-suffix> <current-id-var>: adopt the sample's AP by Name tag if it
+# exists on this file system, else create it; then wait for it AVAILABLE and verify it is on
+# this sample's file system. Echoes the (possibly new) access point ID.
+ensure_access_point() {
+  local suffix="$1" apid="$2" ap_name="${RESOURCE_PREFIX}-${1}"
+  if [[ -z "$apid" || "$apid" == "None" ]]; then
+    apid="$(aws_r s3files list-access-points --file-system-id "$S3_FILES_FILE_SYSTEM_ID" \
+      --query "accessPoints[?name=='$ap_name' && status!='deleted'].accessPointId | [0]" --output text 2>/dev/null || true)"
+    [[ "$apid" == "None" ]] && apid=""
+    if [[ -n "$apid" ]]; then
+      echo "  adopting the $suffix access point from a previous run: $apid" >&2
+    else
+      echo "  creating the $suffix access point (uid/gid 1000, root $AP_ROOT)..." >&2
+      local ap_input; ap_input="$(mktemp)"
+      cat > "$ap_input" <<JSON
 {
-  "clientToken": "${RESOURCE_PREFIX:0:48}-ap",
+  "clientToken": "${RESOURCE_PREFIX:0:40}-${suffix}",
   "fileSystemId": "$S3_FILES_FILE_SYSTEM_ID",
   "tags": [
-    { "key": "Name", "value": "${RESOURCE_PREFIX}-ap" },
+    { "key": "Name", "value": "$ap_name" },
     { "key": "ManagedBy", "value": "$SAMPLE" },
     { "key": "auto-delete", "value": "no" }
   ],
   "posixUser": { "uid": 1000, "gid": 1000 },
   "rootDirectory": {
-    "path": "/storage-s3-files",
+    "path": "$AP_ROOT",
     "creationPermissions": { "ownerUid": 1000, "ownerGid": 1000, "permissions": "0770" }
   }
 }
 JSON
-    S3_FILES_ACCESS_POINT_ID="$(aws_r s3files create-access-point \
-      --cli-input-json "file://$ap_input" --query accessPointId --output text)"
-    rm -f "$ap_input"
+      apid="$(aws_r s3files create-access-point --cli-input-json "file://$ap_input" --query accessPointId --output text)"
+      rm -f "$ap_input"
+    fi
   fi
-  write_env
-fi
-for _ in $(seq 1 60); do
-  st="$(aws_r s3files get-access-point --access-point-id "$S3_FILES_ACCESS_POINT_ID" \
-    --query status --output text)"; st="${st^^}"
-  [[ "$st" == "AVAILABLE" ]] && break
-  [[ "$st" == "ERROR" ]] && die "the S3 Files access point entered an error state"
-  sleep 5
-done
-[[ "$st" == "AVAILABLE" ]] || die "timed out waiting for the S3 Files access point"
+  local st
+  for _ in $(seq 1 60); do
+    st="$(aws_r s3files get-access-point --access-point-id "$apid" --query status --output text 2>/dev/null)"; st="${st^^}"
+    [[ "$st" == "AVAILABLE" ]] && break
+    [[ "$st" == "ERROR" ]] && die "the $suffix access point entered an error state"
+    sleep 5
+  done
+  [[ "$st" == "AVAILABLE" ]] || die "timed out waiting for the $suffix access point"
+  # Prove it is on this sample's file system (a stale .env could point elsewhere) and read back
+  # its real ARN, which S3 Files forms as .../file-system/<fs>/access-point/<ap> (NOT a bare
+  # .../access-point/<ap>): the file system policy's s3files:AccessPointArn condition must use
+  # that exact ARN or the mount is denied. A failed read is fatal.
+  local ap_fs ap_arn ap_detail
+  ap_detail="$(aws_r s3files get-access-point --access-point-id "$apid" \
+    --query '[fileSystemId, accessPointArn]' --output text 2>/dev/null)" \
+    || die "could not read the $suffix access point $apid to verify it is this sample's; refusing to use it until the read succeeds."
+  read -r ap_fs ap_arn <<<"$ap_detail"
+  [[ "$ap_fs" == "$S3_FILES_FILE_SYSTEM_ID" ]] \
+    || die "the $suffix access point $apid is on file system $ap_fs, not this sample's $S3_FILES_FILE_SYSTEM_ID; refusing to adopt an access point this sample did not create. Run './scripts/clean.sh --delete-aws-resources' to clear a stale .env, or set ENV_FILE to a different file."
+  [[ -n "$ap_arn" && "$ap_arn" != "None" ]] || die "could not read the ARN of the $suffix access point $apid."
+  # Echo "<id> <arn>" so the caller gets both.
+  printf '%s %s' "$apid" "$ap_arn"
+}
 
-# Prove the access point is on this sample's file system before using it (and before clean.sh
-# deletes it). An access point ID loaded from a stale .env could point at another file system;
-# the file system itself is already proven this sample's above. A read that fails is fatal.
-ap_fs="$(aws_r s3files get-access-point --access-point-id "$S3_FILES_ACCESS_POINT_ID" \
-  --query 'fileSystemId' --output text 2>/dev/null)" \
-  || die "could not read the S3 Files access point $S3_FILES_ACCESS_POINT_ID to verify it is this sample's; refusing to use it until the read succeeds."
-[[ "$ap_fs" == "$S3_FILES_FILE_SYSTEM_ID" ]] \
-  || die "the S3 Files access point $S3_FILES_ACCESS_POINT_ID is on file system $ap_fs, not this sample's $S3_FILES_FILE_SYSTEM_ID; refusing to adopt an access point this sample did not create. Run './scripts/clean.sh --delete-aws-resources' to clear a stale .env, or set ENV_FILE to a different file."
+writer_ap_out="$(ensure_access_point writer-ap "$S3_FILES_WRITER_AP_ID")" || die "could not ensure the writer access point"
+read -r S3_FILES_WRITER_AP_ID WRITER_AP_ARN <<<"$writer_ap_out"
+write_env
+reader_ap_out="$(ensure_access_point reader-ap "$S3_FILES_READER_AP_ID")" || die "could not ensure the reader access point"
+read -r S3_FILES_READER_AP_ID READER_AP_ARN <<<"$reader_ap_out"
+write_env
 
-# ---- 3. The file system policy: allow only the CSI node principal, deny the EC2 node role. ----
-echo "Step 3/6: apply the S3 Files file system policy (this file system, CSI node principal only, deny EC2 node role)"
+# ---- 3. The file system policy: read-write via the writer AP, read-only via the reader AP. ----
+echo "Step 3/6: apply the S3 Files file system policy (writer AP read-write, reader AP read-only, by s3files:AccessPointArn)"
 fs_policy_file="$(mktemp)"
-python3 - "$SAMPLE_DIR/iam/file-system-policy.json" "$S3_FILES_ARN" "$S3_FILES_CSI_NODE_ROLE_ARN" "$EC2_NODE_ROLE_ARN" > "$fs_policy_file" <<'PY'
+python3 - "$SAMPLE_DIR/iam/file-system-policy.json" "$S3_FILES_ARN" "$S3_FILES_CSI_NODE_ROLE_ARN" "$WRITER_AP_ARN" "$READER_AP_ARN" > "$fs_policy_file" <<'PY'
 import json, sys
-tmpl, fs_arn, node_role, ec2_role = sys.argv[1:5]
+tmpl, fs_arn, node_role, writer_ap_arn, reader_ap_arn = sys.argv[1:6]
 with open(tmpl) as f: doc = json.load(f)
 doc.pop("Comment", None)
-repl = {"<S3_FILES_FILE_SYSTEM_ARN>": fs_arn, "<S3_FILES_CSI_NODE_ROLE_ARN>": node_role, "<EC2_NODE_ROLE_ARN>": ec2_role}
+repl = {"<S3_FILES_FILE_SYSTEM_ARN>": fs_arn, "<S3_FILES_CSI_NODE_ROLE_ARN>": node_role,
+        "<S3_FILES_WRITER_AP_ARN>": writer_ap_arn, "<S3_FILES_READER_AP_ARN>": reader_ap_arn}
 def sub(x):
     if isinstance(x, str):
         for k, v in repl.items(): x = x.replace(k, v)
@@ -563,7 +585,8 @@ done
 render_manifests() {
   sed -e "s|<NAMESPACE>|$NAMESPACE|g" \
       -e "s|<S3_FILES_FILE_SYSTEM_ID>|$S3_FILES_FILE_SYSTEM_ID|g" \
-      -e "s|<S3_FILES_ACCESS_POINT_ID>|$S3_FILES_ACCESS_POINT_ID|g" \
+      -e "s|<S3_FILES_WRITER_AP_ID>|$S3_FILES_WRITER_AP_ID|g" \
+      -e "s|<S3_FILES_READER_AP_ID>|$S3_FILES_READER_AP_ID|g" \
       "$SAMPLE_DIR/deploy/s3-files.yaml"
 }
 if ! $KUBECTL get storageclass nitro-sandbox-s3-files >/dev/null 2>&1; then

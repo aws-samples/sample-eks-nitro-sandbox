@@ -6,13 +6,13 @@
 #
 # Default: delete the two pods, the PVC and workload ServiceAccount, the static PV, the
 # egress ApplicationNetworkPolicy, and the sample's own StorageClass. The S3 Files file
-# system, access point, mount targets, security group, synchronization role and bucket are
+# system, access points, mount targets, security group, synchronization role and bucket are
 # kept, so a later ./scripts/test.sh reuses the same storage and data.
 #
 # --delete-aws-resources additionally uses .env as its deletion record and releases the
-# access point, every mount target, the file system, the synchronization role, the NFS
-# security group, and - only when the sample created it, re-proven by the live bucket tag -
-# every object version in the bucket AND the bucket itself, then deletes .env.
+# writer and reader access points, every mount target, the file system, the synchronization
+# role, the NFS security group, and - only when the sample created it, re-proven by the live
+# bucket tag - every object version in the bucket AND the bucket itself, then deletes .env.
 #
 # Neither mode touches the shared EFS CSI driver, its service accounts, their IAM roles or
 # their Pod Identity associations: this sample never created or changed them. It checks the
@@ -82,9 +82,11 @@ case $ns_rc in
     kdelete "pod s3-files-writer" pod s3-files-writer -n "$NAMESPACE"
     kdelete "pod s3-files-reader" pod s3-files-reader -n "$NAMESPACE"
     kdelete "egress policy" applicationnetworkpolicy s3-files-shared-egress -n "$NAMESPACE"
-    kdelete "PVC storage-s3-files-shared" pvc storage-s3-files-shared -n "$NAMESPACE"
+    kdelete "PVC storage-s3-files-writer" pvc storage-s3-files-writer -n "$NAMESPACE"
+    kdelete "PVC storage-s3-files-reader" pvc storage-s3-files-reader -n "$NAMESPACE"
     kdelete "ServiceAccount s3-files-workload" serviceaccount s3-files-workload -n "$NAMESPACE"
-    kdelete "PV storage-s3-files-shared" pv storage-s3-files-shared
+    kdelete "PV storage-s3-files-writer" pv storage-s3-files-writer
+    kdelete "PV storage-s3-files-reader" pv storage-s3-files-reader
     ;;
 esac
 
@@ -106,7 +108,7 @@ esac
 
 if [[ "$DELETE_AWS" != true ]]; then
   echo
-  echo "Kubernetes objects removed. The S3 Files file system, access point, mount targets,"
+  echo "Kubernetes objects removed. The S3 Files file system, access points, mount targets,"
   echo "security group, synchronization role and bucket are kept; re-run ./scripts/test.sh to"
   echo "reuse them, or run ./scripts/clean.sh --delete-aws-resources to release them."
   echo "The shared EFS CSI driver and its roles/associations were left untouched."
@@ -160,15 +162,17 @@ head_bucket_status() {
   return 2
 }
 
-# Wait for the PV to be gone so no NFS client holds the mount targets. A timeout here means an
+# Wait for BOTH PVs to be gone so no NFS client holds the mount targets. A timeout here means an
 # NFS client may still hold a mount target, so do NOT start AWS teardown.
-if ! $KUBECTL wait --for=delete pv/storage-s3-files-shared --timeout=3m >/dev/null 2>&1; then
-  kexists pv storage-s3-files-shared; pv_rc=$?
-  case $pv_rc in
-    0) die "PV storage-s3-files-shared is still present after waiting; an NFS client may still hold a mount target. Run './scripts/clean.sh' (no flag) first to remove the pods and PV, then re-run with --delete-aws-resources." ;;
-    2) die "could not confirm PV storage-s3-files-shared was deleted (the lookup failed); refusing to start AWS teardown while a mount target may still be held. Re-run once the cluster reads cleanly." ;;
-  esac
-fi
+for pv in storage-s3-files-writer storage-s3-files-reader; do
+  if ! $KUBECTL wait --for=delete "pv/$pv" --timeout=3m >/dev/null 2>&1; then
+    kexists pv "$pv"; pv_rc=$?
+    case $pv_rc in
+      0) die "PV $pv is still present after waiting; an NFS client may still hold a mount target. Run './scripts/clean.sh' (no flag) first to remove the pods and PVs, then re-run with --delete-aws-resources." ;;
+      2) die "could not confirm PV $pv was deleted (the lookup failed); refusing to start AWS teardown while a mount target may still be held. Re-run once the cluster reads cleanly." ;;
+    esac
+  fi
+done
 
 # Prove the recorded file system is this sample's before deleting it or its access point: its
 # `bucket` must be the recorded bucket, and that bucket must carry ManagedBy=storage-s3-files.
@@ -198,41 +202,41 @@ if [[ -n "${S3_FILES_FILE_SYSTEM_ID:-}" ]]; then
   fi
 fi
 
-# The S3 Files access point (only when the file system it is on is proven this sample's AND the
-# recorded access point is confirmed to be on that proven file system). A stale foreign access
-# point ID alongside an owned file system must not be deleted: read the access point's live
-# fileSystemId and require it to equal the proven one; any read failure leaves it unconfirmed
-# and untouched.
-ap_owned=false
-if [[ "$fs_owned" == true && -n "${S3_FILES_ACCESS_POINT_ID:-}" ]]; then
-  ap_fs="$(aws_r s3files get-access-point --access-point-id "$S3_FILES_ACCESS_POINT_ID" \
-    --query 'fileSystemId' --output text 2>/dev/null)"; ap_read_rc=$?
+# The two S3 Files access points (writer and reader), deleted only when the file system they
+# are on is proven this sample's (fs_owned) AND each recorded access point is confirmed to be
+# on that proven file system. A stale foreign access point ID alongside an owned file system
+# must not be deleted: read each access point's live fileSystemId and require it to equal the
+# proven one; any read failure leaves it unconfirmed and untouched.
+# delete_access_point <description> <access-point-id>
+delete_access_point() {
+  local desc="$1" apid="$2"
+  [[ "$fs_owned" == true && -n "$apid" && "$apid" != "None" ]] || return 0
+  local ap_fs ap_read_rc
+  ap_fs="$(aws_r s3files get-access-point --access-point-id "$apid" --query 'fileSystemId' --output text 2>/dev/null)"; ap_read_rc=$?
   if [[ $ap_read_rc -ne 0 ]]; then
-    s3files_gone s3files get-access-point --access-point-id "$S3_FILES_ACCESS_POINT_ID" --query status
+    s3files_gone s3files get-access-point --access-point-id "$apid" --query status
     case $? in
-      0) echo "S3 Files access point $S3_FILES_ACCESS_POINT_ID is already gone." ;;
-      *) warn "could not read S3 Files access point $S3_FILES_ACCESS_POINT_ID to prove it is on this sample's file system; leaving it. Re-run --delete-aws-resources." ;;
+      0) echo "$desc access point $apid is already gone." ;;
+      *) warn "could not read $desc access point $apid to prove it is on this sample's file system; leaving it. Re-run --delete-aws-resources." ;;
     esac
-  elif [[ "$ap_fs" == "$S3_FILES_FILE_SYSTEM_ID" ]]; then
-    ap_owned=true
-  else
-    warn "refusing to delete S3 Files access point $S3_FILES_ACCESS_POINT_ID: it is on file system $ap_fs, not this sample's proven $S3_FILES_FILE_SYSTEM_ID. Leaving it."
+    return 0
   fi
-fi
-if [[ "$ap_owned" == true ]]; then
-  echo "Deleting S3 Files access point $S3_FILES_ACCESS_POINT_ID..."
-  aws_r s3files delete-access-point --access-point-id "$S3_FILES_ACCESS_POINT_ID" >/dev/null 2>&1 || true
-  ap_rc=1  # 0 gone, 1 present, 2 unconfirmed
+  if [[ "$ap_fs" != "$S3_FILES_FILE_SYSTEM_ID" ]]; then
+    warn "refusing to delete $desc access point $apid: it is on file system $ap_fs, not this sample's proven $S3_FILES_FILE_SYSTEM_ID. Leaving it."
+    return 0
+  fi
+  echo "Deleting $desc access point $apid..."
+  aws_r s3files delete-access-point --access-point-id "$apid" >/dev/null 2>&1 || true
+  local ap_rc=1  # 0 gone, 1 present, 2 unconfirmed
   for _ in $(seq 1 60); do
-    s3files_gone s3files get-access-point --access-point-id "$S3_FILES_ACCESS_POINT_ID" --query status; ap_rc=$?
+    s3files_gone s3files get-access-point --access-point-id "$apid" --query status; ap_rc=$?
     [[ "$ap_rc" != 1 ]] && break
     sleep 5
   done
-  case $ap_rc in
-    0) : ;;
-    *) warn "S3 Files access point still present or could not be confirmed deleted; re-run --delete-aws-resources." ;;
-  esac
-fi
+  [[ "$ap_rc" == 0 ]] || warn "$desc access point still present or could not be confirmed deleted; re-run --delete-aws-resources."
+}
+delete_access_point "writer" "${S3_FILES_WRITER_AP_ID:-}"
+delete_access_point "reader" "${S3_FILES_READER_AP_ID:-}"
 
 # The mount targets and the file system (only when the file system is proven this sample's).
 mt_confirmed_empty=false
