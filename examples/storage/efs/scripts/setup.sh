@@ -281,7 +281,21 @@ for _ in $(seq 1 60); do
 done
 [[ "$st" == available ]] || die "timed out waiting for the EFS access point"
 
-# Re-tag on every run: an adopted resource from an older run may predate the tags.
+# Verify ownership of EVERY resource before retagging it, not only the ones discovered this run.
+# An id loaded from .env (from a previous run or another machine) reaches here too, and must not
+# be retagged ManagedBy=storage-efs unless it ALREADY carries that tag: otherwise a stale .env
+# pointing at a resource another demo owns would be silently adopted. efs_require_owner dies if
+# the tag is absent, wrong, or unreadable.
+efs_require_owner "$EFS_FILE_SYSTEM_ID" "the EFS file system"
+efs_require_owner "$EFS_ACCESS_POINT_ID" "the EFS access point"
+sg_owner_check="$(aws_r ec2 describe-security-groups --group-ids "$EFS_SECURITY_GROUP_ID" \
+  --query "SecurityGroups[0].Tags[?Key=='ManagedBy'].Value | [0]" --output text 2>/dev/null)" \
+  || die "could not read the ownership tags of security group $EFS_SECURITY_GROUP_ID; refusing to retag it."
+[[ "$sg_owner_check" == "$SAMPLE" ]] \
+  || die "security group $EFS_SECURITY_GROUP_ID is not tagged ManagedBy=$SAMPLE (found '${sg_owner_check:-<none>}'); refusing to adopt or retag a group this sample did not create."
+
+# Re-tag on every run (idempotent): auto-delete=no may predate an older run's tags. Ownership is
+# already confirmed above, so this only refreshes tags on a resource that is this sample's.
 aws_r efs tag-resource --resource-id "$EFS_FILE_SYSTEM_ID" \
   --tags Key=ManagedBy,Value=$SAMPLE Key=auto-delete,Value=no
 aws_r efs tag-resource --resource-id "$EFS_ACCESS_POINT_ID" \
