@@ -80,6 +80,19 @@ CREATED_SECURITY_GROUP="${CREATED_SECURITY_GROUP:-false}"
 
 aws_r() { aws "$@" --region "$AWS_REGION"; }
 
+# Refuse to adopt an AWS resource that is not this sample's. An EFS resource found by name or
+# creation token must carry ManagedBy=storage-efs before setup reuses or retags it, so a run
+# can never take over a resource another demo created with a colliding name. A tag read that
+# fails is fatal (could not determine ownership), never treated as owned.
+efs_require_owner() { # efs_require_owner <resource-id> <human description>
+  local id="$1" desc="$2" v
+  v="$(aws_r efs list-tags-for-resource --resource-id "$id" \
+    --query "Tags[?Key=='ManagedBy'].Value | [0]" --output text 2>/dev/null)" \
+    || die "could not read the ownership tags of $desc ($id); refusing to adopt it until the read succeeds."
+  [[ "$v" == "$SAMPLE" ]] \
+    || die "$desc ($id) exists but is not tagged ManagedBy=$SAMPLE (found '${v:-<none>}'); refusing to adopt a resource this sample did not create. Use a different RESOURCE_PREFIX, or remove the conflicting resource if it is yours."
+}
+
 write_env() {
   {
     printf 'export CLUSTER_NAME=%q\n' "$CLUSTER_NAME"
@@ -162,7 +175,27 @@ if [[ -z "$EFS_SECURITY_GROUP_ID" || "$EFS_SECURITY_GROUP_ID" == "None" ]]; then
     CREATED_SECURITY_GROUP=true
     echo "  created NFS security group $EFS_SECURITY_GROUP_ID (TCP 2049 from $CLUSTER_SG only)."
   else
-    echo "  reusing NFS security group $EFS_SECURITY_GROUP_ID."
+    # Found by name and VPC: adopt only if it is this sample's (ManagedBy tag) and its ingress
+    # is the single expected rule. Otherwise refuse rather than reuse or retag it.
+    sg_owner="$(aws_r ec2 describe-security-groups --group-ids "$EFS_SECURITY_GROUP_ID" \
+      --query "SecurityGroups[0].Tags[?Key=='ManagedBy'].Value | [0]" --output text 2>/dev/null)" \
+      || die "could not read the ownership tags of security group $EFS_SECURITY_GROUP_ID; refusing to adopt it."
+    [[ "$sg_owner" == "$SAMPLE" ]] \
+      || die "a security group named '$sg_name' already exists in $VPC_ID but is not tagged ManagedBy=$SAMPLE (found '${sg_owner:-<none>}'); refusing to adopt it. Use a different RESOURCE_PREFIX, or remove the conflicting group if it is yours."
+    sg_ingress="$(aws_r ec2 describe-security-groups --group-ids "$EFS_SECURITY_GROUP_ID" \
+      --query 'SecurityGroups[0].IpPermissions' --output json 2>/dev/null)" \
+      || die "could not read the rules of security group $EFS_SECURITY_GROUP_ID."
+    CLUSTER_SG="$CLUSTER_SG" python3 -c 'import json,sys,os
+r=json.load(sys.stdin); csg=os.environ["CLUSTER_SG"]
+if len(r)!=1: sys.exit(1)
+p=r[0]
+if not (p.get("FromPort")==2049 and p.get("ToPort")==2049 and p.get("IpProtocol")=="tcp"): sys.exit(1)
+if p.get("IpRanges") or p.get("Ipv6Ranges") or p.get("PrefixListIds"): sys.exit(1)
+pairs=p.get("UserIdGroupPairs") or []
+sys.exit(0 if (len(pairs)==1 and pairs[0].get("GroupId")==csg) else 1)' <<<"$sg_ingress" \
+      || die "the existing security group $EFS_SECURITY_GROUP_ID does not have exactly the expected rule (TCP 2049 from the cluster security group $CLUSTER_SG only); refusing to reuse it."
+    CREATED_SECURITY_GROUP=true
+    echo "  reusing this sample's NFS security group $EFS_SECURITY_GROUP_ID."
   fi
   write_env
 fi
@@ -179,7 +212,8 @@ if [[ -z "$EFS_FILE_SYSTEM_ID" || "$EFS_FILE_SYSTEM_ID" == "None" ]]; then
       --tags "Key=Name,Value=${RESOURCE_PREFIX}-fs" "Key=ManagedBy,Value=$SAMPLE" "Key=auto-delete,Value=no" \
       --query FileSystemId --output text)"
   else
-    echo "  adopting the EFS file system from a previous run: $EFS_FILE_SYSTEM_ID"
+    efs_require_owner "$EFS_FILE_SYSTEM_ID" "the EFS file system found by creation token"
+    echo "  adopting this sample's EFS file system from a previous run: $EFS_FILE_SYSTEM_ID"
   fi
   write_env
 fi
@@ -223,7 +257,18 @@ if [[ -z "$EFS_ACCESS_POINT_ID" || "$EFS_ACCESS_POINT_ID" == "None" ]]; then
       --tags "Key=Name,Value=${RESOURCE_PREFIX}-ap" "Key=ManagedBy,Value=$SAMPLE" "Key=auto-delete,Value=no" \
       --query AccessPointId --output text)"
   else
-    echo "  adopting the EFS access point from a previous run: $EFS_ACCESS_POINT_ID"
+    efs_require_owner "$EFS_ACCESS_POINT_ID" "the EFS access point found by Name tag"
+    # It must be on THIS file system, with the sample's root directory and POSIX identity.
+    ap_fs="$(aws_r efs describe-access-points --access-point-id "$EFS_ACCESS_POINT_ID" \
+      --query 'AccessPoints[0].FileSystemId' --output text 2>/dev/null)" \
+      || die "could not read access point $EFS_ACCESS_POINT_ID; refusing to adopt it."
+    [[ "$ap_fs" == "$EFS_FILE_SYSTEM_ID" ]] \
+      || die "access point $EFS_ACCESS_POINT_ID is on file system $ap_fs, not this sample's $EFS_FILE_SYSTEM_ID; refusing to adopt it."
+    ap_cfg="$(aws_r efs describe-access-points --access-point-id "$EFS_ACCESS_POINT_ID" \
+      --query 'AccessPoints[0].[RootDirectory.Path,PosixUser.Uid,PosixUser.Gid]' --output text 2>/dev/null)"
+    [[ "$ap_cfg" == $'/storage-efs\t1000\t1000' ]] \
+      || die "access point $EFS_ACCESS_POINT_ID does not have the expected root directory /storage-efs and uid/gid 1000 (found: $ap_cfg); refusing to adopt it."
+    echo "  adopting this sample's EFS access point from a previous run: $EFS_ACCESS_POINT_ID"
   fi
   write_env
 fi

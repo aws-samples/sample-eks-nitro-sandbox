@@ -55,13 +55,24 @@ aws_r() { $AWS "$@" --region "$AWS_REGION"; }
 
 # --- Deploy: render manifests from the record and apply. ---
 echo "== deploy the pods and the egress policy =="
-if ! $KUBECTL get namespace "$NAMESPACE" >/dev/null 2>&1; then
-  $KUBECTL create namespace "$NAMESPACE"
-  $KUBECTL label namespace "$NAMESPACE" "$SAMPLE_LABEL_KEY=$SAMPLE_LABEL_VALUE" --overwrite
+# Create the namespace only when absent; when it exists, require this sample's label before
+# applying anything into it, so the run never puts objects in a namespace another demo owns.
+ns_errf="$(mktemp)"
+if $KUBECTL get namespace "$NAMESPACE" -o name >/dev/null 2>"$ns_errf"; then
+  ns_label="$($KUBECTL get namespace "$NAMESPACE" -o "jsonpath={.metadata.labels.app\.kubernetes\.io/part-of}" 2>/dev/null)" \
+    || die "could not read the labels of namespace '$NAMESPACE'; refusing to apply into it."
+  [[ "$ns_label" == "$SAMPLE_LABEL_VALUE" ]] \
+    || die "namespace '$NAMESPACE' exists but is not labelled $SAMPLE_LABEL_KEY=$SAMPLE_LABEL_VALUE (found '${ns_label:-<none>}'); refusing to apply into a namespace this sample did not create. Choose a different NAMESPACE."
+  echo "  namespace '$NAMESPACE' already exists and is this sample's; reusing it."
+elif grep -qi 'notfound\|not found' "$ns_errf"; then
+  $KUBECTL create namespace "$NAMESPACE" || die "could not create namespace '$NAMESPACE'"
+  $KUBECTL label namespace "$NAMESPACE" "$SAMPLE_LABEL_KEY=$SAMPLE_LABEL_VALUE" --overwrite \
+    || die "could not label namespace '$NAMESPACE'"
   echo "  created namespace '$NAMESPACE' and labelled it this sample's."
 else
-  echo "  namespace '$NAMESPACE' already exists; reusing it."
+  rm -f "$ns_errf"; die "could not read namespace '$NAMESPACE' (the lookup failed). Re-run once the cluster reads cleanly."
 fi
+rm -f "$ns_errf"
 
 # The egress policy: render the checked-in deploy/egress-policy.yaml so the file the page
 # shows is the file that is applied. Substitute <COREDNS_IP> and expand <MOUNT_TARGET_BLOCK>
@@ -86,14 +97,18 @@ text = "\n".join(out)
 text = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
 sys.stdout.write(text + "\n")
 PY
+[[ ${PIPESTATUS[0]} -eq 0 && ${PIPESTATUS[1]} -eq 0 ]] || die "could not render or apply the egress policy"
 
-# Wait for the PolicyEndpoint so the rule is programmed before the pods start.
+# Wait for the PolicyEndpoint so the rule is programmed before the pods start. A timeout here
+# must stop the run: starting the pods with no policy programmed would not restrict egress.
 echo "  waiting for the PolicyEndpoint to be programmed..."
+pe=0
 for _ in $(seq 1 30); do
   n="$($KUBECTL get policyendpoints -n "$NAMESPACE" -o name 2>/dev/null | wc -l | tr -d ' ')"
-  [[ "$n" -gt 0 ]] && break
+  [[ "$n" -gt 0 ]] && { pe="$n"; break; }
   sleep 2
 done
+[[ "$pe" -gt 0 ]] || die "no PolicyEndpoint appeared for the egress policy within the timeout; the policy is not programmed, so the pods were not started. Check that network policy enforcement is enabled on the cluster (the amazon-vpc-cni ConfigMap), as the coding agent page describes."
 
 # The StorageClass (cluster-scoped, create only if absent; never apply over an existing
 # one), then the PV, PVC, ServiceAccount and pods. efs.yaml is one multi-document file;
@@ -111,11 +126,15 @@ docs = sys.stdin.read().split("\n---\n")
 for d in docs:
     if "kind: StorageClass" in d:
         sys.stdout.write(d.strip() + "\n")' | $KUBECTL create -f -
+  [[ ${PIPESTATUS[0]} -eq 0 && ${PIPESTATUS[1]} -eq 0 && ${PIPESTATUS[2]} -eq 0 ]] \
+    || die "could not create the StorageClass nitro-sandbox-efs"
 fi
 render_efs | python3 -c 'import sys
 docs = sys.stdin.read().split("\n---\n")
 out = [d for d in docs if d.strip() and "kind: StorageClass" not in d]
 sys.stdout.write("\n---\n".join(out))' | $KUBECTL apply -n "$NAMESPACE" -f -
+[[ ${PIPESTATUS[0]} -eq 0 && ${PIPESTATUS[1]} -eq 0 && ${PIPESTATUS[2]} -eq 0 ]] \
+  || die "could not render or apply the PV, PVC, ServiceAccount and pods"
 
 echo "  waiting for both pods to become Ready (sandbox VM boot + NFS mount)..."
 $KUBECTL wait -n "$NAMESPACE" --for=condition=Ready pod/$WRITER pod/$READER --timeout=5m \
@@ -125,15 +144,25 @@ $KUBECTL wait -n "$NAMESPACE" --for=condition=Ready pod/$WRITER pod/$READER --ti
 
 echo
 echo "== 1/9 both pods run in a sandbox =="
+node="$($KUBECTL get pod "$WRITER" -n "$NAMESPACE" -o jsonpath='{.spec.nodeName}')"
+node_kernel="$($KUBECTL get node "$node" -o jsonpath='{.status.nodeInfo.kernelVersion}')"
+echo "  node kernel: $node_kernel"
+# Each pod runs in its own guest. The proof is that the pod sees virtio (vd*) block devices,
+# where an ordinary pod on the same node sees nvme, and reports its own kernel and a boot/uptime
+# of its own. The guest kernel VERSION may match the node's (the sandbox AMI can share a build
+# with the node AMI), so the virtio devices, not a differing version string, are the evidence.
 for pod in "$WRITER" "$READER"; do
   rc="$($KUBECTL get pod "$pod" -n "$NAMESPACE" -o jsonpath='{.spec.runtimeClassName}')"
   [[ "$rc" == "isolated-sandbox" ]]; assert "$pod runtimeClassName is isolated-sandbox ($rc)" $?
+  gk="$($KUBECTL exec "$pod" -n "$NAMESPACE" -- uname -r 2>/dev/null)"
+  echo "  $pod guest kernel: $gk"
+  [[ -n "$gk" ]]; assert "$pod reports its own guest kernel ($gk)" $?
+  # Only virtio disks, no nvme: the pod's block devices are the guest's own virtio devices,
+  # not the node's nvme devices passed through.
+  disks="$($KUBECTL exec "$pod" -n "$NAMESPACE" -- sh -c 'ls /sys/block' 2>/dev/null | tr '\n' ' ')"
+  echo "  $pod /sys/block: $disks"
+  grep -q 'vd' <<<"$disks" && ! grep -q 'nvme' <<<"$disks"; assert "$pod guest sees virtio (vd*) disks and no nvme (a separate guest, not the node's devices)" $?
 done
-guest_kernel="$($KUBECTL exec "$WRITER" -n "$NAMESPACE" -- uname -r)"
-node="$($KUBECTL get pod "$WRITER" -n "$NAMESPACE" -o jsonpath='{.spec.nodeName}')"
-node_kernel="$($KUBECTL get node "$node" -o jsonpath='{.status.nodeInfo.kernelVersion}')"
-echo "  guest kernel: $guest_kernel | node kernel: $node_kernel"
-$KUBECTL exec "$WRITER" -n "$NAMESPACE" -- sh -c 'ls /sys/block | grep -q "^vd"'; assert "the writer guest sees virtio (vd*) disks" $?
 
 echo "== 2/9 /shared is an nfs4 mount to the guest's own endpoint =="
 for pod in "$WRITER" "$READER"; do
@@ -143,22 +172,44 @@ for pod in "$WRITER" "$READER"; do
 done
 
 echo "== 3/9 the node holds no NFS mount for these pods =="
-# The guest terminates TLS and runs the NFS client itself; the node should carry no nfs4
-# mount for /var/lib/kubelet pods. A debug pod on the node reads its /proc/mounts.
-dbg="efs-nodecheck-$$"
-$KUBECTL debug node/"$node" -n "$NAMESPACE" --image=public.ecr.aws/docker/library/busybox:1.37 \
-  --profile=general -q --attach=false -- sh -c 'sleep 120' >/dev/null 2>&1 || true
-dbgpod="$($KUBECTL get pod -n "$NAMESPACE" -o name 2>/dev/null | grep "$dbg" | head -1 | sed 's|pod/||')"
-if [[ -z "$dbgpod" ]]; then
-  dbgpod="$($KUBECTL get pod -n "$NAMESPACE" -l 'app!=efs-shared' -o jsonpath='{.items[?(@.spec.nodeName=="'"$node"'")].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -i debug | head -1)"
-fi
-if [[ -n "$dbgpod" ]]; then
-  $KUBECTL wait -n "$NAMESPACE" --for=condition=Ready "pod/$dbgpod" --timeout=60s >/dev/null 2>&1 || true
-  node_nfs="$($KUBECTL exec -n "$NAMESPACE" "$dbgpod" -- sh -c 'grep nfs4 /proc/mounts 2>/dev/null | grep -c kubelet || true' 2>/dev/null | tr -d ' ')"
-  [[ "${node_nfs:-0}" == "0" ]]; assert "the node holds no kubelet nfs4 mount for these pods (found ${node_nfs:-?})" $?
-  $KUBECTL delete pod "$dbgpod" -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
+# The guest terminates TLS and runs the NFS client itself, so the node should carry no nfs4
+# mount under /var/lib/kubelet for these pods. Run a helper pod with a DETERMINISTIC name on
+# the writer's node to read its /proc/mounts via the host mount namespace. This assertion is
+# MANDATORY: if the helper cannot start, record a failure rather than skip it. The helper is
+# created, discovered and deleted by its exact name only, never by a label selector, so it
+# can never match another workload's pod on this shared cluster.
+dbgpod="efs-nodecheck-$$"
+node_nfs_check() {
+  cat <<YAML | $KUBECTL apply -n "$NAMESPACE" -f - >/dev/null 2>&1 || return 1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $dbgpod
+  labels:
+    app: efs-nodecheck
+spec:
+  nodeName: $node
+  hostPID: true
+  restartPolicy: Never
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: probe
+      image: public.ecr.aws/docker/library/busybox:1.37
+      securityContext:
+        privileged: true
+      command: ["sh", "-c", "sleep 120"]
+YAML
+  $KUBECTL wait -n "$NAMESPACE" --for=condition=Ready "pod/$dbgpod" --timeout=90s >/dev/null 2>&1 || return 1
+  # Read the host's /proc/1/mounts (hostPID + privileged) and count nfs4 kubelet mounts.
+  $KUBECTL exec -n "$NAMESPACE" "$dbgpod" -- sh -c 'grep nfs4 /proc/1/mounts 2>/dev/null | grep -c kubelet || true' 2>/dev/null | tr -d ' '
+}
+node_nfs="$(node_nfs_check)"; rc=$?
+$KUBECTL delete pod "$dbgpod" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+if [[ $rc -ne 0 ]]; then
+  assert "the node holds no kubelet nfs4 mount for these pods (node probe could not run)" 1
 else
-  echo "  (could not start a node debug pod; skipping the node-side check)"
+  [[ "${node_nfs:-1}" == "0" ]]; assert "the node holds no kubelet nfs4 mount for these pods (found ${node_nfs:-?})" $?
 fi
 
 echo "== 4/9 the access point pins UID/GID on /shared =="
@@ -178,44 +229,73 @@ $KUBECTL exec "$READER" -n "$NAMESPACE" -- sh -c 'echo hello-from-reader > /shar
 $KUBECTL exec "$WRITER" -n "$NAMESPACE" -- sh -c 'test "$(cat /shared/from-reader)" = hello-from-reader'; assert "the writer sees the file the reader wrote" $?
 
 echo "== 7/9 the pods mount with tls,iam =="
-opts="$($KUBECTL get pv storage-efs-shared -o jsonpath='{.spec.mountOptions}')"
-echo "  PV mountOptions: $opts"
-grep -q 'tls' <<<"$opts" && grep -q 'iam' <<<"$opts"; assert "the PV mount options are tls and iam" $?
+# Compare the normalized mount-option SET exactly, so a stray option (e.g. notls) cannot pass
+# a substring match.
+opts_json="$($KUBECTL get pv storage-efs-shared -o jsonpath='{.spec.mountOptions}')"
+echo "  PV mountOptions: $opts_json"
+printf '%s' "$opts_json" | python3 -c 'import json,sys
+try: v=set(json.load(sys.stdin))
+except Exception: sys.exit(1)
+sys.exit(0 if v=={"tls","iam"} else 1)'; assert "the PV mount options are exactly {tls, iam}" $?
 mnt_opt="$($KUBECTL exec "$WRITER" -n "$NAMESPACE" -- grep ' /shared ' /proc/mounts)"
 grep -q 'port=' <<<"$mnt_opt"; assert "the live mount runs over the stunnel TLS endpoint (local port)" $?
 
 if command -v "${AWS%% *}" >/dev/null 2>&1; then
   echo "== 8/9 the security group and file system policy =="
-  # One mount target carries only this sample's security group.
-  mt_sg="$(aws_r efs describe-mount-targets --file-system-id "$EFS_FILE_SYSTEM_ID" --query 'MountTargets[0].MountTargetId' --output text)"
-  sg_on_mt="$(aws_r efs describe-mount-target-security-groups --mount-target-id "$mt_sg" --query 'SecurityGroups' --output text)"
-  [[ "$sg_on_mt" == "$EFS_SECURITY_GROUP_ID" ]]; assert "the mount target carries only this sample's security group" $?
-  # The security group admits exactly TCP 2049 from the cluster SG.
+  CLUSTER_SG="$(aws_r eks describe-cluster --name "${CLUSTER_NAME:-}" \
+    --query 'cluster.resourcesVpcConfig.clusterSecurityGroupId' --output text 2>/dev/null || true)"
+  # EVERY mount target must carry only this sample's security group.
+  mt_ids="$(aws_r efs describe-mount-targets --file-system-id "$EFS_FILE_SYSTEM_ID" --query 'MountTargets[].MountTargetId' --output text)"
+  mt_sg_ok=0
+  for mt in $mt_ids; do
+    sg_on_mt="$(aws_r efs describe-mount-target-security-groups --mount-target-id "$mt" --query 'SecurityGroups' --output text)"
+    [[ "$sg_on_mt" == "$EFS_SECURITY_GROUP_ID" ]] || mt_sg_ok=1
+  done
+  [[ "$mt_sg_ok" -eq 0 ]]; assert "every mount target carries only this sample's security group" $?
+  # The security group admits exactly one rule: TCP 2049 from the cluster security group, with
+  # no CIDR, no IPv6, no prefix list, and no other group source.
   sg_rules="$(aws_r ec2 describe-security-groups --group-ids "$EFS_SECURITY_GROUP_ID" --query 'SecurityGroups[0].IpPermissions' --output json)"
-  echo "$sg_rules" | python3 -c 'import json,sys
-r=json.load(sys.stdin)
-ok = len(r)==1 and r[0].get("FromPort")==2049 and r[0].get("ToPort")==2049 and r[0].get("IpProtocol")=="tcp" and r[0].get("UserIdGroupPairs") and not r[0].get("IpRanges")
-sys.exit(0 if ok else 1)'; assert "the security group admits exactly TCP 2049 from a security group, no CIDR" $?
-  # The file system policy: TLS required, this access point only, no ClientRootAccess, allows the node role.
+  CLUSTER_SG="$CLUSTER_SG" python3 -c 'import json,sys,os
+r=json.load(sys.stdin); csg=os.environ.get("CLUSTER_SG","")
+if len(r)!=1: sys.exit(1)
+p=r[0]
+if not (p.get("FromPort")==2049 and p.get("ToPort")==2049 and p.get("IpProtocol")=="tcp"): sys.exit(1)
+if p.get("IpRanges") or p.get("Ipv6Ranges") or p.get("PrefixListIds"): sys.exit(1)
+pairs=p.get("UserIdGroupPairs") or []
+if len(pairs)!=1: sys.exit(1)
+if csg and pairs[0].get("GroupId")!=csg: sys.exit(1)
+sys.exit(0)' <<<"$sg_rules"; assert "the security group admits exactly TCP 2049 from the cluster security group (no CIDR, IPv6, prefix list or other group)" $?
+  # The file system policy, validated structurally and exactly.
   pol="$(aws_r efs describe-file-system-policy --file-system-id "$EFS_FILE_SYSTEM_ID" --query 'Policy' --output text)"
-  AP_ARN="arn:aws:elasticfilesystem:${AWS_REGION}:$(aws_r sts get-caller-identity --query Account --output text):access-point/${EFS_ACCESS_POINT_ID}"
-  export AP_ARN EFS_CSI_NODE_ROLE_ARN
-  echo "$pol" | python3 -c 'import json,sys,os
+  ACCOUNT="$(aws_r sts get-caller-identity --query Account --output text)"
+  FS_ARN="arn:aws:elasticfilesystem:${AWS_REGION}:${ACCOUNT}:file-system/${EFS_FILE_SYSTEM_ID}"
+  AP_ARN="arn:aws:elasticfilesystem:${AWS_REGION}:${ACCOUNT}:access-point/${EFS_ACCESS_POINT_ID}"
+  FS_ARN="$FS_ARN" AP_ARN="$AP_ARN" NODE="$EFS_CSI_NODE_ROLE_ARN" python3 -c 'import json,sys,os
 p=json.load(sys.stdin); st=p["Statement"]
-node=os.environ["EFS_CSI_NODE_ROLE_ARN"]; ap=os.environ["AP_ARN"]
-has_tls_deny=any(s["Effect"]=="Deny" and s.get("Condition",{}).get("Bool",{}).get("aws:SecureTransport")=="false" for s in st)
-allows=[s for s in st if s["Effect"]=="Allow"]
-def acts(s):
-    a=s["Action"]; return [a] if isinstance(a,str) else a
-ok_allow=all(
-    s.get("Condition",{}).get("StringEquals",{}).get("elasticfilesystem:AccessPointArn")==ap
-    and "elasticfilesystem:ClientRootAccess" not in acts(s)
-    and set(acts(s))<= {"elasticfilesystem:ClientMount","elasticfilesystem:ClientWrite"}
-    for s in allows)
-principals=[s["Principal"]["AWS"] for s in allows if isinstance(s.get("Principal"),dict) and "AWS" in s["Principal"]]
-only_node = principals==[node]
-sys.exit(0 if (has_tls_deny and ok_allow and only_node and allows) else 1)' \
-    ; assert "the file system policy requires TLS, is confined to this access point, no ClientRootAccess, allows only the CSI node principal" $?
+fs=os.environ["FS_ARN"]; ap=os.environ["AP_ARN"]; node=os.environ["NODE"]
+def listify(x): return x if isinstance(x,list) else [x]
+allows=[s for s in st if s.get("Effect")=="Allow"]
+denies=[s for s in st if s.get("Effect")=="Deny"]
+# Every Allow: principal is EXACTLY the node role (a dict with AWS == node, nothing else),
+# Resource is the file system, actions are a nonempty subset of {ClientMount, ClientWrite}
+# (so ClientRootAccess cannot appear), confined to this access point via a mount target.
+def allow_ok(s):
+    pr=s.get("Principal")
+    if not (isinstance(pr,dict) and list(pr.keys())==["AWS"] and pr["AWS"]==node): return False
+    if listify(s.get("Resource"))!=[fs]: return False
+    acts=set(listify(s.get("Action")))
+    if not acts or not acts<= {"elasticfilesystem:ClientMount","elasticfilesystem:ClientWrite"}: return False
+    cond=s.get("Condition",{})
+    if cond.get("StringEquals",{}).get("elasticfilesystem:AccessPointArn")!=ap: return False
+    if cond.get("Bool",{}).get("elasticfilesystem:AccessedViaMountTarget")!="true": return False
+    return True
+# A TLS Deny on this file system for aws:SecureTransport=false.
+def tls_deny_ok(s):
+    return (listify(s.get("Resource"))==[fs]
+            and s.get("Condition",{}).get("Bool",{}).get("aws:SecureTransport")=="false")
+ok = (len(allows)>=1 and all(allow_ok(s) for s in allows)
+      and any(tls_deny_ok(s) for s in denies))
+sys.exit(0 if ok else 1)' <<<"$pol"; assert "the file system policy: every Allow is the CSI node principal only, this file system and access point, mount-target only, actions subset of ClientMount/ClientWrite (no ClientRootAccess), plus a TLS Deny" $?
 else
   echo "== 8/9 security group and file system policy: SKIP (aws not on PATH) =="
 fi
