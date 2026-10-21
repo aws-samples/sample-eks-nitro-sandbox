@@ -32,7 +32,7 @@ jobs:
 
       - name: Install ASH v3.7.1
         # The commit is tag v3.7.1; keep it equal to the rev in .pre-commit-config.yaml.
-        run: pip install 'automated-security-helper[cdk] @ git+https://github.com/awslabs/automated-security-helper.git@af1206aff596f1288ad066828058b3011de2a998'
+        run: pip install 'automated-security-helper @ git+https://github.com/awslabs/automated-security-helper.git@af1206aff596f1288ad066828058b3011de2a998'
 
       - name: Install grype and syft
         env:

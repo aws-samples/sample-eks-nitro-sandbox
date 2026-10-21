@@ -1,5 +1,5 @@
 # ASH v3 configuration. Everything not set here is ASH's default: every built-in scanner
-# and every reporter. Setup and suppressions: CONTRIBUTING.md, "Security scanning".
+# except cdk-nag, and every reporter. Setup and suppressions: CONTRIBUTING.md, "Security scanning".
 project_name: sample-eks-nitro-sandbox
 global_settings:
   severity_threshold: HIGH
@@ -8,3 +8,6 @@ global_settings:
       reason: .claude/skills links to .agents/skills, which is scanned already
     - path: .kiro/**
       reason: .kiro/skills links to .agents/skills, which is scanned already; .kiro/specs holds local drafts
+scanners:
+  cdk-nag:
+    enabled: false  # no CloudFormation or CDK here; it fails to parse the multi-document Kubernetes manifests
