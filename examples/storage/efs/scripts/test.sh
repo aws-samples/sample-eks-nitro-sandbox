@@ -161,7 +161,13 @@ for pod in "$WRITER" "$READER"; do
   # /proc/uptime would be hours or days; a just-booted guest is seconds to minutes.
   up="$($KUBECTL exec "$pod" -n "$NAMESPACE" -- sh -c 'cut -d. -f1 /proc/uptime' 2>/dev/null)"
   echo "  $pod guest uptime: ${up}s"
-  [[ -n "$up" && "$up" -lt 86400 ]]; assert "$pod guest uptime (${up}s) is a freshly booted guest, not the long-running node" $?
+  # Validate it is numeric BEFORE the arithmetic, so a missing or odd value fails the assertion
+  # rather than crashing the shell under set -u.
+  if [[ "$up" =~ ^[0-9]+$ ]] && (( up < 86400 )); then
+    assert "$pod guest uptime (${up}s) is a freshly booted guest, not the long-running node" 0
+  else
+    assert "$pod guest uptime (${up:-unknown}) is a freshly booted guest, not the long-running node" 1
+  fi
   # Block devices: at least one real virtio vd* entry, and NO nvme entry. The node presents EBS
   # as nvme; a virtio-only device list is the guest's own devices, not the node's passed through.
   disks="$($KUBECTL exec "$pod" -n "$NAMESPACE" -- sh -c 'ls /sys/block' 2>/dev/null)"
