@@ -1,0 +1,20 @@
+# Hooks run on every commit once installed (CONTRIBUTING.md, "Security scanning").
+# trailing-whitespace and end-of-file-fixer fix trailing whitespace and missing final newlines,
+# and stop the commit when they do: re-stage the files and commit again. The others only report.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+        exclude: ^examples/policy/cedar-policy/policy/policy\.generated\.yaml$  # generator output, kept as generated
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: detect-aws-credentials
+        args: [--allow-missing-credentials]
+  - repo: https://github.com/awslabs/automated-security-helper
+    rev: v3.7.1  # same version as .github/workflows/security-scan.yml
+    hooks:
+      - id: ash-simple-scan
+        stages: [pre-commit]

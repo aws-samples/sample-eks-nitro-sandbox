@@ -59,6 +59,64 @@ For more information see the [Code of Conduct FAQ](https://aws.github.io/code-of
 opensource-codeofconduct@amazon.com with any additional questions or comments.
 
 
+## Security scanning
+Every commit and every pull request is scanned with the [Automated Security Helper](https://github.com/awslabs/automated-security-helper)
+(ASH) v3.7.1, configured in `.ash/.ash.yaml`. A finding of severity Critical or High that no suppression covers blocks
+the commit, and fails the **ASH Security Scan** workflow, which runs on every pull request to *main*.
+
+To set it up, install pre-commit and ASH in a virtual environment under `tmp/` (ASH v3.7.1 supports Python 3.10 to 3.12),
+then install the hooks:
+
+```bash
+python3.12 -m venv tmp/venv-ash
+tmp/venv-ash/bin/pip install pre-commit 'git+https://github.com/awslabs/automated-security-helper.git@v3.7.1'
+tmp/venv-ash/bin/pre-commit install
+```
+
+`pre-commit install` writes `.git/hooks/pre-commit`, which calls the Python in `tmp/venv-ash`, so `git commit` runs the
+hooks without activating the environment. If you delete `tmp/venv-ash`, set it up again. On each commit the hooks check
+for conflict markers, private keys and AWS credentials, and run a fast ASH scan. Two of them also fix trailing whitespace and missing final newlines; `.pre-commit-config.yaml` says what each hook does.
+
+ASH and pre-commit download scanners and hook environments into your home folder by default. On a shared machine, keep
+them under `tmp/` by setting these in the shell you commit and scan from:
+
+```bash
+export ASH_BIN_PATH="$PWD/tmp/ash/bin" UV_TOOL_DIR="$PWD/tmp/ash/uv-tools" \
+  UV_TOOL_BIN_DIR="$PWD/tmp/ash/uv-bin" PRE_COMMIT_HOME="$PWD/tmp/pre-commit"
+```
+
+To run the full scan that CI runs, from the repository root:
+
+```bash
+source tmp/venv-ash/bin/activate
+ash --mode local --config .ash/.ash.yaml
+```
+
+With uv you can skip the virtual environment for this scan:
+`uvx --python 3.12 --from 'git+https://github.com/awslabs/automated-security-helper.git@v3.7.1' ash --mode local --config .ash/.ash.yaml`.
+Reports go to `.ash/ash_output/`, which git ignores; start with `.ash/ash_output/reports/ash.summary.md`.
+
+`git commit --no-verify` skips the hooks. Use it only in an emergency: the workflow still scans the pull request and
+reports the finding.
+
+If a finding is a false positive or an accepted risk, add a suppression under `global_settings` in `.ash/.ash.yaml`, with
+the rule ID from the report, the narrowest path that covers it, a reason and an expiration date, and explain it in the
+pull request description:
+
+```yaml
+global_settings:
+  suppressions:
+    - rule_id: 'B602'
+      path: 'examples/<section>/<sample>/scripts/run.py'
+      line_start: 12
+      line_end: 14
+      reason: 'The command is a fixed list; no reader input reaches the shell'
+      expiration: '2027-06-30'
+```
+
+`line_start` and `line_end` are optional. After the expiration date the finding counts again.
+
+
 ## Security issue notifications
 If you discover a potential security issue in this project we ask that you notify AWS/Amazon Security via our [vulnerability reporting page](http://aws.amazon.com/security/vulnerability-reporting/). Please do **not** create a public github issue.
 

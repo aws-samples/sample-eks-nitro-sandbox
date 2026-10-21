@@ -1,0 +1,10 @@
+# ASH v3 configuration. Everything not set here is ASH's default: every built-in scanner
+# and every reporter. Setup and suppressions: CONTRIBUTING.md, "Security scanning".
+project_name: sample-eks-nitro-sandbox
+global_settings:
+  severity_threshold: HIGH
+  ignore_paths:
+    - path: .claude/**
+      reason: .claude/skills links to .agents/skills, which is scanned already
+    - path: .kiro/**
+      reason: .kiro/skills links to .agents/skills, which is scanned already; .kiro/specs holds local drafts
