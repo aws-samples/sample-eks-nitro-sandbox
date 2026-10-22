@@ -170,16 +170,20 @@ $KUBECTL exec "$WRITER" -n "$NAMESPACE" -- sh -c "printf '%s' '$sent' > /shared/
 seen="$($KUBECTL exec "$READER" -n "$NAMESPACE" -- cat /shared/from-writer 2>/dev/null | tr -d '\r')"
 [[ "$seen" == "$sent" ]]; assert "the reader sees the file the writer wrote (one shared dataset)" $?
 # The reader is read-only: a write through the reader access point must FAIL, and fail for the
-# RIGHT reason. A bare non-zero exit would also be produced by a missing pod or a transport
-# error, so that alone would let the check pass open. Capture the shell's own error and require
-# it to be the read-only-filesystem refusal; a success, or a failure for any other reason, fails
-# the assertion.
-wr_out="$($KUBECTL exec "$READER" -n "$NAMESPACE" -- sh -c "printf '%s' 'nope-$run_id' > /shared/from-reader" 2>&1)"; wr_rc=$?
-if [[ $wr_rc -ne 0 ]] && printf '%s' "$wr_out" | grep -qi 'read-only file system'; then
-  assert "the reader's write to /shared is refused with a read-only-filesystem error (not merely a non-zero exit)" 0
+# RIGHT reason. A bare non-zero exit, or merely finding "read-only file system" somewhere in the
+# output, could also come from a missing pod or a transport error, so neither alone proves the
+# write was executed and refused. Have the remote shell attempt the write and THEN echo a unique
+# sentinel: the sentinel is printed only if the container's shell actually ran to completion, and
+# the EROFS line is printed only if the kernel refused the write. Require BOTH. A kubectl/runtime
+# failure that never reached the container prints no sentinel and fails the assertion closed.
+wr_sentinel="reader-write-ran-$run_id"
+wr_out="$($KUBECTL exec "$READER" -n "$NAMESPACE" -- sh -c "printf '%s' 'nope-$run_id' > /shared/from-reader; echo $wr_sentinel" 2>&1)"
+if printf '%s\n' "$wr_out" | grep -qF "$wr_sentinel" \
+   && printf '%s\n' "$wr_out" | grep -qi 'read-only file system'; then
+  assert "the reader's write to /shared is refused with a read-only-filesystem error (sentinel proves the write ran)" 0
 else
-  echo "    reader write rc=$wr_rc out=[$wr_out]"
-  assert "the reader's write to /shared is refused with a read-only-filesystem error (not merely a non-zero exit)" 1
+  echo "    reader write out=[$wr_out] (expected sentinel $wr_sentinel + a read-only-filesystem error)"
+  assert "the reader's write to /shared is refused with a read-only-filesystem error (sentinel proves the write ran)" 1
 fi
 # And the refused write left nothing behind: the file does not exist on the shared dataset. Probe
 # from the writer with a command that prints a distinct token for present vs absent, so a failure
