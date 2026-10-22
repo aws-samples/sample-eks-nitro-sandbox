@@ -71,8 +71,8 @@ the images record what they installed.
 | S3 Files mount helper ([amazon-efs-utils](https://github.com/aws/efs-utils)) | 3.3.4 |
 | Claude Code ([`@anthropic-ai/claude-code`](https://www.npmjs.com/package/@anthropic-ai/claude-code)) | 2.1.306 |
 | Codex CLI ([`@openai/codex`](https://www.npmjs.com/package/@openai/codex)) | 0.163.0 |
-| Kiro CLI ([kiro.dev](https://kiro.dev/docs/cli/)) | TODO: from the build |
-| OpenCode ([`opencode-ai`](https://www.npmjs.com/package/opencode-ai)) | 1.19.3 |
+| Kiro CLI ([kiro.dev](https://kiro.dev/docs/cli/)) | 2.33.1 |
+| OpenCode ([`@opencode/cli`](https://www.npmjs.com/package/@opencode/cli)) | 2.1.2 |
 | pi ([`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)) | 1.3.0 |
 | oh-my-pi ([`@oh-my-pi/pi-coding-agent`](https://github.com/can1357/oh-my-pi)) | 18.12.5 |
 | xterm.js ([`@xterm/xterm`](https://www.npmjs.com/package/@xterm/xterm)) | 6.0.0 |
@@ -101,11 +101,11 @@ cp .env.example .env     # set CLUSTER_NAME and AWS_REGION
 kubectl -n coding-agents-for-developers port-forward svc/agent-app 8080:8080
 ```
 
-Then open <http://127.0.0.1:8080>.
+Then open <http://127.0.0.1:8080>. Pick a CLI under **Start an agent** to open a terminal;
+your sessions are listed below, each with **Open** (while running) or **Restore** (once
+idle) and **Delete**.
 
-```text
-TODO: output from the fresh run
-```
+![The web app. A "Start an agent" row of six tiles -- claude-code, codex, kiro-cli, opencode, pi, oh-my-pi -- each labelled "New agent". Below, a "Your sessions" table lists several sessions with their CLI and status, each row with a Restore and a Delete button.](figures/screenshots/launcher-and-sessions.png)
 
 **Step 1: The shared installs.** `setup.sh` checks for agent-sandbox, the EFS CSI driver
 (3.0.0 or newer, for S3 Files) and network policy enforcement, and stops with the command to
@@ -139,6 +139,20 @@ picker, not authentication, and the app is reachable only through your own port-
 ```text
 TODO: output from the fresh run
 ```
+
+## What a session looks like
+
+Each terminal is a floating window wired to the CLI running in its sandbox pod. These are
+the six CLIs answering the same prompt, each on its own model: the five Bedrock CLIs on the
+inference profile in the app's agent list (Claude Sonnet here), and Codex on a GPT model
+served through the Bedrock "Mantle" OpenAI-compatible endpoint. Kiro CLI uses the
+developer's own Kiro sign-in rather than Bedrock.
+
+| | |
+|---|---|
+| ![claude-code answering "In one sentence, what is EKS Auto Mode?" -- the Claude Code banner shows Sonnet 5.5 and Amazon Bedrock, and a one-paragraph answer about AWS managing the cluster's data plane.](figures/screenshots/claude-code.png) | ![codex answering the same prompt -- the status line shows GPT-5.6 on the amazon-bedrock provider, with a one-sentence answer about EKS Auto Mode managing compute, networking, storage and load balancing.](figures/screenshots/codex.png) |
+| ![opencode answering the same prompt -- the status line shows Claude Sonnet 5.5 (US) on Amazon Bedrock with the token cost, and a one-paragraph answer.](figures/screenshots/opencode.png) | ![pi answering the same prompt -- the status line shows us.anthropic.claude-sonnet-5-5 and the token cost, with a one-paragraph answer.](figures/screenshots/pi.png) |
+| ![oh-my-pi answering the same prompt -- the status line shows Sonnet 5.5 (US) and the cost, with a one-paragraph answer.](figures/screenshots/oh-my-pi.png) | ![kiro-cli V3 open and signed in through the developer's Kiro sign-in (the V3 chat UI, authenticated with no interactive login), ready for the same prompt.](figures/screenshots/kiro-cli.png) |
 
 ## How a session starts
 
@@ -313,16 +327,20 @@ spec:
 | `podSelector`, `agent-cli: <CLI>` | Selects this CLI's session pods. |
 | `policyTypes`, `Ingress` and `Egress` | Default-deny both ways, so only the rules below are allowed. |
 | `ingress: []` | Denies all ingress. The app reaches the pod through the Kubernetes exec API, which is not pod network traffic, so it needs no ingress rule. |
-| `egress` to `0.0.0.0/0` on 53 | DNS, to resolve every host below. A name lookup carries no data out, so the sample allows it broadly rather than pinning the CoreDNS address. |
+| `egress` to `0.0.0.0/0` on 53 | Allows egress to any address on UDP and TCP 53. This is a project choice to keep the sample simple: it does not depend on how a given cluster serves DNS (on EKS Auto Mode the resolver is node-local rather than a pod behind a ClusterIP). What it allows is wider than DNS resolution: any process in the sandbox can reach any host on UDP or TCP 53, so it can send data out over DNS or to anything listening on port 53. What it costs is that port-53 egress is not confined to the cluster's own resolver. It still opens only port 53; every other port and protocol stays denied. |
 | `egress` to `<MOUNT_TARGET_CIDRS>` on 2049 | The S3 Files mount targets, NFS over TLS. |
 | `egress` to `169.254.170.23` on 80 | The Pod Identity agent on the node, for the Bedrock role. |
 | `egress` to the `domainNames` on 443 | The S3 endpoint the mount helper reads objects from, the Bedrock runtime endpoint, and the developer hosts the agents fetch from. |
 
 Enforcement is turned on once per cluster with the `amazon-vpc-cni` ConfigMap in
 `kube-system`, which `setup.sh` checks and stops without if it is off. It is enforced on the
-node, outside the guest, so a command in the sandbox, even as root, cannot change it. A
-`domainNames` rule allows the addresses a name resolves to, so another name served from the
-same addresses is reachable too; a pod can always reach its own node.
+node, outside the guest, so a command in the sandbox, even as root, cannot change it. Its
+limits: DNS is open on port 53 to any address, so a resolver is always reachable, and a pod
+can always reach its own node; that also means port-53 egress is not confined to the
+cluster's resolver, so a process in the sandbox can send data out over DNS or to anything
+listening on port 53 (see the `0.0.0.0/0` row above). A `domainNames` rule allows the
+addresses a name resolves to, so another name served from the same addresses is reachable
+too. Everything beyond port 53, the allowed hosts and the mount targets is denied.
 
 ```text
 TODO: output from the fresh run
