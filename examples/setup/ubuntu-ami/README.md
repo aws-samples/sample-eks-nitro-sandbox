@@ -1,5 +1,30 @@
 # Build an Ubuntu AMI for EKS Pod Isolation
 
+!!! danger "Not ready to merge to `main` as an available sample"
+
+    This sample is **not ready to be merged to `main` and marked available**. It is
+    authored and static-verified, but no live AWS run has happened, because it is blocked
+    on a public release of the EKS Pod Isolation runtime and the host-kernel patch series
+    that does not exist yet. Before this sample can merge to `main` as available, all of
+    the following MUST happen:
+
+    1. **Refresh the runtime and patch-series inputs from the approved public release
+       channel.** Pull the official EKS Pod Isolation runtime (the containerd shim and CRI
+       proxy, the sandbox hypervisor and its guest microVM image) and the host-kernel
+       patch series from the approved public release channel once it exists, and record
+       their exact versions, their SHA-256 digests or signatures, their licenses and
+       redistribution terms, and the supported EKS, Ubuntu, kernel, containerd and EC2
+       support matrix.
+    2. **Run the whole thing live.** Run a fresh AMI build, a fresh second-instance
+       verification, and the node-join and sandbox-pod tests on a live cluster.
+    3. **Replace every placeholder with real captured output.** Every
+       `TODO: output from the fresh run` block below must hold real captured output from
+       that run, nothing written by hand.
+    4. **Run the cleanup and confirm absence.** Run `./clean.sh --delete-aws-resources`
+       after the last run and confirm it reports every owned resource gone.
+
+    Until all four are done, this sample stays a draft and is not marked `(available now)`.
+
 !!! warning "Status: authored and static-verified, blocked on a public release"
 
     This sample is authored and static-verified (every script parses, every pinned
