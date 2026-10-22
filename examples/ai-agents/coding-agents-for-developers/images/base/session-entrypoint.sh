@@ -149,7 +149,7 @@ fi
 setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
   env HOME="$MOUNT/home" AWS_REGION="$AWS_REGION" CLI_CMD="$CLI_CMD" \
       AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE="${AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE:-}" \
-      TERM=xterm-256color \
+      TERM=xterm-256color LANG=C.UTF-8 LC_ALL=C.UTF-8 \
       XDG_RUNTIME_DIR="$RUNTIME_DIR" \
       XDG_CACHE_HOME="$MOUNT/home/.cache" \
       XDG_CONFIG_HOME="$MOUNT/home/.config" \
