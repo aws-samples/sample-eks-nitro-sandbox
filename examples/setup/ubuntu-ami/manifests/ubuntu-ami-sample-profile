@@ -1,0 +1,38 @@
+# AppArmor profile for the ubuntu-ami sample's validation sandbox pod.
+#
+# deploy/pod-isolated-sandbox.yaml selects this profile by name
+# (container.apparmor.security.beta.kubernetes.io/main: localhost/ubuntu-ami-sample-profile).
+# A pod can only request a profile the node has already loaded, so this file is installed
+# into /etc/apparmor.d/ and loaded on the baked AMI by scripts/35-apparmor.sh; without that
+# step the kubelet would refuse the pod and the "accept" control would be indistinguishable
+# from the reject control (deploy/pod-apparmor-reject.yaml). This is the SCOPED, working
+# profile the acceptance criterion asks for: AppArmor stays enabled host-wide, and this
+# profile constrains only the one container that opts into it by name.
+#
+# The profile is deliberately narrow: it allows ordinary container execution and reads, and
+# denies writes to a few sensitive host-shaped paths so test.sh can show one concrete action
+# accepted and one refused for the expected AppArmor reason. It is NOT a hardening baseline;
+# it exists to demonstrate a scoped profile that loads, enforces, and denies.
+
+abi <abi/3.0>,
+
+include <tunables/global>
+
+profile ubuntu-ami-sample-profile flags=(attach_disconnected,mediate_deleted) {
+  include <abstractions/base>
+
+  # Allow the workload to run normally: execute programs, read the filesystem, use the
+  # network and standard device nodes. The container image and the pod command still run.
+  network,
+  capability,
+  file,
+
+  # ENFORCED DENY: writing these sensitive paths is refused under this profile, which is the
+  # "refused control" test.sh demonstrates (e.g. `echo test > /etc/shadow` -> Permission
+  # denied) while the same pod otherwise runs. `deny` wins over the broad `file` allow above.
+  deny /etc/shadow* w,
+  deny /etc/gshadow* w,
+  deny /etc/sudoers* w,
+  deny /etc/sudoers.d/** w,
+  deny /boot/** w,
+}

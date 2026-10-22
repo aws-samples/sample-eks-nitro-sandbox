@@ -1,0 +1,67 @@
+# Source provenance for the ubuntu-ami sample's inputs. Plain text, not Markdown, so it
+# ships as a reference manifest next to packages/sources.lock rather than as a page.
+# packages/sources.lock is the machine-checked lock file the build scripts read; this file
+# is the human-readable provenance note the README's "Public inputs" section points to.
+#
+# Three classes of input:
+#
+# 1. PUBLIC, PINNED, CHECKSUMMED (obtainable by an anonymous repository reader today)
+#    - Ubuntu 24.04 EKS base AMI: resolved per Region from Canonical's public SSM
+#      parameter path; see packages/sources.lock, id=base-ami-ubuntu-2404.
+#    - Linux kernel 6.18.39 source: kernel.org release tarball, verified against
+#      kernel.org's own published sha256sums.asc; see id=linux-kernel-source.
+#    - erofs-utils 1.8.10 source: kernel.org cgit snapshot of the tagged release. A cgit
+#      snapshot has no upstream-published checksum, so the SHA-256 is pinned BY THIS
+#      SAMPLE (confirmed identical across two independent fetches); see
+#      id=erofs-utils-source.
+#    - Distro packages (kernel-build toolchain, containerd, iproute2, util-linux, unzip):
+#      Ubuntu apt repositories, verified by apt's own signed repository metadata; see
+#      id=distro-packages.
+#
+# 2. RELEASED BY AWS TO THE CUSTOMER, PINNED, CHECKSUMMED (not yet anonymously
+#    downloadable at the time of writing)
+#    - EKS Pod Isolation runtime binaries + guest image (containerd shim / CRI proxy,
+#      sandbox hypervisor fork and jailer, guest microVM boot image and root disk, Cedar
+#      policy generator, KMS key provider); see id=eks-pod-isolation-runtime.
+#    - Host-kernel patch series, applied to the pinned kernel.org 6.18.39 tree above
+#      (enclave driver, CMA pool, virtio/vsock); see id=host-kernel-patch-series.
+#    Why not yet public: there is no public GitHub repository or release for the runtime,
+#    the hypervisor fork, or the guest image; the public Amazon EKS User Guide has no page
+#    for the feature yet. This is a property of the feature's pre-GA release stage, not a
+#    gap in this sample. The sample is designed to consume these the moment a public AWS
+#    release channel exists: setup.sh's preflight checks for the two archives at the paths
+#    config.env names, verifies them against packages/sources.lock when present, and stops
+#    cleanly with the documented prerequisite and the public download location when they
+#    are absent. It never substitutes an internal source tree or a private URL.
+#
+# 3. NEVER AN INPUT HERE
+#    Amazon-internal source trees, internal package mirrors, internal hosts, private URLs.
+#    The sample must not require or name any of these.
+#
+# Why not compile the runtime from source like the maintainers' internal demo: an external
+# reader cannot clone the internal source trees that demo builds from (not on any public
+# forge), and naming them would both break the build for a reader and violate this
+# repository's rule against internal URLs in tracked files. This sample consumes the
+# runtime as released artifacts instead, which is also the path AWS intends for customers
+# at general availability: prebuilt runtime binaries and a guest image, plus a host-kernel
+# patch series applied to a public kernel.org tree. The customer compiles only the host
+# kernel; everything else is a verified download.
+#
+# A version bump is not a string edit: re-record the new SHA-256 (or resolved AMI name/ID)
+# in packages/sources.lock, re-apply and re-assert the kernel config after olddefconfig,
+# rebuild, and re-run the live checks end to end. Checking a version string alone is not
+# sufficient.
+#
+# The on-image manifest (for example /etc/nip-custom-ami-manifest), written by the build
+# stages, is the sample's software bill of materials for the node: base AMI name and ID,
+# kernel release string and source SHA-256, applied patch count, erofs-utils version and
+# installed mkfs.erofs binary SHA-256, each runtime artifact's SHA-256 (including artifacts
+# the release ships without one), the observed containerd version, and resolved distro
+# package versions. It names only public inputs and carries no value from the author's
+# account or environment.
+#
+# Bundle-command interface note: a separate workstream is producing deterministic public
+# dependency bundle tooling and will publish its own short machine-readable manifest under
+# packages/ describing that command's interface. This file does not document the bundle
+# command's exact flags; a later README/docs-folding round reconciles that once the manifest
+# lands.

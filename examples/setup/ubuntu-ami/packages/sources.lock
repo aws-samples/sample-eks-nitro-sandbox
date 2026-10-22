@@ -1,0 +1,111 @@
+# Pinned, checksum-verified inputs for the ubuntu-ami sample.
+#
+# One line per input. The fetch/build helpers under packages/ and scripts/ read this file
+# and fail closed: a value that does not match aborts the step, with no override flag. See
+# docs/SOURCES.md for the full design record of where each input comes from and why.
+#
+# Format, one input per block:
+#   id=<stable identifier>
+#   kind=<ssm-ami|file>
+#   ref=<version/ref>
+#   source=<public URL or SSM parameter path; never an internal/private location>
+#   sha256=<hex digest, file inputs only; "n/a" for an AMI resolved by signed SSM parameter>
+#   verify=<short note on how this input is obtained and verified>
+#   status=<available|pending-public-release>
+#
+# A line is read as `key=value`; a block ends at a blank line. Unknown keys are ignored by
+# the fetch helpers (forward-compatible), but `id`, `kind`, `ref`, `source` and `status` are
+# required for every block, and `sha256` is required whenever kind=file.
+#
+# To move a pin: update this file and the corresponding entry in docs/SOURCES.md together,
+# re-fetch, and let the build re-verify against the new value. Do not edit one without the
+# other.
+
+# --- 1. Ubuntu 24.04 EKS-optimized base AMI (Canonical, public SSM parameter) ---------------
+id=base-ami-ubuntu-2404
+kind=ssm-ami
+ref=k8s-1.36
+source=/aws/service/canonical/ubuntu/eks/24.04/1.36/stable/current/amd64/hvm/ebs-gp3/ami-id
+sha256=n/a
+verify=Resolved via `aws ssm get-parameter --name <source>` for the build Region. The AMI is
+  signed by Canonical/AWS; there is no separate SHA-256 to pin. The build records the
+  resolved image name and AMI ID it actually used in the on-image manifest and the run
+  evidence; this lock file pins the Kubernetes version, not a Region-specific AMI ID.
+status=available
+
+# --- 2. Linux kernel source (kernel.org, public, upstream-published checksum) ---------------
+id=linux-kernel-source
+kind=file
+ref=6.18.39
+source=https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.39.tar.xz
+sha256=a7a7e3d2ae9d95e74197223a8d4eb5f6be7aac21b6e6de27e9685d001c1f8cb0
+verify=Verified against kernel.org's own https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc
+  for this release. The fetch helper re-downloads and re-verifies on every run; a mismatch
+  aborts before the tarball is unpacked.
+status=available
+
+# --- 3. erofs-utils source (kernel.org cgit snapshot of the tagged release) -----------------
+id=erofs-utils-source
+kind=file
+ref=1.8.10
+source=https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git/snapshot/erofs-utils-1.8.10.tar.gz
+sha256=05eb4edebe11decce6ecb34e98d2f80c8cd283c2f2967d8ba7efd58418570514
+verify=This is a cgit-generated snapshot of a tag, not an upstream release tarball with its
+  own published checksum, so the SHA-256 is pinned BY THIS SAMPLE (confirmed identical
+  across two independent fetches at the time of writing), not quoted from upstream. A
+  re-fetch that disagrees means cgit's archive generation changed; re-confirm by hand and
+  update this file and docs/SOURCES.md together before trusting a new value. Because
+  mkfs.erofs has no stable --version output, the build also records the installed binary's
+  own SHA-256 into the on-image manifest.
+status=available
+
+# --- 4. EKS Pod Isolation runtime binaries + guest image (released artifact; pre-GA) --------
+# No public AWS release channel exists yet for this artifact (see docs/SOURCES.md, "The
+# release artifacts, and the prerequisite the sample stops on"). setup.sh's preflight checks
+# for it at RUNTIME_ARTIFACT_PATH (see config.env.example) and STOPS with this prerequisite
+# and the public download location (cited by page title until the page exists) if absent.
+# It never substitutes an internal source tree or a private URL. Fill in ref/source/sha256
+# here once a public release exists, and re-confirm every pin above against that release.
+id=eks-pod-isolation-runtime
+kind=file
+ref=TODO-pin-exact-public-release-version
+source=TODO-public-AWS-release-channel-not-yet-published; see docs/SOURCES.md
+sha256=TODO-per-artifact-sha256-from-the-release
+verify=TODO: verify against the release's own SHA-256 files for the large binary artifacts
+  (Firecracker fork, jailer, guest EIF, guest disk); for artifacts the release ships without
+  a checksum (shim, agent, policy generator, key provider), record the SHA-256 observed on
+  the fresh run into this file and the on-image manifest, so the set stays auditable.
+status=pending-public-release
+
+# --- 5. Host-kernel patch series (released artifact; pre-GA) --------------------------------
+# Applied to the pinned kernel.org 6.18.39 tree above to add the sandbox host-kernel support
+# (enclave driver, CMA pool, virtio/vsock). Same prerequisite-stop behavior as block 4: no
+# public release channel yet, so setup.sh's preflight stops cleanly rather than falling back
+# to an internal source tree.
+id=host-kernel-patch-series
+kind=file
+ref=TODO-pin-exact-public-release-version
+source=TODO-public-AWS-release-channel-not-yet-published; see docs/SOURCES.md
+sha256=TODO-sha256-of-the-patch-series-archive
+verify=TODO: verify against the release's published SHA-256 once a public channel exists;
+  record the applied patch count in the on-image manifest.
+status=pending-public-release
+
+# --- 6. Distro packages (Ubuntu apt repositories; capability-asserted, not SHA-256 pinned) --
+# Kernel-build toolchain: build-essential flex bison bc gawk libelf-dev libdw-dev libssl-dev
+#   dwarves git curl xz-utils
+# Host runtime prerequisites: iproute2 util-linux unzip
+# containerd: already present on the Canonical EKS AMI; checked (2.1.x or 2.2.x required),
+#   never installed or upgraded/downgraded by this sample.
+id=distro-packages
+kind=file
+ref=capability-asserted-not-version-pinned
+source=Ubuntu apt repositories (signed repository metadata)
+sha256=n/a
+verify=apt verifies its own packages against Ubuntu's signed repository metadata; this
+  sample does not re-pin a SHA-256 per apt package (that would be a moving target across a
+  reader's apt snapshot). It asserts the capabilities that matter instead (zstd support in
+  erofs-utils, tc present, pahole/dwarves new enough for module BTF, containerd 2.1.x/2.2.x)
+  with an accept control and a reject control for each, and records resolved versions in the
+  on-image manifest and run evidence.
+status=available

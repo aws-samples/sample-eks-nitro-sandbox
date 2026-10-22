@@ -1,0 +1,43 @@
+# The validation sandbox pod. Egress is restricted by the COMPLETE NetworkPolicy in
+# network-policy.yaml, shown alongside this pod on the README page (the acceptance
+# criterion requires either no network at all or a shown, complete policy; this sample
+# demonstrates the policy path so the egress rules are visible). The AppArmor annotation
+# scopes a profile to this pod only; it does not change the host's AppArmor default.
+# setup.sh renders @NODEGROUP@ from NODEGROUP_NAME.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: isolated-sandbox-pod
+  namespace: ubuntu-ami-sample
+  labels:
+    app: isolated-sandbox-pod
+  annotations:
+    container.apparmor.security.beta.kubernetes.io/main: localhost/ubuntu-ami-sample-profile
+spec:
+  runtimeClassName: isolated-sandbox
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: "@NODEGROUP@"
+  tolerations:
+    - key: sandbox.preview/ubuntu-ami
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: main
+      image: public.ecr.aws/amazonlinux/amazonlinux:2023
+      command: ["sh", "-ec"]
+      args:
+        - |
+          echo "Guest kernel: $(uname -r)"
+          echo "Guest boot uptime (s): $(cat /proc/uptime | awk '{print $1}')"
+          echo "Guest devices:"
+          ls -1 /sys/block
+          sleep infinity
+      resources:
+        requests:
+          cpu: "1"
+          memory: 768Mi

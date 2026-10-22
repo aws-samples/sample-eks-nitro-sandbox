@@ -1,0 +1,30 @@
+# The COMPLETE egress policy for the validation sandbox pod. Shown in full on the README,
+# as the repository's security rules require: a reader must see every rule that limits
+# where code in the sandbox can connect. No Ingress, LoadBalancer or NodePort is created
+# anywhere in this sample.
+#
+# Default-deny all ingress and egress for pods labelled app=isolated-sandbox-pod in this
+# namespace, then allow only DNS (UDP/TCP 53) egress to the cluster's DNS service. The
+# sandbox has no other reason to reach the network for this validation: it never claims a
+# workload need beyond proving the guest boundary itself.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: isolated-sandbox-pod-policy
+  namespace: ubuntu-ami-sample
+spec:
+  podSelector:
+    matchLabels:
+      app: isolated-sandbox-pod
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

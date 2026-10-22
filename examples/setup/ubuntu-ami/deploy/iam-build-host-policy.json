@@ -1,0 +1,24 @@
+{
+  "Comment": "Scoped inline policy for the ubuntu-ami sample's BUILD-HOST instance role, created and attached by scripts/00a-iam.sh. The role also gets the AWS-managed AmazonSSMManagedInstanceCore policy (SSM Session Manager / Run Command, no inbound rule needed). This document is the build host's own permissions: it reads the Canonical EKS base-AMI SSM parameter and writes the on-image provenance manifest; it does NOT create EC2/EKS resources (setup.sh does that from the operator's own credentials). Resource ARNs are intentionally left as the shared-default placeholders the README documents; scripts/00a-iam.sh substitutes the running Region and account at creation time.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ResolveBaseAmiSsmParameter",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters"
+      ],
+      "Resource": "arn:aws:ssm:*::parameter/aws/service/canonical/ubuntu/eks/*"
+    },
+    {
+      "Sid": "ReadInstanceIdentityForManifest",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeInstances",
+        "ec2:DescribeTags"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
