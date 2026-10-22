@@ -107,12 +107,16 @@ ge() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0 >= b+0)}'; }
 le() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0 <= b+0)}'; }
 
 # --- 1. Deploy from a clean slate ------------------------------------------------------
-# Check who owns the namespace BEFORE deleting or creating anything. A foreign
-# namespace (or a lookup that cannot run) stops the run here, so the clean-slate
-# deletes below never act in a namespace this sample does not own.
+# Check who owns the namespace ONCE, before deleting or creating anything, and claim an
+# absent one at once with `kubectl create`, which fails if anything created it in the
+# meantime. A foreign namespace or a lookup that cannot run stops the run here, so the
+# clean-slate deletes below only ever act in a namespace this sample owns.
 case "$(ns_state)" in
   error)   line "ERROR: could not determine whether namespace $NS is this sample's (kubectl lookup failed); did nothing."; exit 1 ;;
   foreign) line "ERROR: namespace $NS exists but is not this sample's (missing label sample=sandbox-limits)."; line "Delete it, or run on a cluster without it, then re-run."; exit 1 ;;
+  absent)  kubectl create -f "$DEPLOY/namespace.yaml" ;;
+  owned)   line "reusing namespace $NS (carries this sample's label)" ;;
+  *)       line "ERROR: unexpected namespace state for $NS; did nothing."; exit 1 ;;
 esac
 
 say "Start from a clean slate (delete any leftover pods and policy from a prior run)"
@@ -121,14 +125,7 @@ kubectl delete -f "$DEPLOY/probe-sandboxed.yaml"                  --ignore-not-f
 kubectl delete -f "$DEPLOY/probe-standard.yaml"                   --ignore-not-found --wait=true
 kubectl delete -f "$DEPLOY/sink.yaml"                             --ignore-not-found --wait=true
 
-say "Deploy the namespace, the egress NetworkPolicy, the sink and the two probe pods"
-# Create the namespace only when absent; when it already carries this sample's label,
-# reuse it without re-applying the manifest.
-if [[ "$(ns_state)" == absent ]]; then
-  kubectl create -f "$DEPLOY/namespace.yaml"
-else
-  line "reusing namespace $NS (carries this sample's label)"
-fi
+say "Deploy the egress NetworkPolicy, the sink and the two probe pods"
 COREDNS_IP="$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')"
 sed "s|<COREDNS_IP>|$COREDNS_IP|" "$DEPLOY/egress-policy.yaml" | kubectl apply -f -
 kubectl apply -f "$DEPLOY/sink.yaml"
