@@ -160,7 +160,8 @@ setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
         if tmux has-session -t agent 2>/dev/null; then \
           echo "session-entrypoint: tmux agent session already running, leaving it" >&2; \
         else \
-          tmux new-session -d -s agent -x 200 -y 50 "$CLI_CMD"; \
+          tmux new-session -d -s agent -x 200 -y 50 \
+            "export LANG=C.UTF-8 LC_ALL=C.UTF-8 TERM=xterm-256color; exec $CLI_CMD"; \
           tmux set-option -t agent window-size latest; \
           tmux set-option -t agent aggressive-resize on; \
         fi'
