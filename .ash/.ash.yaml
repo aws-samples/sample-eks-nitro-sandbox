@@ -17,7 +17,9 @@ global_settings:
   # Each entry: the narrowest path, a reason, and an expiration date. Add one only with an
   # explanation in the pull request (CONTRIBUTING.md, "Security scanning").
   # Grouped by cause: namespace set at apply time, pod covered by a policy in another file
-  # or with no network, image placeholders, not applicable on Kubernetes, pinned lines.
+  # or with no network, image placeholders, not applicable on Kubernetes, pinned lines,
+  # fixed version tags on the pages, plain/contrast pods, idle or one-shot pods, load-bearing
+  # UID, the poller and autoscaler, and destination pods with no policy of their own.
   # ---------------------------------------------------------------------------------------
   suppressions:
     # Namespace is set at apply time, never hard-coded in the manifest.
@@ -79,10 +81,6 @@ global_settings:
       path: 'examples/policy/image-signing/**/deploy/*.yaml'
       reason: 'Image is a placeholder; setup.sh and build-offline.sh substitute registry/repo@sha256:<digest> before apply'
       expiration: '2027-12-31'
-    - rule_id: CKV_K8S_43
-      path: 'examples/policy/image-signing/**/deploy/*.yaml'
-      reason: 'Image is a placeholder; setup.sh and build-offline.sh substitute registry/repo@sha256:<digest> before apply'
-      expiration: '2027-12-31'
     # Not applicable on Kubernetes.
     - rule_id: CKV_DOCKER_2
       path: '**/Dockerfile'
@@ -94,6 +92,248 @@ global_settings:
       line_start: 35
       line_end: 35
       reason: 'secretName: references a Kubernetes Secret; the token is created from stdin and is not in the file'
+      expiration: '2027-12-31'
+    # Samples pin images by fixed version tag shown on the pages; CKV_K8S_14 still fails a
+    # :latest or untagged image, and CKV_K8S_15 does not require Always or a digest for a fixed tag.
+    - rule_id: CKV_K8S_43
+      path: '**'
+      reason: 'Samples use fixed version tags shown on the pages; CKV_K8S_14 still fails a :latest or untagged image'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_15
+      path: '**'
+      reason: 'Fixed version tags with IfNotPresent, the default for a fixed tag; Always or a digest is not required'
+      expiration: '2027-12-31'
+    # Plain or contrast pod: the lesson is a pod with no hardening, one line from a regular pod.
+    - rule_id: CKV_K8S_8
+      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
+      reason: 'Same regular pod with one extra line; no probes on purpose (hello-sandbox/README.md:69)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
+      reason: 'Same regular pod with one extra line; no probes on purpose (hello-sandbox/README.md:69)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_10
+      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
+      reason: 'Same regular pod plus one line; no requests on purpose (hello-sandbox/README.md:145)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_11
+      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
+      reason: 'Same regular pod plus one line; no requests on purpose (hello-sandbox/README.md:145)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_12
+      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
+      reason: 'Same regular pod plus one line; no requests on purpose (hello-sandbox/README.md:145)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_13
+      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
+      reason: 'Same regular pod plus one line; no requests on purpose (hello-sandbox/README.md:145)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
+      reason: 'Same regular pod with one extra line; no hardening on purpose (hello-sandbox/README.md:69)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
+      reason: 'Same regular pod with one extra line; no hardening on purpose (hello-sandbox/README.md:69)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
+      reason: 'Same regular pod with one extra line; no hardening on purpose (hello-sandbox/README.md:69)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
+      reason: 'Same regular pod with one extra line; no hardening on purpose (hello-sandbox/README.md:69)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
+      reason: 'Same regular pod with one extra line; no hardening on purpose (hello-sandbox/README.md:69)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
+      reason: 'Same regular pod with one extra line; no hardening on purpose (hello-sandbox/README.md:69)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
+      reason: 'Same regular pod with one extra line; no hardening on purpose (hello-sandbox/README.md:69)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
+      reason: 'Same regular pod with one extra line; no hardening on purpose (hello-sandbox/README.md:69)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_38
+      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
+      reason: 'Same regular pod with one extra line; no hardening on purpose (hello-sandbox/README.md:69)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
+      reason: 'Same regular pod with one extra line; image default user on purpose (hello-sandbox/README.md:69)'
+      expiration: '2027-12-31'
+    # Ordinary non-sandboxed contrast pod for the storage side-by-side (pod-ordinary.yaml:27).
+    - rule_id: CKV_K8S_8
+      path: 'examples/storage/ebs/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary non-sandboxed contrast pod, no hardening on purpose (pod-ordinary.yaml:27)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/storage/ebs/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary non-sandboxed contrast pod, no hardening on purpose (pod-ordinary.yaml:27)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/storage/ebs/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary non-sandboxed contrast pod, no hardening on purpose (pod-ordinary.yaml:27)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/storage/ebs/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary non-sandboxed contrast pod, no hardening on purpose (pod-ordinary.yaml:27)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/storage/ebs/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary non-sandboxed contrast pod, no hardening on purpose (pod-ordinary.yaml:27)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/storage/ebs/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary non-sandboxed contrast pod, no hardening on purpose (pod-ordinary.yaml:27)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/storage/ebs/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary non-sandboxed contrast pod, no hardening on purpose (pod-ordinary.yaml:27)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/storage/ebs/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary non-sandboxed contrast pod, no hardening on purpose (pod-ordinary.yaml:27)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/storage/ebs/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary non-sandboxed contrast pod, no hardening on purpose (pod-ordinary.yaml:27)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/storage/ebs/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary non-sandboxed contrast pod, no hardening on purpose (pod-ordinary.yaml:27)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_38
+      path: 'examples/storage/ebs/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary non-sandboxed contrast pod, no hardening on purpose (pod-ordinary.yaml:27)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/storage/ebs/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary non-sandboxed contrast pod, image default user on purpose (pod-ordinary.yaml:27)'
+      expiration: '2027-12-31'
+    # Probes on idle or one-shot pods: kubectl exec, sleep loops, a batch pod, or meant to stay Pending.
+    - rule_id: CKV_K8S_8
+      path: 'examples/getting-started/coding-agent/fix-issue.yaml'
+      reason: 'One-shot batch pod (restartPolicy: Never) driven by its entrypoint; a probe gates nothing'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/getting-started/coding-agent/fix-issue.yaml'
+      reason: 'One-shot batch pod (restartPolicy: Never) driven by its entrypoint; a probe gates nothing'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/isolation/network-policy/deploy/client-*.yaml'
+      reason: 'Idle client pod (sleep infinity) driven by kubectl exec; a probe gates nothing'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/isolation/network-policy/deploy/client-*.yaml'
+      reason: 'Idle client pod (sleep infinity) driven by kubectl exec; a probe gates nothing'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/policy/cedar-policy/deploy/pod.yaml'
+      reason: 'Idle pod driven by kubectl exec to show the Cedar policy decision; a probe gates nothing'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/policy/cedar-policy/deploy/pod.yaml'
+      reason: 'Idle pod driven by kubectl exec to show the Cedar policy decision; a probe gates nothing'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/policy/image-signing/**/deploy/*.yaml'
+      reason: 'Idle verify pods (Dockerfile:99 exec sleep 3600) driven by kubectl exec; a probe gates nothing'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/policy/image-signing/**/deploy/*.yaml'
+      reason: 'Idle verify pods (Dockerfile:99 exec sleep 3600) driven by kubectl exec; a probe gates nothing'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/storage/ebs/deploy/*.yaml'
+      reason: 'Idle writer pod (writes to the volume then sleeps) driven by kubectl exec; a probe gates nothing'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/storage/ebs/deploy/*.yaml'
+      reason: 'Idle writer pod (writes to the volume then sleeps) driven by kubectl exec; a probe gates nothing'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/storage/efs/deploy/efs.yaml'
+      reason: 'Idle pods (sleep loop) driven by kubectl exec to show the shared mount; a probe gates nothing'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/storage/efs/deploy/efs.yaml'
+      reason: 'Idle pods (sleep loop) driven by kubectl exec to show the shared mount; a probe gates nothing'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/storage/s3-files/deploy/s3-files.yaml'
+      reason: 'Idle pods (sleep loop) driven by kubectl exec to show the shared mount; a probe gates nothing'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/storage/s3-files/deploy/s3-files.yaml'
+      reason: 'Idle pods (sleep loop) driven by kubectl exec to show the shared mount; a probe gates nothing'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/isolation/sandbox-limits/deploy/probe-*.yaml'
+      reason: 'Probe pods already carry a readiness probe; a liveness probe on a sleep loop gates nothing'
+      expiration: '2027-12-31'
+    # Poller and autoscaler: single-replica first-party pods, no port or Service.
+    - rule_id: CKV_K8S_8
+      path: 'examples/managed-agents/claude-managed-agents/deploy/*.yaml'
+      reason: 'A crash is restarted by the Deployment; detecting a hang would need a heartbeat, which the sample does not add'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/managed-agents/claude-managed-agents/deploy/*.yaml'
+      reason: 'Single replica with no port or Service, so a readiness probe gates nothing'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_38
+      path: 'examples/managed-agents/claude-managed-agents/deploy/*.yaml'
+      reason: 'They call the Kubernetes API with least-privilege RBAC (autoscaler patches only sandboxwarmpools/scale)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_35
+      path: 'examples/managed-agents/claude-managed-agents/deploy/*.yaml'
+      reason: 'The SDK reads the key from the environment via secretKeyRef; it is never on a command line'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_11
+      path: 'examples/managed-agents/claude-managed-agents/deploy/*.yaml'
+      reason: 'CPU request without a CPU limit on purpose, so the loop is not CPU-throttled'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/managed-agents/claude-managed-agents/deploy/*.yaml'
+      reason: 'UID 1000 is the image non-root agent user (Dockerfile:23-24)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/managed-agents/claude-managed-agents/deploy/*.yaml'
+      reason: 'First-party non-sandbox pods; the sample policy restricts the sandbox pods, not the poller/autoscaler'
+      expiration: '2027-12-31'
+    # UID 1000 is load-bearing. The EFS and S3 access points enforce UID/GID 1000, and the EBS
+    # pods run as UID 1000 with fsGroup 2000 to produce the write output the page shows.
+    - rule_id: CKV_K8S_40
+      path: 'examples/storage/ebs/deploy/*.yaml'
+      reason: 'UID 1000 with fsGroup 2000 is what the page shows (README Step 3); a high UID would change that output'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/storage/efs/deploy/efs.yaml'
+      reason: 'The EFS access point enforces UID/GID 1000; the pods must match it'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/storage/s3-files/deploy/s3-files.yaml'
+      reason: 'The S3 access point enforces UID/GID 1000; the pods must match it'
+      expiration: '2027-12-31'
+    # Destination pod with no policy of its own: the target an egress policy allows or denies.
+    - rule_id: CKV2_K8S_6
+      path: 'examples/isolation/network-policy/deploy/web-*.yaml'
+      reason: 'Destinations the egress policy allows or denies; they carry no policy of their own'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/isolation/sandbox-limits/deploy/sink.yaml'
+      reason: 'Destination of the probes egress; it carries no policy of its own'
+      expiration: '2027-12-31'
+    # Policy in another file: selected by the ApplicationNetworkPolicy in egress-policy.yaml.
+    - rule_id: CKV2_K8S_6
+      path: 'examples/getting-started/coding-agent/fix-issue.yaml'
+      reason: 'Selected by the ApplicationNetworkPolicy in egress-policy.yaml (podSelector app: coding-agent)'
       expiration: '2027-12-31'
 scanners:
   cdk-nag:
