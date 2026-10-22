@@ -1,0 +1,60 @@
+{
+  "Comment": "The inline permissions for the sample's own S3 Files synchronization role, which S3 Files assumes to keep the file system and the bucket in sync. setup.sh renders <S3_BUCKET_ARN> and <ACCOUNT_ID> before applying it with `aws iam put-role-policy`. Scoped to this bucket and this account only. This follows the S3 Files prerequisites (\"IAM role for accessing your bucket from the file system\"); the bucket uses SSE-S3, so the KMS statement the docs show for an SSE-KMS bucket is not included. The EventBridge statements let S3 Files manage the synchronization rules it creates.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "S3BucketPermissions",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:ListBucketVersions"
+      ],
+      "Resource": "<S3_BUCKET_ARN>",
+      "Condition": {
+        "StringEquals": { "aws:ResourceAccount": "<ACCOUNT_ID>" }
+      }
+    },
+    {
+      "Sid": "S3ObjectPermissions",
+      "Effect": "Allow",
+      "Action": [
+        "s3:AbortMultipartUpload",
+        "s3:DeleteObject*",
+        "s3:GetObject*",
+        "s3:List*",
+        "s3:PutObject*"
+      ],
+      "Resource": "<S3_BUCKET_ARN>/*",
+      "Condition": {
+        "StringEquals": { "aws:ResourceAccount": "<ACCOUNT_ID>" }
+      }
+    },
+    {
+      "Sid": "EventBridgeManage",
+      "Effect": "Allow",
+      "Action": [
+        "events:DeleteRule",
+        "events:DisableRule",
+        "events:EnableRule",
+        "events:PutRule",
+        "events:PutTargets",
+        "events:RemoveTargets"
+      ],
+      "Condition": {
+        "StringEquals": { "events:ManagedBy": "elasticfilesystem.amazonaws.com" }
+      },
+      "Resource": "arn:aws:events:*:*:rule/DO-NOT-DELETE-S3-Files*"
+    },
+    {
+      "Sid": "EventBridgeRead",
+      "Effect": "Allow",
+      "Action": [
+        "events:DescribeRule",
+        "events:ListRuleNamesByTarget",
+        "events:ListRules",
+        "events:ListTargetsByRule"
+      ],
+      "Resource": "arn:aws:events:*:*:rule/*"
+    }
+  ]
+}

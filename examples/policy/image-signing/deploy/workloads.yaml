@@ -52,6 +52,7 @@ spec:
   containers:
     - name: main
       image: POSITIVE_IMAGE_URI
+      imagePullPolicy: IfNotPresent
       env:
         - name: HOME
           value: /scratch
@@ -107,6 +108,7 @@ spec:
   containers:
     - name: main
       image: NEGATIVE_IMAGE_URI
+      imagePullPolicy: IfNotPresent
       env:
         - name: HOME
           value: /scratch
@@ -163,6 +165,7 @@ spec:
   containers:
     - name: main
       image: POSITIVE_IMAGE_URI
+      imagePullPolicy: IfNotPresent
       env:
         - name: HOME
           value: /scratch

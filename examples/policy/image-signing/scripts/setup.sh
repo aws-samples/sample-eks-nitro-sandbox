@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Build one image, push it to two ECR repositories, sign ONLY one copy with AWS
-# Signer, create the in-guest verifier's Pod Identity role, turn on network policy
-# enforcement, apply the egress policy, and launch the three pods this sample
-# compares. Run it from this sample's folder.
+# Signer, create the in-guest verifier's Pod Identity role, apply the egress
+# policy, and launch the three pods this sample compares. Network policy
+# enforcement is a cluster-wide setting the reader turns on first (see the page);
+# this script only checks it. Run it from this sample's folder.
 #
 #   ./scripts/setup.sh    create everything and wait until the pods are Ready
 #
@@ -64,6 +65,18 @@ ctx_now="$(kc config current-context 2>/dev/null || true)"
 echo "kube context: $ctx_now"
 kc get runtimeclass isolated-sandbox >/dev/null 2>&1 \
   || { echo "ERROR: runtimeclass isolated-sandbox not found on this cluster" >&2; exit 2; }
+# Network policy enforcement is a cluster-wide setting; the reader turns it on as a
+# step on the page. Check it here, before creating any AWS resource, so a cluster
+# without it stops the run with nothing half-built. Never change the ConfigMap.
+np_on="$(kc get configmap -n kube-system amazon-vpc-cni \
+  -o jsonpath='{.data.enable-network-policy-controller}' 2>/dev/null || true)"
+if [[ "$np_on" != "true" ]]; then
+  echo "ERROR: network policy enforcement is off on this cluster (amazon-vpc-cni" >&2
+  echo "       enable-network-policy-controller is '${np_on:-unset}'). Turn it on once per" >&2
+  echo "       cluster, as the page's step before setup.sh describes, then re-run:" >&2
+  echo "         kubectl apply -f deploy/enable-network-policy.yaml" >&2
+  exit 2
+fi
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
@@ -261,9 +274,8 @@ else
   echo "Pod Identity association already present for $SERVICE_ACCOUNT (bound to this sample's role)."
 fi
 
-# --- 6/8 network policy enforcement + egress policy ------------------------
-step "6/8 turn on network policy enforcement and apply the egress policy"
-kc apply -f deploy/enable-network-policy.yaml
+# --- 6/8 egress policy -----------------------------------------------------
+step "6/8 apply the egress policy"
 COREDNS_IP="$(kc get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')"
 # ECR serves image layers and the Notation signature blob from Amazon S3 through a
 # presigned URL whose host rotates across the whole S3 regional range, which a

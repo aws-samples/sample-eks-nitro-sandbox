@@ -35,6 +35,8 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 ## Storage
 
 - [EBS volumes](examples/storage/ebs/README.md): a sandboxed pod and a StatefulSet backed by dynamically provisioned, encrypted EBS volumes that outlive the pod, seen inside the guest as virtio devices.
+- [Shared EFS storage](examples/storage/efs/README.md): two sandboxed pods share one EFS file system through a single access point, mounted over TLS with IAM authorization, so each pod reads and writes the same `/shared` directory.
+- [Shared S3 Files storage](examples/storage/s3-files/README.md): two sandboxed pods share one S3 Files access point, backed by a versioned S3 bucket, so the same data is both a shared `/shared` POSIX file system and plain S3 objects addressable from outside the cluster.
 
 ## Preview the site locally
 

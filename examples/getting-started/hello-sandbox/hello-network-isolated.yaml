@@ -8,14 +8,12 @@ spec:
   runtimeClassName: isolated-sandbox
   containers:
     - name: hello
-      image: public.ecr.aws/docker/library/alpine:3.20
+      image: public.ecr.aws/amazonlinux/amazonlinux:2023
+      imagePullPolicy: IfNotPresent
       command: ["sh", "-c"]
       args:
         - |
-          echo "kernel:  $(uname -r)"
-          echo "ipv4:    $(ip -o -4 addr show | awk '{print $2 "=" $4}' | tr '\n' ' ')"
-          echo "route:   $(ip route | head -n 1 | grep . || echo none)"
+          echo "/sys/class/dmi/id/product_name:  $(cat /sys/class/dmi/id/product_name)"
+          echo "ipv4:    $(awk '/32 host/ {print f} {f=$2}' /proc/net/fib_trie | sort -u | tr '\n' ' ')"
+          echo "route:   $(awk 'NR>1 && $2=="00000000" {print "default dev " $1}' /proc/net/route | grep . || echo none)"
           sleep infinity
-      resources:
-        requests: { cpu: "1", memory: 768Mi }
-        limits:   { cpu: "1", memory: 768Mi }

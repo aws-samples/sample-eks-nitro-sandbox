@@ -9,7 +9,8 @@ spec:
   restartPolicy: Never
   containers:
     - name: claude
-      image: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/coding-agent:latest
+      image: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/coding-agent:v1
+      imagePullPolicy: IfNotPresent
       env:
         - { name: CLAUDE_CODE_USE_BEDROCK, value: "1" }
         - { name: AWS_REGION,              value: us-west-2 }

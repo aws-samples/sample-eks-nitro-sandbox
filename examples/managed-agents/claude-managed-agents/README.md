@@ -125,10 +125,12 @@ export REGISTRY=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 aws ecr create-repository --repository-name claude-sandbox-worker --region $AWS_REGION
 aws ecr get-login-password --region $AWS_REGION \
   | docker login --username AWS --password-stdin $REGISTRY
-docker build --platform linux/amd64 -t $REGISTRY/claude-sandbox-worker:latest .
-docker push $REGISTRY/claude-sandbox-worker:latest
+docker build --platform linux/amd64 -t $REGISTRY/claude-sandbox-worker:v1 .
+docker push $REGISTRY/claude-sandbox-worker:v1
 docker logout $REGISTRY
 ```
+
+The workloads set `imagePullPolicy: IfNotPresent` for the fixed `:v1` tag, so a node that already pulled `:v1` keeps using its cached copy; when you rebuild the image, push it under a new tag (for example `:v2`) and update the tag in `deploy/poller.yaml`, `deploy/autoscaler.yaml` and `deploy/sandbox-template.yaml`.
 
 **Step 4: Give the cluster the environment key.** The poller needs the environment key;
 the sandboxes get only the environment id. Both are read from `.env`, so the key never
@@ -209,7 +211,8 @@ spec:
       restartPolicy: Never              # one session, then the pod completes
       containers:
         - name: worker
-          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/claude-sandbox-worker:latest
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/claude-sandbox-worker:v1
+          imagePullPolicy: IfNotPresent
           args: ["serve"]
           env:                          # no Anthropic key: the session's token arrives in the dispatch
             - name: ANTHROPIC_ENVIRONMENT_ID
@@ -756,7 +759,7 @@ kubectl delete namespace claude-platform-aws
 - **Set a budget.** A session's `budget` caps its list cost, so a runaway loop stops
   issuing model requests.
 - **Size requests honestly.** Each sandbox reserves its full memory request, and the sandbox is
-  sized to the pod's limits. Size `replicas` to how many sessions start at once, not to your total
+  sized from the pod's requests. Size `replicas` to how many sessions start at once, not to your total
   session count.
 
 ## Clean up
@@ -780,7 +783,7 @@ kubectl delete -f deploy/egress-policy.yaml -f deploy/rbac.yaml --ignore-not-fou
 kubectl delete secret anthropic-env-key --ignore-not-found
 kubectl delete configmap anthropic-env --ignore-not-found
 aws ecr delete-repository --repository-name claude-sandbox-worker --region $AWS_REGION --force
-docker image rm $REGISTRY/claude-sandbox-worker:latest
+docker image rm $REGISTRY/claude-sandbox-worker:v1
 rm -rf .venv
 ```
 

@@ -29,7 +29,7 @@ pod spec:
   allows egress only to CoreDNS for name lookups, to the Pod Identity credential address,
   and to HTTPS on the Bedrock and GitHub hostnames. Other AWS APIs, other internet hosts and other pods are refused. (The
   policy allows the addresses those names resolve to, so another name served from the
-  same addresses would also be reachable.) The VM is sized to the pod's limits (inside
+  same addresses would also be reachable.) The VM is sized from the pod's requests (inside
   it, `nproc` reports 2 and memory is about 4 GiB), so the hypervisor bounds the CPU and
   memory it can use.
 
@@ -66,10 +66,12 @@ export REGISTRY=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 aws ecr create-repository --repository-name coding-agent --region $AWS_REGION
 aws ecr get-login-password --region $AWS_REGION \
   | docker login --username AWS --password-stdin $REGISTRY
-docker build --platform linux/amd64 -t $REGISTRY/coding-agent:latest .
-docker push $REGISTRY/coding-agent:latest
+docker build --platform linux/amd64 -t $REGISTRY/coding-agent:v1 .
+docker push $REGISTRY/coding-agent:v1
 docker logout $REGISTRY
 ```
+
+The pod sets `imagePullPolicy: IfNotPresent` for the fixed `:v1` tag, so a node that already pulled `:v1` keeps using its cached copy; when you rebuild the image, push it under a new tag (for example `:v2`) and update the tag in `fix-issue.yaml`.
 
 **Step 3: Give the ServiceAccount Bedrock access with Pod Identity.** The role trusts EKS
 Pod Identity and may only invoke models:
@@ -194,7 +196,8 @@ spec:
   restartPolicy: Never
   containers:
     - name: claude
-      image: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/coding-agent:latest
+      image: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/coding-agent:v1
+      imagePullPolicy: IfNotPresent
       env:
         - { name: CLAUDE_CODE_USE_BEDROCK, value: "1" }
         - { name: AWS_REGION,              value: us-west-2 }
@@ -293,7 +296,7 @@ Remove the AWS resources, the local image, and the agent pod from this sample:
 ```bash
 kubectl delete pod fix-issue-$ISSUE_NUMBER --ignore-not-found
 for id in $(aws eks list-pod-identity-associations --cluster-name $CLUSTER_NAME \
-              --region $AWS_REGION --namespace $NAMESPACE \
+              --region $AWS_REGION --namespace $NAMESPACE --service-account coding-agent \
               --query 'associations[].associationId' --output text); do
   aws eks delete-pod-identity-association --cluster-name $CLUSTER_NAME \
     --region $AWS_REGION --association-id $id
@@ -301,7 +304,7 @@ done
 aws iam delete-role-policy --role-name coding-agent-bedrock --policy-name bedrock-invoke
 aws iam delete-role --role-name coding-agent-bedrock
 aws ecr delete-repository --repository-name coding-agent --region $AWS_REGION --force
-docker image rm $REGISTRY/coding-agent:latest
+docker image rm $REGISTRY/coding-agent:v1
 ```
 
 On GitHub, revoke the token, and delete the example repository when you no longer need it

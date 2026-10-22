@@ -1,0 +1,48 @@
+# Egress for the S3 Files pods: DNS and NFS to the mount targets, nothing else.
+#
+# An EKS Auto Mode ApplicationNetworkPolicy is a NetworkPolicy enforced on the node,
+# outside the guest, so a command inside the sandbox cannot change it. For the pods it
+# selects (app: s3-files-shared), all ingress and all egress are denied except DNS on
+# UDP and TCP 53 and NFS (TCP 2049) to the S3 Files mount-target addresses.
+#
+# DNS is allowed to any address (0.0.0.0/0 on port 53), not pinned to the cluster's
+# resolver. This is a project choice to keep the sample simple: it does not depend on how
+# a given cluster serves DNS (on EKS Auto Mode the resolver is node-local rather than a
+# pod behind a ClusterIP). Be clear about the cost: port 53 to any address lets a process
+# in the sandbox reach any host on UDP or TCP 53, not only the cluster's resolver, so data
+# can leave over DNS or to anything listening on port 53. The rule still opens only port
+# 53; every other port and protocol stays denied.
+#
+# setup.sh renders this file before applying it:
+#   <MOUNT_TARGET_BLOCK>  one `- ipBlock: { cidr: <ip>/32 }` line per S3 Files mount-target
+#                         IP, one per cluster Availability Zone:
+#                         aws s3files list-mount-targets --file-system-id <fs> \
+#                           --query 'mountTargets[].ipv4Address'
+#
+# The mount targets are addressed by IP (ipBlock), not domainNames: the S3 Files DNS
+# name resolves to these mount-target IPs, and pinning them keeps the rule to exactly
+# the interfaces NFS must reach. The TLS connection is terminated inside each guest;
+# the node coordinates the CSI operation but is not on the file-data path. The direct
+# read-from-S3 optimization is left out of this sample, and it would run in the driver
+# on the node anyway, so the pod's own egress needs no S3 rule.
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ApplicationNetworkPolicy
+metadata:
+  name: s3-files-shared-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: s3-files-shared
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - to:
+        - ipBlock: { cidr: 0.0.0.0/0 }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        <MOUNT_TARGET_BLOCK>
+      ports:
+        - { protocol: TCP, port: 2049 }

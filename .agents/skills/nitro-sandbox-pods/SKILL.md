@@ -92,13 +92,20 @@ they show the pod's containers ran in a VM of their own:
 - **Virtio disks.** `ls /sys/block` shows `vda`, `vdb` and so on, where an ordinary pod sees
   the instance's `nvme` devices. (`examples/getting-started/hello-sandbox/README.md`.)
 
+The hello sandbox page shows a fourth, the **product name**:
+`cat /sys/class/dmi/id/product_name` reads the VM in the sandbox (`m8i.enclave` on its run),
+where an ordinary pod reads the EC2 instance type (`m8a.xlarge`). `uname -r` alone is not
+evidence: the guest's kernel version can match the node's.
+(`examples/getting-started/hello-sandbox/README.md`, step 5.)
+
 These support a claim but do not prove the pod ran in a sandbox on their own:
 
 - **The runtime class**, `kubectl get pod <pod> -o jsonpath='{.spec.runtimeClassName}'`,
   shows what was asked for, not what ran.
   (`examples/managed-agents/claude-managed-agents/README.md`, step 7.)
-- **No network, when isolated.** Only `lo` has an address, there is no route, and a lookup
-  fails with `bad address`. (`examples/getting-started/hello-sandbox/README.md`.)
+- **No network, when isolated.** Only `127.0.0.1` has an address, there is no route, and a
+  request fails to resolve the host (`curl: (6) Could not resolve host`).
+  (`examples/getting-started/hello-sandbox/README.md`.)
 - **Credentials by name, not value.** `env | cut -d= -f1 | grep ^PREFIX_` shows which
   variables exist without printing a secret.
   (`examples/managed-agents/claude-managed-agents/README.md`, step 7.)
@@ -160,15 +167,27 @@ These support a claim but do not prove the pod ran in a sandbox on their own:
 
 ## Sizing and start-up
 
-- Set requests equal to limits, as every sandboxed pod on this site does
-  (`hello-sandbox.yaml`, `hello-network-isolated.yaml`, `fix-issue.yaml`, `warm-pool.yaml`,
-  `sandbox-template.yaml`). The
-  VM is sized to the pod's limits, so the hypervisor bounds the CPU and memory the pod can
-  use: with 2 CPU and 4 GiB, `nproc` reports 2 and memory is about 4 GiB inside.
-  (`examples/getting-started/coding-agent/README.md`.)
-- Each sandbox reserves its full memory request up front, so bin-packing is by reservation,
-  not usage: size requests honestly and expect fewer, larger pods per node than with
-  ordinary containers. (`examples/getting-started/warm-pool/README.md`, "Sizing".)
+- **A sample sets no CPU or memory requests or limits.** A customer sizes a pod for their own
+  workload in production; a sample that sets a size reads as if a sandbox needs it. With
+  none, the VM gets a small default size: the hello sandbox pods got one vCPU and about
+  130 MiB of memory, enough for a pod that prints and sleeps.
+  (`examples/getting-started/hello-sandbox/README.md`, step 5.)
+- **Set them only when the sample cannot run without them**, such as an agent that needs more
+  memory than the default VM has, or when sizing is what the sample shows. Then the page says
+  why it sets them. A pod with no requests is `BestEffort`, which the kubelet evicts first
+  when a node runs short of resources: fine for a sample, and one reason production sets
+  requests.
+- **Requests and limits do not need to match.** A sandboxed pod whose requests are below its
+  limits is admitted and boots. Its VM is sized from the requests: the sandbox's memory
+  follows `resources.requests.memory` (Amazon EKS User Guide, *Limitations*, the memory
+  overhead and sandbox kernel sections), and a limit above the request does not make the VM
+  bigger. Measured on the maintainers' cluster on 2026-10-21: requests of 500m and 256Mi with
+  limits of 2 CPU and 1Gi booted with one vCPU and `MemTotal: 390040 kB`, while requests of
+  2 CPU and 1Gi, with or without equal limits, booted with two vCPUs and
+  `MemTotal: 1161132 kB`.
+- In production, each sandbox reserves its full memory request up front, so bin-packing is by
+  reservation, not usage: expect fewer, larger pods per node than with ordinary containers.
+  (`examples/getting-started/warm-pool/README.md`, "Sizing".)
 - After the first node is up, a new sandboxed pod is Ready in about 5 to 6 seconds, most of
   it EC2 creating the partition. A warm-pool claim adopts a pod that is already running and
   is Ready in under 1 second. (`examples/getting-started/hello-sandbox/README.md`;
@@ -203,6 +222,9 @@ pause-resume), and the upstream `Sandbox` API provides both fields.
 - Do not claim a limit, size, density, throttle, region or instance type that the pages and
   the public AWS documentation do not state.
 - Do not state a minimum CPU or memory request unless you cite the Amazon EKS documentation
-  for it, and never on slides or in videos; show the sample's actual requests instead.
+  for it, and never on slides or in videos; show the sample's actual requests, or that it
+  sets none, instead.
+- Do not say requests must equal limits, or that the VM is sized to the pod's limits. It is
+  sized from the requests (see "Sizing and start-up").
 - Do not describe confidential-mode policy generation or attestation from memory; point to
   the Amazon EKS User Guide.

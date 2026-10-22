@@ -5,13 +5,11 @@ metadata:
 spec:
   containers:
     - name: hello
-      image: public.ecr.aws/docker/library/alpine:3.20
+      image: public.ecr.aws/amazonlinux/amazonlinux:2023
+      imagePullPolicy: IfNotPresent
       command: ["sh", "-c"]
       args:
         - |
-          echo "kernel:  $(uname -r)"
+          echo "/sys/class/dmi/id/product_name:  $(cat /sys/class/dmi/id/product_name)"
           echo "disks:   $(ls /sys/block | tr '\n' ' ')"
           sleep infinity
-      resources:
-        requests: { cpu: "1", memory: 768Mi }
-        limits:   { cpu: "1", memory: 768Mi }

@@ -31,6 +31,7 @@ spec:
   containers:
     - name: main
       image: OFFLINE_IMAGE_URI
+      imagePullPolicy: IfNotPresent
       workingDir: /var/lib/image-signing/layout
       env:
         - name: HOME

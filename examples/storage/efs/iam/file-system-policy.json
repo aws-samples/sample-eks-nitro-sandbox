@@ -1,0 +1,30 @@
+{
+  "Comment": "The EFS file system policy this sample applies. setup.sh renders <EFS_FILE_SYSTEM_ARN>, <EFS_ACCESS_POINT_ARN> and <EFS_CSI_NODE_ROLE_ARN> from the live cluster before applying it with `aws efs put-file-system-policy`. It requires TLS, confines every allow to this access point reached through a mount target, grants only ClientMount and ClientWrite (never ClientRootAccess), and allows only the EFS CSI driver's node principal. An IAM-signed mount by any other principal falls through to no allow and is refused.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowCSINodePrincipal",
+      "Effect": "Allow",
+      "Principal": { "AWS": "<EFS_CSI_NODE_ROLE_ARN>" },
+      "Action": [
+        "elasticfilesystem:ClientMount",
+        "elasticfilesystem:ClientWrite"
+      ],
+      "Resource": "<EFS_FILE_SYSTEM_ARN>",
+      "Condition": {
+        "Bool": { "elasticfilesystem:AccessedViaMountTarget": "true" },
+        "StringEquals": { "elasticfilesystem:AccessPointArn": "<EFS_ACCESS_POINT_ARN>" }
+      }
+    },
+    {
+      "Sid": "DenyInsecureTransport",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "*",
+      "Resource": "<EFS_FILE_SYSTEM_ARN>",
+      "Condition": {
+        "Bool": { "aws:SecureTransport": "false" }
+      }
+    }
+  ]
+}
