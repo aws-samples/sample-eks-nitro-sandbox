@@ -41,8 +41,22 @@ The sandbox node's AMI is **not** built here. It is the output of
 [#10, Build an Ubuntu AMI for EKS Pod Isolation](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10),
 rebuilt with kernel BTF enabled for Cilium's kube-proxy replacement. This sample never
 guesses, publishes or hard-codes that AMI's id: `setup.sh` reads it from your own
-`config.local.env` (`SANDBOX_AMI_ID`, gitignored) and verifies its architecture, owner and a
-`BtfValidated=true` tag before using it — see [Stage 0](#0-prerequisites-and-the-ami-preflight).
+`config.local.env` (`SANDBOX_AMI_ID`, gitignored) and verifies its architecture, owner, a
+`ManagedBy` tag matching #10's own ownership tag, and a `BtfValidated=true` tag before using
+it — see [Stage 0](#0-prerequisites-and-the-ami-preflight). `BtfValidated=true` is #10's
+contract: its `btf-tag.sh` only ever writes that tag, alongside `ManagedBy`, to an AMI that
+has already passed #10's own fresh-instance BTF verification and that #10's run itself owns;
+an AMI that failed verification, or that is not #10's own, never receives it. Checking
+`ManagedBy` too (not just the AWS account that owns the AMI resource) matches that contract:
+the account-owner check says who can use the AMI, `ManagedBy` says which build produced it.
+
+#10's AMI build itself depends on inputs this sample never fetches or bundles: the public,
+checksummed Linux kernel source and `erofs-utils` are the only two inputs #10's
+`packages/make-bundle.sh` packages. The EKS Pod Isolation runtime binaries and guest image,
+and the host-kernel patch series, are external, user-supplied inputs with no public AWS
+release channel yet (`status=pending-public-release` in #10's `packages/sources.lock`); #10
+never fetches, embeds or commits either one, and this sample inherits that same prerequisite
+through the AMI it consumes. See #10's README for the full dependency chain.
 
 ## Run it
 
@@ -111,9 +125,12 @@ and the policy controls still hold.**
 `config.local.env`, **before any billable AWS resource exists**:
 
 - `SANDBOX_AMI_ID`: must be owned by `AWS_ACCOUNT_ID`, `available`, `x86_64`/`hvm`, named like
-  an Ubuntu build, and carry the `BtfValidated=true` tag [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10)'s
-  build sets. A stale id, a mistyped id, or an AMI from before #10's BTF fix is refused here,
-  not discovered later as a Cilium agent that never goes ready.
+  an Ubuntu build, and carry both the `ManagedBy` tag [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10)'s
+  own build writes (`SANDBOX_AMI_MANAGED_BY_VALUE` in `config.local.env`; defaults to
+  `ubuntu-ami-sample`, #10's own default) and the `BtfValidated=true` tag #10 only ever writes
+  alongside it. A stale id, a mistyped id, an AMI from before #10's BTF fix, or an AMI that
+  merely copies the `BtfValidated=true` tag value without #10's own `ManagedBy` tag, is
+  refused here, not discovered later as a Cilium agent that never goes ready.
 - `SYSTEM_AMI_ID`: a public Ubuntu 24.04 EKS-optimized AMI id you resolved and pinned
   yourself (this sample does not resolve `latest` at runtime, so a re-run always boots the
   AMI you validated against). Only existence, state and architecture are checked; this sample
@@ -357,7 +374,12 @@ What it checks, in order:
    carries `AmazonEKS_CNI_Policy`.
 3. **The sandbox pod has its own guest.** Its guest kernel differs from the node kernel, it
    sees virtio disks (no node `nvme`), and its boot uptime is its own — while `neighbor`, an
-   ordinary pod on the same node, shares the node kernel and sees the node's `nvme`.
+   ordinary pod on the same node, shares the node kernel and sees the node's `nvme`. The
+   sandbox node itself advertises a positive allocatable `eks.amazonaws.com/nitro-sandbox`
+   quantity (the same key and both-ways accept/reject proof as
+   [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10)'s own `test.sh`),
+   evidence the device plugin that key names is actually running on this build's node, not
+   only that the `isolated-sandbox` RuntimeClass object exists.
 4. **Normal pod networking across the guest boundary.** The sandbox pod gets a VPC address on
    a secondary ENI of its own instance with a ready `CiliumEndpoint`, reaches and is reached by
    ordinary pods, and resolves and reaches the ClusterIP Service by DNS — the same as the two

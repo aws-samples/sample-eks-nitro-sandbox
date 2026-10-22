@@ -24,7 +24,7 @@ if [[ -f "$SAMPLE_DIR/config.local.env" ]]; then
   source "$SAMPLE_DIR/config.local.env"
 fi
 export AWS_ACCOUNT_ID AWS_REGION CLUSTER_NAME AVAILABILITY_ZONES SANDBOX_AMI_ID SYSTEM_AMI_ID \
-  SANDBOX_INSTANCE_TYPE SYSTEM_INSTANCE_TYPE OWNER_TAG
+  SANDBOX_AMI_MANAGED_BY_VALUE SANDBOX_INSTANCE_TYPE SYSTEM_INSTANCE_TYPE OWNER_TAG
 
 # Versions this sample was built and tested with. Cilium is pinned exactly; eksctl needs at
 # least the version that knows EKS 1.36. The README's version table must match these.

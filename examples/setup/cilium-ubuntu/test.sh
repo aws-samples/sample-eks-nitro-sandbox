@@ -163,6 +163,19 @@ control_node="$(jget '{.spec.nodeName}' "${ns[@]}" pod control)"
 assert "pod nitro is Ready with runtimeClassName isolated-sandbox" $?
 [[ -n "$nitro_node" && "$(jget '{.metadata.labels.eks\.amazonaws\.com/nodegroup}' node "$nitro_node")" == sandbox ]]
 assert "pod nitro runs on the Ubuntu sandbox node ($nitro_node)" $?
+# ACCEPT: the node's allocatable capacity for the actual extended resource the EKS Pod
+# Isolation device plugin advertises, not just the RuntimeClass object's existence (a
+# RuntimeClass can exist with no node able to run it). Same key and same both-ways proof as
+# ../ubuntu-ami's test.sh ("5/7 positive sandbox capacity"), since this sample's sandbox node
+# runs the same AMI and runtime.
+sandbox_capacity="$(jget '{.status.allocatable.eks\.amazonaws\.com/nitro-sandbox}' node "$nitro_node")"
+[[ "${sandbox_capacity:-0}" =~ ^[0-9]+$ && "${sandbox_capacity:-0}" -gt 0 ]]
+assert "sandbox node $nitro_node advertises positive allocatable eks.amazonaws.com/nitro-sandbox (${sandbox_capacity:-0})" $?
+# REJECT: the same lookup against a bogus resource key on the same node must read absent,
+# proving the check discriminates rather than matching any allocatable field.
+no_sandbox_capacity="$(jget '{.status.allocatable.eks\.amazonaws\.com/nitro-sandbox-bogus}' node "$nitro_node")"
+[[ -z "$no_sandbox_capacity" ]]
+assert "the capacity check reads absent for a nonexistent allocatable key on $nitro_node (reject control)" $?
 nitro_guest="$(kubectl "${ns[@]}" exec nitro -- uname -r 2>/dev/null)"
 nitro_host="$(jget '{.status.nodeInfo.kernelVersion}' node "$nitro_node")"
 [[ -n "$nitro_guest" && -n "$nitro_host" && "$nitro_guest" != "$nitro_host" ]]

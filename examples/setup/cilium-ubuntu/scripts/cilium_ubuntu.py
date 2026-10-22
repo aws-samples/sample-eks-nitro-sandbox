@@ -50,6 +50,16 @@ EXPECTED_AMI_VIRT_TYPE = "hvm"
 # BTF-validated Ubuntu Pod Isolation build apart from an unrelated AMI that merely happens to
 # share the same architecture and owner.
 EXPECTED_AMI_TAG = ("BtfValidated", "true")
+# #10's own ownership tag (TAGS_OWNER_KEY=ManagedBy, TAGS_OWNER_VALUE=RESOURCE_PREFIX,
+# default "ubuntu-ami-sample" -- see ../ubuntu-ami/scripts/lib/common.sh and btf-tag.sh).
+# #10's btf-tag.sh refuses to write BtfValidated=true to an AMI that does not already carry
+# this tag, so ManagedBy is #10's actual provenance signal for "this run built and verified
+# this AMI" -- not the AWS account id alone, which only says who owns the AMI resource, not
+# which build produced it. This sample does not rebuild #10's AMI, so it checks for the tag
+# value #10's own default produces; a reader who renamed RESOURCE_PREFIX when building the
+# AMI sets SANDBOX_AMI_MANAGED_BY_VALUE in config.local.env to match.
+EXPECTED_AMI_OWNER_TAG_KEY = "ManagedBy"
+DEFAULT_SANDBOX_AMI_MANAGED_BY_VALUE = "ubuntu-ami-sample"
 
 
 class DemoError(RuntimeError):
@@ -262,6 +272,18 @@ def cmd_check_sandbox_ami(_):
     name = image.get("Name", "")
     require("ubuntu" in name.lower(), f"AMI {ami} name '{name}' does not look like an Ubuntu build")
     tags = tag_map(image.get("Tags"))
+    # #10's btf-tag.sh never writes BtfValidated=true to an AMI unless that AMI already
+    # carries #10's own ManagedBy ownership tag (btf_ami_is_owned, checked BEFORE tagging).
+    # So BtfValidated=true alone does not distinguish "this run's #10 build, verified" from a
+    # copy of the tag value on an unrelated AMI; checking ManagedBy too matches what #10
+    # actually guarantees, not just the one tag it writes last.
+    managed_by_value = os.environ.get("SANDBOX_AMI_MANAGED_BY_VALUE", "").strip() \
+        or DEFAULT_SANDBOX_AMI_MANAGED_BY_VALUE
+    require(tags.get(EXPECTED_AMI_OWNER_TAG_KEY) == managed_by_value,
+            f"AMI {ami} is not tagged {EXPECTED_AMI_OWNER_TAG_KEY}={managed_by_value}; it does not carry "
+            "the ../ubuntu-ami build's own ownership tag, so it is not provably that sample's output "
+            "(set SANDBOX_AMI_MANAGED_BY_VALUE in config.local.env if you built it with a different "
+            "RESOURCE_PREFIX there).")
     require(tags.get(EXPECTED_AMI_TAG[0]) == EXPECTED_AMI_TAG[1],
             f"AMI {ami} is not tagged {EXPECTED_AMI_TAG[0]}={EXPECTED_AMI_TAG[1]}; it was not produced (or was "
             "not re-validated) by the ../ubuntu-ami BTF-enabled build this sample depends on. "
@@ -270,7 +292,8 @@ def cmd_check_sandbox_ami(_):
     require(root is not None, f"AMI {ami} has no root device mapping matching '{image.get('RootDeviceName')}'")
     print(f"AMI {ami}: {name}")
     print(f"  architecture={image['Architecture']} virtualization={image['VirtualizationType']} "
-          f"owner={image.get('OwnerId')} {EXPECTED_AMI_TAG[0]}={tags.get(EXPECTED_AMI_TAG[0])}")
+          f"owner={image.get('OwnerId')} {EXPECTED_AMI_OWNER_TAG_KEY}={tags.get(EXPECTED_AMI_OWNER_TAG_KEY)} "
+          f"{EXPECTED_AMI_TAG[0]}={tags.get(EXPECTED_AMI_TAG[0])}")
     print("sandbox AMI preflight passed")
 
 
