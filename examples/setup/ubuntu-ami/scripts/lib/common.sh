@@ -5,6 +5,10 @@
 # they can report why they failed instead of stopping at the first non-zero command.
 
 SAMPLE_DIR="${SAMPLE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+# The repository root is four levels up from this sample folder
+# (examples/setup/ubuntu-ami). Local runtime artifacts, logs and output belong under the
+# repository's gitignored tmp/, never inside the sample folder (see AGENTS.md).
+REPO_ROOT="${REPO_ROOT:-$(cd "$SAMPLE_DIR/../../.." && pwd)}"
 LOG_DIR="${LOG_DIR:-$SAMPLE_DIR/logs}"
 OUT_DIR="${OUT_DIR:-$SAMPLE_DIR/out}"
 mkdir -p "$LOG_DIR" "$OUT_DIR"
@@ -25,7 +29,8 @@ unset __common_cfg
 : "${NAMESPACE:=ubuntu-ami-sample}"
 : "${KERNEL_VERSION:=6.18.39}"
 : "${EROFS_UTILS_VERSION:=1.8.10}"
-: "${RUNTIME_ARTIFACTS_DIR:=$SAMPLE_DIR/artifacts}"
+: "${RUNTIME_ARTIFACTS_DIR:=$REPO_ROOT/tmp/issue10/runtime}"
+mkdir -p "$RUNTIME_ARTIFACTS_DIR"
 : "${LOCK_FILE:=$SAMPLE_DIR/packages/sources.lock}"
 : "${NITRO_SANDBOX_DIR_INSTALL:=/usr/share/nitro-sandbox}"
 : "${SHIM_DEBUG:=true}"
