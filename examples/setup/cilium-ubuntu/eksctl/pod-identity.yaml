@@ -1,0 +1,70 @@
+# Stage 1b: the Cilium operator's AWS permissions, created right after the cluster and before
+# Cilium is installed.
+#
+# eksctl refuses Pod Identity associations in `create cluster` while the cluster has no VPC
+# CNI, so setup.sh adds this association as its own step:
+#
+#   eksctl create podidentityassociation -f out/pod-identity.yaml
+#
+# It must exist BEFORE Cilium is installed: EKS injects the credentials into the operator pod
+# only when the pod is created, and the operator is the one Cilium component that calls the
+# EC2 API in ENI mode.
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: ${CLUSTER_NAME}
+  region: ${AWS_REGION}
+  tags:
+    auto-delete: "no"
+    Demo: setup-cilium-ubuntu
+
+# The Cilium operator is the only component that calls the EC2 API: in ENI mode it creates
+# network interfaces for the nodes and assigns their secondary IPs to pods. It gets exactly
+# the EC2 actions Cilium's ENI-mode documentation lists
+# (https://docs.cilium.io/en/stable/network/concepts/ipam/eni/), through its own EKS Pod
+# Identity association, bound to its own service account. Neither node role (system or
+# sandbox) carries AmazonEKS_CNI_Policy or any of these actions (see nodegroups.yaml): a
+# process on a node, including inside a sandbox guest, cannot create or attach an ENI with the
+# node's own credentials.
+iam:
+  podIdentityAssociations:
+    - namespace: kube-system
+      serviceAccountName: cilium-operator
+      roleName: ${CLUSTER_NAME}-cilium-operator
+      tags:
+        auto-delete: "no"
+        Demo: setup-cilium-ubuntu
+      permissionPolicy:
+        Version: "2012-10-17"
+        Statement:
+          # Documented reads the operator makes before it changes anything: discovering
+          # nodes' ENIs, the VPC, subnets, route tables, security groups, instance types the
+          # ENI/IP limits come from, and existing tags.
+          - Sid: CiliumEniIpamDescribe
+            Effect: Allow
+            Action:
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DescribeSubnets
+              - ec2:DescribeVpcs
+              - ec2:DescribeVpcPeeringConnections
+              - ec2:DescribeRouteTables
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeInstances
+              - ec2:DescribeInstanceTypes
+              - ec2:DescribeTags
+            Resource: "*"
+          # Documented writes: create and attach an ENI to a node, assign/unassign secondary
+          # IPs on it, tag what it created, and remove an ENI it no longer needs.
+          - Sid: CiliumEniIpamWrite
+            Effect: Allow
+            Action:
+              - ec2:CreateNetworkInterface
+              - ec2:AttachNetworkInterface
+              - ec2:DetachNetworkInterface
+              - ec2:ModifyNetworkInterfaceAttribute
+              - ec2:AssignPrivateIpAddresses
+              - ec2:UnassignPrivateIpAddresses
+              - ec2:DeleteNetworkInterface
+              - ec2:CreateTags
+            Resource: "*"

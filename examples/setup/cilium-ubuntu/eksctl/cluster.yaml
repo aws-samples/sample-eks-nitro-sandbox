@@ -1,0 +1,50 @@
+# Stage 1: the cluster, with no CNI, no kube-proxy and no nodes.
+#
+# setup.sh fills in the ${...} placeholders from config.env / config.local.env and writes the
+# result to out/cluster.yaml, then runs:
+#
+#   eksctl create cluster -f out/cluster.yaml --without-nodegroup
+#
+# The node groups come later (nodegroups.yaml), AFTER Cilium is installed, so no node ever
+# boots without a CNI that can give its pods an address. This cluster is dedicated and
+# disposable: it is never an existing shared cluster, and setup.sh never changes the CNI or
+# kube-proxy on one.
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: ${CLUSTER_NAME}
+  region: ${AWS_REGION}
+  version: "1.36"
+  # eksctl passes these to every CloudFormation stack it creates, and CloudFormation copies
+  # them onto the VPC, subnets, route tables, gateways, security groups, IAM roles and node
+  # groups in those stacks, so clean.sh's tag sweep can find all of it from this one tag.
+  tags:
+    auto-delete: "no"
+    Demo: setup-cilium-ubuntu
+
+# A new VPC just for this cluster: public and private subnets in two zones, one NAT gateway.
+availabilityZones: ${AVAILABILITY_ZONES}
+vpc:
+  cidr: 10.43.0.0/16
+  nat:
+    gateway: Single
+
+# No vpc-cni and no kube-proxy: EKS installs neither. Cilium is the cluster's only CNI
+# (cilium-values.yaml) and replaces kube-proxy entirely (kubeProxyReplacement: true). The other
+# default add-ons are added back as managed add-ons: CoreDNS, plus the Pod Identity agent,
+# which hands the Cilium operator its AWS credentials through the association in
+# pod-identity.yaml.
+autoModeConfig:
+  enabled: false
+addonsConfig:
+  disableDefaultAddons: true
+addons:
+  - name: coredns
+    tags:
+      auto-delete: "no"
+      Demo: setup-cilium-ubuntu
+  - name: eks-pod-identity-agent
+    tags:
+      auto-delete: "no"
+      Demo: setup-cilium-ubuntu

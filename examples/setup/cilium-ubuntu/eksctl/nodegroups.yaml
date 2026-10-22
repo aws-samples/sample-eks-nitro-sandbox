@@ -1,0 +1,72 @@
+# Stage 3: the two managed node groups, created only once Cilium is installed and reporting
+# healthy (setup.sh's preflight-daemonset and BTF gates run before this file is applied).
+#
+# setup.sh fills in the ${...} placeholders and writes out/nodegroups.yaml, then runs:
+#
+#   eksctl create nodegroup -f out/nodegroups.yaml
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: ${CLUSTER_NAME}
+  region: ${AWS_REGION}
+  tags:
+    auto-delete: "no"
+    Demo: setup-cilium-ubuntu
+
+managedNodeGroups:
+  # The ordinary Ubuntu 24.04 node: CoreDNS, the Cilium operator and the comparison workloads
+  # this sample runs for contrast with the sandbox node run here. Its launch template (created
+  # by setup.sh, launch-template.json rendering) carries the pinned public Ubuntu 24.04
+  # EKS-optimized AMI (SYSTEM_AMI_ID), the instance type, disk and tags; eksctl's own
+  # amiFamily/overrideBootstrapCommand are not used because the launch template already
+  # supplies the AMI and nodeadm user data.
+  - name: system
+    launchTemplate:
+      id: ${SYSTEM_LAUNCH_TEMPLATE_ID}
+      version: "1"
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 1
+    privateNetworking: true
+    availabilityZones: ["${NODE_ZONE}"]
+    iam:
+      # The usual node policies MINUS AmazonEKS_CNI_Policy: no pod on this node, and no
+      # process on it, can create ENIs with the node's own credentials. Only the Cilium
+      # operator can, through its own Pod Identity role (pod-identity.yaml).
+      attachPolicyARNs:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+    tags:
+      auto-delete: "no"
+      Demo: setup-cilium-ubuntu
+
+  # The dedicated, tainted Ubuntu Pod Isolation sandbox node: the AMI built and BTF-validated
+  # by ../ubuntu-ami (issue #10), referenced only through the local SANDBOX_AMI_ID value, never
+  # a published id. The taint keeps every ordinary pod off this node; only a pod that
+  # tolerates sandbox.eks-nitro-sandbox.amazonaws.com/dedicated schedules here, as the sandbox
+  # pod and the ordinary comparison pod this sample runs beside it both do.
+  - name: sandbox
+    launchTemplate:
+      id: ${SANDBOX_LAUNCH_TEMPLATE_ID}
+      version: "1"
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 1
+    privateNetworking: true
+    availabilityZones: ["${NODE_ZONE}"]
+    labels:
+      sandbox.eks-nitro-sandbox.amazonaws.com/dedicated: "true"
+    taints:
+      - key: sandbox.eks-nitro-sandbox.amazonaws.com/dedicated
+        value: "true"
+        effect: NoSchedule
+    iam:
+      attachPolicyARNs:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+    tags:
+      auto-delete: "no"
+      Demo: setup-cilium-ubuntu
