@@ -78,12 +78,13 @@ Auto Mode's managed one. Cluster and node-group lifecycle were previously treate
 scope here; this section is an intentional, narrow addition: it covers building a node AMI
 for an existing cluster, not creating or managing the cluster itself.
 
-- [ubuntu-ami](../examples/setup/ubuntu-ami/README.md) (available now): build a custom
-  Ubuntu 24.04 node AMI for EKS Pod Isolation and add one dedicated, tainted managed node
-  group to an existing cluster. Every public input (base AMI, kernel 6.18.39, erofs-utils
-  1.8.10, distro packages) is pinned and checksum-verified; the EKS Pod Isolation runtime
-  itself has no public release yet, so the build stops at that documented prerequisite
-  until AWS publishes one. Spec: [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10).
+- [ubuntu-ami](../examples/setup/ubuntu-ami/README.md): build a custom Ubuntu 24.04 node
+  AMI for EKS Pod Isolation and add one dedicated, tainted managed node group to an
+  existing cluster. Every public input (base AMI, kernel 6.18.39, erofs-utils 1.8.10,
+  distro packages) is pinned and checksum-verified; authored and static-verified, but
+  blocked on the public release of the EKS Pod Isolation runtime and the host-kernel
+  patch series, neither of which exists yet, so no live run has been performed. Spec:
+  [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10).
 
 ### Isolation (`isolation`)
 

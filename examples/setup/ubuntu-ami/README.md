@@ -1,5 +1,17 @@
 # Build an Ubuntu AMI for EKS Pod Isolation
 
+!!! warning "Status: authored and static-verified, blocked on a public release"
+
+    This sample is authored and static-verified (every script parses, every pinned
+    public input checksum-verifies, the lock file and manifests are well-formed), but
+    **no live AWS run has been performed**. It is blocked on the public release of the
+    EKS Pod Isolation runtime (the containerd shim and CRI proxy, the sandbox
+    hypervisor and its guest microVM image) and the host-kernel patch series, neither
+    of which exists publicly yet. See
+    [The documented prerequisite](#the-documented-prerequisite-the-eks-pod-isolation-runtime-release)
+    for what is blocked and why, and [Evidence](#evidence) for what is still a
+    `TODO: output from the fresh run` placeholder pending that release.
+
 Build a custom Ubuntu 24.04 node AMI for Amazon EKS Pod Isolation, add one dedicated,
 tainted managed node group to an **existing cluster**, and run an isolated pod on that
 node. Ubuntu is the **node operating system**; application containers can use their own
@@ -245,38 +257,21 @@ version, so a later reader can audit the image's full provenance without the bui
 
 ## Evidence
 
-> **No live run has happened yet.** The blocks below are clearly labeled EXAMPLE output,
-> shaped the way this sample's own checks produce it, so a reader knows what to expect.
-> They are a design input, not acceptance evidence. The implementation PR that lands the
-> runtime release replaces every block below with a fresh end-to-end run and says so in
-> the PR description.
+> **No live run has happened yet.** The blocks below are not yet acceptance evidence. The
+> implementation PR that lands the runtime release replaces every block below with a
+> fresh end-to-end run and says so in the PR description.
 
 **Node vs guest kernel, and host vs guest block devices.** The same shape Getting started
 uses: the node reports the host instance's own view, the guest pod reports its VM's.
 
 ```text
-# EXAMPLE -- node (host)
-$ ssh-via-ssm <build-host> -- uname -r; ls -1 /sys/block
-6.18.39
-nvme0n1
-nvme1n1
-
-# EXAMPLE -- guest (isolated pod)
-$ kubectl exec ubuntu-sandbox -- sh -c 'uname -r; ls -1 /sys/block'
-6.18.39
-vda
-vdb
+TODO: output from the fresh run
 ```
 
 **Boot uptime matches the pod's age**, because the VM boots with the pod:
 
 ```text
-# EXAMPLE
-$ kubectl exec ubuntu-sandbox -- cat /proc/uptime
-24.1 21.8
-$ kubectl get pod ubuntu-sandbox
-NAME             READY   STATUS    RESTARTS   AGE
-ubuntu-sandbox   1/1     Running   0          28s
+TODO: output from the fresh run
 ```
 
 **Host-requirement accept/reject controls.** Each control below is proven both ways: one
@@ -309,14 +304,7 @@ control below. The reject control
 the node never loaded and is refused.
 
 ```text
-# EXAMPLE -- AppArmor profile loaded and enforcing
-$ ssh-via-ssm <build-host> -- aa-status --json | python3 -c \
-  'import json,sys; d=json.load(sys.stdin); print(d["profiles"].get("ubuntu-ami-sample-profile", "absent"))'
-enforce
-
-# EXAMPLE -- a denied action under that profile
-$ kubectl exec isolated-sandbox-pod -n ubuntu-ami-sample -- sh -c 'echo test > /etc/shadow' 2>&1
-sh: can't create /etc/shadow: Permission denied
+TODO: output from the fresh run
 ```
 
 ## Cost note
