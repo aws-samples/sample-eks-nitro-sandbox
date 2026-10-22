@@ -9,9 +9,21 @@ SAMPLE_DIR="${SAMPLE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 # (examples/setup/ubuntu-ami). Local runtime artifacts, logs and output belong under the
 # repository's gitignored tmp/, never inside the sample folder (see AGENTS.md).
 REPO_ROOT="${REPO_ROOT:-$(cd "$SAMPLE_DIR/../../.." && pwd)}"
-LOG_DIR="${LOG_DIR:-$SAMPLE_DIR/logs}"
-OUT_DIR="${OUT_DIR:-$SAMPLE_DIR/out}"
-mkdir -p "$LOG_DIR" "$OUT_DIR"
+
+# Logging and failure helpers, defined before the path-containment guard below so it can
+# `die` with a clear message. Defined once; the rest of the file uses them too.
+log()  { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*"; }
+die()  { printf 'FATAL: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'WARN: %s\n' "$*" >&2; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# All local runtime state (logs, output, downloaded runtime artifacts) lives under a single
+# repository-root base, tmp/issue10/run, which the root .gitignore already ignores. Nothing
+# defaults inside the sample folder: see AGENTS.md ("Keep local files in the repository's
+# tmp/ ... Never put them in a sample folder or its .gitignore").
+: "${ISSUE10_RUN_DIR:=$REPO_ROOT/tmp/issue10/run}"
+: "${LOG_DIR:=$ISSUE10_RUN_DIR/logs}"
+: "${OUT_DIR:=$ISSUE10_RUN_DIR/out}"
 
 # config.env is local and gitignored; config.env.example documents every variable with a
 # placeholder. Both the workstation driver and a build-host copy of this directory look for
@@ -29,16 +41,43 @@ unset __common_cfg
 : "${NAMESPACE:=ubuntu-ami-sample}"
 : "${KERNEL_VERSION:=6.18.39}"
 : "${EROFS_UTILS_VERSION:=1.8.10}"
-: "${RUNTIME_ARTIFACTS_DIR:=$REPO_ROOT/tmp/issue10/runtime}"
-mkdir -p "$RUNTIME_ARTIFACTS_DIR"
+: "${RUNTIME_ARTIFACTS_DIR:=$ISSUE10_RUN_DIR/runtime}"
+
+# Every local runtime directory must sit under the repository's gitignored tmp/, never inside
+# the sample folder or anywhere under examples/, because a sample folder is one `git add` from
+# being published (AGENTS.md). An operator may override any of these to point ELSEWHERE outside
+# the sample tree, but an override that resolves inside examples/ is refused here, once, before
+# any directory is created. The check resolves both the override and the examples/ root with a
+# physical `cd`/pwd (realpath equivalent), then prefix-matches, so a relative or symlinked
+# override cannot slip inside. mkdir -p runs after the guard so a refused path is never created.
+# SAMPLE_DIR is examples/<section>/<sample> (examples/setup/ubuntu-ami), so examples/ is two
+# levels up. The containment guard refuses any override that resolves at or under it.
+__examples_root=$(cd "$SAMPLE_DIR/../.." && pwd)
+refuse_inside_examples() { # refuse_inside_examples <var-name> <dir>
+  local name="$1" dir="$2" resolved parent
+  # Resolve the directory even when it does not exist yet: resolve its nearest existing
+  # ancestor, then re-append the missing tail, so the containment check is realpath-based.
+  if [ -d "$dir" ]; then
+    resolved=$(cd "$dir" && pwd)
+  else
+    parent=$dir
+    while [ -n "$parent" ] && [ ! -d "$parent" ]; do parent=$(dirname "$parent"); done
+    [ -d "$parent" ] || die "$name: cannot resolve a parent of '$dir'"
+    resolved="$(cd "$parent" && pwd)${dir#"$parent"}"
+  fi
+  if [ "$resolved" = "$__examples_root" ] || case "$resolved/" in "$__examples_root"/*) true ;; *) false ;; esac; then
+    die "$name resolves to '$resolved', which is at or inside the sample tree ('$__examples_root'). AGENTS.md forbids local files inside a sample folder ('Keep local files in the repository's tmp/ ... Never put them in a sample folder or its .gitignore'). Point it at a path outside examples/, such as the default under tmp/issue10/run."
+  fi
+}
+refuse_inside_examples ISSUE10_RUN_DIR "$ISSUE10_RUN_DIR"
+refuse_inside_examples LOG_DIR "$LOG_DIR"
+refuse_inside_examples OUT_DIR "$OUT_DIR"
+refuse_inside_examples RUNTIME_ARTIFACTS_DIR "$RUNTIME_ARTIFACTS_DIR"
+mkdir -p "$LOG_DIR" "$OUT_DIR" "$RUNTIME_ARTIFACTS_DIR"
+
 : "${LOCK_FILE:=$SAMPLE_DIR/packages/sources.lock}"
 : "${NITRO_SANDBOX_DIR_INSTALL:=/usr/share/nitro-sandbox}"
 : "${SHIM_DEBUG:=true}"
-
-log()  { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*"; }
-die()  { printf 'FATAL: %s\n' "$*" >&2; exit 1; }
-warn() { printf 'WARN: %s\n' "$*" >&2; }
-have() { command -v "$1" >/dev/null 2>&1; }
 
 # Assert a condition and say what it means when it does not hold, so a failed build names
 # the prerequisite it is missing rather than only a line number.

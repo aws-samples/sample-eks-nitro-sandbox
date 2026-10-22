@@ -180,9 +180,12 @@ private or internal artifacts. Instead:
 - **Where the released archives go.** Place the downloaded archives at the paths
   `config.env` names: `RUNTIME_ARTIFACTS_DIR` for the directory, with the runtime archive
   and patch-series archive filenames the release publishes. `RUNTIME_ARTIFACTS_DIR`
-  defaults to the repository's gitignored `tmp/issue10/runtime` (a local scratch
+  defaults to the repository's gitignored `tmp/issue10/run/runtime` (a local scratch
   directory, never inside the sample folder), so these local archives are never at risk of
-  being committed. `setup.sh`'s preflight checks for them at those paths.
+  being committed. All of this sample's local runtime state (logs, output and downloaded
+  artifacts) lives under the one gitignored base `tmp/issue10/run`, in the `logs/`, `out/`
+  and `runtime/` subdirectories. `setup.sh`'s preflight checks for the archives at those
+  paths.
 - Until the release exists, `./setup.sh --prepare` reports this prerequisite and stops
   cleanly, rather than building a partial image. See [Build](#build) for exactly what the
   preflight checks and what it does when the archives are present.
@@ -192,8 +195,9 @@ private or internal artifacts. Instead:
 ```bash
 cd examples/setup/ubuntu-ami
 cp config.env.example config.env
-# Set BUILD_SUBNET_ID and NODE_SUBNET_IDS. RUNTIME_ARTIFACTS_DIR defaults to the
-# repository's gitignored tmp/issue10/runtime; override it only to point elsewhere.
+# Set BUILD_SUBNET_ID and NODE_SUBNET_IDS. Local runtime state (logs, output, downloaded
+# artifacts) defaults to the repository's gitignored tmp/issue10/run (logs/, out/, runtime/);
+# override a path only to point elsewhere outside the sample folder.
 # Your usual CLUSTER_NAME, AWS_REGION and AWS_PROFILE remain in effect.
 $EDITOR config.env
 
