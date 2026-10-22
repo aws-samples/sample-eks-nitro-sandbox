@@ -20,7 +20,7 @@
 # operator-supplied artifacts with no public AWS release channel yet. `build` always skips
 # them (status=pending-public-release in sources.lock) and the emitted manifest documents
 # both as external, user-supplied slots the operator fills from their own licensed copy;
-# see docs/SOURCES.md. This command never fetches, embeds or commits either one, by design,
+# see packages/SOURCES.txt. This command never fetches, embeds or commits either one, by design,
 # not because sources.lock happens to lack a SHA-256 for them today.
 #
 # Determinism: the archive this command produces is byte-identical across two runs over

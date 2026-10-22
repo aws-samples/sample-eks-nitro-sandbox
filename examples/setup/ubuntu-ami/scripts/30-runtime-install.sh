@@ -4,7 +4,7 @@
 # checked it is present and matches packages/sources.lock; this script re-verifies before
 # unpacking, since a build can resume hours after preflight ran).
 #
-# This is the one stage that consumes the release artifact described in docs/SOURCES.md:
+# This is the one stage that consumes the release artifact described in packages/SOURCES.txt:
 # the containerd shim (also the CRI proxy via a subcommand), the Firecracker fork and its
 # jailer, the guest microVM boot image and root disk, the Cedar policy generator and the
 # KMS key provider. Nothing here is built from an internal source tree; everything is
@@ -21,7 +21,7 @@ rm -rf "$STAGE"; mkdir -p "$STAGE"
 tar -C "$STAGE" -xf "$ARCHIVE"
 
 sudo mkdir -p "$NITRO_SANDBOX_DIR_INSTALL"
-# The release's expected layout, per docs/SOURCES.md: a shim binary, the Firecracker fork +
+# The release's expected layout, per packages/SOURCES.txt: a shim binary, the Firecracker fork +
 # jailer, a guest kernel/bootable image and root disk, the Cedar policy generator and the
 # KMS key provider. Record each installed artifact's SHA-256 into the manifest, including
 # any the release ships without its own .sha256 (the shim, agent, policy generator and key
@@ -34,7 +34,7 @@ declare -A EXPECTED=(
 )
 for name in "${!EXPECTED[@]}"; do
   src=$(find "$STAGE" -name "$name" -type f | head -1)
-  [ -n "$src" ] || die "runtime archive did not contain expected artifact: $name (check the archive layout against docs/SOURCES.md)"
+  [ -n "$src" ] || die "runtime archive did not contain expected artifact: $name (check the archive layout against packages/SOURCES.txt)"
   dest="${EXPECTED[$name]}/$name"
   sudo install -m 0755 "$src" "$dest"
   echo "installed $dest sha256=$(sha256sum "$dest" | cut -c1-16)" | sudo tee -a /etc/nip-custom-ami-manifest

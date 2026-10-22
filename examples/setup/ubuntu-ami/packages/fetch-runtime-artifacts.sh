@@ -5,7 +5,7 @@
 #
 #   packages/fetch-runtime-artifacts.sh
 #
-# These two inputs have NO public AWS release channel yet (see docs/SOURCES.md). This
+# These two inputs have NO public AWS release channel yet (see packages/SOURCES.txt). This
 # script never downloads them and never falls back to an internal source tree or a private
 # URL: it only checks for archives the operator has already placed at
 # RUNTIME_ARTIFACTS_DIR, named by the RUNTIME_ARTIFACT_FILE / PATCH_SERIES_FILE variables in
@@ -22,7 +22,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 prerequisite_message() {
   cat <<'MSG'
 PREREQUISITE NOT MET: the EKS Pod Isolation runtime release artifacts are required and are
-not yet obtainable from a public AWS release channel (see docs/SOURCES.md, "The release
+not yet obtainable from a public AWS release channel (see packages/SOURCES.txt, "The release
 artifacts, and the prerequisite the sample stops on"). This is a property of the feature's
 pre-GA release stage, not a bug in this sample: it is designed to consume the runtime as
 verified downloads from a public release the moment one exists, and to stop here until then.
@@ -30,9 +30,9 @@ verified downloads from a public release the moment one exists, and to stop here
 To proceed once a public release exists:
   1. Obtain the runtime binaries + guest image archive, and the host-kernel patch series
      archive, from the Amazon EKS User Guide's download location for EKS Pod Isolation
-     (cited here by page title until that page is published; see docs/SOURCES.md).
+     (cited here by page title until that page is published; see packages/SOURCES.txt).
   2. Record their exact version and per-artifact SHA-256 in packages/sources.lock (the
-     eks-pod-isolation-runtime and host-kernel-patch-series blocks) and in docs/SOURCES.md.
+     eks-pod-isolation-runtime and host-kernel-patch-series blocks) and in packages/SOURCES.txt.
   3. Set RUNTIME_ARTIFACT_FILE and PATCH_SERIES_FILE in config.env to the archive filenames,
      and place both archives under RUNTIME_ARTIFACTS_DIR.
   4. Re-run this script, then ./setup.sh.

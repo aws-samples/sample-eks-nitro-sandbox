@@ -3,7 +3,7 @@
 #
 # Two kinds of check, run in this order:
 #   1. Public inputs: base image, toolchain, disk space, enclave hardware (after reboot).
-#      These never require anything beyond what docs/SOURCES.md lists.
+#      These never require anything beyond what packages/SOURCES.txt lists.
 #   2. The one prerequisite this sample documents rather than works around: the EKS Pod
 #      Isolation runtime release artifacts. packages/fetch-runtime-artifacts.sh checks for
 #      them at the paths config.env names and verifies them against packages/sources.lock.
@@ -89,10 +89,10 @@ fi
 # This is the one check in this sample allowed to STOP the whole build rather than just
 # fail a line: everything above is a public input (base AMI, toolchain, kernel source,
 # erofs-utils); this is the runtime that currently has no public release channel. See
-# docs/SOURCES.md and packages/fetch-runtime-artifacts.sh's own prerequisite message.
+# packages/SOURCES.txt and packages/fetch-runtime-artifacts.sh's own prerequisite message.
 if ! bash "$HERE/../packages/fetch-runtime-artifacts.sh"; then
   log "PREFLIGHT STOPPED: the EKS Pod Isolation runtime release artifacts prerequisite is not met."
-  log "This is the documented stop condition, not a build failure. See the message above and docs/SOURCES.md."
+  log "This is the documented stop condition, not a build failure. See the message above and packages/SOURCES.txt."
   exit 3
 fi
 

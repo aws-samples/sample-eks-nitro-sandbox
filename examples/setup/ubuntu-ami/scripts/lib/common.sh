@@ -76,7 +76,7 @@ verify_sha256() {
   actual:   $actual
 This artifact does not match packages/sources.lock. Do not use it. Either the download is
 corrupt (re-fetch) or the upstream artifact changed (re-pin deliberately in
-packages/sources.lock and docs/SOURCES.md together). There is no override flag."
+packages/sources.lock and packages/SOURCES.txt together). There is no override flag."
   fi
   log "verified sha256 $file"
 }

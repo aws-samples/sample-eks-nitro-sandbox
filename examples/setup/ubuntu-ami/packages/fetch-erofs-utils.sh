@@ -6,7 +6,7 @@
 #
 # The snapshot is a cgit-generated archive of a tag, not a release tarball with its own
 # upstream-published checksum, so the pinned SHA-256 is owned by this sample (see
-# docs/SOURCES.md). A mismatch here can mean cgit's archive generation changed; it aborts
+# packages/SOURCES.txt). A mismatch here can mean cgit's archive generation changed; it aborts
 # the same way a corrupt download would, with no override flag.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

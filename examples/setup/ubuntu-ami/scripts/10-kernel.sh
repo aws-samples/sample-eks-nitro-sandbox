@@ -3,7 +3,7 @@
 # the released EKS Pod Isolation host-kernel patch series, and make it the default GRUB
 # boot entry. Stops short of the reboot so the GRUB state can be read first.
 #
-# This is the customer build path described in docs/SOURCES.md: the kernel SOURCE is
+# This is the customer build path described in packages/SOURCES.txt: the kernel SOURCE is
 # public and pinned (packages/sources.lock); only the patch series is a released artifact,
 # already verified present by 00-preflight.sh (packages/fetch-runtime-artifacts.sh) before
 # this script runs. There is no RPM here and no internal source tree: the kernel is

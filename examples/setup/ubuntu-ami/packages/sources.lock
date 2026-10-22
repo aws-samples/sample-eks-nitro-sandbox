@@ -2,7 +2,7 @@
 #
 # One line per input. The fetch/build helpers under packages/ and scripts/ read this file
 # and fail closed: a value that does not match aborts the step, with no override flag. See
-# docs/SOURCES.md for the full design record of where each input comes from and why.
+# packages/SOURCES.txt for the full design record of where each input comes from and why.
 #
 # Format, one input per block:
 #   id=<stable identifier>
@@ -17,7 +17,7 @@
 # the fetch helpers (forward-compatible), but `id`, `kind`, `ref`, `source` and `status` are
 # required for every block, and `sha256` is required whenever kind=file.
 #
-# To move a pin: update this file and the corresponding entry in docs/SOURCES.md together,
+# To move a pin: update this file and the corresponding entry in packages/SOURCES.txt together,
 # re-fetch, and let the build re-verify against the new value. Do not edit one without the
 # other.
 
@@ -54,13 +54,13 @@ verify=This is a cgit-generated snapshot of a tag, not an upstream release tarba
   own published checksum, so the SHA-256 is pinned BY THIS SAMPLE (confirmed identical
   across two independent fetches at the time of writing), not quoted from upstream. A
   re-fetch that disagrees means cgit's archive generation changed; re-confirm by hand and
-  update this file and docs/SOURCES.md together before trusting a new value. Because
+  update this file and packages/SOURCES.txt together before trusting a new value. Because
   mkfs.erofs has no stable --version output, the build also records the installed binary's
   own SHA-256 into the on-image manifest.
 status=available
 
 # --- 4. EKS Pod Isolation runtime binaries + guest image (released artifact; pre-GA) --------
-# No public AWS release channel exists yet for this artifact (see docs/SOURCES.md, "The
+# No public AWS release channel exists yet for this artifact (see packages/SOURCES.txt, "The
 # release artifacts, and the prerequisite the sample stops on"). setup.sh's preflight checks
 # for it at RUNTIME_ARTIFACT_PATH (see config.env.example) and STOPS with this prerequisite
 # and the public download location (cited by page title until the page exists) if absent.
@@ -69,7 +69,7 @@ status=available
 id=eks-pod-isolation-runtime
 kind=file
 ref=TODO-pin-exact-public-release-version
-source=TODO-public-AWS-release-channel-not-yet-published; see docs/SOURCES.md
+source=TODO-public-AWS-release-channel-not-yet-published; see packages/SOURCES.txt
 sha256=TODO-per-artifact-sha256-from-the-release
 verify=TODO: verify against the release's own SHA-256 files for the large binary artifacts
   (Firecracker fork, jailer, guest EIF, guest disk); for artifacts the release ships without
@@ -85,7 +85,7 @@ status=pending-public-release
 id=host-kernel-patch-series
 kind=file
 ref=TODO-pin-exact-public-release-version
-source=TODO-public-AWS-release-channel-not-yet-published; see docs/SOURCES.md
+source=TODO-public-AWS-release-channel-not-yet-published; see packages/SOURCES.txt
 sha256=TODO-sha256-of-the-patch-series-archive
 verify=TODO: verify against the release's published SHA-256 once a public channel exists;
   record the applied patch count in the on-image manifest.

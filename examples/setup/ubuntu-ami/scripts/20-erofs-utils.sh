@@ -4,7 +4,7 @@
 #
 # The containerd shim runs `mkfs.erofs -zzstd,1` with no fallback. Ubuntu 24.04 ships
 # erofs-utils 1.7.1 without zstd, so this is a source build on Ubuntu specifically (AL2023's
-# distro version already has zstd). See docs/SOURCES.md, input 3.
+# distro version already has zstd). See packages/SOURCES.txt, input 3.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/common.sh"
