@@ -3,12 +3,17 @@
 #   - both pods run in a sandbox (own kernel, boot and virtio disks);
 #   - each /shared is an nfs4 mount to the guest's own endpoint, and the node holds no
 #     NFS mount for the pods;
-#   - the access point pins UID/GID 1000 on /shared, and a non-root container writes it;
-#   - the security group admits TCP 2049 from the cluster only; the file system policy
-#     allows only the CSI node principal ClientMount/ClientWrite (no ClientRootAccess) and
-#     denies the EC2 node role; the bucket policy requires TLS and denies the EC2 node role;
+#   - the access points pin UID/GID 1000 on /shared, and a non-root container writes it;
+#   - both pods share ONE dataset (same file system, two access points rooted at the same
+#     directory): a file the writer writes is read by the reader;
+#   - the reader is READ-ONLY: a write through the reader access point is refused, enforced
+#     by IAM (the reader access point has no ClientWrite), while the writer can write;
+#   - the security group admits TCP 2049 from the cluster only; the file system policy gives
+#     the CSI node principal read-write via the writer access point and read-only via the
+#     reader access point, by the s3files:AccessPointArn condition (no ClientRootAccess,
+#     and the EC2 node role is not named); the bucket policy requires TLS;
 #   - the workload ServiceAccount has no AWS identity and mounts no API token;
-#   - the pods mount with tls,iam; cross-pod visibility works both ways;
+#   - the pods mount with tls,iam;
 #   - a file written through /shared appears as an object in the bucket, and an object put
 #     in the bucket appears as a file on /shared (both ways, asynchronous, polled);
 #   - an outbound internet connection is refused by the egress policy.
@@ -43,7 +48,7 @@ echo "Running ./scripts/setup.sh to build and deploy the sample (idempotent)."
 NAMESPACE="$NAMESPACE" ENV_FILE="$ENV_FILE" "$SAMPLE_DIR/scripts/setup.sh"
 # shellcheck disable=SC1090
 source "$ENV_FILE"
-[[ -n "${S3_FILES_FILE_SYSTEM_ID:-}" && -n "${S3_FILES_ACCESS_POINT_ID:-}" && -n "${S3_BUCKET_NAME:-}" ]] \
+[[ -n "${S3_FILES_FILE_SYSTEM_ID:-}" && -n "${S3_FILES_WRITER_AP_ID:-}" && -n "${S3_FILES_READER_AP_ID:-}" && -n "${S3_BUCKET_NAME:-}" ]] \
   || die "$ENV_FILE is missing the S3 Files IDs; run ./scripts/setup.sh"
 
 AWS_REGION="${AWS_REGION:-us-west-2}"
@@ -156,26 +161,168 @@ else
   [[ -z "$wl_assoc" || "$wl_assoc" == "None" ]]; assert "the workload ServiceAccount has no Pod Identity association" $?
 fi
 
-echo "== 7/10 cross-pod visibility both ways =="
+echo "== 7/10 one shared dataset: writer writes, reader reads, reader write refused at IAM and kernel =="
 run_id="$(cut -d. -f1 /proc/uptime 2>/dev/null)-$$"
 sent="hello-from-writer-$run_id"
-reply="hello-from-reader-$run_id"
-$KUBECTL exec "$WRITER" -n "$NAMESPACE" -- sh -c "printf '%s' '$sent' > /shared/from-writer"; assert "the non-root writer wrote /shared" $?
+# The writer (read-write access point) writes; the reader (read-only access point) sees it.
+# Same file system, both access points rooted at /storage-s3-files, so it is one dataset.
+$KUBECTL exec "$WRITER" -n "$NAMESPACE" -- sh -c "printf '%s' '$sent' > /shared/from-writer"; assert "the non-root writer wrote /shared through the writer access point" $?
 seen="$($KUBECTL exec "$READER" -n "$NAMESPACE" -- cat /shared/from-writer 2>/dev/null | tr -d '\r')"
-[[ "$seen" == "$sent" ]]; assert "the reader sees the file the writer wrote" $?
-$KUBECTL exec "$READER" -n "$NAMESPACE" -- sh -c "printf '%s' '$reply' > /shared/from-reader"; assert "the reader wrote a file" $?
-seen="$($KUBECTL exec "$WRITER" -n "$NAMESPACE" -- cat /shared/from-reader 2>/dev/null | tr -d '\r')"
-[[ "$seen" == "$reply" ]]; assert "the writer sees the file the reader wrote" $?
+[[ "$seen" == "$sent" ]]; assert "the reader sees the file the writer wrote (one shared dataset)" $?
+# The reader is read-only: a write through the reader access point must FAIL, and fail for the
+# RIGHT reason. A bare non-zero exit, or merely finding "read-only file system" somewhere in the
+# output, could also come from a missing pod or a transport error, so neither alone proves the
+# write was executed and refused. Have the remote shell attempt the write and THEN echo a unique
+# sentinel: the sentinel is printed only if the container's shell actually ran to completion, and
+# the EROFS line is printed only if the kernel refused the write. Require BOTH. A kubectl/runtime
+# failure that never reached the container prints no sentinel and fails the assertion closed.
+wr_sentinel="reader-write-ran-$run_id"
+wr_out="$($KUBECTL exec "$READER" -n "$NAMESPACE" -- sh -c "printf '%s' 'nope-$run_id' > /shared/from-reader; echo $wr_sentinel" 2>&1)"
+# Match the sentinel as a WHOLE LINE (grep -qxF), not a substring: it appears on its own line
+# only when `echo $wr_sentinel` actually ran, so a runtime error that merely echoed back the
+# submitted command text (which contains the sentinel as a substring) cannot satisfy it.
+if printf '%s\n' "$wr_out" | grep -qxF "$wr_sentinel" \
+   && printf '%s\n' "$wr_out" | grep -qi 'read-only file system'; then
+  assert "the reader's write to /shared is refused with a read-only-filesystem error (sentinel proves the write ran)" 0
+else
+  echo "    reader write out=[$wr_out] (expected sentinel $wr_sentinel + a read-only-filesystem error)"
+  assert "the reader's write to /shared is refused with a read-only-filesystem error (sentinel proves the write ran)" 1
+fi
+# And the refused write left nothing behind: the file does not exist on the shared dataset. Probe
+# from the writer with a command that prints a distinct token for present vs absent, so a failure
+# to run the exec at all (empty output) is NOT read as "absent".
+probe="$($KUBECTL exec "$WRITER" -n "$NAMESPACE" -- sh -c '[ -e /shared/from-reader ] && echo FOUND || echo MISSING' 2>/dev/null | tr -d '\r')"
+[[ "$probe" == "MISSING" ]]; assert "the reader's refused write created no file on the shared dataset (probe returned MISSING, not an empty/failed exec)" $?
 
-echo "== 8/10 the pods mount with tls,iam =="
-opts_json="$($KUBECTL get pv storage-s3-files-shared -o jsonpath='{.spec.mountOptions}')"
-echo "  PV mountOptions: $opts_json"
-printf '%s' "$opts_json" | python3 -c 'import json,sys
+# The refusal above came from the reader pod, whose /shared is mounted readOnly, so by itself it
+# only proves the GUEST KERNEL refused the write, not the IAM policy. Prove the IAM half of the
+# split directly: start a throwaway pod of the sample's own that mounts the SAME reader PVC but
+# WITHOUT readOnly, so the kernel mount is read-write and the only thing that can refuse a write
+# is the file system policy's DenyWriteThroughReaderAccessPoint statement (keyed on the reader
+# access point ARN). NFS surfaces an IAM denial to the client as EROFS. Clean up the pod after.
+PROBE=s3-files-reader-rw-probe
+# Remove any probe pod left by an earlier run FIRST, and REQUIRE that removal to succeed before
+# applying. If a stale same-name pod survived (delete failed) and apply then patched or no-oped
+# it, `wait` could pass against the stale pod, re-opening the fail-open this block closes. So the
+# pre-delete gates everything: its failure fails the block and skips the apply and the wait.
+# probe_ready is set true only when the probe pod was cleared, applied, and reached Ready; every
+# gate below is sequenced so that a failure at any stage leaves it false, the inner assertions
+# are skipped, and the pre-existing-pod fail-open stays closed.
+probe_ready=false
+# 1. The pre-delete MUST succeed. If a stale same-name pod survived and `apply` then patched or
+#    no-oped it, `wait` could pass against the stale pod. So gate everything on removal first.
+if ! $KUBECTL delete pod "$PROBE" -n "$NAMESPACE" --ignore-not-found --timeout=90s >/dev/null 2>&1; then
+  assert "any stale reader-write probe pod was cleared before applying a fresh one" 1
+else
+  assert "any stale reader-write probe pod was cleared before applying a fresh one" 0
+  # 2. Apply the fresh probe pod.
+  if $KUBECTL apply -n "$NAMESPACE" -f - >/dev/null 2>&1 <<PROBEYAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $PROBE
+  namespace: $NAMESPACE
+  labels:
+    app: s3-files-shared
+spec:
+  runtimeClassName: isolated-sandbox
+  serviceAccountName: s3-files-workload
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: shell
+      image: public.ecr.aws/docker/library/busybox:1.37
+      command: ["sh", "-c", "while true; do sleep 3600; done"]
+      resources:
+        requests: { cpu: "1", memory: 1Gi }
+        limits: { cpu: "1", memory: 1Gi }
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities: { drop: ["ALL"] }
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: shared
+          mountPath: /shared
+          # NO readOnly: the kernel mount is read-write, so only IAM can refuse a write.
+  volumes:
+    - name: shared
+      persistentVolumeClaim:
+        claimName: storage-s3-files-reader
+PROBEYAML
+  then
+    assert "the reader-access-point read-WRITE probe pod was applied" 0
+    # 3. Wait for Ready. Only now is it safe: the pod is this run's, freshly applied.
+    if $KUBECTL wait -n "$NAMESPACE" --for=condition=Ready "pod/$PROBE" --timeout=5m >/dev/null 2>&1; then
+      assert "a reader-access-point pod with a read-WRITE kernel mount reaches Ready (ClientMount is allowed through the reader AP)" 0
+      probe_ready=true
+    else
+      assert "a reader-access-point pod with a read-WRITE kernel mount reaches Ready (ClientMount is allowed through the reader AP)" 1
+    fi
+  else
+    assert "the reader-access-point read-WRITE probe pod was applied" 1
+    assert "a reader-access-point pod with a read-WRITE kernel mount reaches Ready (ClientMount is allowed through the reader AP)" 1
+  fi
+fi
+if [[ "$probe_ready" == true ]]; then
+  # The kernel mount must actually be rw, or the test proves nothing about IAM.
+  pmnt="$($KUBECTL exec "$PROBE" -n "$NAMESPACE" -- grep ' /shared ' /proc/mounts 2>/dev/null)"
+  grep -qE '(^| )rw(,| )' <<<"$pmnt"; assert "the probe's live /shared mount is read-WRITE at the kernel layer (so only IAM can refuse a write)" $?
+  # A write through the writer access point (control, must SUCCEED) and through the reader access
+  # point with a rw kernel mount (must be REFUSED by IAM). Sentinel proves the shell ran.
+  ws="iam-writer-ok-$run_id"
+  w_out="$($KUBECTL exec "$WRITER" -n "$NAMESPACE" -- sh -c "printf '%s' ok > /shared/iam-writer-ok-$run_id && echo $ws; rm -f /shared/iam-writer-ok-$run_id" 2>&1)"
+  printf '%s\n' "$w_out" | grep -qxF "$ws"; assert "a write through the WRITER access point succeeds (control for the IAM split)" $?
+  rs="iam-reader-ran-$run_id"
+  r_out="$($KUBECTL exec "$PROBE" -n "$NAMESPACE" -- sh -c "printf '%s' nope > /shared/iam-probe-$run_id; echo $rs" 2>&1)"
+  if printf '%s\n' "$r_out" | grep -qxF "$rs" && printf '%s\n' "$r_out" | grep -qi 'read-only file system'; then
+    assert "a write through the READER access point is refused BY IAM even with a read-write kernel mount (DenyWriteThroughReaderAccessPoint, not just readOnly)" 0
+  else
+    echo "    reader-AP IAM probe out=[$r_out] (expected sentinel $rs + a read-only-filesystem error)"
+    assert "a write through the READER access point is refused BY IAM even with a read-write kernel mount (DenyWriteThroughReaderAccessPoint, not just readOnly)" 1
+  fi
+  # The refused IAM write left nothing behind.
+  iprobe="$($KUBECTL exec "$WRITER" -n "$NAMESPACE" -- sh -c "[ -e /shared/iam-probe-$run_id ] && echo FOUND || echo MISSING" 2>/dev/null | tr -d '\r')"
+  [[ "$iprobe" == "MISSING" ]]; assert "the IAM-refused write created no file on the shared dataset" $?
+else
+  # The probe never came up: the four inner assertions could not run. Record them as failed so
+  # the suite's assertion total is the same on every path and a skipped proof is never a silent pass.
+  for skipped in \
+    "the probe's live /shared mount is read-WRITE at the kernel layer (so only IAM can refuse a write)" \
+    "a write through the WRITER access point succeeds (control for the IAM split)" \
+    "a write through the READER access point is refused BY IAM even with a read-write kernel mount (DenyWriteThroughReaderAccessPoint, not just readOnly)" \
+    "the IAM-refused write created no file on the shared dataset"; do
+    assert "$skipped" 1
+  done
+fi
+# Always remove the throwaway probe pod, by its exact name, pass or fail. A delete that times out
+# or errors leaves the probe running on the shared cluster, so it is a reported failure, not
+# swallowed.
+$KUBECTL delete pod "$PROBE" -n "$NAMESPACE" --ignore-not-found --timeout=90s >/dev/null 2>&1
+assert "the throwaway reader-write probe pod was removed" $?
+
+echo "== 8/10 both pods mount with tls,iam; the reader mount is read-only =="
+for pv in storage-s3-files-writer storage-s3-files-reader; do
+  opts_json="$($KUBECTL get pv "$pv" -o jsonpath='{.spec.mountOptions}')"
+  echo "  $pv mountOptions: $opts_json"
+  printf '%s' "$opts_json" | python3 -c 'import json,sys
 try: v=set(json.load(sys.stdin))
 except Exception: sys.exit(1)
-sys.exit(0 if v=={"tls","iam"} else 1)'; assert "the PV mount options are exactly {tls, iam}" $?
+sys.exit(0 if v=={"tls","iam"} else 1)'; assert "$pv mount options are exactly {tls, iam}" $?
+done
 mnt_opt="$($KUBECTL exec "$WRITER" -n "$NAMESPACE" -- grep ' /shared ' /proc/mounts)"
 grep -q 'port=' <<<"$mnt_opt"; assert "the live mount runs over the stunnel TLS endpoint (local port)" $?
+# The reader's volumeMount is readOnly in the pod spec (defense in depth), and the live mount
+# carries 'ro'.
+ro_spec="$($KUBECTL get pod "$READER" -n "$NAMESPACE" -o jsonpath='{.spec.containers[0].volumeMounts[?(@.mountPath=="/shared")].readOnly}')"
+[[ "$ro_spec" == "true" ]]; assert "the reader pod mounts /shared readOnly in its spec" $?
+reader_mnt="$($KUBECTL exec "$READER" -n "$NAMESPACE" -- grep ' /shared ' /proc/mounts || true)"
+grep -qE '(^| )ro(,| )' <<<"$reader_mnt"; assert "the reader's live /shared mount is read-only (ro)" $?
 
 if command -v "${AWS%% *}" >/dev/null 2>&1; then
   echo "== 9/10 the security group, file system policy and bucket policy =="
@@ -203,35 +350,62 @@ if len(pairs)!=1: sys.exit(1)
 if pairs[0].get("GroupId")!=csg: sys.exit(1)
 sys.exit(0)' <<<"$sg_rules"; assert "the security group admits exactly TCP 2049 from the cluster security group (no CIDR, IPv6, prefix list or other group)" $?
   fi
-  # The S3 Files file system policy, validated structurally and exactly.
+  # The S3 Files file system policy, validated structurally and exactly: the SAME CSI node
+  # principal gets read-write via the writer access point and read-only via the reader access
+  # point, by the s3files:AccessPointArn condition. No ClientRootAccess anywhere; the writer
+  # grant never applies to the reader access point; and a ClientWrite through the reader access
+  # point is explicitly denied.
   pol="$(aws_r s3files get-file-system-policy --file-system-id "$S3_FILES_FILE_SYSTEM_ID" --query 'policy' --output text 2>/dev/null)"
   ACCOUNT="$(aws_r sts get-caller-identity --query Account --output text)"
   FS_ARN="arn:aws:s3files:${AWS_REGION}:${ACCOUNT}:file-system/${S3_FILES_FILE_SYSTEM_ID}"
-  FS_ARN="$FS_ARN" NODE="$S3_FILES_CSI_NODE_ROLE_ARN" EC2="$EC2_NODE_ROLE_ARN" python3 -c 'import json,sys,os
+  # S3 Files forms an access point ARN as .../file-system/<fs>/access-point/<ap>; read the real
+  # ARNs back from the API rather than constructing them, so the check matches the live policy.
+  WRITER_AP_ARN="$(aws_r s3files get-access-point --access-point-id "$S3_FILES_WRITER_AP_ID" --query 'accessPointArn' --output text 2>/dev/null)"
+  READER_AP_ARN="$(aws_r s3files get-access-point --access-point-id "$S3_FILES_READER_AP_ID" --query 'accessPointArn' --output text 2>/dev/null)"
+  FS_ARN="$FS_ARN" NODE="$S3_FILES_CSI_NODE_ROLE_ARN" WRITER_AP="$WRITER_AP_ARN" READER_AP="$READER_AP_ARN" python3 -c 'import json,sys,os
 p=json.loads(sys.stdin.read())
 if isinstance(p,str): p=json.loads(p)
 st=p["Statement"]
-fs=os.environ["FS_ARN"]; node=os.environ["NODE"]; ec2=os.environ["EC2"]
-def listify(x): return x if isinstance(x,list) else [x]
+fs=os.environ["FS_ARN"]; node=os.environ["NODE"]
+writer_ap=os.environ["WRITER_AP"]; reader_ap=os.environ["READER_AP"]
+# The split is meaningless if the two access point ARNs are empty, unread ("None"), or the same
+# ARN twice: the reader ClientWrite Deny would then also match the writer ARN. Require both to be
+# real and distinct before judging the policy.
+if not writer_ap or not reader_ap or writer_ap in ("None",) or reader_ap in ("None",) or writer_ap==reader_ap:
+    sys.exit(1)
+def L(x): return x if isinstance(x,list) else [x]
+def principal_is_node(s):
+    pr=s.get("Principal")
+    return isinstance(pr,dict) and list(pr.keys())==["AWS"] and pr["AWS"]==node
+def ap_cond(s):
+    return (s.get("Condition",{}).get("StringEquals",{}) or {}).get("s3files:AccessPointArn")
+# No statement anywhere may grant ClientRootAccess.
+if any("s3files:ClientRootAccess" in L(s.get("Action")) for s in st): sys.exit(1)
 allows=[s for s in st if s.get("Effect")=="Allow"]
 denies=[s for s in st if s.get("Effect")=="Deny"]
-def allow_ok(s):
-    pr=s.get("Principal")
-    if not (isinstance(pr,dict) and list(pr.keys())==["AWS"] and pr["AWS"]==node): return False
-    if listify(s.get("Resource"))!=[fs]: return False
-    acts=set(listify(s.get("Action")))
-    # Require EXACTLY both mount actions: a policy granting only one must not pass an assertion
-    # that claims both, and ClientRootAccess must not appear.
-    return acts == {"s3files:ClientMount","s3files:ClientWrite"}
-def ec2_deny_ok(s):
-    pr=s.get("Principal")
-    if not (isinstance(pr,dict) and pr.get("AWS")==ec2): return False
-    if listify(s.get("Resource"))!=[fs]: return False
-    acts=set(listify(s.get("Action")))
-    return {"s3files:ClientMount","s3files:ClientWrite"}<=acts
-# Exactly one Allow (the CSI node principal), and at least one EC2-node-role Deny.
-ok=(len(allows)==1 and allow_ok(allows[0]) and any(ec2_deny_ok(s) for s in denies))
-sys.exit(0 if ok else 1)' <<<"$pol"; assert "the file system policy: exactly one Allow, the CSI node principal with exactly ClientMount+ClientWrite (no ClientRootAccess) on this file system, plus a Deny of the EC2 node role" $?
+# Writer access point: exactly one Allow, node principal, on this fs, exactly ClientMount+
+# ClientWrite, conditioned on the writer access point ARN.
+def writer_allow(s):
+    return (principal_is_node(s) and L(s.get("Resource"))==[fs]
+            and set(L(s.get("Action")))=={"s3files:ClientMount","s3files:ClientWrite"}
+            and ap_cond(s)==writer_ap)
+# Reader access point: exactly one Allow, node principal, on this fs, exactly ClientMount
+# (NO ClientWrite), conditioned on the reader access point ARN.
+def reader_allow(s):
+    return (principal_is_node(s) and L(s.get("Resource"))==[fs]
+            and set(L(s.get("Action")))=={"s3files:ClientMount"}
+            and ap_cond(s)==reader_ap)
+# Reader access point: a Deny of ClientWrite, node principal, conditioned on the reader AP.
+def reader_write_deny(s):
+    return (principal_is_node(s) and L(s.get("Resource"))==[fs]
+            and "s3files:ClientWrite" in L(s.get("Action"))
+            and ap_cond(s)==reader_ap)
+ok=(len([s for s in allows if writer_allow(s)])==1
+    and len([s for s in allows if reader_allow(s)])==1
+    # every Allow is one of those two (no third, unconditioned or broader grant)
+    and all(writer_allow(s) or reader_allow(s) for s in allows)
+    and any(reader_write_deny(s) for s in denies))
+sys.exit(0 if ok else 1)' <<<"$pol"; assert "the file system policy: read-write only via the writer access point and read-only via the reader access point (ClientMount only, ClientWrite denied), by s3files:AccessPointArn, no ClientRootAccess" $?
   # The CSI node role carries NO S3 Files identity permission, so the mount is authorized by
   # the file system resource policy ALONE. Read every inline and attached policy on the node
   # role and fail if any grants an s3files: action or names an S3 Files resource. A lookup
@@ -286,22 +460,18 @@ sys.exit(0)'
     fi
   fi
 
-  # The bucket policy: TLS-only deny, and an EC2-node-role deny.
+  # The bucket policy: a TLS-only deny. (The EC2 node role is not named by this sample.)
   bpol="$(aws_r s3api get-bucket-policy --bucket "$S3_BUCKET_NAME" --query 'Policy' --output text 2>/dev/null)"
-  EC2="$EC2_NODE_ROLE_ARN" python3 -c 'import json,sys,os
+  python3 -c 'import json,sys
 p=json.loads(sys.stdin.read())
 if isinstance(p,str): p=json.loads(p)
-st=p["Statement"]; ec2=os.environ["EC2"]
+st=p["Statement"]
 def listify(x): return x if isinstance(x,list) else [x]
 def tls_deny(s):
     return (s.get("Effect")=="Deny" and s.get("Principal")=="*"
             and "s3:*" in listify(s.get("Action"))
             and s.get("Condition",{}).get("Bool",{}).get("aws:SecureTransport")=="false")
-def ec2_deny(s):
-    return (s.get("Effect")=="Deny" and s.get("Principal")=="*"
-            and "s3:*" in listify(s.get("Action"))
-            and s.get("Condition",{}).get("ArnEquals",{}).get("aws:PrincipalArn")==ec2)
-sys.exit(0 if (any(tls_deny(s) for s in st) and any(ec2_deny(s) for s in st)) else 1)' <<<"$bpol"; assert "the bucket policy denies insecure transport and denies the EC2 node role" $?
+sys.exit(0 if any(tls_deny(s) for s in st) else 1)' <<<"$bpol"; assert "the bucket policy denies insecure transport (TLS-only)" $?
 else
   echo "== 9/10 security group, file system policy and bucket policy: SKIP (aws not on PATH) =="
 fi
@@ -346,4 +516,4 @@ fi
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]] || exit 1
-echo "Shared S3 Files works: two isolated-sandbox pods mount one access point with tls,iam, read each other's writes, and stay in sync with the bucket both ways."
+echo "Shared S3 Files works: two isolated-sandbox pods share one dataset over tls,iam; the writer writes and the reader reads it, the reader's own write is refused (read-only access point), and the dataset stays in sync with the bucket both ways."
