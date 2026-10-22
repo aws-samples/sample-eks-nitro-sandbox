@@ -11,6 +11,7 @@ spec:
   containers:
     - name: web
       image: public.ecr.aws/docker/library/python:3.12-alpine
+      imagePullPolicy: IfNotPresent
       command: ["python3", "-m", "http.server", "8080"]
       workingDir: /srv
       ports:

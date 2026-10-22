@@ -17,6 +17,7 @@ spec:
   containers:
     - name: client
       image: public.ecr.aws/docker/library/alpine:3.20
+      imagePullPolicy: IfNotPresent
       command: ["sh", "-c"]
       args:
         - |

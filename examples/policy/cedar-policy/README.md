@@ -139,6 +139,7 @@ spec:
   containers:
     - name: main
       image: public.ecr.aws/amazonlinux/amazonlinux:minimal
+      imagePullPolicy: IfNotPresent
       securityContext:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true
