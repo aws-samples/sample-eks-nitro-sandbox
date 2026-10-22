@@ -80,6 +80,7 @@ const server = createServer(async (req, res) => {
     }
     return serveStatic(req, res);
   } catch (e) {
+    console.error(`request error ${req.method} ${req.url}:`, e);
     json(res, 500, { error: String(e?.message || e) });
   }
 });

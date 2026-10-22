@@ -76,11 +76,12 @@ export async function ensureAccessPoint(developer, session, cli) {
   return { apId: out.accessPointId, developer, session, cli };
 }
 
-// ListAccessPoints does not return tags, so read them per access point. Returns a
+// ListAccessPoints does not return tags, so read them per access point. The S3 Files
+// ListTagsForResource takes the access point ID (resourceId), not its ARN. Returns a
 // {key: value} map.
-async function apTags(apArn) {
+async function apTags(apId) {
   const out = await s3files.send(
-    new ListTagsForResourceCommand({ resourceArn: apArn })
+    new ListTagsForResourceCommand({ resourceId: apId })
   );
   const map = {};
   for (const t of out.tags ?? []) map[t.key] = t.value;
@@ -93,7 +94,7 @@ async function findAccessPoint(developer, session) {
   );
   for (const ap of out.accessPoints ?? []) {
     if (ap.rootDirectory?.path === sessionRoot(developer, session)) {
-      const tags = await apTags(ap.accessPointArn);
+      const tags = await apTags(ap.accessPointId);
       return { apId: ap.accessPointId, developer, session, cli: tags.cli };
     }
   }
@@ -168,7 +169,7 @@ export async function listSessions(developer) {
   const rows = await Promise.all(
     mine.map(async (ap) => {
       const session = ap.rootDirectory.path.slice(prefix.length);
-      const tags = await apTags(ap.accessPointArn);
+      const tags = await apTags(ap.accessPointId);
       return { session, cli: tags.cli, lastUsed: tags.lastUsed, apId: ap.accessPointId };
     })
   );
