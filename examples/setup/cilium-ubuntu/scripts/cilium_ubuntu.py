@@ -429,7 +429,7 @@ BTF_PATH = "/sys/kernel/btf/vmlinux"
 
 
 def cmd_check_btf(args):
-    """Stage 6's gate: both Ubuntu node kernels must expose valid BTF (a non-empty
+    """Stage 5's gate: both Ubuntu node kernels must expose valid BTF (a non-empty
     /sys/kernel/btf/vmlinux) before their Cilium agents are treated as ready. Run once per
     node group, against a Cilium agent pod already scheduled there, so the check reads the
     real running kernel rather than inferring BTF from a kernel config file."""

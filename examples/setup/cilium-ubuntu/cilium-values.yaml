@@ -1,4 +1,4 @@
-# Stage 2: Cilium as the cluster's only CNI, installed before any node exists.
+# Stage 3: Cilium as the cluster's only CNI, installed before any node exists.
 #
 #   helm upgrade --install cilium cilium/cilium --version 1.20.2 -n kube-system \
 #     -f cilium-values.yaml \

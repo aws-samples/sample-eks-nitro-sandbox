@@ -7,12 +7,13 @@ installed: Cilium gives every pod, the sandbox pod included, a real VPC address,
 every Service in eBPF, and is proved to enforce the same network policy on the sandbox pod as
 on an ordinary pod.
 
-> **Status: cluster scaffold and Cilium install path.** This page currently covers stages 1
-> through 4 below: the cluster, the Cilium operator's AWS permissions, the Cilium install
-> itself, and the two Ubuntu node groups joining it healthy. The evidence sections this
-> sample's issue describes (sandbox networking and policy proofs, the BTF negative control,
-> the `socketLB.hostNamespaceOnly` positive/negative controls, cost and duration) and the
-> `test.sh` / `clean.sh` scripts are tracked separately and are **not** in this change; they
+> **Status: complete as authored, unvalidated against a live cluster.** This page covers all
+> six stages below: the cluster, the Cilium operator's AWS permissions, the Cilium install
+> itself, the two Ubuntu node groups, the BTF gate, and the sandbox pod / Service boundary /
+> policy evidence (`test.sh`, `clean.sh`, `deploy/workloads.yaml`, `deploy/policy.yaml`) are
+> all committed and documented here. What is **not** yet done is the live run: the output
+> blocks below are `TODO` placeholders, not captured output, and the BTF and
+> `socketLB.hostNamespaceOnly` negative controls remain to be proven on a real cluster. They
 > are marked below wherever this page anticipates them.
 
 ```mermaid
@@ -102,7 +103,7 @@ and the policy controls still hold.**
 | [3. Install Cilium before any node](#3-install-cilium-before-any-node) | Helm values: ENI mode, kube-proxy replacement, `socketLB.hostNamespaceOnly` | Cilium waiting for nodes |
 | [4. Add the two Ubuntu node groups](#4-add-the-two-ubuntu-node-groups) | Two launch templates | Both nodes Ready on Cilium |
 | [5. Gate on BTF before either agent counts as ready](#5-gate-on-btf-before-either-agent-counts-as-ready) | A running-kernel check, not a config-file guess | Both nodes' Cilium agents confirmed against `/sys/kernel/btf/vmlinux` |
-| 6. The sandbox pod, Service boundary and policy evidence | *(separate item; not in this change)* | *(separate item; not in this change)* |
+| [6. The sandbox pod, Service boundary and policy evidence](#evidence-testsh) | `test.sh`, `deploy/workloads.yaml`, `deploy/policy.yaml` | The seven pods Ready and the networking, BTF and policy proofs (output blocks are `TODO` until a live run) |
 
 ### 0. Prerequisites and the AMI preflight
 

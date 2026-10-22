@@ -123,8 +123,8 @@ What exists now:
   - Cilium:         $CILIUM_VERSION, ENI IPAM, native routing, kube-proxy replacement, socketLB.hostNamespaceOnly=true
   - RuntimeClass:   isolated-sandbox
 
-This item stops here: the evidence (sandbox networking, policy, BTF negative control,
-service-boundary positive/negative controls) and the full website page are a separate,
-coordinated item. Remember this cluster bills while it exists (EKS control plane, two EC2
-instances, one NAT gateway) -- see the README for cleanup.
+Next: run ./test.sh to apply the workloads and policy and prove the networking, BTF and
+policy claims (see the README's Evidence section). The BTF and socketLB.hostNamespaceOnly
+negative controls are still TODO on a live cluster. Remember this cluster bills while it
+exists (EKS control plane, two EC2 instances, one NAT gateway) -- see the README for cleanup.
 EOF

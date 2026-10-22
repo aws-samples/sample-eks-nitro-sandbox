@@ -1,4 +1,4 @@
-# Stage 1b: the Cilium operator's AWS permissions, created right after the cluster and before
+# Stage 2: the Cilium operator's AWS permissions, created right after the cluster and before
 # Cilium is installed.
 #
 # eksctl refuses Pod Identity associations in `create cluster` while the cluster has no VPC
