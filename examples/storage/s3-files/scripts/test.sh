@@ -178,7 +178,10 @@ seen="$($KUBECTL exec "$READER" -n "$NAMESPACE" -- cat /shared/from-writer 2>/de
 # failure that never reached the container prints no sentinel and fails the assertion closed.
 wr_sentinel="reader-write-ran-$run_id"
 wr_out="$($KUBECTL exec "$READER" -n "$NAMESPACE" -- sh -c "printf '%s' 'nope-$run_id' > /shared/from-reader; echo $wr_sentinel" 2>&1)"
-if printf '%s\n' "$wr_out" | grep -qF "$wr_sentinel" \
+# Match the sentinel as a WHOLE LINE (grep -qxF), not a substring: it appears on its own line
+# only when `echo $wr_sentinel` actually ran, so a runtime error that merely echoed back the
+# submitted command text (which contains the sentinel as a substring) cannot satisfy it.
+if printf '%s\n' "$wr_out" | grep -qxF "$wr_sentinel" \
    && printf '%s\n' "$wr_out" | grep -qi 'read-only file system'; then
   assert "the reader's write to /shared is refused with a read-only-filesystem error (sentinel proves the write ran)" 0
 else
