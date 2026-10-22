@@ -738,7 +738,7 @@ def cmd_l7_requests(_):
 
 # --- `cilium-dbg fqdn cache list`: what the DNS proxy has actually seen ------
 FQDN_CACHE_ROW = re.compile(r'^(?P<endpoint>\d+)\s+(?P<source>\S+)\s+(?P<fqdn>\S+)\s+(?P<ttl>\d+)\s+'
-                            r'(?P<expiry>\S+)\s+(?P<ips>\S+(?:,\S+)*)\s*$')
+                            r'(?P<expiry>\S+)\s+(?P<ips>[^,\s]+(?:,[^,\s]+)*)\s*$')
 
 
 def fqdn_cache_rows(cache_text):
