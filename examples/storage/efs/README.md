@@ -405,10 +405,20 @@ policy denies it.
   their Pod Identity associations. The least privilege for this file system lives in the
   file system policy, which belongs to the sample's own file system, not on the shared node
   role.
-- **The workload has no AWS identity.** The pods' ServiceAccount has no Pod Identity
-  association and mounts no API token. What authorizes the mount is the CSI driver's identity
-  and the file system policy, so giving an application pod its own role would not change how
-  the volume is mounted.
+- **The pods have no AWS identity of their own, but their mount uses a shared one.** The pods'
+  ServiceAccount has no Pod Identity association and mounts no API token. The mount is signed
+  with the CSI driver's node role, the same role every EFS mount on the cluster uses. What
+  bounds these pods' use of it is the egress policy, which lets them reach only this file
+  system's mount targets, and the file system policy, which allows that role only through this
+  access point.
+- **What else the shared node role can mount is the cluster owner's choice.** If you own the
+  cluster, check it: the role's own IAM policies may allow `elasticfilesystem:ClientMount` on
+  every file system in the account (the AWS-managed
+  `AmazonElasticFileSystemClientReadWriteAccess` policy does), and a file system with no file
+  system policy accepts any client that can reach its mount targets. To narrow it, scope the
+  role's mount permissions to named file systems or to a resource tag, and give every file
+  system a policy. The sample does not change the role, because other workloads' mounts depend
+  on it.
 - **The access point is the trust boundary.** Every mount through it runs as UID/GID 1000
   under one root directory and cannot see the rest of the file system. Give each trust
   boundary its own access point or file system, and keep the mount-target security group as
@@ -419,6 +429,10 @@ policy denies it.
   addressable as plain S3 objects, use the S3 Files sample.
 - **Do not set `network-isolated` on these pods.** They need a network to reach the mount
   target, so they take an egress network policy instead of the network-isolated annotation.
+- **The pods pin their node while the sample is up.** They are bare pods, and nothing recreates
+  a bare pod that EKS Auto Mode removes when it consolidates an underused node, so both carry
+  `karpenter.sh/do-not-disrupt: "true"`. That also keeps their node from being consolidated
+  until the clean up deletes them. A real workload runs under a controller instead.
 
 ## Install the EFS CSI driver
 

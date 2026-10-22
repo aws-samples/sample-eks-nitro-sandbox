@@ -285,9 +285,9 @@ working, not a broken cluster.
 
 ## The sandboxed client is really in a sandbox
 
-The same evidence [Hello sandbox](../../getting-started/hello-sandbox/README.md) shows: the
-sandboxed client runs its own kernel build, its uptime matches the pod's age because the VM
-booted with the pod, and it sees virtio disks. Run
+The evidence is the pod's own view: the sandboxed client runs its own kernel build, its uptime
+matches the pod's age because the VM booted with the pod, and it sees virtio disks (the last
+two are also on the [Hello sandbox](../../getting-started/hello-sandbox/README.md) page). Run
 [`scripts/show-sandbox.sh`](scripts/show-sandbox.sh), or by hand (the `echo` prints the heading
 each block shows below):
 

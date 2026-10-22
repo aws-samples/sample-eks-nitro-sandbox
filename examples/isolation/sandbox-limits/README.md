@@ -138,8 +138,11 @@ identical but for one line: `probe-sandboxed` sets `runtimeClassName: isolated-s
 `probe-standard` does not. The egress policy selects both and allows only DNS to CoreDNS. Fill in
 `<COREDNS_IP>` with your cluster's CoreDNS address (the script does this for you):
 
+`kubectl create` refuses a `sandbox-limits` namespace that already exists, so a namespace this
+sample did not make is never relabeled as its own:
+
 ```bash
-kubectl apply -f deploy/namespace.yaml
+kubectl create -f deploy/namespace.yaml
 COREDNS_IP=$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')
 sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f -
 kubectl apply -f deploy/probe-standard.yaml
@@ -535,9 +538,9 @@ connection timeout and the connection-tracking count at its limit.
 
 ## The sandboxed probe is really in a sandbox
 
-The same evidence [Hello sandbox](../../getting-started/hello-sandbox/README.md) shows: the
-sandboxed probe runs its own kernel build, its uptime matches the pod's age because the VM booted
-with the pod, and it sees virtio disks. Run
+The evidence is the pod's own view: the sandboxed probe runs its own kernel build, its uptime
+matches the pod's age because the VM booted with the pod, and it sees virtio disks (the last two
+are also on the [Hello sandbox](../../getting-started/hello-sandbox/README.md) page). Run
 [`scripts/show-sandbox.sh`](scripts/show-sandbox.sh), or by hand:
 
 ```bash
@@ -566,15 +569,23 @@ for both, `6.18.51`; the build (`#1` versus `#2`, and the date) and the boot are
 ## Clean up
 
 Remove the pods, the sink, the policy and the namespace this sample created. Either cleanup flag
-deletes the whole namespace, so one is enough. This does not touch the cluster-wide enforcement
-setting from step 1.
+deletes the whole namespace, so one is enough; each first confirms the namespace carries this
+sample's `sample: sandbox-limits` label and refuses to delete one that does not. This does not
+touch the cluster-wide enforcement setting from step 1. If you ran an earlier version of this
+sample, its `sandbox-limits` namespace predates that label, so delete it once by hand
+(`kubectl delete namespace sandbox-limits`) before running the scripts again.
 
 ```bash
 scripts/run-comparison.sh --cleanup            # DNS walkthrough
 scripts/run-conntrack-comparison.sh --cleanup  # connection walkthrough
 ```
 
-Or by hand:
+Or by hand. First confirm the namespace is this sample's: the next command must print
+`sandbox-limits`. If it prints nothing, the namespace is not this sample's, so delete nothing.
+
+```bash
+kubectl get namespace sandbox-limits -o jsonpath='{.metadata.labels.sample}{"\n"}'
+```
 
 ```bash
 kubectl delete -f deploy/egress-policy.yaml --ignore-not-found

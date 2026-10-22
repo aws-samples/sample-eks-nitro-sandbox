@@ -29,7 +29,7 @@ pod spec:
   allows egress only to CoreDNS for name lookups, to the Pod Identity credential address,
   and to HTTPS on the Bedrock and GitHub hostnames. Other AWS APIs, other internet hosts and other pods are refused. (The
   policy allows the addresses those names resolve to, so another name served from the
-  same addresses would also be reachable.) The VM is sized to the pod's limits (inside
+  same addresses would also be reachable.) The VM is sized from the pod's requests (inside
   it, `nproc` reports 2 and memory is about 4 GiB), so the hypervisor bounds the CPU and
   memory it can use.
 
@@ -293,7 +293,7 @@ Remove the AWS resources, the local image, and the agent pod from this sample:
 ```bash
 kubectl delete pod fix-issue-$ISSUE_NUMBER --ignore-not-found
 for id in $(aws eks list-pod-identity-associations --cluster-name $CLUSTER_NAME \
-              --region $AWS_REGION --namespace $NAMESPACE \
+              --region $AWS_REGION --namespace $NAMESPACE --service-account coding-agent \
               --query 'associations[].associationId' --output text); do
   aws eks delete-pod-identity-association --cluster-name $CLUSTER_NAME \
     --region $AWS_REGION --association-id $id
