@@ -14,4 +14,7 @@ RUN set -eu; \
     npm cache clean --force; \
     pi --version
 
-ENV CLI_CMD="pi"
+# pi reads AWS credentials ambiently from the pod's Pod Identity (the standard
+# AWS_CONTAINER_CREDENTIALS_* variables) and takes the provider and model on the command
+# line, so no config file is needed. AWS_REGION is passed by the session entrypoint.
+ENV CLI_CMD="pi --provider amazon-bedrock --model us.anthropic.claude-sonnet-5-5"

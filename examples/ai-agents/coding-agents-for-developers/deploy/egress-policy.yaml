@@ -45,6 +45,7 @@ spec:
     - to:
         - domainNames:
             - bedrock-runtime.<AWS_REGION>.amazonaws.com
+            - bedrock-mantle.<AWS_REGION>.api.aws
             - github.com
             - codeload.github.com
             - objects.githubusercontent.com

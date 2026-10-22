@@ -4,7 +4,7 @@
 
 import * as store from "./storage.js";
 import * as k8s from "./k8s.js";
-import { randomName } from "./names.js";
+import { randomName, displayName } from "./names.js";
 
 const IDLE_MS = (parseInt(process.env.IDLE_MINUTES, 10) || 30) * 60 * 1000;
 const FS_ID = process.env.S3_FILES_FS_ID;
@@ -20,12 +20,13 @@ export async function newAgent(developer, cli) {
   return start(developer, cli, session);
 }
 
-// Restore: same, on the existing folder; the CLI resumes its own conversation.
+// Restore: same, on the existing folder; the CLI resumes its own conversation. Look up
+// only THIS session's access point (not the whole list), so restore does not fan out a
+// tag read over every session and trip the S3 Files API's request rate limit.
 export async function restore(developer, session) {
-  const sessions = await store.listSessions(developer);
-  const meta = sessions.find((s) => s.session === session);
-  if (!meta) throw new Error(`no session ${session} for ${developer}`);
-  return start(developer, meta.cli, session);
+  const cli = await store.sessionCli(developer, session);
+  if (!cli) throw new Error(`no session ${session} for ${developer}`);
+  return start(developer, cli, session);
 }
 
 async function start(developer, cli, session) {
@@ -38,7 +39,7 @@ async function start(developer, cli, session) {
   console.log(`start ${session}: pod=${podName} node=${node}`);
   const azId = await k8s.nodeAzId(node);
 
-  const credential = await store.mountCredential(ap.apId, developer, session);
+  const credential = await store.mountCredential(ap.apId, developer, cli, session);
   console.log(`start ${session}: startSession azId=${azId}`);
   await k8s.startSession(podName, { credential, fsId: FS_ID, apId: ap.apId, azId });
 
@@ -65,7 +66,7 @@ export async function release(session) {
 
 export async function listClosed(developer) {
   const all = await store.listSessions(developer);
-  return all.map((s) => ({ ...s, running: live.has(s.session) }));
+  return all.map((s) => ({ ...s, display: displayName(s.session), running: live.has(s.session) }));
 }
 
 export async function remove(developer, session) {
@@ -86,7 +87,7 @@ export function startBackgroundLoop() {
           continue;
         }
         if (now - (entry.lastRefresh || entry.startedAt) > REFRESH_MS) {
-          const cred = await store.mountCredential(entry.apId, entry.developer, entry.session);
+          const cred = await store.mountCredential(entry.apId, entry.developer, entry.cli, entry.session);
           await k8s.refreshCredential(entry.podName, cred);
           entry.lastRefresh = now;
         }

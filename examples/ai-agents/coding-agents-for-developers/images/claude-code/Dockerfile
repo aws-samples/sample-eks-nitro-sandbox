@@ -17,7 +17,10 @@ RUN set -eu; \
 
 # Claude Code on Bedrock: the Pod Identity role is resolved from the pod's credential
 # endpoint. Skip telemetry and auto-update the egress policy would refuse anyway.
+# ANTHROPIC_MODEL pins the Bedrock inference profile (set on the base as MODEL_ID); without
+# it Claude Code picks its own default, which may not be enabled in the account.
 ENV CLAUDE_CODE_USE_BEDROCK=1 \
+    ANTHROPIC_MODEL="us.anthropic.claude-sonnet-5-5" \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
     DISABLE_AUTOUPDATER=1 \
     CLI_CMD="claude"

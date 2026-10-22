@@ -125,6 +125,18 @@ if [ -n "$POD_ID_TOKEN_SRC" ] && [ -r "$POD_ID_TOKEN_SRC" ]; then
   export AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE="$POD_ID_TOKEN_DST"
 fi
 
+# Per-CLI setup. Each CLI image may ship /usr/local/bin/cli-setup.sh, which writes that
+# CLI's provider/model configuration (for Amazon Bedrock, model $MODEL_ID) into the dev
+# user's home. It runs AS the dev user, after the mount, because the home it writes to is
+# the S3 Files workspace mounted above, not a path baked into the image. It is idempotent,
+# so it is safe to re-run on restore.
+if [ -x /usr/local/bin/cli-setup.sh ]; then
+  setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
+    env HOME="$MOUNT/home" AWS_REGION="$AWS_REGION" MODEL_ID="${MODEL_ID:-}" \
+        XDG_CONFIG_HOME="$MOUNT/home/.config" \
+        /usr/local/bin/cli-setup.sh || echo "session-entrypoint: cli-setup.sh failed (non-fatal)" >&2
+fi
+
 # 3. Drop to the dev user and start the CLI inside a tmux session. Closing the browser
 #    only detaches tmux, so the CLI keeps running. The app re-attaches on reconnect.
 #    Pass through only what the CLI needs; the mount credential stays with root. The XDG
@@ -137,12 +149,18 @@ fi
 setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
   env HOME="$MOUNT/home" AWS_REGION="$AWS_REGION" CLI_CMD="$CLI_CMD" \
       AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE="${AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE:-}" \
+      TERM=xterm-256color \
       XDG_RUNTIME_DIR="$RUNTIME_DIR" \
       XDG_CACHE_HOME="$MOUNT/home/.cache" \
       XDG_CONFIG_HOME="$MOUNT/home/.config" \
       XDG_DATA_HOME="$MOUNT/home/.local/share" \
       XDG_STATE_HOME="$MOUNT/home/.local/state" \
-      /bin/bash -lc 'mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"; cd "$HOME" && \
-        tmux new-session -d -s agent "$CLI_CMD" && \
-        tmux set-option -t agent window-size latest && \
-        tmux set-option -t agent aggressive-resize on'
+      /bin/bash -lc 'mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"; cd "$HOME"; \
+        tmux set-option -g default-terminal "tmux-256color"; \
+        if tmux has-session -t agent 2>/dev/null; then \
+          echo "session-entrypoint: tmux agent session already running, leaving it" >&2; \
+        else \
+          tmux new-session -d -s agent -x 200 -y 50 "$CLI_CMD"; \
+          tmux set-option -t agent window-size latest; \
+          tmux set-option -t agent aggressive-resize on; \
+        fi'

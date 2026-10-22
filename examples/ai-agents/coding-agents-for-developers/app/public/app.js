@@ -33,8 +33,8 @@ async function loadTiles() {
     el.className = "tile";
     el.innerHTML = `<div class="name">${cli}</div><div class="muted">New agent</div>`;
     el.onclick = async () => {
-      const { session } = await api("/api/new", { developer, cli });
-      openTerminal(session, cli);
+      const { session, display } = await api("/api/new", { developer, cli });
+      openTerminal(session, cli, display);
       loadSessions();
     };
     tiles.appendChild(el);
@@ -47,15 +47,15 @@ async function loadSessions() {
   rows.innerHTML = "";
   for (const s of sessions) {
     const tr = document.createElement("tr");
-    const used = s.lastUsed ? new Date(s.lastUsed).toLocaleString() : "";
+    const name = s.display || s.session;
     tr.innerHTML =
-      `<td>${s.session}</td><td>${s.cli}</td><td class="muted">${used}</td>`;
+      `<td>${name}</td><td>${s.cli}</td><td class="muted">${s.running ? "running" : "idle"}</td>`;
     const actions = document.createElement("td");
     const restore = document.createElement("button");
     restore.textContent = s.running ? "Open" : "Restore";
     restore.onclick = async () => {
       if (!s.running) await api("/api/restore", { developer, session: s.session });
-      openTerminal(s.session, s.cli);
+      openTerminal(s.session, s.cli, name);
     };
     const del = document.createElement("button");
     del.textContent = "Delete";
@@ -75,7 +75,8 @@ async function loadSessions() {
 const windows = new Map();
 let zTop = 10;
 
-function openTerminal(session, cli) {
+function openTerminal(session, cli, display) {
+  const label = display || session;
   if (windows.has(session)) return focusWindow(session);
 
   const win = document.createElement("div");
@@ -85,7 +86,7 @@ function openTerminal(session, cli) {
   win.style.zIndex = ++zTop;
   win.innerHTML = `
     <div class="term-titlebar">
-      <span class="title">${cli} · ${session}</span>
+      <span class="title">${cli} · ${label}</span>
       <button data-act="min">–</button>
       <button data-act="close">×</button>
     </div>
@@ -115,7 +116,7 @@ function openTerminal(session, cli) {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ resize: [term.cols, term.rows] }));
   };
 
-  windows.set(session, { win, term, ws, cli });
+  windows.set(session, { win, term, ws, cli, label });
   win.addEventListener("mousedown", () => { win.style.zIndex = ++zTop; });
   win.querySelector('[data-act="close"]').onclick = async () => {
     ws.close(); win.remove(); windows.delete(session);
@@ -138,7 +139,7 @@ function minimize(session) {
   const chip = document.createElement("div");
   chip.className = "chip";
   chip.dataset.session = session;
-  chip.textContent = `${w.cli} · ${session}`;
+  chip.textContent = `${w.cli} · ${w.label || session}`;
   chip.onclick = () => focusWindow(session);
   $("#dock").appendChild(chip);
 }

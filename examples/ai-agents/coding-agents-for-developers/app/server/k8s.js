@@ -22,21 +22,29 @@ const VERSION = "v1beta1";
 // Claim a warm pod from the CLI's pool. Returns the claim name and the resolved pod.
 export async function claimPod(cli, session) {
   const claimName = `agent-${session}`.slice(0, 63);
-  await custom.createNamespacedCustomObject({
-    group: GROUP,
-    version: VERSION,
-    namespace: NAMESPACE,
-    plural: "sandboxclaims",
-    body: {
-      apiVersion: `${GROUP}/${VERSION}`,
-      kind: "SandboxClaim",
-      metadata: {
-        name: claimName,
-        labels: { "app.kubernetes.io/part-of": "coding-agents-for-developers" },
+  try {
+    await custom.createNamespacedCustomObject({
+      group: GROUP,
+      version: VERSION,
+      namespace: NAMESPACE,
+      plural: "sandboxclaims",
+      body: {
+        apiVersion: `${GROUP}/${VERSION}`,
+        kind: "SandboxClaim",
+        metadata: {
+          name: claimName,
+          labels: { "app.kubernetes.io/part-of": "coding-agents-for-developers" },
+        },
+        spec: { warmPoolRef: { name: `agent-${cli}` } },
       },
-      spec: { warmPoolRef: { name: `agent-${cli}` } },
-    },
-  });
+    });
+  } catch (e) {
+    // A claim with this name already exists: the session is still claimed (the app lost
+    // its in-memory record across a restart, or the browser reconnected). Adopt the
+    // existing claim and its pod instead of failing, so reopen and restore are
+    // idempotent. Any other error is real.
+    if (e?.code !== 409) throw e;
+  }
 
   // Wait for the claim to resolve to a sandbox pod AND for that pod to be scheduled onto
   // a node. A warm pod is adopted in well under a second, but if the pool is momentarily

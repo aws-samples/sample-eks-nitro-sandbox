@@ -17,6 +17,13 @@ RUN set -eu; \
     test -x "$(readlink -f /usr/local/bin/omp)"; \
     /usr/local/bin/omp --version
 
-# oh-my-pi's command is `omp`, installed into Bun's global bin (/usr/local/bin).
+# cli-setup.sh writes the Bedrock provider/model config into the dev user's home at
+# session start (the home is the mounted workspace, so it cannot be baked into the image).
+COPY --chmod=0755 cli-setup.sh /usr/local/bin/cli-setup.sh
+
+# oh-my-pi's command is `omp`, installed into Bun's global bin (/usr/local/bin). Passing
+# --model selects the Bedrock model up front; OMP_SKIP_SETUP skips the first-run provider
+# sign-in wizard (Bedrock auth is ambient Pod Identity, so there is nothing to sign into).
 ENV PATH="/usr/local/bin:${PATH}" \
-    CLI_CMD="omp"
+    OMP_SKIP_SETUP=1 \
+    CLI_CMD="omp --model amazon-bedrock/us.anthropic.claude-sonnet-5-5"

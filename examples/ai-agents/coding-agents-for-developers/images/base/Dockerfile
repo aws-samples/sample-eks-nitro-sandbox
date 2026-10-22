@@ -53,6 +53,10 @@ RUN set -eu; \
     mkdir -p /workspace; \
     chown dev:dev /workspace
 
+# The Amazon Bedrock model every CLI uses, as an inference-profile id. One place to change
+# it; each CLI image's setup turns it into that CLI's own provider/model configuration.
+ENV MODEL_ID="us.anthropic.claude-sonnet-5-5"
+
 COPY --chmod=0755 session-entrypoint.sh /usr/local/bin/session-entrypoint.sh
 
 # A warm pod boots with NO session: it just idles here. When the app claims the pod it

@@ -9,6 +9,14 @@
         "bedrock:InvokeModelWithResponseStream"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "BedrockMantleForCodex",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock-mantle:CreateInference"
+      ],
+      "Resource": "*"
     }
   ]
 }

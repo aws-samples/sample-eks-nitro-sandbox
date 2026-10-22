@@ -10,6 +10,7 @@ import { WebSocketServer } from "ws";
 
 import * as sessions from "./sessions.js";
 import * as k8s from "./k8s.js";
+import { displayName } from "./names.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, "..", "public");
@@ -61,12 +62,12 @@ const server = createServer(async (req, res) => {
       console.log(`/api/new developer=${developer} cli=${cli}`);
       const entry = await sessions.newAgent(developer, cli);
       console.log(`/api/new done session=${entry.session}`);
-      return json(res, 200, { session: entry.session, cli: entry.cli });
+      return json(res, 200, { session: entry.session, display: displayName(entry.session), cli: entry.cli });
     }
     if (req.method === "POST" && url.pathname === "/api/restore") {
       const { developer, session } = await readBody(req);
       const entry = await sessions.restore(developer, session);
-      return json(res, 200, { session: entry.session, cli: entry.cli });
+      return json(res, 200, { session: entry.session, display: displayName(entry.session), cli: entry.cli });
     }
     if (req.method === "POST" && url.pathname === "/api/close") {
       const { session } = await readBody(req);

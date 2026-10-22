@@ -14,5 +14,9 @@ RUN set -eu; \
     npm cache clean --force; \
     codex --version
 
-# Codex reads AWS credentials from the Pod Identity endpoint for its Bedrock provider.
+# cli-setup.sh writes Codex's config.toml (the amazon-bedrock provider) into the dev user's
+# home at session start (the home is the mounted workspace, so it cannot be baked into the
+# image). Codex then signs Bedrock requests with the pod's Pod Identity credentials.
+COPY --chmod=0755 cli-setup.sh /usr/local/bin/cli-setup.sh
+
 ENV CLI_CMD="codex"
