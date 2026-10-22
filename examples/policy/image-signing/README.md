@@ -490,7 +490,9 @@ profile and confirms its status reads `Canceled`. A canceled profile lingers unt
 signatures expire (about 141 months by default) and AWS Signer refuses to reuse the name, so
 to set the sample up again after `--delete-aws-resources`, set a new `SIGNING_PROFILE` in
 `.env` first; `setup.sh` stops with that instruction if the old name is still present.
-Network policy enforcement is cluster-wide;
-deleting the cluster removes it, or delete the `amazon-vpc-cni` ConfigMap in `kube-system` if
-nothing else relies on it. To remove the namespace and the cluster, follow the
+Neither script changes network policy enforcement, which is cluster-wide. On a cluster you
+keep, leave it on (it only enforces policies that select a pod), or, if you turned it on in
+step 1 and nothing else relies on it, set the `amazon-vpc-cni` ConfigMap's
+`enable-network-policy-controller` back to `"false"`. Do not delete the ConfigMap: it holds
+the cluster's other VPC CNI settings. To remove the namespace and the cluster, follow the
 [hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up).

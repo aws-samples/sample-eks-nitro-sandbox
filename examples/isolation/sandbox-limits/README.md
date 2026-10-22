@@ -138,8 +138,11 @@ identical but for one line: `probe-sandboxed` sets `runtimeClassName: isolated-s
 `probe-standard` does not. The egress policy selects both and allows only DNS to CoreDNS. Fill in
 `<COREDNS_IP>` with your cluster's CoreDNS address (the script does this for you):
 
+`kubectl create` refuses a `sandbox-limits` namespace that already exists, so a namespace this
+sample did not make is never relabeled as its own:
+
 ```bash
-kubectl apply -f deploy/namespace.yaml
+kubectl create -f deploy/namespace.yaml
 COREDNS_IP=$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')
 sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f -
 kubectl apply -f deploy/probe-standard.yaml
@@ -577,7 +580,12 @@ scripts/run-comparison.sh --cleanup            # DNS walkthrough
 scripts/run-conntrack-comparison.sh --cleanup  # connection walkthrough
 ```
 
-Or by hand:
+Or by hand. First confirm the namespace is this sample's: the next command must print
+`sandbox-limits`. If it prints nothing, the namespace is not this sample's, so delete nothing.
+
+```bash
+kubectl get namespace sandbox-limits -o jsonpath='{.metadata.labels.sample}{"\n"}'
+```
 
 ```bash
 kubectl delete -f deploy/egress-policy.yaml --ignore-not-found
