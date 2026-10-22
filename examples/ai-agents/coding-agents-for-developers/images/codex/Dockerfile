@@ -19,4 +19,10 @@ RUN set -eu; \
 # image). Codex then signs Bedrock requests with the pod's Pod Identity credentials.
 COPY --chmod=0755 cli-setup.sh /usr/local/bin/cli-setup.sh
 
-ENV CLI_CMD="codex"
+# codex-session.sh keeps the Codex TUI alive across browser detach/reattach: Codex's TUI
+# exits by design when its terminal goes away (the task keeps running on its local
+# app-server daemon), and this sample detaches a tmux client every time the browser tab
+# closes. The wrapper reconnects with `codex resume --last` in a loop. See the script.
+COPY --chmod=0755 codex-session.sh /usr/local/bin/codex-session.sh
+
+ENV CLI_CMD="/usr/local/bin/codex-session.sh"

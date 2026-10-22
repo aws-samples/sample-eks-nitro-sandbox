@@ -132,7 +132,8 @@ fi
 # so it is safe to re-run on restore.
 if [ -x /usr/local/bin/cli-setup.sh ]; then
   setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
-    env HOME="$MOUNT/home" AWS_REGION="$AWS_REGION" MODEL_ID="${MODEL_ID:-}" \
+    env -u AWS_SHARED_CREDENTIALS_FILE -u AWS_PROFILE \
+        HOME="$MOUNT/home" AWS_REGION="$AWS_REGION" MODEL_ID="${MODEL_ID:-}" \
         XDG_CONFIG_HOME="$MOUNT/home/.config" \
         /usr/local/bin/cli-setup.sh || echo "session-entrypoint: cli-setup.sh failed (non-fatal)" >&2
 fi
@@ -143,11 +144,21 @@ fi
 #    base-directory variables point at writable paths: the cache, config, data and state
 #    dirs live under the persisted home, and the runtime dir at the tmpfs path above, so
 #    no tool falls back to a root-owned default like /var/run.
+#
+#    `env -u AWS_SHARED_CREDENTIALS_FILE -u AWS_PROFILE` strips the two variables the
+#    mount step exported. They point at the root-only mount credential in /dev/shm
+#    (mode 600, owned by root) which the dev user cannot read. The CLI does not need them
+#    -- it reaches Bedrock through Pod Identity, not this file -- and leaving them set
+#    makes a CLI that reads AWS_SHARED_CREDENTIALS_FILE (oh-my-pi does, on startup) try to
+#    open the credential and fail with EACCES. So the CLI's environment must not carry the
+#    mount credential's path at all; this is also why the mount credential stays unseen by
+#    the agent, as the comment above intends.
 # Start tmux DETACHED so this exec returns while the CLI keeps running in the pod. The
 # app attaches a browser terminal to the tmux session over a second exec; closing the
 # browser only detaches, so the CLI runs on.
 setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
-  env HOME="$MOUNT/home" AWS_REGION="$AWS_REGION" CLI_CMD="$CLI_CMD" \
+  env -u AWS_SHARED_CREDENTIALS_FILE -u AWS_PROFILE \
+      HOME="$MOUNT/home" AWS_REGION="$AWS_REGION" CLI_CMD="$CLI_CMD" \
       AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE="${AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE:-}" \
       TERM=xterm-256color LANG=C.UTF-8 LC_ALL=C.UTF-8 \
       XDG_RUNTIME_DIR="$RUNTIME_DIR" \
@@ -156,7 +167,15 @@ setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
       XDG_DATA_HOME="$MOUNT/home/.local/share" \
       XDG_STATE_HOME="$MOUNT/home/.local/state" \
       /bin/bash -lc 'mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"; cd "$HOME"; \
-        tmux set-option -g default-terminal "tmux-256color"; \
+        printf "%s\n" \
+          "set -s default-terminal \"tmux-256color\"" \
+          "set -s escape-time 0" \
+          "set -s extended-keys always" \
+          "set -s extended-keys-format csi-u" \
+          "set -as terminal-features \",*:extkeys\"" \
+          "set -g allow-passthrough on" \
+          "set -g status off" \
+          > "$HOME/.tmux.conf"; \
         if tmux has-session -t agent 2>/dev/null; then \
           echo "session-entrypoint: tmux agent session already running, leaving it" >&2; \
         else \
