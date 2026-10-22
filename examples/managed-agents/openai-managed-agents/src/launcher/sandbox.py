@@ -42,7 +42,7 @@ SESSION_ID_LABEL = "openai.com/session-id"
 def label_safe(value: str) -> str:
     """Reduce an id to a valid label value (<= 63 chars of [a-z0-9-])."""
     safe = re.sub(r"[^a-z0-9-]", "-", value.lower()).strip("-")[:63].rstrip("-")
-    return safe or hashlib.sha1(value.encode()).hexdigest()[:12]
+    return safe or hashlib.sha256(value.encode()).hexdigest()[:12]
 
 
 class Dispatcher:

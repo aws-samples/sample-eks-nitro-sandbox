@@ -74,7 +74,10 @@ def _readiness_listener(port: int, stop: threading.Event) -> socket.socket:
     """
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(("0.0.0.0", port))  # the pod network; no host port is published
+    # The all-interface pod bind is intentional: kubelet probes the pod IP, no
+    # host port or Service publishes this port, and deny-all ingress governs it.
+    # Narrowing it to loopback would break the Kubernetes readiness probe.
+    srv.bind(("0.0.0.0", port))  # lgtm[py/bind-socket-all-network-interfaces]
     srv.listen(16)
     srv.settimeout(1.0)
     return srv
