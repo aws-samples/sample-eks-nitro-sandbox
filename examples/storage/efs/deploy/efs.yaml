@@ -71,6 +71,10 @@ metadata:
   namespace: <NAMESPACE>
   labels:
     app: efs-shared
+  annotations:
+    # Pin the node while this long-lived demo pod runs. Auto Mode's node consolidation
+    # would otherwise remove an underused node, and nothing recreates a bare pod.
+    karpenter.sh/do-not-disrupt: "true"
 spec:
   runtimeClassName: isolated-sandbox
   serviceAccountName: efs-workload
@@ -113,6 +117,10 @@ metadata:
   namespace: <NAMESPACE>
   labels:
     app: efs-shared
+  annotations:
+    # Pin the node while this long-lived demo pod runs. Auto Mode's node consolidation
+    # would otherwise remove an underused node, and nothing recreates a bare pod.
+    karpenter.sh/do-not-disrupt: "true"
 spec:
   runtimeClassName: isolated-sandbox
   serviceAccountName: efs-workload
