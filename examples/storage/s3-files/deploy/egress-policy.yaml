@@ -5,11 +5,13 @@
 # selects (app: s3-files-shared), all ingress and all egress are denied except DNS on
 # UDP and TCP 53 and NFS (TCP 2049) to the S3 Files mount-target addresses.
 #
-# DNS is allowed to any address (0.0.0.0/0 on port 53), not pinned to the CoreDNS
-# Service IP. On EKS Auto Mode CoreDNS runs as a per-node systemd service rather than a
-# pod behind a ClusterIP, so the resolver a pod actually reaches is node-local; allowing
-# port 53 to any address keeps name resolution working wherever Auto Mode places it. The
-# rule is still narrow: it opens only the DNS ports, and everything else stays denied.
+# DNS is allowed to any address (0.0.0.0/0 on port 53), not pinned to the cluster's
+# resolver. This is a project choice to keep the sample simple: it does not depend on how
+# a given cluster serves DNS (on EKS Auto Mode the resolver is node-local rather than a
+# pod behind a ClusterIP). Be clear about the cost: port 53 to any address lets a process
+# in the sandbox reach any host on UDP or TCP 53, not only the cluster's resolver, so data
+# can leave over DNS or to anything listening on port 53. The rule still opens only port
+# 53; every other port and protocol stays denied.
 #
 # setup.sh renders this file before applying it:
 #   <MOUNT_TARGET_BLOCK>  one `- ipBlock: { cidr: <ip>/32 }` line per S3 Files mount-target

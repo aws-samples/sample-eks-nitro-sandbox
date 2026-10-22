@@ -264,9 +264,8 @@ hello-from-writer
 
 The reader sees the file the writer wrote: one shared dataset, not two empty mounts.
 
-**Step 6: The reader cannot write.** The reader's access point grants `ClientMount` only, so a
-write through it is refused. (The reader pod also mounts `readOnly`, so the guest kernel refuses
-it too, which is the error shown here.)
+**Step 6: The reader cannot write.** A write through the reader is refused. The reader pod mounts
+`/shared` with `readOnly: true`, so the guest kernel refuses the write before it leaves the pod:
 
 ```bash
 kubectl exec s3-files-reader -n "$NAMESPACE" -- sh -c 'echo nope > /shared/from-reader'
@@ -280,8 +279,59 @@ exit: 1
 from-writer
 ```
 
-The reader's write is refused and nothing it tried to write appears on the shared dataset: the
-writer still sees only `from-writer`. The read/write split is enforced, not advisory.
+That is the kernel mount refusing the write, which is defense in depth, not the IAM policy. To
+show the **file system policy** refusing it on its own, start a throwaway pod of the sample's own
+that mounts the same reader access point **without** `readOnly`, so the kernel mount is
+read-write and the only thing that can refuse a write is the policy's
+`DenyWriteThroughReaderAccessPoint` statement, keyed on the reader access point ARN. (S3 Files
+surfaces an IAM denial to the NFS client as a read-only-filesystem error.)
+
+```bash
+# A reader-access-point pod with a read-WRITE kernel mount (no readOnly).
+kubectl apply -n "$NAMESPACE" -f - <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s3-files-reader-rw-probe
+  namespace: nitro-s3-files-sample
+  labels: { app: s3-files-shared }
+spec:
+  runtimeClassName: isolated-sandbox
+  serviceAccountName: s3-files-workload
+  automountServiceAccountToken: false
+  securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
+  containers:
+    - name: shell
+      image: public.ecr.aws/docker/library/busybox:1.37
+      command: ["sh", "-c", "while true; do sleep 3600; done"]
+      resources: { requests: { cpu: "1", memory: 1Gi }, limits: { cpu: "1", memory: 1Gi } }
+      securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] }, readOnlyRootFilesystem: true }
+      volumeMounts:
+        - { name: shared, mountPath: /shared }   # no readOnly: kernel mount is read-write
+  volumes:
+    - name: shared
+      persistentVolumeClaim: { claimName: storage-s3-files-reader }
+EOF
+kubectl wait -n "$NAMESPACE" --for=condition=Ready pod/s3-files-reader-rw-probe --timeout=5m
+kubectl exec s3-files-reader-rw-probe -n "$NAMESPACE" -- grep ' /shared ' /proc/mounts
+kubectl exec s3-files-reader-rw-probe -n "$NAMESPACE" -- sh -c 'echo nope > /shared/iam-probe-write'
+echo "exit: $?"
+kubectl delete pod s3-files-reader-rw-probe -n "$NAMESPACE"
+```
+
+```text
+pod/s3-files-reader-rw-probe created
+pod/s3-files-reader-rw-probe condition met
+127.0.0.1:/ /shared nfs4 rw,relatime,vers=4.2,...
+sh: can't create /shared/iam-probe-write: Read-only file system
+exit: 1
+pod "s3-files-reader-rw-probe" deleted
+```
+
+The probe's own kernel mount is `rw`, yet the write is still refused: nothing but the file system
+policy could have refused it, so the split is enforced by IAM, not only by the reader pod's
+`readOnly` mount. Nothing it tried to write appears on the shared dataset. The reader pod keeps
+`readOnly` as defense in depth on top of this.
 
 **Step 7: A file on `/shared` is an object in the bucket.** S3 Files keeps the file system and
 the backing bucket in sync. Synchronization is asynchronous, so wait a few seconds, then list the
@@ -455,7 +505,7 @@ spec:
 | --- | --- |
 | `podSelector: app=s3-files-shared` | Selects the writer and reader pods. |
 | `policyTypes: [Ingress, Egress]` | Governs both directions; with no ingress rule, all ingress is denied. |
-| First egress rule, `0.0.0.0/0` port 53 | DNS to any address on UDP and TCP 53. On EKS Auto Mode CoreDNS runs as a per-node systemd service rather than a pod behind a ClusterIP, so the resolver a pod reaches is node-local; allowing port 53 to any address keeps name resolution working wherever Auto Mode places it. DNS is name resolution only, so opening it broadly is safe; the rule still opens only the two DNS ports. |
+| First egress rule, `0.0.0.0/0` port 53 | Allows egress to any address on UDP and TCP 53. This is a project choice to keep the sample simple: it does not depend on how a given cluster serves DNS (on EKS Auto Mode the resolver is node-local rather than a pod behind a ClusterIP). What it allows is wider than DNS resolution: any process in the sandbox can reach any host on UDP or TCP 53, so it can send data out over DNS or to anything listening on port 53. What it costs is that port-53 egress is not confined to the cluster's own resolver. It still opens only port 53; every other port and protocol stays denied. |
 | Second egress rule, `<MOUNT_TARGET_BLOCK>` | NFS (TCP 2049) to each S3 Files mount-target IP, one per Availability Zone. `setup.sh` expands one `- ipBlock: { cidr: <ip>/32 }` line per address from `aws s3files list-mount-targets`. |
 
 The direct read-from-S3 optimization that S3 Files can enable runs in the driver on the node,
@@ -468,7 +518,8 @@ Network policy is turned on once per cluster through the `amazon-vpc-cni` Config
 the policy's `PolicyEndpoint` to appear before it starts the pods. The policy is enforced on the
 node, outside the guest, so a command inside the sandbox cannot change it. Its limit: DNS is
 open on port 53 to any address, so a resolver is always reachable, and a pod can always reach
-its own node. Everything beyond DNS and the mount targets is denied.
+its own node; that also means port-53 egress is not confined to the cluster's resolver (see the
+first egress rule above). Everything beyond port 53 and the mount targets is denied.
 
 With only DNS and NFS allowed, an outbound internet connection from inside the sandbox is
 refused:

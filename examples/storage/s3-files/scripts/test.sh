@@ -161,7 +161,7 @@ else
   [[ -z "$wl_assoc" || "$wl_assoc" == "None" ]]; assert "the workload ServiceAccount has no Pod Identity association" $?
 fi
 
-echo "== 7/10 one shared dataset: the writer writes, the reader reads; the reader cannot write =="
+echo "== 7/10 one shared dataset: writer writes, reader reads, reader write refused at IAM and kernel =="
 run_id="$(cut -d. -f1 /proc/uptime 2>/dev/null)-$$"
 sent="hello-from-writer-$run_id"
 # The writer (read-write access point) writes; the reader (read-only access point) sees it.
@@ -193,6 +193,79 @@ fi
 # to run the exec at all (empty output) is NOT read as "absent".
 probe="$($KUBECTL exec "$WRITER" -n "$NAMESPACE" -- sh -c '[ -e /shared/from-reader ] && echo FOUND || echo MISSING' 2>/dev/null | tr -d '\r')"
 [[ "$probe" == "MISSING" ]]; assert "the reader's refused write created no file on the shared dataset (probe returned MISSING, not an empty/failed exec)" $?
+
+# The refusal above came from the reader pod, whose /shared is mounted readOnly, so by itself it
+# only proves the GUEST KERNEL refused the write, not the IAM policy. Prove the IAM half of the
+# split directly: start a throwaway pod of the sample's own that mounts the SAME reader PVC but
+# WITHOUT readOnly, so the kernel mount is read-write and the only thing that can refuse a write
+# is the file system policy's DenyWriteThroughReaderAccessPoint statement (keyed on the reader
+# access point ARN). NFS surfaces an IAM denial to the client as EROFS. Clean up the pod after.
+PROBE=s3-files-reader-rw-probe
+$KUBECTL apply -n "$NAMESPACE" -f - >/dev/null 2>&1 <<PROBEYAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $PROBE
+  namespace: $NAMESPACE
+  labels:
+    app: s3-files-shared
+spec:
+  runtimeClassName: isolated-sandbox
+  serviceAccountName: s3-files-workload
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: shell
+      image: public.ecr.aws/docker/library/busybox:1.37
+      command: ["sh", "-c", "while true; do sleep 3600; done"]
+      resources:
+        requests: { cpu: "1", memory: 1Gi }
+        limits: { cpu: "1", memory: 1Gi }
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities: { drop: ["ALL"] }
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: shared
+          mountPath: /shared
+          # NO readOnly: the kernel mount is read-write, so only IAM can refuse a write.
+  volumes:
+    - name: shared
+      persistentVolumeClaim:
+        claimName: storage-s3-files-reader
+PROBEYAML
+if $KUBECTL wait -n "$NAMESPACE" --for=condition=Ready "pod/$PROBE" --timeout=5m >/dev/null 2>&1; then
+  assert "a reader-access-point pod with a read-WRITE kernel mount reaches Ready (ClientMount is allowed through the reader AP)" 0
+  # The kernel mount must actually be rw, or the test proves nothing about IAM.
+  pmnt="$($KUBECTL exec "$PROBE" -n "$NAMESPACE" -- grep ' /shared ' /proc/mounts 2>/dev/null)"
+  grep -qE '(^| )rw(,| )' <<<"$pmnt"; assert "the probe's live /shared mount is read-WRITE at the kernel layer (so only IAM can refuse a write)" $?
+  # A write through the writer access point (control, must SUCCEED) and through the reader access
+  # point with a rw kernel mount (must be REFUSED by IAM). Sentinel proves the shell ran.
+  ws="iam-writer-ok-$run_id"
+  w_out="$($KUBECTL exec "$WRITER" -n "$NAMESPACE" -- sh -c "printf '%s' ok > /shared/iam-writer-ok-$run_id && echo $ws; rm -f /shared/iam-writer-ok-$run_id" 2>&1)"
+  printf '%s\n' "$w_out" | grep -qxF "$ws"; assert "a write through the WRITER access point succeeds (control for the IAM split)" $?
+  rs="iam-reader-ran-$run_id"
+  r_out="$($KUBECTL exec "$PROBE" -n "$NAMESPACE" -- sh -c "printf '%s' nope > /shared/iam-probe-$run_id; echo $rs" 2>&1)"
+  if printf '%s\n' "$r_out" | grep -qxF "$rs" && printf '%s\n' "$r_out" | grep -qi 'read-only file system'; then
+    assert "a write through the READER access point is refused BY IAM even with a read-write kernel mount (DenyWriteThroughReaderAccessPoint, not just readOnly)" 0
+  else
+    echo "    reader-AP IAM probe out=[$r_out] (expected sentinel $rs + a read-only-filesystem error)"
+    assert "a write through the READER access point is refused BY IAM even with a read-write kernel mount (DenyWriteThroughReaderAccessPoint, not just readOnly)" 1
+  fi
+  # The refused IAM write left nothing behind.
+  iprobe="$($KUBECTL exec "$WRITER" -n "$NAMESPACE" -- sh -c "[ -e /shared/iam-probe-$run_id ] && echo FOUND || echo MISSING" 2>/dev/null | tr -d '\r')"
+  [[ "$iprobe" == "MISSING" ]]; assert "the IAM-refused write created no file on the shared dataset" $?
+else
+  assert "a reader-access-point pod with a read-WRITE kernel mount reaches Ready (ClientMount is allowed through the reader AP)" 1
+fi
+# Always remove the throwaway probe pod, by its exact name, pass or fail.
+$KUBECTL delete pod "$PROBE" -n "$NAMESPACE" --ignore-not-found --timeout=90s >/dev/null 2>&1 || true
 
 echo "== 8/10 both pods mount with tls,iam; the reader mount is read-only =="
 for pv in storage-s3-files-writer storage-s3-files-reader; do
