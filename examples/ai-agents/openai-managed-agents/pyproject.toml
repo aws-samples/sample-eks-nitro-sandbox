@@ -1,0 +1,29 @@
+[project]
+name = "openai-managed-agents-eks-launcher"
+version = "0.1.0"
+description = "OpenAI Managed Agents self-hosted sandbox launcher for Amazon EKS Nitro sandboxes"
+requires-python = ">=3.12"
+license = { text = "MIT-0" }
+dependencies = [
+    # The OpenAI Python SDK: the Agents API (client.beta.agents.sessions) the
+    # operator scripts use, and the session-state recheck the launcher does
+    # before it releases a claim. The Agents API is beta, so the session,
+    # event and environment calls are checked against this pinned build.
+    "openai==3.31.0",
+    # The agent-sandbox client: SandboxClaim create, wait-until-Ready, pod IP,
+    # list and delete. Keep it on the same release as the controller (v1.0.6).
+    "k8s-agent-sandbox==1.0.6",
+]
+
+[project.scripts]
+launcher = "launcher.__main__:main"
+
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]

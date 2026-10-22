@@ -41,6 +41,7 @@ examples/
 │   ├── mcp-server/
 │   ├── kagent/
 │   ├── claude-managed-agents/
+│   ├── openai-managed-agents/
 │   └── strands-decider/
 ├── agent-guardrails/
 │   ├── nono-nested-subagents/
@@ -131,6 +132,7 @@ Agent platforms:
 - mcp-server: an untrusted MCP server in a sandbox with no network, driven by a trusted client outside it.
 - kagent: Kagent's agent pods placed in sandboxes.
 - [claude-managed-agents](../examples/ai-agents/claude-managed-agents/README.md) (available now): a Claude Managed Agents self-hosted sandbox where every tool call runs in the guest and the organization API key never enters it.
+- [openai-managed-agents](../examples/ai-agents/openai-managed-agents/README.md) (available now): an OpenAI Agents API self-hosted sandbox where `codex exec-server` runs the tool calls in the guest, the application key never enters the cluster, and the sandbox holds only the environment key.
 - strands-decider: Strands Decider choosing where each piece of generated code should run.
 
 ### Agent guardrails (`agent-guardrails`)

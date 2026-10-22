@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hello-default
+spec:
+  containers:
+    - name: hello
+      image: public.ecr.aws/docker/library/alpine:3.20
+      command: ["sh", "-c"]
+      args:
+        - |
+          echo "kernel:  $(uname -r)"
+          echo "disks:   $(ls /sys/block | tr '\n' ' ')"
+          sleep infinity
+      resources:
+        requests: { cpu: "1", memory: 768Mi }
+        limits:   { cpu: "1", memory: 768Mi }

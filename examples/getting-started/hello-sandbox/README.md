@@ -47,7 +47,7 @@ is an regular pod without node selector, toleration or sidecar.
 apiVersion: v1
 kind: Pod
 metadata:
-  name: hello-sandbox
+  name: hello-default
 spec:
   containers:
     - name: hello

@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="kirocrew" type="device" generator="svg2drawio">
+  <diagram id="svg2drawio" name="Diagram">
+    <mxGraphModel dx="0" dy="0" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="1680" pageHeight="1080" math="0" shadow="0" background="#ffffff">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" style="drawPath=1;" />
+        <mxCell id="node" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;EKS Auto Mode node&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:20.37px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;eBPF on the pod host-side veth, outside the guest&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;container=1;collapsible=0;expand=0;recursiveResize=0;strokeColor=#7D8998;fillColor=none;strokeWidth=2;dashed=1;dashPattern=8 5;fixDash=1;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=-5.583;fontSize=14;fontStyle=1;fontColor=#5A6B86;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="40" y="80" width="1600" height="880" as="geometry" />
+        </mxCell>
+        <mxCell id="e-sandbox-coredns" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.8894;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="node" source="sandbox" target="coredns">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="800" y="420" />
+              <mxPoint x="800" y="160" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-sandbox-openai-hosts" value="egress: TCP 443" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;align=center;verticalAlign=middle;spacing=0;labelBackgroundColor=none;" edge="1" parent="node" source="sandbox" target="openai-hosts">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="800" y="400" />
+              <mxPoint x="800" y="440" />
+            </Array>
+            <mxPoint x="-160.0" y="-17.0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-sandbox-refused" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=1;dashPattern=8 6;fixDash=1;endArrow=block;endFill=1;endSize=10;startArrow=none;startFill=1;startSize=10;exitX=1;exitY=0.1106;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="node" source="sandbox" target="refused">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="800" y="380" />
+              <mxPoint x="800" y="720" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="sandbox" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;openai-sandbox&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;-executor&lt;/div&gt;&lt;div style=&quot;line-height:28.80px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;codex exec-server&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.container_1;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="node">
+          <mxGeometry x="280" y="360" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="coredns" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;CoreDNS&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;UDP/TCP 53&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.generic_application;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="node">
+          <mxGeometry x="1120" y="120" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="openai-hosts" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;api.openai.com&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;+ chatgpt host&lt;/div&gt;&lt;div style=&quot;line-height:28.80px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;TCP 443&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.internet_alt1;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="node">
+          <mxGeometry x="1120" y="400" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="refused" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Refused&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;internet, AWS, pods&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.internet_alt1;spacing=0;spacingTop=-0.436;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="node">
+          <mxGeometry x="1120" y="680" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="txt-1" value="egress: DNS" style="text;html=1;whiteSpace=nowrap;overflow=visible;align=center;verticalAlign=top;spacing=0;spacingTop=28.523;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;strokeColor=none;fillColor=none;" vertex="1" parent="node">
+          <mxGeometry x="520" y="240" width="160" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="txt-2" value="all else refused" style="text;html=1;whiteSpace=nowrap;overflow=visible;align=center;verticalAlign=top;spacing=0;spacingTop=28.523;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;strokeColor=none;fillColor=none;" vertex="1" parent="node">
+          <mxGeometry x="520" y="520" width="160" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="footer-3" value="&lt;div style=&quot;line-height:21.60px&quot;&gt;Note: deny-all ingress -- the launcher never connects to a sandbox; the session and the environment key arrive through the SandboxClaim env, not the network.&lt;/div&gt;&lt;div style=&quot;line-height:22.40px&quot;&gt;Note: enforced on the node in eBPF on the pod's host-side veth, outside the guest, so a command the model runs inside the sandbox cannot change it.&lt;/div&gt;&lt;div style=&quot;line-height:21.60px&quot;&gt;Note: domainNames allows the IP addresses a host resolves to, so a different name on the same addresses would also be reachable.&lt;/div&gt;" style="text;html=1;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=top;spacing=0;spacingTop=-1.477;fontSize=18;fontStyle=0;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;strokeColor=none;fillColor=none;spacingLeft=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1000" width="1560" height="70" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

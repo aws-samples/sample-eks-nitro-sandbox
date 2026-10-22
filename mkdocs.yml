@@ -84,3 +84,4 @@ nav:
       - Warm pool: getting-started/warm-pool/README.md
   - AI agents:
       - Claude Managed Agents: ai-agents/claude-managed-agents/README.md
+      - OpenAI Managed Agents: ai-agents/openai-managed-agents/README.md

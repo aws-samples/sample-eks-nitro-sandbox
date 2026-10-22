@@ -1,0 +1,104 @@
+# The sandbox that runs the agent's tool calls, and a pool that keeps two booted.
+#
+# Each session's codex exec-server runs in a pod stamped from this template, one
+# session per pod. runtimeClassName gives each pod its own VM in a Nitro
+# Partition, so the Bash and apply-patch tools the model drives run on a kernel
+# no other pod shares.
+#
+# No OpenAI or Codex key is set in this template. A warm pod booted from it holds
+# none. When the launcher claims a sandbox for a session it sets the session and
+# the environment key in SandboxClaim.spec.env, and the controller cold-starts
+# THAT claim's pod with them injected, so the key reaches the pod through the
+# control plane, never over the pod network, and only on a pod created for a
+# specific session. serve.py reads the session from its own env and runs the
+# executor; a warm pod (no such env) refuses to hold any credential.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: openai-sandbox-executor
+spec:
+  # The launcher delivers the session and the environment key by setting them in
+  # SandboxClaim.spec.env; the controller injects them into the pod it cold-starts
+  # for that claim. That injection is denied unless the template opts in: the
+  # controller's envVarsInjectionPolicy defaults to Disallowed and rejects the
+  # claim with EnvVarsInjectionRejected. "Allowed" lets a claim ADD env vars the
+  # template does not set (the template sets none), which is exactly this design:
+  # a warm pod holds no key, and only a claimed pod gets CODEX_API_KEY and the
+  # session from the claim env.
+  envVarsInjectionPolicy: Allowed
+  # egress-policy.yaml is the network policy for these pods, so the controller
+  # does not add its own.
+  networkPolicyManagement: Unmanaged
+  podTemplate:
+    metadata:
+      labels:
+        app: openai-sandbox-executor
+      annotations:
+        # Keep consolidation from moving a sandbox in the middle of a session.
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      runtimeClassName: isolated-sandbox
+      serviceAccountName: openai-sandbox-executor
+      automountServiceAccountToken: false
+      # No <SERVICE>_HOST/_PORT variables: a Service whose name starts with
+      # "openai" would otherwise inject OPENAI_* names the guard refuses.
+      enableServiceLinks: false
+      # One session, then exit. The pod completes instead of restarting.
+      restartPolicy: Never
+      # On SIGTERM (for example at the claim's deadline) serve.py forwards the
+      # signal to codex exec-server so it can finish its current turn's cleanup
+      # before the pod is killed. The default 30 s grace would cut that short.
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: executor
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/openai-sandbox-executor:latest
+          args: ["serve"]
+          ports:
+            - name: ready
+              containerPort: 8080
+          # Ready, and so claimable, only once serve.py opens the readiness
+          # port. The port carries no dispatch and no credential: the whole
+          # session (and the key) arrives in the pod's env from the claim.
+          readinessProbe:
+            tcpSocket:
+              port: ready
+            periodSeconds: 1
+          # No env block in the template: a warm pod holds no key and refuses to
+          # start if it finds OPENAI_API_KEY, OPENAI_ORG_ID or OPENAI_ORGANIZATION
+          # in its own environment. A claimed pod gets its session and
+          # CODEX_API_KEY from SandboxClaim.spec.env, set by the launcher.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }   # tool calls and codex state
+            - { name: tmp, mountPath: /tmp }
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits:   { cpu: "1", memory: 2Gi }
+      volumes:
+        # emptyDir: a session's files live for the life of its claimed pod, so a
+        # same-session follow-up turn to the same pod sees them, and they are
+        # gone when the claim's deadline deletes the pod. To keep a workspace
+        # across a suspend/resume, see the README's "Keep a session's workspace
+        # while it is idle" note; that uses a volumeClaimTemplate instead.
+        - { name: workspace, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: openai-sandbox-executor
+spec:
+  replicas: 2                       # booted and waiting for a session
+  sandboxTemplateRef:
+    name: openai-sandbox-executor
