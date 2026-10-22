@@ -43,7 +43,7 @@ rebuilt with kernel BTF enabled for Cilium's kube-proxy replacement. This sample
 guesses, publishes or hard-codes that AMI's id: `setup.sh` reads it from your own
 `config.local.env` (`SANDBOX_AMI_ID`, gitignored) and verifies its architecture, owner, a
 `ManagedBy` tag matching #10's own ownership tag, and a `BtfValidated=true` tag before using
-it — see [Stage 0](#0-prerequisites-and-the-ami-preflight). `BtfValidated=true` is #10's
+it: see [Stage 0](#0-prerequisites-and-the-ami-preflight). `BtfValidated=true` is #10's
 contract: its `btf-tag.sh` only ever writes that tag, alongside `ManagedBy`, to an AMI that
 has already passed #10's own fresh-instance BTF verification and that #10's run itself owns;
 an AMI that failed verification, or that is not #10's own, never receives it. Checking
@@ -177,7 +177,7 @@ In ENI mode the Cilium operator is the one component that calls the EC2 API: it 
 network interfaces for the nodes and assigns their secondary IPs to pods. It gets exactly the
 EC2 actions [Cilium's ENI IPAM guidance](https://docs.cilium.io/en/stable/network/concepts/ipam/eni/)
 documents, through a dedicated [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html)
-association bound to its own service account — not through either node role. eksctl does not
+association bound to its own service account, not through either node role. eksctl does not
 accept a Pod Identity association while it creates a cluster without the VPC CNI, so
 `setup.sh` adds it right after the cluster exists, and before Cilium is installed, because EKS
 injects the credentials when the operator pod is created.
@@ -226,7 +226,7 @@ on, and existing tags); the Write actions are the lifecycle of an ENI the operat
 (create, attach, detach when a node leaves, assign/unassign secondary IPs, tag what it
 created, delete it when no longer needed). Nothing here can terminate an instance, change a
 security group's rules, modify route tables, or touch any resource type besides network
-interfaces, tags and the describe-only reads — because the operator's job in ENI mode is
+interfaces, tags and the describe-only reads, because the operator's job in ENI mode is
 exactly network-interface lifecycle and nothing else. `scripts/cilium_ubuntu.py`'s
 `validate_pod_identity_config` enforces this exact action set (no wildcard, no extra action)
 every time `setup.sh` renders this file, so a hand-edit that widens it fails before `eksctl`
@@ -273,8 +273,8 @@ translates a Service address in one of two places: in the socket layer, when a p
 `connect()`, through eBPF hooks in the *node's* kernel; or per packet, at the pod's network
 interface. A sandbox pod's processes call `connect()` in their own guest kernel, which the
 Ubuntu host's socket hooks never see. With `hostNamespaceOnly: true`, the socket load
-balancer serves only the node's own network namespace, and every pod — sandboxed and
-ordinary alike — gets the per-packet load balancer instead, which does see the guest's
+balancer serves only the node's own network namespace, and every pod (sandboxed and
+ordinary alike) gets the per-packet load balancer instead, which does see the guest's
 packets at the pod's interface. Without this setting, a sandbox pod still reaches pod IPs
 directly, but a ClusterIP Service and Service-based DNS both fail, because Cilium's own
 policy drops the sandbox's still-untranslated packets as unrecognized traffic.
@@ -328,15 +328,15 @@ Before the sandbox node group is created, `setup.sh` also checks that the Cilium
 DaemonSet's own selector and tolerations would actually schedule onto a node carrying this
 taint and these labels (`scripts/cilium_ubuntu.py check-sandbox-ami`'s sibling,
 `preflight-daemonset`), and prints `cilium DaemonSet tolerates the sandbox node's taint and
-selects its labels` — so a Helm-values regression that narrowed the agent's tolerations is
+selects its labels`, so a Helm-values regression that narrowed the agent's tolerations is
 caught before a node is created from a launch template that bills.
 
 ### 5. Gate on BTF before either agent counts as ready
 
 Both Ubuntu node kernels must expose valid BTF (`/sys/kernel/btf/vmlinux`, non-empty) before
 `setup.sh` calls their Cilium agents ready. This is read from the **running** kernel through a
-`kubectl exec` into the Cilium agent pod already scheduled on each node — not inferred from a
-kernel config file, and not read from the `cilium-config` ConfigMap — so the check reflects
+`kubectl exec` into the Cilium agent pod already scheduled on each node (not inferred from a
+kernel config file, and not read from the `cilium-config` ConfigMap), so the check reflects
 what the kernel actually booted with.
 
 ```bash
@@ -373,7 +373,7 @@ What it checks, in order:
    Identity, its role allows exactly Cilium's documented ENI actions, and neither node role
    carries `AmazonEKS_CNI_Policy`.
 3. **The sandbox pod has its own guest.** Its guest kernel differs from the node kernel, it
-   sees virtio disks (no node `nvme`), and its boot uptime is its own — while `neighbor`, an
+   sees virtio disks (no node `nvme`), and its boot uptime is its own, while `neighbor`, an
    ordinary pod on the same node, shares the node kernel and sees the node's `nvme`. The
    sandbox node itself advertises a positive allocatable `eks.amazonaws.com/nitro-sandbox`
    quantity (the same key and both-ways accept/reject proof as
@@ -382,7 +382,7 @@ What it checks, in order:
    only that the `isolated-sandbox` RuntimeClass object exists.
 4. **Normal pod networking across the guest boundary.** The sandbox pod gets a VPC address on
    a secondary ENI of its own instance with a ready `CiliumEndpoint`, reaches and is reached by
-   ordinary pods, and resolves and reaches the ClusterIP Service by DNS — the same as the two
+   ordinary pods, and resolves and reaches the ClusterIP Service by DNS, the same as the two
    ordinary lanes, and the node itself (host-network `node-probe`) reaches the Service through
    the socket load balancer.
 5. **L3/L4 policy, both ways.** Each client is ALLOWED to `server:8080` and DENIED to
@@ -394,7 +394,7 @@ What it checks, in order:
    app-issued 403 cannot be mistaken for a policy deny.
 7. **FQDN policy, both ways.** Each client may reach `checkip.amazonaws.com` (recorded as a
    `lookup` in the agent's FQDN cache) but not `example.net`, which is dropped while it still
-   resolves — and the unselected `server` pod still reaches it, so the deny is the policy, not
+   resolves, and the unselected `server` pod still reaches it, so the deny is the policy, not
    the network.
 8. **Ownership tags.** Every ENI in the VPC and every resource the cluster owns carries
    `auto-delete=no`, and no tracked file holds an account id, AMI id or other account-specific
@@ -428,7 +428,7 @@ created that their instances left behind, the cluster with everything in its eks
 (VPC, subnets, gateways, security groups, IAM roles), and the two node launch templates, then
 reads back that the cluster, the launch templates and the eksctl stacks are gone. It refuses a
 cluster not tagged `Demo=setup-cilium-ubuntu`, deletes ENIs and launch templates only when
-they carry that tag, and exits non-zero if anything it was asked to delete is still there — a
+they carry that tag, and exits non-zero if anything it was asked to delete is still there: a
 lookup that fails is recorded as a failure, never read as "gone". Deleting the cluster removes
 the sample's namespace and its pods with it.
 

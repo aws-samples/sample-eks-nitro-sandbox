@@ -165,7 +165,7 @@ assert() {
 # for this sample -- every check here backs a headline claim, so a check that could not run
 # leaves that claim unproven and the run must not report green.
 skip() {
-  printf '  [%s] %s\n' "$(_red 'SKIP!')" "$1 (required evidence missing — counts as a failure)"
+  printf '  [%s] %s\n' "$(_red 'SKIP!')" "$1 (required evidence missing: counts as a failure)"
   DEMO_SKIP=$((DEMO_SKIP + 1))
 }
 
@@ -179,11 +179,11 @@ demo_summary() {
     return 1
   fi
   if ((DEMO_FAIL == 0 && DEMO_SKIP == 0)); then
-    printf '%s\n' "$(_green "RESULT: ${subject} — ${DEMO_PASS}/${total} assertions passed.")"
+    printf '%s\n' "$(_green "RESULT: ${subject}: ${DEMO_PASS}/${total} assertions passed.")"
   elif ((DEMO_FAIL == 0)); then
-    printf '%s\n' "$(_red "RESULT: ${DEMO_SKIP} required check(s) could not run, so ${subject} is NOT proven — see the SKIP lines above.")"
+    printf '%s\n' "$(_red "RESULT: ${DEMO_SKIP} required check(s) could not run, so ${subject} is NOT proven. See the SKIP lines above.")"
   else
-    printf '%s\n' "$(_red "RESULT: ${DEMO_FAIL} of ${total} assertion(s) FAILED — see above.")"
+    printf '%s\n' "$(_red "RESULT: ${DEMO_FAIL} of ${total} assertion(s) FAILED. See above.")"
     ((DEMO_SKIP > 0)) && printf '%s\n' "$(_amber "${DEMO_SKIP} check(s) skipped.")"
   fi
   ((DEMO_FAIL == 0 && DEMO_SKIP == 0))
@@ -211,9 +211,9 @@ clean_summary() {
   local subject="${1:-the sample}"
   printf '\n'
   if ((CLEAN_FAIL == 0)); then
-    printf '%s\n' "$(_green "CLEAN: ${subject} — nothing left behind.")"
+    printf '%s\n' "$(_green "CLEAN: ${subject}: nothing left behind.")"
   else
-    printf '%s\n' "$(_red "CLEAN: ${CLEAN_FAIL} teardown step(s) did not complete for ${subject} — see above.")"
+    printf '%s\n' "$(_red "CLEAN: ${CLEAN_FAIL} teardown step(s) did not complete for ${subject}. See above.")"
   fi
   ((CLEAN_FAIL == 0))
 }
