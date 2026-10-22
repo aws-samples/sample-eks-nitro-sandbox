@@ -62,10 +62,18 @@ current context are not touched. To use `kubectl` yourself:
 export KUBECONFIG=$PWD/out/kubeconfig
 ```
 
-**TODO (separate item): `./test.sh` for the networking, BTF and policy evidence, and
-`./clean.sh --dry-run` / `./clean.sh` for cleanup.** Until those land, see
-[What stays running, and cleaning up](#what-stays-running-and-cleaning-up) for the manual
-teardown and the cost this cluster accrues while it exists.
+Once the cluster is up, prove the sample's claims and then tear it down:
+
+```bash
+./test.sh              # apply the workloads and policy, then prove networking, BTF and policy
+./clean.sh --dry-run   # list only the run-owned resources a full clean would delete
+./clean.sh             # delete the cluster, its VPC, the Cilium ENIs and the IAM resources
+```
+
+`test.sh` applies `deploy/workloads.yaml` and `deploy/policy.yaml`, waits for the seven pods
+to be Ready, and runs the read-only proofs in [Evidence](#evidence-testsh). See
+[What stays running, and cleaning up](#what-stays-running-and-cleaning-up) for what `clean.sh`
+removes and the cost this cluster accrues while it exists.
 
 ## Versions
 
@@ -324,6 +332,61 @@ against the real command with a stub `kubectl` returning `MISSING`, not a copy o
 capturing that failure from an actual non-BTF Ubuntu build, and the accompanying README
 evidence block, belongs to the evidence item together with the rest of stage 6.
 
+## Evidence (`./test.sh`)
+
+`test.sh` is read-only against the cluster's configuration: it applies the sample's own
+workloads (`deploy/workloads.yaml`) and the egress network policy (`deploy/policy.yaml`),
+waits for the seven pods to be Ready, and then proves each claim by reading the **running
+Cilium agents** rather than the Helm values or the `cilium-config` ConfigMap. It compares the
+Nitro sandbox pod (`nitro`, `runtimeClassName: isolated-sandbox`, on the Ubuntu sandbox node)
+against an ordinary pod on the same sandbox node (`neighbor`) and an ordinary pod on the
+system node (`control`), so every result is shown for the sandbox lane beside the two ordinary
+lanes.
+
+What it checks, in order:
+
+1. **No VPC CNI, no kube-proxy, Cilium up on both Ubuntu nodes.** `aws-node` and `kube-proxy`
+   DaemonSets are absent; the EKS add-on list has no `vpc-cni`/`kube-proxy`; both agents report
+   `cilium-dbg status --brief` OK, `KubeProxyReplacement: True` with the socket load balancer
+   **host-namespace-only** (read from the agent, since the ConfigMap cannot tell host-only from
+   full), no `KUBE-` chain in either node's iptables, and a fully loaded eBPF datapath (which a
+   missing-BTF kernel would prevent).
+2. **The operator's credentials.** The operator pod gets its AWS credentials from EKS Pod
+   Identity, its role allows exactly Cilium's documented ENI actions, and neither node role
+   carries `AmazonEKS_CNI_Policy`.
+3. **The sandbox pod has its own guest.** Its guest kernel differs from the node kernel, it
+   sees virtio disks (no node `nvme`), and its boot uptime is its own — while `neighbor`, an
+   ordinary pod on the same node, shares the node kernel and sees the node's `nvme`.
+4. **Normal pod networking across the guest boundary.** The sandbox pod gets a VPC address on
+   a secondary ENI of its own instance with a ready `CiliumEndpoint`, reaches and is reached by
+   ordinary pods, and resolves and reaches the ClusterIP Service by DNS — the same as the two
+   ordinary lanes, and the node itself (host-network `node-probe`) reaches the Service through
+   the socket load balancer.
+5. **L3/L4 policy, both ways.** Each client is ALLOWED to `server:8080` and DENIED to
+   `other:8080` (dropped). The unselected `server` pod still reaches `other`, proving the deny
+   is the policy, not an unavailable destination.
+6. **L7 HTTP policy, both ways.** Each client may `GET /` on `api:8080` (proxy verdict
+   `Forwarded`, 200) but not `GET /admin` (proxy verdict `Denied`, 403). The verdict is read
+   from the node-local Envoy proxy's own `cilium-dbg monitor --type l7` output, so an
+   app-issued 403 cannot be mistaken for a policy deny.
+7. **FQDN policy, both ways.** Each client may reach `checkip.amazonaws.com` (recorded as a
+   `lookup` in the agent's FQDN cache) but not `example.net`, which is dropped while it still
+   resolves — and the unselected `server` pod still reaches it, so the deny is the policy, not
+   the network.
+8. **Ownership tags.** Every ENI in the VPC and every resource the cluster owns carries
+   `auto-delete=no`, and no tracked file holds an account id, AMI id or other account-specific
+   value.
+
+> The output blocks for a real run are captured by the coordinated evidence/page item; until
+> that run, treat the command lines above as the shape of the proof, not as recorded output.
+
+The both-ways negative controls for the L7 and FQDN denies prove the drop is each rule and
+not an unrelated timeout: an unselected control pod reaches the denied destination, and the
+denied name still resolves. The `socketLB.hostNamespaceOnly` negative control (a sandbox pod
+cannot reach a ClusterIP Service or Service-based DNS with the setting off) is a documented
+control run captured by the evidence item; `test.sh` stays read-only and does not flip the
+live Helm value.
+
 ## What stays running, and cleaning up
 
 Every AWS resource `setup.sh` creates carries `auto-delete=no` and `Demo=setup-cilium-ubuntu`:
@@ -336,12 +399,15 @@ While it is up, this sample keeps billing: the EKS control plane, one `m7i.large
 [AWS Pricing Calculator](https://calculator.aws/) for an estimate; the evidence item will add
 a measured duration and cost here from a real run.
 
-**TODO (separate item): `./clean.sh --dry-run` and `./clean.sh`.** Until they exist, delete
-the cluster and its node groups by hand with `eksctl delete nodegroup` /
-`eksctl delete cluster --name <CLUSTER_NAME> --region <AWS_REGION>`, and separately confirm
-that any ENI Cilium created and tagged `Demo=setup-cilium-ubuntu` is gone
-(`aws ec2 describe-network-interfaces --filters Name=tag:Demo,Values=setup-cilium-ubuntu`),
-since eksctl's own delete does not know about them.
+Run `./clean.sh` when you finish. `./clean.sh --dry-run` lists only the run-owned resources it
+would delete and changes nothing; `./clean.sh` deletes the two node groups, the ENIs Cilium
+created that their instances left behind, the cluster with everything in its eksctl stacks
+(VPC, subnets, gateways, security groups, IAM roles), and the two node launch templates, then
+reads back that the cluster, the launch templates and the eksctl stacks are gone. It refuses a
+cluster not tagged `Demo=setup-cilium-ubuntu`, deletes ENIs and launch templates only when
+they carry that tag, and exits non-zero if anything it was asked to delete is still there — a
+lookup that fails is recorded as a failure, never read as "gone". Deleting the cluster removes
+the sample's namespace and its pods with it.
 
 ??? note "Files"
 
@@ -354,6 +420,8 @@ since eksctl's own delete does not know about them.
     | [`eksctl/nodegroups.yaml`](eksctl/nodegroups.yaml) | Stage 4: the node groups |
     | [`setup.sh`](setup.sh) | Stages 0 through 5: create, render, gate |
     | [`scripts/common.sh`](scripts/common.sh) | Shared config loading and helpers |
-    | [`scripts/cilium_ubuntu.py`](scripts/cilium_ubuntu.py) | Rendering, AMI preflight, launch templates, the DaemonSet and BTF gates |
-    | `deploy/` | *(reserved for the evidence item: sandbox pod, comparison pods, Services, policies)* |
-    | `test.sh`, `clean.sh` | *(separate item; not in this change)* |
+    | [`scripts/cilium_ubuntu.py`](scripts/cilium_ubuntu.py) | Rendering, AMI preflight, launch templates, the DaemonSet and BTF gates, and the agent-output proofs `test.sh` / `clean.sh` read |
+    | [`deploy/workloads.yaml`](deploy/workloads.yaml) | The sandbox pod, the comparison pods, and the `server` ClusterIP Service |
+    | [`deploy/policy.yaml`](deploy/policy.yaml) | The egress `CiliumNetworkPolicy`: L3/L4, L7 HTTP and FQDN rules |
+    | [`test.sh`](test.sh) | Apply the workloads and policy, then prove networking, BTF and policy (see [Evidence](#evidence-testsh)) |
+    | [`clean.sh`](clean.sh) | Dry-run and full teardown of the cluster, ENIs, launch templates and IAM |

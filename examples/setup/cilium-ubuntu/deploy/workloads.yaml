@@ -1,0 +1,264 @@
+# The sample's workloads: one Nitro sandbox pod and six ordinary pods, all on Cilium, in the
+# sample's own namespace. test.sh applies this file (after setup.sh has brought both Ubuntu
+# node groups up healthy on Cilium) and waits for every pod to be Ready, so each lands on a
+# node whose agent already replaces kube-proxy and enforces policy.
+#
+#   nitro       runtimeClassName: isolated-sandbox, on the Ubuntu sandbox node. A policy
+#               "client": the pod whose guest-boundary networking this sample exists to prove.
+#   neighbor    an ordinary pod on the SAME Ubuntu sandbox node, also a policy "client": what
+#               the node does for an ordinary pod, next to what it does for the sandbox pod.
+#   node-probe  a host-network pod on the sandbox node: the node's own network namespace,
+#               where Cilium's socket load balancer serves Services. It only runs `sleep`.
+#   control     an ordinary pod on the Ubuntu system node. The other policy "client": every
+#               check the sandbox pod gets, this pod gets too, so the two compare line by line.
+#   server      an ordinary pod behind the ClusterIP Service "server". Clients may reach it.
+#   other       an ordinary pod. Clients may not reach it (see policy.yaml).
+#   api         an ordinary pod serving two paths. The L7 HTTP target: clients may GET "/" but
+#               not "/admin" on this pod (see policy.yaml). It is a SEPARATE target from
+#               "server" so the L7 rule cannot widen the L4-only rule: Cilium combines L7 rules
+#               only when a later toPorts rule selects the SAME toEndpoints and port as an
+#               earlier one (the Layer 7 Policies doc's "if a layer 4 rule is specified ... the
+#               layer 7 portions of the latter rule will have no effect").
+#
+# Every pod but node-probe serves one or more pages on port 8080 with busybox httpd, so any of
+# them can be both the client and the server of a connection.
+#
+# The namespace carries the sample's part-of label so the scripts can confirm the namespace is
+# the sample's before they touch anything in it. The sandbox pod tolerates the dedicated taint
+# and selects the sandbox node group; the ordinary comparison pods select system (control,
+# server, other, api) or the sandbox node group (neighbor, node-probe).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cilium-ubuntu-demo
+  labels:
+    app.kubernetes.io/part-of: setup-cilium-ubuntu
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nitro
+  namespace: cilium-ubuntu-demo
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"
+  labels:
+    app: nitro
+    role: client
+spec:
+  runtimeClassName: isolated-sandbox
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: sandbox
+  tolerations:
+    - key: sandbox.eks-nitro-sandbox.amazonaws.com/dedicated
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: main
+      image: public.ecr.aws/docker/library/busybox:1.37.0
+      command: ["sh", "-c", "mkdir -p /www && echo nitro > /www/index.html && exec httpd -f -p 8080 -h /www"]
+      ports:
+        - containerPort: 8080
+      resources:
+        # The guest VM is sized from the pod's resources plus the RuntimeClass memory
+        # overhead, and the scheduler counts that overhead too, so the node gives up more
+        # memory than the request alone. This pod requests 1 vCPU.
+        requests:
+          cpu: "1"
+          memory: 768Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: neighbor
+  namespace: cilium-ubuntu-demo
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"
+  labels:
+    app: neighbor
+    role: client
+spec:
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: sandbox
+  tolerations:
+    - key: sandbox.eks-nitro-sandbox.amazonaws.com/dedicated
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: main
+      image: public.ecr.aws/docker/library/busybox:1.37.0
+      command: ["sh", "-c", "mkdir -p /www && echo neighbor > /www/index.html && exec httpd -f -p 8080 -h /www"]
+      ports:
+        - containerPort: 8080
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: node-probe
+  namespace: cilium-ubuntu-demo
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"
+  labels:
+    app: node-probe
+spec:
+  # The node's network namespace, so its connections take the path a host process's do. It
+  # listens on nothing, runs as nobody and holds no capabilities.
+  hostNetwork: true
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: sandbox
+  tolerations:
+    - key: sandbox.eks-nitro-sandbox.amazonaws.com/dedicated
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+  containers:
+    - name: main
+      image: public.ecr.aws/docker/library/busybox:1.37.0
+      command: ["sh", "-c", "while true; do sleep 3600; done"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: control
+  namespace: cilium-ubuntu-demo
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"
+  labels:
+    app: control
+    role: client
+spec:
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: system
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: main
+      image: public.ecr.aws/docker/library/busybox:1.37.0
+      command: ["sh", "-c", "mkdir -p /www && echo control > /www/index.html && exec httpd -f -p 8080 -h /www"]
+      ports:
+        - containerPort: 8080
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: server
+  namespace: cilium-ubuntu-demo
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"
+  labels:
+    app: server
+spec:
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: system
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: main
+      image: public.ecr.aws/docker/library/busybox:1.37.0
+      command: ["sh", "-c", "mkdir -p /www && echo server > /www/index.html && exec httpd -f -p 8080 -h /www"]
+      ports:
+        - containerPort: 8080
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: other
+  namespace: cilium-ubuntu-demo
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"
+  labels:
+    app: other
+spec:
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: system
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: main
+      image: public.ecr.aws/docker/library/busybox:1.37.0
+      command: ["sh", "-c", "mkdir -p /www && echo other > /www/index.html && exec httpd -f -p 8080 -h /www"]
+      ports:
+        - containerPort: 8080
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api
+  namespace: cilium-ubuntu-demo
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"
+  labels:
+    app: api
+spec:
+  # The L7 target. "/" is the allowed path, "/admin" the denied one; both are plain files, so
+  # the HTTP verdict comes from Cilium's L7 policy, not from the application.
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: system
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: main
+      image: public.ecr.aws/docker/library/busybox:1.37.0
+      command: ["sh", "-c", "mkdir -p /www && echo allowed > /www/index.html && echo denied > /www/admin && exec httpd -f -p 8080 -h /www"]
+      ports:
+        - containerPort: 8080
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+  namespace: cilium-ubuntu-demo
+spec:
+  type: ClusterIP
+  selector:
+    app: server
+  ports:
+    - port: 80
+      targetPort: 8080
