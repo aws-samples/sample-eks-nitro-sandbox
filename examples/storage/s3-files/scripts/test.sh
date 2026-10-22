@@ -201,6 +201,10 @@ probe="$($KUBECTL exec "$WRITER" -n "$NAMESPACE" -- sh -c '[ -e /shared/from-rea
 # is the file system policy's DenyWriteThroughReaderAccessPoint statement (keyed on the reader
 # access point ARN). NFS surfaces an IAM denial to the client as EROFS. Clean up the pod after.
 PROBE=s3-files-reader-rw-probe
+# Remove any probe pod left by an earlier run FIRST, so `wait` below cannot pass against a stale
+# pod if this apply fails. Delete by exact name; a failure to confirm removal is fatal to the
+# probe (handled by the apply assertion that follows).
+$KUBECTL delete pod "$PROBE" -n "$NAMESPACE" --ignore-not-found --timeout=90s >/dev/null 2>&1 || true
 $KUBECTL apply -n "$NAMESPACE" -f - >/dev/null 2>&1 <<PROBEYAML
 apiVersion: v1
 kind: Pod
@@ -240,7 +244,13 @@ spec:
       persistentVolumeClaim:
         claimName: storage-s3-files-reader
 PROBEYAML
-if $KUBECTL wait -n "$NAMESPACE" --for=condition=Ready "pod/$PROBE" --timeout=5m >/dev/null 2>&1; then
+probe_applied=$?
+if [[ $probe_applied -ne 0 ]]; then
+  # apply itself failed: do NOT wait (a stale same-name pod could make wait pass). Fail the
+  # whole IAM-probe block here, and still run the cleanup below.
+  assert "the reader-access-point read-WRITE probe pod was applied" 1
+elif $KUBECTL wait -n "$NAMESPACE" --for=condition=Ready "pod/$PROBE" --timeout=5m >/dev/null 2>&1; then
+  assert "the reader-access-point read-WRITE probe pod was applied" 0
   assert "a reader-access-point pod with a read-WRITE kernel mount reaches Ready (ClientMount is allowed through the reader AP)" 0
   # The kernel mount must actually be rw, or the test proves nothing about IAM.
   pmnt="$($KUBECTL exec "$PROBE" -n "$NAMESPACE" -- grep ' /shared ' /proc/mounts 2>/dev/null)"
@@ -262,10 +272,15 @@ if $KUBECTL wait -n "$NAMESPACE" --for=condition=Ready "pod/$PROBE" --timeout=5m
   iprobe="$($KUBECTL exec "$WRITER" -n "$NAMESPACE" -- sh -c "[ -e /shared/iam-probe-$run_id ] && echo FOUND || echo MISSING" 2>/dev/null | tr -d '\r')"
   [[ "$iprobe" == "MISSING" ]]; assert "the IAM-refused write created no file on the shared dataset" $?
 else
+  # apply succeeded but the pod never became Ready.
+  assert "the reader-access-point read-WRITE probe pod was applied" 0
   assert "a reader-access-point pod with a read-WRITE kernel mount reaches Ready (ClientMount is allowed through the reader AP)" 1
 fi
-# Always remove the throwaway probe pod, by its exact name, pass or fail.
-$KUBECTL delete pod "$PROBE" -n "$NAMESPACE" --ignore-not-found --timeout=90s >/dev/null 2>&1 || true
+# Always remove the throwaway probe pod, by its exact name, pass or fail. A delete that times out
+# or errors leaves the probe running on the shared cluster, so it is a reported failure, not
+# swallowed.
+$KUBECTL delete pod "$PROBE" -n "$NAMESPACE" --ignore-not-found --timeout=90s >/dev/null 2>&1
+assert "the throwaway reader-write probe pod was removed" $?
 
 echo "== 8/10 both pods mount with tls,iam; the reader mount is read-only =="
 for pv in storage-s3-files-writer storage-s3-files-reader; do
