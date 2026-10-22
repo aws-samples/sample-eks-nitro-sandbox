@@ -10,6 +10,12 @@ Runnable samples for Nitro Sandboxes on Amazon EKS: hardware-enforced workload i
 
 Start from the [site home page](examples/README.md) for what a Nitro sandbox is and the prerequisites the samples share.
 
+## Setup
+
+Node and cluster preparation the other samples treat as a prerequisite. See [the Setup section of the roadmap](docs/ROADMAP.md#setup-setup) for the Ubuntu AMI sample ([#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10)) that precedes this one.
+
+- [Cilium on Ubuntu nodes](examples/setup/cilium-ubuntu/README.md): a dedicated disposable EKS cluster whose only CNI is Cilium, with two Ubuntu 24.04 node groups, and an `isolated-sandbox` pod that gets normal pod networking and the same enforced policy as an ordinary pod.
+
 ## Isolation
 
 - [Network policy](examples/isolation/network-policy/README.md): a standard egress NetworkPolicy enforced on a sandboxed pod, side by side with an ordinary pod that is the control.

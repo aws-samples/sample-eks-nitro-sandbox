@@ -9,6 +9,9 @@ These samples show Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandb
 
 ```text
 examples/
+├── setup/
+│   ├── ubuntu-ami/
+│   └── cilium-ubuntu/
 ├── getting-started/
 │   ├── hello-sandbox/
 │   ├── coding-agent/
@@ -62,6 +65,21 @@ examples/
 ## Planned samples by section
 
 Samples marked ★ are the next six to be added.
+
+### Setup (`setup`)
+
+Node and cluster preparation that the rest of the samples treat as a prerequisite. Added by
+[#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10), which expanded the
+roadmap beyond its original AMI-build exclusion.
+
+- ubuntu-ami: build an Ubuntu 24.04 EKS node AMI for Pod Isolation from public, checksum-verified
+  inputs, and join it to the existing sample cluster. Spec: [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10).
+- [cilium-ubuntu](../examples/setup/cilium-ubuntu/README.md) (authored, pending a live cluster
+  run): a dedicated disposable cluster with Cilium as the only CNI, in ENI mode with kube-proxy
+  replacement, and the two Ubuntu node groups (system and sandbox) from `ubuntu-ami` above
+  joining it. The README, scripts and manifests are complete; the fresh-cluster networking,
+  BTF-gate and policy evidence this sample's issue requires have not been captured yet, so it is
+  not marked "available now" until that run lands. Spec: [#11](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/11).
 
 ### Getting started (`getting-started`, available now)
 
