@@ -119,6 +119,10 @@ metadata:
   namespace: <NAMESPACE>
   labels:
     app: s3-files-shared
+  annotations:
+    # Pin the node while this long-lived demo pod runs. Auto Mode's node consolidation
+    # would otherwise remove an underused node, and nothing recreates a bare pod.
+    karpenter.sh/do-not-disrupt: "true"
 spec:
   runtimeClassName: isolated-sandbox
   serviceAccountName: s3-files-workload
@@ -161,6 +165,10 @@ metadata:
   namespace: <NAMESPACE>
   labels:
     app: s3-files-shared
+  annotations:
+    # Pin the node while this long-lived demo pod runs. Auto Mode's node consolidation
+    # would otherwise remove an underused node, and nothing recreates a bare pod.
+    karpenter.sh/do-not-disrupt: "true"
 spec:
   runtimeClassName: isolated-sandbox
   serviceAccountName: s3-files-workload

@@ -588,6 +588,10 @@ the mount targets.
   S3 objects.
 - **Do not set `network-isolated` on these pods.** They need a network to reach the mount target,
   so they take an egress network policy instead of the network-isolated annotation.
+- **The pods pin their node while the sample is up.** They are bare pods, and nothing recreates
+  a bare pod that EKS Auto Mode removes when it consolidates an underused node, so both carry
+  `karpenter.sh/do-not-disrupt: "true"`. That also keeps their node from being consolidated
+  until the clean up deletes them. A real workload runs under a controller instead.
 
 ## Install the EFS CSI driver for S3 Files
 
