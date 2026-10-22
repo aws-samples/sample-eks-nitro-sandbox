@@ -65,3 +65,12 @@
 # packages/ describing that command's interface. This file does not document the bundle
 # command's exact flags; a later README/docs-folding round reconciles that once the manifest
 # lands.
+#
+# AMI output interface note: the AMI this sample bakes carries two tags a downstream sample
+# can rely on. ManagedBy=<RESOURCE_PREFIX> (every resource this sample creates carries it)
+# marks ownership. BtfValidated=true is set by scripts/verify-fresh-instance.sh, via
+# scripts/lib/btf-tag.sh, ONLY after a SECOND, fresh instance launched from the AMI has
+# PASSED verify-image.py and 40-smoke.sh; it is never set at create-image time and never set
+# when that verification fails, and the tagging step refuses to touch an AMI that does not
+# already carry this run's own ManagedBy tag. The cilium-ubuntu sample (issue #11) reads
+# BtfValidated=true in its own AMI preflight before it will use an AMI this sample produced.

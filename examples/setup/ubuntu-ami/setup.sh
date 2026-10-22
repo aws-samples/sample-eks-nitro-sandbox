@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # setup.sh: IAM -> build host -> kernel build -> runtime install -> runtime wiring ->
-# AppArmor profile -> smoke -> bake-prep -> AMI register -> fresh-image verify -> dedicated
-# tainted node-group join -> apply the validation workloads.
+# AppArmor profile -> smoke -> bake-prep -> AMI register -> fresh-image verify -> tag
+# BtfValidated=true -> dedicated tainted node-group join -> apply the validation workloads.
+#
+# BtfValidated=true (the tag issue #11, Cilium on Ubuntu, requires before it will use an
+# AMI) is applied to the AMI ONLY after scripts/verify-fresh-instance.sh PASSES (step 7
+# below), never at create-image time (step 6) and never when verification fails. See
+# scripts/verify-fresh-instance.sh and scripts/lib/btf-tag.sh for exactly where and how.
 #
 #   ./setup.sh --prepare     # preflight only: validate inputs, resolve pins, check the
 #                            #   documented runtime prerequisite; create nothing
@@ -178,8 +183,12 @@ log "terminating the build host $build_id (the AMI carries the image now)"
 aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids "$build_id" >/dev/null
 aws ec2 wait instance-terminated --region "$AWS_REGION" --instance-ids "$build_id"
 
-# --- Step 7: verify a SECOND fresh instance launched from the AMI --------------------------
-log "Step 7/8: fresh-instance verification on a SECOND instance (scripts/verify-fresh-instance.sh)"
+# --- Step 7: verify a SECOND fresh instance launched from the AMI, then tag it -------------
+# scripts/verify-fresh-instance.sh both runs the fresh-instance checks AND, only once they
+# pass, tags $AMI_ID BtfValidated=true (scripts/lib/btf-tag.sh). If verification fails, the
+# script dies before any tag is written: $AMI_ID is left without BtfValidated=true, and
+# issue #11's AMI preflight correctly refuses it later.
+log "Step 7/8: fresh-instance verification on a SECOND instance, then tag BtfValidated=true on success (scripts/verify-fresh-instance.sh)"
 AMI_ID="$AMI_ID" INSTANCE_PROFILE="$INSTANCE_PROFILE" SECURITY_GROUP_ID="$SECURITY_GROUP_ID" \
   SUBNET_ID="$BUILD_SUBNET_ID" bash "$SAMPLE_DIR/scripts/verify-fresh-instance.sh"
 

@@ -251,6 +251,25 @@ string and its source SHA-256, the applied patch count, the erofs-utils version 
 installed binary hash, each runtime artifact's SHA-256, and the observed containerd
 version, so a later reader can audit the image's full provenance without the build host.
 
+**5. Verify a fresh instance, then tag the AMI `BtfValidated=true`.** After the AMI is
+registered, `./setup.sh` launches a SECOND, fresh instance from it
+([`scripts/verify-fresh-instance.sh`](scripts/verify-fresh-instance.sh)) and runs
+`verify-image.py` and `40-smoke.sh` on that instance, never on the build host's own run.
+Only once both checks pass does `scripts/verify-fresh-instance.sh` tag the AMI
+`BtfValidated=true` ([`scripts/lib/btf-tag.sh`](scripts/lib/btf-tag.sh)), alongside the
+`ManagedBy=<RESOURCE_PREFIX>` ownership tag this sample already carries on every resource
+it creates, plus the kernel and erofs-utils versions the run pinned and the verification
+run's own build id, as immutable metadata. If verification fails, the AMI is left exactly
+as it was: it never receives `BtfValidated=true`, and the tagging step also refuses to
+touch any AMI that does not already carry this run's own `ManagedBy` tag, so it can never
+tag an AMI it does not own. This tag is the contract the `cilium-ubuntu` sample's (issue
+#11) AMI preflight checks before it will use an AMI from this sample: `BtfValidated=true`
+means "a fresh instance booted from this AMI passed this sample's host-readiness and BTF
+checks," never "an AMI was merely created." See
+[`scripts/test-btf-tag.sh`](scripts/test-btf-tag.sh) for the clusterless, AWS-less proof of
+all three paths (verified AMI tagged, failed verification never tagged, an unowned AMI
+refused).
+
 > **containerd is a gate, not an install.** The build checks that the node's containerd
 > is a version the runtime's shim bootstrap protocol supports; it never upgrades or
 > downgrades the shared containerd already on the base AMI.
@@ -289,6 +308,16 @@ that accepts everything.
 | TUN | `/dev/net/tun` present and usable by the runtime | the device node absent |
 | EROFS + zstd | `mkfs.erofs` builds a zstd-compressed image | the distro's stock erofs-utils (no zstd) attempting the same build |
 | Runtime wiring | the containerd runtime handler for `isolated-sandbox` resolves and a pod schedules | the handler absent, or the socket path wrong, and the pod stuck `ContainerCreating` |
+
+**`BtfValidated=true` applied only after fresh-instance verification passes.** The AMI tag
+`cilium-ubuntu`'s (issue #11) AMI preflight requires before it will use an AMI from this
+sample. Written by `scripts/verify-fresh-instance.sh` via `scripts/lib/btf-tag.sh`, never at
+`create-image` time, and never when verification fails or the AMI is not this run's own
+(`ManagedBy=<RESOURCE_PREFIX>` checked first).
+
+```text
+TODO: output from the fresh run
+```
 
 **AppArmor: a working profile vs a refused control.** Unlike the AL2023 path, Ubuntu's
 kernel in this build carries full AppArmor support (there is no AL2023-style sidecar
