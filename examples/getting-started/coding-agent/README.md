@@ -293,7 +293,7 @@ Remove the AWS resources, the local image, and the agent pod from this sample:
 ```bash
 kubectl delete pod fix-issue-$ISSUE_NUMBER --ignore-not-found
 for id in $(aws eks list-pod-identity-associations --cluster-name $CLUSTER_NAME \
-              --region $AWS_REGION --namespace $NAMESPACE \
+              --region $AWS_REGION --namespace $NAMESPACE --service-account coding-agent \
               --query 'associations[].associationId' --output text); do
   aws eks delete-pod-identity-association --cluster-name $CLUSTER_NAME \
     --region $AWS_REGION --association-id $id

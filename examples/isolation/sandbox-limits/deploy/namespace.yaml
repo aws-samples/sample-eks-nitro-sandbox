@@ -6,3 +6,4 @@ metadata:
   name: sandbox-limits
   labels:
     app.kubernetes.io/part-of: eks-nitro-sandbox-demos
+    sample: sandbox-limits
