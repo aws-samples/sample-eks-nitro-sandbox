@@ -29,7 +29,7 @@ pod spec:
   allows egress only to CoreDNS for name lookups, to the Pod Identity credential address,
   and to HTTPS on the Bedrock and GitHub hostnames. Other AWS APIs, other internet hosts and other pods are refused. (The
   policy allows the addresses those names resolve to, so another name served from the
-  same addresses would also be reachable.) The VM is sized to the pod's limits (inside
+  same addresses would also be reachable.) The VM is sized from the pod's requests (inside
   it, `nproc` reports 2 and memory is about 4 GiB), so the hypervisor bounds the CPU and
   memory it can use.
 
