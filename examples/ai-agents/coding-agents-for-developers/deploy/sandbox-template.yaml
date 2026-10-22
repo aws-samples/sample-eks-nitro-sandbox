@@ -31,6 +31,20 @@ spec:
       containers:
         - name: agent
           image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/coding-agents-for-developers-<CLI>:latest
+          # Optional admin-supplied sign-in token. Kiro CLI uses the developer's own Kiro
+          # sign-in; an admin who wants the pod pre-authenticated (so the developer is not
+          # asked to sign in) creates a Secret named agent-<CLI>-auth with a `token` key
+          # holding the base64 auth bundle, and the kiro-cli image's cli-setup.sh writes it
+          # into Kiro CLI's store. optional: true means the pod still starts when the Secret
+          # is absent -- then Kiro CLI runs its normal device-flow login. Other CLIs do not
+          # read KIRO_CLI_AUTH_B64, so this env is harmless for them.
+          env:
+            - name: KIRO_CLI_AUTH_B64
+              valueFrom:
+                secretKeyRef:
+                  name: agent-<CLI>-auth
+                  key: token
+                  optional: true
           # The mount inside the guest needs root + SYS_ADMIN; the CLI then runs as the
           # unprivileged dev user. runAsNonRoot is intentionally not set: the entrypoint
           # mounts as root, then setpriv drops to uid 1000 for the CLI. SETUID/SETGID are
@@ -42,6 +56,11 @@ spec:
             capabilities:
               drop: ["ALL"]
               add: ["SYS_ADMIN", "SETUID", "SETGID"]
+          # 2 vCPU / 4Gi per session pod. Measured headroom: even Codex -- the heaviest CLI,
+          # with a TUI, an app-server daemon and a worker -- peaks under ~0.1 vCPU and ~0.9Gi
+          # on a model turn (`kubectl top pod`), so every CLI sits well inside this. (Codex's
+          # slow startup and input lag are not resource starvation; they are its app-server
+          # cold start and per-keystroke round-trip, not CPU.)
           resources:
             requests: { cpu: "2", memory: 4Gi }
             limits:   { cpu: "2", memory: 4Gi }

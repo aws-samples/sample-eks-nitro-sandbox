@@ -198,13 +198,33 @@ say "Build and push images"
 # --- 4. Apply per-CLI templates/pools/policies and the app ---
 say "Apply SandboxTemplates, warm pools, egress policies"
 vpc_cidr="$(aws ec2 describe-vpcs --vpc-ids "$VPC" --region "$AWS_REGION" --query 'Vpcs[0].CidrBlock' --output text)"
+# kiro-cli alone reaches its Kiro / Amazon Q Developer sign-in and the CodeWhisperer
+# streaming service instead of Amazon Bedrock. Those endpoints live in the developer's Kiro
+# Region (independent of this cluster's Region), so allow *.amazonaws.com on 443 for the
+# kiro-cli pods only -- wide within AWS, still AWS-only. Other CLIs get an empty block.
+kiro_cli_egress() {
+  cat <<'EGRESS'
+    - to:
+        - domainNames:
+            - "*.amazonaws.com"
+      ports:
+        - { protocol: TCP, port: 443 }
+EGRESS
+}
 IFS=',' read -ra clis <<< "$AGENT_CLIS"
 for cli in "${clis[@]}"; do
   sed -e "s|<CLI>|$cli|g" -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" -e "s|<AWS_REGION>|$AWS_REGION|g" \
       -e "s|<POOL_REPLICAS>|$POOL_REPLICAS|g" "$ROOT/deploy/sandbox-template.yaml" \
     | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
-  sed -e "s|<CLI>|$cli|g" -e "s|<AWS_REGION>|$AWS_REGION|g" \
-      -e "s|<VPC_CIDR>|$vpc_cidr|g" "$ROOT/deploy/egress-policy.yaml" | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
+  # Fill the <KIRO_CLI_EGRESS> placeholder line with the extra rule for kiro-cli, empty for
+  # the rest. awk keeps the multi-line block's indentation, which a sed substitution would
+  # mangle. Match the placeholder only when it is the whole line (^<KIRO_CLI_EGRESS>$) so the
+  # comment above that mentions the name by text is left untouched.
+  if [ "$cli" = "kiro-cli" ]; then extra="$(kiro_cli_egress)"; else extra=""; fi
+  awk -v repl="$extra" '/^<KIRO_CLI_EGRESS>$/ { if (repl != "") print repl; next } { print }' \
+      "$ROOT/deploy/egress-policy.yaml" \
+    | sed -e "s|<CLI>|$cli|g" -e "s|<AWS_REGION>|$AWS_REGION|g" -e "s|<VPC_CIDR>|$vpc_cidr|g" \
+    | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
 done
 
 say "Apply the app"

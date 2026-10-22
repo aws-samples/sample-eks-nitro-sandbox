@@ -20,12 +20,14 @@ spec:
     - Egress
   ingress: []                              # deny all ingress; exec is not pod traffic
   egress:
-    # DNS on port 53 to any address, not pinned to the CoreDNS Service IP. On EKS Auto
-    # Mode CoreDNS runs as a per-node systemd service rather than a pod behind a
-    # ClusterIP, so the resolver a pod actually reaches is node-local; pinning the rule
-    # to a Service IP does not reliably reach it. DNS is name resolution only, so a broad
-    # allow on just the DNS ports is safe; everything beyond DNS, the allowed hosts below
-    # and the mount targets stays denied.
+    # DNS on port 53 to any address. This is a project choice to keep the sample simple:
+    # it does not depend on how a given cluster serves DNS (on EKS Auto Mode the resolver
+    # is node-local rather than a pod behind a ClusterIP). What it allows is wider than
+    # DNS resolution: any process in the sandbox can reach any host on UDP or TCP 53, so
+    # it can send data out over DNS or to anything listening on port 53. What it costs is
+    # that port-53 egress is not confined to the cluster's own resolver. It still opens
+    # only port 53; the allowed hosts below and the mount targets aside, everything else
+    # stays denied.
     - to:
         - ipBlock: { cidr: 0.0.0.0/0 }
       ports:
@@ -61,3 +63,14 @@ spec:
         - ipBlock: { cidr: <VPC_CIDR> }
       ports:
         - { protocol: TCP, port: 2049 }
+    # Per-CLI extra egress. setup.sh fills <KIRO_CLI_EGRESS> only when rendering this
+    # policy for kiro-cli, and empties it for every other CLI. kiro-cli is the one agent
+    # that does NOT use Amazon Bedrock: it reaches the developer's own Kiro / Amazon Q
+    # Developer sign-in (IAM Identity Center OIDC) and the CodeWhisperer streaming service,
+    # which the other CLIs never call. Those endpoints live in the developer's Kiro region,
+    # which is independent of this cluster's Region, so the rule allows `*.amazonaws.com` on
+    # 443 rather than pinning a Region -- wide within AWS so a developer in any Region works,
+    # and still AWS-only: no arbitrary internet host is reachable. A deployment that wants it
+    # tighter can replace this with the exact oidc./q./codewhisperer.<region>.amazonaws.com
+    # hosts for its Kiro region.
+<KIRO_CLI_EGRESS>
