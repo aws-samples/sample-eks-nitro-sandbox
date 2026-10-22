@@ -28,6 +28,41 @@ or as draw.io desktop. Nothing else: the scripts here use only Python's standard
 Run every command below from the repository root, where these files are under
 `.agents/skills/aws-diagrams/`.
 
+## Quick start
+
+**Set up once per machine.** With Docker or Podman installed, run:
+
+```bash
+python3 .agents/skills/aws-diagrams/scripts/drawio_shapes.py fetch
+```
+
+This pulls the pinned export image (draw.io desktop, run headless) and copies draw.io's AWS
+icon library out of it into `~/.cache/drawio-aws-library/`. It takes about a minute the first
+time. After that, `check_drawio.py` can verify shape names, and `export_png.py` exports with no
+further download; when Docker or Podman is on `PATH`, it uses the container. With draw.io
+desktop installed instead, skip this step: the scripts find the desktop's library and
+`export_png.py` falls back to the desktop CLI.
+
+**Confirm the setup** by rendering a committed figure and comparing it with its PNG:
+
+```bash
+python3 .agents/skills/aws-diagrams/scripts/export_png.py examples/images/figure-1-isolation-boundary.drawio --border 0 --out /tmp/setup-check.png
+python3 .agents/skills/aws-diagrams/scripts/compare_png.py examples/images/figure-1-isolation-boundary.png /tmp/setup-check.png
+```
+
+`byte-identical` means your engine is the one that made the committed figures.
+
+**Make each figure** with this loop. The sections below explain each step.
+
+1. Copy the template into the page's `images/` folder:
+   `cp .agents/skills/aws-diagrams/assets/figure-template.drawio examples/<section>/<sample>/images/<name>.drawio`
+2. Find each icon's exact shape: `drawio_shapes.py search "<service or thing>"`.
+3. Edit the XML, sizing labels with `measure_text.py`.
+4. Run `check_drawio.py` on the file until it prints no `ERROR`. Fix each `WARN` too, unless it
+   is deliberate and you can say why.
+5. Export: `export_png.py <file> --border 20`.
+6. Open the PNG and look at it.
+
 ## What a figure may say
 
 These rules apply to every label, title and note on a figure, and to its caption and alt text.

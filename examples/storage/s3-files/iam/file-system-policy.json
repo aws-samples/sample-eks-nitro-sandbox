@@ -1,0 +1,39 @@
+{
+  "Comment": "The S3 Files file system policy this sample applies. setup.sh renders <S3_FILES_FILE_SYSTEM_ARN>, <S3_FILES_CSI_NODE_ROLE_ARN>, <S3_FILES_WRITER_AP_ARN> and <S3_FILES_READER_AP_ARN> from the live cluster before applying it with `aws s3files put-file-system-policy`. It gives the SAME CSI node principal different access per access point, using the s3files:AccessPointArn condition key that S3 Files evaluates on every mount: read-write through the writer access point (ClientMount + ClientWrite) and read-only through the reader access point (ClientMount only, with an explicit Deny of ClientWrite so a write through the reader access point is refused at the mount). Never ClientRootAccess. The least privilege lives here, on the sample's own file system, not on the shared CSI node role: for a same-account principal an Allow in a resource policy authorizes the mount, so no identity policy is added to the shared node role, and the EC2 node instance-profile role is neither read nor named.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "WriterAccessPointReadWrite",
+      "Effect": "Allow",
+      "Principal": { "AWS": "<S3_FILES_CSI_NODE_ROLE_ARN>" },
+      "Action": [
+        "s3files:ClientMount",
+        "s3files:ClientWrite"
+      ],
+      "Resource": "<S3_FILES_FILE_SYSTEM_ARN>",
+      "Condition": {
+        "StringEquals": { "s3files:AccessPointArn": "<S3_FILES_WRITER_AP_ARN>" }
+      }
+    },
+    {
+      "Sid": "ReaderAccessPointReadOnly",
+      "Effect": "Allow",
+      "Principal": { "AWS": "<S3_FILES_CSI_NODE_ROLE_ARN>" },
+      "Action": "s3files:ClientMount",
+      "Resource": "<S3_FILES_FILE_SYSTEM_ARN>",
+      "Condition": {
+        "StringEquals": { "s3files:AccessPointArn": "<S3_FILES_READER_AP_ARN>" }
+      }
+    },
+    {
+      "Sid": "DenyWriteThroughReaderAccessPoint",
+      "Effect": "Deny",
+      "Principal": { "AWS": "<S3_FILES_CSI_NODE_ROLE_ARN>" },
+      "Action": "s3files:ClientWrite",
+      "Resource": "<S3_FILES_FILE_SYSTEM_ARN>",
+      "Condition": {
+        "StringEquals": { "s3files:AccessPointArn": "<S3_FILES_READER_AP_ARN>" }
+      }
+    }
+  ]
+}

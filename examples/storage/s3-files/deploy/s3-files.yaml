@@ -1,0 +1,208 @@
+# One shared S3 Files dataset, mounted by two sandboxed pods with different access.
+# Both pods mount the SAME data: two S3 Files access points on the same file system,
+# both rooted at the same directory (/storage-s3-files), so a file one pod writes is
+# the same object the other reads, and the same object in the backing bucket.
+#
+# The difference is permission, enforced by the file system policy's
+# s3files:AccessPointArn condition:
+#   - the WRITER pod mounts the writer access point -> read-write (ClientMount+ClientWrite);
+#   - the READER pod mounts the reader access point -> read-only (ClientMount only; a
+#     write through the reader access point is denied at the mount), and the reader's
+#     volumeMount is readOnly as defense in depth in the guest kernel too.
+#
+# Each pod is an ordinary pod spec with one line added, the runtime class. setup.sh
+# renders <S3_FILES_FILE_SYSTEM_ID>, <S3_FILES_WRITER_AP_ID> and <S3_FILES_READER_AP_ID>
+# from the local env file at apply time. No account-specific ID is committed.
+---
+# A non-default StorageClass for static S3 Files binding. It is named for the
+# sample, carries the sample's mark, and provisions nothing (static PV). setup.sh
+# creates it with `kubectl create` only when it is absent, and never applies over it.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: nitro-sandbox-s3-files
+  labels:
+    app.kubernetes.io/part-of: storage-s3-files
+provisioner: efs.csi.aws.com
+volumeBindingMode: Immediate
+---
+# The workload ServiceAccount has no AWS identity and mounts no API token. What
+# authorizes each mount is the CSI driver's node identity and the file system
+# policy (per access point), never the workload's own identity.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: s3-files-workload
+  namespace: <NAMESPACE>
+automountServiceAccountToken: false
+---
+# The WRITER volume: the writer access point, read-write.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: storage-s3-files-writer
+spec:
+  capacity:
+    # S3 Files is elastic. Kubernetes requires this field but does not enforce it.
+    storage: 5Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nitro-sandbox-s3-files
+  mountOptions:
+    # tls encrypts the NFS connection; iam signs it with the CSI driver's identity
+    # so the file system policy decides by principal and access point. The connection
+    # is terminated inside each guest. S3 Files always mounts with iam.
+    - tls
+    - iam
+  csi:
+    driver: efs.csi.aws.com
+    # s3files: selects an S3 Files file system; the access-point ID is the WRITER AP.
+    volumeHandle: s3files:<S3_FILES_FILE_SYSTEM_ID>::<S3_FILES_WRITER_AP_ID>
+---
+# The READER volume: the reader access point, same data, read-only.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: storage-s3-files-reader
+spec:
+  capacity:
+    storage: 5Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nitro-sandbox-s3-files
+  mountOptions:
+    - tls
+    - iam
+  csi:
+    driver: efs.csi.aws.com
+    # Same file system, the READER AP. Its root directory is the same as the writer
+    # AP's, so this is the same data; the file system policy grants it ClientMount
+    # only, so a write through it is refused.
+    volumeHandle: s3files:<S3_FILES_FILE_SYSTEM_ID>::<S3_FILES_READER_AP_ID>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: storage-s3-files-writer
+  namespace: <NAMESPACE>
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nitro-sandbox-s3-files
+  volumeName: storage-s3-files-writer
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: storage-s3-files-reader
+  namespace: <NAMESPACE>
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nitro-sandbox-s3-files
+  volumeName: storage-s3-files-reader
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s3-files-writer
+  namespace: <NAMESPACE>
+  labels:
+    app: s3-files-shared
+  annotations:
+    # Pin the node while this long-lived demo pod runs. Auto Mode's node consolidation
+    # would otherwise remove an underused node, and nothing recreates a bare pod.
+    karpenter.sh/do-not-disrupt: "true"
+spec:
+  runtimeClassName: isolated-sandbox
+  serviceAccountName: s3-files-workload
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: shell
+      image: public.ecr.aws/docker/library/busybox:1.37
+      command: ["sh", "-c", "while true; do sleep 3600; done"]
+      resources:
+        requests:
+          cpu: "1"
+          memory: 1Gi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: shared
+          mountPath: /shared
+  volumes:
+    - name: shared
+      persistentVolumeClaim:
+        claimName: storage-s3-files-writer
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s3-files-reader
+  namespace: <NAMESPACE>
+  labels:
+    app: s3-files-shared
+  annotations:
+    # Pin the node while this long-lived demo pod runs. Auto Mode's node consolidation
+    # would otherwise remove an underused node, and nothing recreates a bare pod.
+    karpenter.sh/do-not-disrupt: "true"
+spec:
+  runtimeClassName: isolated-sandbox
+  serviceAccountName: s3-files-workload
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: shell
+      image: public.ecr.aws/docker/library/busybox:1.37
+      command: ["sh", "-c", "while true; do sleep 3600; done"]
+      resources:
+        requests:
+          cpu: "1"
+          memory: 1Gi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: shared
+          mountPath: /shared
+          # Defense in depth: the reader access point is already read-only at the IAM
+          # layer; this makes the kernel mount read-only in the guest as well.
+          readOnly: true
+  volumes:
+    - name: shared
+      persistentVolumeClaim:
+        claimName: storage-s3-files-reader

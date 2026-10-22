@@ -14,6 +14,8 @@ and warm pool samples each start from a cluster that has finished the hello sand
 and do not depend on each other. The coding agent sample needs Amazon Bedrock, a container
 registry and a GitHub repository; the warm pool sample needs the agent-sandbox controller.
 
+The other samples are in the left menu, grouped by section.
+
 ## How it works
 
 From the outside, a sandboxed pod is just a pod: the scheduler places it, it gets an IP

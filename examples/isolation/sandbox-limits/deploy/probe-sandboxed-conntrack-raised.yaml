@@ -1,0 +1,51 @@
+# probe-sandboxed-conntrack-raised: the OPTIONAL variant for the connection
+# limit. Identical to probe-sandboxed, with one annotation added that raises the
+# per-pod outbound connection limit:
+#
+#   sandbox.amazonaws.com/conntrack-limit: "8192"
+#
+# The Amazon EKS User Guide (Isolated and confidential pods limitations, "Per-pod
+# outbound connection limit") documents this annotation: the default is 4096
+# simultaneous outbound connections per IP address family, and this annotation
+# sets it per pod (the value must be an integer between 64 and 65536). Setting it
+# here lets the sample show the measured plateau move from about the default to
+# about the raised value, direct evidence that the plateau is this limit.
+#
+# This pod carries the same app: dns-probe label, so the egress NetworkPolicy
+# selects it too.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: probe-sandboxed-conntrack-raised
+  namespace: sandbox-limits
+  labels:
+    app: dns-probe
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"
+    # Raise the per-pod outbound connection limit above the 4096 default.
+    # Documented in the Amazon EKS User Guide, Isolated and confidential pods
+    # limitations.
+    sandbox.amazonaws.com/conntrack-limit: "8192"
+spec:
+  runtimeClassName: isolated-sandbox
+  containers:
+    - name: probe
+      image: public.ecr.aws/docker/library/python:3.12-slim
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          touch /tmp/ready
+          exec sleep infinity
+      readinessProbe:
+        exec:
+          command: ["cat", "/tmp/ready"]
+        initialDelaySeconds: 2
+        periodSeconds: 3
+        failureThreshold: 40
+      resources:
+        requests:
+          cpu: "1"
+          memory: 768Mi
+        limits:
+          cpu: "1"
+          memory: 768Mi

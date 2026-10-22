@@ -1,0 +1,54 @@
+# The egress NetworkPolicy for the DNS probe pods. The sandboxed probe has a
+# network, so the sample restricts its egress, as the security rules require, and
+# shows the whole policy on the page.
+#
+# It selects every probe pod (app: dns-probe) and governs their egress:
+#
+#   - allow egress to CoreDNS on UDP and TCP 53, which the DNS probe needs;
+#   - allow egress to the conntrack sink on TCP 9000, which the connection-limit
+#     probe needs (it connects to the sink by raw IP, so it uses no DNS);
+#   - deny everything else, which is the default for the selected pods once
+#     policyTypes lists Egress;
+#   - deny all ingress (policyTypes lists Ingress with no ingress rule).
+#
+# The same policy applies to probe-standard (an ordinary pod) and the sandboxed
+# probes (runtimeClassName: isolated-sandbox). The policy scopes which destinations
+# the probe can reach; it does not change the DNS query-rate limit being measured,
+# which sits on the sandbox network path and not in the policy. Keeping egress to
+# the in-cluster resolver means the sample needs no internet egress.
+#
+# This is networking.k8s.io/v1, the standard Kubernetes NetworkPolicy. <COREDNS_IP>
+# is your cluster's CoreDNS Service address, filled in by the script (or by hand):
+#   kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'
+# EKS Auto Mode runs CoreDNS locally on each node and the Network Policy Controller
+# matches DNS by that fixed Service IP, so DNS egress is allowed with an ipBlock on
+# it, the same way Getting started > Coding agent allows CoreDNS.
+# https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dns-probe-egress
+  namespace: sandbox-limits
+spec:
+  podSelector:
+    matchLabels:
+      app: dns-probe
+  policyTypes:
+    - Ingress
+    - Egress
+  # No ingress rule, so all ingress to the probe pods is denied.
+  egress:
+    # Allow: CoreDNS, so the probe's DNS queries reach the cluster resolver.
+    - to:
+        - ipBlock: { cidr: <COREDNS_IP>/32 }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # Allow: the conntrack sink, by its pod label, on TCP 9000. The
+    # connection-limit probe opens held-open TCP flows to it by raw IP.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: conntrack-sink
+      ports:
+        - { protocol: TCP, port: 9000 }

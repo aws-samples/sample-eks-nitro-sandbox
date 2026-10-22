@@ -14,7 +14,7 @@ body:
     attributes:
       label: Sample folder
       description: A named folder (not numbered) in one of the sections of docs/ROADMAP.md.
-      placeholder: examples/isolation-and-security/host-escape/
+      placeholder: examples/isolation/network-policy/
     validations:
       required: true
   - type: textarea

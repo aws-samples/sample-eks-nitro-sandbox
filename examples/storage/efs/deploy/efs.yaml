@@ -1,0 +1,157 @@
+# Shared EFS access point mounted by two sandboxed pods over TLS with IAM
+# authorization. A static PersistentVolume names the file system and access point;
+# the PVC binds to it; a writer and a reader pod mount it ReadWriteMany at /shared.
+#
+# setup.sh renders <EFS_FILE_SYSTEM_ID> and <EFS_ACCESS_POINT_ID> from the local
+# env file at apply time. No account-specific ID is committed.
+---
+# A non-default StorageClass for static EFS binding. It is named for the sample,
+# carries the sample's mark, and provisions nothing (static PV). setup.sh creates
+# it with `kubectl create` only when it is absent, and never applies over it.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: nitro-sandbox-efs
+  labels:
+    app.kubernetes.io/part-of: storage-efs
+provisioner: efs.csi.aws.com
+volumeBindingMode: Immediate
+---
+# The workload ServiceAccount has no AWS identity and mounts no API token. What
+# limits the mount is the security group, the access point and the file system
+# policy, never the workload's own identity.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: efs-workload
+  namespace: <NAMESPACE>
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: storage-efs-shared
+spec:
+  capacity:
+    # EFS is elastic. Kubernetes requires this field but does not enforce it.
+    storage: 5Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nitro-sandbox-efs
+  mountOptions:
+    # tls encrypts the NFS connection; iam signs it with the CSI driver's identity
+    # so the file system policy decides by principal. The connection is terminated
+    # inside each guest.
+    - tls
+    - iam
+  csi:
+    driver: efs.csi.aws.com
+    volumeHandle: <EFS_FILE_SYSTEM_ID>::<EFS_ACCESS_POINT_ID>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: storage-efs-shared
+  namespace: <NAMESPACE>
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nitro-sandbox-efs
+  volumeName: storage-efs-shared
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: efs-writer
+  namespace: <NAMESPACE>
+  labels:
+    app: efs-shared
+  annotations:
+    # Pin the node while this long-lived demo pod runs. Auto Mode's node consolidation
+    # would otherwise remove an underused node, and nothing recreates a bare pod.
+    karpenter.sh/do-not-disrupt: "true"
+spec:
+  runtimeClassName: isolated-sandbox
+  serviceAccountName: efs-workload
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: shell
+      image: public.ecr.aws/docker/library/busybox:1.37
+      command: ["sh", "-c", "while true; do sleep 3600; done"]
+      resources:
+        requests:
+          cpu: "1"
+          memory: 1Gi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: shared
+          mountPath: /shared
+  volumes:
+    - name: shared
+      persistentVolumeClaim:
+        claimName: storage-efs-shared
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: efs-reader
+  namespace: <NAMESPACE>
+  labels:
+    app: efs-shared
+  annotations:
+    # Pin the node while this long-lived demo pod runs. Auto Mode's node consolidation
+    # would otherwise remove an underused node, and nothing recreates a bare pod.
+    karpenter.sh/do-not-disrupt: "true"
+spec:
+  runtimeClassName: isolated-sandbox
+  serviceAccountName: efs-workload
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: shell
+      image: public.ecr.aws/docker/library/busybox:1.37
+      command: ["sh", "-c", "while true; do sleep 3600; done"]
+      resources:
+        requests:
+          cpu: "1"
+          memory: 1Gi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: shared
+          mountPath: /shared
+  volumes:
+    - name: shared
+      persistentVolumeClaim:
+        claimName: storage-efs-shared

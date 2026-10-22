@@ -26,10 +26,10 @@ pod spec:
   describes a watcher that starts one pod per issue labeled `agent`; here you start the
   pod yourself.)
 - **Everything else is off.** An `ApplicationNetworkPolicy` denies all ingress, and
-  allows egress only to CoreDNS for name lookups and to HTTPS on the Bedrock and GitHub
-  hostnames. Other AWS APIs, other internet hosts and other pods are refused. (The
+  allows egress only to CoreDNS for name lookups, to the Pod Identity credential address,
+  and to HTTPS on the Bedrock and GitHub hostnames. Other AWS APIs, other internet hosts and other pods are refused. (The
   policy allows the addresses those names resolve to, so another name served from the
-  same addresses would also be reachable.) The VM is sized to the pod's limits (inside
+  same addresses would also be reachable.) The VM is sized from the pod's requests (inside
   it, `nproc` reports 2 and memory is about 4 GiB), so the hypervisor bounds the CPU and
   memory it can use.
 
@@ -46,7 +46,7 @@ The files:
 | [`Dockerfile`](Dockerfile), [`entrypoint.sh`](entrypoint.sh) | The `coding-agent` image: a stock Node base with Claude Code, git, the GitHub CLI and pytest |
 | [`iam/`](iam/) | The Pod Identity trust policy and the Bedrock-only permissions policy |
 | [`service-account.yaml`](service-account.yaml) | The `coding-agent` ServiceAccount the role is associated with |
-| [`egress-policy.yaml`](egress-policy.yaml) | The egress fence: DNS, Bedrock, `github.com` and `api.github.com` only |
+| [`egress-policy.yaml`](egress-policy.yaml) | The egress network policy: DNS, Pod Identity, Bedrock, `github.com` and `api.github.com` only |
 | [`fix-issue.yaml`](fix-issue.yaml) | The agent pod from the post |
 | [`sample-app/`](sample-app/) | A small Python app with a known bug, for the agent to fix |
 
@@ -116,17 +116,34 @@ printf %s "$GITHUB_TOKEN" \
 unset GITHUB_TOKEN
 ```
 
-**Step 5: Fence the egress.** [`egress-policy.yaml`](egress-policy.yaml)
-selects pods labeled `app: coding-agent`. It denies all ingress, and allows egress only
-to CoreDNS and to HTTPS on three hostnames:
+**Step 5: Apply the network policy.** [`egress-policy.yaml`](egress-policy.yaml)
+selects pods labeled `app: coding-agent`. Listing both `Ingress` and `Egress` under
+`policyTypes` denies the pod all traffic in both directions except what the rules allow:
+no ingress at all, and egress only to CoreDNS, to the Pod Identity credential address,
+and to HTTPS on three hostnames. Here it is without its header comment:
 
 ```yaml
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ApplicationNetworkPolicy
+metadata:
+  name: coding-agent-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: coding-agent
+  policyTypes:
+    - Ingress
+    - Egress
   egress:
     - to:
         - ipBlock: { cidr: <COREDNS_IP>/32 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
+    - to:
+        - ipBlock: { cidr: 169.254.170.23/32 }   # EKS Pod Identity credentials
+      ports:
+        - { protocol: TCP, port: 80 }
     - to:
         - domainNames:
             - bedrock-runtime.us-west-2.amazonaws.com   # the model
@@ -135,6 +152,11 @@ to CoreDNS and to HTTPS on three hostnames:
       ports:
         - { protocol: TCP, port: 443 }
 ```
+
+The Pod Identity rule is what lets the agent get its Bedrock credentials. The sandbox
+passes credential requests to `169.254.170.23` on to the Pod Identity Agent on the node,
+and the policy applies to them: without the rule they time out, from a sandboxed pod as
+from an ordinary one.
 
 A standard Kubernetes `NetworkPolicy` can only allow addresses; the Auto Mode
 `ApplicationNetworkPolicy` accepts the same fields plus `domainNames`. Fill in your
@@ -197,8 +219,8 @@ spec:
       secret: { secretName: coding-agent-git-token }
 ```
 
-The [entrypoint](entrypoint.sh) first checks that the egress fence is
-up, then clones the repository with the mounted token, runs
+The [entrypoint](entrypoint.sh) first checks that the network policy is
+in effect, then clones the repository with the mounted token, runs
 `claude -p "$1" --allowedTools "Bash,Edit,Read,Write"` non-interactively, and finally
 pushes the branch and opens the pull request if the agent has not. Fill in the
 placeholders, start it, and follow its log:
@@ -219,7 +241,7 @@ did, and ends with the pull request. Abridged; your summary text and numbers wil
 differ:
 
 ```text
-Egress fence is up: https://example.com is dropped, https://api.github.com answers
+Network policy is in effect: https://example.com is dropped, https://api.github.com answers
 Cloning your-github-user/example-app ...
 Reading issue #1: "date parser drops timezone on ISO-8601 input"
 Running Claude Code ...
@@ -243,7 +265,7 @@ model. From the platform team's point of view, the shell runs on a kernel no oth
 shares, model access is an IAM role, git access is one scoped token, and when the pod
 exits the VM is gone.
 
-To see the fence from inside the pod, run this in a second terminal while the agent is
+To see the network policy from inside the pod, run this in a second terminal while the agent is
 still working. Hosts the policy does not list time out:
 
 ```bash
@@ -271,7 +293,7 @@ Remove the AWS resources, the local image, and the agent pod from this sample:
 ```bash
 kubectl delete pod fix-issue-$ISSUE_NUMBER --ignore-not-found
 for id in $(aws eks list-pod-identity-associations --cluster-name $CLUSTER_NAME \
-              --region $AWS_REGION --namespace $NAMESPACE \
+              --region $AWS_REGION --namespace $NAMESPACE --service-account coding-agent \
               --query 'associations[].associationId' --output text); do
   aws eks delete-pod-identity-association --cluster-name $CLUSTER_NAME \
     --region $AWS_REGION --association-id $id

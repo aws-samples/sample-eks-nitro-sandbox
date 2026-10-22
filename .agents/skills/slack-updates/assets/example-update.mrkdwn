@@ -1,0 +1,7 @@
+*Roadmap update: new OpenShell section*, merged in <https://github.com/aws-samples/sample-eks-nitro-sandbox/pull/44|PR #44>.
+
+• *OpenShell on Kubernetes* <https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/37|#37>: moved here from Integrations. OpenShell installed on EKS with its Helm charts; each workload pod runs in a Nitro sandbox, and the supervisor that holds the credentials stays an ordinary pod. New folder: `examples/openshell/kubernetes/`.
+• *NemoClaw* <https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/43|#43>, new: NemoClaw with OpenClaw, inside one Nitro sandbox pod. OpenShell's controls apply inside, and the Nitro sandbox is around the whole stack.
+• *Agent harnesses* <https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/14|#14> now covers OpenClaw and Hermes only.
+
+*Why NemoClaw doesn't run on <https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/37|#37>:* NemoClaw is built on OpenShell, but its docs say it supports only a single Docker host, and they list native Kubernetes as unsupported (<https://github.com/NVIDIA/NemoClaw/blob/main/docs/reference/platform-support.mdx|platform support>). It also pins its own OpenShell release. So <https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/43|#43> runs NemoClaw's supported stack inside one sandbox pod. If NemoClaw adds Kubernetes support, it can move onto the <https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/37|#37> gateway.

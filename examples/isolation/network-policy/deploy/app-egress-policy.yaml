@@ -1,0 +1,33 @@
+# OPTIONAL variant: egress by hostname.
+#
+# A standard NetworkPolicy can only allow addresses (pods, namespaces, CIDRs). The EKS
+# Auto Mode ApplicationNetworkPolicy accepts the same fields PLUS domainNames in an
+# egress rule, so you can allow an AWS endpoint by name. This policy selects a second
+# pair of identical clients (app: netpol-client-dns) and allows egress only to CoreDNS
+# and to one AWS endpoint by name; a second AWS endpoint, allowed by no rule, is refused.
+#
+# This reuses the pattern from Getting started > Coding agent, which restricts a coding
+# agent's egress to Bedrock and GitHub by name. It is marked optional because it needs
+# the same cluster-wide enforcement, and shows name-based egress rather than the
+# pod-to-pod egress the main sample shows.
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ApplicationNetworkPolicy
+metadata:
+  name: netpol-client-dns-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: netpol-client-dns
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock: { cidr: <COREDNS_IP>/32 }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - domainNames:
+            - sts.<AWS_REGION>.amazonaws.com    # allowed by name
+      ports:
+        - { protocol: TCP, port: 443 }
