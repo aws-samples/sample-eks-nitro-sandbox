@@ -16,6 +16,42 @@ on an ordinary pod.
 > `socketLB.hostNamespaceOnly` negative controls remain to be proven on a real cluster. They
 > are marked below wherever this page anticipates them.
 
+!!! danger "Before this sample is merged to `main` or marked available: a gate, not a suggestion"
+
+    This sample is a draft. Issue #11 stays **blocked** on inputs that have no public release
+    yet (the EKS Pod Isolation runtime and guest image, the host-kernel patch series, and a
+    fresh verified Issue #10 AMI). Every box below MUST be ticked, in order, before this page
+    is merged to `main` or its roadmap entry is changed to `(available now)`. None of them can
+    be ticked from a static read of the manifests; each needs the live run this draft has not
+    done.
+
+    - [ ] **Refresh every version pin to the real released version.** Update the Versions
+          table to the officially released EKS Pod Isolation runtime and guest-image release,
+          the host-kernel patch release, and re-check Cilium, EKS/Kubernetes, Ubuntu and
+          eksctl together on a fresh cluster. While no public release exists, the runtime,
+          guest image and kernel-patch rows stay generic placeholders, never a guessed or
+          internal identifier.
+    - [ ] **Consume a fresh, verified Issue #10 AMI.** `SANDBOX_AMI_ID` must be an AMI that
+          carries both `ManagedBy=ubuntu-ami-sample` (Issue #10's own ownership tag) and
+          `BtfValidated=true`, produced by a fresh Issue #10 build. Never an ordinary Ubuntu
+          AMI, never an AMI from before Issue #10's BTF fix, and never a guessed or published
+          id.
+    - [ ] **Run every live Cilium control on a real cluster.** No VPC CNI and no kube-proxy;
+          ENI mode with native routing and kube-proxy replacement; the least-privilege
+          operator role through EKS Pod Identity; the BTF gate proven both ways, including the
+          captured missing-BTF rejection; `socketLB.hostNamespaceOnly` proven with the setting
+          both `true` and `false`; the sandbox, ordinary and system lanes for pod IP, DNS and
+          ClusterIP reachability; L3/L4 allow, deny and the unselected control; L7 allow and
+          deny with the deny-row resolved against real `cilium-dbg monitor --type l7` output;
+          and FQDN allow, deny and the agent fqdn-cache evidence.
+    - [ ] **Replace every `TODO: output from the fresh run` block with real captured output.**
+          Save each run's output under the repository's `tmp/` and copy the blocks from there;
+          never hand-written output.
+    - [ ] **Run `clean.sh` and prove full teardown.** `./clean.sh` must remove the cluster,
+          its VPC, the Cilium ENIs, the launch templates and the IAM resources, then read back
+          that they are gone and exit zero.
+    - [ ] **Only then** change this sample's `docs/ROADMAP.md` entry to `(available now)`.
+
 ```mermaid
 flowchart TB
   eksctl["eksctl<br/>cluster, no VPC CNI,<br/>no kube-proxy"] --> Cilium["Cilium 1.20.2<br/>ENI mode,<br/>kube-proxy replacement"]
