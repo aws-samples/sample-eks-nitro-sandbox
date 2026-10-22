@@ -210,7 +210,7 @@ done < <(aws_r ec2 describe-subnets --subnet-ids "${SUBNET_IDS[@]}" \
   --query 'Subnets[].[AvailabilityZoneId,SubnetId]' --output text)
 [[ ${#SUBNET_BY_AZ[@]} -gt 0 ]] || die "could not discover the cluster's subnets"
 
-# The backing bucket: versioned, encrypted, Block Public Access, TLS-only + deny-EC2-node.
+# The backing bucket: versioned, encrypted, Block Public Access, TLS-only bucket policy.
 if aws_r s3api head-bucket --bucket "$S3_BUCKET_NAME" >/dev/null 2>&1; then
   marker="$(bucket_owner_marker "$S3_BUCKET_NAME")"
   if [[ "$marker" == "$SAMPLE" ]]; then
@@ -474,18 +474,45 @@ JSON
     sleep 5
   done
   [[ "$st" == "AVAILABLE" ]] || die "timed out waiting for the $suffix access point"
-  # Prove it is on this sample's file system (a stale .env could point elsewhere) and read back
-  # its real ARN, which S3 Files forms as .../file-system/<fs>/access-point/<ap> (NOT a bare
-  # .../access-point/<ap>): the file system policy's s3files:AccessPointArn condition must use
-  # that exact ARN or the mount is denied. A failed read is fatal.
-  local ap_fs ap_arn ap_detail
-  ap_detail="$(aws_r s3files get-access-point --access-point-id "$apid" \
-    --query '[fileSystemId, accessPointArn]' --output text 2>/dev/null)" \
+  # Prove the access point is THIS sample's before using it. A stale .env or a Name-tag clash on
+  # a shared file system could hand us an access point we did not create, or one rooted somewhere
+  # else, so check every value the sample fixes, not just the file system:
+  #   - it is on this sample's file system;
+  #   - its real ARN, which S3 Files forms as .../file-system/<fs>/access-point/<ap> (NOT a bare
+  #     .../access-point/<ap>): the file system policy's s3files:AccessPointArn condition must use
+  #     that exact ARN or the mount is denied;
+  #   - it is tagged ManagedBy=<sample> and Name=<this sample's AP name>;
+  #   - it is rooted at $AP_ROOT with posix uid/gid 1000 (so both access points share one dataset
+  #     and the writer's non-root process can write it).
+  # A failed read, or any mismatch, is fatal: refuse to adopt rather than reuse the wrong one.
+  # get-access-point returns fileSystemId, accessPointArn, rootDirectory, posixUser and tags in
+  # one document, so read it as JSON and check every field with python (robust to tag order and
+  # to --output text splitting on tab). The expected ManagedBy tag, Name tag, root and uid/gid
+  # are passed in the environment; a parse failure or any mismatch exits non-zero, which the
+  # `|| die` below turns into a refusal.
+  local ap_json ap_arn
+  ap_json="$(aws_r s3files get-access-point --access-point-id "$apid" --output json 2>/dev/null)" \
     || die "could not read the $suffix access point $apid to verify it is this sample's; refusing to use it until the read succeeds."
-  read -r ap_fs ap_arn <<<"$ap_detail"
-  [[ "$ap_fs" == "$S3_FILES_FILE_SYSTEM_ID" ]] \
-    || die "the $suffix access point $apid is on file system $ap_fs, not this sample's $S3_FILES_FILE_SYSTEM_ID; refusing to adopt an access point this sample did not create. Run './scripts/clean.sh --delete-aws-resources' to clear a stale .env, or set ENV_FILE to a different file."
-  [[ -n "$ap_arn" && "$ap_arn" != "None" ]] || die "could not read the ARN of the $suffix access point $apid."
+  ap_arn="$(printf '%s' "$ap_json" | AP_ID="$apid" WANT_FS="$S3_FILES_FILE_SYSTEM_ID" \
+    WANT_ROOT="$AP_ROOT" WANT_NAME="$ap_name" WANT_MANAGED="$SAMPLE" python3 -c '
+import json, os, sys
+try:
+    ap = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+apid = os.environ["AP_ID"]
+if ap.get("fileSystemId") != os.environ["WANT_FS"]: sys.exit(1)
+arn = ap.get("accessPointArn")
+if not arn or arn == "None": sys.exit(1)
+if (ap.get("rootDirectory") or {}).get("path") != os.environ["WANT_ROOT"]: sys.exit(1)
+pu = ap.get("posixUser") or {}
+if pu.get("uid") != 1000 or pu.get("gid") != 1000: sys.exit(1)
+tags = {t.get("key"): t.get("value") for t in (ap.get("tags") or [])}
+if tags.get("ManagedBy") != os.environ["WANT_MANAGED"]: sys.exit(1)
+if tags.get("Name") != os.environ["WANT_NAME"]: sys.exit(1)
+sys.stdout.write(arn)
+')" || die "the $suffix access point $apid does not match this sample's expected file system, root ($AP_ROOT), uid/gid 1000, ManagedBy=$SAMPLE tag and Name=$ap_name tag; refusing to adopt an access point this sample did not create. Clear a stale .env with './scripts/clean.sh --delete-aws-resources', or set ENV_FILE to a different file."
+  [[ -n "$ap_arn" ]] || die "could not read the ARN of the $suffix access point $apid."
   # Echo "<id> <arn>" so the caller gets both.
   printf '%s %s' "$apid" "$ap_arn"
 }
@@ -496,6 +523,13 @@ write_env
 reader_ap_out="$(ensure_access_point reader-ap "$S3_FILES_READER_AP_ID")" || die "could not ensure the reader access point"
 read -r S3_FILES_READER_AP_ID READER_AP_ARN <<<"$reader_ap_out"
 write_env
+# The read/write split depends on the two access points being DIFFERENT: if a stale .env named
+# the same access point for both, the reader's ClientWrite Deny would also match the writer ARN
+# and break the split. Refuse to continue unless both IDs and both ARNs are set and distinct.
+[[ -n "$S3_FILES_WRITER_AP_ID" && -n "$S3_FILES_READER_AP_ID" && -n "$WRITER_AP_ARN" && -n "$READER_AP_ARN" ]] \
+  || die "a writer or reader access point id/ARN is empty; refusing to apply a file system policy that cannot enforce the split."
+[[ "$S3_FILES_WRITER_AP_ID" != "$S3_FILES_READER_AP_ID" && "$WRITER_AP_ARN" != "$READER_AP_ARN" ]] \
+  || die "the writer and reader access points resolved to the same access point ($S3_FILES_WRITER_AP_ID); the read/write split needs two distinct access points. Clear a stale .env with './scripts/clean.sh --delete-aws-resources'."
 
 # ---- 3. The file system policy: read-write via the writer AP, read-only via the reader AP. ----
 echo "Step 3/6: apply the S3 Files file system policy (writer AP read-write, reader AP read-only, by s3files:AccessPointArn)"

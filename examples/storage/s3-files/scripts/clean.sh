@@ -405,7 +405,7 @@ fi
 if [[ "$fail" -eq 0 ]]; then
   rm -f "$ENV_FILE"
   echo
-  echo "Released the S3 Files access point, mount targets, file system, synchronization role,"
+  echo "Released the S3 Files access points, mount targets, file system, synchronization role,"
   echo "NFS security group and bucket."
 else
   echo

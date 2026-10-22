@@ -169,19 +169,23 @@ sent="hello-from-writer-$run_id"
 $KUBECTL exec "$WRITER" -n "$NAMESPACE" -- sh -c "printf '%s' '$sent' > /shared/from-writer"; assert "the non-root writer wrote /shared through the writer access point" $?
 seen="$($KUBECTL exec "$READER" -n "$NAMESPACE" -- cat /shared/from-writer 2>/dev/null | tr -d '\r')"
 [[ "$seen" == "$sent" ]]; assert "the reader sees the file the writer wrote (one shared dataset)" $?
-# The reader is read-only: a write through the reader access point must FAIL. A success here is
-# the security property broken, so the assertion fails if the write succeeds.
-if $KUBECTL exec "$READER" -n "$NAMESPACE" -- sh -c "printf '%s' 'nope-$run_id' > /shared/from-reader" 2>/dev/null; then
-  assert "the reader's write to /shared is refused (read-only access point)" 1
+# The reader is read-only: a write through the reader access point must FAIL, and fail for the
+# RIGHT reason. A bare non-zero exit would also be produced by a missing pod or a transport
+# error, so that alone would let the check pass open. Capture the shell's own error and require
+# it to be the read-only-filesystem refusal; a success, or a failure for any other reason, fails
+# the assertion.
+wr_out="$($KUBECTL exec "$READER" -n "$NAMESPACE" -- sh -c "printf '%s' 'nope-$run_id' > /shared/from-reader" 2>&1)"; wr_rc=$?
+if [[ $wr_rc -ne 0 ]] && printf '%s' "$wr_out" | grep -qi 'read-only file system'; then
+  assert "the reader's write to /shared is refused with a read-only-filesystem error (not merely a non-zero exit)" 0
 else
-  assert "the reader's write to /shared is refused (read-only access point)" 0
+  echo "    reader write rc=$wr_rc out=[$wr_out]"
+  assert "the reader's write to /shared is refused with a read-only-filesystem error (not merely a non-zero exit)" 1
 fi
-# And the refused write left nothing behind: the file does not exist on the shared dataset.
-if $KUBECTL exec "$WRITER" -n "$NAMESPACE" -- sh -c "test -e /shared/from-reader" 2>/dev/null; then
-  assert "the reader's refused write created no file on the shared dataset" 1
-else
-  assert "the reader's refused write created no file on the shared dataset" 0
-fi
+# And the refused write left nothing behind: the file does not exist on the shared dataset. Probe
+# from the writer with a command that prints a distinct token for present vs absent, so a failure
+# to run the exec at all (empty output) is NOT read as "absent".
+probe="$($KUBECTL exec "$WRITER" -n "$NAMESPACE" -- sh -c '[ -e /shared/from-reader ] && echo FOUND || echo MISSING' 2>/dev/null | tr -d '\r')"
+[[ "$probe" == "MISSING" ]]; assert "the reader's refused write created no file on the shared dataset (probe returned MISSING, not an empty/failed exec)" $?
 
 echo "== 8/10 both pods mount with tls,iam; the reader mount is read-only =="
 for pv in storage-s3-files-writer storage-s3-files-reader; do
@@ -245,6 +249,11 @@ if isinstance(p,str): p=json.loads(p)
 st=p["Statement"]
 fs=os.environ["FS_ARN"]; node=os.environ["NODE"]
 writer_ap=os.environ["WRITER_AP"]; reader_ap=os.environ["READER_AP"]
+# The split is meaningless if the two access point ARNs are empty, unread ("None"), or the same
+# ARN twice: the reader ClientWrite Deny would then also match the writer ARN. Require both to be
+# real and distinct before judging the policy.
+if not writer_ap or not reader_ap or writer_ap in ("None",) or reader_ap in ("None",) or writer_ap==reader_ap:
+    sys.exit(1)
 def L(x): return x if isinstance(x,list) else [x]
 def principal_is_node(s):
     pr=s.get("Principal")
