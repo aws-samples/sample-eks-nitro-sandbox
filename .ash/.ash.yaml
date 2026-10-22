@@ -89,8 +89,8 @@ global_settings:
     # Pinned line: a Secret reference, not a secret value.
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/getting-started/coding-agent/fix-issue.yaml'
-      line_start: 35
-      line_end: 35
+      line_start: 36
+      line_end: 36
       reason: 'secretName: references a Kubernetes Secret; the token is created from stdin and is not in the file'
       expiration: '2027-12-31'
     # Samples pin images by fixed version tag shown on the pages; CKV_K8S_14 still fails a
