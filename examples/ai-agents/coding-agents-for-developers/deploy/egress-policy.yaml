@@ -20,29 +20,30 @@ spec:
     - Egress
   ingress: []                              # deny all ingress; exec is not pod traffic
   egress:
-    # DNS, to resolve every host below. Allowed to any address: a name lookup carries no
-    # data out, so the sample treats DNS as safe to allow broadly rather than pinning the
-    # CoreDNS ClusterIP.
+    # DNS on port 53 to any address, not pinned to the CoreDNS Service IP. On EKS Auto
+    # Mode CoreDNS runs as a per-node systemd service rather than a pod behind a
+    # ClusterIP, so the resolver a pod actually reaches is node-local; pinning the rule
+    # to a Service IP does not reliably reach it. DNS is name resolution only, so a broad
+    # allow on just the DNS ports is safe; everything beyond DNS, the allowed hosts below
+    # and the mount targets stays denied.
     - to:
         - ipBlock: { cidr: 0.0.0.0/0 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
-    # The S3 Files mount targets, NFS over TLS. One ipBlock per mount-target IP.
-    - to: <MOUNT_TARGET_CIDRS>
-      ports:
-        - { protocol: TCP, port: 2049 }
     # The Pod Identity agent on the node, for the model role (Bedrock CLIs). Kubernetes
     # always allows a pod to reach its own node; this rule is explicit for clarity.
     - to:
         - ipBlock: { cidr: 169.254.170.23/32 }
       ports:
         - { protocol: TCP, port: 80 }
-    # The S3 endpoint the mount helper reads objects from, the Bedrock runtime endpoint,
-    # and the short list of developer hosts the agents fetch from.
+    # The Bedrock runtime endpoint the CLIs call their model on, and the short list of
+    # developer hosts the agents fetch from. The S3 Files mount itself needs no 443
+    # endpoint here: it resolves its mount target by DNS and connects over NFS (2049
+    # below). The mount helper's CloudWatch logging, which would otherwise call the
+    # CloudWatch Logs endpoint on mount, is turned off in the base image for this reason.
     - to:
         - domainNames:
-            - s3.<AWS_REGION>.amazonaws.com
             - bedrock-runtime.<AWS_REGION>.amazonaws.com
             - github.com
             - codeload.github.com
@@ -52,3 +53,10 @@ spec:
             - files.pythonhosted.org
       ports:
         - { protocol: TCP, port: 443 }
+    # The S3 Files mount targets are ENIs in the cluster VPC; the sandbox connects to one
+    # over TLS on 2049. Allow NFS to the VPC CIDR (a domainNames rule cannot cover the NFS
+    # connection reliably, because the mount target is reached by its resolved IP).
+    - to:
+        - ipBlock: { cidr: <VPC_CIDR> }
+      ports:
+        - { protocol: TCP, port: 2049 }

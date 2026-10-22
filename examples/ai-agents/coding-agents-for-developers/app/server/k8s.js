@@ -38,25 +38,42 @@ export async function claimPod(cli, session) {
     },
   });
 
-  // Wait for the claim to resolve to a sandbox (adopts an already-running warm pod,
-  // Ready in under a second).
-  const podName = await waitForClaimPod(claimName);
-  const pod = await core.readNamespacedPod({ name: podName, namespace: NAMESPACE });
-  return { claimName, podName, node: pod.spec?.nodeName };
+  // Wait for the claim to resolve to a sandbox pod AND for that pod to be scheduled onto
+  // a node. A warm pod is adopted in well under a second, but if the pool is momentarily
+  // empty the claim creates a new pod that is briefly Pending with no node yet. The node
+  // is needed to resolve the mount target's AZ, so wait for it rather than reading a node
+  // name that is still undefined.
+  const { podName, node } = await waitForClaimPod(claimName);
+  return { claimName, podName, node };
 }
 
-async function waitForClaimPod(claimName, timeoutMs = 60000) {
+async function waitForClaimPod(claimName, timeoutMs = 120000) {
   const deadline = Date.now() + timeoutMs;
+  let podName;
   while (Date.now() < deadline) {
-    const claim = await custom.getNamespacedCustomObject({
-      group: GROUP, version: VERSION, namespace: NAMESPACE,
-      plural: "sandboxclaims", name: claimName,
-    });
-    const name = claim?.status?.sandbox?.name;
-    if (name) return name;
+    if (!podName) {
+      const claim = await custom.getNamespacedCustomObject({
+        group: GROUP, version: VERSION, namespace: NAMESPACE,
+        plural: "sandboxclaims", name: claimName,
+      });
+      podName = claim?.status?.sandbox?.name;
+    }
+    if (podName) {
+      const pod = await core.readNamespacedPod({ name: podName, namespace: NAMESPACE });
+      const node = pod.spec?.nodeName;
+      // Wait for the pod to be scheduled (node assigned) AND Ready. A warm pod adopted
+      // from the pool is already Ready; but if the pool was momentarily empty the claim
+      // creates a cold pod, and exec-ing into it before its container is Ready races the
+      // kubelet and fails. The Ready condition is true only once the container accepts
+      // exec, so this makes a cold claim wait the few seconds the pod needs instead.
+      const ready = pod.status?.conditions?.some(
+        (c) => c.type === "Ready" && c.status === "True"
+      );
+      if (node && ready) return { podName, node };
+    }
     await sleep(250);
   }
-  throw new Error(`claim ${claimName} did not resolve to a sandbox in time`);
+  throw new Error(`claim ${claimName} did not resolve to a ready pod in time`);
 }
 
 export async function releaseClaim(claimName) {
@@ -74,31 +91,39 @@ export async function nodeAzId(nodeName) {
   return node.metadata?.labels?.["topology.k8s.aws/zone-id"];
 }
 
-// Start the session: the credential body goes in on stdin, the session parameters as the
-// command's environment, and the pod's entrypoint mounts the access point and starts the
-// CLI in tmux. Runs once per session; the long-lived process is the pod's own.
+// The credential is delivered as one base64 line, newline-terminated, so the reader in
+// the pod returns on the newline and does not wait for the exec channel to signal EOF.
+const b64line = (credential) => Buffer.from(credential, "utf8").toString("base64") + "\n";
+
+// Start the session: the credential goes in on stdin (base64, one line), the session
+// parameters as the command's environment, and the pod's entrypoint mounts the access
+// point and starts the CLI in tmux. Runs once; the long-lived process is the pod's own.
 export async function startSession(podName, { credential, fsId, apId, azId }) {
   const script =
     `export S3_FILES_FS_ID=${fsId} S3_FILES_AP_ID=${apId} ` +
     `AWS_REGION=${REGION} POD_AZ_ID=${azId}; ` +
-    // The entrypoint reads the credential on stdin; re-exec it here with the env set.
+    // The entrypoint reads the base64 credential line on stdin; re-exec it with env set.
     `exec /usr/local/bin/session-entrypoint.sh`;
-  await execOnce(podName, ["/bin/sh", "-c", script], credential);
+  await execOnce(podName, ["/bin/sh", "-c", script], b64line(credential));
+  console.log(`session started in ${podName}`);
 }
 
 // Refresh the mount credential before it expires: write the new body into the pod's
-// tmpfs credential file. The mount helper re-reads it for its periodic re-auth.
+// tmpfs credential file. Same one-line base64 delivery, decoded in the pod.
 export async function refreshCredential(podName, credential) {
   await execOnce(
     podName,
-    ["/bin/sh", "-c", "cat > /dev/shm/session/credentials && chmod 600 /dev/shm/session/credentials"],
-    credential
+    ["/bin/sh", "-c",
+      "IFS= read -r b64; printf %s \"$b64\" | base64 -d > /dev/shm/session/credentials && chmod 600 /dev/shm/session/credentials"],
+    b64line(credential),
   );
 }
 
 // tmux last-activity epoch, to find idle sessions.
 export async function lastActivity(podName) {
   const out = await execCapture(podName, [
+    "/usr/bin/setpriv", "--reuid=1000", "--regid=1000", "--init-groups", "--inh-caps=-all",
+    "env", "HOME=/workspace/home",
     "/bin/sh", "-c",
     "tmux display-message -p -t agent '#{session_activity}' 2>/dev/null || echo 0",
   ]);
@@ -110,9 +135,15 @@ export async function lastActivity(podName) {
 export async function attachTerminal(podName, { onData, cols, rows }) {
   const stdout = new Writable({ write(chunk, _enc, cb) { onData(chunk); cb(); } });
   const stdin = new Readable({ read() {} });
+  // Attach as the dev user (uid 1000), the identity that started the tmux server in the
+  // entrypoint. `kubectl exec` runs as the container's default user (root), whose tmux
+  // looks at a different socket and reports "no sessions", so drop to 1000 with the same
+  // HOME the session uses before attaching.
   const ws = await exec.exec(
     NAMESPACE, podName, "agent",
-    ["/bin/sh", "-c", `exec tmux attach -t agent`],
+    ["/usr/bin/setpriv", "--reuid=1000", "--regid=1000", "--init-groups", "--inh-caps=-all",
+      "env", "HOME=/workspace/home", "TERM=xterm-256color",
+      "/bin/sh", "-c", "exec tmux attach -t agent"],
     stdout, stdout, stdin, true,
   );
   return {
@@ -123,27 +154,57 @@ export async function attachTerminal(podName, { onData, cols, rows }) {
 }
 
 // --- exec helpers ---
+// Run one command in the pod. When stdinBody is given, it is written to the command's
+// standard input and the stream is ended so the container sees EOF (otherwise a reader
+// like `cat` in the entrypoint blocks forever). Resolves on the exec's terminal status;
+// a per-call timeout guards against a stuck channel.
 function execOnce(podName, command, stdinBody) {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const done = (fn, arg) => { if (!settled) { settled = true; fn(arg); } };
+
     const stdin = new Readable({ read() {} });
     let err = "";
+    const stdout = new Writable({ write(_c, _e, cb) { cb(); } });
     const stderr = new Writable({ write(c, _e, cb) { err += c.toString(); cb(); } });
+
+    const timer = setTimeout(
+      () => done(reject, new Error(`exec timed out on ${podName}: ${command.join(" ").slice(0, 80)}`)),
+      120000,
+    );
+
     exec
-      .exec(NAMESPACE, podName, "agent", command, null, stderr, stdin, false,
-        (status) => (status?.status === "Success" ? resolve() : reject(new Error(err || status?.message))))
-      .then(() => { if (stdinBody) stdin.push(stdinBody); stdin.push(null); })
-      .catch(reject);
+      .exec(NAMESPACE, podName, "agent", command, stdout, stderr, stdin, false,
+        (status) => {
+          clearTimeout(timer);
+          if (status?.status === "Success") done(resolve);
+          else done(reject, new Error(err.trim() || status?.message || "exec failed"));
+        })
+      .then((ws) => {
+        // Write the body and signal EOF. push(null) ends the Readable; the client library
+        // then closes the exec's stdin channel, which the container reads as end of input.
+        if (stdinBody !== undefined) stdin.push(stdinBody);
+        stdin.push(null);
+        // Belt and braces: close the socket's stdin once the server echoes the close.
+        if (ws && typeof ws.on === "function") {
+          ws.on("close", () => done(resolve));
+        }
+      })
+      .catch((e) => { clearTimeout(timer); done(reject, e); });
   });
 }
 
 function execCapture(podName, command) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     let out = "";
     const stdout = new Writable({ write(c, _e, cb) { out += c.toString(); cb(); } });
+    const stderr = new Writable({ write(_c, _e, cb) { cb(); } });
+    const finish = () => resolve(out);
+    const timer = setTimeout(finish, 15000);
     exec
-      .exec(NAMESPACE, podName, "agent", command, stdout, stdout, null, false,
-        (status) => (status?.status === "Success" ? resolve(out) : resolve(out)))
-      .catch(reject);
+      .exec(NAMESPACE, podName, "agent", command, stdout, stderr, null, false,
+        () => { clearTimeout(timer); finish(); })
+      .catch(() => { clearTimeout(timer); finish(); });
   });
 }
 

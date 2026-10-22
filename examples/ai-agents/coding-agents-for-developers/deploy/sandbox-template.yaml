@@ -33,13 +33,15 @@ spec:
           image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/coding-agents-for-developers-<CLI>:latest
           # The mount inside the guest needs root + SYS_ADMIN; the CLI then runs as the
           # unprivileged dev user. runAsNonRoot is intentionally not set: the entrypoint
-          # mounts as root, then setpriv drops to uid 1000 for the CLI.
+          # mounts as root, then setpriv drops to uid 1000 for the CLI. SETUID/SETGID are
+          # exactly what setpriv needs to make that drop; without them the CLI would have
+          # to run as root. All other capabilities stay dropped.
           securityContext:
             runAsUser: 0
             allowPrivilegeEscalation: true
             capabilities:
               drop: ["ALL"]
-              add: ["SYS_ADMIN"]
+              add: ["SYS_ADMIN", "SETUID", "SETGID"]
           resources:
             requests: { cpu: "2", memory: 4Gi }
             limits:   { cpu: "2", memory: 4Gi }

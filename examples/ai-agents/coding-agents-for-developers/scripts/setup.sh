@@ -197,19 +197,14 @@ say "Build and push images"
 
 # --- 4. Apply per-CLI templates/pools/policies and the app ---
 say "Apply SandboxTemplates, warm pools, egress policies"
-mt_cidrs="$(aws s3files list-mount-targets --file-system-id "$S3_FILES_FS_ID" --region "$AWS_REGION" \
-  --query 'mountTargets[].ipAddress' --output text)"
-cidr_yaml=""; for ip in $mt_cidrs; do cidr_yaml="$cidr_yaml        - ipBlock: { cidr: $ip/32 }"$'\n'; done
+vpc_cidr="$(aws ec2 describe-vpcs --vpc-ids "$VPC" --region "$AWS_REGION" --query 'Vpcs[0].CidrBlock' --output text)"
 IFS=',' read -ra clis <<< "$AGENT_CLIS"
 for cli in "${clis[@]}"; do
   sed -e "s|<CLI>|$cli|g" -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" -e "s|<AWS_REGION>|$AWS_REGION|g" \
       -e "s|<POOL_REPLICAS>|$POOL_REPLICAS|g" "$ROOT/deploy/sandbox-template.yaml" \
     | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
-  # Render the egress policy, substituting the mount-target ipBlocks as a YAML list.
-  awk -v cli="$cli" -v region="$AWS_REGION" -v cidrs="$cidr_yaml" '
-    { gsub(/<CLI>/, cli); gsub(/<AWS_REGION>/, region) }
-    /<MOUNT_TARGET_CIDRS>/ { sub(/- to: <MOUNT_TARGET_CIDRS>/, "- to:"); printf "%s", cidrs; next }
-    { print }' "$ROOT/deploy/egress-policy.yaml" | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
+  sed -e "s|<CLI>|$cli|g" -e "s|<AWS_REGION>|$AWS_REGION|g" \
+      -e "s|<VPC_CIDR>|$vpc_cidr|g" "$ROOT/deploy/egress-policy.yaml" | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
 done
 
 say "Apply the app"

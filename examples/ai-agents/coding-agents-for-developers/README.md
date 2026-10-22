@@ -118,7 +118,7 @@ S3 Files file system and mount targets, and three IAM roles, each with only what
 | Role | Used by | May |
 |---|---|---|
 | Bedrock | Every CLI pod that uses Bedrock, through Pod Identity | `bedrock:InvokeModel*`, and nothing else; no S3 Files access |
-| App | The web app, through Pod Identity | Create, tag and delete this file system's access points; create and delete objects under session prefixes; assume the Mount role |
+| App | The web app, through Pod Identity | Create, tag, read and delete this file system's access points; delete objects under session prefixes on cleanup; assume the Mount role |
 | Mount | Assumed only by the app, narrowed per session | `s3files:ClientMount` and `s3files:ClientWrite` on the file system, and read objects in the bucket; each session policy narrows it to one access point |
 
 Everything it creates is tagged `ManagedBy=coding-agents-for-developers`, so the clean up
@@ -149,9 +149,11 @@ through the same steps:
 1. The app claims a pod from the CLI's pool. The claim adopts a pod that is already running,
    so it is Ready in under a second; the pool boots a replacement.
 2. The app creates the session's access point (or finds it, on restore), rooted at
-   `/<developer>/<session>` with a fixed POSIX user. Because an S3 Files access point does
-   not create its own root directory, the app creates the session's folder in the bucket
-   first, with the App role.
+   `/<developer>/<session>` with a fixed POSIX user (uid/gid 1000) and
+   `creationPermissions` that make the access point create its own root directory owned by
+   that user. The app does not pre-create the folder as a bucket object: an object written
+   under the prefix first is imported owned by root, which the access point's user could not
+   then write, so the CLI's home could not be created.
 3. The app assumes the Mount role with a session policy that names only that access point,
    and writes the resulting short-lived credential into the pod through the exec API's
    standard input, to a memory-backed file. It is never on a command line or in the pod

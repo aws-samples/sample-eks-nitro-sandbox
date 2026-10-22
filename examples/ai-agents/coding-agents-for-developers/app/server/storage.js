@@ -12,6 +12,7 @@ import {
   CreateAccessPointCommand,
   DeleteAccessPointCommand,
   ListAccessPointsCommand,
+  ListTagsForResourceCommand,
 } from "@aws-sdk/client-s3files";
 import { STSClient, AssumeRoleCommand } from "@aws-sdk/client-sts";
 
@@ -46,17 +47,21 @@ export async function ensureAccessPoint(developer, session, cli) {
   const existing = await findAccessPoint(developer, session);
   if (existing) return existing;
 
-  // The folder must exist before the access point can be mounted. The app's own role
-  // (not the pod's) has s3:PutObject under the session prefixes for exactly this.
-  await putFolderMarker(developer, session);
-
+  // posixUser pins every client of this access point to uid/gid 1000, so files the CLI
+  // writes are owned by the dev user and scoping is by access point. creationPermissions
+  // makes the access point CREATE its own root directory owned uid/gid 1000, mode 0770
+  // (rwxrwx---), so the dev user owns /workspace and can create its home there. This works
+  // only because the root directory does not already exist as a bucket object: an object
+  // written under the prefix first would be imported owned by root (uid 0), and the
+  // access point's uid 1000 could not write it. So ensureAccessPoint does NOT pre-create
+  // the folder; the access point creates its root on first mount.
   const out = await s3files.send(
     new CreateAccessPointCommand({
       fileSystemId: FS_ID,
       posixUser: { uid: 1000, gid: 1000 },
       rootDirectory: {
         path: root,
-        creationPermissions: { ownerUid: 1000, ownerGid: 1000, permissions: "0755" },
+        creationPermissions: { ownerUid: 1000, ownerGid: 1000, permissions: "0770" },
       },
       tags: [
         { key: "ManagedBy", value: "coding-agents-for-developers" },
@@ -71,14 +76,25 @@ export async function ensureAccessPoint(developer, session, cli) {
   return { apId: out.accessPointId, developer, session, cli };
 }
 
+// ListAccessPoints does not return tags, so read them per access point. Returns a
+// {key: value} map.
+async function apTags(apArn) {
+  const out = await s3files.send(
+    new ListTagsForResourceCommand({ resourceArn: apArn })
+  );
+  const map = {};
+  for (const t of out.tags ?? []) map[t.key] = t.value;
+  return map;
+}
+
 async function findAccessPoint(developer, session) {
   const out = await s3files.send(
     new ListAccessPointsCommand({ fileSystemId: FS_ID })
   );
   for (const ap of out.accessPoints ?? []) {
     if (ap.rootDirectory?.path === sessionRoot(developer, session)) {
-      const tag = (k) => ap.tags?.find((t) => t.key === k)?.value;
-      return { apId: ap.accessPointId, developer, session, cli: tag("cli") };
+      const tags = await apTags(ap.accessPointArn);
+      return { apId: ap.accessPointId, developer, session, cli: tags.cli };
     }
   }
   return null;
@@ -138,21 +154,25 @@ export async function mountCredential(apId, developer, session) {
   ].join("\n");
 }
 
-// The signed-in developer's closed sessions, newest first, from access-point tags.
+// The signed-in developer's sessions, newest first. The access point's root path encodes
+// the developer and session (/<developer>/<session>), so filter on the path; ListAccessPoints
+// does not return tags, so read cli and lastUsed per matching access point.
 export async function listSessions(developer) {
   const out = await s3files.send(
     new ListAccessPointsCommand({ fileSystemId: FS_ID })
   );
-  const tag = (ap, k) => ap.tags?.find((t) => t.key === k)?.value;
-  return (out.accessPoints ?? [])
-    .filter((ap) => tag(ap, "developer") === developer)
-    .map((ap) => ({
-      session: tag(ap, "session"),
-      cli: tag(ap, "cli"),
-      lastUsed: tag(ap, "lastUsed"),
-      apId: ap.accessPointId,
-    }))
-    .sort((a, b) => (b.lastUsed ?? "").localeCompare(a.lastUsed ?? ""));
+  const prefix = `/${developer}/`;
+  const mine = (out.accessPoints ?? []).filter((ap) =>
+    (ap.rootDirectory?.path ?? "").startsWith(prefix)
+  );
+  const rows = await Promise.all(
+    mine.map(async (ap) => {
+      const session = ap.rootDirectory.path.slice(prefix.length);
+      const tags = await apTags(ap.accessPointArn);
+      return { session, cli: tags.cli, lastUsed: tags.lastUsed, apId: ap.accessPointId };
+    })
+  );
+  return rows.sort((a, b) => (b.lastUsed ?? "").localeCompare(a.lastUsed ?? ""));
 }
 
 export async function deleteSession(developer, session) {
@@ -164,18 +184,8 @@ export async function deleteSession(developer, session) {
 }
 
 // --- S3 object helpers (folder marker create/delete), via the SDK's S3 client ---
-import { S3Client, PutObjectCommand, ListObjectsV2Command, DeleteObjectsCommand } from "@aws-sdk/client-s3";
+import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from "@aws-sdk/client-s3";
 const s3 = new S3Client({ region: REGION });
-
-async function putFolderMarker(developer, session) {
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: BUCKET,
-      Key: `${sessionKeyPrefix(developer, session)}/.keep`,
-      Body: "",
-    })
-  );
-}
 
 async function deleteFolder(developer, session) {
   const Prefix = `${sessionKeyPrefix(developer, session)}/`;

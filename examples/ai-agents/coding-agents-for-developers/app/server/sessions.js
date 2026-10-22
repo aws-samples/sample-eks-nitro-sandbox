@@ -31,11 +31,15 @@ export async function restore(developer, session) {
 async function start(developer, cli, session) {
   if (live.has(session)) return live.get(session);
 
+  console.log(`start ${session}: ensureAccessPoint`);
   const ap = await store.ensureAccessPoint(developer, session, cli);
+  console.log(`start ${session}: claimPod (ap=${ap.apId})`);
   const { claimName, podName, node } = await k8s.claimPod(cli, session);
+  console.log(`start ${session}: pod=${podName} node=${node}`);
   const azId = await k8s.nodeAzId(node);
 
   const credential = await store.mountCredential(ap.apId, developer, session);
+  console.log(`start ${session}: startSession azId=${azId}`);
   await k8s.startSession(podName, { credential, fsId: FS_ID, apId: ap.apId, azId });
 
   const entry = {

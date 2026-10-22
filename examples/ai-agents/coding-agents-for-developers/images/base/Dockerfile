@@ -29,6 +29,22 @@ RUN set -eu; \
     rm -f /tmp/efs-installer.sh; \
     test -x /sbin/mount.s3files
 
+# The mount helper ships with CloudWatch logging ON (enabled = true). On mount it then
+# creates a CloudWatch Logs client and calls CreateLogGroup against the CloudWatch Logs
+# endpoint. The sandbox's egress policy deliberately allows only the few endpoints the
+# session needs (S3 Files, Bedrock, the developer hosts), so that call has nowhere to go
+# and blocks the whole mount on botocore's connect retries. The sandbox is locked down on
+# purpose, so turn the helper's CloudWatch logging off: the mount still logs locally to
+# /var/log/amazon/efs/mount.log. Leaving it on would couple every mount to an endpoint the
+# policy forbids. Flip only the `enabled` line, under the [cloudwatch-log] section, in
+# both config files the install may read.
+RUN set -eu; \
+    for conf in /etc/amazon/efs/s3files-utils.conf /etc/amazon/efs/efs-utils.conf; do \
+      [ -f "$conf" ] || continue; \
+      sed -i '/^\[cloudwatch-log\]/,/^\[/ s/^[[:space:]]*enabled[[:space:]]*=.*/enabled = false/' "$conf"; \
+    done; \
+    grep -A1 '\[cloudwatch-log\]' /etc/amazon/efs/s3files-utils.conf
+
 # An unprivileged user for the CLI. uid/gid 1000 matches the S3 Files access point's
 # POSIX user, so files the agent writes are owned by the access point's identity.
 RUN set -eu; \

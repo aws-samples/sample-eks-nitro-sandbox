@@ -13,7 +13,10 @@
         "s3files:UntagResource",
         "s3files:ListTagsForResource"
       ],
-      "Resource": "arn:aws:s3files:<AWS_REGION>:<ACCOUNT_ID>:file-system/<S3_FILES_FS_ID>",
+      "Resource": [
+        "arn:aws:s3files:<AWS_REGION>:<ACCOUNT_ID>:file-system/<S3_FILES_FS_ID>",
+        "arn:aws:s3files:<AWS_REGION>:<ACCOUNT_ID>:file-system/<S3_FILES_FS_ID>/access-point/*"
+      ],
       "Condition": {
         "StringEquals": { "aws:ResourceAccount": "<ACCOUNT_ID>" }
       }
@@ -26,15 +29,6 @@
         "arn:aws:s3:::<S3_BUCKET_NAME>",
         "arn:aws:s3:::<S3_BUCKET_NAME>/<S3_PREFIX>/*"
       ],
-      "Condition": {
-        "StringEquals": { "aws:ResourceAccount": "<ACCOUNT_ID>" }
-      }
-    },
-    {
-      "Sid": "CreateSessionFolders",
-      "Effect": "Allow",
-      "Action": ["s3:PutObject"],
-      "Resource": "arn:aws:s3:::<S3_BUCKET_NAME>/<S3_PREFIX>/*",
       "Condition": {
         "StringEquals": { "aws:ResourceAccount": "<ACCOUNT_ID>" }
       }

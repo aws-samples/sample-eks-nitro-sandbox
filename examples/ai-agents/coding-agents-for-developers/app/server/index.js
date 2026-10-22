@@ -47,6 +47,7 @@ async function serveStatic(req, res) {
 
 const server = createServer(async (req, res) => {
   try {
+    console.log(`${req.method} ${req.url}`);
     const url = new URL(req.url, "http://localhost");
     if (req.method === "GET" && url.pathname === "/api/clis") {
       return json(res, 200, { clis: CLIS });
@@ -57,7 +58,9 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "POST" && url.pathname === "/api/new") {
       const { developer, cli } = await readBody(req);
+      console.log(`/api/new developer=${developer} cli=${cli}`);
       const entry = await sessions.newAgent(developer, cli);
+      console.log(`/api/new done session=${entry.session}`);
       return json(res, 200, { session: entry.session, cli: entry.cli });
     }
     if (req.method === "POST" && url.pathname === "/api/restore") {
