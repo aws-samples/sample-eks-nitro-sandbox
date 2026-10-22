@@ -51,16 +51,13 @@ metadata:
 spec:
   containers:
     - name: hello
-      image: public.ecr.aws/docker/library/alpine:3.20
+      image: public.ecr.aws/amazonlinux/amazonlinux:2023
       command: ["sh", "-c"]
       args:
         - |
-          echo "kernel:  $(uname -r)"
+          echo "/sys/class/dmi/id/product_name:  $(cat /sys/class/dmi/id/product_name)"
           echo "disks:   $(ls /sys/block | tr '\n' ' ')"
           sleep infinity
-      resources:
-        requests: { cpu: "1", memory: 768Mi }
-        limits:   { cpu: "1", memory: 768Mi }
 ```
 
 ```bash
@@ -82,16 +79,13 @@ spec:
   runtimeClassName: isolated-sandbox   # <-- the only change
   containers:
     - name: hello
-      image: public.ecr.aws/docker/library/alpine:3.20
+      image: public.ecr.aws/amazonlinux/amazonlinux:2023
       command: ["sh", "-c"]
       args:
         - |
-          echo "kernel:  $(uname -r)"
+          echo "/sys/class/dmi/id/product_name:  $(cat /sys/class/dmi/id/product_name)"
           echo "disks:   $(ls /sys/block | tr '\n' ' ')"
           sleep infinity
-      resources:
-        requests: { cpu: "1", memory: 768Mi }
-        limits:   { cpu: "1", memory: 768Mi }
 ```
 
 ```bash
@@ -103,33 +97,29 @@ kubectl wait pod/hello-sandbox --for=condition=Ready --timeout=300s
 
 ```bash
 kubectl logs hello-sandbox
-kubectl exec hello-sandbox -- uname -r
-kubectl exec hello-sandbox -- cat /sys/class/dmi/id/product_name
 ```
 
 ```text
-kernel:  6.18.48
+/sys/class/dmi/id/product_name:  m8i.enclave
 disks:   dm-0 vda vdb vdc
-6.18.48
-m8a.enclave
 ```
 
-Compare the outputs with the `default` pod.
+Compare the output with the `default` pod:
 
 ```bash
 kubectl logs hello-default
-kubectl exec hello-default -- uname -r
-kubectl exec hello-default -- cat /sys/class/dmi/id/product_name
 ```
 
 ```text
-TODO: output from the fresh run
+/sys/class/dmi/id/product_name:  m8a.xlarge
+disks:   dm-0 nvme0n1 nvme1n1 zram0
 ```
 
-Your kernel version may differ. The disk list is what shows you are in a VM: the
-guest sees virtio block devices (`vda`, `vdb`, and so on) where a regular pod on the same
-node sees the instance's `nvme0n1`. The kernel is the VM's own, even when its version
-string matches the node's. `exec` works as it does for any pod.
+The product name is the machine the pod's own view reports. The sandbox reports its VM,
+`m8i.enclave`, while the regular pod reports the EC2 instance it shares with the other pods
+on its node, here an `m8a.xlarge`. The disk list says the same: the guest sees virtio block
+devices (`vda`, `vdb`, and so on) where a regular pod sees the instance's `nvme` devices.
+Your instance types may differ. `exec` works as it does for any pod.
 
 The first sandboxed pod on a new cluster waits for Auto Mode to launch a node. After that,
 a new sandboxed pod is Ready in about 5 to 6 seconds, most of it EC2 creating the
@@ -144,13 +134,29 @@ kubectl get pod hello-sandbox
 ```
 
 ```text
-813.86 810.50
+23.73 21.39
 NAME            READY   STATUS    RESTARTS   AGE
-hello-sandbox   1/1     Running   0          13m
+hello-sandbox   1/1     Running   0          27s
 ```
 
-A regular pod started on the same cluster at the same time reported `59191.99`, about
-16 hours: the node's uptime.
+The `hello-default` pod, started on the same cluster a few seconds earlier, reported
+`11413.84`, about 3 hours: the uptime of its node.
+
+These pods set no CPU or memory requests, so the VM gets a small default size. On this run
+it had one vCPU and about 130 MiB of memory:
+
+```bash
+kubectl exec hello-sandbox -- nproc
+kubectl exec hello-sandbox -- grep MemTotal /proc/meminfo
+```
+
+```text
+1
+MemTotal:         132568 kB
+```
+
+That is enough for these pods. A real workload sets the CPU and memory requests it needs:
+the VM is sized from them, as the [coding agent](../coding-agent/README.md) sample shows.
 
 **Optional: no network besides loopback.** [`hello-network-isolated.yaml`](hello-network-isolated.yaml)
 is the same pod with one annotation, and prints its IPv4 addresses and default route:
@@ -169,8 +175,8 @@ kubectl logs hello-network-isolated
 ```
 
 ```text
-kernel:  6.18.48
-ipv4:    lo=127.0.0.1/8
+/sys/class/dmi/id/product_name:  m8i.enclave
+ipv4:    127.0.0.1
 route:   none
 ```
 
@@ -180,12 +186,12 @@ that serve instance metadata and Pod Identity credentials. `kubectl exec` still 
 the network-isolated pod:
 
 ```bash
-kubectl exec hello-network-isolated -- wget -T 5 -O /dev/null https://aws.amazon.com
+kubectl exec hello-network-isolated -- curl -sS -m 5 -o /dev/null https://aws.amazon.com
 ```
 
 ```text
-wget: bad address 'aws.amazon.com'
-command terminated with exit code 1
+curl: (6) Could not resolve host: aws.amazon.com
+command terminated with exit code 6
 ```
 
 ## Clean up
