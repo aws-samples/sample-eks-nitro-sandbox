@@ -17,7 +17,7 @@ ENV_ENVIRONMENT_KEY = "ANTHROPIC_ENVIRONMENT_KEY"
 ENV_BASE_URL = "ANTHROPIC_BASE_URL"  # optional endpoint override
 # The organization API key. It creates agents, environments and sessions, so it
 # stays on the operator's machine; guard.py refuses to run if a pod has it.
-ENV_API_KEY = "ANTHROPIC_API_KEY"
+ENV_API_KEY = "ANTHROPIC_API_KEY"  # pragma: allowlist secret
 
 # --- Claude Platform on AWS (optional) ---------------------------------------
 # ANTHROPIC_PLATFORM=aws switches every role to the SDK's AnthropicAWS client,

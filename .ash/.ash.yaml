@@ -8,6 +8,93 @@ global_settings:
       reason: .claude/skills links to .agents/skills, which is scanned already
     - path: .kiro/**
       reason: .kiro/skills links to .agents/skills, which is scanned already; .kiro/specs holds local drafts
+    - path: tmp/**
+      reason: gitignored local scratch (venvs, caches, logs); checkov scans the dir and ignores .gitignore
+    - path: site/**
+      reason: gitignored mkdocs build output, a copy of examples/; checkov ignores .gitignore for it
+  # ---------------------------------------------------------------------------------------
+  # Suppressions. ASH v3.7.1 reads them only from this file (it has no include mechanism).
+  # Each entry: the narrowest path, a reason, and an expiration date. Add one only with an
+  # explanation in the pull request (CONTRIBUTING.md, "Security scanning").
+  # Grouped by cause: namespace set at apply time, pod covered by a policy in another file
+  # or with no network, image placeholders, not applicable on Kubernetes, pinned lines.
+  # ---------------------------------------------------------------------------------------
+  suppressions:
+    # Namespace is set at apply time, never hard-coded in the manifest.
+    - rule_id: CKV_K8S_21
+      path: 'examples/getting-started/hello-sandbox/*.yaml'
+      reason: 'No namespace in the manifest; the page creates $NAMESPACE and sets it as the current context'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_21
+      path: 'examples/getting-started/coding-agent/*.yaml'
+      reason: 'Applied into the namespace hello-sandbox sets as the current context'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_21
+      path: 'examples/isolation/network-policy/deploy/*.yaml'
+      reason: 'Applied into the current namespace, which hello-sandbox (required first) sets to $NAMESPACE'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_21
+      path: 'examples/managed-agents/claude-managed-agents/deploy/*.yaml'
+      reason: 'Applied into the namespace set as the current context; never hard-coded'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_21
+      path: 'examples/policy/cedar-policy/deploy/pod.yaml'
+      reason: 'setup.sh renders .metadata.namespace from $NAMESPACE before apply'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_21
+      path: 'examples/storage/ebs/deploy/*.yaml'
+      reason: 'setup.sh and the page apply every manifest with -n "$NAMESPACE"'
+      expiration: '2027-12-31'
+    # Pod is covered by an ApplicationNetworkPolicy in another file, or has no network.
+    - rule_id: CKV2_K8S_6
+      path: 'examples/isolation/network-policy/deploy/client-*-dns.yaml'
+      reason: 'Selected by the ApplicationNetworkPolicy in deploy/app-egress-policy.yaml'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/storage/efs/deploy/efs.yaml'
+      reason: 'Pods carry app: efs-shared, selected by the ApplicationNetworkPolicy in deploy/egress-policy.yaml'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/storage/s3-files/deploy/s3-files.yaml'
+      reason: 'Pods carry app: s3-files-shared, selected by the ApplicationNetworkPolicy in deploy/egress-policy.yaml'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/policy/image-signing/deploy/workloads.yaml'
+      reason: 'verify-signed and verify-unsigned are selected by deploy/egress-policy.yaml; verify-signed-denied is network-isolated'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/policy/image-signing/optional-offline/deploy/verify-offline.yaml'
+      reason: 'Network-isolated: no network to restrict (AGENTS.md, Security rules)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/policy/cedar-policy/deploy/pod.yaml'
+      reason: 'Network-isolated: no network to restrict (AGENTS.md, Security rules)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/storage/ebs/deploy/statefulset-ebs.yaml'
+      reason: 'Replicas are network-isolated: no network to restrict (AGENTS.md, Security rules)'
+      expiration: '2027-12-31'
+    # Image is a placeholder; a script substitutes the signed digest before apply.
+    - rule_id: CKV_K8S_14
+      path: 'examples/policy/image-signing/**/deploy/*.yaml'
+      reason: 'Image is a placeholder; setup.sh and build-offline.sh substitute registry/repo@sha256:<digest> before apply'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_43
+      path: 'examples/policy/image-signing/**/deploy/*.yaml'
+      reason: 'Image is a placeholder; setup.sh and build-offline.sh substitute registry/repo@sha256:<digest> before apply'
+      expiration: '2027-12-31'
+    # Not applicable on Kubernetes.
+    - rule_id: CKV_DOCKER_2
+      path: '**/Dockerfile'
+      reason: 'Kubernetes ignores Docker HEALTHCHECK; health is defined by probes in the manifests'
+      expiration: '2027-12-31'
+    # Pinned line: a Secret reference, not a secret value.
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/getting-started/coding-agent/fix-issue.yaml'
+      line_start: 35
+      line_end: 35
+      reason: 'secretName: references a Kubernetes Secret; the token is created from stdin and is not in the file'
+      expiration: '2027-12-31'
 scanners:
   cdk-nag:
     enabled: false  # no CloudFormation or CDK here; it fails to parse the multi-document Kubernetes manifests

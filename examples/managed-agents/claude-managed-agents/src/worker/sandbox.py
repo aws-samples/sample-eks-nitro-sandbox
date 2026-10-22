@@ -37,7 +37,7 @@ DISPATCH_COUNT_LABEL = "anthropic.com/dispatch-count"
 def label_safe(value: str) -> str:
     """Reduce an id to a valid label value (<= 63 chars of [a-z0-9-])."""
     safe = re.sub(r"[^a-z0-9-]", "-", value.lower()).strip("-")[:63].rstrip("-")
-    return safe or hashlib.sha1(value.encode()).hexdigest()[:12]
+    return safe or hashlib.sha1(value.encode(), usedforsecurity=False).hexdigest()[:12]
 
 
 def post_with_retry(url: str, body: bytes, *, attempts: int = 5, timeout: int = 5) -> None:
@@ -46,7 +46,8 @@ def post_with_retry(url: str, body: bytes, *, attempts: int = 5, timeout: int = 
     for i in range(attempts):
         try:
             req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=timeout):
+            # B310: fixed http:// URL to the claimed sandbox's own pod IP
+            with urllib.request.urlopen(req, timeout=timeout):  # nosec B310
                 return
         except OSError as exc:
             last_err = exc
