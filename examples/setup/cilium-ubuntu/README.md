@@ -70,11 +70,14 @@ cp config.env.example config.local.env   # then set AWS_ACCOUNT_ID, SANDBOX_AMI_
 ./setup.sh
 ```
 
-The script writes its own kubeconfig to `out/kubeconfig`, so your default kubeconfig and its
-current context are not touched. To use `kubectl` yourself:
+The script writes its own kubeconfig under the repository's gitignored `tmp/` directory, at
+`tmp/issue11/run/kubeconfig` (never beneath this sample folder, and never your default
+kubeconfig), so your default kubeconfig and its current context are not touched. `setup.sh`
+prints the exact path; to use `kubectl` yourself, point `KUBECONFIG` at it, for example from
+the repository root:
 
 ```bash
-export KUBECONFIG=$PWD/out/kubeconfig
+export KUBECONFIG="$(git rev-parse --show-toplevel)/tmp/issue11/run/kubeconfig"
 ```
 
 Once the cluster is up, prove the sample's claims and then tear it down:

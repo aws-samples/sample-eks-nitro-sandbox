@@ -4,7 +4,14 @@ clean.sh for the same rendering and ownership logic).
 
 Everything that touches AWS goes through the aws CLI with the caller's standard credentials.
 Everything that touches the cluster goes through kubectl with the KUBECONFIG common.sh
-exported (this sample's own out/kubeconfig, never the caller's default one).
+exported (this sample's own kubeconfig under the repo's gitignored tmp/, never the caller's
+default one).
+
+This module's local output (the rendered eksctl YAML and the launch-template JSON) is written
+under RUN_DIR, the repo-root tmp/issue11/run directory common.sh exports, never beneath the
+sample folder: anything in a sample folder is one `git add` from being published (AGENTS.md,
+"Keep local files in the repository's tmp/"). When run outside those scripts (so RUN_DIR is
+unset), it derives the same path from the repository root.
 
 This module never guesses or publishes an AMI id: SANDBOX_AMI_ID and SYSTEM_AMI_ID always
 come from the caller's own config.local.env (gitignored), and cmd_check_sandbox_ami verifies
@@ -23,8 +30,12 @@ import sys
 from pathlib import Path
 
 DEMO = Path(__file__).resolve().parent.parent
-OUT = DEMO / "out"
 REPO = DEMO.parents[2]  # examples/setup/cilium-ubuntu -> repo root
+# This run's local output: the kubeconfig (written by the shell scripts), the rendered eksctl
+# YAML and the launch-template JSON. It lives under the repo's gitignored tmp/, never beneath
+# the sample folder. common.sh exports RUN_DIR; honour it so the shell and Python agree on one
+# path, and derive the same repo-root tmp/issue11/run when this module is run on its own.
+OUT = Path(os.environ["RUN_DIR"]) if os.environ.get("RUN_DIR") else REPO / "tmp" / "issue11" / "run"
 # Placeholder ids the page may show. Any OTHER resource id in a tracked file is a leak.
 PLACEHOLDER_IDS = {"ami-0123456789abcdef0", "lt-0123456789abcdef0"}
 
@@ -216,10 +227,14 @@ def render_config(template, destination, values, validate):
     import yaml  # PyYAML; imported here so offline checks that do not render need not have it
     text = substitute((DEMO / "eksctl" / template).read_text(), values)
     cfg = validate(yaml.safe_load(text))
-    OUT.mkdir(mode=0o700, exist_ok=True)
+    OUT.mkdir(mode=0o700, parents=True, exist_ok=True)
     destination.write_text(yaml.safe_dump(cfg, sort_keys=False))
     destination.chmod(0o600)
-    print(f"Rendered {destination.relative_to(DEMO)}")
+    try:
+        shown = destination.relative_to(REPO)
+    except ValueError:
+        shown = destination
+    print(f"Rendered {shown}")
 
 
 def zones():
@@ -377,7 +392,7 @@ def template_mismatch(have, want):
 
 
 def cmd_launch_template(args):
-    OUT.mkdir(mode=0o700, exist_ok=True)
+    OUT.mkdir(mode=0o700, parents=True, exist_ok=True)
     name = f"{setting('CLUSTER_NAME')}-{args.group}"
     data = launch_template_data(args.group)
     (OUT / f"{args.group}-launch-template.json").write_text(json.dumps(data, indent=2) + "\n")

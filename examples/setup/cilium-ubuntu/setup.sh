@@ -23,10 +23,13 @@ set -euo pipefail
 # test.sh and clean.sh, which set the same variable, so the three scripts agree on one name.
 SAMPLE_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/common.sh
-source "$SAMPLE_DIR/scripts/common.sh"   # exports KUBECONFIG=$SAMPLE_DIR/out/kubeconfig
+source "$SAMPLE_DIR/scripts/common.sh"   # exports RUN_DIR and KUBECONFIG=$RUN_DIR/kubeconfig
 
 step "1/7 prerequisites"
-mkdir -p -m 700 "$SAMPLE_DIR/out"
+# RUN_DIR is under the repository's gitignored tmp/ (set in common.sh), never the sample
+# folder, so this run's kubeconfig and rendered manifests are never one `git add` from being
+# published. Mode 700 so the kubeconfig written into it stays private.
+mkdir -p -m 700 "$RUN_DIR"
 require_commands aws eksctl helm kubectl python3
 require_eksctl_version
 require_caller_account
@@ -41,7 +44,7 @@ step "2/7 cluster: no VPC CNI, no kube-proxy, no nodes"
 python3 "$PY" render-cluster
 state="$(cluster_state)"
 if [[ "$state" == NONE ]]; then
-  eksctl create cluster -f "$SAMPLE_DIR/out/cluster.yaml" --without-nodegroup --kubeconfig "$KUBECONFIG"
+  eksctl create cluster -f "$RUN_DIR/cluster.yaml" --without-nodegroup --kubeconfig "$KUBECONFIG"
 else
   echo "Cluster $CLUSTER_NAME already exists ($state)."
   require_demo_cluster
@@ -66,7 +69,7 @@ fi
 # EKS injects the credentials when the operator pod is created.
 assoc="$(aws eks list-pod-identity-associations --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" \
   --namespace kube-system --service-account cilium-operator --query 'associations[].associationId' --output text)"
-[[ -n "$assoc" ]] || eksctl create podidentityassociation -f "$SAMPLE_DIR/out/pod-identity.yaml"
+[[ -n "$assoc" ]] || eksctl create podidentityassociation -f "$RUN_DIR/pod-identity.yaml"
 eksctl utils write-kubeconfig --cluster "$CLUSTER_NAME" --region "$AWS_REGION" --kubeconfig "$KUBECONFIG"
 chmod 600 "$KUBECONFIG"
 echo "$(green "No aws-node or kube-proxy DaemonSet exists on this cluster, now or ever:")"
@@ -90,7 +93,7 @@ echo "Launch templates: system $lt_system, sandbox $lt_sandbox"
 step "5/7 node groups: system (ordinary Ubuntu 24.04) and sandbox (the Ubuntu Pod Isolation AMI, tainted)"
 python3 "$PY" render-nodegroups --system-launch-template "$lt_system" --sandbox-launch-template "$lt_sandbox"
 # Existing node groups are skipped, so this is safe to re-run.
-eksctl create nodegroup -f "$SAMPLE_DIR/out/nodegroups.yaml"
+eksctl create nodegroup -f "$RUN_DIR/nodegroups.yaml"
 kubectl wait --for=condition=Ready node -l eks.amazonaws.com/nodegroup=system --timeout=15m
 kubectl wait --for=condition=Ready node -l eks.amazonaws.com/nodegroup=sandbox --timeout=15m
 kubectl -n kube-system rollout status daemonset/cilium --timeout=10m

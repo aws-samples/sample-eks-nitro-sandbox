@@ -8,8 +8,12 @@
 # provides the assertion tally and the AWS/cluster guards the three scripts share.
 #
 # This sample creates a dedicated, disposable cluster, so unlike the cluster-reusing samples
-# it keeps its OWN kubeconfig under out/ and never touches ~/.kube/config: a run here cannot
-# move another kubectl session on the workstation onto this cluster.
+# it keeps its OWN kubeconfig and never touches ~/.kube/config: a run here cannot move another
+# kubectl session on the workstation onto this cluster. All of this run's local state (the
+# kubeconfig, the rendered eksctl YAML, the launch-template JSON) is written under the
+# repository's gitignored tmp/ at RUN_DIR, never beneath the sample folder: anything in a
+# sample folder is one `git add` from being published (see AGENTS.md, "Keep local files in
+# the repository's tmp/").
 
 [[ -f "$SAMPLE_DIR/config.env.example" ]] || { echo "ERROR: $SAMPLE_DIR/config.env.example is missing" >&2; exit 1; }
 # config.env.example is tracked and holds the placeholders and shared defaults; config.local.env
@@ -46,9 +50,33 @@ DEMO_TAG_VAL="setup-cilium-ubuntu"
 
 PY="$SAMPLE_DIR/scripts/cilium_ubuntu.py"
 
-# This sample's own kubeconfig. setup.sh creates the directory and writes it; test.sh and
-# clean.sh only read it, so a dry run leaves the working tree as it found it.
-export KUBECONFIG="$SAMPLE_DIR/out/kubeconfig"
+# The repository root, so this run's local state lands in the repo's gitignored tmp/ rather
+# than beneath the sample folder. Prefer git; fall back to walking up from SAMPLE_DIR to the
+# directory that holds AGENTS.md or .git, so the scripts work in a checkout with no git too.
+# Never a hardcoded absolute path: the repository can be cloned anywhere.
+repo_root() {
+  local root dir
+  if root="$(git -C "$SAMPLE_DIR" rev-parse --show-toplevel 2>/dev/null)" && [[ -n "$root" ]]; then
+    printf '%s\n' "$root"; return 0
+  fi
+  dir="$SAMPLE_DIR"
+  while [[ "$dir" != "/" ]]; do
+    if [[ -e "$dir/AGENTS.md" || -e "$dir/.git" ]]; then printf '%s\n' "$dir"; return 0; fi
+    dir="$(dirname "$dir")"
+  done
+  die "could not find the repository root (no git, no AGENTS.md or .git above $SAMPLE_DIR)"
+}
+REPO_ROOT="$(repo_root)"
+
+# All of this run's local state lives here, under the repo's gitignored tmp/: the kubeconfig,
+# the rendered eksctl YAML and the launch-template JSON. setup.sh creates it; test.sh and
+# clean.sh only read what is in it. Exported so scripts/cilium_ubuntu.py writes the same place.
+export RUN_DIR="$REPO_ROOT/tmp/issue11/run"
+
+# This sample's own kubeconfig, under RUN_DIR (never ~/.kube/config and never the sample
+# folder). setup.sh creates the directory and writes it; test.sh and clean.sh only read it,
+# so a dry run leaves the working tree as it found it.
+export KUBECONFIG="$RUN_DIR/kubeconfig"
 
 # ---------------------------------------------------------------------------
 # Output and guards
