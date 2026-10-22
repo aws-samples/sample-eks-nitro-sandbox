@@ -19,6 +19,7 @@ spec:
   containers:
     - name: writer
       image: public.ecr.aws/docker/library/busybox:1.37
+      imagePullPolicy: IfNotPresent
       command: ["sh", "-c", "echo second pod started; sleep 3600"]
       resources:
         requests: { cpu: "1", memory: 1Gi }

@@ -57,7 +57,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: autoscaler
-          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/claude-sandbox-worker:latest
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/claude-sandbox-worker:v1
+          imagePullPolicy: IfNotPresent
           args: ["stats"]
           env:
             - name: ANTHROPIC_ENVIRONMENT_KEY

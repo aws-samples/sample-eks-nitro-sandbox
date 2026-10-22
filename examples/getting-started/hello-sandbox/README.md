@@ -52,6 +52,7 @@ spec:
   containers:
     - name: hello
       image: public.ecr.aws/amazonlinux/amazonlinux:2023
+      imagePullPolicy: IfNotPresent
       command: ["sh", "-c"]
       args:
         - |
@@ -80,6 +81,7 @@ spec:
   containers:
     - name: hello
       image: public.ecr.aws/amazonlinux/amazonlinux:2023
+      imagePullPolicy: IfNotPresent
       command: ["sh", "-c"]
       args:
         - |
