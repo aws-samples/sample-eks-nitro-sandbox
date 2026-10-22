@@ -147,11 +147,17 @@ export async function attachTerminal(podName, { onData, cols, rows }) {
   // entrypoint. `kubectl exec` runs as the container's default user (root), whose tmux
   // looks at a different socket and reports "no sessions", so drop to 1000 with the same
   // HOME the session uses before attaching.
+  // Set a UTF-8 locale on the attach, and attach with `-u`. tmux decides whether the
+  // attaching client can take UTF-8 from its locale (LC_ALL/LANG/LC_CTYPE) at attach time;
+  // with none set it treats the client as non-UTF-8 and downgrades every multibyte glyph
+  // -- the box-drawing (▎ ─ │), status (● ✻ ⚠) and smart-quote characters the agent TUIs
+  // draw -- to `_` in the bytes it sends to the browser. That is what put the `_` streaks
+  // in the terminal. `-u` forces UTF-8 regardless, and the locale makes it stick.
   const ws = await exec.exec(
     NAMESPACE, podName, "agent",
     ["/usr/bin/setpriv", "--reuid=1000", "--regid=1000", "--init-groups", "--inh-caps=-all",
-      "env", "HOME=/workspace/home", "TERM=xterm-256color",
-      "/bin/sh", "-c", "exec tmux attach -t agent"],
+      "env", "HOME=/workspace/home", "TERM=xterm-256color", "LANG=C.UTF-8", "LC_ALL=C.UTF-8",
+      "/bin/sh", "-c", "exec tmux -u attach -t agent"],
     stdout, stdout, stdin, true,
   );
   return {

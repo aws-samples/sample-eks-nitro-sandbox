@@ -13,7 +13,9 @@ RUN set -eu; \
     mkdir -p public/vendor; \
     cp node_modules/@xterm/xterm/lib/xterm.js public/vendor/xterm.js; \
     cp node_modules/@xterm/xterm/css/xterm.css public/vendor/xterm.css; \
-    cp node_modules/@xterm/addon-fit/lib/addon-fit.js public/vendor/xterm-addon-fit.js
+    cp node_modules/@xterm/addon-fit/lib/addon-fit.js public/vendor/xterm-addon-fit.js; \
+    cp node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js public/vendor/xterm-addon-unicode11.js; \
+    cp node_modules/@xterm/addon-webgl/lib/addon-webgl.js public/vendor/xterm-addon-webgl.js
 
 COPY server ./server
 COPY public ./public
