@@ -172,8 +172,18 @@ developer's own Kiro sign-in rather than Bedrock.
 ## How a session starts
 
 A warm pod boots before its session exists, and a `SandboxClaim` that adds a volume forces a
-cold start, so the warm pods boot with no workspace and idle. New agent and Restore both go
-through the same steps:
+cold start, so the warm pods boot with no workspace and idle. That is why this sample has no
+PersistentVolumeClaim: the session's folder is an S3 Files access point that the pod mounts
+itself, after the claim.
+
+*Figure 2: Claims and warm pools. Each session is a SandboxClaim that adopts a pod its CLI's
+warm pool already has Ready, and the pool boots a replacement. The claim carries no volume,
+because a volume would force a cold start, so the workspace is mounted inside the pod after
+the claim.*
+
+![Inside the AWS Cloud, an Amazon EKS cluster holds the namespace coding-agents-for-developers. On the left, the web app, an ordinary trusted first-party pod, makes one claim per session. An arrow labelled "1. claim a sandbox (New agent, Restore)" runs from the web app to a SandboxClaim named agent- plus the session name, with warmPoolRef naming the CLI's pool. The claim sits in a dashed group, the agent-sandbox controller, which also holds the CLI's SandboxWarmPool (replicas 1) and its SandboxTemplate; there is one such pair for each of the six CLIs. An arrow labelled "2. under a second: adopt a Ready pod" runs from the claim to the warm pool, and another runs from the claim down to the claimed pod. Below, a red frame holds the Nitro sandbox pods, isolated-sandbox, booted with no volume: the claimed pod, the session's pod with its workspace mounted after the claim, and a warm pod, Ready and waiting, which the pool boots along an arrow labelled "refill: boot a replacement". A dashed grey arrow from the web app to a box labelled "cold start, not taken in this sample" reads "no volume on the claim: a volume would force a cold start".](figures/claims-and-warm-pools.png)
+
+New agent and Restore both go through the same steps:
 
 1. The app claims a pod from the CLI's pool. The claim adopts a pod that is already running,
    so it is Ready in under a second; the pool boots a replacement.
@@ -194,6 +204,12 @@ through the same steps:
    with the code.
 5. While the session runs, the app refreshes the credential before it expires.
 
+*Figure 3: How a session's folder reaches its pod. The pod boots with no folder. The web app
+hands it a short-lived credential that can mount only that session's S3 Files access point,
+so any other session's access point is refused.*
+
+![The AWS Cloud holds an Amazon EKS cluster on the left and the session's storage on the right. In the cluster, the web app runs as an ordinary, trusted first-party pod whose own Pod Identity role can create, list and delete access points. Beside it, a dashed SandboxWarmPool for the CLI holds a Nitro sandbox pod, isolated-sandbox, booted with no folder. The web app's arrow "1. claim a warm pod" goes to that pod. Its arrow "2. create or find the access point" goes to the session's S3 Files access point, rooted at the developer, CLI and session path, with POSIX user uid and gid 1000. Its arrow "3. assume the Mount role, scoped to one access point" goes to the Mount role, whose credential expires in 60 minutes. Two more arrows go from the web app to a short-lived credential kept in a memory-backed file inside the pod: "4. credential over exec stdin" and "refresh every 30 min". Inside the pod the credential feeds the session entrypoint, which mounts as root with SYS_ADMIN; its arrow "5. mount at /workspace" goes to the access point, and it then starts tmux and the CLI as uid 1000 with its home in /workspace. The access point syncs with a versioned S3 bucket that holds one prefix per session. A red dashed arrow from the pod to other sessions' access points is labelled refused.](figures/session-start.png)
+
 The mount needs root inside the guest, which is what the sandbox is for: the guest kernel
 belongs to the pod, not the node.
 
@@ -209,6 +225,14 @@ session started in agent-opencode-trpv8
 ```
 
 ## The session lifecycle
+
+A session pauses and resumes by releasing its claim and claiming a new one: the pod is
+disposable, the folder is not.
+
+*Figure 4: Pause and resume a session. Close or idle removes the claim and the pod, Restore
+mounts the same folder in a new pod, and only Delete removes the folder.*
+
+![Four stages of a session, left to right, above a shared storage row. The storage row, "Session folder, outlives every pod; only Delete removes it", holds the session's S3 Files access point, which syncs with the versioned S3 bucket, one prefix per session. Stage a, Running: a SandboxClaim points to a Nitro sandbox pod with pod UID A, isolated-sandbox, running the CLI in tmux with the folder at /workspace, and an edge labelled "mount at /workspace" runs down to the access point. A note says minimizing or closing the browser changes nothing in the cluster. An arrow labelled "Close, or idle 30 min: delete the SandboxClaim" leads to stage b, Paused: no SandboxClaim and no pod, while the access point and its data in S3 stay. An arrow labelled "Restore: claim a new warm pod" leads to stage c, Restored: a new SandboxClaim points to a new pod with pod UID B, which mounts the same access point, and the CLI resumes the last chat with its own continue option, reading its history from its home inside the folder. An arrow labelled Delete runs from Paused to stage d, Deleted: every object version and delete marker under the session prefix, then the access point, is deleted, and nothing remains.](figures/session-lifecycle.png)
 
 | Action | What happens |
 |---|---|
