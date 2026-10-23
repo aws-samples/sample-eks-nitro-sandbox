@@ -261,6 +261,28 @@ for name in base claude-code codex kiro-cli opencode pi oh-my-pi app; do
   fi
 done
 
+# Cluster-scoped RBAC. rbac.yaml creates one ClusterRole and its ClusterRoleBinding (the app
+# reads node labels for the mount's AZ id). Deleting the namespace does not remove
+# cluster-scoped objects, so delete each by its exact name, and only when it carries the
+# sample's part-of label. An explicit NotFound means already gone.
+say "Cluster-scoped RBAC"
+for kind in clusterrolebinding clusterrole; do
+  obj="$SAMPLE-node-reader"
+  if obj_owner="$("${KCTL[@]}" get "$kind" "$obj" \
+      -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}' 2>&1)"; then
+    if [[ "$obj_owner" == "$SAMPLE" ]]; then
+      "${KCTL[@]}" delete "$kind" "$obj" --ignore-not-found >/dev/null 2>&1 || note_fail "$kind $obj"
+    else
+      note_fail "$kind $obj is not labelled app.kubernetes.io/part-of=$SAMPLE (found: ${obj_owner:-none}); left untouched"
+    fi
+  else
+    case "$obj_owner" in
+      *NotFound*) : ;;   # already gone
+      *) note_fail "$kind $obj: lookup failed, left untouched ($(printf '%s' "$obj_owner" | head -1))" ;;
+    esac
+  fi
+done
+
 # The namespace last. (On this host `kubectl delete namespace` may be blocked; if so the
 # empty namespace is left for you to remove, and this is reported.) Confirm it is actually
 # gone rather than trusting that the delete request was accepted: a namespace can sit in
