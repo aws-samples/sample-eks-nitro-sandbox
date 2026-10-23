@@ -23,15 +23,12 @@ RUN set -eu; \
     /usr/local/bin/kiro-cli --version; \
     test -x /usr/local/bin/kiro-cli-chat
 
-# cli-setup.sh pre-authenticates Kiro CLI when the pod carries an admin-supplied token in
-# the KIRO_CLI_AUTH_B64 environment variable (a Kubernetes Secret): it writes the token
-# into Kiro CLI's sign-in store so the developer is not prompted. With no such variable the
-# hook does nothing and Kiro CLI runs its normal device-flow login. See the script.
+# cli-setup.sh prepares Kiro CLI's home for V3 (session locks on tmpfs). See the script.
 COPY --chmod=0755 cli-setup.sh /usr/local/bin/cli-setup.sh
 
 # The sign-in is kept in the session's folder (under $HOME inside /workspace), so a restored
-# session resumes without signing in again. With no admin token, the first sign-in is
-# interactive; inside a sandbox pod that means the OAuth device flow.
+# session resumes without signing in again. The first sign-in is interactive; inside a
+# sandbox pod that means the OAuth device flow.
 #
 # `kiro-cli chat --v3` pins the V3 agent engine (workflows, cloud sessions, specs). The V3
 # flags live on the `chat` subcommand, not on the bare `kiro-cli` entrypoint (bare

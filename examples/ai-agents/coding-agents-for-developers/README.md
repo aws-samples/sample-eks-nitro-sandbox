@@ -522,12 +522,13 @@ https://github.com:22/ -> exit 28                               # allowed host, 
   Identity Center / Builder ID sign-in and the CodeWhisperer service. The interactive
   device-flow login (`kiro-cli login --use-device-flow`) offers Builder ID, Google, GitHub
   and organization sign-in; it reaches the Kiro auth service at `*.kiro.dev`, which the
-  kiro-cli egress rule allows alongside `*.amazonaws.com`. An admin can instead pre-seed a
-  token through the `agent-kiro-cli-auth` Secret (see the `SandboxTemplate`) so the developer
-  is not prompted -- but note that a corporate Builder ID token gated behind an internal
-  network gateway (Midway) cannot complete model loading from inside the sandbox, which has
-  no route to that gateway; a Builder ID, Google or GitHub identity that is not so gated
-  works.
+  kiro-cli egress rule allows alongside `*.amazonaws.com`. The sign-in is the developer's own
+  and is stored in their session's folder, so a restored session stays signed in; the
+  sample injects no shared sign-in token into the pods, because whatever the agent's home
+  holds the agent can read, and the folder is persisted to the bucket. An identity whose
+  sign-in is gated behind a corporate network gateway cannot load models from inside the
+  sandbox, which has no route to that gateway; a Builder ID, Google or GitHub identity that
+  is not so gated works.
 - **The sign-in is a demo picker, not authentication.** The app is first-party code reachable
   only through `kubectl port-forward` on the operator's own machine.
 
