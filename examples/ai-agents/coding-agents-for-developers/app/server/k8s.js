@@ -20,8 +20,10 @@ const GROUP = "extensions.agents.x-k8s.io";
 const VERSION = "v1beta1";
 
 // Claim a warm pod from the CLI's pool. Returns the claim name and the resolved pod.
+export const claimNameFor = (session) => `agent-${session}`.slice(0, 63);
+
 export async function claimPod(cli, session) {
-  const claimName = `agent-${session}`.slice(0, 63);
+  const claimName = claimNameFor(session);
   try {
     await custom.createNamespacedCustomObject({
       group: GROUP,
@@ -51,8 +53,14 @@ export async function claimPod(cli, session) {
   // empty the claim creates a new pod that is briefly Pending with no node yet. The node
   // is needed to resolve the mount target's AZ, so wait for it rather than reading a node
   // name that is still undefined.
-  const { podName, node } = await waitForClaimPod(claimName);
-  return { claimName, podName, node };
+  // If the claim never resolves, delete it so it does not hold a pod nobody tracks.
+  try {
+    const { podName, node } = await waitForClaimPod(claimName);
+    return { claimName, podName, node };
+  } catch (e) {
+    await releaseClaim(claimName);
+    throw e;
+  }
 }
 
 async function waitForClaimPod(claimName, timeoutMs = 120000) {
@@ -67,7 +75,17 @@ async function waitForClaimPod(claimName, timeoutMs = 120000) {
       podName = claim?.status?.sandbox?.name;
     }
     if (podName) {
-      const pod = await core.readNamespacedPod({ name: podName, namespace: NAMESPACE });
+      // When the pool is empty the controller names the new pod in the claim's status a
+      // moment before the pod object exists, so a 404 here means "not created yet": keep
+      // polling until the deadline instead of failing the start.
+      let pod;
+      try {
+        pod = await core.readNamespacedPod({ name: podName, namespace: NAMESPACE });
+      } catch (e) {
+        if (e?.code !== 404) throw e;
+        await sleep(250);
+        continue;
+      }
       const node = pod.spec?.nodeName;
       // Wait for the pod to be scheduled (node assigned) AND Ready. A warm pod adopted
       // from the pool is already Ready; but if the pool was momentarily empty the claim

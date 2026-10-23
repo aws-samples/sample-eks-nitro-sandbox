@@ -37,11 +37,19 @@ async function start(developer, cli, session, { resume = false } = {}) {
   console.log(`start ${session}: claimPod (ap=${ap.apId})`);
   const { claimName, podName, node } = await k8s.claimPod(cli, session);
   console.log(`start ${session}: pod=${podName} node=${node}`);
-  const azId = await k8s.nodeAzId(node);
-
-  const credential = await store.mountCredential(ap.apId, developer, cli, session);
-  console.log(`start ${session}: startSession azId=${azId}`);
-  await k8s.startSession(podName, { credential, fsId: FS_ID, apId: ap.apId, azId, resume });
+  let azId;
+  try {
+    azId = await k8s.nodeAzId(node);
+    const credential = await store.mountCredential(ap.apId, developer, cli, session);
+    console.log(`start ${session}: startSession azId=${azId}`);
+    await k8s.startSession(podName, { credential, fsId: FS_ID, apId: ap.apId, azId, resume });
+  } catch (e) {
+    // The session never became live, so nothing else would release its pod. The folder
+    // (access point) stays: the session shows in the list and Restore or Delete applies.
+    console.error(`start ${session}: failed, releasing claim ${claimName}: ${e?.message || e}`);
+    await k8s.releaseClaim(claimName);
+    throw e;
+  }
 
   const entry = {
     developer, cli, session, apId: ap.apId, claimName, podName, azId,
@@ -71,6 +79,9 @@ export async function listClosed(developer) {
 
 export async function remove(developer, session) {
   await release(session);
+  // Also delete the claim by its name when the app holds no record of it (a start that
+  // failed under an older app, or an app restart): Delete leaves no pod behind.
+  await k8s.releaseClaim(k8s.claimNameFor(session));
   await store.deleteSession(developer, session);
 }
 
