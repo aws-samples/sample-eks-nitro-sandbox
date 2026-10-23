@@ -118,7 +118,7 @@ S3 Files file system and mount targets, and three IAM roles, each with only what
 | Role | Used by | May |
 |---|---|---|
 | Bedrock | Every CLI pod that uses Bedrock, through Pod Identity | `bedrock:InvokeModel*` scoped to this account's inference profiles and the Anthropic foundation models, plus `bedrock-mantle:CreateInference` and the `bedrock-websearch` actions for Codex's server-side web search; no S3 Files access |
-| App | The web app, through Pod Identity | Create, tag, read and delete this file system's access points; delete objects under session prefixes on cleanup; assume the Mount role |
+| App | The web app, through Pod Identity | Create (with tags), list and delete this file system's access points; list and delete object versions under the sample's prefix when a session is deleted; assume the Mount role |
 | Mount | Assumed only by the app, narrowed per session | `s3files:ClientMount` and `s3files:ClientWrite` on the file system, and read objects in the bucket; each session policy narrows it to one access point |
 
 Everything it creates is tagged `ManagedBy=coding-agents-for-developers`, so the clean up
