@@ -303,8 +303,19 @@ sed -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" -e "s|<AWS_REGION>|$AWS_REGION|g" -e "s|<N
     -e "s|<AGENT_CLIS>|$AGENT_CLIS|g" -e "s|<IMAGE_TAG>|$IMAGE_TAG|g" \
     "$ROOT/deploy/app.yaml" | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
 
-# Record the resource ids back into .env for clean.sh and re-runs.
-{ echo "ACCOUNT_ID=$ACCOUNT_ID"; echo "S3_FILES_FS_ID=$S3_FILES_FS_ID"; echo "S3_BUCKET_NAME=$S3_BUCKET_NAME"; } >> "$ENV_FILE"
+# Record the resource ids back into .env for clean.sh and re-runs. Replace each key's line
+# rather than appending, so a re-run leaves one current value instead of a growing list.
+set_env() {
+  local key="$1" val="$2" tmp
+  tmp="$(mktemp "$ENV_FILE.XXXXXX")"
+  awk -v k="$key" -v v="$val" '
+    $0 ~ "^"k"=" { if (!done) { print k"="v; done=1 }; next }
+    { print }
+    END { if (!done) print k"="v }' "$ENV_FILE" > "$tmp" && mv "$tmp" "$ENV_FILE"
+}
+set_env ACCOUNT_ID "$ACCOUNT_ID"
+set_env S3_FILES_FS_ID "$S3_FILES_FS_ID"
+set_env S3_BUCKET_NAME "$S3_BUCKET_NAME"
 
 say "Wait for the warm pools, then open the app"
 for cli in "${clis[@]}"; do
