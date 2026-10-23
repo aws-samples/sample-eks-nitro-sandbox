@@ -111,8 +111,12 @@ idle) and **Delete**.
 add any that is missing. It never installs a cluster-wide thing for you. If you have run
 Getting started and the storage samples, they are already there.
 
-**Step 2: The AWS resources.** `setup.sh` creates the sample's own versioned S3 bucket, its
-S3 Files file system and mount targets, and three IAM roles, each with only what it needs:
+**Step 2: The AWS resources.** `setup.sh` creates the sample's own S3 bucket, its S3 Files
+file system and mount targets, and three IAM roles, each with only what it needs. The bucket
+has S3 Versioning turned on because S3 Files requires it to sync the file system with the
+bucket ([S3 Files prerequisites](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-files-prereq-policies.html)).
+The sessions do not use the versions, but a deleted or overwritten file leaves one behind,
+which is why Delete removes every version under the session's prefix.
 
 | Role | Used by | May |
 |---|---|---|

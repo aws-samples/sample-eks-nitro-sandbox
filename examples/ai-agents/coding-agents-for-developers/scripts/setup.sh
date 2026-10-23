@@ -84,6 +84,7 @@ else
 fi
 aws s3api put-bucket-tagging --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" \
   --tagging "TagSet=[{Key=ManagedBy,Value=$SAMPLE},{Key=auto-delete,Value=no}]"
+# S3 Files requires S3 Versioning on the bucket to sync it with the file system.
 aws s3api put-bucket-versioning --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" \
   --versioning-configuration Status=Enabled
 aws s3api put-bucket-encryption --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" \
