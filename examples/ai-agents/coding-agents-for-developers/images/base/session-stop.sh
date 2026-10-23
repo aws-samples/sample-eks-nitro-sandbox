@@ -39,12 +39,19 @@ fi
 #    closing their files, and umount reports "device is busy" until it has. On a live run
 #    the first attempt after a Codex session failed that way, with no process left holding
 #    the mount, and the same umount succeeded a minute later.
-sync
+#    Both are bounded: on a hard NFS mount either can block while the server is
+#    unreachable, and the app's exec would otherwise wait out its own two-minute timeout.
+timeout 30 sync || echo "session-stop: sync did not finish in 30 seconds" >&2
 if mountpoint -q "$MOUNT"; then
+  # A deadline, not a count of attempts: each attempt is bounded at 10 seconds, so the whole
+  # phase ends within about 40 seconds even if every attempt hangs.
   tries=0
-  until err="$(umount "$MOUNT" 2>&1)"; do
+  deadline=$(( $(date +%s) + 30 ))
+  until err="$(timeout 10 umount "$MOUNT" 2>&1)"; do
+    rc=$?
     tries=$((tries + 1))
-    if [ "$tries" -ge 30 ]; then
+    [ "$rc" -eq 124 ] && err="timed out after 10 seconds"
+    if [ "$(date +%s)" -ge "$deadline" ]; then
       echo "session-stop: umount $MOUNT failed after $tries attempts: $err" >&2
       exit 1
     fi
