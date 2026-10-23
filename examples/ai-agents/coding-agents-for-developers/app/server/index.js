@@ -10,7 +10,7 @@ import { WebSocketServer } from "ws";
 
 import * as sessions from "./sessions.js";
 import * as k8s from "./k8s.js";
-import { displayName } from "./names.js";
+import { displayName, isSessionName } from "./names.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, "..", "public");
@@ -22,11 +22,38 @@ const json = (res, code, body) => {
   res.end(JSON.stringify(body));
 };
 
+// Input checks. The developer, CLI and session name become parts of a SandboxClaim name,
+// an access-point root path and a bucket prefix, so each is checked before anything is
+// created from it: a bad value gets a 400 and leaves no access point or claim behind.
+// developer: a short DNS-label-style name; cli: one of the app's agent list; session: a
+// name randomName produced.
+const DEVELOPER_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+class BadRequest extends Error {}
+function check({ developer, cli, session }, need) {
+  if (need.includes("developer") && !(typeof developer === "string" && DEVELOPER_RE.test(developer)))
+    throw new BadRequest("invalid developer");
+  if (need.includes("cli") && !(typeof cli === "string" && CLIS.includes(cli)))
+    throw new BadRequest("invalid cli");
+  if (need.includes("session") && !isSessionName(session))
+    throw new BadRequest("invalid session");
+}
+
+const MAX_BODY = 16 * 1024;
 const readBody = (req) =>
-  new Promise((resolve) => {
+  new Promise((resolve, reject) => {
     let b = "";
-    req.on("data", (c) => (b += c));
-    req.on("end", () => resolve(b ? JSON.parse(b) : {}));
+    req.on("data", (c) => {
+      b += c;
+      if (b.length > MAX_BODY) { reject(new BadRequest("body too large")); req.destroy(); }
+    });
+    req.on("end", () => {
+      try {
+        const v = b ? JSON.parse(b) : {};
+        resolve(v && typeof v === "object" ? v : {});
+      } catch {
+        reject(new BadRequest("invalid JSON"));
+      }
+    });
   });
 
 const CONTENT_TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
@@ -55,10 +82,12 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "GET" && url.pathname === "/api/sessions") {
       const developer = url.searchParams.get("developer");
+      check({ developer }, ["developer"]);
       return json(res, 200, { sessions: await sessions.listClosed(developer) });
     }
     if (req.method === "POST" && url.pathname === "/api/new") {
       const { developer, cli } = await readBody(req);
+      check({ developer, cli }, ["developer", "cli"]);
       console.log(`/api/new developer=${developer} cli=${cli}`);
       const entry = await sessions.newAgent(developer, cli);
       console.log(`/api/new done session=${entry.session}`);
@@ -66,21 +95,28 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "POST" && url.pathname === "/api/restore") {
       const { developer, session } = await readBody(req);
+      check({ developer, session }, ["developer", "session"]);
       const entry = await sessions.restore(developer, session);
       return json(res, 200, { session: entry.session, display: displayName(entry.session), cli: entry.cli });
     }
     if (req.method === "POST" && url.pathname === "/api/close") {
       const { session } = await readBody(req);
+      check({ session }, ["session"]);
       await sessions.release(session);
       return json(res, 200, { ok: true });
     }
     if (req.method === "POST" && url.pathname === "/api/delete") {
       const { developer, session } = await readBody(req);
+      check({ developer, session }, ["developer", "session"]);
       await sessions.remove(developer, session);
       return json(res, 200, { ok: true });
     }
     return serveStatic(req, res);
   } catch (e) {
+    if (e instanceof BadRequest) {
+      console.log(`rejected ${req.method} ${req.url}: ${e.message}`);
+      return json(res, 400, { error: e.message });
+    }
     console.error(`request error ${req.method} ${req.url}:`, e);
     json(res, 500, { error: String(e?.message || e) });
   }
@@ -91,7 +127,7 @@ const wss = new WebSocketServer({ server, path: "/ws" });
 wss.on("connection", async (ws, req) => {
   const url = new URL(req.url, "http://localhost");
   const session = url.searchParams.get("session");
-  const entry = sessions.getLive(session);
+  const entry = isSessionName(session) ? sessions.getLive(session) : undefined;
   if (!entry) {
     ws.close(1008, "session not running");
     return;
