@@ -486,6 +486,17 @@ https://github.com:22/ -> exit 28                               # allowed host, 
   on retained sessions; Delete reclaims one.
 - **The credential is refreshed.** An assumed-role credential lasts an hour; the app rewrites
   it well before then, so an agent left running keeps writing to its folder past an hour.
+- **Codex's web search is a Mantle-side capability, gated per identity.** Codex runs on a
+  GPT model served through the Bedrock "Mantle" endpoint, and that model can call a
+  **server-side** `web_search` tool that Mantle runs itself -- not Codex fetching a URL
+  through the pod, so the sandbox egress policy neither enables nor blocks it. When the
+  model reaches for it, Mantle answers `Access denied: web search is not authorized for this
+  identity`: the entitlement is on the Bedrock/Mantle side for the calling identity, not an
+  IAM action the pod's role can grant and not something Codex's `[tools] web_search = false`
+  (which only governs Codex's own client-side tool) suppresses. On an identity without that
+  entitlement the turn can end on that error; the sample leaves `web_search = false` and
+  answers from the model's own knowledge. A deployment whose Mantle identity is entitled for
+  web search can set it back to `true`.
 - **The session pods turn the Nitro sandbox network and disk throttles off.** A sandbox pod
   has built-in defaults -- 100 Mbit/s ingress and egress (capped by a 1500 packets/second
   bucket), a 400 Mbit/s overlay (scratch) disk and 1500 overlay IOPS -- which are tight for
