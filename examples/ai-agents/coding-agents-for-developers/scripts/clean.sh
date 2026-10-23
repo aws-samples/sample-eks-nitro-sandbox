@@ -92,7 +92,31 @@ if [[ -n "$fs_ours" ]]; then
     sleep 10
   done
   if [[ "$left" == "0" ]]; then
-    aws s3files delete-file-system --file-system-id "$FS_ID" --region "$AWS_REGION" >/dev/null 2>&1 || note_fail "file system $FS_ID"
+    # The file system can refuse deletion for a short while after its last mount target
+    # leaves the list. Retry, and keep the last error so a refusal is reported, not hidden.
+    fs_deleted=
+    for i in $(seq 1 30); do
+      if fs_del_err="$(aws s3files delete-file-system --file-system-id "$FS_ID" --region "$AWS_REGION" 2>&1)"; then
+        fs_deleted=yes; break
+      fi
+      sleep 10
+    done
+    if [[ -n "$fs_deleted" ]]; then
+      # Wait until it is really gone. While it exists it keeps exporting session writes to
+      # the bucket, which would put objects back after the bucket drain below and make the
+      # bucket delete fail. Only an explicit not-found counts as gone.
+      fs_gone=
+      for i in $(seq 1 60); do
+        if fs_err="$(aws s3files get-file-system --file-system-id "$FS_ID" --region "$AWS_REGION" --query status --output text 2>&1)"; then
+          sleep 10
+        else
+          case "$fs_err" in *ResourceNotFoundException*) fs_gone=yes; break ;; *) sleep 10 ;; esac
+        fi
+      done
+      [[ -n "$fs_gone" ]] || note_fail "file system $FS_ID: delete accepted but still present after 10 minutes (last: ${fs_err:-unknown})"
+    else
+      note_fail "file system $FS_ID: delete refused ($(printf '%s' "$fs_del_err" | head -1))"
+    fi
   else
     note_fail "mount targets for $FS_ID did not drain (last count: $left); not deleting the file system"
   fi
@@ -103,7 +127,11 @@ fi
 # error): the latter must not silently skip cleanup as if the bucket were already gone.
 say "Bucket"
 bucket_present=
-if [[ -n "${S3_BUCKET_NAME:-}" ]]; then
+if [[ -n "$fs_ours" && -z "${fs_gone:-}" ]]; then
+  # The file system is still there, exporting to the bucket: a drain now would race it and
+  # the delete would fail. Leave the bucket for the next run, which retries the file system.
+  note_fail "bucket ${S3_BUCKET_NAME:-} not deleted: its file system $FS_ID still exists (see above)"
+elif [[ -n "${S3_BUCKET_NAME:-}" ]]; then
   head_err="$(aws s3api head-bucket --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" 2>&1)" && bucket_present=yes || {
     case "$head_err" in
       *404*|*"Not Found"*) bucket_present= ;;   # genuinely gone
