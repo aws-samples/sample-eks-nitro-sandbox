@@ -153,10 +153,12 @@ deployment "agent-app" successfully rolled out
 
 Done. Open the app on your machine:
 
-  kubectl -n coding-agents-for-developers port-forward svc/agent-app 8080:8080
+  kubectl --context <CLUSTER_NAME> -n coding-agents-for-developers port-forward svc/agent-app 8080:8080
 
 Then browse to http://127.0.0.1:8080
 ```
+
+`setup.sh` prints your `CLUSTER_NAME` where this shows `<CLUSTER_NAME>`.
 
 ## What a session looks like
 
@@ -221,12 +223,12 @@ belongs to the pod, not the node.
 ```text
 POST /api/new
 /api/new developer=carlos cli=opencode
-start mvk5vhvs-eager-shrew: ensureAccessPoint
-start mvk5vhvs-eager-shrew: claimPod (ap=fsap-07312e085c6c5a10f)
-start mvk5vhvs-eager-shrew: pod=agent-opencode-trpv8 node=i-060fd7e182a73ab1e
-start mvk5vhvs-eager-shrew: startSession azId=usw2-az3
-session started in agent-opencode-trpv8
-/api/new done session=mvk5vhvs-eager-shrew
+start mvl9cvwz-clever-tapir: ensureAccessPoint
+start mvl9cvwz-clever-tapir: claimPod (ap=fsap-0579f4b078b965777)
+start mvl9cvwz-clever-tapir: pod=agent-opencode-s6pct node=i-0975f232bbfc6450a
+start mvl9cvwz-clever-tapir: startSession azId=usw2-az1
+session started in agent-opencode-s6pct
+/api/new done session=mvl9cvwz-clever-tapir
 ```
 
 ## The session lifecycle
@@ -256,18 +258,50 @@ running, nothing released those locks until the lease ran out, so a quick Restor
 the Codex conversation "open in another app" and opencode reported "database disk image
 is malformed". Ending the processes first releases the locks at once.
 
-New agent is fast because the pod is already warm: claiming a warm pod, creating the access
-point, mounting the folder and starting the CLI measured about 1.4 seconds end to end on the
-fresh run. Close then Restore is the same path against the existing folder, so a restored
-session comes up on a **new pod** (a new pod UID) with its files intact:
+New agent is fast because the pod is already warm. On the fresh run, the time from the
+click (`POST /api/new`) to a terminal with the CLI running was:
+
+| New agent | Time |
+|---|---|
+| The first session on a new file system | 18.8 s |
+| Each later session, from a warm pod (codex, pi, opencode, oh-my-pi, kiro-cli) | 2.0 to 3.0 s |
+| A second claude-code session while its pool of one was still refilling | 48.0 s |
+| Restore, from a warm pod, for each of the five Bedrock CLIs | 2.0 to 3.6 s |
+
+The first session is slower because it is the first mount of a new file system. The third
+row is a cold start: with the warm pod already claimed, the claim waits for the pool to boot
+a new pod, so size `POOL_REPLICAS` to the rate at which sessions start.
+
+Close then Restore is the same path against the existing folder, so a restored session comes
+up on a **new pod** (a new pod UID) and the CLI continues its conversation. For pi on the
+fresh run (abridged to the lines that matter; the prompts were typed into the terminal):
 
 ```text
-# before close: pod agent-pi-6zv7d, uid 2bb8cd12-...  (marker written to /workspace/home)
-POST /api/close   -> {"ok":true}        # claim released: SandboxClaim NotFound, folder stays
-POST /api/restore -> {"session":"...-proud-fox"}
-# after restore:  pod agent-pi-zlpxl, uid fc059a2f-...  (different pod UID)
-#   /workspace/home/restore-marker.txt -> "marker written 01:51:36"  (same file, persisted)
+before: pod=agent-pi-5gkpw uid=4d8ac485-9dff-418e-85bb-1d28f108a0c8
+ Remember the code word FINCH-4. Reply with only: noted.
+ noted.
+POST /api/close   -> {"ok":true}                                       HTTP 200 in 0.724209s
+POST /api/restore -> {"session":"mvl9cu7x-lively-gecko","display":"lively-gecko","cli":"pi"}   HTTP 200 in 3.577195s
+after: pod=agent-pi-zbpps uid=29e9f17a-d233-4ab2-95e3-dad35cfcc456
+ What code word did I ask you to remember? Reply with only the word.
+ FINCH-4
 ```
+
+The same check passed for claude-code, codex, opencode and oh-my-pi on the same run, each
+on a new pod UID.
+
+Minimizing a window or closing the browser only detaches the terminal; the CLI keeps
+running in tmux in its pod. On the fresh run, claude-code was asked to print a timestamp
+every 10 seconds for two minutes, and the browser was closed at 17:49:30, 20 seconds in.
+When the app was opened again at 17:51:27, the session had finished the task with no
+browser attached:
+
+![The claude-code window for session gentle-otter, opened again after the browser was closed. Below the request to run a loop printing a tick every 10 seconds, Claude reports that the command ran to completion and printed 12 ticks, one every 10 seconds, from 17:49:10 to 17:51:00 UTC, and the turn shows done at 5:51 PM.](figures/screenshots/output-while-browser-closed.png)
+
+Two sessions open at once, with the claude-code window minimized to the dock at the bottom
+and the opencode window open over the session list:
+
+![The web app with an opencode window for session clever-tapir open, showing its restored conversation about the code word OTTER-3. At the bottom of the page, a dock holds one chip, "claude-code · gentle-otter", the minimized window of a second session.](figures/screenshots/two-sessions-one-minimized.png)
 
 The app keeps no database. It builds the session list from the access points' own root
 paths -- each one is `/<developer>/<cli>/<session>`, so one `ListAccessPoints` call for the
@@ -281,15 +315,22 @@ for the clean up, but the list does not depend on them. The access points, one p
 ```text
 $ aws s3files list-access-points --file-system-id <S3_FILES_FS_ID> --region <AWS_REGION> \
     --query 'accessPoints[].{id:accessPointId,path:rootDirectory.path}' --output table
---------------------------------------------------------------------
-|                         ListAccessPoints                         |
-+----------------------+-------------------------------------------+
-|          id          |                   path                    |
-+----------------------+-------------------------------------------+
-|  fsap-0d58a4d6e...    |  /carlos/claude-code/mvk5n5an-calm-crane  |
-|  fsap-09019727...     |  /carlos/codex/mvk5rit8-jolly-otter       |
-+----------------------+-------------------------------------------+
+-------------------------------------------------------------------------
+|                           ListAccessPoints                            |
++-------------------------+---------------------------------------------+
+|           id            |                    path                     |
++-------------------------+---------------------------------------------+
+|  fsap-0731f50c...       |  /priya/pi/mvl9cu7x-lively-gecko            |
+|  fsap-0e7bf27d...       |  /sam/codex/mvl9csng-calm-wombat            |
+|  fsap-0579f4b0...       |  /carlos/opencode/mvl9cvwz-clever-tapir     |
+|  fsap-01c05b2f...       |  /sam/kiro-cli/mvl9cz9r-jolly-lynx          |
+|  fsap-06bb83d4...       |  /carlos/claude-code/mvl9bd48-gentle-otter  |
+|  fsap-04715388...       |  /priya/oh-my-pi/mvl9cxn3-jolly-crane       |
+|  fsap-06268441...       |  /carlos/claude-code/mvl9brm2-nimble-crane  |
++-------------------------+---------------------------------------------+
 ```
+
+The access-point ids are shortened here; the command prints them in full.
 
 ## It runs in a sandbox
 
@@ -307,7 +348,7 @@ kubectl -n coding-agents-for-developers exec $POD -- sh -c 'env | cut -d= -f1 | 
 ```text
 isolated-sandbox
 6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-240.82
+324.27
 dm-0 vda vdb vdc
 AWS_CONTAINER_CREDENTIALS_FULL_URI
 AWS_DEFAULT_REGION
@@ -318,9 +359,26 @@ ANTHROPIC_MODEL
 AWS_STS_REGIONAL_ENDPOINTS
 ```
 
-The sandbox runs its own kernel, its uptime matches the pod's age because the VM booted with
-the pod, and it sees virtio disks (`vda`, `vdb`, `vdc`, with a `dm-0` device-mapper node on
-top) where an ordinary pod on the same node sees the instance's `nvme` devices. No model API
+The first four lines are from the fresh run. The variable names are from an earlier run of
+this sample: on the fresh run they were read from the pod spec and the image instead, and
+the set was the same (`AWS_STS_REGIONAL_ENDPOINTS`, `AWS_DEFAULT_REGION`, `AWS_REGION`,
+`AWS_CONTAINER_CREDENTIALS_FULL_URI` and `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE` from the
+pod spec; `CLAUDE_CODE_USE_BEDROCK` and `ANTHROPIC_MODEL` among the image's).
+
+The same commands in the app's pod, an ordinary pod with no runtime class, on a node of the
+same cluster:
+
+```text
+6.18.51 #2 SMP PREEMPT_DYNAMIC Wed Oct  7 22:33:11 UTC 2026
+83127.79
+dm-0 nvme0n1 nvme1n1 zram0
+```
+
+The sandbox runs its own kernel build (`#1`, built Oct 1; the node's is `#2`, built Oct 7),
+its uptime of 324 seconds matches the pod's age because the sandbox booted with the pod
+(the node has been up for 23 hours), and it sees virtio disks (`vda`, `vdb`, `vdc`, with a
+`dm-0` device-mapper node on top) where the ordinary pod sees the instance's `nvme`
+devices. No model API
 key is in the pod: the only AWS variables are the Pod Identity credential endpoint
 (`AWS_CONTAINER_CREDENTIALS_FULL_URI`, `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`) and the
 Region, so the Bedrock CLIs sign their requests with the Pod Identity role resolved from
@@ -361,42 +419,66 @@ kubectl -n coding-agents-for-developers exec $POD -- mountpoint /workspace
 
 # Try another session's access point with this pod's own mount credential, as root:
 kubectl -n coding-agents-for-developers exec $POD -- sh -c \
-  "AWS_SHARED_CREDENTIALS_FILE=/dev/shm/session/credentials AWS_PROFILE=session \
+  "mkdir -p /tmp/other; id -u; AWS_SHARED_CREDENTIALS_FILE=/dev/shm/session/credentials AWS_PROFILE=session \
    mount.s3files <S3_FILES_FS_ID> /tmp/other \
-   -o tls,iam,awsprofile=session,region=<AWS_REGION>,azid=<POD_AZ_ID>,accesspoint=$OTHER_AP"
+   -o tls,iam,awsprofile=session,region=<AWS_REGION>,azid=<POD_AZ_ID>,accesspoint=$OTHER_AP; echo \"exit \$?\""
+
+# Try this session's OWN access point with the pod's own Pod Identity role (no mount
+# credential), as root:
+OWN_AP=fsap-...               # this session's access point
+kubectl -n coding-agents-for-developers exec $POD -- sh -c \
+  "mkdir -p /tmp/own; mount.s3files <S3_FILES_FS_ID> /tmp/own \
+   -o tls,iam,region=<AWS_REGION>,azid=<POD_AZ_ID>,accesspoint=$OWN_AP; echo \"exit \$?\""
 ```
 
 ```text
 /workspace is a mountpoint
 
+0
+Could not start amazon-efs-mount-watchdog, unrecognized init system "sleep"
 Mount attempt 1/3 failed due to b'mount.nfs4: access denied by server while mounting 127.0.0.1:/\n', wait 1 sec before next attempt.
 Mount attempt 2/3 failed due to b'mount.nfs4: access denied by server while mounting 127.0.0.1:/\n', wait 1 sec before next attempt.
 b'mount.nfs4: access denied by server while mounting 127.0.0.1:/'
+exit 32
+
+Could not start amazon-efs-mount-watchdog, unrecognized init system "sleep"
+Mount attempt 1/3 failed due to b'mount.nfs4: access denied by server while mounting 127.0.0.1:/\n', wait 1 sec before next attempt.
+Mount attempt 2/3 failed due to b'mount.nfs4: access denied by server while mounting 127.0.0.1:/\n', wait 1 sec before next attempt.
+b'mount.nfs4: access denied by server while mounting 127.0.0.1:/'
+exit 32
 ```
 
-The own access point is mounted; the other session's access point is refused by the server
-(`access denied`), because the credential's session policy allows `s3files:ClientMount` only
-on this session's own access-point ARN.
-The pod's own Pod Identity role is the Bedrock role, which has no S3 Files permission at all,
-so it cannot mount any access point. The mount credential is the only thing that can, and it
-is scoped to one access point, so a pod cannot reach another session's folder even as root.
+The own access point is mounted. As root (`id -u` prints `0`), the other session's access
+point is refused by the server (`access denied`, exit 32), because the credential's session
+policy allows `s3files:ClientMount` only on this session's own access-point ARN. The pod's
+own Pod Identity role is refused even on its own access point: it is the Bedrock role, with
+no S3 Files permission at all, so it cannot mount any access point. The mount credential is
+the only thing that can, and it is scoped to one access point. (The watchdog line is the
+mount helper noting that the container has no init system for its background watchdog; it
+does not affect the mount.)
 
-From outside the cluster, the bucket shows each session under its own prefix (abridged to the
-folder structure; the CLI's home fills in below each session):
+From outside the cluster, the bucket shows each session under its own prefix (abridged to
+two sessions and their folder structure; the CLI's home fills in below each session, 1,305
+objects across the seven sessions of the fresh run):
 
 ```bash
 aws s3 ls s3://<S3_BUCKET_NAME>/coding-agents/ --recursive
 ```
 
 ```text
-2026-10-22 23:11:25          0 coding-agents/carlos/
-2026-10-22 23:11:26          0 coding-agents/carlos/claude-code/
-2026-10-22 23:11:26          0 coding-agents/carlos/claude-code/mvk5n5an-calm-crane/
-2026-10-22 23:11:26          0 coding-agents/carlos/claude-code/mvk5n5an-calm-crane/home/
-2026-10-22 23:12:27        343 coding-agents/carlos/claude-code/mvk5n5an-calm-crane/home/.claude.json
-2026-10-22 23:11:28          0 coding-agents/carlos/claude-code/mvk5n5an-calm-crane/home/.claude/
-2026-10-22 23:12:28        138 coding-agents/carlos/claude-code/mvk5n5an-calm-crane/home/.claude/sessions/85.<redacted>.key
-2026-10-22 23:12:27        208 coding-agents/carlos/claude-code/mvk5n5an-calm-crane/home/.tmux.conf
+2026-10-23 17:42:01          0 coding-agents/carlos/
+2026-10-23 17:42:01          0 coding-agents/carlos/claude-code/
+2026-10-23 17:42:01          0 coding-agents/carlos/claude-code/mvl9bd48-gentle-otter/
+2026-10-23 17:46:25          0 coding-agents/carlos/claude-code/mvl9bd48-gentle-otter/home/
+2026-10-23 17:46:02        208 coding-agents/carlos/claude-code/mvl9bd48-gentle-otter/home/.tmux.conf
+2026-10-23 17:42:09          0 coding-agents/carlos/claude-code/mvl9bd48-gentle-otter/project/
+...
+2026-10-23 17:42:49          0 coding-agents/sam/
+2026-10-23 17:42:51          0 coding-agents/sam/codex/
+2026-10-23 17:42:51          0 coding-agents/sam/codex/mvl9csng-calm-wombat/
+2026-10-23 17:42:52          0 coding-agents/sam/codex/mvl9csng-calm-wombat/home/
+2026-10-23 17:46:11        208 coding-agents/sam/codex/mvl9csng-calm-wombat/home/.tmux.conf
+2026-10-23 17:42:52          0 coding-agents/sam/codex/mvl9csng-calm-wombat/project/
 ...
 ```
 
@@ -512,11 +594,14 @@ done
 ```text
 https://bedrock-runtime.<AWS_REGION>.amazonaws.com/ -> exit 0   # allowed host, 443: connected
 https://github.com/ -> exit 0                                   # allowed host, 443: connected
-curl: (28) Connection timed out after 8002 milliseconds
+curl: (28) Connection timed out after 8001 milliseconds
 https://example.com/ -> exit 28                                 # host not in the policy: blocked
-curl: (28) Connection timed out after 8003 milliseconds
 https://github.com:22/ -> exit 28                               # allowed host, port 22 not allowed: blocked
+curl: (28) Connection timed out after 8003 milliseconds
 ```
+
+The `#` comments are added here; the rest is the fresh run's output, where each `curl:`
+error line goes to standard error and so can print before or after its exit line.
 
 ## Good to know
 
@@ -533,8 +618,23 @@ https://github.com:22/ -> exit 28                               # allowed host, 
   a model turn on the fresh run (`kubectl top pod`):
 
   ```text
-  TODO: output from the fresh run
+  NAME                          CPU(cores)   MEMORY(bytes)
+  agent-app-85cf584c97-hsdm9    0m           87Mi
+  agent-claude-code-4g8xx       59m          179Mi
+  agent-claude-code-t5pdp       0m           0Mi
+  agent-codex-kc6gk             1m           0Mi
+  agent-codex-t864g             35m          805Mi
+  agent-kiro-cli-x9z6h          2m           53Mi
+  agent-mvl9brm2-nimble-crane   2m           99Mi
+  agent-oh-my-pi-x4dxm          103m         569Mi
+  agent-opencode-s6pct          72m          335Mi
+  agent-pi-5gkpw                12m          96Mi
   ```
+
+  The claude-code (`4g8xx`), codex (`t864g`), oh-my-pi, opencode and pi (`5gkpw`) pods are
+  in a model turn. `nimble-crane` is a second claude-code session at its first-run screen,
+  kiro-cli is waiting for its sign-in, and the pods at `0Mi` are warm pods waiting for a
+  claim. Codex, the largest, used 805 MiB of its 1536 MiB request.
 - **Sessions are capped by the access-point quota.** Each retained session is one access
   point, kept until Delete. S3 Files allows 25,000 access points per file system (Amazon S3
   Files service quota *Access points per file system*, not adjustable), which is the ceiling
