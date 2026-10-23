@@ -1,6 +1,7 @@
 # The web app: a single Deployment behind a ClusterIP Service, reached only with
 # `kubectl port-forward`. setup.sh fills <ACCOUNT_ID>, <AWS_REGION>, <NAMESPACE>,
-# <S3_FILES_FS_ID>, <S3_BUCKET_NAME>, <S3_PREFIX>, <MOUNT_ROLE_ARN> and <AGENT_CLIS>.
+# <S3_FILES_FS_ID>, <S3_BUCKET_NAME>, <S3_PREFIX>, <MOUNT_ROLE_ARN>, <AGENT_CLIS> and
+# <IMAGE_TAG>.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,7 +23,8 @@ spec:
       serviceAccountName: agent-app
       containers:
         - name: app
-          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/coding-agents-for-developers-app:latest
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/coding-agents-for-developers-app:<IMAGE_TAG>
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
           env:

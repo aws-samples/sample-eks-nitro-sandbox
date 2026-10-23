@@ -125,7 +125,9 @@ Everything it creates is tagged `ManagedBy=coding-agents-for-developers`, so the
 removes only what the sample made.
 
 **Step 3: The images.** `setup.sh` builds the base image, the six CLI images and the app,
-and pushes them to ECR.
+and pushes them to ECR under a fixed tag, `IMAGE_TAG` in `.env` (default `v1`). The pods
+use `imagePullPolicy: IfNotPresent`, so a node that already pulled a tag keeps its cached
+copy: after you change an image, set a new tag (for example `v2`) and run `setup.sh` again.
 
 **Step 4: The templates, pools and app.** For each CLI it applies a `SandboxTemplate`, a
 `SandboxWarmPool` and an egress policy, then the app's Deployment, Service and RBAC. The

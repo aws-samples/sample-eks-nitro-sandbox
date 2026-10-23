@@ -34,6 +34,7 @@ NAMESPACE="${NAMESPACE:-coding-agents-for-developers}"
 S3_PREFIX="${S3_PREFIX:-coding-agents}"
 POOL_REPLICAS="${POOL_REPLICAS:-1}"
 AGENT_CLIS="${AGENT_CLIS:-claude-code,codex,kiro-cli,opencode,pi,oh-my-pi}"
+IMAGE_TAG="${IMAGE_TAG:-v1}"   # must match build-images.sh; bump it after changing an image
 KCTL=(kubectl --context "$CLUSTER_NAME")
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
@@ -277,7 +278,8 @@ EGRESS
 IFS=',' read -ra clis <<< "$AGENT_CLIS"
 for cli in "${clis[@]}"; do
   sed -e "s|<CLI>|$cli|g" -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" -e "s|<AWS_REGION>|$AWS_REGION|g" \
-      -e "s|<POOL_REPLICAS>|$POOL_REPLICAS|g" "$ROOT/deploy/sandbox-template.yaml" \
+      -e "s|<POOL_REPLICAS>|$POOL_REPLICAS|g" -e "s|<IMAGE_TAG>|$IMAGE_TAG|g" \
+      "$ROOT/deploy/sandbox-template.yaml" \
     | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
   # Fill the <KIRO_CLI_EGRESS> and <MOUNT_TARGET_CIDRS> placeholder lines. awk keeps each
   # multi-line block's indentation, which a sed substitution would mangle. Match each
@@ -297,7 +299,8 @@ say "Apply the app"
 sed -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" -e "s|<AWS_REGION>|$AWS_REGION|g" -e "s|<NAMESPACE>|$NAMESPACE|g" \
     -e "s|<S3_FILES_FS_ID>|$S3_FILES_FS_ID|g" -e "s|<S3_BUCKET_NAME>|$S3_BUCKET_NAME|g" \
     -e "s|<S3_PREFIX>|$S3_PREFIX|g" -e "s|<MOUNT_ROLE_ARN>|$MOUNT_ROLE_ARN|g" \
-    -e "s|<AGENT_CLIS>|$AGENT_CLIS|g" "$ROOT/deploy/app.yaml" | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
+    -e "s|<AGENT_CLIS>|$AGENT_CLIS|g" -e "s|<IMAGE_TAG>|$IMAGE_TAG|g" \
+    "$ROOT/deploy/app.yaml" | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
 
 # Record the resource ids back into .env for clean.sh and re-runs.
 { echo "ACCOUNT_ID=$ACCOUNT_ID"; echo "S3_FILES_FS_ID=$S3_FILES_FS_ID"; echo "S3_BUCKET_NAME=$S3_BUCKET_NAME"; } >> "$ENV_FILE"

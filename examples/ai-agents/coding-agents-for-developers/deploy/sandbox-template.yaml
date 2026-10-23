@@ -1,6 +1,6 @@
 # One SandboxTemplate + SandboxWarmPool per CLI. setup.sh renders this once for each
 # CLI in the agent list, substituting <CLI> (claude-code, codex, kiro-cli, opencode,
-# pi, oh-my-pi), <ACCOUNT_ID>, <AWS_REGION> and <POOL_REPLICAS>.
+# pi, oh-my-pi), <ACCOUNT_ID>, <AWS_REGION>, <POOL_REPLICAS> and <IMAGE_TAG>.
 #
 # The pods boot warm with NO workspace: a SandboxClaim that adds a volume forces a cold
 # start, so the session folder is mounted inside the guest after the claim instead (see
@@ -51,7 +51,8 @@ spec:
       restartPolicy: Never
       containers:
         - name: agent
-          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/coding-agents-for-developers-<CLI>:latest
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/coding-agents-for-developers-<CLI>:<IMAGE_TAG>
+          imagePullPolicy: IfNotPresent
           # No sign-in credential is injected into the pod. Kiro CLI signs in with the
           # developer's own identity through the device flow, in the terminal; see the README.
           # The mount inside the guest needs root + SYS_ADMIN; the CLI then runs as the
