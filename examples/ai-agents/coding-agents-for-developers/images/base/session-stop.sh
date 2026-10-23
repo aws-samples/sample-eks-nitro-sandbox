@@ -35,8 +35,20 @@ if [ "$(live)" -gt 0 ]; then
 fi
 
 # 2. Flush and unmount the session's folder (root, with the SYS_ADMIN the mount used).
+#    Retry for up to 30 seconds: right after the processes end, the NFS client can still be
+#    closing their files, and umount reports "device is busy" until it has. On a live run
+#    the first attempt after a Codex session failed that way, with no process left holding
+#    the mount, and the same umount succeeded a minute later.
 sync
-if grep -q " $MOUNT " /proc/mounts; then
-  umount "$MOUNT" || { echo "session-stop: umount $MOUNT failed" >&2; exit 1; }
+if mountpoint -q "$MOUNT"; then
+  tries=0
+  until err="$(umount "$MOUNT" 2>&1)"; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 30 ]; then
+      echo "session-stop: umount $MOUNT failed after $tries attempts: $err" >&2
+      exit 1
+    fi
+    sleep 1
+  done
 fi
 echo "session-stop: session processes ended and $MOUNT unmounted"
