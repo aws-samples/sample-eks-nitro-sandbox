@@ -10,6 +10,15 @@
 # agent's egress to Bedrock and GitHub by name. It is marked optional because it needs
 # the same cluster-wide enforcement, and shows name-based egress rather than the
 # pod-to-pod egress the main sample shows.
+#
+# <COREDNS_IP> is your cluster's DNS address, the kubelet's clusterDNS, and <AWS_REGION>
+# your Region, both filled in by scripts/run-dns-comparison.sh (or by hand, from one node;
+# needs permission to get nodes/proxy):
+#   kubectl get --raw "/api/v1/nodes/$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')/proxy/configz"
+#   and take kubeletconfig.clusterDNS[0]
+# On EKS Auto Mode DNS is node-local and there is no kube-dns Service, so DNS egress
+# is allowed with an ipBlock on the clusterDNS address, as the guide below does.
+# https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html
 apiVersion: networking.k8s.aws/v1alpha1
 kind: ApplicationNetworkPolicy
 metadata:
