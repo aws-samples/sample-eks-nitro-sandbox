@@ -427,16 +427,21 @@ spec:
 
 kiro-cli is the one CLI that does not use Amazon Bedrock: it reaches the developer's own
 Kiro / Amazon Q Developer sign-in (IAM Identity Center OIDC) and the CodeWhisperer streaming
-service. Those endpoints live in the developer's Kiro Region, independent of this cluster's
-Region, so `setup.sh` adds one rule to the kiro-cli policy only, allowing `*.amazonaws.com`
-on 443 -- wide within AWS so a developer in any Region works, still AWS-only. A deployment
-that wants it tighter can pin the exact `oidc.`/`q.`/`codewhisperer.<region>.amazonaws.com`
-hosts for its Kiro Region.
+service on `*.amazonaws.com`, and the Kiro desktop service on `*.kiro.dev` (the sign-in
+device-authorization flow at `prod.<region>.auth.desktop.kiro.dev`, plus `app.kiro.dev`,
+`runtime.<region>.kiro.dev` and the telemetry hosts, which sit across several sub-hierarchies
+of `kiro.dev`). Those endpoints live in the developer's Kiro Region, independent of this
+cluster's Region, so `setup.sh` adds one rule to the kiro-cli policy only, allowing both
+suffixes on 443 -- wide within AWS and within Kiro's own first-party domain, but no arbitrary
+internet host. A deployment that wants it tighter can pin the exact
+`oidc.`/`q.`/`codewhisperer.<region>.amazonaws.com` hosts and the specific `kiro.dev`
+subdomains its Region and workflow use.
 
 ```yaml
     - to:
         - domainNames:
             - "*.amazonaws.com"
+            - "*.kiro.dev"
       ports:
         - { protocol: TCP, port: 443 }
 ```
@@ -489,14 +494,13 @@ https://github.com:22/ -> exit 28                               # allowed host, 
 - **Codex's web search is a Mantle-side capability, gated per identity.** Codex runs on a
   GPT model served through the Bedrock "Mantle" endpoint, and that model can call a
   **server-side** `web_search` tool that Mantle runs itself -- not Codex fetching a URL
-  through the pod, so the sandbox egress policy neither enables nor blocks it. When the
-  model reaches for it, Mantle answers `Access denied: web search is not authorized for this
-  identity`: the entitlement is on the Bedrock/Mantle side for the calling identity, not an
-  IAM action the pod's role can grant and not something Codex's `[tools] web_search = false`
-  (which only governs Codex's own client-side tool) suppresses. On an identity without that
-  entitlement the turn can end on that error; the sample leaves `web_search = false` and
-  answers from the model's own knowledge. A deployment whose Mantle identity is entitled for
-  web search can set it back to `true`.
+  through the pod, so the sandbox egress policy neither enables nor blocks it, and the pod's
+  IAM role cannot grant it. When the model reaches for it on an identity that is not entitled
+  for Mantle web search, Mantle answers `Access denied: web search is not authorized for this
+  identity` and the turn can end on that error. Whether the server-side tool is available is
+  controlled by the Bedrock/Mantle entitlement on the calling identity, not by the sample.
+  (Codex's own `[tools] web_search = false` governs only Codex's client-side web tool, a
+  separate thing.)
 - **The session pods turn the Nitro sandbox network and disk throttles off.** A sandbox pod
   has built-in defaults -- 100 Mbit/s ingress and egress (capped by a 1500 packets/second
   bucket), a 400 Mbit/s overlay (scratch) disk and 1500 overlay IOPS -- which are tight for

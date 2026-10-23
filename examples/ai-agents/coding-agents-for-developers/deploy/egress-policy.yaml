@@ -76,11 +76,15 @@ spec:
     #     live in the developer's Kiro Region (independent of this cluster's Region), so the
     #     rule allows the whole suffix rather than pinning a Region -- wide within AWS so a
     #     developer in any Region works, still AWS-only.
-    #   *.kiro.dev       -- the Kiro desktop auth service (prod.<region>.auth.desktop.kiro.dev)
-    #     that the interactive sign-in's device-authorization flow calls. Builder ID, Google
-    #     and GitHub sign-in all go through it; without this the device flow cannot fetch a
-    #     code and the login hangs with "error sending request for url".
+    #   *.kiro.dev       -- the Kiro desktop service's own domain. kiro-cli uses several of
+    #     its subdomains across different sub-hierarchies: the sign-in device-authorization
+    #     flow calls prod.<region>.auth.desktop.kiro.dev (without it the login hangs with
+    #     "error sending request for url"), and the session also reaches app.kiro.dev,
+    #     runtime.<region>.kiro.dev and the telemetry.*.kiro.dev hosts. Because those span
+    #     .auth.desktop.kiro.dev, .desktop.kiro.dev and kiro.dev directly, the rule allows
+    #     the whole *.kiro.dev suffix -- wide within Kiro's own domain, still a single
+    #     first-party service, no arbitrary internet host.
     # A deployment that wants it tighter can replace these with the exact
-    # oidc./q./codewhisperer.<region>.amazonaws.com and prod.<region>.auth.desktop.kiro.dev
-    # hosts for its Kiro Region.
+    # oidc./q./codewhisperer.<region>.amazonaws.com hosts and the specific kiro.dev
+    # subdomains its Kiro Region and workflow use (auth, runtime, app, telemetry).
 <KIRO_CLI_EGRESS>

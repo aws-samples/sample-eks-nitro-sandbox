@@ -208,7 +208,7 @@ if "${KCTL[@]}" delete namespace "$NAMESPACE" --ignore-not-found --wait=true --t
     note_fail "namespace $NAMESPACE still present after delete (Terminating?)"
   else
     case "$ns_err" in
-      *NotFound*|*not\ found*) : ;;   # confirmed gone
+      *NotFound*) : ;;   # confirmed gone (kubectl prints "Error from server (NotFound): ...")
       *) note_fail "namespace $NAMESPACE: could not confirm deletion ($(printf '%s' "$ns_err" | head -1))" ;;
     esac
   fi
