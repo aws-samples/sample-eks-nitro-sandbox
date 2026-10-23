@@ -485,6 +485,15 @@ https://github.com:22/ -> exit 28                               # allowed host, 
   the app (default 30). Each CLI's pool keeps `POOL_REPLICAS` pods warm (default 1); size it
   to the peak claim rate, not the number of sessions, and turn off the CLIs you do not need
   by trimming the app's agent list. Each warm pod reserves its full memory request.
+- **The session pods request memory, and set nothing else.** A sandbox's VM is sized from
+  the pod's requests, and with none it gets about 1 vCPU and 130 MiB -- too little memory for
+  these CLIs. The `SandboxTemplate` requests 1536 MiB of memory, no CPU and no limits, from
+  this measurement of each CLI's pod during a model turn on the fresh run (`kubectl top
+  pod`):
+
+  ```text
+  TODO: output from the fresh run
+  ```
 - **Sessions are capped by the access-point quota.** Each retained session is one access
   point, kept until Delete. S3 Files allows 25,000 access points per file system (Amazon S3
   Files service quota *Access points per file system*, not adjustable), which is the ceiling
