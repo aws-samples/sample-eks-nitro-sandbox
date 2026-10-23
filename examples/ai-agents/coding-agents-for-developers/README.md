@@ -217,6 +217,19 @@ session started in agent-opencode-trpv8
 | Restore | The app claims a new warm pod (a new pod UID), mounts the same folder and starts the CLI with its own resume option. |
 | Delete | The app removes the access point and the session's prefix in the bucket. |
 
+New agent is fast because the pod is already warm: claiming a warm pod, creating the access
+point, mounting the folder and starting the CLI measured about 1.4 seconds end to end on the
+fresh run. Close then Restore is the same path against the existing folder, so a restored
+session comes up on a **new pod** (a new pod UID) with its files intact:
+
+```text
+# before close: pod agent-pi-6zv7d, uid 2bb8cd12-...  (marker written to /workspace/home)
+POST /api/close   -> {"ok":true}        # claim released: SandboxClaim NotFound, folder stays
+POST /api/restore -> {"session":"...-proud-fox"}
+# after restore:  pod agent-pi-zlpxl, uid fc059a2f-...  (different pod UID)
+#   /workspace/home/restore-marker.txt -> "marker written 01:51:36"  (same file, persisted)
+```
+
 The app keeps no database. It builds the session list from the access points' own root
 paths -- each one is `/<developer>/<cli>/<session>`, so one `ListAccessPoints` call for the
 file system yields every session's developer, CLI and name with no per-session tag read
