@@ -661,23 +661,22 @@ error line goes to standard error and so can print before or after its exit line
   it after 30 minutes, so an agent left running keeps writing to its folder past an hour. A
   refresh that fails is logged by the app with the session's name
   (`kubectl logs deploy/agent-app`) and retried every minute; if it kept failing until the
-  hour ran out, the session's writes to its folder would start to fail. On a run of this
-  sample, a session started at 17:42 ran a job in its terminal that appended a line to a
-  file in its folder every minute. The app log showed both refreshes, and the folder had
-  every minute's line through 18:57, past the first credential's hour:
+  hour ran out, the session's writes to its folder would start to fail. On the fresh run, a
+  session started at 19:55 UTC ran a job in its terminal that appended a line to a file in
+  its folder every minute. The app log showed both refreshes, and the folder had every
+  minute's line through 20:58, past the first credential's hour:
 
   ```text
-  session mvl9cz9r-jolly-lynx: mount credential refreshed
-  session mvl9cz9r-jolly-lynx: mount credential refreshed
+  session mvle3oyj-witty-gecko: mount credential refreshed
+  session mvle3oyj-witty-gecko: mount credential refreshed
   $ head -1 /workspace/project/heartbeat.log; tail -2 /workspace/project/heartbeat.log
-  beat 1 17:43:14
-  beat 74 18:56:15
-  beat 75 18:57:15
+  beat 1 19:55:57
+  beat 63 20:57:58
+  beat 64 20:58:58
   ```
 
   The job kept the terminal printing, so the idle check kept that session while the idle
-  ones were released after 30 minutes (`session mvl9brm2-nimble-crane: released after 30
-  idle minutes`).
+  ones were released (`session mvle2dor-quiet-vole: released after 30 idle minutes`).
 - **Codex's web search runs on the Mantle side, outside the egress policy.** Codex runs on
   a GPT model served through the Bedrock "Mantle" endpoint, and that model can call a
   server-side web search and web fetch tool that Amazon Bedrock runs itself. The Codex role
