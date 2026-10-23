@@ -23,8 +23,15 @@
 # fails and the window still shows the error, just retried, rather than a silent exit.
 set -u
 
-# First iteration: a new session (there is no prior task to resume yet).
-codex "$@" || true
+# First iteration. On Restore (--resume) the pod is new but the home came back with the
+# session's folder, so continue the most recent recorded session; if there is none yet,
+# start a fresh one. Otherwise it is a new session.
+if [ "${1:-}" = "--resume" ]; then
+  shift
+  codex resume --last "$@" || codex "$@" || true
+else
+  codex "$@" || true
+fi
 
 # Every subsequent iteration: reconnect to the daemon task this pod already started.
 # `--last` picks the most recent session, which is this pod's own (the home is per

@@ -26,4 +26,5 @@ COPY --chmod=0755 cli-setup.sh /usr/local/bin/cli-setup.sh
 # sign-in wizard (Bedrock auth is ambient Pod Identity, so there is nothing to sign into).
 ENV PATH="/usr/local/bin:${PATH}" \
     OMP_SKIP_SETUP=1 \
-    CLI_CMD="omp --model amazon-bedrock/us.anthropic.claude-sonnet-5-5"
+    CLI_CMD="omp --model amazon-bedrock/us.anthropic.claude-sonnet-5-5" \
+    CLI_RESUME_CMD="omp --model amazon-bedrock/us.anthropic.claude-sonnet-5-5 --continue"

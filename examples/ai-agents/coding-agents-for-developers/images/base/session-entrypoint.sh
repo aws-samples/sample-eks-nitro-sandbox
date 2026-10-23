@@ -18,6 +18,9 @@
 #   AWS_REGION         the file system's Region
 #   POD_AZ_ID          the AZ id of the node this pod runs on (usw2-az1, ...)
 #   CLI_CMD            the command to run in tmux (the CLI, set by each image)
+#   CLI_RESUME_CMD     the same CLI continuing its most recent conversation (set by each
+#                      image; optional)
+#   SESSION_RESUME     "1" when the app is restoring an existing session, else unset
 # The credential arrives on stdin as an AWS credentials file body, written to
 # $CRED_FILE below. The script never prints it.
 set -euo pipefail
@@ -153,12 +156,23 @@ fi
 #    open the credential and fail with EACCES. So the CLI's environment must not carry the
 #    mount credential's path at all; this is also why the mount credential stays unseen by
 #    the agent, as the comment above intends.
+# On Restore, start the CLI with its own "continue the most recent conversation" option,
+# so the developer comes back to the conversation they left, not an empty one. The history
+# lives in the CLI's home under /workspace, which came back with the folder. If there is
+# nothing to continue (a session restored before its first prompt), the resume command
+# exits non-zero and the plain CLI starts instead.
+RUN_CMD="exec $CLI_CMD"
+if [ "${SESSION_RESUME:-}" = "1" ] && [ -n "${CLI_RESUME_CMD:-}" ]; then
+  RUN_CMD="$CLI_RESUME_CMD || exec $CLI_CMD"
+  echo "session-entrypoint: restoring, starting with: $CLI_RESUME_CMD" >&2
+fi
+
 # Start tmux DETACHED so this exec returns while the CLI keeps running in the pod. The
 # app attaches a browser terminal to the tmux session over a second exec; closing the
 # browser only detaches, so the CLI runs on.
 setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
   env -u AWS_SHARED_CREDENTIALS_FILE -u AWS_PROFILE \
-      HOME="$MOUNT/home" AWS_REGION="$AWS_REGION" CLI_CMD="$CLI_CMD" \
+      HOME="$MOUNT/home" AWS_REGION="$AWS_REGION" RUN_CMD="$RUN_CMD" \
       AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE="${AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE:-}" \
       TERM=xterm-256color LANG=C.UTF-8 LC_ALL=C.UTF-8 \
       XDG_RUNTIME_DIR="$RUNTIME_DIR" \
@@ -180,7 +194,7 @@ setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
           echo "session-entrypoint: tmux agent session already running, leaving it" >&2; \
         else \
           tmux new-session -d -s agent -x 200 -y 50 \
-            "export LANG=C.UTF-8 LC_ALL=C.UTF-8 TERM=xterm-256color; exec $CLI_CMD"; \
+            "export LANG=C.UTF-8 LC_ALL=C.UTF-8 TERM=xterm-256color; $RUN_CMD"; \
           tmux set-option -t agent window-size latest; \
           tmux set-option -t agent aggressive-resize on; \
         fi'

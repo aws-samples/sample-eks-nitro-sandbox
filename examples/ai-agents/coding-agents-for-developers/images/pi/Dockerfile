@@ -34,4 +34,5 @@ RUN set -eu; \
 # pi reads AWS credentials ambiently from the pod's Pod Identity (the standard
 # AWS_CONTAINER_CREDENTIALS_* variables) and takes the provider and model on the command
 # line, so no config file is needed. AWS_REGION is passed by the session entrypoint.
-ENV CLI_CMD="pi --provider amazon-bedrock --model us.anthropic.claude-sonnet-5-5"
+ENV CLI_CMD="pi --provider amazon-bedrock --model us.anthropic.claude-sonnet-5-5" \
+    CLI_RESUME_CMD="pi --provider amazon-bedrock --model us.anthropic.claude-sonnet-5-5 --continue"

@@ -25,4 +25,5 @@ COPY --chmod=0755 cli-setup.sh /usr/local/bin/cli-setup.sh
 # closes. The wrapper reconnects with `codex resume --last` in a loop. See the script.
 COPY --chmod=0755 codex-session.sh /usr/local/bin/codex-session.sh
 
-ENV CLI_CMD="/usr/local/bin/codex-session.sh"
+ENV CLI_CMD="/usr/local/bin/codex-session.sh" \
+    CLI_RESUME_CMD="/usr/local/bin/codex-session.sh --resume"

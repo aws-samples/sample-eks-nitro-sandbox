@@ -22,4 +22,5 @@ COPY --chmod=0755 cli-setup.sh /usr/local/bin/cli-setup.sh
 
 # opencode reads the config cli-setup.sh writes and AWS credentials ambiently from Pod
 # Identity via the AI SDK's amazon-bedrock provider.
-ENV CLI_CMD="opencode"
+ENV CLI_CMD="opencode" \
+    CLI_RESUME_CMD="opencode --continue"

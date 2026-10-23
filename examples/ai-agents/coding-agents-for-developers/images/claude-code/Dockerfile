@@ -23,4 +23,5 @@ ENV CLAUDE_CODE_USE_BEDROCK=1 \
     ANTHROPIC_MODEL="us.anthropic.claude-sonnet-5-5" \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
     DISABLE_AUTOUPDATER=1 \
-    CLI_CMD="claude"
+    CLI_CMD="claude" \
+    CLI_RESUME_CMD="claude --continue"

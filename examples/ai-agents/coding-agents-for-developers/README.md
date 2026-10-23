@@ -216,7 +216,7 @@ session started in agent-opencode-trpv8
 | Minimize, or close the browser | Nothing changes in the cluster. The pod and the CLI keep running. |
 | No terminal activity for the idle period (default 30 minutes) | The app reads tmux's last-activity time in each pod every minute. Once the period passes, it deletes the `SandboxClaim`: the pod goes, the folder stays. |
 | Close the window | Same as idle: the claim is released, the folder stays, and the session moves to the session list. |
-| Restore | The app claims a new warm pod (a new pod UID), mounts the same folder and starts the CLI with its own resume option. |
+| Restore | The app claims a new warm pod (a new pod UID), mounts the same folder and starts the CLI with its own continue-the-last-conversation option: `claude --continue`, `codex resume --last`, `kiro-cli chat --v3 --resume`, `opencode --continue`, `pi --continue` and `omp --continue`. The history is in the CLI's home inside the folder, so it comes back with it; a session restored before its first prompt starts the CLI fresh. |
 | Delete | The app deletes every object version and delete marker under the session's prefix in the (versioned) bucket, then the access point. |
 
 New agent is fast because the pod is already warm: claiming a warm pod, creating the access

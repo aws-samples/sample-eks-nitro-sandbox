@@ -106,10 +106,13 @@ const b64line = (credential) => Buffer.from(credential, "utf8").toString("base64
 // Start the session: the credential goes in on stdin (base64, one line), the session
 // parameters as the command's environment, and the pod's entrypoint mounts the access
 // point and starts the CLI in tmux. Runs once; the long-lived process is the pod's own.
-export async function startSession(podName, { credential, fsId, apId, azId }) {
+// On Restore, SESSION_RESUME=1 tells the entrypoint to start the CLI with its own
+// continue-the-last-conversation option.
+export async function startSession(podName, { credential, fsId, apId, azId, resume = false }) {
   const script =
     `export S3_FILES_FS_ID=${fsId} S3_FILES_AP_ID=${apId} ` +
-    `AWS_REGION=${REGION} POD_AZ_ID=${azId}; ` +
+    `AWS_REGION=${REGION} POD_AZ_ID=${azId}` +
+    (resume ? " SESSION_RESUME=1" : "") + "; " +
     // The entrypoint reads the base64 credential line on stdin; re-exec it with env set.
     `exec /usr/local/bin/session-entrypoint.sh`;
   await execOnce(podName, ["/bin/sh", "-c", script], b64line(credential));

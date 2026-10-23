@@ -26,10 +26,10 @@ export async function newAgent(developer, cli) {
 export async function restore(developer, session) {
   const cli = await store.sessionCli(developer, session);
   if (!cli) throw new Error(`no session ${session} for ${developer}`);
-  return start(developer, cli, session);
+  return start(developer, cli, session, { resume: true });
 }
 
-async function start(developer, cli, session) {
+async function start(developer, cli, session, { resume = false } = {}) {
   if (live.has(session)) return live.get(session);
 
   console.log(`start ${session}: ensureAccessPoint`);
@@ -41,7 +41,7 @@ async function start(developer, cli, session) {
 
   const credential = await store.mountCredential(ap.apId, developer, cli, session);
   console.log(`start ${session}: startSession azId=${azId}`);
-  await k8s.startSession(podName, { credential, fsId: FS_ID, apId: ap.apId, azId });
+  await k8s.startSession(podName, { credential, fsId: FS_ID, apId: ap.apId, azId, resume });
 
   const entry = {
     developer, cli, session, apId: ap.apId, claimName, podName, azId,

@@ -35,4 +35,5 @@ COPY --chmod=0755 cli-setup.sh /usr/local/bin/cli-setup.sh
 # `kiro-cli --agent-engine v3` errors "unexpected argument"), so name `chat` explicitly.
 # Kiro CLI still defaults to V2 and otherwise nags to upgrade on every launch; pinning V3
 # skips the nag and gives every session the current engine.
-ENV CLI_CMD="kiro-cli chat --v3"
+ENV CLI_CMD="kiro-cli chat --v3" \
+    CLI_RESUME_CMD="kiro-cli chat --v3 --resume"
