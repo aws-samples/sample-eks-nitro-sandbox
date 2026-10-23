@@ -17,16 +17,27 @@ NAMESPACE="${NAMESPACE:-coding-agents-for-developers}"
 KCTL=(kubectl --context "$CLUSTER_NAME")
 ACCOUNT_ID="${ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
 APP_ROLE="$SAMPLE-app"; MOUNT_ROLE="$SAMPLE-mount"; BEDROCK_ROLE="$SAMPLE-bedrock"; SYNC_ROLE="$SAMPLE-s3files-sync"
+CODEX_ROLE="$SAMPLE-bedrock-codex"
 SG_NAME="$SAMPLE-nfs"
 FAIL=0
 say() { printf '\n==> %s\n' "$*"; }
 note_fail() { echo "INCOMPLETE: $*" >&2; FAIL=1; }
 
-# Confirm the namespace is the sample's before deleting anything inside it.
-if "${KCTL[@]}" get namespace "$NAMESPACE" >/dev/null 2>&1; then
-  owned="$("${KCTL[@]}" get namespace "$NAMESPACE" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}' 2>/dev/null || true)"
-  [[ "$owned" == "$SAMPLE" ]] || { echo "namespace $NAMESPACE is not labelled for $SAMPLE; refusing." >&2; exit 2; }
-
+# Confirm the namespace is the sample's before deleting anything inside it. Only an explicit
+# NotFound means it is absent; any other lookup failure (auth, connectivity, wrong context)
+# means ownership cannot be established, so stop before deleting anything at all.
+ns_present=
+if ns_owner="$("${KCTL[@]}" get namespace "$NAMESPACE" \
+    -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}' 2>&1)"; then
+  [[ "$ns_owner" == "$SAMPLE" ]] || { echo "namespace $NAMESPACE is not labelled for $SAMPLE (found: ${ns_owner:-none}); refusing." >&2; exit 2; }
+  ns_present=yes
+else
+  case "$ns_owner" in
+    *NotFound*) echo "namespace $NAMESPACE is already gone" ;;
+    *) echo "namespace $NAMESPACE: lookup failed, so its owner is unknown; refusing ($(printf '%s' "$ns_owner" | head -1))" >&2; exit 2 ;;
+  esac
+fi
+if [[ -n "$ns_present" ]]; then
   say "Warm pools first (so they stop booting replacements), then claims, then the app"
   "${KCTL[@]}" -n "$NAMESPACE" delete sandboxwarmpool -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found
   "${KCTL[@]}" -n "$NAMESPACE" delete sandboxclaim -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found
@@ -37,17 +48,31 @@ fi
 
 # Pod Identity associations (only this sample's namespace/service accounts).
 say "Pod Identity associations"
-for sa in agent-app agent-session; do
-  aid="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" --namespace "$NAMESPACE" \
-    --service-account "$sa" --region "$AWS_REGION" --query 'associations[0].associationId' --output text 2>/dev/null || true)"
-  [[ "$aid" == a-* ]] && aws eks delete-pod-identity-association --cluster-name "$CLUSTER_NAME" \
-    --association-id "$aid" --region "$AWS_REGION" >/dev/null 2>&1 || true
+# A failed listing is "could not determine", not "none"; a failed delete is reported.
+for sa in agent-app agent-session agent-session-codex; do
+  if ! aid="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" --namespace "$NAMESPACE" \
+      --service-account "$sa" --region "$AWS_REGION" --query 'associations[0].associationId' --output text 2>&1)"; then
+    note_fail "Pod Identity association for $sa: lookup failed, not confirmed gone ($(printf '%s' "$aid" | head -1))"
+    continue
+  fi
+  [[ "$aid" == a-* ]] || continue   # None: there is no association for this service account
+  del_err="$(aws eks delete-pod-identity-association --cluster-name "$CLUSTER_NAME" \
+    --association-id "$aid" --region "$AWS_REGION" 2>&1 >/dev/null)" \
+    || note_fail "Pod Identity association $aid ($sa): delete failed ($(printf '%s' "$del_err" | head -1))"
 done
 
 # S3 Files: access points, mount targets, file system.
 say "S3 Files access points, mount targets, file system"
-FS_ID="${S3_FILES_FS_ID:-$(aws s3files list-file-systems --region "$AWS_REGION" \
-  --query "fileSystems[?name=='$SAMPLE'].fileSystemId | [0]" --output text 2>/dev/null)}"
+FS_ID="${S3_FILES_FS_ID:-}"
+if [[ -z "$FS_ID" ]]; then
+  # No id recorded: find the file system by the sample's name. A failed listing must not
+  # read as "there is none".
+  if ! FS_ID="$(aws s3files list-file-systems --region "$AWS_REGION" \
+      --query "fileSystems[?name=='$SAMPLE'].fileSystemId | [0]" --output text 2>&1)"; then
+    note_fail "file system lookup failed, not confirmed gone ($(printf '%s' "$FS_ID" | head -1))"
+    FS_ID=
+  fi
+fi
 # Before touching its access points and mount targets, confirm the file system still exists
 # and is the sample's. An explicit not-found means it is already gone (e.g. a stale id left in
 # .env by an earlier run), which is not a failure and must not start a 10-minute wait for
@@ -71,19 +96,38 @@ if [[ -n "$FS_ID" && "$FS_ID" != "None" ]]; then
   fi
 fi
 if [[ -n "$fs_ours" ]]; then
-  for ap in $(aws s3files list-access-points --file-system-id "$FS_ID" --region "$AWS_REGION" \
-    --query 'accessPoints[].accessPointId' --output text 2>/dev/null); do
-    aws s3files delete-access-point --access-point-id "$ap" --region "$AWS_REGION" >/dev/null 2>&1 || note_fail "access point $ap"
-  done
-  for mt in $(aws s3files list-mount-targets --file-system-id "$FS_ID" --region "$AWS_REGION" \
-    --query 'mountTargets[].mountTargetId' --output text 2>/dev/null); do
-    aws s3files delete-mount-target --mount-target-id "$mt" --region "$AWS_REGION" >/dev/null 2>&1 || note_fail "mount target $mt"
-  done
+  # A failed listing is "could not determine": report it. The drain check below then
+  # decides whether the file system can go, so a missed access point or mount target stops
+  # its delete rather than being mistaken for none.
+  listed=yes
+  if aps="$(aws s3files list-access-points --file-system-id "$FS_ID" --region "$AWS_REGION" \
+      --query 'accessPoints[].accessPointId' --output text 2>&1)"; then
+    for ap in $aps; do
+      [[ "$ap" == None ]] && continue
+      aws s3files delete-access-point --access-point-id "$ap" --region "$AWS_REGION" >/dev/null 2>&1 || note_fail "access point $ap"
+    done
+  else
+    note_fail "access points of $FS_ID: lookup failed, not deleted ($(printf '%s' "$aps" | head -1))"
+    listed=
+  fi
+  if mts="$(aws s3files list-mount-targets --file-system-id "$FS_ID" --region "$AWS_REGION" \
+      --query 'mountTargets[].mountTargetId' --output text 2>&1)"; then
+    for mt in $mts; do
+      [[ "$mt" == None ]] && continue
+      aws s3files delete-mount-target --mount-target-id "$mt" --region "$AWS_REGION" >/dev/null 2>&1 || note_fail "mount target $mt"
+    done
+  else
+    note_fail "mount targets of $FS_ID: lookup failed, not deleted ($(printf '%s' "$mts" | head -1))"
+    listed=
+  fi
   # Wait for the mount targets to drain before deleting the file system. A FAILED lookup
   # must not read as "0 left": default to a non-zero sentinel on lookup failure so a
   # transient error does not look like the mount targets are gone.
+  # If either listing failed, what is left on the file system is unknown: leave it (and so
+  # the bucket below) for the next run rather than deleting it on a guess.
   left=1
-  for i in $(seq 1 60); do
+  [[ -n "$listed" ]] || left="unknown (a listing failed)"
+  for i in $( [[ -n "$listed" ]] && seq 1 60 ); do
     if left="$(aws s3files list-mount-targets --file-system-id "$FS_ID" --region "$AWS_REGION" --query 'length(mountTargets)' --output text 2>/dev/null)"; then
       [[ "$left" == "0" ]] && break
     else
@@ -210,7 +254,7 @@ fi
 # explicit NoSuchEntity means gone. Any other get-role failure (throttle, denied, network)
 # is "could not determine", which is a failure, not success.
 say "IAM roles"
-for role in "$APP_ROLE" "$MOUNT_ROLE" "$BEDROCK_ROLE" "$SYNC_ROLE"; do
+for role in "$APP_ROLE" "$MOUNT_ROLE" "$BEDROCK_ROLE" "$CODEX_ROLE" "$SYNC_ROLE"; do
   # Delete only a role the sample made: it carries ManagedBy=$SAMPLE (setup.sh tags every
   # role it creates). A role of the same name without the tag belongs to someone else and is
   # left alone. An explicit NoSuchEntity means the role is already gone.
@@ -316,7 +360,9 @@ done
 # gone rather than trusting that the delete request was accepted: a namespace can sit in
 # Terminating, and the delete itself may be blocked on this host.
 say "Namespace"
-if "${KCTL[@]}" delete namespace "$NAMESPACE" --ignore-not-found --wait=true --timeout=120s >/dev/null 2>&1; then
+if [[ -z "$ns_present" ]]; then
+  echo "namespace $NAMESPACE was already gone"
+elif "${KCTL[@]}" delete namespace "$NAMESPACE" --ignore-not-found --wait=true --timeout=120s >/dev/null 2>&1; then
   # Confirm it is really gone. A successful get means it is still present (Terminating); a
   # get that FAILS is only confirmation when the error is an explicit NotFound -- any other
   # error (auth, connectivity, wrong context) is "could not determine", not "gone".
