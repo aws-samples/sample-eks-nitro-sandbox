@@ -191,28 +191,45 @@ export async function listSessions(developer) {
 export async function deleteSession(developer, session) {
   const ap = await findAccessPoint(developer, session);
   if (ap) {
-    await s3files.send(new DeleteAccessPointCommand({ accessPointId: ap.apId }));
+    // Data first, then the access point. If deleting the data fails, the access point is
+    // still there, so the session stays in the list and Delete can be retried; deleting
+    // the access point first would hide a session whose data is still in the bucket.
     await deleteFolder(developer, ap.cli, session);
+    await s3files.send(new DeleteAccessPointCommand({ accessPointId: ap.apId }));
   }
 }
 
-// --- S3 object helpers (folder marker create/delete), via the SDK's S3 client ---
-import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from "@aws-sdk/client-s3";
+// --- S3 object helpers (session folder delete), via the SDK's S3 client ---
+import { S3Client, ListObjectVersionsCommand, DeleteObjectsCommand } from "@aws-sdk/client-s3";
 const s3 = new S3Client({ region: REGION, ...retry });
 
+// Delete a session's data for good. The bucket is versioned, so deleting the current
+// objects only adds a delete marker in front of each one and keeps every old version: the
+// data stays in the bucket and the version count grows with every session. So list every
+// version AND delete marker under the session prefix and delete each by VersionId, one page
+// (at most 1000 entries, the DeleteObjects limit) at a time, until none are left.
+// DeleteObjects reports per-key failures in `Errors` rather than throwing, so treat a
+// non-empty `Errors` as a failure.
 async function deleteFolder(developer, cli, session) {
   const Prefix = `${sessionKeyPrefix(developer, cli, session)}/`;
-  let token;
-  do {
+  for (;;) {
+    // Always list from the start: the previous page's entries are gone once deleted.
     const out = await s3.send(
-      new ListObjectsV2Command({ Bucket: BUCKET, Prefix, ContinuationToken: token })
+      new ListObjectVersionsCommand({ Bucket: BUCKET, Prefix, MaxKeys: 1000 })
     );
-    const objects = (out.Contents ?? []).map((o) => ({ Key: o.Key }));
-    if (objects.length) {
-      await s3.send(
-        new DeleteObjectsCommand({ Bucket: BUCKET, Delete: { Objects: objects } })
+    const objects = [...(out.Versions ?? []), ...(out.DeleteMarkers ?? [])]
+      .map((v) => ({ Key: v.Key, VersionId: v.VersionId }))
+      .slice(0, 1000);
+    if (objects.length === 0) return;
+    const del = await s3.send(
+      new DeleteObjectsCommand({ Bucket: BUCKET, Delete: { Objects: objects, Quiet: true } })
+    );
+    if (del.Errors?.length) {
+      const e = del.Errors[0];
+      throw new Error(
+        `deleting ${Prefix}: ${del.Errors.length} object(s) not deleted, first: ` +
+        `${e.Key} (${e.Code}: ${e.Message})`
       );
     }
-    token = out.IsTruncated ? out.NextContinuationToken : undefined;
-  } while (token);
+  }
 }
