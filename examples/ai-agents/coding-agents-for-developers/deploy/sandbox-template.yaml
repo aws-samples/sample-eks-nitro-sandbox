@@ -66,8 +66,13 @@ spec:
             capabilities:
               drop: ["ALL"]
               add: ["SYS_ADMIN", "SETUID", "SETGID"]
-          # No CPU or memory requests or limits: the pod runs at the Nitro sandbox's default
-          # size. The README shows each CLI's usage during a model turn.
+          # A memory request, and nothing else. The Nitro sandbox's memory comes from
+          # resources.requests.memory (Amazon EKS User Guide, "Isolated and confidential pods
+          # limitations"). With no request the guest has about 129 MiB, and on the fresh run
+          # Claude Code could not start and exec into a Codex pod failed. No CPU request and
+          # no limits. The README has the measurement.
+          resources:
+            requests: { memory: 1536Mi }
 ---
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxWarmPool

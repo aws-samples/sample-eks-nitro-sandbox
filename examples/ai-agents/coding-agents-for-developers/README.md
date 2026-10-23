@@ -509,11 +509,14 @@ https://github.com:22/ -> exit 28                               # allowed host, 
 - **The idle period and the pool size are settings.** The idle timeout is `IDLE_MINUTES` on
   the app (default 30). Each CLI's pool keeps `POOL_REPLICAS` pods warm (default 1); size it
   to the peak claim rate, not the number of sessions, and turn off the CLIs you do not need
-  by trimming the app's agent list.
-- **The pods set no CPU or memory requests or limits.** Neither the `SandboxTemplate` nor
-  the app's Deployment sets `resources`, so each session pod runs at the Nitro sandbox's
-  default size. This is each CLI's pod during a model turn on the fresh run (`kubectl top
-  pod`):
+  by trimming the app's agent list. Each warm pod reserves its memory request.
+- **The session pods request memory, and set nothing else.** A Nitro sandbox's memory comes
+  from the pod's `resources.requests.memory` (Amazon EKS User Guide, *Isolated and
+  confidential pods limitations*). With no request, a run of this sample gave each guest
+  about 129 MiB (`MemTotal: 132568 kB`): Claude Code could not start, and exec into a Codex
+  pod failed. So the `SandboxTemplate` requests 1536 MiB of memory, with no CPU request and
+  no limits. The app's Deployment sets no `resources` at all. This is each CLI's pod during
+  a model turn on the fresh run (`kubectl top pod`):
 
   ```text
   TODO: output from the fresh run
