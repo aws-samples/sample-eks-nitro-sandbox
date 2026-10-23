@@ -218,9 +218,13 @@ say "Namespace $NAMESPACE"
 # claim) or already carry our part-of label -- never another demo's label, which we would
 # otherwise overwrite and then delete on clean up.
 if "${KCTL[@]}" get namespace "$NAMESPACE" >/dev/null 2>&1; then
+  # The namespace already exists: adopt it ONLY if it already carries our part-of label.
+  # An existing namespace -- even an unlabelled one -- is not one we are "about to create",
+  # so we do not claim it: it may belong to another demo that simply did not label it, and
+  # the clean up deletes whatever carries our label. Create-only-when-absent (AGENTS.md).
   ns_owner="$("${KCTL[@]}" get namespace "$NAMESPACE" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}' 2>/dev/null || true)"
-  [[ -z "$ns_owner" || "$ns_owner" == "$SAMPLE" ]] \
-    || die "namespace $NAMESPACE already exists and is labelled app.kubernetes.io/part-of=$ns_owner, not $SAMPLE; refusing to adopt it"
+  [[ "$ns_owner" == "$SAMPLE" ]] \
+    || die "namespace $NAMESPACE already exists and is not labelled app.kubernetes.io/part-of=$SAMPLE (found: ${ns_owner:-none}); refusing to adopt it"
 else
   "${KCTL[@]}" create namespace "$NAMESPACE"
 fi

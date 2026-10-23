@@ -107,18 +107,24 @@ if [[ -n "$bucket_present" ]]; then
     # useless here: on a versioned bucket it only adds a delete marker per object.
     emptied=
     for pass in $(seq 1 1000); do
-      page="$(aws s3api list-object-versions --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" \
+      # A FAILED listing must not read as "empty bucket". Capture the call's status; a
+      # failure is a real error (not "already drained"), so report and stop.
+      if ! page="$(aws s3api list-object-versions --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" \
         --max-keys 1000 --no-paginate \
         --query '{Objects: [Versions, DeleteMarkers][][].{Key:Key,VersionId:VersionId}}' \
-        --output json 2>/dev/null || true)"
-      # Count the entries this page returned. No Versions and no DeleteMarkers -> Objects is
-      # null or empty -> the bucket is drained.
-      n="$(printf '%s' "$page" | python3 -c 'import json,sys
-try:
-    d = json.load(sys.stdin) or {}
-except Exception:
-    print(0); sys.exit()
-print(len(d.get("Objects") or []))' 2>/dev/null || echo 0)"
+        --output json 2>/dev/null)"; then
+        note_fail "bucket $S3_BUCKET_NAME: list-object-versions failed on pass $pass"
+        break
+      fi
+      # Count the entries. The parser prints the count on well-formed JSON and exits
+      # NON-ZERO on malformed/empty input, so a parse failure is told apart from a real
+      # empty page (Objects null/[] -> 0) rather than both looking like "drained".
+      if ! n="$(printf '%s' "$page" | python3 -c 'import json,sys
+d = json.load(sys.stdin)
+print(len((d or {}).get("Objects") or []))' 2>/dev/null)"; then
+        note_fail "bucket $S3_BUCKET_NAME: could not parse list-object-versions output on pass $pass"
+        break
+      fi
       [[ "$n" == "0" ]] && { emptied=yes; break; }
       # One delete-objects call for this page. A failure here is real (not "already gone"),
       # so report it and stop the loop rather than spinning or hiding it with `|| true`.
@@ -163,9 +169,13 @@ done
 # demo owns is never deleted here.
 say "Security group"
 VPC="$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" --query cluster.resourcesVpcConfig.vpcId --output text 2>/dev/null || true)"
-SG_ID="$(aws ec2 describe-security-groups --region "$AWS_REGION" \
+# Distinguish a successful "no such group" (empty/None) from a FAILED lookup: a failed
+# describe must not silently skip the security group as if it were already gone.
+if SG_ID="$(aws ec2 describe-security-groups --region "$AWS_REGION" \
   --filters "Name=vpc-id,Values=$VPC" "Name=group-name,Values=$SG_NAME" "Name=tag:ManagedBy,Values=$SAMPLE" \
-  --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)"
+  --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)"; then :; else
+  note_fail "security group lookup for $SG_NAME failed (not confirmed gone)"; SG_ID=""
+fi
 if [[ -n "$SG_ID" && "$SG_ID" != "None" ]]; then
   for i in $(seq 1 30); do aws ec2 delete-security-group --group-id "$SG_ID" --region "$AWS_REGION" >/dev/null 2>&1 && break; sleep 10; done
   # Confirm by error code: only an explicit "not found" means gone.
@@ -191,8 +201,17 @@ done
 # Terminating, and the delete itself may be blocked on this host.
 say "Namespace"
 if "${KCTL[@]}" delete namespace "$NAMESPACE" --ignore-not-found --wait=true --timeout=120s >/dev/null 2>&1; then
-  "${KCTL[@]}" get namespace "$NAMESPACE" >/dev/null 2>&1 \
-    && note_fail "namespace $NAMESPACE still present after delete (Terminating?)"
+  # Confirm it is really gone. A successful get means it is still present (Terminating); a
+  # get that FAILS is only confirmation when the error is an explicit NotFound -- any other
+  # error (auth, connectivity, wrong context) is "could not determine", not "gone".
+  if ns_err="$("${KCTL[@]}" get namespace "$NAMESPACE" 2>&1)"; then
+    note_fail "namespace $NAMESPACE still present after delete (Terminating?)"
+  else
+    case "$ns_err" in
+      *NotFound*|*not\ found*) : ;;   # confirmed gone
+      *) note_fail "namespace $NAMESPACE: could not confirm deletion ($(printf '%s' "$ns_err" | head -1))" ;;
+    esac
+  fi
 else
   note_fail "could not delete namespace $NAMESPACE; remove it by hand: kubectl --context $CLUSTER_NAME delete namespace $NAMESPACE"
 fi
