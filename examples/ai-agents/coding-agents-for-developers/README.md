@@ -168,7 +168,10 @@ Then browse to http://127.0.0.1:8080
 Each terminal is a floating window wired to the CLI running in its sandbox pod. These are
 the six CLIs answering the same prompt, each on its own model: the five Bedrock CLIs on the
 inference profile in the app's agent list (Claude Sonnet here), and Codex on a GPT model
-served through the Bedrock "Mantle" OpenAI-compatible endpoint. Kiro CLI uses the
+served through the Bedrock "Mantle" OpenAI-compatible endpoint. These screenshots are from
+earlier runs of this sample; on the fresh run, each of the five Bedrock CLIs completed turns
+in the Restore check below, Codex answered with its web search, and Kiro CLI was not signed
+in, since its sign-in is the developer's own. Kiro CLI uses the
 developer's own Kiro sign-in rather than Bedrock.
 
 | | |
@@ -226,12 +229,12 @@ belongs to the pod, not the node.
 ```text
 POST /api/new
 /api/new developer=carlos cli=opencode
-start mvl9cvwz-clever-tapir: ensureAccessPoint
-start mvl9cvwz-clever-tapir: claimPod (ap=fsap-0579f4b078b965777)
-start mvl9cvwz-clever-tapir: pod=agent-opencode-s6pct node=i-0975f232bbfc6450a
-start mvl9cvwz-clever-tapir: startSession azId=usw2-az1
-session started in agent-opencode-s6pct
-/api/new done session=mvl9cvwz-clever-tapir
+start mvle3lb1-proud-vole: ensureAccessPoint
+start mvle3lb1-proud-vole: claimPod (ap=fsap-0aa3f82c26fcc3ced)
+start mvle3lb1-proud-vole: pod=agent-opencode-tcw77 node=i-0268382f08bb1ecbc
+start mvle3lb1-proud-vole: startSession azId=usw2-az1
+session started in agent-opencode-tcw77
+/api/new done session=mvle3lb1-proud-vole
 ```
 
 ## The session lifecycle
@@ -276,10 +279,10 @@ click (`POST /api/new`) to a terminal with the CLI running was:
 
 | New agent | Time |
 |---|---|
-| The first session on a new file system | 18.8 s |
-| Each later session, from a warm pod (codex, pi, opencode, oh-my-pi, kiro-cli) | 2.0 to 3.0 s |
-| A second claude-code session while its pool of one was still refilling | 48.0 s |
-| Restore, from a warm pod, for each of the five Bedrock CLIs | 2.0 to 3.6 s |
+| The first session on a new file system | 16.3 s |
+| Each later session, from a warm pod (codex, pi, opencode, oh-my-pi, kiro-cli) | 1.9 to 4.0 s |
+| A second claude-code session while its pool of one was still refilling | 52.5 s |
+| Restore, from a warm pod, for each of the five Bedrock CLIs | 2.1 to 3.6 s |
 
 The first session is slower because it is the first mount of a new file system. The third
 row is a cold start: with the warm pod already claimed, the claim waits for the pool to boot
@@ -290,12 +293,12 @@ up on a **new pod** (a new pod UID) and the CLI continues its conversation. For 
 fresh run (abridged to the lines that matter; the prompts were typed into the terminal):
 
 ```text
-before: pod=agent-pi-5gkpw uid=4d8ac485-9dff-418e-85bb-1d28f108a0c8
+before: pod=agent-pi-jpbp8 uid=c1fbb396-767f-4e5b-b41c-73f00015989a
  Remember the code word FINCH-4. Reply with only: noted.
  noted.
-POST /api/close   -> {"ok":true}                                       HTTP 200 in 0.724209s
-POST /api/restore -> {"session":"mvl9cu7x-lively-gecko","display":"lively-gecko","cli":"pi"}   HTTP 200 in 3.577195s
-after: pod=agent-pi-zbpps uid=29e9f17a-d233-4ab2-95e3-dad35cfcc456
+POST /api/close   -> {"ok":true}                                       HTTP 200 in 0.662820s
+POST /api/restore -> {"session":"mvle3juw-brave-lynx","display":"brave-lynx","cli":"pi"}   HTTP 200 in 3.607896s
+after: pod=agent-pi-xg67n uid=7f8a0b2d-66be-4a54-84e3-362c3e4381f2
  What code word did I ask you to remember? Reply with only the word.
  FINCH-4
 ```
@@ -305,16 +308,17 @@ on a new pod UID.
 
 Minimizing a window or closing the browser only detaches the terminal; the CLI keeps
 running in tmux in its pod. On the fresh run, claude-code was asked to print a timestamp
-every 10 seconds for two minutes, and the browser was closed at 17:49:30, 20 seconds in.
-When the app was opened again at 17:51:27, the session had finished the task with no
-browser attached:
+every 10 seconds for two minutes, and the browser was closed at 20:04:25, about 20 seconds
+in. The CLI kept working with no browser attached (the app was opened briefly at 20:05:40,
+while the task was still running), and when it was opened again at 20:07 the task had
+finished:
 
-![The claude-code window for session gentle-otter, opened again after the browser was closed. Below the request to run a loop printing a tick every 10 seconds, Claude reports that the command ran to completion and printed 12 ticks, one every 10 seconds, from 17:49:10 to 17:51:00 UTC, and the turn shows done at 5:51 PM.](figures/screenshots/output-while-browser-closed.png)
+![The claude-code window for session clever-wombat, opened again after the browser was closed. Below the request to run a loop printing a tick every 10 seconds, Claude reports that the command ran to completion and that all 12 ticks printed, 10 seconds apart, from 20:04:03 to 20:05:53 UTC, and the turn shows done at 8:06 PM.](figures/screenshots/output-while-browser-closed.png)
 
 Two sessions open at once, with the claude-code window minimized to the dock at the bottom
 and the opencode window open over the session list:
 
-![The web app with an opencode window for session clever-tapir open, showing its restored conversation about the code word OTTER-3. At the bottom of the page, a dock holds one chip, "claude-code · gentle-otter", the minimized window of a second session.](figures/screenshots/two-sessions-one-minimized.png)
+![The web app with an opencode window for session proud-vole open, showing its restored conversation about the code word OTTER-3. At the bottom of the page, a dock holds one chip, "claude-code · gentle-otter", the minimized window of a second session.](figures/screenshots/two-sessions-one-minimized.png)
 
 The app keeps no database. It builds the session list from the access points' own root
 paths -- each one is `/<developer>/<cli>/<session>`, so one `ListAccessPoints` call for the
@@ -333,13 +337,13 @@ $ aws s3files list-access-points --file-system-id <S3_FILES_FS_ID> --region <AWS
 +-------------------------+---------------------------------------------+
 |           id            |                    path                     |
 +-------------------------+---------------------------------------------+
-|  fsap-0731f50c...       |  /priya/pi/mvl9cu7x-lively-gecko            |
-|  fsap-0e7bf27d...       |  /sam/codex/mvl9csng-calm-wombat            |
-|  fsap-0579f4b0...       |  /carlos/opencode/mvl9cvwz-clever-tapir     |
-|  fsap-01c05b2f...       |  /sam/kiro-cli/mvl9cz9r-jolly-lynx          |
-|  fsap-06bb83d4...       |  /carlos/claude-code/mvl9bd48-gentle-otter  |
-|  fsap-04715388...       |  /priya/oh-my-pi/mvl9cxn3-jolly-crane       |
-|  fsap-06268441...       |  /carlos/claude-code/mvl9brm2-nimble-crane  |
+|  fsap-07883c58...       |  /sam/codex/mvle3i6z-keen-fox               |
+|  fsap-02a60442...       |  /sam/kiro-cli/mvle3oyj-witty-gecko         |
+|  fsap-0aa9350d...       |  /priya/oh-my-pi/mvle3nc1-calm-shrew        |
+|  fsap-0d148001...       |  /carlos/claude-code/mvle2137-clever-wombat |
+|  fsap-0aa3f82c...       |  /carlos/opencode/mvle3lb1-proud-vole       |
+|  fsap-0fd3e41d...       |  /carlos/claude-code/mvle2dor-quiet-vole    |
+|  fsap-099a7b3c...       |  /priya/pi/mvle3juw-brave-lynx              |
 +-------------------------+---------------------------------------------+
 ```
 
@@ -361,7 +365,7 @@ kubectl -n coding-agents-for-developers exec $POD -- sh -c 'env | cut -d= -f1 | 
 ```text
 isolated-sandbox
 6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-324.27
+484.04
 dm-0 vda vdb vdc
 AWS_CONTAINER_CREDENTIALS_FULL_URI
 AWS_DEFAULT_REGION
@@ -383,13 +387,13 @@ same cluster:
 
 ```text
 6.18.51 #2 SMP PREEMPT_DYNAMIC Wed Oct  7 22:33:11 UTC 2026
-83127.79
+91250.43
 dm-0 nvme0n1 nvme1n1 zram0
 ```
 
 The sandbox runs its own kernel build (`#1`, built Oct 1; the node's is `#2`, built Oct 7),
-its uptime of 324 seconds matches the pod's age because the sandbox booted with the pod
-(the node has been up for 23 hours), and it sees virtio disks (`vda`, `vdb`, `vdc`, with a
+its uptime of 484 seconds matches the pod's age (it started 490 seconds before the command)
+because the sandbox booted with the pod (the node has been up for 25 hours), and it sees virtio disks (`vda`, `vdb`, `vdc`, with a
 `dm-0` device-mapper node on top) where the ordinary pod sees the instance's `nvme`
 devices. No model API
 key is in the pod: the only AWS variables are the Pod Identity credential endpoint
@@ -471,7 +475,7 @@ mount helper noting that the container has no init system for its background wat
 does not affect the mount.)
 
 From outside the cluster, the bucket shows each session under its own prefix (abridged to
-two sessions and their folder structure; the CLI's home fills in below each session, 1,305
+two sessions and their folder structure; the CLI's home fills in below each session, 1,306
 objects across the seven sessions of the fresh run):
 
 ```bash
@@ -479,19 +483,19 @@ aws s3 ls s3://<S3_BUCKET_NAME>/coding-agents/ --recursive
 ```
 
 ```text
-2026-10-23 17:42:01          0 coding-agents/carlos/
-2026-10-23 17:42:01          0 coding-agents/carlos/claude-code/
-2026-10-23 17:42:01          0 coding-agents/carlos/claude-code/mvl9bd48-gentle-otter/
-2026-10-23 17:46:25          0 coding-agents/carlos/claude-code/mvl9bd48-gentle-otter/home/
-2026-10-23 17:46:02        208 coding-agents/carlos/claude-code/mvl9bd48-gentle-otter/home/.tmux.conf
-2026-10-23 17:42:09          0 coding-agents/carlos/claude-code/mvl9bd48-gentle-otter/project/
+2026-10-23 19:54:41          0 coding-agents/carlos/
+2026-10-23 19:54:41          0 coding-agents/carlos/claude-code/
+2026-10-23 19:54:42          0 coding-agents/carlos/claude-code/mvle2137-clever-wombat/
+2026-10-23 19:59:23          0 coding-agents/carlos/claude-code/mvle2137-clever-wombat/home/
+2026-10-23 19:58:52        208 coding-agents/carlos/claude-code/mvle2137-clever-wombat/home/.tmux.conf
+2026-10-23 19:54:42          0 coding-agents/carlos/claude-code/mvle2137-clever-wombat/project/
 ...
-2026-10-23 17:42:49          0 coding-agents/sam/
-2026-10-23 17:42:51          0 coding-agents/sam/codex/
-2026-10-23 17:42:51          0 coding-agents/sam/codex/mvl9csng-calm-wombat/
-2026-10-23 17:42:52          0 coding-agents/sam/codex/mvl9csng-calm-wombat/home/
-2026-10-23 17:46:11        208 coding-agents/sam/codex/mvl9csng-calm-wombat/home/.tmux.conf
-2026-10-23 17:42:52          0 coding-agents/sam/codex/mvl9csng-calm-wombat/project/
+2026-10-23 19:55:36          0 coding-agents/sam/
+2026-10-23 19:55:37          0 coding-agents/sam/codex/
+2026-10-23 19:55:37          0 coding-agents/sam/codex/mvle3i6z-keen-fox/
+2026-10-23 19:55:37          0 coding-agents/sam/codex/mvle3i6z-keen-fox/home/
+2026-10-23 19:59:02        208 coding-agents/sam/codex/mvle3i6z-keen-fox/home/.tmux.conf
+2026-10-23 19:55:37          0 coding-agents/sam/codex/mvle3i6z-keen-fox/project/
 ...
 ```
 
@@ -609,8 +613,8 @@ https://bedrock-runtime.<AWS_REGION>.amazonaws.com/ -> exit 0   # allowed host, 
 https://github.com/ -> exit 0                                   # allowed host, 443: connected
 curl: (28) Connection timed out after 8001 milliseconds
 https://example.com/ -> exit 28                                 # host not in the policy: blocked
-https://github.com:22/ -> exit 28                               # allowed host, port 22 not allowed: blocked
 curl: (28) Connection timed out after 8003 milliseconds
+https://github.com:22/ -> exit 28                               # allowed host, port 22 not allowed: blocked
 ```
 
 The `#` comments are added here; the rest is the fresh run's output, where each `curl:`
@@ -632,22 +636,23 @@ error line goes to standard error and so can print before or after its exit line
 
   ```text
   NAME                          CPU(cores)   MEMORY(bytes)
-  agent-app-85cf584c97-hsdm9    0m           87Mi
-  agent-claude-code-4g8xx       59m          179Mi
-  agent-claude-code-t5pdp       0m           0Mi
-  agent-codex-kc6gk             1m           0Mi
-  agent-codex-t864g             35m          805Mi
-  agent-kiro-cli-x9z6h          2m           53Mi
-  agent-mvl9brm2-nimble-crane   2m           99Mi
-  agent-oh-my-pi-x4dxm          103m         569Mi
-  agent-opencode-s6pct          72m          335Mi
-  agent-pi-5gkpw                12m          96Mi
+  agent-app-75f648748b-8nd4h   0m           86Mi
+  agent-claude-code-74cpv      0m           0Mi
+  agent-claude-code-sq7bs      46m          165Mi
+  agent-codex-df9m9            0m           0Mi
+  agent-codex-kqmzf            35m          803Mi
+  agent-kiro-cli-7w4lk         2m           53Mi
+  agent-mvle2dor-quiet-vole    2m           96Mi
+  agent-oh-my-pi-8fqxl         89m          559Mi
+  agent-opencode-tcw77         33m          328Mi
+  agent-pi-jpbp8               3m           75Mi
+  agent-pi-xg67n               0m           0Mi
   ```
 
-  The claude-code (`4g8xx`), codex (`t864g`), oh-my-pi, opencode and pi (`5gkpw`) pods are
-  in a model turn. `nimble-crane` is a second claude-code session at its first-run screen,
+  The claude-code (`sq7bs`), codex (`kqmzf`), oh-my-pi, opencode and pi (`jpbp8`) pods are
+  in a model turn. `quiet-vole` is a second claude-code session at its first-run screen,
   kiro-cli is waiting for its sign-in, and the pods at `0Mi` are warm pods waiting for a
-  claim. Codex, the largest, used 805 MiB of its 1536 MiB request.
+  claim. Codex, the largest, used 803 MiB of its 1536 MiB request.
 - **Sessions are capped by the access-point quota.** Each retained session is one access
   point, kept until Delete. S3 Files allows 25,000 access points per file system (Amazon S3
   Files service quota *Access points per file system*, not adjustable), which is the ceiling
