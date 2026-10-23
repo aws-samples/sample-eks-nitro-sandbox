@@ -117,7 +117,7 @@ S3 Files file system and mount targets, and three IAM roles, each with only what
 
 | Role | Used by | May |
 |---|---|---|
-| Bedrock | Every CLI pod that uses Bedrock, through Pod Identity | `bedrock:InvokeModel*`, and nothing else; no S3 Files access |
+| Bedrock | Every CLI pod that uses Bedrock, through Pod Identity | `bedrock:InvokeModel*` scoped to this account's inference profiles and the Anthropic foundation models, plus `bedrock-mantle:CreateInference` for Codex; no S3 Files access |
 | App | The web app, through Pod Identity | Create, tag, read and delete this file system's access points; delete objects under session prefixes on cleanup; assume the Mount role |
 | Mount | Assumed only by the app, narrowed per session | `s3files:ClientMount` and `s3files:ClientWrite` on the file system, and read objects in the bucket; each session policy narrows it to one access point |
 
@@ -137,7 +137,20 @@ The sign-in is a drop-down of three demo developers with the password pre-filled
 picker, not authentication, and the app is reachable only through your own port-forward.
 
 ```text
-TODO: output from the fresh run
+==> Wait for the warm pools, then open the app
+sandboxwarmpool.extensions.agents.x-k8s.io/agent-claude-code condition met
+sandboxwarmpool.extensions.agents.x-k8s.io/agent-codex condition met
+sandboxwarmpool.extensions.agents.x-k8s.io/agent-kiro-cli condition met
+sandboxwarmpool.extensions.agents.x-k8s.io/agent-opencode condition met
+sandboxwarmpool.extensions.agents.x-k8s.io/agent-pi condition met
+sandboxwarmpool.extensions.agents.x-k8s.io/agent-oh-my-pi condition met
+deployment "agent-app" successfully rolled out
+
+Done. Open the app on your machine:
+
+  kubectl -n coding-agents-for-developers port-forward svc/agent-app 8080:8080
+
+Then browse to http://127.0.0.1:8080
 ```
 
 ## What a session looks like
@@ -163,7 +176,7 @@ through the same steps:
 1. The app claims a pod from the CLI's pool. The claim adopts a pod that is already running,
    so it is Ready in under a second; the pool boots a replacement.
 2. The app creates the session's access point (or finds it, on restore), rooted at
-   `/<developer>/<session>` with a fixed POSIX user (uid/gid 1000) and
+   `/<developer>/<cli>/<session>` with a fixed POSIX user (uid/gid 1000) and
    `creationPermissions` that make the access point create its own root directory owned by
    that user. The app does not pre-create the folder as a bucket object: an object written
    under the prefix first is imported owned by root, which the access point's user could not
@@ -183,7 +196,14 @@ The mount needs root inside the guest, which is what the sandbox is for: the gue
 belongs to the pod, not the node.
 
 ```text
-TODO: output from the fresh run
+POST /api/new
+/api/new developer=carlos cli=opencode
+start mvk5vhvs-eager-shrew: ensureAccessPoint
+start mvk5vhvs-eager-shrew: claimPod (ap=fsap-07312e085c6c5a10f)
+start mvk5vhvs-eager-shrew: pod=agent-opencode-trpv8 node=i-060fd7e182a73ab1e
+start mvk5vhvs-eager-shrew: startSession azId=usw2-az3
+session started in agent-opencode-trpv8
+/api/new done session=mvk5vhvs-eager-shrew
 ```
 
 ## The session lifecycle
@@ -197,11 +217,26 @@ TODO: output from the fresh run
 | Restore | The app claims a new warm pod (a new pod UID), mounts the same folder and starts the CLI with its own resume option. |
 | Delete | The app removes the access point and the session's prefix in the bucket. |
 
-The session list is built from the access-point tags (the developer, the CLI, the session
-name and when it was last used), so the app keeps no database.
+The app keeps no database. It builds the session list from the access points' own root
+paths -- each one is `/<developer>/<cli>/<session>`, so one `ListAccessPoints` call for the
+file system yields every session's developer, CLI and name with no per-session tag read
+(which matters at scale: a developer with thousands of sessions would otherwise be thousands
+of tag lookups against the S3 Files control-plane rate limit). The session name carries a
+creation-time prefix, so the list sorts newest-first from the path alone. The access points
+also carry tags (`ManagedBy`, `developer`, `cli`, `session`, `lastUsed`) that mark ownership
+for the clean up, but the list does not depend on them. The access points, one per session:
 
 ```text
-TODO: output from the fresh run
+$ aws s3files list-access-points --file-system-id <S3_FILES_FS_ID> --region <AWS_REGION> \
+    --query 'accessPoints[].{id:accessPointId,path:rootDirectory.path}' --output table
+--------------------------------------------------------------------
+|                         ListAccessPoints                         |
++----------------------+-------------------------------------------+
+|          id          |                   path                    |
++----------------------+-------------------------------------------+
+|  fsap-0d58a4d6e...    |  /carlos/claude-code/mvk5n5an-calm-crane  |
+|  fsap-09019727...     |  /carlos/codex/mvk5rit8-jolly-otter       |
++----------------------+-------------------------------------------+
 ```
 
 ## It runs in a sandbox
@@ -218,13 +253,26 @@ kubectl -n coding-agents-for-developers exec $POD -- sh -c 'env | cut -d= -f1 | 
 ```
 
 ```text
-TODO: output from the fresh run
+isolated-sandbox
+6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
+240.82
+dm-0 vda vdb vdc
+AWS_CONTAINER_CREDENTIALS_FULL_URI
+AWS_DEFAULT_REGION
+AWS_REGION
+AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+CLAUDE_CODE_USE_BEDROCK
+ANTHROPIC_MODEL
+AWS_STS_REGIONAL_ENDPOINTS
 ```
 
 The sandbox runs its own kernel, its uptime matches the pod's age because the VM booted with
-the pod, and it sees virtio disks (`vda`, `vdb`, `vdc`) where an ordinary pod on the same
-node sees the instance's `nvme` devices. No model API key is in the pod: the Bedrock CLIs
-sign their requests with the Pod Identity role, resolved from the pod's credential endpoint.
+the pod, and it sees virtio disks (`vda`, `vdb`, `vdc`, with a `dm-0` device-mapper node on
+top) where an ordinary pod on the same node sees the instance's `nvme` devices. No model API
+key is in the pod: the only AWS variables are the Pod Identity credential endpoint
+(`AWS_CONTAINER_CREDENTIALS_FULL_URI`, `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`) and the
+Region, so the Bedrock CLIs sign their requests with the Pod Identity role resolved from
+that endpoint, not a stored key.
 
 ## Per-session scoping, both ways
 
@@ -248,28 +296,56 @@ file is [`iam/mount-session-policy.json`](iam/mount-session-policy.json)); the c
 ```
 
 To show it both ways, mount the session's own access point from inside its pod (it mounts),
-then try another session's access point with the same credential, as root (it is refused):
+then try another session's access point with the same credential, as root (it is refused).
+`$OTHER_AP` is a second session's access point id; the credential is the one the app wrote
+to this pod at `/dev/shm/session/credentials`:
 
 ```bash
-TODO: command from the fresh run
+POD=agent-claude-code-...     # this session's pod
+OTHER_AP=fsap-...             # a different session's access point
+
+# This session's own access point is already mounted at /workspace:
+kubectl -n coding-agents-for-developers exec $POD -- mountpoint /workspace
+
+# Try another session's access point with this pod's own mount credential, as root:
+kubectl -n coding-agents-for-developers exec $POD -- sh -c \
+  "AWS_SHARED_CREDENTIALS_FILE=/dev/shm/session/credentials AWS_PROFILE=session \
+   mount.s3files <S3_FILES_FS_ID> /tmp/other \
+   -o tls,iam,awsprofile=session,region=<AWS_REGION>,azid=<POD_AZ_ID>,accesspoint=$OTHER_AP"
 ```
 
 ```text
-TODO: output from the fresh run
+/workspace is a mountpoint
+
+Mount attempt 1/3 failed due to b'mount.nfs4: access denied by server while mounting 127.0.0.1:/\n', wait 1 sec before next attempt.
+Mount attempt 2/3 failed due to b'mount.nfs4: access denied by server while mounting 127.0.0.1:/\n', wait 1 sec before next attempt.
+b'mount.nfs4: access denied by server while mounting 127.0.0.1:/'
 ```
 
+The own access point is mounted; the other session's access point is refused by the server
+(`access denied`), because the credential's session policy allows `s3files:ClientMount` only
+on this session's own access-point ARN.
 The pod's own Pod Identity role is the Bedrock role, which has no S3 Files permission at all,
 so it cannot mount any access point. The mount credential is the only thing that can, and it
 is scoped to one access point, so a pod cannot reach another session's folder even as root.
 
-From outside the cluster, the bucket shows each session under its own prefix:
+From outside the cluster, the bucket shows each session under its own prefix (abridged to the
+folder structure; the CLI's home fills in below each session):
 
 ```bash
 aws s3 ls s3://<S3_BUCKET_NAME>/coding-agents/ --recursive
 ```
 
 ```text
-TODO: output from the fresh run
+2026-10-22 23:11:25          0 coding-agents/carlos/
+2026-10-22 23:11:26          0 coding-agents/carlos/claude-code/
+2026-10-22 23:11:26          0 coding-agents/carlos/claude-code/mvk5n5an-calm-crane/
+2026-10-22 23:11:26          0 coding-agents/carlos/claude-code/mvk5n5an-calm-crane/home/
+2026-10-22 23:12:27        343 coding-agents/carlos/claude-code/mvk5n5an-calm-crane/home/.claude.json
+2026-10-22 23:11:28          0 coding-agents/carlos/claude-code/mvk5n5an-calm-crane/home/.claude/
+2026-10-22 23:12:28        138 coding-agents/carlos/claude-code/mvk5n5an-calm-crane/home/.claude/sessions/85.<redacted>.key
+2026-10-22 23:12:27        208 coding-agents/carlos/claude-code/mvk5n5an-calm-crane/home/.tmux.conf
+...
 ```
 
 ## How the network policy works
@@ -280,13 +356,16 @@ limitations*). So the session pods have a network, and an egress policy is what 
 code in the sandbox can connect. Each `SandboxTemplate` sets
 `networkPolicyManagement: Unmanaged` and ships its own policy. Here is
 [`egress-policy.yaml`](deploy/egress-policy.yaml) in full, without its header comment;
-`setup.sh` fills in the mount-target addresses at apply time:
+`setup.sh` fills in the mount-target addresses at apply time, and adds one extra rule for
+kiro-cli (shown below the table):
 
 ```yaml
 apiVersion: networking.k8s.aws/v1alpha1
 kind: ApplicationNetworkPolicy
 metadata:
   name: agent-<CLI>-egress
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
 spec:
   podSelector:
     matchLabels:
@@ -301,17 +380,15 @@ spec:
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
-    - to: <MOUNT_TARGET_CIDRS>
-      ports:
-        - { protocol: TCP, port: 2049 }
     - to:
         - ipBlock: { cidr: 169.254.170.23/32 }
       ports:
         - { protocol: TCP, port: 80 }
     - to:
         - domainNames:
-            - s3.<AWS_REGION>.amazonaws.com
             - bedrock-runtime.<AWS_REGION>.amazonaws.com
+            - bedrock-mantle.<AWS_REGION>.api.aws
+            - docs.aws.amazon.com
             - github.com
             - codeload.github.com
             - objects.githubusercontent.com
@@ -320,6 +397,9 @@ spec:
             - files.pythonhosted.org
       ports:
         - { protocol: TCP, port: 443 }
+    - to: <MOUNT_TARGET_CIDRS>
+      ports:
+        - { protocol: TCP, port: 2049 }
 ```
 
 | In the YAML | What it does |
@@ -328,9 +408,25 @@ spec:
 | `policyTypes`, `Ingress` and `Egress` | Default-deny both ways, so only the rules below are allowed. |
 | `ingress: []` | Denies all ingress. The app reaches the pod through the Kubernetes exec API, which is not pod network traffic, so it needs no ingress rule. |
 | `egress` to `0.0.0.0/0` on 53 | Allows egress to any address on UDP and TCP 53. This is a project choice to keep the sample simple: it does not depend on how a given cluster serves DNS (on EKS Auto Mode the resolver is node-local rather than a pod behind a ClusterIP). What it allows is wider than DNS resolution: any process in the sandbox can reach any host on UDP or TCP 53, so it can send data out over DNS or to anything listening on port 53. What it costs is that port-53 egress is not confined to the cluster's own resolver. It still opens only port 53; every other port and protocol stays denied. |
-| `egress` to `<MOUNT_TARGET_CIDRS>` on 2049 | The S3 Files mount targets, NFS over TLS. |
 | `egress` to `169.254.170.23` on 80 | The Pod Identity agent on the node, for the Bedrock role. |
-| `egress` to the `domainNames` on 443 | The S3 endpoint the mount helper reads objects from, the Bedrock runtime endpoint, and the developer hosts the agents fetch from. |
+| `egress` to the `domainNames` on 443 | The Bedrock runtime endpoint the Bedrock CLIs call their model on, the Bedrock "Mantle" endpoint Codex uses for its GPT model, `docs.aws.amazon.com` so the agents can fetch AWS documentation, and the short list of developer hosts (GitHub, npm, PyPI) the agents fetch from. The S3 Files mount reads over NFS (2049), not an S3 443 endpoint, so none is needed here. |
+| `egress` to `<MOUNT_TARGET_CIDRS>` on 2049 | The S3 Files mount targets, NFS over TLS. They are ENIs in the cluster VPC reached by resolved IP, so `setup.sh` resolves this file system's mount-target IPs and fills in one `/32` per target -- egress on 2049 is allowed to the sample's own mount targets only, not to anything on 2049 in the VPC. |
+
+kiro-cli is the one CLI that does not use Amazon Bedrock: it reaches the developer's own
+Kiro / Amazon Q Developer sign-in (IAM Identity Center OIDC) and the CodeWhisperer streaming
+service. Those endpoints live in the developer's Kiro Region, independent of this cluster's
+Region, so `setup.sh` adds one rule to the kiro-cli policy only, allowing `*.amazonaws.com`
+on 443 -- wide within AWS so a developer in any Region works, still AWS-only. A deployment
+that wants it tighter can pin the exact `oidc.`/`q.`/`codewhisperer.<region>.amazonaws.com`
+hosts for its Kiro Region.
+
+```yaml
+    - to:
+        - domainNames:
+            - "*.amazonaws.com"
+      ports:
+        - { protocol: TCP, port: 443 }
+```
 
 Enforcement is turned on once per cluster with the `amazon-vpc-cni` ConfigMap in
 `kube-system`, which `setup.sh` checks and stops without if it is off. It is enforced on the
@@ -342,8 +438,27 @@ listening on port 53 (see the `0.0.0.0/0` row above). A `domainNames` rule allow
 addresses a name resolves to, so another name served from the same addresses is reachable
 too. Everything beyond port 53, the allowed hosts and the mount targets is denied.
 
+To see it from inside a session pod, connect to an allowed endpoint and to a denied one
+(`curl` exits 0 once the TCP connection is established; exit 28 is a connect timeout, which
+is how a blocked destination shows):
+
+```bash
+POD=$(kubectl -n coding-agents-for-developers get pods -l agent-cli=claude-code \
+  --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+for url in https://bedrock-runtime.<AWS_REGION>.amazonaws.com/ https://github.com/ \
+           https://example.com/ https://github.com:22/; do
+  kubectl -n coding-agents-for-developers exec $POD -- \
+    sh -c "curl -sS -o /dev/null --connect-timeout 8 $url; echo \"$url -> exit \$?\""
+done
+```
+
 ```text
-TODO: output from the fresh run
+https://bedrock-runtime.<AWS_REGION>.amazonaws.com/ -> exit 0   # allowed host, 443: connected
+https://github.com/ -> exit 0                                   # allowed host, 443: connected
+curl: (28) Connection timed out after 8002 milliseconds
+https://example.com/ -> exit 28                                 # host not in the policy: blocked
+curl: (28) Connection timed out after 8003 milliseconds
+https://github.com:22/ -> exit 28                               # allowed host, port 22 not allowed: blocked
 ```
 
 ## Good to know
