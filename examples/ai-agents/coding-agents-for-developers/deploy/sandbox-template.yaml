@@ -20,6 +20,22 @@ spec:
         app: agent-session
         agent-cli: <CLI>
         app.kubernetes.io/part-of: coding-agents-for-developers
+      # Nitro sandbox throttle annotations. Absent, they default to 100 Mbit/s ingress and
+      # egress (capped by a 1500 packets/second bucket), a 400 Mbit/s overlay (scratch) disk
+      # and 1500 overlay IOPS -- tight for an interactive coding agent that pulls model
+      # responses, clones repos and installs packages, which showed up as a slow launch.
+      # Turn the network and ephemeral-disk limits off for a responsive session. The value
+      # must be the string "disabled": `0` is rejected and leaves the pod stuck creating.
+      # Bandwidth and packet rate are independent token buckets, so BOTH must be disabled to
+      # actually uncap the network. rootfs-disk-* is already unlimited by default, and
+      # conntrack-limit cannot be turned off, so neither is set here.
+      annotations:
+        sandbox.amazonaws.com/ingress-bandwidth: "disabled"
+        sandbox.amazonaws.com/ingress-packets-per-second: "disabled"
+        sandbox.amazonaws.com/egress-bandwidth: "disabled"
+        sandbox.amazonaws.com/egress-packets-per-second: "disabled"
+        sandbox.amazonaws.com/overlay-disk-bandwidth: "disabled"
+        sandbox.amazonaws.com/overlay-disk-iops: "disabled"
     spec:
       runtimeClassName: isolated-sandbox
       # The pod holds no AWS identity of its own: the mount credential arrives per

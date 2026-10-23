@@ -165,7 +165,7 @@ developer's own Kiro sign-in rather than Bedrock.
 |---|---|
 | ![claude-code answering "In one sentence, what is EKS Auto Mode?" -- the Claude Code banner shows Sonnet 5.5 and Amazon Bedrock, and a one-paragraph answer about AWS managing the cluster's data plane.](figures/screenshots/claude-code.png) | ![codex answering the same prompt -- the status line shows GPT-5.6 on the amazon-bedrock provider, with a one-sentence answer about EKS Auto Mode managing compute, networking, storage and load balancing.](figures/screenshots/codex.png) |
 | ![opencode answering the same prompt -- the status line shows Claude Sonnet 5.5 (US) on Amazon Bedrock with the token cost, and a one-paragraph answer.](figures/screenshots/opencode.png) | ![pi answering the same prompt -- the status line shows us.anthropic.claude-sonnet-5-5 and the token cost, with a one-paragraph answer.](figures/screenshots/pi.png) |
-| ![oh-my-pi answering the same prompt -- the status line shows Sonnet 5.5 (US) and the cost, with a one-paragraph answer.](figures/screenshots/oh-my-pi.png) | ![kiro-cli V3 open and signed in through the developer's Kiro sign-in (the V3 chat UI, authenticated with no interactive login), ready for the same prompt.](figures/screenshots/kiro-cli.png) |
+| ![oh-my-pi answering the same prompt -- the status line shows Sonnet 5.5 (US) and the cost, with a one-paragraph answer.](figures/screenshots/oh-my-pi.png) | ![kiro-cli V3 answering the same prompt -- signed in through the developer's own Kiro sign-in (not Amazon Bedrock), with a one-sentence answer that EKS Auto Mode automates cluster infrastructure management (compute provisioning, scaling and updates) so you do not manage EC2 nodes manually.](figures/screenshots/kiro-cli.png) |
 
 ## How a session starts
 
@@ -486,6 +486,27 @@ https://github.com:22/ -> exit 28                               # allowed host, 
   on retained sessions; Delete reclaims one.
 - **The credential is refreshed.** An assumed-role credential lasts an hour; the app rewrites
   it well before then, so an agent left running keeps writing to its folder past an hour.
+- **The session pods turn the Nitro sandbox network and disk throttles off.** A sandbox pod
+  has built-in defaults -- 100 Mbit/s ingress and egress (capped by a 1500 packets/second
+  bucket), a 400 Mbit/s overlay (scratch) disk and 1500 overlay IOPS -- which are tight for
+  an interactive agent that streams model output, clones repos and installs packages, and
+  show up as a sluggish session. The `SandboxTemplate` sets the `ingress-bandwidth`,
+  `egress-bandwidth`, their `-packets-per-second` partners and the `overlay-disk-bandwidth`
+  and `-iops` annotations to `disabled` (the value must be `disabled`; `0` is rejected and
+  leaves the pod stuck creating). The trade-off, per the Amazon EKS User Guide, is that the
+  pod may then use a larger share of its node's ENI and disk budget; a deployment that packs
+  many sessions per node can set explicit caps instead.
+- **kiro-cli signs in with the developer's own Kiro identity, not Bedrock.** The other five
+  CLIs reach Amazon Bedrock through the pod's Pod Identity role; kiro-cli uses an IAM
+  Identity Center / Builder ID sign-in and the CodeWhisperer service. The interactive
+  device-flow login (`kiro-cli login --use-device-flow`) offers Builder ID, Google, GitHub
+  and organization sign-in; it reaches the Kiro auth service at `*.kiro.dev`, which the
+  kiro-cli egress rule allows alongside `*.amazonaws.com`. An admin can instead pre-seed a
+  token through the `agent-kiro-cli-auth` Secret (see the `SandboxTemplate`) so the developer
+  is not prompted -- but note that a corporate Builder ID token gated behind an internal
+  network gateway (Midway) cannot complete model loading from inside the sandbox, which has
+  no route to that gateway; a Builder ID, Google or GitHub identity that is not so gated
+  works.
 - **The sign-in is a demo picker, not authentication.** The app is first-party code reachable
   only through `kubectl port-forward` on the operator's own machine.
 

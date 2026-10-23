@@ -70,11 +70,17 @@ spec:
     # Per-CLI extra egress. setup.sh fills <KIRO_CLI_EGRESS> only when rendering this
     # policy for kiro-cli, and empties it for every other CLI. kiro-cli is the one agent
     # that does NOT use Amazon Bedrock: it reaches the developer's own Kiro / Amazon Q
-    # Developer sign-in (IAM Identity Center OIDC) and the CodeWhisperer streaming service,
-    # which the other CLIs never call. Those endpoints live in the developer's Kiro region,
-    # which is independent of this cluster's Region, so the rule allows `*.amazonaws.com` on
-    # 443 rather than pinning a Region -- wide within AWS so a developer in any Region works,
-    # and still AWS-only: no arbitrary internet host is reachable. A deployment that wants it
-    # tighter can replace this with the exact oidc./q./codewhisperer.<region>.amazonaws.com
-    # hosts for its Kiro region.
+    # Developer sign-in and the CodeWhisperer streaming service, which the other CLIs never
+    # call. Two domains are allowed on 443:
+    #   *.amazonaws.com  -- IAM Identity Center OIDC and the CodeWhisperer endpoints, which
+    #     live in the developer's Kiro Region (independent of this cluster's Region), so the
+    #     rule allows the whole suffix rather than pinning a Region -- wide within AWS so a
+    #     developer in any Region works, still AWS-only.
+    #   *.kiro.dev       -- the Kiro desktop auth service (prod.<region>.auth.desktop.kiro.dev)
+    #     that the interactive sign-in's device-authorization flow calls. Builder ID, Google
+    #     and GitHub sign-in all go through it; without this the device flow cannot fetch a
+    #     code and the login hangs with "error sending request for url".
+    # A deployment that wants it tighter can replace these with the exact
+    # oidc./q./codewhisperer.<region>.amazonaws.com and prod.<region>.auth.desktop.kiro.dev
+    # hosts for its Kiro Region.
 <KIRO_CLI_EGRESS>

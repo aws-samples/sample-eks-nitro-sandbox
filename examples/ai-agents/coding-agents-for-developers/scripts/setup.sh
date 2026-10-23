@@ -252,7 +252,7 @@ say "Apply SandboxTemplates, warm pools, egress policies"
 # the NFS (2049) egress rule is scoped to the sample's own mount targets rather than to the
 # whole VPC. Stop if none resolve: an empty block would leave the pods unable to mount.
 mt_ips="$(aws s3files list-mount-targets --file-system-id "$S3_FILES_FS_ID" --region "$AWS_REGION" \
-  --query 'mountTargets[].ipAddress' --output text 2>/dev/null || true)"
+  --query 'mountTargets[].ipv4Address' --output text 2>/dev/null || true)"
 [ -n "$mt_ips" ] || die "could not resolve mount-target IPs for $S3_FILES_FS_ID"
 mount_target_cidrs=""
 for ip in $mt_ips; do
@@ -269,6 +269,7 @@ kiro_cli_egress() {
     - to:
         - domainNames:
             - "*.amazonaws.com"
+            - "*.kiro.dev"
       ports:
         - { protocol: TCP, port: 443 }
 EGRESS
