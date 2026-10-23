@@ -58,6 +58,7 @@ RUN set -eu; \
 ENV MODEL_ID="us.anthropic.claude-sonnet-5-5"
 
 COPY --chmod=0755 session-entrypoint.sh /usr/local/bin/session-entrypoint.sh
+COPY --chmod=0755 session-stop.sh /usr/local/bin/session-stop.sh
 
 # A warm pod boots with NO session: it just idles here. When the app claims the pod it
 # runs session-entrypoint.sh through `kubectl exec`, passing the session parameters and

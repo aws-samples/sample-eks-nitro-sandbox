@@ -160,6 +160,14 @@ export async function refreshCredential(podName, credential) {
   await execOnce(podName, ["/bin/sh", "-c", script], b64line(credential));
 }
 
+// End the session's processes and unmount its folder, before the claim is released. The
+// CLIs' SQLite databases and lock files sit on the NFS mount, and a lock left by a pod that
+// was deleted mid-session is held by the server until its lease runs out; see
+// session-stop.sh in the base image.
+export async function stopSession(podName) {
+  await execOnce(podName, ["/usr/local/bin/session-stop.sh"]);
+}
+
 // tmux last-activity epoch, to find idle sessions.
 export async function lastActivity(podName) {
   const out = await execCapture(podName, [

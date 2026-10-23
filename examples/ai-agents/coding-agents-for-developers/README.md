@@ -243,10 +243,18 @@ mounts the same folder in a new pod, and only Delete removes the folder.*
 |---|---|
 | New agent | The app claims a warm pod, creates the access point, mounts the folder and starts the CLI. The pool boots a replacement. |
 | Minimize, or close the browser | Nothing changes in the cluster. The pod and the CLI keep running. |
-| No terminal activity for the idle period (default 30 minutes) | The app reads tmux's last-activity time in each pod every minute. Once the period passes, it deletes the `SandboxClaim`: the pod goes, the folder stays. |
-| Close the window | Same as idle: the claim is released, the folder stays, and the session moves to the session list. |
+| No terminal activity for the idle period (default 30 minutes) | The app reads tmux's last-activity time in each pod every minute. Once the period passes, it stops the session cleanly (below) and deletes the `SandboxClaim`: the pod goes, the folder stays. |
+| Close the window | Same as idle: the session is stopped and the claim released, the folder stays, and the session moves to the session list. |
 | Restore | The app claims a new warm pod (a new pod UID), mounts the same folder and starts the CLI with its own continue-the-last-conversation option: `claude --continue`, `codex resume --last`, `kiro-cli chat --v3 --resume`, `opencode --continue`, `pi --continue` and `omp --continue`. The history is in the CLI's home inside the folder, so it comes back with it; a session restored before its first prompt starts the CLI fresh. |
 | Delete | The app deletes every object version and delete marker under the session's prefix in the (versioned) bucket, then the access point. |
+
+Before it releases a pod, the app runs `session-stop.sh` in it through the exec API: it
+ends every process of the session's user, then unmounts `/workspace`. The CLIs keep SQLite
+databases and lock files in their home on the S3 Files mount, and a lock on that mount is
+a lease the server holds for the client. When a pod was deleted with the CLI still
+running, nothing released those locks until the lease ran out, so a quick Restore found
+the Codex conversation "open in another app" and opencode reported "database disk image
+is malformed". Ending the processes first releases the locks at once.
 
 New agent is fast because the pod is already warm: claiming a warm pod, creating the access
 point, mounting the folder and starting the CLI measured about 1.4 seconds end to end on the

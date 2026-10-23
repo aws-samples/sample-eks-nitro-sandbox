@@ -69,6 +69,15 @@ export async function release(session) {
   const entry = live.get(session);
   if (!entry) return;
   live.delete(session);
+  // Stop the CLI and unmount the folder first, so its locks are released now rather than
+  // when the NFS lease runs out. The pod is released either way: a failed stop is logged,
+  // and the next Restore then waits out the lease (Codex) or may find a stale database.
+  try {
+    await k8s.stopSession(entry.podName);
+    console.log(`session ${session}: stopped in ${entry.podName}`);
+  } catch (e) {
+    console.error(`session ${session}: clean stop in ${entry.podName} failed, releasing anyway: ${e?.message || e}`);
+  }
   await k8s.releaseClaim(entry.claimName);
 }
 

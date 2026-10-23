@@ -1,0 +1,42 @@
+#!/bin/sh
+# Stop a session cleanly before its pod is released. The app runs this through
+# `kubectl exec` on Close, on idle release and before Delete.
+#
+# Why: the CLIs keep SQLite databases (opencode's history, Codex's state) and lock files
+# (Codex's per-thread writer lock) in the CLI's home on /workspace, an NFS mount. A lock on
+# NFS is a lease the server keeps for the client. When the pod was deleted with the CLI
+# still running, nothing released those locks, so the server held them until the lease
+# ran out: a Restore within that time found Codex's conversation "open in another app",
+# and opencode read a stale SQLite WAL index and reported "database disk image is
+# malformed". Ending the processes while the pod is still up releases their locks at once,
+# and unmounting flushes what they wrote.
+set -u
+MOUNT=/workspace
+
+# 1. End every process of the dev user: tmux, the CLI and any daemon the CLI started.
+#    Signal as uid 1000 itself: the container drops CAP_KILL, so root cannot signal
+#    another user's processes. TERM first, so a CLI can close its databases; then KILL
+#    whatever is left after 10 seconds. Exiting releases the process's locks either way.
+#    Count only live processes: PID 1 is `sleep infinity`, which never reaps, so a process
+#    that has exited stays listed as a zombie (state Z). It holds no files and no locks.
+as_dev() { setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all "$@"; }
+live() { ps -u 1000 -o stat= 2>/dev/null | grep -vc '^Z'; }
+wait_gone() {  # $1 = number of half-second checks
+  i=0
+  while [ "$(live)" -gt 0 ] && [ "$i" -lt "$1" ]; do sleep 0.5; i=$((i + 1)); done
+}
+as_dev pkill -TERM -u 1000 2>/dev/null || true
+wait_gone 20
+as_dev pkill -KILL -u 1000 2>/dev/null || true
+wait_gone 10
+if [ "$(live)" -gt 0 ]; then
+  echo "session-stop: $(live) processes of uid 1000 are still running" >&2
+  exit 1
+fi
+
+# 2. Flush and unmount the session's folder (root, with the SYS_ADMIN the mount used).
+sync
+if grep -q " $MOUNT " /proc/mounts; then
+  umount "$MOUNT" || { echo "session-stop: umount $MOUNT failed" >&2; exit 1; }
+fi
+echo "session-stop: session processes ended and $MOUNT unmounted"
