@@ -555,11 +555,17 @@ holding capacity other demos share:
 ./scripts/clean.sh
 ```
 
-It deletes in reverse order (the warm pools first, so they stop booting replacements, then
-the claims, templates, policies and the app), removes only resources tagged
-`ManagedBy=coding-agents-for-developers` (re-checking the bucket's tag before deleting it),
-and exits non-zero if it skipped something or could not confirm a delete. It never removes a
-shared install: agent-sandbox, the EFS CSI driver and network policy enforcement stay, and
-the page above has the command to remove each if nothing else uses it. To remove the
-namespace and the cluster, follow the
+It deletes in reverse order: the warm pools first, so they stop booting replacements, then
+the claims, templates, policies and the app; the Pod Identity associations; the file
+system's access points and mount targets, then the file system, waiting until it is gone so
+it stops exporting to the bucket; every object version in the bucket, then the bucket; the
+IAM roles, the security group and the ECR repositories; the cluster-scoped ClusterRole and
+ClusterRoleBinding; and the namespace last. Before each AWS delete it checks the resource
+carries `ManagedBy=coding-agents-for-developers` (the ClusterRole and binding, the
+`app.kubernetes.io/part-of` label) and leaves anything without it alone. A resource that is
+already gone is not an error, but a lookup that fails, a delete that is refused or a
+resource it left alone makes it exit non-zero with an `INCOMPLETE:` line saying which. It
+never removes a shared install: agent-sandbox, the EFS CSI driver and network policy
+enforcement stay, and the page above has the command to remove each if nothing else uses
+it. To remove the cluster, follow the
 [hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up).
