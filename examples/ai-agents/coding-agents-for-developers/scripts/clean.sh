@@ -34,7 +34,7 @@ if ns_owner="$("${KCTL[@]}" get namespace "$NAMESPACE" \
 else
   case "$ns_owner" in
     *NotFound*) echo "namespace $NAMESPACE is already gone" ;;
-    *) echo "namespace $NAMESPACE: lookup failed, so its owner is unknown; refusing ($(printf '%s' "$ns_owner" | head -1))" >&2; exit 2 ;;
+    *) echo "namespace $NAMESPACE: lookup failed, so its owner is unknown; refusing ($(printf '%s' "$ns_owner" | grep -m1 .))" >&2; exit 2 ;;
   esac
 fi
 if [[ -n "$ns_present" ]]; then
@@ -52,13 +52,13 @@ say "Pod Identity associations"
 for sa in agent-app agent-session agent-session-codex; do
   if ! aid="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" --namespace "$NAMESPACE" \
       --service-account "$sa" --region "$AWS_REGION" --query 'associations[0].associationId' --output text 2>&1)"; then
-    note_fail "Pod Identity association for $sa: lookup failed, not confirmed gone ($(printf '%s' "$aid" | head -1))"
+    note_fail "Pod Identity association for $sa: lookup failed, not confirmed gone ($(printf '%s' "$aid" | grep -m1 .))"
     continue
   fi
   [[ "$aid" == a-* ]] || continue   # None: there is no association for this service account
   del_err="$(aws eks delete-pod-identity-association --cluster-name "$CLUSTER_NAME" \
     --association-id "$aid" --region "$AWS_REGION" 2>&1 >/dev/null)" \
-    || note_fail "Pod Identity association $aid ($sa): delete failed ($(printf '%s' "$del_err" | head -1))"
+    || note_fail "Pod Identity association $aid ($sa): delete failed ($(printf '%s' "$del_err" | grep -m1 .))"
 done
 
 # S3 Files: access points, mount targets, file system.
@@ -69,7 +69,7 @@ if [[ -z "$FS_ID" ]]; then
   # read as "there is none".
   if ! FS_ID="$(aws s3files list-file-systems --region "$AWS_REGION" \
       --query "fileSystems[?name=='$SAMPLE'].fileSystemId | [0]" --output text 2>&1)"; then
-    note_fail "file system lookup failed, not confirmed gone ($(printf '%s' "$FS_ID" | head -1))"
+    note_fail "file system lookup failed, not confirmed gone ($(printf '%s' "$FS_ID" | grep -m1 .))"
     FS_ID=
   fi
 fi
@@ -91,7 +91,7 @@ if [[ -n "$FS_ID" && "$FS_ID" != "None" ]]; then
   else
     case "$fs_err" in
       *ResourceNotFoundException*) echo "file system $FS_ID is already gone" ;;
-      *) note_fail "file system $FS_ID: lookup failed, not confirmed gone ($(printf '%s' "$fs_err" | head -1))" ;;
+      *) note_fail "file system $FS_ID: lookup failed, not confirmed gone ($(printf '%s' "$fs_err" | grep -m1 .))" ;;
     esac
   fi
 fi
@@ -107,7 +107,7 @@ if [[ -n "$fs_ours" ]]; then
       aws s3files delete-access-point --access-point-id "$ap" --region "$AWS_REGION" >/dev/null 2>&1 || note_fail "access point $ap"
     done
   else
-    note_fail "access points of $FS_ID: lookup failed, not deleted ($(printf '%s' "$aps" | head -1))"
+    note_fail "access points of $FS_ID: lookup failed, not deleted ($(printf '%s' "$aps" | grep -m1 .))"
     listed=
   fi
   if mts="$(aws s3files list-mount-targets --file-system-id "$FS_ID" --region "$AWS_REGION" \
@@ -117,7 +117,7 @@ if [[ -n "$fs_ours" ]]; then
       aws s3files delete-mount-target --mount-target-id "$mt" --region "$AWS_REGION" >/dev/null 2>&1 || note_fail "mount target $mt"
     done
   else
-    note_fail "mount targets of $FS_ID: lookup failed, not deleted ($(printf '%s' "$mts" | head -1))"
+    note_fail "mount targets of $FS_ID: lookup failed, not deleted ($(printf '%s' "$mts" | grep -m1 .))"
     listed=
   fi
   # Wait for the mount targets to drain before deleting the file system. A FAILED lookup
@@ -145,6 +145,15 @@ if [[ -n "$fs_ours" ]]; then
       fi
       sleep 10
     done
+    # Still refused after 5 minutes because the file system has writes it has not exported to
+    # the bucket yet: force the delete. That only drops data the next step deletes anyway,
+    # since the bucket is emptied and deleted right after. Any other refusal is reported.
+    if [[ -z "$fs_deleted" && "$fs_del_err" == *ConflictException*"pending export"* ]]; then
+      echo "file system $FS_ID still has writes pending export after 5 minutes; deleting it with --force-delete (the bucket they would go to is deleted next)"
+      if fs_del_err="$(aws s3files delete-file-system --file-system-id "$FS_ID" --region "$AWS_REGION" --force-delete 2>&1)"; then
+        fs_deleted=yes
+      fi
+    fi
     if [[ -n "$fs_deleted" ]]; then
       # Wait until it is really gone. While it exists it keeps exporting session writes to
       # the bucket, which would put objects back after the bucket drain below and make the
@@ -159,7 +168,7 @@ if [[ -n "$fs_ours" ]]; then
       done
       [[ -n "$fs_gone" ]] || note_fail "file system $FS_ID: delete accepted but still present after 10 minutes (last: ${fs_err:-unknown})"
     else
-      note_fail "file system $FS_ID: delete refused ($(printf '%s' "$fs_del_err" | head -1))"
+      note_fail "file system $FS_ID: delete refused ($(printf '%s' "$fs_del_err" | grep -m1 .))"
     fi
   else
     note_fail "mount targets for $FS_ID did not drain (last count: $left); not deleting the file system"
@@ -267,7 +276,7 @@ for role in "$APP_ROLE" "$MOUNT_ROLE" "$BEDROCK_ROLE" "$CODEX_ROLE" "$SYNC_ROLE"
   else
     case "$role_owner" in
       *NoSuchEntity*) continue ;;   # already gone
-      *) note_fail "IAM role $role: tag lookup failed, left untouched ($(printf '%s' "$role_owner" | head -1))"; continue ;;
+      *) note_fail "IAM role $role: tag lookup failed, left untouched ($(printf '%s' "$role_owner" | grep -m1 .))"; continue ;;
     esac
   fi
   for p in $(aws iam list-role-policies --role-name "$role" --query 'PolicyNames' --output text 2>/dev/null); do
@@ -279,7 +288,7 @@ for role in "$APP_ROLE" "$MOUNT_ROLE" "$BEDROCK_ROLE" "$CODEX_ROLE" "$SYNC_ROLE"
   else
     case "$get_err" in
       *NoSuchEntity*) : ;;   # confirmed gone
-      *) note_fail "IAM role $role: could not confirm deletion ($(printf '%s' "$get_err" | head -1))" ;;
+      *) note_fail "IAM role $role: could not confirm deletion ($(printf '%s' "$get_err" | grep -m1 .))" ;;
     esac
   fi
 done
@@ -304,7 +313,7 @@ if [[ -n "$SG_ID" && "$SG_ID" != "None" ]]; then
   else
     case "$desc_err" in
       *InvalidGroup.NotFound*|*does\ not\ exist*) : ;;   # confirmed gone
-      *) note_fail "security group $SG_ID: could not confirm deletion ($(printf '%s' "$desc_err" | head -1))" ;;
+      *) note_fail "security group $SG_ID: could not confirm deletion ($(printf '%s' "$desc_err" | grep -m1 .))" ;;
     esac
   fi
 fi
@@ -328,7 +337,7 @@ for name in base claude-code codex kiro-cli opencode pi oh-my-pi app; do
   else
     case "$repo_arn" in
       *RepositoryNotFoundException*) : ;;   # already gone
-      *) note_fail "ECR repository $repo: lookup failed, left untouched ($(printf '%s' "$repo_arn" | head -1))" ;;
+      *) note_fail "ECR repository $repo: lookup failed, left untouched ($(printf '%s' "$repo_arn" | grep -m1 .))" ;;
     esac
   fi
 done
@@ -350,7 +359,7 @@ for kind in clusterrolebinding clusterrole; do
   else
     case "$obj_owner" in
       *NotFound*) : ;;   # already gone
-      *) note_fail "$kind $obj: lookup failed, left untouched ($(printf '%s' "$obj_owner" | head -1))" ;;
+      *) note_fail "$kind $obj: lookup failed, left untouched ($(printf '%s' "$obj_owner" | grep -m1 .))" ;;
     esac
   fi
 done
@@ -371,7 +380,7 @@ elif "${KCTL[@]}" delete namespace "$NAMESPACE" --ignore-not-found --wait=true -
   else
     case "$ns_err" in
       *NotFound*) : ;;   # confirmed gone (kubectl prints "Error from server (NotFound): ...")
-      *) note_fail "namespace $NAMESPACE: could not confirm deletion ($(printf '%s' "$ns_err" | head -1))" ;;
+      *) note_fail "namespace $NAMESPACE: could not confirm deletion ($(printf '%s' "$ns_err" | grep -m1 .))" ;;
     esac
   fi
 else

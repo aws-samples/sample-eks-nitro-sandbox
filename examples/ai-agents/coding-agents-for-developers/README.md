@@ -728,7 +728,9 @@ holding capacity other demos share:
 It deletes in reverse order: the warm pools first, so they stop booting replacements, then
 the claims, templates, policies and the app; the Pod Identity associations; the file
 system's access points and mount targets, then the file system, waiting until it is gone so
-it stops exporting to the bucket; every object version in the bucket, then the bucket; the
+it stops exporting to the bucket (if it still has writes pending export after 5 minutes of
+retries, it deletes it with `--force-delete`, which drops only data the next step deletes
+anyway); every object version in the bucket, then the bucket; the
 IAM roles, the security group and the ECR repositories; the cluster-scoped ClusterRole and
 ClusterRoleBinding; and the namespace last. Before each AWS delete it checks the resource
 carries `ManagedBy=coding-agents-for-developers` (the ClusterRole and binding, the
