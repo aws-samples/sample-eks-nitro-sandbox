@@ -32,8 +32,7 @@ cd sample-eks-nitro-sandbox/examples/ai-agents/coding-agents-for-developers
 For this sample you also need [Docker](https://docs.docker.com/get-docker/) to build the
 images, the AWS CLI with the `aws s3files` commands, and `kubectl`. A run costs Amazon
 Bedrock usage per token for the five CLIs that use it, and S3 and S3 Files storage for the
-data each session keeps; the warm pools keep one pod per CLI running by default, each
-reserving its full memory request. Kiro CLI usage counts against the developer's own Kiro
+data each session keeps; the warm pools keep one pod per CLI running by default. Kiro CLI usage counts against the developer's own Kiro
 plan.
 
 ## Overview
@@ -510,11 +509,10 @@ https://github.com:22/ -> exit 28                               # allowed host, 
 - **The idle period and the pool size are settings.** The idle timeout is `IDLE_MINUTES` on
   the app (default 30). Each CLI's pool keeps `POOL_REPLICAS` pods warm (default 1); size it
   to the peak claim rate, not the number of sessions, and turn off the CLIs you do not need
-  by trimming the app's agent list. Each warm pod reserves its full memory request.
-- **The session pods request memory, and set nothing else.** A sandbox's VM is sized from
-  the pod's requests, and with none it gets about 1 vCPU and 130 MiB -- too little memory for
-  these CLIs. The `SandboxTemplate` requests 1536 MiB of memory, no CPU and no limits, from
-  this measurement of each CLI's pod during a model turn on the fresh run (`kubectl top
+  by trimming the app's agent list.
+- **The pods set no CPU or memory requests or limits.** Neither the `SandboxTemplate` nor
+  the app's Deployment sets `resources`, so each session pod runs at the Nitro sandbox's
+  default size. This is each CLI's pod during a model turn on the fresh run (`kubectl top
   pod`):
 
   ```text

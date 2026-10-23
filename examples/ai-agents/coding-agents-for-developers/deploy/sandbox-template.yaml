@@ -66,15 +66,8 @@ spec:
             capabilities:
               drop: ["ALL"]
               add: ["SYS_ADMIN", "SETUID", "SETGID"]
-          # A memory request, and nothing else. A sandbox's VM is sized from the pod's
-          # requests; with none it gets a small default (about 1 vCPU and 130 MiB), which is
-          # far too little memory for these CLIs -- Codex, the heaviest, peaks near 0.9 GiB on a
-          # model turn (`kubectl top pod`) -- so the request is what gives the VM room. CPU is
-          # left at the default: the CLIs peak under 0.1 vCPU. No limits: the VM's size is
-          # set by the request, and a limit above it would not make the VM bigger. The README
-          # has the measurement this value comes from.
-          resources:
-            requests: { memory: 1536Mi }
+          # No CPU or memory requests or limits: the pod runs at the Nitro sandbox's default
+          # size. The README shows each CLI's usage during a model turn.
 ---
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxWarmPool
