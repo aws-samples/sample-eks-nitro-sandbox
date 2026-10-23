@@ -71,6 +71,11 @@ docker push $REGISTRY/coding-agent:v1
 docker logout $REGISTRY
 ```
 
+The Dockerfile uses `COPY --chmod`, which needs BuildKit: Docker Desktop has it, and with
+Colima install the `docker-buildx` plugin. On an Apple silicon Mac, build the amd64 image
+with Rosetta emulation (for Colima, `colima start --vm-type vz --vz-rosetta`); under QEMU
+emulation, installing `python3-pytest` fails with a `BrokenPipeError` in `py3compile`.
+
 The pod sets `imagePullPolicy: IfNotPresent` for the fixed `:v1` tag, so a node that already pulled `:v1` keeps using its cached copy; when you rebuild the image, push it under a new tag (for example `:v2`) and update the tag in `fix-issue.yaml`.
 
 **Step 3: Give the ServiceAccount Bedrock access with Pod Identity.** The role trusts EKS
@@ -84,7 +89,7 @@ aws iam put-role-policy --role-name coding-agent-bedrock --policy-name bedrock-i
 kubectl apply -f service-account.yaml
 aws eks create-pod-identity-association --cluster-name $CLUSTER_NAME --region $AWS_REGION \
   --namespace $NAMESPACE --service-account coding-agent \
-  --role-arn arn:aws:iam::$ACCOUNT_ID:role/coding-agent-bedrock
+  --role-arn arn:aws:iam::${ACCOUNT_ID}:role/coding-agent-bedrock
 ```
 
 **Step 4: Create the repository, the issue and the token.** Push the sample app to a new
@@ -161,11 +166,24 @@ and the policy applies to them: without the rule they time out, from a sandboxed
 from an ordinary one.
 
 A standard Kubernetes `NetworkPolicy` can only allow addresses; the Auto Mode
-`ApplicationNetworkPolicy` accepts the same fields plus `domainNames`. Fill in your
-CoreDNS address and apply it:
+`ApplicationNetworkPolicy` accepts the same fields plus `domainNames`. DNS is allowed
+with an `ipBlock` on the cluster's DNS address: the kubelet's `clusterDNS`, which pods
+use as their nameserver. On EKS Auto Mode DNS is served on the node and there is no
+kube-dns Service; the policy allows DNS to that address as the Amazon EKS User Guide,
+*Use Network Policies with EKS Auto Mode*, does
+(<https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html>). Fill in
+`<COREDNS_IP>` with that address, read from the kubelet configuration of the first Ready
+node that answers, as the command below does (this needs permission to get
+`nodes/proxy`), and apply it:
 
 ```bash
-COREDNS_IP=$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')
+for DNS_NODE in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+    | awk '$2 == "True" {print $1}'); do
+  COREDNS_IP=$(kubectl get --raw "/api/v1/nodes/$DNS_NODE/proxy/configz" --request-timeout=10s 2>/dev/null \
+    | sed -n 's/.*"clusterDNS":\["\([^"]*\)".*/\1/p' | grep -Ex '[0-9]{1,3}(\.[0-9]{1,3}){3}')
+  [ -n "$COREDNS_IP" ] && break
+done
+echo "cluster DNS address: $COREDNS_IP"
 sed "s|<COREDNS_IP>|$COREDNS_IP|" egress-policy.yaml | kubectl apply -f -
 until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/coding-agent-egress-'; do sleep 2; done
 kubectl get applicationnetworkpolicies,policyendpoints
@@ -193,11 +211,22 @@ metadata:
 spec:
   runtimeClassName: isolated-sandbox
   serviceAccountName: coding-agent          # Pod Identity -> bedrock:InvokeModel*
+  automountServiceAccountToken: false       # Pod Identity injects its own token; the default SA token is unused
   restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000                         # the image's "node" user, which owns /workspace (Dockerfile:45,47)
+    runAsGroup: 1000
+    fsGroup: 1000                           # the emptyDir mounts below are group-owned by this gid
+    seccompProfile: { type: RuntimeDefault }
   containers:
     - name: claude
       image: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/coding-agent:v1
       imagePullPolicy: IfNotPresent
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: { drop: [ALL] }
       env:
         - { name: CLAUDE_CODE_USE_BEDROCK, value: "1" }
         - { name: AWS_REGION,              value: us-west-2 }
@@ -206,6 +235,9 @@ spec:
         - { name: ISSUE_NUMBER,            value: "<ISSUE_NUMBER>" }
       volumeMounts:
         - { name: git-token, mountPath: /var/run/secrets/git, readOnly: true }
+        - { name: home,      mountPath: /home/node }   # ~/.claude, ~/.gitconfig, ~/.config/gh, caches
+        - { name: workspace, mountPath: /workspace }   # the git clone and the agent's edits
+        - { name: tmp,       mountPath: /tmp }          # git and curl scratch
       command: ["/entrypoint.sh"]
       args:
         - |
@@ -218,9 +250,24 @@ spec:
         requests: { cpu: "2", memory: 4Gi }
         limits:   { cpu: "2", memory: 4Gi }
   volumes:
+    - name: home
+      emptyDir: {}
+    - name: workspace
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
     - name: git-token
       secret: { secretName: coding-agent-git-token }
 ```
+
+Beyond the Nitro VM boundary, the pod is hardened in depth. It runs as the image's
+non-root `node` user (`runAsNonRoot`, UID/GID 1000), drops every Linux capability, forbids
+privilege escalation, and takes the `RuntimeDefault` seccomp profile. Its root filesystem
+is read-only (`readOnlyRootFilesystem`): the three `emptyDir` mounts give the agent the
+only writable paths it needs, its home (`~/.claude`, the git and GitHub CLI config, caches),
+the `/workspace` clone, and `/tmp` scratch, each discarded when the pod exits. The default
+ServiceAccount token is not mounted (`automountServiceAccountToken: false`); the pod reaches
+Bedrock through the separate token EKS Pod Identity projects for it, not that one.
 
 The [entrypoint](entrypoint.sh) first checks that the network policy is
 in effect, then clones the repository with the mounted token, runs
@@ -240,19 +287,24 @@ The loop waits until the container has started (while the pod waits for a node o
 the image); if it keeps waiting, `kubectl describe pod fix-issue-$ISSUE_NUMBER` shows why.
 
 The log starts with the entrypoint's own lines, then Claude Code's summary of what it
-did, and ends with the pull request. Abridged; your summary text and numbers will
+did, and ends with the pull request. This is the whole log of one run, with the run's
+repository shown as `<GITHUB_OWNER>/<GITHUB_REPO>`; your summary text and numbers will
 differ:
 
 ```text
 Network policy is in effect: https://example.com is dropped, https://api.github.com answers
-Cloning your-github-user/example-app ...
+Cloning <GITHUB_OWNER>/<GITHUB_REPO> ...
 Reading issue #1: "date parser drops timezone on ISO-8601 input"
 Running Claude Code ...
-I fixed the bug and opened a pull request: <PR_URL>. The full suite passes (4 tests). [...]
-- **Root cause:** `parse_iso8601` cut the input down to its first 19 characters and parsed that with `strptime`. [...]
-- **Reproduction:** I added two tests to `tests/test_dates.py`, one for a numeric offset and one for `Z`. Both failed before the fix.
-- **Fix:** `src/dates.py` now calls `datetime.fromisoformat(value)`, which keeps the offset and accepts `Z`. Naive inputs still come back naive.
-Pushed agent/issue-1 ... pull request already open: <PR_URL>
+I opened PR #2 for issue #1: https://github.com/<GITHUB_OWNER>/<GITHUB_REPO>/pull/2. The full suite passes (4 tests), and it's on branch `agent/issue-1`.
+
+- **Root cause:** `parse_iso8601` cut the input to `value[:19]` and parsed it with `strptime`. That threw away the `+02:00` offset or `Z` suffix, so the result was always a naive datetime.
+- **Reproduction:** I added two tests, one for an explicit offset and one for `Z`. Both failed before the fix.
+- **Fix:** One line in `src/dates.py`. It now calls `datetime.fromisoformat(value)`.
+- **Python version:** `Z` is only accepted on Python 3.11 and later. This environment runs 3.11.2. If the app must support older versions, it would need to turn `Z` into `+00:00` first.
+
+I noted the version limit in the PR description too.
+Pushed agent/issue-1 ... pull request already open: https://github.com/<GITHUB_OWNER>/<GITHUB_REPO>/pull/2
 ```
 
 The last line says `pull request already open` when a pull request for the branch is

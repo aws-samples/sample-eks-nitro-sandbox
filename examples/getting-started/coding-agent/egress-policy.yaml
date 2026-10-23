@@ -5,8 +5,13 @@
 # and all egress are denied except DNS to CoreDNS, the Pod Identity credential
 # address, and HTTPS to the three names below.
 #
-# <COREDNS_IP> is your cluster's CoreDNS Service address:
-#   kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'
+# <COREDNS_IP> is your cluster's DNS address, the kubelet's clusterDNS, filled in by the
+# README's step 5 command (or by hand, from one node; needs permission to get nodes/proxy):
+#   kubectl get --raw "/api/v1/nodes/$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')/proxy/configz"
+#   and take kubeletconfig.clusterDNS[0]
+# On EKS Auto Mode DNS is node-local and there is no kube-dns Service, so DNS egress
+# is allowed with an ipBlock on the clusterDNS address, as the guide below does.
+# https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html
 # If you run in a Region other than us-west-2, change the Bedrock hostname to match.
 #
 # The Pod Identity rule is what lets the agent get its Bedrock credentials. A Nitro

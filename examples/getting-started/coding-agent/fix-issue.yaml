@@ -6,11 +6,22 @@ metadata:
 spec:
   runtimeClassName: isolated-sandbox
   serviceAccountName: coding-agent          # Pod Identity -> bedrock:InvokeModel*
+  automountServiceAccountToken: false       # Pod Identity injects its own token; the default SA token is unused
   restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000                         # the image's "node" user, which owns /workspace (Dockerfile:45,47)
+    runAsGroup: 1000
+    fsGroup: 1000                           # the emptyDir mounts below are group-owned by this gid
+    seccompProfile: { type: RuntimeDefault }
   containers:
     - name: claude
       image: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/coding-agent:v1
       imagePullPolicy: IfNotPresent
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: { drop: [ALL] }
       env:
         - { name: CLAUDE_CODE_USE_BEDROCK, value: "1" }
         - { name: AWS_REGION,              value: us-west-2 }
@@ -19,6 +30,9 @@ spec:
         - { name: ISSUE_NUMBER,            value: "<ISSUE_NUMBER>" }
       volumeMounts:
         - { name: git-token, mountPath: /var/run/secrets/git, readOnly: true }
+        - { name: home,      mountPath: /home/node }   # ~/.claude, ~/.gitconfig, ~/.config/gh, caches
+        - { name: workspace, mountPath: /workspace }   # the git clone and the agent's edits
+        - { name: tmp,       mountPath: /tmp }          # git and curl scratch
       command: ["/entrypoint.sh"]
       args:
         - |
@@ -31,5 +45,11 @@ spec:
         requests: { cpu: "2", memory: 4Gi }
         limits:   { cpu: "2", memory: 4Gi }
   volumes:
+    - name: home
+      emptyDir: {}
+    - name: workspace
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
     - name: git-token
       secret: { secretName: coding-agent-git-token }
