@@ -48,8 +48,9 @@ plan.
 - **Every session in its own sandbox.** Two terminals open side by side are two pods, each
   with its own kernel build, boot and virtio disks.
 - **No model API key in the sandbox.** The five CLIs that use Amazon Bedrock reach it
-  through EKS Pod Identity, with a role that may only invoke models. Kiro CLI uses the
-  developer's own Kiro sign-in, done once in the terminal and kept in the session's folder.
+  through EKS Pod Identity, with a role that may only invoke models (Codex's own role may
+  also use Bedrock's server-side web search). Kiro CLI uses the developer's own Kiro
+  sign-in, done once in the terminal and kept in the session's folder.
 
 *Figure 1: A developer picks a CLI in the web app; the app claims a warm Nitro sandbox pod
 from that CLI's pool, mounts the session's S3 Files folder into the guest with a credential
@@ -86,7 +87,7 @@ the images record what they installed.
 | [`deploy/sandbox-template.yaml`](deploy/sandbox-template.yaml) | The per-CLI `SandboxTemplate` and `SandboxWarmPool` |
 | [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The per-CLI egress policy |
 | [`deploy/rbac.yaml`](deploy/rbac.yaml), [`deploy/app.yaml`](deploy/app.yaml) | The service accounts and RBAC, and the app Deployment and Service |
-| [`iam/`](iam/) | The Bedrock, App and Mount role policies and trusts, and the per-session mount session policy |
+| [`iam/`](iam/) | The Bedrock, Codex, App and Mount role policies and trusts, and the per-session mount session policy |
 | [`scripts/setup.sh`](scripts/setup.sh), [`scripts/clean.sh`](scripts/clean.sh) | Create everything and apply it; remove it |
 | `.env.example` | The local values the sample needs; copy to `.env`, which git ignores |
 
@@ -112,7 +113,8 @@ add any that is missing. It never installs a cluster-wide thing for you. If you 
 Getting started and the storage samples, they are already there.
 
 **Step 2: The AWS resources.** `setup.sh` creates the sample's own S3 bucket, its S3 Files
-file system and mount targets, and three IAM roles, each with only what it needs. The bucket
+file system and mount targets, the four IAM roles below, each with only what it needs, and
+the role S3 Files itself assumes to sync the file system with the bucket. The bucket
 has S3 Versioning turned on because S3 Files requires it to sync the file system with the
 bucket ([S3 Files prerequisites](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-files-prereq-policies.html)).
 The sessions do not use the versions, but a deleted or overwritten file leaves one behind,
@@ -120,7 +122,8 @@ which is why Delete removes every version under the session's prefix.
 
 | Role | Used by | May |
 |---|---|---|
-| Bedrock | Every CLI pod that uses Bedrock, through Pod Identity | `bedrock:InvokeModel*` scoped to this account's inference profiles and the Anthropic foundation models, plus `bedrock-mantle:CreateInference` and the `bedrock-websearch` actions for Codex's server-side web search; no S3 Files access |
+| Bedrock | The pods of claude-code, kiro-cli, opencode, pi and oh-my-pi (service account `agent-session`), through Pod Identity | `bedrock:InvokeModel*` scoped to this account's inference profiles and the Anthropic foundation models; nothing else, no S3 Files access |
+| Codex | Codex's pods only (service account `agent-session-codex`), through Pod Identity | `bedrock-mantle:CreateInference` for its model on the Bedrock "Mantle" endpoint, and the `bedrock-websearch` actions for its server-side web search; nothing else, no S3 Files access |
 | App | The web app, through Pod Identity | Create (with tags), list and delete this file system's access points; list and delete object versions under the sample's prefix when a session is deleted; assume the Mount role |
 | Mount | Assumed only by the app, narrowed per session | `s3files:ClientMount` and `s3files:ClientWrite` on the file system, and read objects in the bucket; each session policy narrows it to one access point |
 
@@ -256,7 +259,17 @@ databases and lock files in their home on the S3 Files mount, and a lock on that
 a lease the server holds for the client. When a pod was deleted with the CLI still
 running, nothing released those locks until the lease ran out, so a quick Restore found
 the Codex conversation "open in another app" and opencode reported "database disk image
-is malformed". Ending the processes first releases the locks at once.
+is malformed". Ending the processes first releases the locks at once. Every step of the
+stop is bounded, so it ends within about 90 seconds: TERM, then KILL after 10 seconds, a
+`sync` of at most 30 seconds, then the unmount, retried for up to 30 seconds while the mount
+finishes closing files. It usually takes a second or two. If the stop fails, the app logs
+it and releases the pod anyway.
+
+What the app cannot read or do, it reports rather than assumes. If it cannot read a
+session's activity time, it logs the failure and keeps the session; only a pod whose tmux
+session is gone counts as idle since it started. If the `SandboxClaim` cannot be deleted,
+Close and Delete return the error, the app keeps the session in its list so the next
+minute's check retries the release, and Delete leaves the folder in place.
 
 New agent is fast because the pod is already warm. On the fresh run, the time from the
 click (`POST /api/new`) to a terminal with the CLI running was:
@@ -452,7 +465,7 @@ The own access point is mounted. As root (`id -u` prints `0`), the other session
 point is refused by the server (`access denied`, exit 32), because the credential's session
 policy allows `s3files:ClientMount` only on this session's own access-point ARN. The pod's
 own Pod Identity role is refused even on its own access point: it is the Bedrock role, with
-no S3 Files permission at all, so it cannot mount any access point. The mount credential is
+no S3 Files permission at all (nor has the Codex role), so it cannot mount any access point. The mount credential is
 the only thing that can, and it is scoped to one access point. (The watchdog line is the
 mount helper noting that the container has no init system for its background watchdog; it
 does not affect the mount.)
@@ -542,7 +555,7 @@ spec:
 | `policyTypes`, `Ingress` and `Egress` | Default-deny both ways, so only the rules below are allowed. |
 | `ingress: []` | Denies all ingress. The app reaches the pod through the Kubernetes exec API, which is not pod network traffic, so it needs no ingress rule. |
 | `egress` to `0.0.0.0/0` on 53 | Allows egress to any address on UDP and TCP 53. This is a project choice to keep the sample simple: it does not depend on how a given cluster serves DNS (on EKS Auto Mode the resolver is node-local rather than a pod behind a ClusterIP). What it allows is wider than DNS resolution: any process in the sandbox can reach any host on UDP or TCP 53, so it can send data out over DNS or to anything listening on port 53. What it costs is that port-53 egress is not confined to the cluster's own resolver. It still opens only port 53; every other port and protocol stays denied. |
-| `egress` to `169.254.170.23` on 80 | The Pod Identity agent on the node, for the Bedrock role. |
+| `egress` to `169.254.170.23` on 80 | The Pod Identity agent on the node, for the pod's role (the Bedrock role, or the Codex role for Codex). |
 | `egress` to the `domainNames` on 443 | The Bedrock runtime endpoint the Bedrock CLIs call their model on, the Bedrock "Mantle" endpoint Codex uses for its GPT model, `docs.aws.amazon.com` so the agents can fetch AWS documentation, and the short list of developer hosts (GitHub, npm, PyPI) the agents fetch from. The S3 Files mount reads over NFS (2049), not an S3 443 endpoint, so none is needed here. |
 | `egress` to `<MOUNT_TARGET_CIDRS>` on 2049 | The S3 Files mount targets, NFS over TLS. They are ENIs in the cluster VPC reached by resolved IP, so `setup.sh` resolves this file system's mount-target IPs and fills in one `/32` per target -- egress on 2049 is allowed to the sample's own mount targets only, not to anything on 2049 in the VPC. |
 
@@ -646,15 +659,17 @@ error line goes to standard error and so can print before or after its exit line
   hour ran out, the session's writes to its folder would start to fail.
 - **Codex's web search runs on the Mantle side, outside the egress policy.** Codex runs on
   a GPT model served through the Bedrock "Mantle" endpoint, and that model can call a
-  server-side web search and web fetch tool that Amazon Bedrock runs itself. The Bedrock
-  role grants it with the `bedrock-websearch` actions `InvokeSearch` and `InvokeFetch`
-  (scoped to this Region's tools) and `ExternalWebAccess`, which has no resource type to
-  scope to; without them Mantle answers `Access denied: web search is not authorized for
-  this identity` and the turn ends. The trade-off: those searches and fetches are made by
+  server-side web search and web fetch tool that Amazon Bedrock runs itself. The Codex role
+  grants it with the `bedrock-websearch` actions `InvokeSearch` and `InvokeFetch` (scoped to
+  this Region's tools) and `ExternalWebAccess`, which has no resource type to scope to;
+  without them Mantle answers `Access denied: web search is not authorized for this
+  identity` and the turn ends. The trade-off: those searches and fetches are made by
   Bedrock, not by the pod, so the sandbox egress policy does not limit them. The pod's own
-  egress is still restricted, but Codex can read any public web page through the tool.
-  Remove the two `WebSearch...` statements from
-  [`iam/bedrock-invoke-policy.json`](iam/bedrock-invoke-policy.json) to turn this off.
+  egress is still restricted, but any process in a Codex pod, not only the CLI, can use
+  this role to have Bedrock search and read public web pages. Only Codex's pods have the
+  grant: the other five CLIs run under the Bedrock role, which has none of it. Remove the
+  two `WebSearch...` statements from [`iam/codex-policy.json`](iam/codex-policy.json) to
+  turn this off.
 - **Session pods are not consolidated away.** The `SandboxTemplate` sets
   `karpenter.sh/do-not-disrupt: "true"`, so EKS Auto Mode does not evict a session pod to
   consolidate an underutilized node in the middle of a session. The pod still goes when its
@@ -703,7 +718,10 @@ ClusterRoleBinding; and the namespace last. Before each AWS delete it checks the
 carries `ManagedBy=coding-agents-for-developers` (the ClusterRole and binding, the
 `app.kubernetes.io/part-of` label) and leaves anything without it alone. A resource that is
 already gone is not an error, but a lookup that fails, a delete that is refused or a
-resource it left alone makes it exit non-zero with an `INCOMPLETE:` line saying which. It
+resource it left alone makes it exit non-zero with an `INCOMPLETE:` line saying which. If it
+cannot read the namespace's label at all, it stops before deleting anything, since it
+cannot tell whose the namespace is; and if it cannot list the file system's access points
+or mount targets, it leaves the file system and the bucket for the next run. It
 never removes a shared install: agent-sandbox, the EFS CSI driver and network policy
 enforcement stay, and the page above has the command to remove each if nothing else uses
 it. To remove the cluster, follow the

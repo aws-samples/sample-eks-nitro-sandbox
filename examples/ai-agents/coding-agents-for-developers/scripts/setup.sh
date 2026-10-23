@@ -43,6 +43,7 @@ S3_BUCKET_NAME="${S3_BUCKET_NAME:-$SAMPLE-$ACCOUNT_ID-$AWS_REGION}"
 APP_ROLE="$SAMPLE-app"
 MOUNT_ROLE="$SAMPLE-mount"
 BEDROCK_ROLE="$SAMPLE-bedrock"
+CODEX_ROLE="$SAMPLE-bedrock-codex"
 SYNC_ROLE="$SAMPLE-s3files-sync"
 SG_NAME="$SAMPLE-nfs"
 
@@ -135,6 +136,12 @@ mk_role "$BEDROCK_ROLE" "$ROOT/iam/pod-identity-trust.json"
 render "$ROOT/iam/bedrock-invoke-policy.json" > /tmp/$SAMPLE-bedrock-perm.json
 aws iam put-role-policy --role-name "$BEDROCK_ROLE" --policy-name bedrock \
   --policy-document file:///tmp/$SAMPLE-bedrock-perm.json
+# Codex's pods get their own role: its model is on the Bedrock Mantle endpoint, and its
+# server-side web search is a grant no other CLI's pod should hold.
+mk_role "$CODEX_ROLE" "$ROOT/iam/pod-identity-trust.json"
+render "$ROOT/iam/codex-policy.json" > /tmp/$SAMPLE-codex-perm.json
+aws iam put-role-policy --role-name "$CODEX_ROLE" --policy-name codex \
+  --policy-document file:///tmp/$SAMPLE-codex-perm.json
 mk_role "$APP_ROLE" "$ROOT/iam/pod-identity-trust.json"
 
 # --- S3 Files file system, mount targets, security group ---
@@ -242,6 +249,7 @@ assoc() { # service-account  role-arn
 say "Pod Identity associations"
 assoc agent-app "$(aws iam get-role --role-name "$APP_ROLE" --query Role.Arn --output text)"
 assoc agent-session "$(aws iam get-role --role-name "$BEDROCK_ROLE" --query Role.Arn --output text)"
+assoc agent-session-codex "$(aws iam get-role --role-name "$CODEX_ROLE" --query Role.Arn --output text)"
 
 # --- 3. Images ---
 say "Build and push images"
@@ -278,8 +286,10 @@ EGRESS
 }
 IFS=',' read -ra clis <<< "$AGENT_CLIS"
 for cli in "${clis[@]}"; do
+  if [ "$cli" = "codex" ]; then session_sa=agent-session-codex; else session_sa=agent-session; fi
   sed -e "s|<CLI>|$cli|g" -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" -e "s|<AWS_REGION>|$AWS_REGION|g" \
       -e "s|<POOL_REPLICAS>|$POOL_REPLICAS|g" -e "s|<IMAGE_TAG>|$IMAGE_TAG|g" \
+      -e "s|<SESSION_SA>|$session_sa|g" \
       "$ROOT/deploy/sandbox-template.yaml" \
     | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
   # Fill the <KIRO_CLI_EGRESS> and <MOUNT_TARGET_CIDRS> placeholder lines. awk keeps each

@@ -46,7 +46,7 @@ spec:
       # The pod holds no AWS identity of its own: the mount credential arrives per
       # session through exec, and the model credential (for the Bedrock CLIs) comes
       # from the serviceAccount's Pod Identity role, which may only invoke models.
-      serviceAccountName: agent-session
+      serviceAccountName: <SESSION_SA>   # agent-session-codex for codex, agent-session for the rest
       automountServiceAccountToken: false
       restartPolicy: Never
       containers:
