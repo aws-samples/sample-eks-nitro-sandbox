@@ -48,6 +48,7 @@ spec:
         - domainNames:
             - bedrock-runtime.<AWS_REGION>.amazonaws.com
             - bedrock-mantle.<AWS_REGION>.api.aws
+            - docs.aws.amazon.com
             - github.com
             - codeload.github.com
             - objects.githubusercontent.com
@@ -57,10 +58,13 @@ spec:
       ports:
         - { protocol: TCP, port: 443 }
     # The S3 Files mount targets are ENIs in the cluster VPC; the sandbox connects to one
-    # over TLS on 2049. Allow NFS to the VPC CIDR (a domainNames rule cannot cover the NFS
-    # connection reliably, because the mount target is reached by its resolved IP).
+    # over TLS on 2049. setup.sh resolves this file system's mount-target IPs and fills
+    # <MOUNT_TARGET_CIDRS> with one /32 ipBlock each, so NFS egress is allowed only to the
+    # sample's own mount targets rather than to anything on 2049 in the VPC. (A domainNames
+    # rule cannot cover the NFS connection, because the mount target is reached by its
+    # resolved IP, not a stable name.)
     - to:
-        - ipBlock: { cidr: <VPC_CIDR> }
+<MOUNT_TARGET_CIDRS>
       ports:
         - { protocol: TCP, port: 2049 }
     # Per-CLI extra egress. setup.sh fills <KIRO_CLI_EGRESS> only when rendering this

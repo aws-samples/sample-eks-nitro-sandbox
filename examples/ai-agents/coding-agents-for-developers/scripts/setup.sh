@@ -69,8 +69,15 @@ npol="$("${KCTL[@]}" get configmap -n kube-system amazon-vpc-cni \
 # pod supplies (see the README). We do not touch the shared CSI role here.
 
 # --- 2. AWS resources the sample owns ---
+# Reuse only what this sample created. For a resource that already exists, confirm it
+# carries ManagedBy=$SAMPLE before adopting it, and stop otherwise, so a re-run never
+# retags or reconfigures something another demo owns that happens to share the name.
 say "Bucket $S3_BUCKET_NAME"
-if ! aws s3api head-bucket --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+if aws s3api head-bucket --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+  owner="$(aws s3api get-bucket-tagging --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" \
+    --query "TagSet[?Key=='ManagedBy'].Value | [0]" --output text 2>/dev/null || true)"
+  [[ "$owner" == "$SAMPLE" ]] || die "bucket $S3_BUCKET_NAME exists but is not tagged ManagedBy=$SAMPLE (found: ${owner:-none}); refusing to adopt it"
+else
   aws s3api create-bucket --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" \
     --create-bucket-configuration LocationConstraint="$AWS_REGION" >/dev/null
 fi
@@ -87,9 +94,16 @@ aws s3api put-public-access-block --bucket "$S3_BUCKET_NAME" --region "$AWS_REGI
 
 say "IAM roles (Bedrock, App, Mount) and the S3 Files sync role"
 mk_role() { # name  trust-json-file
-  aws iam get-role --role-name "$1" >/dev/null 2>&1 || \
+  if aws iam get-role --role-name "$1" >/dev/null 2>&1; then
+    # Exists already: adopt only if it is the sample's. A same-named role from another
+    # owner must not be reused (its trust policy and permissions would be rewritten below).
+    owner="$(aws iam list-role-tags --role-name "$1" \
+      --query "Tags[?Key=='ManagedBy'].Value | [0]" --output text 2>/dev/null || true)"
+    [[ "$owner" == "$SAMPLE" ]] || die "IAM role $1 exists but is not tagged ManagedBy=$SAMPLE (found: ${owner:-none}); refusing to adopt it"
+  else
     aws iam create-role --role-name "$1" --assume-role-policy-document "file://$2" \
       --tags Key=ManagedBy,Value=$SAMPLE Key=auto-delete,Value=no >/dev/null
+  fi
 }
 render() { sed -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" -e "s|<AWS_REGION>|$AWS_REGION|g" \
   -e "s|<S3_FILES_FS_ID>|${S3_FILES_FS_ID:-PENDING}|g" -e "s|<S3_BUCKET_NAME>|$S3_BUCKET_NAME|g" \
@@ -112,24 +126,31 @@ EOF
 aws iam put-role-policy --role-name "$SYNC_ROLE" --policy-name sync --policy-document file:///tmp/$SAMPLE-sync-perm.json
 SYNC_ROLE_ARN="$(aws iam get-role --role-name "$SYNC_ROLE" --query Role.Arn --output text)"
 
-# Bedrock and App roles trust EKS Pod Identity.
+# Bedrock and App roles trust EKS Pod Identity. The Bedrock policy is rendered (it scopes
+# model invocation to this account's inference profiles and foundation models), so pass it
+# through render() like the others rather than attaching the raw file.
 mk_role "$BEDROCK_ROLE" "$ROOT/iam/pod-identity-trust.json"
+render "$ROOT/iam/bedrock-invoke-policy.json" > /tmp/$SAMPLE-bedrock-perm.json
 aws iam put-role-policy --role-name "$BEDROCK_ROLE" --policy-name bedrock \
-  --policy-document "file://$ROOT/iam/bedrock-invoke-policy.json"
+  --policy-document file:///tmp/$SAMPLE-bedrock-perm.json
 mk_role "$APP_ROLE" "$ROOT/iam/pod-identity-trust.json"
 
 # --- S3 Files file system, mount targets, security group ---
 say "Security group (NFS 2049 from the cluster security group)"
 VPC="$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" --query cluster.resourcesVpcConfig.vpcId --output text)"
 CLUSTER_SG="$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" --query cluster.resourcesVpcConfig.clusterSecurityGroupId --output text)"
+# Find only THIS sample's security group: filter on the ManagedBy tag as well as the name,
+# so a same-named group another demo owns in this VPC is not adopted. If one exists by name
+# without our tag, the create below fails on the duplicate name, which is the right outcome.
 SG_ID="$(aws ec2 describe-security-groups --region "$AWS_REGION" \
-  --filters "Name=vpc-id,Values=$VPC" "Name=group-name,Values=$SG_NAME" \
+  --filters "Name=vpc-id,Values=$VPC" "Name=group-name,Values=$SG_NAME" "Name=tag:ManagedBy,Values=$SAMPLE" \
   --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)"
 if [[ "$SG_ID" == "None" || -z "$SG_ID" ]]; then
   SG_ID="$(aws ec2 create-security-group --group-name "$SG_NAME" \
     --description "NFS 2049 from cluster SG for $SAMPLE" --vpc-id "$VPC" --region "$AWS_REGION" \
     --tag-specifications "ResourceType=security-group,Tags=[{Key=Name,Value=$SG_NAME},{Key=ManagedBy,Value=$SAMPLE},{Key=auto-delete,Value=no}]" \
-    --query GroupId --output text)"
+    --query GroupId --output text)" \
+    || die "could not create security group $SG_NAME (a group with this name may already exist in $VPC under another owner)"
   aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol tcp --port 2049 \
     --source-group "$CLUSTER_SG" --region "$AWS_REGION" >/dev/null
 fi
@@ -137,6 +158,12 @@ fi
 say "S3 Files file system"
 S3_FILES_FS_ID="$(aws s3files list-file-systems --region "$AWS_REGION" \
   --query "fileSystems[?name=='$SAMPLE'].fileSystemId | [0]" --output text 2>/dev/null || true)"
+if [[ "$S3_FILES_FS_ID" != "None" && -n "$S3_FILES_FS_ID" ]]; then
+  # Found a file system with the sample's name: adopt it only if it carries our tag.
+  fs_owner="$(aws s3files list-tags-for-resource --resource-id "$S3_FILES_FS_ID" --region "$AWS_REGION" \
+    --query "tags[?key=='ManagedBy'].value | [0]" --output text 2>/dev/null || true)"
+  [[ "$fs_owner" == "$SAMPLE" ]] || die "file system $S3_FILES_FS_ID is named $SAMPLE but not tagged ManagedBy=$SAMPLE (found: ${fs_owner:-none}); refusing to adopt it"
+fi
 if [[ "$S3_FILES_FS_ID" == "None" || -z "$S3_FILES_FS_ID" ]]; then
   S3_FILES_FS_ID="$(aws s3files create-file-system --region "$AWS_REGION" \
     --bucket "arn:aws:s3:::$S3_BUCKET_NAME" --prefix "$S3_PREFIX/" --role-arn "$SYNC_ROLE_ARN" \
@@ -144,10 +171,14 @@ if [[ "$S3_FILES_FS_ID" == "None" || -z "$S3_FILES_FS_ID" ]]; then
     --tags key=Name,value=$SAMPLE key=ManagedBy,value=$SAMPLE key=auto-delete,value=no \
     --query fileSystemId --output text)"
 fi
+fs_status=""
 for i in $(seq 1 90); do
-  st="$(aws s3files get-file-system --file-system-id "$S3_FILES_FS_ID" --region "$AWS_REGION" --query status --output text)"
-  [[ "${st^^}" == "AVAILABLE" ]] && break; [[ "${st^^}" == "ERROR" ]] && die "file system ERROR"; sleep 5
+  fs_status="$(aws s3files get-file-system --file-system-id "$S3_FILES_FS_ID" --region "$AWS_REGION" --query status --output text)"
+  [[ "${fs_status^^}" == "AVAILABLE" ]] && break; [[ "${fs_status^^}" == "ERROR" ]] && die "file system ERROR"; sleep 5
 done
+# Do not proceed on a file system that never became available: the mount targets and every
+# later step depend on it.
+[[ "${fs_status^^}" == "AVAILABLE" ]] || die "file system $S3_FILES_FS_ID did not become AVAILABLE (last status: ${fs_status:-unknown})"
 
 say "Mount targets, one per cluster subnet"
 for subnet in $(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" \
@@ -157,11 +188,16 @@ for subnet in $(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_R
   [[ "$have" == "None" || -z "$have" ]] && aws s3files create-mount-target \
     --file-system-id "$S3_FILES_FS_ID" --subnet-id "$subnet" --security-groups "$SG_ID" --region "$AWS_REGION" >/dev/null
 done
+pending=1
 for i in $(seq 1 90); do
   pending="$(aws s3files list-mount-targets --file-system-id "$S3_FILES_FS_ID" --region "$AWS_REGION" \
     --query "length(mountTargets[?status!='available'])" --output text 2>/dev/null || echo 1)"
   [[ "$pending" == "0" ]] && break; sleep 10
 done
+# Do not proceed until every mount target is available: the egress policy's
+# <MOUNT_TARGET_CIDRS> and every session's mount depend on them. A lookup failure above
+# leaves pending=1, which this also catches.
+[[ "$pending" == "0" ]] || die "mount targets for $S3_FILES_FS_ID did not all become available ($pending not available / lookup failed)"
 
 # Now that the file system id is known, attach the App and Mount policies and the Mount
 # trust (which names the App role).
@@ -177,7 +213,17 @@ MOUNT_ROLE_ARN="$(aws iam get-role --role-name "$MOUNT_ROLE" --query Role.Arn --
 
 # --- Namespace, service accounts, Pod Identity associations ---
 say "Namespace $NAMESPACE"
-"${KCTL[@]}" get namespace "$NAMESPACE" >/dev/null 2>&1 || "${KCTL[@]}" create namespace "$NAMESPACE"
+# Create the namespace only when absent; applying over an existing one counts as adopting
+# it. If it already exists, it must either be unlabelled (a fresh namespace we are about to
+# claim) or already carry our part-of label -- never another demo's label, which we would
+# otherwise overwrite and then delete on clean up.
+if "${KCTL[@]}" get namespace "$NAMESPACE" >/dev/null 2>&1; then
+  ns_owner="$("${KCTL[@]}" get namespace "$NAMESPACE" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}' 2>/dev/null || true)"
+  [[ -z "$ns_owner" || "$ns_owner" == "$SAMPLE" ]] \
+    || die "namespace $NAMESPACE already exists and is labelled app.kubernetes.io/part-of=$ns_owner, not $SAMPLE; refusing to adopt it"
+else
+  "${KCTL[@]}" create namespace "$NAMESPACE"
+fi
 "${KCTL[@]}" label namespace "$NAMESPACE" app.kubernetes.io/part-of=$SAMPLE --overwrite >/dev/null
 sed "s|<NAMESPACE>|$NAMESPACE|g" "$ROOT/deploy/rbac.yaml" | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
 
@@ -197,7 +243,19 @@ say "Build and push images"
 
 # --- 4. Apply per-CLI templates/pools/policies and the app ---
 say "Apply SandboxTemplates, warm pools, egress policies"
-vpc_cidr="$(aws ec2 describe-vpcs --vpc-ids "$VPC" --region "$AWS_REGION" --query 'Vpcs[0].CidrBlock' --output text)"
+
+# Resolve this file system's mount-target IPs and render them as one /32 ipBlock each, so
+# the NFS (2049) egress rule is scoped to the sample's own mount targets rather than to the
+# whole VPC. Stop if none resolve: an empty block would leave the pods unable to mount.
+mt_ips="$(aws s3files list-mount-targets --file-system-id "$S3_FILES_FS_ID" --region "$AWS_REGION" \
+  --query 'mountTargets[].ipAddress' --output text 2>/dev/null || true)"
+[ -n "$mt_ips" ] || die "could not resolve mount-target IPs for $S3_FILES_FS_ID"
+mount_target_cidrs=""
+for ip in $mt_ips; do
+  mount_target_cidrs="${mount_target_cidrs}        - ipBlock: { cidr: ${ip}/32 }
+"
+done
+
 # kiro-cli alone reaches its Kiro / Amazon Q Developer sign-in and the CodeWhisperer
 # streaming service instead of Amazon Bedrock. Those endpoints live in the developer's Kiro
 # Region (independent of this cluster's Region), so allow *.amazonaws.com on 443 for the
@@ -216,14 +274,17 @@ for cli in "${clis[@]}"; do
   sed -e "s|<CLI>|$cli|g" -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" -e "s|<AWS_REGION>|$AWS_REGION|g" \
       -e "s|<POOL_REPLICAS>|$POOL_REPLICAS|g" "$ROOT/deploy/sandbox-template.yaml" \
     | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
-  # Fill the <KIRO_CLI_EGRESS> placeholder line with the extra rule for kiro-cli, empty for
-  # the rest. awk keeps the multi-line block's indentation, which a sed substitution would
-  # mangle. Match the placeholder only when it is the whole line (^<KIRO_CLI_EGRESS>$) so the
-  # comment above that mentions the name by text is left untouched.
+  # Fill the <KIRO_CLI_EGRESS> and <MOUNT_TARGET_CIDRS> placeholder lines. awk keeps each
+  # multi-line block's indentation, which a sed substitution would mangle. Match each
+  # placeholder only as a whole line (^<...>$) so a comment that mentions the name by text
+  # is left untouched. <MOUNT_TARGET_CIDRS> must always be non-empty (checked above).
   if [ "$cli" = "kiro-cli" ]; then extra="$(kiro_cli_egress)"; else extra=""; fi
-  awk -v repl="$extra" '/^<KIRO_CLI_EGRESS>$/ { if (repl != "") print repl; next } { print }' \
+  awk -v repl="$extra" -v mtc="$mount_target_cidrs" '
+      /^<KIRO_CLI_EGRESS>$/   { if (repl != "") printf "%s", repl ORS; next }
+      /^<MOUNT_TARGET_CIDRS>$/ { printf "%s", mtc; next }
+      { print }' \
       "$ROOT/deploy/egress-policy.yaml" \
-    | sed -e "s|<CLI>|$cli|g" -e "s|<AWS_REGION>|$AWS_REGION|g" -e "s|<VPC_CIDR>|$vpc_cidr|g" \
+    | sed -e "s|<CLI>|$cli|g" -e "s|<AWS_REGION>|$AWS_REGION|g" \
     | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
 done
 

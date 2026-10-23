@@ -118,13 +118,25 @@ export async function startSession(podName, { credential, fsId, apId, azId }) {
 
 // Refresh the mount credential before it expires: write the new body into the pod's
 // tmpfs credential file. Same one-line base64 delivery, decoded in the pod.
+//
+// Fail CLOSED: decode into a temporary file first, require a non-empty line, a successful
+// base64 decode AND a well-formed credential body, then chmod and atomically rename over
+// the live file. The live credential is never truncated until a valid replacement exists,
+// so empty stdin or a corrupt line leaves the running mount's credential intact and the
+// exec exits non-zero (which execOnce surfaces as a rejected promise) rather than
+// replacing a good credential with an empty file.
 export async function refreshCredential(podName, credential) {
-  await execOnce(
-    podName,
-    ["/bin/sh", "-c",
-      "IFS= read -r b64; printf %s \"$b64\" | base64 -d > /dev/shm/session/credentials && chmod 600 /dev/shm/session/credentials"],
-    b64line(credential),
-  );
+  const script = [
+    "set -eu",
+    "IFS= read -r b64",
+    '[ -n "${b64:-}" ] || { echo "refresh: empty credential on stdin" >&2; exit 1; }',
+    "tmp=/dev/shm/session/credentials.new",
+    'printf %s "$b64" | base64 -d > "$tmp" || { echo "refresh: base64 decode failed" >&2; rm -f "$tmp"; exit 1; }',
+    'grep -q "^aws_access_key_id" "$tmp" || { echo "refresh: credential malformed" >&2; rm -f "$tmp"; exit 1; }',
+    'chmod 600 "$tmp"',
+    'mv -f "$tmp" /dev/shm/session/credentials',
+  ].join("; ");
+  await execOnce(podName, ["/bin/sh", "-c", script], b64line(credential));
 }
 
 // tmux last-activity epoch, to find idle sessions.
@@ -187,9 +199,17 @@ function execOnce(podName, command, stdinBody) {
       120000,
     );
 
+    // The Kubernetes exec status callback is the ONLY authority on success: it fires once
+    // with status "Success" (exit 0) or a Failure object (non-zero exit / error). Resolve
+    // only from a "Success" status; treat anything else, and a socket close that arrives
+    // before any status, as a failure. A bare socket close is NOT success -- resolving on
+    // it would make a failed command (a bad credential refresh, a mount that never
+    // happened) look like it worked.
+    let gotStatus = false;
     exec
       .exec(NAMESPACE, podName, "agent", command, stdout, stderr, stdin, false,
         (status) => {
+          gotStatus = true;
           clearTimeout(timer);
           if (status?.status === "Success") done(resolve);
           else done(reject, new Error(err.trim() || status?.message || "exec failed"));
@@ -199,9 +219,15 @@ function execOnce(podName, command, stdinBody) {
         // then closes the exec's stdin channel, which the container reads as end of input.
         if (stdinBody !== undefined) stdin.push(stdinBody);
         stdin.push(null);
-        // Belt and braces: close the socket's stdin once the server echoes the close.
+        // If the socket closes before the status callback fired, that is a failure, not a
+        // success: the command's terminal status never arrived.
         if (ws && typeof ws.on === "function") {
-          ws.on("close", () => done(resolve));
+          ws.on("close", () => {
+            if (!gotStatus) {
+              clearTimeout(timer);
+              done(reject, new Error(err.trim() || `exec on ${podName} closed before a terminal status`));
+            }
+          });
         }
       })
       .catch((e) => { clearTimeout(timer); done(reject, e); });

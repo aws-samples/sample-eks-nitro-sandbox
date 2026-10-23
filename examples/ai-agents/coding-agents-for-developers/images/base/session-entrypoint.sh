@@ -153,11 +153,17 @@ fi
 #    open the credential and fail with EACCES. So the CLI's environment must not carry the
 #    mount credential's path at all; this is also why the mount credential stays unseen by
 #    the agent, as the comment above intends.
+#    `-u KIRO_CLI_AUTH_B64` strips the Kiro CLI auth bundle too. That bundle is an admin
+#    CREDENTIAL (a Builder ID / Identity Center OAuth token), injected into the pod's
+#    environment for kiro-cli's cli-setup.sh to seed into kiro-cli's store. cli-setup.sh
+#    ran above with it in scope (it needs it); from here on nothing does, so it is removed
+#    before the long-lived CLI starts, so the agent process cannot read the original
+#    admin token from its own environment. (It is absent for the other CLIs anyway.)
 # Start tmux DETACHED so this exec returns while the CLI keeps running in the pod. The
 # app attaches a browser terminal to the tmux session over a second exec; closing the
 # browser only detaches, so the CLI runs on.
 setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
-  env -u AWS_SHARED_CREDENTIALS_FILE -u AWS_PROFILE \
+  env -u AWS_SHARED_CREDENTIALS_FILE -u AWS_PROFILE -u KIRO_CLI_AUTH_B64 \
       HOME="$MOUNT/home" AWS_REGION="$AWS_REGION" CLI_CMD="$CLI_CMD" \
       AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE="${AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE:-}" \
       TERM=xterm-256color LANG=C.UTF-8 LC_ALL=C.UTF-8 \
