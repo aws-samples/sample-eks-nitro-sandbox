@@ -203,8 +203,10 @@ New agent and Restore both go through the same steps:
 4. Inside the guest, `session-entrypoint.sh` mounts the access point at `/workspace` with the
    S3 Files mount helper and that credential. Only this step runs as root, with the
    `SYS_ADMIN` capability the mount needs. Then tmux and the CLI start as an unprivileged
-   user whose home sits inside `/workspace`, so its settings, sign-in and history persist
-   with the code.
+   user whose home is `/workspace/home`, so its settings, sign-in and history persist with
+   the code. The CLI starts in `/workspace/project`, a folder of its own: Claude Code keeps
+   its answer to "do you trust this folder?" per folder, but not for the home directory,
+   so started in its home it asked again on every Restore.
 5. While the session runs, the app refreshes the credential before it expires.
 
 *Figure 3: How a session's folder reaches its pod. The pod boots with no folder. The web app

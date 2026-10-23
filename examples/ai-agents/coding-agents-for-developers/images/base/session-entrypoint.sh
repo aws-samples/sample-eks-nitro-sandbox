@@ -94,8 +94,15 @@ fi
 # own root directory owned uid/gid 1000 (mode 0770), so the dev user owns /workspace and
 # can create home. Create it as the dev user (the access point maps every client to 1000,
 # so files the CLI writes are owned 1000 and come back owned 1000 on restore).
+#
+# The CLI starts in $MOUNT/project, not in its home. Claude Code asks once whether to
+# trust the folder it starts in and keeps the answer per folder in its home, but it does
+# not keep the answer for the home directory itself: started in its home, it asked again
+# on every Restore, its default answer ("No, exit") ended `claude --continue`, and the
+# fallback below then started a fresh conversation. Started in a folder of its own, the
+# answer is kept, and each CLI's continue option finds the conversation it keys by folder.
 setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
-  /bin/sh -c "mkdir -p '$MOUNT/home'"
+  /bin/sh -c "mkdir -p '$MOUNT/home' '$MOUNT/project'"
 
 # A per-session runtime directory the dev user owns, for tools that write a lock or
 # socket to XDG_RUNTIME_DIR. Without this the default is /var/run, which only root can
@@ -172,7 +179,7 @@ fi
 # browser only detaches, so the CLI runs on.
 setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
   env -u AWS_SHARED_CREDENTIALS_FILE -u AWS_PROFILE \
-      HOME="$MOUNT/home" AWS_REGION="$AWS_REGION" RUN_CMD="$RUN_CMD" \
+      HOME="$MOUNT/home" WORKDIR="$MOUNT/project" AWS_REGION="$AWS_REGION" RUN_CMD="$RUN_CMD" \
       AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE="${AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE:-}" \
       TERM=xterm-256color LANG=C.UTF-8 LC_ALL=C.UTF-8 \
       XDG_RUNTIME_DIR="$RUNTIME_DIR" \
@@ -180,7 +187,7 @@ setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
       XDG_CONFIG_HOME="$MOUNT/home/.config" \
       XDG_DATA_HOME="$MOUNT/home/.local/share" \
       XDG_STATE_HOME="$MOUNT/home/.local/state" \
-      /bin/bash -lc 'mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"; cd "$HOME"; \
+      /bin/bash -lc 'mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"; cd "$WORKDIR"; \
         printf "%s\n" \
           "set -s default-terminal \"tmux-256color\"" \
           "set -s escape-time 0" \
