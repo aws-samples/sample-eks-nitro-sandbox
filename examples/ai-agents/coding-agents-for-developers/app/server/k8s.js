@@ -168,13 +168,19 @@ export async function stopSession(podName) {
   await execOnce(podName, ["/usr/local/bin/session-stop.sh"]);
 }
 
-// tmux last-activity epoch, to find idle sessions.
+// The last time anything happened in the session's terminal, as an epoch, to find idle
+// sessions: the newest of tmux's session_activity, which moves only on key input, and each
+// window's window_activity, which moves when the pane prints output. Reading the first
+// alone released an agent that was still working on its own: with a pane printing every
+// 15 s and no keys, session_activity aged past ten minutes while window_activity stayed
+// under five seconds. A CLI waiting at its prompt prints nothing, so it still goes idle.
 export async function lastActivity(podName) {
   const out = await execCapture(podName, [
     "/usr/bin/setpriv", "--reuid=1000", "--regid=1000", "--init-groups", "--inh-caps=-all",
     "env", "HOME=/workspace/home",
     "/bin/sh", "-c",
-    "tmux display-message -p -t agent '#{session_activity}' 2>/dev/null || echo 0",
+    "{ tmux display-message -p -t agent '#{session_activity}'; " +
+      "tmux list-windows -t agent -F '#{window_activity}'; } 2>/dev/null | sort -n | tail -1",
   ]);
   return parseInt(out.trim(), 10) || 0;
 }

@@ -243,7 +243,7 @@ mounts the same folder in a new pod, and only Delete removes the folder.*
 |---|---|
 | New agent | The app claims a warm pod, creates the access point, mounts the folder and starts the CLI. The pool boots a replacement. |
 | Minimize, or close the browser | Nothing changes in the cluster. The pod and the CLI keep running. |
-| No terminal activity for the idle period (default 30 minutes) | The app reads tmux's last-activity time in each pod every minute. Once the period passes, it stops the session cleanly (below) and deletes the `SandboxClaim`: the pod goes, the folder stays. |
+| No terminal activity for the idle period (default 30 minutes) | The app reads, every minute, the last time each session's terminal had key input or printed output (tmux's `session_activity` and `window_activity`). An agent still working on its own keeps printing, so it is not idle; a CLI waiting at its prompt prints nothing. Once the period passes, it stops the session cleanly (below) and deletes the `SandboxClaim`: the pod goes, the folder stays. |
 | Close the window | Same as idle: the session is stopped and the claim released, the folder stays, and the session moves to the session list. |
 | Restore | The app claims a new warm pod (a new pod UID), mounts the same folder and starts the CLI with its own continue-the-last-conversation option: `claude --continue`, `codex resume --last`, `kiro-cli chat --v3 --resume`, `opencode --continue`, `pi --continue` and `omp --continue`. The history is in the CLI's home inside the folder, so it comes back with it; a session restored before its first prompt starts the CLI fresh. |
 | Delete | The app deletes every object version and delete marker under the session's prefix in the (versioned) bucket, then the access point. |
