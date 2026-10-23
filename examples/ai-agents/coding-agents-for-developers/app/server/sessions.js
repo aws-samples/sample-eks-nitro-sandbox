@@ -74,26 +74,38 @@ export async function remove(developer, session) {
   await store.deleteSession(developer, session);
 }
 
-// Background loop: refresh credentials, release idle pods.
+// Background loop, every minute: release idle pods, and refresh each session's mount
+// credential before it expires. Failures are logged with the session name, never dropped.
+// A failed refresh leaves lastRefresh unchanged, so it is retried on the next tick; the
+// credential being replaced is valid for an hour and is refreshed after 30 minutes, so
+// there are about 30 retries before the session's mount credential would lapse.
 export function startBackgroundLoop() {
   setInterval(async () => {
     const now = Date.now();
     for (const entry of [...live.values()]) {
+      let step = "idle check";
       try {
         const last = (await k8s.lastActivity(entry.podName)) * 1000;
         const idleFor = now - (last || entry.startedAt);
         if (idleFor > IDLE_MS) {
+          step = "idle release";
           await release(entry.session);
+          console.log(`session ${entry.session}: released after ${Math.round(idleFor / 60000)} idle minutes`);
           continue;
         }
         if (now - (entry.lastRefresh || entry.startedAt) > REFRESH_MS) {
+          step = "credential refresh";
           const cred = await store.mountCredential(entry.apId, entry.developer, entry.cli, entry.session);
           await k8s.refreshCredential(entry.podName, cred);
           entry.lastRefresh = now;
+          console.log(`session ${entry.session}: mount credential refreshed`);
         }
-      } catch {
-        // A pod that has gone (node drained, crashed) is dropped from the live set on
-        // the next claim attempt; the folder is intact for restore.
+      } catch (e) {
+        const age = Math.round((now - (entry.lastRefresh || entry.startedAt)) / 60000);
+        console.error(
+          `session ${entry.session} (pod ${entry.podName}): ${step} failed, will retry next minute; ` +
+          `credential age ${age} min: ${e?.message || e}`
+        );
       }
     }
   }, 60 * 1000).unref();

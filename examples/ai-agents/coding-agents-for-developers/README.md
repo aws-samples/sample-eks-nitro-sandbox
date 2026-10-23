@@ -501,7 +501,10 @@ https://github.com:22/ -> exit 28                               # allowed host, 
   Files service quota *Access points per file system*, not adjustable), which is the ceiling
   on retained sessions; Delete reclaims one.
 - **The credential is refreshed.** An assumed-role credential lasts an hour; the app rewrites
-  it well before then, so an agent left running keeps writing to its folder past an hour.
+  it after 30 minutes, so an agent left running keeps writing to its folder past an hour. A
+  refresh that fails is logged by the app with the session's name
+  (`kubectl logs deploy/agent-app`) and retried every minute; if it kept failing until the
+  hour ran out, the session's writes to its folder would start to fail.
 - **Codex's web search runs on the Mantle side, outside the egress policy.** Codex runs on
   a GPT model served through the Bedrock "Mantle" endpoint, and that model can call a
   server-side web search and web fetch tool that Amazon Bedrock runs itself. The Bedrock
