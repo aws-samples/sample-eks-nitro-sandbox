@@ -53,12 +53,14 @@ export async function claimPod(cli, session) {
   // empty the claim creates a new pod that is briefly Pending with no node yet. The node
   // is needed to resolve the mount target's AZ, so wait for it rather than reading a node
   // name that is still undefined.
-  // If the claim never resolves, delete it so it does not hold a pod nobody tracks.
+  // If the claim never resolves, delete it so it does not hold a pod nobody tracks. The
+  // original error is the one the caller sees; a failed delete is logged with the claim.
   try {
     const { podName, node } = await waitForClaimPod(claimName);
     return { claimName, podName, node };
   } catch (e) {
-    await releaseClaim(claimName);
+    await releaseClaim(claimName).catch((re) =>
+      console.error(`claim ${claimName}: could not delete it after a failed start: ${re?.message || re}`));
     throw e;
   }
 }
@@ -102,13 +104,18 @@ async function waitForClaimPod(claimName, timeoutMs = 120000) {
   throw new Error(`claim ${claimName} did not resolve to a ready pod in time`);
 }
 
+// Delete a session's claim (the pod goes with it). A claim that is already gone is fine;
+// any other failure is thrown, so Close, idle release, Delete and a failed start never
+// report success while the claim and its pod remain.
 export async function releaseClaim(claimName) {
-  await custom
-    .deleteNamespacedCustomObject({
+  try {
+    await custom.deleteNamespacedCustomObject({
       group: GROUP, version: VERSION, namespace: NAMESPACE,
       plural: "sandboxclaims", name: claimName,
-    })
-    .catch(() => {});
+    });
+  } catch (e) {
+    if (e?.code !== 404) throw e;
+  }
 }
 
 // The AZ id of the node a pod runs on, for the S3 Files mount-target DNS name.
@@ -179,10 +186,19 @@ export async function lastActivity(podName) {
     "/usr/bin/setpriv", "--reuid=1000", "--regid=1000", "--init-groups", "--inh-caps=-all",
     "env", "HOME=/workspace/home",
     "/bin/sh", "-c",
-    "{ tmux display-message -p -t agent '#{session_activity}'; " +
-      "tmux list-windows -t agent -F '#{window_activity}'; } 2>/dev/null | sort -n | tail -1",
+    // "none" when the pod has no tmux session: the CLI is gone, so nothing will ever be
+    // active again and the session counts as idle since it started.
+    "if tmux has-session -t agent 2>/dev/null; then " +
+      "{ tmux display-message -p -t agent '#{session_activity}'; " +
+      "tmux list-windows -t agent -F '#{window_activity}'; } | sort -n | tail -1; " +
+      "else echo none; fi",
   ]);
-  return parseInt(out.trim(), 10) || 0;
+  // Accept only "none" or one epoch. Anything else (an exec that failed or printed nothing)
+  // throws: an unreadable activity time must never read as "idle" and release a live session.
+  const v = out.trim();
+  if (v === "none") return 0;
+  if (/^[0-9]{9,11}$/.test(v)) return parseInt(v, 10);
+  throw new Error(`could not read terminal activity in ${podName} (got ${JSON.stringify(v.slice(0, 40))})`);
 }
 
 // Attach a browser terminal to the pod's tmux session. Returns the exec's streams so the
@@ -269,17 +285,28 @@ function execOnce(podName, command, stdinBody) {
   });
 }
 
+// Run one command and resolve with its standard output. Rejects on a timeout, on an exec
+// that could not start, and on a non-success terminal status, so a caller cannot mistake a
+// failure for an empty answer.
 function execCapture(podName, command) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let out = "";
+    let err = "";
+    let settled = false;
+    const done = (fn, arg) => { if (!settled) { settled = true; clearTimeout(timer); fn(arg); } };
     const stdout = new Writable({ write(c, _e, cb) { out += c.toString(); cb(); } });
-    const stderr = new Writable({ write(_c, _e, cb) { cb(); } });
-    const finish = () => resolve(out);
-    const timer = setTimeout(finish, 15000);
+    const stderr = new Writable({ write(c, _e, cb) { err += c.toString(); cb(); } });
+    const timer = setTimeout(
+      () => done(reject, new Error(`exec timed out on ${podName}: ${command.join(" ").slice(0, 80)}`)),
+      15000,
+    );
     exec
       .exec(NAMESPACE, podName, "agent", command, stdout, stderr, null, false,
-        () => { clearTimeout(timer); finish(); })
-      .catch(() => { clearTimeout(timer); finish(); });
+        (status) => {
+          if (status?.status === "Success") done(resolve, out);
+          else done(reject, new Error(err.trim() || status?.message || `exec failed on ${podName}`));
+        })
+      .catch((e) => done(reject, e));
   });
 }
 

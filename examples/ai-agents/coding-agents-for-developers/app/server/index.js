@@ -38,17 +38,28 @@ function check({ developer, cli, session }, need) {
     throw new BadRequest("invalid session");
 }
 
+// The cap is on bytes, not characters: a body of multibyte UTF-8 has fewer characters than
+// bytes. Past the cap, stop keeping the body but keep reading it, so the request ends
+// normally and the 400 reaches the client; destroying the request here would close the
+// socket before the response.
 const MAX_BODY = 16 * 1024;
 const readBody = (req) =>
   new Promise((resolve, reject) => {
-    let b = "";
+    const chunks = [];
+    let bytes = 0;
+    let tooLarge = false;
     req.on("data", (c) => {
-      b += c;
-      if (b.length > MAX_BODY) { reject(new BadRequest("body too large")); req.destroy(); }
+      if (tooLarge) return;
+      bytes += c.length;
+      if (bytes > MAX_BODY) { tooLarge = true; chunks.length = 0; return; }
+      chunks.push(c);
     });
+    req.on("error", reject);
     req.on("end", () => {
+      if (tooLarge) return reject(new BadRequest("body too large"));
       try {
-        const v = b ? JSON.parse(b) : {};
+        const text = Buffer.concat(chunks).toString("utf8");
+        const v = text ? JSON.parse(text) : {};
         resolve(v && typeof v === "object" ? v : {});
       } catch {
         reject(new BadRequest("invalid JSON"));

@@ -13,6 +13,8 @@ const REFRESH_MS = 30 * 60 * 1000; // refresh the 60-min credential well before 
 // Live sessions keyed by session name: { developer, cli, session, apId, podName,
 // claimName, azId, startedAt }.
 const live = new Map();
+// Exported only so a test can seed an entry and check release() keeps it on failure.
+export const __liveForTest = live;
 
 // New agent: generate a name, claim a pod, mount a fresh folder, start the CLI.
 export async function newAgent(developer, cli) {
@@ -47,7 +49,8 @@ async function start(developer, cli, session, { resume = false } = {}) {
     // The session never became live, so nothing else would release its pod. The folder
     // (access point) stays: the session shows in the list and Restore or Delete applies.
     console.error(`start ${session}: failed, releasing claim ${claimName}: ${e?.message || e}`);
-    await k8s.releaseClaim(claimName);
+    await k8s.releaseClaim(claimName).catch((re) =>
+      console.error(`start ${session}: could not delete claim ${claimName}: ${re?.message || re}`));
     throw e;
   }
 
@@ -78,7 +81,14 @@ export async function release(session) {
   } catch (e) {
     console.error(`session ${session}: clean stop in ${entry.podName} failed, releasing anyway: ${e?.message || e}`);
   }
-  await k8s.releaseClaim(entry.claimName);
+  // If the claim cannot be deleted, the pod is still there: keep tracking the session, so
+  // the background loop retries the release and the caller sees the error.
+  try {
+    await k8s.releaseClaim(entry.claimName);
+  } catch (e) {
+    if (!live.has(session)) live.set(session, entry);
+    throw new Error(`could not delete claim ${entry.claimName}: ${e?.message || e}`);
+  }
 }
 
 export async function listClosed(developer) {
