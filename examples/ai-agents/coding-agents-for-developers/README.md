@@ -117,7 +117,7 @@ S3 Files file system and mount targets, and three IAM roles, each with only what
 
 | Role | Used by | May |
 |---|---|---|
-| Bedrock | Every CLI pod that uses Bedrock, through Pod Identity | `bedrock:InvokeModel*` scoped to this account's inference profiles and the Anthropic foundation models, plus `bedrock-mantle:CreateInference` for Codex; no S3 Files access |
+| Bedrock | Every CLI pod that uses Bedrock, through Pod Identity | `bedrock:InvokeModel*` scoped to this account's inference profiles and the Anthropic foundation models, plus `bedrock-mantle:CreateInference` and the `bedrock-websearch` actions for Codex's server-side web search; no S3 Files access |
 | App | The web app, through Pod Identity | Create, tag, read and delete this file system's access points; delete objects under session prefixes on cleanup; assume the Mount role |
 | Mount | Assumed only by the app, narrowed per session | `s3files:ClientMount` and `s3files:ClientWrite` on the file system, and read objects in the bucket; each session policy narrows it to one access point |
 
@@ -491,16 +491,17 @@ https://github.com:22/ -> exit 28                               # allowed host, 
   on retained sessions; Delete reclaims one.
 - **The credential is refreshed.** An assumed-role credential lasts an hour; the app rewrites
   it well before then, so an agent left running keeps writing to its folder past an hour.
-- **Codex's web search is a Mantle-side capability, gated per identity.** Codex runs on a
-  GPT model served through the Bedrock "Mantle" endpoint, and that model can call a
-  **server-side** `web_search` tool that Mantle runs itself -- not Codex fetching a URL
-  through the pod, so the sandbox egress policy neither enables nor blocks it, and the pod's
-  IAM role cannot grant it. When the model reaches for it on an identity that is not entitled
-  for Mantle web search, Mantle answers `Access denied: web search is not authorized for this
-  identity` and the turn can end on that error. Whether the server-side tool is available is
-  controlled by the Bedrock/Mantle entitlement on the calling identity, not by the sample.
-  (Codex's own `[tools] web_search = false` governs only Codex's client-side web tool, a
-  separate thing.)
+- **Codex's web search runs on the Mantle side, outside the egress policy.** Codex runs on
+  a GPT model served through the Bedrock "Mantle" endpoint, and that model can call a
+  server-side web search and web fetch tool that Amazon Bedrock runs itself. The Bedrock
+  role grants it with the `bedrock-websearch` actions `InvokeSearch` and `InvokeFetch`
+  (scoped to this Region's tools) and `ExternalWebAccess`, which has no resource type to
+  scope to; without them Mantle answers `Access denied: web search is not authorized for
+  this identity` and the turn ends. The trade-off: those searches and fetches are made by
+  Bedrock, not by the pod, so the sandbox egress policy does not limit them. The pod's own
+  egress is still restricted, but Codex can read any public web page through the tool.
+  Remove the two `WebSearch...` statements from
+  [`iam/bedrock-invoke-policy.json`](iam/bedrock-invoke-policy.json) to turn this off.
 - **The session pods turn the Nitro sandbox network and disk throttles off.** A sandbox pod
   has built-in defaults -- 100 Mbit/s ingress and egress (capped by a 1500 packets/second
   bucket), a 400 Mbit/s overlay (scratch) disk and 1500 overlay IOPS -- which are tight for

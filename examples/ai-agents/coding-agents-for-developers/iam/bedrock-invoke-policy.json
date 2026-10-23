@@ -21,6 +21,23 @@
         "bedrock-mantle:CreateInference"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "WebSearchToolsForCodex",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock-websearch:InvokeSearch",
+        "bedrock-websearch:InvokeFetch"
+      ],
+      "Resource": "arn:aws:bedrock-websearch:<AWS_REGION>:aws:tool/*"
+    },
+    {
+      "Sid": "WebSearchExternalAccessForCodex",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock-websearch:ExternalWebAccess"
+      ],
+      "Resource": "*"
     }
   ]
 }

@@ -24,12 +24,9 @@ cat > "$DIR/config.toml" <<TOML
 model = "openai.gpt-5.6-terra"
 model_provider = "amazon-bedrock"
 
-# The sandbox's egress policy allows only the endpoints the session needs (S3 Files, the
-# Bedrock endpoints, the developer hosts), so Codex's live web search has nowhere to go:
-# left on, the model reaches for the web_search tool, the request is denied, and the turn
-# fails with "web search is not authorized for this identity". Turn it off so Codex answers
-# from the model directly. A developer who wants web search adds the endpoints to the egress
-# policy and sets this back to true.
+# Codex's own client-side web search tool stays off. The GPT model on Mantle has a separate
+# server-side web search and fetch tool that Amazon Bedrock runs (not the pod), which the
+# Bedrock role grants with the bedrock-websearch actions; see the README.
 [tools]
 web_search = false
 
