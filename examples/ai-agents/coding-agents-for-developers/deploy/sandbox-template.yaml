@@ -30,6 +30,11 @@ spec:
       # actually uncap the network. rootfs-disk-* is already unlimited by default, and
       # conntrack-limit cannot be turned off, so neither is set here.
       annotations:
+        # A session pod holds a live CLI and its in-memory conversation. EKS Auto Mode's
+        # node consolidation (Karpenter) otherwise evicts pods on an "Underutilized" node to
+        # pack them elsewhere, which kills the session mid-turn. do-not-disrupt keeps the
+        # node from being consolidated while this pod runs; the claim's release still ends it.
+        karpenter.sh/do-not-disrupt: "true"
         sandbox.amazonaws.com/ingress-bandwidth: "disabled"
         sandbox.amazonaws.com/ingress-packets-per-second: "disabled"
         sandbox.amazonaws.com/egress-bandwidth: "disabled"

@@ -502,6 +502,11 @@ https://github.com:22/ -> exit 28                               # allowed host, 
   egress is still restricted, but Codex can read any public web page through the tool.
   Remove the two `WebSearch...` statements from
   [`iam/bedrock-invoke-policy.json`](iam/bedrock-invoke-policy.json) to turn this off.
+- **Session pods are not consolidated away.** The `SandboxTemplate` sets
+  `karpenter.sh/do-not-disrupt: "true"`, so EKS Auto Mode does not evict a session pod to
+  consolidate an underutilized node in the middle of a session. The pod still goes when its
+  claim is released (close, idle timeout). The cost is that a node holding a session is not
+  packed down until that session ends.
 - **The session pods turn the Nitro sandbox network and disk throttles off.** A sandbox pod
   has built-in defaults -- 100 Mbit/s ingress and egress (capped by a 1500 packets/second
   bucket), a 400 Mbit/s overlay (scratch) disk and 1500 overlay IOPS -- which are tight for
