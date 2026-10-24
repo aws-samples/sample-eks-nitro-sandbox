@@ -38,6 +38,10 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 - [Shared EFS storage](examples/storage/efs/README.md): two sandboxed pods share one EFS file system through a single access point, mounted over TLS with IAM authorization, so each pod reads and writes the same `/shared` directory.
 - [Shared S3 Files storage](examples/storage/s3-files/README.md): two sandboxed pods share one S3 Files access point, backed by a versioned S3 bucket, so the same data is both a shared `/shared` POSIX file system and plain S3 objects addressable from outside the cluster.
 
+## CI/CD
+
+- [GitHub Actions runners](examples/ci-cd/github-actions/README.md): the GitHub Actions Runner Controller on EKS, where every ephemeral runner pod for a queued job is its own sandbox, running a privileged `docker build` and arbitrary test code that never reach the shared node, and is deleted when the job ends.
+
 ## Preview the site locally
 
 ```bash
