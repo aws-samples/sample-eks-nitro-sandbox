@@ -50,7 +50,16 @@ case $ns_rc in
   1) die "namespace $NAMESPACE exists but is not labelled $NS_LABEL_KEY=$NS_LABEL_VAL; it belongs to something else. Set NAMESPACE to a free name in .env and re-run." ;;
   2) die "could not read the labels on namespace $NAMESPACE; stopping rather than guess" ;;
   3) kc_cluster create namespace "$NAMESPACE"
-     kc_cluster label namespace "$NAMESPACE" "$NS_LABEL_KEY=$NS_LABEL_VAL"
+     # The label is the only thing that marks the namespace as the sample's, so
+     # a namespace created without it is one every script here will refuse from
+     # then on, including the clean up. If the label does not take, remove the
+     # namespace this command just made rather than leaving that behind.
+     if ! kc_cluster label namespace "$NAMESPACE" "$NS_LABEL_KEY=$NS_LABEL_VAL"; then
+       echo "could not label namespace $NAMESPACE; deleting the namespace this run just created" >&2
+       kc_cluster delete namespace "$NAMESPACE" --wait=true --timeout=120s >&2 \
+         || echo "could not delete namespace $NAMESPACE either; remove it by hand: kubectl delete namespace $NAMESPACE" >&2
+       die "namespace $NAMESPACE could not be labelled $NS_LABEL_KEY=$NS_LABEL_VAL, so nothing was created"
+     fi
      echo "created namespace $NAMESPACE, labelled $NS_LABEL_KEY=$NS_LABEL_VAL" ;;
 esac
 

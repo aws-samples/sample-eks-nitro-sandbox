@@ -81,17 +81,27 @@ if [[ $ns_absent -eq 0 ]]; then
   step "2/6 delete the ScaledObject so KEDA stops scaling and removes its HPA"
   del scaledobject "$SCALEDOBJECT"
   # Confirm the HPA went with it, so nothing is left writing to a pool that is
-  # about to be deleted.
+  # about to be deleted. A read that FAILS is recorded as unconfirmed, never as
+  # "no HPA": hpa_for_pool returns non-zero for that case.
   left_hpa=""
-  for _ in $(seq 1 24); do
-    left_hpa="$(hpa_for_pool)"
-    [[ -z "$left_hpa" ]] && break
+  hpa_gone=""
+  hpa_unreadable=""
+  for _ in $(seq 1 24); do   # 24 * 5s = 2m
+    if left_hpa="$(hpa_for_pool)"; then
+      hpa_unreadable=""
+      [[ -z "$left_hpa" ]] && { hpa_gone=1; break; }
+    else
+      left_hpa=""
+      hpa_unreadable=1
+    fi
     sleep 5
   done
-  if [[ -n "$left_hpa" ]]; then
-    note_fail "hpa/$left_hpa still targets $POOL after the ScaledObject was deleted"
-  else
+  if [[ -n "$hpa_gone" ]]; then
     echo "  no HPA targets $POOL any more"
+  elif [[ -n "$hpa_unreadable" ]]; then
+    note_fail "could not list HorizontalPodAutoscalers, so whether one still targets $POOL is unknown (a failed read is not 'gone')"
+  else
+    note_fail "hpa/$left_hpa still targets $POOL after the ScaledObject was deleted"
   fi
 
   step "3/6 delete the claim-demand exporter"
@@ -109,17 +119,34 @@ if [[ $ns_absent -eq 0 ]]; then
   # own namespace, which the label check above has already established is the
   # sample's.
   echo "  waiting for the pool's sandboxes to terminate"
+  # Take the list and kubectl's status BEFORE filtering. Piping a failed list
+  # straight into grep produces no output, which would read as "the sandboxes are
+  # gone" and then let the namespace be deleted on the strength of a lookup that
+  # never answered.
   leftover=""
+  sb_gone=""
+  sb_unreadable=""
   for _ in $(seq 1 60); do   # 60 * 5s = 5m
-    leftover="$(kc get sandboxes -o name 2>/dev/null | sed 's|.*/||' | grep -E "^${POOL}-" | tr '\n' ' ')"
-    [[ -z "$leftover" ]] && break
-    echo "    still terminating: $leftover"
+    sb_rc2=0
+    sb_list="$(kc get sandboxes -o name 2>/dev/null)" || sb_rc2=$?
+    if [[ $sb_rc2 -ne 0 ]]; then
+      sb_unreadable=1
+      leftover=""
+      echo "    could not list sandboxes; retrying"
+    else
+      sb_unreadable=""
+      leftover="$(printf '%s' "$sb_list" | sed 's|.*/||' | grep -E "^${POOL}-" | tr '\n' ' ' || true)"
+      [[ -z "$leftover" ]] && { sb_gone=1; break; }
+      echo "    still terminating: $leftover"
+    fi
     sleep 5
   done
-  if [[ -n "$leftover" ]]; then
-    note_fail "these sandboxes of the pool are still present after 5m: $leftover"
-  else
+  if [[ -n "$sb_gone" ]]; then
     echo "    the pool's sandboxes are gone"
+  elif [[ -n "$sb_unreadable" ]]; then
+    note_fail "could not list the sandboxes in $NAMESPACE, so whether the pool's sandboxes are gone is unknown (a failed read is not 'gone')"
+  else
+    note_fail "these sandboxes of the pool are still present after 5m: $leftover"
   fi
 
   step "5/6 delete the SandboxTemplate"

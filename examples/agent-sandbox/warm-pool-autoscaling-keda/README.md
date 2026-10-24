@@ -16,8 +16,8 @@ cd sample-eks-nitro-sandbox/examples/agent-sandbox/warm-pool-autoscaling-keda
 It also needs [KEDA](https://keda.sh/) on the cluster, which Step 1 installs, and `helm`
 on your machine to install it (3.x; the run below used the KEDA chart's own
 `helm install`). Beyond the cluster there is no cost: the sample holds one warm pod at rest
-and at most three under load, each reserving its memory request, and there is no model or
-API call anywhere in it.
+and at most three under load, and there is no model or API call anywhere in it. These pods
+set no CPU or memory requests, so each guest gets a small default size.
 
 The warm pool sample keeps a fixed number of sandboxes booted. Fixed is the wrong shape for
 demand that comes in bursts: too small and a burst pays the cold start it was meant to
@@ -44,9 +44,9 @@ creates writes the pool's `spec.replicas`.
   the sample ships no network policy. `kubectl exec` still works, which is how the page
   reads the claimed pod.
 
-*Figure 1: TODO: caption from the figure*
+*Figure 1: Warm pool autoscaling with KEDA. Claim demand reaches KEDA through the exporter's ClusterIP Service, and the Horizontal Pod Autoscaler KEDA creates writes the pool's spec.replicas, so warm capacity follows demand up and back down.*
 
-![TODO: alt text from the figure](images/figure-1-warm-pool-autoscaling-keda.png)
+![Inside an AWS Cloud frame and an Amazon EKS cluster, the control loop runs left to right along the top. A SandboxClaim demand document, labelled 0 to 3 to 0, connects to the claim-exporter, which sits in its own plain pod frame marked an ordinary pod with no runtimeClassName, over an arrow labelled get / list SandboxClaim. The exporter, labelled counts SandboxClaims, connects on to the KEDA operator in namespace keda with its metrics-api trigger, over an arrow labelled polls /metrics over ClusterIP. The KEDA operator connects to keda-hpa-warm-pool over an arrow labelled ScaledObject creates and owns. From that Horizontal Pod Autoscaler an arrow labelled writes .spec.replicas via /scale runs down the right of the cluster into the SandboxWarmPool, labelled spec.replicas 1 to 3 to 1. The pool connects left into a red Nitro sandbox pods frame marked isolated-sandbox plus network-isolated, which holds three warm pod boxes and nothing else. Closing the loop along the bottom, an arrow from the SandboxClaim demand labelled adopt a pre-booted pod in under 1 s runs into that frame. A note below the figure reads that spec.replicas is the number the HPA writes from the claim count, and status.readyReplicas is the warm capacity that follows it.](images/figure-1-warm-pool-autoscaling-keda.png)
 
 ## Versions
 
@@ -57,9 +57,10 @@ creates writes the pool's `spec.replicas`.
 | KEDA Helm chart ([kedacore/charts](https://github.com/kedacore/charts)) | 2.21.0 |
 
 The chart version and the KEDA version are numbered separately, so they do not have to
-match. For this release they do: `helm search repo kedacore/keda --versions` on the run
-below showed chart 2.21.0 with app version 2.21.0, and the installed operator image was
-`ghcr.io/kedacore/keda:2.21.0`. Check the pairing again when you move the pin.
+match. For this release they do: installing chart 2.21.0 in Step 1 gave the operator image
+`ghcr.io/kedacore/keda:2.21.0`, which the output there shows. Check the pairing with
+`helm search repo kedacore/keda --versions`, which lists each chart version against its app
+version, when you move the pin.
 
 Nothing else is pinned beyond the images in the manifests
 (`public.ecr.aws/docker/library/busybox:1.36` for the warm pods and
@@ -184,8 +185,10 @@ writes that field.
 That works because the `SandboxWarmPool` CRD defines a `/scale` subresource, which is the
 same thing that lets an HPA scale a Deployment. On the agent-sandbox v1.0.6 CRD its
 `specReplicasPath` is `.spec.replicas`, its `statusReplicasPath` is `.status.replicas` and
-its `labelSelectorPath` is `.status.selector`. `demand.sh` reads the subresource so you can
-see the field the HPA writes:
+its `labelSelectorPath` is `.status.selector`. Those three path names come from the CRD;
+what the subresource itself answers is the document below. `demand.sh` reads it in stage 1/5
+so you can see the field the HPA writes, and prints it indented under a heading; this is the
+same document from the same run, with that indentation removed:
 
 ```bash
 kubectl get --raw \
@@ -193,7 +196,7 @@ kubectl get --raw \
 ```
 
 ```text
-{"kind":"Scale","apiVersion":"autoscaling/v1","metadata":{"name":"warm-pool","namespace":"warm-pool-autoscaling-keda","uid":"9c03af73-5283-48b7-a32b-94a289b6844a","resourceVersion":"54242017","creationTimestamp":"2026-10-24T20:35:03Z"},"spec":{"replicas":1},"status":{"replicas":1,"selector":"agents.x-k8s.io/warm-pool-sandbox=61035b05"}}
+{"kind":"Scale","apiVersion":"autoscaling/v1","metadata":{"name":"warm-pool","namespace":"warm-pool-autoscaling-keda","uid":"2f524892-64fc-46a2-a545-3e9fc8c17750","resourceVersion":"54262291","creationTimestamp":"2026-10-24T21:09:57Z"},"spec":{"replicas":1},"status":{"replicas":1,"selector":"agents.x-k8s.io/warm-pool-sandbox=61035b05"}}
 ```
 
 The pods pin their node with `karpenter.sh/do-not-disrupt: "true"`. A warm pod sits Ready
@@ -234,11 +237,26 @@ rules:
     verbs: ["get", "list"]
 ```
 
-One rule, one resource, two read verbs. No `watch`, no `create`, no `patch`, no `delete`,
-and no `ClusterRole`: a `Role` cannot grant anything outside the namespace it is created in,
-so the exporter cannot read another namespace's claims even by accident. It runs as an
-ordinary pod, with no `runtimeClassName`, as a non-root user with a read-only root file
-system and no capabilities.
+One rule, one resource, two read verbs, and that `Role` is everything the sample grants the
+exporter. No `watch`, no `create`, no `patch`, no `delete`, and no `ClusterRole`: a `Role`
+cannot grant anything outside the namespace it is created in, so the exporter cannot read
+another namespace's claims even by accident. Ask the API server rather than taking the
+manifest's word for it:
+
+```bash
+kubectl auth can-i --list \
+  --as=system:serviceaccount:warm-pool-autoscaling-keda:claim-exporter \
+  -n warm-pool-autoscaling-keda
+```
+
+The only line in the answer that this sample put there is
+`sandboxclaims.extensions.agents.x-k8s.io [get list]`. The rest of the list is what every
+authenticated subject on a Kubernetes cluster has, such as API discovery and self-subject
+access reviews, which no manifest here grants. The same command with `-n` pointing at
+another namespace, or with `--all-namespaces`, answers `no` for `list sandboxclaims`.
+
+The exporter runs as an ordinary pod, with no `runtimeClassName`, as a non-root user with a
+read-only root file system and no capabilities.
 
 Who can reach it is a ClusterIP `Service` on port 8080, so it is reachable from inside the
 cluster and from nowhere else. The sample creates no Ingress, LoadBalancer or NodePort. The
@@ -331,7 +349,7 @@ deployment.apps/claim-exporter created
 service/claim-exporter created
 Waiting for deployment "claim-exporter" rollout to finish: 0 of 1 updated replicas are available...
 deployment "claim-exporter" successfully rolled out
-  exporter is serving: 2026-10-24T20:35:12Z active_claims=0 selector=app.kubernetes.io/part-of=warm-pool-autoscaling-keda
+  exporter is serving: 2026-10-24T21:01:26Z active_claims=0 selector=app.kubernetes.io/part-of=warm-pool-autoscaling-keda
 
 == 4/5 apply the ScaledObject and wait for the HPA KEDA creates ==
 scaledobject.keda.sh/warm-pool created
@@ -340,15 +358,16 @@ scaledobject.keda.sh/warm-pool created
 == 5/5 wait for the pool to settle warm at the floor ==
 NAME        READY   DESIRED   AGE
 warm-pool   1       1         14s
-NAME        SCALETARGETKIND                                      SCALETARGETNAME   MIN   MAX   READY   ACTIVE    FALLBACK   PAUSED   TRIGGERS      AUTHENTICATIONS   AGE
-warm-pool   extensions.agents.x-k8s.io/v1beta1.SandboxWarmPool   warm-pool         1     3     True    Unknown   False      False    metrics-api                     4s
+NAME        SCALETARGETKIND                                      SCALETARGETNAME   MIN   MAX   READY   ACTIVE   FALLBACK   PAUSED   TRIGGERS      AUTHENTICATIONS   AGE
+warm-pool   extensions.agents.x-k8s.io/v1beta1.SandboxWarmPool   warm-pool         1     3     True    False    False      False    metrics-api                     5s
 ```
 
 The exporter is already serving `active_claims=0`, the HPA KEDA created targets
 `SandboxWarmPool/warm-pool`, and the `ScaledObject` row shows the bounds, `MIN 1` and
 `MAX 3`. The pool is warm at the floor. The first sandboxed pod on a cold cluster waits for
 Auto Mode to launch a sandbox-capable node, so a first run can take minutes; on this run the
-node was already there and the pool was warm in 14 seconds.
+node was already there and the pool was warm by the time setup read it, with the pool 14
+seconds old.
 
 **Step 6: Drive demand up and back down.** `demand.sh` is the sample. It reads the pool at
 each stage, drives demand from 0 to 3 claims and back to 0, and asserts on `spec.replicas`
@@ -359,32 +378,43 @@ every time.
 ```
 
 ```text
+== 1/5 precondition: the HPA KEDA created targets the SandboxWarmPool ==
+  HPA whose scaleTargetRef names warm-pool: keda-hpa-warm-pool
+  PASS  an HPA targets sandboxwarmpool/warm-pool, so its replica count is driven rather than fixed
+  scaleTargetRef.kind=SandboxWarmPool   ownerReferences[kind=ScaledObject].name=warm-pool
+  PASS  the HPA's scaleTargetRef.kind is SandboxWarmPool: it scales the pool itself, not a Deployment
+  PASS  the HPA is owned by scaledobject/warm-pool, so KEDA created it and KEDA owns the scaling
+  ScaledObject bounds: minReplicaCount=1 maxReplicaCount=3   (load generator cap: 3 claims)
+
 == 2/5 baseline: no demand, the pool holds the warm floor ==
+  PASS  no demand claim of this sample's is left on the cluster, so stage 3/5 reads a claim this run created
   [reading] baseline   spec.replicas=1  status.readyReplicas=1  claims=0
   PASS  baseline: 0 claims and spec.replicas=1, the floor (minReplicaCount=1)
 
 == 3/5 one claim adopts a pre-booted pod, and it is a sandbox ==
+  PASS  claim demand-1 was created by this run (kubectl create, so an existing claim of that name would have failed here)
 sandboxclaim.extensions.agents.x-k8s.io/demand-1 condition met
-  claim demand-1 -> sandbox/warm-pool-mg64j   launch-type=warm
-  pod created   2026-10-24T20:35:03Z
-  claim created 2026-10-24T20:35:31Z
-  so the pod had already been booted and Ready for 28s when the claim was created
-  kubectl wait for the claim to report Ready, once the claim existed: 0.739s
-  (apply and wait together, including both kubectl round trips: 1.987s)
+  claim demand-1 -> sandbox/warm-pool-xvlbz   launch-type=warm
+  pod created   2026-10-24T21:09:57Z
+  claim created 2026-10-24T21:10:27Z
+  so the pod had already been booted and Ready for 30s when the claim was created
+  kubectl wait for the claim to report Ready, once the claim existed: 0.747s (kubectl wait exit 0)
+  (create and wait together, including both kubectl round trips: 1.943s)
   PASS  the claim adopted a pre-booted pod from the pool (sandbox label launch-type=warm), not a cold-created one
-  PASS  the pod was created 28s before the claim existed, so it was adopted, not created for the claim
-  PASS  the claim reported Ready 0.739s after it existed: under a second, where a cold start is about 5 to 6
+  PASS  the pod was created 30s before the claim existed, so it was adopted, not created for the claim
+  PASS  the claim reported Ready 0.747s after it existed: under a second, where a cold start is about 5 to 6
 
 == 4/5 drive demand UP to 3 claims ==
   claims now: 3
-  exporter is serving: 2026-10-24T20:35:59Z active_claims=3 selector=app.kubernetes.io/part-of=warm-pool-autoscaling-keda
+  PASS  the demand is 3 claims, so the metric KEDA reads should ask for 3 warm pods
+  exporter is serving: 2026-10-24T21:10:53Z active_claims=3 selector=app.kubernetes.io/part-of=warm-pool-autoscaling-keda
   [reading] under load spec.replicas=3  status.readyReplicas=1  claims=3
   PASS  under load KEDA raised spec.replicas from 1 to 3: the scale-up decision
   PASS  spec.replicas reached maxReplicaCount=3, matching 3 claims at targetValue 1
-  hpa/keda-hpa-warm-pool: keda-hpa-warm-pool   SandboxWarmPool/warm-pool   3/1   1     3     1     49s
+  hpa/keda-hpa-warm-pool: keda-hpa-warm-pool   SandboxWarmPool/warm-pool   3/1   1     3     1     50s
 
 == 5/5 drive demand DOWN to 0 claims ==
-  exporter is serving: 2026-10-24T20:36:17Z active_claims=0 selector=app.kubernetes.io/part-of=warm-pool-autoscaling-keda
+  exporter is serving: 2026-10-24T21:11:11Z active_claims=0 selector=app.kubernetes.io/part-of=warm-pool-autoscaling-keda
   [reading] drained    spec.replicas=1  status.readyReplicas=1  claims=0
   PASS  with the demand gone KEDA lowered spec.replicas from 3 to 1: the scale-down decision
   PASS  spec.replicas came all the way back to the floor minReplicaCount=1: no idle warm capacity held
@@ -392,12 +422,20 @@ sandboxclaim.extensions.agents.x-k8s.io/demand-1 condition met
 spec.replicas: baseline=1 -> under load=3 -> drained=1
 claim demand:  0 -> 3 -> 0
 
-12/12 checks passed: KEDA moves the pool's spec.replicas up and back down with SandboxClaim demand
+16/16 checks passed: KEDA moves the pool's spec.replicas up and back down with SandboxClaim demand
 ```
 
-Abridged: stage 1/5 and the sandbox readings are shown below. The trajectory is the result:
-`spec.replicas` went `1 -> 3 -> 1` as the claims went `0 -> 3 -> 0`, and the exporter's own
-log lines show the count KEDA read at each end of it.
+Abridged: three things from the same run are shown elsewhere rather than here, and nothing
+else is left out. The opening `context:` line is as in Step 5; the `/scale` document stage
+1/5 prints is in Step 2; and stage 3/5's sandbox and no-network readings are in Step 7 and
+the next section.
+
+Stage 1/5 is the first thing to read: the HPA KEDA created has
+`scaleTargetRef.kind: SandboxWarmPool`, so it scales the pool itself rather than a
+Deployment, and its `ownerReferences` name the `ScaledObject`, so KEDA created it and KEDA
+owns the scaling. Then the trajectory is the result: `spec.replicas` went `1 -> 3 -> 1` as
+the claims went `0 -> 3 -> 0`, and the exporter's own log lines show the count KEDA read at
+each end of it.
 
 **The under-load reading is the reason the page reads two fields.** At that moment
 `spec.replicas` was 3 and `status.readyReplicas` was 1. The decision had already moved to 3;
@@ -412,34 +450,41 @@ The HPA row says the same in its own terms: `3/1` is the metric against the targ
 claims against `targetValue: 1`, and `SandboxWarmPool/warm-pool` is what it is scaling.
 
 **Step 7: The claimed pod is a sandbox.** The first claim adopted a pod the pool had booted
-28 seconds earlier, which is what makes it sub-second: there was nothing to create. These
-are the three signals that it ran in a sandbox of its own, each next to what the exporter
-pod, an ordinary pod on the same cluster, shows instead:
+28 seconds earlier, which is what makes it sub-second: there was nothing to create. While
+the claim still holds that pod, stage 3/5 of `demand.sh` reads the three signals that show
+it ran in a sandbox of its own, and reads each one again from the exporter pod, which is an
+ordinary pod on the same cluster. These are the commands it runs:
 
 ```bash
-POD=$(kubectl get sandboxclaim demand-1 -o jsonpath='{.status.sandbox.name}')
-kubectl exec $POD -- uname -rv
-kubectl exec $POD -- cat /proc/uptime
-kubectl exec $POD -- ls /sys/block
-kubectl exec $POD -- cat /sys/class/dmi/id/product_name
+NS=warm-pool-autoscaling-keda     # or your NAMESPACE
+POD=$(kubectl -n $NS get sandboxclaim demand-1 -o jsonpath='{.status.sandbox.name}')
+kubectl -n $NS exec $POD -- uname -rv
+kubectl -n $NS exec $POD -- cat /proc/uptime
+kubectl -n $NS exec $POD -- ls /sys/block
+kubectl -n $NS exec $POD -- cat /sys/class/dmi/id/product_name
 ```
 
+To run them yourself you need a claim that is still held, and `demand.sh` deletes its claims
+in stage 5/5, so create one first with `kubectl -n $NS apply -f -` from the claim in
+[`scripts/common.sh`](scripts/common.sh), or read the block below, which is stage 3/5's own
+output from the fresh run, with the exporter pod's answers under the claimed pod's:
+
 ```text
-  the claimed pod (warm-pool-mg64j), in a sandbox:
+  the claimed pod (warm-pool-xvlbz), in a sandbox:
     uname -rv                        -> 6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-    cat /proc/uptime                 -> 32.32 29.93
+    cat /proc/uptime                 -> 34.34 31.96
     ls /sys/block                    -> dm-0 vda vdb vdc
     cat /sys/class/dmi/id/product_name -> m8i.enclave
-  the exporter pod (claim-exporter-ccd987dd5-sd6f4), an ordinary pod:
+  the exporter pod (claim-exporter-5f65c8b6d7-2p6zh), an ordinary pod:
     uname -rv                        -> 6.18.51 #2 SMP PREEMPT_DYNAMIC Wed Oct  7 22:33:11 UTC 2026
-    cat /proc/uptime                 -> 179596.70 1431998.03
+    cat /proc/uptime                 -> 181692.71 1448687.86
     ls /sys/block                    -> dm-0 nvme0n1 nvme1n1 zram0
     cat /sys/class/dmi/id/product_name -> m8a.2xlarge
 ```
 
 The kernel version string is the same, `6.18.51`, but the build is not: the guest runs
 `#1`, built on 1 October, where the node runs `#2`, built on 7 October. That kernel belongs
-to the pod alone. The uptime is the pod's, 32 seconds, matching a pod the pool had booted
+to the pod alone. The uptime is the pod's, 34 seconds, matching a pod the pool had booted
 half a minute earlier, where the ordinary pod reports its node's, about 50 hours. The block
 devices are virtio `vd*` where the ordinary pod sees the instance's `nvme*`. And the product
 name is the VM, `m8i.enclave`, where the ordinary pod reads the EC2 instance it shares with
@@ -449,27 +494,41 @@ the other pods on its node, an `m8a.2xlarge`.
 
 The warm pods boot with `sandbox.amazonaws.com/network-isolated: "true"`, so there is no
 egress to restrict and the sample ships no network policy. Only loopback has an address,
-there is no default route, and a lookup fails:
+there is no default route, and a lookup fails. Stage 3/5 of `demand.sh` reads this from the
+claimed pod too, and prints the command above each answer, so the block below is again its
+output rather than something to run after the claims are gone:
 
 ```bash
-kubectl exec $POD -- ip -4 -o addr show
-kubectl exec $POD -- ip route show default
-kubectl exec $POD -- wget -T 5 -O /dev/null https://aws.amazon.com
+kubectl -n $NS exec $POD -- ip -4 -o addr show
+kubectl -n $NS exec $POD -- ip route show default
+kubectl -n $NS exec $POD -- wget -T 5 -O /dev/null https://aws.amazon.com
 ```
 
 ```text
-  $ kubectl exec warm-pool-mg64j -- ip -4 -o addr show
+  the claimed pod is network-isolated, so there is no network to restrict:
+  PASS  kubectl exec into the claimed pod works, so the readings below are the pod's answers
+  $ kubectl exec warm-pool-xvlbz -- ip -4 -o addr show
     1: lo    inet 127.0.0.1/8 scope host lo\       valid_lft forever preferred_lft forever
-  $ kubectl exec warm-pool-mg64j -- ip route show default      # prints nothing: no default route
-  $ kubectl exec warm-pool-mg64j -- wget -T 5 -O /dev/null https://aws.amazon.com
+  $ kubectl exec warm-pool-xvlbz -- ip route show default      # prints nothing: no default route
+  $ kubectl exec warm-pool-xvlbz -- wget -T 5 -O /dev/null https://aws.amazon.com
     wget: bad address 'aws.amazon.com'
     command terminated with exit code 1
+  PASS  the request out of the claimed pod failed because there is no network to carry it, not for some other reason
 ```
 
 `ip route show default` prints nothing. `kubectl exec` keeps working because it uses the
 guest's internal control channel, not the network, which is how every reading above was
-taken. A pod that needs a network instead drops the annotation and ships an egress policy,
-as the [network policy](../../isolation/network-policy/README.md) sample shows.
+taken.
+
+The two `PASS` lines around the readings are there because "the request failed" is not on
+its own evidence of isolation. The first one checks that `kubectl exec` into the pod works
+at all, so a refused exec cannot be read as a pod with no network; the second requires the
+failure to be a no-network failure, `bad address` here, rather than any non-zero exit. A
+request that came back `403 Forbidden` would mean the pod reached the internet, and it would
+fail this check.
+
+A pod that needs a network instead drops the annotation and ships an egress policy, as the
+[network policy](../../isolation/network-policy/README.md) sample shows.
 
 The exporter, being an ordinary pod, does have a network: it has to reach the Kubernetes API
 to count claims. It is reached only over a ClusterIP Service, as Step 3 says.
@@ -485,6 +544,8 @@ the same three claims, and watches for at least as long as `demand.sh` gives the
 ```
 
 ```text
+context: sandbox-demo (pinned)   namespace: warm-pool-autoscaling-keda
+
 == 1/4 settle at the floor, then remove the ScaledObject ==
   [reading] baseline   spec.replicas=1  status.readyReplicas=1  claims=0
 scaledobject.keda.sh "warm-pool" deleted from warm-pool-autoscaling-keda namespace
@@ -493,7 +554,9 @@ scaledobject.keda.sh "warm-pool" deleted from warm-pool-autoscaling-keda namespa
 
 == 2/4 apply the same demand: 3 claims ==
   claims now: 3
-  exporter is serving: 2026-10-24T20:36:37Z active_claims=3 selector=app.kubernetes.io/part-of=warm-pool-autoscaling-keda
+  PASS  the same demand is present for the control: 3 claims, as in demand.sh
+  exporter is serving: 2026-10-24T21:11:36Z active_claims=3 selector=app.kubernetes.io/part-of=warm-pool-autoscaling-keda
+  PASS  the exporter served active_claims=3, so the demand signal KEDA would have read was there
   (the demand signal is there; with no ScaledObject, nothing reads it)
 
 == 3/4 watch for the same window demand.sh gives the scale-up (300s) ==
@@ -501,12 +564,28 @@ scaledobject.keda.sh "warm-pool" deleted from warm-pool-autoscaling-keda namespa
   PASS  with no autoscaler, spec.replicas stayed flat at 1 under the same 3 claims
 
 == 4/4 put the sample back: claims deleted, ScaledObject re-applied ==
-  scaledobject/warm-pool re-applied, claims deleted
+  PASS  scaledobject/warm-pool was re-applied, so the sample is not left without its autoscaler
   waiting for KEDA to take the pool back
   HPA whose scaleTargetRef names warm-pool: keda-hpa-warm-pool
+  PASS  KEDA created its HPA for warm-pool again, so the pool is back under autoscaling
 
-2/2 checks passed: the pool stays flat under the same demand when KEDA's ScaledObject is absent
+control result: no ScaledObject, no movement. The up and down movement
+./scripts/demand.sh asserts is therefore KEDA's, not spare capacity and not
+the pool replenishing itself.
+
+6/6 checks passed: the pool stays flat under the same demand when KEDA's ScaledObject is absent
+
+restoring scaledobject/warm-pool
 ```
+
+The last line is the script's exit handler, which deletes the claims and re-applies the
+`ScaledObject` whatever happened, including on an interrupt. It runs again after step 4/4
+has already done it, so seeing it twice is the handler doing its job.
+
+The two extra checks in step 2/4 matter: "nothing read the signal" means nothing unless the
+signal was there. The control asserts that the same three claims exist and that the exporter
+actually served `active_claims=3`, so the only difference between this run and the one above
+is whether KEDA was reading it.
 
 Side by side, that is the result:
 
@@ -544,10 +623,16 @@ cannot leave the sample without its autoscaler.
 - **The exporter is a single replica and is not on the claim path.** If it stops, KEDA's
   trigger fails and the HPA holds the last replica count it wrote; claims keep being served
   from whatever the pool has. Nothing in the claim path goes through the exporter.
-- **Each warm pod reserves its memory request up front.** A warm pool trades idle pods for
-  the latency win, and autoscaling trades a slower response to a burst for not holding those
-  pods when demand falls. `maxReplicaCount` is the bound on how much of that trade you are
-  willing to make.
+- **A warm pod costs whatever it reserves, for as long as it is booted.** These pods set no
+  requests, so each guest gets a small default size, but a real template sizes its pods for
+  the workload and a sandbox reserves its full memory request up front. A warm pool trades
+  idle pods for the latency win, and autoscaling trades a slower response to a burst for not
+  holding those pods when demand falls. `maxReplicaCount` is the bound on how much of that
+  trade you are willing to make.
+- **Running setup again resets the pool to the floor.** `setup.sh` re-applies
+  `deploy/warm-pool.yaml`, which carries `replicas: 1`, over the field the HPA owns. KEDA
+  writes it back on its next sync, about 15 seconds, so this is a brief dip rather than a
+  change, but do not run setup in the middle of reading a trajectory.
 - **The load this sample generates is capped.** `MAX_CLAIMS` in
   [`scripts/common.sh`](scripts/common.sh) is 3, at or below `maxReplicaCount`, so a run on a
   shared cluster cannot ask for more warm capacity than the pool's own bound.
@@ -604,7 +689,8 @@ clean up complete: the claims, the ScaledObject and its HPA, the exporter, the w
 ```
 
 The claims are reported absent here because `control-no-autoscaler.sh` had already deleted
-them when it put the sample back. The clean up checks the namespace carries the sample's
+them when it put the sample back, so this run of the clean up had none to remove. The clean
+up checks the namespace carries the sample's
 label before it deletes anything inside it, deletes the claims by their exact names rather
 than by a label selector, reads a failed lookup as a failure rather than as "gone", and
 exits non-zero if it skipped something or could not confirm a delete, so an incomplete clean

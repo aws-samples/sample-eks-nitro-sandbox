@@ -71,14 +71,27 @@ echo
 
 step "2/5 baseline: no demand, the pool holds the warm floor"
 # Start from a clean demand floor so the baseline is a real reading, not whatever
-# an interrupted run left behind.
-delete_claims
+# an interrupted run left behind. The claims must be GONE, not merely accepted
+# for deletion: step 3/5 creates one with `create` and reads its timestamps, and
+# a claim still terminating would make that creation fail or, worse, make the
+# readings describe the old claim.
+delete_claims || true
+claims_gone=0
+wait_claims_gone 180 || claims_gone=$?
+[[ $claims_gone -eq 0 ]]
+assert $? "no demand claim of this sample's is left on the cluster, so stage 3/5 reads a claim this run created"
 wait_spec_replicas "\$v -le $so_min" 300
 wait_pool_warm 900 >/dev/null
-baseline="$(pool_spec_replicas)"; baseline="${baseline:-?}"
+baseline="$(pool_spec_replicas)" || baseline="?"
+baseline_claims="$(claim_count)" || baseline_claims="?"
 print_stage "baseline"
-[[ "$baseline" == "$so_min" && "$(claim_count)" == "0" ]]
+# The baseline must be a real number: every comparison in stages 4/5 and 5/5 uses
+# it, and inside [[ ]] a non-numeric value such as "?" evaluates arithmetically
+# to 0, which would make "spec.replicas went up" true for any reading at all.
+[[ "$baseline" =~ ^[0-9]+$ && "$baseline" == "$so_min" && "$baseline_claims" == "0" ]]
 assert $? "baseline: 0 claims and spec.replicas=$baseline, the floor (minReplicaCount=$so_min)"
+[[ "$baseline" =~ ^[0-9]+$ ]] \
+  || die "the baseline spec.replicas could not be read, so nothing after this could be measured against it; stopping rather than report movement I did not measure"
 
 step "3/5 one claim adopts a pre-booted pod, and it is a sandbox"
 # The point of a warm pool: the claim is handed a pod that is ALREADY RUNNING, so
@@ -99,10 +112,20 @@ step "3/5 one claim adopts a pre-booted pod, and it is a sandbox"
 #   * client side: how long `kubectl wait --for=condition=Ready` takes once the
 #     claim object exists. That is one kubectl round trip, so it is an upper
 #     bound on the wait, not a lower one.
+# `create`, not `apply`: a claim of this name left by an earlier run would be
+# quietly updated by an apply, and every reading below would then describe that
+# old claim. Stage 2/5 has already asserted none is left.
 t_apply_start="$(python3 -c 'import time; print(time.time())')"
-make_claims 1
+create_rc=0
+create_claim_fresh 1 || create_rc=$?
 t_apply_done="$(python3 -c 'import time; print(time.time())')"
-kc wait "sandboxclaim/${CLAIM_PREFIX}-1" --for=condition=Ready --timeout=120s
+[[ $create_rc -eq 0 ]]
+assert $? "claim ${CLAIM_PREFIX}-1 was created by this run (kubectl create, so an existing claim of that name would have failed here)"
+# Keep kubectl wait's own status: without it, a wait that fails fast, because the
+# claim does not exist or the API refused it, leaves a sub-second measurement that
+# would satisfy the "under a second" check having waited for nothing.
+wait_rc=0
+kc wait "sandboxclaim/${CLAIM_PREFIX}-1" --for=condition=Ready --timeout=120s || wait_rc=$?
 t_ready="$(python3 -c 'import time; print(time.time())')"
 wait_secs="$(python3 -c "print('%.3f' % (${t_ready} - ${t_apply_done}))")"
 wall_secs="$(python3 -c "print('%.3f' % (${t_ready} - ${t_apply_start}))")"
@@ -126,15 +149,21 @@ echo "  claim ${CLAIM_PREFIX}-1 -> sandbox/$pod   launch-type=${launch_type:-<no
 echo "  pod created   $pod_created"
 echo "  claim created $claim_created"
 echo "  so the pod had already been booted and Ready for ${preboot}s when the claim was created"
-echo "  kubectl wait for the claim to report Ready, once the claim existed: ${wait_secs}s"
-echo "  (apply and wait together, including both kubectl round trips: ${wall_secs}s)"
+echo "  kubectl wait for the claim to report Ready, once the claim existed: ${wait_secs}s (kubectl wait exit ${wait_rc})"
+echo "  (create and wait together, including both kubectl round trips: ${wall_secs}s)"
 [[ "$launch_type" == "warm" ]]
 assert $? "the claim adopted a pre-booted pod from the pool (sandbox label launch-type=warm), not a cold-created one"
-[[ "$preboot" != "?" && "$preboot" -gt 0 ]]
+[[ "$preboot" =~ ^[0-9]+$ && "$preboot" -gt 0 ]]
 assert $? "the pod was created ${preboot}s before the claim existed, so it was adopted, not created for the claim"
 # Under a second, measured client side with one kubectl round trip in it. A cold
 # start is about 5 to 6 seconds on a warm node, so this also separates the two.
-python3 -c "import sys; sys.exit(0 if $wait_secs < 1.0 else 1)"
+# The wait must have SUCCEEDED, and the measurement must be positive: a wait that
+# failed fast, or a clock that stepped backwards, must not read as "sub-second".
+if [[ $wait_rc -eq 0 ]]; then
+  python3 -c "import sys; sys.exit(0 if 0.0 < $wait_secs < 1.0 else 1)"
+else
+  false
+fi
 assert $? "the claim reported Ready ${wait_secs}s after it existed: under a second, where a cold start is about 5 to 6"
 
 # The three signals that show the adopted pod ran in a sandbox of its own, each
@@ -155,6 +184,14 @@ echo "    cat /sys/class/dmi/id/product_name -> $(kc exec "$exporter_pod" -- cat
 
 echo
 echo "  the claimed pod is network-isolated, so there is no network to restrict:"
+# exec itself must work before a failed request can mean anything. Without this,
+# any reason exec could not run, an empty pod name included, would read as "the
+# pod has no network", which is the opposite of a measurement.
+exec_rc=0
+kc exec "$pod" -- true >/dev/null 2>&1 || exec_rc=$?
+[[ $exec_rc -eq 0 ]]
+assert $? "kubectl exec into the claimed pod works, so the readings below are the pod's answers"
+
 echo "  \$ kubectl exec $pod -- ip -4 -o addr show"
 kc exec "$pod" -- ip -4 -o addr show 2>/dev/null | sed 's/^/    /'
 echo "  \$ kubectl exec $pod -- ip route show default      # prints nothing: no default route"
@@ -163,13 +200,26 @@ echo "  \$ kubectl exec $pod -- wget -T 5 -O /dev/null https://aws.amazon.com"
 wget_out="$(kc exec "$pod" -- wget -T 5 -O /dev/null https://aws.amazon.com 2>&1)"
 wget_rc=$?
 printf '%s\n' "$wget_out" | sed 's/^/    /'
-[[ $wget_rc -ne 0 ]]
-assert $? "a request out of the claimed pod fails: it is network-isolated and has no route out"
+# Non-zero is not enough: the request must have failed because there is no
+# network. Match the messages a pod with no route or no resolver gives, so a
+# missing wget, a refused exec or any other error cannot pass as isolation.
+if [[ $exec_rc -eq 0 && $wget_rc -ne 0 ]] \
+   && printf '%s' "$wget_out" | grep -qE 'bad address|Network is unreachable|Host is unreachable|Temporary failure in name resolution'; then
+  true
+else
+  false
+fi
+assert $? "the request out of the claimed pod failed because there is no network to carry it, not for some other reason"
 
 step "4/5 drive demand UP to $MAX_CLAIMS claims"
-make_claims "$MAX_CLAIMS"
-echo "  claims now: $(claim_count)"
-wait_exporter_metric "$MAX_CLAIMS" 60
+# demand-1 is already there from stage 3/5, so this creates the rest.
+make_rc=0
+make_claims "$MAX_CLAIMS" || make_rc=$?
+up_claims="$(claim_count)" || up_claims="?"
+echo "  claims now: $up_claims"
+[[ $make_rc -eq 0 && "$up_claims" == "$MAX_CLAIMS" ]]
+assert $? "the demand is $MAX_CLAIMS claims, so the metric KEDA reads should ask for $MAX_CLAIMS warm pods"
+wait_exporter_metric "$MAX_CLAIMS" 120
 # Wait for the DECISION to move, then print the OUTCOME beside it.
 wait_spec_replicas "\$v -gt $baseline" 300
 loaded="$(pool_spec_replicas)"; loaded="${loaded:-?}"

@@ -10,10 +10,11 @@
 # metrics-api scaler can read.
 #
 # WHAT IT CAN REACH. The ServiceAccount this runs as is bound to a namespaced
-# Role whose only rule is get and list on sandboxclaims in this namespace. It
-# cannot read a claim in another namespace, cannot list anything else, and cannot
-# create, patch or delete anything at all. The one API call below is a list of
-# SandboxClaims in POD_NAMESPACE, and it is the only call the code makes.
+# Role whose only rule is get and list on sandboxclaims in this namespace, and
+# that Role is everything the sample grants it. It cannot read a claim in another
+# namespace, cannot list anything else, and cannot create, patch or delete
+# anything at all. The one API call below is a list of SandboxClaims in
+# POD_NAMESPACE, and it is the only call the code makes.
 #
 # WHO CAN REACH IT. It listens on all interfaces inside its own container and is
 # published only through a ClusterIP Service, so it is reachable from inside the
@@ -33,7 +34,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 NAMESPACE = os.environ["POD_NAMESPACE"]
 SELECTOR = os.environ["CLAIM_SELECTOR"]
@@ -50,8 +51,13 @@ CLAIMS_URL = (
 )
 
 # The last count the API actually answered with. On an API error the handler
-# serves this instead of 0: a transient blip must not look like demand falling
-# away, which would make KEDA scale the pool down for no reason.
+# serves this instead of failing: a transient blip must not look like demand
+# falling away, which would make KEDA scale the pool down for no reason.
+#
+# It starts at 0, so this protects a running exporter, not a restarting one: an
+# exporter that restarts while the API is unreachable has no last good count and
+# serves 0 until its first successful read. The pool's minReplicaCount is the
+# floor that case falls to.
 _last_good = 0
 
 
@@ -71,6 +77,17 @@ def count_claims():
 
 
 class Handler(BaseHTTPRequestHandler):
+    # Drop a connection that goes quiet rather than holding the handler open. The
+    # endpoint is reachable from anywhere in the cluster, and without a timeout a
+    # single idle connection would stall KEDA's poll and the readiness probe.
+    timeout = 5
+
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        except TimeoutError:
+            self.close_connection = True
+
     def do_GET(self):
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         try:
@@ -108,4 +125,8 @@ if __name__ == "__main__":
     # Binds every interface in the container. The boundary is the ClusterIP
     # Service in deploy/exporter.yaml, which publishes this port inside the
     # cluster only; the sample creates no Ingress, LoadBalancer or NodePort.
-    HTTPServer(("0.0.0.0", LISTEN_PORT), Handler).serve_forever()
+    #
+    # Threading, not the single-threaded HTTPServer: KEDA's poll and the
+    # readiness probe must not queue behind each other, or behind a connection
+    # that is waiting on the API call this handler makes.
+    ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), Handler).serve_forever()

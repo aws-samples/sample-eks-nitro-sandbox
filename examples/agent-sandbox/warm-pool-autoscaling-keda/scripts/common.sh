@@ -219,12 +219,29 @@ pool_spec_replicas() {
   return 1
 }
 
+# pool_ready_replicas : the capacity outcome. Prints the count, or nothing and
+# returns non-zero when the read FAILED. An absent field is a real answer, none
+# ready, and prints 0; a failed read is not, and callers must map it to "?"
+# rather than to 0.
 pool_ready_replicas() {
-  kc get sandboxwarmpool "$POOL" -o jsonpath='{.status.readyReplicas}' 2>/dev/null
+  local v rc=0
+  v="$(kc get sandboxwarmpool "$POOL" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)" || rc=$?
+  [[ $rc -ne 0 ]] && return 1
+  printf '%s' "${v:-0}"
 }
 
+# claim_count : how many of this sample's claims exist. Prints the count, or
+# nothing and returns non-zero when the read FAILED.
+#
+# `kubectl ... | grep -c .` cannot be used on its own here: grep prints 0 and
+# succeeds whatever kubectl did, so a failed read would be indistinguishable from
+# "no claims" and would satisfy the baseline assertion on no evidence. Take the
+# output and kubectl's status first, then count.
 claim_count() {
-  kc get sandboxclaims -l "$CLAIM_SELECTOR" -o name 2>/dev/null | grep -c . || true
+  local out rc=0
+  out="$(kc get sandboxclaims -l "$CLAIM_SELECTOR" -o name 2>/dev/null)" || rc=$?
+  [[ $rc -ne 0 ]] && return 1
+  printf '%s' "$(printf '%s' "$out" | grep -c . || true)"
 }
 
 # exporter_metric : the claim count the exporter last served, read from its own
@@ -249,35 +266,40 @@ wait_exporter_metric() {
 }
 
 # print_stage "<label>" : one reading line, with the decision and the outcome
-# side by side and the demand that produced them.
+# side by side and the demand that produced them. A read that failed shows as "?"
+# and never as 0, so a reading line can never be mistaken for a measurement that
+# was taken.
 print_stage() {
-  local sr rr
-  sr="$(pool_spec_replicas)" || sr=""
-  rr="$(pool_ready_replicas)"
+  local sr rr cc
+  sr="$(pool_spec_replicas)" || sr="?"
+  rr="$(pool_ready_replicas)" || rr="?"
+  cc="$(claim_count)" || cc="?"
   printf '  [reading] %-10s spec.replicas=%s  status.readyReplicas=%s  claims=%s\n' \
-    "$1" "${sr:-?}" "${rr:-0}" "$(claim_count)"
+    "$1" "${sr:-?}" "${rr:-?}" "${cc:-?}"
 }
 
-# hpa_for_pool : the name of the HPA whose scaleTargetRef names our pool, or
-# nothing. This is how the scripts find the HPA KEDA created without assuming
-# KEDA's naming.
+# hpa_for_pool : the name of the HPA whose scaleTargetRef names our pool. Prints
+# the name, prints nothing when there is no such HPA, and returns NON-ZERO when
+# the read failed. The distinction matters: a caller that reads a failed list as
+# "no HPA" would report "nothing is autoscaling the pool" having established
+# nothing, which is the one thing the control must never do.
 hpa_for_pool() {
-  kc get hpa -o jsonpath="{range .items[?(@.spec.scaleTargetRef.name=='$POOL')]}{.metadata.name}{end}" 2>/dev/null || true
+  local out rc=0
+  out="$(kc get hpa -o jsonpath="{range .items[?(@.spec.scaleTargetRef.name=='$POOL')]}{.metadata.name}{end}" 2>/dev/null)" || rc=$?
+  [[ $rc -ne 0 ]] && return 1
+  printf '%s' "$out"
 }
 
 # ---------------------------------------------------------------------------
 # The bounded load generator.
 # ---------------------------------------------------------------------------
-# make_claims <n> : create n SandboxClaims, clamped to MAX_CLAIMS.
-make_claims() {
-  local n=$1 i
-  ((n > MAX_CLAIMS)) && n=$MAX_CLAIMS
-  for ((i = 1; i <= n; i++)); do
-    kc apply -f - >/dev/null <<EOF
+# claim_manifest <n> : one SandboxClaim document on standard output.
+claim_manifest() {
+  cat <<EOF
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxClaim
 metadata:
-  name: ${CLAIM_PREFIX}-${i}
+  name: ${CLAIM_PREFIX}-${1}
   namespace: ${NAMESPACE}
   labels:
     app.kubernetes.io/part-of: ${SAMPLE}
@@ -285,15 +307,70 @@ spec:
   warmPoolRef:
     name: ${POOL}
 EOF
+}
+
+# create_claim_fresh <n> : create ONE claim with `create`, not `apply`, so a claim
+# of that name that already exists makes this FAIL instead of being quietly
+# updated. The adoption readings in demand.sh depend on the claim being new: an
+# `apply` over a claim left by an earlier run would keep that claim's own
+# creationTimestamp and its already-Ready condition, and the adoption checks would
+# all pass without a single thing having been adopted.
+create_claim_fresh() {
+  claim_manifest "$1" | kc create -f - >/dev/null
+}
+
+# make_claims <n> : bring the demand up to n claims, clamped to MAX_CLAIMS.
+#
+# It creates the claims that are absent and leaves the ones that are there,
+# rather than applying over them. Nothing here ever uses `kubectl apply` on a
+# claim: applying over a claim created with `create` warns about the missing
+# last-applied-configuration annotation, and, worse, it is the operation that
+# would let a claim from an earlier run stand in for one this run made.
+# Returns non-zero if any claim could not be created or read.
+make_claims() {
+  local n=$1 i rc=0 crc
+  ((n > MAX_CLAIMS)) && n=$MAX_CLAIMS
+  for ((i = 1; i <= n; i++)); do
+    crc=0; resource_exists kc "sandboxclaim/${CLAIM_PREFIX}-${i}" || crc=$?
+    case $crc in
+      0) : ;;   # already there: leave it, it is this sample's demand either way
+      1) create_claim_fresh "$i" || rc=1 ;;
+      2) echo "  could not read sandboxclaim/${CLAIM_PREFIX}-${i}; not creating over it" >&2
+         rc=1 ;;
+    esac
   done
+  return $rc
 }
 
 # delete_claims : delete this sample's claims BY EXACT NAME, never by label
 # selector, so a delete can only ever remove the claims this sample made.
+# Returns kubectl's status; callers that go on to read a claim must also call
+# wait_claims_gone, because this does not wait.
 delete_claims() {
   local names=() i
   for ((i = 1; i <= MAX_CLAIMS; i++)); do names+=("${CLAIM_PREFIX}-${i}"); done
-  kc delete sandboxclaim "${names[@]}" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  kc delete sandboxclaim "${names[@]}" --ignore-not-found --wait=false >/dev/null 2>&1
+}
+
+# wait_claims_gone <timeout-s> : wait until none of this sample's demand claims
+# exist, by exact name. A read that fails keeps waiting rather than concluding
+# they are gone, and a timeout returns non-zero.
+wait_claims_gone() {
+  local timeout=${1:-120} i rc left
+  local deadline=$((SECONDS + timeout))
+  while :; do
+    left=""
+    for ((i = 1; i <= MAX_CLAIMS; i++)); do
+      rc=0; resource_exists kc "sandboxclaim/${CLAIM_PREFIX}-${i}" || rc=$?
+      case $rc in
+        0) left+=" ${CLAIM_PREFIX}-${i}" ;;
+        2) left+=" ${CLAIM_PREFIX}-${i}(unreadable)" ;;
+      esac
+    done
+    [[ -z "$left" ]] && return 0
+    ((SECONDS >= deadline)) && { printf '  still present:%s\n' "$left"; return 1; }
+    sleep 3
+  done
 }
 
 # wait_spec_replicas "<test expression using \$v>" <timeout-s> : wait until the
@@ -312,19 +389,30 @@ wait_spec_replicas() {
 
 # wait_pool_warm <timeout-s> : wait until readyReplicas meets spec.replicas with
 # nothing terminating, so the pool is genuinely warm at whatever size it is.
+# Every one of the three reads fails closed: a read that failed leaves the loop
+# waiting rather than concluding the pool is warm.
 wait_pool_warm() {
-  local timeout=${1:-600} ready want terminating
+  local timeout=${1:-600} ready want pods prc terminating
   local deadline=$((SECONDS + timeout))
   while :; do
-    ready="$(pool_ready_replicas)"; ready="${ready:-0}"
+    ready="$(pool_ready_replicas)" || ready=""
     want="$(pool_spec_replicas)" || want=""
-    terminating="$(kc get pods \
+    # Take the pod list and kubectl's status before filtering: a failed list
+    # produces no output, which would otherwise read as "nothing terminating".
+    prc=0
+    pods="$(kc get pods \
       -o jsonpath='{range .items[?(@.metadata.deletionTimestamp)]}{.metadata.name}{"\n"}{end}' \
-      2>/dev/null | grep "^${POOL}-" | tr '\n' ' ' || true)"
-    if [[ -n "$want" && "$ready" == "$want" && "$ready" != "0" && -z "$terminating" ]]; then
+      2>/dev/null)" || prc=$?
+    if [[ $prc -ne 0 ]]; then
+      terminating="?"
+    else
+      terminating="$(printf '%s' "$pods" | grep "^${POOL}-" | tr '\n' ' ' || true)"
+    fi
+    if [[ -n "$ready" && -n "$want" && "$ready" == "$want" && "$ready" != "0" \
+          && -z "$terminating" ]]; then
       return 0
     fi
-    printf '  readyReplicas=%s/%s%s\n' "$ready" "${want:-?}" \
+    printf '  readyReplicas=%s/%s%s\n' "${ready:-?}" "${want:-?}" \
       "${terminating:+ (terminating: $terminating)}"
     ((SECONDS >= deadline)) && return 1
     sleep 5

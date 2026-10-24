@@ -9,10 +9,12 @@
 # takes no sandbox capacity from the pool it measures.
 #
 # WHAT IT CAN REACH. The Role below is namespaced and its only rule is get and
-# list on sandboxclaims. That is the whole of the exporter's access to the
-# cluster: no other resource, no other verb, no other namespace, and no
-# ClusterRole. A Role cannot grant anything outside the namespace it is created
-# in, so this cannot read another sample's claims even by accident.
+# list on sandboxclaims. That is the whole of what this sample grants it: no
+# other resource, no other verb, no other namespace, and no ClusterRole. A Role
+# cannot grant anything outside the namespace it is created in, so this cannot
+# read another sample's claims even by accident. Beyond it the ServiceAccount has
+# only what every authenticated subject on a Kubernetes cluster has, such as API
+# discovery and self-subject access reviews, which no manifest here grants.
 #
 # WHO CAN REACH IT. Only a ClusterIP Service, so it is reachable from inside the
 # cluster and from nowhere else. There is no Ingress, LoadBalancer or NodePort
@@ -111,6 +113,8 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           resources:
             # An ordinary pod, sized for what it does: read a short list and
             # answer an HTTP request every few seconds.
