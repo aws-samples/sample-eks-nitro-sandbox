@@ -1,0 +1,218 @@
+version: 1
+admission_policy: |+
+  // Container: main
+  // WARNING: image has encrypted layers; /etc/group is unreadable so image-derived supplemental groups are unknown.
+  permit(
+      principal,
+      action == Agent::Action::"CreateContainer",
+      resource == Workload::Container::"main"
+  )
+  when {
+      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:027ec5bfec6c99e336fc495ad8a4ca9d4fdeae12ef21739da9c45d95b7ae5f9c" &&
+      context.working_dir == "/" &&
+      context.run_as_user == 65534 &&
+      context.run_as_group == 65534 &&
+      context.additional_gids == [65534] &&
+      context.read_only_rootfs == true &&
+      context.capabilities_effective.isEmpty() &&
+      context.capabilities_bounding.isEmpty() &&
+      context.capabilities_ambient.isEmpty() &&
+      context.capabilities_inheritable.isEmpty() &&
+      context.capabilities_permitted.isEmpty() &&
+      context.no_new_privileges == true &&
+      context.masked_paths.containsAll(["/proc/asound", "/proc/acpi",
+                                    "/proc/interrupts", "/proc/kcore",
+                                    "/proc/keys", "/proc/latency_stats",
+                                    "/proc/timer_list", "/proc/timer_stats",
+                                    "/proc/sched_debug", "/proc/scsi",
+                                    "/sys/firmware",
+                                    "/sys/devices/virtual/powercap"]) &&
+      context.readonly_paths.containsAll(["/proc/bus", "/proc/fs", "/proc/irq",
+                                      "/proc/sys", "/proc/sysrq-trigger"]) &&
+      context.mounts == [
+                     {"destination": "/proc", "source": "proc",
+                      "mount_type": "proc",
+                      "options": ["nosuid", "noexec", "nodev"]},
+                     {"destination": "/dev", "source": "tmpfs",
+                      "mount_type": "tmpfs",
+                      "options": ["nosuid", "strictatime", "mode=755", "size=65536k"]},
+                     {"destination": "/dev/pts", "source": "devpts",
+                      "mount_type": "devpts",
+                      "options": ["nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620", "gid=5"]},
+                     {"destination": "/dev/shm", "source": "shm",
+                      "mount_type": "tmpfs",
+                      "options": ["nosuid", "noexec", "nodev", "mode=1777", "size=65536k"]},
+                     {"destination": "/dev/mqueue", "source": "mqueue",
+                      "mount_type": "mqueue",
+                      "options": ["nosuid", "noexec", "nodev"]},
+                     {"destination": "/sys", "source": "sysfs",
+                      "mount_type": "sysfs",
+                      "options": ["nosuid", "noexec", "nodev", "ro"]},
+                     {"destination": "/sys/fs/cgroup", "source": "cgroup",
+                      "mount_type": "cgroup",
+                      "options": ["nosuid", "noexec", "nodev", "relatime", "ro"]},
+                     {"destination": "/dev/termination-log",
+                      "source": "/var/lib/kubelet/pods/<pod-uid>/containers/main/<termination-log-hash>",
+                      "mount_type": "bind",
+                      "options": ["rbind", "rprivate", "rw"]},
+                     {"destination": "/etc/hosts",
+                      "source": "/var/lib/kubelet/pods/<pod-uid>/etc-hosts",
+                      "mount_type": "bind",
+                      "options": ["rbind", "rprivate", "rw"]},
+                     {
+                      "destination": "/var/run/secrets/pods.eks.amazonaws.com/serviceaccount",
+                      "source": "/var/lib/kubelet/pods/<pod-uid>/volumes/kubernetes.io~projected/eks-pod-identity-token",
+                      "mount_type": "bind",
+                      "options": ["rbind", "rprivate", "ro"]}] &&
+      context.hostname == "encrypted-image-demo" &&
+      // WARNING: only the default action is checked; individual syscall rules vary by architecture and kernel version and are confined to the guest
+      context.linux_seccomp_default_action == "SCMP_ACT_ERRNO" &&
+      context.apparmor_profile == "" &&
+      context.process_args == "[\"/bin/sh\",\"-c\",\"echo \\\"kernel:  $(uname -rv)\\\"; echo \\\"uptime:  $(cut -d' ' -f1 /proc/uptime)s\\\"; echo \\\"disks:   $(ls /sys/block | tr '\\\\n' ' ')\\\"; echo \\\"product: $(cat /sys/class/dmi/id/product_name)\\\"; echo encrypted-image-ready; sleep 60; probe() { echo \\\"HTTP $(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \\\"$1\\\"; echo \\\" (curl exit $?)\\\")\\\"; }; echo \\\"kms:     $(probe https://kms.us-west-2.amazonaws.com/)\\\"; echo \\\"blocked: $(probe https://example.com/)\\\"; echo encrypted-image-probes-done; exec sleep 3600\"]" &&
+      // Guest networking: the VM owns the network stack, so no network namespace
+      // exists in the OCI spec. The pod hostNetwork setting has no effect.
+      context.host_network == true &&
+      context.host_pid == false &&
+      context.host_ipc == false &&
+      context.shared_pid == false &&
+      context.linux_namespace_types == ["pid", "ipc", "uts", "mnt", "cgroup"] &&
+      context.sysctls.isEmpty() &&
+      context.env.containsAll([
+                           {"name": "PATH",
+                            "value": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+                           {"name": "AWS_REGION", "value": "us-west-2"},
+                           {"name": "AWS_DEFAULT_REGION", "value": "us-west-2"},
+                           {"name": "AWS_STS_REGIONAL_ENDPOINTS",
+                            "value": "regional"},
+                           {"name": "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+                            "value": "http://169.254.170.23/v1/credentials"},
+                           {"name": "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+                            "value": "/var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token"}]) &&
+      context.env_names == ["PATH", "AWS_REGION", "AWS_DEFAULT_REGION",
+                        "AWS_STS_REGIONAL_ENDPOINTS",
+                        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+                        "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+                        "KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT",
+                        "KUBERNETES_SERVICE_PORT_HTTPS", "KUBERNETES_PORT",
+                        "KUBERNETES_PORT_443_TCP",
+                        "KUBERNETES_PORT_443_TCP_PROTO",
+                        "KUBERNETES_PORT_443_TCP_PORT",
+                        "KUBERNETES_PORT_443_TCP_ADDR"]
+  };
+  
+  
+  // Admission: the ECS execute-command annotation (sandbox.amazonaws.com/ecs-exec-enabled) is
+  // forbidden on EKS. It drives SSM binary mount injection in the
+  // guest agent, which EKS never uses.
+  forbid(
+      principal,
+      action == Agent::Action::"CreateContainer",
+      resource
+  )
+  when {
+      context.ecs_exec_enabled
+  };
+  
+  // PrepareImage: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:027ec5bfec6c99e336fc495ad8a4ca9d4fdeae12ef21739da9c45d95b7ae5f9c
+  permit(
+      principal,
+      action == Agent::Action::"PrepareImage",
+      resource
+  )
+  when {
+      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:027ec5bfec6c99e336fc495ad8a4ca9d4fdeae12ef21739da9c45d95b7ae5f9c"
+  };
+  
+  
+  // Admission: host image mounting is disabled (no permit policy)
+  
+runtime_policy: |+
+  // Runtime: stdin writes are denied (no permit policy)
+  // Blocks: kubectl attach -i, kubectl exec -i, kubectl cp (to pod)
+  // Runtime: exec is denied (no permit policy)
+  // Blocks: kubectl exec, kubectl cp
+  // Runtime: agent log streaming is disabled (no permit policy)
+  // Runtime: SetupVolume is denied (no CSI volumes)
+  
+  // Runtime: allow log reading
+  permit(
+      principal,
+      action == Agent::Action::"ReadLogs",
+      resource
+  );
+  // Runtime: allow reading termination logs
+  permit(
+      principal,
+      action == Agent::Action::"ReadTerminationLog",
+      resource
+  );
+  // Runtime: allow file write (exact) /var/lib/kubelet/pods/<pod-uid>/etc-hosts
+  // Runtime: allow file write (exact) /var/lib/kubelet/pods/<pod-uid>/containers/main/<termination-log-hash>
+  // Runtime: allow file write (directory) /var/lib/kubelet/pods/<pod-uid>/volumes/kubernetes.io~projected/eks-pod-identity-token
+  permit(
+      principal,
+      action == Agent::Action::"WriteFile",
+      resource
+  )
+  when {
+      (context.path == "/var/lib/kubelet/pods/<pod-uid>/etc-hosts" ||
+   context.path == "/var/lib/kubelet/pods/<pod-uid>/containers/main/<termination-log-hash>" ||
+   context.path like "/var/lib/kubelet/pods/<pod-uid>/volumes/kubernetes.io~projected/eks-pod-identity-token/*")
+  };
+  // Runtime: allow stats
+  permit(
+      principal,
+      action == Agent::Action::"Stats",
+      resource
+  );
+  // Runtime: allow guest metadata init
+  permit(
+      principal,
+      action == Agent::Action::"InitGuestMetadata",
+      resource
+  );
+  // Runtime: allow guest metadata update
+  permit(
+      principal,
+      action == Agent::Action::"UpdateGuestMetadata",
+      resource
+  );
+  // Runtime: allow sandbox setup
+  permit(
+      principal,
+      action == Agent::Action::"SetupSandbox",
+      resource
+  )
+  when {
+      context.sysctls.isEmpty() &&
+      context.fsgroup == -1 &&
+      context.host_entries.isEmpty() &&
+      context.deny_all_egress == false &&
+      context.hostname == "encrypted-image-demo" &&
+      // the agent creates exactly the pod's mounted emptyDir volumes
+      context.volume_paths.isEmpty()
+  };
+  
+  // Runtime: allow OOM event watching
+  permit(
+      principal,
+      action == Agent::Action::"WatchOomEvents",
+      resource
+  );
+  // Runtime: allow guest container resource reclamation on removal
+  permit(
+      principal,
+      action == Agent::Action::"RemoveContainer",
+      resource
+  );
+  // Runtime: allow task creation (no binary logger)
+  permit(
+      principal,
+      action == Agent::Action::"CreateTask",
+      resource
+  )
+  when {
+      context.binary_logger_path == "" &&
+      context.binary_logger_args.isEmpty()
+  };
+  

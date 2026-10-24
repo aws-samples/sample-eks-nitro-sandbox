@@ -38,6 +38,12 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 - [Shared EFS storage](examples/storage/efs/README.md): two sandboxed pods share one EFS file system through a single access point, mounted over TLS with IAM authorization, so each pod reads and writes the same `/shared` directory.
 - [Shared S3 Files storage](examples/storage/s3-files/README.md): two sandboxed pods share one S3 Files access point, backed by a versioned S3 bucket, so the same data is both a shared `/shared` POSIX file system and plain S3 objects addressable from outside the cluster.
 
+## Confidential
+
+Samples that use `runtimeClassName: confidential-sandbox`, where the node is untrusted and AWS KMS releases a key only to a sandbox whose attestation matches. The [section page](examples/confidential/README.md) covers what they share.
+
+- [Encrypted image](examples/confidential/encrypted-image/README.md): a container image whose every layer is ciphertext in Amazon ECR, decrypted inside the sandbox by the guest image runtime once KMS has checked the attested policy measurement, while the same credentials used from outside the sandbox are refused.
+
 ## Preview the site locally
 
 ```bash
