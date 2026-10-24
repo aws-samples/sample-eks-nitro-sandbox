@@ -218,11 +218,16 @@ jobs:
         run: |
           secs="${HOLD_SECONDS:-240}"
           # Digits only, and capped: a bad or huge value would otherwise hold a
-          # sandbox and a maxRunners slot until the job timeout.
+          # sandbox and a maxRunners slot until the job timeout. The length test
+          # comes first, because a digit string too long for an integer makes
+          # `[ -gt ]` complain instead of comparing.
           case "$secs" in
             ''|*[!0-9]*) echo "hold_seconds is not a number; using 240"; secs=240 ;;
           esac
-          [ "$secs" -le 900 ] || { echo "hold_seconds above 900; using 900"; secs=900; }
+          if [ "${#secs}" -gt 4 ] || [ "$secs" -gt 900 ]; then
+            echo "hold_seconds above 900; using 900"
+            secs=900
+          fi
           echo "=== HOLDING-POD-OPEN for ${secs}s ==="
           echo "Inspect it now, in the namespace the sample installed the runners in:"
           echo "  kubectl get pods -n <ARC_RUNNERS_NAMESPACE> -l actions-ephemeral-runner=True"

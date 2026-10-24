@@ -183,8 +183,9 @@ itself does not land in your shell history:
 `scripts/setup.sh` builds a Kubernetes Secret from that file with
 `kubectl create secret generic --from-file`, so the credential is never an argument to a
 command and never visible to another process in `ps`, and it suspends shell tracing around
-the two places that handle it. It creates the Secret when none is there, and writes over
-only one this sample already owns.
+every place that handles it. It creates the Secret when none is there, and replaces one this
+sample already owns outright rather than merging into it, so moving from a token to a GitHub
+App does not leave the old token in the Secret beside the new keys.
 
 It never uses a client-side apply, which would copy the credential into the object's
 `last-applied-configuration` annotation: `kubectl describe secret` prints annotations even

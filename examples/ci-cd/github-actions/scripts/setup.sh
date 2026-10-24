@@ -195,8 +195,14 @@ secret_write() {
     "${KCTL[@]}" label --local -f - "$LABEL_KEY=$LABEL_VALUE" -o yaml \
       | "${KCTL[@]}" create -f -
   else
+    # `replace`, not `apply --server-side`: a full PUT of an object whose
+    # ownership was just checked. A server-side apply takes ownership only of
+    # the keys it sends and leaves keys written by another field manager, so
+    # after a `create` above, moving from a token to a GitHub App would leave
+    # the old github_token in the Secret beside the App keys while the reader
+    # believed it had been replaced.
     "${KCTL[@]}" label --local -f - "$LABEL_KEY=$LABEL_VALUE" -o yaml \
-      | "${KCTL[@]}" apply --server-side --force-conflicts -f -
+      | "${KCTL[@]}" replace -f -
   fi
 }
 
@@ -207,14 +213,22 @@ secret_write() {
 # server-side apply replaced it with the new token. Remove it, then confirm it
 # is gone rather than assume.
 strip_last_applied() {
+  # Tracing off, like the two credential branches: this function used to read
+  # the annotation's VALUE into a variable, which is the whole Secret with the
+  # credential in it, so `bash -x setup.sh` would have printed it. It now asks
+  # jq only whether the key is there and keeps nothing but that answer.
+  local xt=0; case "$-" in *x*) xt=1; set +x;; esac
   "${KCTL[@]}" annotate secret "$GITHUB_SECRET_NAME" -n "$ARC_RUNNERS_NAMESPACE" \
     kubectl.kubernetes.io/last-applied-configuration- >/dev/null 2>&1 || true
-  local left
-  left="$("${KCTL[@]}" get secret "$GITHUB_SECRET_NAME" -n "$ARC_RUNNERS_NAMESPACE" \
-    -o 'jsonpath={.metadata.annotations.kubectl\.kubernetes\.io/last-applied-configuration}' \
-    2>/dev/null)" \
-    || die "could not confirm Secret '$GITHUB_SECRET_NAME' carries no last-applied-configuration annotation."
-  [[ -z "$left" ]] \
+  local present rc=0
+  present="$("${KCTL[@]}" get secret "$GITHUB_SECRET_NAME" -n "$ARC_RUNNERS_NAMESPACE" \
+    -o json 2>/dev/null \
+    | jq -r '(.metadata.annotations // {}) | has("kubectl.kubernetes.io/last-applied-configuration")')" \
+    || rc=$?
+  [[ "$xt" == 1 ]] && set -x
+  [[ "$rc" -eq 0 && -n "$present" ]] \
+    || die "could not confirm whether Secret '$GITHUB_SECRET_NAME' carries a last-applied-configuration annotation. That is a failed read, not a report that it is absent."
+  [[ "$present" == false ]] \
     || die "Secret '$GITHUB_SECRET_NAME' still carries a kubectl.kubernetes.io/last-applied-configuration annotation, which would hold a copy of your credential in clear view of 'kubectl describe secret'. Remove it by hand:
   kubectl --context $CLUSTER_NAME -n $ARC_RUNNERS_NAMESPACE annotate secret $GITHUB_SECRET_NAME kubectl.kubernetes.io/last-applied-configuration-"
 }
