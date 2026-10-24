@@ -34,9 +34,11 @@ git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/ci-cd/github-actions
 ```
 
-For this sample you also need [Helm](https://helm.sh/docs/intro/install/) 3.8 or later, which
-installs the two ARC charts from an OCI registry, and [`jq`](https://jqlang.github.io/jq/),
-which the scripts use to read Helm's JSON. You also need two things of your own: a
+For this sample you also need [Helm](https://helm.sh/docs/intro/install/) 3.14 or later,
+which installs the two ARC charts from an OCI registry; the scripts use `helm --labels` and
+read labels back from `helm get metadata`, neither of which is in earlier versions. You also
+need [`jq`](https://jqlang.github.io/jq/), which the scripts use to read Helm's JSON. The run
+on this page used Helm 4.2.4. You also need two things of your own: a
 **test repository** you own and can afford to run untrusted-shaped jobs in, and a
 **least-privilege GitHub credential** for it. Both are described in Step 2.
 
@@ -63,14 +65,17 @@ gets root does so inside the pod's own kernel.
 
 **The credential never reaches the runner.** The GitHub credential is used by the controller
 and the listener to register runners just in time. The runner pod is given no GitHub admin
-credential and no AWS role, and the page checks both by variable name.
+credential and no AWS role, and the page checks both by variable name. It does not leave the
+cluster-side pods, though: ARC builds a `<listener>-config` Secret next to the listener in
+the controller's namespace whose `config.json` embeds the credential, so the credential
+exists in two places, both outside the sandbox. "Where the credential lives" below says what
+that means for clean up.
 
-*Figure 1: The GitHub Actions service outside AWS; inside an Amazon EKS cluster, the ARC
-controller and listener as ordinary pods in `arc-systems`, and one per-job sandbox pod in
-`arc-runners` holding the runner and its privileged `docker:dind` sidecar, with an egress
-policy on the pod and the shared EC2 node untouched beneath it.*
+*Figure 1: Only the per-job runner pod is a sandbox. The ARC controller and its listener stay
+ordinary pods in `arc-systems`, the listener holds the one outbound connection to GitHub, and
+the credential it reads never reaches the runner pod.*
 
-![Outside the AWS Cloud, the GitHub Actions service at github.com. Inside the AWS Cloud, an Amazon EKS cluster contains two namespaces. The namespace arc-systems holds the ARC controller and the listener, both drawn as ordinary pods; the listener makes a single outbound long-poll HTTPS connection to the GitHub Actions service, and nothing accepts an inbound connection. The namespace arc-runners holds a GitHub credential Secret, read only by the controller and the listener, and one per-job pod drawn as a sandbox labelled runtimeClassName isolated-sandbox, created one per queued job and deleted when the job ends. Inside that sandbox pod are two containers side by side, the runner container and a docker:dind sidecar marked privileged inside the guest only, connected over a Docker socket. An egress network policy on the sandbox pod restricts its outbound traffic to the GitHub Actions hosts and the base-image registry. A dashed line from the credential Secret to the runner pod is crossed out, showing the credential does not reach it. Beneath the cluster, the shared EC2 node carries the pods but is untouched by the job.](images/architecture.png)
+![Outside AWS sits GitHub Actions at github.com. Inside the AWS Cloud, an Amazon EKS cluster holds two namespaces. The namespace arc-systems holds ordinary pods with no runtime class: an ARC controller and a listener. A two-way arrow between the listener and GitHub Actions is labelled outbound long poll, no inbound, so nothing accepts an inbound connection. An arrow from the controller down into the namespace arc-runners is labelled one pod per queued job. In arc-runners, a Nitro sandbox pod framed in red carries runtimeClassName isolated-sandbox and the note one per queued job, deleted when the job ends, and inside it a runner container that runs the job steps sits beside a docker:dind container that is privileged in the guest. A GitHub credential, read by the listener, sits in the same namespace, with an arrow running from it up to the listener and a red dashed arrow from it to the sandbox pod labelled never reaches the runner. A green arrow from the sandbox pod to Amazon ECR Public, for base images, is labelled egress allowed, while a red dashed arrow to everything else, the internet and other pods, is labelled egress policy refused. An ApplicationNetworkPolicy, whose egress allows GitHub and the registry, is attached to the sandbox pod. A red dashed arrow from the sandbox pod to the shared EC2 node, with its IMDS, disks and runtime socket, is labelled refused.](images/architecture.png)
 
 ## Versions
 
@@ -162,16 +167,27 @@ every repository in the account. A **fine-grained personal access token** whose 
 access is only that one repository, with the same two permissions, works too. Either way,
 the credential goes in a file of its own and only its path goes in `.env`:
 
+A GitHub App's private key is already a `.pem` file, so point `.env` at it. For a token,
+put it in a file of its own. Type it at a prompt rather than in the command, so the token
+itself does not land in your shell history:
+
 ```bash
-# a token, in a file by itself, with no trailing newline and nothing else in it
-printf '%s' 'github_pat_...' > ~/.github-arc-token
-chmod 600 ~/.github-arc-token
+( umask 077
+  printf 'Paste the token, then press Enter: '
+  read -rs TOKEN
+  printf '%s' "$TOKEN" > ~/.github-arc-token
+  unset TOKEN
+  echo )
 ```
 
 `scripts/setup.sh` builds a Kubernetes Secret from that file with
 `kubectl create secret generic --from-file`, so the credential is never an argument to a
-command, never in your shell history and never visible to another process in `ps`. The Helm
-values reference the Secret by name, so it is not in the release's values either:
+command and never visible to another process in `ps`, and it suspends shell tracing around
+the two places that handle it. It writes the Secret with `kubectl apply --server-side`:
+a client-side apply would copy the credential into the object's
+`last-applied-configuration` annotation, which `kubectl describe secret` prints even though
+it hides the data. The Helm values reference the Secret by name, so it is not in the
+release's values either:
 
 ```yaml
 githubConfigSecret: __GITHUB_SECRET_NAME__   # a NAME, never an inline token
@@ -265,11 +281,19 @@ TODO: output from the fresh run
 ```
 
 Nothing is running before the job is queued, one pod appears for it, and the pod is gone
-when the job finishes. Run the workflow a second time and the new pod has a different pod
-UID, which is how you can tell it is a fresh pod and not a reused one:
+when the job finishes.
+
+That last part matters for the next two steps: ARC deletes the runner pod the moment the
+job ends, so a command run afterwards has nothing left to read. The workflow's final step
+therefore holds the pod open for four minutes, after the work is done, and prints
+`=== HOLDING-POD-OPEN ===`. Run the commands in Step 6 and Step 8 while it is held. On a
+`workflow_dispatch` run you can change how long with the `hold_seconds` input.
+
+Record the pod's name and UID while it is held, then do the same on a second run. The two
+UIDs differ, which is how you can tell the second job got a fresh pod and not a reused one:
 
 ```bash
-kubectl get pods -n arc-runners \
+kubectl get pods -n arc-runners -l actions-ephemeral-runner=True \
   -o custom-columns='POD:.metadata.name,UID:.metadata.uid,RUNTIME CLASS:.spec.runtimeClassName,NODE:.spec.nodeName'
 ```
 
@@ -284,11 +308,15 @@ prints three readings. Take them from the job log in the Actions tab:
 TODO: output from the fresh run
 ```
 
-Now the same three readings from an ordinary pod on the same node. Fill the runner pod's
-node into the comparison pod and apply it:
+Now the same three readings from an ordinary pod on the same node. While the runner pod is
+held open, read its node, fill that into the comparison pod and apply it. The `NODE` check
+matters: with an empty value the comparison pod would be scheduled anywhere, and "the same
+node" would quietly not hold.
 
 ```bash
-NODE=$(kubectl get pods -n arc-runners -o jsonpath='{.items[0].spec.nodeName}')
+NODE=$(kubectl get pods -n arc-runners -l actions-ephemeral-runner=True \
+  -o jsonpath='{.items[0].spec.nodeName}')
+[ -n "$NODE" ] || { echo "no runner pod is running; trigger the workflow and run this while it holds the pod open"; }
 sed "s|<NODE_NAME>|$NODE|" deploy/ordinary-pod.yaml | kubectl apply -n arc-runners -f -
 kubectl wait --for=condition=Ready pod/ordinary-comparison -n arc-runners --timeout=120s
 kubectl exec -n arc-runners ordinary-comparison -- \
@@ -327,50 +355,84 @@ which is arbitrary code execution. Both run on the job's own in-pod daemon:
 TODO: output from the fresh run
 ```
 
-The runner image ships no `pip`, so the tests run in a throwaway container on that same
-daemon, which is also how untrusted test code should be run. The test file goes in on
-standard input because a bind mount would resolve against the dind daemon's filesystem
-rather than the runner container's.
+The tests run in a throwaway container on that same daemon, which is also how untrusted test
+code should be run. They use the Python standard library's `unittest` rather than installing
+`pytest`, because the egress policy allows no package index: nothing in this job may reach
+one, by design. The test file goes in on standard input because a bind mount would resolve
+against the dind daemon's filesystem rather than the runner container's.
 
 **Step 8: No credential reached the runner pod.** Runners register just in time, so the
 admin credential stays with the controller and the listener. The workflow prints variable
-names, never values, and the same can be read from the live pod's spec:
+names, never values. Read the same from the live pod while it is held open, asking which
+Secret each variable and volume actually refers to rather than only what they are called:
 
 ```bash
-kubectl get pods -n arc-runners -o jsonpath='{.items[0].spec.containers[*].env[*].name}{"\n"}'
-kubectl get pods -n arc-runners -o jsonpath='{.items[0].spec.volumes[*].name}{"\n"}'
+kubectl get pods -n arc-runners -l actions-ephemeral-runner=True -o jsonpath='
+  env names:    {.items[0].spec.containers[*].env[*].name}{"\n"}
+  env secrets:  {.items[0].spec.containers[*].env[*].valueFrom.secretKeyRef.name}{"\n"}
+  volumes:      {.items[0].spec.volumes[*].name}{"\n"}
+  vol secrets:  {.items[0].spec.volumes[*].secret.secretName}{"\n"}
+  serviceaccount: {.items[0].spec.serviceAccountName}{"\n"}'
 ```
 
 ```text
 TODO: output from the fresh run
 ```
 
-No `github_token`, `github_app_private_key` or `AWS_` variable is present, and the credential
-Secret is not among the pod's volumes. The runner pods are also given no EKS Pod Identity
+No `github_token`, `github_app_private_key` or `AWS_` variable is present, and no volume or
+variable refers to the credential Secret. The runner pods are also given no EKS Pod Identity
 association, so there is no AWS role to assume: the build pulls its public base images
 anonymously. The chart gives the runner pod a ServiceAccount with no permissions of its own.
 
 **Step 9: The escape probes, and what they are worth.** The workflow's last step tries to
-reach the node's instance-metadata credentials, list the node's `nvme` devices and open the
-node's container runtime socket, and fails the job if any of them succeeds.
+reach the node's instance-metadata credentials, list the node's `nvme` devices both from the
+runner container and from a privileged container on the job's own daemon, and open the
+node's container runtime socket. It fails the job if any of them succeeds.
 
 ```text
 TODO: output from the fresh run
 ```
 
-Be clear about what this does and does not establish. On EKS a plain namespaced pod already
-cannot reach any of those three, so an ordinary runner passes these probes too. They are
-worth running because they fail closed, so a future regression that did expose the node
-would break the job rather than pass quietly, but they do not by themselves show that the
-job ran in a sandbox. The load-bearing evidence for that is Step 6: the pod's own kernel
-build, its own boot and its virtio disks.
+Be clear about what each probe is worth, because three of the four would also pass on an
+ordinary pod:
+
+- **The instance-metadata probe is answered by the network policy**, not by the sandbox:
+  the policy does not allow `169.254.169.254`, so the request is refused before the
+  question of isolation arises. Separately, whether a pod can reach instance metadata at
+  all depends on the node's hop limit, so "a pod cannot reach it" is not true in general.
+- **The `nvme` read from the runner container, and the runtime socket**, are blocked for any
+  namespaced pod that mounts no host paths, so an ordinary runner passes them too.
+- **The `nvme` read from a privileged container on the job's own daemon is the telling one.**
+  In an ordinary pod, a privileged container does see the node's devices. Here it does not,
+  because "privileged" is privileged inside the guest.
+
+They are worth running because they fail closed, so a future regression that did expose the
+node would break the job rather than pass quietly. They are not what shows the job ran in a
+sandbox. The load-bearing evidence for that is Step 6: the pod's own kernel build, its own
+boot and its virtio disks.
+
+## Where the credential lives
+
+The credential is used by the cluster-side pods and never by the runner, but it is not in
+only one place. `scripts/setup.sh` creates your Secret in the runners' namespace, and for
+each runner scale set ARC then builds a listener in the controller's namespace with a
+`<listener>-config` Secret beside it whose `config.json` embeds the credential, so the
+listener can authenticate. Both copies are outside the sandbox, and both are owned by the
+runner scale set, so uninstalling it removes them.
+
+That matters for clean up rather than for the runner: `scripts/clean.sh` confirms, after the
+uninstall, that no listener, pod or Secret for this scale set is left in the controller's
+namespace, and says so if any is, because what it is confirming gone is a copy of your
+credential. Revoke the credential at GitHub when you are finished with the sample; that is
+the only step that makes it useless wherever a copy may remain.
 
 ## How the network policy works
 
 Every ephemeral runner pod ARC creates carries the label
 `actions-ephemeral-runner: "True"`, so one policy covers every per-job pod without naming
-any of them. Here is the whole file, as it is in the folder, with `<COREDNS_IP>` filled in
-by `scripts/setup.sh` from your cluster's CoreDNS Service address:
+any of them. Here is the whole file as it is in the folder, apart from its header comment.
+`<COREDNS_IP>` is the one value filled in at apply time, by `scripts/setup.sh`, from your
+cluster's CoreDNS Service address:
 
 ```yaml
 apiVersion: networking.k8s.aws/v1alpha1
@@ -386,13 +448,18 @@ spec:
   policyTypes:
     - Ingress
     - Egress
+  # Nothing reaches a runner pod. The job is driven by the runner's own outbound
+  # long poll, so no inbound connection is ever needed.
   ingress: []
   egress:
+    # Name lookups, to the cluster's CoreDNS Service only.
     - to:
         - ipBlock: { cidr: <COREDNS_IP>/32 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
+    # The hosts a self-hosted runner needs, from GitHub's own list in the
+    # self-hosted runners reference, plus the registry the build pulls from.
     - to:
         - domainNames:
             - github.com                             # register the runner, fetch the job
@@ -403,6 +470,10 @@ spec:
             - "*.pkg.github.com"                     # GitHub Packages
             - pkg-containers.githubusercontent.com   # container layer downloads
             - public.ecr.aws                         # base images this sample's build pulls
+            # Amazon ECR Public answers a layer download with a redirect to
+            # CloudFront, at a generated host name, so the pull needs this too.
+            # It is wider than one registry: it allows every host under
+            # cloudfront.net.
             - "*.cloudfront.net"
       ports:
         - { protocol: TCP, port: 443 }
@@ -414,9 +485,9 @@ spec:
 | `policyTypes: [Ingress, Egress]` | Both directions are governed, so anything not allowed below is refused |
 | `ingress: []` | Nothing reaches a runner pod. The job is driven by the runner's own outbound long poll, so no inbound connection is ever needed |
 | `ipBlock: <COREDNS_IP>/32` on 53 | Name lookups, to the cluster's CoreDNS Service only, not to any other resolver |
-| `github.com`, `api.github.com`, `*.actions.githubusercontent.com` | What a self-hosted runner needs to register, collect a job and report back, from GitHub's list in the [self-hosted runners reference](https://docs.github.com/en/actions/reference/self-hosted-runners-reference) |
-| `codeload.github.com` | Downloads the actions a workflow refers to |
-| `ghcr.io`, `*.pkg.github.com`, `pkg-containers.githubusercontent.com` | Container and package pulls from GitHub, on the same reference list |
+| `github.com`, `api.github.com`, `*.actions.githubusercontent.com` | What a self-hosted runner needs to register, collect a job and report back. These are a subset of GitHub's list in the [self-hosted runners reference](https://docs.github.com/en/actions/reference/self-hosted-runners-reference), enough for this workflow |
+| `codeload.github.com` | Downloads the actions a workflow refers to. This workflow uses none, so it is here for workflows that do |
+| `ghcr.io`, `*.pkg.github.com`, `pkg-containers.githubusercontent.com` | Container and package pulls from GitHub, on the same reference list. This workflow needs none of them either: the runner image is pulled by the kubelet on the node, outside this policy. Remove them if your workflows never pull from GitHub's registries, since `ghcr.io` also accepts pushes |
 | `public.ecr.aws` and `*.cloudfront.net` | The base images this sample's `docker build` pulls. Amazon ECR Public answers a layer download with a redirect to CloudFront at a generated host name, so the pull needs both |
 | no rule for `169.254.170.23` | The runner pods have no EKS Pod Identity association and need no AWS credential. A policy for a pod that does have a role needs that rule, or its credential requests time out |
 
@@ -427,12 +498,29 @@ interface, so a command in the runner, even as root, cannot change it. `setup.sh
 the policy's `PolicyEndpoint` before you queue a job, because that is how the controller
 says it has handed the policy to the nodes.
 
-Its limits are worth stating plainly. A `domainNames` rule allows the addresses a name
-resolves to, so another name served from the same addresses is reachable too; `*.cloudfront.net`
-is the widest entry here, and it allows every host served from CloudFront, not only Amazon
-ECR Public. Kubernetes always allows traffic between a pod and its own node, which is not a
-path to the internet. GitHub notes its host list can change, so re-check it against the
-self-hosted runners reference when you build.
+Its limits are worth stating plainly, because this policy constrains untrusted code:
+
+- **An allowlist of hosts is not a stop on getting data out.** A `domainNames` rule allows
+  the addresses a name resolves to, so another name served from the same addresses is
+  reachable too. `*.cloudfront.net` is the widest entry, and it allows every host served
+  from CloudFront, including a distribution an attacker owns. Code in the job can also
+  reach `github.com` and `api.github.com` with a token of its own. Treat the policy as a
+  limit on what the job can reach, not as a guarantee that nothing leaves.
+- **A pod can always reach its own node.** Kubernetes allows that traffic whatever the
+  policy says. It is not a path to the internet, but the node's own host-network services,
+  such as the kubelet's port 10250, are on it.
+- **Only pods the selector matches are restricted.** Another pod in the same namespace with
+  no `actions-ephemeral-runner` label, such as the comparison pod in Step 6, is not covered.
+  Add a namespace-wide default-deny if you want everything in the namespace restricted.
+- **This workflow's needs are not every workflow's.** GitHub serves job logs, step
+  summaries, artifacts and the cache from Azure blob storage, so a workflow that uploads an
+  artifact or uses `actions/cache` also needs `*.blob.core.windows.net`, which allows any
+  Azure storage account. If a job hangs or its log is truncated, that is the first thing to
+  add. GitHub notes its host list can change, so re-check it against the self-hosted runners
+  reference when you build.
+- **No package index is allowed, on purpose.** The workflow installs nothing: the build runs
+  no `apk add` and the tests use the Python standard library. Adding either would mean adding
+  its index host, and a package index is a large surface to open to untrusted code.
 
 The workflow asks the policy both ways, from inside the runner, so a pass cannot be confused
 with a policy that allows everything:
@@ -441,8 +529,9 @@ with a policy that allows everything:
 - name: Egress policy, both ways
   run: |
     for url in https://api.github.com https://example.com https://registry-1.docker.io; do
-      curl -sS -o /dev/null --connect-timeout 8 "$url" 2>/dev/null
-      echo "$url -> exit $?"
+      rc=0
+      curl -sS -o /dev/null --connect-timeout 8 "$url" 2>/dev/null || rc=$?
+      echo "$url -> exit $rc"
     done
 ```
 
@@ -490,13 +579,22 @@ is the case this sample exists for.
 - **`kubectl exec` into a runner pod still works**, because the sandbox's control channel is
   not the network. That is useful when a job fails, and it is also why a job's own output is
   not the only way to inspect a run.
-- **The escape probes are not the proof.** They are necessary but not sufficient: an ordinary
-  namespaced pod passes them too. Step 6's kernel build, boot and virtio disks are what show
-  the job ran in a sandbox.
+- **The escape probes are not the proof.** Three of the four pass on an ordinary pod too, and
+  one of them is answered by the network policy rather than by the sandbox. Step 6's kernel
+  build, boot and virtio disks are what show the job ran in a sandbox. Step 9 says which
+  probe is worth what.
+- **The credential exists in two places in the cluster, neither of them the runner.** Your
+  Secret in the runners' namespace, and the listener's `config.json` Secret that ARC builds
+  in the controller's namespace. Revoking the credential at GitHub is the step that makes
+  every copy useless.
+- **The job holds its pod open for four minutes at the end.** That is only so the page's
+  inspection commands have a live pod to read, since ARC deletes it as soon as the job ends.
+  Drop that step for real work: it keeps a sandbox, and a `maxRunners` slot, busy for no
+  reason.
 
 ## Clean up
 
-Set the variables again if you are in a new shell, then remove what the sample created:
+`clean.sh` reads the same `.env` that `setup.sh` used, so there is nothing to set again:
 
 ```bash
 cd sample-eks-nitro-sandbox/examples/ci-cd/github-actions
@@ -508,11 +606,15 @@ TODO: output from the fresh run
 ```
 
 `clean.sh` uninstalls the runner scale set first, because that is what creates runner pods,
-waits for any in-flight runner pod to go, then deletes the egress policy, the credential
-Secret and the `arc-runners` namespace. It only touches a namespace labelled
-`ManagedBy=github-actions`, and a lookup that fails counts as "could not determine" rather
-than "already gone", so anything it could not delete or confirm is named at the end and
-makes it exit non-zero.
+and waits for any in-flight runner pod to go. It deletes the egress policy only once those
+pods are confirmed gone, since removing it earlier would leave a running job unrestricted.
+Then it deletes the credential Secret and the `arc-runners` namespace, and finally confirms
+that no listener, pod or Secret for this scale set is left in the controller's namespace, as
+"Where the credential lives" explains.
+
+It only touches a namespace labelled `ManagedBy=github-actions`, and a lookup that fails
+counts as "could not determine" rather than "already gone", so anything it could not delete
+or confirm is named at the end and makes it exit non-zero.
 
 It leaves the ARC controller and the four ARC CRDs, and prints the commands to remove them,
 because they are shared cluster-wide and this sample did not install them. If you installed

@@ -32,8 +32,10 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 say() { printf '\n==> %s\n' "$*"; }
 
 [[ -f "$ENV_FILE" ]] || die "copy .env.example to .env and fill it in first."
+set -a
 # shellcheck disable=SC1090
-set -a; . "$ENV_FILE"; set +a
+. "$ENV_FILE"
+set +a
 
 : "${CLUSTER_NAME:?set CLUSTER_NAME in .env}"
 : "${GITHUB_CONFIG_URL:?set GITHUB_CONFIG_URL in .env}"
@@ -42,6 +44,8 @@ ARC_SYSTEMS_NAMESPACE="${ARC_SYSTEMS_NAMESPACE:-arc-systems}"
 ARC_RUNNERS_NAMESPACE="${ARC_RUNNERS_NAMESPACE:-arc-runners}"
 RUNNER_SCALE_SET_NAME="${RUNNER_SCALE_SET_NAME:-github-actions-nitro}"
 GITHUB_SECRET_NAME="${GITHUB_SECRET_NAME:-github-credential}"
+# The name in deploy/egress-policy.yaml. Not overridable: the file sets it.
+POLICY_NAME=github-actions-runner-egress
 
 SCALESET_CHART="oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set"
 CONTROLLER_CHART="oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller"
@@ -83,13 +87,37 @@ say "3/7 the ARC controller (shared; this sample does not install it)"
 # ---------------------------------------------------------------------------
 # One controller watches every namespace, and its CRDs hold every team's runner
 # sets. If it is already here it is used exactly as it is.
+#
+# Look for it the way AGENTS.md says, by its CRDs and by its Deployment in any
+# namespace, not only as a Helm release in the namespace this sample expects. A
+# controller installed elsewhere, or without Helm, must not be reported as
+# absent: the reader would then install a second one, and two controllers would
+# reconcile the same CRDs.
+ctrl_deploys="$("${KCTL[@]}" get deploy -A \
+  -l app.kubernetes.io/name=gha-rs-controller \
+  -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' 2>/dev/null)" \
+  || die "could not list ARC controller Deployments. That is a failed read, not a report that the controller is absent."
+ctrl_elsewhere="$(grep -v "^$ARC_SYSTEMS_NAMESPACE/" <<<"$ctrl_deploys" | grep . || true)"
+[[ -z "$ctrl_elsewhere" ]] \
+  || die "an ARC controller runs in another namespace ($(tr '\n' ' ' <<<"$ctrl_elsewhere")). One controller watches every namespace, so a second would compete with it for every runner set. Set ARC_SYSTEMS_NAMESPACE in .env to that namespace, or remove that controller, then re-run."
+
+crds_present="$("${KCTL[@]}" get crd autoscalingrunnersets.actions.github.com \
+  -o name --ignore-not-found 2>/dev/null)" \
+  || die "could not read the ARC CRDs. That is a failed read, not a report that they are absent."
+
 ctrl_list="$("${HELM[@]}" list -n "$ARC_SYSTEMS_NAMESPACE" -o json 2>/dev/null)" \
   || die "could not list Helm releases in '$ARC_SYSTEMS_NAMESPACE'. That is a failed read, not a report that the controller is absent."
 ctrl_chart="$(jq -r \
   '[.[] | select(.chart | startswith("gha-runner-scale-set-controller-"))][0].chart // ""' \
   <<<"$ctrl_list" | sed 's|^gha-runner-scale-set-controller-||')"
 if [[ -z "$ctrl_chart" ]]; then
-  die "no ARC controller Helm release found in namespace '$ARC_SYSTEMS_NAMESPACE'.
+  if [[ -n "$(grep . <<<"$ctrl_deploys" || true)" ]]; then
+    die "an ARC controller Deployment runs in '$ARC_SYSTEMS_NAMESPACE' but there is no controller Helm release there, so its version cannot be read. This sample needs $ARC_VERSION, because the controller refuses a scale set built by another version. Check that install by hand, then re-run."
+  fi
+  if [[ -n "$crds_present" ]]; then
+    die "the ARC CRDs exist but no controller runs anywhere: another ARC install, or one partly removed. Installing a controller over this could adopt someone else's CRDs. Sort that out by hand (kubectl get crd | grep actions.github.com), then re-run."
+  fi
+  die "no ARC controller found on this cluster.
   The controller and its CRDs are shared cluster-wide, so install them yourself, once, at the version this sample pins:
 
   helm install arc $CONTROLLER_CHART \\
@@ -124,25 +152,43 @@ fi
 say "5/7 the GitHub credential Secret"
 # ---------------------------------------------------------------------------
 # Refuse a same-named Secret this sample did not create, so a credential
-# belonging to someone else is never replaced.
-if "${KCTL[@]}" get secret "$GITHUB_SECRET_NAME" -n "$ARC_RUNNERS_NAMESPACE" >/dev/null 2>&1; then
+# belonging to someone else is never replaced. A read that FAILS is not a report
+# that the Secret is absent: --ignore-not-found separates the two, so a
+# transient error or RBAC that denies get never reaches the write below.
+secret_present="$("${KCTL[@]}" get secret "$GITHUB_SECRET_NAME" \
+  -n "$ARC_RUNNERS_NAMESPACE" -o name --ignore-not-found 2>/dev/null)" \
+  || die "could not read Secret '$GITHUB_SECRET_NAME' in '$ARC_RUNNERS_NAMESPACE'. That is a failed read, not a report that it is absent; refusing to write over a credential whose owner is unknown."
+if [[ -n "$secret_present" ]]; then
   owner="$("${KCTL[@]}" get secret "$GITHUB_SECRET_NAME" -n "$ARC_RUNNERS_NAMESPACE" \
-    -o "jsonpath={.metadata.labels.$LABEL_KEY}" 2>/dev/null || true)"
+    -o "jsonpath={.metadata.labels.$LABEL_KEY}" 2>/dev/null)" \
+    || die "could not read the labels of Secret '$GITHUB_SECRET_NAME'."
   [[ "$owner" == "$LABEL_VALUE" ]] \
-    || die "Secret '$GITHUB_SECRET_NAME' in '$ARC_RUNNERS_NAMESPACE' is not this sample's. Set GITHUB_SECRET_NAME in .env to another name."
+    || die "Secret '$GITHUB_SECRET_NAME' in '$ARC_RUNNERS_NAMESPACE' is not this sample's (labelled $LABEL_KEY=${owner:-none}). Set GITHUB_SECRET_NAME in .env to another name."
 fi
 
 # Both branches build the Secret with kubectl --from-file, so no credential is
 # ever an argument, and xtrace is off around them so `bash -x` cannot print one.
+#
+# They write it with `apply --server-side`. A client-side apply would copy the
+# whole Secret, credential included, into its
+# kubectl.kubernetes.io/last-applied-configuration annotation, and
+# `kubectl describe secret` prints annotations even though it hides data. The
+# sample's label goes on in the same write, with `kubectl label --local`, so the
+# Secret is never briefly unlabelled.
+secret_write() {
+  "${KCTL[@]}" label --local -f - "$LABEL_KEY=$LABEL_VALUE" -o yaml \
+    | "${KCTL[@]}" apply --server-side --force-conflicts -f -
+}
+
 make_secret_from_app() {
   local xt=0; case "$-" in *x*) xt=1; set +x;; esac
+  local rc=0
   "${KCTL[@]}" create secret generic "$GITHUB_SECRET_NAME" \
     --namespace "$ARC_RUNNERS_NAMESPACE" \
     --from-literal=github_app_id="$GITHUB_APP_ID" \
     --from-literal=github_app_installation_id="$GITHUB_APP_INSTALLATION_ID" \
     --from-file=github_app_private_key="$GITHUB_APP_PRIVATE_KEY_FILE" \
-    --dry-run=client -o yaml | "${KCTL[@]}" apply -f -
-  local rc=$?
+    --dry-run=client -o yaml | secret_write || rc=$?
   [[ "$xt" == 1 ]] && set -x
   return "$rc"
 }
@@ -150,20 +196,21 @@ make_secret_from_app() {
 make_secret_from_pat() {
   # --from-file takes the file's bytes verbatim, and a trailing newline makes
   # the token invalid, so copy it through a private temp file that holds the
-  # token and nothing else.
+  # token and nothing else. The trap removes that copy even on an interrupt.
   local xt=0; case "$-" in *x*) xt=1; set +x;; esac
   local tmp rc=0
   tmp="$(mktemp "${TMPDIR:-/tmp}/arc-token.XXXXXX")" || { [[ "$xt" == 1 ]] && set -x; return 1; }
+  trap 'rm -f "$tmp"' RETURN INT TERM
   chmod 600 "$tmp"
   if ! tr -d '\r\n' < "$GITHUB_PAT_FILE" > "$tmp" || [[ ! -s "$tmp" ]]; then
-    rm -f "$tmp"; [[ "$xt" == 1 ]] && set -x
+    [[ "$xt" == 1 ]] && set -x
     echo "GITHUB_PAT_FILE=$GITHUB_PAT_FILE is empty, or could not be read." >&2
     return 1
   fi
   "${KCTL[@]}" create secret generic "$GITHUB_SECRET_NAME" \
     --namespace "$ARC_RUNNERS_NAMESPACE" \
     --from-file=github_token="$tmp" \
-    --dry-run=client -o yaml | "${KCTL[@]}" apply -f - || rc=$?
+    --dry-run=client -o yaml | secret_write || rc=$?
   rm -f "$tmp"
   [[ -e "$tmp" ]] && { echo "could not remove $tmp; delete it by hand." >&2; rc=1; }
   [[ "$xt" == 1 ]] && set -x
@@ -182,8 +229,6 @@ elif [[ -n "${GITHUB_PAT_FILE:-}" ]]; then
 else
   die "no credential in .env. Set either the three GITHUB_APP_* values or GITHUB_PAT_FILE."
 fi
-"${KCTL[@]}" label secret "$GITHUB_SECRET_NAME" -n "$ARC_RUNNERS_NAMESPACE" \
-  "$LABEL_KEY=$LABEL_VALUE" --overwrite >/dev/null
 
 # ---------------------------------------------------------------------------
 say "6/7 the runner pods' egress policy"
@@ -195,19 +240,22 @@ sed "s|<COREDNS_IP>|$coredns|g" "$SAMPLE_DIR/deploy/egress-policy.yaml" \
 echo "  applied, with CoreDNS at $coredns."
 
 # The PolicyEndpoint is how the controller says it has handed the policy to the
-# nodes. Wait for it before any job can be queued.
-echo "  waiting for the PolicyEndpoint..."
+# nodes. Wait for THIS policy's endpoint, matched by its owner, not for any
+# endpoint in the namespace: another policy's would otherwise look like proof.
+pe_for_policy() {
+  "${KCTL[@]}" get policyendpoints -n "$ARC_RUNNERS_NAMESPACE" -o json 2>/dev/null \
+    | jq -r --arg p "$POLICY_NAME" \
+        '[.items[] | select((.metadata.ownerReferences // []) | any(.name == $p))]
+         | .[0].metadata.name // ""'
+}
+echo "  waiting for the PolicyEndpoint of $POLICY_NAME..."
 for _ in $(seq 1 30); do
-  if [[ -n "$("${KCTL[@]}" get policyendpoints -n "$ARC_RUNNERS_NAMESPACE" \
-      -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)" ]]; then
-    break
-  fi
+  [[ -n "$(pe_for_policy)" ]] && break
   sleep 2
 done
-pe="$("${KCTL[@]}" get policyendpoints -n "$ARC_RUNNERS_NAMESPACE" \
-  -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)"
+pe="$(pe_for_policy || true)"
 [[ -n "$pe" ]] \
-  || die "no PolicyEndpoint appeared for the egress policy in '$ARC_RUNNERS_NAMESPACE'. Without it the policy is not on the nodes yet."
+  || die "no PolicyEndpoint owned by '$POLICY_NAME' appeared in '$ARC_RUNNERS_NAMESPACE'. Without it the policy is not on the nodes yet, so a job queued now would run unrestricted."
 echo "  PolicyEndpoint: $pe"
 
 # ---------------------------------------------------------------------------
@@ -216,12 +264,17 @@ say "7/7 the runner scale set"
 # Refuse a same-named release this sample did not install.
 ss_list="$("${HELM[@]}" list -n "$ARC_RUNNERS_NAMESPACE" -o json 2>/dev/null)" \
   || die "could not list Helm releases in '$ARC_RUNNERS_NAMESPACE'."
+# `install` when absent and `upgrade` only for this sample's own release, rather
+# than `upgrade --install`: `install` fails if a release of this name appeared
+# between the check below and the call, instead of taking it over.
+helm_verb=install
 if jq -e --arg n "$RUNNER_SCALE_SET_NAME" 'any(.[]; .name == $n)' <<<"$ss_list" >/dev/null; then
   ss_meta="$("${HELM[@]}" get metadata "$RUNNER_SCALE_SET_NAME" -n "$ARC_RUNNERS_NAMESPACE" -o json 2>/dev/null)" \
     || die "could not read the Helm metadata of release '$RUNNER_SCALE_SET_NAME'."
   rel_owner="$(jq -r --arg k "$LABEL_KEY" '.labels[$k] // ""' <<<"$ss_meta")"
   [[ "$rel_owner" == "$LABEL_VALUE" ]] \
     || die "a Helm release '$RUNNER_SCALE_SET_NAME' already exists in '$ARC_RUNNERS_NAMESPACE' and is not labelled $LABEL_KEY=$LABEL_VALUE, so it is not this sample's. Set RUNNER_SCALE_SET_NAME in .env to another name."
+  helm_verb=upgrade
 fi
 
 values_rendered="$(mktemp "${TMPDIR:-/tmp}/arc-values.XXXXXX.yaml")"
@@ -230,7 +283,7 @@ sed -e "s|__GITHUB_CONFIG_URL__|$GITHUB_CONFIG_URL|g" \
     -e "s|__GITHUB_SECRET_NAME__|$GITHUB_SECRET_NAME|g" \
     "$SAMPLE_DIR/deploy/runner-scale-set-values.yaml" > "$values_rendered"
 
-"${HELM[@]}" upgrade --install "$RUNNER_SCALE_SET_NAME" "$SCALESET_CHART" \
+"${HELM[@]}" "$helm_verb" "$RUNNER_SCALE_SET_NAME" "$SCALESET_CHART" \
   --version "$ARC_VERSION" \
   --namespace "$ARC_RUNNERS_NAMESPACE" \
   --labels "$LABEL_KEY=$LABEL_VALUE" \
@@ -238,7 +291,7 @@ sed -e "s|__GITHUB_CONFIG_URL__|$GITHUB_CONFIG_URL|g" \
 
 echo "  waiting for the listener pod in '$ARC_SYSTEMS_NAMESPACE'..."
 "${KCTL[@]}" wait --for=condition=Ready pod \
-  -l actions.github.com/scale-set-name="$RUNNER_SCALE_SET_NAME" \
+  -l "actions.github.com/scale-set-name=$RUNNER_SCALE_SET_NAME,actions.github.com/scale-set-namespace=$ARC_RUNNERS_NAMESPACE" \
   -n "$ARC_SYSTEMS_NAMESPACE" --timeout=180s \
   || die "the listener pod for '$RUNNER_SCALE_SET_NAME' did not become Ready in '$ARC_SYSTEMS_NAMESPACE', so the scale set is not registered with GitHub. Check the credential, then:
   kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE logs -l actions.github.com/scale-set-name=$RUNNER_SCALE_SET_NAME"
