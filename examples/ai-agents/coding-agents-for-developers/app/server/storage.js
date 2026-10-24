@@ -193,14 +193,34 @@ export async function listSessions(developer) {
     .sort((x, y) => y.session.localeCompare(x.session));
 }
 
+// How Delete waits for S3 Files exports to settle. Exported so a test can shorten it.
+export const deleteTiming = { settleMs: 20000, maxRounds: 8 };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 export async function deleteSession(developer, session) {
   const ap = await findAccessPoint(developer, session);
-  if (ap) {
-    // Data first, then the access point. If deleting the data fails, the access point is
-    // still there, so the session stays in the list and Delete can be retried; deleting
-    // the access point first would hide a session whose data is still in the bucket.
-    await deleteFolder(developer, ap.cli, session);
-    await s3files.send(new DeleteAccessPointCommand({ accessPointId: ap.apId }));
+  if (!ap) return;
+  // The access point first: once it is gone nothing can mount the folder and write to it.
+  // Writes made before that can still be on their way from the file system to the bucket
+  // (S3 Files exports asynchronously), so a version deleted now can come back. So drain the
+  // prefix, wait, and list it again, until two lists in a row a wait apart find nothing.
+  await s3files.send(new DeleteAccessPointCommand({ accessPointId: ap.apId }));
+  try {
+    let quiet = 0;
+    for (let round = 1; round <= deleteTiming.maxRounds; round++) {
+      const deleted = await deleteFolder(developer, ap.cli, session);
+      quiet = deleted === 0 ? quiet + 1 : 0;
+      if (quiet >= 2) return;
+      if (deleted > 0) console.log(`delete ${session}: removed ${deleted} version(s) in round ${round}`);
+      await sleep(deleteTiming.settleMs);
+    }
+    throw new Error(`objects kept reappearing under the session's prefix after ${deleteTiming.maxRounds} rounds`);
+  } catch (e) {
+    // Keep the session listable, so the developer sees it and Delete can be retried: the
+    // session list is built from access points, so put this one back.
+    await ensureAccessPoint(developer, session, ap.cli).catch((re) =>
+      console.error(`delete ${session}: could not recreate its access point after a failed delete: ${re?.message || re}`));
+    throw new Error(`deleting session ${session}: ${e?.message || e}`);
   }
 }
 
@@ -215,8 +235,10 @@ const s3 = new S3Client({ region: REGION, ...retry });
 // (at most 1000 entries, the DeleteObjects limit) at a time, until none are left.
 // DeleteObjects reports per-key failures in `Errors` rather than throwing, so treat a
 // non-empty `Errors` as a failure.
+// Returns how many versions and markers it deleted (0 when the prefix was already empty).
 async function deleteFolder(developer, cli, session) {
   const Prefix = `${sessionKeyPrefix(developer, cli, session)}/`;
+  let total = 0;
   for (;;) {
     // Always list from the start: the previous page's entries are gone once deleted.
     const out = await s3.send(
@@ -225,7 +247,8 @@ async function deleteFolder(developer, cli, session) {
     const objects = [...(out.Versions ?? []), ...(out.DeleteMarkers ?? [])]
       .map((v) => ({ Key: v.Key, VersionId: v.VersionId }))
       .slice(0, 1000);
-    if (objects.length === 0) return;
+    if (objects.length === 0) return total;
+    total += objects.length;
     const del = await s3.send(
       new DeleteObjectsCommand({ Bucket: BUCKET, Delete: { Objects: objects, Quiet: true } })
     );
