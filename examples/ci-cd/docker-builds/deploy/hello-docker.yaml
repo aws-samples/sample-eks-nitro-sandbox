@@ -1,0 +1,72 @@
+# The interactive build pod: one privileged Docker daemon in a Nitro sandbox, which you
+# exec into to run `docker build` and `docker run` by hand.
+#
+# scripts/setup.sh renders <NAMESPACE>.
+#
+# runtimeClassName: isolated-sandbox is the whole opt-in. The RuntimeClass carries the
+# scheduling constraints, so there is no node selector, toleration or sidecar here.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hello-docker
+  namespace: <NAMESPACE>
+  labels:
+    app: hello-docker
+    # The egress policy selects every build pod in the sample by this label.
+    app.kubernetes.io/part-of: docker-builds
+  annotations:
+    # Pin the node while this long-lived build pod runs. Auto Mode's node consolidation
+    # would otherwise remove an underused node, and nothing recreates a bare pod.
+    karpenter.sh/do-not-disrupt: "true"
+spec:
+  runtimeClassName: isolated-sandbox
+  serviceAccountName: docker-builds-builder
+  # Pod Identity does not need the Kubernetes token mounted, and the build never calls the
+  # Kubernetes API, so the token stays out of the pod.
+  automountServiceAccountToken: false
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: dind
+      image: public.ecr.aws/docker/library/docker:29.9.2-dind
+      # The one privilege the sample asks for. It reaches only this pod's own guest: the
+      # daemon can mount, chroot, manage cgroups, unpack layers and run nested containers
+      # inside the sandbox, and nothing of that reaches the node (Amazon EKS User Guide,
+      # "Developing with sandboxes", Privileged pods). A privileged container gets every
+      # capability and no seccomp profile, so there is nothing to drop or restrict here:
+      # the sandbox is the boundary, not the container's own settings.
+      securityContext:
+        privileged: true
+      # Start the daemon on its local Unix socket and NOTHING else. The image's entrypoint
+      # would otherwise add --host=tcp://0.0.0.0:2375 (or 2376 with TLS) and put a daemon
+      # that is root-equivalent on the pod network; naming `dockerd` and its --host here
+      # keeps the entrypoint's own setup (tini as PID 1, iptables modules) and leaves the
+      # daemon reachable only from inside this pod.
+      args: ["dockerd", "--host=unix:///var/run/docker.sock"]
+      # Report Ready only once the daemon answers, so an exec straight after the wait finds
+      # a working `docker` CLI.
+      readinessProbe:
+        exec:
+          command: ["docker", "info"]
+        initialDelaySeconds: 5
+        periodSeconds: 5
+        failureThreshold: 30
+      volumeMounts:
+        # Cover the image's declared VOLUME /var/lib/docker with a volume the pod provides.
+        # An emptyDir is enough for a throwaway build; the Jobs put an EBS claim here so the
+        # layer cache survives the run.
+        - name: docker-storage
+          mountPath: /var/lib/docker
+      resources:
+        # A sandbox is sized when it boots and cannot be resized in place (Amazon EKS User
+        # Guide, "Isolated and confidential pods limitations", In-place resource resize), so
+        # a multi-minute build asks for what it needs up front. Without these the guest gets
+        # the small default size, which is not enough to compile and pull base images.
+        requests:
+          cpu: "1"
+          memory: 2Gi
+        limits:
+          cpu: "1"
+          memory: 2Gi
+  volumes:
+    - name: docker-storage
+      emptyDir: {}

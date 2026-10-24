@@ -1,0 +1,3 @@
+# Local values and run state, never committed.
+.env
+.docker-builds.state

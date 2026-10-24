@@ -1,0 +1,38 @@
+# An ordinary pod (no runtime class, no privileges) for the comparison the page makes: what
+# the node's kernel, boot, disks and sysctls look like from a pod that shares them.
+#
+# scripts/setup.sh renders <NAMESPACE> and <NODE_NAME> with the node the sandboxed build pod
+# landed on, so both pods report the same machine.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ordinary-pod
+  namespace: <NAMESPACE>
+  labels:
+    app: ordinary-pod
+    app.kubernetes.io/part-of: docker-builds
+spec:
+  # No runtimeClassName: this pod's containers run on the node's own kernel.
+  nodeName: <NODE_NAME>
+  # Sandbox-capable nodes carry workload=isolated:NoSchedule, which the RuntimeClass
+  # tolerates for a sandboxed pod. This pod is placed on the same node on purpose, so it
+  # tolerates the taint itself.
+  tolerations:
+    - key: workload
+      operator: Equal
+      value: isolated
+      effect: NoSchedule
+  automountServiceAccountToken: false
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: shell
+      image: public.ecr.aws/docker/library/busybox:1.37
+      command: ["sleep", "3600"]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        seccompProfile:
+          type: RuntimeDefault
