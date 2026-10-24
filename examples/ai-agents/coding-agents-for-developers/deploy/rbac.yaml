@@ -2,7 +2,7 @@
 #
 # - agent-app     the web app. Its Pod Identity role (the App role) manages per-session
 #                 access points and assumes the Mount role. In the cluster it may only do
-#                 what app/server/k8s.js calls: create, get and delete SandboxClaims, get
+#                 what app/server/k8s.js calls: create, get, list and delete SandboxClaims, get
 #                 pods, exec into them, and get nodes.
 # - agent-session the session pods of every CLI except Codex. Its Pod Identity role (the
 #                 Bedrock role) may only invoke models. It has no S3 Files access: the mount
@@ -40,11 +40,12 @@ metadata:
   labels:
     app.kubernetes.io/part-of: coding-agents-for-developers
 rules:
-  # Claim a warm pod (create), read which pod the claim resolved to (get), and release it
-  # (delete), one SandboxClaim per session.
+  # Claim a warm pod (create), read which pod the claim resolved to (get), release it
+  # (delete), one SandboxClaim per session, and list the sample's claims once at app start
+  # to pick up sessions that kept running while the app restarted (list).
   - apiGroups: ["extensions.agents.x-k8s.io"]
     resources: ["sandboxclaims"]
-    verbs: ["get", "create", "delete"]
+    verbs: ["get", "list", "create", "delete"]
   # Read the claimed pod (its node and Ready condition), and drive the terminal.
   - apiGroups: [""]
     resources: ["pods"]

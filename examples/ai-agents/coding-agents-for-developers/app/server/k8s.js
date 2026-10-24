@@ -104,6 +104,25 @@ async function waitForClaimPod(claimName, timeoutMs = 120000) {
   throw new Error(`claim ${claimName} did not resolve to a ready pod in time`);
 }
 
+// Every session claim this sample made, with the pod each resolved to: [{ claimName,
+// podName }]. Used at app start to pick up sessions that kept running while the app
+// restarted. Claims without a pod yet are skipped.
+export async function listSessionClaims() {
+  const out = await custom.listNamespacedCustomObject({
+    group: GROUP, version: VERSION, namespace: NAMESPACE, plural: "sandboxclaims",
+    labelSelector: "app.kubernetes.io/part-of=coding-agents-for-developers",
+  });
+  return (out?.items ?? [])
+    .map((c) => ({ claimName: c.metadata?.name, podName: c.status?.sandbox?.name }))
+    .filter((c) => c.claimName && c.podName);
+}
+
+// The node a pod runs on.
+export async function podNode(podName) {
+  const pod = await core.readNamespacedPod({ name: podName, namespace: NAMESPACE });
+  return pod.spec?.nodeName;
+}
+
 // The pod a claim resolved to, or null when there is no such claim (or it has no pod yet).
 export async function claimedPodName(claimName) {
   try {

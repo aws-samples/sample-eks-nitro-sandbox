@@ -111,6 +111,11 @@ async function listAllAccessPoints() {
   return all;
 }
 
+// Every session on the file system: [{ apId, developer, cli, session }], from the paths.
+export async function listAllSessions() {
+  return listAllAccessPoints();
+}
+
 async function findAccessPoint(developer, session) {
   const all = await listAllAccessPoints();
   return all.find((a) => a.developer === developer && a.session === session) ?? null;

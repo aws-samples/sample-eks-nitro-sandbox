@@ -165,6 +165,11 @@ wss.on("connection", async (ws, req) => {
   ws.on("close", () => term.close());
 });
 
+// Pick up sessions that kept running while the app was down, so the loop refreshes their
+// credentials and releases them when idle. A failure is logged; the app still starts.
+sessions.adoptRunningSessions()
+  .then((n) => console.log(`picked up ${n} running session(s) after start`))
+  .catch((e) => console.error(`could not pick up running sessions after start: ${e?.message || e}`));
 sessions.startBackgroundLoop();
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`coding-agents-for-developers app on :${PORT}, CLIs: ${CLIS.join(", ")}`);

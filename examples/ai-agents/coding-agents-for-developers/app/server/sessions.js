@@ -62,6 +62,37 @@ async function start(developer, cli, session, { resume = false } = {}) {
   return entry;
 }
 
+// At app start: the app keeps running sessions in memory only, so after a restart every
+// session left running (a browser closed, an agent working on its own) would otherwise
+// never have its mount credential refreshed (its writes fail about an hour later) or be
+// released when idle. Rebuild `live` from the sample's claims, resolving each claim's
+// session to its developer, CLI and access point from the access-point paths. The pod's
+// current credential is of unknown age, so mark it due: the first loop pass refreshes it.
+export async function adoptRunningSessions() {
+  const claims = await k8s.listSessionClaims();
+  if (claims.length === 0) return 0;
+  const bySession = new Map((await store.listAllSessions()).map((s) => [s.session, s]));
+  let adopted = 0;
+  for (const { claimName, podName } of claims) {
+    const session = claimName.replace(/^agent-/, "");
+    const s = bySession.get(session);
+    if (!s || live.has(session)) continue; // no access point: not a session folder we know
+    try {
+      const azId = await k8s.nodeAzId(await k8s.podNode(podName));
+      const now = Date.now();
+      live.set(session, {
+        developer: s.developer, cli: s.cli, session, apId: s.apId, claimName, podName, azId,
+        startedAt: now, lastRefresh: now - REFRESH_MS - 1,
+      });
+      adopted++;
+      console.log(`session ${session}: picked up after an app restart (pod ${podName})`);
+    } catch (e) {
+      console.error(`session ${session}: could not pick up pod ${podName} after a restart: ${e?.message || e}`);
+    }
+  }
+  return adopted;
+}
+
 export function getLive(session) {
   return live.get(session);
 }
