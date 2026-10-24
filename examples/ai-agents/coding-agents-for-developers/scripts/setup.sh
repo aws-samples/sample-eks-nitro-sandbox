@@ -51,6 +51,24 @@ SG_NAME="$SAMPLE-nfs"
 say() { printf '\n==> %s\n' "$*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+# The service account, and so the AWS role, each CLI's pods run as. Codex has its own role;
+# kiro-cli has a service account with no role at all (it signs in with the developer's own
+# Kiro identity, not AWS); the four others share the Bedrock role. Every CLI is named: a
+# name not listed here gets no service account, rather than falling through to a role.
+session_sa_for() {
+  case "$1" in
+    codex)                         echo agent-session-codex ;;
+    kiro-cli)                      echo agent-session-kiro ;;
+    claude-code|opencode|pi|oh-my-pi) echo agent-session ;;
+    *)                             return 1 ;;
+  esac
+}
+# Check AGENT_CLIS before creating anything, so a typo stops the run here.
+IFS=',' read -ra clis <<< "$AGENT_CLIS"
+for cli in "${clis[@]}"; do
+  session_sa_for "$cli" >/dev/null || die "AGENT_CLIS names '$cli', which is not one of this sample's CLIs (claude-code, codex, kiro-cli, opencode, pi, oh-my-pi)"
+done
+
 # --- 1. Shared installs: check, never change. Stop with the command if absent. ---
 say "Checking shared installs (reused as they are, never changed)"
 "${KCTL[@]}" get crd sandboxtemplates.extensions.agents.x-k8s.io >/dev/null 2>&1 \
@@ -285,15 +303,8 @@ kiro_cli_egress() {
         - { protocol: TCP, port: 443 }
 EGRESS
 }
-IFS=',' read -ra clis <<< "$AGENT_CLIS"
 for cli in "${clis[@]}"; do
-  # Codex has its own role; kiro-cli has a service account with no role at all (it signs
-  # in with the developer's own Kiro identity, not AWS); the rest share the Bedrock role.
-  case "$cli" in
-    codex)    session_sa=agent-session-codex ;;
-    kiro-cli) session_sa=agent-session-kiro ;;
-    *)        session_sa=agent-session ;;
-  esac
+  session_sa="$(session_sa_for "$cli")" || die "no service account for CLI '$cli'"
   sed -e "s|<CLI>|$cli|g" -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" -e "s|<AWS_REGION>|$AWS_REGION|g" \
       -e "s|<POOL_REPLICAS>|$POOL_REPLICAS|g" -e "s|<IMAGE_TAG>|$IMAGE_TAG|g" \
       -e "s|<SESSION_SA>|$session_sa|g" \
