@@ -17,13 +17,16 @@ set -euo pipefail
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$SAMPLE_DIR"
 
+# The namespace comes from the environment, as on the page, and .env never overrides it: it is
+# the one value the other scripts also take from the environment, so a copy in .env would make
+# this script and setup.sh disagree about which namespace the run is in.
+NAMESPACE="${NAMESPACE:-docker-builds-sample}"
+
 [[ -f .env ]] || { echo "error: .env not found. Copy .env.example to .env and fill it in." >&2; exit 2; }
 # shellcheck disable=SC1091
 . ./.env
 : "${CLUSTER_NAME:?set CLUSTER_NAME in .env}"
 : "${AWS_REGION:?set AWS_REGION in .env}"
-
-NAMESPACE="${NAMESPACE:-docker-builds-sample}"
 MANAGED_BY="docker-builds"
 SAMPLE_LABEL_JSONPATH='app\.kubernetes\.io/part-of'
 SERVICE_ACCOUNT="docker-builds-builder"

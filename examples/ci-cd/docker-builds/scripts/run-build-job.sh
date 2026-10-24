@@ -53,6 +53,10 @@ if [[ "$PUSH" == true ]]; then
   . "$STATE_FILE"
   [[ "${ECR_PUSH_READY:-false}" == "true" ]] \
     || die "--push needs ./scripts/ecr-setup.sh to have completed (the state file does not record a ready push)"
+  # The association is namespaced, so a push set up for another namespace is not this run's.
+  [[ "${ECR_NAMESPACE:-}" == "$NAMESPACE" ]] \
+    || die "the recorded Amazon ECR push belongs to namespace '${ECR_NAMESPACE:-unknown}', not '$NAMESPACE'.
+Run ./scripts/ecr-setup.sh for this namespace, or drop --push."
   ECR_REGISTRY="${ECR_ACCOUNT_ID}.dkr.ecr.${ECR_AWS_REGION}.amazonaws.com"
   ECR_REPO="${ECR_REPO_NAME}"
   AWS_REGION_RENDER="${ECR_AWS_REGION}"

@@ -118,7 +118,11 @@ coredns="$(kc get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')"
 push_rules=""
 # shellcheck disable=SC1090
 [[ -f "$STATE_FILE" ]] && . "$STATE_FILE"
-if [[ "${ECR_PUSH_READY:-false}" == "true" ]]; then
+if [[ "${ECR_PUSH_READY:-false}" == "true" && "${ECR_NAMESPACE:-}" != "$NAMESPACE" ]]; then
+  # The recorded push belongs to another run, so its rules are not added here: this
+  # namespace's pods get the policy without a credential path.
+  echo "  the recorded Amazon ECR push belongs to namespace '${ECR_NAMESPACE:-unknown}', not '$NAMESPACE'; applying the policy without the push rules."
+elif [[ "${ECR_PUSH_READY:-false}" == "true" ]]; then
   push_rules="$(sed -e "s|<AWS_REGION>|${ECR_AWS_REGION}|g" -e "s|<ACCOUNT_ID>|${ECR_ACCOUNT_ID}|g" \
     "$SAMPLE_DIR/deploy/egress-push-rules.yaml")"
   echo "  including the optional push rules (the state file records an ECR push set up in ${ECR_AWS_REGION})."

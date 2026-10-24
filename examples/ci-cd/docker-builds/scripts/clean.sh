@@ -73,15 +73,23 @@ if [[ "$ns_exists" == true ]]; then
   # Read each claim's EC2 volume ID before deleting the claim, so the volume can be confirmed
   # gone afterwards: the PersistentVolume outlives the claim until the CSI driver has deleted
   # the volume, and that is the cheapest proof it stopped billing.
+  # A claim that exists but whose volume cannot be read is "could not determine", not "no
+  # volume": it is reported, because the volume would otherwise be deleted with the claim and
+  # never confirmed gone.
   declare -A volume_of=()
   for claim in docker-build-cache buildkit-cache; do
-    if kc -n "$NAMESPACE" get "pvc/$claim" >/dev/null 2>&1; then
-      pv="$(kc -n "$NAMESPACE" get "pvc/$claim" -o jsonpath='{.spec.volumeName}' 2>/dev/null)"
-      if [[ -n "$pv" ]]; then
-        vol="$(kc get "pv/$pv" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null)"
-        [[ -n "$vol" ]] && volume_of["$claim"]="$vol"
-      fi
+    kc -n "$NAMESPACE" get "pvc/$claim" >/dev/null 2>&1 || continue
+    pv="$(kc -n "$NAMESPACE" get "pvc/$claim" -o jsonpath='{.spec.volumeName}' 2>/dev/null)"
+    if [[ -z "$pv" ]]; then
+      note_fail "claim $claim exists but its PersistentVolume could not be read, so its EBS volume cannot be confirmed deleted; check it in the EC2 console"
+      continue
     fi
+    vol="$(kc get "pv/$pv" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null)"
+    if [[ -z "$vol" ]]; then
+      note_fail "claim $claim is bound to $pv but its EBS volume ID could not be read, so the volume cannot be confirmed deleted; check it in the EC2 console"
+      continue
+    fi
+    volume_of["$claim"]="$vol"
   done
   echo "Deleting the EBS layer cache claims (this deletes their volumes)..."
   kc -n "$NAMESPACE" delete pvc docker-build-cache buildkit-cache --ignore-not-found --wait=true \
