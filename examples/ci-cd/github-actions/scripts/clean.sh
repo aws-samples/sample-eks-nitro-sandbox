@@ -127,23 +127,37 @@ if [[ "$ns_state" == ours ]]; then
     # only when their CRDs are installed, so a cluster without ARC CRDs cannot
     # make this clean up refuse for ever.
     echo "  release '$RUNNER_SCALE_SET_NAME' is already gone."
-    arc_crds_there="$("${KCTL[@]}" get crd autoscalingrunnersets.actions.github.com \
-      -o name --ignore-not-found 2>/dev/null)"
-    if [[ $? -ne 0 ]]; then
-      warn "could not read the ARC CRDs, so whether this sample's runner scale set objects are gone cannot be told."
-    elif [[ -z "$arc_crds_there" ]]; then
-      echo "  the ARC CRDs are not installed, so no runner scale set object can exist."
-      ss_gone=yes
-    else
-      arc_objs="$("${KCTL[@]}" get autoscalingrunnersets,ephemeralrunnersets,ephemeralrunners \
-        -n "$ARC_RUNNERS_NAMESPACE" -o name --ignore-not-found 2>/dev/null)"
+    # Each kind is read only when its own CRD is installed. Reading all three at
+    # once would fail outright if any one CRD were missing, for instance while a
+    # CRD delete hangs on a finalizer, and every later run would then warn
+    # "could not read" with nothing left to find.
+    arc_objs=""
+    arc_read_failed=no
+    for k in autoscalingrunnersets ephemeralrunnersets ephemeralrunners; do
+      k_crd="$("${KCTL[@]}" get crd "$k.actions.github.com" -o name --ignore-not-found 2>/dev/null)"
       if [[ $? -ne 0 ]]; then
-        warn "could not read this sample's runner scale set objects in '$ARC_RUNNERS_NAMESPACE'; that is a failed read, not a report that none are left."
-      elif [[ -n "$arc_objs" ]]; then
-        warn "the Helm release is gone but runner scale set objects remain in '$ARC_RUNNERS_NAMESPACE': $(tr '\n' ' ' <<<"$arc_objs"). They may still be terminating, or a finalizer may be stuck. Re-run once they are gone."
-      else
-        ss_gone=yes
+        warn "could not read the $k.actions.github.com CRD, so whether any $k is left cannot be told."
+        arc_read_failed=yes
+        continue
       fi
+      [[ -z "$k_crd" ]] && continue   # the CRD is absent, so no object can exist
+      k_objs="$("${KCTL[@]}" get "$k" -n "$ARC_RUNNERS_NAMESPACE" \
+        -o name --ignore-not-found 2>/dev/null)"
+      if [[ $? -ne 0 ]]; then
+        warn "could not read $k in '$ARC_RUNNERS_NAMESPACE'; that is a failed read, not a report that none are left."
+        arc_read_failed=yes
+        continue
+      fi
+      [[ -n "$k_objs" ]] && arc_objs+="$k_objs"$'\n'
+    done
+    if [[ "$arc_read_failed" == yes ]]; then
+      : # already warned; ss_gone stays no
+    elif [[ -n "$(grep . <<<"$arc_objs" || true)" ]]; then
+      warn "the Helm release is gone but runner scale set objects remain in '$ARC_RUNNERS_NAMESPACE': $(tr '\n' ' ' <<<"$arc_objs"). They may still be terminating. If they do not clear, a finalizer is stuck, which happens when the ARC controller was removed before its objects were: remove the controller's finalizers with
+  kubectl --context $CLUSTER_NAME -n $ARC_RUNNERS_NAMESPACE patch <kind>/<name> --type=merge -p '{\"metadata\":{\"finalizers\":null}}'
+  and re-run."
+    else
+      ss_gone=yes
     fi
   else
     # Inside this sample's own namespace the namespace label is enough, so the
@@ -325,27 +339,28 @@ if [[ "$sysns_state" != absent ]]; then
   # and would tell the reader a copy of their credential may remain when none
   # does. An unlabelled hit is still reported, which is the point of not
   # trusting labels alone.
-  byname_json="$("${KCTL[@]}" get secret -n "$ARC_SYSTEMS_NAMESPACE" \
-    -o json --ignore-not-found 2>/dev/null)"
-  byname_rc=$?
-  if [[ "$byname_rc" -ne 0 ]]; then
-    warn "could not list Secrets in '$ARC_SYSTEMS_NAMESPACE' to check for a listener config Secret by name."
-  elif [[ -z "$byname_json" ]]; then
-    # --ignore-not-found prints nothing when there is nothing to list.
-    echo "  no Secret named after this scale set in '$ARC_SYSTEMS_NAMESPACE'."
-  else
-    hits="$(jq -r --arg n "$RUNNER_SCALE_SET_NAME" --arg ns "$ARC_RUNNERS_NAMESPACE" '
+  # kubectl goes straight into jq, so only the matching NAMES are ever held in a
+  # variable. Holding the JSON itself would put the `data` of every Secret in
+  # this namespace into `bash -x` output, which on a shared cluster means other
+  # installs' listener credentials as well as this reader's.
+  #
+  # With pipefail this is non-zero if either kubectl or jq fails, and empty
+  # kubectl output leaves `hits` empty with a zero status, so absent and
+  # unreadable stay apart.
+  hits="$("${KCTL[@]}" get secret -n "$ARC_SYSTEMS_NAMESPACE" \
+    -o json --ignore-not-found 2>/dev/null \
+    | jq -r --arg n "$RUNNER_SCALE_SET_NAME" --arg ns "$ARC_RUNNERS_NAMESPACE" '
       [ (.items // [])[]
         | select(.metadata.name | startswith($n + "-"))
         | select((((.metadata.labels // {})["actions.github.com/scale-set-namespace"]) // $ns) == $ns)
-        | .metadata.name ] | join(" ")' <<<"$byname_json" 2>/dev/null)"
-    if [[ $? -ne 0 ]]; then
-      warn "could not parse the Secret list from '$ARC_SYSTEMS_NAMESPACE' to check for a listener config Secret by name."
-    elif [[ -n "$hits" ]]; then
-      warn "Secrets named after this scale set are still in '$ARC_SYSTEMS_NAMESPACE': $hits. One of these may be the listener's config Secret, which holds a copy of the GitHub credential."
-    else
-      echo "  no Secret named after this scale set in '$ARC_SYSTEMS_NAMESPACE'."
-    fi
+        | .metadata.name ] | join(" ")' 2>/dev/null)"
+  byname_rc=$?
+  if [[ "$byname_rc" -ne 0 ]]; then
+    warn "could not read or parse the Secrets in '$ARC_SYSTEMS_NAMESPACE' to check for a listener config Secret named after this scale set; that is a failed read, not a report that none is left."
+  elif [[ -n "$hits" ]]; then
+    warn "Secrets named after this scale set are still in '$ARC_SYSTEMS_NAMESPACE': $hits. One of these may be the listener's config Secret, which holds a copy of the GitHub credential."
+  else
+    echo "  no Secret named after this scale set in '$ARC_SYSTEMS_NAMESPACE'."
   fi
 fi
 

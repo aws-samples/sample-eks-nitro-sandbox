@@ -185,11 +185,10 @@ fi
 # never briefly unlabelled.
 #
 # `create` when the Secret was absent, so one that appeared since the check is
-# not taken over; `apply --server-side` only for this sample's own Secret. A
-# client-side apply is never used: it copies the whole Secret, credential
-# included, into its kubectl.kubernetes.io/last-applied-configuration
-# annotation, and `kubectl describe secret` prints annotations even though it
-# hides data.
+# not taken over; `replace` only for this sample's own Secret. A client-side
+# apply is never used: it copies the whole Secret, credential included, into its
+# kubectl.kubernetes.io/last-applied-configuration annotation, and
+# `kubectl describe secret` prints annotations even though it hides data.
 secret_write() {
   if [[ -z "$secret_present" ]]; then
     "${KCTL[@]}" label --local -f - "$LABEL_KEY=$LABEL_VALUE" -o yaml \
@@ -206,12 +205,14 @@ secret_write() {
   fi
 }
 
-# Server-side apply does not add that annotation, but it does keep refreshing
-# one the object already has, so a Secret first written by an older client-side
-# run would go on carrying the current credential in it. Measured on EKS 1.37:
-# after a client-side apply the annotation held the token, and a later
-# server-side apply replaced it with the new token. Remove it, then confirm it
-# is gone rather than assume.
+# Neither `create` nor `replace` adds that annotation, and a `replace` that
+# omits it removes one already there, so with the writes above this is belt and
+# braces. It stays because the annotation is the one place a credential could
+# sit in plain view of `kubectl describe secret`, and because it catches a
+# Secret left annotated by an older version of this script or by someone's own
+# `kubectl apply`. Measured on EKS 1.37: after a client-side apply the
+# annotation held the token, and a later server-side apply replaced it with the
+# new token. Remove it, then confirm it is gone rather than assume.
 strip_last_applied() {
   # Tracing off, like the two credential branches: this function used to read
   # the annotation's VALUE into a variable, which is the whole Secret with the
