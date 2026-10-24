@@ -706,6 +706,17 @@ pod and its own node, which is why the kubelet's readiness probe on `/healthz` s
 with all ingress denied, and why `kubectl port-forward` is unaffected: it reaches the pod
 through the guest's control channel rather than the pod network.
 
+**Enforcement is a cluster setting, and the policy has to reach the nodes.** EKS Auto Mode
+accepts a policy without enforcing it until the `amazon-vpc-cni` ConfigMap turns the
+controller on, which is Step 2 and is a change the reader makes once per cluster;
+`setup.sh` checks it and stops rather than making it. After applying the policy, setup waits
+for the `PolicyEndpoint` named after it, which is how it knows the controller has handed the
+policy to the nodes, and only then creates the editor. This sample's workload is a bare
+`Sandbox`, which creates no `NetworkPolicy` of its own; a `SandboxTemplate` does create one
+by default, and a template shipping its own policy needs
+`networkPolicyManagement: Unmanaged` so the controller's policy does not add itself to
+yours.
+
 **Its limits.** A `domainNames` rule allows the addresses those names resolve to, so another
 name served from the same addresses is reachable too. The rule is a list of hosts, not a
 guarantee about content. And a pod can always reach its own node.
@@ -838,11 +849,12 @@ by its exact name.
   sized from the requests and the small default guest is not enough for code-server's
   Node.js server and the workbench's extension host. Most samples on this site set none at
   all; this one says what it sets and why.
-- **The image's `fixuid` warning on start-up is expected.** The image ships a `fixuid`
-  helper that remaps the container user at start-up and needs a setuid binary to do it,
-  which this pod denies with `allowPrivilegeEscalation: false`. It prints a warning and does
-  nothing, which is correct here: the pod already runs as uid 1000 with `fsGroup: 1000`, so
-  there is nothing to remap.
+- **The `fixuid` warning at the top of `kubectl logs ide` is expected.** The image ships a
+  `fixuid` helper that can remap the container user at start-up, and it needs privileges this
+  pod does not give it: the warning it prints lists the conditions, one of which is that
+  `NoNewPrivileges` be off, and `allowPrivilegeEscalation: false` turns it on. It then does
+  nothing, which is right here, because the pod already runs as uid 1000 with
+  `fsGroup: 1000` and there is nothing to remap.
 - **A build-at-boot variant would need root and a privileged container.** code-server can
   also be built at start-up from a `devcontainer.json`, by a tool that extracts image layers
   onto its own root filesystem and bind-mounts it as it goes. That needs to run as root with
