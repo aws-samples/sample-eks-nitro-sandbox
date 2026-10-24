@@ -94,6 +94,7 @@ nav:
       - Claude Managed Agents: managed-agents/claude-managed-agents/README.md
   - Agent sandbox:
       - Pause and resume: agent-sandbox/pause-resume/README.md
+      - Warm pool autoscaling with KEDA: agent-sandbox/warm-pool-autoscaling-keda/README.md
   - Storage:
       - EBS volumes: storage/ebs/README.md
       - Shared EFS storage: storage/efs/README.md

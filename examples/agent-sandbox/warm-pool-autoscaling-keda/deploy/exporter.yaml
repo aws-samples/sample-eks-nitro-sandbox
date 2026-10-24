@@ -1,0 +1,146 @@
+# The claim-demand exporter: the ServiceAccount and Role it runs as, the
+# Deployment that serves src/exporter.py, and the ClusterIP Service KEDA polls.
+#
+# The exporter's code is in src/exporter.py. setup.sh renders it into the
+# ConfigMap this Deployment mounts, so the file on disk is the file that runs.
+#
+# IT IS AN ORDINARY POD. No runtimeClassName: it is first-party code the cluster
+# operator deployed, so it needs no sandbox, and keeping it out of one means it
+# takes no sandbox capacity from the pool it measures.
+#
+# WHAT IT CAN REACH. The Role below is namespaced and its only rule is get and
+# list on sandboxclaims. That is the whole of the exporter's access to the
+# cluster: no other resource, no other verb, no other namespace, and no
+# ClusterRole. A Role cannot grant anything outside the namespace it is created
+# in, so this cannot read another sample's claims even by accident.
+#
+# WHO CAN REACH IT. Only a ClusterIP Service, so it is reachable from inside the
+# cluster and from nowhere else. There is no Ingress, LoadBalancer or NodePort
+# anywhere in this sample.
+#
+# __NAMESPACE__ and __CLAIM_SELECTOR__ are filled in at apply time by the
+# scripts, so an overridden name reaches these objects too. Never apply this file
+# with the placeholders in place.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: claim-exporter
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: warm-pool-autoscaling-keda
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: claim-exporter
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: warm-pool-autoscaling-keda
+rules:
+  # The exporter counts claims, so it reads claims, in this namespace, and
+  # nothing else. get is here because list alone does not cover a single-object
+  # read; the code only lists. There is deliberately no watch, no create, no
+  # patch, no delete, and no second rule.
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: claim-exporter
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: warm-pool-autoscaling-keda
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: claim-exporter
+subjects:
+  - kind: ServiceAccount
+    name: claim-exporter
+    namespace: __NAMESPACE__
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: claim-exporter
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: claim-exporter
+    app.kubernetes.io/part-of: warm-pool-autoscaling-keda
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: claim-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: claim-exporter
+        app.kubernetes.io/part-of: warm-pool-autoscaling-keda
+    spec:
+      serviceAccountName: claim-exporter
+      containers:
+        - name: exporter
+          # A stock Python image running the script from the ConfigMap, so the
+          # sample builds and pushes no image of its own.
+          image: public.ecr.aws/docker/library/python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/app/exporter.py"]
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CLAIM_SELECTOR
+              value: "__CLAIM_SELECTOR__"
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65534
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            # An ordinary pod, sized for what it does: read a short list and
+            # answer an HTTP request every few seconds.
+            requests:
+              cpu: 50m
+              memory: 64Mi
+          volumeMounts:
+            - name: src
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: src
+          configMap:
+            name: claim-exporter-src
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: claim-exporter
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: warm-pool-autoscaling-keda
+spec:
+  # ClusterIP, named here rather than left to the default, so the one thing that
+  # must never change about this Service is written down. Never LoadBalancer or
+  # NodePort: that would put the endpoint outside the cluster.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: claim-exporter
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

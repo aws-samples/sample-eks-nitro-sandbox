@@ -31,6 +31,7 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 ## Agent sandbox
 
 - [Pause and resume](examples/agent-sandbox/pause-resume/README.md): suspend a sandbox to release its compute and keep its EBS workspace, then resume onto a new guest with the data intact.
+- [Warm pool autoscaling with KEDA](examples/agent-sandbox/warm-pool-autoscaling-keda/README.md): KEDA reads a count of `SandboxClaim` objects and drives a warm pool's `spec.replicas` up and back down with it, with a no-autoscaler control that stays flat under the same demand.
 
 ## Storage
 

@@ -1,0 +1,71 @@
+# The KEDA ScaledObject that drives the SandboxWarmPool's spec.replicas from the
+# SandboxClaim count the exporter reports.
+#
+# scaleTargetRef names the SandboxWarmPool itself, not a Deployment. KEDA scales
+# any resource that defines a /scale subresource the same way it scales a
+# Deployment, and the SandboxWarmPool CRD defines one whose specReplicasPath is
+# .spec.replicas. So KEDA creates a Horizontal Pod Autoscaler, the HPA writes the
+# pool's /scale subresource, and spec.replicas is the field that moves.
+#
+# THE ARITHMETIC. metricType: Value with targetValue: 1 means
+#   desiredReplicas = ceil(active_claims / 1)
+# clamped to [minReplicaCount, maxReplicaCount]. So with the bounds below: no
+# claims hold the pool at the warm floor of 1, one claim asks for 1, two ask for
+# 2, and three or more ask for 3, which is the cap.
+#
+# __NAMESPACE__ is filled in at apply time by the scripts from the NAMESPACE
+# variable, so an overridden name reaches this object and the exporter URL below.
+# Never apply this file with the placeholder in place.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: warm-pool
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: warm-pool-autoscaling-keda
+spec:
+  scaleTargetRef:
+    apiVersion: extensions.agents.x-k8s.io/v1beta1
+    kind: SandboxWarmPool
+    name: warm-pool
+  # A warm floor: at rest the pool still holds one pre-booted pod, so the first
+  # claim after a quiet spell is still adopted in under a second rather than
+  # paying a cold start.
+  minReplicaCount: 1
+  # The bound on warm capacity. The pool may never hold more than this many
+  # pre-booted pods however much demand the exporter reports, which is what keeps
+  # the sample small on a shared cluster.
+  maxReplicaCount: 3
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          # No stabilization window: a claim that arrives should raise the pool
+          # now, not after the HPA has watched the metric settle.
+          stabilizationWindowSeconds: 0
+        scaleDown:
+          # The HPA's default scale-down stabilization window is 300 seconds, so
+          # with the default the pool would sit at its loaded size for five
+          # minutes after the last claim went away and the page could not show
+          # the scale-down at all. Zero here means the decision follows the
+          # metric in both directions. In production, set this to how long you
+          # are willing to pay to keep warm capacity that nothing is asking for.
+          stabilizationWindowSeconds: 0
+          policies:
+            # Allow the whole pool to come back down in one step. Without a
+            # policy the HPA applies its default, which is a percentage-based
+            # limit that would take several periods to get back to the floor.
+            - type: Pods
+              value: 3
+              periodSeconds: 15
+  triggers:
+    - type: metrics-api
+      # Value, not AverageValue: the metric is a count of claims for the whole
+      # pool, not a per-pod rate, so it must not be divided by the replica count.
+      metricType: Value
+      metadata:
+        # Cluster DNS for the exporter's ClusterIP Service. Reachable from inside
+        # the cluster and from nowhere else.
+        url: "http://claim-exporter.__NAMESPACE__.svc.cluster.local:8080/metrics"
+        valueLocation: "active_claims"
+        targetValue: "1"
