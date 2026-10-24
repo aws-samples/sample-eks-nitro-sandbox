@@ -701,10 +701,12 @@ error line goes to standard error and so can print before or after its exit line
   this one session's folder. Codex still asks before a command it judges risky (its default
   approval policy, `on-request`).
 - **Session pods are not consolidated away.** The `SandboxTemplate` sets
-  `karpenter.sh/do-not-disrupt: "true"`, so EKS Auto Mode does not evict a session pod to
-  consolidate an underutilized node in the middle of a session. The pod still goes when its
-  claim is released (close, idle timeout). The cost is that a node holding a session is not
-  packed down until that session ends.
+  `karpenter.sh/do-not-disrupt: "true"` on every pod it makes, so EKS Auto Mode does not
+  evict one to consolidate an underutilized node. That covers the warm pods waiting in the
+  pools as well as the claimed ones, so a node holding only warm pods is not packed down
+  either. A claimed pod still goes when its claim is released (close, idle timeout). The
+  cost is that a node holding a session or a warm pod is not consolidated until that pod
+  goes.
 - **The session pods turn the Nitro sandbox network and disk throttles off.** A sandbox pod
   has built-in defaults -- 100 Mbit/s ingress and egress (capped by a 1500 packets/second
   bucket), a 400 Mbit/s overlay (scratch) disk and 1500 overlay IOPS -- which are tight for
@@ -746,9 +748,14 @@ it stops exporting to the bucket (if it still has writes pending export after 5 
 retries, it deletes it with `--force-delete`, which drops only data the next step deletes
 anyway); every object version in the bucket, then the bucket; the
 IAM roles, the security group and the ECR repositories; the cluster-scoped ClusterRole and
-ClusterRoleBinding; and the namespace last. Before each AWS delete it checks the resource
-carries `ManagedBy=coding-agents-for-developers` (the ClusterRole and binding, the
-`app.kubernetes.io/part-of` label) and leaves anything without it alone. A resource that is
+ClusterRoleBinding; and the namespace last. It decides what is the sample's in three ways.
+The file system, bucket, IAM roles and ECR repositories must carry the tag
+`ManagedBy=coding-agents-for-developers`, and the security group is looked up by that tag
+and its name; anything without the tag is left alone. Pod Identity associations are
+matched by the sample's namespace and service accounts, and access points and mount
+targets by the sample's own file system, once that file system's tag is confirmed. The
+ClusterRole and binding, and the namespace, must carry the `app.kubernetes.io/part-of`
+label, and everything inside the namespace is selected by that label. A resource that is
 already gone is not an error, but a lookup that fails, a delete that is refused or a
 resource it left alone makes it exit non-zero with an `INCOMPLETE:` line saying which. If it
 cannot read the namespace's label at all, it stops before deleting anything, since it
