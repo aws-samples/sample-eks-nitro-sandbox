@@ -37,7 +37,15 @@ command -v kubectl >/dev/null 2>&1 || { echo "error: kubectl is not on PATH" >&2
 
 # --- the namespace and everything in it ------------------------------------
 ns_exists=true
-if ! kc get namespace "$NAMESPACE" >/dev/null 2>&1; then
+# A failed read is "could not determine", never "already gone": --ignore-not-found makes an
+# absent namespace an empty answer with status 0, so any non-zero status here is a real failure
+# (an unreachable API, the wrong context, RBAC) and is reported rather than skipped silently.
+ns_name="$(kc get namespace "$NAMESPACE" --ignore-not-found -o name 2>&1)"
+ns_rc=$?
+if [[ $ns_rc -ne 0 ]]; then
+  note_fail "could not determine whether namespace '$NAMESPACE' exists, so nothing in it was touched. kubectl said: $ns_name"
+  ns_exists=false
+elif [[ -z "$ns_name" ]]; then
   ns_exists=false
   echo "Namespace '$NAMESPACE' is already gone; nothing to delete in the cluster."
 else
@@ -73,20 +81,27 @@ if [[ "$ns_exists" == true ]]; then
   # Read each claim's EC2 volume ID before deleting the claim, so the volume can be confirmed
   # gone afterwards: the PersistentVolume outlives the claim until the CSI driver has deleted
   # the volume, and that is the cheapest proof it stopped billing.
-  # A claim that exists but whose volume cannot be read is "could not determine", not "no
-  # volume": it is reported, because the volume would otherwise be deleted with the claim and
-  # never confirmed gone.
+  # A read that FAILS is "could not determine", not "no volume": it is reported, because the
+  # volume would otherwise be deleted with the claim and never confirmed gone. A read that
+  # SUCCEEDS and comes back empty is the legitimate unbound case: a claim no pod ever used has
+  # no volume to confirm.
   declare -A volume_of=()
   for claim in docker-build-cache buildkit-cache; do
     kc -n "$NAMESPACE" get "pvc/$claim" >/dev/null 2>&1 || continue
-    pv="$(kc -n "$NAMESPACE" get "pvc/$claim" -o jsonpath='{.spec.volumeName}' 2>/dev/null)"
-    if [[ -z "$pv" ]]; then
-      note_fail "claim $claim exists but its PersistentVolume could not be read, so its EBS volume cannot be confirmed deleted; check it in the EC2 console"
+    pv="$(kc -n "$NAMESPACE" get "pvc/$claim" -o jsonpath='{.spec.volumeName}' 2>&1)"
+    pv_rc=$?
+    if [[ $pv_rc -ne 0 ]]; then
+      note_fail "could not read which PersistentVolume claim $claim is bound to, so its EBS volume cannot be confirmed deleted; check it in the EC2 console. kubectl said: $pv"
       continue
     fi
-    vol="$(kc get "pv/$pv" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null)"
-    if [[ -z "$vol" ]]; then
-      note_fail "claim $claim is bound to $pv but its EBS volume ID could not be read, so the volume cannot be confirmed deleted; check it in the EC2 console"
+    if [[ -z "$pv" ]]; then
+      echo "  $claim is not bound to a volume (no pod ever used it), so there is no EBS volume to confirm."
+      continue
+    fi
+    vol="$(kc get "pv/$pv" -o jsonpath='{.spec.csi.volumeHandle}' 2>&1)"
+    vol_rc=$?
+    if [[ $vol_rc -ne 0 || -z "$vol" ]]; then
+      note_fail "claim $claim is bound to $pv but its EBS volume ID could not be read, so the volume cannot be confirmed deleted; check it in the EC2 console${vol:+. kubectl said: $vol}"
       continue
     fi
     volume_of["$claim"]="$vol"
@@ -141,61 +156,92 @@ if [[ "$ns_exists" == true ]]; then
 fi
 
 # --- the optional push's AWS resources -------------------------------------
-# Only when the state file's run is the one being cleaned up: NAMESPACE identifies the run,
-# so a clean up pointed at some other namespace never removes this run's AWS resources.
-if [[ "${ECR_PUSH_READY:-false}" == "true" && "${ECR_NAMESPACE:-}" != "$NAMESPACE" ]]; then
-  note_fail "the recorded Amazon ECR push belongs to namespace '${ECR_NAMESPACE:-unknown}', not '$NAMESPACE'; its role, association and repository were left in place (clean up that namespace instead)"
-elif [[ "${ECR_PUSH_READY:-false}" == "true" ]]; then
+# Act on whatever the state file records, not on whether the push was finished: ecr-setup.sh
+# records each resource as soon as it exists, so a setup that stopped part way still leaves a
+# repository or a role to remove here. Each one is tag-checked again before it is deleted.
+# NAMESPACE identifies the run, so a clean up pointed at another namespace never removes this
+# run's AWS resources.
+if [[ -n "${ECR_REPO_NAME:-}${ECR_ROLE_NAME:-}${ECR_ASSOCIATION_ID:-}" && "${ECR_NAMESPACE:-}" != "$NAMESPACE" ]]; then
+  note_fail "the Amazon ECR push recorded in $(basename "$STATE_FILE") belongs to namespace '${ECR_NAMESPACE:-unknown}', not '$NAMESPACE'; its role, association and repository were left in place (clean up that namespace instead)"
+elif [[ -n "${ECR_REPO_NAME:-}${ECR_ROLE_NAME:-}${ECR_ASSOCIATION_ID:-}" ]]; then
   echo "Removing the Amazon ECR push resources recorded in $(basename "$STATE_FILE")..."
   if ! command -v aws >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
-    note_fail "the AWS CLI and jq are needed to remove the push resources (role ${ECR_ROLE_NAME:-?}, repository ${ECR_REPO_NAME:-?}); they are left in place"
+    note_fail "the AWS CLI and jq are needed to remove the push resources (role ${ECR_ROLE_NAME:-none}, repository ${ECR_REPO_NAME:-none}); they are left in place"
   else
     region="${ECR_AWS_REGION}"
     # Pod Identity association: delete only the one this sample recorded, and only while it
-    # still points at this sample's role.
-    bound="$(aws eks describe-pod-identity-association --cluster-name "$ECR_CLUSTER_NAME" \
-      --association-id "$ECR_ASSOCIATION_ID" --region "$region" \
-      --query 'association.roleArn' --output text 2>&1)"
-    if [[ "$bound" == *"ResourceNotFoundException"* || "$bound" == *"NotFoundException"* ]]; then
-      echo "  Pod Identity association $ECR_ASSOCIATION_ID is already gone."
-    elif [[ "$bound" == *"arn:aws:iam::"*":role/${ECR_ROLE_NAME}" ]]; then
-      aws eks delete-pod-identity-association --cluster-name "$ECR_CLUSTER_NAME" \
-        --association-id "$ECR_ASSOCIATION_ID" --region "$region" >/dev/null \
-        && echo "  deleted Pod Identity association $ECR_ASSOCIATION_ID." \
-        || note_fail "could not delete Pod Identity association $ECR_ASSOCIATION_ID"
+    # still points at this sample's role. An empty record means setup never got that far.
+    if [[ -z "${ECR_ASSOCIATION_ID:-}" ]]; then
+      echo "  no Pod Identity association was recorded, so there is none to delete."
     else
-      note_fail "Pod Identity association $ECR_ASSOCIATION_ID is not bound to this sample's role (read: $bound); left untouched"
+      bound="$(aws eks describe-pod-identity-association --cluster-name "$ECR_CLUSTER_NAME" \
+        --association-id "$ECR_ASSOCIATION_ID" --region "$region" \
+        --query 'association.roleArn' --output text 2>&1)"
+      if [[ "$bound" == *"ResourceNotFoundException"* || "$bound" == *"NotFoundException"* ]]; then
+        echo "  Pod Identity association $ECR_ASSOCIATION_ID is already gone."
+      elif [[ "$bound" == *"arn:aws:iam::"*":role/${ECR_ROLE_NAME}" ]]; then
+        aws eks delete-pod-identity-association --cluster-name "$ECR_CLUSTER_NAME" \
+          --association-id "$ECR_ASSOCIATION_ID" --region "$region" >/dev/null \
+          && echo "  deleted Pod Identity association $ECR_ASSOCIATION_ID." \
+          || note_fail "could not delete Pod Identity association $ECR_ASSOCIATION_ID"
+      else
+        note_fail "Pod Identity association $ECR_ASSOCIATION_ID is not bound to this sample's role (read: $bound); left untouched"
+      fi
     fi
 
-    # IAM role: delete only a role tagged ManagedBy=docker-builds.
-    owner="$(aws iam list-role-tags --role-name "$ECR_ROLE_NAME" 2>&1 \
-      | jq -r --arg m "$MANAGED_BY" 'any(.Tags[]?; .Key=="ManagedBy" and .Value==$m)' 2>/dev/null)"
-    if [[ "$owner" == "true" ]]; then
-      aws iam delete-role-policy --role-name "$ECR_ROLE_NAME" --policy-name "$ECR_POLICY_NAME" 2>/dev/null \
-        || true
-      aws iam delete-role --role-name "$ECR_ROLE_NAME" >/dev/null 2>&1 \
-        && echo "  deleted IAM role $ECR_ROLE_NAME and its policy." \
-        || note_fail "could not delete IAM role $ECR_ROLE_NAME"
-    elif ! aws iam get-role --role-name "$ECR_ROLE_NAME" >/dev/null 2>&1; then
-      echo "  IAM role $ECR_ROLE_NAME is already gone."
+    # IAM role: delete only a role tagged ManagedBy=docker-builds. A failed tag read and a
+    # failed existence read together must not read as "already gone", so the existence read's
+    # own failure is reported.
+    if [[ -z "${ECR_ROLE_NAME:-}" ]]; then
+      echo "  no IAM role was recorded, so there is none to delete."
     else
-      note_fail "IAM role $ECR_ROLE_NAME is not tagged ManagedBy=$MANAGED_BY; left untouched"
+      tags_out="$(aws iam list-role-tags --role-name "$ECR_ROLE_NAME" 2>&1)"
+      tags_rc=$?
+      owner=false
+      [[ $tags_rc -eq 0 ]] && owner="$(printf '%s' "$tags_out" \
+        | jq -r --arg m "$MANAGED_BY" 'any(.Tags[]?; .Key=="ManagedBy" and .Value==$m)' 2>/dev/null)"
+      if [[ "$owner" == "true" ]]; then
+        aws iam delete-role-policy --role-name "$ECR_ROLE_NAME" --policy-name "$ECR_POLICY_NAME" 2>/dev/null \
+          || true
+        aws iam delete-role --role-name "$ECR_ROLE_NAME" >/dev/null 2>&1 \
+          && echo "  deleted IAM role $ECR_ROLE_NAME and its policy." \
+          || note_fail "could not delete IAM role $ECR_ROLE_NAME"
+      elif [[ "$tags_out" == *"NoSuchEntity"* ]]; then
+        echo "  IAM role $ECR_ROLE_NAME is already gone."
+      elif [[ $tags_rc -ne 0 ]]; then
+        note_fail "could not determine whether IAM role $ECR_ROLE_NAME is this sample's; it was left in place. AWS said: $tags_out"
+      else
+        note_fail "IAM role $ECR_ROLE_NAME is not tagged ManagedBy=$MANAGED_BY; left untouched"
+      fi
     fi
 
     # ECR repository: delete only a repository tagged ManagedBy=docker-builds, with the image
     # the build pushed (--force, since the repository holds this sample's own image).
-    repo_arn="arn:aws:ecr:${region}:${ECR_ACCOUNT_ID}:repository/${ECR_REPO_NAME}"
-    if ! aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" --region "$region" >/dev/null 2>&1; then
-      echo "  ECR repository $ECR_REPO_NAME is already gone."
+    if [[ -z "${ECR_REPO_NAME:-}" ]]; then
+      echo "  no ECR repository was recorded, so there is none to delete."
     else
-      owner="$(aws ecr list-tags-for-resource --resource-arn "$repo_arn" --region "$region" 2>/dev/null \
-        | jq -r --arg m "$MANAGED_BY" 'any(.tags[]?; .Key=="ManagedBy" and .Value==$m)')"
-      if [[ "$owner" == "true" ]]; then
-        aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --region "$region" --force >/dev/null \
-          && echo "  deleted ECR repository $ECR_REPO_NAME and the image in it." \
-          || note_fail "could not delete ECR repository $ECR_REPO_NAME"
+      repo_arn="arn:aws:ecr:${region}:${ECR_ACCOUNT_ID}:repository/${ECR_REPO_NAME}"
+      repo_out="$(aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" --region "$region" 2>&1)"
+      repo_rc=$?
+      if [[ $repo_rc -ne 0 && "$repo_out" == *"RepositoryNotFoundException"* ]]; then
+        echo "  ECR repository $ECR_REPO_NAME is already gone."
+      elif [[ $repo_rc -ne 0 ]]; then
+        note_fail "could not determine whether ECR repository $ECR_REPO_NAME exists; it was left in place. AWS said: $repo_out"
       else
-        note_fail "ECR repository $ECR_REPO_NAME is not tagged ManagedBy=$MANAGED_BY; left untouched"
+        tags_out="$(aws ecr list-tags-for-resource --resource-arn "$repo_arn" --region "$region" 2>&1)"
+        tags_rc=$?
+        owner=false
+        [[ $tags_rc -eq 0 ]] && owner="$(printf '%s' "$tags_out" \
+          | jq -r --arg m "$MANAGED_BY" 'any(.tags[]?; .Key=="ManagedBy" and .Value==$m)' 2>/dev/null)"
+        if [[ "$owner" == "true" ]]; then
+          aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --region "$region" --force >/dev/null \
+            && echo "  deleted ECR repository $ECR_REPO_NAME and the image in it." \
+            || note_fail "could not delete ECR repository $ECR_REPO_NAME"
+        elif [[ $tags_rc -ne 0 ]]; then
+          note_fail "could not determine whether ECR repository $ECR_REPO_NAME is this sample's; it was left in place. AWS said: $tags_out"
+        else
+          note_fail "ECR repository $ECR_REPO_NAME is not tagged ManagedBy=$MANAGED_BY; left untouched"
+        fi
       fi
     fi
   fi

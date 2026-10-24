@@ -1,8 +1,9 @@
 # An ordinary pod (no runtime class, no privileges) for the comparison the page makes: what
 # the node's kernel, boot, disks and sysctls look like from a pod that shares them.
 #
-# scripts/setup.sh renders <NAMESPACE> and <NODE_NAME> with the node the sandboxed build pod
-# landed on, so both pods report the same machine.
+# No script applies this one: the page's Step 4 renders <NAMESPACE> and <NODE_NAME> with the
+# node the sandboxed build pod landed on, so both pods report the same machine. The clean up
+# deletes it by name.
 apiVersion: v1
 kind: Pod
 metadata:

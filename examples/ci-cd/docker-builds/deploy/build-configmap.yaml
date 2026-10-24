@@ -87,12 +87,15 @@ data:
       # with through EKS Pod Identity, so the pod holds no stored credential and the token
       # is never printed.
       docker login --username AWS --password-stdin "$ECR_REGISTRY" < /ecr/token
+      # The token is good for hours, and the completed pod stays until the next run or the
+      # clean up, so remove it as soon as the daemon has it.
+      rm -f /ecr/token
       REMOTE="$ECR_REGISTRY/${ECR_REPO}:${IMAGE_TAG:-v1}"
       docker tag "$IMAGE" "$REMOTE"
       docker push "$REMOTE"
       echo ">>> pushed $REMOTE"
-      # Leave no credential behind in the pod's Docker config, even though the pod is about
-      # to be deleted with its guest.
+      # Leave no credential behind in the pod: the token file is already gone, and this takes
+      # the daemon's copy out of the Docker config too.
       docker logout "$ECR_REGISTRY" >/dev/null
     else
       echo ">>> ECR_REGISTRY is unset: built and ran the image without a registry"

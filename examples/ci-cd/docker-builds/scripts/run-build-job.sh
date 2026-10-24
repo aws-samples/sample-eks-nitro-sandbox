@@ -71,8 +71,13 @@ Run ./scripts/ecr-setup.sh for this namespace, or drop --push."
           command: ["/bin/sh", "-c"]
           args:
             - |
+              set -e
               umask 077
               aws ecr get-login-password --region "$AWS_REGION" > /ecr/token
+              # Say nothing until there is a token to say it about: the redirection truncates
+              # the file first, so without these two lines a failed call would leave an empty
+              # token, exit 0 and still report success.
+              [ -s /ecr/token ]
               echo "wrote an Amazon ECR authorization token for $ECR_REGISTRY"
           env:
             - { name: AWS_REGION,   value: "<AWS_REGION>" }

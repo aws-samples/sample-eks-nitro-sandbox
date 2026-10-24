@@ -53,10 +53,52 @@ echo "Account $ACCOUNT_ID, Region $AWS_REGION, cluster $CLUSTER_NAME."
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
+# The state file records each resource as soon as it exists, not at the end: this script can
+# stop part way (a refused adoption, a denied call), and whatever it already created must still
+# be something scripts/clean.sh can find and remove. ECR_PUSH_READY stays false until the whole
+# push is set up, so the build Job will not try to use a half-made credential path.
+STATE_REPO="" STATE_ROLE="" STATE_ASSOC="" STATE_READY=false
+write_state() {
+  {
+    printf 'ECR_PUSH_READY=%s\n' "$STATE_READY"
+    printf 'ECR_ACCOUNT_ID=%q\n' "$ACCOUNT_ID"
+    printf 'ECR_AWS_REGION=%q\n' "$AWS_REGION"
+    printf 'ECR_CLUSTER_NAME=%q\n' "$CLUSTER_NAME"
+    printf 'ECR_NAMESPACE=%q\n' "$NAMESPACE"
+    printf 'ECR_REPO_NAME=%q\n' "$STATE_REPO"
+    printf 'ECR_ROLE_NAME=%q\n' "$STATE_ROLE"
+    printf 'ECR_POLICY_NAME=%q\n' "$POLICY_NAME"
+    printf 'ECR_ASSOCIATION_ID=%q\n' "$STATE_ASSOC"
+  } > "$STATE_FILE"
+}
+
+# aws_read <description> <command...> : run a read-only AWS call, and tell a failure apart from
+# an absent resource. Prints the output on stdout; returns 0 when the resource is there, 1 when
+# AWS says it is not, and stops the script on any other error, because a failed read is "could
+# not determine" and never "absent".
+aws_read() {
+  local what="$1"; shift
+  local out rc
+  out="$("$@" 2>&1)"; rc=$?
+  if [[ $rc -eq 0 ]]; then printf '%s' "$out"; return 0; fi
+  case "$out" in
+    *NotFoundException*|*NoSuchEntity*)
+      # Covers RepositoryNotFoundException and ResourceNotFoundException too: AWS says "this
+      # does not exist", which is the one failure that is not a failure to determine.
+      return 1 ;;
+  esac
+  die "could not read $what (the call failed, which is not a report that it is missing):
+$out
+Re-run once AWS answers cleanly."
+}
+
 echo "Step 1/4: the ECR repository $ECR_REPO_NAME"
-if aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
-  owner="$(aws ecr list-tags-for-resource --resource-arn "$REPO_ARN" --region "$AWS_REGION" \
-    | jq -r --arg m "$MANAGED_BY" 'any(.tags[]?; .Key=="ManagedBy" and .Value==$m)')"
+if aws_read "ECR repository $ECR_REPO_NAME" \
+     aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" --region "$AWS_REGION" >/dev/null; then
+  tags="$(aws_read "the tags of ECR repository $ECR_REPO_NAME" \
+    aws ecr list-tags-for-resource --resource-arn "$REPO_ARN" --region "$AWS_REGION")" \
+    || die "ECR repository $ECR_REPO_NAME exists but its tags could not be read"
+  owner="$(printf '%s' "$tags" | jq -r --arg m "$MANAGED_BY" 'any(.tags[]?; .Key=="ManagedBy" and .Value==$m)')"
   [[ "$owner" == "true" ]] || die "ECR repository $ECR_REPO_NAME exists but is not tagged ManagedBy=$MANAGED_BY;
 refusing to use a repository this sample did not create. Set ECR_REPO_NAME to a name of your own."
   echo "  reusing $ECR_REPO_NAME (tagged ManagedBy=$MANAGED_BY)."
@@ -67,21 +109,26 @@ else
     --tags Key=ManagedBy,Value="$MANAGED_BY" Key=auto-delete,Value=no >/dev/null
   echo "  created $ECR_REPO_NAME."
 fi
+STATE_REPO="$ECR_REPO_NAME"
+write_state
 
 echo "Step 2/4: the push role $ROLE_NAME, scoped to that one repository"
 sed -e "s|<CLUSTER_NAME>|$CLUSTER_NAME|g" -e "s|<NAMESPACE>|$NAMESPACE|g" \
-  iam/pod-identity-trust.json > "$tmp_dir/trust.json"
-if aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
-  owner="$(aws iam list-role-tags --role-name "$ROLE_NAME" \
-    | jq -r --arg m "$MANAGED_BY" 'any(.Tags[]?; .Key=="ManagedBy" and .Value==$m)')"
+  -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" iam/pod-identity-trust.json > "$tmp_dir/trust.json"
+if aws_read "IAM role $ROLE_NAME" aws iam get-role --role-name "$ROLE_NAME" >/dev/null; then
+  tags="$(aws_read "the tags of IAM role $ROLE_NAME" aws iam list-role-tags --role-name "$ROLE_NAME")" \
+    || die "IAM role $ROLE_NAME exists but its tags could not be read"
+  owner="$(printf '%s' "$tags" | jq -r --arg m "$MANAGED_BY" 'any(.Tags[]?; .Key=="ManagedBy" and .Value==$m)')"
   [[ "$owner" == "true" ]] || die "IAM role $ROLE_NAME exists but is not tagged ManagedBy=$MANAGED_BY;
 refusing to use a role this sample did not create. Set ROLE_NAME to a name of your own."
+  STATE_ROLE="$ROLE_NAME"; write_state
   aws iam update-assume-role-policy --role-name "$ROLE_NAME" --policy-document "file://$tmp_dir/trust.json"
   echo "  reusing $ROLE_NAME (tagged ManagedBy=$MANAGED_BY), trust policy refreshed."
 else
   aws iam create-role --role-name "$ROLE_NAME" \
     --assume-role-policy-document "file://$tmp_dir/trust.json" \
     --tags Key=ManagedBy,Value="$MANAGED_BY" Key=auto-delete,Value=no >/dev/null
+  STATE_ROLE="$ROLE_NAME"; write_state
   echo "  created $ROLE_NAME."
 fi
 sed -e "s|<AWS_REGION>|$AWS_REGION|g" -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" -e "s|<ECR_REPO>|$ECR_REPO_NAME|g" \
@@ -99,33 +146,31 @@ aws iam get-role-policy --role-name "$ROLE_NAME" --policy-name "$POLICY_NAME" \
   --query 'PolicyDocument' --output json | sed 's/^/    /'
 
 echo "Step 3/4: the EKS Pod Identity association for $NAMESPACE/$SERVICE_ACCOUNT"
-assoc="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
+# A failed list is not an empty list: creating an association on top of a read that failed
+# would be acting on a guess, so the read stops the script instead.
+assoc="$(aws_read "the Pod Identity associations of $NAMESPACE/$SERVICE_ACCOUNT" \
+  aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
   --namespace "$NAMESPACE" --service-account "$SERVICE_ACCOUNT" \
-  --query 'associations[0].associationId' --output text 2>/dev/null || true)"
+  --query 'associations[0].associationId' --output text)" || assoc=""
 if [[ -z "$assoc" || "$assoc" == "None" ]]; then
   assoc="$(aws eks create-pod-identity-association --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
     --namespace "$NAMESPACE" --service-account "$SERVICE_ACCOUNT" --role-arn "$ROLE_ARN" \
     --query 'association.associationId' --output text)"
+  STATE_ASSOC="$assoc"; write_state
   echo "  created association $assoc."
 else
-  bound="$(aws eks describe-pod-identity-association --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
-    --association-id "$assoc" --query 'association.roleArn' --output text)"
+  bound="$(aws_read "Pod Identity association $assoc" \
+    aws eks describe-pod-identity-association --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
+    --association-id "$assoc" --query 'association.roleArn' --output text)" \
+    || die "association $assoc was listed and then could not be read"
   [[ "$bound" == "$ROLE_ARN" ]] || die "an association for $NAMESPACE/$SERVICE_ACCOUNT already exists ($assoc)
 bound to $bound, not this sample's role $ROLE_ARN; refusing to adopt it"
+  STATE_ASSOC="$assoc"; write_state
   echo "  reusing association $assoc (bound to this sample's role)."
 fi
 
-{
-  printf 'ECR_PUSH_READY=true\n'
-  printf 'ECR_ACCOUNT_ID=%q\n' "$ACCOUNT_ID"
-  printf 'ECR_AWS_REGION=%q\n' "$AWS_REGION"
-  printf 'ECR_REPO_NAME=%q\n' "$ECR_REPO_NAME"
-  printf 'ECR_ROLE_NAME=%q\n' "$ROLE_NAME"
-  printf 'ECR_POLICY_NAME=%q\n' "$POLICY_NAME"
-  printf 'ECR_CLUSTER_NAME=%q\n' "$CLUSTER_NAME"
-  printf 'ECR_ASSOCIATION_ID=%q\n' "$assoc"
-  printf 'ECR_NAMESPACE=%q\n' "$NAMESPACE"
-} > "$STATE_FILE"
+STATE_READY=true
+write_state
 
 echo "Step 4/4: add the push rules to the egress policy"
 coredns="$(kc get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')"

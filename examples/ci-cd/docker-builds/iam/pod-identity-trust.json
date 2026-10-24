@@ -13,6 +13,7 @@
       ],
       "Condition": {
         "StringEquals": {
+          "aws:SourceAccount": "<ACCOUNT_ID>",
           "aws:RequestTag/eks-cluster-name": "<CLUSTER_NAME>",
           "aws:RequestTag/kubernetes-namespace": "<NAMESPACE>",
           "aws:RequestTag/kubernetes-service-account": "docker-builds-builder"
