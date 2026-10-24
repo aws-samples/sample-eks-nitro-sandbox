@@ -39,11 +39,16 @@ else
 fi
 if [[ -n "$ns_present" ]]; then
   say "Warm pools first (so they stop booting replacements), then claims, then the app"
-  "${KCTL[@]}" -n "$NAMESPACE" delete sandboxwarmpool -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found
-  "${KCTL[@]}" -n "$NAMESPACE" delete sandboxclaim -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found
-  "${KCTL[@]}" -n "$NAMESPACE" delete sandboxtemplate -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found
-  "${KCTL[@]}" -n "$NAMESPACE" delete applicationnetworkpolicy -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found
-  "${KCTL[@]}" -n "$NAMESPACE" delete deploy,svc -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found
+  "${KCTL[@]}" -n "$NAMESPACE" delete sandboxwarmpool -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
+    || note_fail "warm pools in $NAMESPACE: delete failed"
+  "${KCTL[@]}" -n "$NAMESPACE" delete sandboxclaim -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
+    || note_fail "claims in $NAMESPACE: delete failed"
+  "${KCTL[@]}" -n "$NAMESPACE" delete sandboxtemplate -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
+    || note_fail "templates in $NAMESPACE: delete failed"
+  "${KCTL[@]}" -n "$NAMESPACE" delete applicationnetworkpolicy -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
+    || note_fail "network policies in $NAMESPACE: delete failed"
+  "${KCTL[@]}" -n "$NAMESPACE" delete deploy,svc -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
+    || note_fail "the app (deploy, svc) in $NAMESPACE: delete failed"
 fi
 
 # Pod Identity associations (only this sample's namespace/service accounts).
@@ -78,6 +83,11 @@ fi
 # .env by an earlier run), which is not a failure and must not start a 10-minute wait for
 # mount targets that will never drain. Any other lookup error is "could not determine".
 fs_ours=
+# Set only when the file system is known to be gone: no file system has the sample's name,
+# the recorded id answers an explicit not-found, or the delete below is confirmed. The bucket
+# is drained only then, since a file system still there keeps exporting into it.
+fs_confirmed_gone=
+[[ "$FS_ID" == "None" ]] && fs_confirmed_gone=yes   # the name lookup succeeded and found none
 if [[ -n "$FS_ID" && "$FS_ID" != "None" ]]; then
   if fs_err="$(aws s3files get-file-system --file-system-id "$FS_ID" --region "$AWS_REGION" \
       --query status --output text 2>&1)"; then
@@ -90,7 +100,7 @@ if [[ -n "$FS_ID" && "$FS_ID" != "None" ]]; then
     fi
   else
     case "$fs_err" in
-      *ResourceNotFoundException*) echo "file system $FS_ID is already gone" ;;
+      *ResourceNotFoundException*) echo "file system $FS_ID is already gone"; fs_confirmed_gone=yes ;;
       *) note_fail "file system $FS_ID: lookup failed, not confirmed gone ($(printf '%s' "$fs_err" | grep -m1 .))" ;;
     esac
   fi
@@ -180,10 +190,12 @@ fi
 # error): the latter must not silently skip cleanup as if the bucket were already gone.
 say "Bucket"
 bucket_present=
-if [[ -n "$fs_ours" && -z "${fs_gone:-}" ]]; then
-  # The file system is still there, exporting to the bucket: a drain now would race it and
-  # the delete would fail. Leave the bucket for the next run, which retries the file system.
-  note_fail "bucket ${S3_BUCKET_NAME:-} not deleted: its file system $FS_ID still exists (see above)"
+[[ -n "${fs_gone:-}" ]] && fs_confirmed_gone=yes
+if [[ -z "$fs_confirmed_gone" ]]; then
+  # The file system is not confirmed gone: it is still there, it is not the sample's, or the
+  # lookup failed. If it exists it keeps exporting to the bucket, so a drain now would race it
+  # and could delete data it is still writing. Leave the bucket for the next run.
+  note_fail "bucket ${S3_BUCKET_NAME:-} not deleted: file system ${FS_ID:-unknown} not confirmed gone (see above)"
 elif [[ -n "${S3_BUCKET_NAME:-}" ]]; then
   head_err="$(aws s3api head-bucket --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" 2>&1)" && bucket_present=yes || {
     case "$head_err" in
