@@ -690,6 +690,16 @@ error line goes to standard error and so can print before or after its exit line
   grant: the other five CLIs run under the Bedrock role, which has none of it. Remove the
   two `WebSearch...` statements from [`iam/codex-policy.json`](iam/codex-policy.json) to
   turn this off.
+- **Codex runs without its own command sandbox; the pod is the boundary.** On Linux, Codex
+  runs the shell commands it makes for you inside bubblewrap, which needs to create user
+  namespaces. The Nitro sandbox's guest kernel allows none (`max_user_namespaces` is `0`, for
+  root too), so bubblewrap fails with `Creating new namespace failed ... (ENOSPC)`, whether
+  it is the system one or the one Codex bundles, and so does every command Codex runs.
+  So the Codex config the image writes sets `sandbox_mode = "danger-full-access"`.
+  Despite its name, that only drops Codex's second, inner boundary; it does not reach past
+  the pod's own: the sandbox's own kernel, the egress policy, and a mount credential for
+  this one session's folder. Codex still asks before a command it judges risky (its default
+  approval policy, `on-request`).
 - **Session pods are not consolidated away.** The `SandboxTemplate` sets
   `karpenter.sh/do-not-disrupt: "true"`, so EKS Auto Mode does not evict a session pod to
   consolidate an underutilized node in the middle of a session. The pod still goes when its
