@@ -401,6 +401,23 @@ key is in the pod: the only AWS variables are the Pod Identity credential endpoi
 Region, so the Bedrock CLIs sign their requests with the Pod Identity role resolved from
 that endpoint, not a stored key.
 
+## Can one developer reach another developer's files?
+
+It depends on the layer.
+
+- **From an agent's pod: no.** Isolation is per session, which is stricter than per
+  developer: a pod can mount only its own session's folder, so not another developer's, and
+  not another session of the same developer either. The credential that mounts the folder is
+  scoped to that one access point, the pod's own role has no S3 Files access at all, and the
+  egress policy refuses all ingress, so pods cannot reach each other. The next section
+  proves it, as root inside the sandbox.
+- **Through this web app: yes, by design of the demo.** The sign-in is a picker, not
+  authentication, so anyone who can reach your `kubectl port-forward` can pick any developer
+  and open, close or delete any session. The app checks only that each name is well formed.
+- **For a real deployment**, put real authentication in front of the app, and check on every
+  call that the session belongs to the signed-in developer. That includes the terminal
+  WebSocket (`/ws`) and Close, which today take only a session name.
+
 ## Per-session scoping, both ways
 
 The security property is that a session's pod can mount only its own folder. The app gives
