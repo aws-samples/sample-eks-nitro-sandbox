@@ -1,0 +1,29 @@
+# An ordinary (non-sandboxed) pod, for the side-by-side in Step 6: it runs the
+# same three commands the editor's pod runs, on the same node, so the page can show
+# what each signal looks like without a sandbox.
+#
+# scripts/compare.sh renders __NAMESPACE__ and __NODE_NAME__ (the node the editor's
+# pod is on) and applies it, then deletes this pod by its exact name. It mounts no
+# volume and needs no network.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ide-ordinary
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: ide
+spec:
+  # No runtimeClassName: an ordinary pod that shares the node's kernel.
+  nodeName: __NODE_NAME__
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  containers:
+    - name: probe
+      image: public.ecr.aws/docker/library/busybox:1.37
+      imagePullPolicy: IfNotPresent
+      command: ["sh", "-c", "sleep 600"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true

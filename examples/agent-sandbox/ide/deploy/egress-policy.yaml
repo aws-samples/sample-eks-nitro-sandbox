@@ -1,0 +1,50 @@
+# The editor's network: nothing in, DNS and two hosts out.
+#
+# An EKS Auto Mode ApplicationNetworkPolicy is a NetworkPolicy that also accepts
+# hostnames (domainNames) in an egress rule. For the editor's pod it allows:
+#   - no ingress at all, because nothing in the cluster needs to reach the editor:
+#     the operator reaches it with kubectl port-forward, which goes through the
+#     guest's control channel rather than the pod network;
+#   - egress to CoreDNS for name lookups, and HTTPS to the extension registry and
+#     the git host a developer actually uses from the workbench.
+# Every other address is refused, so code the developer runs in the editor cannot
+# reach other pods, AWS APIs or the rest of the internet. (Kubernetes always
+# allows a pod to reach its own node, which is not a path to the internet.)
+#
+# <COREDNS_IP> is your cluster's CoreDNS Service address, which scripts/setup.sh
+# fills in at apply time from:
+#   kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'
+# __NAMESPACE__ is filled in the same way, from NAMESPACE.
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ApplicationNetworkPolicy
+metadata:
+  name: ide-egress
+  namespace: __NAMESPACE__
+spec:
+  podSelector:
+    matchLabels:
+      app: ide
+  policyTypes:
+    - Ingress
+    - Egress
+  # No ingress rules under policyTypes: Ingress means every connection to the
+  # editor from the pod network is refused, including from other pods on the
+  # cluster. kubectl port-forward still works.
+  egress:
+    - to:
+        - ipBlock: { cidr: <COREDNS_IP>/32 }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - domainNames:
+            # The extension registry code-server searches needs two names: the
+            # gallery answers the search on open-vsx.org and then redirects the
+            # download of the extension itself to its asset host. With only the
+            # first name, a search succeeds and every install times out.
+            - open-vsx.org
+            - openvsx.eclipsecontent.org
+            # git clone, fetch and push over HTTPS from the editor's terminal.
+            - github.com
+      ports:
+        - { protocol: TCP, port: 443 }

@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="drawio" type="device">
+  <diagram id="figure-2-ide-network-policy" name="Diagram">
+    <mxGraphModel dx="0" dy="0" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="1880" pageHeight="1120" math="0" shadow="0" background="#ffffff">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- EKS node boundary: the policy is enforced here, on the node -->
+        <mxCell id="node" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;Amazon EKS node&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;the network policy agent enforces the policy here, outside the guest&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#ED7100;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#ED7100;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="400" y="120" width="880" height="740" as="geometry" />
+        </mxCell>
+        <mxCell id="tab-node" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalAlign=top;align=center;html=1;fontSize=12;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.eks;" vertex="1" parent="1">
+          <mxGeometry x="400" y="120" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <!-- The editor's sandbox pod -->
+        <mxCell id="sandbox" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;Nitro sandbox pod&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;runtimeClassName: isolated-sandbox&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#DD344C;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#DD344C;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="760" y="240" width="440" height="280" as="geometry" />
+        </mxCell>
+        <mxCell id="tab-sandbox" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalAlign=top;align=center;html=1;fontSize=12;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;" vertex="1" parent="1">
+          <mxGeometry x="760" y="240" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="code" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;code-server&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;editor and terminal&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.generic_application;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="940" y="340" width="80" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- The policy, enforced on the node -->
+        <mxCell id="policy" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;ApplicationNetworkPolicy&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;ide-egress: Ingress, Egress&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;eBPF, host-side interface&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#DD344C;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.filtering_rule;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="940" y="640" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="e-policy-sandbox" value="governs this pod" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=none;startArrow=none;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;align=left;verticalAlign=middle;" edge="1" parent="1" source="policy" target="sandbox">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="12" y="0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- The kubelet on the node -->
+        <mxCell id="kubelet" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;kubelet&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;on the node&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.gear;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="560" y="640" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="e-probe" value="readiness probe:&lt;br&gt;always allowed" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.857;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="kubelet" target="sandbox">
+          <mxGeometry x="0.5" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="600" y="480" />
+            </Array>
+            <mxPoint x="0" y="-26" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-pf" value="guest control channel" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.2727;entryY=1;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="kubelet" target="sandbox">
+          <mxGeometry x="-0.4" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="880" y="680" />
+            </Array>
+            <mxPoint x="0" y="-15" as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Ingress: any other pod is refused; port-forward does not use the pod network -->
+        <mxCell id="other" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Any other pod&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;pod IP or Service name&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.generic_application;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="140" y="340" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="e-other" value="in: refused" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#DD344C;strokeWidth=2.5;dashed=1;dashPattern=8 6;fixDash=1;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="other" target="sandbox">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="-180" y="-15" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="operator" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Operator&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;kubectl port-forward&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.user;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="140" y="640" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="e-operator" value="via the API server" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="operator" target="kubelet">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="-80" y="-15" as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Allowed egress -->
+        <mxCell id="coredns" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;CoreDNS&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;kube-dns ClusterIP&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.generic_application;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1640" y="160" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="registry" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Extension registry&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;open-vsx.org&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;openvsx.eclipsecontent.org&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.generic_application;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1640" y="400" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="github" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;github.com&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;git clone, fetch, push&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.git_repository;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1640" y="660" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="e-dns" value="out: DNS 53 (UDP/TCP)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1D8102;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.1429;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="sandbox" target="coredns">
+          <mxGeometry x="0.5" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1360" y="280" />
+              <mxPoint x="1360" y="200" />
+            </Array>
+            <mxPoint x="0" y="-15" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-registry" value="out: HTTPS 443" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1D8102;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="sandbox" target="registry">
+          <mxGeometry x="0.5" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1360" y="380" />
+              <mxPoint x="1360" y="440" />
+            </Array>
+            <mxPoint x="0" y="-15" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-github" value="out: HTTPS 443" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1D8102;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.8571;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="sandbox" target="github">
+          <mxGeometry x="0.6" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1400" y="480" />
+              <mxPoint x="1400" y="700" />
+            </Array>
+            <mxPoint x="0" y="-15" as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Everything else refused -->
+        <mxCell id="denied" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Everything else&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;example.com&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;sts.us-west-2.amazonaws.com&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#DD344C;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.internet_alt1;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1640" y="920" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="e-denied" value="refused" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#DD344C;strokeWidth=2.5;dashed=1;dashPattern=8 6;fixDash=1;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=0.9;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="sandbox" target="denied">
+          <mxGeometry x="0.5" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1156" y="960" />
+            </Array>
+            <mxPoint x="0" y="-15" as="offset" />
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
