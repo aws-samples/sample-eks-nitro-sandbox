@@ -122,10 +122,14 @@ which is why Delete removes every version under the session's prefix.
 
 | Role | Used by | May |
 |---|---|---|
-| Bedrock | The pods of claude-code, kiro-cli, opencode, pi and oh-my-pi (service account `agent-session`), through Pod Identity | `bedrock:InvokeModel*` scoped to this account's inference profiles and the Anthropic foundation models; nothing else, no S3 Files access |
+| Bedrock | The pods of claude-code, opencode, pi and oh-my-pi (service account `agent-session`), through Pod Identity | `bedrock:InvokeModel*` scoped to this account's inference profiles and the Anthropic foundation models; nothing else, no S3 Files access |
 | Codex | Codex's pods only (service account `agent-session-codex`), through Pod Identity | `bedrock-mantle:CreateInference` for its model on the Bedrock "Mantle" endpoint, and the `bedrock-websearch` actions for its server-side web search; nothing else, no S3 Files access |
 | App | The web app, through Pod Identity | Create (with tags), list and delete this file system's access points; list and delete object versions under the sample's prefix when a session is deleted; assume the Mount role |
 | Mount | Assumed only by the app, narrowed per session | `s3files:ClientMount` and `s3files:ClientWrite` on the file system, and read objects in the bucket; each session policy narrows it to one access point |
+
+kiro-cli's pods have no role: they run as service account `agent-session-kiro`, which has
+no Pod Identity association, because Kiro CLI signs in with the developer's own Kiro
+identity rather than AWS credentials.
 
 Everything it creates is tagged `ManagedBy=coding-agents-for-developers`, so the clean up
 removes only what the sample made.
@@ -485,7 +489,7 @@ exit 32
 The own access point is mounted. As root (`id -u` prints `0`), the other session's access
 point is refused by the server (`access denied`, exit 32), because the credential's session
 policy allows `s3files:ClientMount` only on this session's own access-point ARN. The pod's
-own Pod Identity role is refused even on its own access point: it is the Bedrock role, with
+own Pod Identity role is refused even on its own access point (kiro-cli's pods have no role at all): it is the Bedrock role, with
 no S3 Files permission at all (nor has the Codex role), so it cannot mount any access point. The mount credential is
 the only thing that can, and it is scoped to one access point. (The watchdog line is the
 mount helper noting that the container has no init system for its background watchdog; it
@@ -576,7 +580,7 @@ spec:
 | `policyTypes`, `Ingress` and `Egress` | Default-deny both ways, so only the rules below are allowed. |
 | `ingress: []` | Denies all ingress. The app reaches the pod through the Kubernetes exec API, which is not pod network traffic, so it needs no ingress rule. |
 | `egress` to `0.0.0.0/0` on 53 | Allows egress to any address on UDP and TCP 53. This is a project choice to keep the sample simple: it does not depend on how a given cluster serves DNS (on EKS Auto Mode the resolver is node-local rather than a pod behind a ClusterIP). What it allows is wider than DNS resolution: any process in the sandbox can reach any host on UDP or TCP 53, so it can send data out over DNS or to anything listening on port 53. What it costs is that port-53 egress is not confined to the cluster's own resolver. It still opens only port 53; every other port and protocol stays denied. |
-| `egress` to `169.254.170.23` on 80 | The Pod Identity agent on the node, for the pod's role (the Bedrock role, or the Codex role for Codex). |
+| `egress` to `169.254.170.23` on 80 | The Pod Identity agent on the node, for the pod's role (the Bedrock role, or the Codex role for Codex). kiro-cli's pods have no role, so the agent gives them no credential. |
 | `egress` to the `domainNames` on 443 | The Bedrock runtime endpoint the Bedrock CLIs call their model on, the Bedrock "Mantle" endpoint Codex uses for its GPT model, `docs.aws.amazon.com` so the agents can fetch AWS documentation, and the short list of developer hosts (GitHub, npm, PyPI) the agents fetch from. The S3 Files mount reads over NFS (2049), not an S3 443 endpoint, so none is needed here. |
 | `egress` to `<MOUNT_TARGET_CIDRS>` on 2049 | The S3 Files mount targets, NFS over TLS. They are ENIs in the cluster VPC reached by resolved IP, so `setup.sh` resolves this file system's mount-target IPs and fills in one `/32` per target -- egress on 2049 is allowed to the sample's own mount targets only, not to anything on 2049 in the VPC. |
 
@@ -704,7 +708,8 @@ error line goes to standard error and so can print before or after its exit line
   Bedrock, not by the pod, so the sandbox egress policy does not limit them. The pod's own
   egress is still restricted, but any process in a Codex pod, not only the CLI, can use
   this role to have Bedrock search and read public web pages. Only Codex's pods have the
-  grant: the other five CLIs run under the Bedrock role, which has none of it. Remove the
+  grant: four of the other CLIs run under the Bedrock role, which has none of it, and
+  kiro-cli has no AWS role at all. Remove the
   two `WebSearch...` statements from [`iam/codex-policy.json`](iam/codex-policy.json) to
   turn this off.
 - **Codex runs without its own command sandbox; the pod is the boundary.** On Linux, Codex

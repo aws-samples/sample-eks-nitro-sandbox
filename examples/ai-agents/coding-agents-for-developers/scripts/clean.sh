@@ -54,7 +54,9 @@ fi
 # Pod Identity associations (only this sample's namespace/service accounts).
 say "Pod Identity associations"
 # A failed listing is "could not determine", not "none"; a failed delete is reported.
-for sa in agent-app agent-session agent-session-codex; do
+# agent-session-kiro is listed too: setup.sh gives it no association, so one found there was
+# added by hand in the sample's namespace, and is removed with the rest.
+for sa in agent-app agent-session agent-session-codex agent-session-kiro; do
   if ! aid="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" --namespace "$NAMESPACE" \
       --service-account "$sa" --region "$AWS_REGION" --query 'associations[0].associationId' --output text 2>&1)"; then
     note_fail "Pod Identity association for $sa: lookup failed, not confirmed gone ($(printf '%s' "$aid" | grep -m1 .))"

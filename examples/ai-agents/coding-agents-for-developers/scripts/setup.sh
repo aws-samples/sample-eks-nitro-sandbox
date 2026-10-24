@@ -287,7 +287,13 @@ EGRESS
 }
 IFS=',' read -ra clis <<< "$AGENT_CLIS"
 for cli in "${clis[@]}"; do
-  if [ "$cli" = "codex" ]; then session_sa=agent-session-codex; else session_sa=agent-session; fi
+  # Codex has its own role; kiro-cli has a service account with no role at all (it signs
+  # in with the developer's own Kiro identity, not AWS); the rest share the Bedrock role.
+  case "$cli" in
+    codex)    session_sa=agent-session-codex ;;
+    kiro-cli) session_sa=agent-session-kiro ;;
+    *)        session_sa=agent-session ;;
+  esac
   sed -e "s|<CLI>|$cli|g" -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" -e "s|<AWS_REGION>|$AWS_REGION|g" \
       -e "s|<POOL_REPLICAS>|$POOL_REPLICAS|g" -e "s|<IMAGE_TAG>|$IMAGE_TAG|g" \
       -e "s|<SESSION_SA>|$session_sa|g" \

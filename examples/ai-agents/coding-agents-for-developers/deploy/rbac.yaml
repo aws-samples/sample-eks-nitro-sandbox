@@ -4,12 +4,14 @@
 #                 access points and assumes the Mount role. In the cluster it may only do
 #                 what app/server/k8s.js calls: create, get, list and delete SandboxClaims, get
 #                 pods, exec into them, and get nodes.
-# - agent-session the session pods of every CLI except Codex. Its Pod Identity role (the
+# - agent-session the session pods of claude-code, opencode, pi and oh-my-pi. Its Pod Identity role (the
 #                 Bedrock role) may only invoke models. It has no S3 Files access: the mount
 #                 credential arrives per session through exec, not from this role.
 # - agent-session-codex  Codex's session pods. Its role (the Codex role) may call Codex's
 #                 model on the Bedrock Mantle endpoint and its server-side web search, and
 #                 nothing else. Kept separate so no other CLI's pod holds those grants.
+# - agent-session-kiro  kiro-cli's session pods. No Pod Identity association, so no AWS
+#                 role at all: Kiro CLI signs in with the developer's own Kiro identity.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -29,6 +31,14 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: agent-session-codex
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-session-kiro
   labels:
     app.kubernetes.io/part-of: coding-agents-for-developers
 automountServiceAccountToken: false
