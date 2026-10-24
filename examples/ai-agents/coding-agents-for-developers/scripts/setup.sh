@@ -11,8 +11,9 @@
 #      network-policy enforcement). If one is absent it STOPS with the command to add it,
 #      never installing a cluster-wide thing for you.
 #   2. Create the sample's own AWS resources: a versioned bucket, an S3 Files file system
-#      and its mount targets, and three IAM roles (Bedrock, App, Mount) with their Pod
-#      Identity associations.
+#      and its mount targets, and five IAM roles: Bedrock, Codex and App (each with a Pod
+#      Identity association), Mount (assumed by the app per session) and the S3 Files sync
+#      role (assumed by the S3 Files service).
 #   3. Build and push the base image, the six CLI images and the app image.
 #   4. Render and apply the per-CLI SandboxTemplate, SandboxWarmPool and egress policy,
 #      and the app Deployment, Service and RBAC.
@@ -95,7 +96,7 @@ aws s3api put-public-access-block --bucket "$S3_BUCKET_NAME" --region "$AWS_REGI
   --public-access-block-configuration \
   BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 
-say "IAM roles (Bedrock, App, Mount) and the S3 Files sync role"
+say "IAM roles (Bedrock, Codex, App, Mount) and the S3 Files sync role"
 mk_role() { # name  trust-json-file
   if aws iam get-role --role-name "$1" >/dev/null 2>&1; then
     # Exists already: adopt only if it is the sample's. A same-named role from another

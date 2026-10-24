@@ -34,7 +34,7 @@ sandbox_mode = "danger-full-access"
 
 # Codex's own client-side web search tool stays off. The GPT model on Mantle has a separate
 # server-side web search and fetch tool that Amazon Bedrock runs (not the pod), which the
-# Bedrock role grants with the bedrock-websearch actions; see the README.
+# Codex role (Codex's pods only) grants with the bedrock-websearch actions; see the README.
 [tools]
 web_search = false
 
