@@ -186,6 +186,18 @@ sign-in is the developer's own rather than Bedrock:
   Use with Your Organization
 ```
 
+A second fresh run of the same code (after the clean up, `setup.sh` again) then had a
+developer sign in from that menu with their own Kiro identity and ask one question. The
+terminal, abridged to the turn:
+
+```text
+  In one sentence what is EKS Auto Mode
+• EKS Auto Mode is an Amazon EKS feature that fully automates cluster
+  infrastructure management — including compute provisioning, scaling, and
+  updates — so you don't have to manage EC2 nodes manually.
+▸ Credits: turn 0.06 • session 0.06 | Time: 1s
+```
+
 The terminal has tmux mouse mode on (`set -g mouse on` in the session's tmux config), so
 the mouse wheel scrolls the CLI's output in the browser rather than its prompt history.
 
