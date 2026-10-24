@@ -135,6 +135,10 @@ header {
 .tile:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: var(--shadow-2); }
 .tile .name { font-weight: 600; font-size: 15px; }
 .tile .sub { color: var(--muted); font-size: 12px; margin-top: var(--space-1); }
+.tile.busy { cursor: progress; opacity: 0.7; border-color: var(--accent); transform: none; }
+.tile.busy .sub { color: var(--accent); }
+.tile.failed { border-color: var(--danger); }
+.tile.failed .sub { color: var(--danger); }
 
 /* ---------------- Sessions table ---------------- */
 table { width: 100%; border-collapse: collapse; }

@@ -32,10 +32,30 @@ async function loadTiles() {
     const el = document.createElement("div");
     el.className = "tile";
     el.innerHTML = `<div class="name">${cli}</div><div class="sub">New agent</div>`;
+    const sub = el.querySelector(".sub");
+    // A new session takes seconds from a warm pod, and up to a minute on the first mount or
+    // a cold start. The tile gave no sign of it, so a second click started a second session
+    // (claude-code, from a pool of one, then waited for a cold start). While a start
+    // is in flight the tile says so and ignores clicks; a failed start shows its error on
+    // the tile and lets the next click try again.
     el.onclick = async () => {
-      const { session, display } = await api("/api/new", { developer, cli });
-      openTerminal(session, cli, display);
-      loadSessions();
+      if (el.classList.contains("busy")) return;
+      el.classList.add("busy");
+      el.classList.remove("failed");
+      el.setAttribute("aria-busy", "true");
+      sub.textContent = "Starting...";
+      try {
+        const { session, display } = await api("/api/new", { developer, cli });
+        openTerminal(session, cli, display);
+        sub.textContent = "New agent";
+        loadSessions();
+      } catch (err) {
+        el.classList.add("failed");
+        sub.textContent = `Could not start: ${err.message}`;
+      } finally {
+        el.classList.remove("busy");
+        el.removeAttribute("aria-busy");
+      }
     };
     tiles.appendChild(el);
   }

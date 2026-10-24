@@ -290,7 +290,10 @@ click (`POST /api/new`) to a terminal with the CLI running was:
 
 The first session is slower because it is the first mount of a new file system. The third
 row is a cold start: with the warm pod already claimed, the claim waits for the pool to boot
-a new pod, so size `POOL_REPLICAS` to the rate at which sessions start.
+a new pod, so size `POOL_REPLICAS` to the rate at which sessions start. While a start is
+in flight, its tile reads **Starting...** and ignores further clicks, so a second click
+does not claim a second pod; if the start fails, the tile shows the error and the next
+click tries again.
 
 Close then Restore is the same path against the existing folder, so a restored session comes
 up on a **new pod** (a new pod UID) and the CLI continues its conversation. For pi on the
