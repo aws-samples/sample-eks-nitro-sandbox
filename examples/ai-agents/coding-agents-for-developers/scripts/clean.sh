@@ -70,27 +70,26 @@ done
 
 # S3 Files: access points, mount targets, file system.
 say "S3 Files access points, mount targets, file system"
-FS_ID="${S3_FILES_FS_ID:-}"
-if [[ -z "$FS_ID" ]]; then
-  # No id recorded: find the file system by the sample's name. A failed listing must not
-  # read as "there is none".
+# Find the file system by the sample's name. A failed listing must not read as "there is
+# none": it leaves FS_ID empty, so nothing below counts the file system as gone.
+lookup_fs_by_name() {
   if ! FS_ID="$(aws s3files list-file-systems --region "$AWS_REGION" \
       --query "fileSystems[?name=='$SAMPLE'].fileSystemId | [0]" --output text 2>&1)"; then
     note_fail "file system lookup failed, not confirmed gone ($(printf '%s' "$FS_ID" | grep -m1 .))"
     FS_ID=
   fi
-fi
+}
 # Before touching its access points and mount targets, confirm the file system still exists
-# and is the sample's. An explicit not-found means it is already gone (e.g. a stale id left in
-# .env by an earlier run), which is not a failure and must not start a 10-minute wait for
-# mount targets that will never drain. Any other lookup error is "could not determine".
-fs_ours=
-# Set only when the file system is known to be gone: no file system has the sample's name,
-# the recorded id answers an explicit not-found, or the delete below is confirmed. The bucket
-# is drained only then, since a file system still there keeps exporting into it.
-fs_confirmed_gone=
-[[ "$FS_ID" == "None" ]] && fs_confirmed_gone=yes   # the name lookup succeeded and found none
-if [[ -n "$FS_ID" && "$FS_ID" != "None" ]]; then
+# and is the sample's. An explicit not-found means it is already gone, which is not a failure
+# and must not start a 10-minute wait for mount targets that will never drain. Any other
+# lookup error is "could not determine".
+# fs_confirmed_gone is set only when the file system is known to be gone: no file system has
+# the sample's name, or the delete below is confirmed. The bucket is drained only then, since
+# a file system still there keeps exporting into it.
+check_fs() {
+  fs_ours=; fs_confirmed_gone=; fs_id_gone=
+  [[ "$FS_ID" == "None" ]] && fs_confirmed_gone=yes   # the name lookup succeeded and found none
+  [[ -n "$FS_ID" && "$FS_ID" != "None" ]] || return 0
   if fs_err="$(aws s3files get-file-system --file-system-id "$FS_ID" --region "$AWS_REGION" \
       --query status --output text 2>&1)"; then
     fs_owner="$(aws s3files list-tags-for-resource --resource-id "$FS_ID" --region "$AWS_REGION" \
@@ -102,9 +101,21 @@ if [[ -n "$FS_ID" && "$FS_ID" != "None" ]]; then
     fi
   else
     case "$fs_err" in
-      *ResourceNotFoundException*) echo "file system $FS_ID is already gone"; fs_confirmed_gone=yes ;;
+      *ResourceNotFoundException*) echo "file system $FS_ID is already gone"; fs_id_gone=yes ;;
       *) note_fail "file system $FS_ID: lookup failed, not confirmed gone ($(printf '%s' "$fs_err" | grep -m1 .))" ;;
     esac
+  fi
+}
+FS_ID="${S3_FILES_FS_ID:-}"
+[[ -n "$FS_ID" ]] || lookup_fs_by_name
+check_fs
+if [[ -n "$fs_id_gone" ]]; then
+  # The id recorded in .env is gone, but that does not mean the sample has no file system:
+  # the previous clean up deleted that one, and a setup that stopped before it recorded the
+  # new id left the old one in .env. Look again by name, and check whatever that finds.
+  if [[ -n "${S3_FILES_FS_ID:-}" ]]; then
+    lookup_fs_by_name
+    check_fs
   fi
 fi
 if [[ -n "$fs_ours" ]]; then
