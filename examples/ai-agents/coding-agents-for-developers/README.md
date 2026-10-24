@@ -101,7 +101,7 @@ cp .env.example .env     # set CLUSTER_NAME and AWS_REGION
 kubectl -n coding-agents-for-developers port-forward svc/agent-app 8080:8080
 ```
 
-Then open <http://127.0.0.1:8080>. Pick a CLI under **Start an agent** to open a terminal;
+Then open `http://127.0.0.1:8080`. Pick a CLI under **Start an agent** to open a terminal;
 your sessions are listed below, each with **Open** (while running) or **Restore** (once
 idle) and **Delete**.
 
