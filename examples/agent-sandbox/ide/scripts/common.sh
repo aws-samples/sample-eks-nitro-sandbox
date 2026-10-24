@@ -42,11 +42,10 @@ if [[ -f "$SAMPLE_DIR/.env" ]]; then
     case "$_k" in
       NAMESPACE)      NAMESPACE="${NAMESPACE:-$_v}" ;;
       STORAGE_CLASS)  STORAGE_CLASS="${STORAGE_CLASS:-$_v}" ;;
-      AWS_REGION)     AWS_REGION="${AWS_REGION:-$_v}" ;;
       KUBE_CONTEXT)   KUBE_CONTEXT="${KUBE_CONTEXT:-$_v}" ;;
       LOCAL_DIR)      LOCAL_DIR="${LOCAL_DIR:-$_v}" ;;
     esac
-  done < <(grep -E '^[[:space:]]*(NAMESPACE|STORAGE_CLASS|AWS_REGION|KUBE_CONTEXT|LOCAL_DIR)[[:space:]]*=' "$SAMPLE_DIR/.env" \
+  done < <(grep -E '^[[:space:]]*(NAMESPACE|STORAGE_CLASS|KUBE_CONTEXT|LOCAL_DIR)[[:space:]]*=' "$SAMPLE_DIR/.env" \
              | sed -E 's/^[[:space:]]*//; s/[[:space:]]*=[[:space:]]*/=/')
 fi
 
@@ -54,12 +53,15 @@ NAMESPACE="${NAMESPACE:-ide}"
 # STORAGE_CLASS, when set, names a specific class for the workspace claim and
 # overrides the choice; setup then only checks that class's provisioner. When it
 # is unset (the default), setup CHOOSES the class: the cluster's default class if
-# exactly one fits (EBS CSI, gp3, encrypted), otherwise the sample's own class.
+# exactly one fits (EBS CSI, gp3, encrypted, reclaimed on delete), otherwise the
+# sample's own class.
 STORAGE_CLASS="${STORAGE_CLASS:-}"
 CHOSEN_STORAGE_CLASS=""
 SAMPLE_STORAGE_CLASS="ide-gp3"
 EBS_PROVISIONER="ebs.csi.eks.amazonaws.com"
-AWS_REGION="${AWS_REGION:-us-west-2}"
+# The reclaim policy the sample needs: the clean up deletes the PV and waits for
+# it to be gone, which only releases the EBS volume when the class reclaims it.
+EBS_RECLAIM_POLICY="Delete"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 
 # Where the password and its hash live on the operator's own machine. The
@@ -186,18 +188,32 @@ sc_field() {
 }
 
 # sc_fits <class> : does this class fit the sample? EBS CSI provisioner, type gp3
-# (or unset, which is gp3), and encrypted "true".
+# (or unset, which is gp3), encrypted "true", and reclaimPolicy Delete so the
+# clean up's PV delete really releases the EBS volume. A class with Retain would
+# leave a volume billing after a clean up that reported success.
 #   0 it fits   1 it does not   2 a read failed
 sc_fits() {
-  local class=$1 prov type enc rc=0
+  local class=$1 prov type enc reclaim rc=0
   prov="$(sc_field "$class" '{.provisioner}')" || rc=$?
   type="$(sc_field "$class" '{.parameters.type}')" || rc=$?
   enc="$(sc_field "$class" '{.parameters.encrypted}')" || rc=$?
+  reclaim="$(sc_field "$class" '{.reclaimPolicy}')" || rc=$?
   [[ $rc -ne 0 ]] && return 2
   [[ "$prov" == "$EBS_PROVISIONER" ]] || return 1
   [[ -z "$type" || "$type" == "gp3" ]] || return 1
   [[ "$enc" == "true" ]] || return 1
+  [[ "$reclaim" == "$EBS_RECLAIM_POLICY" ]] || return 1
   return 0
+}
+
+# sc_reclaims_on_delete <class> : the one check the clean up depends on, applied
+# to a class the reader named in STORAGE_CLASS as well as to a default class.
+#   0 it reclaims on delete   1 it does not   2 a read failed
+sc_reclaims_on_delete() {
+  local class=$1 reclaim rc=0
+  reclaim="$(sc_field "$class" '{.reclaimPolicy}')" || rc=$?
+  [[ $rc -ne 0 ]] && return 2
+  [[ "$reclaim" == "$EBS_RECLAIM_POLICY" ]]
 }
 
 # choose_storage_class : decide which StorageClass the workspace claim names, and
@@ -205,7 +221,8 @@ sc_fits() {
 # StorageClass is chosen, never changed: this never patches a class and never
 # `kubectl apply`s one.
 #
-#   STORAGE_CLASS set   -> use it, after checking its provisioner is EBS CSI.
+#   STORAGE_CLASS set   -> use it, after checking its provisioner is EBS CSI and
+#                          that it reclaims its volumes on delete.
 #   STORAGE_CLASS unset -> use the one default class that fits, if exactly one
 #                          does; otherwise the sample's own class.
 choose_storage_class() {
@@ -221,8 +238,14 @@ choose_storage_class() {
     [[ $rc -ne 0 ]] && die "could not read storageclass/$STORAGE_CLASS; stopping rather than guess (a failed read is not 'absent')"
     [[ -z "$prov" ]] && die "storageclass/$STORAGE_CLASS (from STORAGE_CLASS) not found. Set STORAGE_CLASS to a class that uses $EBS_PROVISIONER, or unset it to let setup choose."
     [[ "$prov" != "$EBS_PROVISIONER" ]] && die "storageclass/$STORAGE_CLASS (from STORAGE_CLASS) uses provisioner '$prov', not '$EBS_PROVISIONER'; its volumes are not EBS CSI volumes."
+    # The clean up deletes the PV and waits for it to be gone, and calls that
+    # "the EBS volume is deleted". That is only true for a class that reclaims
+    # its volumes on delete, so refuse a class where it would not be.
+    local rrc=0; sc_reclaims_on_delete "$STORAGE_CLASS" || rrc=$?
+    [[ $rrc -eq 2 ]] && die "could not read the reclaimPolicy of storageclass/$STORAGE_CLASS; stopping rather than guess"
+    [[ $rrc -eq 1 ]] && die "storageclass/$STORAGE_CLASS (from STORAGE_CLASS) does not have reclaimPolicy $EBS_RECLAIM_POLICY, so deleting the claim would leave its EBS volume behind and the clean up could not report it gone. Set STORAGE_CLASS to a class with reclaimPolicy $EBS_RECLAIM_POLICY, or unset it to let setup choose."
     CHOSEN_STORAGE_CLASS="$STORAGE_CLASS"
-    echo "using storageclass $CHOSEN_STORAGE_CLASS (from STORAGE_CLASS), provisioner $prov"
+    echo "using storageclass $CHOSEN_STORAGE_CLASS (from STORAGE_CLASS), provisioner $prov, reclaimPolicy $EBS_RECLAIM_POLICY"
     return 0
   fi
 
@@ -243,14 +266,14 @@ choose_storage_class() {
 
   if [[ ${#fitting[@]} -eq 1 ]]; then
     CHOSEN_STORAGE_CLASS="${fitting[0]}"
-    echo "using the cluster default storageclass ${CHOSEN_STORAGE_CLASS} (it fits: $EBS_PROVISIONER, gp3, encrypted); creating no class"
+    echo "using the cluster default storageclass ${CHOSEN_STORAGE_CLASS} (it fits: $EBS_PROVISIONER, gp3, encrypted, reclaimPolicy $EBS_RECLAIM_POLICY); creating no class"
     return 0
   fi
 
   if [[ ${#fitting[@]} -gt 1 ]]; then
     echo "note: ${#fitting[@]} default StorageClasses fit; not guessing which. Using the sample's own class ${SAMPLE_STORAGE_CLASS}."
   else
-    echo "note: no default StorageClass fits ($EBS_PROVISIONER, gp3, encrypted). Using the sample's own class ${SAMPLE_STORAGE_CLASS}."
+    echo "note: no default StorageClass fits ($EBS_PROVISIONER, gp3, encrypted, reclaimPolicy $EBS_RECLAIM_POLICY). Using the sample's own class ${SAMPLE_STORAGE_CLASS}."
   fi
   ensure_sample_storage_class
   CHOSEN_STORAGE_CLASS="$SAMPLE_STORAGE_CLASS"
@@ -258,7 +281,8 @@ choose_storage_class() {
 
 # ensure_sample_storage_class : make SAMPLE_STORAGE_CLASS available. Create it from
 # the manifest with `kubectl create` only when absent; reuse an existing one only
-# when it carries the sample's mark AND the right provisioner; stop otherwise.
+# when it carries the sample's mark AND the right provisioner AND reclaims its
+# volumes on delete; stop otherwise.
 ensure_sample_storage_class() {
   local prov rc=0
   prov="$(sc_field "$SAMPLE_STORAGE_CLASS" '{.provisioner}')" || rc=$?
@@ -274,7 +298,10 @@ ensure_sample_storage_class() {
   [[ $mrc -ne 0 ]] && die "could not read the labels on storageclass/$SAMPLE_STORAGE_CLASS; stopping rather than guess"
   [[ "$mark" != "$SAMPLE" ]] && die "storageclass/$SAMPLE_STORAGE_CLASS already exists without the sample's mark ($NS_LABEL_KEY=$SAMPLE); it belongs to something else. Remove it or set STORAGE_CLASS to a class that uses $EBS_PROVISIONER."
   [[ "$prov" != "$EBS_PROVISIONER" ]] && die "storageclass/$SAMPLE_STORAGE_CLASS exists with provisioner '$prov', not '$EBS_PROVISIONER'; not reusing it."
-  echo "reusing storageclass/$SAMPLE_STORAGE_CLASS (carries the sample's mark, provisioner $prov)"
+  local rrc=0; sc_reclaims_on_delete "$SAMPLE_STORAGE_CLASS" || rrc=$?
+  [[ $rrc -eq 2 ]] && die "could not read the reclaimPolicy of storageclass/$SAMPLE_STORAGE_CLASS; stopping rather than guess"
+  [[ $rrc -eq 1 ]] && die "storageclass/$SAMPLE_STORAGE_CLASS exists without reclaimPolicy $EBS_RECLAIM_POLICY, so the clean up could not report its EBS volume gone; not reusing it. Remove it, or set STORAGE_CLASS to a class with reclaimPolicy $EBS_RECLAIM_POLICY."
+  echo "reusing storageclass/$SAMPLE_STORAGE_CLASS (carries the sample's mark, provisioner $prov, reclaimPolicy $EBS_RECLAIM_POLICY)"
 }
 
 # require_hash_file : the editor's password hash must already exist on this

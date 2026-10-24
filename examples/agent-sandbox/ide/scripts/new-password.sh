@@ -21,8 +21,14 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 
 # npx comes with Node.js and runs code-server's own documented hasher, argon2-cli.
 require_commands npx
-mkdir -p "$LOCAL_DIR"
-chmod 700 "$LOCAL_DIR"
+# Create the directory with mode 700 only when it is absent, so pointing
+# LOCAL_DIR at a directory you already have (your home directory, say) never
+# changes that directory's mode. Every file written below is created under
+# umask 077 and is mode 600 regardless of the directory.
+if [[ ! -d "$LOCAL_DIR" ]]; then
+  mkdir -p "$(dirname "$LOCAL_DIR")"
+  mkdir -m 700 "$LOCAL_DIR"
+fi
 
 from_stdin=0
 case "${1:-}" in
@@ -31,7 +37,9 @@ case "${1:-}" in
   *)         die "unknown argument: $1 (use --stdin to read a password from standard input, or no argument to generate one)" ;;
 esac
 
-if [[ -f "$PASSWORD_FILE" && $from_stdin -eq 0 ]]; then
+# -s, not -f: an empty password file is as useless as a missing one, and reusing
+# one would hash the empty string and produce a hash that looks perfectly valid.
+if [[ -s "$PASSWORD_FILE" && $from_stdin -eq 0 ]]; then
   echo "reusing the password already in $(rel "$PASSWORD_FILE") (delete it to generate a new one)"
 else
   # Create the file with mode 600 BEFORE anything is written to it, so the
@@ -42,7 +50,10 @@ else
     # Read standard input, drop any trailing newline the shell or the terminal
     # added: code-server compares the password byte for byte.
     tr -d '\r\n' > "$PASSWORD_FILE"
-    [[ -s "$PASSWORD_FILE" ]] || die "nothing arrived on standard input; no password written"
+    # Remove the empty file before stopping, so nothing is left for a later run
+    # to find and reuse.
+    [[ -s "$PASSWORD_FILE" ]] \
+      || { rm -f "$PASSWORD_FILE"; die "nothing arrived on standard input; no password written"; }
     echo "wrote the password you supplied to $(rel "$PASSWORD_FILE")"
   else
     require_commands openssl tr
@@ -56,9 +67,13 @@ fi
 # argon2 hash, exactly as the code-server FAQ shows. tr strips the trailing
 # newline: the Secret must hold the hash and nothing else, or code-server cannot
 # parse it.
+#
+# The version is pinned, like every other version this sample uses: this is the
+# one program that sees the plaintext, so which code runs is not something to
+# leave to whatever npm publishes next. The page states the same pin.
 umask 077
-npx --yes argon2-cli -e < "$PASSWORD_FILE" | tr -d '\r\n' > "$HASH_FILE" \
-  || die "could not hash the password with 'npx argon2-cli -e'"
+npx --yes argon2-cli@0.25.1 -e < "$PASSWORD_FILE" | tr -d '\r\n' > "$HASH_FILE" \
+  || die "could not hash the password with 'npx argon2-cli@0.25.1 -e'"
 grep -q '^[$]argon2' "$HASH_FILE" \
   || die "the hasher did not produce an argon2 hash; $(rel "$HASH_FILE") holds something else"
 chmod 600 "$HASH_FILE"

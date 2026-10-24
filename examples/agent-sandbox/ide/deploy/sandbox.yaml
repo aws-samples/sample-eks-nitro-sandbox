@@ -6,8 +6,10 @@
 #
 # Nothing publishes that port outside the cluster: there is no Ingress, no
 # LoadBalancer and no NodePort anywhere in this sample. service: true asks the
-# controller for a headless ClusterIP Service, and the only way in is
-# `kubectl port-forward` from the operator's own machine.
+# controller for a headless ClusterIP Service, and the way in is
+# `kubectl port-forward` from the operator's own machine. The egress policy
+# refuses every connection from the pod network; see its header for the one
+# thing a network policy cannot deny, the pod's own node.
 #
 # The editor's password is an argon2 hash the operator generated on their own
 # machine, held in the Kubernetes Secret named below. The pod spec carries only a
@@ -69,9 +71,13 @@ spec:
           # editor runs with is exactly this and nothing is passed twice.
           command: ["/usr/bin/entrypoint.sh"]
           args:
-            # Listen on the pod's port inside the guest. Nothing publishes it
-            # outside the cluster, and the egress policy denies all ingress to
-            # this pod, so kubectl port-forward is the only path in.
+            # Listen on the pod's own interface inside the guest, not only on the
+            # guest's loopback: a kubectl port-forward stream reaches the editor
+            # from the pod's own node, which code-server logs as a connection
+            # from the node's address, so the socket has to accept the pod's
+            # address too. Nothing publishes the port outside the cluster, and
+            # the egress policy denies all ingress from the pod network, so the
+            # port-forward tunnel is the way in.
             - --bind-addr=0.0.0.0:8080
             # Keep the editor off the network it does not need: no telemetry and
             # no update check, so the egress policy has fewer hosts to allow.

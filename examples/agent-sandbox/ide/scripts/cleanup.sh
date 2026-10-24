@@ -102,9 +102,10 @@ if [[ $ns_absent -eq 0 ]]; then
     2) note_fail "could not read pvc/$PVC; not reporting it gone" ;;
   esac
   if [[ -n "$pv" ]]; then
-    # The PV is cluster-scoped. Deleting it reclaims the EBS volume (the classes
-    # this sample uses have reclaimPolicy Delete). Wait until it is gone, so a
-    # still-billing volume is never reported as cleaned up.
+    # The PV is cluster-scoped. Deleting it reclaims the EBS volume, because
+    # setup only ever uses a class with reclaimPolicy Delete and refuses any
+    # other (choose_storage_class). Wait until it is gone, so a still-billing
+    # volume is never reported as cleaned up.
     pv_rc=0; resource_exists kc_cluster "pv/$pv" || pv_rc=$?
     case $pv_rc in
       0) if kc_cluster wait --for=delete "pv/$pv" --timeout=180s; then
@@ -150,8 +151,23 @@ step "6/6 delete the sample's own StorageClass, if the sample made it"
 # Delete ide-gp3 only when it exists AND carries the sample's mark. Never touch the
 # cluster default (setup used it without creating anything), and never touch a
 # class with this name that something else owns.
-sc_prov="$(sc_field "$SAMPLE_STORAGE_CLASS" '{.provisioner}')" ; sc_rc=$?
-if [[ $sc_rc -ne 0 ]]; then
+#
+# Skipped while anything above is unconfirmed, for the same reason the namespace
+# is: a claim of the sample's may still be bound to this class, and deleting a
+# class a pending claim names would leave that claim stuck.
+sc_prov=""
+if [[ $failures -ne 0 ]]; then
+  echo "  SKIPPED: not deleting storageclass/$SAMPLE_STORAGE_CLASS while $failures item(s) above are unconfirmed; resolve them and re-run." >&2
+  sc_rc=0
+  sc_prov=""
+  skip_sc=1
+else
+  skip_sc=0
+  sc_prov="$(sc_field "$SAMPLE_STORAGE_CLASS" '{.provisioner}')" ; sc_rc=$?
+fi
+if [[ $skip_sc -eq 1 ]]; then
+  :
+elif [[ $sc_rc -ne 0 ]]; then
   note_fail "could not read storageclass/$SAMPLE_STORAGE_CLASS; not reporting it gone"
 elif [[ -z "$sc_prov" ]]; then
   echo "  storageclass/$SAMPLE_STORAGE_CLASS not present (setup used the cluster default, or it was already removed)"

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Read the three sandbox signals from the editor's pod, and the same three from an
+# Read the four sandbox signals from the editor's pod, and the same four from an
 # ordinary pod on the same node, side by side.
 #
 #   ./scripts/compare.sh
 #
 # Creates one ordinary (non-sandboxed) pod on the node the editor is on, reads
-# `uname -rv`, `cat /proc/uptime` and `ls /sys/block` in each, then deletes that
-# pod by its exact name. It touches nothing else.
+# `uname -rv`, `cat /proc/uptime`, `ls /sys/block` and
+# `cat /sys/class/dmi/id/product_name` in each, then deletes that pod by its exact
+# name. It touches nothing else.
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "$HERE/common.sh"
@@ -23,8 +24,13 @@ node="$(kc get pod "$SANDBOX" -o jsonpath='{.spec.nodeName}' 2>/dev/null)" \
 [[ -n "$node" ]] || die "the editor's pod has no node yet; wait for it to be scheduled"
 
 cleanup_ordinary() {
-  # By exact name, never a label selector.
-  kc delete pod "$ORDINARY_POD" --ignore-not-found --wait=true --timeout=120s >/dev/null 2>&1 || true
+  # By exact name, never a label selector: a selector meant for one helper pod
+  # can match another demo's pod on a shared cluster. A delete that fails is
+  # reported, not hidden, because the pod would otherwise sit on the node until
+  # its own 600-second sleep ends.
+  if ! kc delete pod "$ORDINARY_POD" --ignore-not-found --wait=true --timeout=120s; then
+    echo "warning: could not delete pod/$ORDINARY_POD; remove it with 'kubectl -n $NAMESPACE delete pod $ORDINARY_POD'" >&2
+  fi
 }
 trap cleanup_ordinary EXIT
 
@@ -49,4 +55,4 @@ step "where the workspace comes from, inside the guest"
 kc exec "$SANDBOX" -- sh -c "df -h $WORKSPACE /; awk '\$2==\"$WORKSPACE\"{print \$1, \$3}' /proc/mounts" 2>&1 | sed 's/^/  /'
 
 echo
-echo "deleting pod/$ORDINARY_POD (by name)"
+echo "done; deleting pod/$ORDINARY_POD by name"

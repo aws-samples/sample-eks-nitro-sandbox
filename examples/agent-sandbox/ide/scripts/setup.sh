@@ -66,18 +66,41 @@ case $ns_rc in
   1) die "namespace $NAMESPACE exists but is not labelled $NS_LABEL_KEY=$NS_LABEL_VAL; it belongs to something else. Set NAMESPACE to a free name in .env and re-run." ;;
   2) die "could not read the labels on namespace $NAMESPACE; stopping rather than guess" ;;
   3) kc_cluster create namespace "$NAMESPACE"
-     kc_cluster label namespace "$NAMESPACE" "$NS_LABEL_KEY=$NS_LABEL_VAL"
+     # The label is the mark everything else depends on: without it, this script
+     # and the clean up both refuse the namespace, so say exactly that rather
+     # than exiting on set -e with no explanation.
+     kc_cluster label namespace "$NAMESPACE" "$NS_LABEL_KEY=$NS_LABEL_VAL" \
+       || die "created namespace $NAMESPACE but could not label it $NS_LABEL_KEY=$NS_LABEL_VAL. Nothing else was created. Label it yourself with
+         kubectl label namespace $NAMESPACE $NS_LABEL_KEY=$NS_LABEL_VAL
+       and re-run, or delete the namespace: without the label the scripts will not touch it."
      echo "created namespace $NAMESPACE, labelled $NS_LABEL_KEY=$NS_LABEL_VAL" ;;
 esac
 
 step "2/5 secret/$SECRET from $(rel "$HASH_FILE")"
 # The hash is read from the FILE, so neither the password nor its hash is ever on
 # a command line. Created only when absent: the namespace is the sample's, so an
-# existing Secret here is this sample's, and reusing it keeps the password that
-# matches it. Delete the Secret (or run the clean up) to change the password.
+# existing Secret here is this sample's, and applying over it is not needed.
+#
+# An existing Secret is kept, but only after checking it holds the hash this
+# machine has. Otherwise a reader who ran ./scripts/new-password.sh again would
+# be told to type a password the running editor does not accept, and nothing
+# would say why.
 sec_rc=0; resource_exists kc "secret/$SECRET" || sec_rc=$?
 case $sec_rc in
-  0) echo "  secret/$SECRET already exists; keeping it (delete it to set a new password)" ;;
+  0) live_hash_rc=0
+     live_hash="$(kc get secret "$SECRET" -o jsonpath='{.data.hashed-password}' 2>/dev/null)" || live_hash_rc=$?
+     [[ $live_hash_rc -ne 0 ]] && die "could not read secret/$SECRET; stopping rather than guess"
+     # Compare base64 to base64, so the hash itself is never built into an
+     # argument or printed.
+     want_hash="$(base64 -w0 < "$HASH_FILE" 2>/dev/null || base64 < "$HASH_FILE" | tr -d '\n')"
+     if [[ "$live_hash" != "$want_hash" ]]; then
+       die "secret/$SECRET already exists and holds a different hash from $(rel "$HASH_FILE").
+       The editor would keep accepting the older password, not the one in $(rel "$PASSWORD_FILE").
+       Delete the Secret to set the new password, keeping the workspace:
+         kubectl -n $NAMESPACE delete secret $SECRET && ./scripts/setup.sh
+       The pod picks the new value up when it restarts (kubectl -n $NAMESPACE delete pod $SANDBOX)."
+     fi
+     echo "  secret/$SECRET already exists and holds the hash in $(rel "$HASH_FILE"); keeping it" ;;
   1) kc create secret generic "$SECRET" --from-file="hashed-password=$HASH_FILE" \
        || die "could not create secret/$SECRET"
      echo "  created secret/$SECRET from the hash file; the plaintext stayed on this machine" ;;
@@ -88,8 +111,8 @@ step "3/5 egress policy $POLICY (all ingress denied)"
 sed -e "s/__NAMESPACE__/$NAMESPACE/g" -e "s|<COREDNS_IP>|$coredns_ip|g" \
   "$SAMPLE_DIR/deploy/egress-policy.yaml" | kc apply -f -
 # The PolicyEndpoint shows the controller picked the policy up and handed it to
-# the nodes. Start the editor only after it appears, so the first thing it can do
-# is already under the policy.
+# the nodes. Wait for it before creating the editor, so the policy is on the
+# nodes before the pod that it governs exists.
 echo "  waiting for the PolicyEndpoint named after $POLICY"
 for _ in $(seq 1 60); do
   if kc get policyendpoints -o name 2>/dev/null | grep -q "^policyendpoint.networking.k8s.aws/${POLICY}-"; then
@@ -107,8 +130,13 @@ step "4/5 apply sandbox/$SANDBOX"
 # mismatch and say what it costs, rather than letting the apply fail with a CEL
 # message that does not mention the workspace.
 want_access=ReadWriteOncePod
-live_access="$(kc get sandbox "$SANDBOX" \
-  -o jsonpath='{.spec.volumeClaimTemplates[0].spec.accessModes[0]}' 2>/dev/null || true)"
+# --ignore-not-found, not `|| true`: an absent Sandbox is an empty result with
+# status 0, so a read that actually failed is still a failure and stops the run
+# rather than looking like "there is no Sandbox".
+access_rc=0
+live_access="$(kc get sandbox "$SANDBOX" --ignore-not-found \
+  -o jsonpath='{.spec.volumeClaimTemplates[0].spec.accessModes[0]}' 2>/dev/null)" || access_rc=$?
+[[ $access_rc -ne 0 ]] && die "could not read sandbox/$SANDBOX; stopping rather than guess whether it exists"
 if [[ -n "$live_access" && "$live_access" != "$want_access" ]]; then
   die "sandbox/$SANDBOX already exists with accessModes: [$live_access], and this manifest asks for $want_access.
        volumeClaimTemplates is immutable on the Sandbox CRD, so the Sandbox has to be recreated:

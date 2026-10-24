@@ -5,6 +5,11 @@
 # scripts/compare.sh renders __NAMESPACE__ and __NODE_NAME__ (the node the editor's
 # pod is on) and applies it, then deletes this pod by its exact name. It mounts no
 # volume and needs no network.
+#
+# It deliberately does NOT carry the app: ide label, so the sample's egress policy
+# does not select it. The policy is for the sandbox, which is what this repository
+# requires a policy for; this pod is the control, it only sleeps, it opens no
+# connection, and compare.sh deletes it as soon as it has read the four signals.
 apiVersion: v1
 kind: Pod
 metadata:

@@ -1,10 +1,13 @@
-# The editor's network: nothing in, DNS and two hosts out.
+# The editor's network: nothing in from the pod network, DNS and three names out.
 #
 # An EKS Auto Mode ApplicationNetworkPolicy is a NetworkPolicy that also accepts
 # hostnames (domainNames) in an egress rule. For the editor's pod it allows:
-#   - no ingress at all, because nothing in the cluster needs to reach the editor:
-#     the operator reaches it with kubectl port-forward, which goes through the
-#     guest's control channel rather than the pod network;
+#   - no ingress at all, because no pod on the cluster needs to reach the editor.
+#     kubectl port-forward still works: the stream arrives from the pod's own
+#     node, and Kubernetes always allows traffic between a pod and its node, so
+#     an ingress rule can neither deny that nor is needed to permit it. The
+#     consequence is that anything sending from the node's own address, such as
+#     a hostNetwork pod on that node, can still reach the editor's port;
 #   - egress to CoreDNS for name lookups, and HTTPS to the extension registry and
 #     the git host a developer actually uses from the workbench.
 # Every other address is refused, so code the developer runs in the editor cannot

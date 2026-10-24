@@ -48,11 +48,14 @@ this folder, all ingress to the pod is denied by network policy, and you reach i
   password nor the hash is on a command line. A wrong password is refused and the right one
   opens the workbench.
 - **Reachable from your own machine only.** `kubectl port-forward` listens on `127.0.0.1`
-  on the machine you run it from. Another pod on the cluster cannot reach the editor at all.
+  on the machine you run it from, and no pod on the pod network can reach the editor: the
+  policy refuses every connection to it. The port-forward stream itself arrives from the
+  pod's own node, which Kubernetes always allows, and the page shows that in the editor's
+  own log.
 
-*Figure 1: VS Code in the browser, in a sandbox. The only way in is a `kubectl port-forward` tunnel from the operator's own machine; the editor's password reaches the pod as an argon2 hash in a Kubernetes Secret, and its project folder is an Amazon EBS volume owned by the `Sandbox` rather than the pod.*
+*Figure 1: VS Code in the browser, in a sandbox. The way in is a `kubectl port-forward` tunnel from the operator's own machine, and nothing publishes the editor's port; the editor's password reaches the pod as an argon2 hash in a Kubernetes Secret, and its project folder is an Amazon EBS volume owned by the `Sandbox` rather than the pod.*
 
-![On the left, outside AWS, a frame for the operator's own machine holds a browser at http://localhost:8080 connected over HTTP to a kubectl port-forward that listens on 127.0.0.1 only, and below it a plaintext password that stays on this machine with no connection into the cluster. An arrow labelled "only path in" leaves the tunnel and enters an AWS Cloud frame holding an Amazon EKS cluster frame, reaching the Kubernetes API server of the EKS control plane, and a second arrow labelled "port-forward stream" carries on to a namespace called ide. Inside that namespace a dashed group labelled Sandbox ide, which owns the pod and the workspace claim so the volume outlives the pod, holds a red Nitro sandbox pod frame marked runtimeClassName isolated-sandbox with code-server running as non-root uid 1000 on port 8080 in the guest. Below the pod an Amazon EBS workspace, the claim workspace-ide of 10Gi with access mode ReadWriteOncePod, connects up into the pod labelled "virtio disk /dev/vdd at /home/coder/project". To the right of the pod a headless Service ide with clusterIP None is labelled "selects", and below it a Secret ide-password holding the argon2 hash only feeds the pod through an arrow labelled "env HASHED_PASSWORD". At the bottom left, outside AWS, an Internet icon marked "no public endpoint" has a red dashed arrow to the cluster frame labelled "no Ingress, no LoadBalancer, no NodePort".](images/figure-1-ide.png)
+![On the left, outside AWS, a frame for the operator's own machine holds a browser at http://localhost:8080 connected over HTTP to a kubectl port-forward that listens on 127.0.0.1 only, and below it a plaintext password that stays on this machine with no connection into the cluster. An arrow labelled "the way in" leaves the tunnel and enters an AWS Cloud frame holding an Amazon EKS cluster frame, reaching the Kubernetes API server of the EKS control plane, and a second arrow labelled "port-forward stream" carries on to a namespace called ide. Inside that namespace a dashed group labelled Sandbox ide, which owns the pod and the workspace claim so the volume outlives the pod, holds a red Nitro sandbox pod frame marked runtimeClassName isolated-sandbox with code-server running as non-root uid 1000 on port 8080 in the guest. Below the pod an Amazon EBS workspace, the claim workspace-ide of 10Gi with access mode ReadWriteOncePod, connects up into the pod labelled "virtio disk /dev/vdd at /home/coder/project". To the right of the pod a headless Service ide with clusterIP None is labelled "selects", and below it a Secret ide-password holding the argon2 hash only feeds the pod through an arrow labelled "env HASHED_PASSWORD". At the bottom left, outside AWS, an Internet icon marked "no public endpoint" has a red dashed arrow to the cluster frame labelled "no Ingress, no LoadBalancer, no NodePort".](images/figure-1-ide.png)
 
 ## Quick start
 
@@ -157,18 +160,17 @@ of your own instead.
 
 ```text
 generated a random password in tmp/ide/password
-npm warn deprecated argon2-cli@0.25.1: Please use the argon2 CLI provided by your distro, or use argon2 directly through node instead.
 
 hash (this is what the Kubernetes Secret will hold):
-  $argon2i$v=19$m=4096,t=3,p=1$6DTkDYGFxYPFt3dgXA+keQ$/bfe9lMj2rn53KwPJb9aWF71wkIAFnPJd0o2hZg3fnM
+  $argon2i$v=19$m=4096,t=3,p=1$LWu1x6Zf+KuwFtCSI4To9g$iMh5Jdkg3Fl91GyRdbG9OSfLHRoyCVMQgOwm/E8jS5s
 
 Read the password when you need to type it:   cat tmp/ide/password
 Next:                                         ./scripts/setup.sh
 ```
 
-Abridged: `npx` prints one deprecation warning per package it fetches, and all but one are
-left out here. The hash is what the cluster holds; the password itself stays in
-`tmp/ide/password`, which is the only place it exists.
+The hash is what the cluster holds; the password itself stays in `tmp/ide/password`, which is
+the only place it exists. The first run on a machine also prints npm's own deprecation
+warnings while it fetches `argon2-cli`; this run had it cached, so there are none.
 
 **Step 5: Create the Secret, the policy and the Sandbox.**
 [`scripts/setup.sh`](scripts/setup.sh) creates the Secret from the hash file, applies the
@@ -262,7 +264,7 @@ spec:
 context: sandbox-demo (pinned)   namespace: ide
 network policy enforcement is on (amazon-vpc-cni enable-network-policy-controller=true)
 CoreDNS at 10.100.0.10 (the egress policy allows DNS to it)
-using the cluster default storageclass auto-ebs-sc (it fits: ebs.csi.eks.amazonaws.com, gp3, encrypted); creating no class
+using the cluster default storageclass auto-ebs-sc (it fits: ebs.csi.eks.amazonaws.com, gp3, encrypted, reclaimPolicy Delete); creating no class
 
 == 1/5 namespace ide ==
 namespace/ide created
@@ -280,7 +282,7 @@ NAME                                                     AGE
 applicationnetworkpolicy.networking.k8s.aws/ide-egress   2s
 
 NAME                                                 AGE
-policyendpoint.networking.k8s.aws/ide-egress-9kglm   2s
+policyendpoint.networking.k8s.aws/ide-egress-bwv4r   2s
 
 == 4/5 apply sandbox/ide ==
 sandbox.agents.x-k8s.io/ide created
@@ -288,9 +290,9 @@ sandbox.agents.x-k8s.io/ide created
 == 5/5 wait for the guest to boot, mount the workspace and serve the IDE ==
 sandbox.agents.x-k8s.io/ide condition met
 NAME            STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
-workspace-ide   Bound    pvc-ec5d0c13-7abe-4b4e-bf77-a35ddcc67b9d   10Gi       RWOP           auto-ebs-sc    <unset>                 12s
+workspace-ide   Bound    pvc-3bbc5401-aefc-401f-9581-42d77eda693f   10Gi       RWOP           auto-ebs-sc    <unset>                 16s
 NAME   TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)    AGE   SELECTOR
-ide    ClusterIP   None         <none>        8080/TCP   13s   agents.x-k8s.io/sandbox-name-hash=72cfaf5f
+ide    ClusterIP   None         <none>        8080/TCP   16s   agents.x-k8s.io/sandbox-name-hash=72cfaf5f
 
 sandbox/ide is Ready: code-server is serving on :8080 inside the guest,
 with its workspace on EBS at /home/coder/project.
@@ -307,7 +309,7 @@ already under the policy. The claim is `Bound` with access mode `RWOP`
 a headless Service: it gives the editor a name inside the cluster and publishes nothing
 outside it.
 
-The editor was Ready 12 seconds after the `Sandbox` was created on this run, because the
+The editor was Ready 16 seconds after the `Sandbox` was created on this run, because the
 cluster already had a sandbox-capable node. On a cold cluster the first sandboxed pod waits
 for Auto Mode to launch one.
 
@@ -335,7 +337,7 @@ Type:  Opaque
 Data
 ====
 hashed-password:  95 bytes
-$argon2i$v=19$m=4096,t=3,p=1$6DTkDYGFxYPFt3dgXA+keQ$/bfe9lMj2rn53KwPJb9aWF71wkIAFnPJd0o2hZg3fnM
+$argon2i$v=19$m=4096,t=3,p=1$LWu1x6Zf+KuwFtCSI4To9g$iMh5Jdkg3Fl91GyRdbG9OSfLHRoyCVMQgOwm/E8jS5s
 ```
 
 There is no Ingress and no NodePort, the one Service is a headless `ClusterIP`, and the
@@ -347,7 +349,7 @@ selects this pod; a `SandboxTemplate`, which does create one by default, would n
 The pod's own security settings, read from the live pod rather than the manifest:
 
 ```bash
-kubectl -n ide get pod ide -o jsonpath='runtimeClassName={.spec.runtimeClassName}{"\n"}runAsNonRoot={.spec.securityContext.runAsNonRoot}{"\n"}runAsUser={.spec.securityContext.runAsUser}{"\n"}runAsGroup={.spec.securityContext.runAsGroup}{"\n"}fsGroup={.spec.securityContext.fsGroup}{"\n"}seccompProfile={.spec.securityContext.seccompProfile.type}{"\n"}privileged={.spec.containers[*].securityContext.privileged}{"\n"}allowPrivilegeEscalation={.spec.containers[*].securityContext.allowPrivilegeEscalation}{"\n"}capabilitiesDropped={.spec.containers[*].securityContext.capabilities.drop[*]}{"\n"}automountServiceAccountToken={.spec.automountServiceAccountToken}{"\n"}'
+kubectl -n ide get pod ide -o jsonpath='runtimeClassName={.spec.runtimeClassName}{"\n"}runAsNonRoot={.spec.securityContext.runAsNonRoot}{"\n"}runAsUser={.spec.securityContext.runAsUser}{"\n"}runAsGroup={.spec.securityContext.runAsGroup}{"\n"}fsGroup={.spec.securityContext.fsGroup}{"\n"}seccompProfile={.spec.securityContext.seccompProfile.type}{"\n"}privileged={.spec.containers[*].securityContext.privileged}{"\n"}allowPrivilegeEscalation={.spec.containers[*].securityContext.allowPrivilegeEscalation}{"\n"}capabilitiesDropped={.spec.containers[*].securityContext.capabilities.drop[*]}{"\n"}automountServiceAccountToken={.spec.automountServiceAccountToken}{"\n"}node={.spec.nodeName}{"\n"}podIP={.status.podIP}{"\n"}'
 kubectl -n ide describe pod ide | grep -A1 'Environment:'
 ```
 
@@ -362,6 +364,8 @@ privileged=
 allowPrivilegeEscalation=false
 capabilitiesDropped=ALL
 automountServiceAccountToken=false
+node=i-0773cb5caaeee133f
+podIP=192.168.186.195
 
     Environment:
       HASHED_PASSWORD:  <set to the key 'hashed-password' in secret 'ide-password'>  Optional: false
@@ -369,7 +373,8 @@ automountServiceAccountToken=false
 
 `privileged=` is empty because nothing asked for it. The environment line is the whole
 point of reading it here: the pod spec carries a reference to the Secret's key, not the
-hash, and nothing in it carries the password.
+hash, and nothing in it carries the password. Keep the node and the pod address: the network
+policy section uses both.
 
 **Step 6: Prove the editor's pod ran in a sandbox.**
 [`scripts/compare.sh`](scripts/compare.sh) reads the signals from the editor's pod and from
@@ -382,7 +387,7 @@ an ordinary pod it creates on the same node, then deletes that pod by its exact 
 ```text
 context: sandbox-demo (pinned)   namespace: ide
 
-== an ordinary pod on the same node (i-05fe4dcf2fe5a5e1c) ==
+== an ordinary pod on the same node (i-0773cb5caaeee133f) ==
 pod/ide-ordinary created
 pod/ide-ordinary condition met
 
@@ -394,9 +399,9 @@ pod/ide-ordinary condition met
 
 == cat /proc/uptime ==
 --- sandboxed pod/ide ---
-  17.48 14.34
+  65.25 62.03
 --- ordinary pod/ide-ordinary ---
-  1535.79 5827.56
+  2437.17 9504.30
 
 == ls /sys/block ==
 --- sandboxed pod/ide ---
@@ -428,16 +433,17 @@ pod/ide-ordinary condition met
 
 == when each pod started, to compare with its uptime ==
 NAME           CREATED                RUNTIMECLASS
-ide            2026-10-24T20:40:31Z   isolated-sandbox
-ide-ordinary   2026-10-24T20:40:53Z   <none>
+ide            2026-10-24T21:21:41Z   isolated-sandbox
+ide-ordinary   2026-10-24T21:22:54Z   <none>
 
 == where the workspace comes from, inside the guest ==
   Filesystem      Size  Used Avail Use% Mounted on
   /dev/vdd        9.8G   24K  9.8G   1% /home/coder/project
-  overlay         9.9G  176M  9.8G   2% /
+  overlay         9.9G  175M  9.8G   2% /
   /dev/vdd ext4
 
-deleting pod/ide-ordinary (by name)
+done; deleting pod/ide-ordinary by name
+pod "ide-ordinary" deleted from ide namespace
 ```
 
 Four signals, each with what the ordinary pod on the same node shows instead:
@@ -445,9 +451,9 @@ Four signals, each with what the ordinary pod on the same node shows instead:
 - **Its own kernel.** The version string is the same, `6.18.51`, but the build is not: `#1`
   built on 1 October in the guest against `#2` built on 7 October on the node. `uname -r`
   alone is not evidence; the build is.
-- **Its own boot.** The editor's pod reports 17 seconds of uptime, which matches its own age
-  (created at 20:40:31, read a few seconds later), because the VM booted with the pod. The
-  ordinary pod reports 1535 seconds, the node's uptime.
+- **Its own boot.** The editor's pod reports 65 seconds of uptime, which matches its own age
+  (created at 21:21:41, read about a minute later), because the VM booted with the pod. The
+  ordinary pod reports 2437 seconds, the node's uptime.
 - **Virtio disks.** The guest sees `vda` to `vdd` and nothing else. The ordinary pod sees
   the instance's `nvme*` devices, plus the node's `loop*` and `zram0`.
 - **The VM's own product name.** `m8i.enclave` in the guest, where the ordinary pod reads
@@ -482,6 +488,7 @@ Forwarding from 127.0.0.1:8080 -> 8080
 Handling connection for 8080
 ```
 
+Abridged: the tunnel keeps running and logs a line per connection until you press Ctrl-C.
 `Forwarding from 127.0.0.1:8080` is the claim about reach: the tunnel is offered on the
 loopback address of the machine running `kubectl`, and nowhere else.
 
@@ -532,13 +539,15 @@ kubectl -n ide logs ide | grep -i 'failed login'
 0
 [2026-10-24T20:40:42.503Z] info    - Authentication is enabled
 [2026-10-24T20:40:42.503Z] info      - Using password from $HASHED_PASSWORD
-Failed login attempt {"remoteAddress":"192.168.171.104","userAgent":"curl/8.21.0","timestamp":1792874494}
+Failed login attempt {"remoteAddress":"192.168.176.147","userAgent":"curl/8.21.0","timestamp":1792877016}
 ```
 
 The plaintext appears zero times in the pod spec and zero times in the log, and `grep -F -f`
 takes the pattern from the password file, so the search itself does not put it on a command
 line either. code-server says which source it used, `$HASHED_PASSWORD`. The refused attempt
-is logged with the caller's address and user agent, and no password.
+is logged with the caller's address and user agent, and no password. That address is worth a
+second look, and ["How the network policy works"](#how-the-network-policy-works) comes back
+to it: it is not the pod's address, it is the node's.
 
 **Step 8: The workspace is its own EBS volume, and it outlives the pod.** The claim comes
 from the `Sandbox`, not from the pod, so deleting the pod does not touch it. Write a file in
@@ -554,7 +563,7 @@ kubectl -n ide exec ide -- sh -c "tr '\0' ' ' < /proc/1/cmdline; echo"
 
 ```text
 uid=1000(coder) gid=1000(coder) groups=1000(coder),100(users)
-drwxrwsr-x. 3 root coder 4096 Oct 24 20:40 /home/coder/project
+drwxrwsr-x. 3 root coder 4096 Oct 24 21:21 /home/coder/project
 dumb-init /usr/bin/code-server --bind-addr=0.0.0.0:8080 --disable-telemetry --disable-update-check /home/coder/project
 ```
 
@@ -578,15 +587,15 @@ kubectl -n ide wait --for=condition=Ready sandbox/ide --timeout=15m
 ```
 
 ```text
--rw-r--r-- 1 coder coder 27 Oct 24 20:41 /home/coder/project/notes.md
-podUID=2e09c94e-f9ef-4a9c-8530-fda60891b5a9
-started=2026-10-24T20:40:34Z
+-rw-r--r-- 1 coder coder 27 Oct 24 21:23 /home/coder/project/notes.md
+podUID=ac990642-db94-451e-9ad3-ab026af53493
+started=2026-10-24T21:21:44Z
 phase=Bound
-pv=pvc-ec5d0c13-7abe-4b4e-bf77-a35ddcc67b9d
+pv=pvc-3bbc5401-aefc-401f-9581-42d77eda693f
 csiDriver=ebs.csi.eks.amazonaws.com
-volumeHandle=vol-0916e02f74871021a
+volumeHandle=vol-094d6b8117e22f989
 reclaimPolicy=Delete
-ownerReferences=[{"apiVersion":"agents.x-k8s.io/v1beta1","blockOwnerDeletion":true,"controller":true,"kind":"Sandbox","name":"ide","uid":"40069f26-b6a3-4509-9e56-1fa382cdedb4"}]
+ownerReferences=[{"apiVersion":"agents.x-k8s.io/v1beta1","blockOwnerDeletion":true,"controller":true,"kind":"Sandbox","name":"ide","uid":"d14775e6-949c-42a9-ba24-243655da44b0"}]
 pod "ide" deleted from ide namespace
 sandbox.agents.x-k8s.io/ide condition met
 ```
@@ -606,27 +615,27 @@ kubectl -n ide exec ide -- sh -c 'df -h --output=source,target /home/coder/proje
 ```
 
 ```text
-podUID=f2b8e655-af82-4a46-9fc5-116fa295331e
-started=2026-10-24T20:41:47Z
+podUID=cc2c7cd1-16c2-4e02-b373-133e69da8da8
+started=2026-10-24T21:23:48Z
 phase=Bound
-pv=pvc-ec5d0c13-7abe-4b4e-bf77-a35ddcc67b9d
+pv=pvc-3bbc5401-aefc-401f-9581-42d77eda693f
 hello from the sandbox IDE
 total 20
-drwxrws---. 2 root  coder 16384 Oct 24 20:40 lost+found
--rw-rw-r--. 1 coder coder    27 Oct 24 20:41 notes.md
+drwxrws---. 2 root  coder 16384 Oct 24 21:21 lost+found
+-rw-rw-r--. 1 coder coder    27 Oct 24 21:23 notes.md
 Filesystem      Size  Used Avail Use% Mounted on
 /dev/vdd        9.8G   28K  9.8G   1% /home/coder/project
 overlay         9.9G  176M  9.8G   2% /
-6.63 3.77
+10.12 7.26
 Filesystem     Mounted on
 /dev/vdd       /home/coder/project
 overlay        /
 overlay        /
 ```
 
-The pod UID changed (`2e09c94e...` to `f2b8e655...`), so this is a new pod on a new guest,
-and its uptime is its own 6 seconds rather than the old pod's. The claim is still `Bound` to
-the same PV (`pvc-ec5d0c13...`), which is the same EBS volume (`vol-0916e02f...`), and
+The pod UID changed (`ac990642...` to `cc2c7cd1...`), so this is a new pod on a new guest,
+and its uptime is its own 10 seconds rather than the old pod's. The claim is still `Bound` to
+the same PV (`pvc-3bbc5401...`), which is the same EBS volume (`vol-094d6b81...`), and
 `notes.md` is still in it with the same size and timestamp.
 
 The last three lines are the limit of what persists. Only `/home/coder/project` is on the
@@ -685,7 +694,7 @@ spec:
 |---|---|
 | `podSelector`, `app: ide` | Selects the editor's pod, which carries that label from the `Sandbox`'s pod template. |
 | `policyTypes`, `Ingress` and `Egress` | Makes the pod default-deny in both directions: nothing is allowed except the rules below. |
-| no `ingress` rules | Nothing on the pod network may connect to the editor, not even another pod in the same namespace. |
+| no `ingress` rules | No pod on the pod network may connect to the editor, not even one in the same namespace. It does not, and cannot, deny the pod's own node: see "Where it is enforced". |
 | `egress`, to `<COREDNS_IP>/32` on UDP and TCP 53 | Lets the editor look up names with CoreDNS. Without it nothing resolves, so the allowed names below would be unreachable too. |
 | `egress`, to `domainNames: open-vsx.org` and `openvsx.eclipsecontent.org` on TCP 443 | The extension registry. The gallery answers a search on the first name and redirects the download of the extension to the second, so an install needs both. |
 | `egress`, to `domainNames: github.com` on TCP 443 | `git clone`, fetch and push over HTTPS from the editor's terminal. |
@@ -697,21 +706,44 @@ needed one would also need egress to `169.254.170.23` on TCP 80.
 
 *Figure 2: How the editor's network policy works. All ingress from the pod network is refused, while `kubectl port-forward` and the kubelet's readiness probe still reach the pod; egress is allowed to CoreDNS, the extension registry's two names and the git host, and refused everywhere else.*
 
-![In the middle, an Amazon EKS node frame is captioned "the network policy agent enforces the policy here, outside the guest" and contains a red Nitro sandbox pod frame marked runtimeClassName isolated-sandbox, holding code-server described as editor and terminal. From the left, a pod labelled "Any other pod, pod IP or Service name" has a red dashed arrow to the pod frame labelled "in: refused". Below it, an operator running kubectl port-forward connects "via the API server" to the kubelet on the node, which reaches the pod over the "guest control channel", and a second kubelet arrow into the pod is labelled "readiness probe: always allowed". An ApplicationNetworkPolicy icon named ide-egress, with sub lines "Ingress, Egress" and "eBPF, host-side interface", points up at the pod labelled "governs this pod". On the right, three green arrows leave the pod: "out: DNS 53 (UDP/TCP)" to CoreDNS at the kube-dns ClusterIP, "out: HTTPS 443" to an extension registry labelled open-vsx.org and openvsx.eclipsecontent.org, and "out: HTTPS 443" to github.com for git clone, fetch and push. A fourth, red dashed arrow leaves the pod downward and is labelled "refused", ending at an Internet icon labelled "Everything else", example.com and sts.us-west-2.amazonaws.com.](images/figure-2-ide-network-policy.png)
+![In the middle, an Amazon EKS node frame is captioned "the network policy agent enforces the policy here, outside the guest" and contains a red Nitro sandbox pod frame marked runtimeClassName isolated-sandbox, holding code-server described as editor and terminal. From the left, a pod labelled "Any other pod, pod IP or Service name" has a red dashed arrow to the pod frame labelled "in: refused". Below it, an operator running kubectl port-forward connects "via the API server" to the kubelet on the node, which reaches the pod over an arrow labelled "from the node: always allowed", and a second kubelet arrow into the pod is labelled "readiness probe: always allowed". An ApplicationNetworkPolicy icon named ide-egress, with sub lines "Ingress, Egress" and "eBPF, host-side interface", points up at the pod labelled "governs this pod". On the right, three green arrows leave the pod: "out: DNS 53 (UDP/TCP)" to CoreDNS at the kube-dns ClusterIP, "out: HTTPS 443" to an extension registry labelled open-vsx.org and openvsx.eclipsecontent.org, and "out: HTTPS 443" to github.com for git clone, fetch and push. A fourth, red dashed arrow leaves the pod downward and is labelled "refused", ending at an Internet icon labelled "Everything else", example.com and sts.us-west-2.amazonaws.com.](images/figure-2-ide-network-policy.png)
 
 **Where it is enforced.** On the node, outside the guest. The node's network policy agent
 attaches eBPF programs to the pod's host-side interface, so a command run inside the editor's
-terminal cannot change the policy, even as root. Kubernetes always allows traffic between a
-pod and its own node, which is why the kubelet's readiness probe on `/healthz` still works
-with all ingress denied, and why `kubectl port-forward` is unaffected: it reaches the pod
-through the guest's control channel rather than the pod network.
+terminal cannot change the policy, even as root.
+
+**Why `kubectl port-forward` still works with all ingress denied.** Kubernetes always allows
+traffic between a pod and its own node, and the port-forward stream arrives from the node.
+The editor's own log shows it. The refused login attempt in Step 7 was logged with
+`"remoteAddress":"192.168.176.147"`, which is not the editor's pod address
+(`192.168.186.195`, from Step 5). It is the InternalIP of the node that pod was on:
+
+```bash
+kubectl get node i-0773cb5caaeee133f -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}'
+```
+
+```text
+192.168.176.147
+```
+
+So the request reached the editor from the node, over the pod network, at the pod's address.
+The kubelet's readiness probe on
+`/healthz` reaches the pod the same way. Two things follow, and the sample depends on both:
+the container binds `0.0.0.0:8080` rather than the guest's loopback, because the stream comes
+to the pod's address; and the policy cannot deny the node, so anything that sends from the
+node's own address, such as a `hostNetwork` pod scheduled on that node, can still reach the
+editor's port. What the policy does deny is every pod on the pod network, which is what the
+probe below shows.
 
 **Enforcement is a cluster setting, and the policy has to reach the nodes.** EKS Auto Mode
 accepts a policy without enforcing it until the `amazon-vpc-cni` ConfigMap turns the
-controller on, which is Step 2 and is a change the reader makes once per cluster;
-`setup.sh` checks it and stops rather than making it. After applying the policy, setup waits
-for the `PolicyEndpoint` named after it, which is how it knows the controller has handed the
-policy to the nodes, and only then creates the editor. This sample's workload is a bare
+controller on, which is Step 2 and a change the reader makes once per cluster; `setup.sh`
+checks it and stops rather than making it. After applying the policy, setup waits for the
+`PolicyEndpoint` named after it, which is how it knows the controller has handed the policy
+to the nodes, and only then creates the editor, so the policy is on the nodes before the pod
+it governs exists. That is the ordering this sample can control; whether the very first
+packet a brand new pod sends is already filtered depends on the CNI's enforcing mode, which
+is a cluster-wide setting this sample does not change. This sample's workload is a bare
 `Sandbox`, which creates no `NetworkPolicy` of its own; a `SandboxTemplate` does create one
 by default, and a template shipping its own policy needs
 `networkPolicyManagement: Unmanaged` so the controller's policy does not add itself to
@@ -719,7 +751,7 @@ yours.
 
 **Its limits.** A `domainNames` rule allows the addresses those names resolve to, so another
 name served from the same addresses is reachable too. The rule is a list of hosts, not a
-guarantee about content. And a pod can always reach its own node.
+guarantee about content. And a pod can always reach its own node, in both directions.
 
 **Both directions, on the live cluster.** One allowed connection that connects, one refused
 that does not, and the two things a developer actually does with the allowed hosts:
@@ -737,12 +769,12 @@ kubectl -n ide exec ide -- sh -c 'curl -sS -o /dev/null -m 15 -w "sts.us-west-2.
 policyTypes=["Ingress","Egress"]
 ingressRules=
 allowedNames=["open-vsx.org","openvsx.eclipsecontent.org","github.com"]
-192.168.170.212
+192.168.186.194
 default route via device eth0
-2a04:4e42:600::498 open-vsx.org
-2a04:4e42:200::498 open-vsx.org
-2606:4700:10::ac42:93f3 example.com
+2a04:4e42::498  open-vsx.org
+2a04:4e42:400::498 open-vsx.org
 2606:4700:10::6814:179a example.com
+2606:4700:10::ac42:93f3 example.com
 open-vsx.org: HTTP 200
 openvsx.eclipsecontent.org: HTTP 403
 github.com: HTTP 200
@@ -799,10 +831,10 @@ kubectl -n ide delete pod ide-ingress-probe
 ```text
 pod/ide-ingress-probe created
 --- to the pod IP ---
-Connecting to 192.168.170.212:8080 (192.168.170.212:8080)
+Connecting to 192.168.186.194:8080 (192.168.186.194:8080)
 wget: download timed out
 --- to the Service name ---
-Connecting to ide.ide.svc.cluster.local:8080 (192.168.170.212:8080)
+Connecting to ide.ide.svc.cluster.local:8080 (192.168.186.194:8080)
 wget: download timed out
 pod "ide-ingress-probe" deleted from ide namespace
 ```
@@ -814,11 +846,16 @@ by its exact name.
 
 ## Good to know
 
-- **The editor is reachable from the machine running `kubectl` and nowhere else.** There is
-  no Ingress, no LoadBalancer and no NodePort in this folder; the one Service is a headless
-  `ClusterIP`; and the network policy refuses every connection to the pod from the pod
-  network. The only path in is the `kubectl port-forward` tunnel, which listens on
-  `127.0.0.1` on your own machine, and anyone using it needs your cluster credentials first.
+- **The editor is reachable from the machine running `kubectl`, and from the pod's own
+  node.** There is no Ingress, no LoadBalancer and no NodePort in this folder; the one
+  Service is a headless `ClusterIP`; and the network policy refuses every connection to the
+  pod from the pod network. The path a reader uses is the `kubectl port-forward` tunnel,
+  which listens on `127.0.0.1` on your own machine and needs your cluster credentials. The
+  honest exception is the node: Kubernetes always allows traffic between a pod and its own
+  node, which is how the port-forward stream and the readiness probe arrive, and it is why a
+  `hostNetwork` pod on that node could reach the editor's port too. On a cluster where that
+  matters, keep `hostNetwork` pods off it with admission policy, which is a cluster-wide
+  control and so outside this sample.
 - **The hash in the Secret is a credential, not only a verifier.** code-server's session
   cookie is the hash itself: `isCookieValid` in `src/node/util.ts` at 4.143.1 compares the
   cookie to the configured argon2 hash. So whoever can read the Secret can set that cookie
@@ -885,8 +922,8 @@ sandbox.agents.x-k8s.io "ide" deleted from ide namespace
 
 == 3/6 confirm the workspace PVC and its EBS volume are gone ==
 persistentvolumeclaim "workspace-ide" deleted from ide namespace
-persistentvolume/pvc-ec5d0c13-7abe-4b4e-bf77-a35ddcc67b9d condition met
-  pv pvc-ec5d0c13-7abe-4b4e-bf77-a35ddcc67b9d: gone
+persistentvolume/pvc-3bbc5401-aefc-401f-9581-42d77eda693f condition met
+  pv pvc-3bbc5401-aefc-401f-9581-42d77eda693f: gone
 
 == 4/6 delete secret/ide-password and the egress policy ide-egress ==
 secret "ide-password" deleted from ide namespace

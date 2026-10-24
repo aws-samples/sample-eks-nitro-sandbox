@@ -47,12 +47,12 @@
             <mxPoint x="0" y="-26" as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="e-pf" value="guest control channel" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.2727;entryY=1;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="kubelet" target="sandbox">
+        <mxCell id="e-pf" value="from the node:&lt;br&gt;always allowed" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.2727;entryY=1;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="kubelet" target="sandbox">
           <mxGeometry x="-0.4" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="880" y="680" />
             </Array>
-            <mxPoint x="0" y="-15" as="offset" />
+            <mxPoint x="0" y="-26" as="offset" />
           </mxGeometry>
         </mxCell>
 
