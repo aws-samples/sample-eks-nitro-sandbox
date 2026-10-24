@@ -196,6 +196,7 @@ setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
           "set -as terminal-features \",*:extkeys\"" \
           "set -g allow-passthrough on" \
           "set -g status off" \
+          "set -g mouse on" \
           > "$HOME/.tmux.conf"; \
         if tmux has-session -t agent 2>/dev/null; then \
           echo "session-entrypoint: tmux agent session already running, leaving it" >&2; \
