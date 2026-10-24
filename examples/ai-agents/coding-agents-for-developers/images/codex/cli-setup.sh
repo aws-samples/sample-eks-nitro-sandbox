@@ -26,7 +26,8 @@ mkdir -p "$DIR"
 # ENOSPC and every shell command Codex runs for you fails. The pod is the boundary instead:
 # its own kernel, the egress policy, and a folder credential for this one session. So
 # "danger-full-access" here means no second boundary inside the pod, not more than the pod
-# allows. approval_policy stays at Codex's default (on-request).
+# allows. approval_policy is left at Codex's default, which still asks for approval
+# (/status: "Custom (danger-full-access, Ask for approval)").
 cat > "$DIR/config.toml" <<TOML
 model = "openai.gpt-5.6-terra"
 model_provider = "amazon-bedrock"

@@ -787,9 +787,10 @@ error line goes to standard error and so can print before or after its exit line
   So the Codex config the image writes sets `sandbox_mode = "danger-full-access"`.
   Despite its name, that only drops Codex's second, inner boundary; it does not reach past
   the pod's own: the sandbox's own kernel, the egress policy, and a mount credential for
-  this one session's folder. Codex still asks before a command it judges risky (its default
-  approval policy, `on-request`). On the fresh run, asked in its terminal to run a command,
-  Codex ran it as the session's unprivileged user and showed no sandbox warning:
+  this one session's folder. The sample leaves Codex's approval policy at its default, and
+  Codex's `/status` on the fresh run read `Permissions: Custom (danger-full-access, Ask for
+  approval)`. Asked in its terminal to run a command, Codex ran it as the session's
+  unprivileged user and showed no sandbox warning:
 
   ```text
   • Ran id -u; uname -r; echo fix9 > fix9.txt; cat fix9.txt
