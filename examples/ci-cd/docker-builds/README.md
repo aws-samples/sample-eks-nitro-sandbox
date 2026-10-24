@@ -324,7 +324,10 @@ Four readings, one per question:
 - **Its own machine, and only its own processes.** `m8i.enclave` is the sandbox, `m8i.xlarge`
   the EC2 instance it was carved from. The process table in the privileged pod holds the
   daemon, its init process and the command just run: no kubelet, no node containerd, and
-  nothing from any other pod on that node.
+  nothing from any other pod on that node. Read that one honestly: a container's PID namespace
+  hides the node's processes from an ordinary pod too. What the three readings above add is
+  that there is no node kernel behind this one to reach, which is what Step 5 puts to the
+  test.
 
 **Step 5: Root in the privileged pod reaches the sandbox's kernel, not the node's.** The
 clearest reading of the boundary is a kernel setting. Write one as root in the privileged pod,
@@ -656,9 +659,10 @@ build pod set up without it has no route to a credential at all, which is the ti
 5.
 
 That policy, [`iam/ecr-push-policy.json`](iam/ecr-push-policy.json), is the whole of what the
-build can do in AWS. Five write actions and one read, on one repository ARN: it cannot create a
-repository, cannot touch another one, cannot delete an image, and can do nothing outside
-Amazon ECR. `ecr:GetAuthorizationToken` is the one action on `*`, because the token is issued
+build can do in AWS. Six actions on one repository ARN: four that upload the layers and put
+the manifest, and two the push reads as it goes (which layers are already there, and which
+manifests). It cannot create a repository, cannot touch another one, cannot delete an image,
+and can do nothing outside Amazon ECR. `ecr:GetAuthorizationToken` is the one action on `*`, because the token is issued
 for the registry rather than a repository, and on its own it grants no access to any
 repository. The role's trust policy,
 [`iam/pod-identity-trust.json`](iam/pod-identity-trust.json), is as narrow: only
