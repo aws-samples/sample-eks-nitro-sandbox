@@ -115,38 +115,49 @@ export async function remove(developer, session) {
 }
 
 // Background loop, every minute: release idle pods, and refresh each session's mount
-// credential before it expires. Failures are logged with the session name, never dropped.
-// A failed refresh leaves lastRefresh unchanged, so it is retried on the next tick; the
-// credential being replaced is valid for an hour and is refreshed after 30 minutes, so
-// there are about 30 retries before the session's mount credential would lapse.
-export function startBackgroundLoop() {
-  setInterval(async () => {
-    const now = Date.now();
-    for (const entry of [...live.values()]) {
-      let step = "idle check";
-      try {
-        const last = (await k8s.lastActivity(entry.podName)) * 1000;
-        const idleFor = now - (last || entry.startedAt);
-        if (idleFor > IDLE_MS) {
-          step = "idle release";
+// credential before it expires. The idle check and the refresh are independent: a failed
+// activity read must not skip the refresh, or a read that keeps failing would let the
+// credential lapse. Failures are logged with the session name, never dropped. A failed
+// refresh leaves lastRefresh unchanged, so it is retried on the next tick; the credential
+// being replaced is valid for an hour and is refreshed after 30 minutes, so there are
+// about 30 retries before the session's mount credential would lapse.
+export async function backgroundTick(now = Date.now()) {
+  for (const entry of [...live.values()]) {
+    try {
+      const last = (await k8s.lastActivity(entry.podName)) * 1000;
+      const idleFor = now - (last || entry.startedAt);
+      if (idleFor > IDLE_MS) {
+        try {
           await release(entry.session);
           console.log(`session ${entry.session}: released after ${Math.round(idleFor / 60000)} idle minutes`);
           continue;
+        } catch (e) {
+          console.error(`session ${entry.session} (pod ${entry.podName}): idle release failed, will retry next minute: ${e?.message || e}`);
         }
-        if (now - (entry.lastRefresh || entry.startedAt) > REFRESH_MS) {
-          step = "credential refresh";
-          const cred = await store.mountCredential(entry.apId, entry.developer, entry.cli, entry.session);
-          await k8s.refreshCredential(entry.podName, cred);
-          entry.lastRefresh = now;
-          console.log(`session ${entry.session}: mount credential refreshed`);
-        }
+      }
+    } catch (e) {
+      console.error(`session ${entry.session} (pod ${entry.podName}): idle check failed, will retry next minute: ${e?.message || e}`);
+    }
+    // A session the idle check released is gone from the map; refresh only the ones still
+    // tracked, whatever the idle check did.
+    if (live.get(entry.session) !== entry) continue;
+    if (now - (entry.lastRefresh || entry.startedAt) > REFRESH_MS) {
+      try {
+        const cred = await store.mountCredential(entry.apId, entry.developer, entry.cli, entry.session);
+        await k8s.refreshCredential(entry.podName, cred);
+        entry.lastRefresh = now;
+        console.log(`session ${entry.session}: mount credential refreshed`);
       } catch (e) {
         const age = Math.round((now - (entry.lastRefresh || entry.startedAt)) / 60000);
         console.error(
-          `session ${entry.session} (pod ${entry.podName}): ${step} failed, will retry next minute; ` +
+          `session ${entry.session} (pod ${entry.podName}): credential refresh failed, will retry next minute; ` +
           `credential age ${age} min: ${e?.message || e}`
         );
       }
     }
-  }, 60 * 1000).unref();
+  }
+}
+
+export function startBackgroundLoop() {
+  setInterval(() => { backgroundTick().catch((e) => console.error(`background loop: ${e?.message || e}`)); }, 60 * 1000).unref();
 }
