@@ -750,21 +750,25 @@ error line goes to standard error and so can print before or after its exit line
   refresh that fails is logged by the app with the session's name
   (`kubectl logs deploy/agent-app`) and retried every minute; if it kept failing until the
   hour ran out, the session's writes to its folder would start to fail. On the fresh run, a
-  session started at 19:55 UTC ran a job in its terminal that appended a line to a file in
-  its folder every minute. The app log showed both refreshes, and the folder had every
-  minute's line through 20:58, past the first credential's hour:
+  kiro-cli session started at 03:08 UTC; the app was restarted at 03:13 and refreshed the
+  session's credential when it picked the session up. From 03:24 a job in its terminal
+  appended a line to a file in its folder every minute. The app log showed the refresh
+  every 30 minutes after that, and the folder had every minute's line through 04:15, past
+  the hour of both the first credential and the one from 03:13:
 
   ```text
-  session mvle3oyj-witty-gecko: mount credential refreshed
-  session mvle3oyj-witty-gecko: mount credential refreshed
+  session mvltkhlp-merry-heron: mount credential refreshed     # 03:13:37, after the restart
+  session mvltkhlp-merry-heron: mount credential refreshed     # 03:43:37
+  session mvltkhlp-merry-heron: mount credential refreshed     # 04:13:38
   $ head -1 /workspace/project/heartbeat.log; tail -2 /workspace/project/heartbeat.log
-  beat 1 19:55:57
-  beat 63 20:57:58
-  beat 64 20:58:58
+  beat 1 03:24:46
+  beat 51 04:14:47
+  beat 52 04:15:47
   ```
 
-  The job kept the terminal printing, so the idle check kept that session while the idle
-  ones were released (`session mvle2dor-quiet-vole: released after 30 idle minutes`).
+  The times after `#` are from the log's timestamps. The job kept the terminal printing, so
+  the idle check kept that session while it released the six idle ones, at 30 or 31 idle
+  minutes each (`session mvltsw76-eager-marten: released after 30 idle minutes`).
 - **Codex's web search runs on the Mantle side, outside the egress policy.** Codex runs on
   a GPT model served through the Bedrock "Mantle" endpoint, and that model can call a
   server-side web search and web fetch tool that Amazon Bedrock runs itself. The Codex role
