@@ -168,12 +168,22 @@ jobs:
           #    daemon. This is the one that matters: in an ordinary pod a
           #    privileged container does see the node's nvme devices, so a
           #    sandbox is what makes this read come back empty.
+          #
+          #    It must fail CLOSED. An empty result because `docker run` itself
+          #    failed, for instance the daemon not being up or the image pull
+          #    being refused, would otherwise read as "contained" while nothing
+          #    was measured. The container prints a marker, and a missing marker
+          #    or a non-zero exit is a failure, not a pass.
           echo "--- privileged container on the job's own daemon ---"
+          priv_rc=0
           priv=$(docker run --rm --privileged \
                    public.ecr.aws/docker/library/alpine:3.20 \
-                   sh -c 'ls /dev/nvme* 2>/dev/null; ls /sys/block | tr "\n" " "' 2>/dev/null || true)
+                   sh -c 'echo PRIV-PROBE-RAN; ls /dev/nvme* 2>/dev/null; ls /sys/block | tr "\n" " "' \
+                 2>&1) || priv_rc=$?
           echo "privileged sees: $priv"
-          if printf '%s' "$priv" | grep -q 'nvme'; then
+          if [ "$priv_rc" -ne 0 ] || ! printf '%s' "$priv" | grep -q 'PRIV-PROBE-RAN'; then
+            echo "privileged-host-nvme: PROBE DID NOT RUN (exit $priv_rc) - not a pass"; verdict=1
+          elif printf '%s' "$priv" | grep -q 'nvme'; then
             echo "privileged-host-nvme: VISIBLE (bad)"; verdict=1
           else
             echo "privileged-host-nvme: not visible"
@@ -198,10 +208,23 @@ jobs:
       #    ends, so without this there is no live pod left to inspect, and the
       #    page's Step 6 and Step 8 commands would return nothing.
       - name: Hold the pod open for inspection
+        # The input goes in through the environment, never pasted into the
+        # script text. A `${{ }}` expression inside `run:` is substituted before
+        # the shell parses it, so an input such as `1"; curl ...; "` would run as
+        # code. That is GitHub's documented script-injection pattern, and a
+        # sample about running untrusted CI should not show it.
+        env:
+          HOLD_SECONDS: ${{ github.event.inputs.hold_seconds }}
         run: |
-          secs="${{ github.event.inputs.hold_seconds || '240' }}"
+          secs="${HOLD_SECONDS:-240}"
+          # Digits only, and capped: a bad or huge value would otherwise hold a
+          # sandbox and a maxRunners slot until the job timeout.
+          case "$secs" in
+            ''|*[!0-9]*) echo "hold_seconds is not a number; using 240"; secs=240 ;;
+          esac
+          [ "$secs" -le 900 ] || { echo "hold_seconds above 900; using 900"; secs=900; }
           echo "=== HOLDING-POD-OPEN for ${secs}s ==="
-          echo "Inspect it now, for example:"
-          echo "  kubectl get pods -n arc-runners -l actions-ephemeral-runner=True"
+          echo "Inspect it now, in the namespace the sample installed the runners in:"
+          echo "  kubectl get pods -n <ARC_RUNNERS_NAMESPACE> -l actions-ephemeral-runner=True"
           sleep "$secs"
           echo "=== HOLD-COMPLETE ==="

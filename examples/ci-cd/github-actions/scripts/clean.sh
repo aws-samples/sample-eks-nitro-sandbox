@@ -95,7 +95,12 @@ if [[ "$ns_state" == ours ]]; then
   say "1/4 the runner scale set"
   # -----------------------------------------------------------------------
   # Uninstall it first: while it exists the controller keeps making runner pods.
-  ss_list="$("${HELM[@]}" list -n "$ARC_RUNNERS_NAMESPACE" -o json 2>/dev/null)"
+  # Name the statuses, so a release stuck in pending or uninstalling is seen
+  # rather than reported as already gone. Helm 3 lists only deployed and failed
+  # by default; Helm 4 lists every status but has dropped the `-a` shorthand, so
+  # these flags are what works on both.
+  ss_list="$("${HELM[@]}" list --deployed --failed --pending --uninstalling \
+    -n "$ARC_RUNNERS_NAMESPACE" -o json 2>/dev/null)"
   ss_rc=$?
   # jq exits 1 when the release is absent but 2 or 5 on a parse error, so tell
   # "not there" apart from "could not tell".
@@ -108,15 +113,21 @@ if [[ "$ns_state" == ours ]]; then
       *) ss_found=unknown ;;
     esac
   fi
+  # While the scale set exists the controller keeps making runner pods, so
+  # whether it is gone decides, with the pod read below, what may be deleted
+  # next. Unknown is not gone.
+  ss_gone=no
   if [[ "$ss_found" == unknown ]]; then
     warn "could not list Helm releases in '$ARC_RUNNERS_NAMESPACE'; leaving the scale set alone."
   elif [[ "$ss_found" == no ]]; then
     echo "  release '$RUNNER_SCALE_SET_NAME' is already gone."
+    ss_gone=yes
   else
     # Inside this sample's own namespace the namespace label is enough, so the
     # release is uninstalled without re-asserting ownership per object.
     if "${HELM[@]}" uninstall "$RUNNER_SCALE_SET_NAME" -n "$ARC_RUNNERS_NAMESPACE" --wait --timeout 5m; then
       echo "  uninstalled '$RUNNER_SCALE_SET_NAME'."
+      ss_gone=yes
     else
       warn "could not uninstall Helm release '$RUNNER_SCALE_SET_NAME' in '$ARC_RUNNERS_NAMESPACE'."
     fi
@@ -171,12 +182,17 @@ if [[ "$ns_state" == ours ]]; then
   # -----------------------------------------------------------------------
   say "2/4 the egress policy"
   # -----------------------------------------------------------------------
-  # Only once the runner pods are confirmed gone. Removing the policy while a
-  # runner pod still ran would leave that pod's egress unrestricted.
-  if [[ "$runners_left" == no ]]; then
+  # Only once the runner pods are confirmed gone AND the scale set is confirmed
+  # gone. Removing the policy while a runner pod still ran, or while the
+  # controller could still create one, would leave a job's egress unrestricted.
+  safe_to_unprotect=no
+  if [[ "$runners_left" == no && "$ss_gone" == yes ]]; then
+    safe_to_unprotect=yes
+  fi
+  if [[ "$safe_to_unprotect" == yes ]]; then
     delete_if_present applicationnetworkpolicy "$POLICY_NAME" "ApplicationNetworkPolicy"
   else
-    warn "not deleting the egress policy '$POLICY_NAME': runner pods may still be running in '$ARC_RUNNERS_NAMESPACE', and removing it would leave their egress unrestricted. Re-run once they are gone."
+    warn "not deleting the egress policy '$POLICY_NAME': runner pods may still be running in '$ARC_RUNNERS_NAMESPACE', or the runner scale set may still exist and create one, and removing the policy would leave a job's egress unrestricted. Re-run once both are gone."
   fi
 
   # -----------------------------------------------------------------------
@@ -187,17 +203,25 @@ if [[ "$ns_state" == ours ]]; then
   # -----------------------------------------------------------------------
   say "4/4 the runners namespace"
   # -----------------------------------------------------------------------
-  if "${KCTL[@]}" delete namespace "$ARC_RUNNERS_NAMESPACE" --wait --timeout=5m; then
-    echo "  deleted namespace $ARC_RUNNERS_NAMESPACE."
+  # Gated on the same condition as the policy. Deleting the namespace removes
+  # the policy and the pods together, and a pod keeps running through its
+  # termination grace period after the policy has gone, so an ungated delete
+  # here would undo the gate above.
+  if [[ "$safe_to_unprotect" != yes ]]; then
+    warn "not deleting namespace '$ARC_RUNNERS_NAMESPACE': runner pods may still be running, or the runner scale set may still exist. Deleting it would remove the egress policy while a pod was still terminating. Re-run once both are gone."
   else
-    warn "could not delete namespace '$ARC_RUNNERS_NAMESPACE'."
-  fi
-  left="$("${KCTL[@]}" get namespace "$ARC_RUNNERS_NAMESPACE" \
-    -o name --ignore-not-found 2>/dev/null)"
-  if [[ $? -ne 0 ]]; then
-    warn "could not confirm namespace '$ARC_RUNNERS_NAMESPACE' is gone."
-  elif [[ -n "$left" ]]; then
-    warn "namespace '$ARC_RUNNERS_NAMESPACE' still exists after the delete."
+    if "${KCTL[@]}" delete namespace "$ARC_RUNNERS_NAMESPACE" --wait --timeout=5m; then
+      echo "  deleted namespace $ARC_RUNNERS_NAMESPACE."
+    else
+      warn "could not delete namespace '$ARC_RUNNERS_NAMESPACE'."
+    fi
+    left="$("${KCTL[@]}" get namespace "$ARC_RUNNERS_NAMESPACE" \
+      -o name --ignore-not-found 2>/dev/null)"
+    if [[ $? -ne 0 ]]; then
+      warn "could not confirm namespace '$ARC_RUNNERS_NAMESPACE' is gone."
+    elif [[ -n "$left" ]]; then
+      warn "namespace '$ARC_RUNNERS_NAMESPACE' still exists after the delete."
+    fi
   fi
 fi
 
@@ -212,22 +236,54 @@ say "the listener, and ARC's copy of the credential"
 # "did": confirm it, because what is being confirmed gone is a copy of the
 # credential.
 sel="actions.github.com/scale-set-name=$RUNNER_SCALE_SET_NAME,actions.github.com/scale-set-namespace=$ARC_RUNNERS_NAMESPACE"
-for kind in autoscalinglistener secret pod; do
-  found="$("${KCTL[@]}" get "$kind" -n "$ARC_SYSTEMS_NAMESPACE" -l "$sel" \
-    -o name --ignore-not-found 2>/dev/null)"
-  rc=$?
-  if [[ "$rc" -ne 0 ]]; then
-    # An absent CRD or namespace is not a failure to report here: the whole
-    # point is that nothing is left, and a missing kind means nothing is.
-    if "${KCTL[@]}" get namespace "$ARC_SYSTEMS_NAMESPACE" -o name --ignore-not-found 2>/dev/null | grep -q .; then
+
+# Is the controller namespace there at all? Absent means there is nothing left
+# to find, so a per-kind read failing is expected and not worth reporting. A
+# read that FAILS is neither: it must not silence the per-kind failures below.
+sysns="$("${KCTL[@]}" get namespace "$ARC_SYSTEMS_NAMESPACE" \
+  -o name --ignore-not-found 2>/dev/null)"
+sysns_rc=$?
+if [[ "$sysns_rc" -ne 0 ]]; then
+  sysns_state=unknown
+  warn "could not determine whether namespace '$ARC_SYSTEMS_NAMESPACE' exists, so the checks below cannot be trusted to say the listener's copy of the credential is gone."
+elif [[ -z "$sysns" ]]; then
+  sysns_state=absent
+  echo "  namespace '$ARC_SYSTEMS_NAMESPACE' does not exist, so nothing of this scale set is left in it."
+else
+  sysns_state=present
+fi
+
+if [[ "$sysns_state" != absent ]]; then
+  for kind in autoscalinglistener secret pod; do
+    found="$("${KCTL[@]}" get "$kind" -n "$ARC_SYSTEMS_NAMESPACE" -l "$sel" \
+      -o name --ignore-not-found 2>/dev/null)"
+    rc=$?
+    if [[ "$rc" -ne 0 ]]; then
       warn "could not read $kind objects for this scale set in '$ARC_SYSTEMS_NAMESPACE'; that is a failed read, not a report that none are left."
+    elif [[ -n "$found" ]]; then
+      warn "this scale set still has $kind objects in '$ARC_SYSTEMS_NAMESPACE': $(tr '\n' ' ' <<<"$found"). The listener's config Secret holds a copy of the GitHub credential, so remove them before you consider the credential gone from the cluster."
+    else
+      echo "  no $kind left for this scale set in '$ARC_SYSTEMS_NAMESPACE'."
     fi
-  elif [[ -n "$found" ]]; then
-    warn "this scale set still has $kind objects in '$ARC_SYSTEMS_NAMESPACE': $(tr '\n' ' ' <<<"$found"). The listener's config Secret holds a copy of the GitHub credential, so remove them before you consider the credential gone from the cluster."
+  done
+
+  # The label selector above is how ARC labels these objects, read from its
+  # source. Do not rely on that alone for the credential copy: also look for a
+  # Secret whose name starts with the scale set's, which is how ARC names the
+  # listener and its `<listener>-config`.
+  byname="$("${KCTL[@]}" get secret -n "$ARC_SYSTEMS_NAMESPACE" \
+    -o name --ignore-not-found 2>/dev/null)"
+  if [[ $? -ne 0 ]]; then
+    warn "could not list Secrets in '$ARC_SYSTEMS_NAMESPACE' to check for a listener config Secret by name."
   else
-    echo "  no $kind left for this scale set in '$ARC_SYSTEMS_NAMESPACE'."
+    hits="$(grep -E "/${RUNNER_SCALE_SET_NAME}-[^/]*$" <<<"$byname" || true)"
+    if [[ -n "$hits" ]]; then
+      warn "Secrets named after this scale set are still in '$ARC_SYSTEMS_NAMESPACE': $(tr '\n' ' ' <<<"$hits"). One of these may be the listener's config Secret, which holds a copy of the GitHub credential."
+    else
+      echo "  no Secret named after this scale set in '$ARC_SYSTEMS_NAMESPACE'."
+    fi
   fi
-done
+fi
 
 # ---------------------------------------------------------------------------
 say "what stays"

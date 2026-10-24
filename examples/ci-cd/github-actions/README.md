@@ -183,11 +183,18 @@ itself does not land in your shell history:
 `scripts/setup.sh` builds a Kubernetes Secret from that file with
 `kubectl create secret generic --from-file`, so the credential is never an argument to a
 command and never visible to another process in `ps`, and it suspends shell tracing around
-the two places that handle it. It writes the Secret with `kubectl apply --server-side`:
-a client-side apply would copy the credential into the object's
-`last-applied-configuration` annotation, which `kubectl describe secret` prints even though
-it hides the data. The Helm values reference the Secret by name, so it is not in the
-release's values either:
+the two places that handle it. It creates the Secret when none is there, and writes over
+only one this sample already owns.
+
+It never uses a client-side apply, which would copy the credential into the object's
+`last-applied-configuration` annotation: `kubectl describe secret` prints annotations even
+though it hides the data. Server-side apply adds no such annotation, but it does keep
+refreshing one that is already there, so a Secret first written by an older version of this
+script would go on carrying the current credential in plain view. `setup.sh` therefore
+removes that annotation after every write and stops if it is still present.
+
+The Helm values reference the Secret by name, so the credential is not in the release's
+values either:
 
 ```yaml
 githubConfigSecret: __GITHUB_SECRET_NAME__   # a NAME, never an inline token
@@ -404,7 +411,9 @@ ordinary pod:
   namespaced pod that mounts no host paths, so an ordinary runner passes them too.
 - **The `nvme` read from a privileged container on the job's own daemon is the telling one.**
   In an ordinary pod, a privileged container does see the node's devices. Here it does not,
-  because "privileged" is privileged inside the guest.
+  because "privileged" is privileged inside the guest. The container prints a marker, and a
+  missing marker or a non-zero exit fails the job: an empty result because the container
+  never ran would otherwise read as containment that was never measured.
 
 They are worth running because they fail closed, so a future regression that did expose the
 node would break the job rather than pass quietly. They are not what shows the job ran in a
@@ -606,10 +615,13 @@ TODO: output from the fresh run
 ```
 
 `clean.sh` uninstalls the runner scale set first, because that is what creates runner pods,
-and waits for any in-flight runner pod to go. It deletes the egress policy only once those
-pods are confirmed gone, since removing it earlier would leave a running job unrestricted.
-Then it deletes the credential Secret and the `arc-runners` namespace, and finally confirms
-that no listener, pod or Secret for this scale set is left in the controller's namespace, as
+and waits for any in-flight runner pod to go. It deletes the egress policy, and the namespace
+itself, only once **both** the runner pods and the scale set are confirmed gone: removing the
+policy while a job was still running, or while the controller could still start one, would
+leave that job's egress unrestricted, and deleting the namespace would remove the policy
+while a pod was still terminating. If either is still there, or could not be read, it keeps
+both and says so. It also deletes the credential Secret, and finally confirms that no
+listener, pod or Secret for this scale set is left in the controller's namespace, as
 "Where the credential lives" explains.
 
 It only touches a namespace labelled `ManagedBy=github-actions`, and a lookup that fails

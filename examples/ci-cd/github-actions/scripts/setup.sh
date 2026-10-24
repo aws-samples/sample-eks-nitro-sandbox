@@ -105,17 +105,23 @@ crds_present="$("${KCTL[@]}" get crd autoscalingrunnersets.actions.github.com \
   -o name --ignore-not-found 2>/dev/null)" \
   || die "could not read the ARC CRDs. That is a failed read, not a report that they are absent."
 
-ctrl_list="$("${HELM[@]}" list -n "$ARC_SYSTEMS_NAMESPACE" -o json 2>/dev/null)" \
+# The statuses are named so a controller release stuck in pending or failed is
+# seen rather than read as absent. Helm 3 lists only deployed and failed by
+# default, and Helm 4 has dropped the `-a` shorthand, so these flags suit both.
+ctrl_list="$("${HELM[@]}" list --deployed --failed --pending --uninstalling \
+  -n "$ARC_SYSTEMS_NAMESPACE" -o json 2>/dev/null)" \
   || die "could not list Helm releases in '$ARC_SYSTEMS_NAMESPACE'. That is a failed read, not a report that the controller is absent."
 ctrl_chart="$(jq -r \
   '[.[] | select(.chart | startswith("gha-runner-scale-set-controller-"))][0].chart // ""' \
-  <<<"$ctrl_list" | sed 's|^gha-runner-scale-set-controller-||')"
+  <<<"$ctrl_list" \
+  || die "could not parse the output of 'helm list' for '$ARC_SYSTEMS_NAMESPACE'.")"
+ctrl_chart="${ctrl_chart#gha-runner-scale-set-controller-}"
 if [[ -z "$ctrl_chart" ]]; then
   if [[ -n "$(grep . <<<"$ctrl_deploys" || true)" ]]; then
     die "an ARC controller Deployment runs in '$ARC_SYSTEMS_NAMESPACE' but there is no controller Helm release there, so its version cannot be read. This sample needs $ARC_VERSION, because the controller refuses a scale set built by another version. Check that install by hand, then re-run."
   fi
   if [[ -n "$crds_present" ]]; then
-    die "the ARC CRDs exist but no controller runs anywhere: another ARC install, or one partly removed. Installing a controller over this could adopt someone else's CRDs. Sort that out by hand (kubectl get crd | grep actions.github.com), then re-run."
+    die "the ARC CRDs exist but no ARC controller Deployment carries the label this script looks for ($ARC_SYSTEMS_NAMESPACE or elsewhere): another ARC install, one renamed with nameOverride, or one partly removed. Installing a controller over this could adopt someone else's CRDs. Sort that out by hand (kubectl get crd | grep actions.github.com), then re-run."
   fi
   die "no ARC controller found on this cluster.
   The controller and its CRDs are shared cluster-wide, so install them yourself, once, at the version this sample pins:
@@ -128,6 +134,12 @@ fi
 [[ "$ctrl_chart" == "$ARC_VERSION" ]] \
   || die "the ARC controller in '$ARC_SYSTEMS_NAMESPACE' is version $ctrl_chart, but this sample pins $ARC_VERSION, and the controller refuses a scale set built by a different version.
   Either set ARC_VERSION=$ctrl_chart in .env to match the controller already on the cluster, or upgrade the controller yourself. This sample does not change a shared install."
+# `rollout status` with a selector that matches nothing prints "No resources
+# found" and exits 0 (measured on EKS 1.37), so a release whose Deployment is
+# missing or renamed would otherwise be reported ready. Require the Deployment
+# first.
+grep -q "^$ARC_SYSTEMS_NAMESPACE/" <<<"$ctrl_deploys" \
+  || die "a controller Helm release $ctrl_chart exists in '$ARC_SYSTEMS_NAMESPACE' but no Deployment there carries app.kubernetes.io/name=gha-rs-controller, so there is nothing to wait on. The release may be broken, partly removed, or installed with a nameOverride. Check it by hand, then re-run."
 "${KCTL[@]}" rollout status deploy -n "$ARC_SYSTEMS_NAMESPACE" \
   -l app.kubernetes.io/name=gha-rs-controller --timeout=120s \
   || die "the ARC controller in '$ARC_SYSTEMS_NAMESPACE' is not ready."
@@ -166,18 +178,45 @@ if [[ -n "$secret_present" ]]; then
     || die "Secret '$GITHUB_SECRET_NAME' in '$ARC_RUNNERS_NAMESPACE' is not this sample's (labelled $LABEL_KEY=${owner:-none}). Set GITHUB_SECRET_NAME in .env to another name."
 fi
 
-# Both branches build the Secret with kubectl --from-file, so no credential is
-# ever an argument, and xtrace is off around them so `bash -x` cannot print one.
+# Both credential branches below, the GitHub App one and the token one, build
+# the Secret with kubectl --from-file, so no credential is ever an argument, and
+# xtrace is off around each so `bash -x` cannot print one. The sample's label
+# goes on in the same write, with `kubectl label --local`, so the Secret is
+# never briefly unlabelled.
 #
-# They write it with `apply --server-side`. A client-side apply would copy the
-# whole Secret, credential included, into its
-# kubectl.kubernetes.io/last-applied-configuration annotation, and
-# `kubectl describe secret` prints annotations even though it hides data. The
-# sample's label goes on in the same write, with `kubectl label --local`, so the
-# Secret is never briefly unlabelled.
+# `create` when the Secret was absent, so one that appeared since the check is
+# not taken over; `apply --server-side` only for this sample's own Secret. A
+# client-side apply is never used: it copies the whole Secret, credential
+# included, into its kubectl.kubernetes.io/last-applied-configuration
+# annotation, and `kubectl describe secret` prints annotations even though it
+# hides data.
 secret_write() {
-  "${KCTL[@]}" label --local -f - "$LABEL_KEY=$LABEL_VALUE" -o yaml \
-    | "${KCTL[@]}" apply --server-side --force-conflicts -f -
+  if [[ -z "$secret_present" ]]; then
+    "${KCTL[@]}" label --local -f - "$LABEL_KEY=$LABEL_VALUE" -o yaml \
+      | "${KCTL[@]}" create -f -
+  else
+    "${KCTL[@]}" label --local -f - "$LABEL_KEY=$LABEL_VALUE" -o yaml \
+      | "${KCTL[@]}" apply --server-side --force-conflicts -f -
+  fi
+}
+
+# Server-side apply does not add that annotation, but it does keep refreshing
+# one the object already has, so a Secret first written by an older client-side
+# run would go on carrying the current credential in it. Measured on EKS 1.37:
+# after a client-side apply the annotation held the token, and a later
+# server-side apply replaced it with the new token. Remove it, then confirm it
+# is gone rather than assume.
+strip_last_applied() {
+  "${KCTL[@]}" annotate secret "$GITHUB_SECRET_NAME" -n "$ARC_RUNNERS_NAMESPACE" \
+    kubectl.kubernetes.io/last-applied-configuration- >/dev/null 2>&1 || true
+  local left
+  left="$("${KCTL[@]}" get secret "$GITHUB_SECRET_NAME" -n "$ARC_RUNNERS_NAMESPACE" \
+    -o 'jsonpath={.metadata.annotations.kubectl\.kubernetes\.io/last-applied-configuration}' \
+    2>/dev/null)" \
+    || die "could not confirm Secret '$GITHUB_SECRET_NAME' carries no last-applied-configuration annotation."
+  [[ -z "$left" ]] \
+    || die "Secret '$GITHUB_SECRET_NAME' still carries a kubectl.kubernetes.io/last-applied-configuration annotation, which would hold a copy of your credential in clear view of 'kubectl describe secret'. Remove it by hand:
+  kubectl --context $CLUSTER_NAME -n $ARC_RUNNERS_NAMESPACE annotate secret $GITHUB_SECRET_NAME kubectl.kubernetes.io/last-applied-configuration-"
 }
 
 make_secret_from_app() {
@@ -200,9 +239,13 @@ make_secret_from_pat() {
   local xt=0; case "$-" in *x*) xt=1; set +x;; esac
   local tmp rc=0
   tmp="$(mktemp "${TMPDIR:-/tmp}/arc-token.XXXXXX")" || { [[ "$xt" == 1 ]] && set -x; return 1; }
-  trap 'rm -f "$tmp"' RETURN INT TERM
+  # INT and TERM traps are global, and $tmp is local, so clear them before every
+  # return: left set, a later interrupt would run `rm -f "$tmp"` with $tmp
+  # unbound and fail under `set -u` instead of stopping cleanly.
+  trap 'rm -f "$tmp"' INT TERM
   chmod 600 "$tmp"
   if ! tr -d '\r\n' < "$GITHUB_PAT_FILE" > "$tmp" || [[ ! -s "$tmp" ]]; then
+    rm -f "$tmp"; trap - INT TERM
     [[ "$xt" == 1 ]] && set -x
     echo "GITHUB_PAT_FILE=$GITHUB_PAT_FILE is empty, or could not be read." >&2
     return 1
@@ -213,6 +256,7 @@ make_secret_from_pat() {
     --dry-run=client -o yaml | secret_write || rc=$?
   rm -f "$tmp"
   [[ -e "$tmp" ]] && { echo "could not remove $tmp; delete it by hand." >&2; rc=1; }
+  trap - INT TERM
   [[ "$xt" == 1 ]] && set -x
   return "$rc"
 }
@@ -229,6 +273,8 @@ elif [[ -n "${GITHUB_PAT_FILE:-}" ]]; then
 else
   die "no credential in .env. Set either the three GITHUB_APP_* values or GITHUB_PAT_FILE."
 fi
+strip_last_applied
+echo "  no last-applied-configuration annotation on it."
 
 # ---------------------------------------------------------------------------
 say "6/7 the runner pods' egress policy"
@@ -262,7 +308,8 @@ echo "  PolicyEndpoint: $pe"
 say "7/7 the runner scale set"
 # ---------------------------------------------------------------------------
 # Refuse a same-named release this sample did not install.
-ss_list="$("${HELM[@]}" list -n "$ARC_RUNNERS_NAMESPACE" -o json 2>/dev/null)" \
+ss_list="$("${HELM[@]}" list --deployed --failed --pending --uninstalling \
+  -n "$ARC_RUNNERS_NAMESPACE" -o json 2>/dev/null)" \
   || die "could not list Helm releases in '$ARC_RUNNERS_NAMESPACE'."
 # `install` when absent and `upgrade` only for this sample's own release, rather
 # than `upgrade --install`: `install` fails if a release of this name appeared
