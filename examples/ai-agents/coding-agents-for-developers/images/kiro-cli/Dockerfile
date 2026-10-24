@@ -25,6 +25,8 @@ RUN set -eu; \
 
 # cli-setup.sh prepares Kiro CLI's home for V3 (session locks on tmpfs). See the script.
 COPY --chmod=0755 cli-setup.sh /usr/local/bin/cli-setup.sh
+# kiro-session.sh signs in with the device flow when needed, then starts the chat. See it.
+COPY --chmod=0755 kiro-session.sh /usr/local/bin/kiro-session.sh
 
 # The sign-in is kept in the session's folder (under $HOME inside /workspace), so a restored
 # session resumes without signing in again. The first sign-in is interactive; inside a
@@ -35,5 +37,5 @@ COPY --chmod=0755 cli-setup.sh /usr/local/bin/cli-setup.sh
 # `kiro-cli --agent-engine v3` errors "unexpected argument"), so name `chat` explicitly.
 # Kiro CLI still defaults to V2 and otherwise nags to upgrade on every launch; pinning V3
 # skips the nag and gives every session the current engine.
-ENV CLI_CMD="kiro-cli chat --v3" \
-    CLI_RESUME_CMD="kiro-cli chat --v3 --resume"
+ENV CLI_CMD="/usr/local/bin/kiro-session.sh" \
+    CLI_RESUME_CMD="/usr/local/bin/kiro-session.sh --resume"
