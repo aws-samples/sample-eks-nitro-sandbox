@@ -92,9 +92,11 @@ check_fs() {
   [[ -n "$FS_ID" && "$FS_ID" != "None" ]] || return 0
   if fs_err="$(aws s3files get-file-system --file-system-id "$FS_ID" --region "$AWS_REGION" \
       --query status --output text 2>&1)"; then
-    fs_owner="$(aws s3files list-tags-for-resource --resource-id "$FS_ID" --region "$AWS_REGION" \
-      --query "tags[?key=='ManagedBy'].value | [0]" --output text 2>/dev/null || true)"
-    if [[ "$fs_owner" == "$SAMPLE" ]]; then
+    # A failed tag read is "could not determine", not "someone else's": say which it was.
+    if ! fs_owner="$(aws s3files list-tags-for-resource --resource-id "$FS_ID" --region "$AWS_REGION" \
+        --query "tags[?key=='ManagedBy'].value | [0]" --output text 2>&1)"; then
+      note_fail "file system $FS_ID: tag lookup failed, so its owner is unknown; left untouched ($(printf '%s' "$fs_owner" | grep -m1 .))"
+    elif [[ "$fs_owner" == "$SAMPLE" ]]; then
       fs_ours=yes
     else
       note_fail "file system $FS_ID is not tagged ManagedBy=$SAMPLE (found: ${fs_owner:-none}); left untouched"
