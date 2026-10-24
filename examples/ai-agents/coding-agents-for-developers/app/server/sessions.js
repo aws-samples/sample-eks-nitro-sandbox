@@ -69,8 +69,16 @@ export function getLive(session) {
 // Close or idle: release the claim (the pod goes, the folder stays). The session then
 // shows in the developer's list and can be restored.
 export async function release(session) {
-  const entry = live.get(session);
-  if (!entry) return;
+  let entry = live.get(session);
+  if (!entry) {
+    // The app keeps running sessions in memory only, so after an app restart a session can
+    // still hold a claim and a pod the app has no record of. Look the pod up from the claim,
+    // so Close (and idle, and Delete) still stop and release it instead of doing nothing.
+    const claimName = k8s.claimNameFor(session);
+    const podName = await k8s.claimedPodName(claimName);
+    if (!podName) return; // no claim: nothing is running
+    entry = { session, claimName, podName, adopted: true };
+  }
   live.delete(session);
   // Stop the CLI and unmount the folder first, so its locks are released now rather than
   // when the NFS lease runs out. The pod is released either way: a failed stop is logged,
@@ -86,7 +94,9 @@ export async function release(session) {
   try {
     await k8s.releaseClaim(entry.claimName);
   } catch (e) {
-    if (!live.has(session)) live.set(session, entry);
+    // Keep tracking a session the app started, so the idle loop retries the release. One it
+    // only looked up from its claim has no full record to track; the next Close retries it.
+    if (!entry.adopted && !live.has(session)) live.set(session, entry);
     throw new Error(`could not delete claim ${entry.claimName}: ${e?.message || e}`);
   }
 }

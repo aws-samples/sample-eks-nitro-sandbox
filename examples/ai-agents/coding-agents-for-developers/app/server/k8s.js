@@ -104,6 +104,20 @@ async function waitForClaimPod(claimName, timeoutMs = 120000) {
   throw new Error(`claim ${claimName} did not resolve to a ready pod in time`);
 }
 
+// The pod a claim resolved to, or null when there is no such claim (or it has no pod yet).
+export async function claimedPodName(claimName) {
+  try {
+    const claim = await custom.getNamespacedCustomObject({
+      group: GROUP, version: VERSION, namespace: NAMESPACE,
+      plural: "sandboxclaims", name: claimName,
+    });
+    return claim?.status?.sandbox?.name || null;
+  } catch (e) {
+    if (e?.code === 404) return null;
+    throw e;
+  }
+}
+
 // Delete a session's claim (the pod goes with it). A claim that is already gone is fine;
 // any other failure is thrown, so Close, idle release, Delete and a failed start never
 // report success while the claim and its pod remain.
