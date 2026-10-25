@@ -1,0 +1,56 @@
+# The runner pods' network: nothing in, and out only to the hosts a job needs.
+#
+# An EKS Auto Mode ApplicationNetworkPolicy is a NetworkPolicy that also accepts
+# host names (domainNames) in an egress rule. Every ephemeral runner pod ARC
+# creates carries the label actions-ephemeral-runner: "True", so this one policy
+# covers every per-job pod without naming any of them.
+#
+# The runner pods have no EKS Pod Identity association and need no AWS
+# credential, so there is no rule for the Pod Identity endpoint
+# (169.254.170.23). A policy for a pod that does have a role needs one.
+#
+# <COREDNS_IP> is your cluster's CoreDNS Service address, which scripts/setup.sh
+# fills in at apply time from:
+#   kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ApplicationNetworkPolicy
+metadata:
+  name: github-actions-runner-egress
+  labels:
+    ManagedBy: github-actions
+spec:
+  podSelector:
+    matchLabels:
+      actions-ephemeral-runner: "True"
+  policyTypes:
+    - Ingress
+    - Egress
+  # Nothing reaches a runner pod. The job is driven by the runner's own outbound
+  # long poll, so no inbound connection is ever needed.
+  ingress: []
+  egress:
+    # Name lookups, to the cluster's CoreDNS Service only.
+    - to:
+        - ipBlock: { cidr: <COREDNS_IP>/32 }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # The hosts a self-hosted runner needs, from GitHub's own list in the
+    # self-hosted runners reference, plus the registry the build pulls from.
+    - to:
+        - domainNames:
+            - github.com                             # register the runner, fetch the job
+            - api.github.com                         # the Actions API
+            - "*.actions.githubusercontent.com"      # the Actions broker and job service
+            - codeload.github.com                    # download the actions a workflow uses
+            - ghcr.io                                # GitHub container registry
+            - "*.pkg.github.com"                     # GitHub Packages
+            - pkg-containers.githubusercontent.com   # container layer downloads
+            - public.ecr.aws                         # base images this sample's build pulls
+            # Amazon ECR Public answers a layer download with a redirect to
+            # CloudFront, at a generated host name, so the pull needs this too.
+            # It is wider than one registry: it allows every host under
+            # cloudfront.net.
+            - "*.cloudfront.net"
+      ports:
+        - { protocol: TCP, port: 443 }

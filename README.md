@@ -32,12 +32,18 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 
 - [Pause and resume](examples/agent-sandbox/pause-resume/README.md): suspend a sandbox to release its compute and keep its EBS workspace, then resume onto a new guest with the data intact.
 - [Warm pool autoscaling with KEDA](examples/agent-sandbox/warm-pool-autoscaling-keda/README.md): KEDA reads a count of `SandboxClaim` objects and drives a warm pool's `spec.replicas` up and back down with it, with a no-autoscaler control that stays flat under the same demand.
+- [IDE in the browser](examples/agent-sandbox/ide/README.md): code-server (VS Code in the browser) in a sandbox on a persistent EBS workspace, reached only by `kubectl port-forward`, with its password an argon2 hash from a Kubernetes Secret.
 
 ## Storage
 
 - [EBS volumes](examples/storage/ebs/README.md): a sandboxed pod and a StatefulSet backed by dynamically provisioned, encrypted EBS volumes that outlive the pod, seen inside the guest as virtio devices.
 - [Shared EFS storage](examples/storage/efs/README.md): two sandboxed pods share one EFS file system through a single access point, mounted over TLS with IAM authorization, so each pod reads and writes the same `/shared` directory.
 - [Shared S3 Files storage](examples/storage/s3-files/README.md): two sandboxed pods share one S3 Files access point, backed by a versioned S3 bucket, so the same data is both a shared `/shared` POSIX file system and plain S3 objects addressable from outside the cluster.
+
+## CI/CD
+
+- [Docker builds](examples/ci-cd/docker-builds/README.md): a privileged Docker daemon builds and runs container images inside a sandbox, by hand and as an unattended Job, with an EBS layer cache across Job runs and an optional push to Amazon ECR through a role scoped to one repository.
+- [GitHub Actions runners](examples/ci-cd/github-actions/README.md): the GitHub Actions Runner Controller on EKS, where every ephemeral runner pod for a queued job is its own sandbox, running a privileged `docker build` and arbitrary test code that never reach the shared node, and is deleted when the job ends.
 
 ## Preview the site locally
 
