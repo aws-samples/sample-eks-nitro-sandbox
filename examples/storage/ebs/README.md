@@ -86,11 +86,14 @@ non-root user with `fsGroup` set, and boots network-isolated.
 ```yaml
 spec:
   runtimeClassName: isolated-sandbox   # the one-line opt-in; the RuntimeClass carries the scheduling constraints
+  automountServiceAccountToken: false
   securityContext:
     runAsNonRoot: true
     runAsUser: 1000
     runAsGroup: 1000
     fsGroup: 2000
+    seccompProfile:
+      type: RuntimeDefault
 ```
 
 ```yaml
@@ -109,7 +112,9 @@ spec:
 
 ```text
 Step 1/3: choose the StorageClass
-  the cluster default StorageClass 'auto-ebs-sc' fits (Auto Mode provisioner, gp3, encrypted). Using it and creating nothing.
+  the cluster has no default StorageClass; using the sample's own 'nitro-sandbox-ebs'.
+storageclass.storage.k8s.io/nitro-sandbox-ebs created
+  created the sample's own non-default StorageClass 'nitro-sandbox-ebs'.
 Step 2/3: create the namespace (only if absent) and apply the PVC and pod
 namespace/nitro-ebs-sample created
 namespace/nitro-ebs-sample labeled
@@ -119,16 +124,21 @@ pod/ebs-sandbox created
 Step 3/3: wait for the volume to attach and the guest to boot
 pod/ebs-sandbox condition met
 
-ebs-sandbox is Ready with its EBS volume mounted at /data, bound through 'auto-ebs-sc'.
-NAME               STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
-ebs-sandbox-data   Bound    pvc-75a2a00f-51ca-4e2c-b58a-a3ca24673e8f   10Gi       RWOP           auto-ebs-sc    <unset>                 13s
+ebs-sandbox is Ready with its EBS volume mounted at /data, bound through 'nitro-sandbox-ebs'.
+(This run created the sample's own StorageClass 'nitro-sandbox-ebs'; the clean up deletes it.)
+NAME               STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS        VOLUMEATTRIBUTESCLASS   AGE
+ebs-sandbox-data   Bound    pvc-5e8fb5a2-2975-492f-80e2-b1ad154b3229   10Gi       RWOP           nitro-sandbox-ebs   <unset>                 109s
+
+Assert it with:  NAMESPACE=nitro-ebs-sample ./scripts/test.sh
+Tear down:       NAMESPACE=nitro-ebs-sample ./scripts/clean.sh
 ```
 
-On this cluster the default class `auto-ebs-sc` fits, so setup used it and created nothing:
-the claim is bound through `auto-ebs-sc`. `volumeBindingMode: WaitForFirstConsumer` means
-the volume is not created until the pod is scheduled, so the claim is `Bound` once the pod
-is Ready. [How setup chooses the StorageClass](#how-setup-chooses-the-storageclass) below
-shows the other branch, where setup creates the sample's own class.
+This cluster had no default StorageClass, so setup created the sample's own non-default
+class `nitro-sandbox-ebs`, and the claim is bound through it. `volumeBindingMode:
+WaitForFirstConsumer` means the volume is not created until the pod is scheduled, so the
+claim is `Bound` once the pod is Ready.
+[How setup chooses the StorageClass](#how-setup-chooses-the-storageclass) below shows both
+branches: using a cluster default that fits, and creating the sample's own class.
 
 **Step 2: Prove the pod ran in a sandbox.** The pod's own view is the evidence: its kernel
 is the guest's, its uptime matches the pod's age because the VM booted with the pod, and its
@@ -143,7 +153,7 @@ kubectl exec ebs-sandbox -n "$NAMESPACE" -- df -hT /data
 
 ```text
 6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-19.84 18.03
+23.78 17.79
 dm-0
 vda
 vdb
@@ -153,14 +163,14 @@ Filesystem           Type            Size      Used Available Use% Mounted on
 /dev/vdd             ext4            9.7G     28.0K      9.7G   0% /data
 ```
 
-The kernel is the guest's own build, the uptime (`19.84` seconds) matches the pod's age
+The kernel is the guest's own build, the uptime (`23.78` seconds) matches the pod's age
 because the VM booted with the pod, the disks are virtio (`vda`, `vdb`, ...), and `/data` is
 on `/dev/vdd`. Apply [`deploy/pod-ordinary.yaml`](deploy/pod-ordinary.yaml), an ordinary
 pod that mounts the same kind of EBS volume, and it shows an `nvme` device instead. The page
 renders `<STORAGE_CLASS>` with the class this run used:
 
 ```bash
-sed "s|storageClassName: <STORAGE_CLASS>|storageClassName: auto-ebs-sc|" deploy/pod-ordinary.yaml | kubectl apply -n "$NAMESPACE" -f -
+sed "s|storageClassName: <STORAGE_CLASS>|storageClassName: nitro-sandbox-ebs|" deploy/pod-ordinary.yaml | kubectl apply -n "$NAMESPACE" -f -
 kubectl wait --for=condition=Ready pod/ordinary-pod -n "$NAMESPACE" --timeout=5m
 kubectl exec ordinary-pod -n "$NAMESPACE" -- sh -c 'ls /sys/block'
 kubectl exec ordinary-pod -n "$NAMESPACE" -- df -hT /data
@@ -175,6 +185,9 @@ zram0
 Filesystem           Type            Size      Used Available Use% Mounted on
 /dev/nvme2n1         ext4            9.7G     24.0K      9.7G   0% /data
 ```
+
+This block is from an earlier run of the same, unchanged ordinary pod: on this run its
+`ls /sys/block` hit a transient exec error, and its `df` line (`/dev/nvme2n1`) matches.
 
 The same kind of EBS volume is presented to an ordinary pod as an `nvme` device; the
 sandboxed pod sees its own volume passed into the guest as a virtio `/dev/vd*` device.
@@ -198,7 +211,7 @@ kubectl exec ebs-sandbox -n "$NAMESPACE" -- sh -c 'echo hello > /data/from-non-r
 
 ```text
 uid=1000 gid=1000 groups=1000,2000
-drwxrwsr-x    3 root     2000          4096 Oct 20 14:46 /data
+drwxrwsr-x    3 root     2000          4096 Oct 23 02:27 /data
 hello
 ```
 
@@ -216,8 +229,8 @@ kubectl exec ebs-sandbox -n "$NAMESPACE" -- ip route show default
 ```
 
 ```text
-1: lo    inet 127.0.0.1/8 scope host lo
-1: lo    inet6 ::1/128 scope host noprefixroute
+1: lo    inet 127.0.0.1/8 scope host lo\       valid_lft forever preferred_lft forever
+1: lo    inet6 ::1/128 scope host noprefixroute \       valid_lft forever preferred_lft forever
 ```
 
 Only `lo` has an address and `ip route show default` prints nothing, yet Step 3 wrote to
@@ -237,19 +250,18 @@ kubectl exec ebs-sandbox -n "$NAMESPACE" -- cat /data/boot-log.txt
 
 ```text
 pod "ebs-sandbox" deleted from nitro-ebs-sample namespace
-NAME               STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
-ebs-sandbox-data   Bound    pvc-75a2a00f-51ca-4e2c-b58a-a3ca24673e8f   10Gi       RWOP           auto-ebs-sc    <unset>                 7m28s
+NAME               STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS        VOLUMEATTRIBUTESCLASS   AGE
+ebs-sandbox-data   Bound    pvc-5e8fb5a2-2975-492f-80e2-b1ad154b3229   10Gi       RWOP           nitro-sandbox-ebs   <unset>                 4m46s
 ...
-booted 2026-10-20T14:46:33Z as uid 1000
-booted 2026-10-20T14:48:25Z as uid 1000
-marker Tue Oct 20 14:53:16 UTC 2026
-booted 2026-10-20T14:54:01Z as uid 1000
+booted 2026-10-23T02:27:33Z as uid 1000
+marker Fri Oct 23 02:29:58 UTC 2026
+booted 2026-10-23T02:30:51Z as uid 1000
 ```
 
 The PVC stayed `Bound` while no pod existed, the replacement bound the same
-PersistentVolume, and `/data` still holds the lines earlier guests wrote, including the
+PersistentVolume, and `/data` still holds the lines the earlier guest wrote, including the
 marker: the data outlived the guest that wrote it. (The `setup.sh` output between the two is
-omitted here; it is the same as Step 1.)
+omitted here, at the `...` line; on this second run it reuses the class and the namespace.)
 
 **Step 6: One pod at a time.** The claim is `ReadWriteOncePod`, so while `ebs-sandbox` holds
 it a second pod claiming the same volume stays `Pending`. Apply
@@ -264,12 +276,16 @@ kubectl delete pod ebs-sandbox-second -n "$NAMESPACE"
 ```
 
 ```text
+pod/ebs-sandbox-second created
 NAME                 READY   STATUS    RESTARTS   AGE
-ebs-sandbox-second   0/1     Pending   0          14s
-0/11 nodes are available: 1 Insufficient cpu, 2 node(s) unavailable due to PersistentVolumeClaim with ReadWriteOncePod access mode already in-use by another pod, 3 node(s) had untolerated taint(s), 5 node(s) didn't match Pod's node affinity/selector. preemption: 0/11 nodes are available: 3 No preemption victims found for incoming pod, 8 Preemption is not helpful for scheduling.
+ebs-sandbox-second   0/1     Pending   0          26s
+0/3 nodes are available: 1 Insufficient cpu, 1 node(s) had untolerated taint(s), 1 node(s) unavailable due to PersistentVolumeClaim with ReadWriteOncePod access mode already in-use by another pod. no new claims to deallocate, preemption: 0/3 nodes are available: 1 Preemption is not helpful for scheduling, 2 No preemption victims found for incoming pod.
+pod "ebs-sandbox-second" deleted from nitro-ebs-sample namespace
 ```
 
-The second pod stays `Pending`: `ReadWriteOncePod` restricts the volume to one pod
+The second pod stays `Pending`, and the scheduler names the reason (`unavailable due to
+PersistentVolumeClaim with ReadWriteOncePod access mode already in-use by another pod`):
+`ReadWriteOncePod` restricts the volume to one pod
 cluster-wide, which is the constraint a single-attach block device needs. `ReadWriteOnce`
 would restrict it only to one node, letting two pods on that node both claim it, so this
 sample uses `ReadWriteOncePod` for every claim.
@@ -321,7 +337,7 @@ claim. Each claim names the same class the run used (render `<STORAGE_CLASS>` wi
 ```
 
 ```bash
-sed "s|storageClassName: <STORAGE_CLASS>|storageClassName: auto-ebs-sc|" deploy/statefulset-ebs.yaml | kubectl apply -n "$NAMESPACE" -f -
+sed "s|storageClassName: <STORAGE_CLASS>|storageClassName: nitro-sandbox-ebs|" deploy/statefulset-ebs.yaml | kubectl apply -n "$NAMESPACE" -f -
 kubectl rollout status statefulset/ebs-sandbox-set -n "$NAMESPACE" --timeout=10m
 kubectl logs ebs-sandbox-set-0 -n "$NAMESPACE"
 kubectl delete pod ebs-sandbox-set-0 -n "$NAMESPACE"
@@ -332,17 +348,21 @@ kubectl logs ebs-sandbox-set-0 -n "$NAMESPACE"
 ```text
 service/ebs-sandbox-set created
 statefulset.apps/ebs-sandbox-set created
+Waiting for 2 pods to be ready...
+Waiting for 1 pods to be ready...
+Waiting for 1 pods to be ready...
 partitioned roll out complete: 2 new pods have been updated...
 --- /data/boot-log.txt ---
-booted 2026-10-20T14:54:25Z as ebs-sandbox-set-0
+booted 2026-10-23T02:33:42Z as ebs-sandbox-set-0
 --- device backing /data ---
 Filesystem           Type            Size      Used Available Use% Mounted on
 /dev/vdd             ext4            9.7G     28.0K      9.7G   0% /data
 pod "ebs-sandbox-set-0" deleted from nitro-ebs-sample namespace
+Waiting for 1 pods to be ready...
 partitioned roll out complete: 2 new pods have been updated...
 --- /data/boot-log.txt ---
-booted 2026-10-20T14:54:25Z as ebs-sandbox-set-0
-booted 2026-10-20T14:57:27Z as ebs-sandbox-set-0
+booted 2026-10-23T02:33:42Z as ebs-sandbox-set-0
+booted 2026-10-23T02:34:59Z as ebs-sandbox-set-0
 --- device backing /data ---
 Filesystem           Type            Size      Used Available Use% Mounted on
 /dev/vdd             ext4            9.7G     28.0K      9.7G   0% /data
@@ -362,8 +382,8 @@ provisioned. So this sample chooses a class and never changes one.
 
 1. **The cluster's default class, when it fits.** "Fits" means `provisioner:
    ebs.csi.eks.amazonaws.com`, `type: gp3` (or unset, which is gp3), and `encrypted:
-   "true"`. If exactly one default class fits, setup uses it and creates nothing. On this
-   cluster the default `auto-ebs-sc` fits, which is the run shown above.
+   "true"`. If exactly one default class fits, setup uses it and creates nothing. The
+   run shown above had no default class, so setup took the next branch.
 2. **Otherwise, the sample's own class.** [`deploy/storage-class.yaml`](deploy/storage-class.yaml)
    is a non-default class named `nitro-sandbox-ebs`, following the Amazon EKS User Guide,
    *Create a storage class*: `allowedTopologies` limited to Auto Mode nodes,
@@ -402,7 +422,8 @@ other claim on the cluster is provisioned. setup only ever `kubectl create`s the
 own class when it is absent.
 
 To run the second branch yourself on a cluster whose default already fits, force the
-sample's own class with `STORAGE_CLASS`:
+sample's own class with `STORAGE_CLASS`. The two output blocks below are from an earlier
+run, on a cluster whose default `auto-ebs-sc` fits:
 
 ```bash
 NAMESPACE=nitro-ebs-own STORAGE_CLASS=nitro-sandbox-ebs ./scripts/setup.sh
@@ -492,19 +513,20 @@ Deleting any data-ebs-sandbox-set-* per-replica claims (one EBS volume each)...
 persistentvolumeclaim "data-ebs-sandbox-set-0" deleted from nitro-ebs-sample namespace
 persistentvolumeclaim "data-ebs-sandbox-set-1" deleted from nitro-ebs-sample namespace
 Confirming the EBS volumes are gone (waiting up to 180s for the CSI driver to delete them)...
-  ebs-sandbox-data: volume vol-0e2c49212ee125bb7 is gone.
-  data-ebs-sandbox-set-0: volume vol-09fc433cfbfd1b4e0 is gone.
-  data-ebs-sandbox-set-1: volume vol-05f41001ac1a23f6c is gone.
-The sample's StorageClass 'nitro-sandbox-ebs' is not present (setup used the cluster default, or it was never created). Nothing to delete; the cluster default is untouched.
+  ebs-sandbox-data: volume vol-0aba18066c580255b is gone.
+  data-ebs-sandbox-set-0: volume vol-0be3cb42eea67cf74 is gone.
+  data-ebs-sandbox-set-1: volume vol-009dff37b48c088fd is gone.
+Deleting the sample's own StorageClass 'nitro-sandbox-ebs' (it carries the sample's mark and is not the cluster default)...
+storageclass.storage.k8s.io "nitro-sandbox-ebs" deleted
 The cluster's default StorageClass was never touched.
 
 Clean up complete: every pod, the StatefulSet, the Service and every PVC this sample created are gone, their EBS volumes are confirmed deleted, and the sample's own StorageClass (if it created one) is removed.
 ```
 
-This run used the cluster's default class, so there was no sample StorageClass to delete and
-the cluster default was left exactly as it was. When setup created the sample's own
-`nitro-sandbox-ebs` class, this step deletes that class instead, still leaving the cluster
-default untouched.
+This run created the sample's own class, so `clean.sh` deleted `nitro-sandbox-ebs` (it
+carries the mark). The cluster had no default class, and `clean.sh` never touches one: when
+setup used a cluster default that fits, this step finds no sample class to delete and leaves
+the default as it was.
 
 If this is the last sample you ran, follow the
 [hello sandbox](../../getting-started/hello-sandbox/README.md#clean-up) clean up to remove
