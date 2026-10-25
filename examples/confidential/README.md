@@ -120,6 +120,14 @@ then has to match before `Decrypt` succeeds. These samples pin no more than the 
 so that what they install is exactly what the generator emitted, with nothing added by
 hand.
 
+**On the deny side, give each register its own statement.** The keys in a
+`StringNotEqualsIgnoreCase` block are ANDed too, so one deny listing two registers fires
+only when *both* fail to match, which is far weaker than it looks: a request matching one
+register and not the other slips past it. That is why the template below carries two
+separate denies, one per register, rather than one with both. If you add a register, add a
+deny for it; the setup script's gate check reads the live policy back and refuses to go on
+if it finds the merged form.
+
 **The limitation that comes with that, stated plainly.** `PCR17` binds key release to one
 exact policy document, and so to the image digest, environment, identity and mounts that
 policy pins. It does **not** bind release to a particular guest system image: another guest

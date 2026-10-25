@@ -853,7 +853,9 @@ own node.
   image measurement, which the Amazon EKS User Guide, *Security model and parent instance
   trust assumptions*, asks for alongside `PCR17` at minimum. `PCR0` has to come from a
   real attestation document, and nothing in this sample reads one, so it is left out
-  rather than written by hand. The
+  rather than written by hand. If you do add it, give it a deny statement of its own:
+  registers listed together in one deny are ANDed, so such a deny only fires when every
+  one of them mismatches. The
   [Confidential section page](../README.md#the-policy-and-its-measurement) sets this out in
   full.
 - **A new IAM role is not immediately visible to KMS.** `kms:PutKeyPolicy` refuses a policy
