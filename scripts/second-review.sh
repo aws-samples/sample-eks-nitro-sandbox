@@ -33,11 +33,14 @@
 #   SECOND_REVIEW_CODEX_PROVIDER   optional, passed as codex's model_provider.
 #   SECOND_REVIEW_CODEX_EFFORT     optional, passed as codex's model_reasoning_effort.
 #   SECOND_REVIEW_KEEP_AWS_ENV     keep the AWS credentials in the environment when
-#                                  running the codex backend. They are removed by
-#                                  default, so that a machine holding credentials for
-#                                  some other account cannot end up billed for the
-#                                  review. Set this to 1 only if your codex authenticates
-#                                  to Bedrock with exactly those credentials.
+#                                  running the codex backend. The variables the AWS SDKs
+#                                  read are removed by default, so that a machine holding
+#                                  credentials for some other account does not end up
+#                                  billed for the review. It is a denylist, so a backend
+#                                  that reads some other variable is not covered; check
+#                                  which account a new backend bills before trusting it.
+#                                  Set this to 1 only if your codex authenticates to
+#                                  Bedrock with exactly those credentials.
 #
 # The backend's trace (review.err) can hold credential details: read it with tail or a
 # targeted search, and never paste it into a pull request, an issue or Slack.
@@ -258,7 +261,7 @@ case "$BACKEND" in
                -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN -u AWS_ROLE_SESSION_NAME
                -u AWS_ACCESS_KEY -u AWS_SECRET_KEY -u AWS_SECURITY_TOKEN
                -u AWS_CREDENTIAL_PROFILES_FILE
-               AWS_CONFIG_FILE=/dev/null
+               AWS_CONFIG_FILE=/dev/null BOTO_CONFIG=/dev/null
                AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_EC2_METADATA_DISABLED=true)
     fi
     ${timeout_cmd[@]+"${timeout_cmd[@]}"} "${aws_env[@]}" "$resolved_cmd" "${codex_args[@]}" \
@@ -302,14 +305,18 @@ case "$BACKEND" in
     # be there: with only one, the block would run to the end of the trace and a brief that
     # quotes a preamble -- as a brief reviewing this very script does -- could supply these
     # values itself. Anchored, so only a whole line of exactly eight hyphens counts.
-    # Only the part before codex's own "user" marker counts, which is where it starts
-    # echoing the brief. Counting rules over the whole trace was not enough: a trace with
-    # one real rule plus a rule in the echoed brief also counts two, and the first block
-    # would then run into the brief, which could supply these values itself.
+    # Only the part before codex's own "user" marker counts, which is the line it prints
+    # straight after its preamble, before echoing the brief. Counting rules over the whole
+    # trace was not enough: one real rule plus a rule in the echoed brief also counts two,
+    # and the first block would then run into the brief, which could supply these values
+    # itself. The marker must be there: without it, "before the marker" is the whole trace
+    # and the same brief-supplied block would be believed again.
+    grep -qx 'user' "$OUT_ABS/review.err" || refuse E_NO_PREAMBLE \
+      "codex's trace has no 'user' marker, so where its own preamble ends and the echoed brief begins cannot be told apart, and the mode it ran in cannot be read from it. Check $OUT_ABS/review.err with tail."
     awk '/^user$/ { exit } { print }' "$OUT_ABS/review.err" > "$OUT_ABS/pre-user.txt"
     rules=$(grep -c '^--------$' "$OUT_ABS/pre-user.txt" || true)
     [ "${rules:-0}" -ge 2 ] || refuse E_NO_PREAMBLE \
-      "codex's trace has ${rules:-0} preamble rule(s) before it echoes the brief, not the two that delimit its own preamble, so the mode it ran in cannot be read from it. Check $OUT_ABS/review.err with tail."
+      "codex's trace has ${rules:-0} preamble rule(s) before its 'user' marker, not the two that delimit its own preamble, so the mode it ran in cannot be read from it. Check $OUT_ABS/review.err with tail."
     awk '/^--------$/ { n++; next } n == 1' "$OUT_ABS/pre-user.txt" > "$OUT_ABS/preamble.txt"
     reported_models=$(sed -n 's/^model: //p' "$OUT_ABS/preamble.txt" | head -1)
     sandbox_mode=$(sed -n 's/^sandbox: //p' "$OUT_ABS/preamble.txt" | head -1)
@@ -326,7 +333,7 @@ case "$BACKEND" in
     # a string-valued modelUsage would otherwise be split into its characters, and a
     # non-object record would end the script with no tagged reason.
     python3 -c '
-import json, sys, unicodedata
+import json, sys
 
 path, out = sys.argv[1], sys.argv[2]
 try:
@@ -346,14 +353,16 @@ if not isinstance(usage, dict) or not usage:
 if not all(isinstance(k, str) and k.strip() for k in usage):
     print("BAD\tmodelUsage has a name that is not a non-empty string")
     raise SystemExit(0)
-# The names come back to the shell as one tab-separated line joined by "+", so a name
-# holding a control character could push another name onto a line nothing reads, and a
-# name holding "+" would be split into two. Refuse rather than mangle.
-bad = [k for k in usage
-       if "+" in k or any(unicodedata.category(c) == "Cc" for c in k)]
+# The names come back to the shell as one tab-separated line joined by "+", and then into
+# review-record.txt for a person to read. Allow only visible ASCII without "+": naming the
+# characters to reject kept missing some -- first the ESC and DEL controls, then the Zl/Zp
+# separators and the Cf zero-width and bidirectional overrides, which can make two
+# different names look identical or make the record read as something it is not.
+allowed = set(chr(c) for c in range(0x21, 0x7F)) - {"+"}
+bad = [k for k in usage if not set(k) <= allowed]
 if bad:
-    print("BAD\ta model name holds a '+' or a control character, which this script "
-          "cannot carry safely: %s" % json.dumps(bad))
+    print("BAD\ta model name holds something other than visible ASCII without '+', "
+          "which this script cannot carry or display safely: %s" % json.dumps(bad))
     raise SystemExit(0)
 denials = d.get("permission_denials")
 if not isinstance(denials, list):
