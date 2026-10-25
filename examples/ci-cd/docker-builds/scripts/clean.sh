@@ -334,7 +334,7 @@ fi
 # only record of something that is still in the account, and none of those cases records a
 # failure of its own, so the clean up would still say it was complete. It is reported and kept.
 if [[ -e "$STATE_FILE.tmp" ]]; then
-  note_fail "$(basename "$STATE_FILE").tmp was left behind by a ./scripts/ecr-setup.sh that stopped while it was recording a resource, so it may name an ECR repository or an IAM role that $(basename "$STATE_FILE") does not. Read it, remove by hand whatever it names that is still there, then delete it"
+  note_fail "$(basename "$STATE_FILE").tmp was left behind by a ./scripts/ecr-setup.sh that stopped while it was recording a resource, so it may name an ECR repository, an IAM role or a Pod Identity association that $(basename "$STATE_FILE") does not. If its last line is ECR_STATE_END=1 it is a complete record: move it over $(basename "$STATE_FILE") and run this again, and the checks here will remove what it names. Otherwise read it, remove by hand whatever it names that is still there, then delete it"
 fi
 
 echo
