@@ -15,7 +15,9 @@ time, the author had already read the code.
 **Three ways to do it, all sanctioned, your pick, no approval needed:** the Codex CLI or
 the Claude Code CLI, both through `scripts/second-review.sh`, or a fresh sub agent in your
 own session. The invariants below are the requirement; the script holds them for you on the
-two CLI paths, and you hold them yourself with a sub agent — where the model difference is
+two CLI paths (establishing the read-only one by different means for each — see
+[What "read-only" rests on, per backend](../../../AGENTS.md#what-read-only-rests-on-per-backend)),
+and you hold them yourself with a sub agent — where the model difference is
 the one that needs deliberate effort, because **a sub agent inherits your model unless you
 override it**. See
 [A sub agent in your own session](../../../AGENTS.md#a-sub-agent-in-your-own-session).
@@ -109,15 +111,20 @@ and the host-specific options on the maintainers' workstation.
   runs with `--restricted` and `--strict-mcp-config`, so the reviewer holds only `Read`,
   `Grep` and `Glob`, while Codex 0.164 cannot be made to drop the host's MCP servers, so a
   Codex reviewer can also reach those. That is a fact about the backends, not a ranking.
-- **The reviewer must not be able to write.** Two separate things, so keep them apart when
-  you record the review: the backend is *configured* to refuse writes, and the script
-  *checks afterwards* that no persistent change it can see was left in `--tree` — every
-  path's type, mode, size, modification time, symlink target and content. It cannot see a
-  file created and deleted inside the run, or any write outside the tree. Point it at the
-  snapshot in `tmp/review/tree`, never your working tree. A read-only flag on its own is
-  not enough: Codex's `--sandbox read-only` still asked to write and a host that answers
-  the ask let it through, which is why the script pins the approval policy too and refuses
-  a run whose reported mode is anything else.
+- **The reviewer must not be able to write — and say which way you established that.**
+  Three separate things, so keep them apart when you record the review:
+  - the backend is *configured* to refuse writes;
+  - for Codex only, it also *reports* its mode, and the script refuses the run unless that
+    report says `sandbox: read-only` and `approval: never`. Claude reports nothing back, so
+    on that path the record states what it was asked to be, not something it confirmed;
+  - for both, the script *checks afterwards* that no persistent change it can see was left
+    in `--tree` — every path's type, mode, size, modification time, symlink target and
+    content. It cannot see a file created and deleted inside the run, or any write outside
+    the tree.
+
+  Point it at the snapshot in `tmp/review/tree`, never your working tree. A read-only flag
+  on its own is not enough: Codex's `--sandbox read-only` still asked to write and a host
+  that answers the ask let it through, which is why the script pins the approval policy too.
 - **Keep the brief, the output and any trace in `tmp/review/`.** The script refuses an
   `--out` outside the repository's gitignored `tmp/`. A trace (`review.err`) can hold
   credential details: read it with `tail` or a targeted search, and never paste it into a

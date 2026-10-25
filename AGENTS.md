@@ -135,8 +135,9 @@ security claim. **There are three sanctioned ways to do it, and they are interch
    are asking it to review.
 
 You pick, and no approval is needed. What matters is not which one you use but the three
-invariants below: the script holds them for you on paths 1 and 2, and you hold them
-yourself on path 3.
+invariants below. The script holds them for you on paths 1 and 2 — with one difference in
+*how* it establishes the read-only one, set out under [Running it](#running-it) — and you
+hold them yourself on path 3.
 
 **Adversarial** describes what the reviewer does, not how the brief is worded: it assumes
 the implementer's code is wrong and tries to break the claims it makes. It does not mean
@@ -158,8 +159,11 @@ reviewer you use:
 
 #### Running it
 
-`scripts/second-review.sh` runs either backend and holds all three invariants. Run it from
-the repository root, with the brief, the snapshot of the commit and the output under `tmp/`:
+`scripts/second-review.sh` runs either backend. It holds the different-model and
+recorded-model invariants the same way for both, and the read-only one by different means
+for each — see [What "read-only" rests on, per backend](#what-read-only-rests-on-per-backend)
+below. Run it from the repository root, with the brief, the snapshot of the commit and the
+output under `tmp/`:
 
 ```bash
 ./scripts/second-review.sh --backend codex  --model openai.gpt-5.6-sol \
@@ -192,19 +196,30 @@ the repository root, with the brief, the snapshot of the commit and the output u
   way no review happened, and that is a fact the maintainers need rather than something to
   configure around.
 
-Read-only is not one flag. Codex's `--sandbox read-only` on its own does **not** stop it
-writing: it leaves the approval policy at `on-request`, and a host whose configuration
-answers that ask by itself lets the write through. A run on 2026-10-25 with exactly that
-flag created a file in the review tree and appended to a page, and reported both as
-successful. The script passes `-c approval_policy="never"` as well, and refuses a run whose
-reported mode is anything else.
+##### What "read-only" rests on, per backend
 
-That is the backend being *configured* to refuse writes. Separately, the script *checks
-afterwards* that nothing it can see changed in the tree: every path's type, mode, size,
-modification time, symlink target and content, fingerprinted before and after. Keep the two
-apart when you record a review, because the check has limits — it cannot see a file created
-and deleted within the run, and it says nothing about writes outside the tree. It is still
-the check that caught the write above.
+Read-only is not one flag, and the two backends do not establish it the same way. Say which
+one you used when you record a review, rather than writing "read-only" as if it meant the
+same thing.
+
+- **Codex: reported and checked.** `--sandbox read-only` on its own does **not** stop Codex
+  writing — it leaves the approval policy at `on-request`, and a host whose configuration
+  answers that ask by itself lets the write through. A run on 2026-10-25 with exactly that
+  flag created a file in the review tree and appended to a page, and reported both as
+  successful. The script passes `-c approval_policy="never"` as well, and then **reads
+  Codex's own preamble and refuses the run unless Codex reports `sandbox: read-only` and
+  `approval: never`**. So for this backend the confinement is confirmed from what the
+  backend says about itself.
+- **Claude: requested, and checked after the fact.** The script runs it with `--restricted`,
+  `--strict-mcp-config`, a read-only tool list and no answerer for permission prompts, so
+  the reviewer holds no tool that can write. But **Claude does not report its confinement
+  back**, so there is nothing to parse and verify: the record states what Claude was *asked*
+  to be. The evidence that it did not write is the tree check below, not a backend report.
+- **Both: the tree is fingerprinted before and after** — every path's type, mode, size,
+  modification time, symlink target and content — and the run fails if anything changed.
+  That check has limits: it cannot see a file created and deleted within the run, and it
+  says nothing about writes outside the tree. It is still the check that caught the write
+  above, and on the Claude path it is the whole of the after-the-fact evidence.
 
 #### A sub agent in your own session
 
@@ -262,10 +277,14 @@ review, and a collaborator on a laptop has none of it.
   Its Bedrock calls bill the toolbox-managed builder account, because the host
   `~/.codex/config.toml` pins the provider with a `credential_export` running the toolbox
   Codex credential helper.
-- **The review must not be billed to an account whose credentials merely happen to be
-  present.** The script removes the AWS credentials from the environment before running the
-  Codex backend, so a machine holding credentials for some other account cannot end up
-  paying for a review; the backend is left with whatever its own configuration pins. Set
+- **The review should not be billed to an account whose credentials merely happen to be
+  present.** The script removes the AWS credential variables from the environment before
+  running the Codex backend, which leaves it whatever its own configuration pins and so
+  **reduces the risk** of an ambient account paying for a review. It does not eliminate it:
+  the removal is a **denylist** of the variables the AWS SDKs are known to read, so a
+  backend that reads some other variable is not covered, and a backend whose credentials
+  come from a helper named in its own configuration file is not affected by it at all.
+  Knowing which account your backend bills is still yours to establish. Set
   `SECOND_REVIEW_KEEP_AWS_ENV=1` only if your Codex authenticates to Bedrock with exactly
   those credentials. Why: this workstation holds live credentials for an unrelated account,
   and the removal is what keeps them out of the reviewer.
@@ -274,10 +293,12 @@ review, and a collaborator on a laptop has none of it.
   `-c model_providers.amazon-bedrock.aws.profile=...` unconditionally, and Codex 0.164
   refuses a provider carrying both that and the host config's `aws.credential_export`
   ("provider aws.credential_export cannot be combined with aws.profile"). No `-c` option
-  avoids it, because Codex merges `-c` into the config rather than replacing a table. Its
-  billing guarantee is not lost: its profile and the host config's `credential_export`
-  resolve to the same builder-account role. Use it only if you have fixed it, by pointing
-  `SECOND_REVIEW_CODEX_CMD` at it.
+  avoids it, because Codex merges `-c` into the config rather than replacing a table.
+  Dropping it appears to cost nothing: on the maintainers' workstation its profile and the
+  host config's `credential_export` were observed to resolve to the same builder-account
+  role. That is one observation on one machine, not a guarantee, and a review's output
+  identifies no billed account — so treat it as a reason not to worry rather than as proof.
+  Use the wrapper only if you have fixed it, by pointing `SECOND_REVIEW_CODEX_CMD` at it.
 - **The two backends differ in what else the reviewer can reach.** `--backend claude` runs
   with `--restricted` and `--strict-mcp-config`, so the reviewer holds only `Read`, `Grep`
   and `Glob` and no MCP server. Codex 0.164 cannot clear `mcp_servers` from the command
@@ -296,8 +317,8 @@ review, and a collaborator on a laptop has none of it.
     `~/.claude/settings.json`, which resolves to a different account. On the maintainers'
     workstation, use `SECOND_REVIEW_CLAUDE_CMD=~/.toolbox/bin/claude`: that is the build the
     maintainers have set up for the account they intend for Claude usage.
-  - **The credential removal below is Codex-only, and gives the Claude backend no
-    protection**, because a helper named in a settings file is not read from the environment
+  - **The credential removal described above is Codex-only, and gives the Claude backend
+    no protection**, because a helper named in a settings file is not read from the environment
     at all. Removing environment variables cannot redirect it, and cannot keep anything out
     of it either.
   - **Anywhere else, which account you bill is yours to establish**, by asking your
