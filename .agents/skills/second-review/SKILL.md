@@ -86,8 +86,21 @@ you do with the answer.
   - a claim on the page that the output blocks do not show;
   - shell traps: `set -euo pipefail` with `|| true` and command substitutions, unset
     variables, an unchecked tool, an unanchored pattern matching its own comment.
+- **If the change ships prose beside a check, ask about the prose too:** does any sentence
+  claim more than the code establishes — "cannot" where the code reduces a risk, "verified"
+  where it was requested, "proves" where it was checked afterwards and partially? Point the
+  reviewer at the gap between what the script's own comments say and what the page or
+  `AGENTS.md` says; where they disagree, the comments are usually the honest ones. Why: this
+  skill's own tooling was reviewed nine times, and the first eight briefs all scoped the
+  reviewer to the script's checks. The ninth asked this question and immediately found two
+  overclaims the others had no reason to look at — a reviewer answers the question you ask
+  it, and a narrow brief run eight times is still a narrow brief.
 - **Say what earlier reviews covered**, and ask it not to repeat them. Why: its attention
   is the scarce part.
+- **Vary what you scope a later round to.** Repeating a round against the same classes
+  mostly re-checks the last fix. If several rounds have come back with only small or
+  theoretical findings, that may mean the code is converging, or it may mean every brief has
+  been asking the same thing; change the question before concluding the former.
 - **Tell it to assume your own fixes are wrong.** Why: in this repository's history, the
   defect a review finds is often in the fix to the previous finding.
 - **Ask it to say when a class is clean**, and to label each finding must-fix or optional
