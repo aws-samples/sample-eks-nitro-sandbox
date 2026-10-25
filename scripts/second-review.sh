@@ -260,7 +260,7 @@ case "$BACKEND" in
                -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
                -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN -u AWS_ROLE_SESSION_NAME
                -u AWS_ACCESS_KEY -u AWS_SECRET_KEY -u AWS_SECURITY_TOKEN
-               -u AWS_CREDENTIAL_PROFILES_FILE
+               -u AWS_CREDENTIAL_PROFILES_FILE -u AWS_CREDENTIAL_FILE
                AWS_CONFIG_FILE=/dev/null BOTO_CONFIG=/dev/null
                AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_EC2_METADATA_DISABLED=true)
     fi
@@ -311,8 +311,18 @@ case "$BACKEND" in
     # and the first block would then run into the brief, which could supply these values
     # itself. The marker must be there: without it, "before the marker" is the whole trace
     # and the same brief-supplied block would be believed again.
+    # The marker has to be codex's own, not a line of the brief that happens to read
+    # "user": codex echoes the brief immediately after its marker, so the line following
+    # the first marker must be the brief's first line. Checked against two real traces, a
+    # one-line brief and a long one. Without this, a trace that stopped before codex's own
+    # marker would let the echoed brief supply the marker, a closing rule and the three
+    # fields, and its block would be believed.
+    brief_first=$(head -1 "$BRIEF_ABS")
+    echoed_first=$(awk '/^user$/ { if (getline > 0) print; exit }' "$OUT_ABS/review.err")
     grep -qx 'user' "$OUT_ABS/review.err" || refuse E_NO_PREAMBLE \
       "codex's trace has no 'user' marker, so where its own preamble ends and the echoed brief begins cannot be told apart, and the mode it ran in cannot be read from it. Check $OUT_ABS/review.err with tail."
+    [ "$echoed_first" = "$brief_first" ] || refuse E_NO_PREAMBLE \
+      "the line after the 'user' marker in codex's trace is not the brief's first line, so that marker is not codex's own and everything before it may be the echoed brief rather than codex's preamble. Check $OUT_ABS/review.err with tail."
     awk '/^user$/ { exit } { print }' "$OUT_ABS/review.err" > "$OUT_ABS/pre-user.txt"
     rules=$(grep -c '^--------$' "$OUT_ABS/pre-user.txt" || true)
     [ "${rules:-0}" -ge 2 ] || refuse E_NO_PREAMBLE \
@@ -358,11 +368,15 @@ if not all(isinstance(k, str) and k.strip() for k in usage):
 # characters to reject kept missing some -- first the ESC and DEL controls, then the Zl/Zp
 # separators and the Cf zero-width and bidirectional overrides, which can make two
 # different names look identical or make the record read as something it is not.
-allowed = set(chr(c) for c in range(0x21, 0x7F)) - {"+"}
-bad = [k for k in usage if not set(k) <= allowed]
+# Space is allowed inside a name, because a backend may be pointed at a custom model
+# identifier that contains one, and a space is safe in both a tab-separated line and the
+# record; a name padded with whitespace is refused, because it would display as another.
+allowed = set(chr(c) for c in range(0x20, 0x7F)) - {"+"}
+bad = [k for k in usage if not set(k) <= allowed or k != k.strip()]
 if bad:
-    print("BAD\ta model name holds something other than visible ASCII without '+', "
-          "which this script cannot carry or display safely: %s" % json.dumps(bad))
+    print("BAD\ta model name holds something other than printable ASCII without '+', "
+          "or is padded with whitespace, which this script cannot carry or display "
+          "safely: %s" % json.dumps(bad))
     raise SystemExit(0)
 denials = d.get("permission_denials")
 if not isinstance(denials, list):
