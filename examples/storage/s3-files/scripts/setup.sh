@@ -206,11 +206,30 @@ could not be determined. Fix that, then re-run."
 whether it is $MIN_DRIVER_VERSION or newer could not be determined."
   fi
 fi
-driver_image="$($KUBECTL get daemonset efs-csi-node -n kube-system --ignore-not-found \
-  -o jsonpath='{.spec.template.spec.containers[?(@.name=="efs-plugin")].image}')" \
-  || die "could not read the efs-csi-node daemonset in kube-system (the error is above), so
-whether the Amazon EFS CSI driver is installed could not be determined. Check the kube context
-you meant ('kubectl config current-context'), then re-run."
+# The daemonset is read only when there is no add-on, which is the only case its answer
+# decides anything: the version to compare, and whether the refusal should name create-addon
+# or say the driver was installed some other way. Reading it when the add-on already gave an
+# authoritative version would let a kubectl hiccup stop a run whose version was never in
+# doubt, under a message saying the version could not be determined.
+driver_image=""
+if [[ "$addon_present" != aws-efs-csi-driver ]]; then
+  # One read, two facts: whether the daemonset is there at all, and the efs-plugin image on
+  # it. Reading only the image cannot tell "no daemonset" from "a daemonset whose containers
+  # are not the ones this expects", and the second must not be answered with create-addon.
+  ds_read="$($KUBECTL get daemonset efs-csi-node -n kube-system --ignore-not-found \
+    -o jsonpath='{.metadata.name}{"\t"}{.spec.template.spec.containers[?(@.name=="efs-plugin")].image}')" \
+    || die "there is no aws-efs-csi-driver add-on on cluster '$CLUSTER_NAME', and reading the
+efs-csi-node daemonset in kube-system failed (the error is above), so which version of the
+Amazon EFS CSI driver is installed could not be determined. Check the kube context you meant
+('kubectl config current-context'), then re-run."
+  ds_name="${ds_read%%$'\t'*}"
+  driver_image="${ds_read#*$'\t'}"
+  if [[ -n "$ds_name" && -z "$driver_image" ]]; then
+    die "the efs-csi-node daemonset in kube-system has no efs-plugin container, so which
+version of the Amazon EFS CSI driver it runs could not be determined. Check that install, then
+re-run."
+  fi
+fi
 driver_version="$addon_version"
 [[ -n "$driver_version" ]] || driver_version="${driver_image##*:}"
 if ! driver_version_at_least "$driver_version" "$MIN_DRIVER_VERSION"; then
@@ -221,23 +240,30 @@ if ! driver_version_at_least "$driver_version" "$MIN_DRIVER_VERSION"; then
   # it was installed. Which add-on build to ask for is the cluster's to answer: an
   # -eksbuild suffix is only offered for some Kubernetes versions, so the message has the
   # reader list the compatible builds rather than pinning one that may not exist there.
-  pick="  aws eks describe-addon-versions --addon-name aws-efs-csi-driver \\
-    --kubernetes-version <this cluster's Kubernetes version> --region \"$AWS_REGION\" \\
-    --query 'addons[0].addonVersions[].addonVersion'"
+  # Every line below is paste-safe: an angle-bracket placeholder would be read as a shell
+  # redirection, so the two values the reader supplies arrive as assignments instead.
+  pick="  # list the builds offered for this cluster, then set ADDON_VERSION to one of them
+  KUBERNETES_VERSION=\$(aws eks describe-cluster --name \"$CLUSTER_NAME\" --region \"$AWS_REGION\" \\
+    --query cluster.version --output text)
+  aws eks describe-addon-versions --addon-name aws-efs-csi-driver --region \"$AWS_REGION\" \\
+    --kubernetes-version \"\$KUBERNETES_VERSION\" \\
+    --query 'addons[0].addonVersions[].addonVersion' --output text
+  ADDON_VERSION=    # one of those, $MIN_DRIVER_VERSION or newer"
   if [[ "$addon_present" == aws-efs-csi-driver ]]; then
-    how="Pick a compatible build of $MIN_DRIVER_VERSION or newer, upgrade the add-on to it,
-then re-run:
+    how="Upgrade the add-on to a compatible build of $MIN_DRIVER_VERSION or newer, then re-run:
 $pick
   aws eks update-addon --cluster-name \"$CLUSTER_NAME\" --region \"$AWS_REGION\" \\
-    --addon-name aws-efs-csi-driver --addon-version <a build of $MIN_DRIVER_VERSION or newer>"
+    --addon-name aws-efs-csi-driver --addon-version \"\$ADDON_VERSION\""
   elif [[ -z "$driver_image" ]]; then
-    how="Pick a compatible build of $MIN_DRIVER_VERSION or newer, install the add-on, then
+    how="Neither the aws-efs-csi-driver add-on nor an efs-csi-node daemonset in kube-system is
+there, which is the whole of what this check looks for. If the driver is installed some other
+way, upgrade that install to $MIN_DRIVER_VERSION or newer. Otherwise install the add-on, then
 re-run:
 $pick
   aws eks create-addon --cluster-name \"$CLUSTER_NAME\" --region \"$AWS_REGION\" \\
-    --addon-name aws-efs-csi-driver --addon-version <a build of $MIN_DRIVER_VERSION or newer>"
+    --addon-name aws-efs-csi-driver --addon-version \"\$ADDON_VERSION\""
   else
-    how="The driver is installed as the efs-csi-node daemonset rather than as an EKS add-on
+    how="The driver runs as the efs-csi-node daemonset rather than as an EKS add-on
 ($driver_image), so upgrade it to $MIN_DRIVER_VERSION or newer the way it was installed, then
 re-run."
   fi
