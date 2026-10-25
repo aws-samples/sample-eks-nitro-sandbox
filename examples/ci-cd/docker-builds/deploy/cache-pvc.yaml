@@ -1,0 +1,23 @@
+# The EBS-backed layer cache the build Jobs mount at their builder's data directory, so
+# image layers and the build cache survive the Job and a re-run reuses unchanged layers.
+#
+# One template, used twice: scripts/setup.sh renders <CACHE_CLAIM> with docker-build-cache
+# for the Docker-in-Docker Job and with buildkit-cache for the optional BuildKit Job, and
+# <STORAGE_CLASS> with the class it chose. Each claim is created only when it is absent,
+# because a claim's spec is immutable and the point of keeping it is a warm second run.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: <CACHE_CLAIM>
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: docker-builds
+spec:
+  # ReadWriteOncePod, not ReadWriteOnce: an EBS volume attaches to one sandbox at a time
+  # (Amazon EKS User Guide, "Storage", Access mode), and ReadWriteOnce would only keep it to
+  # one node, so two build pods on that node could both claim it.
+  accessModes: ["ReadWriteOncePod"]
+  storageClassName: <STORAGE_CLASS>
+  resources:
+    requests:
+      storage: 10Gi

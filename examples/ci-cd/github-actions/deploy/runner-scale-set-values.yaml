@@ -1,0 +1,68 @@
+# Helm values for the official `gha-runner-scale-set` chart.
+#
+# This file is where the sample happens. `template.spec` is a standard Kubernetes
+# PodSpec, so `runtimeClassName: isolated-sandbox` on it makes every ephemeral
+# runner pod ARC creates for a queued job boot as its own sandbox, with its own
+# kernel. `containerMode.type: dind` adds a privileged Docker-in-Docker sidecar
+# to that same pod, so the runner and its Docker daemon share one pod and one
+# sandbox: a `docker build` from an untrusted pull request is privileged only
+# inside the guest.
+#
+# What the chart honours from `template.spec`: `runtimeClassName`,
+# `nodeSelector`, `tolerations`, the `runner` container's own fields, and extra
+# volumes. What it does not: the `dind` sidecar. In `dind` container mode the
+# chart renders that sidecar itself and ignores any container named `dind` here,
+# so its storage driver and volumes cannot be set through these values. The
+# chart default (`overlay2`, on an `emptyDir` inside the guest) builds and runs
+# images in the sandbox.
+#
+# scripts/setup.sh renders __GITHUB_CONFIG_URL__ from your .env and passes
+# `githubConfigSecret` as a name, so no credential is ever on a command line.
+githubConfigUrl: "__GITHUB_CONFIG_URL__"
+
+# A reference to the Secret scripts/setup.sh creates from your credential file,
+# by NAME. An inline `githubConfigSecret.github_token` here, or a
+# `helm --set` of one, would put the credential in the release's own Secret and
+# in `helm get values`.
+githubConfigSecret: __GITHUB_SECRET_NAME__
+
+# Idle to zero: no runner pod exists until a job is queued. The listener pod in
+# the controller's namespace holds the only standing connection.
+minRunners: 0
+maxRunners: 2
+
+# `dind` injects a privileged `docker:dind` sidecar into the runner pod and
+# points the runner at it over /var/run/docker.sock. Because it is a sidecar in
+# the same pod, the one runtimeClassName below covers the Docker daemon too.
+containerMode:
+  type: dind
+
+# The ephemeral runner pod spec: an ordinary PodSpec, and the sandbox seam.
+template:
+  spec:
+    # The only line that makes this a sandbox.
+    runtimeClassName: isolated-sandbox
+    # The runner and dind images are x86_64 only.
+    nodeSelector:
+      kubernetes.io/arch: amd64
+    containers:
+      # Only the `runner` container is read from here; the chart owns `dind`.
+      - name: runner
+        # The chart's own default runner image. GitHub stops queuing jobs to a
+        # runner more than 30 days behind a release, and its broker refuses a
+        # deprecated runner outright, so this tracks the chart default rather
+        # than pinning an older tag.
+        image: ghcr.io/actions/actions-runner:latest
+        command: ["/home/runner/run.sh"]
+        # This sample sets requests and limits, which most samples here do not.
+        # A `docker build` needs more memory than the default sandbox size, and
+        # equal requests and limits give the pod Guaranteed QoS so one queued
+        # job takes exactly one sandbox of known size. Change them to suit your
+        # own builds.
+        resources:
+          requests:
+            cpu: "1"
+            memory: "2Gi"
+          limits:
+            cpu: "1"
+            memory: "2Gi"

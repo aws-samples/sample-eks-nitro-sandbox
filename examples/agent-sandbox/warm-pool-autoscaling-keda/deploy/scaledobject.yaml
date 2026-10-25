@@ -1,0 +1,84 @@
+# The KEDA ScaledObject that drives the SandboxWarmPool's spec.replicas from the
+# SandboxClaim count the exporter reports.
+#
+# scaleTargetRef names the SandboxWarmPool itself, not a Deployment. KEDA scales
+# any resource that defines a /scale subresource the same way it scales a
+# Deployment, and the SandboxWarmPool CRD defines one whose specReplicasPath is
+# .spec.replicas. So KEDA creates a Horizontal Pod Autoscaler, the HPA writes the
+# pool's /scale subresource, and spec.replicas is the field that moves.
+#
+# THE ARITHMETIC, and what this sample has and has not established.
+#
+# What its runs show: no claims hold the pool at the warm floor of 1, and three
+# claims take it to 3, the cap. Those two readings are on the page.
+#
+# What they do NOT show is the mapping in between, and the obvious guess for it is
+# probably wrong. "desiredReplicas = ceil(active_claims / targetValue)" is the
+# natural reading of metricType: Value, but the Horizontal Pod Autoscaler's
+# arithmetic for an external metric scales the ratio by the number of READY
+# replicas: roughly ceil((metricValue / targetValue) * readyReplicas), holding
+# steady while the ratio is within its tolerance of 1. With targetValue: 1 that
+# makes the ratio the claim count itself, so any demand above one claim asks for
+# more than the cap and lands on it. Both readings this sample took are the same
+# under either rule, which is why the difference does not show in its output.
+#
+# Do not read a per-claim mapping into the numbers below. What the bounds
+# guarantee is the part that matters here: at rest the pool holds
+# minReplicaCount, and it never exceeds maxReplicaCount.
+#
+# __NAMESPACE__ is filled in at apply time by the scripts from the NAMESPACE
+# variable, so an overridden name reaches this object and the exporter URL below.
+# Never apply this file with the placeholder in place.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: warm-pool
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: warm-pool-autoscaling-keda
+spec:
+  scaleTargetRef:
+    apiVersion: extensions.agents.x-k8s.io/v1beta1
+    kind: SandboxWarmPool
+    name: warm-pool
+  # A warm floor: at rest the pool still holds one pre-booted pod, so the first
+  # claim after a quiet spell is still adopted in under a second rather than
+  # paying a cold start.
+  minReplicaCount: 1
+  # The bound on warm capacity. The pool may never hold more than this many
+  # pre-booted pods however much demand the exporter reports, which is what keeps
+  # the sample small on a shared cluster.
+  maxReplicaCount: 3
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          # No stabilization window: a claim that arrives should raise the pool
+          # now, not after the HPA has watched the metric settle.
+          stabilizationWindowSeconds: 0
+        scaleDown:
+          # The HPA's default scale-down stabilization window is 300 seconds, so
+          # with the default the pool would sit at its loaded size for five
+          # minutes after the last claim went away and the page could not show
+          # the scale-down at all. Zero here means the decision follows the
+          # metric in both directions. In production, set this to how long you
+          # are willing to pay to keep warm capacity that nothing is asking for.
+          stabilizationWindowSeconds: 0
+          policies:
+            # Allow the whole pool to come back down in one step. Without a
+            # policy the HPA applies its default, which is a percentage-based
+            # limit that would take several periods to get back to the floor.
+            - type: Pods
+              value: 3
+              periodSeconds: 15
+  triggers:
+    - type: metrics-api
+      # Value, not AverageValue: the metric is a count of claims for the whole
+      # pool, not a per-pod rate, so it must not be divided by the replica count.
+      metricType: Value
+      metadata:
+        # Cluster DNS for the exporter's ClusterIP Service. Reachable from inside
+        # the cluster and from nowhere else.
+        url: "http://claim-exporter.__NAMESPACE__.svc.cluster.local:8080/metrics"
+        valueLocation: "active_claims"
+        targetValue: "1"
