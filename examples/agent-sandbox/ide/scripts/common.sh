@@ -51,7 +51,8 @@ fi
 
 NAMESPACE="${NAMESPACE:-ide}"
 # STORAGE_CLASS, when set, names a specific class for the workspace claim and
-# overrides the choice; setup then only checks that class's provisioner. When it
+# overrides the choice; setup then checks that class's provisioner and that it
+# reclaims its volumes on delete, and nothing else. When it
 # is unset (the default), setup CHOOSES the class: the cluster's default class if
 # exactly one fits (EBS CSI, gp3, encrypted, reclaimed on delete), otherwise the
 # sample's own class.
@@ -98,6 +99,18 @@ kc_cluster() {
     kubectl --context "$KUBE_CONTEXT" "$@"
   else
     kubectl "$@"
+  fi
+}
+
+# kubectl_cmd : the kubectl invocation to PRINT in a message, so a command the
+# reader is told to run names the same cluster the script used. With no pinned
+# context it is plain "kubectl", which uses whatever context is current, the same
+# as the script did.
+kubectl_cmd() {
+  if [[ -n "$KUBE_CONTEXT" ]]; then
+    printf 'kubectl --context %s' "$KUBE_CONTEXT"
+  else
+    printf 'kubectl'
   fi
 }
 
@@ -329,7 +342,7 @@ require_network_policy_enforcement() {
   if [[ "$v" != "true" ]]; then
     die "network policy enforcement is off on this cluster (amazon-vpc-cni enable-network-policy-controller is '${v:-<unset>}'), so the egress policy would be accepted and not enforced.
        This is a cluster-wide setting every workload shares, so this script does not change it. Turn it on yourself with:
-         kubectl -n kube-system patch configmap amazon-vpc-cni --type merge -p '{\"data\":{\"enable-network-policy-controller\":\"true\"}}'
+         $(kubectl_cmd) -n kube-system patch configmap amazon-vpc-cni --type merge -p '{\"data\":{\"enable-network-policy-controller\":\"true\"}}'
        then re-run ./scripts/setup.sh."
   fi
   echo "network policy enforcement is on (amazon-vpc-cni enable-network-policy-controller=true)"

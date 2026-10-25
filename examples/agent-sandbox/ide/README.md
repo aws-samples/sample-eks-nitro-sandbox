@@ -84,6 +84,7 @@ This folder was built against these releases:
 |---|---|
 | agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.6, as in [Warm pool](../../getting-started/warm-pool/README.md) |
 | code-server ([coder/code-server](https://github.com/coder/code-server)) | 4.143.1, as `ghcr.io/coder/code-server:4.143.1` |
+| `argon2-cli`, the hasher code-server's FAQ names | 0.25.1, pinned in [`scripts/new-password.sh`](scripts/new-password.sh) as `npx argon2-cli@0.25.1` |
 
 ## Files
 
@@ -130,8 +131,11 @@ storage class*). `setup.sh` chooses which class the claim names, so there is not
 here:
 
 - **Your cluster's default class, when it fits.** "Fits" means `provisioner:
-  ebs.csi.eks.amazonaws.com`, `type: gp3` (or unset, which is gp3) and `encrypted: "true"`.
-  When exactly one default class fits, setup uses it and creates nothing.
+  ebs.csi.eks.amazonaws.com`, `type: gp3` (or unset, which is gp3), `encrypted: "true"` and
+  `reclaimPolicy: Delete`. When exactly one default class fits, setup uses it and creates
+  nothing. The reclaim policy is in the list because the clean up deletes the
+  `PersistentVolume` and reports the EBS volume gone, which is only true for `Delete`; a
+  `Retain` class is refused with a message rather than leaving a volume billing.
 - **Otherwise, the sample's own class.** [`deploy/storage-class.yaml`](deploy/storage-class.yaml)
   is a non-default class named `ide-gp3`, marked as the sample's. Setup creates it with
   `kubectl create` only when it is absent, and the clean up removes it.
@@ -141,8 +145,8 @@ Setup never changes a class that already exists and never `kubectl apply`s one: 
 `kubectl apply`, applying a manifest without the default annotation would strip it from the
 live class and change how every other claim on the cluster is provisioned.) To force a
 specific class, set `STORAGE_CLASS` in `.env` to its name; setup then checks that class uses
-the EBS CSI provisioner. The run below used the cluster default `auto-ebs-sc`, so it created
-no class.
+the EBS CSI provisioner and reclaims its volumes on delete, and nothing else. The run below
+used the cluster default `auto-ebs-sc`, so it created no class.
 
 **Step 4: Generate the password, on your own machine.** code-server prefers a
 `hashed-password` over a plaintext `password` and reads the hash from `$HASHED_PASSWORD`
@@ -151,8 +155,12 @@ hashed?"). [`scripts/new-password.sh`](scripts/new-password.sh) writes a random 
 `tmp/ide/password` under this repository, with mode 600, and pipes it on standard input to
 code-server's own hasher; only the hash goes in `tmp/ide/hashed-password`. The repository's
 `tmp/` is git-ignored, so neither file can be committed by accident, and the plaintext is
-never passed on a command line. Use `./scripts/new-password.sh --stdin` to supply a password
-of your own instead.
+never passed on a command line. Both files are written through `mktemp` and moved into
+place, so they are never world-readable and a run that stops part way leaves the password you
+already had untouched: the editor on the cluster still accepts it. The script creates
+`tmp/ide` with mode 700 when it is absent, and leaves the mode alone when it is not, so if
+you point `LOCAL_DIR` at a directory of your own, its mode stays yours. Use
+`./scripts/new-password.sh --stdin` to supply a password of your own instead.
 
 ```bash
 ./scripts/new-password.sh
@@ -537,8 +545,8 @@ kubectl -n ide logs ide | grep -i 'failed login'
 ```text
 0
 0
-[2026-10-24T20:40:42.503Z] info    - Authentication is enabled
-[2026-10-24T20:40:42.503Z] info      - Using password from $HASHED_PASSWORD
+[2026-10-24T21:21:55.439Z] info    - Authentication is enabled
+[2026-10-24T21:21:55.440Z] info      - Using password from $HASHED_PASSWORD
 Failed login attempt {"remoteAddress":"192.168.176.147","userAgent":"curl/8.21.0","timestamp":1792877016}
 ```
 
@@ -726,9 +734,9 @@ kubectl get node i-0773cb5caaeee133f -o jsonpath='{.status.addresses[?(@.type=="
 192.168.176.147
 ```
 
-So the request reached the editor from the node, over the pod network, at the pod's address.
-The kubelet's readiness probe on
-`/healthz` reaches the pod the same way. Two things follow, and the sample depends on both:
+The source address is the node's, so the request reached the editor from the node rather
+than from inside the guest, and it was addressed to the pod. The kubelet runs on that node
+too, so its readiness probe on `/healthz` is node-to-pod traffic of the same kind. Two things follow, and the sample depends on both:
 the container binds `0.0.0.0:8080` rather than the guest's loopback, because the stream comes
 to the pod's address; and the policy cannot deny the node, so anything that sends from the
 node's own address, such as a `hostNetwork` pod scheduled on that node, can still reach the
@@ -753,8 +761,11 @@ yours.
 name served from the same addresses is reachable too. The rule is a list of hosts, not a
 guarantee about content. And a pod can always reach its own node, in both directions.
 
-**Both directions, on the live cluster.** One allowed connection that connects, one refused
-that does not, and the two things a developer actually does with the allowed hosts:
+**Both directions, on the live cluster.** These reads come after Step 8, which replaced the
+pod, so the address below is the new pod's (`192.168.186.194`) rather than the one Step 5
+read for the first pod (`192.168.186.195`). The node, and so the node address in the log
+above, is the same. One allowed connection that connects, one refused that does not, and the
+two things a developer actually does with the allowed hosts:
 
 ```bash
 kubectl -n ide get applicationnetworkpolicy ide-egress -o jsonpath='policyTypes={.spec.policyTypes}{"\n"}ingressRules={.spec.ingress}{"\n"}allowedNames={.spec.egress[1].to[0].domainNames}{"\n"}'

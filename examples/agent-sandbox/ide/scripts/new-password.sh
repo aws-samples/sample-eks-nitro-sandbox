@@ -37,30 +37,38 @@ case "${1:-}" in
   *)         die "unknown argument: $1 (use --stdin to read a password from standard input, or no argument to generate one)" ;;
 esac
 
+# Every write below goes to a fresh file from mktemp, which creates it mode 600,
+# and is moved into place only once it holds what it should. So the plaintext is
+# never in a world-readable file, a file that already exists keeps its own mode
+# until it is replaced, and a run that stops part way through leaves the password
+# you already had exactly as it was. That last part matters: the editor on the
+# cluster still accepts the old password, so losing the file would lose the only
+# copy of the one thing that opens it.
+require_commands mktemp tr
+umask 077
+
 # -s, not -f: an empty password file is as useless as a missing one, and reusing
-# one would hash the empty string and produce a hash that looks perfectly valid.
+# one would hash the empty string into a hash that looks perfectly valid.
 if [[ -s "$PASSWORD_FILE" && $from_stdin -eq 0 ]]; then
   echo "reusing the password already in $(rel "$PASSWORD_FILE") (delete it to generate a new one)"
 else
-  # Create the file with mode 600 BEFORE anything is written to it, so the
-  # plaintext is never briefly world-readable.
-  umask 077
+  pw_tmp="$(mktemp "$LOCAL_DIR/.password.XXXXXX")"
   if [[ $from_stdin -eq 1 ]]; then
-    require_commands tr
     # Read standard input, drop any trailing newline the shell or the terminal
     # added: code-server compares the password byte for byte.
-    tr -d '\r\n' > "$PASSWORD_FILE"
-    # Remove the empty file before stopping, so nothing is left for a later run
-    # to find and reuse.
-    [[ -s "$PASSWORD_FILE" ]] \
-      || { rm -f "$PASSWORD_FILE"; die "nothing arrived on standard input; no password written"; }
+    tr -d '\r\n' > "$pw_tmp"
+    [[ -s "$pw_tmp" ]] \
+      || { rm -f "$pw_tmp"; die "nothing arrived on standard input; no password written, and $(rel "$PASSWORD_FILE") is unchanged"; }
+    mv -f "$pw_tmp" "$PASSWORD_FILE"
     echo "wrote the password you supplied to $(rel "$PASSWORD_FILE")"
   else
-    require_commands openssl tr
-    openssl rand -base64 24 | tr -d '\r\n' > "$PASSWORD_FILE"
+    require_commands openssl
+    openssl rand -base64 24 | tr -d '\r\n' > "$pw_tmp"
+    [[ -s "$pw_tmp" ]] \
+      || { rm -f "$pw_tmp"; die "openssl produced no password; $(rel "$PASSWORD_FILE") is unchanged"; }
+    mv -f "$pw_tmp" "$PASSWORD_FILE"
     echo "generated a random password in $(rel "$PASSWORD_FILE")"
   fi
-  chmod 600 "$PASSWORD_FILE"
 fi
 
 # Hash it. argon2-cli reads the password on standard input and prints the encoded
@@ -70,13 +78,13 @@ fi
 #
 # The version is pinned, like every other version this sample uses: this is the
 # one program that sees the plaintext, so which code runs is not something to
-# leave to whatever npm publishes next. The page states the same pin.
-umask 077
-npx --yes argon2-cli@0.25.1 -e < "$PASSWORD_FILE" | tr -d '\r\n' > "$HASH_FILE" \
-  || die "could not hash the password with 'npx argon2-cli@0.25.1 -e'"
-grep -q '^[$]argon2' "$HASH_FILE" \
-  || die "the hasher did not produce an argon2 hash; $(rel "$HASH_FILE") holds something else"
-chmod 600 "$HASH_FILE"
+# leave to whatever npm publishes next. The page's versions table states the pin.
+hash_tmp="$(mktemp "$LOCAL_DIR/.hashed-password.XXXXXX")"
+npx --yes argon2-cli@0.25.1 -e < "$PASSWORD_FILE" | tr -d '\r\n' > "$hash_tmp" \
+  || { rm -f "$hash_tmp"; die "could not hash the password with 'npx argon2-cli@0.25.1 -e'"; }
+grep -q '^[$]argon2' "$hash_tmp" \
+  || { rm -f "$hash_tmp"; die "the hasher did not produce an argon2 hash; nothing was written to $(rel "$HASH_FILE")"; }
+mv -f "$hash_tmp" "$HASH_FILE"
 
 echo
 echo "hash (this is what the Kubernetes Secret will hold):"

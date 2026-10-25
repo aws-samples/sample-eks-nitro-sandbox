@@ -18,7 +18,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "$HERE/common.sh"
 
-require_commands kubectl sed
+# base64 is used to compare the Secret's value with the local hash file without
+# putting either on a command line.
+require_commands kubectl sed base64
 show_context
 
 # Check every prerequisite BEFORE creating anything, so a missing one stops the
@@ -70,9 +72,15 @@ case $ns_rc in
      # and the clean up both refuse the namespace, so say exactly that rather
      # than exiting on set -e with no explanation.
      kc_cluster label namespace "$NAMESPACE" "$NS_LABEL_KEY=$NS_LABEL_VAL" \
-       || die "created namespace $NAMESPACE but could not label it $NS_LABEL_KEY=$NS_LABEL_VAL. Nothing else was created. Label it yourself with
-         kubectl label namespace $NAMESPACE $NS_LABEL_KEY=$NS_LABEL_VAL
-       and re-run, or delete the namespace: without the label the scripts will not touch it."
+       || die "created namespace $NAMESPACE but could not label it $NS_LABEL_KEY=$NS_LABEL_VAL. Nothing was created in it.$(
+            [[ "$CHOSEN_STORAGE_CLASS" == "$SAMPLE_STORAGE_CLASS" ]] \
+              && printf ' The step before this one created storageclass/%s, which is cluster-scoped and is still there.' "$SAMPLE_STORAGE_CLASS"
+            true
+          ) Label the namespace yourself with
+         $(kubectl_cmd) label namespace $NAMESPACE $NS_LABEL_KEY=$NS_LABEL_VAL
+       and re-run; without the label this script and the clean up both refuse it. To undo
+       instead, label it as above and then run ./scripts/cleanup.sh, which removes the
+       namespace and the sample's own StorageClass."
      echo "created namespace $NAMESPACE, labelled $NS_LABEL_KEY=$NS_LABEL_VAL" ;;
 esac
 
@@ -97,8 +105,9 @@ case $sec_rc in
        die "secret/$SECRET already exists and holds a different hash from $(rel "$HASH_FILE").
        The editor would keep accepting the older password, not the one in $(rel "$PASSWORD_FILE").
        Delete the Secret to set the new password, keeping the workspace:
-         kubectl -n $NAMESPACE delete secret $SECRET && ./scripts/setup.sh
-       The pod picks the new value up when it restarts (kubectl -n $NAMESPACE delete pod $SANDBOX)."
+         $(kubectl_cmd) -n $NAMESPACE delete secret $SECRET && ./scripts/setup.sh
+       The pod picks the new value up when it restarts:
+         $(kubectl_cmd) -n $NAMESPACE delete pod $SANDBOX"
      fi
      echo "  secret/$SECRET already exists and holds the hash in $(rel "$HASH_FILE"); keeping it" ;;
   1) kc create secret generic "$SECRET" --from-file="hashed-password=$HASH_FILE" \

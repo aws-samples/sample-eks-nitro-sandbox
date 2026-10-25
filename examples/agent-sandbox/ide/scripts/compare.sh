@@ -29,7 +29,11 @@ cleanup_ordinary() {
   # reported, not hidden, because the pod would otherwise sit on the node until
   # its own 600-second sleep ends.
   if ! kc delete pod "$ORDINARY_POD" --ignore-not-found --wait=true --timeout=120s; then
-    echo "warning: could not delete pod/$ORDINARY_POD; remove it with 'kubectl -n $NAMESPACE delete pod $ORDINARY_POD'" >&2
+    echo "error: could not delete pod/$ORDINARY_POD. Remove it with:" >&2
+    echo "  $(kubectl_cmd) -n $NAMESPACE delete pod $ORDINARY_POD" >&2
+    # The trap does not change the exit status on its own, so set it here: a
+    # helper pod left running on a shared cluster is an incomplete run.
+    exit 1
   fi
 }
 trap cleanup_ordinary EXIT
