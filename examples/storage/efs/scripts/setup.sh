@@ -142,11 +142,26 @@ driver_image="$($KUBECTL get daemonset efs-csi-node -n kube-system \
 driver_version="$addon_version"
 [[ -n "$driver_version" && "$driver_version" != "None" ]] || driver_version="${driver_image##*:}"
 if ! driver_version_at_least "$driver_version" "$MIN_DRIVER_VERSION"; then
-  die "the Amazon EFS CSI driver $MIN_DRIVER_VERSION or newer is required (found: ${driver_version:-no version from either the add-on or the efs-csi-node image; could not determine}).
-Install or upgrade the add-on as the page's prerequisites describe, then re-run. For the EKS
-add-on, with create-addon when the driver is absent and update-addon when it is too old:
+  # Name the command that fits what is on the cluster. update-addon fails when there is no
+  # add-on to update, and create-addon fails when there already is one, so printing one of
+  # them for every case hands the reader a command that errors. A driver installed some
+  # other way (a Helm release, a self-managed daemonset) is neither, and is upgraded the way
+  # it was installed.
+  if [[ -n "$addon_version" && "$addon_version" != "None" ]]; then
+    how="Upgrade the add-on, then re-run:
   aws eks update-addon --cluster-name \"$CLUSTER_NAME\" --region \"$AWS_REGION\" \\
-    --addon-name aws-efs-csi-driver --addon-version v${MIN_DRIVER_VERSION}-eksbuild.1
+    --addon-name aws-efs-csi-driver --addon-version v${MIN_DRIVER_VERSION}-eksbuild.1"
+  elif [[ -z "$driver_image" ]]; then
+    how="Install the add-on, then re-run:
+  aws eks create-addon --cluster-name \"$CLUSTER_NAME\" --region \"$AWS_REGION\" \\
+    --addon-name aws-efs-csi-driver --addon-version v${MIN_DRIVER_VERSION}-eksbuild.1"
+  else
+    how="The driver is installed as the efs-csi-node daemonset rather than as an EKS add-on
+($driver_image), so upgrade it the way it was installed, then re-run."
+  fi
+  die "the Amazon EFS CSI driver $MIN_DRIVER_VERSION or newer is required (found: ${driver_version:-no version from either the add-on or the efs-csi-node image; could not determine}).
+$how
+The page's prerequisites and the EFS CSI driver guide have the detail:
   https://docs.aws.amazon.com/eks/latest/userguide/efs-csi.html"
 fi
 echo "  found aws-efs-csi-driver $driver_version (>= $MIN_DRIVER_VERSION)."

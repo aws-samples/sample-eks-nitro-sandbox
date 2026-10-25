@@ -126,14 +126,14 @@ spec:
 The run below started on a cluster with none of the sample's AWS resources present. The
 `nitro-efs-sample` namespace already existed, empty, from an earlier run (the sample never
 deletes the namespace, only what is inside it), so setup reused it rather than creating it.
-One line is not as that run printed it: the check then enforced a minimum of 2.0.0, which was
-the wrong version, so where the run printed `(>= 2.0.0)` the line below shows the `(>= 3.5.1)`
-the corrected check prints. The driver it found, `v3.5.1-eksbuild.1`, already met 3.5.1;
-nothing else in the block is changed.
+This block is exactly what that run printed, and it predates the correction of the minimum:
+the check then enforced 2.0.0, so its first line reads `(>= 2.0.0)` where the current check
+prints `(>= 3.5.1)`. The driver that run found, `v3.5.1-eksbuild.1`, already met 3.5.1, so
+nothing else in the block is affected.
 
 ```text
 Step 1/5: check the Amazon EFS CSI driver (a shared install; reused, never changed)
-  found aws-efs-csi-driver v3.5.1-eksbuild.1 (>= 3.5.1).
+  found aws-efs-csi-driver v3.5.1-eksbuild.1 (>= 2.0.0).
   CSI node principal (read, not changed): arn:aws:iam::<ACCOUNT_ID>:role/AmazonEKS_EFS_CSI_NodeRole
 Step 2/5: create the sample's security group, file system, mount targets and access point
   created NFS security group sg-EXAMPLE (TCP 2049 from sg-CLUSTER only).
