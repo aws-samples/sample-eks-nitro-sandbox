@@ -32,6 +32,13 @@
 #   SECOND_REVIEW_CLAUDE_CMD       the claude command. Default "claude".
 #   SECOND_REVIEW_CODEX_PROVIDER   optional, passed as codex's model_provider.
 #   SECOND_REVIEW_CODEX_EFFORT     optional, passed as codex's model_reasoning_effort.
+#   SECOND_REVIEW_CLAUDE_SETTINGS  optional, a settings file passed to claude as
+#                                  --settings. Needed when your claude authenticates
+#                                  through a setting (awsCredentialExport, apiKeyHelper):
+#                                  the --restricted flag this script uses makes claude
+#                                  ignore the user settings file, and --settings is how
+#                                  that one setting comes back. Put only the
+#                                  authentication setting in it.
 #   SECOND_REVIEW_KEEP_AWS_ENV     keep the AWS credentials in the environment when
 #                                  running the codex backend. The variables the AWS SDKs
 #                                  read are removed by default, so that a machine holding
@@ -310,15 +317,52 @@ case "$BACKEND" in
     # is where the write-capable tools on a configured workstation live;
     # --disallowedTools is the deny list for the rest; and --permission-prompts none
     # means nothing can answer a permission request, so a tool that needs one is refused.
-    ( cd "$TREE_ABS" && ${timeout_cmd[@]+"${timeout_cmd[@]}"} "$resolved_cmd" -p \
-        --output-format json \
-        --model "$MODEL" \
-        --restricted \
-        --strict-mcp-config \
-        --allowedTools "Read,Grep,Glob" \
-        --disallowedTools "Edit,Write,NotebookEdit,Bash,BashOutput,KillShell,Task,Agent,WebFetch,WebSearch" \
-        --permission-prompts none ) \
+    claude_args=(-p --output-format json --model "$MODEL"
+                 --restricted
+                 --strict-mcp-config
+                 --allowedTools "Read,Grep,Glob"
+                 --disallowedTools "Edit,Write,NotebookEdit,Bash,BashOutput,KillShell,Task,Agent,WebFetch,WebSearch"
+                 --permission-prompts none)
+    # Ignoring the user settings file also throws away how this claude authenticates, when
+    # it authenticates through a setting such as awsCredentialExport or apiKeyHelper: the
+    # run then falls back to whatever ambient credentials happen to exist, which fails when
+    # there are none and bills the wrong account when there are. --settings is still read
+    # under --restricted, so naming a file that carries only the authentication setting
+    # restores the credential path without restoring anything else. A settings file cannot
+    # hand a tool back either way: --restricted removes the tools themselves, so even a
+    # file granting Bash, Write and Edit leaves the reviewer unable to write (checked).
+    if [ -n "${SECOND_REVIEW_CLAUDE_SETTINGS:-}" ]; then
+      [ -f "$SECOND_REVIEW_CLAUDE_SETTINGS" ] || refuse E_CLAUDE_SETTINGS \
+        "\$SECOND_REVIEW_CLAUDE_SETTINGS names '$SECOND_REVIEW_CLAUDE_SETTINGS', which is not a file."
+      claude_settings_abs=$(realpath "$SECOND_REVIEW_CLAUDE_SETTINGS") || refuse E_CLAUDE_SETTINGS \
+        "could not resolve \$SECOND_REVIEW_CLAUDE_SETTINGS '$SECOND_REVIEW_CLAUDE_SETTINGS'."
+      claude_args+=(--settings "$claude_settings_abs")
+    fi
+    ( cd "$TREE_ABS" && ${timeout_cmd[@]+"${timeout_cmd[@]}"} "$resolved_cmd" "${claude_args[@]}" ) \
       < "$BRIEF_ABS" > "$OUT_ABS/review.json" 2> "$OUT_ABS/review.err" || run_status=$?
+    # An authentication failure shows up either way -- claude has reported one both with
+    # exit status 0 (the error only in its JSON) and with a non-zero status -- so this looks
+    # at the record regardless of the status, and says the specific cause rather than
+    # letting the generic "the backend exited N" message below carry it.
+    if [ -s "$OUT_ABS/review.json" ]; then
+      claude_auth_failed=$(python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print(""); raise SystemExit(0)
+if not isinstance(d, dict):
+    print(""); raise SystemExit(0)
+err = "%s %s" % (d.get("api_error") or "", d.get("result") or "")
+print("yes" if (d.get("is_error") and
+                ("credential" in err.lower() or "provider_credentials" in err.lower()))
+      else "")
+' "$OUT_ABS/review.json" 2>/dev/null) || claude_auth_failed=''
+      if [ -n "$claude_auth_failed" ]; then
+        refuse E_RUN_FAILED \
+          "the claude backend could not authenticate, so no review was produced. The most likely cause on a machine where claude authenticates through a settings file: --restricted makes it ignore the user settings file, so set \$SECOND_REVIEW_CLAUDE_SETTINGS to a file carrying only that authentication setting. Read $OUT_ABS/review.err yourself with tail, and do not paste it into a pull request, an issue or Slack."
+      fi
+    fi
     ;;
 esac
 

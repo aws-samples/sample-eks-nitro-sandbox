@@ -156,6 +156,11 @@ and the host-specific options on the maintainers' workstation.
   (`SECOND_REVIEW_CODEX_CMD`, `SECOND_REVIEW_CLAUDE_CMD`) over editing a backend's global
   configuration: the machine may be shared, that configuration can decide which account a
   review bills, and a collaborator on a laptop has none of those files.
+- **A claude backend that will not authenticate usually needs
+  `SECOND_REVIEW_CLAUDE_SETTINGS`.** The `--restricted` flag the script uses makes claude
+  ignore the user settings file, which is where an `awsCredentialExport` or `apiKeyHelper`
+  credential path lives; name a file carrying only that setting. The script says so when it
+  recognises the failure.
 - **Try the other backend before giving up on one.** They are equally sanctioned, so a
   backend that will not authenticate is a reason to switch, not a blocker to report.
 

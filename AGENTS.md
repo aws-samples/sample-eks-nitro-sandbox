@@ -170,7 +170,10 @@ output under `tmp/`:
   --implementer-model <the model that wrote the change> \
   --brief tmp/review/brief.md --tree tmp/review/tree --out tmp/review
 
-./scripts/second-review.sh --backend claude --model opus \
+# Claude authenticating through a settings file needs that file named, because
+# --restricted makes it ignore the user one:
+SECOND_REVIEW_CLAUDE_SETTINGS=tmp/review/claude-settings.json \
+  ./scripts/second-review.sh --backend claude --model opus \
   --implementer-model <the model that wrote the change> ...
 ```
 
@@ -212,9 +215,19 @@ same thing.
   backend says about itself.
 - **Claude: requested, and checked after the fact.** The script runs it with `--restricted`,
   `--strict-mcp-config`, a read-only tool list and no answerer for permission prompts, so
-  the reviewer holds no tool that can write. But **Claude does not report its confinement
-  back**, so there is nothing to parse and verify: the record states what Claude was *asked*
-  to be. The evidence that it did not write is the tree check below, not a backend report.
+  the reviewer holds no tool that can write — asked to write, it reports that no such tool
+  exists and that `ToolSearch select:Write,Edit,Bash` finds nothing. `--restricted` is what
+  removes the tools, rather than a permission rule: a settings file granting `Bash`, `Write`
+  and `Edit` was tried and still could not write, because the tools are not there to grant.
+  But **Claude does not report its confinement back**, so there is nothing to parse and
+  verify: the record states what Claude was *asked* to be. The evidence that it did not
+  write is the tree check below, not a backend report.
+  - `--restricted` also makes claude ignore the **user settings file**, which is where a
+    `awsCredentialExport` or `apiKeyHelper` credential path lives. Set
+    `SECOND_REVIEW_CLAUDE_SETTINGS` to a file carrying only that setting; `--settings` is
+    still read under `--restricted`. Without it the backend cannot authenticate, or
+    authenticates as whatever ambient credentials exist. The script names this cause when
+    the run fails that way.
 - **Both: the tree is fingerprinted before and after** — every path's type, mode, size,
   modification time, symlink target and content — and the run fails if anything changed.
   That check has limits: it cannot see a file created and deleted within the run, and it
@@ -318,9 +331,15 @@ review, and a collaborator on a laptop has none of it.
     workstation, use `SECOND_REVIEW_CLAUDE_CMD=~/.toolbox/bin/claude`: that is the build the
     maintainers have set up for the account they intend for Claude usage.
   - **The credential removal described above is Codex-only, and gives the Claude backend
-    no protection**, because a helper named in a settings file is not read from the environment
-    at all. Removing environment variables cannot redirect it, and cannot keep anything out
-    of it either.
+    no protection**, because the environment is not where that helper is named. But
+    **something else does reach it**: the `--restricted` flag the Claude backend runs with
+    makes claude ignore the user settings file, which is exactly where
+    `awsCredentialExport` lives. Without `SECOND_REVIEW_CLAUDE_SETTINGS` the credential
+    path is therefore discarded and the run falls back to ambient credentials — failing
+    when there are none, and billing the ambient account when there are. Set that variable
+    to a file carrying only the authentication setting. Why this is spelled out: the
+    backend shipped broken this way, and the failure looked like an expired-token problem
+    rather than a flag interaction.
   - **Anywhere else, which account you bill is yours to establish**, by asking your
     backend's own credential helper who it is rather than reading the shell's ambient
     identity. The two differ, and a review's output shows neither.
