@@ -432,14 +432,20 @@ Without a `permissions:` block a workflow gets the repository's default, which o
 repositories still includes `contents: write`. Set it explicitly on any workflow that runs
 code you have not read. Two limits on what that buys you:
 
-- **`permissions:` does not govern `ACTIONS_RUNTIME_TOKEN`.** That token reaches this run's
-  Actions cache and artifact services, so a workflow running untrusted code should not share
-  a cache with workflows you trust. In this sample nothing is reachable there anyway, because
-  the hosts those services use are not on the egress allowlist, as "How the network policy
-  works" explains.
-- **On a pull request from a fork, GitHub already caps `GITHUB_TOKEN` at read.** The block
-  matters most for `workflow_dispatch` and for pull requests from the same repository, so do
-  not read it as the thing that protects you on fork pull requests.
+- **`permissions:` does not govern `ACTIONS_RUNTIME_TOKEN`.** That token reaches the Actions
+  cache, which is scoped to the repository and the ref rather than to one run, and this run's
+  artifacts. So a workflow that runs untrusted code should not share a cache with workflows
+  you trust. The egress policy only partly limits this, and it is worth being precise about
+  which half: the *contents* live on Azure blob storage (`*.blob.core.windows.net`), which is
+  **not** on the allowlist, so uploads and downloads fail; but those services' API is under
+  `*.actions.githubusercontent.com`, which **is** on the allowlist, because a self-hosted
+  runner needs that wildcard to work at all. Calls to the API therefore still go through.
+- **By default, a pull request from a fork gets a read-only `GITHUB_TOKEN`.** That default is
+  a repository setting, not a law, and the fork pull request option below asks you to change
+  settings in that same area, so do not treat the fork case as self-protecting: set
+  `permissions:` explicitly and leave any "send write tokens to fork pull requests" option
+  off. The block is what bounds the token for `workflow_dispatch` and for pull requests from
+  the same repository in any case.
 
 Revoking the credential at GitHub, as "Where the credential lives" says, is what makes every
 copy of the *administering* credential useless. `GITHUB_TOKEN` expires when the job ends.

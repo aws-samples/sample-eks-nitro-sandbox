@@ -32,8 +32,10 @@ name: untrusted-pr
 # because the sample's page documents running a genuine fork pull request
 # instead, which adds a checkout step, and actions/checkout uses this token.
 #
-# It does NOT bound ACTIONS_RUNTIME_TOKEN, which reaches this run's Actions
-# cache and artifacts; `permissions:` does not govern that one.
+# It does NOT bound ACTIONS_RUNTIME_TOKEN, which reaches the repository's
+# Actions cache and this run's artifacts; `permissions:` does not govern that
+# one. The sample's page, Step 8, says which half of that the egress policy
+# limits and which it does not.
 permissions:
   contents: read
 
