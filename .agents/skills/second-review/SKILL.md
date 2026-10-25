@@ -203,9 +203,23 @@ you do with the answer.
   was the right fix.
 - **After fixing a case that proved nothing, run it against the code *without* the fix and
   confirm it fails.** This should be the default for any new rejecting case, not the remedy
-  after being caught: it is the only way to know the case discriminates. Eight cases here
+  after being caught: it is the only way to know the case discriminates. Ten cases here
   needed it. Making the script under test an overridable variable costs one line and makes
   this a one-command check.
+- **The unfixed code you test against has to be shown to parse.** Reverting a fix by cutting
+  text is itself a change that can go wrong: one mutation here cut from the middle of a
+  comment, left a fragment that was no longer a comment, and the mutant died on its first
+  line — so the case "passed" for a reason that had nothing to do with the check, exactly
+  as a stub that fails every call stops a script before the check you meant to prove. Cut
+  whole blocks, assert the block was found exactly once, and run `bash -n` on the result
+  before believing either outcome.
+- **A case that prints more than one line needs its verdict read, not its first line.** A
+  case asserting both "it refused" and "it kept the earlier result" prints a line for each,
+  so taking the first match read a passing sub-assertion as the whole verdict. Treat any
+  failing line carrying the case's name as the verdict.
+- **Two branches that share a refusal tag each need their own message asserted.** Here the
+  tree check has one tag for "changed while the reviewer ran" and "changed after the run";
+  swapping the two messages left every case green until each one pinned its own wording.
 - **When a reviewer names one instance of a class, check whether the class is bigger before
   fixing the instance.** Twice here the reported case was the smaller one: a trailing-slash
   pattern was named for one containment check and turned out to affect three, and a
