@@ -181,7 +181,7 @@ pod/hello-docker condition met
 
 hello-docker is Ready: a privileged Docker daemon is running in its own sandbox.
 NAME           READY   STATUS    RESTARTS   AGE   IP                NODE                  NOMINATED NODE   READINESS GATES
-hello-docker   1/1     Running   0          15s   192.168.186.196   i-<NODE>   <none>           <none>
+hello-docker   1/1     Running   0          17s   <POD_IP>   i-<NODE>   <none>           <none>
 
 Build by hand:    kubectl exec -it hello-docker -n docker-builds-sample -- sh
 Run the CI build: NAMESPACE=docker-builds-sample ./scripts/run-build-job.sh
@@ -228,8 +228,8 @@ kubectl exec hello-docker -n "$NAMESPACE" -- docker run --rm hello:v1
 #5 DONE 0.1s
 
 #6 exporting to image
-#6 exporting layers 0.0s done
-#6 exporting manifest sha256:e7cf397b8bbaf1488e895767c716a6dd39c6961e238bf31d70ad776a8ece79ee done
+#6 exporting layers done
+#6 exporting manifest sha256:d4360340f3d64179f39a175fb2ca35dab12e1d8a24f2acfd85f932f1ee87161d done
 #6 naming to docker.io/library/hello:v1 done
 #6 unpacking to docker.io/library/hello:v1 0.1s done
 #6 DONE 0.1s
@@ -246,11 +246,11 @@ kubectl exec hello-docker -n "$NAMESPACE" -- ps -ef
 ```
 
 ```text
-server 29.9.2, storage driver overlayfs, 1 CPU, 2242519040 bytes
+server 29.9.2, storage driver overlayfs, 1 CPU, 2242408448 bytes
 PID   USER     TIME  COMMAND
     1 root      0:00 docker-init -- dockerd --host=unix:///var/run/docker.sock
-  130 root      0:00 dockerd --host=unix:///var/run/docker.sock
-  539 root      0:00 ps -ef
+  131 root      0:00 dockerd --host=unix:///var/run/docker.sock
+  537 root      0:00 ps -ef
 ```
 
 The process list is the whole of it: the daemon, its init process, and the command you ran.
@@ -279,8 +279,8 @@ kubectl get pod hello-docker ordinary-pod -n "$NAMESPACE"
 
 ```text
 --- hello-docker ---
-6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-20.68 16.01
+6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
+22.65 17.93
 dm-0
 vda
 vdb
@@ -288,11 +288,11 @@ vdc
 m8i.enclave
 PID   USER     TIME  COMMAND
     1 root      0:00 docker-init -- dockerd --host=unix:///var/run/docker.sock
-  130 root      0:00 dockerd --host=unix:///var/run/docker.sock
-  619 root      0:00 ps -ef
+  131 root      0:00 dockerd --host=unix:///var/run/docker.sock
+  618 root      0:00 ps -ef
 --- ordinary-pod ---
-6.18.51 #2 SMP PREEMPT_DYNAMIC Wed Oct  7 22:33:11 UTC 2026
-2842.38 11040.63
+6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
+3753.81 14536.68
 dm-0
 loop0
 loop1
@@ -308,21 +308,21 @@ zram0
 m8i.xlarge
 PID   USER     TIME  COMMAND
     1 1000      0:00 sleep 3600
-   30 1000      0:00 ps -ef
+   31 1000      0:00 ps -ef
 NAME           READY   STATUS    RESTARTS   AGE
-hello-docker   1/1     Running   0          29s
-ordinary-pod   1/1     Running   0          9s
+hello-docker   1/1     Running   0          31s
+ordinary-pod   1/1     Running   0          8s
 ```
 
 Four readings, one per question:
 
-- **Its own kernel.** The version is the same, `6.18.51`, and the build is not: the sandbox is
-  on `#1 ... Thu Oct  1`, the node on `#2 ... Wed Oct  7`. `uname -r` alone would prove
-  nothing here.
-- **Its own boot.** The sandbox reports 20 seconds of uptime: this guest's own boot, a few
-  seconds after the pod was created, which the 29-second pod age in the last block bears out.
-  The ordinary pod reports 2842 seconds, which is the node's boot and not its own: that pod was
-  9 seconds old.
+- **Its own kernel.** The version is the same, `6.18.54`, and the build is not: the sandbox is
+  on build `#1`, stamped `17:38:11`, the node on build `#2`, stamped `00:16:59`. `uname -r`
+  alone would prove nothing here.
+- **Its own boot.** The sandbox reports 22 seconds of uptime: this guest's own boot, a few
+  seconds after the pod was created, which the 31-second pod age in the last block bears out.
+  The ordinary pod reports 3753 seconds, which is the node's boot and not its own: that pod was
+  8 seconds old.
 - **Virtio disks.** The sandbox has `vda`, `vdb` and `vdc`; the node has `nvme0n1`, `nvme1n1`,
   the loop devices Bottlerocket uses and `zram0`. The build daemon unpacks every layer onto
   disks that are passed into the guest.
@@ -350,19 +350,19 @@ kubectl exec hello-docker -n "$NAMESPACE" -- sh -c 'wget -q -T 5 -O - http://169
 
 ```text
 60
-200
+120
 7
-200
+120
 ls: /dev/nvme*: No such file or directory
 exit=1
 exit=1
 wget: download timed out
 ```
 
-Read it in order. `vm.swappiness` was 60 in the sandbox and 200 on the node: two kernels, each
+Read it in order. `vm.swappiness` was 60 in the sandbox and 120 on the node: two kernels, each
 with the value its own operating system set, which is the first thing the comparison shows.
 Root in the privileged pod wrote 7, and the sandbox now reports 7 while the node still reports
-200, so the write landed on the guest's kernel, which is the pod's alone. A privileged
+120, so the write landed on the guest's kernel, which is the pod's alone. A privileged
 container's `/proc/sys` is the real, writable `/proc` of the kernel it runs on, and
 `vm.swappiness` is not namespaced, so that write went somewhere: on a node without a sandbox it
 would have gone to the kernel every other pod on that node is using. The same pod cannot even
@@ -434,12 +434,12 @@ Waiting for the build to finish (a cold build pulls base images and compiles; a 
 #12 exporting to image
 #12 naming to docker.io/library/hello-nitro:v1 done
 #12 DONE 0.3s
->>> build finished in 17s
+>>> build finished in 18s
 >>> docker run hello-nitro:v1   (the image this build produced, run in this sandbox)
-hello from a docker build inside a Nitro sandbox (linux/amd64, container 8f39e4a38116)
+hello from a docker build inside a Nitro sandbox (linux/amd64, container aad606c6f06a)
 >>> what a nested container sees: the sandbox's own kernel and virtio disks
-6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-uptime: 22.55s
+6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
+uptime: 22.85s
 block devices:
 dm-0
 vda
@@ -493,9 +493,9 @@ Waiting for the build to finish (a cold build pulls base images and compiles; a 
 #12 exporting to image
 #12 naming to docker.io/library/hello-nitro:v1 done
 #12 DONE 0.0s
->>> build finished in 1s
+>>> build finished in 0s
 >>> docker run hello-nitro:v1   (the image this build produced, run in this sandbox)
-hello from a docker build inside a Nitro sandbox (linux/amd64, container fed102d62495)
+hello from a docker build inside a Nitro sandbox (linux/amd64, container 4df1dff67c3d)
 ```
 
 Abridged, and the two blocks are the two runs of the same Job, one after the other: a cold
@@ -740,20 +740,20 @@ job.batch "docker-build" deleted from docker-builds-sample namespace
 job.batch/docker-build created
 Waiting for the build to finish (a cold build pulls base images and compiles; a warm one is much faster).
 
->>> build finished in 0s
+>>> build finished in 1s
 >>> docker run hello-nitro:v1   (the image this build produced, run in this sandbox)
-hello from a docker build inside a Nitro sandbox (linux/amd64, container 29242dec43e8)
+hello from a docker build inside a Nitro sandbox (linux/amd64, container 2710cec16f18)
 >>> pushing to <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-docker-builds
 Login Succeeded
 The push refers to repository [<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-docker-builds]
-5bb78fd2228f: Waiting
-1a38de62a867: Waiting
+709fa5d7c765: Waiting
+44136fa355b3: Waiting
 7b229517ed22: Waiting
 44136fa355b3: Pushed
-1a38de62a867: Pushed
-5bb78fd2228f: Pushed
+709fa5d7c765: Pushed
+ba866c29d2c8: Pushed
 7b229517ed22: Pushed
-v1: digest: sha256:9bac01c3257c8591179a4f45e1195847b07491b97c42694f902248d7890ecd32 size: 855
+v1: digest: sha256:4eb96f24a364486213c22c87e9e62d6f6b3e565f88c5cbadac0ed7178efa3ce9 size: 855
 >>> pushed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-docker-builds:v1
 >>> DONE
 ```
@@ -777,9 +777,9 @@ wrote an Amazon ECR authorization token for <ACCOUNT_ID>.dkr.ecr.us-west-2.amazo
 ------------------------------------------------------------------------------------------
 |                                     DescribeImages                                     |
 +-----------+----------------------------------------------------------------------------+
-|  Digest   |  sha256:9bac01c3257c8591179a4f45e1195847b07491b97c42694f902248d7890ecd32   |
-|  Pushed   |  2026-10-24T21:32:01.188000+00:00                                          |
-|  SizeBytes|  5306437                                                                   |
+|  Digest   |  sha256:4eb96f24a364486213c22c87e9e62d6f6b3e565f88c5cbadac0ed7178efa3ce9   |
+|  Pushed   |  2026-10-25T15:10:48.798000+00:00                                          |
+|  SizeBytes|  5306436                                                                   |
 +-----------+----------------------------------------------------------------------------+
 ||                                         Tags                                         ||
 |+--------------------------------------------------------------------------------------+|
@@ -822,20 +822,20 @@ Waiting for the BuildKit build to finish.
 
 >>> starting buildkitd (its state and cache on the EBS volume)
 ID				PLATFORMS
-ng1ir37kj18ke22d49ow4j2yv	linux/amd64,linux/amd64/v2,linux/amd64/v3,linux/amd64/v4,linux/386
+v806ly60evmr9jbjazdzrq07z	linux/amd64,linux/amd64/v2,linux/amd64/v3,linux/amd64/v4,linux/386
 >>> writing the build context
 >>> buildctl build -> OCI image at /var/lib/buildkit/hello-nitro.oci.tar
 #10 [build 4/4] RUN CGO_ENABLED=0 go build -o /hello main.go
 #10 DONE 7.0s
 #12 exporting to oci image format
-#12 sending tarball 0.0s done
+#12 sending tarball 0.1s done
 #12 DONE 0.2s
->>> build finished in 17s
--rw-rw-rw-    1 root     root       5314048 Oct 24 21:32 /var/lib/buildkit/hello-nitro.oci.tar
->>> exported digest=sha256:365669867b646db741e00f761484f2f85c934dde6da232125b605e8c38061b78
+>>> build finished in 16s
+-rw-rw-rw-    1 root     root       5314048 Oct 25 15:11 /var/lib/buildkit/hello-nitro.oci.tar
+>>> exported digest=sha256:de96bd14666f27d58a79c7e2a5a2cf7603af5825d53e0e84c479b26a9ec2e058
 >>> the sandbox this build ran in: its own kernel, boot and virtio disks
-6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-uptime: 22.34s
+6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
+uptime: 21.22s
 block devices:
 dm-0
 vda
@@ -939,8 +939,8 @@ persistentvolumeclaim "buildkit-cache" deleted from docker-builds-sample namespa
 Deleting the namespace...
 namespace "docker-builds-sample" deleted
 Confirming the EBS volumes are gone (up to 180s for the CSI driver)...
-  docker-build-cache: volume vol-0963693650b47cebf is gone.
-  buildkit-cache: volume vol-0f160cf204e542b96 is gone.
+  docker-build-cache: volume vol-059669b8472084a45 is gone.
+  buildkit-cache: volume vol-0b8b36b8561a3c762 is gone.
 Removing the Amazon ECR push resources recorded in .docker-builds.state...
   deleted Pod Identity association <ASSOCIATION_ID>.
   deleted IAM role nitro-sample-docker-builds-push and its policy.
