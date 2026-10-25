@@ -14,9 +14,11 @@ time, the author had already read the code.
 
 **Three ways to do it, all sanctioned, your pick, no approval needed:** the Codex CLI or
 the Claude Code CLI, both through `scripts/second-review.sh`, or a fresh sub agent in your
-own session. The invariants below are the requirement; the script holds them for you on the
-two CLI paths (establishing the read-only one by different means for each — see
-[What "read-only" rests on, per backend](../../../AGENTS.md#what-read-only-rests-on-per-backend)),
+own session. The invariants below are the requirement; the script works to hold them for you
+on the two CLI paths, with limits worth reading under [Run it](#run-it) — the different-model
+one rests on the model *names* you give it, and it establishes the read-only one by different
+means for each backend (see
+[What "read-only" rests on, per backend](../../../AGENTS.md#what-read-only-rests-on-per-backend)) —
 and you hold them yourself with a sub agent — where the model difference is
 the one that needs deliberate effort, because **a sub agent inherits your model unless you
 override it**. See
@@ -296,7 +298,9 @@ and the host-specific options on the maintainers' workstation.
   review has to get right, so the script refuses to start when the two models match, and
   refuses its own result when the model that answered turns out to be the implementer's
   anyway. Give the implementer's resolved model, not an alias or a prompt router name: a
-  router that resolves to the model you were avoiding defeats the whole exercise.
+  router that resolves to the model you were avoiding defeats the whole exercise. The script
+  compares the two **names**, so where the implementer's name is a router's it cannot hold
+  this invariant at all — see [Record it](#record-it) for what such a record does show.
 - **Either backend, your choice.** They differ in one way worth knowing: `--backend claude`
   runs with `--tools Read,Grep,Glob` and `--strict-mcp-config`, so it is asked to hold only
   those three — a reviewer under those flags reports exactly them and no loadable extras,
@@ -316,8 +320,9 @@ and the host-specific options on the maintainers' workstation.
     not something it confirmed;
   - for both, the script *checks afterwards* that no persistent change it can see was left
     in `--tree` — every path's type, mode, size, modification time, symlink target and
-    content. It cannot see a file created and deleted inside the run, or any write outside
-    the tree.
+    content. It is not guaranteed to see a file created and deleted inside the run (the
+    directory's mtime usually gives it away, but not if it was the tree's own root or the
+    mtime was put back), and it says nothing about any write outside the tree.
 
   Point it at the round's snapshot, never your working tree. A read-only flag
   on its own is not enough: Codex's `--sandbox read-only` still asked to write and a host
@@ -353,7 +358,9 @@ and the host-specific options on the maintainers' workstation.
   script removes the AWS credential variables from the environment before running it, so an
   ambient account is less likely to pay for the review — but that is a *denylist*, so a
   backend reading some other variable is not covered, and a backend whose credentials come
-  from its own configuration file is not affected by it at all. If your Codex authenticates
+  from its own configuration file is not covered by it either — and not untouched, either:
+  that helper runs as a child of the backend, so it inherits the stripped environment, and
+  one that itself reads AWS variables or `~/.aws` may fail under it. If your Codex authenticates
   *from* environment credentials, that removal is what breaks it: set
   `SECOND_REVIEW_KEEP_AWS_ENV=1`, which is the fix for the `E_RUN_FAILED` you would
   otherwise get. None of this is specific to the maintainers' machine.
@@ -449,3 +456,12 @@ the model that wrote the change, so a reader can see the two differ, which commi
 found, what was fixed and in which commit, and which findings were false positives and
 why. Name any commit that changes a check and was not reviewed. Describe each proof as it ran: which stub cases reached which message, and
 which paths no case reached. A box ticked with no account of the review does not count.
+
+**If the implementer's name you gave the script is a prompt router's, say so beside the
+record, and say what it therefore shows.** The script compares the two names, so it cannot
+show that a router name differs from whatever it resolved to: such a record is evidence of
+*runtime diversity* — a different vendor's tool and model family — and not of invariant 1.
+Against a Claude implementer on a Claude router, a Codex record is the authoritative one for
+invariant 1, because choosing Codex excludes every Claude model however the router resolved.
+Why: two green records measuring different things read as two records of the same strength,
+which is the hazard invariant 3 exists to warn about, landing inside your own evidence.

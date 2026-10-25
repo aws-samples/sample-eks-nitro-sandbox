@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Run the adversarial second review AGENTS.md requires, keeping its three invariants:
-# the reviewer runs on a different model from the one that wrote the change, it cannot
-# write to the tree it reviews, and the model that actually answered is recorded.
+# the reviewer runs on a different model from the one that wrote the change, it is
+# confined from writing to the tree it reviews and is shown to have left it unchanged, and
+# the model that actually answered is recorded. Note the second one as two things: this
+# script configures the confinement and checks the tree afterwards; it does not guarantee
+# that nothing could have been written.
 #
 # Usage: scripts/second-review.sh --backend codex|claude --model <id>
 #                                 --implementer-model <id>
@@ -188,6 +191,7 @@ resolved_cmd=$(command -v -- "$BACKEND_CMD" 2>/dev/null) || resolved_cmd=''
 command -v python3 >/dev/null 2>&1 || cannot_check "python3 is needed to read the backend's record of which model answered."
 command -v sha256sum >/dev/null 2>&1 || cannot_check "sha256sum is needed to show the reviewer did not change the tree."
 command -v realpath >/dev/null 2>&1 || cannot_check "realpath is needed to check the output path stays under the repository's tmp/."
+command -v readlink >/dev/null 2>&1 || cannot_check "readlink is needed to check every link the backend command points through."
 
 [ -f "$BRIEF" ] || refuse E_BRIEF "no brief at '$BRIEF'. Write one from the second-review skill's assets/review-brief.md."
 [ -s "$BRIEF" ] || refuse E_BRIEF "the brief at '$BRIEF' is empty; a reviewer given nothing to check finds nothing."
@@ -260,19 +264,68 @@ not_an_output_name "$BRIEF_ABS" "$OUT_ABS" "the brief" E_BRIEF
 # so it is the caller's to get wrong: the cleanup would unlink it after it had passed its
 # own executable check. Not at --version, whose failure is swallowed by
 # "|| backend_version=''": the run fails at the backend invocation, as E_RUN_FAILED. The exit
-# code depends on the name -- 127 when nothing is there, but 126 for a name this script
-# re-creates before the call (review.out, review.err, tree-before.sha256, codex-stdin.txt,
-# review.json), because the command path is then a fresh file that is not executable.
+# code depends on the name AND on the backend, because the two do not re-create the same
+# names before the call: a command path this script has just re-created as a fresh,
+# non-executable file gives 126, and one that is simply not there gives 127. Before the codex
+# call the re-created names are review.out, review.err, codex-stdin.txt and
+# tree-before.sha256; before the claude call they are review.err, review.json and
+# tree-before.sha256 -- review.out is written later, by the record extractor -- so a claude
+# command at review.out gives 127 where a codex one gives 126. Measured: a codex command
+# pointing at review.out exits 126.
 not_an_output_name "$resolved_cmd" "$OUT_ABS" "the $BACKEND command" E_CMD_MISSING
-# ...and where it points. For the brief and the settings file the name is the whole story,
-# because the cleanup removes the name and leaves the target alone. The command is different:
-# it is EXECUTED, so a link at any name on PATH pointing into --out at one of these names
-# still loses its target to the cleanup. Checked for the resolved path as well.
-cmd_target=$(realpath -- "$resolved_cmd" 2>/dev/null) || cmd_target=''
-[ -z "$cmd_target" ] || [ "$cmd_target" = "$resolved_cmd" ] || \
+# ...and every link it points THROUGH, not only the name it was given. For the brief and the
+# settings file the name is the whole story, because the cleanup removes the name and leaves
+# the target alone. The command is different: it is EXECUTED through the path as typed, so
+# every link in the chain has to survive the cleanup. A chain
+# "PATH/codex -> $OUT/review.out -> /real/codex" passes a check on the first name and a check
+# on the final target alike, since both of those are innocent; the cleanup then unlinks the
+# middle one, and the run dies at the backend call with any earlier review in that --out
+# already gone (measured: E_RUN_FAILED, exit 126). So walk the chain and check each hop. A
+# relative target is resolved against the link's own directory, as the kernel does. The walk
+# ends by itself, because a loop would already have failed the -x above; the hop bound is a
+# backstop against a link created while this runs, not a case a caller can produce.
+cmd_hop="$resolved_cmd" cmd_hops=0
+while [ -L "$cmd_hop" ]; do
+  cmd_hops=$((cmd_hops + 1))
+  [ "$cmd_hops" -le 64 ] || refuse E_CMD_MISSING \
+    "the $BACKEND command '$resolved_cmd' points through more than 64 symbolic links, so where it leads cannot be established. A guard that cannot answer must refuse."
+  cmd_link=$(readlink -- "$cmd_hop") || refuse E_CMD_MISSING \
+    "could not read the symbolic link '$cmd_hop' that the $BACKEND command '$resolved_cmd' points through, so where it leads cannot be established. A guard that cannot answer must refuse."
+  case "$cmd_link" in
+    /*) cmd_hop="$cmd_link" ;;
+    *)  cmd_hop="$(dirname -- "$cmd_hop")/$cmd_link" ;;
+  esac
+  not_an_output_name "$cmd_hop" "$OUT_ABS" "the $BACKEND command points through," E_CMD_MISSING
+done
+# ...and where it ends up once every DIRECTORY component is resolved too, which the walk
+# above does not do: it follows the last component of each hop, and a link in a directory
+# part of the path is collapsed only by realpath. not_an_output_name resolves the directory
+# of every name it is given, so a directory link that lands in --out at one of these names is
+# already refused above; this is the backstop for the rest of the ways a path can end at one.
+# It refuses when it cannot resolve rather than skipping the check: it used to fall back to an
+# empty value and pass, which is the shape of guard the rest of this commit removes. The
+# refusal is not reachable through the current callers, because -x has already resolved the
+# path, but the rule is the one not_an_output_name states -- a guard that cannot answer must
+# refuse -- and a later edit must not be able to reintroduce the fallback by accident.
+cmd_target=$(realpath -- "$resolved_cmd" 2>/dev/null) || refuse E_CMD_MISSING \
+  "could not resolve where the $BACKEND command '$resolved_cmd' points, so it cannot be shown to sit outside --out. A guard that cannot answer must refuse, as the tmp/ containment check does."
+[ "$cmd_target" = "$resolved_cmd" ] || \
   not_an_output_name "$cmd_target" "$OUT_ABS" "the $BACKEND command resolves to," E_CMD_MISSING
 
 TREE_ABS=$(realpath "$TREE")
+
+# codex prints "workdir: <tree>" inside its own preamble, on a line ahead of the "model:",
+# "sandbox:" and "approval:" lines this script reads back from it. A tree path holding a
+# newline followed by lines spelling those three out would therefore land inside the block
+# the preamble check parses, and be read as codex's own report of how it ran. That path comes
+# from the caller and not from the brief -- a caller who wanted to lie could lie in
+# --implementer-model just as cheaply -- so this closes a seam rather than an attack, and the
+# nonce check still bounds what the BRIEF can reach. Refused for both backends, because a
+# tree path with a line break in it is a mistake on either.
+case "$TREE_ABS" in
+  *$'\n'*) refuse E_TREE \
+    "the tree path resolves to one containing a line break. Such a path lands inside the block this script parses back out of codex's own preamble, where it could pass itself off as codex's report of the mode it ran in. Extract the commit somewhere whose path has no line break in it." ;;
+esac
 
 # This script's own output inside the tree would show up as the tree changing, and read
 # as a reviewer that wrote to it. Keep them apart rather than explain the false alarm.
@@ -286,7 +339,12 @@ esac
 # read-only, and this is the check that it did: every path's type, mode, size, modification
 # time and symlink target, and every regular file's content hash, before and after. A
 # single added, removed, edited, re-pointed or re-permissioned path fails the run. What it
-# cannot see: a file created and deleted within the run, and any write outside the tree.
+# is not guaranteed to see: a file created and deleted within the run, and any write outside
+# the tree. "Not guaranteed" rather than "cannot", for the first of those: creating and
+# removing a file changes the mtime of the directory that held it, and every directory's
+# mtime below the root is fingerprinted, so such a change usually does show up -- unless it
+# was in the tree's own root directory, which -mindepth 1 skips, or the mtime was put back.
+# The second is flat: nothing outside the tree is looked at.
 # Records are NUL-delimited, and so is the hash list, because a path may legally hold a
 # newline or the text " -> ": with line-delimited records two different trees could line
 # up to the same fingerprint. cmp compares the bytes, so the delimiter never has to be
@@ -370,6 +428,11 @@ print("OK")
     # Grep, which do need to list, say so rather than refuse.
     [ -x "$SECOND_REVIEW_CONTEXT_DIR" ] || refuse E_CONTEXT_DIR \
       "\$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR' cannot be searched (check its permissions); nothing inside it could be opened, so the reviewer would silently never read the diff the brief names."
+    # The "say so" half of the rule above. Without this the sentence described a message the
+    # script never printed, and a 0711 context directory still left Glob and Grep finding
+    # nothing in it with no sign of why.
+    [ -r "$SECOND_REVIEW_CONTEXT_DIR" ] || note \
+      "\$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR' can be searched but cannot be listed, so a file the brief names by its absolute path still reads, while the reviewer's Glob and Grep will find nothing in it."
     context_abs=$(realpath "$SECOND_REVIEW_CONTEXT_DIR") || refuse E_CONTEXT_DIR \
       "could not resolve \$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR'."
     # Compare against a prefix that always ends in exactly one slash. The obvious
@@ -405,13 +468,17 @@ mkdir -p "$OUT_ABS"
 # first write. Every refusal this script can make from the caller's arguments alone now
 # comes earlier. What is left after this point either writes (the baseline fingerprint,
 # codex-stdin.txt, the mktemp for the reviewer's working directory) or reads the backend's
-# own output. Two honest exceptions: an argument only the BACKEND can judge -- a bad --model,
-# provider or effort, or credentials its settings file does not carry -- still surfaces as
-# E_RUN_FAILED after the cleanup, and that cannot be checked here; and an --out that cannot
-# be written -- whether it was so from the start or becomes so mid-run -- is refused at the
-# first write, which is after the cleanup loop. That one costs nothing, because rm fails on
-# the first name that is actually there, so nothing is removed. A full disk can also end
-# some of the later writes untagged. None of them records a review.
+# own output. Two honest exceptions, both after the cleanup. An argument only the BACKEND can
+# judge -- a bad --model, provider or effort, or credentials its settings file does not
+# carry -- still surfaces as E_RUN_FAILED, and that cannot be checked here. And an --out that
+# cannot be written is refused in two different places, depending on what is in it:
+# unwritable from the start with an earlier output still there, every rm fails and the second
+# pass below refuses E_OUT_TAINTED without removing anything; unwritable from the start and
+# empty, every rm succeeds and the first write refuses E_OUT_TAINTED instead. Becoming
+# unwritable LATER is not refused at all: the next write is codex-stdin.txt or
+# tree-at-return.sha256, neither of which is guarded, so set -e ends the run with bash's own
+# untagged message -- measured with a stub that chmods --out mid-run, and the same for a full
+# disk. None of these records a review, and none of them removes anything from the tree.
 # Two reasons for that placement, both learned the hard way: with --out inside the tree
 # this loop deleted files from the snapshot and only then refused E_OUT_IN_TREE -- a guard
 # in a tool whose whole promise is not touching the tree, destroying files in it -- and a
@@ -441,9 +508,10 @@ mkdir -p "$OUT_ABS"
 #     created between the two passes will still refuse in the second pass, by which point
 #     earlier names are already gone. Each needs something the ordinary caller does not have:
 #     privilege (a bind mount; "chattr +i", checked -- refused without it, on Linux), a
-#     SECOND USER's file in a sticky directory, or another process racing this one -- and such a process could overwrite
-#     tree-before.sha256 anyway, which no check here defends against. An --out path long
-#     enough that only the longest names hit ENAMETOOLONG also qualifies, absurdly.
+#     SECOND USER's file in a sticky directory, or another process racing this one -- and
+#     such a process could overwrite tree-before.sha256 anyway, which no check here defends
+#     against. An --out path long enough that only the longest names hit ENAMETOOLONG also
+#     qualifies, absurdly.
 #     One exception to "needs privilege", for honesty: on macOS a file's OWNER can set
 #     "chflags uchg", no privilege required. It is moot here only because this script needs
 #     GNU find -printf, realpath -m and sort -z, so it does not run on stock macOS anyway.
@@ -663,7 +731,7 @@ esac
 # snapshot feeds those messages, and is also compared at the end: a mismatch here with a
 # match later means something put the tree back *after the backend returned*, which a single
 # late fingerprint would have missed. A change made and undone entirely inside the backend's
-# own run is invisible to both, as the fingerprint's own note says.
+# own run is not guaranteed to be seen by either, as the fingerprint's own note says.
 tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-at-return.sha256"
 if cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then
   tree_verdict="the tree was unchanged when the backend returned"
@@ -837,7 +905,7 @@ done
 # The "put back afterwards" case is tested first, because it is the one a single late
 # fingerprint would have passed: on its own, "after" matches, and the run would have been
 # recorded as clean. A change made and undone entirely inside the backend's own run is
-# invisible to both, as tree_fingerprint's own note says.
+# not guaranteed to be seen by either, as tree_fingerprint's own note says.
 tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-after.sha256"
 if cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-after.sha256" \
    && ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then

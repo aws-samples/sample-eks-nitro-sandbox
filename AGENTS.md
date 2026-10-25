@@ -188,7 +188,13 @@ SECOND_REVIEW_CONTEXT_DIR="$round/context" \
 
 - **Give the implementer's resolved model**, not an alias or a router name. The script
   refuses the run when the two models match, and refuses its own result when the model that
-  answered turns out to be the implementer's anyway.
+  answered turns out to be the implementer's anyway. **It compares the two names, so it
+  cannot hold the invariant for a name that is not a model.** Where the implementer was
+  itself behind a Bedrock prompt router — as this repository's own agent is — the name given
+  is the router's, and the record then shows *runtime diversity*, a different vendor's tool
+  and model family, rather than invariant 1. Against a Claude implementer a Codex record is
+  authoritative for invariant 1, because choosing Codex excludes every Claude model however
+  the router resolved, and a Claude record is not. Say which of the two a record is.
 - **Review the snapshot, not your working tree.** `--tree "$round/tree"` is the plain
   extract of the commit that the `second-review` skill makes, in a folder made fresh for
   this round.
@@ -199,9 +205,11 @@ SECOND_REVIEW_CONTEXT_DIR="$round/context" \
   given the tree as its working root and will read an absolute path anywhere.
 - **One `--out` per run.** The script clears the names it writes there, so pointing two
   runs at one output directory loses the first one's review. Two concurrent runs sharing it
-  also read each other's files; the codex path refuses when that happens, because its
-  preamble nonce will not match, but the claude path has no such marker. The round folder
-  the skill prepares gives each run its own.
+  also read each other's files; the codex path usually refuses when that happens, because its
+  preamble nonce will not match, but the claude path has no such marker. Usually, not always:
+  the nonce only catches it if the second run clears the output names before the first has
+  read its own trace, so a first run already past that check — and the record it goes on to
+  write — is not protected. The round folder the skill prepares gives each run its own.
 - **`--brief` and `--out` must be under this repository's gitignored `tmp/`**, and the
   script refuses anything else. Why: it writes the backend's trace into `--out`, and a
   trace can hold credential details, so it must never land in a tracked folder.
@@ -223,8 +231,10 @@ SECOND_REVIEW_CONTEXT_DIR="$round/context" \
 - **Report the exact error and stop, whenever the script refuses.** It names the check that
   refused, tagged: before the run (`E_SAME_MODEL`, `E_CMD_MISSING`, `E_NOT_IN_TMP`) or
   after it (`E_RUN_FAILED`, `E_BAD_RECORD`, `E_NOT_READ_ONLY`, `E_TREE_CHANGED`). Either
-  way no review happened, and that is a fact the maintainers need rather than something to
-  configure around.
+  way no review is recorded, and that is a fact the maintainers need rather than something to
+  configure around. Not the same as no review having happened: after one of the second group
+  the reviewer has already run and `review.out` may well be sitting there. What the refusal
+  says is that the run cannot stand as a second review.
 
 ##### What "read-only" rests on, per backend
 
@@ -262,8 +272,10 @@ same thing.
     `awsCredentialExport` or `apiKeyHelper` credential path lives. Set
     `SECOND_REVIEW_CLAUDE_SETTINGS` to a file carrying only that setting; `--settings` is
     still read under `--restricted`. Without it the backend cannot authenticate, or
-    authenticates as whatever ambient credentials exist. The script names this cause when
-    the run fails that way.
+    authenticates as whatever ambient credentials exist. The script names this cause when it
+    recognises the failure — when claude's own record is flagged as an error and its text
+    mentions credentials, authentication or a 403. A non-zero exit with no record gives the
+    generic `E_RUN_FAILED` instead, so read the trace when that is what you get.
   - **The script checks that file and allows exactly one of `awsCredentialExport` and
     `apiKeyHelper`, non-empty, and nothing else.** Why: `--settings` restores *executable*
     configuration, not just values. A permission grant in it is inert, as above — but a
@@ -301,10 +313,15 @@ same thing.
     *other* way a settings file could run something, `hooks` above all, none of which the
     reviewer needs.
 - **Both: the tree is fingerprinted before and after** — every path's type, mode, size,
-  modification time, symlink target and content — and the run fails if anything changed.
-  That check has limits: it cannot see a file created and deleted within the run, and it
-  says nothing about writes outside the tree. It is still the check that caught the write
-  above, and on the Claude path it is the whole of the after-the-fact evidence.
+  modification time, symlink target and content — and the run fails if any of those changed.
+  Owner, extended attributes and ACLs are not among them. That check has limits: it is not
+  guaranteed to see a file created and deleted within the run, and it says nothing at all
+  about writes outside the tree. "Not guaranteed" rather than "cannot", for the first:
+  creating and removing a file changes the mtime of the directory that held it, and every
+  directory's mtime below the tree's root is fingerprinted, so such a change usually does
+  show up — unless it was in the root directory itself, which the fingerprint skips, or the
+  mtime was put back. It is still the check that caught the write above, and on the Claude
+  path it is the whole of the after-the-fact evidence.
 
 #### Limits that apply wherever you run it
 
@@ -316,7 +333,12 @@ These are not host-specific, and the section below is not where to look for them
   **reduces the risk** of an ambient account paying for a review. It does not eliminate it:
   the removal is a **denylist** of the variables the AWS SDKs are known to read, so a
   backend that reads some other variable is not covered, and a backend whose credentials
-  come from a helper named in its own configuration file is not affected by it at all.
+  come from a helper named in its own configuration file is not covered by it either: that
+  helper is where the account comes from, and taking variables out of the environment cannot
+  reach it. Not covered is not the same as unaffected, though — the helper runs as a child of
+  the backend, so it inherits the stripped environment (`AWS_CONFIG_FILE=/dev/null`,
+  `AWS_SHARED_CREDENTIALS_FILE=/dev/null`, `AWS_EC2_METADATA_DISABLED=true`, no profile), and
+  a helper that itself reads AWS variables or `~/.aws` runs under that and may fail.
   Knowing which account your backend bills is still yours to establish. Set
   `SECOND_REVIEW_KEEP_AWS_ENV=1` only if your Codex authenticates to Bedrock with exactly
   those credentials. Why: this workstation holds live credentials for an unrelated account,
