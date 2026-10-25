@@ -84,7 +84,11 @@ step "4/5 apply the ScaledObject and wait for the HPA KEDA creates"
 sed -e "s/__NAMESPACE__/$NAMESPACE/g" "$SAMPLE_DIR/deploy/scaledobject.yaml" | kc apply -f -
 hpa=""
 for _ in $(seq 1 36); do   # 36 * 5s = 3m
-  hpa="$(hpa_for_pool)"
+  # hpa_for_pool returns non-zero when the read FAILED, and this script runs
+  # under set -e, so the status has to be taken here. Without the `|| hpa=""` a
+  # single transient failed list would end the run on the spot, with no message,
+  # turning a retry loop into one that does not retry.
+  hpa="$(hpa_for_pool)" || hpa=""
   [[ -n "$hpa" ]] && break
   sleep 5
 done

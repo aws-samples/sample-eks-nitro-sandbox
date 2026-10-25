@@ -44,8 +44,16 @@ resource_exists kc "sandboxwarmpool/$POOL" >/dev/null \
   || die "sandboxwarmpool/$POOL is not in namespace $NAMESPACE; run ./scripts/setup.sh first"
 
 step "1/5 precondition: the HPA KEDA created targets the SandboxWarmPool"
-hpa="$(hpa_for_pool)"
-echo "  HPA whose scaleTargetRef names $POOL: ${hpa:-<none>}"
+# Tell "there is no such HPA" apart from "the list could not be read", so the
+# line below never says the first when it means the second.
+hpa_rc=0
+hpa="$(hpa_for_pool)" || hpa_rc=$?
+if [[ $hpa_rc -ne 0 ]]; then
+  hpa=""
+  echo "  HPA whose scaleTargetRef names $POOL: <could not read>"
+else
+  echo "  HPA whose scaleTargetRef names $POOL: ${hpa:-<none>}"
+fi
 [[ -n "$hpa" ]]
 assert $? "an HPA targets sandboxwarmpool/$POOL, so its replica count is driven rather than fixed"
 
@@ -85,9 +93,22 @@ wait_pool_warm 900 >/dev/null
 baseline="$(pool_spec_replicas)" || baseline="?"
 baseline_claims="$(claim_count)" || baseline_claims="?"
 print_stage "baseline"
-# The baseline must be a real number: every comparison in stages 4/5 and 5/5 uses
-# it, and inside [[ ]] a non-numeric value such as "?" evaluates arithmetically
-# to 0, which would make "spec.replicas went up" true for any reading at all.
+# The baseline must be a real number: every comparison in stages 4/5 and 5/5 is
+# measured against it.
+#
+# What an unreadable baseline actually does, since it is easy to state this
+# wrongly: "?" carried into -gt or -lt is NOT read as 0. Inside [[ ]] the
+# operands of -gt and -lt go through arithmetic evaluation, where a bare word is
+# a variable name (an unset one is 0) but "?" is not a name, so bash prints
+# `[[: ?: syntax error: operand expected` and the test is FALSE. So the
+# comparison fails closed rather than passing on nothing.
+#
+# The guard is still here for two reasons. It stops with a message that says what
+# went wrong, instead of letting the run carry on and emit a bash syntax error
+# from the middle of a stage. And the stage-5/5 floor check is a STRING
+# comparison, where "?" is a value like any other: two unreadable reads would
+# compare equal and report a pool that came back to the floor without either
+# side having been measured.
 [[ "$baseline" =~ ^[0-9]+$ && "$baseline" == "$so_min" && "$baseline_claims" == "0" ]]
 assert $? "baseline: 0 claims and spec.replicas=$baseline, the floor (minReplicaCount=$so_min)"
 [[ "$baseline" =~ ^[0-9]+$ ]] \
@@ -192,24 +213,39 @@ kc exec "$pod" -- true >/dev/null 2>&1 || exec_rc=$?
 [[ $exec_rc -eq 0 ]]
 assert $? "kubectl exec into the claimed pod works, so the readings below are the pod's answers"
 
+# The two readings that settle it, asserted rather than just printed. A failed
+# request is NOT evidence on its own: busybox wget prints "bad address" for any
+# failed name lookup, which a pod that HAS a network also does when its DNS is
+# blocked, so a check that accepted that message would accept a networked pod.
+# What cannot be faked is the interface list and the routing table.
 echo "  \$ kubectl exec $pod -- ip -4 -o addr show"
-kc exec "$pod" -- ip -4 -o addr show 2>/dev/null | sed 's/^/    /'
-echo "  \$ kubectl exec $pod -- ip route show default      # prints nothing: no default route"
-kc exec "$pod" -- ip route show default 2>/dev/null | sed 's/^/    /'
-echo "  \$ kubectl exec $pod -- wget -T 5 -O /dev/null https://aws.amazon.com"
-wget_out="$(kc exec "$pod" -- wget -T 5 -O /dev/null https://aws.amazon.com 2>&1)"
-wget_rc=$?
-printf '%s\n' "$wget_out" | sed 's/^/    /'
-# Non-zero is not enough: the request must have failed because there is no
-# network. Match the messages a pod with no route or no resolver gives, so a
-# missing wget, a refused exec or any other error cannot pass as isolation.
-if [[ $exec_rc -eq 0 && $wget_rc -ne 0 ]] \
-   && printf '%s' "$wget_out" | grep -qE 'bad address|Network is unreachable|Host is unreachable|Temporary failure in name resolution'; then
+addr_out="$(kc exec "$pod" -- ip -4 -o addr show 2>&1)"
+addr_rc=$?
+printf '%s\n' "$addr_out" | sed 's/^/    /'
+# Every address line must be on lo. A guest with a network has an eth0 line here.
+if [[ $addr_rc -eq 0 && -n "$addr_out" ]] \
+   && ! printf '%s\n' "$addr_out" | grep -qvE '^[0-9]+:[[:space:]]+lo[[:space:]]'; then
   true
 else
   false
 fi
-assert $? "the request out of the claimed pod failed because there is no network to carry it, not for some other reason"
+assert $? "the only interface with an address in the claimed pod is loopback: there is no network interface to carry traffic"
+
+echo "  \$ kubectl exec $pod -- ip route show default      # prints nothing: no default route"
+route_out="$(kc exec "$pod" -- ip route show default 2>&1)"
+route_rc=$?
+printf '%s' "$route_out" | sed 's/^/    /'
+[[ $route_rc -eq 0 && -z "$route_out" ]]
+assert $? "the claimed pod has no default route, so nothing would know where to send a packet"
+
+echo "  \$ kubectl exec $pod -- wget -T 5 -O /dev/null https://aws.amazon.com"
+wget_out="$(kc exec "$pod" -- wget -T 5 -O /dev/null https://aws.amazon.com 2>&1)"
+wget_rc=$?
+printf '%s\n' "$wget_out" | sed 's/^/    /'
+# Corroboration, not the proof: the request must at least fail, and fail in a way
+# consistent with having no network rather than with having reached something.
+[[ $exec_rc -eq 0 && $wget_rc -ne 0 && "$wget_out" =~ (bad[[:space:]]address|Network[[:space:]]is[[:space:]]unreachable|Host[[:space:]]is[[:space:]]unreachable) ]]
+assert $? "a request out of the claimed pod fails the way a pod with no network fails, rather than reaching anything"
 
 step "4/5 drive demand UP to $MAX_CLAIMS claims"
 # demand-1 is already there from stage 3/5, so this creates the rest.

@@ -35,8 +35,19 @@ restore_scaledobject() {
   sed -e "s/__NAMESPACE__/$NAMESPACE/g" "$SAMPLE_DIR/deploy/scaledobject.yaml" \
     | kc apply -f - >/dev/null 2>&1
 }
-# INT and TERM as well as EXIT: an interrupt must not leave the pool unmanaged.
-trap 'echo; echo "restoring scaledobject/$SCALEDOBJECT"; delete_claims || true; restore_scaledobject || echo "WARNING: could not restore scaledobject/$SCALEDOBJECT; re-run ./scripts/setup.sh" >&2' EXIT INT TERM
+# Restore on the way out, however the script ends, so it cannot leave the pool
+# unmanaged.
+#
+# The restore is on EXIT only, and INT and TERM just exit. A handler trapped on
+# INT or TERM does NOT end the script: bash runs it and carries on with the next
+# command. Putting the restore on INT would therefore re-apply the ScaledObject in
+# the middle of the run and let the run continue, so the watch loop would measure
+# a pool that KEDA had been handed back and report it flat: all checks passing
+# after the operator had interrupted the run. Exiting instead makes the EXIT trap
+# run once, with a signal exit status.
+trap 'echo; echo "restoring scaledobject/$SCALEDOBJECT"; delete_claims || true; restore_scaledobject || echo "WARNING: could not restore scaledobject/$SCALEDOBJECT; re-run ./scripts/setup.sh" >&2' EXIT
+trap 'echo; echo "interrupted" >&2; exit 130' INT
+trap 'echo; echo "terminated" >&2; exit 143' TERM
 
 so_min="$(kc get scaledobject "$SCALEDOBJECT" -o jsonpath='{.spec.minReplicaCount}' 2>/dev/null)"
 [[ "$so_min" =~ ^[0-9]+$ ]] \
@@ -44,16 +55,25 @@ so_min="$(kc get scaledobject "$SCALEDOBJECT" -o jsonpath='{.spec.minReplicaCoun
 
 step "1/4 settle at the floor, then remove the ScaledObject"
 delete_claims || true
-wait_claims_gone 180 || true
+# The claims must be GONE before the baseline is read. A claim that is still
+# terminating counts as demand everywhere that matters: the exporter counts it,
+# claim_count counts it, and KEDA keeps the pool raised for it. If that left the
+# pool sitting at maxReplicaCount, then "the pool stayed flat" would be true
+# because the pool could not go any higher, and this control would report a pass
+# having measured nothing. That is the one failure this script exists to rule
+# out, so it stops here rather than carrying on.
+wait_claims_gone 180 \
+  || die "claims from an earlier run are still present, so the pool may already be raised and 'it stayed flat' could not mean anything; wait for them to go and re-run"
 wait_spec_replicas "\$v -le $so_min" 300
 baseline="$(pool_spec_replicas)" || baseline="?"
 print_stage "baseline"
-# The baseline is what "flat" is measured against. If it could not be read, there
-# is no control to run: comparing two unread values would make "it stayed flat"
-# true by construction, which is exactly the vacuous pass this script exists to
-# rule out for demand.sh.
+# The baseline is what "flat" is measured against, and it must be the FLOOR, not
+# just any number. A baseline already at maxReplicaCount could not rise, so a
+# flat reading would prove nothing.
 [[ "$baseline" =~ ^[0-9]+$ ]] \
   || die "the baseline spec.replicas could not be read, so 'the pool stayed flat' could not be established; stopping"
+[[ "$baseline" == "$so_min" ]] \
+  || die "the pool is at spec.replicas=$baseline, not the floor $so_min, so it has room to fall but not to rise and a flat reading would prove nothing; clear the demand and re-run"
 
 kc delete scaledobject "$SCALEDOBJECT" --ignore-not-found --wait=true --timeout=120s
 # KEDA deletes the HPA it created when the ScaledObject goes. Confirm it, so the
@@ -83,10 +103,11 @@ fi
 assert $? "the ScaledObject and the HPA it owned are both gone: nothing is autoscaling the pool now"
 
 step "2/4 apply the same demand: $MAX_CLAIMS claims"
-make_claims "$MAX_CLAIMS"
+make_rc=0
+make_claims "$MAX_CLAIMS" || make_rc=$?
 control_claims="$(claim_count)" || control_claims="?"
 echo "  claims now: $control_claims"
-[[ "$control_claims" == "$MAX_CLAIMS" ]]
+[[ $make_rc -eq 0 && "$control_claims" == "$MAX_CLAIMS" ]]
 assert $? "the same demand is present for the control: $MAX_CLAIMS claims, as in demand.sh"
 # Wait for the exporter to report the new demand before reading it, so the line
 # below shows the signal that IS there and that nothing is acting on, rather than
@@ -125,8 +146,13 @@ step "4/4 put the sample back: claims deleted, ScaledObject re-applied"
 delete_claims || true
 restore_rc=0
 restore_scaledobject || restore_rc=$?
-[[ $restore_rc -eq 0 ]]
-assert $? "scaledobject/$SCALEDOBJECT was re-applied, so the sample is not left without its autoscaler"
+# An apply over an object that is still terminating succeeds and then vanishes
+# with it, so the apply's status alone is not enough: read the object back and
+# require it to be present with no deletionTimestamp.
+restored_del="$(kc get scaledobject "$SCALEDOBJECT" -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null)"
+restored_rc=$?
+[[ $restore_rc -eq 0 && $restored_rc -eq 0 && -z "$restored_del" ]]
+assert $? "scaledobject/$SCALEDOBJECT is back and not terminating, so the sample is not left without its autoscaler"
 echo "  waiting for KEDA to take the pool back"
 back=""
 for _ in $(seq 1 36); do   # 36 * 5s = 3m

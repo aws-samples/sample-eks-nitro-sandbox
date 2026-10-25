@@ -77,16 +77,13 @@ def count_claims():
 
 
 class Handler(BaseHTTPRequestHandler):
-    # Drop a connection that goes quiet rather than holding the handler open. The
-    # endpoint is reachable from anywhere in the cluster, and without a timeout a
-    # single idle connection would stall KEDA's poll and the readiness probe.
+    # Drop a connection that sends nothing for five seconds, rather than holding
+    # a worker on it. The endpoint is reachable from anywhere in the cluster, and
+    # together with the threading server below this keeps one quiet connection
+    # from delaying KEDA's poll or the readiness probe. BaseHTTPRequestHandler
+    # already closes the connection when this timeout fires, so there is nothing
+    # to catch here.
     timeout = 5
-
-    def handle_one_request(self):
-        try:
-            super().handle_one_request()
-        except TimeoutError:
-            self.close_connection = True
 
     def do_GET(self):
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
