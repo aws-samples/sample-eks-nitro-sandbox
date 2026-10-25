@@ -225,11 +225,15 @@ and the host-specific options on the maintainers' workstation.
   `AGENTS.md`, Verification rules), and get it reviewed again, scoped to the fix. Repeat
   until the last commit that changes a check has been reviewed. Why: in one sample the
   second round found that the fixes from the first could skip their own error messages.
-- **Check that each case still fails for the reason it claims, every round.** A fix often
-  moves a case onto an *earlier* check than the one it was written for. The case still
-  passes, the suite stays green, and the check it was supposed to cover is no longer tested
-  at all — so a hole can reopen in silence. Read the message each rejecting case actually
-  produced, not just its exit status, and make the expected tag part of the assertion.
+- **Check that each case still fails for the reason it claims, every round. This is the
+  single most common defect in this repository's own review tooling: seven separate
+  instances in one change.** Not seven kinds of bug — seven times a case sat green in a
+  passing suite while testing nothing it was named for. A fix often moves a case onto an
+  *earlier* check than the one it was written for, so the case still passes, the suite stays
+  green, and the check it was supposed to cover is no longer tested at all — a hole can
+  reopen in silence. Read the message each rejecting case actually produced, not just its
+  exit status, and make the expected tag part of the assertion. If you take one thing from
+  this skill, take this.
   Why: in the review tooling's own history this happened three times in six rounds. Once a
   fix made every "good" stub stop emitting the marker a new check looked for, so an
   81-case green suite was quietly demonstrating that the marker's *absence* was acceptable
@@ -257,6 +261,14 @@ and the host-specific options on the maintainers' workstation.
   written to catch. This is the shape most likely to recur elsewhere in this repository,
   because every sample's guard tests reset state between cases: if a case needs the world
   to be in an odd state, arrange that after the reset and assert it is still so.
+- **Assert the arguments the tool was actually given, not only what it returned.** A stub
+  that ignores its argv makes every case indifferent to the flags under test. In this
+  tooling the flag that confines the Claude reviewer to three read-only tools — the most
+  security-relevant line in the change — had **nothing** guarding it: reverting it to the
+  weaker flag would have left all 120 cases green, and no one would have noticed because
+  the suite still passed. A fix with no case asserting it is one careless edit from
+  silently disappearing. Have the stub record its arguments and assert the ones that
+  matter.
 - **A harness can be structurally unable to express the claim you think it is testing.**
   Not merely wrong — incapable. One assertion here checked the script's own output for a
   path, which could never work, because the script always prints that path itself; the claim
