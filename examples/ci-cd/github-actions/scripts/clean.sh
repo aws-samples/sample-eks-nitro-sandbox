@@ -150,12 +150,19 @@ if [[ "$ns_state" == ours ]]; then
       fi
       [[ -n "$k_objs" ]] && arc_objs+="$k_objs"$'\n'
     done
-    if [[ "$arc_read_failed" == yes ]]; then
-      : # already warned; ss_gone stays no
-    elif [[ -n "$(grep . <<<"$arc_objs" || true)" ]]; then
-      warn "the Helm release is gone but runner scale set objects remain in '$ARC_RUNNERS_NAMESPACE': $(tr '\n' ' ' <<<"$arc_objs"). They may still be terminating. If they do not clear, a finalizer is stuck, which happens when the ARC controller was removed before its objects were: remove the controller's finalizers with
-  kubectl --context $CLUSTER_NAME -n $ARC_RUNNERS_NAMESPACE patch <kind>/<name> --type=merge -p '{\"metadata\":{\"finalizers\":null}}'
-  and re-run."
+    # Objects first, then a failed read. The other order hid a real finding:
+    # when one kind's read failed and another kind still had objects, only the
+    # failed read was warned, so the reader was not told what was left or how
+    # to clear a stuck finalizer until a later run. Either way `ss_gone` stays
+    # no, so the gate below is unaffected.
+    if [[ -n "$(grep . <<<"$arc_objs" || true)" ]]; then
+      warn "the Helm release is gone but runner scale set objects remain in '$ARC_RUNNERS_NAMESPACE': $(tr '\n' ' ' <<<"$arc_objs"). They may still be terminating, so re-run first.
+  If they never clear, a finalizer is stuck, which happens when the ARC controller was removed before its objects were. Check that no controller is running, because clearing a finalizer while one is alive skips ARC's own clean up and can leave the listener, and its copy of your GitHub credential, behind:
+    kubectl --context $CLUSTER_NAME get deploy -A -l app.kubernetes.io/name=gha-rs-controller
+  Only if that prints nothing, remove the finalizers and re-run:
+    kubectl --context $CLUSTER_NAME -n $ARC_RUNNERS_NAMESPACE patch <kind>/<name> --type=merge -p '{\"metadata\":{\"finalizers\":null}}'"
+    elif [[ "$arc_read_failed" == yes ]]; then
+      : # already warned above, per kind; ss_gone stays no
     else
       ss_gone=yes
     fi

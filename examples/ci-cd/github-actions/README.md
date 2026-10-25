@@ -187,12 +187,15 @@ every place that handles it. It creates the Secret when none is there, and repla
 sample already owns outright rather than merging into it, so moving from a token to a GitHub
 App does not leave the old token in the Secret beside the new keys.
 
-It never uses a client-side apply, which would copy the credential into the object's
-`last-applied-configuration` annotation: `kubectl describe secret` prints annotations even
-though it hides the data. Server-side apply adds no such annotation, but it does keep
-refreshing one that is already there, so a Secret first written by an older version of this
-script would go on carrying the current credential in plain view. `setup.sh` therefore
-removes that annotation after every write and stops if it is still present.
+It uses no form of `kubectl apply` for the Secret at all. A client-side apply copies the
+whole object, credential included, into its `last-applied-configuration` annotation, and
+`kubectl describe secret` prints annotations even though it hides the data. A server-side
+apply adds no such annotation, but it keeps refreshing one that is already there, so a
+Secret that had once been applied client-side would go on carrying the *current* credential
+in plain view. `setup.sh` therefore uses `create` for a Secret that is absent and `replace`
+for one this sample already owns, and then removes that annotation after every write and
+stops if it is still present — which catches a Secret left annotated by an earlier tool or
+by your own `kubectl apply`.
 
 The Helm values reference the Secret by name, so the credential is not in the release's
 values either:

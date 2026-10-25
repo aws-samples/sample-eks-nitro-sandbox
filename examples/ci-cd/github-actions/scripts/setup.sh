@@ -210,9 +210,12 @@ secret_write() {
 # braces. It stays because the annotation is the one place a credential could
 # sit in plain view of `kubectl describe secret`, and because it catches a
 # Secret left annotated by an older version of this script or by someone's own
-# `kubectl apply`. Measured on EKS 1.37: after a client-side apply the
-# annotation held the token, and a later server-side apply replaced it with the
-# new token. Remove it, then confirm it is gone rather than assume.
+# `kubectl apply`. Why that case is worth catching, measured on EKS 1.37 when
+# this script still applied: after a client-side apply the annotation held the
+# token, and a later server-side apply refreshed it with the new token rather
+# than dropping it, so the annotation kept exposing the CURRENT credential.
+# Neither path is taken here any more. Remove it, then confirm it is gone
+# rather than assume.
 strip_last_applied() {
   # Tracing off, like the two credential branches: this function used to read
   # the annotation's VALUE into a variable, which is the whole Secret with the
@@ -351,11 +354,35 @@ sed -e "s|__GITHUB_CONFIG_URL__|$GITHUB_CONFIG_URL|g" \
   --labels "$LABEL_KEY=$LABEL_VALUE" \
   -f "$values_rendered"
 
+listener_sel="actions.github.com/scale-set-name=$RUNNER_SCALE_SET_NAME,actions.github.com/scale-set-namespace=$ARC_RUNNERS_NAMESPACE"
+
+# Wait for the listener pod to EXIST before waiting for it to be Ready.
+# `kubectl wait` with a label selector that matches nothing does not wait: it
+# exits non-zero at once with "no matching resources found" and ignores
+# --timeout (measured on EKS 1.37: 0.65s against --timeout=60s). The controller
+# needs a few seconds to create the listener pod after the release is
+# installed, so waiting for Ready directly failed on every clean install, and
+# the message blamed the credential when the credential was fine.
 echo "  waiting for the listener pod in '$ARC_SYSTEMS_NAMESPACE'..."
-"${KCTL[@]}" wait --for=condition=Ready pod \
-  -l "actions.github.com/scale-set-name=$RUNNER_SCALE_SET_NAME,actions.github.com/scale-set-namespace=$ARC_RUNNERS_NAMESPACE" \
+listener_pod=""
+for _ in $(seq 1 60); do
+  # A label selector that matches nothing is a successful empty read (exit 0,
+  # no stdout; measured), so an empty result means absent and a non-zero status
+  # means the read failed. The two must not be confused: a failed read here
+  # would otherwise look like a listener that never appeared.
+  listener_pod="$("${KCTL[@]}" get pod -n "$ARC_SYSTEMS_NAMESPACE" \
+    -l "$listener_sel" -o name --ignore-not-found 2>/dev/null)" \
+    || die "could not read the listener pods in '$ARC_SYSTEMS_NAMESPACE'. That is a failed read, not a report that the listener is absent."
+  [[ -n "$listener_pod" ]] && break
+  sleep 2
+done
+[[ -n "$listener_pod" ]] \
+  || die "the controller created no listener pod for '$RUNNER_SCALE_SET_NAME' in '$ARC_SYSTEMS_NAMESPACE' within 120s. The release is installed, so this is the controller, not the credential: a controller on a different version from the scale set is the usual cause. Check its logs:
+  kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE logs -l app.kubernetes.io/name=gha-rs-controller"
+
+"${KCTL[@]}" wait --for=condition=Ready pod -l "$listener_sel" \
   -n "$ARC_SYSTEMS_NAMESPACE" --timeout=180s \
-  || die "the listener pod for '$RUNNER_SCALE_SET_NAME' did not become Ready in '$ARC_SYSTEMS_NAMESPACE', so the scale set is not registered with GitHub. Check the credential, then:
+  || die "the listener pod for '$RUNNER_SCALE_SET_NAME' exists in '$ARC_SYSTEMS_NAMESPACE' but did not become Ready, so the scale set is not registered with GitHub. This is where a credential that GitHub rejects shows up. Check it, then:
   kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE logs -l actions.github.com/scale-set-name=$RUNNER_SCALE_SET_NAME"
 
 say "setup complete"
