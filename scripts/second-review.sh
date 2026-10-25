@@ -103,19 +103,20 @@ esac
 # Compare the names the way the backends vary them, so a vendor prefix, a Bedrock
 # cross-Region prefix, a version suffix or a context-window suffix cannot hide that two
 # names are one model: "us.anthropic.claude-sonnet-5-5:0", "anthropic.claude-sonnet-5-5"
-# and "claude-sonnet-5-5" all normalise the same. The suffixes are removed in a loop
-# until nothing changes, because one pass is order-dependent: ":0[1m]" would reduce but
-# "[1m]:0" would not, and the same model under two spellings would compare unequal.
+# and "claude-sonnet-5-5" all normalise the same. At most one version suffix and one
+# context-window suffix come off, in whichever order they appear -- the first matching
+# expression wins and `t` ends the script -- so ":0[1m]" and "[1m]:0" reduce alike without
+# collapsing genuinely different names: "model:1:2" and "model[a][b]" keep a suffix and
+# stay distinct from "model".
 normalise_model() {
-  local m prev
+  local m
   m=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
   m=$(printf '%s' "$m" | sed -E 's/^(us|eu|apac|global|us-gov)\.//')
   m=$(printf '%s' "$m" | sed -E 's/^(anthropic|openai|amazon|meta|mistral|cohere|ai21|deepseek|qwen|writer|stability|twelvelabs|luma)\.//')
-  prev=''
-  while [ "$m" != "$prev" ]; do
-    prev="$m"
-    m=$(printf '%s' "$m" | sed -E 's/\[[^][]*\]$//; s/:[0-9]+$//')
-  done
+  m=$(printf '%s' "$m" | sed -E 's/\[[^][]*\]:[0-9]+$//; t
+                                  s/:[0-9]+\[[^][]*\]$//; t
+                                  s/\[[^][]*\]$//; t
+                                  s/:[0-9]+$//')
   printf '%s' "$m"
 }
 
@@ -159,16 +160,24 @@ command -v realpath >/dev/null 2>&1 || cannot_check "realpath is needed to check
 # refused run leaves nothing behind in a tracked folder. -m resolves a path that does not
 # exist yet; both sides are canonical, so a "..", a symbolic link, or a sibling whose name
 # merely starts with "tmp" cannot pass.
-TMP_ABS=$(realpath -m "$REPO_ROOT/tmp")
+# tmp/ itself must be a real directory in the repository. Were it a symbolic link to, say,
+# examples/, resolving it would make a tracked folder the approved destination and the
+# check would wave the trace straight into it.
+[ ! -L "$REPO_ROOT/tmp" ] || refuse E_TMP_IS_LINK \
+  "'$REPO_ROOT/tmp' is a symbolic link, so where the brief, the review and the trace would land is not this repository's gitignored tmp/. Make it a real directory."
+TMP_ABS=$(realpath -m "$REPO_ROOT/tmp") || refuse E_NOT_IN_TMP \
+  "could not resolve '$REPO_ROOT/tmp', so there is nothing to check the brief and output paths against."
 in_repo_tmp() {
-  case "$1/" in "$TMP_ABS"/*) return 0 ;; esac
+  local p
+  # A symlink loop or a path realpath cannot resolve must refuse, not run unchecked.
+  p=$(realpath -m "$1" 2>/dev/null) || refuse E_NOT_IN_TMP \
+    "could not resolve $2 '$1' to a real path, so it cannot be shown to be under this repository's gitignored tmp/."
+  case "$p/" in "$TMP_ABS"/*) printf '%s' "$p"; return 0 ;; esac
   refuse E_NOT_IN_TMP \
-    "$2 '$1' is not under this repository's gitignored tmp/ ('$TMP_ABS'). The brief, the review and the backend's trace live there: the trace can hold credential details, and anything in a tracked folder is one 'git add' from being published."
+    "$2 '$p' is not under this repository's gitignored tmp/ ('$TMP_ABS'). The brief, the review and the backend's trace live there: the trace can hold credential details, and anything in a tracked folder is one 'git add' from being published."
 }
-OUT_ABS=$(realpath -m "$OUT")
-in_repo_tmp "$OUT_ABS" --out
-BRIEF_ABS=$(realpath -m "$BRIEF")
-in_repo_tmp "$BRIEF_ABS" --brief
+OUT_ABS=$(in_repo_tmp "$OUT" --out)
+BRIEF_ABS=$(in_repo_tmp "$BRIEF" --brief)
 
 mkdir -p "$OUT_ABS"
 TREE_ABS=$(realpath "$TREE")
@@ -247,6 +256,8 @@ case "$BACKEND" in
                -u AWS_CONTAINER_AUTHORIZATION_TOKEN
                -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
                -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN -u AWS_ROLE_SESSION_NAME
+               -u AWS_ACCESS_KEY -u AWS_SECRET_KEY -u AWS_SECURITY_TOKEN
+               -u AWS_CREDENTIAL_PROFILES_FILE
                AWS_CONFIG_FILE=/dev/null
                AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_EC2_METADATA_DISABLED=true)
     fi
@@ -291,10 +302,15 @@ case "$BACKEND" in
     # be there: with only one, the block would run to the end of the trace and a brief that
     # quotes a preamble -- as a brief reviewing this very script does -- could supply these
     # values itself. Anchored, so only a whole line of exactly eight hyphens counts.
-    rules=$(grep -c '^--------$' "$OUT_ABS/review.err" || true)
+    # Only the part before codex's own "user" marker counts, which is where it starts
+    # echoing the brief. Counting rules over the whole trace was not enough: a trace with
+    # one real rule plus a rule in the echoed brief also counts two, and the first block
+    # would then run into the brief, which could supply these values itself.
+    awk '/^user$/ { exit } { print }' "$OUT_ABS/review.err" > "$OUT_ABS/pre-user.txt"
+    rules=$(grep -c '^--------$' "$OUT_ABS/pre-user.txt" || true)
     [ "${rules:-0}" -ge 2 ] || refuse E_NO_PREAMBLE \
-      "codex's trace has ${rules:-0} preamble rule(s), not the two that delimit its own preamble, so the mode it ran in cannot be read from it. Check $OUT_ABS/review.err with tail."
-    awk '/^--------$/ { n++; next } n == 1' "$OUT_ABS/review.err" > "$OUT_ABS/preamble.txt"
+      "codex's trace has ${rules:-0} preamble rule(s) before it echoes the brief, not the two that delimit its own preamble, so the mode it ran in cannot be read from it. Check $OUT_ABS/review.err with tail."
+    awk '/^--------$/ { n++; next } n == 1' "$OUT_ABS/pre-user.txt" > "$OUT_ABS/preamble.txt"
     reported_models=$(sed -n 's/^model: //p' "$OUT_ABS/preamble.txt" | head -1)
     sandbox_mode=$(sed -n 's/^sandbox: //p' "$OUT_ABS/preamble.txt" | head -1)
     approval_mode=$(sed -n 's/^approval: //p' "$OUT_ABS/preamble.txt" | head -1)
@@ -310,7 +326,7 @@ case "$BACKEND" in
     # a string-valued modelUsage would otherwise be split into its characters, and a
     # non-object record would end the script with no tagged reason.
     python3 -c '
-import json, sys
+import json, sys, unicodedata
 
 path, out = sys.argv[1], sys.argv[2]
 try:
@@ -334,7 +350,7 @@ if not all(isinstance(k, str) and k.strip() for k in usage):
 # holding a control character could push another name onto a line nothing reads, and a
 # name holding "+" would be split into two. Refuse rather than mangle.
 bad = [k for k in usage
-       if "+" in k or any(c in k for c in "\t\n\r\v\f\0")]
+       if "+" in k or any(unicodedata.category(c) == "Cc" for c in k)]
 if bad:
     print("BAD\ta model name holds a '+' or a control character, which this script "
           "cannot carry safely: %s" % json.dumps(bad))
@@ -379,7 +395,14 @@ esac
 # The requested model may be an alias, so apply the principle to what actually answered.
 # Split on "+" through an array: an unquoted expansion would let a name holding a bracket,
 # such as "claude-opus-5-5[1m]", be read as a glob and silently become a filename.
-IFS='+' read -r -a answered_models <<< "$reported_models"
+# Only the claude backend joins several names with "+"; codex reports exactly one, and
+# splitting it would drop a trailing "+" (bash discards the empty last field), so a model
+# literally named "x+" would compare unequal to an implementer of the same name.
+if [ "$BACKEND" = claude ]; then
+  IFS='+' read -r -a answered_models <<< "$reported_models"
+else
+  answered_models=("$reported_models")
+fi
 for m in "${answered_models[@]}"; do
   got=$(normalise_model "$m")
   check_model_name "$m" "$got" "the model the $BACKEND backend reported,"
