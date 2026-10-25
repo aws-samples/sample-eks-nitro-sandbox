@@ -55,7 +55,11 @@ refuse() { printf 'second-review: %s: %s\n' "$1" "$2" >&2; exit 1; }
 cannot_check() { printf 'second-review: E_NO_TOOL: %s\n' "$1" >&2; exit 2; }
 note() { printf 'second-review: %s\n' "$1"; }
 
-REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# Resolve the script itself first: invoked through a symbolic link from somewhere else,
+# "dirname $0" is the link's directory, and the containment check below would then approve
+# that directory's tmp/ instead of this repository's.
+SELF=$(realpath "$0" 2>/dev/null || printf '%s' "$0")
+REPO_ROOT=$(cd "$(dirname "$SELF")/.." && pwd)
 
 BACKEND='' MODEL='' IMPLEMENTER='' BRIEF='tmp/review/brief.md' TREE='tmp/review/tree'
 OUT='tmp/review' TIMEOUT=5400
@@ -99,19 +103,34 @@ esac
 # Compare the names the way the backends vary them, so a vendor prefix, a Bedrock
 # cross-Region prefix, a version suffix or a context-window suffix cannot hide that two
 # names are one model: "us.anthropic.claude-sonnet-5-5:0", "anthropic.claude-sonnet-5-5"
-# and "claude-sonnet-5-5" all normalise the same.
+# and "claude-sonnet-5-5" all normalise the same. The suffixes are removed in a loop
+# until nothing changes, because one pass is order-dependent: ":0[1m]" would reduce but
+# "[1m]:0" would not, and the same model under two spellings would compare unequal.
 normalise_model() {
-  printf '%s' "$1" \
-    | tr '[:upper:]' '[:lower:]' \
-    | sed -E 's/[[:space:]]+//g
-              s/\[[^][]*\]$//
-              s/^(us|eu|apac|global|us-gov)\.//
-              s/^(anthropic|openai|amazon|meta|mistral|cohere|ai21|deepseek|qwen|writer|stability|twelvelabs|luma|nova)\.//
-              s/:[0-9]+$//'
+  local m prev
+  m=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  m=$(printf '%s' "$m" | sed -E 's/^(us|eu|apac|global|us-gov)\.//')
+  m=$(printf '%s' "$m" | sed -E 's/^(anthropic|openai|amazon|meta|mistral|cohere|ai21|deepseek|qwen|writer|stability|twelvelabs|luma)\.//')
+  prev=''
+  while [ "$m" != "$prev" ]; do
+    prev="$m"
+    m=$(printf '%s' "$m" | sed -E 's/\[[^][]*\]$//; s/:[0-9]+$//')
+  done
+  printf '%s' "$m"
+}
+
+# A name that is nothing but a prefix ("amazon.") normalises to the empty string, and two
+# empty strings would compare equal while an empty and a real one would compare different.
+# Neither is a model, so refuse the name instead of comparing it.
+check_model_name() {
+  [ -n "$2" ] || refuse E_MODEL_NAME \
+    "$3 '$1' is not a model name: everything in it is a vendor prefix, a Region prefix or a version suffix, so there is nothing left to compare."
 }
 
 want_model=$(normalise_model "$MODEL")
 impl_model=$(normalise_model "$IMPLEMENTER")
+check_model_name "$MODEL" "$want_model" "--model"
+check_model_name "$IMPLEMENTER" "$impl_model" "--implementer-model"
 [ "$want_model" != "$impl_model" ] || refuse E_SAME_MODEL \
   "the reviewer model and the implementer model are the same ('$MODEL' and '$IMPLEMENTER' both normalise to '$want_model'). An adversarial second review has to be done by a different model than the one that wrote the change."
 
@@ -135,20 +154,24 @@ command -v realpath >/dev/null 2>&1 || cannot_check "realpath is needed to check
 [ -s "$BRIEF" ] || refuse E_BRIEF "the brief at '$BRIEF' is empty; a reviewer given nothing to check finds nothing."
 [ -d "$TREE" ] || refuse E_TREE "no tree to review at '$TREE'. Extract the commit there first ('git archive <commit> | tar -x -C $TREE')."
 
-# The trace lands in --out and can hold credential details, so --out has to stay in the
-# gitignored tmp/. Checked before anything is created, so a refused run leaves nothing
-# behind in a tracked folder. -m resolves a path that does not exist yet.
-OUT_ABS=$(realpath -m "$OUT")
+# The brief, the review and the trace all belong in the gitignored tmp/, and the trace can
+# hold credential details, so both paths are checked before anything is created and a
+# refused run leaves nothing behind in a tracked folder. -m resolves a path that does not
+# exist yet; both sides are canonical, so a "..", a symbolic link, or a sibling whose name
+# merely starts with "tmp" cannot pass.
 TMP_ABS=$(realpath -m "$REPO_ROOT/tmp")
-case "$OUT_ABS/" in
-  "$TMP_ABS"/*) ;;
-  *) refuse E_OUT_NOT_TMP \
-    "--out '$OUT_ABS' is not under this repository's gitignored tmp/ ('$TMP_ABS'). The backend's trace can hold credential details, and anything in a tracked folder is one 'git add' from being published." ;;
-esac
+in_repo_tmp() {
+  case "$1/" in "$TMP_ABS"/*) return 0 ;; esac
+  refuse E_NOT_IN_TMP \
+    "$2 '$1' is not under this repository's gitignored tmp/ ('$TMP_ABS'). The brief, the review and the backend's trace live there: the trace can hold credential details, and anything in a tracked folder is one 'git add' from being published."
+}
+OUT_ABS=$(realpath -m "$OUT")
+in_repo_tmp "$OUT_ABS" --out
+BRIEF_ABS=$(realpath -m "$BRIEF")
+in_repo_tmp "$BRIEF_ABS" --brief
 
 mkdir -p "$OUT_ABS"
 TREE_ABS=$(realpath "$TREE")
-BRIEF_ABS=$(realpath "$BRIEF")
 
 # This script's own output inside the tree would show up as the tree changing, and read
 # as a reviewer that wrote to it. Keep them apart rather than explain the false alarm.
@@ -212,7 +235,11 @@ case "$BACKEND" in
     # E_RUN_FAILED rather than quietly billing someone else.
     aws_env=(env)
     if [ "${SECOND_REVIEW_KEEP_AWS_ENV:-0}" != 1 ]; then
-      aws_env=(env -u AWS_PROFILE -u AWS_DEFAULT_PROFILE -u AWS_CONFIG_FILE
+      # AWS_CONFIG_FILE is pointed at /dev/null rather than unset: unsetting it makes the
+      # SDK fall back to the default ~/.aws/config, whose profiles can carry credentials
+      # or a credential process, which is the very thing being kept out. Same for the
+      # shared credentials file.
+      aws_env=(env -u AWS_PROFILE -u AWS_DEFAULT_PROFILE
                -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN
                -u AWS_BEARER_TOKEN_BEDROCK -u AWS_CREDENTIAL_EXPIRATION
                -u AWS_CONTAINER_CREDENTIALS_FULL_URI
@@ -220,6 +247,7 @@ case "$BACKEND" in
                -u AWS_CONTAINER_AUTHORIZATION_TOKEN
                -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
                -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN -u AWS_ROLE_SESSION_NAME
+               AWS_CONFIG_FILE=/dev/null
                AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_EC2_METADATA_DISABLED=true)
     fi
     ${timeout_cmd[@]+"${timeout_cmd[@]}"} "${aws_env[@]}" "$resolved_cmd" "${codex_args[@]}" \
@@ -258,10 +286,15 @@ reported_models=''
 confinement=''
 case "$BACKEND" in
   codex)
-    # Read only codex's own preamble, the block between the first two rules, so a line of
-    # the brief echoed back into the trace cannot supply any of these three values.
-    # Anchored, and the brief is never inside this block.
-    awk '/^-{8}$/ { n++; next } n == 1' "$OUT_ABS/review.err" > "$OUT_ABS/preamble.txt"
+    # Read only codex's own preamble, the block between the first two rules. codex prints
+    # it before it echoes the brief, so the first block is always its own. Both rules must
+    # be there: with only one, the block would run to the end of the trace and a brief that
+    # quotes a preamble -- as a brief reviewing this very script does -- could supply these
+    # values itself. Anchored, so only a whole line of exactly eight hyphens counts.
+    rules=$(grep -c '^--------$' "$OUT_ABS/review.err" || true)
+    [ "${rules:-0}" -ge 2 ] || refuse E_NO_PREAMBLE \
+      "codex's trace has ${rules:-0} preamble rule(s), not the two that delimit its own preamble, so the mode it ran in cannot be read from it. Check $OUT_ABS/review.err with tail."
+    awk '/^--------$/ { n++; next } n == 1' "$OUT_ABS/review.err" > "$OUT_ABS/preamble.txt"
     reported_models=$(sed -n 's/^model: //p' "$OUT_ABS/preamble.txt" | head -1)
     sandbox_mode=$(sed -n 's/^sandbox: //p' "$OUT_ABS/preamble.txt" | head -1)
     approval_mode=$(sed -n 's/^approval: //p' "$OUT_ABS/preamble.txt" | head -1)
@@ -294,8 +327,17 @@ if not isinstance(usage, dict) or not usage:
     print("BAD\tmodelUsage is %s, not a non-empty object of model names"
           % json.dumps(usage))
     raise SystemExit(0)
-if not all(isinstance(k, str) and k for k in usage):
+if not all(isinstance(k, str) and k.strip() for k in usage):
     print("BAD\tmodelUsage has a name that is not a non-empty string")
+    raise SystemExit(0)
+# The names come back to the shell as one tab-separated line joined by "+", so a name
+# holding a control character could push another name onto a line nothing reads, and a
+# name holding "+" would be split into two. Refuse rather than mangle.
+bad = [k for k in usage
+       if "+" in k or any(c in k for c in "\t\n\r\v\f\0")]
+if bad:
+    print("BAD\ta model name holds a '+' or a control character, which this script "
+          "cannot carry safely: %s" % json.dumps(bad))
     raise SystemExit(0)
 denials = d.get("permission_denials")
 if not isinstance(denials, list):
@@ -340,6 +382,7 @@ esac
 IFS='+' read -r -a answered_models <<< "$reported_models"
 for m in "${answered_models[@]}"; do
   got=$(normalise_model "$m")
+  check_model_name "$m" "$got" "the model the $BACKEND backend reported,"
   [ "$got" != "$impl_model" ] || refuse E_REPORTED_SAME_MODEL \
     "'$MODEL' was answered by '$m', which is the model that wrote the change ('$IMPLEMENTER'). Ask for a different model."
 done

@@ -105,12 +105,15 @@ and the host-specific options on the maintainers' workstation.
 - **Prefer `--backend claude` when the reviewer only needs to read.** It runs with
   `--restricted` and `--strict-mcp-config`, so the reviewer holds only `Read`, `Grep` and
   `Glob`. The Codex backend cannot be made to drop the host's MCP servers.
-- **The reviewer must not be able to write, and the script proves that rather than
-  claiming it**: it fingerprints `--tree` before and after and fails if anything changed.
-  Point it at the snapshot in `tmp/review/tree`, never your working tree. A read-only flag
-  on its own is not enough — Codex's `--sandbox read-only` still asked to write and a host
-  that answers the ask let it through, which is why the script also pins the approval
-  policy and checks what the backend reports.
+- **The reviewer must not be able to write.** Two separate things, so keep them apart when
+  you record the review: the backend is *configured* to refuse writes, and the script
+  *checks afterwards* that no persistent change it can see was left in `--tree` — every
+  path's type, mode, size, modification time, symlink target and content. It cannot see a
+  file created and deleted inside the run, or any write outside the tree. Point it at the
+  snapshot in `tmp/review/tree`, never your working tree. A read-only flag on its own is
+  not enough: Codex's `--sandbox read-only` still asked to write and a host that answers
+  the ask let it through, which is why the script pins the approval policy too and refuses
+  a run whose reported mode is anything else.
 - **Keep the brief, the output and any trace in `tmp/review/`.** The script refuses an
   `--out` outside the repository's gitignored `tmp/`. A trace (`review.err`) can hold
   credential details: read it with `tail` or a targeted search, and never paste it into a

@@ -167,9 +167,9 @@ the repository root, with the brief, the snapshot of the commit and the output u
   answered turns out to be the implementer's anyway.
 - **Review the snapshot, not your working tree.** `--tree tmp/review/tree` is the plain
   extract of the commit that the `second-review` skill makes.
-- **`--out` must be under this repository's gitignored `tmp/`**, and the script refuses
-  anything else. Why: it writes the backend's trace there, and a trace can hold credential
-  details, so it must never land in a tracked folder.
+- **`--brief` and `--out` must be under this repository's gitignored `tmp/`**, and the
+  script refuses anything else. Why: it writes the backend's trace into `--out`, and a
+  trace can hold credential details, so it must never land in a tracked folder.
 - **Never paste a trace** (`review.err`) into a pull request, an issue or Slack. Read it
   with `tail` or a targeted search.
 - **`review-record.txt` is what goes in the pull request**: the backend, the model that
@@ -178,17 +178,25 @@ the repository root, with the brief, the snapshot of the commit and the output u
   background, redirect to a log under `tmp/` and check it with
   `pgrep -f '[s]econd-review.sh'`. Why the brackets: without them the pattern also matches
   the shell running `pgrep`, so a review that has exited still looks alive.
-- **If the reviewer cannot start, report the exact error and stop.** The script names the
-  check that refused, tagged (`E_SAME_MODEL`, `E_CMD_MISSING`, `E_RUN_FAILED`,
-  `E_TREE_CHANGED`). An error at start-up is a fact the maintainers need.
+- **Report the exact error and stop, whenever the script refuses.** It names the check that
+  refused, tagged: before the run (`E_SAME_MODEL`, `E_CMD_MISSING`, `E_NOT_IN_TMP`) or
+  after it (`E_RUN_FAILED`, `E_BAD_RECORD`, `E_NOT_READ_ONLY`, `E_TREE_CHANGED`). Either
+  way no review happened, and that is a fact the maintainers need rather than something to
+  configure around.
 
 Read-only is not one flag. Codex's `--sandbox read-only` on its own does **not** stop it
 writing: it leaves the approval policy at `on-request`, and a host whose configuration
 answers that ask by itself lets the write through. A run on 2026-10-25 with exactly that
 flag created a file in the review tree and appended to a page, and reported both as
-successful. The script passes `-c approval_policy="never"` as well, and it does not trust
-the flags either: it fingerprints the tree before and after and fails if any path's
-content, mode or symlink target changed. That check is what caught the write.
+successful. The script passes `-c approval_policy="never"` as well, and refuses a run whose
+reported mode is anything else.
+
+That is the backend being *configured* to refuse writes. Separately, the script *checks
+afterwards* that nothing it can see changed in the tree: every path's type, mode, size,
+modification time, symlink target and content, fingerprinted before and after. Keep the two
+apart when you record a review, because the check has limits — it cannot see a file created
+and deleted within the run, and it says nothing about writes outside the tree. It is still
+the check that caught the write above.
 
 #### Bringing your own reviewer
 
