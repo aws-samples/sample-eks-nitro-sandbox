@@ -42,6 +42,12 @@ on this page used Helm 4.2.4. You also need two things of your own: a
 **test repository** you own and can afford to run untrusted-shaped jobs in, and a
 **least-privilege GitHub credential** for it. Both are described in Step 2.
 
+Every output block on this page is from one real run of this sample. Three kinds of local
+name in that output are replaced by the same placeholders the commands use, because this
+repository is public: `<CLUSTER_NAME>` for the kube context, `<OWNER>/<TEST_REPO>` for the
+test repository, and `<NODE_NAME>` for an EC2 instance id. Pod names, pod UIDs, kernel
+builds, uptimes, device lists and timings are exactly as the run printed them.
+
 There is no model cost. The controller and listener are small ordinary pods that run
 continuously; a sandboxed runner pod exists only while a job runs. The only cost beyond the
 cluster is the outbound data the job's image pulls use, over the cluster's existing egress.
@@ -146,7 +152,19 @@ helm install arc oci://ghcr.io/actions/actions-runner-controller-charts/gha-runn
 ```
 
 ```text
-TODO: output from the fresh run
+Pulled: ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller:0.15.1
+Digest: sha256:c2497a6dedaaa723322abfe9ea2f5a81b9b8fbb90b38e45d7835b6c7629a3aae
+NAME: arc
+LAST DEPLOYED: Sun Oct 25 17:08:54 2026
+NAMESPACE: arc-systems
+STATUS: deployed
+REVISION: 1
+DESCRIPTION: Install complete
+TEST SUITE: None
+NOTES:
+Thank you for installing gha-runner-scale-set-controller.
+
+Your release is named arc.
 ```
 
 The controller goes in `arc-systems` and the runners in `arc-runners`, in a later step.
@@ -220,7 +238,63 @@ waits for its `PolicyEndpoint`, and installs the runner scale set.
 ```
 
 ```text
-TODO: output from the fresh run
+==> 1/7 tools, context and RuntimeClass
+  context '<CLUSTER_NAME>', isolated-sandbox present.
+
+==> 2/7 network policy enforcement
+  enforcement is on.
+
+==> 3/7 the ARC controller (shared; this sample does not install it)
+deployment "arc-gha-rs-controller" successfully rolled out
+  controller 0.15.1 is installed and ready; using it as it is.
+
+==> 4/7 the runners namespace
+namespace/arc-runners created
+namespace/arc-runners labeled
+  created namespace 'arc-runners' and labelled it ManagedBy=github-actions.
+
+==> 5/7 the GitHub credential Secret
+secret/github-credential created
+  Secret 'github-credential' created from the token file.
+  no last-applied-configuration annotation on it.
+
+==> 6/7 the runner pods' egress policy
+applicationnetworkpolicy.networking.k8s.aws/github-actions-runner-egress created
+  applied, with CoreDNS at 10.100.0.10.
+  waiting for the PolicyEndpoint of github-actions-runner-egress...
+  PolicyEndpoint: github-actions-runner-egress-lj7wh
+
+==> 7/7 the runner scale set
+Pulled: ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set:0.15.1
+Digest: sha256:2ae7e43db61047aa3c4182e73c8f58ace35e796fa07d41b64fb3c39e81e1f365
+NAME: github-actions-nitro
+LAST DEPLOYED: Sun Oct 25 17:09:10 2026
+NAMESPACE: arc-runners
+STATUS: deployed
+REVISION: 1
+DESCRIPTION: Install complete
+TEST SUITE: None
+NOTES:
+Thank you for installing gha-runner-scale-set.
+
+Your release is named github-actions-nitro.
+  waiting for the listener pod in 'arc-systems'...
+pod/github-actions-nitro-6695d4f4-listener condition met
+
+==> setup complete
+  ARC controller:    namespace arc-systems, version 0.15.1 (shared; not installed by this sample)
+  Runner scale set:  release 'github-actions-nitro' in namespace arc-runners
+  Registered with:   https://github.com/<OWNER>/<TEST_REPO>
+  Egress policy:     github-actions-runner-egress, PolicyEndpoint github-actions-runner-egress-lj7wh
+
+Next, copy the workflow into your test repository and trigger it:
+
+  cp workflow/untrusted-pr-workflow.yaml <your-clone>/.github/workflows/
+  (commit and push, then run it from the repository's Actions tab)
+
+A runner pod appears only while the job runs. Watch for it with:
+
+  kubectl --context <CLUSTER_NAME> get pods -n arc-runners -w
 ```
 
 The listener pod is the thing to watch for. It runs in `arc-systems`, not with the runners,
@@ -263,7 +337,11 @@ kubectl get autoscalingrunnerset -n arc-runners \
 ```
 
 ```text
-TODO: output from the fresh run
+POD                                      RUNTIME CLASS
+arc-gha-rs-controller-557d5846d4-4r5qh   <none>
+github-actions-nitro-6695d4f4-listener   <none>
+
+isolated-sandbox
 ```
 
 In `dind` container mode the chart renders the `docker:dind` sidecar itself and ignores any
@@ -288,7 +366,37 @@ kubectl get pods -n arc-runners -w
 ```
 
 ```text
-TODO: output from the fresh run
+NAME                                READY   STATUS    RESTARTS   AGE
+github-actions-nitro-runner-wcltn   2/2     Running   0          8m38s
+github-actions-nitro-runner-s6g5d   0/2     Pending   0          0s
+github-actions-nitro-runner-s6g5d   0/2     Pending   0          0s
+github-actions-nitro-runner-s6g5d   0/2     Init:0/2   0          0s
+github-actions-nitro-runner-s6g5d   0/2     Init:0/2   0          3s
+github-actions-nitro-runner-s6g5d   0/2     Init:0/2   0          5s
+github-actions-nitro-runner-s6g5d   0/2     Init:1/2   0          19s
+github-actions-nitro-runner-s6g5d   0/2     Init:1/2   0          20s
+github-actions-nitro-runner-s6g5d   0/2     PodInitializing   0          26s
+github-actions-nitro-runner-s6g5d   1/2     PodInitializing   0          26s
+github-actions-nitro-runner-s6g5d   2/2     Running           0          27s
+github-actions-nitro-runner-s6g5d   2/2     Running           0          99s
+github-actions-nitro-runner-wcltn   1/2     Completed         0          21m
+github-actions-nitro-runner-wcltn   1/2     Terminating       0          21m
+github-actions-nitro-runner-wcltn   0/2     Terminating       0          21m
+github-actions-nitro-runner-wcltn   0/2     Completed         0          21m
+github-actions-nitro-runner-wcltn   0/2     Completed         0          21m
+github-actions-nitro-runner-wcltn   0/2     Completed         0          21m
+github-actions-nitro-runner-wcltn   0/2     Completed         0          21m
+github-actions-nitro-runner-s6g5d   1/2     Completed         0          21m
+github-actions-nitro-runner-s6g5d   1/2     Terminating       0          21m
+github-actions-nitro-runner-s6g5d   0/2     Terminating       0          21m
+github-actions-nitro-runner-s6g5d   0/2     Completed         0          21m
+github-actions-nitro-runner-s6g5d   0/2     Completed         0          21m
+github-actions-nitro-runner-s6g5d   0/2     Completed         0          21m
+github-actions-nitro-runner-s6g5d   0/2     Completed         0          21m
+
+(abridged: the Step 6 comparison pod's own lines are left out. The watch was started
+while the first job's pod was already running, which is why the first line is not an
+empty namespace; the second job's pod is the one shown appearing from nothing.)
 ```
 
 Nothing is running before the job is queued, one pod appears for it, and the pod is gone
@@ -311,7 +419,11 @@ kubectl get pods -n arc-runners -l actions-ephemeral-runner=True \
 ```
 
 ```text
-TODO: output from the fresh run
+POD                                 UID                                    RUNTIME CLASS      NODE
+github-actions-nitro-runner-wcltn   08ca0d6d-9837-49a2-880a-23340b86b266   isolated-sandbox   <NODE_NAME>
+github-actions-nitro-runner-s6g5d   deb13418-81b8-4882-ba60-e82b3cda5a31   isolated-sandbox   <NODE_NAME>
+
+(the first job's pod, then the second job's: different names and different UIDs)
 ```
 
 **Step 6: Read the job's own account of the machine it ran on.** The workflow's first step
@@ -340,7 +452,14 @@ joblog | sed -n '/SANDBOX-EVIDENCE-BEGIN/,/SANDBOX-EVIDENCE-END/p'
 ```
 
 ```text
-TODO: output from the fresh run
+=== SANDBOX-EVIDENCE-BEGIN ===
+kernel:        6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
+uptime:        32.39 seconds
+block devices: dm-0 vda vdb vdc vdd
+product name:  m8i.enclave
+cpus:          1
+MemTotal:        2173468 kB
+=== SANDBOX-EVIDENCE-END ===
 ```
 
 Now the same three readings from an ordinary pod on the same node. While the runner pod is
@@ -359,7 +478,12 @@ kubectl exec -n arc-runners ordinary-comparison -- \
 ```
 
 ```text
-TODO: output from the fresh run
+pod/ordinary-comparison created
+pod/ordinary-comparison condition met
+
+6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
+2996.06
+dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0
 ```
 
 The runner pod runs its own kernel build, its uptime matches the pod's age because the
@@ -393,7 +517,77 @@ joblog | sed -n '/DOCKER-BUILD-BEGIN/,/UNIT-TESTS-END/p'
 ```
 
 ```text
-TODO: output from the fresh run
+=== DOCKER-BUILD-BEGIN ===
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 271B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for public.ecr.aws/docker/library/alpine:3.20
+#2 DONE 0.5s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [1/3] FROM public.ecr.aws/docker/library/alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+#4 resolve public.ecr.aws/docker/library/alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc done
+#4 sha256:25f1d6b1951ac8eb3740558fe94cb83d377bdadf95fd9f98b50d2e1b96130471 3.63MB / 3.63MB 0.1s done
+#4 DONE 0.1s
+
+#4 [1/3] FROM public.ecr.aws/docker/library/alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+#4 extracting sha256:25f1d6b1951ac8eb3740558fe94cb83d377bdadf95fd9f98b50d2e1b96130471 0.1s done
+#4 DONE 0.2s
+
+#5 [2/3] RUN echo "building untrusted pull request image"
+#5 0.133 building untrusted pull request image
+#5 DONE 0.1s
+
+#6 [3/3] RUN id && echo "UNTRUSTED-BUILD-RAN" > /built.txt
+#6 0.141 uid=0(root) gid=0(root) groups=0(root),1(bin),2(daemon),3(sys),4(adm),6(disk),10(wheel),11(floppy),20(dialout),26(tape),27(video)
+#6 DONE 0.1s
+
+#7 exporting to image
+#7 exporting layers 0.0s done
+#7 exporting manifest sha256:800bde964eff02bc84eed10ac9965484db8fbbfd43a2ef2329eb164cb2d3f251 done
+#7 exporting config sha256:cdf30133c6adc95ed120a0ac6566d0583c91cf3d0ec7b2be1875618e6ff6b501 done
+#7 exporting attestation manifest sha256:51f4abceaa0d4ad9fa0259b362beafb5c0869438dacf7e821211bef36201c4e2 done
+#7 exporting manifest list sha256:5146068c75313f1f74d1671ba8f9ef7afdab5e92da181a6aaa9d05c4344227f9 done
+#7 naming to docker.io/library/untrusted-pr:ci done
+#7 unpacking to docker.io/library/untrusted-pr:ci 0.1s done
+#7 DONE 0.1s
+UNTRUSTED-BUILD-RAN
+DOCKER-BUILD-CONFIRMED
+=== DOCKER-BUILD-END ===
+=== UNIT-TESTS-BEGIN ===
+Unable to find image 'public.ecr.aws/docker/library/python:3.12-alpine' locally
+3.12-alpine: Pulling from docker/library/python
+39a526054cd9: Pulling fs layer
+7b229517ed22: Pulling fs layer
+6505b46c81c2: Pulling fs layer
+37737182bc17: Pulling fs layer
+39a526054cd9: Download complete
+37737182bc17: Download complete
+7b229517ed22: Download complete
+6505b46c81c2: Download complete
+9ad09c55f902: Download complete
+8b658d4a4a02: Download complete
+7b229517ed22: Pull complete
+6505b46c81c2: Pull complete
+39a526054cd9: Pull complete
+37737182bc17: Pull complete
+Digest: sha256:b658b05ce9c4eb97ec6fc19424818a1f31993659c2b505a532f470e83807815d
+Status: Downloaded newer image for public.ecr.aws/docker/library/python:3.12-alpine
+test_add (__main__.TestDemo.test_add) ... ok
+test_upper (__main__.TestDemo.test_upper) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.001s
+
+OK
+UNIT-TESTS-PASSED
+=== UNIT-TESTS-END ===
 ```
 
 The tests run in a throwaway container on that same daemon, which is also how untrusted test
@@ -417,7 +611,15 @@ kubectl get pods -n arc-runners -l actions-ephemeral-runner=True -o jsonpath='
 ```
 
 ```text
-TODO: output from the fresh run
+  env names:    DOCKER_HOST RUNNER_WAIT_FOR_DOCKER_IN_SECONDS ACTIONS_RUNNER_INPUT_JITCONFIG GITHUB_ACTIONS_RUNNER_EXTRA_USER_AGENT ACTIONS_RUNNER_RETURN_VERSION_DEPRECATED_EXIT_CODE
+
+  env secrets:  github-actions-nitro-runner-wcltn
+
+  volumes:      dind-sock dind-externals work kube-api-access-r6tqp
+
+  vol secrets:  
+
+  serviceaccount: github-actions-nitro-gha-rs-no-permission
 ```
 
 No `github_token`, `github_app_private_key` or `AWS_` variable is present, and no volume or
@@ -490,7 +692,20 @@ joblog | sed -n '/ESCAPE-PROBES-BEGIN/,/ESCAPE-PROBES:/p'
 ```
 
 ```text
-TODO: output from the fresh run
+=== ESCAPE-PROBES-BEGIN ===
+node-role-credentials: refused
+host-nvme-devices: not visible
+--- privileged container on the job's own daemon ---
+privileged sees: Unable to find image 'public.ecr.aws/docker/library/alpine:3.20' locally
+3.20: Pulling from docker/library/alpine
+Digest: sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+Status: Downloaded newer image for public.ecr.aws/docker/library/alpine:3.20
+PRIV-PROBE-RAN
+dm-0 vda vdb vdc vdd
+privileged-host-nvme: not visible
+node-containerd-socket: not visible
+=== ESCAPE-PROBES-END ===
+ESCAPE-PROBES: all contained
 ```
 
 Be clear about what each probe is worth, because three of the four would also pass on an
@@ -632,6 +847,12 @@ Its limits are worth stating plainly, because this policy constrains untrusted c
   container's stdout is its diagnostics, not the steps' output. That works because the runner pod is in your cluster, which is also why a
   sandboxed runner is easier to inspect here than an ordinary one, not harder.
 
+  **It also makes a job slow to report that it finished.** On this run the last step ended at
+  17:20:19 and GitHub recorded the job as complete at 17:30:55: ten and a half minutes later,
+  with nothing running. The pod had already gone. The most likely reading, from the timings
+  plus the blocked host rather than from anything GitHub documents, is that the runner spends
+  that time retrying the upload it cannot make. Expect it, and do not read it as a hung job.
+
   The same host serves step summaries, artifacts and the cache, so a workflow that uploads an
   artifact or uses `actions/cache` needs it too. Adding `*.blob.core.windows.net` would allow
   **any** Azure storage account, which is a wide entry to open to untrusted code, so this
@@ -660,7 +881,11 @@ joblog | sed -n '/EGRESS-BEGIN/,/EGRESS-END/p'
 ```
 
 ```text
-TODO: output from the fresh run
+=== EGRESS-BEGIN ===
+https://api.github.com -> exit 0
+https://example.com -> exit 28
+https://registry-1.docker.io -> exit 28
+=== EGRESS-END ===
 ```
 
 `curl` exits 0 when it connects and 28 when the connection times out. A refusal has two
@@ -726,7 +951,60 @@ cd sample-eks-nitro-sandbox/examples/ci-cd/github-actions
 ```
 
 ```text
-TODO: output from the fresh run
+==> the runners namespace
+  'arc-runners' is labelled ManagedBy=github-actions; it is this sample's.
+
+==> 1/4 the runner scale set
+release "github-actions-nitro" uninstalled
+  uninstalled 'github-actions-nitro'.
+  waiting for any in-flight runner pod to go...
+  no runner pods left.
+
+==> 2/4 the egress policy
+applicationnetworkpolicy.networking.k8s.aws "github-actions-runner-egress" deleted from arc-runners namespace
+  deleted github-actions-runner-egress.
+
+==> 3/4 the GitHub credential Secret
+secret "github-credential" deleted from arc-runners namespace
+  deleted github-credential.
+
+==> 4/4 the runners namespace
+namespace "arc-runners" deleted
+  deleted namespace arc-runners.
+
+==> the listener, and ARC's copy of the credential
+  no autoscalinglistener left for this scale set in 'arc-systems'.
+  no secret left for this scale set in 'arc-systems'.
+  no pod left for this scale set in 'arc-systems'.
+  no Secret named after this scale set in 'arc-systems'.
+
+==> what stays
+  The ARC controller in 'arc-systems' and the four ARC CRDs stay.
+  They are shared: one controller watches every namespace, and each CRD holds
+  every team's objects of that kind, so deleting one would delete another team's
+  runner sets. This sample did not install them, so it does not remove them.
+
+  If you installed them only for this sample, and nothing else on the cluster
+  uses ARC, remove them yourself:
+
+    helm --kube-context <CLUSTER_NAME> uninstall arc -n arc-systems
+    kubectl --context <CLUSTER_NAME> delete namespace arc-systems
+    kubectl --context <CLUSTER_NAME> delete crd \
+      autoscalingrunnersets.actions.github.com \
+      autoscalinglisteners.actions.github.com \
+      ephemeralrunnersets.actions.github.com \
+      ephemeralrunners.actions.github.com
+
+  Check nothing else uses ARC first:
+
+    kubectl --context <CLUSTER_NAME> get autoscalingrunnersets -A
+
+  Network policy enforcement is a cluster-wide setting and also stays. The
+  workflow file in your test repository, and the credential you created on
+  GitHub, are yours to remove: delete the workflow, and revoke the token or
+  uninstall the GitHub App.
+
+Clean up complete.
 ```
 
 `clean.sh` uninstalls the runner scale set first, because that is what creates runner pods,
