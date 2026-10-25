@@ -87,7 +87,15 @@ if [[ "$ns_exists" == true ]]; then
   # no volume to confirm.
   declare -A volume_of=()
   for claim in docker-build-cache buildkit-cache; do
-    kc -n "$NAMESPACE" get "pvc/$claim" >/dev/null 2>&1 || continue
+    # The same rule as the namespace read above: --ignore-not-found makes an absent claim an
+    # empty answer with status 0, so a non-zero status here is a read that failed.
+    claim_out="$(kc -n "$NAMESPACE" get "pvc/$claim" --ignore-not-found -o name 2>&1)"
+    claim_rc=$?
+    if [[ $claim_rc -ne 0 ]]; then
+      note_fail "could not determine whether claim $claim exists, so its EBS volume cannot be confirmed deleted; check it in the EC2 console. kubectl said: $claim_out"
+      continue
+    fi
+    [[ -n "$claim_out" ]] || continue
     pv="$(kc -n "$NAMESPACE" get "pvc/$claim" -o jsonpath='{.spec.volumeName}' 2>&1)"
     pv_rc=$?
     if [[ $pv_rc -ne 0 ]]; then

@@ -17,16 +17,23 @@ set -euo pipefail
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$SAMPLE_DIR"
 
-# The namespace comes from the environment, as on the page, and .env never overrides it: it is
-# the one value the other scripts also take from the environment, so a copy in .env would make
-# this script and setup.sh disagree about which namespace the run is in.
-NAMESPACE="${NAMESPACE:-docker-builds-sample}"
+# The namespace comes from the environment, as on the page, and .env must not override it: it
+# is the one value the other scripts also take from the environment, so a copy of it in .env
+# would make this script and setup.sh disagree about which namespace the run is in, and the
+# mismatch would be baked into the state file where the other guards cannot see it. Sourcing
+# assigns unconditionally whatever the order, so the caller's value is kept aside and put back.
+namespace_from_caller="${NAMESPACE:-}"
 
 [[ -f .env ]] || { echo "error: .env not found. Copy .env.example to .env and fill it in." >&2; exit 2; }
 # shellcheck disable=SC1091
 . ./.env
 : "${CLUSTER_NAME:?set CLUSTER_NAME in .env}"
 : "${AWS_REGION:?set AWS_REGION in .env}"
+
+if [[ -n "$namespace_from_caller" && -n "${NAMESPACE:-}" && "$NAMESPACE" != "$namespace_from_caller" ]]; then
+  echo "note: .env sets NAMESPACE=$NAMESPACE; using NAMESPACE=$namespace_from_caller from the environment, as the page's steps do." >&2
+fi
+NAMESPACE="${namespace_from_caller:-${NAMESPACE:-docker-builds-sample}}"
 MANAGED_BY="docker-builds"
 SAMPLE_LABEL_JSONPATH='app\.kubernetes\.io/part-of'
 SERVICE_ACCOUNT="docker-builds-builder"
@@ -72,33 +79,49 @@ write_state() {
   } > "$STATE_FILE"
 }
 
-# aws_read <description> <command...> : run a read-only AWS call, and tell a failure apart from
-# an absent resource. Prints the output on stdout; returns 0 when the resource is there, 1 when
-# AWS says it is not, and stops the script on any other error, because a failed read is "could
-# not determine" and never "absent".
+# aws_read <description> <command...> : run a read-only AWS call and tell a failure apart from
+# an absent resource. Returns 0 when the resource is there, with the call's output in
+# AWS_READ_OUT; returns 1 when AWS says it does not exist; and stops the script on any other
+# error, because a failed read is "could not determine" and never "absent".
+#
+# The output comes back in a variable rather than on stdout on purpose. In
+# `x="$(aws_read ...)"` the function would run in a subshell, where its `die` exits only that
+# subshell: the caller would see an empty value and a non-zero status, which is exactly what
+# "does not exist" looks like, and would carry on. Every call below therefore runs aws_read as
+# a plain command and reads AWS_READ_OUT.
+AWS_READ_OUT=""
 aws_read() {
   local what="$1"; shift
   local out rc
   out="$("$@" 2>&1)"; rc=$?
-  if [[ $rc -eq 0 ]]; then printf '%s' "$out"; return 0; fi
+  AWS_READ_OUT="$out"
+  if [[ $rc -eq 0 ]]; then return 0; fi
   case "$out" in
     *NotFoundException*|*NoSuchEntity*)
       # Covers RepositoryNotFoundException and ResourceNotFoundException too: AWS says "this
       # does not exist", which is the one failure that is not a failure to determine.
-      return 1 ;;
+      AWS_READ_OUT=""; return 1 ;;
   esac
   die "could not read $what (the call failed, which is not a report that it is missing):
 $out
 Re-run once AWS answers cleanly."
 }
 
+# The cluster, once, so a wrong CLUSTER_NAME is a clear error here rather than a confusing
+# "no association" later: eks list-pod-identity-associations answers NotFoundException for a
+# cluster that does not exist, which otherwise reads like an empty list.
+aws_read "EKS cluster $CLUSTER_NAME" \
+  aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" --query 'cluster.name' \
+  || die "the EKS cluster '$CLUSTER_NAME' does not exist in $AWS_REGION. Set CLUSTER_NAME in
+.env to the cluster this sample is running on."
+
 echo "Step 1/4: the ECR repository $ECR_REPO_NAME"
 if aws_read "ECR repository $ECR_REPO_NAME" \
-     aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" --region "$AWS_REGION" >/dev/null; then
-  tags="$(aws_read "the tags of ECR repository $ECR_REPO_NAME" \
-    aws ecr list-tags-for-resource --resource-arn "$REPO_ARN" --region "$AWS_REGION")" \
+     aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" --region "$AWS_REGION"; then
+  aws_read "the tags of ECR repository $ECR_REPO_NAME" \
+    aws ecr list-tags-for-resource --resource-arn "$REPO_ARN" --region "$AWS_REGION" \
     || die "ECR repository $ECR_REPO_NAME exists but its tags could not be read"
-  owner="$(printf '%s' "$tags" | jq -r --arg m "$MANAGED_BY" 'any(.tags[]?; .Key=="ManagedBy" and .Value==$m)')"
+  owner="$(printf '%s' "$AWS_READ_OUT" | jq -r --arg m "$MANAGED_BY" 'any(.tags[]?; .Key=="ManagedBy" and .Value==$m)')"
   [[ "$owner" == "true" ]] || die "ECR repository $ECR_REPO_NAME exists but is not tagged ManagedBy=$MANAGED_BY;
 refusing to use a repository this sample did not create. Set ECR_REPO_NAME to a name of your own."
   echo "  reusing $ECR_REPO_NAME (tagged ManagedBy=$MANAGED_BY)."
@@ -115,10 +138,10 @@ write_state
 echo "Step 2/4: the push role $ROLE_NAME, scoped to that one repository"
 sed -e "s|<CLUSTER_NAME>|$CLUSTER_NAME|g" -e "s|<NAMESPACE>|$NAMESPACE|g" \
   -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" iam/pod-identity-trust.json > "$tmp_dir/trust.json"
-if aws_read "IAM role $ROLE_NAME" aws iam get-role --role-name "$ROLE_NAME" >/dev/null; then
-  tags="$(aws_read "the tags of IAM role $ROLE_NAME" aws iam list-role-tags --role-name "$ROLE_NAME")" \
+if aws_read "IAM role $ROLE_NAME" aws iam get-role --role-name "$ROLE_NAME"; then
+  aws_read "the tags of IAM role $ROLE_NAME" aws iam list-role-tags --role-name "$ROLE_NAME" \
     || die "IAM role $ROLE_NAME exists but its tags could not be read"
-  owner="$(printf '%s' "$tags" | jq -r --arg m "$MANAGED_BY" 'any(.Tags[]?; .Key=="ManagedBy" and .Value==$m)')"
+  owner="$(printf '%s' "$AWS_READ_OUT" | jq -r --arg m "$MANAGED_BY" 'any(.Tags[]?; .Key=="ManagedBy" and .Value==$m)')"
   [[ "$owner" == "true" ]] || die "IAM role $ROLE_NAME exists but is not tagged ManagedBy=$MANAGED_BY;
 refusing to use a role this sample did not create. Set ROLE_NAME to a name of your own."
   STATE_ROLE="$ROLE_NAME"; write_state
@@ -148,10 +171,14 @@ aws iam get-role-policy --role-name "$ROLE_NAME" --policy-name "$POLICY_NAME" \
 echo "Step 3/4: the EKS Pod Identity association for $NAMESPACE/$SERVICE_ACCOUNT"
 # A failed list is not an empty list: creating an association on top of a read that failed
 # would be acting on a guess, so the read stops the script instead.
-assoc="$(aws_read "the Pod Identity associations of $NAMESPACE/$SERVICE_ACCOUNT" \
+if aws_read "the Pod Identity associations of $NAMESPACE/$SERVICE_ACCOUNT" \
   aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
   --namespace "$NAMESPACE" --service-account "$SERVICE_ACCOUNT" \
-  --query 'associations[0].associationId' --output text)" || assoc=""
+  --query 'associations[0].associationId' --output text; then
+  assoc="$AWS_READ_OUT"
+else
+  assoc=""
+fi
 if [[ -z "$assoc" || "$assoc" == "None" ]]; then
   assoc="$(aws eks create-pod-identity-association --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
     --namespace "$NAMESPACE" --service-account "$SERVICE_ACCOUNT" --role-arn "$ROLE_ARN" \
@@ -159,10 +186,11 @@ if [[ -z "$assoc" || "$assoc" == "None" ]]; then
   STATE_ASSOC="$assoc"; write_state
   echo "  created association $assoc."
 else
-  bound="$(aws_read "Pod Identity association $assoc" \
+  aws_read "Pod Identity association $assoc" \
     aws eks describe-pod-identity-association --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
-    --association-id "$assoc" --query 'association.roleArn' --output text)" \
+    --association-id "$assoc" --query 'association.roleArn' --output text \
     || die "association $assoc was listed and then could not be read"
+  bound="$AWS_READ_OUT"
   [[ "$bound" == "$ROLE_ARN" ]] || die "an association for $NAMESPACE/$SERVICE_ACCOUNT already exists ($assoc)
 bound to $bound, not this sample's role $ROLE_ARN; refusing to adopt it"
   STATE_ASSOC="$assoc"; write_state
