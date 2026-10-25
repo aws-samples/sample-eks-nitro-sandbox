@@ -16,7 +16,7 @@ Questions and review pings go to the internal Slack channel `#eks-nitro-sandbox-
 | `docs/ROADMAP.md` | The planned samples, the section names and the layout conventions. |
 | `mkdocs.yml` | The site configuration, including the left menu (`nav`). |
 | `.agents/skills/` | The agent skills, one copy each. The other skills folders are links to it. |
-| `scripts/` | Checks that run with no cluster and no AWS account. |
+| `scripts/` | Checks that run with no cluster and no AWS account, and `second-review.sh`, which runs a second review on a reviewer backend you name. |
 
 ## Preview and build the site
 
@@ -124,30 +124,88 @@ you do not have; the clone worked if git reports no error after it.
   package path. Why: the package is internal, and a link to a page that does not exist yet
   is broken.
 
-### The agent reviewer on the maintainers' workstation
+### The agent reviewer
 
-On the maintainers' shared workstation, the Codex reviewer for a second review (see the
-`second-review` skill) runs through a wrapper that bills the team's builder account. Run it
-from the folder under review, with the brief and output in the repository's `tmp/`:
+A second review (see the `second-review` skill) runs through `scripts/second-review.sh`,
+on either of two backends, Codex or Claude. Run it from the repository root, with the
+brief, the snapshot of the commit and the output in the repository's `tmp/`:
 
 ```bash
-setsid nohup env AWS_REGION=us-east-2 AWS_DEFAULT_REGION=us-east-2 \
-  ~/.kiro/crew/codex/codex-builder exec --skip-git-repo-check --sandbox read-only \
-  -c model_provider="amazon-bedrock" -c model="openai.gpt-5.6-sol" \
-  - < tmp/review/brief.md > tmp/review/review.out 2> tmp/review/review.err &
+./scripts/second-review.sh --backend codex --model openai.gpt-5.6-sol \
+  --implementer-model <the model that wrote the change> \
+  --brief tmp/review/brief.md --tree tmp/review/tree --out tmp/review
 ```
 
-- **Use it exactly as written.** Without an `exec -c` option, Codex refuses to load its
-  configuration ("aws.credential_export cannot be combined with aws.profile"); `--sandbox
-  read-only` keeps the reviewer from editing the tree; the brief goes on standard input.
-  Why: each of these was dropped once, and each time the review failed or ran unconfined.
-- **Do not change the wrapper or `~/.codex/config.toml`** to make it start. Why: the
-  wrapper's profile setting decides which account the review bills.
-- **It takes 10 to 25 minutes.** `review.out` is written only at the end; check that it is
-  still running with `pgrep -f '[o]penai.gpt-5.6-sol'`. Read `review.err` only with `tail`
-  or a targeted search, and never paste it anywhere: it logs credential details. Why the
-  brackets: without them the pattern can also match the shell that runs `pgrep`, so a
-  review that has exited still looks alive.
+- **The reviewer runs on a different model from the one that wrote the change.** That is
+  the whole point of a second review, so both models are arguments, the script refuses the
+  run when they are the same, and it refuses its own result when the model that answered
+  turns out to be the implementer's after all. Give the implementer's resolved model, not
+  an alias or a prompt router name. Why: a model reviewing its own work repeats its own
+  reasoning, and an alias such as `opus`, or a Bedrock prompt router, can resolve to the
+  very model you were avoiding.
+- **Name the command, not the installation.** `SECOND_REVIEW_CODEX_CMD` and
+  `SECOND_REVIEW_CLAUDE_CMD` say which command to run (default `codex` and `claude`), and
+  `SECOND_REVIEW_CODEX_PROVIDER` and `SECOND_REVIEW_CODEX_EFFORT` pass Codex a provider and
+  a reasoning effort. Why: a collaborator on a laptop authenticates their own backend, and
+  a shared workstation points these at a build that decides which account the review bills,
+  without either of them editing the script.
+- **The reviewer cannot change what it reviews, and the script checks that rather than
+  claiming it.** It fingerprints the tree before and after the run and fails if a single
+  file was added, removed or edited, and it fails when the backend reports a mode that
+  could write. Why: `--sandbox read-only` on its own does not stop Codex writing — it
+  leaves the approval policy at `on-request`, and a host whose config answers that ask by
+  itself lets the write through. A run on 2026-10-25 created a file in the tree and
+  appended to a page, and reported both as successful; the script now passes
+  `-c approval_policy="never"` as well, and the same two writes come back refused.
+- **Review the snapshot, not your working tree.** Pass `--tree tmp/review/tree`, the plain
+  extract of the commit the `second-review` skill makes.
+- **Keep the brief, the output and the trace under `tmp/`.** The script writes
+  `review.out` (the review), `review-record.txt` (which model answered, for the pull
+  request) and `review.err` (the backend's trace). A trace can hold credential details:
+  read it with `tail` or a targeted search, and never paste it into a pull request, an
+  issue or Slack.
+- **It takes 10 to 25 minutes**, and `review.out` is written only at the end. To run it in
+  the background, redirect it to a log under `tmp/` and check it is still going with
+  `pgrep -f '[s]econd-review.sh'`. Why the brackets: without them the pattern can also
+  match the shell that runs `pgrep`, so a review that has exited still looks alive.
+- **If the reviewer cannot start, report the exact error and stop.** The script says which
+  check refused the run, tagged (`E_SAME_MODEL`, `E_CMD_MISSING`, `E_RUN_FAILED`). Why: an
+  error at start-up is a fact the maintainers need, not something to configure around.
+
+#### The two backends on the maintainers' workstation
+
+- **Codex** needs the toolbox build and its Bedrock provider named, because the `codex` the
+  shared `PATH` finds first can be an older standalone build:
+
+  ```bash
+  SECOND_REVIEW_CODEX_CMD=~/.toolbox/bin/codex SECOND_REVIEW_CODEX_PROVIDER=amazon-bedrock \
+    ./scripts/second-review.sh --backend codex --model openai.gpt-5.6-sol ...
+  ```
+
+  Its Bedrock calls bill the toolbox-managed builder account, because the host
+  `~/.codex/config.toml` pins the provider with a `credential_export` that runs the toolbox
+  Codex credential helper. Nothing else needs setting, and nothing outside the repository
+  needs changing.
+- **The `~/.kiro/crew/codex/codex-builder` wrapper is no longer used, and must not be put
+  back in front of this script.** It appends `-c model_providers.amazon-bedrock.aws.profile=...`
+  unconditionally, and Codex 0.164 refuses to load a provider that has both an
+  `aws.profile` and the host config's `aws.credential_export`
+  ("provider aws.credential_export cannot be combined with aws.profile"), so every review
+  died at config load. No `-c` option avoids it: Codex merges `-c` into the config rather
+  than replacing a table, so `credential_export` cannot be cleared from the command line.
+  Its billing guarantee is not lost by dropping it — both its profile and the host config's
+  `credential_export` resolve to the same builder-account role. Why this is written down:
+  the wrapper looks like the safer path, and re-adding it breaks every review again.
+- **Codex's MCP servers reach the reviewer; Claude's do not.** `--backend claude` runs with
+  `--restricted` and `--strict-mcp-config`, so the reviewer has only `Read`, `Grep` and
+  `Glob` and no MCP server. Codex 0.164 cannot clear `mcp_servers` from the command line,
+  so a review on `--backend codex` can still reach whatever MCP servers the host config
+  defines, some of which write to other systems. The tree is still safe, which is what the
+  script checks. Why: prefer `--backend claude` when the reviewer only needs to read.
+
+Do not change global tool configuration (`~/.codex/config.toml`, a wrapper on the shared
+`PATH`, a shell profile) to make a review start. Why: the machine is shared, and a
+collaborator on a laptop has none of those files.
 
 ### Other tools on the maintainers' workstation
 
@@ -172,10 +230,12 @@ setsid nohup env AWS_REGION=us-east-2 AWS_DEFAULT_REGION=us-east-2 \
   clusters and machines" says. Why: the blocks are the host owner's policy, and getting
   around one hides from them that an agent needed it.
 
-The two repository URLs, this reviewer command and the preview generator's name are the
-only internal values this file holds, at the maintainers' choice. Remove them before this
-repository is made public, which needs Nitro sandboxes to be generally available first: until then the pages above, and any
-sample that quotes them, describe an unreleased feature.
+The two repository URLs, the backend commands and wrapper named above and the preview
+generator's name are the only internal values this file holds, at the maintainers' choice.
+Remove them before this repository is made public, which needs Nitro sandboxes to be
+generally available first: until then the pages above, and any sample that quotes them,
+describe an unreleased feature. `scripts/second-review.sh` itself holds none of them: it
+takes every command from the environment.
 
 ## Security rules
 
@@ -319,10 +379,12 @@ people's demos use at the same time.
 
 ## Review
 
-- **Get a second reviewer, a person or another agent, for any change to a check, a
-  credential path or a security claim.** The `second-review` skill says how to brief one,
-  run it and record the result. Why: those fail silently; the sample still runs and the
-  page still reads well.
+- **Get a second reviewer, a person or another agent on a different model from the one
+  that wrote the change, for any change to a check, a credential path or a security
+  claim.** The `second-review` skill says how to brief one, run it with
+  `scripts/second-review.sh` and record the result, and
+  [The agent reviewer](#the-agent-reviewer) covers the backends. Why: those fail silently;
+  the sample still runs and the page still reads well.
 - **The pull request's checklist is the issue's acceptance criteria plus this
   repository's quality bar.** Copy `.github/pull_request_template.md` to
   `tmp/pr-body.md`, and paste every box from the issue's *Acceptance criteria* under "From

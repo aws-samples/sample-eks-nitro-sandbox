@@ -33,11 +33,18 @@ you do with the answer.
 
 2. **Write the brief**: copy `assets/review-brief.md` to `tmp/review/brief.md` and fill it
    in, following [Write the brief](#write-the-brief).
-3. **Run the reviewer** read-only, with the brief on standard input. On the maintainers'
-   workstation that is the Codex command in `AGENTS.md`, "The agent reviewer on the
-   maintainers' workstation". Elsewhere, see [Run it](#run-it).
+3. **Run the reviewer** on a model that is not the one that wrote the change:
+
+   ```bash
+   ./scripts/second-review.sh --backend codex --model openai.gpt-5.6-sol \
+     --implementer-model <the model that wrote the change> \
+     --brief tmp/review/brief.md --tree tmp/review/tree --out tmp/review
+   ```
+
+   See [Run it](#run-it) for the two backends and what the script refuses.
 4. **Triage** each finding against the files, following [Use the result](#use-the-result).
-5. **Record** the review in the pull request's second-reviewer box.
+5. **Record** the review in the pull request's second-reviewer box, from
+   `tmp/review/review-record.txt`, which names the model that actually answered.
 
 ## Write the brief
 
@@ -67,17 +74,37 @@ you do with the answer.
 
 ## Run it
 
-- **The reviewer must not be able to write.** Use a read-only mode, and point it at the
-  snapshot in `tmp/review/tree`, not your working tree.
-- **Keep the brief, the output and any trace in `tmp/review/`.** A trace can hold
-  credential details: read it with `tail` or a targeted search, and never paste it into a
-  pull request, an issue or Slack.
+`scripts/second-review.sh` runs the reviewer. It takes `--backend codex` or
+`--backend claude`, `--model`, and `--implementer-model`; `AGENTS.md`,
+[The agent reviewer](../../../AGENTS.md#the-agent-reviewer), covers the backends, the
+environment variables that name each command, and what the maintainers' workstation needs.
+
+- **A different model from the one that wrote the change.** That is the one thing a second
+  review has to get right, so the script refuses to start when the two models match, and
+  refuses its own result when the model that answered turns out to be the implementer's
+  anyway. Give the implementer's resolved model, not an alias or a prompt router name: a
+  router that resolves to the model you were avoiding defeats the whole exercise.
+- **Prefer `--backend claude` when the reviewer only needs to read.** It runs with
+  `--restricted` and `--strict-mcp-config`, so the reviewer holds only `Read`, `Grep` and
+  `Glob`. The Codex backend cannot be made to drop the host's MCP servers.
+- **The reviewer must not be able to write, and the script proves that rather than
+  claiming it**: it fingerprints `--tree` before and after and fails if anything changed.
+  Point it at the snapshot in `tmp/review/tree`, never your working tree. A read-only flag
+  on its own is not enough — Codex's `--sandbox read-only` still asked to write and a host
+  that answers the ask let it through, which is why the script also pins the approval
+  policy and checks what the backend reports.
+- **Keep the brief, the output and any trace in `tmp/review/`.** A trace (`review.err`)
+  can hold credential details: read it with `tail` or a targeted search, and never paste
+  it into a pull request, an issue or Slack.
 - **An agent of your own tool works too**, as long as it starts with no context from your
-  session. Name the model explicitly when you start it: a default such as "Auto" may not be
-  available, and the start then fails.
-- **If the reviewer cannot start, report the exact error and stop.** Do not change its
-  configuration or credentials to make it run. Why: those decide which account a review
-  bills, and an error at start-up is a fact the maintainers need.
+  session and runs on a different model. Name the model explicitly when you start it: a
+  default such as "Auto" may not be available, and the start then fails.
+- **If the reviewer cannot start, report the exact error and stop.** The script names the
+  check that refused, tagged (`E_SAME_MODEL`, `E_CMD_MISSING`, `E_RUN_FAILED`). Do not
+  change a backend's global configuration or credentials to make it run: those decide which
+  account a review bills, the machine may be shared, and a collaborator on a laptop has
+  none of those files. Point the script at a different command instead
+  (`SECOND_REVIEW_CODEX_CMD`, `SECOND_REVIEW_CLAUDE_CMD`).
 
 ## Use the result
 
@@ -96,8 +123,9 @@ you do with the answer.
 ## Record it
 
 Tick the second-reviewer box in the description's "Quality bar" list, and write under its
-"Second review" heading: who or what reviewed it (a person, or the agent and
-model), which commit, what it found, what was fixed and in which
-commit, and which findings were false positives and why. Name any commit that changes a
-check and was not reviewed. Describe each proof as it ran: which stub cases reached which message, and
+"Second review" heading: who or what reviewed it (a person, or the backend and the model
+that answered, which `tmp/review/review-record.txt` names — not the model you asked for),
+the model that wrote the change, so a reader can see the two differ, which commit, what it
+found, what was fixed and in which commit, and which findings were false positives and
+why. Name any commit that changes a check and was not reviewed. Describe each proof as it ran: which stub cases reached which message, and
 which paths no case reached. A box ticked with no account of the review does not count.
