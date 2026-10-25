@@ -189,6 +189,11 @@ SECOND_REVIEW_CLAUDE_SETTINGS=tmp/review/claude-settings.json \
   with `tail` or a targeted search.
 - **`review-record.txt` is what goes in the pull request**: the backend, the model that
   answered, the implementer's model, and what the reviewer was confined to.
+- **Do not edit `scripts/second-review.sh` while a review is running.** Bash reads a script
+  as it executes, so changing the file moves the offsets under the running shell and it dies
+  part-way with a syntax error — after the backend has spent its time, and before the record
+  is written. One round was lost that way: the review itself completed and `review.out` was
+  there, but `review-record.txt` never appeared. Wait for the run, or work on a copy.
 - **It takes 10 to 25 minutes**, and `review.out` is written at the end. To run it in the
   background, redirect to a log under `tmp/` and check it with
   `pgrep -f '[s]econd-review.sh'`. Why the brackets: without them the pattern also matches
@@ -249,9 +254,11 @@ same thing.
     planted link there pointing at the tree would have put the helper straight back inside
     it. Checked both: `mkdir -p` does behave that way, and the old fixed-name version puts
     the reviewer physically in the tree while the new one does not.
-  - A consequence worth knowing rather than glossing: a relative write by such a command now
-    lands beside the output instead of in the tree, so the tree fingerprint is *less* likely
-    to notice it. **The isolation reduces the exposure and the detection together.**
+  - A consequence worth knowing rather than glossing: an *incidental* relative write by such
+    a command now lands beside the output instead of in the tree, so the tree fingerprint is
+    *less* likely to notice it. A command that deliberately writes to `../tree` is not
+    stopped by this at all. **The isolation reduces the exposure and the detection
+    together.**
   - **This costs you nothing else, because `--restricted` ignores settings *files*, not the
     environment.** Everything that is not a credential helper — the provider switch, a
     Region, a profile — goes in your shell as it normally would, and reaches the reviewer;

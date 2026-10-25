@@ -95,6 +95,12 @@ you do with the answer.
   reviewer to the script's checks. The ninth asked this question and immediately found two
   overclaims the others had no reason to look at — a reviewer answers the question you ask
   it, and a narrow brief run eight times is still a narrow brief.
+- **Write the brief even when you are not going to run the round.** Composing the question
+  forces you to state the contract the code is supposed to meet, and a contract stated
+  plainly is one you can see being broken. Asking "is this the right refusal tag for a
+  failed `mktemp`?" is what revealed that the tag used there meant "could not check" and
+  exits 2 everywhere else, while that one use exited 1 — a contradiction nobody had seen in
+  twelve rounds of reading the code. The brief found it before the reviewer ran.
 - **Say what earlier reviews covered**, and ask it not to repeat them. Why: its attention
   is the scarce part.
 - **Vary what you scope a later round to.** Repeating a round against the same classes
@@ -193,7 +199,27 @@ and the host-specific options on the maintainers' workstation.
   a green suite is evidence only for what it still exercises.
 - **A case that would pass either way proves nothing.** One round found two cases comparing
   a value against something unrelated, so they passed whether or not the code under test
-  was correct. Pick the comparison that fails if the defect returns.
+  was correct. Pick the comparison that fails if the defect returns. The surest way to know
+  is to run the case against the superseded code and watch it fail: in this tooling a case
+  meant to prove a reviewer no longer ran inside the reviewed tree reported the *logical*
+  working directory, which shows a symbolic link and hides that the directory physically
+  **was** the tree — it passed against the unfixed script, and only a side-by-side run
+  revealed that.
+- **Say which cases are regressions and which are coverage.** A case that exercises a rule
+  older than the commit you are proving is worth having, but it is not evidence for that
+  commit. Label them separately in the pull request, because a reader who assumes every case
+  is a regression will overestimate what the suite shows. Do not invent artificial
+  regressions to even up the numbers.
+- **A harness can be structurally unable to express the claim you think it is testing.**
+  Not merely wrong — incapable. One assertion here checked the script's own output for a
+  path, which could never work, because the script always prints that path itself; the claim
+  needed a different assertion against the review. If a case cannot fail for the reason it
+  names, no amount of care in the expected value fixes it.
+- **Defence in depth leaves layers no test can reach, and that is the right trade.** After
+  a check failed open, this tooling grew a second, independent check of the same condition.
+  While the first works the second is unreachable, so nothing can test it. Keep it, and say
+  in the pull request that it is unreached redundancy rather than dead code — otherwise
+  someone later deletes it for being untested and re-centralises the risk.
 - **Stop when no must-fix finding remains.** Optional findings go in the pull request as
   notes. Why: each round should check the fixes, not widen the assignment.
 

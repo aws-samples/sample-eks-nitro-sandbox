@@ -383,8 +383,8 @@ print("OK")
     # mktemp -d, not a fixed name: --out can be reused, and "mkdir -p" on a path that is
     # already a symbolic link succeeds without replacing it, so a stale or planted
     # claude-cwd link pointing at the tree would have put the helper straight back inside
-    # it, and widened what the file tools could reach. Checked that mkdir -p behaves that
-    # way and that cd follows the link.
+    # it. Checked that mkdir -p behaves that way and that cd follows the link. (It would
+    # not have widened what the file tools reach: --add-dir already grants the tree.)
     # A distinct tag, not E_NO_TOOL: that one is printed by cannot_check and means "a tool
     # this script needs is missing", which exits 2 for "could not check". This is a refusal
     # of the run, which exits 1, and a caller that treats 2 differently should not see one.
@@ -505,7 +505,10 @@ if not isinstance(d, dict):
     raise SystemExit(0)
 if d.get("is_error"):
     # Independent of the error check earlier: a failed run must never be recorded as a
-    # review, even if that check were bypassed or failed to run.
+    # review, even if that check were bypassed or failed to run. While that check works
+    # this branch is unreachable, so no test covers it -- it is deliberate redundancy
+    # after that check once failed open, not dead code. Do not remove it for being
+    # untested; that would put the whole weight back on one check.
     print("BAD\tthe record is flagged is_error, so the backend did not produce a review")
     raise SystemExit(0)
 usage = d.get("modelUsage")
