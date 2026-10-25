@@ -17,11 +17,13 @@ data:
     # image layer it unpacks, and the container it runs.
     set -eu
 
-    # Leave no credential behind on any exit path. The init container has already written
-    # /ecr/token by the time this script starts, so the trap goes here and not in the push
-    # branch below: under `set -eu` a failure at the daemon wait, at `docker build` or at
-    # either `docker run` would otherwise leave the token in the failed pod's emptyDir, and a
-    # failed Job's pod stays until the next run or the clean up. The token is good for hours.
+    # Leave no credential behind on any exit path. When the push is enabled the init container
+    # has already written /ecr/token by the time this script starts, so the trap goes here and
+    # not in the push branch below: under `set -eu` a failure at the daemon wait, at
+    # `docker build` or at either `docker run` would otherwise leave the token in the failed
+    # pod's emptyDir, and a failed Job's pod stays until the next run or the clean up. The
+    # token is good for hours. With no push there is no token and no registry, so it is a
+    # no-op.
     # Single-quoted, so $ECR_REGISTRY is read when the trap fires, not now.
     trap 'rm -f /ecr/token
           if [ -n "${ECR_REGISTRY:-}" ]; then docker logout "$ECR_REGISTRY" >/dev/null 2>&1 || true; fi' EXIT

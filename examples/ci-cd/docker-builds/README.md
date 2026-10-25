@@ -794,7 +794,7 @@ input, which is what the Amazon ECR documentation's `--password-stdin` is for. A
 good for hours and a completed Job's pod stays until the next run, so the build removes the
 token file as soon as the daemon has read it and runs `docker logout` after the push, which
 takes the daemon's own copy out of the pod's Docker config. Both also run from a `trap` on
-exit, so a build that fails at the login, the tag or the push leaves neither behind either.
+exit set before the build starts, so a build that fails at any step leaves neither behind.
 
 Inside a sandbox the instance metadata service holds no role: its `iam/` paths return 404
 (Amazon EKS User Guide, *Isolated and confidential pods limitations*, Instance metadata

@@ -83,6 +83,11 @@ write_state() {
     printf 'ECR_ROLE_NAME=%q\n' "$STATE_ROLE"
     printf 'ECR_POLICY_NAME=%q\n' "$POLICY_NAME"
     printf 'ECR_ASSOCIATION_ID=%q\n' "$STATE_ASSOC"
+    # Written last, and required by both readers. `.` reports only its last command's status,
+    # so a file truncated part way (a full disk, a kill between writes) or with a bad line in
+    # the middle otherwise reads as a good file with empty fields, and the next write blanks
+    # whatever it really held. That orphaning is the defect three review rounds kept finding.
+    printf 'ECR_STATE_END=1\n'
   } > "$STATE_FILE"
 }
 
@@ -111,14 +116,20 @@ if [[ -f "$STATE_FILE" ]]; then
   # actually holds, which is the orphaning this block exists to prevent.
   recorded="$(
     unset ECR_NAMESPACE ECR_REPO_NAME ECR_ROLE_NAME ECR_ASSOCIATION_ID \
-          ECR_ACCOUNT_ID ECR_AWS_REGION ECR_CLUSTER_NAME
+          ECR_ACCOUNT_ID ECR_AWS_REGION ECR_CLUSTER_NAME ECR_STATE_END
     # shellcheck disable=SC1090
     . "$STATE_FILE" >/dev/null 2>&1 || exit 3
+    # The end marker, not `.`'s status, is what says the file was read whole: see write_state.
+    [[ "${ECR_STATE_END:-}" == 1 ]] || exit 3
     printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' \
       "${ECR_NAMESPACE:-}" "${ECR_REPO_NAME:-}" "${ECR_ROLE_NAME:-}" "${ECR_ASSOCIATION_ID:-}" \
       "${ECR_ACCOUNT_ID:-}" "${ECR_AWS_REGION:-}" "${ECR_CLUSTER_NAME:-}"
-  )" || die "$state_name exists but could not be read all the way through, so what an earlier
-run created cannot be determined. Fix or move the file aside, then run this again."
+  )" || die "$state_name exists but is not a complete state file, so what an earlier run
+created cannot be determined. Fix or move the file aside, then run this again."
+  # A newline in a value would cut the record short and leave later fields empty, which would
+  # pass the comparisons below and then be blanked by the next write.
+  [[ "$recorded" != *$'\n'* ]] || die "$state_name holds a value with a newline in it; it cannot
+be read reliably. Fix or move the file aside, then run this again."
   IFS=$'\x1f' read -r rec_ns rec_repo rec_role rec_assoc rec_acct rec_region rec_cluster \
     <<<"$recorded"
 
