@@ -101,3 +101,4 @@ nav:
       - Shared S3 Files storage: storage/s3-files/README.md
   - CI/CD:
       - Docker builds: ci-cd/docker-builds/README.md
+      - GitHub Actions runners: ci-cd/github-actions/README.md
