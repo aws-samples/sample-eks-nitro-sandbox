@@ -152,6 +152,31 @@ you do with the answer.
   put it back was being recorded as clean. Had the other backend not disagreed, the pull
   request would have carried a written argument for why a real hole was fine. **Read a
   clearance as closely as a finding.**
+- **Write a guard that constrains to the good case, not one that enumerates the bad ones.**
+  An enumeration is only as complete as your imagination on the day; a constraint is
+  complete by construction. Three of the strongest fixes in this tooling have that shape,
+  and each replaced something with the other shape:
+  - `--allowedTools` *enumerated* which tools could run unasked, and left the reviewer
+    holding `SendMessage` and `CronDelete`. `--tools` *sets what it holds* — three tools,
+    nothing loadable.
+  - The settings check could have blocked `hooks`, then `env`, then `mcpServers`,
+    `plugins`, `statusLine`… Instead it permits **exactly two** authentication keys, so
+    everything else is refused by the same rule and nobody has to think of it.
+  - A check refused the *kind of link* it had thought of, and a hard link walked past it.
+    Removing the name covers symbolic links, hard links and FIFOs at once, and touches no
+    target: *"refusing only covers the kind of link you thought to test for."*
+
+  This generalises past review tooling: a clean-up or ownership check that lists the bad
+  cases will miss one.
+- **A guard that cannot run in the environment that tests it is worse than none.** One
+  candidate fix needed `stat`, which is not on the suite's minimal `PATH`, so the guard
+  would have been silently untested there; `rm` is, which is part of why removing the name
+  was the right fix.
+- **After fixing a case that proved nothing, run it against the code *without* the fix and
+  confirm it fails.** This should be the default for any new rejecting case, not the remedy
+  after being caught: it is the only way to know the case discriminates. Eight cases here
+  needed it. Making the script under test an overridable variable costs one line and makes
+  this a one-command check.
 - **When a reviewer names one instance of a class, check whether the class is bigger before
   fixing the instance.** Twice here the reported case was the smaller one: a trailing-slash
   pattern was named for one containment check and turned out to affect three, and a
