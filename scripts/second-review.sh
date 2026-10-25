@@ -162,10 +162,14 @@ esac
 # time and symlink target, and every regular file's content hash, before and after. A
 # single added, removed, edited, re-pointed or re-permissioned path fails the run. What it
 # cannot see: a file created and deleted within the run, and any write outside the tree.
+# Records are NUL-delimited, and so is the hash list, because a path may legally hold a
+# newline or the text " -> ": with line-delimited records two different trees could line
+# up to the same fingerprint. cmp compares the bytes, so the delimiter never has to be
+# read back.
 tree_fingerprint() {
   ( cd "$1" || exit 1
-    find . -mindepth 1 -printf '%y %m %s %T@ %p -> %l\n' | LC_ALL=C sort
-    find . -mindepth 1 -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum )
+    find . -mindepth 1 -printf '%y %m %s %T@ %p -> %l\0' | LC_ALL=C sort -z
+    find . -mindepth 1 -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum -z )
 }
 tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-before.sha256"
 
@@ -300,6 +304,11 @@ if not isinstance(denials, list):
 result = d.get("result")
 if not isinstance(result, str):
     print("BAD\tresult is %s, not a string" % type(result).__name__)
+    raise SystemExit(0)
+if not result.strip():
+    # A blank review would otherwise satisfy "the file is not empty" and be recorded.
+    print("BAD\tresult is %d character(s) of whitespace, which is not a review"
+          % len(result))
     raise SystemExit(0)
 with open(out, "w") as f:
     f.write(result)
