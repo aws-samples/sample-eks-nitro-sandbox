@@ -56,7 +56,7 @@ This folder was built against these releases:
 
 | Component | Version |
 |---|---|
-| Amazon EFS CSI driver add-on ([kubernetes-sigs/aws-efs-csi-driver](https://github.com/kubernetes-sigs/aws-efs-csi-driver)) | `v3.5.1-eksbuild.1` on the run below; the sample needs **2.0.0 or newer** to mount an access point over TLS |
+| Amazon EFS CSI driver add-on ([kubernetes-sigs/aws-efs-csi-driver](https://github.com/kubernetes-sigs/aws-efs-csi-driver)) | `v3.5.1-eksbuild.1` on the run below; the sample needs **3.5.1 or newer** |
 | `busybox` image ([public.ecr.aws/docker/library/busybox](https://gallery.ecr.aws/docker/library/busybox)) | `1.37` |
 
 The files:
@@ -82,7 +82,7 @@ export NAMESPACE=nitro-efs-sample
 ## Create the storage and deploy the pods
 
 **Step 1: Run setup.** [`scripts/setup.sh`](scripts/setup.sh) does everything the walkthrough
-below needs. It first confirms the Amazon EFS CSI driver is installed at 2.0.0 or newer and
+below needs. It first confirms the Amazon EFS CSI driver is installed at 3.5.1 or newer and
 reads, without changing it, which IAM role the driver's node service account uses. It creates
 the sample's own resources, each tagged `ManagedBy=storage-efs` and `auto-delete=no`: an NFS
 security group that admits TCP 2049 from the cluster security group only, an encrypted EFS
@@ -125,11 +125,15 @@ spec:
 
 The run below started on a cluster with none of the sample's AWS resources present. The
 `nitro-efs-sample` namespace already existed, empty, from an earlier run (the sample never
-deletes the namespace, only what is inside it), so setup reused it rather than creating it:
+deletes the namespace, only what is inside it), so setup reused it rather than creating it.
+One line is not as that run printed it: the check then enforced a minimum of 2.0.0, which was
+the wrong version, so where the run printed `(>= 2.0.0)` the line below shows the `(>= 3.5.1)`
+the corrected check prints. The driver it found, `v3.5.1-eksbuild.1`, already met 3.5.1;
+nothing else in the block is changed.
 
 ```text
 Step 1/5: check the Amazon EFS CSI driver (a shared install; reused, never changed)
-  found aws-efs-csi-driver v3.5.1-eksbuild.1 (>= 2.0.0).
+  found aws-efs-csi-driver v3.5.1-eksbuild.1 (>= 3.5.1).
   CSI node principal (read, not changed): arn:aws:iam::<ACCOUNT_ID>:role/AmazonEKS_EFS_CSI_NodeRole
 Step 2/5: create the sample's security group, file system, mount targets and access point
   created NFS security group sg-EXAMPLE (TCP 2049 from sg-CLUSTER only).
@@ -436,15 +440,17 @@ policy denies it.
 
 ## Install the EFS CSI driver
 
-This sample needs the Amazon EFS CSI driver on the cluster, at 2.0.0 or newer, with EKS Pod
+This sample needs the Amazon EFS CSI driver on the cluster, at 3.5.1 or newer, with EKS Pod
 Identity roles for its controller and node service accounts. On the maintainers' cluster it
 was already installed; on a cluster without it, install it once following the
 [Amazon EFS CSI driver guide](https://docs.aws.amazon.com/eks/latest/userguide/efs-csi.html),
 and `setup.sh` will find and reuse it. The driver's node service account must carry a Pod
 Identity association, because this sample mounts with IAM authorization, which needs the mount
-signed with the node role's identity. `setup.sh` stops with the install guidance when the
-driver is absent or its node service account has no association, and it never creates or
-changes the driver's roles.
+signed with the node role's identity. `setup.sh` stops with the install or upgrade command
+when the driver is absent, older than 3.5.1, or at a version it cannot read, and with the
+install guidance when its node service account has no association. It compares every
+component of the version, not the major alone, so a 3.x driver older than 3.5.1 is caught.
+It never creates or changes the driver's roles.
 
 ## Clean up
 

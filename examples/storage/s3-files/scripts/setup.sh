@@ -4,8 +4,9 @@
 #   CLUSTER_NAME=<cluster> AWS_REGION=<region> ./scripts/setup.sh
 #
 # What it does, in order:
-#   1. Checks the Amazon EFS CSI driver is installed at 3.0.0 or newer (S3 Files
-#      support starts in 3.0.0), and stops with the install command when it is not.
+#   1. Checks the Amazon EFS CSI driver is installed at 3.5.1 or newer, comparing every
+#      component of the version and not the major alone, and stops with the install or
+#      upgrade command when it is not.
 #      The driver, its service accounts, their IAM roles and their Pod Identity
 #      associations are a SHARED INSTALL: this sample reads them and never changes
 #      them (no role created, no policy attached, no association touched). It only
@@ -56,7 +57,7 @@ NAMESPACE="${NAMESPACE:-nitro-s3-files-sample}"
 KUBECTL="${KUBECTL:-kubectl}"
 
 SAMPLE="storage-s3-files"
-MIN_DRIVER_MAJOR=3
+MIN_DRIVER_VERSION=3.5.1
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
@@ -159,6 +160,26 @@ wait_for_s3_files() {
   die "timed out waiting for the S3 Files file system"
 }
 
+# Is the installed driver at least the minimum? Every component is compared, not the major
+# alone: 3.0.0 and 3.4.9 are older than 3.5.1 and must be refused. The version arrives either
+# as the EKS add-on version ("v3.5.1-eksbuild.1") or as the efs-csi-node container's image tag
+# ("v3.5.1"), so a leading "v" and any "-eksbuild.N" suffix come off before the comparison. A
+# version neither source yields, or one that does not parse, is "could not determine", which
+# is a refusal and never a pass.
+driver_version_at_least() { # driver_version_at_least <found> <minimum major.minor.patch>
+  local found="${1#v}" i
+  local -a f m
+  found="${found%%-*}"
+  [[ "$found" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  IFS=. read -r -a f <<<"$found"
+  IFS=. read -r -a m <<<"$2"
+  for i in 0 1 2; do
+    if ((10#${f[i]} > 10#${m[i]})); then return 0; fi
+    if ((10#${f[i]} < 10#${m[i]})); then return 1; fi
+  done
+  return 0
+}
+
 # ---- 1. The EFS CSI driver is a shared install: check it, reuse it, never change it. ----
 echo "Step 1/6: check the Amazon EFS CSI driver (a shared install; reused, never changed)"
 addon_version="$(aws_r eks describe-addon --cluster-name "$CLUSTER_NAME" \
@@ -167,13 +188,15 @@ driver_image="$($KUBECTL get daemonset efs-csi-node -n kube-system \
   -o jsonpath='{.spec.template.spec.containers[?(@.name=="efs-plugin")].image}' 2>/dev/null || true)"
 driver_version="$addon_version"
 [[ -n "$driver_version" && "$driver_version" != "None" ]] || driver_version="${driver_image##*:}"
-driver_major="${driver_version#v}"; driver_major="${driver_major%%.*}"
-if ! [[ "$driver_major" =~ ^[0-9]+$ && "$driver_major" -ge "$MIN_DRIVER_MAJOR" ]]; then
-  die "the Amazon EFS CSI driver ${MIN_DRIVER_MAJOR}.0.0 or newer is required for S3 Files (found: ${driver_version:-none}).
-Install it as the page's prerequisites describe, following the S3 Files CSI guide, then re-run:
+if ! driver_version_at_least "$driver_version" "$MIN_DRIVER_VERSION"; then
+  die "the Amazon EFS CSI driver $MIN_DRIVER_VERSION or newer is required for S3 Files (found: ${driver_version:-no version from either the add-on or the efs-csi-node image; could not determine}).
+Install or upgrade the add-on as the page's prerequisites describe, then re-run. For the EKS
+add-on, with create-addon when the driver is absent and update-addon when it is too old:
+  aws eks update-addon --cluster-name \"$CLUSTER_NAME\" --region \"$AWS_REGION\" \\
+    --addon-name aws-efs-csi-driver --addon-version v${MIN_DRIVER_VERSION}-eksbuild.1
   https://docs.aws.amazon.com/eks/latest/userguide/s3files-csi.html"
 fi
-echo "  found aws-efs-csi-driver $driver_version (>= ${MIN_DRIVER_MAJOR}.0.0)."
+echo "  found aws-efs-csi-driver $driver_version (>= $MIN_DRIVER_VERSION)."
 
 # Read the CSI node service account's Pod Identity role WITHOUT changing it.
 node_assoc="$(aws_r eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" \
