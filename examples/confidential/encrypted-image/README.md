@@ -843,14 +843,19 @@ own node.
   minutes before any pod, and starts the credentials pod up to three times, treating "no
   answer from KMS" as no evidence rather than as a denial. The "attempt 1 ... replacing it"
   line in its output is that retry.
-- **The gate pins the policy measurement, not the guest image.** `PCR17` binds key release
-  to this exact policy document, and so to the image digest, the environment, the identity
-  and the mounts it pins. It does not bind release to a particular guest system image: the
-  Amazon EKS User Guide, *Security model and parent instance trust assumptions*, recommends
-  including at least `PCR0`, the system image, as well. This sample leaves `PCR0` out
-  because the preview guest image's value changes with each release, which would stop the
-  sample working on the next one. The [Confidential section page](../README.md#the-policy-and-its-measurement)
-  has the full list.
+- **The gate pins the policy measurement, not the guest image.** The two conditions this
+  sample installs are the ones the generator emits, and `PCR17` binds key release to this
+  exact policy document, and so to the image digest, the environment, the identity and the
+  mounts it pins. Neither of them binds release to a particular guest system image:
+  another guest image presenting the same `PCR17` is not excluded, and `PCR8:ServiceName`
+  matches the signing certificate's service name rather than measuring the image. A key
+  policy can carry more registers, and for production you would add `PCR0`, the system
+  image measurement, which the Amazon EKS User Guide, *Security model and parent instance
+  trust assumptions*, asks for alongside `PCR17` at minimum. `PCR0` has to come from a
+  real attestation document, and nothing in this sample reads one, so it is left out
+  rather than written by hand. The
+  [Confidential section page](../README.md#the-policy-and-its-measurement) sets this out in
+  full.
 - **A new IAM role is not immediately visible to KMS.** `kms:PutKeyPolicy` refuses a policy
   naming a role AWS has only just created, with "one or more invalid principals". It is an
   ordinary propagation delay; `setup.sh` retries on that error and on no other, which is the

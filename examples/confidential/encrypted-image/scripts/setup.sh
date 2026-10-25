@@ -223,8 +223,15 @@ else
   # has no business in a document whose whole job is to allow nothing that can reach it.
   jq -e '
     def action_matches($target):
-      (ascii_downcase | gsub("\\*"; ".*") | gsub("\\?"; ".")) as $re
-      | $target | test("^" + $re + "$");
+      ascii_downcase as $glob
+      # An IAM action holds only these characters. Anything else is not an action and
+      # grants nothing, so it matches nothing: without this, a string such as
+      # "kms:.ecrypt" would become a regex that matches kms:decrypt, and a Deny carrying
+      # it would be counted as refusing a decrypt when under IAM it refuses nothing. It
+      # also keeps a stray bracket out of the regex, which would otherwise make the test
+      # throw.
+      | ($glob | test("^[a-z0-9:*?-]+$"))
+        and ($target | test("^" + ($glob | gsub("\\*"; ".*") | gsub("\\?"; ".")) + "$"));
     def reaches_decrypt:
       action_matches("kms:decrypt") or action_matches("kms:reencryptfrom")
       or action_matches("kms:creategrant");
@@ -395,8 +402,15 @@ verify_key_policy() {  # verify_key_policy <expected-pcr17>
     # the glob this way, rather than listing prefixes, is what makes "kms:De*",
     # "kms:*crypt" and "kms:Decryp?" count: each of them really does grant the action.
     def action_matches($target):
-      (ascii_downcase | gsub("\\*"; ".*") | gsub("\\?"; ".")) as $re
-      | $target | test("^" + $re + "$");
+      ascii_downcase as $glob
+      # An IAM action holds only these characters. Anything else is not an action and
+      # grants nothing, so it matches nothing: without this, a string such as
+      # "kms:.ecrypt" would become a regex that matches kms:decrypt, and a Deny carrying
+      # it would be counted as refusing a decrypt when under IAM it refuses nothing. It
+      # also keeps a stray bracket out of the regex, which would otherwise make the test
+      # throw.
+      | ($glob | test("^[a-z0-9:*?-]+$"))
+        and ($target | test("^" + ($glob | gsub("\\*"; ".*") | gsub("\\?"; ".")) + "$"));
     def actions: (.Action | if type == "array" then . else [.] end);
     # The two sides ask different questions, and the difference matters.
     #

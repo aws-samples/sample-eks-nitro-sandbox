@@ -104,8 +104,9 @@ jq -e --arg role "$IAM_ROLE_ARN" --arg roleid "$IAM_ROLE_ID" --arg pcr17 "$PREDI
   # the comments there explain the glob translation, and why the deny side is narrower
   # than the allow side. Keep this program free of apostrophes: it is single-quoted.
   def action_matches($target):
-    (ascii_downcase | gsub("\\*"; ".*") | gsub("\\?"; ".")) as $re
-    | $target | test("^" + $re + "$");
+    ascii_downcase as $glob
+    | ($glob | test("^[a-z0-9:*?-]+$"))
+      and ($target | test("^" + ($glob | gsub("\\*"; ".*") | gsub("\\?"; ".")) + "$"));
   def actions: (.Action | if type == "array" then . else [.] end);
   def reaches_decrypt:
     action_matches("kms:decrypt") or action_matches("kms:reencryptfrom")

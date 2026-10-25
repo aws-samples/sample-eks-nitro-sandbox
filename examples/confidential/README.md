@@ -102,15 +102,43 @@ Everything the role may do is in the key policy, where the attestation condition
 there is no second path to `kms:Decrypt` that skips the gate. The setup scripts check for
 identity policies on the role and stop if they find one.
 
-**For production, pin more than the policy.** Pinning `PCR17` binds key release to one
+**What these samples pin.** Exactly two conditions, which are the ones the policy
+generator prints for you to paste (Amazon EKS User Guide, *Cedar policies*):
+
+```json
+"Condition": {
+  "StringEqualsIgnoreCase": {
+    "kms:RecipientAttestation:PCR17": "<predicted PCR17>",
+    "kms:RecipientAttestation:PCR8:ServiceName": "eks.amazonaws.com"
+  }
+}
+```
+
+Several `kms:RecipientAttestation:*` keys in one `StringEqualsIgnoreCase` block are
+combined with AND, so a key policy can pin more registers than this, and every one listed
+then has to match before `Decrypt` succeeds. These samples pin no more than the two above,
+so that what they install is exactly what the generator emitted, with nothing added by
+hand.
+
+**The limitation that comes with that, stated plainly.** `PCR17` binds key release to one
 exact policy document, and so to the image digest, environment, identity and mounts that
-policy pins. It does not bind release to a particular guest system image: another guest
-image presenting the same `PCR17` is not excluded. The Amazon EKS User Guide's
-recommendation is to include at minimum `PCR0`, the system image, as well as `PCR17`
-(*Security model and parent instance trust assumptions*). The samples here gate on `PCR17`
-and the `PCR8` service name, and say so on each page; they leave `PCR0` out because the
-preview guest image's value changes with each release, which would make a sample that
-pinned it stop working on the next one.
+policy pins. It does **not** bind release to a particular guest system image: another guest
+image presenting the same `PCR17` is not excluded. `PCR8:ServiceName` does not close that
+gap either, because it matches the certificate's service name rather than measuring the
+image. So two conditions are not equivalent to binding the system image, and these samples
+do not bind it.
+
+For production, add the system image measurement, `PCR0`, alongside `PCR17` and the `PCR8`
+service name. The Amazon EKS User Guide, *Security model and parent instance trust
+assumptions*, asks for `PCR0` and `PCR17` at minimum. Take `PCR0` from a real attestation
+document produced by the guest image you intend to approve; it is not a value to write by
+hand, and these samples have no step that reads one, which is the other reason they leave
+it out.
+
+One consequence to plan for, which is a consideration rather than anything the guide
+states: because `PCR0` measures the system image, a key gated on it stops releasing
+whenever that image changes, so updating the sandbox environment becomes a key-policy
+change too.
 
 ## The attested decrypt
 
