@@ -102,9 +102,10 @@ and the host-specific options on the maintainers' workstation.
   refuses its own result when the model that answered turns out to be the implementer's
   anyway. Give the implementer's resolved model, not an alias or a prompt router name: a
   router that resolves to the model you were avoiding defeats the whole exercise.
-- **Prefer `--backend claude` when the reviewer only needs to read.** It runs with
-  `--restricted` and `--strict-mcp-config`, so the reviewer holds only `Read`, `Grep` and
-  `Glob`. The Codex backend cannot be made to drop the host's MCP servers.
+- **Either backend, your choice.** They differ in one way worth knowing: `--backend claude`
+  runs with `--restricted` and `--strict-mcp-config`, so the reviewer holds only `Read`,
+  `Grep` and `Glob`, while Codex 0.164 cannot be made to drop the host's MCP servers, so a
+  Codex reviewer can also reach those. That is a fact about the backends, not a ranking.
 - **The reviewer must not be able to write.** Two separate things, so keep them apart when
   you record the review: the backend is *configured* to refuse writes, and the script
   *checks afterwards* that no persistent change it can see was left in `--tree` — every
@@ -143,6 +144,21 @@ and the host-specific options on the maintainers' workstation.
   `AGENTS.md`, Verification rules), and get it reviewed again, scoped to the fix. Repeat
   until the last commit that changes a check has been reviewed. Why: in one sample the
   second round found that the fixes from the first could skip their own error messages.
+- **Check that each case still fails for the reason it claims, every round.** A fix often
+  moves a case onto an *earlier* check than the one it was written for. The case still
+  passes, the suite stays green, and the check it was supposed to cover is no longer tested
+  at all — so a hole can reopen in silence. Read the message each rejecting case actually
+  produced, not just its exit status, and make the expected tag part of the assertion.
+  Why: in the review tooling's own history this happened three times in six rounds. Once a
+  fix made every "good" stub stop emitting the marker a new check looked for, so an
+  81-case green suite was quietly demonstrating that the marker's *absence* was acceptable
+  — the opposite of what the case was named for. Twice a case was rejected by a newer
+  check while still being reported as proving an older one. **Twice the defect a round
+  found was in the proof harness rather than the code**, which is the thing to expect:
+  a green suite is evidence only for what it still exercises.
+- **A case that would pass either way proves nothing.** One round found two cases comparing
+  a value against something unrelated, so they passed whether or not the code under test
+  was correct. Pick the comparison that fails if the defect returns.
 - **Stop when no must-fix finding remains.** Optional findings go in the pull request as
   notes. Why: each round should check the fixes, not widen the assignment.
 

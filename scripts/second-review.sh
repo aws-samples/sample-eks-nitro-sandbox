@@ -123,6 +123,21 @@ normalise_model() {
   printf '%s' "$m"
 }
 
+# Every model name is written into review-record.txt for a person to read, and codex's
+# reported name and the two names given on the command line were never validated -- only
+# claude's modelUsage keys were. A tab, a newline or an ESC in any of them can forge or
+# alter a field of that record, so they all go through one check: printable ASCII, and no
+# leading or trailing space. "+" is rejected only where claude joins several names with it.
+check_model_charset() {
+  case "$1" in
+    "" ) return 0 ;;                       # emptiness is check_model_name's business
+    " "*|*" " ) refuse E_MODEL_NAME \
+      "$2 '$1' begins or ends with a space, so it would be recorded as a different name than the one that answered." ;;
+  esac
+  printf '%s' "$1" | LC_ALL=C grep -qE '^[[:print:]]+$' || refuse E_MODEL_NAME \
+    "$2 '$1' holds something other than printable ASCII, which cannot be carried or recorded safely."
+}
+
 # A name that is nothing but a prefix ("amazon.") normalises to the empty string, and two
 # empty strings would compare equal while an empty and a real one would compare different.
 # Neither is a model, so refuse the name instead of comparing it.
@@ -131,6 +146,8 @@ check_model_name() {
     "$3 '$1' is not a model name: everything in it is a vendor prefix, a Region prefix or a version suffix, so there is nothing left to compare."
 }
 
+check_model_charset "$MODEL" "--model"
+check_model_charset "$IMPLEMENTER" "--implementer-model"
 want_model=$(normalise_model "$MODEL")
 impl_model=$(normalise_model "$IMPLEMENTER")
 check_model_name "$MODEL" "$want_model" "--model"
@@ -208,6 +225,12 @@ tree_fingerprint() {
 }
 tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-before.sha256"
 
+# A short, per-run ASCII line, prepended to what the codex backend reads and used to
+# authenticate the preamble boundary below. It only has to be something the brief cannot
+# already contain -- the brief is written before the run -- so bash's own RANDOM is
+# enough and adds no dependency on another tool.
+NONCE_LINE="second-review-nonce-$$-${RANDOM}${RANDOM}${RANDOM} (harness marker, ignore this line)"
+
 timeout_cmd=()
 if command -v timeout >/dev/null 2>&1; then timeout_cmd=(timeout "$TIMEOUT"); fi
 
@@ -240,6 +263,13 @@ case "$BACKEND" in
       codex_args+=(-c "model_reasoning_effort=\"$SECOND_REVIEW_CODEX_EFFORT\"")
     fi
     codex_args+=(-)
+    # What codex actually reads: this run's nonce, then the brief. The nonce is what the
+    # preamble boundary is authenticated against below, so it must not be anything the
+    # author could have written into the brief.
+    {
+      printf '%s\n' "$NONCE_LINE"
+      cat "$BRIEF_ABS"
+    } > "$OUT_ABS/codex-stdin.txt"
     # Take the AWS credentials out of the environment unless asked not to, so a machine
     # that holds credentials for another account cannot have the review billed to it: the
     # backend is left with whatever its own configuration pins. Fails closed -- a codex
@@ -260,12 +290,13 @@ case "$BACKEND" in
                -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
                -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN -u AWS_ROLE_SESSION_NAME
                -u AWS_ACCESS_KEY -u AWS_SECRET_KEY -u AWS_SECURITY_TOKEN
-               -u AWS_CREDENTIAL_PROFILES_FILE -u AWS_CREDENTIAL_FILE
+               -u AWS_CREDENTIAL_PROFILES_FILE
                AWS_CONFIG_FILE=/dev/null BOTO_CONFIG=/dev/null
+               AWS_CREDENTIAL_FILE=/dev/null AWS_CREDENTIALS_FILE=/dev/null
                AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_EC2_METADATA_DISABLED=true)
     fi
     ${timeout_cmd[@]+"${timeout_cmd[@]}"} "${aws_env[@]}" "$resolved_cmd" "${codex_args[@]}" \
-      < "$BRIEF_ABS" > "$OUT_ABS/review.out" 2> "$OUT_ABS/review.err" || run_status=$?
+      < "$OUT_ABS/codex-stdin.txt" > "$OUT_ABS/review.out" 2> "$OUT_ABS/review.err" || run_status=$?
     ;;
   claude)
     # --restricted takes away the tools that run commands or code and ignores the user,
@@ -311,18 +342,18 @@ case "$BACKEND" in
     # and the first block would then run into the brief, which could supply these values
     # itself. The marker must be there: without it, "before the marker" is the whole trace
     # and the same brief-supplied block would be believed again.
-    # The marker has to be codex's own, not a line of the brief that happens to read
-    # "user": codex echoes the brief immediately after its marker, so the line following
-    # the first marker must be the brief's first line. Checked against two real traces, a
-    # one-line brief and a long one. Without this, a trace that stopped before codex's own
-    # marker would let the echoed brief supply the marker, a closing rule and the three
-    # fields, and its block would be believed.
-    brief_first=$(head -1 "$BRIEF_ABS")
+    # The marker has to be codex's own, not a line of the echoed brief that reads "user".
+    # codex echoes what it was given immediately after its marker, so the line after the
+    # first marker must be the nonce this run prepended to that input. Authenticating
+    # against the brief's own first line was not enough: a brief whose first line is
+    # "model: ..." satisfies the comparison while also supplying the parsed fields, so a
+    # truncated trace could still be read as a preamble. The nonce is generated per run
+    # and is not in anything the author wrote, so the input cannot contain it in advance.
     echoed_first=$(awk '/^user$/ { if (getline > 0) print; exit }' "$OUT_ABS/review.err")
     grep -qx 'user' "$OUT_ABS/review.err" || refuse E_NO_PREAMBLE \
-      "codex's trace has no 'user' marker, so where its own preamble ends and the echoed brief begins cannot be told apart, and the mode it ran in cannot be read from it. Check $OUT_ABS/review.err with tail."
-    [ "$echoed_first" = "$brief_first" ] || refuse E_NO_PREAMBLE \
-      "the line after the 'user' marker in codex's trace is not the brief's first line, so that marker is not codex's own and everything before it may be the echoed brief rather than codex's preamble. Check $OUT_ABS/review.err with tail."
+      "codex's trace has no 'user' marker, so where its own preamble ends and the echoed input begins cannot be told apart, and the mode it ran in cannot be read from it. Check $OUT_ABS/review.err with tail."
+    [ "$echoed_first" = "$NONCE_LINE" ] || refuse E_NO_PREAMBLE \
+      "the line after the 'user' marker in codex's trace is not this run's nonce, so that marker is not codex's own and everything before it may be the echoed input rather than codex's preamble. Check $OUT_ABS/review.err with tail."
     awk '/^user$/ { exit } { print }' "$OUT_ABS/review.err" > "$OUT_ABS/pre-user.txt"
     rules=$(grep -c '^--------$' "$OUT_ABS/pre-user.txt" || true)
     [ "${rules:-0}" -ge 2 ] || refuse E_NO_PREAMBLE \
@@ -427,6 +458,7 @@ else
   answered_models=("$reported_models")
 fi
 for m in "${answered_models[@]}"; do
+  check_model_charset "$m" "the model the $BACKEND backend reported,"
   got=$(normalise_model "$m")
   check_model_name "$m" "$got" "the model the $BACKEND backend reported,"
   [ "$got" != "$impl_model" ] || refuse E_REPORTED_SAME_MODEL \

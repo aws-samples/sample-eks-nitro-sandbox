@@ -247,12 +247,20 @@ review, and a collaborator on a laptop has none of it.
   billing guarantee is not lost: its profile and the host config's `credential_export`
   resolve to the same builder-account role. Use it only if you have fixed it, by pointing
   `SECOND_REVIEW_CODEX_CMD` at it.
-- **MCP servers reach a Codex reviewer, but not a Claude one.** `--backend claude` runs with
-  `--restricted` and `--strict-mcp-config`, leaving the reviewer only `Read`, `Grep` and
-  `Glob` and no MCP server. Codex 0.164 cannot clear `mcp_servers` from the command line, so
-  a Codex review on a configured workstation can still reach MCP tools that write to other
-  systems. The tree is still checked; writes elsewhere are not. Prefer `--backend claude`
-  when the reviewer only needs to read.
+- **The two backends differ in what else the reviewer can reach.** `--backend claude` runs
+  with `--restricted` and `--strict-mcp-config`, so the reviewer holds only `Read`, `Grep`
+  and `Glob` and no MCP server. Codex 0.164 cannot clear `mcp_servers` from the command
+  line, so a Codex review on a configured workstation can also reach whatever MCP servers
+  the host defines, some of which write to other systems. Both backends are equally
+  sanctioned; this is a difference to know about, not a reason to pick one. In both cases
+  the review tree is checked afterwards, and writes outside it are not.
+- **Which account each backend bills is a property of that backend's own configuration, so
+  check it rather than assume it.** On the maintainers' workstation the Codex path is
+  confirmed to bill the toolbox-managed builder account (the provider's `credential_export`
+  helper returns that role, `codex amzn usage` attributes usage to it, and ambient
+  credentials do not displace it). **The Claude path's billing on that workstation has not
+  been verified**: it authenticates to Bedrock through the launcher's own AWS configuration,
+  which may be an unrelated account. Do not state otherwise until someone has checked.
 
 ### Other tools on the maintainers' workstation
 
