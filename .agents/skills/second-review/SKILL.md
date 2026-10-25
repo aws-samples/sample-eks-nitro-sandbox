@@ -210,6 +210,13 @@ and the host-specific options on the maintainers' workstation.
   commit. Label them separately in the pull request, because a reader who assumes every case
   is a regression will overestimate what the suite shows. Do not invent artificial
   regressions to even up the numbers.
+- **Set a case's fixture up from inside whatever resets the workspace, not before it.** A
+  harness that clears state between cases will clear your fixture too, and the case then
+  passes for the wrong reason. Here a symbolic link planted before calling the run helper
+  was deleted by that helper's own reset, so the case passed against the very code it was
+  written to catch. This is the shape most likely to recur elsewhere in this repository,
+  because every sample's guard tests reset state between cases: if a case needs the world
+  to be in an odd state, arrange that after the reset and assert it is still so.
 - **A harness can be structurally unable to express the claim you think it is testing.**
   Not merely wrong — incapable. One assertion here checked the script's own output for a
   path, which could never work, because the script always prints that path itself; the claim
