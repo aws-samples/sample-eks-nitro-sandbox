@@ -94,28 +94,48 @@ write_state() {
 # cannot set anything in this script, with the names unset first so a value from the
 # environment or from .env cannot pose as a record.
 #
-# A file that records a different namespace, repository or role belongs to a different run and
-# is never silently rewritten: that run's resources would become unreachable.
+# A file that records a different run is never silently rewritten, because that run's
+# resources would become unreachable. "A different run" is any of the seven fields below
+# disagreeing, not only the namespace: the association belongs to one cluster, the repository
+# to one Region, and both to one account, so a changed CLUSTER_NAME, AWS_REGION or profile
+# would carry an old association or repository name into a place it does not exist, and the
+# next write would overwrite the record of where it really is.
+#
+# The fields are separated by \x1f, not a tab: tab is an IFS whitespace character, so `read`
+# merges runs of them and drops leading ones, and a record with an empty middle field would
+# parse shifted by one.
 if [[ -f "$STATE_FILE" ]]; then
-  recorded="$(
-    unset ECR_NAMESPACE ECR_REPO_NAME ECR_ROLE_NAME ECR_ASSOCIATION_ID
-    # shellcheck disable=SC1090
-    . "$STATE_FILE" >/dev/null 2>&1 || true
-    printf '%s\t%s\t%s\t%s' \
-      "${ECR_NAMESPACE:-}" "${ECR_REPO_NAME:-}" "${ECR_ROLE_NAME:-}" "${ECR_ASSOCIATION_ID:-}"
-  )"
-  IFS=$'\t' read -r rec_ns rec_repo rec_role rec_assoc <<<"$recorded"
   state_name="$(basename "$STATE_FILE")"
-  [[ -z "$rec_ns" || "$rec_ns" == "$NAMESPACE" ]] \
-    || die "$state_name records a push for namespace '$rec_ns', not '$NAMESPACE'.
-Run NAMESPACE=$rec_ns ./scripts/clean.sh first, so that run's role, association and
-repository are removed while they can still be found."
-  [[ -z "$rec_repo" || "$rec_repo" == "$ECR_REPO_NAME" ]] \
-    || die "$state_name records ECR repository '$rec_repo', not '$ECR_REPO_NAME'.
-Run ./scripts/clean.sh first, or set ECR_REPO_NAME=$rec_repo to carry on with that one."
-  [[ -z "$rec_role" || "$rec_role" == "$ROLE_NAME" ]] \
-    || die "$state_name records IAM role '$rec_role', not '$ROLE_NAME'.
-Run ./scripts/clean.sh first, or set ROLE_NAME=$rec_role to carry on with that one."
+  # A state file that cannot be read, or stops part way through on a syntax error, is "could
+  # not determine": carrying on would start the records from empty and blank whatever it
+  # actually holds, which is the orphaning this block exists to prevent.
+  recorded="$(
+    unset ECR_NAMESPACE ECR_REPO_NAME ECR_ROLE_NAME ECR_ASSOCIATION_ID \
+          ECR_ACCOUNT_ID ECR_AWS_REGION ECR_CLUSTER_NAME
+    # shellcheck disable=SC1090
+    . "$STATE_FILE" >/dev/null 2>&1 || exit 3
+    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' \
+      "${ECR_NAMESPACE:-}" "${ECR_REPO_NAME:-}" "${ECR_ROLE_NAME:-}" "${ECR_ASSOCIATION_ID:-}" \
+      "${ECR_ACCOUNT_ID:-}" "${ECR_AWS_REGION:-}" "${ECR_CLUSTER_NAME:-}"
+  )" || die "$state_name exists but could not be read all the way through, so what an earlier
+run created cannot be determined. Fix or move the file aside, then run this again."
+  IFS=$'\x1f' read -r rec_ns rec_repo rec_role rec_assoc rec_acct rec_region rec_cluster \
+    <<<"$recorded"
+
+  # refuse <what> <recorded> <this run's> <how to carry on>
+  refuse() {
+    [[ -z "$2" || "$2" == "$3" ]] \
+      || die "$state_name records $1 '$2', not '$3', so it belongs to a different run.
+Run NAMESPACE=${rec_ns:-$NAMESPACE} ./scripts/clean.sh against that run first, so its role,
+association and repository are removed while they can still be found$4"
+  }
+  refuse "namespace"       "$rec_ns"      "$NAMESPACE"      "."
+  refuse "ECR repository"  "$rec_repo"    "$ECR_REPO_NAME"  ", or set ECR_REPO_NAME=$rec_repo to carry on with that one."
+  refuse "IAM role"        "$rec_role"    "$ROLE_NAME"      ", or set ROLE_NAME=$rec_role to carry on with that one."
+  refuse "AWS account"     "$rec_acct"    "$ACCOUNT_ID"     "."
+  refuse "Region"          "$rec_region"  "$AWS_REGION"     "."
+  refuse "EKS cluster"     "$rec_cluster" "$CLUSTER_NAME"   "."
+
   STATE_REPO="$rec_repo"; STATE_ROLE="$rec_role"; STATE_ASSOC="$rec_assoc"
 fi
 

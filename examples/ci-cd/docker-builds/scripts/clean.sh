@@ -40,7 +40,13 @@ command -v kubectl >/dev/null 2>&1 || { echo "error: kubectl is not on PATH" >&2
 unset ECR_PUSH_READY ECR_ACCOUNT_ID ECR_AWS_REGION ECR_CLUSTER_NAME ECR_NAMESPACE \
       ECR_REPO_NAME ECR_ROLE_NAME ECR_POLICY_NAME ECR_ASSOCIATION_ID
 # shellcheck disable=SC1090
-[[ -f "$STATE_FILE" ]] && . "$STATE_FILE"
+if [[ -f "$STATE_FILE" ]]; then
+  # A state file that cannot be read, or stops part way on a syntax error, is "could not
+  # determine": without this the script would carry on with no records and report "Clean up
+  # complete" while the push's role, association and repository were still there.
+  . "$STATE_FILE" \
+    || note_fail "$(basename "$STATE_FILE") exists but could not be read all the way through, so any Amazon ECR push it records was left in place. Fix or move the file aside, then run this again"
+fi
 
 # --- the namespace and everything in it ------------------------------------
 ns_exists=true
@@ -130,7 +136,13 @@ if [[ "$ns_exists" == true ]]; then
 
   if [[ "${#volume_of[@]}" -gt 0 ]]; then
     if command -v aws >/dev/null 2>&1; then
-      region="${ECR_AWS_REGION:-${AWS_REGION:-}}"
+      # The Region the volumes are actually in, most authoritative first: what the push
+      # recorded, then .env, then the environment. .env comes before the environment because
+      # it is where this sample's cluster Region lives and ecr-setup.sh reads it the same way;
+      # a shell left exported to some other Region would otherwise make describe-volumes answer
+      # InvalidVolume.NotFound for a volume that is alive in the cluster's Region, which would
+      # be reported as "gone".
+      region="${ECR_AWS_REGION:-}"
       if [[ -z "$region" && -f .env ]]; then
         # In a subshell, so .env sets nothing in this script. Sourcing it here would also
         # bring in NAMESPACE and ECR_REPO_NAME if the reader set them, and either would change
@@ -138,6 +150,7 @@ if [[ "$ns_exists" == true ]]; then
         # shellcheck disable=SC1091
         region="$( . ./.env >/dev/null 2>&1; printf '%s' "${AWS_REGION:-}" )"
       fi
+      region="${region:-${AWS_REGION:-}}"
       if [[ -z "$region" ]]; then
         for claim in "${!volume_of[@]}"; do
           note_fail "could not confirm EBS volume ${volume_of[$claim]} ($claim) is gone: no AWS Region set (set AWS_REGION)"
@@ -192,7 +205,7 @@ elif [[ -n "${ECR_REPO_NAME:-}${ECR_ROLE_NAME:-}${ECR_ASSOCIATION_ID:-}" ]]; the
     note_fail "$(basename "$STATE_FILE") records a push (role ${ECR_ROLE_NAME:-none}, repository ${ECR_REPO_NAME:-none}) but is missing the Region, cluster or account it belongs to; those resources were left in place. Remove them by hand, or restore the file and run this again"
   else
     region="${ECR_AWS_REGION}"
-    assoc_unreadable=false
+    keep_role=false
     # Pod Identity association: delete only the one this sample recorded, and only while it
     # still points at this sample's role. An empty record means setup never got that far.
     if [[ -z "${ECR_ASSOCIATION_ID:-}" ]]; then
@@ -209,14 +222,19 @@ elif [[ -n "${ECR_REPO_NAME:-}${ECR_ROLE_NAME:-}${ECR_ASSOCIATION_ID:-}" ]]; the
         # below is left alone too: deleting the role out from under a live association would
         # leave it pointing at nothing.
         note_fail "could not determine which role Pod Identity association $ECR_ASSOCIATION_ID is bound to; it was left in place. AWS said: $bound"
-        assoc_unreadable=true
+        keep_role=true
       # The account is pinned as well as the role name: a bare *:role/<name> match would accept
       # a same-named role in any account.
-      elif [[ "$bound" == "arn:aws:iam::${ECR_ACCOUNT_ID}:role/${ECR_ROLE_NAME}" ]]; then
-        aws eks delete-pod-identity-association --cluster-name "$ECR_CLUSTER_NAME" \
-          --association-id "$ECR_ASSOCIATION_ID" --region "$region" >/dev/null \
-          && echo "  deleted Pod Identity association $ECR_ASSOCIATION_ID." \
-          || note_fail "could not delete Pod Identity association $ECR_ASSOCIATION_ID"
+      elif [[ -n "${ECR_ROLE_NAME:-}" && "$bound" == "arn:aws:iam::${ECR_ACCOUNT_ID}:role/${ECR_ROLE_NAME}" ]]; then
+        if aws eks delete-pod-identity-association --cluster-name "$ECR_CLUSTER_NAME" \
+             --association-id "$ECR_ASSOCIATION_ID" --region "$region" >/dev/null; then
+          echo "  deleted Pod Identity association $ECR_ASSOCIATION_ID."
+        else
+          # Same reason as a failed read: the association may still be live, so the role it is
+          # bound to is left alone rather than stranded.
+          note_fail "could not delete Pod Identity association $ECR_ASSOCIATION_ID"
+          keep_role=true
+        fi
       else
         note_fail "Pod Identity association $ECR_ASSOCIATION_ID is not bound to this sample's role (read: $bound); left untouched"
       fi
@@ -227,8 +245,8 @@ elif [[ -n "${ECR_REPO_NAME:-}${ECR_ROLE_NAME:-}${ECR_ASSOCIATION_ID:-}" ]]; the
     # own failure is reported.
     if [[ -z "${ECR_ROLE_NAME:-}" ]]; then
       echo "  no IAM role was recorded, so there is none to delete."
-    elif [[ "$assoc_unreadable" == true ]]; then
-      note_fail "IAM role $ECR_ROLE_NAME was left in place because the association above could not be read; deleting it could strand a live association. Run this again once AWS answers cleanly"
+    elif [[ "$keep_role" == true ]]; then
+      note_fail "IAM role $ECR_ROLE_NAME was left in place because the association above could not be read or could not be deleted; removing the role could strand a live association. Run this again once AWS answers cleanly"
     else
       tags_out="$(aws iam list-role-tags --role-name "$ECR_ROLE_NAME" 2>&1)"
       tags_rc=$?
@@ -236,7 +254,7 @@ elif [[ -n "${ECR_REPO_NAME:-}${ECR_ROLE_NAME:-}${ECR_ASSOCIATION_ID:-}" ]]; the
       [[ $tags_rc -eq 0 ]] && owner="$(printf '%s' "$tags_out" \
         | jq -r --arg m "$MANAGED_BY" 'any(.Tags[]?; .Key=="ManagedBy" and .Value==$m)' 2>/dev/null)"
       if [[ "$owner" == "true" ]]; then
-        aws iam delete-role-policy --role-name "$ECR_ROLE_NAME" --policy-name "$ECR_POLICY_NAME" 2>/dev/null \
+        aws iam delete-role-policy --role-name "$ECR_ROLE_NAME" --policy-name "${ECR_POLICY_NAME:-docker-builds-ecr-push}" 2>/dev/null \
           || true
         aws iam delete-role --role-name "$ECR_ROLE_NAME" >/dev/null 2>&1 \
           && echo "  deleted IAM role $ECR_ROLE_NAME and its policy." \

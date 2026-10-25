@@ -17,6 +17,15 @@ data:
     # image layer it unpacks, and the container it runs.
     set -eu
 
+    # Leave no credential behind on any exit path. The init container has already written
+    # /ecr/token by the time this script starts, so the trap goes here and not in the push
+    # branch below: under `set -eu` a failure at the daemon wait, at `docker build` or at
+    # either `docker run` would otherwise leave the token in the failed pod's emptyDir, and a
+    # failed Job's pod stays until the next run or the clean up. The token is good for hours.
+    # Single-quoted, so $ECR_REGISTRY is read when the trap fires, not now.
+    trap 'rm -f /ecr/token
+          if [ -n "${ECR_REGISTRY:-}" ]; then docker logout "$ECR_REGISTRY" >/dev/null 2>&1 || true; fi' EXIT
+
     IMAGE="${IMAGE:-hello-nitro:v1}"
 
     echo ">>> waiting for the Docker daemon on its local socket"
@@ -81,11 +90,8 @@ data:
 
     if [ -n "${ECR_REGISTRY:-}" ]; then
       echo ">>> pushing to $ECR_REGISTRY/${ECR_REPO}"
-      # Leave no credential behind on any exit path, not only the one where the push works.
-      # `set -eu` would otherwise skip both clean-up lines below if the login, the tag or the
-      # push failed, and a failed Job's pod stays until the next run or the clean up, holding
-      # a token that is good for hours and the daemon's copy of it in its config.
-      trap 'rm -f /ecr/token; docker logout "$ECR_REGISTRY" >/dev/null 2>&1 || true' EXIT
+      # The token file and the daemon's stored login are also removed by the trap set at the
+      # top of this script, which covers every earlier failure as well.
       # The token reaches docker login on standard input, never on a command line, as the
       # Amazon ECR documentation shows. The init container produced it with
       # `aws ecr get-login-password` from the role this pod's ServiceAccount is associated
