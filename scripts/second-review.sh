@@ -205,15 +205,28 @@ command -v realpath >/dev/null 2>&1 || cannot_check "realpath is needed to check
   "'$REPO_ROOT/tmp' is a symbolic link, so where the brief, the review and the trace would land is not this repository's gitignored tmp/. Make it a real directory."
 TMP_ABS=$(realpath -m "$REPO_ROOT/tmp") || refuse E_NOT_IN_TMP \
   "could not resolve '$REPO_ROOT/tmp', so there is nothing to check the brief and output paths against."
-# A --brief at one of the output names would pass its own [ -f ] check and then be removed
-# by the loop below, so refuse it rather than delete the thing we were asked to read.
-brief_not_an_output_name() {
-  case "$(basename -- "$1")" in
-    review.out|review.err|review.json|review-record.txt|record.tsv|preamble.txt|\
-    pre-user.txt|codex-stdin.txt|tree-before.sha256|tree-at-return.sha256|tree-after.sha256)
-      [ "$(dirname -- "$1")" != "$2" ] || refuse E_BRIEF \
-        "the brief '$1' has the name of a file this script writes into --out, and would be removed before being read. Rename it." ;;
-  esac
+# Every name this script writes into --out, in one place. The cleanup below clears exactly
+# these, and no input the script reads may sit at one of them. Keeping the list in two
+# places meant the check and the cleanup had to be kept in step by hand, which is the kind
+# of enumeration this script otherwise avoids.
+OUT_NAMES="review.out review.err review.json review-record.txt record.tsv
+preamble.txt pre-user.txt codex-stdin.txt
+tree-before.sha256 tree-at-return.sha256 tree-after.sha256"
+
+# An input at one of those names would pass its own [ -f ] check and then be removed by the
+# cleanup before it could be read, so refuse it rather than delete the thing we were asked
+# to read. Checked for every input path rather than only the brief: a settings file at one
+# of the names was cleared the same way, and because its own check now runs before the
+# cleanup, the run went on to hand claude a file that was no longer there.
+# $3 names the input in the message, $4 is the tag to refuse with, so each input refuses
+# under the tag its own option already uses.
+not_an_output_name() {
+  local n
+  for n in $OUT_NAMES; do
+    [ "$(basename -- "$1")" = "$n" ] || continue
+    [ "$(dirname -- "$1")" != "$2" ] || refuse "$4" \
+      "$3 '$1' has the name of a file this script writes into --out, and would be removed before being read. Rename it."
+  done
 }
 
 in_repo_tmp() {
@@ -227,7 +240,7 @@ in_repo_tmp() {
 }
 OUT_ABS=$(in_repo_tmp "$OUT" --out)
 BRIEF_ABS=$(in_repo_tmp "$BRIEF" --brief)
-brief_not_an_output_name "$BRIEF_ABS" "$OUT_ABS"
+not_an_output_name "$BRIEF_ABS" "$OUT_ABS" "the brief" E_BRIEF
 
 TREE_ABS=$(realpath "$TREE")
 
@@ -253,10 +266,77 @@ tree_fingerprint() {
     find . -mindepth 1 -printf '%y %m %s %T@ %p -> %l\0' | LC_ALL=C sort -z
     find . -mindepth 1 -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum -z )
 }
+# Validate the claude backend's two optional paths here, before anything is created or
+# removed. They were checked inside the backend branch, which runs after the cleanup
+# below, so a mistyped one deleted a completed review and only then refused -- ten to
+# twenty-five minutes of billed work lost to a typo. Only the mktemp for the reviewer's
+# working directory stays late, because it writes and so cannot come first.
+if [ "$BACKEND" = claude ]; then
+  if [ -n "${SECOND_REVIEW_CLAUDE_SETTINGS:-}" ]; then
+    [ -f "$SECOND_REVIEW_CLAUDE_SETTINGS" ] || refuse E_CLAUDE_SETTINGS \
+      "\$SECOND_REVIEW_CLAUDE_SETTINGS names '$SECOND_REVIEW_CLAUDE_SETTINGS', which is not a file."
+    claude_settings_abs=$(realpath "$SECOND_REVIEW_CLAUDE_SETTINGS") || refuse E_CLAUDE_SETTINGS \
+      "could not resolve \$SECOND_REVIEW_CLAUDE_SETTINGS '$SECOND_REVIEW_CLAUDE_SETTINGS'."
+    settings_verdict=$(python3 -c '
+import json, sys
+ALLOWED = {"awsCredentialExport", "apiKeyHelper"}
+try:
+  with open(sys.argv[1]) as f:
+      d = json.load(f)
+except Exception as e:
+  print("could not read it as JSON: %s" % str(e)[:200]); raise SystemExit(0)
+if not isinstance(d, dict):
+  print("it is a %s, not an object" % type(d).__name__); raise SystemExit(0)
+extra = sorted(set(d) - ALLOWED)
+if extra:
+  print("it sets %s; only %s may be set here. A settings file can carry hooks, MCP "
+        "servers, plugins, a status line, permissions and a model override, and several "
+        "of those run a command or widen what the reviewer can reach, so this is an "
+        "allowlist of the two authentication keys rather than a list of things to block"
+        % (json.dumps(extra)[:200], " or ".join(sorted(ALLOWED)))); raise SystemExit(0)
+# Exactly one, so a valid helper cannot sit beside a malformed second one.
+if len(d) != 1:
+  print("it sets %d of %s; set exactly one"
+        % (len(d), " or ".join(sorted(ALLOWED)))); raise SystemExit(0)
+k = next(iter(d))
+if not isinstance(d[k], str) or not d[k].strip():
+  print("its %s is %s, not a non-empty string, so it would restore no credential path "
+        "and the run would fall back to ambient credentials"
+        % (k, json.dumps(d[k])[:120])); raise SystemExit(0)
+print("OK")
+' "$claude_settings_abs" 2>/dev/null) || settings_verdict="could not be read"
+    [ "$settings_verdict" = OK ] || refuse E_CLAUDE_SETTINGS \
+      "the settings file '$claude_settings_abs' cannot be used: $settings_verdict."
+    not_an_output_name "$claude_settings_abs" "$OUT_ABS" \
+      "the settings file \$SECOND_REVIEW_CLAUDE_SETTINGS names," E_CLAUDE_SETTINGS
+  fi
+  if [ -n "${SECOND_REVIEW_CONTEXT_DIR:-}" ]; then
+    [ -d "$SECOND_REVIEW_CONTEXT_DIR" ] || refuse E_CONTEXT_DIR \
+      "\$SECOND_REVIEW_CONTEXT_DIR names '$SECOND_REVIEW_CONTEXT_DIR', which is not a directory."
+    context_abs=$(realpath "$SECOND_REVIEW_CONTEXT_DIR") || refuse E_CONTEXT_DIR \
+      "could not resolve \$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR'."
+    # Compare against a prefix that always ends in exactly one slash. The obvious
+    # "$dir"/* is wrong when the directory is "/", because realpath returns that with
+    # its own trailing slash and the pattern becomes //*, which matches no ordinary
+    # absolute path -- SECOND_REVIEW_CONTEXT_DIR=/ would then have been passed to
+    # --add-dir, handing the reviewer the whole filesystem, trace included. Writing it
+    # as "${dir%/}"/* is also wrong: that leaves a quoted empty string, which bash does
+    # not match either. Checked all three forms against "/" and ordinary paths. This
+    # also covers the directory being exactly --out, so no equality test is needed; one
+    # was there, could never run, and made a harness case pass with the wrong message.
+    context_prefix="${context_abs%/}/"
+    case "$OUT_ABS/" in
+      "$context_prefix"*) refuse E_CONTEXT_DIR \
+        "\$SECOND_REVIEW_CONTEXT_DIR '$context_abs' is, or contains, the output directory, so it would give the reviewer the backend's trace. Use a directory holding only what the reviewer may read." ;;
+    esac
+  fi
+fi
+
 mkdir -p "$OUT_ABS"
 
 # Remove anything already sitting at a name this script writes, immediately before the
-# first write and after every refusal that can still happen before the backend runs.
+# first write and after every refusal that can still happen before the backend runs, bar
+# the mktemp for the reviewer's working directory, which writes and so cannot come first.
 # Two reasons for that placement, both learned the hard way: with --out inside the tree
 # this loop deleted files from the snapshot and only then refused E_OUT_IN_TREE -- a guard
 # in a tool whose whole promise is not touching the tree, destroying files in it -- and a
@@ -270,14 +350,29 @@ mkdir -p "$OUT_ABS"
 # and it covers symbolic links, hard links, FIFOs, sockets and device nodes at once. It can
 # only account for what exists before the run: something writing into --out *during* it
 # could overwrite tree-before.sha256 itself, which no check here could defend against.
-for _n in review.out review.err review.json review-record.txt record.tsv \
-          preamble.txt pre-user.txt codex-stdin.txt \
-          tree-before.sha256 tree-at-return.sha256 tree-after.sha256; do
-  # A failing rm would otherwise end the script under set -e with rm's own untagged
-  # message, so the refusal below could only ever fire after a *successful* removal.
+# The names come from $OUT_NAMES, set above and also used to refuse an input sitting at one
+# of them, so the cleanup and that check cannot drift apart.
+#
+# Check everything can be cleared before clearing any of it. This is an action, not a
+# refusal, so a single pass that removed as it went had already destroyed the earlier
+# results by the time it met a name it could not remove -- a directory, say.
+for _n in $OUT_NAMES; do
+  if [ -d "$OUT_ABS/$_n" ] && [ ! -L "$OUT_ABS/$_n" ]; then
+    refuse E_OUT_TAINTED \
+      "'$OUT_ABS/$_n' is a directory, so this script cannot write its output there. Nothing has been removed. Use a fresh --out."
+  fi
+done
+# An --out that cannot be written at all would otherwise pass the loop below -- removing a
+# name that is not there succeeds -- and die at the first redirect with no tag.
+if ! ( : > "$OUT_ABS/.probe" ) 2>/dev/null; then
+  refuse E_OUT_TAINTED \
+    "cannot create a file in '$OUT_ABS', so this script cannot write its output there. Nothing has been removed."
+fi
+rm -f -- "$OUT_ABS/.probe"
+for _n in $OUT_NAMES; do
   if ! rm -f -- "$OUT_ABS/$_n" 2>/dev/null || [ -e "$OUT_ABS/$_n" ] || [ -L "$OUT_ABS/$_n" ]; then
     refuse E_OUT_TAINTED \
-      "'$OUT_ABS/$_n' is in the way and this script cannot clear it -- a directory at that name, an unwritable --out, or something re-creating it. It cannot write there safely. Use a fresh --out."
+      "'$OUT_ABS/$_n' is in the way and this script cannot clear it -- something is re-creating it, or it cannot be removed. Use a fresh --out."
   fi
 done
 
@@ -396,43 +491,7 @@ case "$BACKEND" in
     # with a SessionStart command hook was tried under the full read-only flag set and it
     # executed and created a file, so a settings file this script accepted unchecked would
     # hand the reviewer arbitrary execution.
-    if [ -n "${SECOND_REVIEW_CLAUDE_SETTINGS:-}" ]; then
-      [ -f "$SECOND_REVIEW_CLAUDE_SETTINGS" ] || refuse E_CLAUDE_SETTINGS \
-        "\$SECOND_REVIEW_CLAUDE_SETTINGS names '$SECOND_REVIEW_CLAUDE_SETTINGS', which is not a file."
-      claude_settings_abs=$(realpath "$SECOND_REVIEW_CLAUDE_SETTINGS") || refuse E_CLAUDE_SETTINGS \
-        "could not resolve \$SECOND_REVIEW_CLAUDE_SETTINGS '$SECOND_REVIEW_CLAUDE_SETTINGS'."
-      settings_verdict=$(python3 -c '
-import json, sys
-ALLOWED = {"awsCredentialExport", "apiKeyHelper"}
-try:
-    with open(sys.argv[1]) as f:
-        d = json.load(f)
-except Exception as e:
-    print("could not read it as JSON: %s" % str(e)[:200]); raise SystemExit(0)
-if not isinstance(d, dict):
-    print("it is a %s, not an object" % type(d).__name__); raise SystemExit(0)
-extra = sorted(set(d) - ALLOWED)
-if extra:
-    print("it sets %s; only %s may be set here. A settings file can carry hooks, MCP "
-          "servers, plugins, a status line, permissions and a model override, and several "
-          "of those run a command or widen what the reviewer can reach, so this is an "
-          "allowlist of the two authentication keys rather than a list of things to block"
-          % (json.dumps(extra)[:200], " or ".join(sorted(ALLOWED)))); raise SystemExit(0)
-# Exactly one, so a valid helper cannot sit beside a malformed second one.
-if len(d) != 1:
-    print("it sets %d of %s; set exactly one"
-          % (len(d), " or ".join(sorted(ALLOWED)))); raise SystemExit(0)
-k = next(iter(d))
-if not isinstance(d[k], str) or not d[k].strip():
-    print("its %s is %s, not a non-empty string, so it would restore no credential path "
-          "and the run would fall back to ambient credentials"
-          % (k, json.dumps(d[k])[:120])); raise SystemExit(0)
-print("OK")
-' "$claude_settings_abs" 2>/dev/null) || settings_verdict="could not be read"
-      [ "$settings_verdict" = OK ] || refuse E_CLAUDE_SETTINGS \
-        "the settings file '$claude_settings_abs' cannot be used: $settings_verdict."
-      claude_args+=(--settings "$claude_settings_abs")
-    fi
+    if [ -n "${claude_settings_abs:-}" ]; then claude_args+=(--settings "$claude_settings_abs"); fi
     # Run from a directory made fresh for this run rather than from the tree, with the tree
     # added as a readable directory. Why: an allowed credential helper is still a command
     # claude executes, and with the tree as the working directory it would execute inside
@@ -454,27 +513,7 @@ print("OK")
     # --restricted confines its file tools to the working directory and the added ones, so
     # it refused that read until this existed. Name a directory holding only material the
     # reviewer may read -- never --out, which holds the trace.
-    if [ -n "${SECOND_REVIEW_CONTEXT_DIR:-}" ]; then
-      [ -d "$SECOND_REVIEW_CONTEXT_DIR" ] || refuse E_CONTEXT_DIR \
-        "\$SECOND_REVIEW_CONTEXT_DIR names '$SECOND_REVIEW_CONTEXT_DIR', which is not a directory."
-      context_abs=$(realpath "$SECOND_REVIEW_CONTEXT_DIR") || refuse E_CONTEXT_DIR \
-        "could not resolve \$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR'."
-      # Compare against a prefix that always ends in exactly one slash. The obvious
-      # "$dir"/* is wrong when the directory is "/", because realpath returns that with
-      # its own trailing slash and the pattern becomes //*, which matches no ordinary
-      # absolute path -- SECOND_REVIEW_CONTEXT_DIR=/ would then have been passed to
-      # --add-dir, handing the reviewer the whole filesystem, trace included. Writing it
-      # as "${dir%/}"/* is also wrong: that leaves a quoted empty string, which bash does
-      # not match either. Checked all three forms against "/" and ordinary paths. This
-      # also covers the directory being exactly --out, so no equality test is needed; one
-      # was there, could never run, and made a harness case pass with the wrong message.
-      context_prefix="${context_abs%/}/"
-      case "$OUT_ABS/" in
-        "$context_prefix"*) refuse E_CONTEXT_DIR \
-          "\$SECOND_REVIEW_CONTEXT_DIR '$context_abs' is, or contains, the output directory, so it would give the reviewer the backend's trace. Use a directory holding only what the reviewer may read." ;;
-      esac
-      claude_args+=(--add-dir "$context_abs")
-    fi
+    if [ -n "${context_abs:-}" ]; then claude_args+=(--add-dir "$context_abs"); fi
     ( cd "$claude_cwd" && ${timeout_cmd[@]+"${timeout_cmd[@]}"} "$resolved_cmd" "${claude_args[@]}" ) \
       < "$BRIEF_ABS" > "$OUT_ABS/review.json" 2> "$OUT_ABS/review.err" || run_status=$?
     # Any error the backend reports means no review happened, whatever its wording, so the
@@ -688,13 +727,17 @@ for m in "${answered_models[@]}"; do
     "'$MODEL' was answered by '$m', which is the model that wrote the change ('$IMPLEMENTER'). Ask for a different model."
 done
 
-# Both fingerprints must match the one taken before the run, and the later one is tested
-# first, and each of the three outcomes has its own message: changed during the run,
-# changed after it returned, or put back afterwards. Testing the early one
-# first said "it matches again now" even when it did not. A mismatch in both is a change
-# during the run, while a
-# mismatch only at return means a change that was put back afterwards. Testing the early one
-# first said "it matches again now" even when it did not.
+# Both fingerprints must match the one taken before the run, and each of the three ways
+# they can differ gets its own message:
+#
+#   before == after, before != at-return   a change that was put back afterwards
+#   before != after, before == at-return    a change made after the backend returned
+#   before != after, before != at-return    a change made while the reviewer ran
+#
+# The "put back afterwards" case is tested first, because it is the one a single late
+# fingerprint would have passed: on its own, "after" matches, and the run would have been
+# recorded as clean. A change made and undone entirely inside the backend's own run is
+# invisible to both, as tree_fingerprint's own note says.
 tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-after.sha256"
 if cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-after.sha256" \
    && ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then
@@ -703,8 +746,9 @@ if cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-after.sha256" \
 fi
 if ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-after.sha256"; then
   if cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then
-    # Matched when the backend returned and differs now: the change came afterwards, from
-    # something the backend left running or from another process, not from the run itself.
+    # Matched when the backend returned and differs now, so the change came after the
+    # backend's own run -- from a process it left behind, or from something else on the
+    # machine. Either way it is a change to the tree under review, so it refuses.
     refuse E_TREE_CHANGED \
       "the tree at $TREE_ABS matched its fingerprint when the backend returned and differs now, so something changed it after the run -- a process the backend left behind, or another one. Compare $OUT_ABS/tree-at-return.sha256 with tree-after.sha256."
   fi
