@@ -1,0 +1,76 @@
+# This sample's own SandboxTemplate and SandboxWarmPool, in the sample's own
+# namespace. Nothing here touches another warm pool on the cluster.
+#
+# spec.replicas on the pool is a FLOOR that setup applies once. From the moment
+# the ScaledObject exists, the Horizontal Pod Autoscaler KEDA creates owns that
+# field and writes it from observed SandboxClaim demand, so do not read the
+# number below as the size of the pool at run time. The SandboxWarmPool CRD
+# defines a /scale subresource whose specReplicasPath is .spec.replicas, which is
+# what lets an HPA drive it:
+#   kubectl get --raw \
+#     /apis/extensions.agents.x-k8s.io/v1beta1/namespaces/<NAMESPACE>/sandboxwarmpools/warm-pool/scale
+#
+# __NAMESPACE__ is filled in at apply time by the scripts from the NAMESPACE
+# variable, so an overridden name reaches this object too. Never apply this file
+# with the placeholder in place.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: warm-pool-agent
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: warm-pool-autoscaling-keda
+spec:
+  podTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: warm-pool-autoscaling-keda
+      annotations:
+        # No network besides loopback: no route out, no DNS, no instance
+        # metadata and no Pod Identity credentials. There is no egress to
+        # restrict, so this sample ships no network policy. kubectl exec, cp and
+        # logs keep working, because they use the guest's internal control
+        # channel, which is how the page reads the claimed pod.
+        sandbox.amazonaws.com/network-isolated: "true"
+        # Pin the node while a warm pod sits Ready and idle in the pool. Nothing
+        # would reschedule a pre-booted warm pod if voluntary disruption
+        # (consolidation, drift, expiry) removed the node under it. The pool
+        # would notice and boot a replacement, but the reader would see the warm
+        # count dip for reasons that have nothing to do with KEDA. The pods go
+        # away on scale-down, so this does not hold a node open after the pool
+        # shrinks.
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      # The one line that puts the pod in a Nitro sandbox. No node selector,
+      # toleration or sidecar: the RuntimeClass carries the scheduling
+      # constraints, and EKS Auto Mode brings up a sandbox-capable node.
+      runtimeClassName: isolated-sandbox
+      # No API credential inside the sandbox. A pod built from a SandboxTemplate
+      # has this defaulted to false already, so this is saying out loud what the
+      # pod relies on rather than changing it: a warm pod runs untrusted code and
+      # has no reason to hold a token for the cluster it runs on.
+      automountServiceAccountToken: false
+      containers:
+        - name: agent
+          image: public.ecr.aws/docker/library/busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sleep", "infinity"]
+          # No CPU or memory requests or limits. This sample is about how MANY
+          # warm pods the pool holds, not how big each one is, so it leaves
+          # sizing to the reader and the guest gets a small default size. A real
+          # workload sets the requests it needs: the guest is sized from them.
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: warm-pool
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: warm-pool-autoscaling-keda
+spec:
+  # The floor, applied once. The ScaledObject's minReplicaCount holds it here at
+  # rest and the HPA raises it under demand, up to maxReplicaCount. See the
+  # comment at the top of this file.
+  replicas: 1
+  sandboxTemplateRef:
+    name: warm-pool-agent

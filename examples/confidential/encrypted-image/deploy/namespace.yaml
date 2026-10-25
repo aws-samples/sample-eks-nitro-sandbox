@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: encrypted-image-sample
+  labels:
+    # The mark that makes this namespace the sample's own. setup.sh reuses a namespace
+    # only when it carries this label, and clean.sh checks for it before it deletes
+    # anything inside, so neither ever touches a namespace another demo owns. The value
+    # names the SAMPLE, not the namespace, so an overridden NAMESPACE is still recognised.
+    app.kubernetes.io/managed-by: encrypted-image

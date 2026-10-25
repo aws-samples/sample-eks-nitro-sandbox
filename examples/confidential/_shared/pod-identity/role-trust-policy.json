@@ -1,0 +1,41 @@
+{
+  "_comment": [
+    "The trust policy for a Confidential sample's dedicated EKS Pod Identity role. A",
+    "sample's setup script drops this _comment key, fills in the placeholders and passes",
+    "the result as --assume-role-policy-document:",
+    "  <CLUSTER_NAME>     the cluster the pod runs on",
+    "  <NAMESPACE>        the sample's namespace",
+    "  <SERVICE_ACCOUNT>  the pod's service account",
+    "",
+    "The three aws:RequestTag conditions are what scope the role to one service account on",
+    "one cluster: EKS Pod Identity sets them as session tags when it assumes the role, so",
+    "without them any Pod Identity association in the account could assume it. sts:TagSession",
+    "is required alongside sts:AssumeRole because the service passes those tags.",
+    "Source: EKS Pod Identity and its role trust policy in the Amazon EKS User Guide,",
+    "'Grant pods access to AWS resources with EKS Pod Identity'.",
+    "",
+    "The role gets no identity policy, attached or inline. Everything it may do lives in",
+    "the KMS key policy next to this file, where the attestation condition sits, so there",
+    "is no second path to kms:Decrypt that skips the gate. A sample's setup script checks",
+    "that the role has no identity policies and stops if it finds one."
+  ],
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowEKSPodIdentityToAssumeThisRole",
+      "Effect": "Allow",
+      "Principal": { "Service": "pods.eks.amazonaws.com" },
+      "Action": [
+        "sts:AssumeRole",
+        "sts:TagSession"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/eks-cluster-name": "<CLUSTER_NAME>",
+          "aws:RequestTag/kubernetes-namespace": "<NAMESPACE>",
+          "aws:RequestTag/kubernetes-service-account": "<SERVICE_ACCOUNT>"
+        }
+      }
+    }
+  ]
+}

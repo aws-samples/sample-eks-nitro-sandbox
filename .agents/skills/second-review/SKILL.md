@@ -425,6 +425,18 @@ and the host-specific options on the maintainers' workstation.
   While the first works the second is unreachable, so nothing can test it. Keep it, and say
   in the pull request that it is unreached redundancy rather than dead code — otherwise
   someone later deletes it for being untested and re-centralises the risk.
+- **Do not trust a fix because it was just reviewed; the next round keeps finding the defect
+  inside the last round's fix.** Warm pool autoscaling with KEDA is the record: four
+  consecutive rounds each found the new defect in the previous round's fix, and the same five
+  lines of narration were wrong in four different ways — round two in a comment written for
+  round one's finding, round three in the read-back added for round two's, round four in
+  round three's guard on a sentence, round five in the sibling line round four's guard
+  missed. So prove a fix against **every** branch it touches and against the unfixed form of
+  each, not just the case that was reported. Why: a fix is new code written under the
+  impression that the area is now understood, which is exactly when it is not. The
+  reviewer tooling in pull request #98 then matched it: six consecutive rounds, each finding
+  the defect inside the previous round's fix, twice in a guard added to protect the reviewed
+  tree and which damaged it instead.
 - **Stop when no must-fix finding remains.** Optional findings go in the pull request as
   notes. Why: each round should check the fixes, not widen the assignment.
 
