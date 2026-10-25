@@ -358,9 +358,10 @@ and the host-specific options on the maintainers' workstation.
   script removes the AWS credential variables from the environment before running it, so an
   ambient account is less likely to pay for the review — but that is a *denylist*, so a
   backend reading some other variable is not covered, and a backend whose credentials come
-  from its own configuration file is not covered by it either — and not untouched, either:
-  that helper runs as a child of the backend, so it inherits the stripped environment, and
-  one that itself reads AWS variables or `~/.aws` may fail under it. If your Codex authenticates
+  from a helper named in its own configuration file is not covered by it either — and that
+  helper is not untouched: it is normally a child process, so it normally inherits the
+  stripped environment, and one that authenticates through those variables or the SDK's
+  ordinary configuration lookup may fail under it. If your Codex authenticates
   *from* environment credentials, that removal is what breaks it: set
   `SECOND_REVIEW_KEEP_AWS_ENV=1`, which is the fix for the `E_RUN_FAILED` you would
   otherwise get. None of this is specific to the maintainers' machine.
@@ -459,9 +460,11 @@ which paths no case reached. A box ticked with no account of the review does not
 
 **If the implementer's name you gave the script is a prompt router's, say so beside the
 record, and say what it therefore shows.** The script compares the two names, so it cannot
-show that a router name differs from whatever it resolved to: such a record is evidence of
-*runtime diversity* — a different vendor's tool and model family — and not of invariant 1.
-Against a Claude implementer on a Claude router, a Codex record is the authoritative one for
-invariant 1, because choosing Codex excludes every Claude model however the router resolved.
-Why: two green records measuring different things read as two records of the same strength,
-which is the hazard invariant 3 exists to warn about, landing inside your own evidence.
+show that a router name differs from whatever it resolved to. What settles invariant 1 then
+is **the model that answered**, read against the set that router can resolve to: an answered
+model outside that set — an OpenAI model against a Claude router — holds the invariant however
+the router resolved, and one inside it shows only that a session with no context from yours
+did the review. The backend does not decide this; `--backend codex` can be pointed at a
+Bedrock Anthropic model, and the script never checks the answered model's family. Why say it:
+two green records measuring different things read as two records of the same strength, which
+is the hazard invariant 3 exists to warn about, landing inside your own evidence.

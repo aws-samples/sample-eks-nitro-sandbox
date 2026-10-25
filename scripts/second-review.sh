@@ -297,16 +297,33 @@ while [ -L "$cmd_hop" ]; do
   esac
   not_an_output_name "$cmd_hop" "$OUT_ABS" "the $BACKEND command points through," E_CMD_MISSING
 done
-# ...and where it ends up once every DIRECTORY component is resolved too, which the walk
-# above does not do: it follows the last component of each hop, and a link in a directory
-# part of the path is collapsed only by realpath. not_an_output_name resolves the directory
-# of every name it is given, so a directory link that lands in --out at one of these names is
-# already refused above; this is the backstop for the rest of the ways a path can end at one.
+# The walk above ends on "[ -L ] is false", which means BOTH "this is the end of the chain"
+# and "this path could not be looked at" -- and the second one silently leaves every hop
+# after it unchecked, which is the fail-open shape this commit exists to remove, in the guard
+# added to remove it. Two ways to get there, both caller-built: a relative target is
+# concatenated rather than normalised, so a chain of long relative targets grows the path
+# string past PATH_MAX while the kernel still resolves the chain one target at a time
+# (measured: five hops of 960 characters end the walk at 4816 characters, with -x on the
+# command still passing); and a component or target ending in a newline loses it to "$( )",
+# sending the walk to a different path. So require that the walk arrived at the same file the
+# command actually is. -ef compares device and inode with links followed, so it is true
+# whenever the walk completed -- including when the command is not a link at all, where
+# cmd_hop is still the command -- and false exactly when the walk ended somewhere else.
+[ "$cmd_hop" -ef "$resolved_cmd" ] || refuse E_CMD_MISSING \
+  "could not follow every link the $BACKEND command '$resolved_cmd' points through -- the walk ended at a path that is not the command's own file -- so the chain cannot be shown to stay clear of --out. A guard that cannot answer must refuse."
+# ...and where it ends up with every DIRECTORY component resolved as well. Being exact about
+# what this adds, because it is easy to overclaim: once the walk above has completed, almost
+# nothing. The walk's last hop is the command's own file, and not_an_output_name resolves the
+# directory of every name it is given, so a path that ends at an output name in --out -- by a
+# directory link, by "..", or after leaving and re-entering --out -- is already refused up
+# there. It is kept as redundancy, deliberately and not as dead code: this is the line that
+# was failing open, and the walk is new.
 # It refuses when it cannot resolve rather than skipping the check: it used to fall back to an
-# empty value and pass, which is the shape of guard the rest of this commit removes. The
-# refusal is not reachable through the current callers, because -x has already resolved the
-# path, but the rule is the one not_an_output_name states -- a guard that cannot answer must
-# refuse -- and a later edit must not be able to reintroduce the fallback by accident.
+# empty value and pass. That refusal is unreachable without a stub -- "-x" above has already
+# resolved this path through the kernel, so the only ways here are a realpath that cannot
+# answer (which is how the proof case reaches it) or the path changing under the run -- but
+# the rule is the one not_an_output_name states, a guard that cannot answer must refuse, and a
+# later edit must not be able to reintroduce the fallback by accident.
 cmd_target=$(realpath -- "$resolved_cmd" 2>/dev/null) || refuse E_CMD_MISSING \
   "could not resolve where the $BACKEND command '$resolved_cmd' points, so it cannot be shown to sit outside --out. A guard that cannot answer must refuse, as the tmp/ containment check does."
 [ "$cmd_target" = "$resolved_cmd" ] || \
@@ -314,17 +331,23 @@ cmd_target=$(realpath -- "$resolved_cmd" 2>/dev/null) || refuse E_CMD_MISSING \
 
 TREE_ABS=$(realpath "$TREE")
 
-# codex prints "workdir: <tree>" inside its own preamble, on a line ahead of the "model:",
-# "sandbox:" and "approval:" lines this script reads back from it. A tree path holding a
-# newline followed by lines spelling those three out would therefore land inside the block
-# the preamble check parses, and be read as codex's own report of how it ran. That path comes
-# from the caller and not from the brief -- a caller who wanted to lie could lie in
-# --implementer-model just as cheaply -- so this closes a seam rather than an attack, and the
-# nonce check still bounds what the BRIEF can reach. Refused for both backends, because a
-# tree path with a line break in it is a mistake on either.
-case "$TREE_ABS" in
+# A newline in the tree's path breaks two things, so it is refused rather than carried.
+# First, codex prints "workdir: <tree>" inside its own preamble, on a line ahead of the
+# "model:", "sandbox:" and "approval:" lines this script reads back from it, so such a path
+# lands inside the block the preamble check parses and could pass itself off as codex's own
+# report of how it ran. That path comes from the caller and not from the brief -- a caller who
+# wanted to lie could lie in --implementer-model just as cheaply -- so this closes a seam
+# rather than an attack, and the nonce check still bounds what the BRIEF can reach.
+# Second, and worse, the line above silently loses a TRAILING newline: "$( )" strips it along
+# with realpath's own, so a directory genuinely named "tree\n" resolves to the sibling path
+# "tree" and the run would fingerprint and review a different tree than the one named.
+# Checked: that is what happens, and the run reports no problem when the sibling exists.
+# Both are tested on $TREE as well as $TREE_ABS, because only $TREE still holds a newline the
+# substitution stripped. Refused on both backends: only codex has a preamble, but neither can
+# be given the wrong tree.
+case "$TREE$TREE_ABS" in
   *$'\n'*) refuse E_TREE \
-    "the tree path resolves to one containing a line break. Such a path lands inside the block this script parses back out of codex's own preamble, where it could pass itself off as codex's report of the mode it ran in. Extract the commit somewhere whose path has no line break in it." ;;
+    "the tree path contains a line break. Resolving it would quietly drop a trailing one and review a different directory, and on the codex backend such a path lands inside the block this script parses back out of codex's own preamble, where it could pass itself off as codex's report of the mode it ran in. Extract the commit somewhere whose path has no line break in it." ;;
 esac
 
 # This script's own output inside the tree would show up as the tree changing, and read
@@ -344,7 +367,10 @@ esac
 # removing a file changes the mtime of the directory that held it, and every directory's
 # mtime below the root is fingerprinted, so such a change usually does show up -- unless it
 # was in the tree's own root directory, which -mindepth 1 skips, or the mtime was put back.
-# The second is flat: nothing outside the tree is looked at.
+# "Usually" is more optimistic on the codex path than it sounds: codex is given the tree as
+# its working directory with -C, so a scratch file it creates and removes lands in exactly
+# the root directory that is skipped. The second limit is flat: nothing outside the tree is
+# looked at.
 # Records are NUL-delimited, and so is the hash list, because a path may legally hold a
 # newline or the text " -> ": with line-delimited records two different trees could line
 # up to the same fingerprint. cmp compares the bytes, so the delimiter never has to be
@@ -432,7 +458,7 @@ print("OK")
     # script never printed, and a 0711 context directory still left Glob and Grep finding
     # nothing in it with no sign of why.
     [ -r "$SECOND_REVIEW_CONTEXT_DIR" ] || note \
-      "\$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR' can be searched but cannot be listed, so a file the brief names by its absolute path still reads, while the reviewer's Glob and Grep will find nothing in it."
+      "\$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR' can be searched but cannot be listed, so a file the brief names by its full path still reads, while the reviewer's Glob finds nothing there and its Grep searches only a file it is given by full path."
     context_abs=$(realpath "$SECOND_REVIEW_CONTEXT_DIR") || refuse E_CONTEXT_DIR \
       "could not resolve \$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR'."
     # Compare against a prefix that always ends in exactly one slash. The obvious
@@ -471,14 +497,25 @@ mkdir -p "$OUT_ABS"
 # own output. Two honest exceptions, both after the cleanup. An argument only the BACKEND can
 # judge -- a bad --model, provider or effort, or credentials its settings file does not
 # carry -- still surfaces as E_RUN_FAILED, and that cannot be checked here. And an --out that
-# cannot be written is refused in two different places, depending on what is in it:
-# unwritable from the start with an earlier output still there, every rm fails and the second
-# pass below refuses E_OUT_TAINTED without removing anything; unwritable from the start and
-# empty, every rm succeeds and the first write refuses E_OUT_TAINTED instead. Becoming
-# unwritable LATER is not refused at all: the next write is codex-stdin.txt or
-# tree-at-return.sha256, neither of which is guarded, so set -e ends the run with bash's own
-# untagged message -- measured with a stub that chmods --out mid-run, and the same for a full
-# disk. None of these records a review, and none of them removes anything from the tree.
+# cannot be written is refused in several different places, depending on what is in it and
+# when it became unwritable, and all of them were measured with a stub that chmods --out
+# while answering --version:
+#
+#   * unwritable from the start, with an earlier output still there: every rm fails and the
+#     second pass below refuses E_OUT_TAINTED, having removed nothing;
+#   * unwritable from the start and empty: every rm succeeds, and the first write refuses
+#     E_OUT_TAINTED instead;
+#   * becoming unwritable after the baseline fingerprint, codex path: the next write is
+#     codex-stdin.txt, which is not guarded, so set -e ends the run with bash's own UNTAGGED
+#     message. The same for a full disk, and the same later at tree-at-return.sha256;
+#   * becoming unwritable after the baseline fingerprint, claude path: the next thing is the
+#     mktemp for the reviewer's working directory, which IS guarded -- E_NO_CWD;
+#   * a redirection failing at the backend call lands in run_status, so it is reported as
+#     E_RUN_FAILED and reads as the backend's fault rather than --out's;
+#   * an --out that mkdir -p above cannot create at all is untagged too.
+#
+# None of these records a review, and none of them removes anything from the tree. Tagging
+# the later writes is left to the redesign in issue #100 rather than added here.
 # Two reasons for that placement, both learned the hard way: with --out inside the tree
 # this loop deleted files from the snapshot and only then refused E_OUT_IN_TREE -- a guard
 # in a tool whose whole promise is not touching the tree, destroying files in it -- and a
@@ -563,7 +600,7 @@ note "model       $MODEL requested; the implementer was $IMPLEMENTER"
 note "tree        $TREE_ABS"
 note "brief       $BRIEF_ABS"
 note "writing     $OUT_ABS/review.out, review.err, review-record.txt"
-note "this takes 10 to 25 minutes; review.out is written at the end."
+note "this usually takes 10 to 25 minutes, less for a tightly scoped brief; review.out is written at the end."
 
 run_status=0
 case "$BACKEND" in

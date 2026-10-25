@@ -161,9 +161,10 @@ reviewer you use:
 
 #### Running it
 
-`scripts/second-review.sh` runs either backend. It holds the different-model and
-recorded-model invariants the same way for both, and the read-only one by different means
-for each — see [What "read-only" rests on, per backend](#what-read-only-rests-on-per-backend)
+`scripts/second-review.sh` runs either backend. It checks the different-model and
+recorded-model invariants the same way for both — by comparing the model *names*, which is
+why the first bullet below matters — and establishes the read-only one by different means for
+each; see [What "read-only" rests on, per backend](#what-read-only-rests-on-per-backend)
 below. Run it from the repository root, with the brief, the snapshot of the commit and the
 output under `tmp/`:
 
@@ -191,10 +192,15 @@ SECOND_REVIEW_CONTEXT_DIR="$round/context" \
   answered turns out to be the implementer's anyway. **It compares the two names, so it
   cannot hold the invariant for a name that is not a model.** Where the implementer was
   itself behind a Bedrock prompt router — as this repository's own agent is — the name given
-  is the router's, and the record then shows *runtime diversity*, a different vendor's tool
-  and model family, rather than invariant 1. Against a Claude implementer a Codex record is
-  authoritative for invariant 1, because choosing Codex excludes every Claude model however
-  the router resolved, and a Claude record is not. Say which of the two a record is.
+  is the router's, and the comparison establishes nothing: the router may have resolved to
+  the very model that answered. What settles it then is **the model that answered**, read
+  against the set that router can resolve to. A record whose answered model is outside that
+  set — an OpenAI model against a Claude router — holds invariant 1 however the router
+  resolved. A record whose answered model is inside it does not, and shows only that a
+  session with no context from the implementing one did the review. **The backend is not
+  what settles it**: `--backend codex` can be pointed at a Bedrock Anthropic model, and the
+  script never checks what family the answered model belongs to. So read the answered model,
+  say which of the two kinds a record is, and do not infer it from the tool.
 - **Review the snapshot, not your working tree.** `--tree "$round/tree"` is the plain
   extract of the commit that the `second-review` skill makes, in a folder made fresh for
   this round.
@@ -224,17 +230,23 @@ SECOND_REVIEW_CONTEXT_DIR="$round/context" \
   alone, so this is a hazard rather than a certainty.) One round was lost that way: the
   review itself completed and `review.out` was there, but `review-record.txt` never
   appeared. Wait for the run, or work on a copy.
-- **It takes 10 to 25 minutes**, and `review.out` is written at the end. To run it in the
+- **It usually takes 10 to 25 minutes**, and `review.out` is written at the end. A tightly
+  scoped brief can be much quicker — one round of this tooling came back from Codex in fifty
+  seconds — so a fast return is not by itself a sign the reviewer did nothing; the trace shows
+  what it read. To run it in the
   background, redirect to a log under `tmp/` and check it with
   `pgrep -f '[s]econd-review.sh'`. Why the brackets: without them the pattern also matches
   the shell running `pgrep`, so a review that has exited still looks alive.
 - **Report the exact error and stop, whenever the script refuses.** It names the check that
   refused, tagged: before the run (`E_SAME_MODEL`, `E_CMD_MISSING`, `E_NOT_IN_TMP`) or
-  after it (`E_RUN_FAILED`, `E_BAD_RECORD`, `E_NOT_READ_ONLY`, `E_TREE_CHANGED`). Either
-  way no review is recorded, and that is a fact the maintainers need rather than something to
-  configure around. Not the same as no review having happened: after one of the second group
-  the reviewer has already run and `review.out` may well be sitting there. What the refusal
-  says is that the run cannot stand as a second review.
+  after it (`E_RUN_FAILED`, `E_BAD_RECORD`, `E_NOT_READ_ONLY`, `E_TREE_CHANGED`,
+  `E_REPORTED_SAME_MODEL`). Either way no review is recorded, and that is a fact the
+  maintainers need rather than something to configure around. Not the same as no review
+  having happened: after `E_NOT_READ_ONLY`, `E_TREE_CHANGED`, `E_BAD_RECORD` or
+  `E_REPORTED_SAME_MODEL` the reviewer has run and `review.out` may well be sitting there.
+  After `E_RUN_FAILED` it may not have — that tag also covers a command that was not there
+  and a backend that could not authenticate. What the refusal says is that the run cannot
+  stand as a second review.
 
 ##### What "read-only" rests on, per backend
 
@@ -320,8 +332,10 @@ same thing.
   creating and removing a file changes the mtime of the directory that held it, and every
   directory's mtime below the tree's root is fingerprinted, so such a change usually does
   show up — unless it was in the root directory itself, which the fingerprint skips, or the
-  mtime was put back. It is still the check that caught the write above, and on the Claude
-  path it is the whole of the after-the-fact evidence.
+  mtime was put back. Read "usually" carefully on the Codex path: Codex is given the tree as
+  its working directory, so a scratch file it creates and removes lands in exactly the root
+  directory that is skipped. It is still the check that caught the write above, and on the
+  Claude path it is the whole of the after-the-fact evidence.
 
 #### Limits that apply wherever you run it
 
@@ -335,10 +349,13 @@ These are not host-specific, and the section below is not where to look for them
   backend that reads some other variable is not covered, and a backend whose credentials
   come from a helper named in its own configuration file is not covered by it either: that
   helper is where the account comes from, and taking variables out of the environment cannot
-  reach it. Not covered is not the same as unaffected, though — the helper runs as a child of
-  the backend, so it inherits the stripped environment (`AWS_CONFIG_FILE=/dev/null`,
-  `AWS_SHARED_CREDENTIALS_FILE=/dev/null`, `AWS_EC2_METADATA_DISABLED=true`, no profile), and
-  a helper that itself reads AWS variables or `~/.aws` runs under that and may fail.
+  reach it. Not covered is not the same as unaffected, though — a helper the backend runs is
+  normally a child process, so it normally inherits the stripped environment
+  (`AWS_CONFIG_FILE=/dev/null`, `AWS_SHARED_CREDENTIALS_FILE=/dev/null`,
+  `AWS_EC2_METADATA_DISABLED=true`, no profile), and one that authenticates through those
+  variables or the SDK's ordinary configuration lookup runs under that and may fail. A helper
+  that opens a fixed path such as `~/.aws/credentials` itself is not affected, and a backend
+  that builds its own environment for the helper need not pass any of this on.
   Knowing which account your backend bills is still yours to establish. Set
   `SECOND_REVIEW_KEEP_AWS_ENV=1` only if your Codex authenticates to Bedrock with exactly
   those credentials. Why: this workstation holds live credentials for an unrelated account,
