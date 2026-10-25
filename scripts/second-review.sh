@@ -218,6 +218,19 @@ OUT_ABS=$(in_repo_tmp "$OUT" --out)
 BRIEF_ABS=$(in_repo_tmp "$BRIEF" --brief)
 
 mkdir -p "$OUT_ABS"
+# Nothing this script writes may already be a symbolic link. Both ">" and "tee" follow
+# one, so a link planted in a reused output directory would aim a write wherever it points
+# -- the review tree included, after the tree has been fingerprinted. Checked that both
+# follow. The names are the ones written below, in --out itself; claude-cwd is not among
+# them because mktemp -d makes that fresh every run.
+for _n in review.out review.err review.json review-record.txt record.tsv \
+          preamble.txt pre-user.txt codex-stdin.txt \
+          tree-before.sha256 tree-at-return.sha256 tree-after.sha256; do
+  if [ -L "$OUT_ABS/$_n" ]; then
+    refuse E_OUT_TAINTED \
+      "'$OUT_ABS/$_n' is a symbolic link. Both a redirect and tee follow one, so writing there would aim this script's output at whatever it points to, which could be the tree under review. Remove it, or use a fresh --out."
+  fi
+done
 TREE_ABS=$(realpath "$TREE")
 
 # This script's own output inside the tree would show up as the tree changing, and read
@@ -649,8 +662,14 @@ for m in "${answered_models[@]}"; do
     "'$MODEL' was answered by '$m', which is the model that wrote the change ('$IMPLEMENTER'). Ask for a different model."
 done
 
-# The fingerprint that decides, taken now rather than reused from above.
+# Both fingerprints must match the one taken before the run. Checking only this later one
+# would discard an observed write that was undone in between: a backend that changed the
+# tree and then restored it would have been recorded as clean.
 tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-after.sha256"
+if ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then
+  refuse E_TREE_CHANGED \
+    "the tree at $TREE_ABS differed from its fingerprint when the backend returned, so the reviewer was not read-only, even though it matches again now -- a change that was undone is still a change. Compare $OUT_ABS/tree-before.sha256 with tree-at-return.sha256."
+fi
 if ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-after.sha256"; then
   refuse E_TREE_CHANGED \
     "the tree at $TREE_ABS changed while the reviewer ran, so the reviewer was not read-only. Compare $OUT_ABS/tree-before.sha256 with tree-after.sha256."

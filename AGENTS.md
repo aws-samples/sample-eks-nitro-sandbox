@@ -168,18 +168,18 @@ below. Run it from the repository root, with the brief, the snapshot of the comm
 output under `tmp/`:
 
 ```bash
-# One folder per round, as the second-review skill's quick start sets up, so that no path
-# can point at an earlier round's snapshot:
-round=$(mktemp -d tmp/review.XXXXXX)
+# $round is the folder the second-review skill's quick start prepares: one per round, with
+# tree/ extracted from the commit, brief.md written, and context/change.diff in place. Set
+# it up there first -- these commands only run the reviewer.
 
 ./scripts/second-review.sh --backend codex  --model openai.gpt-5.6-sol \
   --implementer-model <the model that wrote the change> \
   --brief "$round/brief.md" --tree "$round/tree" --out "$round/out"
 
-# Claude needs two more things: the settings file carrying its credential helper, because
-# --restricted makes it ignore the user one; and a context directory, because it can only
-# read the tree and the directories it is given, so the diff the brief names must be in one.
-SECOND_REVIEW_CLAUDE_SETTINGS="$round/claude-settings.json" \
+# Claude needs a context directory, because its file tools reach only the tree, the
+# directories it is given, and its own working directory -- so the diff the brief names
+# must be in one. Add SECOND_REVIEW_CLAUDE_SETTINGS as well only if your claude
+# authenticates through a settings file; it is not needed otherwise.
 SECOND_REVIEW_CONTEXT_DIR="$round/context" \
   ./scripts/second-review.sh --backend claude --model opus \
   --implementer-model <the model that wrote the change> \
@@ -193,8 +193,9 @@ SECOND_REVIEW_CONTEXT_DIR="$round/context" \
   extract of the commit that the `second-review` skill makes, in a folder made fresh for
   this round.
 - **`SECOND_REVIEW_CONTEXT_DIR` is how the Claude backend reads anything outside the tree**,
-  such as the commit's diff. It is added as a readable directory, and the script refuses one
-  that is or contains `--out`, because that holds the trace. Codex needs none of this: it is
+  such as the commit's diff. Its file tools reach the tree, the directories it is given, and
+  its own fresh working directory, and nothing else. The folder is added as readable, and
+  the script refuses one that is or contains `--out`, because that holds the trace. Codex needs none of this: it is
   given the tree as its working root and will read an absolute path anywhere.
 - **`--brief` and `--out` must be under this repository's gitignored `tmp/`**, and the
   script refuses anything else. Why: it writes the backend's trace into `--out`, and a
@@ -316,8 +317,10 @@ These are not host-specific, and the section below is not where to look for them
   those credentials. Why: this workstation holds live credentials for an unrelated account,
   and the removal is what keeps them out of the reviewer.
 - **The two backends differ in what else the reviewer can reach.** `--backend claude` runs
-  with `--tools Read,Grep,Glob` and `--strict-mcp-config`, so those three are the only
-  tools it holds and it has no MCP server. Codex 0.164 cannot clear `mcp_servers` from the
+  with `--tools Read,Grep,Glob` and `--strict-mcp-config`, so it is asked to hold only those
+  three and no MCP server. A reviewer under those flags reports exactly them, with nothing
+  loadable; that is the reviewer's own self-report, not something the script verifies, which
+  is why the tree check is what the record rests on. Codex 0.164 cannot clear `mcp_servers` from the
   command line, so a Codex review can also reach whatever MCP servers that machine's
   `~/.codex/config.toml` defines — any machine's, not only a configured workstation — and
   some of those write to other systems. Both backends are equally sanctioned; this is a

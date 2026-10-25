@@ -44,6 +44,7 @@ you do with the answer.
    to be deleted:
 
    ```bash
+   mkdir -p tmp                      # gitignored, so absent in a fresh clone
    round=$(mktemp -d tmp/review.XXXXXX)
    mkdir -p "$round/tree" "$round/context"
    git archive <commit> | tar -x -C "$round/tree"
@@ -76,8 +77,10 @@ you do with the answer.
 
    See [Run it](#run-it) for what the script refuses and why.
 4. **Triage** each finding against the files, following [Use the result](#use-the-result).
-5. **Record** the review in the pull request's second-reviewer box, from
-   `"$round/out/review-record.txt"`, which names the model that actually answered.
+5. **Record** the review in the pull request's second-reviewer box, from the
+   `review-record.txt` in whichever `--out` you used — `"$round/out"` for the codex run
+   above, `"$round/out-claude"` for the claude one. It names the model that actually
+   answered.
 
 ## Write the brief
 
@@ -153,8 +156,9 @@ and the host-specific options on the maintainers' workstation.
   anyway. Give the implementer's resolved model, not an alias or a prompt router name: a
   router that resolves to the model you were avoiding defeats the whole exercise.
 - **Either backend, your choice.** They differ in one way worth knowing: `--backend claude`
-  runs with `--tools Read,Grep,Glob` and `--strict-mcp-config`, so those three are the only
-  tools the reviewer holds, while Codex 0.164 cannot be made to drop that machine's MCP
+  runs with `--tools Read,Grep,Glob` and `--strict-mcp-config`, so it is asked to hold only
+  those three — a reviewer under those flags reports exactly them and no loadable extras,
+  which is its own self-report rather than something the script verifies — while Codex 0.164 cannot be made to drop that machine's MCP
   servers, so a Codex reviewer can also reach those. That is a fact about the backends, not
   a ranking. The flag matters: `--allowedTools` would only say which tools may run without
   asking, leaving the reviewer holding others — including some that act outside the tree,
