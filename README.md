@@ -31,6 +31,7 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 ## Agent sandbox
 
 - [Pause and resume](examples/agent-sandbox/pause-resume/README.md): suspend a sandbox to release its compute and keep its EBS workspace, then resume onto a new guest with the data intact.
+- [IDE in the browser](examples/agent-sandbox/ide/README.md): code-server (VS Code in the browser) in a sandbox on a persistent EBS workspace, reached only by `kubectl port-forward`, with its password an argon2 hash from a Kubernetes Secret.
 
 ## Storage
 
