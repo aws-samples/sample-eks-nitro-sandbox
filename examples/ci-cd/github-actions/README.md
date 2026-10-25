@@ -320,10 +320,23 @@ job's final step holds the pod open: this policy does not allow the host GitHub 
 logs to, so the Actions tab has no log for this run. "How the network policy works" below
 explains that, and it is a deliberate trade rather than a fault.
 
+The job's console log is on the runner itself, under `_diag/pages/`. Note that
+`kubectl logs` is **not** where it is: the runner container's own stdout carries the runner's
+diagnostics, not the steps' output. Define this helper once and reuse it in Steps 7 to 9; it
+drops the colour-coded lines where the runner echoes each script, and the timestamps, leaving
+what the Actions tab would have shown:
+
 ```bash
 POD=$(kubectl get pods -n arc-runners -l actions-ephemeral-runner=True \
   -o jsonpath='{.items[0].metadata.name}')
-kubectl logs -n arc-runners "$POD" -c runner | sed -n '/SANDBOX-EVIDENCE-BEGIN/,/SANDBOX-EVIDENCE-END/p'
+
+joblog() {
+  kubectl exec -n arc-runners "$POD" -c runner -- \
+    sh -c 'cat /home/runner/_diag/pages/*.log' \
+    | grep -vF $'\x1b[36;1m' | sed 's/^[^ ]*Z //' | grep -vE '^(##\[|shell: )'
+}
+
+joblog | sed -n '/SANDBOX-EVIDENCE-BEGIN/,/SANDBOX-EVIDENCE-END/p'
 ```
 
 ```text
@@ -376,7 +389,7 @@ which is arbitrary code execution. Both run on the job's own in-pod daemon:
 Read it from the pod, as in Step 6, while the job holds the pod open:
 
 ```bash
-kubectl logs -n arc-runners "$POD" -c runner | sed -n '/DOCKER-BUILD-BEGIN/,/UNIT-TESTS-END/p'
+joblog | sed -n '/DOCKER-BUILD-BEGIN/,/UNIT-TESTS-END/p'
 ```
 
 ```text
@@ -473,7 +486,7 @@ runner container and from a privileged container on the job's own daemon, and op
 node's container runtime socket. It fails the job if any of them succeeds.
 
 ```bash
-kubectl logs -n arc-runners "$POD" -c runner | sed -n '/ESCAPE-PROBES-BEGIN/,/ESCAPE-PROBES/p'
+joblog | sed -n '/ESCAPE-PROBES-BEGIN/,/ESCAPE-PROBES:/p'
 ```
 
 ```text
@@ -614,8 +627,9 @@ Its limits are worth stating plainly, because this policy constrains untrusted c
   Measured on this sample, with the control that makes it conclusive: a stock, unsandboxed
   runner's job in the same repository, with no egress policy, returns a readable log from the
   same endpoint. The job itself runs perfectly well; it is only the log delivery that fails.
-  **Read the job's output from the pod instead**, with `kubectl logs`, which is what Steps 6,
-  7 and 9 below do. That works because the runner pod is in your cluster, which is also why a
+  **Read the job's output from the pod instead**, from the runner's own `_diag/pages/` log,
+  which is what Steps 6 to 9 below do with the `joblog` helper. Not `kubectl logs`: the runner
+  container's stdout is its diagnostics, not the steps' output. That works because the runner pod is in your cluster, which is also why a
   sandboxed runner is easier to inspect here than an ordinary one, not harder.
 
   The same host serves step summaries, artifacts and the cache, so a workflow that uploads an
@@ -632,7 +646,7 @@ The workflow asks the policy both ways, from inside the runner, so a pass cannot
 with a policy that allows everything. Read this step's output from the pod too:
 
 ```bash
-kubectl logs -n arc-runners "$POD" -c runner | sed -n '/EGRESS-BEGIN/,/EGRESS-END/p'
+joblog | sed -n '/EGRESS-BEGIN/,/EGRESS-END/p'
 ```
 
 ```yaml

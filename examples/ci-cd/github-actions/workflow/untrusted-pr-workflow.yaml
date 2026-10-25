@@ -78,7 +78,13 @@ jobs:
         run: |
           echo "=== CREDENTIAL-NAMES-BEGIN ==="
           echo "--- GitHub admin credential variable names (expect none) ---"
-          env | cut -d= -f1 | grep -iE 'github_token|github_app|github_pat' || echo "none"
+          # -x matches a WHOLE variable name. Unanchored, 'github_pat' also
+          # matches GITHUB_PATH, which every Actions job sets and which is not a
+          # credential: a live run printed it under "expect none", which reads
+          # like a leak. Names are listed in full, never values.
+          env | cut -d= -f1 \
+            | grep -ixE 'github_token|github_app_id|github_app_installation_id|github_app_private_key|github_pat' \
+            || echo "none"
           echo "--- AWS variable names (expect none) ---"
           env | cut -d= -f1 | grep -E '^AWS_' || echo "none"
           echo "=== CREDENTIAL-NAMES-END ==="
