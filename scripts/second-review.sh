@@ -234,7 +234,8 @@ not_an_output_name() {
   # the file. Only the directory is resolved: the cleanup removes the NAME, so a symbolic
   # link at one of these names is cleared whatever it points at, and resolving the whole
   # path would compare the target instead.
-  d=$(realpath -m -- "$(dirname -- "$1")" 2>/dev/null) || d=$(dirname -- "$1")
+  d=$(realpath -m -- "$(dirname -- "$1")" 2>/dev/null) || refuse "$4" \
+    "$3 '$1' has a directory this script cannot resolve, so it cannot be shown to sit outside --out. A guard that cannot answer must refuse, as the tmp/ containment check does."
   for n in $OUT_NAMES; do
     [ "$(basename -- "$1")" = "$n" ] || continue
     [ "$d" != "$2" ] || refuse "$4" \
@@ -257,9 +258,19 @@ not_an_output_name "$BRIEF_ABS" "$OUT_ABS" "the brief" E_BRIEF
 # The backend command is an input path too. A backend binary living inside --out under one
 # of these eleven names is far-fetched, but the command path is taken from the environment,
 # so it is the caller's to get wrong: the cleanup would unlink it after it had passed its
-# own executable check. The run would then fail at the backend invocation as E_RUN_FAILED
-# with exit 127, not at --version: that call's failure is swallowed by "|| backend_version=''".
+# own executable check. Not at --version, whose failure is swallowed by
+# "|| backend_version=''": the run fails at the backend invocation, as E_RUN_FAILED. The exit
+# code depends on the name -- 127 when nothing is there, but 126 for a name this script
+# re-creates before the call (review.out, review.err, tree-before.sha256, codex-stdin.txt,
+# review.json), because the command path is then a fresh file that is not executable.
 not_an_output_name "$resolved_cmd" "$OUT_ABS" "the $BACKEND command" E_CMD_MISSING
+# ...and where it points. For the brief and the settings file the name is the whole story,
+# because the cleanup removes the name and leaves the target alone. The command is different:
+# it is EXECUTED, so a link at any name on PATH pointing into --out at one of these names
+# still loses its target to the cleanup. Checked for the resolved path as well.
+cmd_target=$(realpath -- "$resolved_cmd" 2>/dev/null) || cmd_target=''
+[ -z "$cmd_target" ] || [ "$cmd_target" = "$resolved_cmd" ] || \
+  not_an_output_name "$cmd_target" "$OUT_ABS" "the $BACKEND command resolves to," E_CMD_MISSING
 
 TREE_ABS=$(realpath "$TREE")
 
@@ -284,10 +295,12 @@ esac
 # function is also called from an "if" condition, where set -e is switched off for the whole
 # call, and the subshell's status would then come only from the second pipeline. A tree whose
 # metadata listing failed but which holds no regular file for the second pipeline to hash
-# would otherwise produce a short baseline. Not an unrefused one -- the at-return fingerprint
-# runs as a plain command, so set -e would have ended the run, but only after the backend had
-# been paid for, and the comparison would have blamed the reviewer for "changing" the tree.
-# What this buys is refusing early, with the right cause.
+# would otherwise produce a short baseline, and what happened next depended on whether the
+# failure persisted -- two different bad outcomes, not one sequence. Persistent: the at-return
+# fingerprint runs as a plain command, so set -e ended the run, after the backend had been
+# paid for and with no tag. Transient: that fingerprint succeeded, so the short baseline was
+# compared against a full one and the reviewer was blamed for "changing" the tree. What this
+# buys is refusing early instead, with the right cause.
 tree_fingerprint() {
   ( cd "$1" || exit 1
     { find . -mindepth 1 -printf '%y %m %s %T@ %p -> %l\0' | LC_ALL=C sort -z; } || exit 1
@@ -349,11 +362,14 @@ print("OK")
   if [ -n "${SECOND_REVIEW_CONTEXT_DIR:-}" ]; then
     [ -d "$SECOND_REVIEW_CONTEXT_DIR" ] || refuse E_CONTEXT_DIR \
       "\$SECOND_REVIEW_CONTEXT_DIR names '$SECOND_REVIEW_CONTEXT_DIR', which is not a directory."
-    # Readable and searchable too, for the same reason the brief is checked with -r: -d alone
-    # passes a directory the reviewer cannot list, and the only symptom would be a reviewer
-    # that silently never sees the diff the brief told it to read.
-    { [ -r "$SECOND_REVIEW_CONTEXT_DIR" ] && [ -x "$SECOND_REVIEW_CONTEXT_DIR" ]; } || refuse E_CONTEXT_DIR \
-      "\$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR' cannot be read (check its permissions); the reviewer would be given it as a readable directory and would silently find nothing in it."
+    # Searchable is the hard requirement: without it nothing inside can be opened at all,
+    # and the only symptom would be a reviewer that silently never reads the diff the brief
+    # named. Being LISTABLE (-r) is not required, and demanding it refused a legitimate
+    # setup: a mode-0711 directory cannot be listed, but a file named in the brief by its
+    # absolute path still reads from it -- checked. Since the reviewer also holds Glob and
+    # Grep, which do need to list, say so rather than refuse.
+    [ -x "$SECOND_REVIEW_CONTEXT_DIR" ] || refuse E_CONTEXT_DIR \
+      "\$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR' cannot be searched (check its permissions); nothing inside it could be opened, so the reviewer would silently never read the diff the brief names."
     context_abs=$(realpath "$SECOND_REVIEW_CONTEXT_DIR") || refuse E_CONTEXT_DIR \
       "could not resolve \$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR'."
     # Compare against a prefix that always ends in exactly one slash. The obvious
@@ -391,9 +407,11 @@ mkdir -p "$OUT_ABS"
 # codex-stdin.txt, the mktemp for the reviewer's working directory) or reads the backend's
 # own output. Two honest exceptions: an argument only the BACKEND can judge -- a bad --model,
 # provider or effort, or credentials its settings file does not carry -- still surfaces as
-# E_RUN_FAILED after the cleanup, and that cannot be checked here; and a machine failure
-# (a full disk, an --out that becomes unwritable mid-run) can end some of the later writes
-# untagged. Neither records a review.
+# E_RUN_FAILED after the cleanup, and that cannot be checked here; and an --out that cannot
+# be written -- whether it was so from the start or becomes so mid-run -- is refused at the
+# first write, which is after the cleanup loop. That one costs nothing, because rm fails on
+# the first name that is actually there, so nothing is removed. A full disk can also end
+# some of the later writes untagged. None of them records a review.
 # Two reasons for that placement, both learned the hard way: with --out inside the tree
 # this loop deleted files from the snapshot and only then refused E_OUT_IN_TREE -- a guard
 # in a tool whose whole promise is not touching the tree, destroying files in it -- and a
@@ -423,10 +441,12 @@ mkdir -p "$OUT_ABS"
 #     created between the two passes will still refuse in the second pass, by which point
 #     earlier names are already gone. Each needs something the ordinary caller does not have:
 #     privilege (a bind mount; "chattr +i", checked -- refused without it, on Linux), a
-#     SECOND USER's file in a sticky directory, a non-Linux immutability flag such as macOS
-#     "chflags uchg", or another process racing this one -- and such a process could overwrite
+#     SECOND USER's file in a sticky directory, or another process racing this one -- and such a process could overwrite
 #     tree-before.sha256 anyway, which no check here defends against. An --out path long
 #     enough that only the longest names hit ENAMETOOLONG also qualifies, absurdly.
+#     One exception to "needs privilege", for honesty: on macOS a file's OWNER can set
+#     "chflags uchg", no privilege required. It is moot here only because this script needs
+#     GNU find -printf, realpath -m and sort -z, so it does not run on stock macOS anyway.
 #
 # So: the first pass makes the reachable case atomic and the second pass is the backstop,
 # whose message says only what it knows.
