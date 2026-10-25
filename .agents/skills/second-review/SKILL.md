@@ -33,7 +33,7 @@ you do with the answer.
 
 | File (in this skill's folder) | What it is for |
 |---|---|
-| `assets/review-brief.md` | A brief to copy into `tmp/review/` and fill in. |
+| `assets/review-brief.md` | A brief to copy into the round's folder and fill in. |
 
 ## Quick start
 
@@ -55,24 +55,29 @@ you do with the answer.
    `SECOND_REVIEW_CONTEXT_DIR` and it becomes readable. Never point that at `--out`, which
    holds the backend's trace.
 
-2. **Write the brief**: copy `assets/review-brief.md` to `tmp/review/brief.md` and fill it
-   in, following [Write the brief](#write-the-brief).
+2. **Write the brief**: copy `assets/review-brief.md` to `"$round/brief.md"` and fill it
+   in, following [Write the brief](#write-the-brief). Where it names the diff, use the
+   absolute path of `"$round/context/change.diff"`, because a path the reviewer cannot read
+   is a round wasted.
 3. **Run the reviewer** on a model that is not the one that wrote the change, with either
-   backend:
+   backend. Keep using `$round` — every path below comes from it, so nothing points at an
+   earlier round's snapshot:
 
    ```bash
    ./scripts/second-review.sh --backend codex  --model openai.gpt-5.6-sol \
      --implementer-model <the model that wrote the change> \
-     --brief tmp/review/brief.md --tree tmp/review/tree --out tmp/review
+     --brief "$round/brief.md" --tree "$round/tree" --out "$round/out"
 
-   ./scripts/second-review.sh --backend claude --model opus \
-     --implementer-model <the model that wrote the change> ...
+   SECOND_REVIEW_CONTEXT_DIR="$round/context" \
+     ./scripts/second-review.sh --backend claude --model opus \
+     --implementer-model <the model that wrote the change> \
+     --brief "$round/brief.md" --tree "$round/tree" --out "$round/out-claude"
    ```
 
    See [Run it](#run-it) for what the script refuses and why.
 4. **Triage** each finding against the files, following [Use the result](#use-the-result).
 5. **Record** the review in the pull request's second-reviewer box, from
-   `tmp/review/review-record.txt`, which names the model that actually answered.
+   `"$round/out/review-record.txt"`, which names the model that actually answered.
 
 ## Write the brief
 
@@ -123,7 +128,7 @@ you do with the answer.
   Claude round found it false, because it could ask itself. It also found that the brief
   pointed the Claude reviewer at a file only Codex could read. So a change that documents
   behaviour for two backends wants a round on each, not fourteen on one — **backend
-  diversity is not about the model, it is about what the runtime can observe.**
+  diversity is not only about the model, it is about what the runtime can observe.**
 - **Vary what you scope a later round to.** Repeating a round against the same classes
   mostly re-checks the last fix. If several rounds have come back with only small or
   theoretical findings, that may mean the code is converging, or it may mean every brief has
@@ -168,10 +173,10 @@ and the host-specific options on the maintainers' workstation.
     content. It cannot see a file created and deleted inside the run, or any write outside
     the tree.
 
-  Point it at the snapshot in `tmp/review/tree`, never your working tree. A read-only flag
+  Point it at the round's snapshot, never your working tree. A read-only flag
   on its own is not enough: Codex's `--sandbox read-only` still asked to write and a host
   that answers the ask let it through, which is why the script pins the approval policy too.
-- **Keep the brief, the output and any trace in `tmp/review/`.** The script refuses an
+- **Keep the brief, the output and any trace in the round's folder under `tmp/`.** The script refuses an
   `--out` outside the repository's gitignored `tmp/`. A trace (`review.err`) can hold
   credential details: read it with `tail` or a targeted search, and never paste it into a
   pull request, an issue or Slack.

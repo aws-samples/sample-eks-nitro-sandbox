@@ -168,22 +168,34 @@ below. Run it from the repository root, with the brief, the snapshot of the comm
 output under `tmp/`:
 
 ```bash
+# One folder per round, as the second-review skill's quick start sets up, so that no path
+# can point at an earlier round's snapshot:
+round=$(mktemp -d tmp/review.XXXXXX)
+
 ./scripts/second-review.sh --backend codex  --model openai.gpt-5.6-sol \
   --implementer-model <the model that wrote the change> \
-  --brief tmp/review/brief.md --tree tmp/review/tree --out tmp/review
+  --brief "$round/brief.md" --tree "$round/tree" --out "$round/out"
 
-# Claude authenticating through a settings file needs that file named, because
-# --restricted makes it ignore the user one:
-SECOND_REVIEW_CLAUDE_SETTINGS=tmp/review/claude-settings.json \
+# Claude needs two more things: the settings file carrying its credential helper, because
+# --restricted makes it ignore the user one; and a context directory, because it can only
+# read the tree and the directories it is given, so the diff the brief names must be in one.
+SECOND_REVIEW_CLAUDE_SETTINGS="$round/claude-settings.json" \
+SECOND_REVIEW_CONTEXT_DIR="$round/context" \
   ./scripts/second-review.sh --backend claude --model opus \
-  --implementer-model <the model that wrote the change> ...
+  --implementer-model <the model that wrote the change> \
+  --brief "$round/brief.md" --tree "$round/tree" --out "$round/out-claude"
 ```
 
 - **Give the implementer's resolved model**, not an alias or a router name. The script
   refuses the run when the two models match, and refuses its own result when the model that
   answered turns out to be the implementer's anyway.
-- **Review the snapshot, not your working tree.** `--tree tmp/review/tree` is the plain
-  extract of the commit that the `second-review` skill makes.
+- **Review the snapshot, not your working tree.** `--tree "$round/tree"` is the plain
+  extract of the commit that the `second-review` skill makes, in a folder made fresh for
+  this round.
+- **`SECOND_REVIEW_CONTEXT_DIR` is how the Claude backend reads anything outside the tree**,
+  such as the commit's diff. It is added as a readable directory, and the script refuses one
+  that is or contains `--out`, because that holds the trace. Codex needs none of this: it is
+  given the tree as its working root and will read an absolute path anywhere.
 - **`--brief` and `--out` must be under this repository's gitignored `tmp/`**, and the
   script refuses anything else. Why: it writes the backend's trace into `--out`, and a
   trace can hold credential details, so it must never land in a tracked folder.

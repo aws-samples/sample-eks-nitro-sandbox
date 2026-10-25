@@ -1,7 +1,8 @@
 I maintain the sample at examples/<section>/<sample>/ in the repository snapshot at
-<absolute path to tmp/review/tree> (a plain extract of commit <commit>; it is not a git
-checkout). Please review my own commit, read-only. Its diff is <absolute path to
-tmp/review/change.diff>.
+<absolute path to the round's tree> (a plain extract of commit <commit>; it is not a git
+checkout). Please review my own commit, read-only. Its diff is <absolute path to the
+round's context/change.diff -- the folder passed as SECOND_REVIEW_CONTEXT_DIR, because a
+Claude reviewer can only read the tree and the directories it is given>.
 
 What the commit does, in one or two sentences:
 <...>

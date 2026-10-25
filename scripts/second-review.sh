@@ -32,6 +32,12 @@
 #   SECOND_REVIEW_CLAUDE_CMD       the claude command. Default "claude".
 #   SECOND_REVIEW_CODEX_PROVIDER   optional, passed as codex's model_provider.
 #   SECOND_REVIEW_CODEX_EFFORT     optional, passed as codex's model_reasoning_effort.
+#   SECOND_REVIEW_CONTEXT_DIR      optional, a directory added as readable for the claude
+#                                  backend, which otherwise sees only the tree and its own
+#                                  working directory. Put the commit's diff there, and
+#                                  nothing the reviewer may not read: the script refuses a
+#                                  directory that is, or contains, --out, because that
+#                                  holds the backend's trace.
 #   SECOND_REVIEW_CLAUDE_SETTINGS  optional, a settings file passed to claude as
 #                                  --settings. Needed when your claude authenticates
 #                                  through a setting (awsCredentialExport, apiKeyHelper):
@@ -204,7 +210,7 @@ in_repo_tmp() {
   # A symlink loop or a path realpath cannot resolve must refuse, not run unchecked.
   p=$(realpath -m "$1" 2>/dev/null) || refuse E_NOT_IN_TMP \
     "could not resolve $2 '$1' to a real path, so it cannot be shown to be under this repository's gitignored tmp/."
-  case "$p/" in "$TMP_ABS"/*) printf '%s' "$p"; return 0 ;; esac
+  case "$p/" in "${TMP_ABS%/}/"*) printf '%s' "$p"; return 0 ;; esac
   refuse E_NOT_IN_TMP \
     "$2 '$p' is not under this repository's gitignored tmp/ ('$TMP_ABS'). The brief, the review and the backend's trace live there: the trace can hold credential details, and anything in a tracked folder is one 'git add' from being published."
 }
@@ -216,8 +222,9 @@ TREE_ABS=$(realpath "$TREE")
 
 # This script's own output inside the tree would show up as the tree changing, and read
 # as a reviewer that wrote to it. Keep them apart rather than explain the false alarm.
+tree_prefix="${TREE_ABS%/}/"
 case "$OUT_ABS/" in
-  "$TREE_ABS"/*) refuse E_OUT_IN_TREE \
+  "$tree_prefix"*) refuse E_OUT_IN_TREE \
     "--out '$OUT_ABS' is inside the tree under review '$TREE_ABS'; this script's own files would read as the reviewer changing the tree. Put --out beside the tree, under the repository's tmp/." ;;
 esac
 
@@ -326,8 +333,9 @@ case "$BACKEND" in
     # the enclosing repository, CronDelete removes scheduled tasks. Asked to list its
     # tools, a reviewer under the old flags named all of them and said it could message
     # another session; under --tools it names exactly three and says it cannot.
-    # --disallowedTools stays as a second layer, and because --restricted will return a
-    # code-running tool "unless --tools names them", which this never does.
+    # --disallowedTools stays as a second layer: --restricted withholds the code-running
+    # tools unless --tools names them, so the layer matters if a later edit ever adds one
+    # to --tools.
     claude_args=(-p --output-format json --model "$MODEL"
                  --restricted
                  --strict-mcp-config
@@ -412,12 +420,20 @@ print("OK")
         "\$SECOND_REVIEW_CONTEXT_DIR names '$SECOND_REVIEW_CONTEXT_DIR', which is not a directory."
       context_abs=$(realpath "$SECOND_REVIEW_CONTEXT_DIR") || refuse E_CONTEXT_DIR \
         "could not resolve \$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR'."
+      # Compare against a prefix that always ends in exactly one slash. The obvious
+      # "$dir"/* is wrong when the directory is "/", because realpath returns that with
+      # its own trailing slash and the pattern becomes //*, which matches no ordinary
+      # absolute path -- SECOND_REVIEW_CONTEXT_DIR=/ would then have been passed to
+      # --add-dir, handing the reviewer the whole filesystem, trace included. Writing it
+      # as "${dir%/}"/* is also wrong: that leaves a quoted empty string, which bash does
+      # not match either. Checked all three forms against "/" and ordinary paths. This
+      # also covers the directory being exactly --out, so no equality test is needed; one
+      # was there, could never run, and made a harness case pass with the wrong message.
+      context_prefix="${context_abs%/}/"
       case "$OUT_ABS/" in
-        "$context_abs"/*) refuse E_CONTEXT_DIR \
-          "\$SECOND_REVIEW_CONTEXT_DIR '$context_abs' contains the output directory, so it would give the reviewer the backend's trace. Use a directory holding only what the reviewer may read." ;;
+        "$context_prefix"*) refuse E_CONTEXT_DIR \
+          "\$SECOND_REVIEW_CONTEXT_DIR '$context_abs' is, or contains, the output directory, so it would give the reviewer the backend's trace. Use a directory holding only what the reviewer may read." ;;
       esac
-      [ "$context_abs" != "$OUT_ABS" ] || refuse E_CONTEXT_DIR \
-        "\$SECOND_REVIEW_CONTEXT_DIR is the output directory, which holds the backend's trace."
       claude_args+=(--add-dir "$context_abs")
     fi
     ( cd "$claude_cwd" && ${timeout_cmd[@]+"${timeout_cmd[@]}"} "$resolved_cmd" "${claude_args[@]}" ) \
@@ -463,15 +479,18 @@ print("ERROR_AUTH" if ("credential" in blob or "authenticat" in blob or "403" in
     ;;
 esac
 
-# Fingerprint the tree straight away, while the facts are fresh, so that every refusal
-# below can say whether the tree changed. It used to be taken only just before the record
-# was written, so a run refused for an unconfined backend said nothing about the tree --
-# exactly the thing a reader most wants to know at that moment.
-tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-after.sha256"
-if cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-after.sha256"; then
-  tree_verdict="the tree is unchanged"
+# Fingerprint the tree as soon as the backend returns, so that the two codex confinement
+# refusals below can say whether the tree changed: they are read from codex's preamble
+# after it ran, and a reader most wants to know that at exactly that moment. This early
+# snapshot is for those messages only -- the decision is made on a fresh one taken just
+# before the record is written, because this script writes several files between here and
+# there and a reused output directory could, through a symlink, let the backend touch the
+# tree after this point.
+tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-at-return.sha256"
+if cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then
+  tree_verdict="the tree was unchanged when the backend returned"
 else
-  tree_verdict="THE TREE CHANGED during the run"
+  tree_verdict="THE TREE HAD CHANGED when the backend returned"
 fi
 
 # --- what the run must have produced ----------------------------------------------------
@@ -599,7 +618,7 @@ print("OK\t%s\t%d" % ("+".join(sorted(usage)), len(denials)))
     reported_models="$field_a"
     # What claude was asked to be, not something it reports back: the proof that it was
     # read-only is the tree fingerprint below, not this line.
-    confinement="claude was run with --restricted --strict-mcp-config --tools Read,Grep,Glob (the only tools it held), and refused $field_b permission request(s)"
+    confinement="claude was run with --restricted --strict-mcp-config --tools Read,Grep,Glob (asked to hold only these), and refused $field_b permission request(s)"
     ;;
 esac
 
@@ -630,6 +649,8 @@ for m in "${answered_models[@]}"; do
     "'$MODEL' was answered by '$m', which is the model that wrote the change ('$IMPLEMENTER'). Ask for a different model."
 done
 
+# The fingerprint that decides, taken now rather than reused from above.
+tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-after.sha256"
 if ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-after.sha256"; then
   refuse E_TREE_CHANGED \
     "the tree at $TREE_ABS changed while the reviewer ran, so the reviewer was not read-only. Compare $OUT_ABS/tree-before.sha256 with tree-after.sha256."
