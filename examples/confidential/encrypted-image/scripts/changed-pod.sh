@@ -18,7 +18,7 @@ SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SHARED_DIR="$(cd "$SAMPLE_DIR/../_shared" && pwd)"
 REPO_ROOT="$(cd "$SAMPLE_DIR/../../.." && pwd)"
 TMP_DIR="$REPO_ROOT/tmp/encrypted-image"
-STATE_FILE="$SAMPLE_DIR/.encrypted-image.state"
+STATE_FILE="$TMP_DIR/state.env"
 
 if [[ -f "$SAMPLE_DIR/.env" ]]; then set -a; . "$SAMPLE_DIR/.env"; set +a; fi
 [[ -f "$STATE_FILE" ]] || { echo "ERROR: no $STATE_FILE; run ./scripts/setup.sh first" >&2; exit 1; }

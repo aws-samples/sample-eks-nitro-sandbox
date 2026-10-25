@@ -8,7 +8,7 @@ admission_policy: |+
       resource == Workload::Container::"main"
   )
   when {
-      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:027ec5bfec6c99e336fc495ad8a4ca9d4fdeae12ef21739da9c45d95b7ae5f9c" &&
+      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:24efb1c3911cb44942d53337655c0b7eba9e07fcdc1c0627a9564069cd694a72" &&
       context.working_dir == "/" &&
       context.run_as_user == 65534 &&
       context.run_as_group == 65534 &&
@@ -113,14 +113,14 @@ admission_policy: |+
       context.ecs_exec_enabled
   };
   
-  // PrepareImage: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:027ec5bfec6c99e336fc495ad8a4ca9d4fdeae12ef21739da9c45d95b7ae5f9c
+  // PrepareImage: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:24efb1c3911cb44942d53337655c0b7eba9e07fcdc1c0627a9564069cd694a72
   permit(
       principal,
       action == Agent::Action::"PrepareImage",
       resource
   )
   when {
-      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:027ec5bfec6c99e336fc495ad8a4ca9d4fdeae12ef21739da9c45d95b7ae5f9c"
+      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:24efb1c3911cb44942d53337655c0b7eba9e07fcdc1c0627a9564069cd694a72"
   };
   
   

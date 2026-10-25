@@ -24,7 +24,7 @@ set -uo pipefail
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$SAMPLE_DIR/../../.." && pwd)"
 TMP_DIR="$REPO_ROOT/tmp/encrypted-image"
-STATE_FILE="$SAMPLE_DIR/.encrypted-image.state"
+STATE_FILE="$TMP_DIR/state.env"
 
 MANAGED_BY="encrypted-image"
 POD_NAME="encrypted-image-demo"
@@ -224,7 +224,6 @@ fi
 # ---------------------------------------------------------------------- local files
 echo "Deleting the run files under $TMP_DIR..."
 rm -rf "$TMP_DIR"
-rm -f "$STATE_FILE"
 
 echo
 if [[ "$failed" == 0 ]]; then

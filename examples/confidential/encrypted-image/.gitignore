@@ -1,10 +1,4 @@
 # Local values the sample needs. Machine-local; never committed.
+# Everything else a run writes, including its record of the resource IDs, goes to the
+# repository's tmp/, which is ignored at the root.
 .env
-
-# State file scripts/setup.sh writes to record the resource IDs and which ones this run
-# created, so clean.sh removes only what setup.sh made. Contains this account's ARNs and
-# the key ARN; never committed.
-.encrypted-image.state
-
-# Live-run logs captured as evidence during a real run. Machine-local; never committed.
-*.log

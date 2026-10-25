@@ -20,7 +20,9 @@ SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SHARED_DIR="$(cd "$SAMPLE_DIR/../_shared" && pwd)"
 REPO_ROOT="$(cd "$SAMPLE_DIR/../../.." && pwd)"
 TMP_DIR="$REPO_ROOT/tmp/encrypted-image"
-STATE_FILE="$SAMPLE_DIR/.encrypted-image.state"
+# The run record goes under the repository's tmp/, with the rest of the run files, and
+# never in the sample folder: it holds this account's ARNs and the key ARN.
+STATE_FILE="$TMP_DIR/state.env"
 
 MANAGED_BY="encrypted-image"
 
@@ -461,9 +463,10 @@ else
   # create, copy the binary and the three config files in, then start: the keyprovider
   # has to be inside the container before skopeo's entrypoint runs.
   #
-  # No --encrypt-layer: every layer is encrypted. An image that mixes encrypted and
-  # plaintext layers is not supported, the pull fails and the policy generator refuses
-  # it (Amazon EKS User Guide, "Encrypted container images").
+  # --encrypt-layer is deliberately not passed: that flag selects individual layers, and
+  # an image that mixes encrypted and plaintext layers is not supported. The pull fails,
+  # naming the layers that are not encrypted, and the policy generator refuses such an
+  # image (Amazon EKS User Guide, "Encrypted container images").
   skopeo_container="$("$CONTAINER_CLI" create -i --network host \
     -e AWS_REGION="$AWS_REGION" -e AWS_DEFAULT_REGION="$AWS_REGION" \
     -e AWS_PROFILE=default \

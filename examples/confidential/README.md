@@ -185,4 +185,4 @@ secret read from AWS Secrets Manager, and an encrypted file read from Amazon S3.
 Each sample's page lists what it needs, and they all share the
 [prerequisites](../README.md#prerequisites) on the home page: a cluster with the
 `confidential-sandbox` runtime class, and the policy generator on your `PATH`. The Amazon
-EKS User Guide, *Cedar policies*, names the generator and says how to obtain it.
+EKS User Guide, *Cedar policies*, names the generator.
