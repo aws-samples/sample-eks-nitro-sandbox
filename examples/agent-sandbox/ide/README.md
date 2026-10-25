@@ -164,7 +164,9 @@ editor already on the cluster still accepts the old password, so a half-finished
 replaced only the password file would destroy the one thing that opens it. Running the
 script again keeps a password that is already there and keeps its hash with it, rather than
 re-hashing: argon2 salts every hash afresh, so a second hash of the same password is a
-different string, and the cluster would be holding the first one. The script creates
+different string, and the cluster would be holding the first one. It does not re-check that
+the hash it keeps is a hash of that password, because the hasher has no verify mode, so if
+you edit either file by hand, delete both and run the script again. The script creates
 `tmp/ide` with mode 700 when it is absent, and leaves the mode alone when it is not, so if
 you point `LOCAL_DIR` at a directory of your own, its mode stays yours. Use
 `./scripts/new-password.sh --stdin` to supply a password of your own instead.
@@ -177,7 +179,7 @@ you point `LOCAL_DIR` at a directory of your own, its mode stays yours. Use
 generated a random password in tmp/ide/password
 
 hash (this is what the Kubernetes Secret will hold):
-  $argon2i$v=19$m=4096,t=3,p=1$LWu1x6Zf+KuwFtCSI4To9g$iMh5Jdkg3Fl91GyRdbG9OSfLHRoyCVMQgOwm/E8jS5s
+  $argon2i$v=19$m=4096,t=3,p=1$jli6H1d0S+IEZsWOIpS4lw$b3DAXhvHr151f04iSp95cYkopjqYwqdc2dtkk7rB/To
 
 Read the password when you need to type it:   cat tmp/ide/password
 Next:                                         ./scripts/setup.sh
@@ -297,7 +299,7 @@ NAME                                                     AGE
 applicationnetworkpolicy.networking.k8s.aws/ide-egress   2s
 
 NAME                                                 AGE
-policyendpoint.networking.k8s.aws/ide-egress-bwv4r   2s
+policyendpoint.networking.k8s.aws/ide-egress-mzbdn   2s
 
 == 4/5 apply sandbox/ide ==
 sandbox.agents.x-k8s.io/ide created
@@ -305,9 +307,9 @@ sandbox.agents.x-k8s.io/ide created
 == 5/5 wait for the guest to boot, mount the workspace and serve the IDE ==
 sandbox.agents.x-k8s.io/ide condition met
 NAME            STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
-workspace-ide   Bound    pvc-3bbc5401-aefc-401f-9581-42d77eda693f   10Gi       RWOP           auto-ebs-sc    <unset>                 16s
+workspace-ide   Bound    pvc-28ec2c6c-6f46-4aa9-9b62-fc976eec7af3   10Gi       RWOP           auto-ebs-sc    <unset>                 43s
 NAME   TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)    AGE   SELECTOR
-ide    ClusterIP   None         <none>        8080/TCP   16s   agents.x-k8s.io/sandbox-name-hash=72cfaf5f
+ide    ClusterIP   None         <none>        8080/TCP   43s   agents.x-k8s.io/sandbox-name-hash=72cfaf5f
 
 sandbox/ide is Ready: code-server is serving on :8080 inside the guest,
 with its workspace on EBS at /home/coder/project.
@@ -324,7 +326,7 @@ already under the policy. The claim is `Bound` with access mode `RWOP`
 a headless Service: it gives the editor a name inside the cluster and publishes nothing
 outside it.
 
-The editor was Ready 16 seconds after the `Sandbox` was created on this run, because the
+The editor was Ready 43 seconds after the `Sandbox` was created on this run, because the
 cluster already had a sandbox-capable node. On a cold cluster the first sandboxed pod waits
 for Auto Mode to launch one.
 
@@ -352,7 +354,7 @@ Type:  Opaque
 Data
 ====
 hashed-password:  95 bytes
-$argon2i$v=19$m=4096,t=3,p=1$LWu1x6Zf+KuwFtCSI4To9g$iMh5Jdkg3Fl91GyRdbG9OSfLHRoyCVMQgOwm/E8jS5s
+$argon2i$v=19$m=4096,t=3,p=1$jli6H1d0S+IEZsWOIpS4lw$b3DAXhvHr151f04iSp95cYkopjqYwqdc2dtkk7rB/To
 ```
 
 There is no Ingress and no NodePort, the one Service is a headless `ClusterIP`, and the
@@ -379,8 +381,8 @@ privileged=
 allowPrivilegeEscalation=false
 capabilitiesDropped=ALL
 automountServiceAccountToken=false
-node=i-0773cb5caaeee133f
-podIP=192.168.186.195
+node=i-0b1322681d4622d8f
+podIP=192.168.176.240
 
     Environment:
       HASHED_PASSWORD:  <set to the key 'hashed-password' in secret 'ide-password'>  Optional: false
@@ -402,21 +404,21 @@ an ordinary pod it creates on the same node, then deletes that pod by its exact 
 ```text
 context: sandbox-demo (pinned)   namespace: ide
 
-== an ordinary pod on the same node (i-0773cb5caaeee133f) ==
+== an ordinary pod on the same node (i-0b1322681d4622d8f) ==
 pod/ide-ordinary created
 pod/ide-ordinary condition met
 
 == uname -rv ==
 --- sandboxed pod/ide ---
-  6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
+  6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
 --- ordinary pod/ide-ordinary ---
-  6.18.51 #2 SMP PREEMPT_DYNAMIC Wed Oct  7 22:33:11 UTC 2026
+  6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
 
 == cat /proc/uptime ==
 --- sandboxed pod/ide ---
-  65.25 62.03
+  80.82 78.70
 --- ordinary pod/ide-ordinary ---
-  2437.17 9504.30
+  283.22 1021.04
 
 == ls /sys/block ==
 --- sandboxed pod/ide ---
@@ -448,8 +450,8 @@ pod/ide-ordinary condition met
 
 == when each pod started, to compare with its uptime ==
 NAME           CREATED                RUNTIMECLASS
-ide            2026-10-24T21:21:41Z   isolated-sandbox
-ide-ordinary   2026-10-24T21:22:54Z   <none>
+ide            2026-10-25T14:09:00Z   isolated-sandbox
+ide-ordinary   2026-10-25T14:10:32Z   <none>
 
 == where the workspace comes from, inside the guest ==
   Filesystem      Size  Used Avail Use% Mounted on
@@ -463,12 +465,13 @@ pod "ide-ordinary" deleted from ide namespace
 
 Four signals, each with what the ordinary pod on the same node shows instead:
 
-- **Its own kernel.** The version string is the same, `6.18.51`, but the build is not: `#1`
-  built on 1 October in the guest against `#2` built on 7 October on the node. `uname -r`
-  alone is not evidence; the build is.
-- **Its own boot.** The editor's pod reports 65 seconds of uptime, which matches its own age
-  (created at 21:21:41, read about a minute later), because the VM booted with the pod. The
-  ordinary pod reports 2437 seconds, the node's uptime.
+- **Its own kernel.** The version string is the same, `6.18.54`, but the build is not: `#1`
+  built at 17:38 on 22 October in the guest against `#2` built at 00:16 the same day on the
+  node. `uname -r` alone is not evidence; the build is.
+- **Its own boot.** The editor's pod reports 81 seconds of uptime, which matches its own age
+  (created at 14:09:00, read about a minute and a half later), because the VM booted with the
+  pod. The ordinary pod reports 283 seconds, the node's uptime, although it had itself been
+  created seconds earlier: it is reading a clock that started before it existed.
 - **Virtio disks.** The guest sees `vda` to `vdd` and nothing else. The ordinary pod sees
   the instance's `nvme*` devices, plus the node's `loop*` and `zram0`.
 - **The VM's own product name.** `m8i.enclave` in the guest, where the ordinary pod reads
@@ -552,9 +555,9 @@ kubectl -n ide logs ide | grep -i 'failed login'
 ```text
 0
 0
-[2026-10-24T21:21:55.439Z] info    - Authentication is enabled
-[2026-10-24T21:21:55.440Z] info      - Using password from $HASHED_PASSWORD
-Failed login attempt {"remoteAddress":"192.168.176.147","userAgent":"curl/8.21.0","timestamp":1792877016}
+[2026-10-25T14:09:41.016Z] info    - Authentication is enabled
+[2026-10-25T14:09:41.016Z] info      - Using password from $HASHED_PASSWORD
+Failed login attempt {"remoteAddress":"192.168.178.104","userAgent":"curl/8.21.0","timestamp":1792937474}
 ```
 
 The plaintext appears zero times in the pod spec and zero times in the log, and `grep -F -f`
@@ -578,7 +581,7 @@ kubectl -n ide exec ide -- sh -c "tr '\0' ' ' < /proc/1/cmdline; echo"
 
 ```text
 uid=1000(coder) gid=1000(coder) groups=1000(coder),100(users)
-drwxrwsr-x. 3 root coder 4096 Oct 24 21:21 /home/coder/project
+drwxrwsr-x. 3 root coder 4096 Oct 25 14:09 /home/coder/project
 dumb-init /usr/bin/code-server --bind-addr=0.0.0.0:8080 --disable-telemetry --disable-update-check /home/coder/project
 ```
 
@@ -602,15 +605,15 @@ kubectl -n ide wait --for=condition=Ready sandbox/ide --timeout=15m
 ```
 
 ```text
--rw-r--r-- 1 coder coder 27 Oct 24 21:23 /home/coder/project/notes.md
-podUID=ac990642-db94-451e-9ad3-ab026af53493
-started=2026-10-24T21:21:44Z
+-rw-r--r-- 1 coder coder 27 Oct 25 14:11 /home/coder/project/notes.md
+podUID=52982790-ebaf-4c37-b630-4434b59db7fb
+started=2026-10-25T14:09:03Z
 phase=Bound
-pv=pvc-3bbc5401-aefc-401f-9581-42d77eda693f
+pv=pvc-28ec2c6c-6f46-4aa9-9b62-fc976eec7af3
 csiDriver=ebs.csi.eks.amazonaws.com
-volumeHandle=vol-094d6b8117e22f989
+volumeHandle=vol-041fc85bbdcec6a41
 reclaimPolicy=Delete
-ownerReferences=[{"apiVersion":"agents.x-k8s.io/v1beta1","blockOwnerDeletion":true,"controller":true,"kind":"Sandbox","name":"ide","uid":"d14775e6-949c-42a9-ba24-243655da44b0"}]
+ownerReferences=[{"apiVersion":"agents.x-k8s.io/v1beta1","blockOwnerDeletion":true,"controller":true,"kind":"Sandbox","name":"ide","uid":"bd22e9c9-14aa-4937-bcc7-2fd3f1d482f0"}]
 pod "ide" deleted from ide namespace
 sandbox.agents.x-k8s.io/ide condition met
 ```
@@ -630,27 +633,27 @@ kubectl -n ide exec ide -- sh -c 'df -h --output=source,target /home/coder/proje
 ```
 
 ```text
-podUID=cc2c7cd1-16c2-4e02-b373-133e69da8da8
-started=2026-10-24T21:23:48Z
+podUID=4f276fb8-0a77-4d71-84e9-9840f0a92a3d
+started=2026-10-25T14:11:25Z
 phase=Bound
-pv=pvc-3bbc5401-aefc-401f-9581-42d77eda693f
+pv=pvc-28ec2c6c-6f46-4aa9-9b62-fc976eec7af3
 hello from the sandbox IDE
 total 20
-drwxrws---. 2 root  coder 16384 Oct 24 21:21 lost+found
--rw-rw-r--. 1 coder coder    27 Oct 24 21:23 notes.md
+drwxrws---. 2 root  coder 16384 Oct 25 14:09 lost+found
+-rw-rw-r--. 1 coder coder    27 Oct 25 14:11 notes.md
 Filesystem      Size  Used Avail Use% Mounted on
 /dev/vdd        9.8G   28K  9.8G   1% /home/coder/project
 overlay         9.9G  176M  9.8G   2% /
-10.12 7.26
+7.06 4.23
 Filesystem     Mounted on
 /dev/vdd       /home/coder/project
 overlay        /
 overlay        /
 ```
 
-The pod UID changed (`ac990642...` to `cc2c7cd1...`), so this is a new pod on a new guest,
-and its uptime is its own 10 seconds rather than the old pod's. The claim is still `Bound` to
-the same PV (`pvc-3bbc5401...`), which is the same EBS volume (`vol-094d6b81...`), and
+The pod UID changed (`52982790...` to `4f276fb8...`), so this is a new pod on a new guest,
+and its uptime is its own 7 seconds rather than the old pod's. The claim is still `Bound` to
+the same PV (`pvc-28ec2c6c...`), which is the same EBS volume (`vol-041fc85b...`), and
 `notes.md` is still in it with the same size and timestamp.
 
 The last three lines are the limit of what persists. Only `/home/coder/project` is on the
@@ -730,15 +733,15 @@ terminal cannot change the policy, even as root.
 **Why `kubectl port-forward` still works with all ingress denied.** Kubernetes always allows
 traffic between a pod and its own node, and the port-forward stream arrives from the node.
 The editor's own log shows it. The refused login attempt in Step 7 was logged with
-`"remoteAddress":"192.168.176.147"`, which is not the editor's pod address
-(`192.168.186.195`, from Step 5). It is the InternalIP of the node that pod was on:
+`"remoteAddress":"192.168.178.104"`, which is not the editor's pod address
+(`192.168.176.240`, from Step 5). It is the InternalIP of the node that pod was on:
 
 ```bash
-kubectl get node i-0773cb5caaeee133f -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}'
+kubectl get node i-0b1322681d4622d8f -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}'
 ```
 
 ```text
-192.168.176.147
+192.168.178.104
 ```
 
 The source address is the node's, so the request reached the editor from the node rather
@@ -769,8 +772,8 @@ name served from the same addresses is reachable too. The rule is a list of host
 guarantee about content. And a pod can always reach its own node, in both directions.
 
 **Both directions, on the live cluster.** These reads come after Step 8, which replaced the
-pod, so the address below is the new pod's (`192.168.186.194`) rather than the one Step 5
-read for the first pod (`192.168.186.195`). The node, and so the node address in the log
+pod, so the address below is the new pod's (`192.168.176.243`) rather than the one Step 5
+read for the first pod (`192.168.176.240`). The node, and so the node address in the log
 above, is the same. One allowed connection that connects, one refused that does not, and the
 two things a developer actually does with the allowed hosts:
 
@@ -787,17 +790,17 @@ kubectl -n ide exec ide -- sh -c 'curl -sS -o /dev/null -m 15 -w "sts.us-west-2.
 policyTypes=["Ingress","Egress"]
 ingressRules=
 allowedNames=["open-vsx.org","openvsx.eclipsecontent.org","github.com"]
-192.168.186.194
+192.168.176.243
 default route via device eth0
-2a04:4e42::498  open-vsx.org
+2a04:4e42:200::498 open-vsx.org
 2a04:4e42:400::498 open-vsx.org
 2606:4700:10::6814:179a example.com
 2606:4700:10::ac42:93f3 example.com
 open-vsx.org: HTTP 200
 openvsx.eclipsecontent.org: HTTP 403
 github.com: HTTP 200
-curl: (28) Connection timed out after 15002 milliseconds
 example.com: HTTP 000
+curl: (28) Connection timed out after 15000 milliseconds
 command terminated with exit code 28
 curl: (28) Connection timed out after 15002 milliseconds
 sts.us-west-2.amazonaws.com: HTTP 000
@@ -849,10 +852,10 @@ kubectl -n ide delete pod ide-ingress-probe
 ```text
 pod/ide-ingress-probe created
 --- to the pod IP ---
-Connecting to 192.168.186.194:8080 (192.168.186.194:8080)
+Connecting to 192.168.176.243:8080 (192.168.176.243:8080)
 wget: download timed out
 --- to the Service name ---
-Connecting to ide.ide.svc.cluster.local:8080 (192.168.186.194:8080)
+Connecting to ide.ide.svc.cluster.local:8080 (192.168.176.243:8080)
 wget: download timed out
 pod "ide-ingress-probe" deleted from ide namespace
 ```
@@ -891,10 +894,12 @@ by its exact name.
   differ from what this run would apply, and tells you to run the clean up and set up again,
   rather than letting the apply fail with a message that does not mention the workspace it
   is about to cost. The class is the one that changes by itself: a fitting default class
-  appearing on the cluster, or a different `STORAGE_CLASS` in `.env`, is enough. Growing the volume in place is not a way
-  round it either: expanding an EBS volume while the pod is running is not supported for a
-  sandboxed pod, which sees the original capacity until its sandbox attaches the volume
-  again (Amazon EKS User Guide, *Isolated and confidential pods limitations*).
+  appearing on the cluster, or a different `STORAGE_CLASS` in `.env`, is enough. Growing the
+  volume has a limit of its own: expanding an EBS volume while the pod is running is not
+  supported, and the pod keeps seeing the original capacity until the volume is attached to
+  a sandbox again (Amazon EKS User Guide, *Isolated and confidential pods limitations*).
+  The sample's own class does not set `allowVolumeExpansion`, so on that class there is no
+  expansion to attempt.
 - **The workspace claim is `ReadWriteOncePod`, and for a sandbox that is not a preference.**
   An EBS volume reaches a sandboxed pod as a raw block device attached to its sandbox, and a
   block device can be attached to only one sandbox at a time; mounting it from two would
@@ -949,8 +954,8 @@ sandbox.agents.x-k8s.io "ide" deleted from ide namespace
 
 == 3/6 confirm the workspace PVC and its EBS volume are gone ==
 persistentvolumeclaim "workspace-ide" deleted from ide namespace
-persistentvolume/pvc-3bbc5401-aefc-401f-9581-42d77eda693f condition met
-  pv pvc-3bbc5401-aefc-401f-9581-42d77eda693f: gone
+persistentvolume/pvc-28ec2c6c-6f46-4aa9-9b62-fc976eec7af3 condition met
+  pv pvc-28ec2c6c-6f46-4aa9-9b62-fc976eec7af3: gone
 
 == 4/6 delete secret/ide-password and the egress policy ide-egress ==
 secret "ide-password" deleted from ide namespace

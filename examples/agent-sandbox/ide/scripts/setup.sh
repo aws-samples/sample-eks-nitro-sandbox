@@ -169,6 +169,13 @@ if [[ -n "$live_tmpl" && "$live_tmpl" != "||" ]]; then
   live_class="${_rest%%|*}"
   live_size="${_rest##*|}"
   mismatch=""
+  # keep_hint is added only for the class, and only when the class is what
+  # differs: it is the one field a reader can point back at the existing claim.
+  # For the access mode or the size there is nothing to set, and saying "unset
+  # STORAGE_CLASS" would be wrong advice, which is worse than none. It is also
+  # wrong when STORAGE_CLASS is already unset and the cluster grew a default
+  # class that fits, so the hint names the value to SET rather than to unset.
+  keep_hint=""
   if [[ "$live_access" != "$want_access" ]]; then
     mismatch="$mismatch
          accessModes: [$live_access], and this manifest asks for [$want_access]"
@@ -176,6 +183,9 @@ if [[ -n "$live_tmpl" && "$live_tmpl" != "||" ]]; then
   if [[ "$live_class" != "$CHOSEN_STORAGE_CLASS" ]]; then
     mismatch="$mismatch
          storageClassName: $live_class, and this run chose $CHOSEN_STORAGE_CLASS"
+    keep_hint="
+       To keep the existing workspace instead, point this run back at the class the claim
+       already uses: set STORAGE_CLASS=$live_class in .env or in the environment, and re-run."
   fi
   if [[ "$live_size" != "$WORKSPACE_SIZE" ]]; then
     mismatch="$mismatch
@@ -185,8 +195,11 @@ if [[ -n "$live_tmpl" && "$live_tmpl" != "||" ]]; then
     die "sandbox/$SANDBOX already exists with a different workspace claim template:$mismatch
        volumeClaimTemplates is immutable on the Sandbox CRD, so the Sandbox has to be recreated:
          ./scripts/cleanup.sh && ./scripts/setup.sh
-       That DELETES the workspace and its EBS volume. To keep the existing workspace instead,
-       leave the claim as it is: unset STORAGE_CLASS in .env, or set it back to $live_class."
+       That DELETES the workspace and its EBS volume.$keep_hint$(
+         [[ $CREATED_SAMPLE_STORAGE_CLASS -eq 1 ]] \
+           && printf '\n       This run also created storageclass/%s, which is cluster-scoped; ./scripts/cleanup.sh removes it.' "$SAMPLE_STORAGE_CLASS"
+         true
+       )"
   fi
 fi
 sed -e "s/__NAMESPACE__/$NAMESPACE/g" \

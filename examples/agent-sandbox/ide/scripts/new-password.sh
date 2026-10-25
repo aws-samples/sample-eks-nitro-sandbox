@@ -73,8 +73,14 @@ if [[ -s "$PASSWORD_FILE" && $from_stdin -eq 0 ]]; then
   # one the Secret already holds, so a fresh hash of the same password would stop
   # the run with "the editor would keep accepting the older password" when the
   # password had not changed at all.
+  # This only checks that the file holds something shaped like an argon2 hash, not
+  # that it is a hash OF this password: argon2-cli 0.25.1 has no verify mode, and
+  # re-hashing to find out is the very thing that breaks setup.sh. So the two
+  # files are assumed to belong together, which holds as long as neither is
+  # edited by hand. Say that rather than claim more.
   if [[ -s "$HASH_FILE" ]] && grep -q '^[$]argon2' "$HASH_FILE"; then
-    echo "keeping the argon2 hash already in $(rel "$HASH_FILE") (it is this password's)"
+    echo "keeping the argon2 hash already in $(rel "$HASH_FILE"); it is not re-checked"
+    echo "  against the password, so if you edited either file yourself, delete both and re-run"
     hash_needed=0
   fi
 else
