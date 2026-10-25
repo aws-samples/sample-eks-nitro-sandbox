@@ -143,6 +143,26 @@ you do with the answer.
   `mkdir -p /tree`: a new collaborator's first command trying to create a directory at the
   filesystem root. That is not a reasoning failure a line-by-line read would surface. Ask
   each reviewer the questions its runtime can actually answer.
+- **A reviewer is authoritative on whether a defect exists, never on how bad it is.**
+  Severity is yours to decide, with the reviewer's reasoning as input. Two rounds here
+  establish it in opposite directions: one backend *cleared* a hole the other then found,
+  and later the same backend found a defect, analysed it more thoroughly than the other, and
+  **concluded it was optional** — a guard deleting files from the tree it protects, which it
+  reasoned was not must-fix because no bad review could get through. That reasoning was
+  sound and the conclusion was wrong: a tool whose central promise is that the reviewer
+  cannot change the tree must not itself change the tree, whatever else holds. Read the
+  argument, then judge the severity yourself against what the thing is *for*.
+- **A guard that cannot fire in the circumstance it was written for is worse than none**,
+  because it reads like coverage — in the suite, and in the pull request. One here could
+  only fire *after* the removal it was guarding had succeeded, since a failing `rm` ended
+  the script under `set -e` with its own untagged message; and its wording, "could not be
+  removed", was false in the only case that could reach it. Ask of every new refusal: what
+  exactly makes this fire, and is that the thing I am worried about?
+- **Writing a lesson down does not install it.** The reset-destroys-your-fixture shape
+  appeared here for the third time *in a guard written while recording that very lesson*.
+  So prefer tooling that enforces the habit over a convention that asks you to remember it:
+  this suite's `run()` now plants fixtures itself, rather than documenting that you must
+  plant them after the reset — the categorical-over-enumerative rule applied to the harness.
 - **When a reviewer *clears* a concern with an argument, the argument is a finding too, and
   wants checking like any other claim.** A plausible clearance is more dangerous than a
   missed finding, because it gets adopted and then cited. One round here cleared a
@@ -168,6 +188,15 @@ you do with the answer.
 
   This generalises past review tooling: a clean-up or ownership check that lists the bad
   cases will miss one.
+- **But if the categorical form of your guard is an *action*, its ordering and scope are
+  part of the guard, not details.** The rule above is about coverage and says nothing about
+  blast radius. A refusal is inert: it can sit anywhere, early, and the worst case is a
+  false refusal. Removing, moving or truncating something is not inert, so it must run
+  **after every check that could refuse**, and be **scoped so it cannot reach the thing
+  being protected**. A guard here whose whole purpose was "the reviewer cannot change the
+  tree" had neither, and deleted two files *from the snapshot* before reporting that the
+  output directory was inside the tree. If you take the categorical rule without this
+  caveat you will reproduce that.
 - **A guard that cannot run in the environment that tests it is worse than none.** One
   candidate fix needed `stat`, which is not on the suite's minimal `PATH`, so the guard
   would have been silently untested there; `rm` is, which is part of why removing the name
