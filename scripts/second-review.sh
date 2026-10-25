@@ -362,13 +362,6 @@ for _n in $OUT_NAMES; do
       "'$OUT_ABS/$_n' is a directory, so this script cannot write its output there. Nothing has been removed. Use a fresh --out."
   fi
 done
-# An --out that cannot be written at all would otherwise pass the loop below -- removing a
-# name that is not there succeeds -- and die at the first redirect with no tag.
-if ! ( : > "$OUT_ABS/.probe" ) 2>/dev/null; then
-  refuse E_OUT_TAINTED \
-    "cannot create a file in '$OUT_ABS', so this script cannot write its output there. Nothing has been removed."
-fi
-rm -f -- "$OUT_ABS/.probe"
 for _n in $OUT_NAMES; do
   if ! rm -f -- "$OUT_ABS/$_n" 2>/dev/null || [ -e "$OUT_ABS/$_n" ] || [ -L "$OUT_ABS/$_n" ]; then
     refuse E_OUT_TAINTED \
@@ -376,7 +369,20 @@ for _n in $OUT_NAMES; do
   fi
 done
 
-tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-before.sha256"
+# An --out that cannot be written at all reaches here: removing a name that is not there
+# succeeds, so the loop above passes and the first redirection is what fails. Tag that
+# failure rather than letting set -e end the run with bash's own untagged message.
+#
+# The first real write is the probe. A separate one at a fixed name was tried and was a
+# hole: ">" follows a symbolic link, so a stale or planted link at that name pointed the
+# probe wherever it liked -- checked, and it truncated a file in the tree -- and because
+# the probe ran before this fingerprint, the damage was already in the "before" baseline
+# and the run reported the tree unchanged. The names above have just been removed, so
+# writing to one of them cannot follow a link, and no extra name has to be cleared.
+if ! tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-before.sha256"; then
+  refuse E_OUT_TAINTED \
+    "could not write '$OUT_ABS/tree-before.sha256', so this script cannot write its output there -- an unwritable --out, or a tree it cannot read. Nothing has been removed from the tree. Use a fresh --out."
+fi
 
 # A short, per-run ASCII line, prepended to what the codex backend reads and used to
 # authenticate the preamble boundary below. It only has to be something the brief cannot
