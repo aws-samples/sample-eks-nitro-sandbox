@@ -62,7 +62,23 @@ kc() {
 command -v kubectl >/dev/null 2>&1 || { echo "ERROR: kubectl is required" >&2; exit 1; }
 command -v aws >/dev/null 2>&1 || { echo "ERROR: the AWS CLI is required" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required" >&2; exit 1; }
-[[ -n "$AWS_REGION" ]] && export AWS_REGION AWS_DEFAULT_REGION="$AWS_REGION"
+
+# The Region is required, not optional. Without it the AWS CLI falls back to whatever the
+# ambient configuration says, and a regional lookup in the wrong Region comes back with
+# the service's own not-found exception: this script would then report the ECR repository
+# and the KMS key as "already gone" and exit 0, while they are still there.
+[[ -n "$AWS_REGION" ]] || {
+  echo "ERROR: AWS_REGION is not set, so a lookup could run against the wrong Region and report resources that still exist as already gone. Fill it in in .env (next to this script's sample folder), or run from the shell that ran setup.sh." >&2
+  exit 1
+}
+export AWS_REGION AWS_DEFAULT_REGION="$AWS_REGION"
+
+# Say which cluster and Region this is about to act on, for the same reason: an empty
+# KUBE_CONTEXT means "whatever is current", which on a shared machine is not always this
+# sample's cluster.
+clean_context="$(kc config current-context 2>/dev/null || true)"
+[[ -n "$clean_context" ]] || { echo "ERROR: could not read the current kube context; set KUBE_CONTEXT in .env" >&2; exit 1; }
+echo "Cleaning up in context $clean_context, Region $AWS_REGION, namespace $NAMESPACE."
 
 # Same contract as setup.sh: absence is proved by the service's own not-found exception.
 # Returns 0 and prints stdout when present, 1 when the exception came back, 2 otherwise.
@@ -222,8 +238,18 @@ else
 fi
 
 # ---------------------------------------------------------------------- local files
-echo "Deleting the run files under $TMP_DIR..."
-rm -rf "$TMP_DIR"
+# The run files hold the resource ids and the registry credentials the other scripts
+# need, so they are only removed when there is nothing left to come back for: not after a
+# clean up that left something behind, and not when the AWS resources were kept on
+# purpose for another run.
+if [[ "$failed" != 0 ]]; then
+  echo "Keeping the run files under $TMP_DIR: the clean up left something behind, and they hold the ids needed to finish it."
+elif [[ "$keep_aws" == true ]]; then
+  echo "Keeping the run files under $TMP_DIR: the AWS resources were kept, and scripts/changed-pod.sh needs them."
+else
+  echo "Deleting the run files under $TMP_DIR..."
+  rm -rf "$TMP_DIR"
+fi
 
 echo
 if [[ "$failed" == 0 ]]; then

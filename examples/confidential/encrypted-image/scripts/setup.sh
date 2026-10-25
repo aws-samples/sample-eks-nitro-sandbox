@@ -200,15 +200,41 @@ if [[ "$key_rc" == 0 ]]; then
   echo "  reusing KMS key $KMS_ALIAS"
   state_put KMS_CREATED false
 else
+  # The key is created WITH a policy, never with the default one. kms:CreateKey with no
+  # --policy attaches the default key policy, whose "Enable IAM policies" statement allows
+  # kms:* to the account root, and that is an unconditional kms:Decrypt: the key would
+  # spend the time between here and the gate in step 3 able to decrypt for any
+  # sufficiently privileged identity in the account.
+  #
+  # This birth policy is the gate's template with the one conditional allow removed, so it
+  # names no role and does not have to wait for one to exist. Key administration and
+  # build-time encrypt are there, and so are both denies, carrying an all-zero measurement
+  # no sandbox can present. So the key denies every decrypt from the moment it exists, and
+  # step 3 adds the allow once the role is there.
+  jq --arg account "$account_id" --arg pcr17 "$(printf '0%.0s' $(seq 96))" '
+    del(._comment)
+    | (.Statement[] | select(.Sid == "KeyAdministration").Principal.AWS) = "arn:aws:iam::\($account):root"
+    | (.Statement[] | select(.Sid == "BuildTimeEncrypt").Principal.AWS) = "arn:aws:iam::\($account):root"
+    | (.Statement[] | select(.Sid == "DenyUnlessThePolicyMeasurementMatches").Condition.StringNotEqualsIgnoreCase["kms:RecipientAttestation:PCR17"]) = $pcr17
+    | .Statement |= map(select(.Sid != "AttestedDecryptOnly"))
+  ' "$KEY_POLICY_TEMPLATE" > "$TMP_DIR/kms-key-policy.birth.json"
+  jq -e '([.Statement[] | select(.Effect == "Allow")
+           | (.Action | if type == "array" then . else [.] end)[] | ascii_downcase]
+          | map(select(. == "*" or . == "kms:*" or startswith("kms:decrypt")
+                       or startswith("kms:reencryptfrom"))) | length) == 0
+  ' "$TMP_DIR/kms-key-policy.birth.json" >/dev/null ||
+    die "the birth key policy would allow a decrypt; refusing to create the key"
   key_json="$(aws kms create-key \
     --description "Wraps the encrypted image layer key for the EKS Nitro sandbox encrypted-image sample" \
     --key-usage ENCRYPT_DECRYPT --key-spec SYMMETRIC_DEFAULT \
+    --policy "file://$TMP_DIR/kms-key-policy.birth.json" \
     --tags "TagKey=ManagedBy,TagValue=$MANAGED_BY" \
     --query 'KeyMetadata' --output json)"
   kms_key_id="$(jq -r '.KeyId' <<<"$key_json")"
   kms_key_arn="$(jq -r '.Arn' <<<"$key_json")"
   aws kms create-alias --alias-name "$KMS_ALIAS" --target-key-id "$kms_key_id"
   echo "  created KMS key $kms_key_arn"
+  echo "  it denies every decrypt already: created with a policy, not the default one"
   state_put KMS_CREATED true
 fi
 state_put KMS_ALIAS "$KMS_ALIAS"
@@ -259,8 +285,15 @@ else
   echo "  created IAM role $role_arn"
   state_put IAM_CREATED true
 fi
+# The role's unique id, as well as its ARN. A key policy naming a role that has only just
+# been created, or recreated under a name that existed before, can come back from KMS with
+# this id in place of the ARN: both name the same principal, and the id names only this
+# role, never a later one of the same name. The gate check below accepts either form.
+role_id="$(aws iam get-role --role-name "$IAM_ROLE_NAME" --query 'Role.RoleId' --output text)"
+[[ -n "$role_id" && "$role_id" != "None" ]] || die "could not read the unique id of the role $IAM_ROLE_NAME"
 state_put IAM_ROLE_NAME "$IAM_ROLE_NAME"
 state_put IAM_ROLE_ARN "$role_arn"
+state_put IAM_ROLE_ID "$role_id"
 
 # The role must carry no identity policy, attached or inline. One that allowed
 # kms:Decrypt would grant it without the attestation condition, and the gate below would
@@ -311,44 +344,78 @@ put_key_policy() {  # put_key_policy <expected-pcr17>
   exit 1
 }
 
+# A put that lands while the role is still propagating is stored with the role's unique id
+# in place of its ARN. The gate is the same either way, but the ARN is the readable form,
+# so put it again a few times to let it settle on the ARN. This never loops on a wrong
+# gate: it only ever re-sends the same document, and it gives up quietly, leaving
+# verify_key_policy to accept the id form.
+settle_key_policy_principal() {
+  local attempt stored
+  for attempt in $(seq 6); do
+    stored="$(aws kms get-key-policy --key-id "$kms_key_arn" --policy-name default \
+      --query Policy --output text \
+      | jq -r '[.Statement[] | select(.Sid == "AttestedDecryptOnly")
+                | (.Principal.AWS | if type == "array" then .[] else . end)] | join(",")')"
+    [[ "$stored" != "$role_arn" ]] || return 0
+    sleep 5
+    aws kms put-key-policy --key-id "$kms_key_arn" --policy-name default \
+      --policy "file://$TMP_DIR/kms-key-policy.json" >/dev/null 2>&1 || true
+  done
+  return 0
+}
+
 # Reads the live policy back and checks the three things a denial's meaning depends on:
-# that no principal has an unconditional decrypt, that the one allow is bound to this
-# role and this measurement, and that both denies carry the values this run installed.
+# that the only allow that reaches a decrypt is the conditional one, that it is bound to
+# this role and this measurement, and that both denies carry the values this run installed
+# AND still cover kms:Decrypt. A deny that lost that action would leave a mismatched
+# measurement refused by implicit deny, which the page could not tell from the explicit
+# one it shows.
 verify_key_policy() {  # verify_key_policy <expected-pcr17>
   local live
   live="$(aws kms get-key-policy --key-id "$kms_key_arn" --policy-name default \
     --query Policy --output text)"
   printf '%s\n' "$live" | jq . > "$TMP_DIR/kms-key-policy.live.json"
-  jq -e --arg role "$role_arn" --arg pcr17 "$1" '
-    ([.Statement[] | select(.Effect == "Allow")
-      | (.Action | if type == "array" then . else [.] end)[]
-      | ascii_downcase] | map(select(. == "kms:*" or . == "kms:decrypt" or . == "kms:reencryptfrom"))
-      | length) as $unconditional_decrypt_actions
+  jq -e --arg role "$role_arn" --arg roleid "$role_id" --arg pcr17 "$1" '
+    # Any action string that can reach a decrypt, wildcards included: "*", "kms:*" and
+    # any prefix form such as "kms:Decrypt*" all do, and an equality list would miss them.
+    def reaches_decrypt:
+      ascii_downcase
+      | . == "*" or . == "kms:*"
+        or startswith("kms:decrypt") or startswith("kms:reencryptfrom");
+    def actions: (.Action | if type == "array" then . else [.] end);
+    ([.Statement[] | select(.Effect == "Allow") | actions[] | select(reaches_decrypt)]
+      | length) as $allow_actions_reaching_decrypt
     | ([.Statement[] | select(.Sid == "AttestedDecryptOnly")
         | select(.Effect == "Allow")
-        | select((.Principal.AWS | if type == "array" then . else [.] end) == [$role])
+        # The ARN or the role unique id: KMS stores the id when the put lands while the
+        # role is still propagating. Both name this one role and nothing else.
+        | select((.Principal.AWS | if type == "array" then . else [.] end)
+                 | . == [$role] or . == [$roleid])
         | select(.Condition.StringEqualsIgnoreCase["kms:RecipientAttestation:PCR17"] == $pcr17)
         | select(.Condition.StringEqualsIgnoreCase["kms:RecipientAttestation:PCR8:ServiceName"] == "eks.amazonaws.com")
       ] | length) as $allows
     | ([.Statement[] | select(.Sid == "DenyUnlessThePolicyMeasurementMatches")
         | select(.Effect == "Deny") | select(.Principal == "*")
+        | select(actions | map(ascii_downcase) | index("kms:decrypt"))
         | select(.Condition.StringNotEqualsIgnoreCase["kms:RecipientAttestation:PCR17"] == $pcr17)
       ] | length) as $pcr17_denies
     | ([.Statement[] | select(.Sid == "DenyUnlessTheAttestationComesFromAnEKSSandbox")
         | select(.Effect == "Deny") | select(.Principal == "*")
+        | select(actions | map(ascii_downcase) | index("kms:decrypt"))
         | select(.Condition.StringNotEqualsIgnoreCase["kms:RecipientAttestation:PCR8:ServiceName"] == "eks.amazonaws.com")
       ] | length) as $pcr8_denies
-    | $unconditional_decrypt_actions == 1
+    | $allow_actions_reaching_decrypt == 1
       and $allows == 1 and $pcr17_denies == 1 and $pcr8_denies == 1
   ' "$TMP_DIR/kms-key-policy.live.json" >/dev/null ||
     die "the live KMS key policy is not the gate this script installed (read back into $TMP_DIR/kms-key-policy.live.json). A denial only means the measurement was refused if the gate that produced it is the gate we believe is there."
 }
 
-# The allow-list in KeyAdministration holds exactly one of the three actions the check
-# above counts, kms:Encrypt aside: none of kms:*, kms:Decrypt or kms:ReEncryptFrom. The
-# count of 1 is the single conditional kms:Decrypt in AttestedDecryptOnly.
+# KeyAdministration lists its actions and holds none that can reach a decrypt, and
+# BuildTimeEncrypt is kms:Encrypt only, so the one action the count above finds is the
+# conditional kms:Decrypt in AttestedDecryptOnly.
 zero_pcr17="$(printf '0%.0s' $(seq 96))"
 put_key_policy "$zero_pcr17"
+settle_key_policy_principal
 verify_key_policy "$zero_pcr17"
 echo "  the key policy allows no decrypt yet (gated on an all-zero measurement)"
 
@@ -398,8 +465,14 @@ if [[ "$assoc_id" == "None" || -z "$assoc_id" ]]; then
   echo "  created Pod Identity association $assoc_id"
   state_put ASSOCIATION_CREATED true
 else
-  assoc_role="$(aws eks describe-pod-identity-association --cluster-name "$CLUSTER_NAME" \
-    --association-id "$assoc_id" --query 'association.roleArn' --output text)"
+  assoc_json="$(aws eks describe-pod-identity-association --cluster-name "$CLUSTER_NAME" \
+    --association-id "$assoc_id" --query 'association' --output json)"
+  # The same ownership test the other three AWS resources get, and the one clean.sh
+  # applies before it will delete this association. Without it setup could adopt an
+  # association another demo made, which clean.sh would then refuse to remove.
+  assoc_tag="$(jq -r '.tags.ManagedBy // ""' <<<"$assoc_json")"
+  require_managed_by "the Pod Identity association for $NAMESPACE/$SERVICE_ACCOUNT" "$assoc_tag"
+  assoc_role="$(jq -r '.roleArn' <<<"$assoc_json")"
   [[ "$assoc_role" == "$role_arn" ]] ||
     die "a Pod Identity association for $NAMESPACE/$SERVICE_ACCOUNT already points at $assoc_role, not $role_arn; changed nothing"
   echo "  reusing Pod Identity association $assoc_id"
@@ -491,7 +564,9 @@ else
   # an image that mixes encrypted and plaintext layers is not supported. The pull fails,
   # naming the layers that are not encrypted, and the policy generator refuses such an
   # image (Amazon EKS User Guide, "Encrypted container images").
-  skopeo_container="$("$CONTAINER_CLI" create -i --network host \
+  # No --network host: the container reaches the two registries and AWS KMS over the
+  # default bridge, and the host's own loopback services are none of its business.
+  skopeo_container="$("$CONTAINER_CLI" create -i \
     -e AWS_REGION="$AWS_REGION" -e AWS_DEFAULT_REGION="$AWS_REGION" \
     -e AWS_PROFILE=default \
     -e AWS_SHARED_CREDENTIALS_FILE=/run/aws-credentials \
@@ -570,11 +645,15 @@ render "$SAMPLE_DIR/deploy/pod.yaml" "$image_filter" "$TMP_DIR/pod-input.json"
 genpolicy_home="$TMP_DIR/genpolicy-home"
 rm -rf "$genpolicy_home"
 mkdir -p "$genpolicy_home/.docker"
-ecr_auth="$(printf 'AWS:%s' "$(aws ecr get-login-password)" | base64 | tr -d '\r\n')"
-jq -n --arg registry "$registry" --arg auth "$ecr_auth" \
-  '{auths: {($registry): {auth: $auth}}}' > "$genpolicy_home/.docker/config.json"
-unset ecr_auth
+# The token reaches jq on standard input, never in its argv: a command line is readable
+# from /proc by any local user, and this is a live credential for the registry.
+printf 'AWS:%s' "$(aws ecr get-login-password)" | base64 | tr -d '\r\n' \
+  | jq -Rn --arg registry "$registry" '{auths: {($registry): {auth: input}}}' \
+  > "$genpolicy_home/.docker/config.json"
 chmod 600 "$genpolicy_home/.docker/config.json"
+jq -e --arg registry "$registry" '.auths[$registry].auth | type == "string" and length > 0' \
+  "$genpolicy_home/.docker/config.json" >/dev/null ||
+  die "could not write the registry credentials the policy generator needs"
 
 HOME="$genpolicy_home" "$GENPOLICY" \
   --profile "$PROFILE" --with-pod-identity \
@@ -622,15 +701,20 @@ jq -r '
 # PrepareImage permit, and the same digest under each. The generator also writes the
 # digest into a comment, so a plain grep for it passes on a policy that does not enforce
 # it; and counting clauses passes when both sit under one permit and none under the other.
+# Each rule's head sets `rule`, and a clause is only recorded inside a permit. Tracking
+# the keyword is what makes this a check on permits: a forbid rule carrying the same
+# image_ref clause pins nothing, and resetting on the head alone would not help, because
+# the action line that names the operation comes after it.
 pins="$(awk '
-  /^[[:space:]]*action == Agent::Action::"CreateContainer"/ { permit = "create"; next }
-  /^[[:space:]]*action == Agent::Action::"PrepareImage"/    { permit = "prepare"; next }
-  /^[[:space:]]*permit\(/ { permit = "" }
+  /^[[:space:]]*permit\(/ { rule = "permit"; which = ""; next }
+  /^[[:space:]]*forbid\(/ { rule = "forbid"; which = ""; next }
+  /^[[:space:]]*action == Agent::Action::"CreateContainer"/ { which = "create"; next }
+  /^[[:space:]]*action == Agent::Action::"PrepareImage"/    { which = "prepare"; next }
   /^[[:space:]]*context\.image_ref == "/ {
-    if (permit != "" && !(permit in seen)) {
+    if (rule == "permit" && which != "" && !(which in seen)) {
       line = $0
       sub(/^[^"]*"/, "", line); sub(/".*$/, "", line)
-      seen[permit] = line
+      seen[which] = line
     }
   }
   END { printf "%s %s\n", (("create" in seen) ? seen["create"] : "NONE"),
@@ -639,9 +723,19 @@ pins="$(awk '
 create_pin="${pins%% *}"; prepare_pin="${pins##* }"
 [[ "$create_pin" != "NONE" && "$create_pin" == "$prepare_pin" ]] ||
   die "the generated policy does not enforce one image digest under both the CreateContainer and PrepareImage permits (CreateContainer='$create_pin', PrepareImage='$prepare_pin'); read $TMP_DIR/policy.yaml"
+
+# And the digest it pins has to be the image this run pushed. Two pins that agree with
+# each other but name some other image would gate the key on a policy for that image.
+pushed_digest="$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+  --image-ids "imageTag=$IMAGE_TAG" --query 'imageDetails[0].imageDigest' --output text)"
+[[ "$pushed_digest" == sha256:* ]] ||
+  die "could not read the digest of the published image $ENCRYPTED_IMAGE_URI"
+[[ "$create_pin" == "$registry/$ECR_REPOSITORY@$pushed_digest" ]] ||
+  die "the generated policy pins '$create_pin', which is not the image this run published ($registry/$ECR_REPOSITORY@$pushed_digest); read $TMP_DIR/policy.yaml"
 echo "  image digest pinned under both permits: $create_pin"
 
 put_key_policy "$predicted_pcr17"
+settle_key_policy_principal
 verify_key_policy "$predicted_pcr17"
 echo "  the gate now releases the layer key only to this measurement"
 # A key policy change takes a moment to be in force everywhere. Starting the pod before

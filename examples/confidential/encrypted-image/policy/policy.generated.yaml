@@ -8,7 +8,7 @@ admission_policy: |+
       resource == Workload::Container::"main"
   )
   when {
-      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:24efb1c3911cb44942d53337655c0b7eba9e07fcdc1c0627a9564069cd694a72" &&
+      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:690b253fb55d8234cc2158ab18d4e6c8e4c85f2b3c6800eeaee0db0fb7e377e8" &&
       context.working_dir == "/" &&
       context.run_as_user == 65534 &&
       context.run_as_group == 65534 &&
@@ -99,8 +99,8 @@ admission_policy: |+
                         "KUBERNETES_PORT_443_TCP_PORT",
                         "KUBERNETES_PORT_443_TCP_ADDR"]
   };
-  
-  
+
+
   // Admission: the ECS execute-command annotation (sandbox.amazonaws.com/ecs-exec-enabled) is
   // forbidden on EKS. It drives SSM binary mount injection in the
   // guest agent, which EKS never uses.
@@ -112,20 +112,20 @@ admission_policy: |+
   when {
       context.ecs_exec_enabled
   };
-  
-  // PrepareImage: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:24efb1c3911cb44942d53337655c0b7eba9e07fcdc1c0627a9564069cd694a72
+
+  // PrepareImage: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:690b253fb55d8234cc2158ab18d4e6c8e4c85f2b3c6800eeaee0db0fb7e377e8
   permit(
       principal,
       action == Agent::Action::"PrepareImage",
       resource
   )
   when {
-      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:24efb1c3911cb44942d53337655c0b7eba9e07fcdc1c0627a9564069cd694a72"
+      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:690b253fb55d8234cc2158ab18d4e6c8e4c85f2b3c6800eeaee0db0fb7e377e8"
   };
-  
-  
+
+
   // Admission: host image mounting is disabled (no permit policy)
-  
+
 runtime_policy: |+
   // Runtime: stdin writes are denied (no permit policy)
   // Blocks: kubectl attach -i, kubectl exec -i, kubectl cp (to pod)
@@ -133,7 +133,7 @@ runtime_policy: |+
   // Blocks: kubectl exec, kubectl cp
   // Runtime: agent log streaming is disabled (no permit policy)
   // Runtime: SetupVolume is denied (no CSI volumes)
-  
+
   // Runtime: allow log reading
   permit(
       principal,
@@ -192,7 +192,7 @@ runtime_policy: |+
       // the agent creates exactly the pod's mounted emptyDir volumes
       context.volume_paths.isEmpty()
   };
-  
+
   // Runtime: allow OOM event watching
   permit(
       principal,
@@ -215,4 +215,4 @@ runtime_policy: |+
       context.binary_logger_path == "" &&
       context.binary_logger_args.isEmpty()
   };
-  
+

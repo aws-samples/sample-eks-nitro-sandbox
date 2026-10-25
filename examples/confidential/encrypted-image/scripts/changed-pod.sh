@@ -95,11 +95,37 @@ echo "== 3/4 confirm the gate still expects the approved measurement =="
 # approved one. Read the live policy rather than trusting that nothing moved it.
 aws kms get-key-policy --key-id "$KMS_KEY_ARN" --policy-name default \
   --query Policy --output text | jq . > "$TMP_DIR/kms-key-policy.live.json"
+# The same predicate setup.sh's verify_key_policy applies, for the same reason: this
+# pod's denial only means "the measurement was refused" if the gate is still the approved
+# one, with no second allow that could reach a decrypt and with both denies still
+# covering kms:Decrypt.
 jq -e --arg pcr17 "$PREDICTED_PCR17" '
-  ([.Statement[] | select(.Sid == "AttestedDecryptOnly")
-     | select(.Condition.StringEqualsIgnoreCase["kms:RecipientAttestation:PCR17"] == $pcr17)] | length) == 1
+  def reaches_decrypt:
+    ascii_downcase
+    | . == "*" or . == "kms:*"
+      or startswith("kms:decrypt") or startswith("kms:reencryptfrom");
+  def actions: (.Action | if type == "array" then . else [.] end);
+  ([.Statement[] | select(.Effect == "Allow") | actions[] | select(reaches_decrypt)]
+    | length) as $allow_actions_reaching_decrypt
+  | ([.Statement[] | select(.Sid == "AttestedDecryptOnly")
+      | select(.Effect == "Allow")
+      | select(.Condition.StringEqualsIgnoreCase["kms:RecipientAttestation:PCR17"] == $pcr17)
+      | select(.Condition.StringEqualsIgnoreCase["kms:RecipientAttestation:PCR8:ServiceName"] == "eks.amazonaws.com")
+    ] | length) as $allows
+  | ([.Statement[] | select(.Sid == "DenyUnlessThePolicyMeasurementMatches")
+      | select(.Effect == "Deny") | select(.Principal == "*")
+      | select(actions | map(ascii_downcase) | index("kms:decrypt"))
+      | select(.Condition.StringNotEqualsIgnoreCase["kms:RecipientAttestation:PCR17"] == $pcr17)
+    ] | length) as $pcr17_denies
+  | ([.Statement[] | select(.Sid == "DenyUnlessTheAttestationComesFromAnEKSSandbox")
+      | select(.Effect == "Deny") | select(.Principal == "*")
+      | select(actions | map(ascii_downcase) | index("kms:decrypt"))
+      | select(.Condition.StringNotEqualsIgnoreCase["kms:RecipientAttestation:PCR8:ServiceName"] == "eks.amazonaws.com")
+    ] | length) as $pcr8_denies
+  | $allow_actions_reaching_decrypt == 1
+    and $allows == 1 and $pcr17_denies == 1 and $pcr8_denies == 1
 ' "$TMP_DIR/kms-key-policy.live.json" >/dev/null ||
-  die "the live KMS key policy is not gated on the approved measurement; not starting the changed pod"
+  die "the live KMS key policy is not the approved gate (read back into $TMP_DIR/kms-key-policy.live.json); not starting the changed pod, because its refusal would not show the measurement being refused"
 echo "  the gate is bound to the approved measurement, unchanged"
 
 echo "== 4/4 start the changed pod and wait for the refusal =="
