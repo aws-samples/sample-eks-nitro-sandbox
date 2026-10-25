@@ -205,6 +205,17 @@ command -v realpath >/dev/null 2>&1 || cannot_check "realpath is needed to check
   "'$REPO_ROOT/tmp' is a symbolic link, so where the brief, the review and the trace would land is not this repository's gitignored tmp/. Make it a real directory."
 TMP_ABS=$(realpath -m "$REPO_ROOT/tmp") || refuse E_NOT_IN_TMP \
   "could not resolve '$REPO_ROOT/tmp', so there is nothing to check the brief and output paths against."
+# A --brief at one of the output names would pass its own [ -f ] check and then be removed
+# by the loop below, so refuse it rather than delete the thing we were asked to read.
+brief_not_an_output_name() {
+  case "$(basename -- "$1")" in
+    review.out|review.err|review.json|review-record.txt|record.tsv|preamble.txt|\
+    pre-user.txt|codex-stdin.txt|tree-before.sha256|tree-at-return.sha256|tree-after.sha256)
+      [ "$(dirname -- "$1")" != "$2" ] || refuse E_BRIEF \
+        "the brief '$1' has the name of a file this script writes into --out, and would be removed before being read. Rename it." ;;
+  esac
+}
+
 in_repo_tmp() {
   local p
   # A symlink loop or a path realpath cannot resolve must refuse, not run unchecked.
@@ -216,27 +227,7 @@ in_repo_tmp() {
 }
 OUT_ABS=$(in_repo_tmp "$OUT" --out)
 BRIEF_ABS=$(in_repo_tmp "$BRIEF" --brief)
-
-mkdir -p "$OUT_ABS"
-# Remove anything already sitting at a name this script writes, before the first write.
-# Refusing only a symbolic link was not enough: a hard link passes [ -L ] and shares its
-# target's file, so ">", tee and python's open(...,"w") all write straight into whatever it
-# points at -- a tracked file, or a file in the tree after the tree has been fingerprinted.
-# Checked both: a hard link at review-record.txt let tee overwrite a tree file, and removing
-# the name first leaves the target untouched. Removing a name never touches its target, and
-# it covers symbolic links, hard links and FIFOs at once, which is why this replaces rather
-# than refuses. It can only account for what exists before the run; something writing into
-# --out *during* the run could also simply overwrite tree-before.sha256, which no check here
-# could defend against.
-for _n in review.out review.err review.json review-record.txt record.tsv \
-          preamble.txt pre-user.txt codex-stdin.txt \
-          tree-before.sha256 tree-at-return.sha256 tree-after.sha256; do
-  rm -f -- "$OUT_ABS/$_n"
-  if [ -e "$OUT_ABS/$_n" ] || [ -L "$OUT_ABS/$_n" ]; then
-    refuse E_OUT_TAINTED \
-      "'$OUT_ABS/$_n' already exists and could not be removed, so this script cannot write there safely. Use a fresh --out."
-  fi
-done
+brief_not_an_output_name "$BRIEF_ABS" "$OUT_ABS"
 
 TREE_ABS=$(realpath "$TREE")
 
@@ -262,6 +253,34 @@ tree_fingerprint() {
     find . -mindepth 1 -printf '%y %m %s %T@ %p -> %l\0' | LC_ALL=C sort -z
     find . -mindepth 1 -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum -z )
 }
+mkdir -p "$OUT_ABS"
+
+# Remove anything already sitting at a name this script writes, immediately before the
+# first write and after every refusal that can still happen before the backend runs.
+# Two reasons for that placement, both learned the hard way: with --out inside the tree
+# this loop deleted files from the snapshot and only then refused E_OUT_IN_TREE -- a guard
+# in a tool whose whole promise is not touching the tree, destroying files in it -- and a
+# re-run into a used --out with some other argument mistyped would throw away the previous
+# run's review.out and review-record.txt, which is ten to twenty-five minutes of billed
+# work, before refusing for the unrelated mistake.
+#
+# Removing rather than refusing, because refusing only caught symbolic links: a hard link
+# passes [ -L ] and shares its target's file, so ">", tee and python's open all write
+# straight into whatever it names. Checked both. Removing a name never touches its target,
+# and it covers symbolic links, hard links, FIFOs, sockets and device nodes at once. It can
+# only account for what exists before the run: something writing into --out *during* it
+# could overwrite tree-before.sha256 itself, which no check here could defend against.
+for _n in review.out review.err review.json review-record.txt record.tsv \
+          preamble.txt pre-user.txt codex-stdin.txt \
+          tree-before.sha256 tree-at-return.sha256 tree-after.sha256; do
+  # A failing rm would otherwise end the script under set -e with rm's own untagged
+  # message, so the refusal below could only ever fire after a *successful* removal.
+  if ! rm -f -- "$OUT_ABS/$_n" 2>/dev/null || [ -e "$OUT_ABS/$_n" ] || [ -L "$OUT_ABS/$_n" ]; then
+    refuse E_OUT_TAINTED \
+      "'$OUT_ABS/$_n' is in the way and this script cannot clear it -- a directory at that name, an unwritable --out, or something re-creating it. It cannot write there safely. Use a fresh --out."
+  fi
+done
+
 tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-before.sha256"
 
 # A short, per-run ASCII line, prepended to what the codex backend reads and used to
@@ -670,7 +689,10 @@ for m in "${answered_models[@]}"; do
 done
 
 # Both fingerprints must match the one taken before the run, and the later one is tested
-# first so that each message is true: a mismatch in both is simply a changed tree, while a
+# first, and each of the three outcomes has its own message: changed during the run,
+# changed after it returned, or put back afterwards. Testing the early one
+# first said "it matches again now" even when it did not. A mismatch in both is a change
+# during the run, while a
 # mismatch only at return means a change that was put back afterwards. Testing the early one
 # first said "it matches again now" even when it did not.
 tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-after.sha256"
@@ -680,6 +702,12 @@ if cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-after.sha256" \
     "the tree at $TREE_ABS differed from its fingerprint when the backend returned, and matches again now: a change that was put back afterwards is still a change, and the reviewer was not read-only. Compare $OUT_ABS/tree-before.sha256 with tree-at-return.sha256."
 fi
 if ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-after.sha256"; then
+  if cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then
+    # Matched when the backend returned and differs now: the change came afterwards, from
+    # something the backend left running or from another process, not from the run itself.
+    refuse E_TREE_CHANGED \
+      "the tree at $TREE_ABS matched its fingerprint when the backend returned and differs now, so something changed it after the run -- a process the backend left behind, or another one. Compare $OUT_ABS/tree-at-return.sha256 with tree-after.sha256."
+  fi
   refuse E_TREE_CHANGED \
     "the tree at $TREE_ABS changed while the reviewer ran, so the reviewer was not read-only. Compare $OUT_ABS/tree-before.sha256 with tree-after.sha256."
 fi

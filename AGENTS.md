@@ -197,6 +197,11 @@ SECOND_REVIEW_CONTEXT_DIR="$round/context" \
   its own fresh working directory, and nothing else. The folder is added as readable, and
   the script refuses one that is or contains `--out`, because that holds the trace. Codex needs none of this: it is
   given the tree as its working root and will read an absolute path anywhere.
+- **One `--out` per run.** The script clears the names it writes there, so pointing two
+  runs at one output directory loses the first one's review. Two concurrent runs sharing it
+  also read each other's files; the codex path refuses when that happens, because its
+  preamble nonce will not match, but the claude path has no such marker. The round folder
+  the skill prepares gives each run its own.
 - **`--brief` and `--out` must be under this repository's gitignored `tmp/`**, and the
   script refuses anything else. Why: it writes the backend's trace into `--out`, and a
   trace can hold credential details, so it must never land in a tracked folder.
