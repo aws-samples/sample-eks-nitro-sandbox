@@ -19,6 +19,18 @@ EXPORTER_SRC_CM=claim-exporter-src
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAMPLE_DIR="$(cd "$HERE/.." && pwd)"
 
+# grep and sed are checked HERE, before .env is read, and not left to
+# require_commands further down. The parser below pipes through both inside a
+# process substitution, where a failure does not trip `set -e`: a missing grep
+# would silently leave .env unread, and the run would then use the default
+# namespace and whatever context the machine happens to be on. Every other
+# missing command fails the run; this one would have changed which cluster was
+# targeted, which is the one failure that must not be quiet.
+for _c in grep sed; do
+  command -v "$_c" >/dev/null 2>&1 \
+    || { echo "error: missing required command: $_c, which is needed to read .env; refusing to fall back to the default namespace and the machine's current context" >&2; exit 1; }
+done
+
 # Load .env if present, as defaults. A value already set in the environment wins
 # over .env, so `NAMESPACE=other ./scripts/setup.sh` overrides the file.
 if [[ -f "$SAMPLE_DIR/.env" ]]; then
@@ -370,7 +382,11 @@ make_claims() {
 delete_claims() {
   local names=() i
   for ((i = 1; i <= MAX_CLAIMS; i++)); do names+=("${CLAIM_PREFIX}-${i}"); done
-  kc delete sandboxclaim "${names[@]}" --ignore-not-found --wait=false >/dev/null 2>&1
+  # --request-timeout because the control calls this from inside a trap that
+  # ignores INT, TERM and HUP, where a hung call could only be escaped with a
+  # SIGKILL.
+  kc delete sandboxclaim "${names[@]}" --ignore-not-found --wait=false \
+    --request-timeout=30s >/dev/null 2>&1
 }
 
 # wait_claims_gone <timeout-s> : wait until none of this sample's demand claims

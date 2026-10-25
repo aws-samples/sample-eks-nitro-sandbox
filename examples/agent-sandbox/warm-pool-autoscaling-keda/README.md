@@ -324,7 +324,7 @@ spec:
 | Field | What it does |
 |---|---|
 | `scaleTargetRef` | The `SandboxWarmPool`. KEDA creates an HPA for it and the HPA writes the pool's `/scale` subresource, exactly as it would for a Deployment. |
-| `metricType: Value` with `targetValue: "1"` | `desiredReplicas = ceil(active_claims / 1)`, clamped to the bounds. Not `AverageValue`: the metric is a count for the whole pool, not a per-pod rate, so it must not be divided by the replica count. |
+| `metricType: Value` with `targetValue: "1"` | The claim count is compared with the target directly, not divided across the pods as `AverageValue` would: the metric is a count for the whole pool, not a per-pod rate. What this sample's runs establish is the two ends — no claims hold the floor, and demand at the cap lands on the cap. They do not establish the mapping in between, and the natural guess for it, one more warm pod per claim, is probably not what the HPA does: its external-metric arithmetic scales the ratio by the number of *ready* replicas. [`deploy/scaledobject.yaml`](deploy/scaledobject.yaml) says more. Rely on the bounds, not on a per-claim rule. |
 | `minReplicaCount: 1` | The warm floor. At rest the pool still holds one pre-booted pod, so the first claim after a quiet spell is still adopted in under a second. |
 | `maxReplicaCount: 3` | The bound on warm capacity. However much demand the exporter reports, the pool never holds more than this. |
 | `behavior.scaleDown.stabilizationWindowSeconds: 0` | The HPA's default is 300 seconds, so with the default the pool would sit at its loaded size for five minutes after the last claim went and you could not see the scale-down at all. In production, set it to how long you are willing to pay to keep warm capacity nothing is asking for. |
@@ -558,15 +558,18 @@ configuration, and the request is only corroboration:
 
 **Both address families, on purpose.** `ip -4` and an IPv4-only route check would say
 nothing about IPv6, so a guest reachable only over v6 would satisfy them while the page
-claimed it had no network at all. `ip -o addr show` lists every family — which is why
-loopback appears twice above, once as `127.0.0.1` and once as `::1` — and the route reading
-asks for the v4 and the v6 default separately.
+claimed it had no network at all. `ip -o addr show` lists every family, so loopback appears
+twice, once as `127.0.0.1` and once as `::1`, and the route reading asks for the v4 and the
+v6 default separately.
 
 The three `ip` readings come from the guest's own kernel rather than from whether a request
 happened to work, which is what makes them stronger than the `wget` line; `ip` itself is the
-container image's own binary, so this is the guest describing itself and not an attestation. Each of the four checks was proved to reject as well as to accept, against the
-real script rather than a copy of it; the pull request lists the inputs, including the
-IPv6-only ones that the earlier IPv4-only version of these two checks accepted.
+container image's own binary, so this is the guest describing itself and not an attestation.
+
+Each of the four checks was proved to reject as well as to accept, against the real script
+rather than a copy of it. The pull request lists every input, including the IPv6-only address
+and the IPv6-only default route, which the earlier IPv4-only version of these two checks
+accepted.
 
 A pod that needs a network instead drops the annotation and ships an egress policy, as the
 [network policy](../../isolation/network-policy/README.md) sample shows.

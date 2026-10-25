@@ -49,8 +49,12 @@ restore_scaledobject() {
   # trap restores it again, and on every `die` after the trap is set, where the
   # ScaledObject has not been deleted at all. The trap ignores INT and TERM while
   # it runs, so those two minutes were also uninterruptible and printed nothing.
+  # A read that FAILED maps to "wait", not to "nothing in flight": if a deletion
+  # really is in progress, skipping the wait means applying over a terminating
+  # object, and the read-back below then reports a restore that could have worked.
+  # --ignore-not-found keeps a genuinely absent object as the empty, no-wait case.
   del="$(kc get scaledobject "$SCALEDOBJECT" --ignore-not-found \
-           --request-timeout=30s -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null)" || del=""
+           --request-timeout=30s -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null)" || del="unknown"
   if [[ -n "$del" ]]; then
     echo "  scaledobject/$SCALEDOBJECT is still terminating; waiting for the deletion to finish"
     kc wait --for=delete "scaledobject/$SCALEDOBJECT" --timeout=120s >/dev/null 2>&1 || true
@@ -206,16 +210,23 @@ while ((SECONDS < deadline)); do
 done
 after="$(pool_spec_replicas)" || after="?"
 print_stage "under load"
-# Only printed when the window really was flat, so the line cannot appear above a
-# reading that moved, or claim "every one of them" when nothing was read at all.
-if [[ -z "$moved" ]]; then
+# "every one of them" is a claim about readings that were taken, so it needs
+# BOTH that none of them moved and that there were some. With no successful read
+# the line would otherwise say "read 0 time(s), every one of them 1", which is
+# the sentence this guard exists to prevent.
+if [[ -z "$moved" && $polls -gt 0 ]]; then
   echo "  spec.replicas read $polls time(s) during the window, every one of them $baseline"
+elif [[ -z "$moved" ]]; then
+  echo "  no reading of spec.replicas came back during the window, so nothing was observed"
 fi
 # Both sides must be real numbers AND equal, and the window must have been
 # watched. "?" == "?" would otherwise report a flat pool from two failed reads.
 [[ -z "$moved" && $polls -gt 0 && "$after" =~ ^[0-9]+$ && "$after" == "$baseline" ]]
 assert $? "with no autoscaler, spec.replicas stayed flat at $baseline under the same $MAX_CLAIMS claims"
 [[ -n "$moved" ]] && echo "  spec.replicas moved to $moved with no ScaledObject present; that is unexpected, investigate before trusting demand.sh"
+# A flat window and a different reading after it is its own case, and without this
+# the FAIL above would have nothing beside it saying what was seen.
+[[ -z "$moved" && "$after" != "$baseline" ]] && echo "  spec.replicas read $after after the window, having been $baseline throughout it"
 
 step "4/4 put the sample back: claims deleted, ScaledObject re-applied"
 # The trap does this too, so an interrupted run is covered; doing it here means
@@ -231,14 +242,26 @@ restore_scaledobject || restore_rc=$?
 assert $? "scaledobject/$SCALEDOBJECT is back and not terminating, so the sample is not left without its autoscaler"
 echo "  waiting for KEDA to take the pool back"
 back=""
+seen=""          # the last answer the loop got, for the line below
+seen_rc=0
 for _ in $(seq 1 36); do   # 36 * 5s = 3m
   # One name, not several: two HPAs both targeting the pool would make this
   # "yes" while KEDA's own may never have been created.
-  if back="$(hpa_for_pool)" && [[ -n "$back" && "$back" != *$'\n'* ]]; then break; fi
+  seen_rc=0
+  seen="$(hpa_for_pool)" || seen_rc=$?
+  if [[ $seen_rc -eq 0 && -n "$seen" && "$seen" != *$'\n'* ]]; then back="$seen"; break; fi
   back=""
   sleep 5
 done
-echo "  HPA whose scaleTargetRef names $POOL: ${back:-<none>}"
+# Report what was actually seen. Printing "<none>" for a failed read, or for two
+# names, would say the opposite of what happened.
+if [[ $seen_rc -ne 0 ]]; then
+  echo "  HPA whose scaleTargetRef names $POOL: <could not read>"
+elif [[ -z "$seen" ]]; then
+  echo "  HPA whose scaleTargetRef names $POOL: <none>"
+else
+  echo "  HPA whose scaleTargetRef names $POOL: ${seen//$'\n'/, }"
+fi
 [[ -n "$back" ]]
 assert $? "KEDA created its HPA for $POOL again, so the pool is back under autoscaling"
 

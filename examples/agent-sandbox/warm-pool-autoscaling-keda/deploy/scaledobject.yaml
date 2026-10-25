@@ -7,11 +7,24 @@
 # .spec.replicas. So KEDA creates a Horizontal Pod Autoscaler, the HPA writes the
 # pool's /scale subresource, and spec.replicas is the field that moves.
 #
-# THE ARITHMETIC. metricType: Value with targetValue: 1 means
-#   desiredReplicas = ceil(active_claims / 1)
-# clamped to [minReplicaCount, maxReplicaCount]. So with the bounds below: no
-# claims hold the pool at the warm floor of 1, one claim asks for 1, two ask for
-# 2, and three or more ask for 3, which is the cap.
+# THE ARITHMETIC, and what this sample has and has not established.
+#
+# What its runs show: no claims hold the pool at the warm floor of 1, and three
+# claims take it to 3, the cap. Those two readings are on the page.
+#
+# What they do NOT show is the mapping in between, and the obvious guess for it is
+# probably wrong. "desiredReplicas = ceil(active_claims / targetValue)" is the
+# natural reading of metricType: Value, but the Horizontal Pod Autoscaler's
+# arithmetic for an external metric scales the ratio by the number of READY
+# replicas: roughly ceil((metricValue / targetValue) * readyReplicas), holding
+# steady while the ratio is within its tolerance of 1. With targetValue: 1 that
+# makes the ratio the claim count itself, so any demand above one claim asks for
+# more than the cap and lands on it. Both readings this sample took are the same
+# under either rule, which is why the difference does not show in its output.
+#
+# Do not read a per-claim mapping into the numbers below. What the bounds
+# guarantee is the part that matters here: at rest the pool holds
+# minReplicaCount, and it never exceeds maxReplicaCount.
 #
 # __NAMESPACE__ is filled in at apply time by the scripts from the NAMESPACE
 # variable, so an overridden name reaches this object and the exporter URL below.

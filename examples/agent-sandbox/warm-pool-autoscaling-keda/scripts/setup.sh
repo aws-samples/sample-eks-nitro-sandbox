@@ -14,7 +14,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "$HERE/common.sh"
 
-require_commands kubectl sed seq
+# grep and tr are used by wait_pool_warm, which step 5/5 calls, not by this file
+# directly. They belong here all the same: without grep that function's filter
+# produces an empty string, which it would read as "nothing is terminating".
+require_commands kubectl sed seq grep tr
 show_context
 
 # --- the shared installs, checked before anything is created ----------------
