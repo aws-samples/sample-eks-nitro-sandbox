@@ -72,16 +72,21 @@ kc() {
 
 # A lookup that cannot run is "could not determine", which is a failure, never "absent".
 # So absence is proved by the service's own not-found exception and nothing else; any
-# other error stops the script before it can create a duplicate of something that is
-# already there.
+# other error has to stop the script before it can create a duplicate of something that
+# is already there.
 #   lookup <not-found-exception> <aws args...>
 #     prints stdout and returns 0 when the resource is there
 #     returns 1 only when the named exception came back
+#     returns 2 when it could not be determined, having printed the AWS error
+#
+# It returns 2 rather than exiting, because every caller runs it inside a command
+# substitution: an exit there would leave the subshell only, and the caller would read
+# the non-zero status as "absent" and go on to create the resource.
 lookup() {
   local notfound="$1"; shift
   local out err rc=0
-  out="$(mktemp "${TMPDIR:-/tmp}/ei-out.XXXXXX")" || die "mktemp failed"
-  err="$(mktemp "${TMPDIR:-/tmp}/ei-err.XXXXXX")" || die "mktemp failed"
+  out="$(mktemp "${TMPDIR:-/tmp}/ei-out.XXXXXX")" || return 2
+  err="$(mktemp "${TMPDIR:-/tmp}/ei-err.XXXXXX")" || return 2
   aws "$@" >"$out" 2>"$err" || rc=$?
   if [[ "$rc" == 0 ]]; then
     cat "$out"; rm -f "$out" "$err"; return 0
@@ -89,10 +94,17 @@ lookup() {
   if grep -Fq "$notfound" "$err"; then
     rm -f "$out" "$err"; return 1
   fi
-  echo "ERROR: 'aws $*' failed (exit $rc) and not with $notfound, so it is unknown whether the resource exists; created nothing:" >&2
+  echo "ERROR: 'aws $*' failed (exit $rc) and not with $notfound, so it is unknown whether the resource exists:" >&2
   sed 's/^/  /' "$err" >&2
   rm -f "$out" "$err"
-  exit 1
+  return 2
+}
+
+# The other half of that contract, at the call site. A lookup that could not run must
+# never reach the create path.
+stop_if_undetermined() {  # stop_if_undetermined <lookup-rc> <description>
+  [[ "$1" != 2 ]] ||
+    die "could not determine whether $2 exists (the AWS error is above), so this run created and changed nothing. Re-run once the call succeeds."
 }
 
 # Confirms a resource this script is about to reuse carries the sample's ownership tag.
@@ -148,8 +160,11 @@ state_put CLUSTER_NAME "$CLUSTER_NAME"
 # ------------------------------------------------------- 2/8 ECR repository and KMS key
 echo "== 2/8 create the ECR repository and the KMS key =="
 
-if repo_json="$(lookup RepositoryNotFoundException ecr describe-repositories \
-  --repository-names "$ECR_REPOSITORY" --query 'repositories[0]' --output json)"; then
+repo_json=""; repo_rc=0
+repo_json="$(lookup RepositoryNotFoundException ecr describe-repositories \
+  --repository-names "$ECR_REPOSITORY" --query 'repositories[0]' --output json)" || repo_rc=$?
+stop_if_undetermined "$repo_rc" "the ECR repository $ECR_REPOSITORY"
+if [[ "$repo_rc" == 0 ]]; then
   repo_arn="$(jq -r '.repositoryArn' <<<"$repo_json")"
   # ECR does not return tags on describe-repositories, so ownership needs this second call.
   repo_tag="$(aws ecr list-tags-for-resource --resource-arn "$repo_arn" \
@@ -171,8 +186,11 @@ fi
 state_put ECR_REPOSITORY "$ECR_REPOSITORY"
 state_put ECR_REPOSITORY_ARN "$repo_arn"
 
-if key_json="$(lookup NotFoundException kms describe-key --key-id "$KMS_ALIAS" \
-  --query 'KeyMetadata' --output json)"; then
+key_json=""; key_rc=0
+key_json="$(lookup NotFoundException kms describe-key --key-id "$KMS_ALIAS" \
+  --query 'KeyMetadata' --output json)" || key_rc=$?
+stop_if_undetermined "$key_rc" "the KMS key behind $KMS_ALIAS"
+if [[ "$key_rc" == 0 ]]; then
   kms_key_id="$(jq -r '.KeyId' <<<"$key_json")"
   kms_key_arn="$(jq -r '.Arn' <<<"$key_json")"
   key_tag="$(aws kms list-resource-tags --key-id "$kms_key_id" \
@@ -218,8 +236,11 @@ trust_policy="$(jq --arg c "$CLUSTER_NAME" --arg n "$NAMESPACE" --arg s "$SERVIC
 ' "$TRUST_POLICY_TEMPLATE")"
 printf '%s\n' "$trust_policy" > "$TMP_DIR/role-trust-policy.json"
 
-if role_json="$(lookup NoSuchEntity iam get-role --role-name "$IAM_ROLE_NAME" \
-  --query 'Role' --output json)"; then
+role_json=""; role_rc=0
+role_json="$(lookup NoSuchEntity iam get-role --role-name "$IAM_ROLE_NAME" \
+  --query 'Role' --output json)" || role_rc=$?
+stop_if_undetermined "$role_rc" "the IAM role $IAM_ROLE_NAME"
+if [[ "$role_rc" == 0 ]]; then
   role_tag="$(aws iam list-role-tags --role-name "$IAM_ROLE_NAME" \
     --query "Tags[?Key=='ManagedBy'].Value | [0]" --output text)"
   if [[ "$role_tag" == "None" ]]; then role_tag=""; fi
@@ -415,11 +436,14 @@ echo "  egress policy applied and handed to the nodes ($endpoints PolicyEndpoint
 echo "== 5/8 encrypt every layer and push to ECR =="
 
 image_exists=false
-if manifest_json="$(lookup ImageNotFoundException ecr batch-get-image \
+manifest_json=""; image_rc=0
+manifest_json="$(lookup ImageNotFoundException ecr batch-get-image \
   --repository-name "$ECR_REPOSITORY" --image-ids "imageTag=$IMAGE_TAG" \
   --accepted-media-types application/vnd.oci.image.manifest.v1+json \
                          application/vnd.docker.distribution.manifest.v2+json \
-  --query 'images[0].imageManifest' --output text)"; then
+  --query 'images[0].imageManifest' --output text)" || image_rc=$?
+stop_if_undetermined "$image_rc" "the published image $ENCRYPTED_IMAGE_URI"
+if [[ "$image_rc" == 0 ]]; then
   if [[ -n "$manifest_json" && "$manifest_json" != "None" ]]; then image_exists=true; fi
 fi
 
