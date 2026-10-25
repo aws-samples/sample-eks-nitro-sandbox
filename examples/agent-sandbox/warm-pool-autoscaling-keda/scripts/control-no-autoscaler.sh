@@ -226,7 +226,26 @@ assert $? "with no autoscaler, spec.replicas stayed flat at $baseline under the 
 [[ -n "$moved" ]] && echo "  spec.replicas moved to $moved with no ScaledObject present; that is unexpected, investigate before trusting demand.sh"
 # A flat window and a different reading after it is its own case, and without this
 # the FAIL above would have nothing beside it saying what was seen.
-[[ -z "$moved" && "$after" != "$baseline" ]] && echo "  spec.replicas read $after after the window, having been $baseline throughout it"
+#
+# Each branch claims only what was actually read, which the single line this
+# replaces did not. "having been $baseline throughout it" is a claim about the
+# readings in the window, so it needs $polls to say some came back; and naming a
+# value needs that value to BE a reading, where "?" is what a failed read prints.
+# Without those two conditions the line said "read ? after the window, having been
+# 1 throughout it" directly under "no reading of spec.replicas came back during
+# the window" -- two consecutive lines contradicting each other, about readings
+# that were never taken. That is the third time this same sentence has been raised:
+# round three found the loop counting a reading it then mis-reported, round four
+# found the fix still printing it with no readings at all, and round five found
+# these cases. Every branch keeps `-z "$moved"`, so the movement case is still
+# reported only by the "moved to" line above and nothing is added to it.
+if [[ -z "$moved" && "$after" == "?" ]]; then
+  echo "  spec.replicas could not be read after the window"
+elif [[ -z "$moved" && $polls -eq 0 && "$after" != "$baseline" ]]; then
+  echo "  spec.replicas read $after after the window, but nothing came back during it"
+elif [[ -z "$moved" && "$after" != "$baseline" ]]; then
+  echo "  spec.replicas read $after after the window, having been $baseline throughout it"
+fi
 
 step "4/4 put the sample back: claims deleted, ScaledObject re-applied"
 # The trap does this too, so an interrupted run is covered; doing it here means
