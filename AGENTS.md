@@ -135,9 +135,9 @@ security claim. **There are three sanctioned ways to do it, and they are interch
    are asking it to review.
 
 You pick, and no approval is needed. What matters is not which one you use but the three
-invariants below. The script holds them for you on paths 1 and 2 — with one difference in
-*how* it establishes the read-only one, set out under [Running it](#running-it) — and you
-hold them yourself on path 3.
+invariants below. The script works to hold them for you on paths 1 and 2 — by different
+means for each, and with limits worth reading, set out under [Running it](#running-it) — and
+you hold them yourself on path 3.
 
 **Adversarial** describes what the reviewer does, not how the brief is worded: it assumes
 the implementer's code is wrong and tries to break the claims it makes. It does not mean
@@ -151,8 +151,10 @@ reviewer you use:
 
 1. **It runs on a different model from the one that wrote the change.** Why: a model
    reviewing its own work repeats its own reasoning.
-2. **It cannot write to the tree it reviews.** Why: a reviewer that edits the code is no
-   longer telling you what the code says.
+2. **It must not be able to write to the tree it reviews, and is shown to have left it
+   unchanged.** Those are two separate things — how the backend was confined, and what the
+   tree looked like afterwards — and the two backends do not establish them identically.
+   Why: a reviewer that edits the code is no longer telling you what the code says.
 3. **The model that actually answered is recorded in the pull request.** Why: an alias such
    as `opus`, or a Bedrock prompt router, can resolve to the very model you were avoiding,
    so the name you asked for is not evidence.
@@ -212,20 +214,29 @@ Read-only is not one flag, and the two backends do not establish it the same way
 one you used when you record a review, rather than writing "read-only" as if it meant the
 same thing.
 
-- **Codex: reported and checked.** `--sandbox read-only` on its own does **not** stop Codex
-  writing — it leaves the approval policy at `on-request`, and a host whose configuration
-  answers that ask by itself lets the write through. A run on 2026-10-25 with exactly that
-  flag created a file in the review tree and appended to a page, and reported both as
-  successful. The script passes `-c approval_policy="never"` as well, and then **reads
-  Codex's own preamble and refuses the run unless Codex reports `sandbox: read-only` and
-  `approval: never`**. So for this backend the confinement is confirmed from what the
-  backend says about itself.
-- **Claude: requested, and checked after the fact.** The script runs it with `--restricted`,
-  `--strict-mcp-config`, a read-only tool list and no answerer for permission prompts, so
-  the reviewer holds no tool that can write — asked to write, it reports that no such tool
-  exists and that `ToolSearch select:Write,Edit,Bash` finds nothing. `--restricted` is what
-  removes the tools, rather than a permission rule: a settings file granting `Bash`, `Write`
-  and `Edit` was tried and still could not write, because the tools are not there to grant.
+- **Codex: configured, then read back afterwards.** `--sandbox read-only` on its own does
+  **not** stop Codex writing — it leaves the approval policy at `on-request`, and a host
+  whose configuration answers that ask by itself lets the write through. A run on
+  2026-10-25 with exactly that flag created a file in the review tree and appended to a
+  page, and reported both as successful. The script passes `-c approval_policy="never"` as
+  well, and **reads Codex's own preamble after the run, refusing the result unless Codex
+  reported `sandbox: read-only` and `approval: never`**. Note *after*: that is a check on
+  what happened, not a gate before it. If it refuses, the reviewer has already run, so the
+  message also says whether the tree changed.
+- **Claude: configured, and checked only by the tree.** The script runs it with
+  `--restricted`, `--strict-mcp-config`, `--tools Read,Grep,Glob` and no answerer for
+  permission prompts. **`--tools` is the load-bearing flag: it sets which tools the reviewer
+  *holds*.** An earlier version used `--allowedTools`, which only says which tools may run
+  without asking and takes nothing away — under it the reviewer still held `ToolSearch`,
+  `Skill`, `ListAgents`, `ReportFindings` and `ScheduleWakeup`, and could load
+  `SendMessage`, `EnterWorktree`, `ExitWorktree`, `CronList` and `CronDelete`. Three of
+  those act **outside the tree, where the fingerprint cannot see them**: `SendMessage`
+  reaches other sessions on the machine, `EnterWorktree` acts on the enclosing repository,
+  `CronDelete` removes scheduled tasks. Asked to list its tools, a reviewer under the old
+  flags named all of them and said it *could* message another session; under `--tools` it
+  names exactly three and says it cannot.
+  A settings file granting `Bash`, `Write` and `Edit` was also tried and still could not
+  write, because a permission grant cannot resurrect a tool that is not present.
   But **Claude does not report its confinement back**, so there is nothing to parse and
   verify: the record states what Claude was *asked* to be. The evidence that it did not
   write is the tree check below, not a backend report.
@@ -277,6 +288,30 @@ same thing.
   says nothing about writes outside the tree. It is still the check that caught the write
   above, and on the Claude path it is the whole of the after-the-fact evidence.
 
+#### Limits that apply wherever you run it
+
+These are not host-specific, and the section below is not where to look for them.
+
+- **The review should not be billed to an account whose credentials merely happen to be
+  present.** The script removes the AWS credential variables from the environment before
+  running the Codex backend, which leaves it whatever its own configuration pins and so
+  **reduces the risk** of an ambient account paying for a review. It does not eliminate it:
+  the removal is a **denylist** of the variables the AWS SDKs are known to read, so a
+  backend that reads some other variable is not covered, and a backend whose credentials
+  come from a helper named in its own configuration file is not affected by it at all.
+  Knowing which account your backend bills is still yours to establish. Set
+  `SECOND_REVIEW_KEEP_AWS_ENV=1` only if your Codex authenticates to Bedrock with exactly
+  those credentials. Why: this workstation holds live credentials for an unrelated account,
+  and the removal is what keeps them out of the reviewer.
+- **The two backends differ in what else the reviewer can reach.** `--backend claude` runs
+  with `--tools Read,Grep,Glob` and `--strict-mcp-config`, so those three are the only
+  tools it holds and it has no MCP server. Codex 0.164 cannot clear `mcp_servers` from the
+  command line, so a Codex review can also reach whatever MCP servers that machine's
+  `~/.codex/config.toml` defines — any machine's, not only a configured workstation — and
+  some of those write to other systems. Both backends are equally sanctioned; this is a
+  difference to know about, not a reason to pick one. In both cases the review tree is
+  checked afterwards, and writes outside it are not.
+
 #### A sub agent in your own session
 
 The third path needs no script: dispatch a fresh agent, give it the brief, and have it read
@@ -319,8 +354,10 @@ flags-only check while still being able to write.
 
 #### Host-specific options, where you are on that machine
 
-These are local conveniences, not the required path. Nothing here is needed to run a
-review, and a collaborator on a laptop has none of it.
+These are local conveniences: a particular build to name, and a wrapper not to use. The
+limits that apply to every run are above, under
+[Limits that apply wherever you run it](#limits-that-apply-wherever-you-run-it) — do not
+skip those because you are not on this machine.
 
 - **The maintainers' workstation Codex.** Name the toolbox build and its Bedrock provider,
   because the `codex` the shared `PATH` finds first can be an older standalone build:
@@ -333,17 +370,6 @@ review, and a collaborator on a laptop has none of it.
   Its Bedrock calls bill the toolbox-managed builder account, because the host
   `~/.codex/config.toml` pins the provider with a `credential_export` running the toolbox
   Codex credential helper.
-- **The review should not be billed to an account whose credentials merely happen to be
-  present.** The script removes the AWS credential variables from the environment before
-  running the Codex backend, which leaves it whatever its own configuration pins and so
-  **reduces the risk** of an ambient account paying for a review. It does not eliminate it:
-  the removal is a **denylist** of the variables the AWS SDKs are known to read, so a
-  backend that reads some other variable is not covered, and a backend whose credentials
-  come from a helper named in its own configuration file is not affected by it at all.
-  Knowing which account your backend bills is still yours to establish. Set
-  `SECOND_REVIEW_KEEP_AWS_ENV=1` only if your Codex authenticates to Bedrock with exactly
-  those credentials. Why: this workstation holds live credentials for an unrelated account,
-  and the removal is what keeps them out of the reviewer.
 - **`~/.kiro/crew/codex/codex-builder`** is the older wrapper that did that removal outside
   the script. It no longer starts: it appends
   `-c model_providers.amazon-bedrock.aws.profile=...` unconditionally, and Codex 0.164
@@ -355,13 +381,6 @@ review, and a collaborator on a laptop has none of it.
   role. That is one observation on one machine, not a guarantee, and a review's output
   identifies no billed account — so treat it as a reason not to worry rather than as proof.
   Use the wrapper only if you have fixed it, by pointing `SECOND_REVIEW_CODEX_CMD` at it.
-- **The two backends differ in what else the reviewer can reach.** `--backend claude` runs
-  with `--restricted` and `--strict-mcp-config`, so the reviewer holds only `Read`, `Grep`
-  and `Glob` and no MCP server. Codex 0.164 cannot clear `mcp_servers` from the command
-  line, so a Codex review on a configured workstation can also reach whatever MCP servers
-  the host defines, some of which write to other systems. Both backends are equally
-  sanctioned; this is a difference to know about, not a reason to pick one. In both cases
-  the review tree is checked afterwards, and writes outside it are not.
 - **Each backend authenticates through its own configured credential path, and the two do
   not resolve to the same account.** That is expected: they are different vendors' traffic.
   On the maintainers' workstation both are accounts the maintainers intend.

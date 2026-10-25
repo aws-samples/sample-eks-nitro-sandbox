@@ -317,10 +317,21 @@ case "$BACKEND" in
     # is where the write-capable tools on a configured workstation live;
     # --disallowedTools is the deny list for the rest; and --permission-prompts none
     # means nothing can answer a permission request, so a tool that needs one is refused.
+    # --tools is the list of tools the reviewer HOLDS. --allowedTools, which this used
+    # before, only says which tools may run without asking -- it does not take any away.
+    # With it alone the reviewer still held ToolSearch, Skill, ListAgents, ReportFindings
+    # and ScheduleWakeup, and could load SendMessage, EnterWorktree, ExitWorktree, CronList
+    # and CronDelete. Three of those act outside the tree, where the fingerprint cannot
+    # see them: SendMessage reaches other sessions on the machine, EnterWorktree acts on
+    # the enclosing repository, CronDelete removes scheduled tasks. Asked to list its
+    # tools, a reviewer under the old flags named all of them and said it could message
+    # another session; under --tools it names exactly three and says it cannot.
+    # --disallowedTools stays as a second layer, and because --restricted will return a
+    # code-running tool "unless --tools names them", which this never does.
     claude_args=(-p --output-format json --model "$MODEL"
                  --restricted
                  --strict-mcp-config
-                 --allowedTools "Read,Grep,Glob"
+                 --tools "Read,Grep,Glob"
                  --disallowedTools "Edit,Write,NotebookEdit,Bash,BashOutput,KillShell,Task,Agent,WebFetch,WebSearch"
                  --permission-prompts none)
     # Ignoring the user settings file also throws away how this claude authenticates, when
@@ -391,6 +402,24 @@ print("OK")
     claude_cwd=$(mktemp -d "$OUT_ABS/claude-cwd.XXXXXX") || refuse E_NO_CWD \
       "could not make a working directory for the reviewer under $OUT_ABS, so there is nowhere to run it that is outside the tree."
     claude_args+=(--add-dir "$TREE_ABS")
+    # The brief often points at the commit's diff, which sits outside the tree. Codex is
+    # given the tree as its working root and can read an absolute path; claude under
+    # --restricted confines its file tools to the working directory and the added ones, so
+    # it refused that read until this existed. Name a directory holding only material the
+    # reviewer may read -- never --out, which holds the trace.
+    if [ -n "${SECOND_REVIEW_CONTEXT_DIR:-}" ]; then
+      [ -d "$SECOND_REVIEW_CONTEXT_DIR" ] || refuse E_CONTEXT_DIR \
+        "\$SECOND_REVIEW_CONTEXT_DIR names '$SECOND_REVIEW_CONTEXT_DIR', which is not a directory."
+      context_abs=$(realpath "$SECOND_REVIEW_CONTEXT_DIR") || refuse E_CONTEXT_DIR \
+        "could not resolve \$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR'."
+      case "$OUT_ABS/" in
+        "$context_abs"/*) refuse E_CONTEXT_DIR \
+          "\$SECOND_REVIEW_CONTEXT_DIR '$context_abs' contains the output directory, so it would give the reviewer the backend's trace. Use a directory holding only what the reviewer may read." ;;
+      esac
+      [ "$context_abs" != "$OUT_ABS" ] || refuse E_CONTEXT_DIR \
+        "\$SECOND_REVIEW_CONTEXT_DIR is the output directory, which holds the backend's trace."
+      claude_args+=(--add-dir "$context_abs")
+    fi
     ( cd "$claude_cwd" && ${timeout_cmd[@]+"${timeout_cmd[@]}"} "$resolved_cmd" "${claude_args[@]}" ) \
       < "$BRIEF_ABS" > "$OUT_ABS/review.json" 2> "$OUT_ABS/review.err" || run_status=$?
     # Any error the backend reports means no review happened, whatever its wording, so the
@@ -433,6 +462,17 @@ print("ERROR_AUTH" if ("credential" in blob or "authenticat" in blob or "403" in
     fi
     ;;
 esac
+
+# Fingerprint the tree straight away, while the facts are fresh, so that every refusal
+# below can say whether the tree changed. It used to be taken only just before the record
+# was written, so a run refused for an unconfined backend said nothing about the tree --
+# exactly the thing a reader most wants to know at that moment.
+tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-after.sha256"
+if cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-after.sha256"; then
+  tree_verdict="the tree is unchanged"
+else
+  tree_verdict="THE TREE CHANGED during the run"
+fi
 
 # --- what the run must have produced ----------------------------------------------------
 
@@ -480,10 +520,10 @@ case "$BACKEND" in
     sandbox_mode=$(sed -n 's/^sandbox: //p' "$OUT_ABS/preamble.txt" | head -1)
     approval_mode=$(sed -n 's/^approval: //p' "$OUT_ABS/preamble.txt" | head -1)
     [ "$sandbox_mode" = read-only ] || refuse E_NOT_READ_ONLY \
-      "codex reported its sandbox as '${sandbox_mode:-(not reported)}', not read-only; a reviewer that can edit the tree is not a reviewer."
+      "codex reported its sandbox as '${sandbox_mode:-(not reported)}', not read-only; a reviewer that can edit the tree is not a reviewer. This is read from codex's own preamble after it ran, so the run happened: $tree_verdict."
     # Read-only is only read-only while nothing can approve an escalation out of it.
     [ "$approval_mode" = never ] || refuse E_APPROVAL_ESCALATION \
-      "codex reported its approval policy as '${approval_mode:-(not reported)}', not never; it can ask to write and a host that answers the ask by itself will let it."
+      "codex reported its approval policy as '${approval_mode:-(not reported)}', not never; it can ask to write and a host that answers the ask by itself will let it. This is read from codex's own preamble after it ran, so the run happened: $tree_verdict."
     confinement="codex reported sandbox=read-only, approvals=never"
     ;;
   claude)
@@ -559,7 +599,7 @@ print("OK\t%s\t%d" % ("+".join(sorted(usage)), len(denials)))
     reported_models="$field_a"
     # What claude was asked to be, not something it reports back: the proof that it was
     # read-only is the tree fingerprint below, not this line.
-    confinement="claude was run with --restricted --strict-mcp-config, tools Read/Grep/Glob, and refused $field_b permission request(s)"
+    confinement="claude was run with --restricted --strict-mcp-config --tools Read,Grep,Glob (the only tools it held), and refused $field_b permission request(s)"
     ;;
 esac
 
@@ -590,7 +630,6 @@ for m in "${answered_models[@]}"; do
     "'$MODEL' was answered by '$m', which is the model that wrote the change ('$IMPLEMENTER'). Ask for a different model."
 done
 
-tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-after.sha256"
 if ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-after.sha256"; then
   refuse E_TREE_CHANGED \
     "the tree at $TREE_ABS changed while the reviewer ran, so the reviewer was not read-only. Compare $OUT_ABS/tree-before.sha256 with tree-after.sha256."

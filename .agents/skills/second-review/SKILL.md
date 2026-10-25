@@ -38,13 +38,22 @@ you do with the answer.
 ## Quick start
 
 1. **Snapshot what is reviewed**, so the reviewer reads exactly that commit and cannot
-   change your work:
+   change your work. Make a new directory for each round rather than reusing one: `tar -x`
+   over an earlier round's tree leaves behind files the new commit deleted, so "exactly
+   that commit" stops being true from the second round onwards — and this way nothing has
+   to be deleted:
 
    ```bash
-   mkdir -p tmp/review/tree
-   git archive <commit> | tar -x -C tmp/review/tree
-   git show <commit> > tmp/review/change.diff
+   round=$(mktemp -d tmp/review.XXXXXX)
+   mkdir -p "$round/tree" "$round/context"
+   git archive <commit> | tar -x -C "$round/tree"
+   git show <commit> > "$round/context/change.diff"
    ```
+
+   The diff goes in `context/`, not beside the output: the Claude backend confines its file
+   tools to the tree and the directories it is given, so pass that folder as
+   `SECOND_REVIEW_CONTEXT_DIR` and it becomes readable. Never point that at `--out`, which
+   holds the backend's trace.
 
 2. **Write the brief**: copy `assets/review-brief.md` to `tmp/review/brief.md` and fill it
    in, following [Write the brief](#write-the-brief).
@@ -72,8 +81,12 @@ you do with the answer.
   framed as hunting for attacks has been refused outright by a reviewer's safety filter,
   after burning its whole budget. This is how "adversarial" is expressed: the brief tells
   the reviewer to assume your code is wrong and to try to break the claims it makes, which
-  is the next three bullets, and `assets/review-brief.md` is worded that way already. It
-  needs no change between the Codex and Claude backends; both have taken it as written.
+  is the next three bullets, and `assets/review-brief.md` is worded that way already. Both backends
+  have taken it as written, with one difference to respect: a path in the brief must be one
+  the reviewer can actually read. Codex is given the tree as its working root and will read
+  an absolute path anywhere; Claude confines its file tools to the tree and the directories
+  it is given, so anything you point it at — the diff above all — belongs in the folder you
+  pass as `SECOND_REVIEW_CONTEXT_DIR`.
 - **State the requirements from the spec, not from memory.** Quote the issue's criteria
   where they matter. Why: one brief said "must not bake the signature" when the spec's
   optional variant exists to do exactly that, and the reviewer flagged it as a defect twice.
@@ -103,6 +116,14 @@ you do with the answer.
   twelve rounds of reading the code. The brief found it before the reviewer ran.
 - **Say what earlier reviews covered**, and ask it not to repeat them. Why: its attention
   is the scarce part.
+- **Run a round on each backend you make a claim about.** A reviewer can only see some
+  defects from inside its own runtime: a Codex reviewer cannot see which tools a Claude
+  reviewer holds, and vice versa. Fourteen Codex rounds on this tooling all read
+  "the reviewer holds only `Read`, `Grep` and `Glob`" and none could check it; the first
+  Claude round found it false, because it could ask itself. It also found that the brief
+  pointed the Claude reviewer at a file only Codex could read. So a change that documents
+  behaviour for two backends wants a round on each, not fourteen on one — **backend
+  diversity is not about the model, it is about what the runtime can observe.**
 - **Vary what you scope a later round to.** Repeating a round against the same classes
   mostly re-checks the last fix. If several rounds have come back with only small or
   theoretical findings, that may mean the code is converging, or it may mean every brief has
@@ -127,15 +148,21 @@ and the host-specific options on the maintainers' workstation.
   anyway. Give the implementer's resolved model, not an alias or a prompt router name: a
   router that resolves to the model you were avoiding defeats the whole exercise.
 - **Either backend, your choice.** They differ in one way worth knowing: `--backend claude`
-  runs with `--restricted` and `--strict-mcp-config`, so the reviewer holds only `Read`,
-  `Grep` and `Glob`, while Codex 0.164 cannot be made to drop the host's MCP servers, so a
-  Codex reviewer can also reach those. That is a fact about the backends, not a ranking.
+  runs with `--tools Read,Grep,Glob` and `--strict-mcp-config`, so those three are the only
+  tools the reviewer holds, while Codex 0.164 cannot be made to drop that machine's MCP
+  servers, so a Codex reviewer can also reach those. That is a fact about the backends, not
+  a ranking. The flag matters: `--allowedTools` would only say which tools may run without
+  asking, leaving the reviewer holding others — including some that act outside the tree,
+  where the fingerprint cannot see them.
 - **The reviewer must not be able to write — and say which way you established that.**
   Three separate things, so keep them apart when you record the review:
   - the backend is *configured* to refuse writes;
-  - for Codex only, it also *reports* its mode, and the script refuses the run unless that
-    report says `sandbox: read-only` and `approval: never`. Claude reports nothing back, so
-    on that path the record states what it was asked to be, not something it confirmed;
+  - for Codex only, it also *reports* its mode, and the script reads that report **after
+    the run** and refuses the result unless it says `sandbox: read-only` and
+    `approval: never`. That is a check on what happened, not a gate before it, so on a
+    refusal the reviewer has already run and the message says whether the tree changed.
+    Claude reports nothing back, so on that path the record states what it was asked to be,
+    not something it confirmed;
   - for both, the script *checks afterwards* that no persistent change it can see was left
     in `--tree` — every path's type, mode, size, modification time, symlink target and
     content. It cannot see a file created and deleted inside the run, or any write outside
@@ -171,6 +198,14 @@ and the host-specific options on the maintainers' workstation.
   verified to execute and write under the full read-only flag set. Note what that check
   does *not* claim — both permitted keys are themselves commands claude runs, so it removes
   every other way a settings file could run something rather than eliminating execution.
+- **Know which account your review bills, on any machine.** For the Codex backend the
+  script removes the AWS credential variables from the environment before running it, so an
+  ambient account is less likely to pay for the review — but that is a *denylist*, so a
+  backend reading some other variable is not covered, and a backend whose credentials come
+  from its own configuration file is not affected by it at all. If your Codex authenticates
+  *from* environment credentials, that removal is what breaks it: set
+  `SECOND_REVIEW_KEEP_AWS_ENV=1`, which is the fix for the `E_RUN_FAILED` you would
+  otherwise get. None of this is specific to the maintainers' machine.
 - **Try the other backend before giving up on one.** They are equally sanctioned, so a
   backend that will not authenticate is a reason to switch, not a blocker to report.
 
