@@ -108,6 +108,10 @@ REVISION: 1
 DESCRIPTION: Install complete
 ```
 
+This block and the next one are from a separate run, on this cluster at the point where KEDA
+was not yet installed. The walkthrough further down this page reuses the install that is
+there rather than making one, so it cannot produce an install transcript of its own.
+
 Abridged: the chart also prints a banner and a list of `kubectl` commands. Check the three
 Deployments are up, and which version you got:
 
@@ -138,6 +142,11 @@ error: KEDA is not installed on this cluster (no scaledobjects.keda.sh CRD). Thi
   helm install keda kedacore/keda --namespace keda --create-namespace \
     --version 2.21.0 --wait
 ```
+
+That block is from a separate run as well, taken before KEDA was installed: the check needs
+KEDA to be absent, and the walkthrough run cannot arrange that without removing a shared
+install, which a sample here never does. Every other output block on this page comes from
+one fresh run of the sample.
 
 The `context:` line here and in the blocks below shows `sandbox-demo`, the shared default
 cluster name from the home page; the runs that produced this output used a different context
