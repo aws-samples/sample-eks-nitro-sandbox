@@ -533,23 +533,11 @@ kubectl -n $NS exec $POD -- wget -T 5 -O /dev/null https://aws.amazon.com
 ```
 
 ```text
-  the claimed pod is network-isolated, so there is no network to restrict:
-  PASS  kubectl exec into the claimed pod works, so the readings below are the pod's answers
-  $ kubectl exec warm-pool-frmjd -- ip -o addr show
-    1: lo    inet 127.0.0.1/8 scope host lo\       valid_lft forever preferred_lft forever
-    1: lo    inet6 ::1/128 scope host noprefixroute \       valid_lft forever preferred_lft forever
-  PASS  the only interface with an address in the claimed pod is loopback, in either address family: there is no network interface to carry traffic
-  $ kubectl exec warm-pool-frmjd -- ip route show default; ip -6 route show default      # print nothing: no default route
-  PASS  the claimed pod has no default route for IPv4 and none for IPv6, so nothing would know where to send a packet
-  $ kubectl exec warm-pool-frmjd -- wget -T 5 -O /dev/null https://aws.amazon.com
-    wget: bad address 'aws.amazon.com'
-    command terminated with exit code 1
-  PASS  a request out of the claimed pod fails the way a pod with no network fails, rather than reaching anything
+TODO: output from the fresh run
 ```
 
-`ip route show default` prints nothing. `kubectl exec` keeps working because it uses the
-guest's internal control channel, not the network, which is how every reading above was
-taken.
+Both route commands print nothing. `kubectl exec` keeps working because it uses the guest's
+internal control channel, not the network, which is how every reading above was taken.
 
 **Why there are four checks and not one.** "The request failed" is not on its own evidence
 of isolation, and the failure message is the weakest part of it: busybox prints
@@ -574,10 +562,9 @@ claimed it had no network at all. `ip -o addr show` lists every family — which
 loopback appears twice above, once as `127.0.0.1` and once as `::1` — and the route reading
 asks for the v4 and the v6 default separately.
 
-The three configuration readings come from the guest's own kernel rather than from whether a
-request happened to work, which is what makes them stronger than the `wget` line; `ip`
-itself is the container image's own binary, so this is the guest describing itself and not an
-attestation. Each of the four checks was proved to reject as well as to accept, against the
+The three `ip` readings come from the guest's own kernel rather than from whether a request
+happened to work, which is what makes them stronger than the `wget` line; `ip` itself is the
+container image's own binary, so this is the guest describing itself and not an attestation. Each of the four checks was proved to reject as well as to accept, against the
 real script rather than a copy of it; the pull request lists the inputs, including the
 IPv6-only ones that the earlier IPv4-only version of these two checks accepted.
 

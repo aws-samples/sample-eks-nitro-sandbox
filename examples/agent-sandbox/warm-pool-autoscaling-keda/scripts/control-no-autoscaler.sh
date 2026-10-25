@@ -21,7 +21,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # assert_summary own the exit code.
 set +e
 
-require_commands kubectl sed seq
+require_commands kubectl sed seq grep
 show_context
 require_our_namespace
 
@@ -42,10 +42,25 @@ resource_exists kc "sandboxwarmpool/$POOL" >/dev/null \
 # deletionTimestamp. Both callers, step 4/4 and the EXIT trap, get all three.
 restore_scaledobject() {
   local del rc
-  kc wait --for=delete "scaledobject/$SCALEDOBJECT" --timeout=120s >/dev/null 2>&1 || true
+  # Wait ONLY when there is a deletion in flight. `kubectl wait --for=delete` on an
+  # object that nothing is deleting does not return early: it waits the whole
+  # timeout and then fails. Called unconditionally, that put a flat two minutes on
+  # every normal exit, where step 4/4 has just restored the object and the EXIT
+  # trap restores it again, and on every `die` after the trap is set, where the
+  # ScaledObject has not been deleted at all. The trap ignores INT and TERM while
+  # it runs, so those two minutes were also uninterruptible and printed nothing.
+  del="$(kc get scaledobject "$SCALEDOBJECT" --ignore-not-found \
+           --request-timeout=30s -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null)" || del=""
+  if [[ -n "$del" ]]; then
+    echo "  scaledobject/$SCALEDOBJECT is still terminating; waiting for the deletion to finish"
+    kc wait --for=delete "scaledobject/$SCALEDOBJECT" --timeout=120s >/dev/null 2>&1 || true
+  fi
+  # --request-timeout on both calls: with INT and TERM ignored in the trap, an API
+  # call that hangs would otherwise need a SIGKILL to get out of.
   sed -e "s/__NAMESPACE__/$NAMESPACE/g" "$SAMPLE_DIR/deploy/scaledobject.yaml" \
-    | kc apply -f - >/dev/null 2>&1 || return 1
-  del="$(kc get scaledobject "$SCALEDOBJECT" -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null)"
+    | kc apply --request-timeout=30s -f - >/dev/null 2>&1 || return 1
+  del="$(kc get scaledobject "$SCALEDOBJECT" --request-timeout=30s \
+           -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null)"
   rc=$?
   [[ $rc -eq 0 && -z "$del" ]]
 }
@@ -60,10 +75,11 @@ restore_scaledobject() {
 # after the operator had interrupted the run. Exiting instead makes the EXIT trap
 # run once, with a signal exit status.
 #
-# The handler ignores INT and TERM while it runs: a second Ctrl-C, or an impatient
-# `kill`, would otherwise cut the restore off part way and leave the pool with no
+# The handler ignores INT, TERM and HUP while it runs: a second Ctrl-C, an
+# impatient `kill`, or the dropped ssh session that sends HUP to the whole process
+# group would otherwise cut the restore off part way and leave the pool with no
 # autoscaler and no warning printed.
-trap 'trap "" INT TERM; echo; echo "restoring scaledobject/$SCALEDOBJECT"; delete_claims || true; restore_scaledobject || echo "WARNING: could not restore scaledobject/$SCALEDOBJECT; re-run ./scripts/setup.sh" >&2' EXIT
+trap 'trap "" INT TERM HUP; echo; echo "restoring scaledobject/$SCALEDOBJECT"; delete_claims || true; restore_scaledobject || echo "WARNING: could not restore scaledobject/$SCALEDOBJECT; re-run ./scripts/setup.sh" >&2' EXIT
 trap 'echo; echo "interrupted" >&2; exit 130' INT
 trap 'echo; echo "terminated" >&2; exit 143' TERM
 
@@ -79,6 +95,13 @@ so_max="$(kc get scaledobject "$SCALEDOBJECT" -o jsonpath='{.spec.maxReplicaCoun
   || die "could not read maxReplicaCount from scaledobject/$SCALEDOBJECT; stopping rather than claim a pool stayed flat without knowing it could have risen"
 (( so_max > so_min )) \
   || die "scaledobject/$SCALEDOBJECT has minReplicaCount=$so_min and maxReplicaCount=$so_max, so the pool has no room to rise and 'it stayed flat' would be true whatever happened; widen the bounds and re-run"
+# And the demand this script applies must be enough to ASK for more than the
+# floor. With targetValue 1 the trigger wants one warm pod per claim, so
+# MAX_CLAIMS claims at or below minReplicaCount would leave KEDA wanting exactly
+# the floor: the pool would sit still with the ScaledObject present too, and a
+# flat reading here would say nothing about whether KEDA was reading the signal.
+(( MAX_CLAIMS > so_min )) \
+  || die "this script applies $MAX_CLAIMS claims and the floor is minReplicaCount=$so_min, so even with KEDA reading the signal the pool would not rise above the floor and 'it stayed flat' would prove nothing; raise MAX_CLAIMS above $so_min or lower the floor"
 
 step "1/4 settle at the floor, then remove the ScaledObject"
 delete_claims || true
@@ -173,13 +196,21 @@ while ((SECONDS < deadline)); do
   v="$(pool_spec_replicas)" || v=""
   if [[ -n "$v" ]]; then
     polls=$((polls + 1))
-    [[ "$v" -gt "$baseline" ]] && { moved="$v"; break; }
+    # ANY reading that is not the baseline ends the window, not just a higher one.
+    # "Flat" means every reading was the baseline, which is what the assertion
+    # below says; breaking only on a higher value would let a reading BELOW the
+    # baseline be counted and then reported as having been the baseline.
+    [[ "$v" != "$baseline" ]] && { moved="$v"; break; }
   fi
   sleep 10
 done
 after="$(pool_spec_replicas)" || after="?"
 print_stage "under load"
-echo "  spec.replicas read $polls time(s) during the window, every one of them $baseline"
+# Only printed when the window really was flat, so the line cannot appear above a
+# reading that moved, or claim "every one of them" when nothing was read at all.
+if [[ -z "$moved" ]]; then
+  echo "  spec.replicas read $polls time(s) during the window, every one of them $baseline"
+fi
 # Both sides must be real numbers AND equal, and the window must have been
 # watched. "?" == "?" would otherwise report a flat pool from two failed reads.
 [[ -z "$moved" && $polls -gt 0 && "$after" =~ ^[0-9]+$ && "$after" == "$baseline" ]]
@@ -201,7 +232,9 @@ assert $? "scaledobject/$SCALEDOBJECT is back and not terminating, so the sample
 echo "  waiting for KEDA to take the pool back"
 back=""
 for _ in $(seq 1 36); do   # 36 * 5s = 3m
-  if back="$(hpa_for_pool)" && [[ -n "$back" ]]; then break; fi
+  # One name, not several: two HPAs both targeting the pool would make this
+  # "yes" while KEDA's own may never have been created.
+  if back="$(hpa_for_pool)" && [[ -n "$back" && "$back" != *$'\n'* ]]; then break; fi
   back=""
   sleep 5
 done

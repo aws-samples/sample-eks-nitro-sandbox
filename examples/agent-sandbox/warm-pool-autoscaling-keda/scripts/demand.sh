@@ -36,7 +36,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # readable in full. assert_summary owns the exit code.
 set +e
 
-require_commands kubectl python3
+require_commands kubectl python3 sed grep tr
 show_context
 require_our_namespace
 
@@ -54,7 +54,9 @@ if [[ $hpa_rc -ne 0 ]]; then
 else
   echo "  HPA whose scaleTargetRef names $POOL: ${hpa:-<none>}"
 fi
-[[ -n "$hpa" ]]
+# One name, not several: hpa_for_pool separates multiple matches with a newline,
+# and "two HPAs target the pool" must not satisfy "an HPA targets the pool".
+[[ -n "$hpa" && "$hpa" != *$'\n'* ]]
 assert $? "an HPA targets sandboxwarmpool/$POOL, so its replica count is driven rather than fixed"
 
 target_kind="$(kc get hpa "$hpa" -o jsonpath='{.spec.scaleTargetRef.kind}' 2>/dev/null)"
@@ -248,13 +250,18 @@ else
 fi
 assert $? "the only interface with an address in the claimed pod is loopback, in either address family: there is no network interface to carry traffic"
 
-echo "  \$ kubectl exec $pod -- ip route show default; ip -6 route show default      # print nothing: no default route"
+# One echo per command, each above its own answer, so the transcript cannot read
+# as though the second `ip` ran on this machine rather than in the pod. Each
+# answer is printed only when there is one, and with a newline, so the failing
+# case does not run its route onto the next line.
+echo "  \$ kubectl exec $pod -- ip route show default         # prints nothing: no IPv4 default route"
 route_out="$(kc exec "$pod" -- ip route show default 2>&1)"
 route_rc=$?
+[[ -n "$route_out" ]] && printf '%s\n' "$route_out" | sed 's/^/    /'
+echo "  \$ kubectl exec $pod -- ip -6 route show default      # prints nothing: no IPv6 default route"
 route6_out="$(kc exec "$pod" -- ip -6 route show default 2>&1)"
 route6_rc=$?
-printf '%s' "$route_out" | sed 's/^/    /'
-printf '%s' "$route6_out" | sed 's/^/    /'
+[[ -n "$route6_out" ]] && printf '%s\n' "$route6_out" | sed 's/^/    /'
 [[ $route_rc -eq 0 && -z "$route_out" && $route6_rc -eq 0 && -z "$route6_out" ]]
 assert $? "the claimed pod has no default route for IPv4 and none for IPv6, so nothing would know where to send a packet"
 
