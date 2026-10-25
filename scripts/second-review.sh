@@ -218,19 +218,26 @@ OUT_ABS=$(in_repo_tmp "$OUT" --out)
 BRIEF_ABS=$(in_repo_tmp "$BRIEF" --brief)
 
 mkdir -p "$OUT_ABS"
-# Nothing this script writes may already be a symbolic link. Both ">" and "tee" follow
-# one, so a link planted in a reused output directory would aim a write wherever it points
-# -- the review tree included, after the tree has been fingerprinted. Checked that both
-# follow. The names are the ones written below, in --out itself; claude-cwd is not among
-# them because mktemp -d makes that fresh every run.
+# Remove anything already sitting at a name this script writes, before the first write.
+# Refusing only a symbolic link was not enough: a hard link passes [ -L ] and shares its
+# target's file, so ">", tee and python's open(...,"w") all write straight into whatever it
+# points at -- a tracked file, or a file in the tree after the tree has been fingerprinted.
+# Checked both: a hard link at review-record.txt let tee overwrite a tree file, and removing
+# the name first leaves the target untouched. Removing a name never touches its target, and
+# it covers symbolic links, hard links and FIFOs at once, which is why this replaces rather
+# than refuses. It can only account for what exists before the run; something writing into
+# --out *during* the run could also simply overwrite tree-before.sha256, which no check here
+# could defend against.
 for _n in review.out review.err review.json review-record.txt record.tsv \
           preamble.txt pre-user.txt codex-stdin.txt \
           tree-before.sha256 tree-at-return.sha256 tree-after.sha256; do
-  if [ -L "$OUT_ABS/$_n" ]; then
+  rm -f -- "$OUT_ABS/$_n"
+  if [ -e "$OUT_ABS/$_n" ] || [ -L "$OUT_ABS/$_n" ]; then
     refuse E_OUT_TAINTED \
-      "'$OUT_ABS/$_n' is a symbolic link. Both a redirect and tee follow one, so writing there would aim this script's output at whatever it points to, which could be the tree under review. Remove it, or use a fresh --out."
+      "'$OUT_ABS/$_n' already exists and could not be removed, so this script cannot write there safely. Use a fresh --out."
   fi
 done
+
 TREE_ABS=$(realpath "$TREE")
 
 # This script's own output inside the tree would show up as the tree changing, and read
@@ -495,10 +502,10 @@ esac
 # Fingerprint the tree as soon as the backend returns, so that the two codex confinement
 # refusals below can say whether the tree changed: they are read from codex's preamble
 # after it ran, and a reader most wants to know that at exactly that moment. This early
-# snapshot is for those messages only -- the decision is made on a fresh one taken just
-# before the record is written, because this script writes several files between here and
-# there and a reused output directory could, through a symlink, let the backend touch the
-# tree after this point.
+# snapshot feeds those messages, and is also compared at the end: a mismatch here with a
+# match later means something put the tree back *after the backend returned*, which a single
+# late fingerprint would have missed. A change made and undone entirely inside the backend's
+# own run is invisible to both, as the fingerprint's own note says.
 tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-at-return.sha256"
 if cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then
   tree_verdict="the tree was unchanged when the backend returned"
@@ -662,13 +669,15 @@ for m in "${answered_models[@]}"; do
     "'$MODEL' was answered by '$m', which is the model that wrote the change ('$IMPLEMENTER'). Ask for a different model."
 done
 
-# Both fingerprints must match the one taken before the run. Checking only this later one
-# would discard an observed write that was undone in between: a backend that changed the
-# tree and then restored it would have been recorded as clean.
+# Both fingerprints must match the one taken before the run, and the later one is tested
+# first so that each message is true: a mismatch in both is simply a changed tree, while a
+# mismatch only at return means a change that was put back afterwards. Testing the early one
+# first said "it matches again now" even when it did not.
 tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-after.sha256"
-if ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then
-  refuse E_TREE_CHANGED \
-    "the tree at $TREE_ABS differed from its fingerprint when the backend returned, so the reviewer was not read-only, even though it matches again now -- a change that was undone is still a change. Compare $OUT_ABS/tree-before.sha256 with tree-at-return.sha256."
+if cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-after.sha256" \
+   && ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then
+  refuse E_TREE_RESTORED \
+    "the tree at $TREE_ABS differed from its fingerprint when the backend returned, and matches again now: a change that was put back afterwards is still a change, and the reviewer was not read-only. Compare $OUT_ABS/tree-before.sha256 with tree-at-return.sha256."
 fi
 if ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-after.sha256"; then
   refuse E_TREE_CHANGED \

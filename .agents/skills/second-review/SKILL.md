@@ -57,9 +57,9 @@ you do with the answer.
    holds the backend's trace.
 
 2. **Write the brief**: copy `assets/review-brief.md` to `"$round/brief.md"` and fill it
-   in, following [Write the brief](#write-the-brief). Where it names the diff, use the
-   absolute path of `"$round/context/change.diff"`, because a path the reviewer cannot read
-   is a round wasted.
+   in, following [Write the brief](#write-the-brief). Where it names the diff, give an
+   **absolute** path — `$round` above is relative, so write `"$PWD/$round/context/change.diff"`
+   — because a path the reviewer cannot read is a round wasted.
 3. **Run the reviewer** on a model that is not the one that wrote the change, with either
    backend. Keep using `$round` — every path below comes from it, so nothing points at an
    earlier round's snapshot:
@@ -316,7 +316,7 @@ and the host-specific options on the maintainers' workstation.
 
 Tick the second-reviewer box in the description's "Quality bar" list, and write under its
 "Second review" heading: who or what reviewed it (a person, or the backend and the model
-that answered, which `tmp/review/review-record.txt` names — not the model you asked for),
+that answered, which the run's own `review-record.txt` names — not the model you asked for),
 the model that wrote the change, so a reader can see the two differ, which commit, what it
 found, what was fixed and in which commit, and which findings were false positives and
 why. Name any commit that changes a check and was not reviewed. Describe each proof as it ran: which stub cases reached which message, and
