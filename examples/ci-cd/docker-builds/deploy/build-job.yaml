@@ -1,0 +1,81 @@
+# The CI build: the same `docker build` and `docker run` as the interactive pod, run
+# unattended as a Job with a privileged Docker daemon in a Nitro sandbox.
+#
+# scripts/run-build-job.sh renders <NAMESPACE>, <ECR_REGISTRY> (empty unless the optional
+# push is enabled), <ECR_REPO>, <AWS_REGION> and <ECR_INIT_CONTAINER>, which is the
+# init container that fetches the ECR token when the push is enabled, and nothing at all
+# when it is not: without the push the Job has no AWS credential path whatsoever.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: docker-build
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: docker-builds
+spec:
+  backoffLimit: 0        # a build failure is a result to read, not something to retry
+  completions: 1
+  template:
+    metadata:
+      labels:
+        app: docker-build
+        # The egress policy selects every build pod in the sample by this label.
+        app.kubernetes.io/part-of: docker-builds
+      annotations:
+        # The layer cache is a ReadWriteOncePod EBS volume, which attaches to one sandbox at
+        # a time. Pin the node while the build runs so consolidation cannot take the node
+        # away mid-build and leave the volume attached to it.
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      runtimeClassName: isolated-sandbox
+      restartPolicy: Never
+      serviceAccountName: docker-builds-builder
+      automountServiceAccountToken: false
+<ECR_INIT_CONTAINER>
+      containers:
+        - name: dind
+          image: public.ecr.aws/docker/library/docker:29.9.2-dind
+          securityContext:
+            privileged: true       # reaches only this pod's own guest
+          env:
+            - { name: IMAGE,        value: "hello-nitro:v1" }
+            - { name: IMAGE_TAG,    value: "v1" }
+            - { name: ECR_REGISTRY, value: "<ECR_REGISTRY>" }
+            - { name: ECR_REPO,     value: "<ECR_REPO>" }
+            - { name: AWS_REGION,   value: "<AWS_REGION>" }
+          # Start the daemon on its local Unix socket only, with no TCP listener, then run
+          # the build script. `exec` keeps the script as the container's main process, so the
+          # Job finishes when the build does.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              dockerd --host=unix:///var/run/docker.sock >/tmp/dockerd.log 2>&1 &
+              exec /bin/sh /scripts/build.sh
+          volumeMounts:
+            - name: cache
+              mountPath: /var/lib/docker   # the EBS layer cache, kept across Job runs
+            - name: scripts
+              mountPath: /scripts
+            - name: ecr-token
+              mountPath: /ecr
+          resources:
+            # A sandbox is sized when it boots and cannot be resized in place (Amazon EKS
+            # User Guide, "Isolated and confidential pods limitations", In-place resource
+            # resize), so the build asks for what it needs up front.
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: docker-build-cache
+        - name: scripts
+          configMap:
+            name: docker-build-script
+        # Holds the ECR token the init container writes when the push is enabled. It never
+        # leaves this pod's guest, and nothing is written here on the default path.
+        - name: ecr-token
+          emptyDir: {}
