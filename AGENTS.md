@@ -127,8 +127,16 @@ you do not have; the clone worked if git reports no error after it.
 ### The adversarial second reviewer
 
 `AGENTS.md` requires a second review for any change to a check, a credential path or a
-security claim. **A collaborator's agent does that review with either Claude Code or
-Codex.** Both are sanctioned, you pick, and no approval is needed.
+security claim. **There are three sanctioned ways to do it, and they are interchangeable:**
+
+1. **The Codex CLI**, through `scripts/second-review.sh --backend codex`.
+2. **The Claude Code CLI**, through `scripts/second-review.sh --backend claude`.
+3. **A fresh sub agent in your own session**, dispatched with no context from the work you
+   are asking it to review.
+
+You pick, and no approval is needed. What matters is not which one you use but the three
+invariants below: the script holds them for you on paths 1 and 2, and you hold them
+yourself on path 3.
 
 **Adversarial** describes what the reviewer does, not how the brief is worded: it assumes
 the implementer's code is wrong and tries to break the claims it makes. It does not mean
@@ -198,11 +206,34 @@ apart when you record a review, because the check has limits — it cannot see a
 and deleted within the run, and it says nothing about writes outside the tree. It is still
 the check that caught the write above.
 
-#### Bringing your own reviewer
+#### A sub agent in your own session
 
-Another agent is fine — the two backends are what this repository ships support for, not a
-closed list. If you wire up your own, show in the pull request that it met the same three
-invariants:
+The third path needs no script: dispatch a fresh agent, give it the brief, and have it read
+the snapshot. It is the most convenient of the three and **the easiest to get wrong**,
+because the invariants that come almost free on the two CLI paths — where a different
+vendor's tool means a different model by construction — are yours to arrange here.
+
+- **A sub agent inherits the parent's model unless you say otherwise.** So a naive dispatch
+  has the implementing model reviewing its own work, which looks exactly like a real review
+  and satisfies none of its purpose. **Pass an explicit model override that differs from the
+  implementing model** — in Claude Code that is the Agent tool's `model` parameter — and
+  record the model that actually ran, not the one you asked for.
+- **Give it a read-only tool set.** There is no sandbox flag here: the reviewer is read-only
+  because it holds no edit, write or shell tool, so hand it reading tools only.
+- **No context from your session is load-bearing.** A fork that inherits the implementer's
+  reasoning will repeat it and is not an independent review. Start it fresh, with the brief
+  and the snapshot as its only input.
+- **Show the tree unchanged afterwards**, the same way the script does: fingerprint it
+  before and after and compare.
+
+This is the path the coding-agent sample's review took while the Codex command was broken,
+and it worked.
+
+#### Bringing a different reviewer again
+
+Another tool entirely is fine too — the three paths above are what this repository has used,
+not a closed list. If you wire up your own, show in the pull request that it met the same
+three invariants:
 
 - which model answered, and that it differs from the model that wrote the change — from the
   tool's own report of the model, not the name you asked for;
@@ -254,13 +285,24 @@ review, and a collaborator on a laptop has none of it.
   the host defines, some of which write to other systems. Both backends are equally
   sanctioned; this is a difference to know about, not a reason to pick one. In both cases
   the review tree is checked afterwards, and writes outside it are not.
-- **Which account each backend bills is a property of that backend's own configuration, so
-  check it rather than assume it.** On the maintainers' workstation the Codex path is
-  confirmed to bill the toolbox-managed builder account (the provider's `credential_export`
-  helper returns that role, `codex amzn usage` attributes usage to it, and ambient
-  credentials do not displace it). **The Claude path's billing on that workstation has not
-  been verified**: it authenticates to Bedrock through the launcher's own AWS configuration,
-  which may be an unrelated account. Do not state otherwise until someone has checked.
+- **Each backend authenticates through its own configured credential path, and the two do
+  not resolve to the same account.** That is expected: they are different vendors' traffic.
+  On the maintainers' workstation both are accounts the maintainers intend.
+  - **Codex** takes its credentials from the provider's `credential_export` helper in
+    `~/.codex/config.toml`, which resolves to the toolbox-managed builder account
+    (confirmed three ways: the helper's identity, `codex amzn usage` attribution, and that
+    ambient credentials do not displace it).
+  - **Claude** takes its credentials from its own `awsCredentialExport` helper in
+    `~/.claude/settings.json`, which resolves to a different account. On the maintainers'
+    workstation, use `SECOND_REVIEW_CLAUDE_CMD=~/.toolbox/bin/claude`: that is the build the
+    maintainers have set up for the account they intend for Claude usage.
+  - **The credential removal below is Codex-only, and gives the Claude backend no
+    protection**, because a helper named in a settings file is not read from the environment
+    at all. Removing environment variables cannot redirect it, and cannot keep anything out
+    of it either.
+  - **Anywhere else, which account you bill is yours to establish**, by asking your
+    backend's own credential helper who it is rather than reading the shell's ambient
+    identity. The two differ, and a review's output shows neither.
 
 ### Other tools on the maintainers' workstation
 

@@ -12,10 +12,13 @@ runs and the page still reads well. In this repository's samples, agent reviews 
 permissions, and clean-up scripts that reported "gone" for things they never checked. Each
 time, the author had already read the code.
 
-**Either Claude Code or Codex does the review.** Both are sanctioned, you pick, no approval
-needed, and `scripts/second-review.sh` runs either one. Another agent is fine too, as long
-as you show it met the same invariants
-([Bringing your own reviewer](../../../AGENTS.md#bringing-your-own-reviewer)).
+**Three ways to do it, all sanctioned, your pick, no approval needed:** the Codex CLI or
+the Claude Code CLI, both through `scripts/second-review.sh`, or a fresh sub agent in your
+own session. The invariants below are the requirement; the script holds them for you on the
+two CLI paths, and you hold them yourself with a sub agent — where the model difference is
+the one that needs deliberate effort, because **a sub agent inherits your model unless you
+override it**. See
+[A sub agent in your own session](../../../AGENTS.md#a-sub-agent-in-your-own-session).
 
 The review is **adversarial**: the reviewer assumes your code is wrong and tries to break
 the claims it makes. That is a description of its job, not of how you word the brief — see
@@ -119,11 +122,14 @@ and the host-specific options on the maintainers' workstation.
   `--out` outside the repository's gitignored `tmp/`. A trace (`review.err`) can hold
   credential details: read it with `tail` or a targeted search, and never paste it into a
   pull request, an issue or Slack.
-- **An agent of your own tool works too**, as long as it starts with no context from your
-  session and runs on a different model. Name the model explicitly when you start it: a
-  default such as "Auto" may not be available, and the start then fails. Show in the pull
-  request how it met the three invariants, as
-  [Bringing your own reviewer](../../../AGENTS.md#bringing-your-own-reviewer) says.
+- **A sub agent of your own tool works too**, as long as it starts with no context from
+  your session and runs on a different model. **Name the model explicitly**: a sub agent
+  inherits the parent's model by default, which would have the implementing model review
+  its own work while looking like a real review, and a default such as "Auto" may not be
+  available so the start then fails. In Claude Code the Agent tool's `model` parameter is
+  the override. Give it reading tools only, since there is no sandbox flag on that path.
+  Show in the pull request how it met the three invariants, as
+  [Bringing a different reviewer again](../../../AGENTS.md#bringing-a-different-reviewer-again) says.
 - **If the reviewer cannot start, report the exact error and stop.** The script names the
   check that refused, tagged (`E_SAME_MODEL`, `E_CMD_MISSING`, `E_RUN_FAILED`,
   `E_BAD_RECORD`). Prefer pointing the script at a different command

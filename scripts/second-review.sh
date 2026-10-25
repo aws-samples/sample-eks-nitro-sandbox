@@ -96,7 +96,7 @@ esac
 case "$BACKEND" in
   codex|claude) ;;
   '') refuse E_BACKEND "--backend is required, and must be codex or claude." ;;
-  *)  refuse E_BACKEND "--backend '$BACKEND' is not a backend this script runs; use codex or claude. To use another agent, see AGENTS.md, 'Bringing your own reviewer': run it yourself and show it meets the same three invariants." ;;
+  *)  refuse E_BACKEND "--backend '$BACKEND' is not a backend this script runs; use codex or claude. To use another agent, a sub agent in your own session is a third sanctioned way -- see AGENTS.md, 'The adversarial second reviewer' -- and must meet the same three invariants, including an explicit model override so it does not inherit the implementing model." ;;
 esac
 
 [ -n "$MODEL" ] || refuse E_MODEL "--model is required: name the model the reviewer must use."
@@ -128,14 +128,19 @@ normalise_model() {
 # claude's modelUsage keys were. A tab, a newline or an ESC in any of them can forge or
 # alter a field of that record, so they all go through one check: printable ASCII, and no
 # leading or trailing space. "+" is rejected only where claude joins several names with it.
+# The whole value is tested as one string, with a shell pattern rather than grep: grep
+# works a line at a time, so a name of "good<newline>forged" passed it on the strength of
+# its first line, and then reached the record with a line break in it. LC_ALL=C keeps
+# [:print:] to the ASCII range the record can carry.
 check_model_charset() {
+  local LC_ALL=C
   case "$1" in
     "" ) return 0 ;;                       # emptiness is check_model_name's business
     " "*|*" " ) refuse E_MODEL_NAME \
       "$2 '$1' begins or ends with a space, so it would be recorded as a different name than the one that answered." ;;
+    *[![:print:]]*) refuse E_MODEL_NAME \
+      "$2 holds a character that is not printable ASCII -- a tab, a line break or a control character -- which cannot be carried or recorded safely. The name is in the run's arguments; it is not repeated here because it would break this message across lines." ;;
   esac
-  printf '%s' "$1" | LC_ALL=C grep -qE '^[[:print:]]+$' || refuse E_MODEL_NAME \
-    "$2 '$1' holds something other than printable ASCII, which cannot be carried or recorded safely."
 }
 
 # A name that is nothing but a prefix ("amazon.") normalises to the empty string, and two
