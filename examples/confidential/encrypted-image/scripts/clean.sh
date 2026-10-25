@@ -48,7 +48,7 @@ keep_aws=false
 for arg in "$@"; do
   case "$arg" in
     --keep-aws-resources) keep_aws=true ;;
-    --help|-h) sed -n '2,24p' "$0"; exit 0 ;;
+    --help|-h) sed -n '2,21p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -238,14 +238,15 @@ else
 fi
 
 # ---------------------------------------------------------------------- local files
-# The run files hold the resource ids and the registry credentials the other scripts
-# need, so they are only removed when there is nothing left to come back for: not after a
-# clean up that left something behind, and not when the AWS resources were kept on
-# purpose for another run.
+# The run files hold the resource ids and the registry credentials, so they are only
+# removed when there is nothing left to come back for: not after a clean up that left
+# something behind, and not when the AWS resources were kept on purpose. Note that
+# --keep-aws-resources still deletes the namespace and the service account, so a later
+# scripts/setup.sh is what makes the kept resources usable again, not changed-pod.sh.
 if [[ "$failed" != 0 ]]; then
   echo "Keeping the run files under $TMP_DIR: the clean up left something behind, and they hold the ids needed to finish it."
 elif [[ "$keep_aws" == true ]]; then
-  echo "Keeping the run files under $TMP_DIR: the AWS resources were kept, and scripts/changed-pod.sh needs them."
+  echo "Keeping the run files under $TMP_DIR: they hold the ids of the AWS resources that were kept."
 else
   echo "Deleting the run files under $TMP_DIR..."
   rm -rf "$TMP_DIR"

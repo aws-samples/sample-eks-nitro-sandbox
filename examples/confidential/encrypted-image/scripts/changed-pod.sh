@@ -95,31 +95,41 @@ echo "== 3/4 confirm the gate still expects the approved measurement =="
 # approved one. Read the live policy rather than trusting that nothing moved it.
 aws kms get-key-policy --key-id "$KMS_KEY_ARN" --policy-name default \
   --query Policy --output text | jq . > "$TMP_DIR/kms-key-policy.live.json"
-# The same predicate setup.sh's verify_key_policy applies, for the same reason: this
-# pod's denial only means "the measurement was refused" if the gate is still the approved
-# one, with no second allow that could reach a decrypt and with both denies still
-# covering kms:Decrypt.
-jq -e --arg pcr17 "$PREDICTED_PCR17" '
+# The same predicate setup.sh's verify_key_policy applies, down to the role it binds the
+# allow to, which setup.sh recorded in the run file. Same reason: this pod's denial only
+# means "the measurement was refused" if the gate is still the approved one, with no
+# second allow that could reach a decrypt and with both denies still covering it.
+jq -e --arg role "$IAM_ROLE_ARN" --arg roleid "$IAM_ROLE_ID" --arg pcr17 "$PREDICTED_PCR17" '
   def reaches_decrypt:
     ascii_downcase
     | . == "*" or . == "kms:*"
       or startswith("kms:decrypt") or startswith("kms:reencryptfrom");
   def actions: (.Action | if type == "array" then . else [.] end);
+  # Narrower than reaches_decrypt on purpose: a deny covering only kms:ReEncryptFrom
+  # would leave a mismatched measurement refused by implicit deny, not the explicit one
+  # this script reports. See the same note in setup.sh.
+  def covers_decrypt:
+    ascii_downcase
+    | . == "*" or . == "kms:*" or startswith("kms:decrypt");
+  def denies_decrypt: actions | any(covers_decrypt);
   ([.Statement[] | select(.Effect == "Allow") | actions[] | select(reaches_decrypt)]
     | length) as $allow_actions_reaching_decrypt
   | ([.Statement[] | select(.Sid == "AttestedDecryptOnly")
       | select(.Effect == "Allow")
+      | select(actions | map(ascii_downcase) | any(reaches_decrypt))
+      | select((.Principal.AWS | if type == "array" then . else [.] end)
+               | . == [$role] or . == [$roleid])
       | select(.Condition.StringEqualsIgnoreCase["kms:RecipientAttestation:PCR17"] == $pcr17)
       | select(.Condition.StringEqualsIgnoreCase["kms:RecipientAttestation:PCR8:ServiceName"] == "eks.amazonaws.com")
     ] | length) as $allows
   | ([.Statement[] | select(.Sid == "DenyUnlessThePolicyMeasurementMatches")
       | select(.Effect == "Deny") | select(.Principal == "*")
-      | select(actions | map(ascii_downcase) | index("kms:decrypt"))
+      | select(denies_decrypt)
       | select(.Condition.StringNotEqualsIgnoreCase["kms:RecipientAttestation:PCR17"] == $pcr17)
     ] | length) as $pcr17_denies
   | ([.Statement[] | select(.Sid == "DenyUnlessTheAttestationComesFromAnEKSSandbox")
       | select(.Effect == "Deny") | select(.Principal == "*")
-      | select(actions | map(ascii_downcase) | index("kms:decrypt"))
+      | select(denies_decrypt)
       | select(.Condition.StringNotEqualsIgnoreCase["kms:RecipientAttestation:PCR8:ServiceName"] == "eks.amazonaws.com")
     ] | length) as $pcr8_denies
   | $allow_actions_reaching_decrypt == 1

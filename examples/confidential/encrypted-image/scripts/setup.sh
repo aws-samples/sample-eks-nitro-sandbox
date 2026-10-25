@@ -218,12 +218,17 @@ else
     | (.Statement[] | select(.Sid == "DenyUnlessThePolicyMeasurementMatches").Condition.StringNotEqualsIgnoreCase["kms:RecipientAttestation:PCR17"]) = $pcr17
     | .Statement |= map(select(.Sid != "AttestedDecryptOnly"))
   ' "$KEY_POLICY_TEMPLATE" > "$TMP_DIR/kms-key-policy.birth.json"
+  # Any truncated wildcard (kms:De*, kms:*crypt) counts too, as does kms:CreateGrant: a
+  # grant cannot beat the two denies, but it has no business in a document whose whole
+  # job is to allow nothing that can reach the layer key.
   jq -e '([.Statement[] | select(.Effect == "Allow")
            | (.Action | if type == "array" then . else [.] end)[] | ascii_downcase]
-          | map(select(. == "*" or . == "kms:*" or startswith("kms:decrypt")
+          | map(select(. == "*" or . == "kms:creategrant"
+                       or test("^kms:[a-z]*\\*$")
+                       or startswith("kms:decrypt")
                        or startswith("kms:reencryptfrom"))) | length) == 0
   ' "$TMP_DIR/kms-key-policy.birth.json" >/dev/null ||
-    die "the birth key policy would allow a decrypt; refusing to create the key"
+    die "the birth key policy would allow something that can reach a decrypt; refusing to create the key"
   key_json="$(aws kms create-key \
     --description "Wraps the encrypted image layer key for the EKS Nitro sandbox encrypted-image sample" \
     --key-usage ENCRYPT_DECRYPT --key-spec SYMMETRIC_DEFAULT \
@@ -357,6 +362,9 @@ settle_key_policy_principal() {
       | jq -r '[.Statement[] | select(.Sid == "AttestedDecryptOnly")
                 | (.Principal.AWS | if type == "array" then .[] else . end)] | join(",")')"
     [[ "$stored" != "$role_arn" ]] || return 0
+    # No AttestedDecryptOnly at all is not something waiting will fix; leave it to
+    # verify_key_policy, which has the error message for it.
+    [[ -n "$stored" ]] || return 0
     sleep 5
     aws kms put-key-policy --key-id "$kms_key_arn" --policy-name default \
       --policy "file://$TMP_DIR/kms-key-policy.json" >/dev/null 2>&1 || true
@@ -383,10 +391,26 @@ verify_key_policy() {  # verify_key_policy <expected-pcr17>
       | . == "*" or . == "kms:*"
         or startswith("kms:decrypt") or startswith("kms:reencryptfrom");
     def actions: (.Action | if type == "array" then . else [.] end);
+    # The deny side needs a NARROWER test than the allow side, and the difference matters.
+    # On the allow side kms:ReEncryptFrom counts, because it is a way to reach the
+    # plaintext. On the deny side it does not: a deny that covers only ReEncryptFrom
+    # leaves a mismatched measurement refused by implicit deny, where the page shows an
+    # explicit one. So a deny has to cover kms:Decrypt itself, by name or by a wildcard
+    # that spans it. ("kms:*" spans it, which is why this is not plain membership: a
+    # template hardened that way is stricter than what we ship, not weaker.)
+    def covers_decrypt:
+      ascii_downcase
+      | . == "*" or . == "kms:*" or startswith("kms:decrypt");
+    def denies_decrypt: actions | any(covers_decrypt);
     ([.Statement[] | select(.Effect == "Allow") | actions[] | select(reaches_decrypt)]
       | length) as $allow_actions_reaching_decrypt
     | ([.Statement[] | select(.Sid == "AttestedDecryptOnly")
         | select(.Effect == "Allow")
+        # The one allow that reaches a decrypt has to be THIS statement. Counting
+        # decrypt-reaching actions across the policy and finding one is not enough on its
+        # own: the count would also be 1 if this statement had been cut back to, say,
+        # kms:DescribeKey and an unconditional decrypt allow added elsewhere.
+        | select(actions | map(ascii_downcase) | any(reaches_decrypt))
         # The ARN or the role unique id: KMS stores the id when the put lands while the
         # role is still propagating. Both name this one role and nothing else.
         | select((.Principal.AWS | if type == "array" then . else [.] end)
@@ -396,12 +420,12 @@ verify_key_policy() {  # verify_key_policy <expected-pcr17>
       ] | length) as $allows
     | ([.Statement[] | select(.Sid == "DenyUnlessThePolicyMeasurementMatches")
         | select(.Effect == "Deny") | select(.Principal == "*")
-        | select(actions | map(ascii_downcase) | index("kms:decrypt"))
+        | select(denies_decrypt)
         | select(.Condition.StringNotEqualsIgnoreCase["kms:RecipientAttestation:PCR17"] == $pcr17)
       ] | length) as $pcr17_denies
     | ([.Statement[] | select(.Sid == "DenyUnlessTheAttestationComesFromAnEKSSandbox")
         | select(.Effect == "Deny") | select(.Principal == "*")
-        | select(actions | map(ascii_downcase) | index("kms:decrypt"))
+        | select(denies_decrypt)
         | select(.Condition.StringNotEqualsIgnoreCase["kms:RecipientAttestation:PCR8:ServiceName"] == "eks.amazonaws.com")
       ] | length) as $pcr8_denies
     | $allow_actions_reaching_decrypt == 1
@@ -645,14 +669,27 @@ render "$SAMPLE_DIR/deploy/pod.yaml" "$image_filter" "$TMP_DIR/pod-input.json"
 genpolicy_home="$TMP_DIR/genpolicy-home"
 rm -rf "$genpolicy_home"
 mkdir -p "$genpolicy_home/.docker"
-# The token reaches jq on standard input, never in its argv: a command line is readable
-# from /proc by any local user, and this is a live credential for the registry.
-printf 'AWS:%s' "$(aws ecr get-login-password)" | base64 | tr -d '\r\n' \
+# The token is checked before it is encoded. Inside a pipeline a failed command
+# substitution does not stop the script, so without this the pipeline would happily
+# encode "AWS:" and write a well-formed config holding no password: the generator would
+# then fail later with an opaque authentication error.
+ecr_token="$(aws ecr get-login-password)" ||
+  die "could not get an ECR authorization token for the policy generator"
+[[ -n "$ecr_token" ]] || die "the ECR authorization token came back empty"
+# It reaches jq on standard input, never in its argv: a command line is readable from
+# /proc by any local user, and this is a live credential for the registry.
+printf 'AWS:%s' "$ecr_token" | base64 | tr -d '\r\n' \
   | jq -Rn --arg registry "$registry" '{auths: {($registry): {auth: input}}}' \
   > "$genpolicy_home/.docker/config.json"
+unset ecr_token
 chmod 600 "$genpolicy_home/.docker/config.json"
-jq -e --arg registry "$registry" '.auths[$registry].auth | type == "string" and length > 0' \
-  "$genpolicy_home/.docker/config.json" >/dev/null ||
+jq -e --arg registry "$registry" --arg prefix "QVdTOg" '
+  .auths[$registry].auth
+  | type == "string" and length > 0
+    # "QVdTOg" is base64 for "AWS:", so a token-less "AWS:" encodes to exactly that and
+    # nothing more. Anything longer carries a password.
+    and . != "QVdTOg==" and (length > ($prefix | length) + 2)
+' "$genpolicy_home/.docker/config.json" >/dev/null ||
   die "could not write the registry credentials the policy generator needs"
 
 HOME="$genpolicy_home" "$GENPOLICY" \

@@ -942,8 +942,9 @@ lookup in the wrong Region comes back with that service's own not-found exceptio
 would otherwise be reported as "already gone" while the resource is still there in the
 Region the run used. The run files under the repository's `tmp/` are removed only when
 there is nothing to come back for: a clean up that left something behind, or one run with
-`--keep-aws-resources`, keeps them, because they hold the resource ids and the registry
-credentials the other two scripts need.
+`--keep-aws-resources`, keeps them, because they hold the resource ids. Note that
+`--keep-aws-resources` still deletes the namespace and the service account, so it is
+`setup.sh` that makes the kept key and repository usable again, not `changed-pod.sh`.
 
 Two things it does not do. The KMS key is scheduled, not destroyed: AWS enforces a waiting
 period of at least 7 days and there is no way to remove a key sooner. And it leaves network
