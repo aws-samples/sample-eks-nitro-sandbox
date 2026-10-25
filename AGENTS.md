@@ -235,6 +235,16 @@ same thing.
     tried under the full read-only flag set and **it executed and created a file**, so an
     unchecked settings file would hand the reviewer arbitrary execution, and an `env` entry
     could point its credentials somewhere else.
+  - **This costs you nothing else, because `--restricted` ignores settings *files*, not the
+    environment.** Everything that is not a credential helper — the provider switch, a
+    Region, a profile — goes in your shell as it normally would, and reaches the reviewer;
+    the run proving this backend worked relied on an ambient `CLAUDE_CODE_USE_BEDROCK`. The
+    settings file is for the one thing the environment cannot carry.
+  - Being exact about what the allowlist does and does not buy: `apiKeyHelper` also names a
+    command that claude executes, so permitting it permits execution — of the credential
+    helper you chose, which is the point of naming it. What the check removes is every
+    *other* way a settings file could run something, `hooks` above all, none of which the
+    reviewer needs.
 - **Both: the tree is fingerprinted before and after** — every path's type, mode, size,
   modification time, symlink target and content — and the run fails if anything changed.
   That check has limits: it cannot see a file created and deleted within the run, and it
