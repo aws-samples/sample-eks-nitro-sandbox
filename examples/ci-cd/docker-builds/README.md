@@ -897,11 +897,11 @@ token on standard input are the shape most pipelines already use.
 
 ## Clean up
 
-The commands use the variables from the walkthrough. In a new shell, set them again first,
-with the values you used:
+The clean up needs the namespace from the walkthrough. In a new shell, set it again first,
+with the value you used:
 
 ```bash
-export AWS_REGION=us-west-2 NAMESPACE=docker-builds-sample
+export NAMESPACE=docker-builds-sample
 ```
 
 [`scripts/clean.sh`](scripts/clean.sh) deletes the Jobs, the pods, the build scripts, the
@@ -911,6 +911,11 @@ the Pod Identity association, the IAM role with its policy, and the ECR reposito
 image in it. It touches only a namespace labelled `app.kubernetes.io/part-of=docker-builds` and
 only AWS resources tagged `ManagedBy=docker-builds`, and anything it skips or cannot confirm is
 listed at the end and makes it exit non-zero.
+
+It needs no `AWS_REGION`: it reads the Region to look each cache volume up in from the
+cluster's own nodes, which provisioned them, and the Region of the push's resources from the
+state file that recorded them. So it needs to be able to read nodes, and it removes the push's
+resources only while your credentials are for the account the state file names.
 
 ```bash
 ./scripts/clean.sh

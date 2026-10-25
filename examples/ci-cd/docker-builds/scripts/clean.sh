@@ -38,18 +38,15 @@ command -v kubectl >/dev/null 2>&1 || { echo "error: kubectl is not on PATH" >&2
 # look like a record of a push, and the check below would report a clean up as incomplete over
 # a push that was never set up.
 unset ECR_PUSH_READY ECR_ACCOUNT_ID ECR_AWS_REGION ECR_CLUSTER_NAME ECR_NAMESPACE \
-      ECR_REPO_NAME ECR_ROLE_NAME ECR_POLICY_NAME ECR_ASSOCIATION_ID
+      ECR_REPO_NAME ECR_ROLE_NAME ECR_POLICY_NAME ECR_ASSOCIATION_ID ECR_STATE_END
 # shellcheck disable=SC1090
 if [[ -f "$STATE_FILE" ]]; then
   # A state file that cannot be read whole is "could not determine": without this the script
   # would carry on and report "Clean up complete" while the push's resources were still there.
-  # ECR_STATE_END is the marker ecr-setup.sh writes last; `.` reports only its last command's
-  # status, so a file truncated part way through reads as a good one with empty fields.
-  #
-  # Every name is unset again on a bad read. The values from before the bad line survive the
-  # failed `.`, and acting on a half-read record is worse than acting on none: with the
-  # association line lost but the role line kept, the role would be deleted while its
-  # association was still live, which is exactly what keep_role below exists to prevent.
+  # ECR_STATE_END is the marker ecr-setup.sh writes last, because `.` reports only its last
+  # command's status. Every name is unset again on a bad read: values from before the bad line
+  # survive the failed `.`, and a half-read record is worse than none, because a lost
+  # association line with the role line kept would delete the role while its association lived.
   # shellcheck disable=SC1090
   if ! . "$STATE_FILE" || [[ "${ECR_STATE_END:-}" != 1 ]]; then
     note_fail "$(basename "$STATE_FILE") exists but is not a complete state file, so any Amazon ECR push it records was left in place. Fix or move the file aside, then run this again"
@@ -137,18 +134,33 @@ if [[ "$ns_exists" == true ]]; then
     fi
     volume_of["$claim"]="$vol"
   done
-  # The Region those volumes are in, read from the cluster itself rather than guessed from the
-  # environment. They were provisioned by this cluster's EBS CSI driver, so its nodes' topology
-  # label is the authority. Any other source can name a Region the volumes are not in, where
-  # describe-volumes answers InvalidVolume.NotFound and a live, billing volume is reported as
-  # gone: a state file from another run names its own Region, .env can be stale, and a shell
-  # can be left exported to anything. Read before the namespace goes, while the cluster is
-  # certainly still reachable.
+  # The Region those volumes are in, taken from the cluster that provisioned them rather than
+  # from the environment: a state file, a stale .env or an exported Region can all name a
+  # Region the volumes are not in, where a live volume reads as InvalidVolume.NotFound. Read
+  # before the namespace goes, while the cluster is certainly still reachable.
   vol_region=""
   if [[ "${#volume_of[@]}" -gt 0 ]]; then
     vol_region="$(kc get nodes \
       -o jsonpath='{.items[0].metadata.labels.topology\.kubernetes\.io/region}' 2>/dev/null)" \
       || vol_region=""
+  fi
+
+  # Read each volume once while it still exists. A later "not found" only means "deleted" if a
+  # "found" was possible to begin with: a shell whose credentials are for another account (a
+  # kubeconfig can pin its own AWS_PROFILE, so the cluster is reachable while the CLI is
+  # elsewhere), or a Region that came back wrong, would answer InvalidVolume.NotFound for a
+  # volume that is alive and billing, and that would be reported as gone.
+  if [[ -n "$vol_region" ]] && command -v aws >/dev/null 2>&1; then
+    for claim in "${!volume_of[@]}"; do
+      vol="${volume_of[$claim]}"
+      seen="$(aws ec2 describe-volumes --volume-ids "$vol" --region "$vol_region" \
+        --query 'Volumes[0].State' --output text 2>&1)"
+      seen_rc=$?
+      if [[ $seen_rc -ne 0 || -z "$seen" || "$seen" == "None" ]]; then
+        note_fail "could not confirm EBS volume $vol ($claim) is gone: it is not visible to these credentials in $vol_region before deletion, so a later 'not found' would not mean deleted. Check this volume ID in the EC2 console"
+        unset "volume_of[$claim]"
+      fi
+    done
   fi
 
   echo "Deleting the EBS layer cache claims (this deletes their volumes)..."
@@ -209,17 +221,13 @@ elif [[ -n "${ECR_REPO_NAME:-}${ECR_ROLE_NAME:-}${ECR_ASSOCIATION_ID:-}" ]]; the
     note_fail "the AWS CLI and jq are needed to remove the push resources (role ${ECR_ROLE_NAME:-none}, repository ${ECR_REPO_NAME:-none}); they are left in place"
   elif [[ -z "${ECR_AWS_REGION:-}" || -z "${ECR_CLUSTER_NAME:-}" || -z "${ECR_ACCOUNT_ID:-}" ]]; then
     # Checked before anything reads them: under `set -u` an absent name would abort the script
-    # here, after the namespace is already gone and before the summary is printed, so a
-    # truncated or hand-edited state file would look like a crash rather than a clean up that
-    # could not finish.
+    # after the namespace is gone and before the summary, which reads as a crash.
     note_fail "$(basename "$STATE_FILE") records a push (role ${ECR_ROLE_NAME:-none}, repository ${ECR_REPO_NAME:-none}) but is missing the Region, cluster or account it belongs to; those resources were left in place. Remove them by hand, or restore the file and run this again"
-  elif ! here_acct="$(aws sts get-caller-identity --query Account --output text 2>&1)" \
+  elif ! here_acct="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)" \
        || [[ "$here_acct" != "$ECR_ACCOUNT_ID" ]]; then
-    # The one check that makes the three deletes below safe to do by name. In another account
-    # every lookup answers "does not exist", which would read as "already gone": the clean up
-    # would report success, delete the state file, and leave the recorded account's role,
-    # association and repository with nothing left to find them by. Worse, a same-named role
-    # tagged ManagedBy=docker-builds in the current account would be deleted instead.
+    # The one check that makes the three deletes below safe to do by name: in another account
+    # every lookup answers "does not exist", which would read as "already gone" and would also
+    # put a same-named tagged role in the current account at risk.
     note_fail "$(basename "$STATE_FILE") records a push in AWS account $ECR_ACCOUNT_ID, but these credentials are for ${here_acct:-an account that could not be read}; its role, association and repository were left in place. Re-run with credentials for account $ECR_ACCOUNT_ID"
   else
     region="${ECR_AWS_REGION}"

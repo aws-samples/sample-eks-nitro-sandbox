@@ -1,3 +1,6 @@
 # Local values and run state, never committed.
 .env
+# The state file, and the .tmp scripts/ecr-setup.sh renames into place, which a kill part way
+# through would leave behind. Both hold this account's IDs.
 .docker-builds.state
+.docker-builds.state.tmp

@@ -83,21 +83,21 @@ write_state() {
     printf 'ECR_ROLE_NAME=%q\n' "$STATE_ROLE"
     printf 'ECR_POLICY_NAME=%q\n' "$POLICY_NAME"
     printf 'ECR_ASSOCIATION_ID=%q\n' "$STATE_ASSOC"
-    # Written last, and required by both readers. `.` reports only its last command's status,
-    # so a file truncated part way (a full disk, a kill between writes) or with a bad line in
-    # the middle otherwise reads as a good file with empty fields, and the next write blanks
-    # whatever it really held. That orphaning is the defect three review rounds kept finding.
+    # Written last, and checked by the readers that delete or adopt: `.` reports only its
+    # last command's status, so a file that stops part way through would otherwise read as a
+    # good one with empty fields, and the next write would blank what it really held.
     printf 'ECR_STATE_END=1\n'
-  } > "$STATE_FILE"
+  } > "$STATE_FILE.tmp"
+  # Renamed into place, so a kill or a full disk part way through leaves the previous file
+  # intact rather than a half-written one.
+  mv -f "$STATE_FILE.tmp" "$STATE_FILE"
 }
 
 # A state file an earlier run left records resources that still exist, so the records are
-# seeded from it rather than started empty. write_state rewrites the whole file: from empty, a
-# re-run would blank the role and the association the moment it recorded the repository, and a
-# stop before it re-recorded them (a throttled put-role-policy, a refused adoption) would
-# leave them in the account with nothing left to find them by. It is read in a subshell so it
-# cannot set anything in this script, with the names unset first so a value from the
-# environment or from .env cannot pose as a record.
+# seeded from it rather than started empty: write_state rewrites the whole file, so from empty
+# a re-run would blank the role and the association the moment it recorded the repository, and
+# a stop before re-recording them would leave them with nothing to find them by. It is read in
+# a subshell, with the names unset first, so neither the file nor .env can set anything here.
 #
 # A file that records a different run is never silently rewritten, because that run's
 # resources would become unreachable. "A different run" is any of the seven fields below
@@ -119,7 +119,8 @@ if [[ -f "$STATE_FILE" ]]; then
           ECR_ACCOUNT_ID ECR_AWS_REGION ECR_CLUSTER_NAME ECR_STATE_END
     # shellcheck disable=SC1090
     . "$STATE_FILE" >/dev/null 2>&1 || exit 3
-    # The end marker, not `.`'s status, is what says the file was read whole: see write_state.
+    # The end marker, not `.`'s status, is what says the file was written whole: see
+    # write_state. It does not catch a hand-edited line that fails at run time.
     [[ "${ECR_STATE_END:-}" == 1 ]] || exit 3
     printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' \
       "${ECR_NAMESPACE:-}" "${ECR_REPO_NAME:-}" "${ECR_ROLE_NAME:-}" "${ECR_ASSOCIATION_ID:-}" \
