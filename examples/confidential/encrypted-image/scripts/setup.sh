@@ -218,15 +218,19 @@ else
     | (.Statement[] | select(.Sid == "DenyUnlessThePolicyMeasurementMatches").Condition.StringNotEqualsIgnoreCase["kms:RecipientAttestation:PCR17"]) = $pcr17
     | .Statement |= map(select(.Sid != "AttestedDecryptOnly"))
   ' "$KEY_POLICY_TEMPLATE" > "$TMP_DIR/kms-key-policy.birth.json"
-  # Any truncated wildcard (kms:De*, kms:*crypt) counts too, as does kms:CreateGrant: a
-  # grant cannot beat the two denies, but it has no business in a document whose whole
-  # job is to allow nothing that can reach the layer key.
-  jq -e '([.Statement[] | select(.Effect == "Allow")
-           | (.Action | if type == "array" then . else [.] end)[] | ascii_downcase]
-          | map(select(. == "*" or . == "kms:creategrant"
-                       or test("^kms:[a-z]*\\*$")
-                       or startswith("kms:decrypt")
-                       or startswith("kms:reencryptfrom"))) | length) == 0
+  # The same glob test verify_key_policy applies, so the two checks in this script cannot
+  # disagree about what reaches the layer key. A grant cannot beat the two denies, but it
+  # has no business in a document whose whole job is to allow nothing that can reach it.
+  jq -e '
+    def action_matches($target):
+      (ascii_downcase | gsub("\\*"; ".*") | gsub("\\?"; ".")) as $re
+      | $target | test("^" + $re + "$");
+    def reaches_decrypt:
+      action_matches("kms:decrypt") or action_matches("kms:reencryptfrom")
+      or action_matches("kms:creategrant");
+    ([.Statement[] | select(.Effect == "Allow")
+      | (.Action | if type == "array" then . else [.] end)[]
+      | select(reaches_decrypt)] | length) == 0
   ' "$TMP_DIR/kms-key-policy.birth.json" >/dev/null ||
     die "the birth key policy would allow something that can reach a decrypt; refusing to create the key"
   key_json="$(aws kms create-key \
@@ -384,23 +388,28 @@ verify_key_policy() {  # verify_key_policy <expected-pcr17>
     --query Policy --output text)"
   printf '%s\n' "$live" | jq . > "$TMP_DIR/kms-key-policy.live.json"
   jq -e --arg role "$role_arn" --arg roleid "$role_id" --arg pcr17 "$1" '
-    # Any action string that can reach a decrypt, wildcards included: "*", "kms:*" and
-    # any prefix form such as "kms:Decrypt*" all do, and an equality list would miss them.
-    def reaches_decrypt:
-      ascii_downcase
-      | . == "*" or . == "kms:*"
-        or startswith("kms:decrypt") or startswith("kms:reencryptfrom");
+    # Does this IAM action string match the named action? An IAM action is matched
+    # case-insensitively and anchored, with * standing for any run of characters and ?
+    # for one. Action names hold no other regular-expression metacharacter, so turning
+    # the two wildcards into their regex equivalents is the whole translation. Testing
+    # the glob this way, rather than listing prefixes, is what makes "kms:De*",
+    # "kms:*crypt" and "kms:Decryp?" count: each of them really does grant the action.
+    def action_matches($target):
+      (ascii_downcase | gsub("\\*"; ".*") | gsub("\\?"; ".")) as $re
+      | $target | test("^" + $re + "$");
     def actions: (.Action | if type == "array" then . else [.] end);
-    # The deny side needs a NARROWER test than the allow side, and the difference matters.
-    # On the allow side kms:ReEncryptFrom counts, because it is a way to reach the
-    # plaintext. On the deny side it does not: a deny that covers only ReEncryptFrom
-    # leaves a mismatched measurement refused by implicit deny, where the page shows an
-    # explicit one. So a deny has to cover kms:Decrypt itself, by name or by a wildcard
-    # that spans it. ("kms:*" spans it, which is why this is not plain membership: a
-    # template hardened that way is stricter than what we ship, not weaker.)
-    def covers_decrypt:
-      ascii_downcase
-      | . == "*" or . == "kms:*" or startswith("kms:decrypt");
+    # The two sides ask different questions, and the difference matters.
+    #
+    # An ALLOW is dangerous if it grants any route to the layer key: Decrypt itself,
+    # ReEncryptFrom (re-wrap under an ungated key, then decrypt there), or CreateGrant
+    # (hand the ability to someone else).
+    def reaches_decrypt:
+      action_matches("kms:decrypt") or action_matches("kms:reencryptfrom")
+      or action_matches("kms:creategrant");
+    # A DENY only does its job here if it refuses Decrypt. One covering just
+    # ReEncryptFrom would leave a mismatched measurement refused by implicit deny, where
+    # the page shows an explicit one, so ReEncryptFrom must NOT satisfy this side.
+    def covers_decrypt: action_matches("kms:decrypt");
     def denies_decrypt: actions | any(covers_decrypt);
     ([.Statement[] | select(.Effect == "Allow") | actions[] | select(reaches_decrypt)]
       | length) as $allow_actions_reaching_decrypt
@@ -677,12 +686,14 @@ ecr_token="$(aws ecr get-login-password)" ||
   die "could not get an ECR authorization token for the policy generator"
 [[ -n "$ecr_token" ]] || die "the ECR authorization token came back empty"
 # It reaches jq on standard input, never in its argv: a command line is readable from
-# /proc by any local user, and this is a live credential for the registry.
-printf 'AWS:%s' "$ecr_token" | base64 | tr -d '\r\n' \
-  | jq -Rn --arg registry "$registry" '{auths: {($registry): {auth: input}}}' \
-  > "$genpolicy_home/.docker/config.json"
+# /proc by any local user, and this is a live credential for the registry. The umask is
+# set in the subshell that does the writing, so the file is never briefly world-readable
+# the way it would be if it were created first and chmod-ed after.
+( umask 077
+  printf 'AWS:%s' "$ecr_token" | base64 | tr -d '\r\n' \
+    | jq -Rn --arg registry "$registry" '{auths: {($registry): {auth: input}}}' \
+    > "$genpolicy_home/.docker/config.json" )
 unset ecr_token
-chmod 600 "$genpolicy_home/.docker/config.json"
 jq -e --arg registry "$registry" --arg prefix "QVdTOg" '
   .auths[$registry].auth
   | type == "string" and length > 0

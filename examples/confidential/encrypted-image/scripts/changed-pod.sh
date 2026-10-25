@@ -100,17 +100,17 @@ aws kms get-key-policy --key-id "$KMS_KEY_ARN" --policy-name default \
 # means "the measurement was refused" if the gate is still the approved one, with no
 # second allow that could reach a decrypt and with both denies still covering it.
 jq -e --arg role "$IAM_ROLE_ARN" --arg roleid "$IAM_ROLE_ID" --arg pcr17 "$PREDICTED_PCR17" '
-  def reaches_decrypt:
-    ascii_downcase
-    | . == "*" or . == "kms:*"
-      or startswith("kms:decrypt") or startswith("kms:reencryptfrom");
+  # The same definitions verify_key_policy uses in setup.sh, and for the same reasons;
+  # the comments there explain the glob translation, and why the deny side is narrower
+  # than the allow side. Keep this program free of apostrophes: it is single-quoted.
+  def action_matches($target):
+    (ascii_downcase | gsub("\\*"; ".*") | gsub("\\?"; ".")) as $re
+    | $target | test("^" + $re + "$");
   def actions: (.Action | if type == "array" then . else [.] end);
-  # Narrower than reaches_decrypt on purpose: a deny covering only kms:ReEncryptFrom
-  # would leave a mismatched measurement refused by implicit deny, not the explicit one
-  # this script reports. See the same note in setup.sh.
-  def covers_decrypt:
-    ascii_downcase
-    | . == "*" or . == "kms:*" or startswith("kms:decrypt");
+  def reaches_decrypt:
+    action_matches("kms:decrypt") or action_matches("kms:reencryptfrom")
+    or action_matches("kms:creategrant");
+  def covers_decrypt: action_matches("kms:decrypt");
   def denies_decrypt: actions | any(covers_decrypt);
   ([.Statement[] | select(.Effect == "Allow") | actions[] | select(reaches_decrypt)]
     | length) as $allow_actions_reaching_decrypt
