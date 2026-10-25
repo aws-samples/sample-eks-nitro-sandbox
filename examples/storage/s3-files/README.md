@@ -606,11 +606,14 @@ cluster it was already installed; on a cluster without it, install it once follo
 [S3 Files CSI guide](https://docs.aws.amazon.com/eks/latest/userguide/s3files-csi.html), and
 `setup.sh` will find and reuse it. The driver's node service account must carry a Pod Identity
 association, because S3 Files always mounts with IAM authorization, which needs the mount signed
-with the node role's identity. `setup.sh` stops with the install or upgrade command when the
-driver is absent, older than 3.5.1, or at a version it cannot read, and with the install
-guidance when its node service account has no association. It compares every component of the
-version, not the major alone, so a 3.x driver older than 3.5.1 is caught. It never creates or
-changes the driver's roles.
+with the node role's identity. `setup.sh` compares every component of the installed version
+against 3.5.1, not the major alone, so a 3.x driver older than 3.5.1 is caught. It then stops
+with the command that fits the cluster: `create-addon` when there is no add-on, `update-addon`
+when the add-on is too old, and for a driver installed some other way, a note to upgrade it the
+way it was installed rather than a command that would fail. A lookup it cannot make — listing
+the add-ons, reading the add-on's version, reading the daemonset — stops the run saying the
+version could not be determined, which is never read as "not installed". It also stops when the
+node service account has no association, and it never creates or changes the driver's roles.
 
 ## Clean up
 
