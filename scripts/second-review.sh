@@ -375,13 +375,20 @@ print("OK")
         "the settings file '$claude_settings_abs' cannot be used: $settings_verdict."
       claude_args+=(--settings "$claude_settings_abs")
     fi
-    # Run from an empty directory rather than from the tree, with the tree added as a
-    # readable directory. Why: an allowed credential helper is still a command claude
-    # executes, and with the tree as the working directory it would execute inside the very
-    # thing under review. --out is already required to sit outside the tree.
-    mkdir -p "$OUT_ABS/claude-cwd"
+    # Run from a directory made fresh for this run rather than from the tree, with the tree
+    # added as a readable directory. Why: an allowed credential helper is still a command
+    # claude executes, and with the tree as the working directory it would execute inside
+    # the very thing under review. --out is already required to sit outside the tree.
+    #
+    # mktemp -d, not a fixed name: --out can be reused, and "mkdir -p" on a path that is
+    # already a symbolic link succeeds without replacing it, so a stale or planted
+    # claude-cwd link pointing at the tree would have put the helper straight back inside
+    # it, and widened what the file tools could reach. Checked that mkdir -p behaves that
+    # way and that cd follows the link.
+    claude_cwd=$(mktemp -d "$OUT_ABS/claude-cwd.XXXXXX") || refuse E_NO_TOOL \
+      "could not make a working directory for the reviewer under $OUT_ABS."
     claude_args+=(--add-dir "$TREE_ABS")
-    ( cd "$OUT_ABS/claude-cwd" && ${timeout_cmd[@]+"${timeout_cmd[@]}"} "$resolved_cmd" "${claude_args[@]}" ) \
+    ( cd "$claude_cwd" && ${timeout_cmd[@]+"${timeout_cmd[@]}"} "$resolved_cmd" "${claude_args[@]}" ) \
       < "$BRIEF_ABS" > "$OUT_ABS/review.json" 2> "$OUT_ABS/review.err" || run_status=$?
     # Any error the backend reports means no review happened, whatever its wording, so the
     # record is rejected on `is_error` alone and the error code only chooses the message.

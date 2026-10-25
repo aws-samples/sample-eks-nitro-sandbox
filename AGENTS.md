@@ -241,12 +241,17 @@ same thing.
     does.** Both permitted keys *are* commands claude runs — that is what naming a
     credential helper means. What the check removes is every *other* way a settings file
     could run something. The helper is a command you chose, trusted for that purpose.
-  - **The reviewer runs from an empty directory, not from the tree**, with the tree added as
-    a readable directory. Why: a permitted helper would otherwise execute with the thing
-    under review as its working directory. A consequence worth knowing: a relative write by
-    such a command now lands beside the output rather than in the tree, so the tree
-    fingerprint is *less* likely to notice it — the isolation reduces the exposure and the
-    detection together.
+  - **The reviewer runs from a directory made fresh for the run, not from the tree**, with
+    the tree added as a readable directory. Why: a permitted helper would otherwise execute
+    with the thing under review as its working directory. The directory is made with
+    `mktemp -d` rather than at a fixed name, because `--out` can be reused and `mkdir -p` on
+    a path that is already a symbolic link succeeds without replacing it — so a stale or
+    planted link there pointing at the tree would have put the helper straight back inside
+    it. Checked both: `mkdir -p` does behave that way, and the old fixed-name version puts
+    the reviewer physically in the tree while the new one does not.
+  - A consequence worth knowing rather than glossing: a relative write by such a command now
+    lands beside the output instead of in the tree, so the tree fingerprint is *less* likely
+    to notice it. **The isolation reduces the exposure and the detection together.**
   - **This costs you nothing else, because `--restricted` ignores settings *files*, not the
     environment.** Everything that is not a credential helper — the provider switch, a
     Region, a profile — goes in your shell as it normally would, and reaches the reviewer;
