@@ -157,7 +157,7 @@ if [[ "$ns_exists" == true ]]; then
         --query 'Volumes[0].State' --output text 2>&1)"
       seen_rc=$?
       if [[ $seen_rc -ne 0 || -z "$seen" || "$seen" == "None" ]]; then
-        note_fail "could not confirm EBS volume $vol ($claim) is gone: it was not visible to these credentials in $vol_region before deletion, so a later 'not found' would not mean deleted. Check this volume ID in the EC2 console. AWS said: $seen"
+        note_fail "could not confirm EBS volume $vol ($claim) is gone: it was not visible to these credentials in $vol_region before deletion, so a later 'not found' would not mean deleted. Check this volume ID in the EC2 console. AWS said: ${seen//$'\n'/ }"
         unset "volume_of[$claim]"
       fi
     done
@@ -327,10 +327,15 @@ elif [[ -n "${ECR_REPO_NAME:-}${ECR_ROLE_NAME:-}${ECR_ASSOCIATION_ID:-}" ]]; the
   [[ "${#FAILURES[@]}" -eq 0 ]] && rm -f "$STATE_FILE"
 fi
 
-# A .docker-builds.state.tmp that a killed scripts/ecr-setup.sh left behind is not a record of
-# anything, but it does hold the account ID. It is removed from here, not from the push block
-# above, because that block is only entered when the state file records a push.
-[[ "${#FAILURES[@]}" -eq 0 ]] && rm -f "$STATE_FILE.tmp"
+# A .docker-builds.state.tmp is a record, not litter: scripts/ecr-setup.sh writes it inside
+# write_state, and every write_state but the last one runs just after a repository, role or
+# association came into being. So a leftover means a write was interrupted at that moment, and
+# the newest resource may be named only in that file, or nowhere. Deleting it would destroy the
+# only record of something that is still in the account, and none of those cases records a
+# failure of its own, so the clean up would still say it was complete. It is reported and kept.
+if [[ -e "$STATE_FILE.tmp" ]]; then
+  note_fail "$(basename "$STATE_FILE").tmp was left behind by a ./scripts/ecr-setup.sh that stopped while it was recording a resource, so it may name an ECR repository or an IAM role that $(basename "$STATE_FILE") does not. Read it, remove by hand whatever it names that is still there, then delete it"
+fi
 
 echo
 if [[ "${#FAILURES[@]}" -gt 0 ]]; then
