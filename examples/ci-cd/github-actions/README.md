@@ -412,12 +412,16 @@ So the only credential in the pod's **spec** is that one runner's own config, no
 credential that could add or remove runners.
 
 Be clear that this is a statement about the pod spec, not about everything the job can see.
-A GitHub Actions job is also handed its own `GITHUB_TOKEN`, and an `ACTIONS_RUNTIME_TOKEN`,
-in the job message the runner collects over its own connection rather than in the pod spec,
-which is exactly why a check of the spec cannot see them. That token is the one a malicious
-pull request would reach for, and its reach is set by the workflow's `permissions:` block,
-not by anything on this page. This sample's workflow therefore sets the narrowest block it
-can:
+A GitHub Actions job is also handed its own `GITHUB_TOKEN` and an `ACTIONS_RUNTIME_TOKEN`, in
+the job message the runner collects over its own connection rather than in the pod spec,
+which is exactly why a check of the spec cannot see them. It is also handed any secret the
+workflow names; this one names none, and it is granted no OIDC token, which would need
+`id-token: write`.
+
+**`GITHUB_TOKEN` is the one a malicious pull request would reach for**, and its reach is set
+by the workflow's `permissions:` block, not by anything else on this page. This sample's
+workflow sets the narrowest block that still lets the checkout step work if you take up the
+genuine fork pull request option below:
 
 ```yaml
 permissions:
@@ -426,9 +430,19 @@ permissions:
 
 Without a `permissions:` block a workflow gets the repository's default, which on many
 repositories still includes `contents: write`. Set it explicitly on any workflow that runs
-code you have not read. Revoking the credential at GitHub, as "Where the credential lives"
-says, is what makes every copy of the *administering* credential useless; the job's own
-token expires with the job.
+code you have not read. Two limits on what that buys you:
+
+- **`permissions:` does not govern `ACTIONS_RUNTIME_TOKEN`.** That token reaches this run's
+  Actions cache and artifact services, so a workflow running untrusted code should not share
+  a cache with workflows you trust. In this sample nothing is reachable there anyway, because
+  the hosts those services use are not on the egress allowlist, as "How the network policy
+  works" explains.
+- **On a pull request from a fork, GitHub already caps `GITHUB_TOKEN` at read.** The block
+  matters most for `workflow_dispatch` and for pull requests from the same repository, so do
+  not read it as the thing that protects you on fork pull requests.
+
+Revoking the credential at GitHub, as "Where the credential lives" says, is what makes every
+copy of the *administering* credential useless. `GITHUB_TOKEN` expires when the job ends.
 
 **Step 9: The escape probes, and what they are worth.** The workflow's last step tries to
 reach the node's instance-metadata credentials, list the node's `nvme` devices both from the

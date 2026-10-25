@@ -25,8 +25,15 @@ name: untrusted-pr
 # spec, so the sample's "no credential in the runner pod" check cannot see it
 # and it is the credential untrusted code would actually reach. Its reach is set
 # here. Without this block the token gets the repository's default, which on
-# many repositories includes contents: write. This workflow only needs to read,
-# and in fact checks nothing out at all.
+# many repositories includes contents: write.
+#
+# This workflow itself needs nothing at all: it has no `uses:` step and checks
+# nothing out, so `permissions: {}` would run it. `contents: read` is here
+# because the sample's page documents running a genuine fork pull request
+# instead, which adds a checkout step, and actions/checkout uses this token.
+#
+# It does NOT bound ACTIONS_RUNTIME_TOKEN, which reaches this run's Actions
+# cache and artifacts; `permissions:` does not govern that one.
 permissions:
   contents: read
 
@@ -59,8 +66,13 @@ jobs:
           grep MemTotal /proc/meminfo
           echo "=== SANDBOX-EVIDENCE-END ==="
 
-      # 2. No credential reached this pod. Printed by NAME, never by value.
-      - name: Credentials visible to the job, by name
+      # 2. No ADMIN credential reached this pod: no github_token,
+      #    github_app_private_key or AWS_ variable. The job does hold its own
+      #    GITHUB_TOKEN, handed to it in the job message rather than in the pod
+      #    spec, which is why this step cannot see it; the page's Step 8 says
+      #    what that token is and what bounds it. Printed by NAME, never by
+      #    value.
+      - name: Admin credentials visible to the job, by name
         run: |
           echo "=== CREDENTIAL-NAMES-BEGIN ==="
           echo "--- GitHub admin credential variable names (expect none) ---"

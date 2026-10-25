@@ -410,8 +410,9 @@ done
 [[ -n "$listener_pod" ]] \
   || die "the controller created no listener pod for '$RUNNER_SCALE_SET_NAME' in '$ARC_SYSTEMS_NAMESPACE' within 120s. The release is installed, so the scale set was most likely never registered with GitHub. The two usual causes are a credential GitHub rejects, which the controller logs as 401 Bad credentials on the registration-token request, and a controller on a different version from the scale set:
   kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE logs -l app.kubernetes.io/name=gha-rs-controller
-  If instead a listener object exists and only its pod is missing, something in '$ARC_SYSTEMS_NAMESPACE' refused the pod:
-  kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE get autoscalinglistener"
+  If instead a listener object exists and only its pod is missing, the listener controller could not create it. Its own events and the controller's logs say why. The selector matters on a shared cluster: without it this lists every team's listeners.
+  kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE get autoscalinglistener -l $listener_sel
+  kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE describe autoscalinglistener -l $listener_sel"
 
 # Waited on by NAME, so a listener that is being replaced cannot be waited on.
 #
@@ -429,7 +430,7 @@ done
 # the script resolves that.
 "${KCTL[@]}" wait --for=condition=Ready "pod/$listener_pod" \
   -n "$ARC_SYSTEMS_NAMESPACE" --timeout=180s \
-  || die "the listener pod '$listener_pod' exists in '$ARC_SYSTEMS_NAMESPACE' but did not become Ready. The scale set IS registered with GitHub, because the controller creates the listener only after registering, so this is the listener itself rather than registration: an image it cannot pull, a crash loop, or no egress to GitHub from '$ARC_SYSTEMS_NAMESPACE'. A credential revoked since the scale set was registered would also land here. Its events, then its log:
+  || die "the listener pod '$listener_pod' exists in '$ARC_SYSTEMS_NAMESPACE' but did not become Ready. The scale set WAS registered with GitHub, because the controller creates the listener only after registering, so this is the listener itself rather than registration: a pod that never got scheduled (no room on any node, a taint, a quota), an image it cannot pull, or a crash loop. A credential revoked, or a scale set removed at GitHub, since registration would also land here. Its events, then its log:
   kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE describe pod $listener_pod
   kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE logs $listener_pod"
 
@@ -450,9 +451,12 @@ done
 if [[ "$helm_verb" == upgrade ]]; then
   echo "  note: this was a re-run. If you changed the credential, the listener above may"
   echo "  still be the previous one, running on the previous credential. To rebuild it,"
-  echo "  delete the listener OBJECT, not just its pod, then wait for the new pod:"
-  echo "    kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE delete autoscalinglistener -l actions.github.com/scale-set-name=$RUNNER_SCALE_SET_NAME,actions.github.com/scale-set-namespace=$ARC_RUNNERS_NAMESPACE"
-  echo "    kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE wait --for=condition=Ready pod -l actions.github.com/scale-set-name=$RUNNER_SCALE_SET_NAME --timeout=180s"
+  echo "  delete the listener OBJECT, not just its pod, then run this script again:"
+  echo "    kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE delete autoscalinglistener -l $listener_sel"
+  echo "    ./scripts/setup.sh"
+  echo "  Re-running is what waits correctly: 'kubectl wait' on a selector cannot do it,"
+  echo "  because the delete clears the old pod first and a selector matching nothing"
+  echo "  fails at once instead of waiting."
 fi
 
 say "setup complete"
