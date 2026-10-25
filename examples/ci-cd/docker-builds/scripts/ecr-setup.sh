@@ -30,10 +30,17 @@ namespace_from_caller="${NAMESPACE:-}"
 : "${CLUSTER_NAME:?set CLUSTER_NAME in .env}"
 : "${AWS_REGION:?set AWS_REGION in .env}"
 
-if [[ -n "$namespace_from_caller" && -n "${NAMESPACE:-}" && "$NAMESPACE" != "$namespace_from_caller" ]]; then
-  echo "note: .env sets NAMESPACE=$NAMESPACE; using NAMESPACE=$namespace_from_caller from the environment, as the page's steps do." >&2
+# Whatever .env may have set is only ever reported, never used: the default has to be the same
+# literal the other scripts fall back to, because setup.sh, run-build-job.sh and
+# run-buildkit-job.sh never read .env at all. Falling back to .env's value here instead would
+# put this script in one namespace and the rest of the sample in another.
+namespace_from_env_file="${NAMESPACE:-}"
+NAMESPACE="${namespace_from_caller:-docker-builds-sample}"
+if [[ -n "$namespace_from_env_file" && "$namespace_from_env_file" != "$NAMESPACE" ]]; then
+  echo "note: .env sets NAMESPACE=$namespace_from_env_file, which this script ignores: every script in
+this sample takes the namespace from the environment, as the page's steps do. Using
+NAMESPACE=$NAMESPACE." >&2
 fi
-NAMESPACE="${namespace_from_caller:-${NAMESPACE:-docker-builds-sample}}"
 MANAGED_BY="docker-builds"
 SAMPLE_LABEL_JSONPATH='app\.kubernetes\.io/part-of'
 SERVICE_ACCOUNT="docker-builds-builder"
@@ -78,6 +85,39 @@ write_state() {
     printf 'ECR_ASSOCIATION_ID=%q\n' "$STATE_ASSOC"
   } > "$STATE_FILE"
 }
+
+# A state file an earlier run left records resources that still exist, so the records are
+# seeded from it rather than started empty. write_state rewrites the whole file: from empty, a
+# re-run would blank the role and the association the moment it recorded the repository, and a
+# stop before it re-recorded them (a throttled put-role-policy, a refused adoption) would
+# leave them in the account with nothing left to find them by. It is read in a subshell so it
+# cannot set anything in this script, with the names unset first so a value from the
+# environment or from .env cannot pose as a record.
+#
+# A file that records a different namespace, repository or role belongs to a different run and
+# is never silently rewritten: that run's resources would become unreachable.
+if [[ -f "$STATE_FILE" ]]; then
+  recorded="$(
+    unset ECR_NAMESPACE ECR_REPO_NAME ECR_ROLE_NAME ECR_ASSOCIATION_ID
+    # shellcheck disable=SC1090
+    . "$STATE_FILE" >/dev/null 2>&1 || true
+    printf '%s\t%s\t%s\t%s' \
+      "${ECR_NAMESPACE:-}" "${ECR_REPO_NAME:-}" "${ECR_ROLE_NAME:-}" "${ECR_ASSOCIATION_ID:-}"
+  )"
+  IFS=$'\t' read -r rec_ns rec_repo rec_role rec_assoc <<<"$recorded"
+  state_name="$(basename "$STATE_FILE")"
+  [[ -z "$rec_ns" || "$rec_ns" == "$NAMESPACE" ]] \
+    || die "$state_name records a push for namespace '$rec_ns', not '$NAMESPACE'.
+Run NAMESPACE=$rec_ns ./scripts/clean.sh first, so that run's role, association and
+repository are removed while they can still be found."
+  [[ -z "$rec_repo" || "$rec_repo" == "$ECR_REPO_NAME" ]] \
+    || die "$state_name records ECR repository '$rec_repo', not '$ECR_REPO_NAME'.
+Run ./scripts/clean.sh first, or set ECR_REPO_NAME=$rec_repo to carry on with that one."
+  [[ -z "$rec_role" || "$rec_role" == "$ROLE_NAME" ]] \
+    || die "$state_name records IAM role '$rec_role', not '$ROLE_NAME'.
+Run ./scripts/clean.sh first, or set ROLE_NAME=$rec_role to carry on with that one."
+  STATE_REPO="$rec_repo"; STATE_ROLE="$rec_role"; STATE_ASSOC="$rec_assoc"
+fi
 
 # aws_read <description> <command...> : run a read-only AWS call and tell a failure apart from
 # an absent resource. Returns 0 when the resource is there, with the call's output in

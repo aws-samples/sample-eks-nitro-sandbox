@@ -81,6 +81,11 @@ data:
 
     if [ -n "${ECR_REGISTRY:-}" ]; then
       echo ">>> pushing to $ECR_REGISTRY/${ECR_REPO}"
+      # Leave no credential behind on any exit path, not only the one where the push works.
+      # `set -eu` would otherwise skip both clean-up lines below if the login, the tag or the
+      # push failed, and a failed Job's pod stays until the next run or the clean up, holding
+      # a token that is good for hours and the daemon's copy of it in its config.
+      trap 'rm -f /ecr/token; docker logout "$ECR_REGISTRY" >/dev/null 2>&1 || true' EXIT
       # The token reaches docker login on standard input, never on a command line, as the
       # Amazon ECR documentation shows. The init container produced it with
       # `aws ecr get-login-password` from the role this pod's ServiceAccount is associated
