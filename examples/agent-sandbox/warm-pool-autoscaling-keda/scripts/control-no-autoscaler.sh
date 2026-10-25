@@ -21,7 +21,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # assert_summary own the exit code.
 set +e
 
-require_commands kubectl sed
+require_commands kubectl sed seq
 show_context
 require_our_namespace
 
@@ -29,11 +29,25 @@ resource_exists kc "sandboxwarmpool/$POOL" >/dev/null \
   || die "sandboxwarmpool/$POOL is not in namespace $NAMESPACE; run ./scripts/setup.sh first"
 
 # Put the ScaledObject back whatever happens, including on an interrupt, so this
-# run cannot leave the sample without its autoscaler. Returns kubectl's status,
-# so step 4/4 can assert the restore worked rather than just announcing it.
+# run cannot leave the sample without its autoscaler.
+#
+# It is not enough to apply and take kubectl's status. An apply over an object
+# that is still being deleted SUCCEEDS and the object then goes away with the
+# deletion, so the apply's exit code says nothing about whether the autoscaler is
+# there afterwards. That case is not hypothetical: the likeliest moment for an
+# interrupt is during the `kc delete scaledobject --wait=true` in step 1/4, where
+# the delete request is already in and the object is terminating behind KEDA's
+# finalizer. So this waits for any in-flight deletion to finish, applies, and
+# then READS THE OBJECT BACK, returning non-zero unless it is present with no
+# deletionTimestamp. Both callers, step 4/4 and the EXIT trap, get all three.
 restore_scaledobject() {
+  local del rc
+  kc wait --for=delete "scaledobject/$SCALEDOBJECT" --timeout=120s >/dev/null 2>&1 || true
   sed -e "s/__NAMESPACE__/$NAMESPACE/g" "$SAMPLE_DIR/deploy/scaledobject.yaml" \
-    | kc apply -f - >/dev/null 2>&1
+    | kc apply -f - >/dev/null 2>&1 || return 1
+  del="$(kc get scaledobject "$SCALEDOBJECT" -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null)"
+  rc=$?
+  [[ $rc -eq 0 && -z "$del" ]]
 }
 # Restore on the way out, however the script ends, so it cannot leave the pool
 # unmanaged.
@@ -45,13 +59,26 @@ restore_scaledobject() {
 # a pool that KEDA had been handed back and report it flat: all checks passing
 # after the operator had interrupted the run. Exiting instead makes the EXIT trap
 # run once, with a signal exit status.
-trap 'echo; echo "restoring scaledobject/$SCALEDOBJECT"; delete_claims || true; restore_scaledobject || echo "WARNING: could not restore scaledobject/$SCALEDOBJECT; re-run ./scripts/setup.sh" >&2' EXIT
+#
+# The handler ignores INT and TERM while it runs: a second Ctrl-C, or an impatient
+# `kill`, would otherwise cut the restore off part way and leave the pool with no
+# autoscaler and no warning printed.
+trap 'trap "" INT TERM; echo; echo "restoring scaledobject/$SCALEDOBJECT"; delete_claims || true; restore_scaledobject || echo "WARNING: could not restore scaledobject/$SCALEDOBJECT; re-run ./scripts/setup.sh" >&2' EXIT
 trap 'echo; echo "interrupted" >&2; exit 130' INT
 trap 'echo; echo "terminated" >&2; exit 143' TERM
 
 so_min="$(kc get scaledobject "$SCALEDOBJECT" -o jsonpath='{.spec.minReplicaCount}' 2>/dev/null)"
+so_max="$(kc get scaledobject "$SCALEDOBJECT" -o jsonpath='{.spec.maxReplicaCount}' 2>/dev/null)"
 [[ "$so_min" =~ ^[0-9]+$ ]] \
   || die "could not read minReplicaCount from scaledobject/$SCALEDOBJECT; stopping rather than compare against a floor I do not know"
+# The pool must have somewhere to GO for "it stayed flat" to say anything. If the
+# floor and the ceiling were the same number, the pool could not rise however much
+# demand arrived, and this control would pass on a pool that was never free to
+# move. That is the shape of vacuous pass this whole script exists to exclude.
+[[ "$so_max" =~ ^[0-9]+$ ]] \
+  || die "could not read maxReplicaCount from scaledobject/$SCALEDOBJECT; stopping rather than claim a pool stayed flat without knowing it could have risen"
+(( so_max > so_min )) \
+  || die "scaledobject/$SCALEDOBJECT has minReplicaCount=$so_min and maxReplicaCount=$so_max, so the pool has no room to rise and 'it stayed flat' would be true whatever happened; widen the bounds and re-run"
 
 step "1/4 settle at the floor, then remove the ScaledObject"
 delete_claims || true
@@ -99,7 +126,19 @@ if [[ -n "$read_failed" ]]; then
 else
   echo "  HPA whose scaleTargetRef names $POOL: ${left:-<none>}"
 fi
-[[ -n "$gone" ]]
+# The assertion names the ScaledObject as well as the HPA, so read the
+# ScaledObject too rather than inferring it from the delete having been issued.
+# resource_exists returns 1 for absent and 2 for a read that failed, and only 1
+# will do here: a ScaledObject we could not read is not a ScaledObject we know
+# is gone.
+so_rc=0
+resource_exists kc "scaledobject/$SCALEDOBJECT" >/dev/null || so_rc=$?
+case $so_rc in
+  0) echo "  scaledobject/$SCALEDOBJECT: still present" ;;
+  1) echo "  scaledobject/$SCALEDOBJECT: gone" ;;
+  2) echo "  scaledobject/$SCALEDOBJECT: <could not read>" ;;
+esac
+[[ -n "$gone" && $so_rc -eq 1 ]]
 assert $? "the ScaledObject and the HPA it owned are both gone: nothing is autoscaling the pool now"
 
 step "2/4 apply the same demand: $MAX_CLAIMS claims"
@@ -125,16 +164,25 @@ step "3/4 watch for the same window demand.sh gives the scale-up (300s)"
 # long: a slow move must not be missed by stopping early.
 deadline=$((SECONDS + 300))
 moved=""
+# Count the reads that actually came back. "Nothing moved" is only a finding if
+# the window was watched: if every read in it had failed, the pool could have
+# risen and fallen again inside the window and the final read below would still
+# say the floor. So the window must have produced readings of its own.
+polls=0
 while ((SECONDS < deadline)); do
   v="$(pool_spec_replicas)" || v=""
-  if [[ -n "$v" && "$v" -gt "$baseline" ]]; then moved="$v"; break; fi
+  if [[ -n "$v" ]]; then
+    polls=$((polls + 1))
+    [[ "$v" -gt "$baseline" ]] && { moved="$v"; break; }
+  fi
   sleep 10
 done
 after="$(pool_spec_replicas)" || after="?"
 print_stage "under load"
-# Both sides must be real numbers AND equal. "?" == "?" would otherwise report a
-# flat pool from two failed reads.
-[[ -z "$moved" && "$after" =~ ^[0-9]+$ && "$after" == "$baseline" ]]
+echo "  spec.replicas read $polls time(s) during the window, every one of them $baseline"
+# Both sides must be real numbers AND equal, and the window must have been
+# watched. "?" == "?" would otherwise report a flat pool from two failed reads.
+[[ -z "$moved" && $polls -gt 0 && "$after" =~ ^[0-9]+$ && "$after" == "$baseline" ]]
 assert $? "with no autoscaler, spec.replicas stayed flat at $baseline under the same $MAX_CLAIMS claims"
 [[ -n "$moved" ]] && echo "  spec.replicas moved to $moved with no ScaledObject present; that is unexpected, investigate before trusting demand.sh"
 
@@ -144,14 +192,11 @@ step "4/4 put the sample back: claims deleted, ScaledObject re-applied"
 # sample without its autoscaler while reporting all checks passed would be worse
 # than one that failed.
 delete_claims || true
+# restore_scaledobject waits out any in-flight deletion, applies, and reads the
+# object back, so its status already means "it is there and not terminating".
 restore_rc=0
 restore_scaledobject || restore_rc=$?
-# An apply over an object that is still terminating succeeds and then vanishes
-# with it, so the apply's status alone is not enough: read the object back and
-# require it to be present with no deletionTimestamp.
-restored_del="$(kc get scaledobject "$SCALEDOBJECT" -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null)"
-restored_rc=$?
-[[ $restore_rc -eq 0 && $restored_rc -eq 0 && -z "$restored_del" ]]
+[[ $restore_rc -eq 0 ]]
 assert $? "scaledobject/$SCALEDOBJECT is back and not terminating, so the sample is not left without its autoscaler"
 echo "  waiting for KEDA to take the pool back"
 back=""
@@ -165,8 +210,19 @@ echo "  HPA whose scaleTargetRef names $POOL: ${back:-<none>}"
 assert $? "KEDA created its HPA for $POOL again, so the pool is back under autoscaling"
 
 echo
-echo "control result: no ScaledObject, no movement. The up and down movement"
-echo "./scripts/demand.sh asserts is therefore KEDA's, not spare capacity and not"
-echo "the pool replenishing itself."
+# The conclusion is a finding, so it is only printed when the checks that support
+# it all passed. Printed unconditionally it would have appeared under a run whose
+# flat-pool check had just FAILED, including the run that reports the pool moved
+# with no ScaledObject present, which is the one reading that would call
+# demand.sh into question.
+if [[ $ASSERT_FAIL -eq 0 ]]; then
+  echo "control result: no ScaledObject, no movement. The up and down movement"
+  echo "./scripts/demand.sh asserts is therefore KEDA's, not spare capacity and not"
+  echo "the pool replenishing itself."
+else
+  echo "control result: NOT established. A check above failed, so this run says"
+  echo "nothing either way about the movement ./scripts/demand.sh asserts. Read the"
+  echo "FAIL line and re-run before trusting either script."
+fi
 
 assert_summary "the pool stays flat under the same demand when KEDA's ScaledObject is absent"

@@ -14,7 +14,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "$HERE/common.sh"
 
-require_commands kubectl sed
+require_commands kubectl sed seq
 show_context
 
 # --- the shared installs, checked before anything is created ----------------

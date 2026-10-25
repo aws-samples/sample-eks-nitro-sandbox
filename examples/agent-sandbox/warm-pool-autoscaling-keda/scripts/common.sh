@@ -33,6 +33,16 @@ if [[ -f "$SAMPLE_DIR/.env" ]]; then
 fi
 
 NAMESPACE="${NAMESPACE:-warm-pool-autoscaling-keda}"
+# The namespace name goes into `sed s/__NAMESPACE__/$NAMESPACE/` when the scripts
+# render their manifests, where `/` would end the expression and `&` would expand
+# to the matched text, so a name carrying either would quietly produce a
+# different manifest from the one you asked for. A Kubernetes namespace can only
+# be a DNS label anyway, so requiring that here costs nothing and keeps the
+# substitution safe.
+[[ "$NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || {
+  echo "error: NAMESPACE must be a DNS label (lower-case letters, digits and dashes, starting and ending alphanumeric, at most 63 characters); got '$NAMESPACE'" >&2
+  exit 1
+}
 # The context the run pins. Set KUBE_CONTEXT to the kube context of the cluster
 # you ran Getting started on. Empty means "use the current context", which the
 # scripts then print so you can see which cluster they used.
@@ -255,11 +265,18 @@ exporter_metric() {
 # reports n claims, so a reading taken right after the claims were created is the
 # exporter's answer to the new demand and not its answer to the old. Returns
 # non-zero on timeout; the caller prints whatever it got either way.
+#
+# A line carrying ` error=` does not count, even when its number is the one we
+# want. On an API error the exporter serves its last good count, so that line is
+# the count it remembers rather than the count it just read. The control asserts
+# on this to establish that the demand signal KEDA would have read was really
+# there, and a remembered number is not that.
 wait_exporter_metric() {
-  local want=$1 timeout=${2:-60}
+  local want=$1 timeout=${2:-60} line
   local deadline=$((SECONDS + timeout))
   while :; do
-    [[ "$(exporter_metric)" == *"active_claims=$want "* ]] && return 0
+    line="$(exporter_metric)"
+    [[ "$line" == *"active_claims=$want "* && "$line" != *" error="* ]] && return 0
     ((SECONDS >= deadline)) && return 1
     sleep 2
   done
@@ -283,9 +300,13 @@ print_stage() {
 # the read failed. The distinction matters: a caller that reads a failed list as
 # "no HPA" would report "nothing is autoscaling the pool" having established
 # nothing, which is the one thing the control must never do.
+# The newline in the range is a separator, not decoration: without it two HPAs
+# that both target the pool would come back as one run-together word, which every
+# caller would then print as a single impossible name and pass to `kubectl get
+# hpa`. Separated, the same case is visibly two names and still fails closed.
 hpa_for_pool() {
   local out rc=0
-  out="$(kc get hpa -o jsonpath="{range .items[?(@.spec.scaleTargetRef.name=='$POOL')]}{.metadata.name}{end}" 2>/dev/null)" || rc=$?
+  out="$(kc get hpa -o jsonpath="{range .items[?(@.spec.scaleTargetRef.name=='$POOL')]}{.metadata.name}{\"\n\"}{end}" 2>/dev/null)" || rc=$?
   [[ $rc -ne 0 ]] && return 1
   printf '%s' "$out"
 }

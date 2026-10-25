@@ -35,7 +35,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # exit code at the end.
 set +e
 
-require_commands kubectl
+require_commands kubectl sed grep tr seq
 show_context
 
 failures=0
@@ -79,7 +79,20 @@ if [[ $ns_absent -eq 0 ]]; then
   del sandboxclaim "${claim_names[@]}"
 
   step "2/6 delete the ScaledObject so KEDA stops scaling and removes its HPA"
-  del scaledobject "$SCALEDOBJECT"
+  # If KEDA has already been uninstalled, the scaledobjects.keda.sh CRD is gone
+  # with it, and asking for a resource type the API server does not know is a
+  # FAILED read, not an absent object. Left to `del` that becomes "could not
+  # read", which is recorded as unconfirmed and stops the namespace from being
+  # deleted, so a reader who followed this page's own "What stays" section and
+  # removed KEDA first could never finish the clean up. The ScaledObject cannot
+  # outlive its CRD, so an absent CRD really does mean there is nothing here.
+  so_crd_rc=0
+  resource_exists kc_cluster crd scaledobjects.keda.sh >/dev/null || so_crd_rc=$?
+  case $so_crd_rc in
+    0) del scaledobject "$SCALEDOBJECT" ;;
+    1) echo "  the scaledobjects.keda.sh CRD is not on this cluster, so KEDA has been removed and scaledobject/$SCALEDOBJECT cannot exist; nothing to delete" ;;
+    2) note_fail "could not read the cluster's CRDs, so whether scaledobject/$SCALEDOBJECT still exists could not be determined" ;;
+  esac
   # Confirm the HPA went with it, so nothing is left writing to a pool that is
   # about to be deleted. A read that FAILS is recorded as unconfirmed, never as
   # "no HPA": hpa_for_pool returns non-zero for that case.

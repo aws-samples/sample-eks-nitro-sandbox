@@ -68,6 +68,12 @@ assert $? "the HPA is owned by scaledobject/$SCALEDOBJECT, so KEDA created it an
 so_min="$(kc get scaledobject "$SCALEDOBJECT" -o jsonpath='{.spec.minReplicaCount}' 2>/dev/null)"
 so_max="$(kc get scaledobject "$SCALEDOBJECT" -o jsonpath='{.spec.maxReplicaCount}' 2>/dev/null)"
 echo "  ScaledObject bounds: minReplicaCount=$so_min maxReplicaCount=$so_max   (load generator cap: $MAX_CLAIMS claims)"
+# Both bounds must be numbers before anything is measured against them. An empty
+# one goes into the expression wait_spec_replicas evals as a missing operand,
+# which is a syntax error on every poll, so the run would sit through 300s and
+# then 420s of waiting before failing for a reason the output would not name.
+[[ "$so_min" =~ ^[0-9]+$ && "$so_max" =~ ^[0-9]+$ ]] \
+  || die "could not read minReplicaCount/maxReplicaCount from scaledobject/$SCALEDOBJECT (got '$so_min'/'$so_max'); stopping rather than measure against bounds I do not know"
 
 # The /scale subresource is what lets an HPA drive the pool at all. Read it, so
 # the page shows the field the HPA writes rather than asserting it exists.
@@ -96,19 +102,21 @@ print_stage "baseline"
 # The baseline must be a real number: every comparison in stages 4/5 and 5/5 is
 # measured against it.
 #
-# What an unreadable baseline actually does, since it is easy to state this
-# wrongly: "?" carried into -gt or -lt is NOT read as 0. Inside [[ ]] the
-# operands of -gt and -lt go through arithmetic evaluation, where a bare word is
-# a variable name (an unset one is 0) but "?" is not a name, so bash prints
-# `[[: ?: syntax error: operand expected` and the test is FALSE. So the
-# comparison fails closed rather than passing on nothing.
+# What an unreadable baseline actually does, since this is easy to state wrongly
+# and two earlier versions of this comment did. "?" carried into -gt or -lt is
+# NOT read as 0: inside [[ ]] those operands go through arithmetic evaluation,
+# and "?" is not a valid name, so bash prints
+# `[[: ?: syntax error: operand expected` and the test is FALSE. The comparison
+# fails closed rather than passing on nothing. (Nor would an unset NAME be 0
+# here: these scripts run under set -u, where `[[ foo -gt 0 ]]` on an unset foo
+# aborts with "foo: unbound variable".)
 #
-# The guard is still here for two reasons. It stops with a message that says what
-# went wrong, instead of letting the run carry on and emit a bash syntax error
-# from the middle of a stage. And the stage-5/5 floor check is a STRING
-# comparison, where "?" is a value like any other: two unreadable reads would
-# compare equal and report a pool that came back to the floor without either
-# side having been measured.
+# So the guard is not what keeps a bad baseline from passing a check. What it is
+# for: it stops with a message that names the problem, instead of letting the run
+# carry on and emit a raw bash syntax error from the middle of a stage; and it
+# keeps "?" out of the expression wait_spec_replicas builds and evals in stages
+# 4/5 and 5/5, where it would be a syntax error on every poll, so the wait could
+# never be satisfied and would burn its full 300s and 420s before failing.
 [[ "$baseline" =~ ^[0-9]+$ && "$baseline" == "$so_min" && "$baseline_claims" == "0" ]]
 assert $? "baseline: 0 claims and spec.replicas=$baseline, the floor (minReplicaCount=$so_min)"
 [[ "$baseline" =~ ^[0-9]+$ ]] \
@@ -218,25 +226,37 @@ assert $? "kubectl exec into the claimed pod works, so the readings below are th
 # failed name lookup, which a pod that HAS a network also does when its DNS is
 # blocked, so a check that accepted that message would accept a networked pod.
 # What cannot be faked is the interface list and the routing table.
-echo "  \$ kubectl exec $pod -- ip -4 -o addr show"
-addr_out="$(kc exec "$pod" -- ip -4 -o addr show 2>&1)"
+#
+# BOTH address families, deliberately. `ip -4` and a v4-only route check would
+# say nothing about IPv6, so a guest reachable only over v6 would satisfy them
+# while the assertion below claimed it had no network at all. `ip -o addr show`
+# lists every family, and the route reading asks for the v4 and the v6 default
+# separately.
+echo "  \$ kubectl exec $pod -- ip -o addr show"
+addr_out="$(kc exec "$pod" -- ip -o addr show 2>&1)"
 addr_rc=$?
 printf '%s\n' "$addr_out" | sed 's/^/    /'
-# Every address line must be on lo. A guest with a network has an eth0 line here.
+# Every address line must be on lo, in any family. A guest with a network has an
+# eth0 line here. The here-string rather than a pipe into grep: under pipefail a
+# `grep -q` that exits on its first match can leave the pipeline reporting the
+# SIGPIPE it sent the writer, and `!` would turn that into a pass.
 if [[ $addr_rc -eq 0 && -n "$addr_out" ]] \
-   && ! printf '%s\n' "$addr_out" | grep -qvE '^[0-9]+:[[:space:]]+lo[[:space:]]'; then
+   && ! grep -qvE '^[0-9]+:[[:space:]]+lo[[:space:]]' <<<"$addr_out"; then
   true
 else
   false
 fi
-assert $? "the only interface with an address in the claimed pod is loopback: there is no network interface to carry traffic"
+assert $? "the only interface with an address in the claimed pod is loopback, in either address family: there is no network interface to carry traffic"
 
-echo "  \$ kubectl exec $pod -- ip route show default      # prints nothing: no default route"
+echo "  \$ kubectl exec $pod -- ip route show default; ip -6 route show default      # print nothing: no default route"
 route_out="$(kc exec "$pod" -- ip route show default 2>&1)"
 route_rc=$?
+route6_out="$(kc exec "$pod" -- ip -6 route show default 2>&1)"
+route6_rc=$?
 printf '%s' "$route_out" | sed 's/^/    /'
-[[ $route_rc -eq 0 && -z "$route_out" ]]
-assert $? "the claimed pod has no default route, so nothing would know where to send a packet"
+printf '%s' "$route6_out" | sed 's/^/    /'
+[[ $route_rc -eq 0 && -z "$route_out" && $route6_rc -eq 0 && -z "$route6_out" ]]
+assert $? "the claimed pod has no default route for IPv4 and none for IPv6, so nothing would know where to send a packet"
 
 echo "  \$ kubectl exec $pod -- wget -T 5 -O /dev/null https://aws.amazon.com"
 wget_out="$(kc exec "$pod" -- wget -T 5 -O /dev/null https://aws.amazon.com 2>&1)"
