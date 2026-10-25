@@ -20,6 +20,16 @@
 # `runs-on` must equal the Helm release name of the runner scale set, which is
 # RUNNER_SCALE_SET_NAME in the sample's .env (default: github-actions-nitro).
 name: untrusted-pr
+
+# The job's own GITHUB_TOKEN is handed to it in the job message, not in the pod
+# spec, so the sample's "no credential in the runner pod" check cannot see it
+# and it is the credential untrusted code would actually reach. Its reach is set
+# here. Without this block the token gets the repository's default, which on
+# many repositories includes contents: write. This workflow only needs to read,
+# and in fact checks nothing out at all.
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
     inputs:

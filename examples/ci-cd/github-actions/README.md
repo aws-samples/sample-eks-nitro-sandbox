@@ -403,15 +403,32 @@ difference, because it is the whole point of this step:
 
 | | The credential this sample creates | The runner pod's JIT config |
 |---|---|---|
-| What it can do | administer the repository's runners | register this one runner, once |
-| How long it lasts | until you revoke it | this pod's lifetime |
+| What it can do | administer the repository's runners | act as this one ephemeral runner, for one job |
+| How long it lasts | until you revoke it | at most this pod's lifetime |
 | Where it lives | the runners' namespace, and the listener's config Secret | a Secret named after this pod, deleted with it |
 | Is it in the runner pod? | no | yes, by design |
 
-So the thing an attacker in the sandbox could reach is a single-use registration config for
-the pod they are already in, not the credential that could add or remove runners. Revoking
-the credential at GitHub, as "Where the credential lives" says, is still what makes every
-copy of the administering credential useless.
+So the only credential in the pod's **spec** is that one runner's own config, not the
+credential that could add or remove runners.
+
+Be clear that this is a statement about the pod spec, not about everything the job can see.
+A GitHub Actions job is also handed its own `GITHUB_TOKEN`, and an `ACTIONS_RUNTIME_TOKEN`,
+in the job message the runner collects over its own connection rather than in the pod spec,
+which is exactly why a check of the spec cannot see them. That token is the one a malicious
+pull request would reach for, and its reach is set by the workflow's `permissions:` block,
+not by anything on this page. This sample's workflow therefore sets the narrowest block it
+can:
+
+```yaml
+permissions:
+  contents: read
+```
+
+Without a `permissions:` block a workflow gets the repository's default, which on many
+repositories still includes `contents: write`. Set it explicitly on any workflow that runs
+code you have not read. Revoking the credential at GitHub, as "Where the credential lives"
+says, is what makes every copy of the *administering* credential useless; the job's own
+token expires with the job.
 
 **Step 9: The escape probes, and what they are worth.** The workflow's last step tries to
 reach the node's instance-metadata credentials, list the node's `nvme` devices both from the

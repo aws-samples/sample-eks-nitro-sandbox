@@ -402,14 +402,35 @@ done
 # stays Pending with no scale set id, and no EphemeralRunnerSet, listener or
 # listener pod is ever created. So "no pod" must NOT tell the reader to rule the
 # credential out, which an earlier version of this message did.
+# "Most likely", not "never": the overwhelmingly common cause is that
+# registration failed, but an AutoscalingListener whose POD was refused, by
+# admission control, a quota or a policy engine in the controller's namespace,
+# would also leave no pod. Reading the listener object tells the two apart, so
+# the message gives that command as well as the controller's logs.
 [[ -n "$listener_pod" ]] \
-  || die "the controller created no listener pod for '$RUNNER_SCALE_SET_NAME' in '$ARC_SYSTEMS_NAMESPACE' within 120s. The release is installed, so the scale set was never registered with GitHub. The two usual causes are a credential GitHub rejects, which the controller logs as 401 Bad credentials on the registration-token request, and a controller on a different version from the scale set. Its logs say which:
-  kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE logs -l app.kubernetes.io/name=gha-rs-controller"
+  || die "the controller created no listener pod for '$RUNNER_SCALE_SET_NAME' in '$ARC_SYSTEMS_NAMESPACE' within 120s. The release is installed, so the scale set was most likely never registered with GitHub. The two usual causes are a credential GitHub rejects, which the controller logs as 401 Bad credentials on the registration-token request, and a controller on a different version from the scale set:
+  kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE logs -l app.kubernetes.io/name=gha-rs-controller
+  If instead a listener object exists and only its pod is missing, something in '$ARC_SYSTEMS_NAMESPACE' refused the pod:
+  kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE get autoscalinglistener"
 
 # Waited on by NAME, so a listener that is being replaced cannot be waited on.
+#
+# If the pod EXISTS, the scale set is already registered: the controller creates
+# the listener only after registering (see the comment above). So this failure
+# must not send the reader to the credential first, the way an earlier version
+# of this message did. It is the listener itself: an image it cannot pull, a
+# crash loop, or no egress to GitHub. A credential revoked between registration
+# and now would also land here, which is why it is still worth a mention, but
+# second. `describe` comes first because an image-pull failure leaves the log
+# empty.
+#
+# On a re-run the pod can also be rebuilt between the read above and this wait,
+# in which case this fails at once with NotFound rather than waiting; re-running
+# the script resolves that.
 "${KCTL[@]}" wait --for=condition=Ready "pod/$listener_pod" \
   -n "$ARC_SYSTEMS_NAMESPACE" --timeout=180s \
-  || die "the listener pod '$listener_pod' exists in '$ARC_SYSTEMS_NAMESPACE' but did not become Ready, so the scale set is not registered with GitHub. Check the credential, then read that pod's own log:
+  || die "the listener pod '$listener_pod' exists in '$ARC_SYSTEMS_NAMESPACE' but did not become Ready. The scale set IS registered with GitHub, because the controller creates the listener only after registering, so this is the listener itself rather than registration: an image it cannot pull, a crash loop, or no egress to GitHub from '$ARC_SYSTEMS_NAMESPACE'. A credential revoked since the scale set was registered would also land here. Its events, then its log:
+  kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE describe pod $listener_pod
   kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE logs $listener_pod"
 
 # On a re-run this wait can be satisfied by the listener that was ALREADY
@@ -418,10 +439,20 @@ done
 # credential would otherwise read "setup complete" as "the new credential is in
 # use". On a first install, which is what the page walks through, there is no
 # previous listener and the question does not arise.
+#
+# The note names the AutoscalingListener, not just its pod. ARC's listener
+# config Secret, which is the copy of the credential the listener actually
+# reads, is created by the AutoscalingListener controller alongside the
+# listener; deleting only the pod has not been shown here to regenerate it, so
+# telling a reader to do that could leave the rebuilt pod on the old
+# credential. Deleting the listener object makes the AutoscalingRunnerSet
+# controller build a new one, and its Secret with it.
 if [[ "$helm_verb" == upgrade ]]; then
   echo "  note: this was a re-run. If you changed the credential, the listener above may"
-  echo "  still be the previous one. Force ARC to rebuild it and wait again with:"
-  echo "    kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE delete pod $listener_pod"
+  echo "  still be the previous one, running on the previous credential. To rebuild it,"
+  echo "  delete the listener OBJECT, not just its pod, then wait for the new pod:"
+  echo "    kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE delete autoscalinglistener -l actions.github.com/scale-set-name=$RUNNER_SCALE_SET_NAME,actions.github.com/scale-set-namespace=$ARC_RUNNERS_NAMESPACE"
+  echo "    kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE wait --for=condition=Ready pod -l actions.github.com/scale-set-name=$RUNNER_SCALE_SET_NAME --timeout=180s"
 fi
 
 say "setup complete"
