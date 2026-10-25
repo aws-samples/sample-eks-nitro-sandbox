@@ -914,8 +914,9 @@ listed at the end and makes it exit non-zero.
 
 It needs no `AWS_REGION`: it reads the Region to look each cache volume up in from the
 cluster's own nodes, which provisioned them, and the Region of the push's resources from the
-state file that recorded them. So it needs to be able to read nodes, and it removes the push's
-resources only while your credentials are for the account the state file names.
+state file that recorded them. So it needs to be able to read nodes; it confirms each cache
+volume only with credentials for the cluster's own account, and it removes the push's resources
+only with credentials for the account the state file names.
 
 ```bash
 ./scripts/clean.sh

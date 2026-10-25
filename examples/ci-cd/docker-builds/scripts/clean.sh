@@ -157,7 +157,7 @@ if [[ "$ns_exists" == true ]]; then
         --query 'Volumes[0].State' --output text 2>&1)"
       seen_rc=$?
       if [[ $seen_rc -ne 0 || -z "$seen" || "$seen" == "None" ]]; then
-        note_fail "could not confirm EBS volume $vol ($claim) is gone: it is not visible to these credentials in $vol_region before deletion, so a later 'not found' would not mean deleted. Check this volume ID in the EC2 console"
+        note_fail "could not confirm EBS volume $vol ($claim) is gone: it was not visible to these credentials in $vol_region before deletion, so a later 'not found' would not mean deleted. Check this volume ID in the EC2 console. AWS said: $seen"
         unset "volume_of[$claim]"
       fi
     done
@@ -326,6 +326,11 @@ elif [[ -n "${ECR_REPO_NAME:-}${ECR_ROLE_NAME:-}${ECR_ASSOCIATION_ID:-}" ]]; the
   fi
   [[ "${#FAILURES[@]}" -eq 0 ]] && rm -f "$STATE_FILE"
 fi
+
+# A .docker-builds.state.tmp that a killed scripts/ecr-setup.sh left behind is not a record of
+# anything, but it does hold the account ID. It is removed from here, not from the push block
+# above, because that block is only entered when the state file records a push.
+[[ "${#FAILURES[@]}" -eq 0 ]] && rm -f "$STATE_FILE.tmp"
 
 echo
 if [[ "${#FAILURES[@]}" -gt 0 ]]; then
