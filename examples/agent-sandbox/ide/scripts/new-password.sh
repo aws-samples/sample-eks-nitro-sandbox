@@ -80,7 +80,8 @@ if [[ -s "$PASSWORD_FILE" && $from_stdin -eq 0 ]]; then
   # edited by hand. Say that rather than claim more.
   if [[ -s "$HASH_FILE" ]] && grep -q '^[$]argon2' "$HASH_FILE"; then
     echo "keeping the argon2 hash already in $(rel "$HASH_FILE"); it is not re-checked"
-    echo "  against the password, so if you edited either file yourself, delete both and re-run"
+    echo "  against the password. If the two may not match, because either was edited by hand"
+    echo "  or written by an older copy of this script, delete both and run this again."
     hash_needed=0
   fi
 else

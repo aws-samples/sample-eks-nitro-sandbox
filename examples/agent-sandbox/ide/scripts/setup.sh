@@ -183,9 +183,15 @@ if [[ -n "$live_tmpl" && "$live_tmpl" != "||" ]]; then
   if [[ "$live_class" != "$CHOSEN_STORAGE_CLASS" ]]; then
     mismatch="$mismatch
          storageClassName: $live_class, and this run chose $CHOSEN_STORAGE_CLASS"
-    keep_hint="
+    # Only offer the hint when there is a class to name. A claim template with no
+    # storageClassName cannot come from this sample's manifest, which always names
+    # one, and "set STORAGE_CLASS=" would be the same as leaving it unset.
+    if [[ -n "$live_class" ]]; then
+      keep_hint="
        To keep the existing workspace instead, point this run back at the class the claim
-       already uses: set STORAGE_CLASS=$live_class in .env or in the environment, and re-run."
+       already uses: set STORAGE_CLASS=$live_class in .env, and re-run. A value already in
+       the environment wins over .env, so unset it there first if you exported one."
+    fi
   fi
   if [[ "$live_size" != "$WORKSPACE_SIZE" ]]; then
     mismatch="$mismatch
