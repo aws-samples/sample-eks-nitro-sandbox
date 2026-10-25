@@ -204,7 +204,7 @@ you do with the answer.
 - **After fixing a case that proved nothing, run it against the code *without* the fix and
   confirm it fails.** This should be the default for any new rejecting case, not the remedy
   after being caught: it is the only way to know the case discriminates. Ten cases here
-  needed it. Making the script under test an overridable variable costs one line and makes
+  needed it, and six more were added in round 20. Making the script under test an overridable variable costs one line and makes
   this a one-command check.
 - **The unfixed code you test against has to be shown to parse.** Reverting a fix by cutting
   text is itself a change that can go wrong: one mutation here cut from the middle of a
@@ -220,6 +220,33 @@ you do with the answer.
 - **Two branches that share a refusal tag each need their own message asserted.** Here the
   tree check has one tag for "changed while the reviewer ran" and "changed after the run";
   swapping the two messages left every case green until each one pinned its own wording.
+  `E_OUT_TAINTED` covers three states and had the same gap.
+- **A variable set inside an `if` and read later as `"${var:-}"` is an injection point.**
+  Bash makes every environment variable a shell variable, so moving a check earlier and
+  leaving its *result* to be read further down let an exported lowercase variable supply that
+  result with the check never having run — reaching `--settings` with the settings allowlist
+  skipped, which is arbitrary execution. Empty such variables before the branch that sets
+  them. Found by the Claude backend; Codex missed it.
+- **`-f` and `-s` both pass for a file you cannot read.** Add `-r` for anything the script
+  will later read, or the failure surfaces much later and gets misattributed — here as "the
+  backend exited 1" when the backend had never run.
+- **Inside an `if` condition, `set -e` is off for the whole call, subshells included.** A
+  function whose body is several pipelines then reports only the last one's status, so an
+  earlier failure is silently dropped. Give each pipeline its own `|| exit 1` rather than
+  relying on `set -e` being in force.
+- **Prefer a deterministic hook to a timing window.** A case needing a change to land
+  between two of the script's own steps was first written as a background writer polling for
+  a file to appear: it could fire while that file was still being written (wrong branch) or
+  after the next step (no refusal at all), and under one mutation the early landing made the
+  broken code pass. Replaced with a shim first on `PATH` for a command the script calls
+  exactly once at that point — no race, and nothing left running afterwards.
+- **A required or forbidden string must not be a prefix of a legitimate value.** Asserting
+  the argument list did not contain `--add-dir $work` failed against correct code, because
+  the legitimate `--add-dir $work/tree` contains it. The same unanchored-match trap
+  `AGENTS.md` warns about for manifests, inside the test harness.
+- **Mark code, not comments, when you write a mutation.** Two mutations stopped applying
+  because the comment above the code they cut had been reworded. They failed loudly, which
+  is the design, but a marker that is code-only does not go stale.
 - **When a reviewer names one instance of a class, check whether the class is bigger before
   fixing the instance.** Twice here the reported case was the smaller one: a trailing-slash
   pattern was named for one containment check and turned out to affect three, and a

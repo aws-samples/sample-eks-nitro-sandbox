@@ -191,6 +191,11 @@ command -v realpath >/dev/null 2>&1 || cannot_check "realpath is needed to check
 
 [ -f "$BRIEF" ] || refuse E_BRIEF "no brief at '$BRIEF'. Write one from the second-review skill's assets/review-brief.md."
 [ -s "$BRIEF" ] || refuse E_BRIEF "the brief at '$BRIEF' is empty; a reviewer given nothing to check finds nothing."
+# Readable, not merely present and non-empty: -f and -s both pass for a mode-000 file, and
+# the failure then surfaced far later and misattributed. On the codex path "cat" failed and
+# set -e ended the run with no tag at all; on the claude path the input redirection failed,
+# which was reported as "the claude backend exited 1" when claude had never run.
+[ -r "$BRIEF" ] || refuse E_BRIEF "the brief at '$BRIEF' cannot be read (check its permissions); the reviewer is given it on standard input, so the run would fail after the output directory had already been cleared."
 [ -d "$TREE" ] || refuse E_TREE "no tree to review at '$TREE'. Extract the commit there first ('git archive <commit> | tar -x -C $TREE')."
 
 # The brief, the review and the trace all belong in the gitignored tmp/, and the trace can
@@ -241,6 +246,11 @@ in_repo_tmp() {
 OUT_ABS=$(in_repo_tmp "$OUT" --out)
 BRIEF_ABS=$(in_repo_tmp "$BRIEF" --brief)
 not_an_output_name "$BRIEF_ABS" "$OUT_ABS" "the brief" E_BRIEF
+# The backend command is an input path too. A backend binary living inside --out under one
+# of these eleven names is far-fetched, but the command path is taken from the environment,
+# so it is the caller's to get wrong: the cleanup would unlink it after it had passed its
+# own executable check, and the run would then fail at --version with the cause hidden.
+not_an_output_name "$resolved_cmd" "$OUT_ABS" "the $BACKEND command" E_CMD_MISSING
 
 TREE_ABS=$(realpath "$TREE")
 
@@ -261,16 +271,30 @@ esac
 # newline or the text " -> ": with line-delimited records two different trees could line
 # up to the same fingerprint. cmp compares the bytes, so the delimiter never has to be
 # read back.
+# The first pipeline carries "|| exit 1" of its own rather than relying on set -e: this
+# function is also called from an "if" condition, where set -e is switched off for the whole
+# call, and the subshell's status would then come only from the second pipeline. A tree whose
+# metadata listing failed but which holds no regular file for the second pipeline to hash
+# would otherwise produce a short baseline that nothing refused.
 tree_fingerprint() {
   ( cd "$1" || exit 1
-    find . -mindepth 1 -printf '%y %m %s %T@ %p -> %l\0' | LC_ALL=C sort -z
+    { find . -mindepth 1 -printf '%y %m %s %T@ %p -> %l\0' | LC_ALL=C sort -z; } || exit 1
     find . -mindepth 1 -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum -z )
 }
+
 # Validate the claude backend's two optional paths here, before anything is created or
-# removed. They were checked inside the backend branch, which runs after the cleanup
-# below, so a mistyped one deleted a completed review and only then refused -- ten to
-# twenty-five minutes of billed work lost to a typo. Only the mktemp for the reviewer's
-# working directory stays late, because it writes and so cannot come first.
+# removed. They were checked inside the backend branch, which runs after the cleanup below,
+# so a mistyped one deleted a completed review and only then refused -- ten to twenty-five
+# minutes of billed work lost to a typo.
+#
+# Emptied first, and deliberately: these two are read much later as "${var:-}" to decide
+# whether to pass --settings and --add-dir. Bash makes every environment variable a shell
+# variable, so without this an exported lowercase "claude_settings_abs" would reach
+# --settings with the allowlist never having run -- a settings file can carry hooks, which
+# execute -- and an exported "context_abs" would reach --add-dir without the containment
+# check that keeps the trace away from the reviewer. Before these checks were moved, the
+# arguments were appended inside the checked branch and neither could happen.
+claude_settings_abs='' context_abs=''
 if [ "$BACKEND" = claude ]; then
   if [ -n "${SECOND_REVIEW_CLAUDE_SETTINGS:-}" ]; then
     [ -f "$SECOND_REVIEW_CLAUDE_SETTINGS" ] || refuse E_CLAUDE_SETTINGS \
@@ -281,28 +305,28 @@ if [ "$BACKEND" = claude ]; then
 import json, sys
 ALLOWED = {"awsCredentialExport", "apiKeyHelper"}
 try:
-  with open(sys.argv[1]) as f:
-      d = json.load(f)
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
 except Exception as e:
-  print("could not read it as JSON: %s" % str(e)[:200]); raise SystemExit(0)
+    print("could not read it as JSON: %s" % str(e)[:200]); raise SystemExit(0)
 if not isinstance(d, dict):
-  print("it is a %s, not an object" % type(d).__name__); raise SystemExit(0)
+    print("it is a %s, not an object" % type(d).__name__); raise SystemExit(0)
 extra = sorted(set(d) - ALLOWED)
 if extra:
-  print("it sets %s; only %s may be set here. A settings file can carry hooks, MCP "
-        "servers, plugins, a status line, permissions and a model override, and several "
-        "of those run a command or widen what the reviewer can reach, so this is an "
-        "allowlist of the two authentication keys rather than a list of things to block"
-        % (json.dumps(extra)[:200], " or ".join(sorted(ALLOWED)))); raise SystemExit(0)
+    print("it sets %s; only %s may be set here. A settings file can carry hooks, MCP "
+          "servers, plugins, a status line, permissions and a model override, and several "
+          "of those run a command or widen what the reviewer can reach, so this is an "
+          "allowlist of the two authentication keys rather than a list of things to block"
+          % (json.dumps(extra)[:200], " or ".join(sorted(ALLOWED)))); raise SystemExit(0)
 # Exactly one, so a valid helper cannot sit beside a malformed second one.
 if len(d) != 1:
-  print("it sets %d of %s; set exactly one"
-        % (len(d), " or ".join(sorted(ALLOWED)))); raise SystemExit(0)
+    print("it sets %d of %s; set exactly one"
+          % (len(d), " or ".join(sorted(ALLOWED)))); raise SystemExit(0)
 k = next(iter(d))
 if not isinstance(d[k], str) or not d[k].strip():
-  print("its %s is %s, not a non-empty string, so it would restore no credential path "
-        "and the run would fall back to ambient credentials"
-        % (k, json.dumps(d[k])[:120])); raise SystemExit(0)
+    print("its %s is %s, not a non-empty string, so it would restore no credential path "
+          "and the run would fall back to ambient credentials"
+          % (k, json.dumps(d[k])[:120])); raise SystemExit(0)
 print("OK")
 ' "$claude_settings_abs" 2>/dev/null) || settings_verdict="could not be read"
     [ "$settings_verdict" = OK ] || refuse E_CLAUDE_SETTINGS \
@@ -332,11 +356,23 @@ print("OK")
   fi
 fi
 
+# Read the tree once, discarding the result, before anything is cleared. The baseline
+# fingerprint below is a *write*, so it has to come after the cleanup -- but it can fail
+# because the TREE cannot be read, which is an input mistake (a mistyped --tree, a file
+# with no read permission) and not a write failure at all. Finding that out after the
+# cleanup meant a typo destroyed a previous run's review and was then reported as a problem
+# with --out. Reading it here costs one extra traversal and keeps every refusal that is
+# about the caller's arguments ahead of the cleanup.
+tree_fingerprint "$TREE_ABS" > /dev/null 2>&1 || refuse E_TREE \
+  "the tree at '$TREE_ABS' cannot be fully read, so it cannot be fingerprinted: check it exists and that every file and directory in it is readable. Nothing has been removed."
+
 mkdir -p "$OUT_ABS"
 
 # Remove anything already sitting at a name this script writes, immediately before the
-# first write and after every refusal that can still happen before the backend runs, bar
-# the mktemp for the reviewer's working directory, which writes and so cannot come first.
+# first write. Every refusal that depends on what the caller passed in now comes earlier.
+# What is left after this point either writes (the baseline fingerprint, codex-stdin.txt,
+# the mktemp for the reviewer's working directory) or reads the backend's own output, so a
+# failure there is a failure of the machine or of the backend, not a mistyped argument.
 # Two reasons for that placement, both learned the hard way: with --out inside the tree
 # this loop deleted files from the snapshot and only then refused E_OUT_IN_TREE -- a guard
 # in a tool whose whole promise is not touching the tree, destroying files in it -- and a
@@ -353,9 +389,24 @@ mkdir -p "$OUT_ABS"
 # The names come from $OUT_NAMES, set above and also used to refuse an input sitting at one
 # of them, so the cleanup and that check cannot drift apart.
 #
-# Check everything can be cleared before clearing any of it. This is an action, not a
-# refusal, so a single pass that removed as it went had already destroyed the earlier
-# results by the time it met a name it could not remove -- a directory, say.
+# Two passes, because this is an action and not a refusal: a single pass that removed as it
+# went had already destroyed the earlier results by the time it met a name it could not
+# remove. Being exact about what the first pass buys, because it is easy to overclaim:
+#
+#   * It refuses a **directory** at any of the names without removing anything. That is the
+#     one blocker a caller can actually produce here, and the case that prompted this.
+#   * An **unwritable --out** is also atomic, by accident rather than design: every existing
+#     name then fails to be removed, so the second pass refuses on the first of them.
+#   * It does **not** cover every way `rm -f` can fail. An immutable or append-only file, a
+#     bind mount (EBUSY), a file owned by someone else in a sticky directory, or a directory
+#     created between the two passes will still refuse in the second pass, by which point
+#     earlier names are already gone. Each of those needs privilege this script's caller does
+#     not have, or another process racing it -- and such a process could overwrite
+#     tree-before.sha256 anyway, which no check here defends against. Checked: "chattr +i"
+#     is refused without privilege.
+#
+# So: the first pass makes the reachable case atomic and the second pass is the backstop,
+# whose message says only what it knows.
 for _n in $OUT_NAMES; do
   if [ -d "$OUT_ABS/$_n" ] && [ ! -L "$OUT_ABS/$_n" ]; then
     refuse E_OUT_TAINTED \
@@ -365,7 +416,7 @@ done
 for _n in $OUT_NAMES; do
   if ! rm -f -- "$OUT_ABS/$_n" 2>/dev/null || [ -e "$OUT_ABS/$_n" ] || [ -L "$OUT_ABS/$_n" ]; then
     refuse E_OUT_TAINTED \
-      "'$OUT_ABS/$_n' is in the way and this script cannot clear it -- something is re-creating it, or it cannot be removed. Use a fresh --out."
+      "'$OUT_ABS/$_n' is in the way and this script cannot clear it -- something is re-creating it, or it cannot be removed. Earlier names in the list may already have been cleared, so treat a previous run's output there as lost. Use a fresh --out."
   fi
 done
 
@@ -381,7 +432,7 @@ done
 # writing to one of them cannot follow a link, and no extra name has to be cleared.
 if ! tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-before.sha256"; then
   refuse E_OUT_TAINTED \
-    "could not write '$OUT_ABS/tree-before.sha256', so this script cannot write its output there -- an unwritable --out, or a tree it cannot read. Nothing has been removed from the tree. Use a fresh --out."
+    "could not write '$OUT_ABS/tree-before.sha256'. The tree was read successfully a moment ago, so this is about the destination: an --out that cannot be written, a full disk, or a read-only filesystem. Nothing in the tree has been touched."
 fi
 
 # A short, per-run ASCII line, prepended to what the codex backend reads and used to
