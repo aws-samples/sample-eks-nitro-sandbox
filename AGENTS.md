@@ -228,6 +228,13 @@ same thing.
     still read under `--restricted`. Without it the backend cannot authenticate, or
     authenticates as whatever ambient credentials exist. The script names this cause when
     the run fails that way.
+  - **The script checks that file and allows only `awsCredentialExport` and
+    `apiKeyHelper`.** Why: `--settings` restores *executable* configuration, not just
+    values. A permission grant in it is inert, as above — but a `hooks` entry runs shell
+    commands outside the reviewer's tool list entirely. A `SessionStart` command hook was
+    tried under the full read-only flag set and **it executed and created a file**, so an
+    unchecked settings file would hand the reviewer arbitrary execution, and an `env` entry
+    could point its credentials somewhere else.
 - **Both: the tree is fingerprinted before and after** — every path's type, mode, size,
   modification time, symlink target and content — and the run fails if anything changed.
   That check has limits: it cannot see a file created and deleted within the run, and it

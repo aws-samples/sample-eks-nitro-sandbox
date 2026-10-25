@@ -159,8 +159,10 @@ and the host-specific options on the maintainers' workstation.
 - **A claude backend that will not authenticate usually needs
   `SECOND_REVIEW_CLAUDE_SETTINGS`.** The `--restricted` flag the script uses makes claude
   ignore the user settings file, which is where an `awsCredentialExport` or `apiKeyHelper`
-  credential path lives; name a file carrying only that setting. The script says so when it
-  recognises the failure.
+  credential path lives; name a file carrying **only** that setting. The script says so when
+  it recognises the failure, and it refuses a settings file that sets anything else: a
+  `hooks` entry in one runs shell commands outside the reviewer's tool list, which was
+  verified to execute and write under the full read-only flag set.
 - **Try the other backend before giving up on one.** They are equally sanctioned, so a
   backend that will not authenticate is a reason to switch, not a blocker to report.
 

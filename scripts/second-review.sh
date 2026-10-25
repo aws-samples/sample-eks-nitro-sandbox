@@ -327,40 +327,78 @@ case "$BACKEND" in
     # it authenticates through a setting such as awsCredentialExport or apiKeyHelper: the
     # run then falls back to whatever ambient credentials happen to exist, which fails when
     # there are none and bills the wrong account when there are. --settings is still read
-    # under --restricted, so naming a file that carries only the authentication setting
-    # restores the credential path without restoring anything else. A settings file cannot
-    # hand a tool back either way: --restricted removes the tools themselves, so even a
-    # file granting Bash, Write and Edit leaves the reviewer unable to write (checked).
+    # under --restricted, so naming a file that carries that one setting restores the
+    # credential path.
+    #
+    # The file's contents are checked, and only the authentication keys are allowed,
+    # because --settings restores *executable* configuration and not just values. A
+    # permission grant in it is harmless -- a file granting Bash, Write and Edit still left
+    # the reviewer unable to write, since --restricted removes the tools rather than denying
+    # them -- but a `hooks` entry runs shell commands outside the tool list entirely. One
+    # with a SessionStart command hook was tried under the full read-only flag set and it
+    # executed and created a file, so a settings file this script accepted unchecked would
+    # hand the reviewer arbitrary execution.
     if [ -n "${SECOND_REVIEW_CLAUDE_SETTINGS:-}" ]; then
       [ -f "$SECOND_REVIEW_CLAUDE_SETTINGS" ] || refuse E_CLAUDE_SETTINGS \
         "\$SECOND_REVIEW_CLAUDE_SETTINGS names '$SECOND_REVIEW_CLAUDE_SETTINGS', which is not a file."
       claude_settings_abs=$(realpath "$SECOND_REVIEW_CLAUDE_SETTINGS") || refuse E_CLAUDE_SETTINGS \
         "could not resolve \$SECOND_REVIEW_CLAUDE_SETTINGS '$SECOND_REVIEW_CLAUDE_SETTINGS'."
+      settings_verdict=$(python3 -c '
+import json, sys
+ALLOWED = {"awsCredentialExport", "apiKeyHelper"}
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+except Exception as e:
+    print("could not read it as JSON: %s" % e); raise SystemExit(0)
+if not isinstance(d, dict):
+    print("it is a %s, not an object" % type(d).__name__); raise SystemExit(0)
+extra = sorted(set(d) - ALLOWED)
+if extra:
+    print("it sets %s; only %s may be set here, because --settings also restores "
+          "executable configuration such as hooks, which run outside the reviewer tool list"
+          % (json.dumps(extra), " or ".join(sorted(ALLOWED)))); raise SystemExit(0)
+if not any(isinstance(d.get(k), str) and d.get(k).strip() for k in ALLOWED):
+    print("it sets none of %s to a non-empty string, so it would restore no credential "
+          "path and the run would fall back to ambient credentials"
+          % " or ".join(sorted(ALLOWED))); raise SystemExit(0)
+print("OK")
+' "$claude_settings_abs" 2>/dev/null) || settings_verdict="could not be read"
+      [ "$settings_verdict" = OK ] || refuse E_CLAUDE_SETTINGS \
+        "the settings file '$claude_settings_abs' cannot be used: $settings_verdict."
       claude_args+=(--settings "$claude_settings_abs")
     fi
     ( cd "$TREE_ABS" && ${timeout_cmd[@]+"${timeout_cmd[@]}"} "$resolved_cmd" "${claude_args[@]}" ) \
       < "$BRIEF_ABS" > "$OUT_ABS/review.json" 2> "$OUT_ABS/review.err" || run_status=$?
-    # An authentication failure shows up either way -- claude has reported one both with
-    # exit status 0 (the error only in its JSON) and with a non-zero status -- so this looks
-    # at the record regardless of the status, and says the specific cause rather than
-    # letting the generic "the backend exited N" message below carry it.
+    # Any error the backend reports means no review happened, whatever its wording, so the
+    # record is rejected on `is_error` alone and the error code only chooses the message.
+    # Matching the text for "credential" and passing everything else through was wrong: a
+    # status-zero record with is_error true, api_error "authentication_failed" and a
+    # populated modelUsage satisfied the later shape validator and would have been recorded
+    # as a real review. An error shows up both with exit status 0, the error only in the
+    # JSON, and with a non-zero status, so the record is read regardless of the status.
     if [ -s "$OUT_ABS/review.json" ]; then
-      claude_auth_failed=$(python3 -c '
+      claude_error=$(python3 -c '
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
 except Exception:
-    print(""); raise SystemExit(0)
-if not isinstance(d, dict):
-    print(""); raise SystemExit(0)
-err = "%s %s" % (d.get("api_error") or "", d.get("result") or "")
-print("yes" if (d.get("is_error") and
-                ("credential" in err.lower() or "provider_credentials" in err.lower()))
-      else "")
-' "$OUT_ABS/review.json" 2>/dev/null) || claude_auth_failed=''
-      if [ -n "$claude_auth_failed" ]; then
+    raise SystemExit(0)
+if not isinstance(d, dict) or not d.get("is_error"):
+    raise SystemExit(0)
+blob = ("%s %s %s" % (d.get("api_error") or "", d.get("result") or "",
+                      d.get("api_error_status") or "")).lower()
+if "credential" in blob or "authenticat" in blob or "403" in blob:
+    print("auth")
+else:
+    print(d.get("api_error") or d.get("subtype") or "an unnamed error")
+' "$OUT_ABS/review.json" 2>/dev/null) || claude_error=''
+      if [ "$claude_error" = auth ]; then
         refuse E_RUN_FAILED \
           "the claude backend could not authenticate, so no review was produced. The most likely cause on a machine where claude authenticates through a settings file: --restricted makes it ignore the user settings file, so set \$SECOND_REVIEW_CLAUDE_SETTINGS to a file carrying only that authentication setting. Read $OUT_ABS/review.err yourself with tail, and do not paste it into a pull request, an issue or Slack."
+      elif [ -n "$claude_error" ]; then
+        refuse E_RUN_FAILED \
+          "the claude backend reported an error ($claude_error), so no review was produced. Read $OUT_ABS/review.err yourself with tail, and do not paste it into a pull request, an issue or Slack."
       fi
     fi
     ;;
