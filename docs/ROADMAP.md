@@ -85,7 +85,7 @@ Checks that run inside the guest and decide what the pod may run.
 
 Coding agents:
 
-- **coding-agents-for-developers ★**: a web app where a developer starts Claude Code, Codex, Kiro CLI, OpenCode, pi or oh-my-pi in a browser terminal. Each session runs in its own sandbox, claimed from a warm pool, and can open only its own workspace folder on S3 Files. Spec: [#12](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/12).
+- [coding-agents-for-developers](../examples/ai-agents/coding-agents-for-developers/README.md) (available now): a web app where a developer starts Claude Code, Codex, Kiro CLI, OpenCode, pi or oh-my-pi in a browser terminal. Each session runs in its own sandbox, claimed from a warm pool, and can open only its own workspace folder on S3 Files. Spec: [#12](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/12).
 
 Agent frameworks on Amazon Bedrock:
 
@@ -125,8 +125,8 @@ The same procurement analyst agent three ways. Inside its sandbox, a second poli
 The [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) resources, `Sandbox`, `SandboxTemplate`, `SandboxWarmPool` and `SandboxClaim`, with Nitro sandboxes.
 
 - [pause-resume](../examples/agent-sandbox/pause-resume/README.md) (available now): suspend a sandbox and resume it into a new guest VM with its EBS data intact. Spec: [#30](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/30).
-- **warm-pool-autoscaling-keda ★**: KEDA scales a warm pool up and down with claim demand. Spec: [#31](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/31).
-- ide: VS Code in the browser on a persistent EBS workspace. Spec: [#32](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/32).
+- [warm-pool-autoscaling-keda](../examples/agent-sandbox/warm-pool-autoscaling-keda/README.md) (available now): KEDA scales a warm pool up and down with claim demand, so warm capacity tracks demand instead of a fixed count. Spec: [#31](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/31).
+- [ide](../examples/agent-sandbox/ide/README.md) (available now): VS Code in the browser on a persistent EBS workspace. Spec: [#32](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/32).
 - argo-rollouts: rolling a `SandboxTemplate` change through a warm pool with Argo Rollouts, replacing the warm sandboxes built from the old template. Spec: [#33](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/33).
 - brain-and-hands: the agent (the brain) runs on an ordinary pod with model access and no local shell. Each command it runs goes to a warm, network-isolated sandbox (the hands) that it claims from a pool and drives with `kubectl exec`. Spec: [#38](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/38).
 
@@ -138,8 +138,8 @@ The [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) resources,
 
 ### CI/CD (`ci-cd`)
 
-- **docker-builds ★**: privileged `docker build` and `docker run` inside a sandbox, without exposing the node. Spec: [#23](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/23).
-- **github-actions ★**: GitHub Actions Runner Controller with each untrusted pull request job in its own sandbox, deleted when the job ends. Spec: [#24](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/24).
+- [docker-builds](../examples/ci-cd/docker-builds/README.md) (available now): privileged `docker build` and `docker run` inside a sandbox, without exposing the node, with an EBS layer cache across Job runs and an optional push to Amazon ECR. Spec: [#23](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/23).
+- [github-actions](../examples/ci-cd/github-actions/README.md) (available now): GitHub Actions Runner Controller with each untrusted pull request job in its own sandbox, deleted when the job ends. Spec: [#24](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/24).
 - gitlab-ci: a self-hosted GitLab whose CI jobs each run in a sandbox, including a privileged `docker build`. Spec: [#25](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/25).
 
 ### Integrations (`integrations`)
@@ -153,6 +153,8 @@ Other platforms that create and manage sandboxes.
 
 These samples use `runtimeClassName: confidential-sandbox`.
 
-- encrypted-image: encrypted image layers in Amazon ECR, decrypted inside the sandbox after AWS KMS checks its attested policy. Spec: [#19](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/19).
+The [Confidential section page](../examples/confidential/README.md) holds what they share: the trust boundary, the KMS key-policy shape, the attested decrypt and the measurement caveat.
+
+- [encrypted-image](../examples/confidential/encrypted-image/README.md) (available now): encrypted image layers in Amazon ECR, decrypted inside the sandbox after AWS KMS checks its attested policy. Spec: [#19](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/19).
 - secrets-manager-secret: an AWS Secrets Manager secret released only to an approved sandbox. Spec: [#20](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/20).
 - s3-encrypted-file: a file encrypted before upload to Amazon S3 and decrypted only inside an approved sandbox. Spec: [#21](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/21).

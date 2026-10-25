@@ -37,6 +37,8 @@ metadata:
     karpenter.sh/do-not-disrupt: "true"
 spec:
   runtimeClassName: isolated-sandbox   # the one-line opt-in; the RuntimeClass carries the scheduling constraints
+  # The pod calls no Kubernetes API, so it mounts no ServiceAccount token.
+  automountServiceAccountToken: false
   securityContext:
     runAsNonRoot: true
     runAsUser: 1000
@@ -44,6 +46,8 @@ spec:
     # Kubernetes applies fsGroup as the group owner of the volume and makes it
     # group-writable at mount time, so the non-root process can write /data.
     fsGroup: 2000
+    seccompProfile:
+      type: RuntimeDefault
   containers:
     - name: writer
       image: public.ecr.aws/docker/library/busybox:1.37
@@ -65,6 +69,14 @@ spec:
         # Requests equal limits: the VM is sized to the pod's limits.
         requests: { cpu: "1", memory: 1Gi }
         limits:   { cpu: "1", memory: 1Gi }
+      securityContext:
+        # The sandbox already runs this pod in its own VM; these keep the container
+        # itself least-privileged. The writer only appends to /data (the mounted
+        # volume), so the root filesystem can be read-only.
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
       volumeMounts:
         - name: data
           mountPath: /data

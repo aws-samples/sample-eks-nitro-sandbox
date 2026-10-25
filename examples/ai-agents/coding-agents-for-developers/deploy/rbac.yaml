@@ -1,0 +1,107 @@
+# Service accounts and RBAC for the sample.
+#
+# - agent-app     the web app. Its Pod Identity role (the App role) manages per-session
+#                 access points and assumes the Mount role. In the cluster it may only do
+#                 what app/server/k8s.js calls: create, get, list and delete SandboxClaims, get
+#                 pods, exec into them, and get nodes.
+# - agent-session the session pods of claude-code, opencode, pi and oh-my-pi. Its Pod Identity role (the
+#                 Bedrock role) may only invoke models. It has no S3 Files access: the mount
+#                 credential arrives per session through exec, not from this role.
+# - agent-session-codex  Codex's session pods. Its role (the Codex role) may call Codex's
+#                 model on the Bedrock Mantle endpoint and its server-side web search, and
+#                 nothing else. Kept separate so no other CLI's pod holds those grants.
+# - agent-session-kiro  kiro-cli's session pods. No Pod Identity association, so no AWS
+#                 role at all: Kiro CLI signs in with the developer's own Kiro identity.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-app
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-session
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-session-codex
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-session-kiro
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-app
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+rules:
+  # Claim a warm pod (create), read which pod the claim resolved to (get), release it
+  # (delete), one SandboxClaim per session, and list the sample's claims once at app start
+  # to pick up sessions that kept running while the app restarted (list).
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims"]
+    verbs: ["get", "list", "create", "delete"]
+  # Read the claimed pod (its node and Ready condition), and drive the terminal.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-app
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agent-app
+subjects:
+  - kind: ServiceAccount
+    name: agent-app
+---
+# The app reads one node's labels to resolve each claimed pod's AZ id for the mount. Nodes
+# are cluster-scoped, so this is a narrow ClusterRole granting only get on nodes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: coding-agents-for-developers-node-reader
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: coding-agents-for-developers-node-reader
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: coding-agents-for-developers-node-reader
+subjects:
+  - kind: ServiceAccount
+    name: agent-app
+    namespace: <NAMESPACE>

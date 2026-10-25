@@ -1,0 +1,207 @@
+/* Coding agents web app -- styling.
+ *
+ * A small, token-driven design system in plain CSS (the app is vanilla HTML/JS, no build
+ * step). The tokens, spacing scale (4px base), button variants/sizes/states and status
+ * colours follow the design-system conventions: one place for colour, spacing, radius and
+ * shadow, and every interactive control has hover / active / focus-visible states. */
+
+:root {
+  /* Surfaces & ink (dark theme) */
+  --bg: #0d1117;
+  --bg-elev: #0f141b;
+  --panel: #161b22;
+  --panel-2: #1c2230;
+  --border: #2a3139;
+  --border-strong: #3d444d;
+  --text: #e6edf3;
+  --muted: #9aa5b1;
+  --faint: #6e7781;
+
+  /* Brand & status */
+  --accent: #2f81f7;
+  --accent-hover: #4a90f8;
+  --accent-active: #1f6feb;
+  --accent-text: #ffffff;
+  --accent-soft: rgba(47, 129, 247, 0.14);
+  --success: #3fb950;
+  --success-border: #238636;
+  --danger: #f85149;
+  --danger-soft: rgba(248, 81, 73, 0.12);
+  --warn: #d29922;
+
+  /* Spacing scale (4px base) */
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-8: 32px;
+
+  /* Radius, shadow, motion */
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-2: 0 8px 24px rgba(0,0,0,0.4);
+  --shadow-float: 0 16px 48px rgba(0,0,0,0.55);
+  --ease: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "DejaVu Sans Mono", "Liberation Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: 14px/1.55 var(--font-sans);
+  background:
+    radial-gradient(1200px 600px at 100% -10%, rgba(47,129,247,0.06), transparent 60%),
+    var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.hidden { display: none !important; }
+.muted { color: var(--muted); }
+code {
+  font-family: var(--font-mono); font-size: 0.9em;
+  color: var(--accent); background: var(--accent-soft);
+  padding: 1px 6px; border-radius: var(--radius-sm);
+}
+
+/* ---------------- Buttons ---------------- */
+button {
+  font: 500 14px/1 var(--font-sans);
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
+  height: 40px; padding: 0 var(--space-4);
+  border: 1px solid transparent; border-radius: var(--radius-sm);
+  background: var(--accent); color: var(--accent-text);
+  cursor: pointer; white-space: nowrap;
+  transition: background var(--ease), border-color var(--ease), color var(--ease), transform var(--ease);
+}
+button:hover { background: var(--accent-hover); }
+button:active { background: var(--accent-active); transform: translateY(0.5px); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* small + variants */
+.btn-sm { height: 32px; padding: 0 var(--space-3); font-size: 13px; border-radius: var(--radius-sm); }
+.btn-ghost { background: transparent; color: var(--muted); border-color: var(--border-strong); }
+.btn-ghost:hover { background: var(--danger-soft); color: var(--danger); border-color: var(--danger); }
+button.link {
+  height: auto; padding: 0; background: none; color: var(--accent); border: 0;
+}
+button.link:hover { background: none; text-decoration: underline; }
+
+/* ---------------- Sign in ---------------- */
+.signin { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: var(--space-4); }
+.card {
+  background: linear-gradient(180deg, var(--panel) 0%, var(--bg-elev) 100%);
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  padding: var(--space-8); width: 380px; box-shadow: var(--shadow-2);
+}
+.card h1 { margin: 0 0 var(--space-2); font-size: 22px; letter-spacing: -0.01em; }
+.card .muted { font-size: 13px; }
+.card label { display: block; margin: var(--space-5) 0 var(--space-1); font-size: 13px; color: var(--muted); }
+.card select, .card input {
+  width: 100%; height: 40px; padding: 0 var(--space-3);
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm); font: inherit;
+}
+.card select:focus, .card input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.card button { width: 100%; margin-top: var(--space-6); }
+
+/* ---------------- Header ---------------- */
+header {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--border);
+  background: rgba(22, 27, 34, 0.8); backdrop-filter: blur(8px);
+  position: sticky; top: 0; z-index: 5;
+}
+.brand { font-weight: 600; letter-spacing: -0.01em; }
+.spacer { flex: 1; }
+.workspace > section { padding: var(--space-5) var(--space-6); }
+/* Leave room at the bottom so the fixed dock never covers the last session row. The dock
+   is ~40px tall; pad a bit more so the last row clears it comfortably. */
+.workspace { padding-bottom: 64px; }
+.workspace h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 var(--space-4); font-weight: 600; }
+
+/* ---------------- Launcher tiles ---------------- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: var(--space-3); }
+.tile {
+  background: linear-gradient(180deg, var(--panel) 0%, var(--bg-elev) 100%);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: var(--space-4); cursor: pointer;
+  transition: border-color var(--ease), transform var(--ease), box-shadow var(--ease);
+}
+.tile:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: var(--shadow-2); }
+.tile .name { font-weight: 600; font-size: 15px; }
+.tile .sub { color: var(--muted); font-size: 12px; margin-top: var(--space-1); }
+.tile.busy { cursor: progress; opacity: 0.7; border-color: var(--accent); transform: none; }
+.tile.busy .sub { color: var(--accent); }
+.tile.failed { border-color: var(--danger); }
+.tile.failed .sub { color: var(--danger); }
+
+/* ---------------- Sessions table ---------------- */
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); vertical-align: middle; }
+th { color: var(--faint); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+tbody tr { transition: background var(--ease); }
+tbody tr:hover { background: rgba(255,255,255,0.025); }
+td .name-cell { font-weight: 500; }
+
+/* Status pill */
+.status {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  padding: 2px var(--space-2) 2px var(--space-2);
+  border-radius: 999px; font-size: 12px; border: 1px solid var(--border-strong); color: var(--muted);
+}
+.status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.status.running { color: var(--success); border-color: var(--success-border); }
+.status.idle { color: var(--faint); }
+
+.row-actions { white-space: nowrap; text-align: right; }
+
+/* ---------------- Floating terminal windows ---------------- */
+.term-window {
+  position: fixed; width: 760px; height: 460px;
+  background: #000; border: 1px solid var(--border-strong); border-radius: var(--radius);
+  overflow: hidden; display: flex; flex-direction: column; box-shadow: var(--shadow-float);
+}
+.term-titlebar {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border-bottom: 1px solid var(--border);
+  cursor: move; user-select: none;
+}
+.term-titlebar .title { flex: 1; font-size: 13px; font-weight: 500; color: var(--text); }
+.term-titlebar .dots { display: flex; gap: var(--space-2); }
+.term-titlebar button {
+  height: 22px; width: 22px; padding: 0; border-radius: 6px;
+  background: var(--border); color: var(--text); font-size: 13px; line-height: 1;
+}
+.term-titlebar button:hover { background: var(--border-strong); }
+.term-titlebar button[data-act="close"]:hover { background: var(--danger); color: #fff; }
+.term-body { flex: 1; padding: var(--space-2); min-height: 0; }
+.resize-handle {
+  position: absolute; right: 0; bottom: 0; width: 16px; height: 16px;
+  cursor: nwse-resize; background: linear-gradient(135deg, transparent 50%, var(--border-strong) 50%);
+}
+
+/* ---------------- Dock (minimized windows) ---------------- */
+.dock {
+  position: fixed; bottom: 0; left: 0; right: 0;
+  display: flex; gap: var(--space-2); align-items: center;
+  padding: var(--space-2) var(--space-3);
+  background: rgba(22, 27, 34, 0.9); backdrop-filter: blur(8px);
+  border-top: 1px solid var(--border); min-height: 40px; z-index: 4;
+}
+.dock:empty { display: none; }
+.dock .chip {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-1) var(--space-3); font-size: 13px;
+  background: var(--panel-2); border: 1px solid var(--border-strong);
+  border-radius: 999px; cursor: pointer;
+  transition: border-color var(--ease), background var(--ease);
+}
+.dock .chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
+.dock .chip:hover { border-color: var(--accent); background: var(--panel); }

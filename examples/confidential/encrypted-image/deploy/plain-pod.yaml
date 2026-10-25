@@ -1,0 +1,55 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: encrypted-image-plain
+  # setup.sh fills in the namespace, the source image and the node at apply time.
+  labels:
+    app.kubernetes.io/name: encrypted-image-plain
+    app.kubernetes.io/managed-by: encrypted-image
+    # Deliberately not app: encrypted-image. The egress policy selects that label, and
+    # this pod is the control for the readings below, not for the policy.
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"
+spec:
+  # No runtimeClassName: an ordinary pod. It runs the SAME image as the sandboxed pod,
+  # in its original plaintext form straight from the public registry, and prints the same
+  # four readings. That is what makes the comparison on the page a comparison of where
+  # the container ran, and not of what it was running.
+  #
+  # setup.sh pins it to the node the sandboxed pod landed on, so the two readings come
+  # from one machine.
+  nodeName: <NODE_NAME>
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsUser: 65534
+    runAsGroup: 65534
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: main
+      # The plaintext source image, the one whose encrypted copy the sandboxed pod runs.
+      image: <SOURCE_IMAGE>
+      imagePullPolicy: IfNotPresent
+      command:
+        - /bin/sh
+        - -c
+        - >-
+          echo "kernel:  $(uname -rv)";
+          echo "uptime:  $(cut -d' ' -f1 /proc/uptime)s";
+          echo "disks:   $(ls /sys/block | tr '\n' ' ')";
+          echo "product: $(cat /sys/class/dmi/id/product_name)";
+          echo encrypted-image-plain-ready;
+          exec sleep 3600
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      resources:
+        requests:
+          cpu: 100m
+          memory: 64Mi

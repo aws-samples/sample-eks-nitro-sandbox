@@ -1,0 +1,16 @@
+# Turns on the VPC CNI Network Policy Controller for an EKS Auto Mode cluster, once per
+# cluster. Until this exists, NetworkPolicy and ApplicationNetworkPolicy objects are
+# accepted but not enforced.
+# https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html
+#
+# This is a cluster-wide setting that every workload on the cluster shares, so the
+# sample's scripts never apply it: the page has you apply it yourself, and setup.sh
+# checks it and stops with this command when it is off. Pods that no policy selects are
+# unaffected by turning it on.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: amazon-vpc-cni
+  namespace: kube-system
+data:
+  enable-network-policy-controller: "true"
