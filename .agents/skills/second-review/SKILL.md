@@ -238,8 +238,29 @@ you do with the answer.
   between two of the script's own steps was first written as a background writer polling for
   a file to appear: it could fire while that file was still being written (wrong branch) or
   after the next step (no refusal at all), and under one mutation the early landing made the
-  broken code pass. Replaced with a shim first on `PATH` for a command the script calls
-  exactly once at that point — no race, and nothing left running afterwards.
+  broken code pass. Replaced with a shim first on `PATH` for a command whose *first* call is
+  at that point — no race, and nothing left running afterwards. (The script calls that
+  command several times; it is the shim's own marker file that makes it act once. A reviewer
+  caught this description claiming the script called it once.)
+- **A test harness must clear the environment it is testing.** The suite here passed the
+  caller's environment straight through, and `AGENTS.md` tells maintainers to export exactly
+  the variables that name the backend command. Measured on a machine with
+  `SECOND_REVIEW_CODEX_CMD` exported: **66 invocations of the real backend in one suite run**,
+  billed, plus 28 spurious failures — and with `SECOND_REVIEW_CLAUDE_SETTINGS` exported, a
+  case that asserts a variable is ignored failed against correct code. `env -u` each one.
+  A suite that reads its own environment is not testing the same thing on two machines.
+- **A guard that compares paths must resolve them itself.** The one here took `dirname` of
+  what it was given and compared it to an already-resolved directory. That worked for the two
+  callers whose paths had been through `realpath` and silently failed for the third, where
+  `command -v` returns the command as typed: a relative path, or one with `./` in the middle,
+  passed the guard and was then deleted. Resolve inside the guard, so adding a caller cannot
+  reintroduce it. Resolve the *directory* only when the thing being protected is the name —
+  resolving the whole path compares a symbolic link's target instead of the link.
+- **`python3 -c` puts the current directory first on `sys.path`.** A validator invoked that
+  way can be fed a planted `json.py` from wherever the caller happens to be standing. Checked
+  both ways: without `-I`, a planted module made the settings allowlist print `OK` for a file
+  carrying `hooks`; with `-I`, the file is refused. Use `python3 -I` for anything whose answer
+  is a security decision.
 - **A required or forbidden string must not be a prefix of a legitimate value.** Asserting
   the argument list did not contain `--add-dir $work` failed against correct code, because
   the legitimate `--add-dir $work/tree` contains it. The same unanchored-match trap

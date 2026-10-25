@@ -226,10 +226,18 @@ tree-before.sha256 tree-at-return.sha256 tree-after.sha256"
 # $3 names the input in the message, $4 is the tag to refuse with, so each input refuses
 # under the tag its own option already uses.
 not_an_output_name() {
-  local n
+  local n d
+  # The directory is resolved here, not left to the caller. The brief and the settings file
+  # arrive already canonical, but the backend command does not: "command -v" hands back the
+  # command as typed, so a relative "tmp/review/review.out" or a "./" in the middle gave a
+  # dirname that never equalled $2, and the guard passed while the cleanup still unlinked
+  # the file. Only the directory is resolved: the cleanup removes the NAME, so a symbolic
+  # link at one of these names is cleared whatever it points at, and resolving the whole
+  # path would compare the target instead.
+  d=$(realpath -m -- "$(dirname -- "$1")" 2>/dev/null) || d=$(dirname -- "$1")
   for n in $OUT_NAMES; do
     [ "$(basename -- "$1")" = "$n" ] || continue
-    [ "$(dirname -- "$1")" != "$2" ] || refuse "$4" \
+    [ "$d" != "$2" ] || refuse "$4" \
       "$3 '$1' has the name of a file this script writes into --out, and would be removed before being read. Rename it."
   done
 }
@@ -249,7 +257,8 @@ not_an_output_name "$BRIEF_ABS" "$OUT_ABS" "the brief" E_BRIEF
 # The backend command is an input path too. A backend binary living inside --out under one
 # of these eleven names is far-fetched, but the command path is taken from the environment,
 # so it is the caller's to get wrong: the cleanup would unlink it after it had passed its
-# own executable check, and the run would then fail at --version with the cause hidden.
+# own executable check. The run would then fail at the backend invocation as E_RUN_FAILED
+# with exit 127, not at --version: that call's failure is swallowed by "|| backend_version=''".
 not_an_output_name "$resolved_cmd" "$OUT_ABS" "the $BACKEND command" E_CMD_MISSING
 
 TREE_ABS=$(realpath "$TREE")
@@ -275,7 +284,10 @@ esac
 # function is also called from an "if" condition, where set -e is switched off for the whole
 # call, and the subshell's status would then come only from the second pipeline. A tree whose
 # metadata listing failed but which holds no regular file for the second pipeline to hash
-# would otherwise produce a short baseline that nothing refused.
+# would otherwise produce a short baseline. Not an unrefused one -- the at-return fingerprint
+# runs as a plain command, so set -e would have ended the run, but only after the backend had
+# been paid for, and the comparison would have blamed the reviewer for "changing" the tree.
+# What this buys is refusing early, with the right cause.
 tree_fingerprint() {
   ( cd "$1" || exit 1
     { find . -mindepth 1 -printf '%y %m %s %T@ %p -> %l\0' | LC_ALL=C sort -z; } || exit 1
@@ -301,7 +313,7 @@ if [ "$BACKEND" = claude ]; then
       "\$SECOND_REVIEW_CLAUDE_SETTINGS names '$SECOND_REVIEW_CLAUDE_SETTINGS', which is not a file."
     claude_settings_abs=$(realpath "$SECOND_REVIEW_CLAUDE_SETTINGS") || refuse E_CLAUDE_SETTINGS \
       "could not resolve \$SECOND_REVIEW_CLAUDE_SETTINGS '$SECOND_REVIEW_CLAUDE_SETTINGS'."
-    settings_verdict=$(python3 -c '
+    settings_verdict=$(python3 -I -c '
 import json, sys
 ALLOWED = {"awsCredentialExport", "apiKeyHelper"}
 try:
@@ -337,6 +349,11 @@ print("OK")
   if [ -n "${SECOND_REVIEW_CONTEXT_DIR:-}" ]; then
     [ -d "$SECOND_REVIEW_CONTEXT_DIR" ] || refuse E_CONTEXT_DIR \
       "\$SECOND_REVIEW_CONTEXT_DIR names '$SECOND_REVIEW_CONTEXT_DIR', which is not a directory."
+    # Readable and searchable too, for the same reason the brief is checked with -r: -d alone
+    # passes a directory the reviewer cannot list, and the only symptom would be a reviewer
+    # that silently never sees the diff the brief told it to read.
+    { [ -r "$SECOND_REVIEW_CONTEXT_DIR" ] && [ -x "$SECOND_REVIEW_CONTEXT_DIR" ]; } || refuse E_CONTEXT_DIR \
+      "\$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR' cannot be read (check its permissions); the reviewer would be given it as a readable directory and would silently find nothing in it."
     context_abs=$(realpath "$SECOND_REVIEW_CONTEXT_DIR") || refuse E_CONTEXT_DIR \
       "could not resolve \$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR'."
     # Compare against a prefix that always ends in exactly one slash. The obvious
@@ -369,10 +386,14 @@ tree_fingerprint "$TREE_ABS" > /dev/null 2>&1 || refuse E_TREE \
 mkdir -p "$OUT_ABS"
 
 # Remove anything already sitting at a name this script writes, immediately before the
-# first write. Every refusal that depends on what the caller passed in now comes earlier.
-# What is left after this point either writes (the baseline fingerprint, codex-stdin.txt,
-# the mktemp for the reviewer's working directory) or reads the backend's own output, so a
-# failure there is a failure of the machine or of the backend, not a mistyped argument.
+# first write. Every refusal this script can make from the caller's arguments alone now
+# comes earlier. What is left after this point either writes (the baseline fingerprint,
+# codex-stdin.txt, the mktemp for the reviewer's working directory) or reads the backend's
+# own output. Two honest exceptions: an argument only the BACKEND can judge -- a bad --model,
+# provider or effort, or credentials its settings file does not carry -- still surfaces as
+# E_RUN_FAILED after the cleanup, and that cannot be checked here; and a machine failure
+# (a full disk, an --out that becomes unwritable mid-run) can end some of the later writes
+# untagged. Neither records a review.
 # Two reasons for that placement, both learned the hard way: with --out inside the tree
 # this loop deleted files from the snapshot and only then refused E_OUT_IN_TREE -- a guard
 # in a tool whose whole promise is not touching the tree, destroying files in it -- and a
@@ -400,10 +421,12 @@ mkdir -p "$OUT_ABS"
 #   * It does **not** cover every way `rm -f` can fail. An immutable or append-only file, a
 #     bind mount (EBUSY), a file owned by someone else in a sticky directory, or a directory
 #     created between the two passes will still refuse in the second pass, by which point
-#     earlier names are already gone. Each of those needs privilege this script's caller does
-#     not have, or another process racing it -- and such a process could overwrite
-#     tree-before.sha256 anyway, which no check here defends against. Checked: "chattr +i"
-#     is refused without privilege.
+#     earlier names are already gone. Each needs something the ordinary caller does not have:
+#     privilege (a bind mount; "chattr +i", checked -- refused without it, on Linux), a
+#     SECOND USER's file in a sticky directory, a non-Linux immutability flag such as macOS
+#     "chflags uchg", or another process racing this one -- and such a process could overwrite
+#     tree-before.sha256 anyway, which no check here defends against. An --out path long
+#     enough that only the longest names hit ENAMETOOLONG also qualifies, absurdly.
 #
 # So: the first pass makes the reachable case atomic and the second pass is the backstop,
 # whose message says only what it knows.
@@ -583,7 +606,7 @@ case "$BACKEND" in
     # its own, so neither check is the only thing standing between a failed run and a
     # review that looks real.
     if [ -s "$OUT_ABS/review.json" ]; then
-      claude_status=$(python3 -c '
+      claude_status=$(python3 -I -c '
 import json, sys
 try:
     with open(sys.argv[1]) as f:
@@ -684,7 +707,7 @@ case "$BACKEND" in
     # One pass over the record, refusing a shape this cannot read rather than guessing:
     # a string-valued modelUsage would otherwise be split into its characters, and a
     # non-object record would end the script with no tagged reason.
-    python3 -c '
+    python3 -I -c '
 import json, sys
 
 path, out = sys.argv[1], sys.argv[2]
