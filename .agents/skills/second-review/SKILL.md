@@ -162,7 +162,9 @@ and the host-specific options on the maintainers' workstation.
   credential path lives; name a file carrying **only** that setting. The script says so when
   it recognises the failure, and it refuses a settings file that sets anything else: a
   `hooks` entry in one runs shell commands outside the reviewer's tool list, which was
-  verified to execute and write under the full read-only flag set.
+  verified to execute and write under the full read-only flag set. Note what that check
+  does *not* claim — both permitted keys are themselves commands claude runs, so it removes
+  every other way a settings file could run something rather than eliminating execution.
 - **Try the other backend before giving up on one.** They are equally sanctioned, so a
   backend that will not authenticate is a reason to switch, not a blocker to report.
 

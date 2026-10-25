@@ -228,13 +228,25 @@ same thing.
     still read under `--restricted`. Without it the backend cannot authenticate, or
     authenticates as whatever ambient credentials exist. The script names this cause when
     the run fails that way.
-  - **The script checks that file and allows only `awsCredentialExport` and
-    `apiKeyHelper`.** Why: `--settings` restores *executable* configuration, not just
-    values. A permission grant in it is inert, as above — but a `hooks` entry runs shell
-    commands outside the reviewer's tool list entirely. A `SessionStart` command hook was
-    tried under the full read-only flag set and **it executed and created a file**, so an
-    unchecked settings file would hand the reviewer arbitrary execution, and an `env` entry
-    could point its credentials somewhere else.
+  - **The script checks that file and allows exactly one of `awsCredentialExport` and
+    `apiKeyHelper`, non-empty, and nothing else.** Why: `--settings` restores *executable*
+    configuration, not just values. A permission grant in it is inert, as above — but a
+    `hooks` entry runs shell commands outside the reviewer's tool list entirely. A
+    `SessionStart` command hook was tried under the full read-only flag set and **it
+    executed and created a file**. A settings file can also carry MCP servers, plugins, a
+    status line, extra readable directories and a model override, so the check is an
+    allowlist of the two authentication keys rather than a list of things to block; each of
+    those keys is refused by the same rule, with a case for each.
+  - **This does not mean "no executable configuration", and the docs should not say it
+    does.** Both permitted keys *are* commands claude runs — that is what naming a
+    credential helper means. What the check removes is every *other* way a settings file
+    could run something. The helper is a command you chose, trusted for that purpose.
+  - **The reviewer runs from an empty directory, not from the tree**, with the tree added as
+    a readable directory. Why: a permitted helper would otherwise execute with the thing
+    under review as its working directory. A consequence worth knowing: a relative write by
+    such a command now lands beside the output rather than in the tree, so the tree
+    fingerprint is *less* likely to notice it — the isolation reduces the exposure and the
+    detection together.
   - **This costs you nothing else, because `--restricted` ignores settings *files*, not the
     environment.** Everything that is not a credential helper — the provider switch, a
     Region, a profile — goes in your shell as it normally would, and reaches the reviewer;

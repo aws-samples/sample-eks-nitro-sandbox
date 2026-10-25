@@ -350,56 +350,76 @@ try:
     with open(sys.argv[1]) as f:
         d = json.load(f)
 except Exception as e:
-    print("could not read it as JSON: %s" % e); raise SystemExit(0)
+    print("could not read it as JSON: %s" % str(e)[:200]); raise SystemExit(0)
 if not isinstance(d, dict):
     print("it is a %s, not an object" % type(d).__name__); raise SystemExit(0)
 extra = sorted(set(d) - ALLOWED)
 if extra:
-    print("it sets %s; only %s may be set here, because --settings also restores "
-          "executable configuration such as hooks, which run outside the reviewer tool list"
-          % (json.dumps(extra), " or ".join(sorted(ALLOWED)))); raise SystemExit(0)
-if not any(isinstance(d.get(k), str) and d.get(k).strip() for k in ALLOWED):
-    print("it sets none of %s to a non-empty string, so it would restore no credential "
-          "path and the run would fall back to ambient credentials"
-          % " or ".join(sorted(ALLOWED))); raise SystemExit(0)
+    print("it sets %s; only %s may be set here. A settings file can carry hooks, MCP "
+          "servers, plugins, a status line, permissions and a model override, and several "
+          "of those run a command or widen what the reviewer can reach, so this is an "
+          "allowlist of the two authentication keys rather than a list of things to block"
+          % (json.dumps(extra)[:200], " or ".join(sorted(ALLOWED)))); raise SystemExit(0)
+# Exactly one, so a valid helper cannot sit beside a malformed second one.
+if len(d) != 1:
+    print("it sets %d of %s; set exactly one"
+          % (len(d), " or ".join(sorted(ALLOWED)))); raise SystemExit(0)
+k = next(iter(d))
+if not isinstance(d[k], str) or not d[k].strip():
+    print("its %s is %s, not a non-empty string, so it would restore no credential path "
+          "and the run would fall back to ambient credentials"
+          % (k, json.dumps(d[k])[:120])); raise SystemExit(0)
 print("OK")
 ' "$claude_settings_abs" 2>/dev/null) || settings_verdict="could not be read"
       [ "$settings_verdict" = OK ] || refuse E_CLAUDE_SETTINGS \
         "the settings file '$claude_settings_abs' cannot be used: $settings_verdict."
       claude_args+=(--settings "$claude_settings_abs")
     fi
-    ( cd "$TREE_ABS" && ${timeout_cmd[@]+"${timeout_cmd[@]}"} "$resolved_cmd" "${claude_args[@]}" ) \
+    # Run from an empty directory rather than from the tree, with the tree added as a
+    # readable directory. Why: an allowed credential helper is still a command claude
+    # executes, and with the tree as the working directory it would execute inside the very
+    # thing under review. --out is already required to sit outside the tree.
+    mkdir -p "$OUT_ABS/claude-cwd"
+    claude_args+=(--add-dir "$TREE_ABS")
+    ( cd "$OUT_ABS/claude-cwd" && ${timeout_cmd[@]+"${timeout_cmd[@]}"} "$resolved_cmd" "${claude_args[@]}" ) \
       < "$BRIEF_ABS" > "$OUT_ABS/review.json" 2> "$OUT_ABS/review.err" || run_status=$?
     # Any error the backend reports means no review happened, whatever its wording, so the
     # record is rejected on `is_error` alone and the error code only chooses the message.
-    # Matching the text for "credential" and passing everything else through was wrong: a
-    # status-zero record with is_error true, api_error "authentication_failed" and a
-    # populated modelUsage satisfied the later shape validator and would have been recorded
-    # as a real review. An error shows up both with exit status 0, the error only in the
-    # JSON, and with a non-zero status, so the record is read regardless of the status.
+    # This extractor fails CLOSED: it prints one of three fixed ASCII words, and anything
+    # else -- including python failing outright -- refuses the run. It used to clear the
+    # variable on failure, which meant "no error": a record whose api_error held an
+    # unpaired surrogate crashed the print with UnicodeEncodeError, and the run was then
+    # recorded as a successful review. The record validator below also rejects is_error on
+    # its own, so neither check is the only thing standing between a failed run and a
+    # review that looks real.
     if [ -s "$OUT_ABS/review.json" ]; then
-      claude_error=$(python3 -c '
+      claude_status=$(python3 -c '
 import json, sys
 try:
-    d = json.load(open(sys.argv[1]))
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
 except Exception:
-    raise SystemExit(0)
-if not isinstance(d, dict) or not d.get("is_error"):
-    raise SystemExit(0)
-blob = ("%s %s %s" % (d.get("api_error") or "", d.get("result") or "",
-                      d.get("api_error_status") or "")).lower()
-if "credential" in blob or "authenticat" in blob or "403" in blob:
-    print("auth")
-else:
-    print(d.get("api_error") or d.get("subtype") or "an unnamed error")
-' "$OUT_ABS/review.json" 2>/dev/null) || claude_error=''
-      if [ "$claude_error" = auth ]; then
-        refuse E_RUN_FAILED \
-          "the claude backend could not authenticate, so no review was produced. The most likely cause on a machine where claude authenticates through a settings file: --restricted makes it ignore the user settings file, so set \$SECOND_REVIEW_CLAUDE_SETTINGS to a file carrying only that authentication setting. Read $OUT_ABS/review.err yourself with tail, and do not paste it into a pull request, an issue or Slack."
-      elif [ -n "$claude_error" ]; then
-        refuse E_RUN_FAILED \
-          "the claude backend reported an error ($claude_error), so no review was produced. Read $OUT_ABS/review.err yourself with tail, and do not paste it into a pull request, an issue or Slack."
-      fi
+    print("NO_RECORD"); raise SystemExit(0)
+if not isinstance(d, dict):
+    print("NO_RECORD"); raise SystemExit(0)
+if not d.get("is_error"):
+    print("OK"); raise SystemExit(0)
+# Only ASCII leaves this script, so no value in the record can break the print.
+blob = "%s %s %s" % (d.get("api_error") or "", d.get("result") or "",
+                     d.get("api_error_status") or "")
+blob = blob.encode("ascii", "replace").decode("ascii").lower()
+print("ERROR_AUTH" if ("credential" in blob or "authenticat" in blob or "403" in blob)
+      else "ERROR_OTHER")
+' "$OUT_ABS/review.json" 2>/dev/null) || claude_status=EXTRACTOR_FAILED
+      case "$claude_status" in
+        OK) ;;
+        ERROR_AUTH) refuse E_RUN_FAILED \
+          "the claude backend could not authenticate, so no review was produced. The most likely cause on a machine where claude authenticates through a settings file: --restricted makes it ignore the user settings file, so set \$SECOND_REVIEW_CLAUDE_SETTINGS to a file carrying only that authentication setting. Read $OUT_ABS/review.err yourself with tail, and do not paste it into a pull request, an issue or Slack." ;;
+        ERROR_OTHER) refuse E_RUN_FAILED \
+          "the claude backend reported an error, so no review was produced. Read $OUT_ABS/review.json and $OUT_ABS/review.err yourself with tail, and do not paste them into a pull request, an issue or Slack." ;;
+        *) refuse E_BAD_RECORD \
+          "could not tell whether the claude backend reported an error (the check returned '$claude_status'), so this run cannot be recorded as a review. Check $OUT_ABS/review.json." ;;
+      esac
     fi
     ;;
 esac
@@ -472,6 +492,11 @@ except Exception as e:
     raise SystemExit(0)
 if not isinstance(d, dict):
     print("BAD\tthe record is a %s, not an object" % type(d).__name__)
+    raise SystemExit(0)
+if d.get("is_error"):
+    # Independent of the error check earlier: a failed run must never be recorded as a
+    # review, even if that check were bypassed or failed to run.
+    print("BAD\tthe record is flagged is_error, so the backend did not produce a review")
     raise SystemExit(0)
 usage = d.get("modelUsage")
 if not isinstance(usage, dict) or not usage:
