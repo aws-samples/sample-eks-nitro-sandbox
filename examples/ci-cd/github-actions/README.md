@@ -297,7 +297,9 @@ when the job finishes.
 That last part matters for the next two steps: ARC deletes the runner pod the moment the
 job ends, so a command run afterwards has nothing left to read. The workflow's final step
 therefore holds the pod open for four minutes, after the work is done, and prints
-`=== HOLDING-POD-OPEN ===`. Run the commands in Step 6 and Step 8 while it is held. On a
+`=== HOLDING-POD-OPEN ===`. Run the commands in Steps 6 to 9 while it is held, including the
+`kubectl logs` ones: the pod's log goes with the pod, so once ARC deletes it the job's output
+is gone from the cluster as well as from the Actions tab. On a
 `workflow_dispatch` run you can change how long with the `hold_seconds` input.
 
 Record the pod's name and UID while it is held, then do the same on a second run. The two
@@ -313,7 +315,16 @@ TODO: output from the fresh run
 ```
 
 **Step 6: Read the job's own account of the machine it ran on.** The workflow's first step
-prints three readings. Take them from the job log in the Actions tab:
+prints three readings. Read them from the pod rather than from the Actions tab, while the
+job's final step holds the pod open: this policy does not allow the host GitHub uploads job
+logs to, so the Actions tab has no log for this run. "How the network policy works" below
+explains that, and it is a deliberate trade rather than a fault.
+
+```bash
+POD=$(kubectl get pods -n arc-runners -l actions-ephemeral-runner=True \
+  -o jsonpath='{.items[0].metadata.name}')
+kubectl logs -n arc-runners "$POD" -c runner | sed -n '/SANDBOX-EVIDENCE-BEGIN/,/SANDBOX-EVIDENCE-END/p'
+```
 
 ```text
 TODO: output from the fresh run
@@ -360,6 +371,12 @@ which is arbitrary code execution. Both run on the job's own in-pod daemon:
     docker build -t untrusted-pr:ci .
     docker run --rm untrusted-pr:ci
     echo "DOCKER-BUILD-CONFIRMED"
+```
+
+Read it from the pod, as in Step 6, while the job holds the pod open:
+
+```bash
+kubectl logs -n arc-runners "$POD" -c runner | sed -n '/DOCKER-BUILD-BEGIN/,/UNIT-TESTS-END/p'
 ```
 
 ```text
@@ -454,6 +471,10 @@ copy of the *administering* credential useless. `GITHUB_TOKEN` expires when the 
 reach the node's instance-metadata credentials, list the node's `nvme` devices both from the
 runner container and from a privileged container on the job's own daemon, and open the
 node's container runtime socket. It fails the job if any of them succeeds.
+
+```bash
+kubectl logs -n arc-runners "$POD" -c runner | sed -n '/ESCAPE-PROBES-BEGIN/,/ESCAPE-PROBES/p'
+```
 
 ```text
 TODO: output from the fresh run
@@ -580,18 +601,39 @@ Its limits are worth stating plainly, because this policy constrains untrusted c
 - **Only pods the selector matches are restricted.** Another pod in the same namespace with
   no `actions-ephemeral-runner` label, such as the comparison pod in Step 6, is not covered.
   Add a namespace-wide default-deny if you want everything in the namespace restricted.
-- **This workflow's needs are not every workflow's.** GitHub serves job logs, step
-  summaries, artifacts and the cache from Azure blob storage, so a workflow that uploads an
-  artifact or uses `actions/cache` also needs `*.blob.core.windows.net`, which allows any
-  Azure storage account. If a job hangs or its log is truncated, that is the first thing to
-  add. GitHub notes its host list can change, so re-check it against the self-hosted runners
-  reference when you build.
+- **With this policy you get no job log in the Actions tab at all.** This is the one
+  consequence that will surprise you, so it is worth stating before you hit it. The runner
+  uploads its log to Azure blob storage, and `*.blob.core.windows.net` is deliberately not on
+  the allowlist, so the upload never happens and asking GitHub for the log returns Azure's own
+  error rather than a truncated log:
+
+  ```xml
+  <Error><Code>BlobNotFound</Code><Message>The specified blob does not exist.
+  ```
+
+  Measured on this sample, with the control that makes it conclusive: a stock, unsandboxed
+  runner's job in the same repository, with no egress policy, returns a readable log from the
+  same endpoint. The job itself runs perfectly well; it is only the log delivery that fails.
+  **Read the job's output from the pod instead**, with `kubectl logs`, which is what Steps 6,
+  7 and 9 below do. That works because the runner pod is in your cluster, which is also why a
+  sandboxed runner is easier to inspect here than an ordinary one, not harder.
+
+  The same host serves step summaries, artifacts and the cache, so a workflow that uploads an
+  artifact or uses `actions/cache` needs it too. Adding `*.blob.core.windows.net` would allow
+  **any** Azure storage account, which is a wide entry to open to untrusted code, so this
+  sample leaves it off and reads the log from the cluster. Add it only if you decide the
+  Actions log is worth that, and know what you are widening. GitHub notes its host list can
+  change, so re-check it against the self-hosted runners reference when you build.
 - **No package index is allowed, on purpose.** The workflow installs nothing: the build runs
   no `apk add` and the tests use the Python standard library. Adding either would mean adding
   its index host, and a package index is a large surface to open to untrusted code.
 
 The workflow asks the policy both ways, from inside the runner, so a pass cannot be confused
-with a policy that allows everything:
+with a policy that allows everything. Read this step's output from the pod too:
+
+```bash
+kubectl logs -n arc-runners "$POD" -c runner | sed -n '/EGRESS-BEGIN/,/EGRESS-END/p'
+```
 
 ```yaml
 - name: Egress policy, both ways
