@@ -370,20 +370,59 @@ for _ in $(seq 1 60); do
   # no stdout; measured), so an empty result means absent and a non-zero status
   # means the read failed. The two must not be confused: a failed read here
   # would otherwise look like a listener that never appeared.
+  #
+  # A pod being REPLACED does not count. On a re-run, ARC can have the old
+  # listener terminating while the new one is coming up, and both carry this
+  # selector; waiting on the set would then wait on a pod that is going away.
+  # Only a pod with no deletionTimestamp is taken, and the wait below is given
+  # that pod by name rather than the selector.
+  # kubectl goes straight into jq, so only the pod NAME is ever held in a
+  # variable. Holding the pod JSON itself would be the defect this repository's
+  # review chain found twice in clean.sh: bash prints an assignment with its
+  # value under xtrace. Measured on this cluster, an ARC listener pod carries no
+  # inline credential (its only literal env value is the path
+  # /etc/gha-listener/config.json, and the credential is read from a mounted
+  # Secret), so the JSON form was safe today; it is piped anyway, because the
+  # pod shape is upstream code and this is a credential path.
+  #
+  # With pipefail this is non-zero if either kubectl or jq fails, and an empty
+  # match leaves the name empty with a zero status, so absent and unreadable
+  # stay apart.
   listener_pod="$("${KCTL[@]}" get pod -n "$ARC_SYSTEMS_NAMESPACE" \
-    -l "$listener_sel" -o name --ignore-not-found 2>/dev/null)" \
-    || die "could not read the listener pods in '$ARC_SYSTEMS_NAMESPACE'. That is a failed read, not a report that the listener is absent."
+    -l "$listener_sel" -o json 2>/dev/null \
+    | jq -r '[(.items // [])[] | select(.metadata.deletionTimestamp == null)] | .[0].metadata.name // ""' 2>/dev/null)" \
+    || die "could not read or parse the listener pods in '$ARC_SYSTEMS_NAMESPACE'. That is a failed read, not a report that the listener is absent."
   [[ -n "$listener_pod" ]] && break
   sleep 2
 done
+# Both this and the Ready failure below can be caused by the credential. The
+# controller registers the runner scale set with GitHub BEFORE it creates the
+# listener: measured with a deliberately bad token, GitHub answers the
+# registration-token request 401 "Bad credentials", the AutoscalingRunnerSet
+# stays Pending with no scale set id, and no EphemeralRunnerSet, listener or
+# listener pod is ever created. So "no pod" must NOT tell the reader to rule the
+# credential out, which an earlier version of this message did.
 [[ -n "$listener_pod" ]] \
-  || die "the controller created no listener pod for '$RUNNER_SCALE_SET_NAME' in '$ARC_SYSTEMS_NAMESPACE' within 120s. The release is installed, so this is the controller, not the credential: a controller on a different version from the scale set is the usual cause. Check its logs:
+  || die "the controller created no listener pod for '$RUNNER_SCALE_SET_NAME' in '$ARC_SYSTEMS_NAMESPACE' within 120s. The release is installed, so the scale set was never registered with GitHub. The two usual causes are a credential GitHub rejects, which the controller logs as 401 Bad credentials on the registration-token request, and a controller on a different version from the scale set. Its logs say which:
   kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE logs -l app.kubernetes.io/name=gha-rs-controller"
 
-"${KCTL[@]}" wait --for=condition=Ready pod -l "$listener_sel" \
+# Waited on by NAME, so a listener that is being replaced cannot be waited on.
+"${KCTL[@]}" wait --for=condition=Ready "pod/$listener_pod" \
   -n "$ARC_SYSTEMS_NAMESPACE" --timeout=180s \
-  || die "the listener pod for '$RUNNER_SCALE_SET_NAME' exists in '$ARC_SYSTEMS_NAMESPACE' but did not become Ready, so the scale set is not registered with GitHub. This is where a credential that GitHub rejects shows up. Check it, then:
-  kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE logs -l actions.github.com/scale-set-name=$RUNNER_SCALE_SET_NAME"
+  || die "the listener pod '$listener_pod' exists in '$ARC_SYSTEMS_NAMESPACE' but did not become Ready, so the scale set is not registered with GitHub. Check the credential, then read that pod's own log:
+  kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE logs $listener_pod"
+
+# On a re-run this wait can be satisfied by the listener that was ALREADY
+# running, before ARC has rebuilt it from the credential just written. That is
+# worth saying rather than hiding: a reader who re-ran this script to change the
+# credential would otherwise read "setup complete" as "the new credential is in
+# use". On a first install, which is what the page walks through, there is no
+# previous listener and the question does not arise.
+if [[ "$helm_verb" == upgrade ]]; then
+  echo "  note: this was a re-run. If you changed the credential, the listener above may"
+  echo "  still be the previous one. Force ARC to rebuild it and wait again with:"
+  echo "    kubectl --context $CLUSTER_NAME -n $ARC_SYSTEMS_NAMESPACE delete pod $listener_pod"
+fi
 
 say "setup complete"
 cat <<EOF

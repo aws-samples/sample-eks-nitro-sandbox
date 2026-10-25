@@ -395,6 +395,24 @@ variable refers to the credential Secret. The runner pods are also given no EKS 
 association, so there is no AWS role to assume: the build pulls its public base images
 anonymously. The chart gives the runner pod a ServiceAccount with no permissions of its own.
 
+The pod is not credential-free, though, and the output above says so: it carries
+`ACTIONS_RUNNER_INPUT_JITCONFIG`, from a Secret ARC names after the runner pod itself and
+owns with that pod's `EphemeralRunner`. That is the just-in-time registration config, which
+is what "runners register just in time" means in practice. It is worth being exact about the
+difference, because it is the whole point of this step:
+
+| | The credential this sample creates | The runner pod's JIT config |
+|---|---|---|
+| What it can do | administer the repository's runners | register this one runner, once |
+| How long it lasts | until you revoke it | this pod's lifetime |
+| Where it lives | the runners' namespace, and the listener's config Secret | a Secret named after this pod, deleted with it |
+| Is it in the runner pod? | no | yes, by design |
+
+So the thing an attacker in the sandbox could reach is a single-use registration config for
+the pod they are already in, not the credential that could add or remove runners. Revoking
+the credential at GitHub, as "Where the credential lives" says, is still what makes every
+copy of the administering credential useless.
+
 **Step 9: The escape probes, and what they are worth.** The workflow's last step tries to
 reach the node's instance-metadata credentials, list the node's `nvme` devices both from the
 runner container and from a privileged container on the job's own daemon, and open the
