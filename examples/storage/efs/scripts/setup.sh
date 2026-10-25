@@ -175,6 +175,9 @@ if [[ "$addon_present" != aws-efs-csi-driver ]]; then
 efs-csi-node daemonset in kube-system failed (the error is above), so which version of the
 Amazon EFS CSI driver is installed could not be determined. Check the kube context you meant
 ('kubectl config current-context'), then re-run."
+  # The separator is emitted unconditionally by the jsonpath, so a read that found the
+  # daemonset always has one. Were it ever missing, driver_image would hold the name, which
+  # fails to parse as a version: a refusal, never an accept.
   ds_name="${ds_read%%$'\t'*}"
   driver_image="${ds_read#*$'\t'}"
   if [[ -n "$ds_name" && -z "$driver_image" ]]; then
