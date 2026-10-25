@@ -42,14 +42,23 @@ step "an ordinary pod on the same node ($node)"
 sed -e "s/__NAMESPACE__/$NAMESPACE/g" -e "s/__NODE_NAME__/$node/g" \
   "$SAMPLE_DIR/deploy/pod-ordinary.yaml" | kc apply -f -
 kc wait --for=condition=Ready "pod/$ORDINARY_POD" --timeout=5m \
-  || die "the ordinary pod never became Ready; check 'kubectl -n $NAMESPACE describe pod $ORDINARY_POD'"
+  || die "the ordinary pod never became Ready; check '$(kubectl_cmd) -n $NAMESPACE describe pod $ORDINARY_POD'"
 
+# Each probe reports its own result, and one that fails does not end the
+# comparison: with set -e and pipefail a non-zero exec would stop the script and
+# lose the signals after it, so the failure is printed and the loop goes on. The
+# exit status is shown, so a missing signal cannot be mistaken for a reading.
+probe_in() {
+  local pod=$1 probe=$2 rc=0
+  echo "--- $3 pod/$pod ---"
+  kc exec "$pod" -- sh -c "$probe" 2>&1 | sed 's/^/  /' || rc=$?
+  [[ $rc -ne 0 ]] && echo "  (this probe exited $rc in pod/$pod; the reading above, if any, is incomplete)"
+  return 0
+}
 for probe in 'uname -rv' 'cat /proc/uptime' 'ls /sys/block' 'cat /sys/class/dmi/id/product_name'; do
   step "$probe"
-  echo "--- sandboxed pod/$SANDBOX ---"
-  kc exec "$SANDBOX" -- sh -c "$probe" 2>&1 | sed 's/^/  /'
-  echo "--- ordinary pod/$ORDINARY_POD ---"
-  kc exec "$ORDINARY_POD" -- sh -c "$probe" 2>&1 | sed 's/^/  /'
+  probe_in "$SANDBOX" "$probe" sandboxed
+  probe_in "$ORDINARY_POD" "$probe" ordinary
 done
 
 step "when each pod started, to compare with its uptime"

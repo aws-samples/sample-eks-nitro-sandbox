@@ -69,9 +69,29 @@ if [[ $ns_absent -eq 0 ]]; then
        elif [[ -z "$pv" ]]; then
          note_fail "pvc/$PVC has no bound PV; cannot confirm the EBS volume is deleted"
        fi ;;
-    1) : ;;  # no PVC: nothing to record
+    1) : ;;  # no PVC: fall through to the claimRef lookup below
     2) note_fail "could not read pvc/$PVC; cannot determine its EBS volume (a failed read is not 'gone')" ;;
   esac
+
+  # The claim being absent does NOT mean its volume is gone, and reading the PV
+  # through the claim is the only way we have while the claim exists. Once it is
+  # gone there is no volumeName to follow, so find the PV by its claimRef
+  # instead. Two cases reach here: garbage collection removed the claim before
+  # this run started, and a previous run whose PV wait timed out, reported
+  # INCOMPLETE and told the reader to re-run. Without this the re-run would skip
+  # the whole check below and still print "the EBS volume ... gone".
+  if [[ -z "$pv" && $pvc_rc -eq 1 ]]; then
+    ref_rc=0
+    pv="$(kc_cluster get pv \
+      -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.claimRef.namespace}{"/"}{.spec.claimRef.name}{"\n"}{end}' 2>/dev/null \
+      | awk -v want="$NAMESPACE/$PVC" '$2==want{print $1}')" || ref_rc=$?
+    if [[ $ref_rc -ne 0 ]]; then
+      pv=""
+      note_fail "could not list PersistentVolumes to look for one still bound to $NAMESPACE/$PVC; cannot confirm the EBS volume is deleted"
+    elif [[ -n "$pv" ]]; then
+      echo "pvc/$PVC is already gone, but a PersistentVolume still names it; confirming that too"
+    fi
+  fi
 
   step "1/6 delete the ordinary comparison pod, if Step 6 left one"
   # Deleted by its exact name, never with a label selector: a selector meant for
@@ -109,22 +129,32 @@ if [[ $ns_absent -eq 0 ]]; then
     2) note_fail "could not read pvc/$PVC; not reporting it gone" ;;
   esac
   if [[ -n "$pv" ]]; then
-    # The PV is cluster-scoped. Deleting it reclaims the EBS volume, because
-    # setup only ever uses a class with reclaimPolicy Delete (choose_storage_class
-    # refuses any other, which is what makes this step's message true rather than
-    # merely likely). Wait until the PV is gone, so a still-billing volume is
-    # never reported as cleaned up; with a Retain class the PV would stay
-    # Released, the wait would time out and this would be recorded as a failure.
-    pv_rc=0; resource_exists kc_cluster "pv/$pv" || pv_rc=$?
-    case $pv_rc in
-      0) if kc_cluster wait --for=delete "pv/$pv" --timeout=180s; then
-           echo "  pv $pv: gone"
-         else
-           note_fail "pv/$pv (the EBS volume) is still present; it may still be billing. Check it with: $(kubectl_cmd) get pv $pv"
-         fi ;;
-      1) echo "  pv $pv: gone" ;;
-      2) note_fail "could not read pv/$pv; cannot confirm the EBS volume is deleted (a failed read is not 'gone')" ;;
-    esac
+    # The PV is cluster-scoped. Deleting the claim reclaims the EBS volume behind
+    # it, because setup only ever uses a class with reclaimPolicy Delete
+    # (choose_storage_class refuses any other, which is what makes this step's
+    # message true rather than merely likely). Wait until the PV is gone, so a
+    # still-billing volume is never reported as cleaned up; with a Retain class
+    # the PV would stay Released, the wait would time out and this would be
+    # recorded as a failure. The claimRef lookup above can return more than one
+    # name, so confirm each.
+    while IFS= read -r pv_name; do
+      [[ -z "$pv_name" ]] && continue
+      pv_rc=0; resource_exists kc_cluster "pv/$pv_name" || pv_rc=$?
+      case $pv_rc in
+        0) if kc_cluster wait --for=delete "pv/$pv_name" --timeout=180s; then
+             echo "  pv $pv_name: gone"
+           else
+             note_fail "pv/$pv_name (the EBS volume) is still present; it may still be billing. Check it with: $(kubectl_cmd) get pv $pv_name"
+           fi ;;
+        1) echo "  pv $pv_name: gone" ;;
+        2) note_fail "could not read pv/$pv_name; cannot confirm the EBS volume is deleted (a failed read is not 'gone')" ;;
+      esac
+    done <<< "$pv"
+  elif [[ $failures -eq 0 ]]; then
+    # No claim and no PV naming it, and nothing above went unconfirmed: there is
+    # genuinely no volume. Say so, rather than leaving the success line at the end
+    # to imply a volume was checked when none existed.
+    echo "  no PersistentVolume names $NAMESPACE/$PVC; there is no EBS volume to confirm"
   fi
 
   step "4/6 delete secret/$SECRET and the egress policy $POLICY"

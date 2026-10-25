@@ -153,7 +153,9 @@ spec:
         storageClassName: __STORAGE_CLASS__
         resources:
           requests:
-            storage: 10Gi
+            # Rendered from WORKSPACE_SIZE at apply time, which is also the value
+            # setup compares with an existing Sandbox's claim template.
+            storage: __STORAGE_SIZE__
 # The resulting PVC is named "<template name>-<sandbox name>", that is
 # workspace-ide, and carries the Sandbox as its ownerReference. Deleting the pod
 # leaves the claim and the EBS volume alone, which is why the workspace survives a

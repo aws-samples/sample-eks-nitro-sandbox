@@ -20,9 +20,10 @@ allowedTopologies:
         values:
           - auto
 provisioner: ebs.csi.eks.amazonaws.com
-# Named rather than left to the API default, because the clean up deletes the PV
-# and reports the EBS volume gone, and that is only true for Delete. setup checks
-# this field on whichever class it ends up using, including this one.
+# Named rather than left to the API default, because the clean up deletes the
+# claim, waits for its PersistentVolume to be deleted and reports the EBS volume
+# gone, and that is only true for Delete. setup checks this field on whichever
+# class it ends up using, including this one.
 reclaimPolicy: Delete
 volumeBindingMode: WaitForFirstConsumer
 parameters:

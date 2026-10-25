@@ -59,10 +59,20 @@ NAMESPACE="${NAMESPACE:-ide}"
 STORAGE_CLASS="${STORAGE_CLASS:-}"
 CHOSEN_STORAGE_CLASS=""
 SAMPLE_STORAGE_CLASS="ide-gp3"
+# Set to 1 only when this run actually created the sample's own class, so a
+# message can say "created" when that is true and not when the class was reused.
+# shellcheck disable=SC2034
+CREATED_SAMPLE_STORAGE_CLASS=0
 EBS_PROVISIONER="ebs.csi.eks.amazonaws.com"
-# The reclaim policy the sample needs: the clean up deletes the PV and waits for
-# it to be gone, which only releases the EBS volume when the class reclaims it.
+# The reclaim policy the sample needs: the clean up deletes the claim and waits
+# for its PV to be deleted, which only releases the EBS volume when the class
+# reclaims it rather than retaining it.
 EBS_RECLAIM_POLICY="Delete"
+# The workspace size. Rendered into the Sandbox manifest at apply time and
+# compared with an existing Sandbox's claim template, so the value the manifest
+# asks for and the value setup checks cannot drift apart.
+# shellcheck disable=SC2034
+WORKSPACE_SIZE="10Gi"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 
 # Where the password and its hash live on the operator's own machine. The
@@ -251,7 +261,7 @@ choose_storage_class() {
     [[ $rc -ne 0 ]] && die "could not read storageclass/$STORAGE_CLASS; stopping rather than guess (a failed read is not 'absent')"
     [[ -z "$prov" ]] && die "storageclass/$STORAGE_CLASS (from STORAGE_CLASS) not found. Set STORAGE_CLASS to a class that uses $EBS_PROVISIONER, or unset it to let setup choose."
     [[ "$prov" != "$EBS_PROVISIONER" ]] && die "storageclass/$STORAGE_CLASS (from STORAGE_CLASS) uses provisioner '$prov', not '$EBS_PROVISIONER'; its volumes are not EBS CSI volumes."
-    # The clean up deletes the PV and waits for it to be gone, and calls that
+    # The clean up deletes the claim, waits for its PV to be deleted, and calls that
     # "the EBS volume is deleted". That is only true for a class that reclaims
     # its volumes on delete, so refuse a class where it would not be.
     local rrc=0; sc_reclaims_on_delete "$STORAGE_CLASS" || rrc=$?
@@ -304,6 +314,8 @@ ensure_sample_storage_class() {
     echo "creating storageclass/$SAMPLE_STORAGE_CLASS from deploy/storage-class.yaml"
     kc_cluster create -f "$SAMPLE_DIR/deploy/storage-class.yaml" \
       || die "could not create storageclass/$SAMPLE_STORAGE_CLASS"
+    # shellcheck disable=SC2034  # read by setup.sh, which sources this file
+    CREATED_SAMPLE_STORAGE_CLASS=1
     return 0
   fi
   local mark mrc=0

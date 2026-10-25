@@ -133,9 +133,10 @@ here:
 - **Your cluster's default class, when it fits.** "Fits" means `provisioner:
   ebs.csi.eks.amazonaws.com`, `type: gp3` (or unset, which is gp3), `encrypted: "true"` and
   `reclaimPolicy: Delete`. When exactly one default class fits, setup uses it and creates
-  nothing. The reclaim policy is in the list because the clean up deletes the
-  `PersistentVolume` and reports the EBS volume gone, which is only true for `Delete`; a
-  `Retain` class is refused with a message rather than leaving a volume billing.
+  nothing. The reclaim policy is in the list because the clean up deletes the claim, waits
+  for its `PersistentVolume` to be deleted and reports the EBS volume gone, which is only
+  true for `Delete`; a `Retain` class is refused with a message rather than leaving a volume
+  billing.
 - **Otherwise, the sample's own class.** [`deploy/storage-class.yaml`](deploy/storage-class.yaml)
   is a non-default class named `ide-gp3`, marked as the sample's. Setup creates it with
   `kubectl create` only when it is absent, and the clean up removes it.
@@ -155,9 +156,15 @@ hashed?"). [`scripts/new-password.sh`](scripts/new-password.sh) writes a random 
 `tmp/ide/password` under this repository, with mode 600, and pipes it on standard input to
 code-server's own hasher; only the hash goes in `tmp/ide/hashed-password`. The repository's
 `tmp/` is git-ignored, so neither file can be committed by accident, and the plaintext is
-never passed on a command line. Both files are written through `mktemp` and moved into
-place, so they are never world-readable and a run that stops part way leaves the password you
-already had untouched: the editor on the cluster still accepts it. The script creates
+never passed on a command line. Both files are written through `mktemp`, and neither is
+moved into place until the password and its hash are both in hand, so they are never
+world-readable and they never fall out of step: a run that fails at the hashing leaves the
+password you already had, and its hash, exactly as they were. That matters because the
+editor already on the cluster still accepts the old password, so a half-finished run that
+replaced only the password file would destroy the one thing that opens it. Running the
+script again keeps a password that is already there and keeps its hash with it, rather than
+re-hashing: argon2 salts every hash afresh, so a second hash of the same password is a
+different string, and the cluster would be holding the first one. The script creates
 `tmp/ide` with mode 700 when it is absent, and leaves the mode alone when it is not, so if
 you point `LOCAL_DIR` at a directory of your own, its mode stays yours. Use
 `./scripts/new-password.sh --stdin` to supply a password of your own instead.
@@ -880,13 +887,22 @@ by its exact name.
   it, as [pause and resume](../pause-resume/README.md) does.
 - **`volumeClaimTemplates` is immutable after the `Sandbox` is created.** Changing the size,
   class or access mode means deleting and recreating the `Sandbox`, which deletes the
-  workspace. `setup.sh` detects a mismatch with an existing `Sandbox` and tells you to run
-  the clean up and set up again, rather than letting the apply fail with a message that does
-  not mention the workspace it is about to cost.
-- **The workspace claim is `ReadWriteOncePod`.** Only one pod may mount the workspace at a
-  time. Plain `ReadWriteOnce` promises only one node, so two pods on that node could mount
-  the same workspace together, which a single-developer workspace must not allow. The
-  single-attach volume is also why the pod template sets
+  workspace. `setup.sh` reads all three fields off an existing `Sandbox`, says which ones
+  differ from what this run would apply, and tells you to run the clean up and set up again,
+  rather than letting the apply fail with a message that does not mention the workspace it
+  is about to cost. The class is the one that changes by itself: a fitting default class
+  appearing on the cluster, or a different `STORAGE_CLASS` in `.env`, is enough. Growing the volume in place is not a way
+  round it either: expanding an EBS volume while the pod is running is not supported for a
+  sandboxed pod, which sees the original capacity until its sandbox attaches the volume
+  again (Amazon EKS User Guide, *Isolated and confidential pods limitations*).
+- **The workspace claim is `ReadWriteOncePod`, and for a sandbox that is not a preference.**
+  An EBS volume reaches a sandboxed pod as a raw block device attached to its sandbox, and a
+  block device can be attached to only one sandbox at a time; mounting it from two would
+  corrupt the filesystem. Plain `ReadWriteOnce` would not prevent that, because it grants
+  access per node rather than per pod, so two pods on one node could be scheduled against
+  the same volume. `ReadWriteOncePod` is the access mode to use for EBS with a sandbox, and
+  it makes the single-pod requirement explicit (Amazon EKS User Guide, *Isolated and
+  confidential pods limitations*). The single-attach volume is also why the pod template sets
   `karpenter.sh/do-not-disrupt: "true"`: the node is not consolidated with the volume still
   attached, which could stall the detach.
 - **Ready means serving, because of the `readinessProbe`.** Without one, a `Sandbox` reports
