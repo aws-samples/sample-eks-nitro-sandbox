@@ -295,6 +295,20 @@ people's demos use at the same time.
   keep the run's name or say on the page, beside the block, that you changed it; a note in
   the pull request is not enough. Why: readers compare their own output with the page, and
   one page showed a line that none of its runs had printed.
+- **One exception, for a reader-installed shared prerequisite.** Where a page has the reader
+  install a shared prerequisite as a step, that step's own blocks may come from a separate
+  real run: the install's output, and the setup script's refusal when the prerequisite is
+  absent. Nothing else. The walkthrough run cannot produce either of them, because
+  [Shared accounts, clusters and machines](#shared-accounts-clusters-and-machines) requires
+  it to reuse an install that is already there, and the refusal needs the prerequisite to be
+  missing. The conditions are the same as for any other block: it is output from a **real**
+  run, never written by hand, and **the page says beside the block that it comes from a
+  separate run** — in the page, not only in the pull request, as the EBS sample does with
+  "This block is from an earlier run of the same, unchanged ordinary pod". Everything else on
+  the page still comes from the one fresh walkthrough run, and the pull request's fresh-run
+  box is read with this exception. Why: the walkthrough is required to reuse a shared
+  install, so demanding its install output from that same run would force a sample either to
+  break the shared-install rule or to leave that box permanently unticked.
 - **Until that run, put `TODO: output from the fresh run` in each output block**, never
   output you wrote yourself. Why: written output reads like a real run, so neither you nor a
   reviewer can tell later which blocks were run.
