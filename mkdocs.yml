@@ -99,3 +99,5 @@ nav:
       - EBS volumes: storage/ebs/README.md
       - Shared EFS storage: storage/efs/README.md
       - Shared S3 Files storage: storage/s3-files/README.md
+  - CI/CD:
+      - Docker builds: ci-cd/docker-builds/README.md
