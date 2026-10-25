@@ -124,58 +124,96 @@ you do not have; the clone worked if git reports no error after it.
   package path. Why: the package is internal, and a link to a page that does not exist yet
   is broken.
 
-### The agent reviewer
+### The adversarial second reviewer
 
-A second review (see the `second-review` skill) runs through `scripts/second-review.sh`,
-on either of two backends, Codex or Claude. Run it from the repository root, with the
-brief, the snapshot of the commit and the output in the repository's `tmp/`:
+`AGENTS.md` requires a second review for any change to a check, a credential path or a
+security claim. **A collaborator's agent does that review with either Claude Code or
+Codex.** Both are sanctioned, you pick, and no approval is needed.
+
+**Adversarial** describes what the reviewer does, not how the brief is worded: it assumes
+the implementer's code is wrong and tries to break the claims it makes. It does not mean
+writing the brief as an attack exercise — a brief framed that way has been refused outright
+by a reviewer's safety filter. The `second-review` skill ships a brief template, written as
+a maintainer asking for a check of their own commit against stated invariants, that works
+unchanged on both backends.
+
+Three invariants make a second review worth having, and they are what to keep whichever
+reviewer you use:
+
+1. **It runs on a different model from the one that wrote the change.** Why: a model
+   reviewing its own work repeats its own reasoning.
+2. **It cannot write to the tree it reviews.** Why: a reviewer that edits the code is no
+   longer telling you what the code says.
+3. **The model that actually answered is recorded in the pull request.** Why: an alias such
+   as `opus`, or a Bedrock prompt router, can resolve to the very model you were avoiding,
+   so the name you asked for is not evidence.
+
+#### Running it
+
+`scripts/second-review.sh` runs either backend and holds all three invariants. Run it from
+the repository root, with the brief, the snapshot of the commit and the output under `tmp/`:
 
 ```bash
-./scripts/second-review.sh --backend codex --model openai.gpt-5.6-sol \
+./scripts/second-review.sh --backend codex  --model openai.gpt-5.6-sol \
   --implementer-model <the model that wrote the change> \
   --brief tmp/review/brief.md --tree tmp/review/tree --out tmp/review
+
+./scripts/second-review.sh --backend claude --model opus \
+  --implementer-model <the model that wrote the change> ...
 ```
 
-- **The reviewer runs on a different model from the one that wrote the change.** That is
-  the whole point of a second review, so both models are arguments, the script refuses the
-  run when they are the same, and it refuses its own result when the model that answered
-  turns out to be the implementer's after all. Give the implementer's resolved model, not
-  an alias or a prompt router name. Why: a model reviewing its own work repeats its own
-  reasoning, and an alias such as `opus`, or a Bedrock prompt router, can resolve to the
-  very model you were avoiding.
-- **Name the command, not the installation.** `SECOND_REVIEW_CODEX_CMD` and
-  `SECOND_REVIEW_CLAUDE_CMD` say which command to run (default `codex` and `claude`), and
-  `SECOND_REVIEW_CODEX_PROVIDER` and `SECOND_REVIEW_CODEX_EFFORT` pass Codex a provider and
-  a reasoning effort. Why: a collaborator on a laptop authenticates their own backend, and
-  a shared workstation points these at a build that decides which account the review bills,
-  without either of them editing the script.
-- **The reviewer cannot change what it reviews, and the script checks that rather than
-  claiming it.** It fingerprints the tree before and after the run and fails if a single
-  file was added, removed or edited, and it fails when the backend reports a mode that
-  could write. Why: `--sandbox read-only` on its own does not stop Codex writing — it
-  leaves the approval policy at `on-request`, and a host whose config answers that ask by
-  itself lets the write through. A run on 2026-10-25 created a file in the tree and
-  appended to a page, and reported both as successful; the script now passes
-  `-c approval_policy="never"` as well, and the same two writes come back refused.
-- **Review the snapshot, not your working tree.** Pass `--tree tmp/review/tree`, the plain
-  extract of the commit the `second-review` skill makes.
-- **Keep the brief, the output and the trace under `tmp/`.** The script writes
-  `review.out` (the review), `review-record.txt` (which model answered, for the pull
-  request) and `review.err` (the backend's trace). A trace can hold credential details:
-  read it with `tail` or a targeted search, and never paste it into a pull request, an
-  issue or Slack.
-- **It takes 10 to 25 minutes**, and `review.out` is written only at the end. To run it in
-  the background, redirect it to a log under `tmp/` and check it is still going with
-  `pgrep -f '[s]econd-review.sh'`. Why the brackets: without them the pattern can also
-  match the shell that runs `pgrep`, so a review that has exited still looks alive.
-- **If the reviewer cannot start, report the exact error and stop.** The script says which
-  check refused the run, tagged (`E_SAME_MODEL`, `E_CMD_MISSING`, `E_RUN_FAILED`). Why: an
-  error at start-up is a fact the maintainers need, not something to configure around.
+- **Give the implementer's resolved model**, not an alias or a router name. The script
+  refuses the run when the two models match, and refuses its own result when the model that
+  answered turns out to be the implementer's anyway.
+- **Review the snapshot, not your working tree.** `--tree tmp/review/tree` is the plain
+  extract of the commit that the `second-review` skill makes.
+- **`--out` must be under this repository's gitignored `tmp/`**, and the script refuses
+  anything else. Why: it writes the backend's trace there, and a trace can hold credential
+  details, so it must never land in a tracked folder.
+- **Never paste a trace** (`review.err`) into a pull request, an issue or Slack. Read it
+  with `tail` or a targeted search.
+- **`review-record.txt` is what goes in the pull request**: the backend, the model that
+  answered, the implementer's model, and what the reviewer was confined to.
+- **It takes 10 to 25 minutes**, and `review.out` is written at the end. To run it in the
+  background, redirect to a log under `tmp/` and check it with
+  `pgrep -f '[s]econd-review.sh'`. Why the brackets: without them the pattern also matches
+  the shell running `pgrep`, so a review that has exited still looks alive.
+- **If the reviewer cannot start, report the exact error and stop.** The script names the
+  check that refused, tagged (`E_SAME_MODEL`, `E_CMD_MISSING`, `E_RUN_FAILED`,
+  `E_TREE_CHANGED`). An error at start-up is a fact the maintainers need.
 
-#### The two backends on the maintainers' workstation
+Read-only is not one flag. Codex's `--sandbox read-only` on its own does **not** stop it
+writing: it leaves the approval policy at `on-request`, and a host whose configuration
+answers that ask by itself lets the write through. A run on 2026-10-25 with exactly that
+flag created a file in the review tree and appended to a page, and reported both as
+successful. The script passes `-c approval_policy="never"` as well, and it does not trust
+the flags either: it fingerprints the tree before and after and fails if any path's
+content, mode or symlink target changed. That check is what caught the write.
 
-- **Codex** needs the toolbox build and its Bedrock provider named, because the `codex` the
-  shared `PATH` finds first can be an older standalone build:
+#### Bringing your own reviewer
+
+Another agent is fine — the two backends are what this repository ships support for, not a
+closed list. If you wire up your own, show in the pull request that it met the same three
+invariants:
+
+- which model answered, and that it differs from the model that wrote the change — from the
+  tool's own report of the model, not the name you asked for;
+- that it could not write to the tree: name the read-only mode you used, and show the tree
+  unchanged after the run (`scripts/second-review.sh` writes `tree-before.sha256` and
+  `tree-after.sha256`, and you can compare the same way);
+- that the brief, the output and the trace stayed under `tmp/`.
+
+Verify this with a run that tries to write, and show it refused, rather than asserting it
+from the flags. Why: two of the three reviewers tried here would have passed a
+flags-only check while still being able to write.
+
+#### Host-specific options, where you are on that machine
+
+These are local conveniences, not the required path. Nothing here is needed to run a
+review, and a collaborator on a laptop has none of it.
+
+- **The maintainers' workstation Codex.** Name the toolbox build and its Bedrock provider,
+  because the `codex` the shared `PATH` finds first can be an older standalone build:
 
   ```bash
   SECOND_REVIEW_CODEX_CMD=~/.toolbox/bin/codex SECOND_REVIEW_CODEX_PROVIDER=amazon-bedrock \
@@ -183,29 +221,30 @@ brief, the snapshot of the commit and the output in the repository's `tmp/`:
   ```
 
   Its Bedrock calls bill the toolbox-managed builder account, because the host
-  `~/.codex/config.toml` pins the provider with a `credential_export` that runs the toolbox
-  Codex credential helper. Nothing else needs setting, and nothing outside the repository
-  needs changing.
-- **The `~/.kiro/crew/codex/codex-builder` wrapper is no longer used, and must not be put
-  back in front of this script.** It appends `-c model_providers.amazon-bedrock.aws.profile=...`
-  unconditionally, and Codex 0.164 refuses to load a provider that has both an
-  `aws.profile` and the host config's `aws.credential_export`
-  ("provider aws.credential_export cannot be combined with aws.profile"), so every review
-  died at config load. No `-c` option avoids it: Codex merges `-c` into the config rather
-  than replacing a table, so `credential_export` cannot be cleared from the command line.
-  Its billing guarantee is not lost by dropping it — both its profile and the host config's
-  `credential_export` resolve to the same builder-account role. Why this is written down:
-  the wrapper looks like the safer path, and re-adding it breaks every review again.
-- **Codex's MCP servers reach the reviewer; Claude's do not.** `--backend claude` runs with
-  `--restricted` and `--strict-mcp-config`, so the reviewer has only `Read`, `Grep` and
-  `Glob` and no MCP server. Codex 0.164 cannot clear `mcp_servers` from the command line,
-  so a review on `--backend codex` can still reach whatever MCP servers the host config
-  defines, some of which write to other systems. The tree is still safe, which is what the
-  script checks. Why: prefer `--backend claude` when the reviewer only needs to read.
-
-Do not change global tool configuration (`~/.codex/config.toml`, a wrapper on the shared
-`PATH`, a shell profile) to make a review start. Why: the machine is shared, and a
-collaborator on a laptop has none of those files.
+  `~/.codex/config.toml` pins the provider with a `credential_export` running the toolbox
+  Codex credential helper.
+- **The review must not be billed to an account whose credentials merely happen to be
+  present.** The script removes the AWS credentials from the environment before running the
+  Codex backend, so a machine holding credentials for some other account cannot end up
+  paying for a review; the backend is left with whatever its own configuration pins. Set
+  `SECOND_REVIEW_KEEP_AWS_ENV=1` only if your Codex authenticates to Bedrock with exactly
+  those credentials. Why: this workstation holds live credentials for an unrelated account,
+  and the removal is what keeps them out of the reviewer.
+- **`~/.kiro/crew/codex/codex-builder`** is the older wrapper that did that removal outside
+  the script. It no longer starts: it appends
+  `-c model_providers.amazon-bedrock.aws.profile=...` unconditionally, and Codex 0.164
+  refuses a provider carrying both that and the host config's `aws.credential_export`
+  ("provider aws.credential_export cannot be combined with aws.profile"). No `-c` option
+  avoids it, because Codex merges `-c` into the config rather than replacing a table. Its
+  billing guarantee is not lost: its profile and the host config's `credential_export`
+  resolve to the same builder-account role. Use it only if you have fixed it, by pointing
+  `SECOND_REVIEW_CODEX_CMD` at it.
+- **MCP servers reach a Codex reviewer, but not a Claude one.** `--backend claude` runs with
+  `--restricted` and `--strict-mcp-config`, leaving the reviewer only `Read`, `Grep` and
+  `Glob` and no MCP server. Codex 0.164 cannot clear `mcp_servers` from the command line, so
+  a Codex review on a configured workstation can still reach MCP tools that write to other
+  systems. The tree is still checked; writes elsewhere are not. Prefer `--backend claude`
+  when the reviewer only needs to read.
 
 ### Other tools on the maintainers' workstation
 
@@ -383,7 +422,7 @@ people's demos use at the same time.
   that wrote the change, for any change to a check, a credential path or a security
   claim.** The `second-review` skill says how to brief one, run it with
   `scripts/second-review.sh` and record the result, and
-  [The agent reviewer](#the-agent-reviewer) covers the backends. Why: those fail silently;
+  [The adversarial second reviewer](#the-adversarial-second-reviewer) covers the backends. Why: those fail silently;
   the sample still runs and the page still reads well.
 - **The pull request's checklist is the issue's acceptance criteria plus this
   repository's quality bar.** Copy `.github/pull_request_template.md` to

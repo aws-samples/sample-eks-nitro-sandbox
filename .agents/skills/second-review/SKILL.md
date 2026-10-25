@@ -1,6 +1,6 @@
 ---
 name: second-review
-description: Get the second review AGENTS.md requires for any change to a check, a credential path or a security claim in this repository - write a scoped brief, run a reviewer that cannot edit the tree, label each finding real or false positive, fix the real ones, and record the review in the pull request. Use before a pull request that touches a guard, an IAM policy, a network policy, a clean-up script or a claim on a page leaves draft, or when asked for a review of your own commit.
+description: Get the adversarial second review AGENTS.md requires for any change to a check, a credential path or a security claim in this repository - write a scoped brief, run Claude Code or Codex on a different model from the one that wrote the change and with no write access to the tree, label each finding real or false positive, fix the real ones, and record the reviewing model in the pull request. Use before a pull request that touches a guard, an IAM policy, a network policy, a clean-up script or a claim on a page leaves draft, or when asked for a review of your own commit.
 ---
 
 # Get a second review
@@ -11,6 +11,16 @@ runs and the page still reads well. In this repository's samples, agent reviews 
 `||` that should have been `&&` in a check, an adopted IAM role that could keep extra
 permissions, and clean-up scripts that reported "gone" for things they never checked. Each
 time, the author had already read the code.
+
+**Either Claude Code or Codex does the review.** Both are sanctioned, you pick, no approval
+needed, and `scripts/second-review.sh` runs either one. Another agent is fine too, as long
+as you show it met the same invariants
+([Bringing your own reviewer](../../../AGENTS.md#bringing-your-own-reviewer)).
+
+The review is **adversarial**: the reviewer assumes your code is wrong and tries to break
+the claims it makes. That is a description of its job, not of how you word the brief — see
+[Write the brief](#write-the-brief), where a brief worded as an attack exercise is the
+mistake to avoid.
 
 The reviewer is a person or an agent with none of your session's context. This skill covers
 the parts that decide whether the review finds anything: what you ask, how it runs, and what
@@ -33,15 +43,19 @@ you do with the answer.
 
 2. **Write the brief**: copy `assets/review-brief.md` to `tmp/review/brief.md` and fill it
    in, following [Write the brief](#write-the-brief).
-3. **Run the reviewer** on a model that is not the one that wrote the change:
+3. **Run the reviewer** on a model that is not the one that wrote the change, with either
+   backend:
 
    ```bash
-   ./scripts/second-review.sh --backend codex --model openai.gpt-5.6-sol \
+   ./scripts/second-review.sh --backend codex  --model openai.gpt-5.6-sol \
      --implementer-model <the model that wrote the change> \
      --brief tmp/review/brief.md --tree tmp/review/tree --out tmp/review
+
+   ./scripts/second-review.sh --backend claude --model opus \
+     --implementer-model <the model that wrote the change> ...
    ```
 
-   See [Run it](#run-it) for the two backends and what the script refuses.
+   See [Run it](#run-it) for what the script refuses and why.
 4. **Triage** each finding against the files, following [Use the result](#use-the-result).
 5. **Record** the review in the pull request's second-reviewer box, from
    `tmp/review/review-record.txt`, which names the model that actually answered.
@@ -51,7 +65,10 @@ you do with the answer.
 - **Say it is your code, and what it must do.** Write it as the maintainer asking for a
   check of your own commit against stated invariants, naming the files. Why: a brief
   framed as hunting for attacks has been refused outright by a reviewer's safety filter,
-  after burning its whole budget.
+  after burning its whole budget. This is how "adversarial" is expressed: the brief tells
+  the reviewer to assume your code is wrong and to try to break the claims it makes, which
+  is the next three bullets, and `assets/review-brief.md` is worded that way already. It
+  needs no change between the Codex and Claude backends; both have taken it as written.
 - **State the requirements from the spec, not from memory.** Quote the issue's criteria
   where they matter. Why: one brief said "must not bake the signature" when the spec's
   optional variant exists to do exactly that, and the reviewer flagged it as a defect twice.
@@ -74,10 +91,11 @@ you do with the answer.
 
 ## Run it
 
-`scripts/second-review.sh` runs the reviewer. It takes `--backend codex` or
+`scripts/second-review.sh` runs either backend. It takes `--backend codex` or
 `--backend claude`, `--model`, and `--implementer-model`; `AGENTS.md`,
-[The agent reviewer](../../../AGENTS.md#the-agent-reviewer), covers the backends, the
-environment variables that name each command, and what the maintainers' workstation needs.
+[The adversarial second reviewer](../../../AGENTS.md#the-adversarial-second-reviewer),
+covers the three invariants, the environment variables that name each backend's command,
+and the host-specific options on the maintainers' workstation.
 
 - **A different model from the one that wrote the change.** That is the one thing a second
   review has to get right, so the script refuses to start when the two models match, and
@@ -93,18 +111,23 @@ environment variables that name each command, and what the maintainers' workstat
   on its own is not enough — Codex's `--sandbox read-only` still asked to write and a host
   that answers the ask let it through, which is why the script also pins the approval
   policy and checks what the backend reports.
-- **Keep the brief, the output and any trace in `tmp/review/`.** A trace (`review.err`)
-  can hold credential details: read it with `tail` or a targeted search, and never paste
-  it into a pull request, an issue or Slack.
+- **Keep the brief, the output and any trace in `tmp/review/`.** The script refuses an
+  `--out` outside the repository's gitignored `tmp/`. A trace (`review.err`) can hold
+  credential details: read it with `tail` or a targeted search, and never paste it into a
+  pull request, an issue or Slack.
 - **An agent of your own tool works too**, as long as it starts with no context from your
   session and runs on a different model. Name the model explicitly when you start it: a
-  default such as "Auto" may not be available, and the start then fails.
+  default such as "Auto" may not be available, and the start then fails. Show in the pull
+  request how it met the three invariants, as
+  [Bringing your own reviewer](../../../AGENTS.md#bringing-your-own-reviewer) says.
 - **If the reviewer cannot start, report the exact error and stop.** The script names the
-  check that refused, tagged (`E_SAME_MODEL`, `E_CMD_MISSING`, `E_RUN_FAILED`). Do not
-  change a backend's global configuration or credentials to make it run: those decide which
-  account a review bills, the machine may be shared, and a collaborator on a laptop has
-  none of those files. Point the script at a different command instead
-  (`SECOND_REVIEW_CODEX_CMD`, `SECOND_REVIEW_CLAUDE_CMD`).
+  check that refused, tagged (`E_SAME_MODEL`, `E_CMD_MISSING`, `E_RUN_FAILED`,
+  `E_BAD_RECORD`). Prefer pointing the script at a different command
+  (`SECOND_REVIEW_CODEX_CMD`, `SECOND_REVIEW_CLAUDE_CMD`) over editing a backend's global
+  configuration: the machine may be shared, that configuration can decide which account a
+  review bills, and a collaborator on a laptop has none of those files.
+- **Try the other backend before giving up on one.** They are equally sanctioned, so a
+  backend that will not authenticate is a reason to switch, not a blocker to report.
 
 ## Use the result
 
