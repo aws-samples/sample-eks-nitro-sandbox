@@ -103,3 +103,6 @@ nav:
   - CI/CD:
       - Docker builds: ci-cd/docker-builds/README.md
       - GitHub Actions runners: ci-cd/github-actions/README.md
+  - Confidential:
+      - Confidential sandboxes: confidential/README.md
+      - Encrypted image: confidential/encrypted-image/README.md

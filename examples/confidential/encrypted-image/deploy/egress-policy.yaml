@@ -1,0 +1,45 @@
+# Egress for the sandboxed pod: DNS, the EKS Pod Identity credential address and the
+# regional AWS KMS endpoint, and nothing else. All ingress is denied.
+#
+# An EKS Auto Mode ApplicationNetworkPolicy is a NetworkPolicy that also accepts
+# hostnames (domainNames) in an egress rule.
+# https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html
+#
+# setup.sh fills in two placeholders at apply time:
+#   <COREDNS_IP>  your cluster's CoreDNS Service address, read with
+#                 kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'
+#   <AWS_REGION>  the Region of the KMS key the image layers are wrapped with
+#
+# Why these three rules and no others. The node pulls the encrypted layer blobs and
+# transfers them into the sandbox, so the guest itself never talks to Amazon ECR and
+# needs no rule for it. What the guest does need is one kms:Decrypt call to unwrap the
+# layer key, which needs the KMS endpoint, a name to resolve it, and the pod's AWS
+# credentials. The credential endpoint is served inside the guest at 169.254.170.23, but
+# the sandbox passes those requests on to the Pod Identity Agent on the node, and this
+# policy applies to them: without the rule they time out.
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ApplicationNetworkPolicy
+metadata:
+  name: encrypted-image-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: encrypted-image
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - to:
+        - ipBlock: { cidr: <COREDNS_IP>/32 }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - ipBlock: { cidr: 169.254.170.23/32 }   # EKS Pod Identity credentials
+      ports:
+        - { protocol: TCP, port: 80 }
+    - to:
+        - domainNames:
+            - kms.<AWS_REGION>.amazonaws.com     # unwrap the layer key
+      ports:
+        - { protocol: TCP, port: 443 }

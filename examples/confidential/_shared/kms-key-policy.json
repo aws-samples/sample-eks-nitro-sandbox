@@ -1,0 +1,112 @@
+{
+  "_comment": [
+    "The attestation gate the Confidential samples put on their KMS key. A sample's setup",
+    "script drops this _comment key (KMS rejects an unknown top-level key), fills in the",
+    "placeholders and calls kms:PutKeyPolicy with the result:",
+    "  <ACCOUNT_ID>      the account the key lives in",
+    "  <POD_ROLE_ARN>    the pod's dedicated EKS Pod Identity role, which carries no",
+    "                    identity policies of its own, so every permission it has on this",
+    "                    key is written here",
+    "  <EXPECTED_PCR17>  the measurement the policy generator predicted for the approved",
+    "                    pod's Cedar policy",
+    "",
+    "The shape is allow-on-match plus explicit-deny-otherwise. Three things make",
+    "attestation, rather than possession of the credentials, the boundary:",
+    "  1. KeyAdministration lists its actions instead of using kms:*, and leaves out",
+    "     kms:Decrypt and kms:ReEncryptFrom. ReEncryptFrom matters as much as Decrypt: it",
+    "     would let a key administrator re-wrap the layer key under a second, ungated key",
+    "     and then decrypt it there.",
+    "  2. AttestedDecryptOnly is the only allow for kms:Decrypt, and it is conditional.",
+    "  3. The two denies apply to every principal. A negated condition operator is also",
+    "     true when the key is absent from the request, so a Decrypt that carries no",
+    "     attestation document at all is caught by both of them.",
+    "",
+    "Sources, all public: the kms:RecipientAttestation condition keys in the AWS KMS",
+    "Developer Guide, 'AWS KMS condition keys for AWS Nitro Enclaves'; 'Cryptographic",
+    "attestation support in AWS KMS' in the AWS Nitro Enclaves User Guide; Decrypt and its",
+    "Recipient and CiphertextForRecipient parameters in the AWS KMS API Reference; the",
+    "default key policy and its 'Enable IAM policies' statement in the AWS KMS Developer",
+    "Guide, 'Default key policy'. Which measurement index holds the policy, and the",
+    "PCR8:ServiceName form rather than a raw PCR8 value, come from the Amazon EKS User",
+    "Guide, 'Cedar policies'."
+  ],
+  "Version": "2012-10-17",
+  "Id": "confidential-sample-attestation-gate",
+  "Statement": [
+    {
+      "Sid": "KeyAdministration",
+      "Effect": "Allow",
+      "Principal": { "AWS": "arn:aws:iam::<ACCOUNT_ID>:root" },
+      "Action": [
+        "kms:CancelKeyDeletion",
+        "kms:CreateAlias",
+        "kms:DeleteAlias",
+        "kms:DescribeKey",
+        "kms:DisableKey",
+        "kms:EnableKey",
+        "kms:GetKeyPolicy",
+        "kms:GetKeyRotationStatus",
+        "kms:ListAliases",
+        "kms:ListGrants",
+        "kms:ListKeyPolicies",
+        "kms:ListResourceTags",
+        "kms:PutKeyPolicy",
+        "kms:ScheduleKeyDeletion",
+        "kms:TagResource",
+        "kms:UntagResource",
+        "kms:UpdateAlias"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "BuildTimeEncrypt",
+      "Effect": "Allow",
+      "Principal": { "AWS": "arn:aws:iam::<ACCOUNT_ID>:root" },
+      "Action": "kms:Encrypt",
+      "Resource": "*"
+    },
+    {
+      "Sid": "AttestedDecryptOnly",
+      "Effect": "Allow",
+      "Principal": { "AWS": "<POD_ROLE_ARN>" },
+      "Action": "kms:Decrypt",
+      "Resource": "*",
+      "Condition": {
+        "StringEqualsIgnoreCase": {
+          "kms:RecipientAttestation:PCR17": "<EXPECTED_PCR17>",
+          "kms:RecipientAttestation:PCR8:ServiceName": "eks.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "DenyUnlessThePolicyMeasurementMatches",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": [
+        "kms:Decrypt",
+        "kms:ReEncryptFrom"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEqualsIgnoreCase": {
+          "kms:RecipientAttestation:PCR17": "<EXPECTED_PCR17>"
+        }
+      }
+    },
+    {
+      "Sid": "DenyUnlessTheAttestationComesFromAnEKSSandbox",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": [
+        "kms:Decrypt",
+        "kms:ReEncryptFrom"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEqualsIgnoreCase": {
+          "kms:RecipientAttestation:PCR8:ServiceName": "eks.amazonaws.com"
+        }
+      }
+    }
+  ]
+}
