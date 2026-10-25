@@ -385,8 +385,11 @@ print("OK")
     # claude-cwd link pointing at the tree would have put the helper straight back inside
     # it, and widened what the file tools could reach. Checked that mkdir -p behaves that
     # way and that cd follows the link.
-    claude_cwd=$(mktemp -d "$OUT_ABS/claude-cwd.XXXXXX") || refuse E_NO_TOOL \
-      "could not make a working directory for the reviewer under $OUT_ABS."
+    # A distinct tag, not E_NO_TOOL: that one is printed by cannot_check and means "a tool
+    # this script needs is missing", which exits 2 for "could not check". This is a refusal
+    # of the run, which exits 1, and a caller that treats 2 differently should not see one.
+    claude_cwd=$(mktemp -d "$OUT_ABS/claude-cwd.XXXXXX") || refuse E_NO_CWD \
+      "could not make a working directory for the reviewer under $OUT_ABS, so there is nowhere to run it that is outside the tree."
     claude_args+=(--add-dir "$TREE_ABS")
     ( cd "$claude_cwd" && ${timeout_cmd[@]+"${timeout_cmd[@]}"} "$resolved_cmd" "${claude_args[@]}" ) \
       < "$BRIEF_ABS" > "$OUT_ABS/review.json" 2> "$OUT_ABS/review.err" || run_status=$?
