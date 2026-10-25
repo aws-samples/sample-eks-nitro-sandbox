@@ -124,14 +124,40 @@ you do with the answer.
   twelve rounds of reading the code. The brief found it before the reviewer ran.
 - **Say what earlier reviews covered**, and ask it not to repeat them. Why: its attention
   is the scarce part.
-- **Run a round on each backend you make a claim about.** A reviewer can only see some
-  defects from inside its own runtime: a Codex reviewer cannot see which tools a Claude
-  reviewer holds, and vice versa. Fourteen Codex rounds on this tooling all read
-  "the reviewer holds only `Read`, `Grep` and `Glob`" and none could check it; the first
-  Claude round found it false, because it could ask itself. It also found that the brief
-  pointed the Claude reviewer at a file only Codex could read. So a change that documents
-  behaviour for two backends wants a round on each, not fourteen on one — **backend
-  diversity is not only about the model, it is about what the runtime can observe.**
+- **A single clean round from one backend is not enough for a claim about both.** This is
+  the rule; two rounds of this tooling are the evidence for it, and they argue it from
+  different directions:
+  - *Round 15* — both backends, run independently, found the **same** containment hole
+    (`SECOND_REVIEW_CONTEXT_DIR=/` slipping past a `"$dir"/*` pattern, which would have
+    handed the reviewer the whole filesystem). Convergence from two runtimes is a stronger
+    signal than either alone.
+  - *Round 16* — they **disagreed**, and the one that found a defect was right. So neither
+    is a rubber stamp for the other.
+
+  The reason is not redundancy, it is **different axes of observation**. A Codex reviewer
+  cannot see which tools a Claude reviewer holds; fourteen Codex rounds here all read "the
+  reviewer holds only `Read`, `Grep` and `Glob`" and none could check it, while the first
+  Claude round asked itself and found it false. And a Claude reviewer reading the page as a
+  *user* found that `mktemp -d tmp/review.XXXXXX` fails in a fresh clone — `tmp/` is
+  gitignored, so absent — leaving the variable empty and turning the next line into
+  `mkdir -p /tree`: a new collaborator's first command trying to create a directory at the
+  filesystem root. That is not a reasoning failure a line-by-line read would surface. Ask
+  each reviewer the questions its runtime can actually answer.
+- **When a reviewer *clears* a concern with an argument, the argument is a finding too, and
+  wants checking like any other claim.** A plausible clearance is more dangerous than a
+  missed finding, because it gets adopted and then cited. One round here cleared a
+  fingerprint hole with reasoning — "they can't disagree misleadingly, because every path
+  that stops on the early one is a refusal" — which was wrong: the early fingerprint stopped
+  nothing, it only fed the refusal messages, and a backend that wrote to the tree and then
+  put it back was being recorded as clean. Had the other backend not disagreed, the pull
+  request would have carried a written argument for why a real hole was fine. **Read a
+  clearance as closely as a finding.**
+- **When a reviewer names one instance of a class, check whether the class is bigger before
+  fixing the instance.** Twice here the reported case was the smaller one: a trailing-slash
+  pattern was named for one containment check and turned out to affect three, and a
+  symlink-following write was reported for the record file when in fact both `>` and `tee`
+  follow links, so *every* name written under the output directory was a vector. Fixing only
+  what was reported would have left most of each hole open.
 - **Vary what you scope a later round to.** Repeating a round against the same classes
   mostly re-checks the last fix. If several rounds have come back with only small or
   theoretical findings, that may mean the code is converging, or it may mean every brief has
