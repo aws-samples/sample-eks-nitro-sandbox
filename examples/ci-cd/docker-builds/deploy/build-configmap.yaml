@@ -1,0 +1,117 @@
+# The build the Docker-in-Docker Job runs, unattended: write a small multi-stage build
+# context, build it, run the result, report what the sandbox looks like from inside, and,
+# when ECR_REGISTRY is set, push the image.
+#
+# scripts/setup.sh renders <NAMESPACE>.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: docker-build-script
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: docker-builds
+data:
+  build.sh: |
+    #!/bin/sh
+    # Everything below happens inside this pod's sandbox: the privileged daemon, every base
+    # image layer it unpacks, and the container it runs.
+    set -eu
+
+    # Leave no credential behind on any exit path. When the push is enabled the init container
+    # has already written /ecr/token by the time this script starts, so the trap goes here and
+    # not in the push branch below: under `set -eu` a failure at the daemon wait, at
+    # `docker build` or at either `docker run` would otherwise leave the token in the failed
+    # pod's emptyDir, and a failed Job's pod stays until the next run or the clean up. The
+    # token is good for hours. With no push there is no token and no registry, so it is a
+    # no-op.
+    # Single-quoted, so $ECR_REGISTRY is read when the trap fires, not now.
+    trap 'rm -f /ecr/token
+          if [ -n "${ECR_REGISTRY:-}" ]; then docker logout "$ECR_REGISTRY" >/dev/null 2>&1 || true; fi' EXIT
+
+    IMAGE="${IMAGE:-hello-nitro:v1}"
+
+    echo ">>> waiting for the Docker daemon on its local socket"
+    i=0
+    until docker info >/dev/null 2>&1; do
+      i=$((i + 1))
+      [ "$i" -lt 150 ] || { echo ">>> ERROR: the daemon did not answer within 300s"; exit 1; }
+      sleep 2
+    done
+    docker info --format '>>> daemon {{.ServerVersion}}, storage driver {{.Driver}}, {{.NCPU}} CPU'
+
+    echo ">>> writing the build context"
+    mkdir -p /workspace && cd /workspace
+    # A quoted heredoc: nothing in it is expanded, so the Go format verbs survive.
+    cat > main.go <<'GO'
+    package main
+
+    import (
+    	"fmt"
+    	"os"
+    	"runtime"
+    )
+
+    func main() {
+    	host, _ := os.Hostname()
+    	fmt.Printf("hello from a docker build inside a Nitro sandbox (%s/%s, container %s)\n",
+    		runtime.GOOS, runtime.GOARCH, host)
+    }
+    GO
+
+    # A module with no requirements: the compile stage needs no module host, so the egress
+    # policy allows only DNS and the image registry.
+    cat > go.mod <<'MOD'
+    module hello-nitro
+
+    go 1.27
+    MOD
+
+    cat > Dockerfile <<'DF'
+    # Stage 1: compile a small Go program, a real build step that caches.
+    FROM public.ecr.aws/docker/library/golang:1.27.2-alpine3.24 AS build
+    WORKDIR /src
+    COPY go.mod main.go ./
+    RUN CGO_ENABLED=0 go build -o /hello main.go
+    # Stage 2: ship the binary on a small base.
+    FROM public.ecr.aws/docker/library/alpine:3.24.3
+    COPY --from=build /hello /hello
+    ENTRYPOINT ["/hello"]
+    DF
+
+    echo ">>> docker build $IMAGE   (layers and build cache on the EBS volume at /var/lib/docker)"
+    t0=$(date +%s)
+    docker build -t "$IMAGE" .
+    echo ">>> build finished in $(( $(date +%s) - t0 ))s"
+
+    echo ">>> docker run $IMAGE   (the image this build produced, run in this sandbox)"
+    docker run --rm "$IMAGE"
+
+    echo ">>> what a nested container sees: the sandbox's own kernel and virtio disks"
+    docker run --rm public.ecr.aws/docker/library/busybox:1.37 \
+      sh -c 'uname -rv; echo "uptime: $(cut -d" " -f1 /proc/uptime)s"; echo "block devices:"; ls /sys/block'
+
+    if [ -n "${ECR_REGISTRY:-}" ]; then
+      echo ">>> pushing to $ECR_REGISTRY/${ECR_REPO}"
+      # The token file and the daemon's stored login are also removed by the trap set at the
+      # top of this script, which covers every earlier failure as well.
+      # The token reaches docker login on standard input, never on a command line, as the
+      # Amazon ECR documentation shows. The init container produced it with
+      # `aws ecr get-login-password` from the role this pod's ServiceAccount is associated
+      # with through EKS Pod Identity, so the pod holds no stored credential and the token
+      # is never printed.
+      docker login --username AWS --password-stdin "$ECR_REGISTRY" < /ecr/token
+      # The token is good for hours, and the completed pod stays until the next run or the
+      # clean up, so remove it as soon as the daemon has it.
+      rm -f /ecr/token
+      REMOTE="$ECR_REGISTRY/${ECR_REPO}:${IMAGE_TAG:-v1}"
+      docker tag "$IMAGE" "$REMOTE"
+      docker push "$REMOTE"
+      echo ">>> pushed $REMOTE"
+      # Leave no credential behind in the pod: the token file is already gone, and this takes
+      # the daemon's copy out of the Docker config too.
+      docker logout "$ECR_REGISTRY" >/dev/null
+    else
+      echo ">>> ECR_REGISTRY is unset: built and ran the image without a registry"
+    fi
+
+    echo ">>> DONE"

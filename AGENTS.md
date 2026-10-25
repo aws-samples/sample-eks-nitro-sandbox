@@ -223,6 +223,16 @@ people's demos use at the same time.
   Why: one sample's review rounds added a check for every object until its helper scripts
   ran to about 300 lines around two patches and a delete, and its setup wrote tags to the
   reader's account that the page never mentioned.
+- **A sample's helper scripts may run to about 500 lines, when every check earns its place.**
+  Length is not the test. A script that grew because each review round bolted on another
+  per-object check is the failure above whatever its length, and a script that is long because
+  each check answers a defect a review round actually found is fine up to roughly that mark.
+  Past it, cut the checks that defend cases nobody will meet, such as a hand-edited state
+  file, before the ones that defend cases that happen: a wrong account, a lookup that failed,
+  a resource that is not the sample's. Why: the 300 lines above is what one over-checking
+  sample happened to reach, not a ceiling, and reading it as one would mean deleting checks
+  that each answer a real defect. Set at 500 by the maintainers while reviewing pull request
+  #95, whose clean up is 340 lines after eight review rounds.
 - **Delete what you made for yourself by its exact name.** A helper pod (`kubectl debug
   node/...`, a probe pod) is removed with `kubectl delete pod <name> -n <namespace>`, never
   with a label selector. Why: a selector meant for one helper pod deleted another demo's
