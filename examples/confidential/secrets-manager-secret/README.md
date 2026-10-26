@@ -26,8 +26,8 @@ and the other Confidential samples share. Four samples lead into this one:
   Here the workload makes the call itself.
 - [hello sandbox](../../getting-started/hello-sandbox/README.md) introduces the readings that
   show a pod ran in a sandbox.
-- [coding agent](../../getting-started/coding-agent/README.md) introduces EKS Pod Identity
-  and an `ApplicationNetworkPolicy` with `domainNames`.
+- [coding agent](../../getting-started/coding-agent/README.md) introduces EKS Pod Identity,
+  which is how this pod gets its AWS credentials.
 
 The commands below use files from this repository, so clone it if you have not already:
 
@@ -904,10 +904,11 @@ that service's own not-found exception, which would otherwise be reported as "al
 while the resource is still there in the Region the run used. The run files under the
 repository's `tmp/` are removed only when there is nothing to come back for.
 
-Two things it does not do. The KMS key is scheduled, not destroyed: AWS enforces a waiting
-period of at least 7 days and there is no way to remove a key sooner. And it leaves network
-policy enforcement on, because that is a cluster-wide setting other workloads may depend on;
-remove it yourself if nothing else needs it.
+One thing it does not do. The KMS key is scheduled, not destroyed: AWS enforces a waiting
+period of at least 7 days and there is no way to remove a key sooner. Its alias is deleted at
+once, so a later run with the same `KMS_ALIAS` makes a new key rather than finding this one.
+Nothing else is left behind, and the sample changes no cluster-wide setting, so there is
+nothing to put back.
 
 To keep the AWS resources for another run:
 
