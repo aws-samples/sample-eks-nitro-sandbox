@@ -875,23 +875,45 @@ Back to one warm pod waiting, about 40 seconds after the release.
   and warm-pool pods have generated names. Keep only the brain and the hands in this
   namespace. The sandbox tool's refusal to take a pod name is an application-level control on
   top, not a second enforcement point.
-- **A warm pod can fail to start and not recover by itself.** Once, on one of the runs behind
-  this page, a pool replacement went into `CrashLoopBackOff` with a `StartError` from the
-  sandbox runtime (`mount_host_image: gave up after 10s: no single guest disk reports serial
-  ... yet`), and the kubelet's restarts did not clear it, so the pool sat with no ready
-  replica while the pod retried. Deleting that one `Sandbox` **by name** let the pool create
-  another, which started normally on the same node:
+- **A warm pod can fail to start, and the kubelet's restarts will not clear it.** A pool
+  replacement goes into `CrashLoopBackOff` with a `StartError` from the sandbox runtime
+  (`mount_host_image: gave up after 10s: no single guest disk reports serial ... yet`) and
+  never starts, so the pool is short a ready replica while the pod retries. Restarting does
+  not help, because the kubelet restarts the *container* and not the sandbox: every retry
+  re-enters the same guest, and that guest has stopped seeing newly attached disks at all. On
+  the occurrence that was traced through the node's logs, ten disks were attached to it over
+  three minutes and it saw none of them, so waiting longer would not have rescued it either.
+
+  **The pool does repair itself, after about five and a half minutes.** The agent-sandbox warm
+  pool controller sweeps a sandbox left stuck like this and the pool boots a healthy
+  replacement a few seconds later. So the cost is a pool below its desired replica count for
+  roughly five and a half minutes, not a pool that stays broken until somebody notices. With
+  `replicas: 1`, which is what this sample runs, that window has no warm capacity at all, so a
+  claim arriving inside it pays a cold start.
+
+  Deleting the stuck `Sandbox` **by name** is the fast fix and still worth knowing:
 
   ```bash
   kubectl -n $NAMESPACE delete sandbox <the-stuck-sandbox>
   ```
 
-  Never by label selector, which would take the pool's healthy pods with it. It happened once
-  and the Amazon EKS User Guide does not document it, so treat it as something to watch for
-  rather than a known limit; it is recorded with the full output in
-  [issue #111](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/111). The
-  practical consequence is worth taking either way: read `status.readyReplicas` on the pool,
-  not just that the pool exists, before you rely on a claim being served in about a second.
+  Never by label selector, which would take the pool's healthy pods with it.
+
+  Two limits on the above. The sweep belongs to the **warm pool** controller, so it is not a
+  general guarantee: a standalone `Sandbox`, or an ordinary pod using the runtime class, has no
+  such sweep and may stay stuck indefinitely. That was not tested. And on frequency, a run that
+  set out to measure it hit this on 2 of 41 replacements forced by a claim adopting a warm pod,
+  and on 0 of 40 forced by deleting a warm `Sandbox` by name — but those two runs were
+  sequential rather than interleaved and every pod landed on one node, so "a claim makes it
+  more likely" and "that node degraded over twenty minutes" fit the figures equally well. The
+  Amazon EKS User Guide does not document the failure, so treat it as something to watch for
+  rather than a known limit; it is recorded, with the full output and the measurements, in
+  [issue #111](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/111).
+
+  The practical consequence survives the automatic recovery: read `status.readyReplicas` on the
+  pool, not just that the pool exists, before you rely on a claim being served in about a
+  second. The pool heals without you, but not instantly, and for those few minutes it has less
+  warm capacity than you asked for.
 - **`claude -p` needs the project already trusted.** [`brain/claude.json`](brain/claude.json)
   marks `/workspace` trusted and the MCP server enabled. Without it a non-interactive run
   stops at the trust prompt, which leaves `settings.json` unread and the sandbox tool never
