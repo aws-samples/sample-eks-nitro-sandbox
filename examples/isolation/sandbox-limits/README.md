@@ -27,8 +27,74 @@ reach the limit while the identical ordinary pod sails past it. The ordinary pod
 so the result cannot be read any other way: same image, same target, same offered load, and the
 only pod that reaches the limit is the sandboxed one.
 
-The page covers the [DNS query-rate limit](#the-dns-query-rate-limit) first, then the
+The table below lists every per-sandbox limit, so a reader who meets one this sample does not
+walk through still has its annotation, its default and how to change it. The walkthroughs then
+cover the [DNS query-rate limit](#the-dns-query-rate-limit) first, then the
 [outbound connection limit](#the-outbound-connection-limit).
+
+## Every per-sandbox limit and its default
+
+Each limit below is set per pod with an annotation on the pod, or on the pod template for a
+pod a controller creates. Nine of the eleven are on by default; the two root filesystem
+limits ship as `disabled` and are unlimited already. The numbers are the Amazon EKS User
+Guide's: *Set up isolated and confidential pods*, section "Pod annotations" and "Throttling",
+lists each annotation and its default, and *Isolated and confidential pods limitations*
+covers the connection and DNS limits and what happens to a pod that sets one to `0`.
+
+Bandwidth values are in bits per second, not bytes per second, so `100M` means 100 Mbit/s.
+The rest are dimensionless: packets a second, I/O operations a second, connections. All of
+them are read once when the pod is created, so changing one on a running pod has no effect;
+delete the pod and recreate it.
+
+| Annotation | Default | How to turn it off |
+|---|---|---|
+| `sandbox.amazonaws.com/ingress-bandwidth` | `100M`, inbound network bandwidth (100 Mbit/s) | Set it to `"disabled"` |
+| `sandbox.amazonaws.com/egress-bandwidth` | `100M`, outbound network bandwidth (100 Mbit/s) | Set it to `"disabled"` |
+| `sandbox.amazonaws.com/ingress-packets-per-second` | `1500`, inbound packet rate | Set it to `"disabled"` |
+| `sandbox.amazonaws.com/egress-packets-per-second` | `1500`, outbound packet rate | Set it to `"disabled"` |
+| `sandbox.amazonaws.com/dns-packets-per-second` | `100`, DNS queries a second to the resolver, per address family. Values above `512` are clamped down to `512` | Set it to `"disabled"` |
+| `sandbox.amazonaws.com/overlay-disk-bandwidth` | `400M`, throughput of the overlay (ephemeral scratch) disk (400 Mbit/s, equivalent to 50 MiB/s) | Set it to `"disabled"` |
+| `sandbox.amazonaws.com/overlay-disk-iops` | `1500`, overlay disk I/O operations a second | Set it to `"disabled"` |
+| `sandbox.amazonaws.com/rootfs-disk-bandwidth` | `disabled`, root filesystem throughput | Already off: unlimited by default, because the root filesystem is read-only and needed for boot |
+| `sandbox.amazonaws.com/rootfs-disk-iops` | `disabled`, root filesystem I/O operations a second | Already off: unlimited by default |
+| `sandbox.amazonaws.com/log-bandwidth` | `2M`, container log streaming throughput (2 Mbit/s, equivalent to 256 KiB/s) | Set it to `"disabled"` |
+| `sandbox.amazonaws.com/conntrack-limit` | `4096`, connections the pod may hold in the node's connection-tracking table, per address family | **Cannot be turned off.** Both `"0"` and `"disabled"` are refused and the pod fails to start. It can only be raised, and a value is clamped into `64` to `65536` |
+
+!!! important "Check this table before you call it an application bug"
+    A workload that showed no problem as an ordinary pod and shows one as a sandboxed pod may
+    be meeting one of these defaults rather than a bug of its own: dropped or timed-out new
+    connections, intermittent DNS failures, network throughput that will not climb past about
+    100 Mbit/s, slow scratch-disk I/O, or container logs that arrive truncated or late. Every
+    default in the table except the two root filesystem limits is a finite value, and
+    `"disabled"` turns every one of them off for a pod except
+    `sandbox.amazonaws.com/conntrack-limit`, which cannot be turned off and can only be
+    raised within `64` to `65536`.
+
+    `"0"` is never the way to turn a limit off. Any value that works out to a rate of zero
+    (`0`, `00`, `0k`, `0.4`, or under 8 bits per second for a bandwidth annotation) fails the
+    pod, which stays in `Pending` or `ContainerCreating` with repeated `FailedCreatePodSandBox`
+    events instead of reaching `Failed`, because the kubelet retries sandbox creation
+    indefinitely. `kubectl describe pod <name>` and its events name the annotation that was
+    refused.
+
+Two more things the User Guide notes are easy to get wrong. Network bandwidth and packet rate
+are enforced by independent token buckets, so raising `egress-bandwidth` without also raising
+`egress-packets-per-second` leaves throughput capped near 100 Mbit/s: at the default 1500
+packets a second and the 9001-byte MTU EKS nodes typically use, 1500 x 9001 is about
+102 Mbit/s, which is what the bandwidth default already allows. And an unrecognised value,
+such as `100MB` or `100 M`, is logged and replaced with the built-in default, so a typo leaves
+the throttle where it was rather than failing the pod.
+
+`sandbox.amazonaws.com/network-isolated` is deliberately not in this table. It is a
+connectivity toggle rather than a throttle: it is off unless you set it to `"true"`, and when
+you do the sandbox boots with no network interface at all, rather than a capped one, so it has
+no default to raise and nothing to turn off. The
+[hello sandbox](../../getting-started/hello-sandbox/README.md) sample shows that mode.
+
+The two limits this sample walks through are the
+[DNS query rate](#the-dns-query-rate-limit) (`dns-packets-per-second`) and the
+[outbound connection count](#the-outbound-connection-limit) (`conntrack-limit`), each measured
+on your own cluster against an identical ordinary pod.
 
 ## The DNS query-rate limit
 
