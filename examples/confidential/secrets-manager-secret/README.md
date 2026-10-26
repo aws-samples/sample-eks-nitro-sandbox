@@ -74,8 +74,9 @@ attestation.
   reads all three pods' logs back and fails if the value is in any of them.
 
 *Figure 1: The secret's journey, from the setup machine to the sandbox that reads it back.
-What AWS Secrets Manager holds is a ciphertext envelope, and the value is in plaintext only
-on the setup machine and inside the guest. Who AWS KMS will release it to is Figure 2.*
+What AWS Secrets Manager holds is a ciphertext envelope, and the parent instance never sees
+the value: it starts on the setup machine, which is trusted with it, and is recovered inside
+the guest. Who AWS KMS will release it to is Figure 2.*
 
 ![A setup machine outside the cluster, labelled trusted with the value, holds a 64-byte token in plaintext. Two flows leave it. Step 1, kms:Encrypt, runs along the top of the AWS Cloud frame to AWS KMS on the far right; step 2, store the ciphertext, runs to AWS Secrets Manager, which holds the ciphertext envelope, in the upper left of the AWS Cloud frame. Inside the AWS Cloud frame an Amazon EKS cluster frame contains an EKS node frame labelled parent instance, which never sees the value. Inside the node is a Nitro sandbox pod frame with runtimeClassName confidential-sandbox, holding a Python application that decrypts in the guest and, to its left, the decrypted plaintext, which stays in the guest. Step 3, read the ciphertext envelope, runs from AWS Secrets Manager across and down into the Python application. The Python application then exchanges two flows with AWS KMS, outside the cluster to the right, whose label reads that it checks the attested PCR17 against the approved policy: step 4, an attested kms:Decrypt, and step 5, the value returned for this guest only. Step 6, validate by length and SHA-256, runs from the Python application back to the plaintext box inside the sandbox.](images/figure-1-secrets-manager-secret.png)
 

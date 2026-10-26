@@ -75,12 +75,13 @@ attestation.
   no AWS or KMS code in it. The guest's image runtime decrypts and unpacks the layers before
   the container's first instruction runs.
 
-*Figure 1: The image's journey, from the build machine to the container that runs it. Only
-ciphertext leaves the build machine, and the layers are decrypted inside the sandbox by the
-guest's own image runtime, which is why the workload image needs no decryption code. Who KMS
-will release that layer key to is Figure 2.*
+*Figure 1: The image's journey, from the build machine to the container that runs it. Every
+layer published to Amazon ECR is ciphertext, and the layer key that opens them travels wrapped
+by AWS KMS; the layers are decrypted inside the sandbox by the guest's own image runtime,
+which is why the workload image needs no decryption code. Who KMS will release that layer key
+to is Figure 2.*
 
-![A build machine outside the cluster holds a source image with plaintext layers and runs skopeo with the keyprovider, which encrypts every layer. Three flows leave the build machine: step 1 encrypt, from the source image to skopeo; step 2, kms:Encrypt wraps the layer key, running along the top of the AWS Cloud to AWS KMS on the far right; and step 3, push ciphertext, to Amazon ECR, which holds every layer as ciphertext. Inside the AWS Cloud, an Amazon EKS cluster frame contains an EKS node frame labelled parent instance, which sees only ciphertext, and step 4, pull ciphertext, runs from Amazon ECR down into that node. Inside the node is a Nitro sandbox pod frame with runtimeClassName confidential-sandbox, holding a guest image runtime that decrypts the layers and a main container that starts after decryption. The guest image runtime exchanges two flows with AWS KMS, outside the cluster to the right: step 5, an attested kms:Decrypt, and step 6, the key returned for the sandbox. Step 7, start the container, runs from the guest image runtime to the main container.](images/figure-1-encrypted-image.png)
+![A build machine outside the cluster holds a source image with plaintext layers and runs skopeo with the keyprovider, which encrypts every layer. Three flows leave the build machine: step 1 encrypt, from the source image to skopeo; step 2, kms:Encrypt wraps the layer key, running along the top of the AWS Cloud to AWS KMS on the far right, labelled the attestation gate; and step 3, push ciphertext, to Amazon ECR, which holds every layer as ciphertext. Inside the AWS Cloud, an Amazon EKS cluster frame contains an EKS node frame labelled parent instance, which sees only ciphertext, and step 4, pull ciphertext, runs from Amazon ECR down into that node. Inside the node is a Nitro sandbox pod frame with runtimeClassName confidential-sandbox, holding a guest image runtime that decrypts the layers and a main container that starts after decryption. The guest image runtime exchanges two flows with AWS KMS, outside the cluster to the right: step 5, an attested kms:Decrypt, and step 6, the key returned for the sandbox. Step 7, start the container, runs from the guest image runtime to the main container.](images/figure-1-encrypted-image.png)
 
 ## Versions
 
