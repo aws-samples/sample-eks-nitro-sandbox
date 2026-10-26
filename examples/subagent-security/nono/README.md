@@ -37,7 +37,7 @@ Amazon ECR. A run costs one Bedrock turn, a few small Amazon S3 objects, and one
 pod plus one small ordinary pod kept running until you clean up.
 
 Every output block on this page is from one real run of this sample, run id
-`6dd529702ae64cfba5ba2f979003faf5`. Values from the account and cluster it ran on are
+`13cc944b3984459e865976b73d319659`. Values from the account and cluster it ran on are
 replaced by the same placeholders the commands use, because this repository is public:
 `<ACCOUNT_ID>`, `<CLUSTER_NAME>` and `<NODE_NAME>`. The Region is left as
 `us-west-2`, the default this repository's samples share. Run ids, pod names, kernel
@@ -213,7 +213,7 @@ configmap/supplier-ca created
 
 ==> 4/7 the synthetic supplier API
   created the ECR repository pod-isolation/subagent-analyst-nono-supplier-api
-  built and pushed pod-isolation/subagent-analyst-nono-supplier-api:89408513f9b9fa9c2b5c
+  built and pushed pod-isolation/subagent-analyst-nono-supplier-api:6477c8d7c039259448ff
 service/supplier-api created
 service/supplier-api-alias created
 deployment.apps/supplier-api created
@@ -226,12 +226,12 @@ deployment "supplier-api" successfully rolled out
 
 ==> 6/7 the IAM role and its EKS Pod Identity association
   created the IAM role subagent-analyst-nono
-  created the Pod Identity association a-eapize6hxkzjha7qz
+  created the Pod Identity association a-8tfukbezevcahflrb
 
 ==> 7/7 the nono analyst image and its sandboxed pod
 the committed profiles match the generator for: reader, evaluator, writer
   created the ECR repository pod-isolation/subagent-analyst-nono
-  built and pushed pod-isolation/subagent-analyst-nono:d3ef65d78c403e5b9eb6
+  built and pushed pod-isolation/subagent-analyst-nono:a1c6658d01e83a67a6cb
 pod/analyst created
 pod/analyst condition met
 
@@ -328,19 +328,19 @@ PASS the choice gate rejects an answer that names the supplier only in its prose
 PASS the citation gate rejects an answer missing one source key
 PASS the report object round-trips through S3: recommendation.md
 PASS the report object round-trips through S3: comparison.json
-PASS no supplier key appears in the evidence or the report
+PASS the evidence and the report were scanned for the supplier key before being written, and the run was stopped if it appeared
 
-ANALYST_COMPLETE=6dd529702ae64cfba5ba2f979003faf5
+ANALYST_COMPLETE=13cc944b3984459e865976b73d319659
 67 checks passed
   66 checks passed in the sandbox
   12 requests correlated with the supplier API's own log (6 allowed arrived once each, 5 refused never arrived)
-  model usage: 2602 tokens on global.anthropic.claude-sonnet-4-5-20250929-v1:0
+  model usage: 2563 tokens on global.anthropic.claude-sonnet-4-5-20250929-v1:0
 
 ==> done
-  run id:         6dd529702ae64cfba5ba2f979003faf5
-  recommendation: /path/to/sample-eks-nitro-sandbox/tmp/nono/runs/6dd529702ae64cfba5ba2f979003faf5/recommendation.md
-  evidence:       /path/to/sample-eks-nitro-sandbox/tmp/nono/runs/6dd529702ae64cfba5ba2f979003faf5/evidence.json
-  S3 report:      s3://subagent-analyst-nono-<ACCOUNT_ID>/reports/rfp-001/6dd529702ae64cfba5ba2f979003faf5/
+  run id:         13cc944b3984459e865976b73d319659
+  recommendation: /path/to/sample-eks-nitro-sandbox/tmp/nono/runs/13cc944b3984459e865976b73d319659/recommendation.md
+  evidence:       /path/to/sample-eks-nitro-sandbox/tmp/nono/runs/13cc944b3984459e865976b73d319659/evidence.json
+  S3 report:      s3://subagent-analyst-nono-<ACCOUNT_ID>/reports/rfp-001/13cc944b3984459e865976b73d319659/
 ```
 
 The last three lines are the cross-check in [`scripts/correlate.py`](scripts/correlate.py),
@@ -365,43 +365,36 @@ cat ../../../tmp/nono/runs/<RUN_ID>/recommendation.md
 
 **Recommended supplier:** Northstar Office Systems (`northstar`)
 
-## Procurement Analysis: 100 Workstations for Customer Service Office
+## Procurement Analysis: 100 Workstation Office Equipment
 
 **Requirements:**
 - Budget: $125,000 maximum
 - Delivery: 30 days maximum
 - Warranty: 24 months minimum
 
-### Supplier Comparison
+**Supplier Comparison:**
 
-#### ✅ Northstar Office Systems (RECOMMENDED)
-**Source:** `proposals/rfp-001/northstar.json`
-
-- **Price:** $120,000 (within budget, $5,000 under)
+### ✅ Northstar Office Systems (*proposals/rfp-001/northstar.json*)
+- **Price:** $120,000 (within budget)
 - **Delivery:** 28 days (meets requirement)
-- **Warranty:** 36 months (exceeds requirement by 12 months)
-- **Status:** Eligible - meets all requirements
+- **Warranty:** 36 months (exceeds requirement)
+- **Status:** ELIGIBLE
 
-#### ❌ Harbor Supply Partners
-**Source:** `proposals/rfp-001/harbor.json`
-
+### ❌ Harbor Supply Partners (*proposals/rfp-001/harbor.json*)
 - **Price:** $105,000 (within budget)
-- **Delivery:** 45 days (**fails requirement** - 15 days late)
+- **Delivery:** 45 days (exceeds 30-day limit)
 - **Warranty:** 24 months (meets requirement)
-- **Status:** Ineligible - delivery exceeds maximum
+- **Status:** INELIGIBLE - Late delivery
 
-#### ❌ Cedar Workplace Group
-**Source:** `proposals/rfp-001/cedar.json`
-
-- **Price:** $130,000 (**fails requirement** - $5,000 over budget)
+### ❌ Cedar Workplace Group (*proposals/rfp-001/cedar.json*)
+- **Price:** $130,000 (exceeds budget by $5,000)
 - **Delivery:** 21 days (meets requirement)
 - **Warranty:** 36 months (exceeds requirement)
-- **Status:** Ineligible - exceeds budget
+- **Status:** INELIGIBLE - Over budget
 
-### Recommendation
-
-**Northstar Office Systems** is the only eligible supplier, meeting all procurement requirements with competitive pricing, timely delivery, and superior warranty coverage.
+**Recommendation:** Northstar Office Systems is the only eligible supplier, meeting all requirements with competitive pricing at $120,000, timely 28-day delivery, and superior 36-month warranty coverage.
 ```
+
 
 
 
@@ -628,7 +621,7 @@ PASS the reader has no AWS credential variable; its AWS environment is ['AWS_CA_
 PASS the reader has no model API key
 PASS the reader cannot open the supplier key file
 PASS the supplier API refuses an invalid key with 401
-PASS no supplier key appears in the evidence or the report
+PASS the evidence and the report were scanned for the supplier key before being written, and the run was stopped if it appeared
 ```
 
 Nothing here prints or stores either value. The comparison that decides "not the real
@@ -696,9 +689,9 @@ kubectl exec analyst -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f1 /proc/upti
 
 ```text
 isolated-sandbox
-pod age: 40s
+pod age: 41s
 6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-38.91
+40.08
 dm-0 vda vdb vdc
 m8i.enclave
 ```
@@ -717,7 +710,7 @@ kubectl exec ordinary-comparison -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f
 
 ```text
 6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
-48589.93
+49659.02
 dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0
 m8i.xlarge
 ```
@@ -727,12 +720,12 @@ Three readings differ, and each says something:
 | Reading | Sandboxed analyst | Ordinary pod on the same node |
 |---|---|---|
 | `uname -rv` | `6.18.54 #1`, built Oct 22 17:38 | `6.18.54 #2`, built Oct 22 00:16 |
-| `/proc/uptime` | `38.91`, against a pod age of 40s | `48589.93`, about 13.5 hours — the node's |
+| `/proc/uptime` | `40.08`, against a pod age of 41s | `49659.02`, about 13.8 hours — the node's |
 | `/sys/block` | `vda vdb vdc`, virtio | `nvme0n1 nvme1n1`, the instance's own |
 | `product_name` | `m8i.enclave` | `m8i.xlarge` |
 
-The analyst pod runs its **own kernel build**, and the uptime is the giveaway: 38 seconds
-against a pod 40s old, because the sandbox booted when the pod did, while the ordinary pod
+The analyst pod runs its **own kernel build**, and the uptime is the giveaway: 40 seconds
+against a pod 41s old, because the sandbox booted when the pod did, while the ordinary pod
 reports the node's thirteen-hour uptime. It sees virtio disks where the ordinary pod sees the
 instance's `nvme` devices, and it names the enclave rather than the instance type.
 
@@ -834,7 +827,7 @@ deployment.apps "supplier-api" deleted from subagent-security-nono namespace
 namespace "subagent-security-nono" deleted
 
 ==> 2/4 the EKS Pod Identity association
-  deleted the association a-eapize6hxkzjha7qz.
+  deleted the association a-8tfukbezevcahflrb.
 
 ==> 3/4 the AWS resources
   deleted the bucket subagent-analyst-nono-<ACCOUNT_ID>.
