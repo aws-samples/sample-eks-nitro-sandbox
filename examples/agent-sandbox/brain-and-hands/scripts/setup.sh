@@ -135,19 +135,19 @@ if [[ $role_rc -eq 0 ]]; then
   # The tag says the role is the sample's. It does not say the role still only
   # carries what the sample put on it: a role from an earlier life, or one
   # someone widened by hand, can keep attached managed policies and other inline
-  # policies, and the page claims this role allows two actions and nothing else.
+  # policies, and the page describes the only policies this sample attaches.
   # So check that before reusing it, and refuse rather than quietly make the
   # page's claim false for this run.
   attached="$(aws iam list-attached-role-policies --role-name "$POD_IDENTITY_ROLE_NAME" \
     --query 'AttachedPolicies[].PolicyName' --output text 2>/dev/null)" \
     || die "could not list the attached policies on IAM role $POD_IDENTITY_ROLE_NAME; stopping rather than reuse a role whose permissions I cannot read"
   [[ -z "$attached" ]] \
-    || die "IAM role $POD_IDENTITY_ROLE_NAME is tagged as this sample's but has managed policies attached ($attached). This sample's page says the role allows two Bedrock actions and nothing else, which would not be true of this run. Remove them, or set POD_IDENTITY_ROLE_NAME in .env to a free name and re-run."
+    || die "IAM role $POD_IDENTITY_ROLE_NAME is tagged as this sample's but has managed policies attached ($attached). This sample's page describes the only policies it attaches to this role, which would not match what is on it for this run. Remove them, or set POD_IDENTITY_ROLE_NAME in .env to a free name and re-run."
   inline="$(aws iam list-role-policies --role-name "$POD_IDENTITY_ROLE_NAME" \
     --query 'PolicyNames[]' --output text 2>/dev/null)" \
     || die "could not list the inline policies on IAM role $POD_IDENTITY_ROLE_NAME; stopping rather than reuse a role whose permissions I cannot read"
   [[ -z "$inline" || "$inline" == "bedrock-invoke" ]] \
-    || die "IAM role $POD_IDENTITY_ROLE_NAME is tagged as this sample's but carries inline policies other than bedrock-invoke ($inline), so the page's claim that it allows two Bedrock actions and nothing else would not hold. Remove them, or set POD_IDENTITY_ROLE_NAME in .env to a free name and re-run."
+    || die "IAM role $POD_IDENTITY_ROLE_NAME is tagged as this sample's but carries inline policies other than bedrock-invoke ($inline), so the page's account of what is attached to this role would not hold. Remove them, or set POD_IDENTITY_ROLE_NAME in .env to a free name and re-run."
   echo "reusing IAM role $POD_IDENTITY_ROLE_NAME (ManagedBy=$MANAGED_BY, no other policies on it)"
 else
   role_arn="$(aws iam create-role --role-name "$POD_IDENTITY_ROLE_NAME" \
@@ -157,23 +157,58 @@ else
     || die "could not create IAM role $POD_IDENTITY_ROLE_NAME"
   echo "created IAM role $POD_IDENTITY_ROLE_NAME, tagged ManagedBy=$MANAGED_BY"
 fi
+
+# Whose role would the brain actually be given? The Pod Identity association is
+# what decides that, so read it HERE, before a permission is written or any
+# RBAC is applied, rather than at step 5 where it is created. An association
+# left over for this namespace and ServiceAccount that names some other role
+# would hand the brain permissions this sample never scoped, while the page
+# describes the ones it did, and refusing after writing a policy would mean
+# refusing with the account already changed.
+assoc="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" \
+  --region "$AWS_REGION" --namespace "$NAMESPACE" --service-account "$BRAIN" \
+  --query 'associations[0].associationId' --output text 2>/dev/null)" \
+  || die "could not list the Pod Identity associations on cluster $CLUSTER_NAME"
+if [[ -n "$assoc" && "$assoc" != "None" ]]; then
+  assoc_role="$(aws eks describe-pod-identity-association --cluster-name "$CLUSTER_NAME" \
+    --region "$AWS_REGION" --association-id "$assoc" \
+    --query association.roleArn --output text 2>/dev/null)" \
+    || die "could not describe the existing Pod Identity association $assoc for $NAMESPACE/$BRAIN; stopping rather than leave the brain holding a role I could not read"
+  [[ "$assoc_role" == "$role_arn" ]] \
+    || die "a Pod Identity association already exists for $NAMESPACE/$BRAIN ($assoc) and names a different role:
+  it names:  $assoc_role
+  we expect: $role_arn
+The brain's pods would be given that role, not this sample's, so the page's account of what the brain may do in AWS would not hold. Delete that association, or set NAMESPACE in .env to a free name and re-run."
+fi
+
 # The one permission the brain gets: invoke the one model it is configured with.
-# Nothing else, in AWS, belongs to the brain, and with no network policy in this
-# sample this role is the only AWS boundary it has, so it is scoped to the model
-# rather than to "any model".
+# It is the only role the sample creates, and with no network policy in this
+# sample it is the only AWS boundary the brain has, so it is scoped to the one
+# model rather than to "any model".
 #
 # A cross-Region inference profile such as us.anthropic.claude-sonnet-5-5 needs
 # two resources: the profile itself, which is addressed in your own account, and
-# the foundation model it routes to, which is the profile ID without its
-# geography prefix and which it may invoke in any of the Regions behind the
-# profile. Hence the Region wildcard on the second statement, and only there.
-BASE_MODEL_ID="${BEDROCK_MODEL_ID#*.}"
-[[ "$BASE_MODEL_ID" != "$BEDROCK_MODEL_ID" ]] \
-  || die "BEDROCK_MODEL_ID ('$BEDROCK_MODEL_ID') does not look like an inference profile ID, which starts with a geography prefix such as 'us.' or 'global.'. List what your account has with: aws bedrock list-inference-profiles --region $AWS_REGION --query 'inferenceProfileSummaries[].inferenceProfileId'"
+# the foundation models it routes to, one per Region behind the profile.
+#
+# Those model ARNs are read from the profile rather than derived from its ID. A
+# derived prefix with a trailing wildcard would also allow any other model whose
+# ID starts the same way, which is not what this policy says it allows.
+fm_arns="$(aws bedrock get-inference-profile \
+  --inference-profile-identifier "$BEDROCK_MODEL_ID" --region "$AWS_REGION" \
+  --query 'models[].modelArn' --output json 2>/dev/null | tr -d ' \n')" \
+  || die "could not read the inference profile $BEDROCK_MODEL_ID in $AWS_REGION. List what your account has with: aws bedrock list-inference-profiles --region $AWS_REGION --query 'inferenceProfileSummaries[].inferenceProfileId'"
+# Fail closed on anything that is not a plain list of Bedrock foundation-model
+# ARNs. An empty list would be a policy that grants nothing, and the brain would
+# fail its first model call with AccessDenied for a reason nothing here
+# explained; anything carrying a sed metacharacter would produce a different
+# policy from the one asked for.
+[[ "$fm_arns" == '["arn:aws:bedrock:'*'"]' && "$fm_arns" != *'|'* \
+   && "$fm_arns" != *'&'* && "$fm_arns" != *'\'* ]] \
+  || die "the inference profile $BEDROCK_MODEL_ID did not return a usable list of foundation-model ARNs (got '${fm_arns:-<empty>}'); stopping rather than write a policy that may grant nothing or something else"
 bedrock_policy="$(sed -e "s|<AWS_REGION>|$AWS_REGION|g" \
                       -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" \
                       -e "s|<BEDROCK_MODEL_ID>|$BEDROCK_MODEL_ID|g" \
-                      -e "s|<BASE_MODEL_ID>|$BASE_MODEL_ID|g" \
+                      -e "s|\[\"<FOUNDATION_MODEL_ARNS>\"\]|$fm_arns|" \
                       "$SAMPLE_DIR/iam/bedrock-invoke-policy.json")"
 aws iam put-role-policy --role-name "$POD_IDENTITY_ROLE_NAME" --policy-name bedrock-invoke \
   --policy-document "$bedrock_policy" \
@@ -184,12 +219,10 @@ echo "  permissions: bedrock-invoke, two actions on $BEDROCK_MODEL_ID only"
 step "5/6 the brain's identity and RBAC"
 sed -e "s|<NAMESPACE>|$NAMESPACE|g" "$SAMPLE_DIR/deploy/rbac.yaml" | kc apply -f -
 
-# The association binds the role to this namespace and this ServiceAccount, so
-# the credential is only delivered to the brain's own pods.
-assoc="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" \
-  --region "$AWS_REGION" --namespace "$NAMESPACE" --service-account "$BRAIN" \
-  --query 'associations[0].associationId' --output text 2>/dev/null)" \
-  || die "could not list the Pod Identity associations on cluster $CLUSTER_NAME"
+# The association names a namespace and a ServiceAccount, so it delivers the
+# role to the brain's pods in this namespace. Whether one already existed, and
+# whether it names this sample's role, was settled in step 4 before any
+# permission was written; here it is only created when it was absent.
 if [[ -z "$assoc" || "$assoc" == "None" ]]; then
   assoc="$(aws eks create-pod-identity-association --cluster-name "$CLUSTER_NAME" \
     --region "$AWS_REGION" --namespace "$NAMESPACE" --service-account "$BRAIN" \
@@ -198,21 +231,7 @@ if [[ -z "$assoc" || "$assoc" == "None" ]]; then
     || die "could not create the Pod Identity association"
   echo "  created Pod Identity association $assoc for $NAMESPACE/$BRAIN"
 else
-  # An association already exists for this namespace and ServiceAccount. It is
-  # the thing that decides which role the brain's pods actually receive, so
-  # reusing it without reading it would mean the brain could be handed a role
-  # this sample never made and never scoped, while the page says its only AWS
-  # permission is the bedrock-invoke policy above. Check it names our role.
-  assoc_role="$(aws eks describe-pod-identity-association --cluster-name "$CLUSTER_NAME" \
-    --region "$AWS_REGION" --association-id "$assoc" \
-    --query association.roleArn --output text 2>/dev/null)" \
-    || die "could not describe the existing Pod Identity association $assoc for $NAMESPACE/$BRAIN; stopping rather than leave the brain holding a role I could not read"
-  [[ "$assoc_role" == "$role_arn" ]] \
-    || die "a Pod Identity association already exists for $NAMESPACE/$BRAIN ($assoc) and names a different role:
-  it names:  $assoc_role
-  we expect: $role_arn
-The brain's pods would be given that role, not this sample's, so the page's account of what the brain may do in AWS would not hold. Delete that association, or set NAMESPACE in .env to a free name and re-run."
-  echo "  reusing Pod Identity association $assoc for $NAMESPACE/$BRAIN (it names this sample's role)"
+  echo "  reusing Pod Identity association $assoc for $NAMESPACE/$BRAIN (checked in step 4: it names this sample's role)"
 fi
 
 step "6/6 the hands, then the brain"

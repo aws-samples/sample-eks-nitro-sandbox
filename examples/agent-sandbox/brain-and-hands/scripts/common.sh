@@ -260,13 +260,19 @@ wait_pool_warm() {
 # into "absent". In the clean up that means reporting a role gone that is still
 # there; in setup it means trying to create one on top of a read that never
 # answered. Both scripts go through here instead.
+# The pattern is matched inside the AWS CLI's own error framing, "An error
+# occurred (<Code>) when calling ...", and not anywhere in the output. An
+# unanchored search for the bare code would also match the code appearing as
+# part of a resource name echoed back in some other error, so an AccessDenied on
+# a role whose name contained the code would have been read as "absent". Match
+# the framing and the code can only be the code.
 aws_exists() {
   local pattern=$1; shift
   [[ "$1" == "--" ]] && shift
   local out rc=0
   out="$("$@" 2>&1)" || rc=$?
   [[ $rc -eq 0 ]] && return 0
-  grep -q "$pattern" <<<"$out" && return 1
+  grep -Fq "An error occurred ($pattern)" <<<"$out" && return 1
   AWS_LAST_ERROR="$(tr '\n' ' ' <<<"$out")"
   return 2
 }

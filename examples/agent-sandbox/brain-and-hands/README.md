@@ -14,7 +14,10 @@ cd sample-eks-nitro-sandbox/examples/agent-sandbox/brain-and-hands
 ```
 
 It also needs `docker` on your machine to build the brain image (the run below used
-25.0.18), and an Amazon Bedrock model your account can invoke. Beyond the cluster, a run
+25.0.18), and an Amazon Bedrock model your account can invoke. Your own credentials need
+`bedrock:GetInferenceProfile` as well as the usual EKS, ECR and IAM permissions, because
+setup reads the model ARNs the inference profile routes to in order to scope the brain's
+role to them. Beyond the cluster, a run
 costs the Amazon Bedrock tokens the agent spends, one ECR repository, and the capacity of
 one long-lived ordinary pod plus the warm pod the pool keeps booted. The pods set no CPU or
 memory requests, so each guest gets a small default size.
@@ -65,9 +68,9 @@ sample is the worked version of it.
   replacement while the claim is held.
 - **The hands hold no credential, and the brain's role is the only one the sample makes.**
   The hands have no Pod Identity association, no IAM role and no ServiceAccount token, which
-  step 11 checks by name without printing a value. The brain's role allows
-  `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` and nothing else, shown
-  in full in step 11.
+  step 11 checks by name without printing a value. The only policy the sample puts on the
+  brain's role allows `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` on
+  the one model it is configured with, shown in full in step 11.
 - **The brain can claim and exec in one namespace and nothing else.** Step 12 asks the
   Kubernetes API what its ServiceAccount may do, and shows it refused creating or deleting
   pods, port-forward, Secrets, another namespace and anything cluster-scoped.
@@ -214,7 +217,7 @@ created namespace brain-and-hands, labelled app.kubernetes.io/managed-by=brain-a
 created ECR repository brain-and-hands, tagged ManagedBy=brain-and-hands
 
 == 3/6 build and push the brain image ==
-  <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/brain-and-hands:0467084bfb6d443f
+  <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/brain-and-hands:f70e17a09a3ddc56
 
 == 4/6 the brain's Bedrock role, through EKS Pod Identity ==
 created IAM role brain-and-hands-brain, tagged ManagedBy=brain-and-hands
@@ -225,7 +228,7 @@ created IAM role brain-and-hands-brain, tagged ManagedBy=brain-and-hands
 serviceaccount/brain created
 role.rbac.authorization.k8s.io/brain created
 rolebinding.rbac.authorization.k8s.io/brain created
-  created Pod Identity association a-ww5lc0yeiw7mednmu for brain-and-hands/brain
+  created Pod Identity association a-jkiuyy64p0auccs0s for brain-and-hands/brain
 
 == 6/6 the hands, then the brain ==
 sandboxtemplate.extensions.agents.x-k8s.io/hands created
@@ -238,7 +241,7 @@ deployment "brain" successfully rolled out
 NAME         READY   DESIRED   AGE
 hands-pool   1       1         11s
 NAME    READY   UP-TO-DATE   AVAILABLE   AGE
-brain   1/1     1            1           10s
+brain   1/1     1            1           11s
 ```
 
 The image tag is a digest of the `Dockerfile` and everything under `brain/`, so a change to
@@ -250,14 +253,14 @@ kubectl -n $NAMESPACE get sandboxwarmpool,deploy,pods
 
 ```text
 NAME                                                    READY   DESIRED   AGE
-sandboxwarmpool.extensions.agents.x-k8s.io/hands-pool   1       1         11s
+sandboxwarmpool.extensions.agents.x-k8s.io/hands-pool   1       1         12s
 
 NAME                    READY   UP-TO-DATE   AVAILABLE   AGE
-deployment.apps/brain   1/1     1            1           10s
+deployment.apps/brain   1/1     1            1           11s
 
-NAME                        READY   STATUS    RESTARTS   AGE
-pod/brain-76bdc6c966-4826j   1/1     Running   0          10s
-pod/hands-pool-dxxgg        1/1     Running   0          11s
+NAME                         READY   STATUS    RESTARTS   AGE
+pod/brain-78fd6689db-jkb5w   1/1     Running   0          11s
+pod/hands-pool-lnb4j         1/1     Running   0          13s
 ```
 
 Two pods: an ordinary one and a sandboxed one waiting to be claimed.
@@ -404,18 +407,18 @@ kubectl -n $NAMESPACE exec deploy/brain -- \
 ```
 
 ```text
-I claimed sandbox pod `hands-pool-dxxgg`, a warm-pool pod that was ready in 1.28s. I haven't released it.
+I claimed sandbox pod `hands-pool-lnb4j`. It came from the warm pool and was ready in 0.26s. I haven't released it yet.
 
-- **`uname -rv`** worked and returned `6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026`.
-- **Fetching https://example.com with python3** failed with exit code 1. `urllib` raised `URLError: <urlopen error [Errno -3] Temporary failure in name resolution>`, so DNS lookup failed and no request was sent. The sandbox has no network access, as the tool description says.
+- **`uname -rv`** succeeded (exit 0) and printed `6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026`.
+- **Python fetch of https://example.com** failed (exit 1). `urllib` raised `URLError: <urlopen error [Errno -3] Temporary failure in name resolution>`, so the hostname never resolved. This matches the tool description, which says the sandbox has no network.
 
 Do you want me to release the sandbox?
 ```
 
 That is the whole pattern in one turn: the model decided to run a command, the command ran
-in a pre-booted sandbox pod a second away, and the attempt to reach the network from there
-failed because there is no network to reach it on. The turn took 11.9 seconds and five
-model turns.
+in a pre-booted sandbox pod a quarter of a second away, and the attempt to reach the
+network from there failed because there is no network to reach it on. The turn took 7.4
+seconds and five model turns.
 
 **Step 7: The claim adopted a pod that was already running, and the pool refilled.** A
 `SandboxClaim` with a `warmPoolRef` adopts a booted pod rather than starting one:
@@ -425,9 +428,10 @@ kubectl -n $NAMESPACE exec deploy/brain -- claude -p 'Claim a sandbox and report
 ```
 
 ```text
-The claim took 0.22 seconds. That's wall-clock time from the claim to the sandbox being Ready, and it includes the tool's own kubectl calls.
+I claimed a sandbox, and the claim took **0.21 s** from claim to Ready. That's wall-clock time and includes the tool's kubectl calls.
 
-The sandbox is pod `hands-pool-9sd8x`. It was a warm launch, adopted from the pre-booted pool.
+- **Pod:** `hands-pool-bkq4g`
+- **Launch type:** warm. It was adopted from the pre-booted pool, so nothing had to be started from scratch.
 ```
 
 The tool measures its own wall clock, from just before it creates the claim to the moment
@@ -448,14 +452,14 @@ kubectl -n $NAMESPACE get sandboxwarmpool hands-pool
 
 ```text
 NAME            READY   SANDBOX            REASON              AGE
-brain-session   True    hands-pool-9sd8x   DependenciesReady   3s
+brain-session   True    hands-pool-bkq4g   DependenciesReady   3s
 
 NAME               LAUNCH-TYPE
-hands-pool-9sd8x   warm
-hands-pool-l48gp   warm
+hands-pool-7vjnj   warm
+hands-pool-bkq4g   warm
 
 NAME         READY   DESIRED   AGE
-hands-pool   1       1         2m24s
+hands-pool   1       1         34s
 ```
 
 The pool was back to `readyReplicas=1` about 10 seconds after the claim, so while a session
@@ -481,17 +485,17 @@ kubectl -n $NAMESPACE exec deploy/brain -- sh -c \
 kernel:        6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
 product name:  m8i.enclave
 disks:         dm-0 vda vdb vdc
-uptime:        113.59s
+uptime:        92.77s
 --- the pool's replacement pod, on the same node ---
 kernel:        6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
 product name:  m8i.enclave
 disks:         dm-0 vda vdb vdc
-uptime:        6.66s
+uptime:        7.58s
 --- the brain, an ordinary pod ---
 kernel:        6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
 product name:  m8a.2xlarge
 disks:         dm-0 nvme0n1 nvme1n1 zram0
-uptime:        45452.18s
+uptime:        47525.64s
 ```
 
 Read the three rows against each other:
@@ -501,11 +505,11 @@ Read the three rows against each other:
 | `uname -rv` | `6.18.54 #1`, the guest kernel | `6.18.54 #2`, its node's kernel |
 | `/sys/class/dmi/id/product_name` | `m8i.enclave`, the VM | `m8a.2xlarge`, the EC2 instance |
 | `ls /sys/block` | `vda vdb vdc`, virtio devices | `nvme0n1 nvme1n1`, the instance's disks |
-| `/proc/uptime` | 114s and 7s, each pod's own age | 45452s, the node's uptime |
+| `/proc/uptime` | 93s and 8s, each pod's own age | 47525s, the node's uptime |
 
 The version string is the same, `6.18.54`, and the build is not: `#1` against `#2`. That is
 why `uname -r` alone is not evidence. The two uptimes are the clearest reading of all: both
-sandbox pods are on the same node, and each reports its own boot, over a minute and a half
+sandbox pods are on the same node, and each reports its own boot, a minute and a half
 apart, because each got its own VM.
 
 ```bash
@@ -515,9 +519,9 @@ kubectl -n $NAMESPACE get pods \
 
 ```text
 NAME                    NODE       RUNTIMECLASS
-brain-76bdc6c966-4826j   <NODE_A>   <none>
-hands-pool-9sd8x        <NODE_B>   isolated-sandbox
-hands-pool-l48gp        <NODE_B>   isolated-sandbox
+brain-78fd6689db-jkb5w   <NODE_A>   <none>
+hands-pool-bkq4g        <NODE_B>   isolated-sandbox
+hands-pool-7vjnj        <NODE_B>   isolated-sandbox
 ```
 
 The runtime class shows what was asked for rather than what ran, which is why the readings
@@ -569,7 +573,7 @@ lo       127.0.0.1
 dummy0   (no IPv4 address)
 --- the brain, an ordinary pod ---
 lo       127.0.0.1
-eth0     192.168.127.129
+eth0     192.168.127.133
 
 Iface	Destination	Gateway 	Flags	RefCnt	Use	Metric	Mask		MTU	Window	IRTT
 ```
@@ -662,7 +666,8 @@ reach them on. The `KUBERNETES_*` variables are present whatever `enableServiceL
 and they name an address these pods have no route to.
 
 Only the brain has an association, and the association names a namespace and a
-ServiceAccount, so the credential is delivered to the brain's pods and nowhere else:
+ServiceAccount, so this association delivers the role to the brain's ServiceAccount in this
+namespace:
 
 ```bash
 aws eks list-pod-identity-associations --cluster-name $CLUSTER_NAME --namespace $NAMESPACE \
@@ -675,7 +680,7 @@ aws eks list-pod-identity-associations --cluster-name $CLUSTER_NAME --namespace 
 +----------------------+------------------+
 |     associationId    | serviceAccount   |
 +----------------------+------------------+
-|  a-ww5lc0yeiw7mednmu |  brain           |
+|  a-jkiuyy64p0auccs0s |  brain           |
 +----------------------+------------------+
 ```
 
@@ -705,13 +710,17 @@ aws iam list-role-policies --role-name $POD_IDENTITY_ROLE_NAME --query PolicyNam
             "Resource": "arn:aws:bedrock:us-west-2:<ACCOUNT_ID>:inference-profile/us.anthropic.claude-sonnet-5-5"
         },
         {
-            "Sid": "InvokeTheFoundationModelThatProfileRoutesTo",
+            "Sid": "InvokeTheFoundationModelsThatProfileRoutesTo",
             "Effect": "Allow",
             "Action": [
                 "bedrock:InvokeModel",
                 "bedrock:InvokeModelWithResponseStream"
             ],
-            "Resource": "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-5-5*"
+            "Resource": [
+                "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-5-5",
+                "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-5-5",
+                "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-5-5"
+            ]
         }
     ]
 }
@@ -721,19 +730,26 @@ aws iam list-role-policies --role-name $POD_IDENTITY_ROLE_NAME --query PolicyNam
 ]
 ```
 
-Two actions, on one model, and nothing else: no attached managed policies and one inline
-policy. It takes two statements because `us.anthropic.claude-sonnet-5-5` is a cross-Region
-inference profile. The first names the profile, which is addressed in your own account. The
-second names the foundation model the profile routes to, which is the profile ID without its
-`us.` geography prefix, and which it may invoke in any of the Regions behind the profile:
-hence the Region wildcard there, and only there.
+Two actions, on the one model the brain is configured with. It takes two statements because
+`us.anthropic.claude-sonnet-5-5` is a cross-Region inference profile: the first names the
+profile, which is addressed in your own account, and the second names the foundation models
+the profile routes to, one per Region behind it. Those ARNs are read from the profile itself
+at apply time, with `aws bedrock get-inference-profile`, rather than derived from its ID,
+because a derived prefix with a trailing wildcard would also allow any other model whose ID
+started the same way.
+
+Read the scope precisely. Those two statements are the whole of what **this sample attaches
+to this role**, and `setup.sh` refuses to reuse a tagged role that has picked up anything
+else, so the run you get matches the policy above. That is not the same as saying nothing
+else can ever reach the role: a trust policy edited afterwards, or a second Pod Identity
+association elsewhere naming the same role, are outside what the sample creates or checks.
 
 Because the role is the only AWS boundary this sample shows, `setup.sh` also refuses to
 reuse a role that carries the sample's tag but has picked up other policies, which would
 make the paragraph above untrue for your run:
 
 ```text
-error: IAM role brain-and-hands-brain is tagged as this sample's but has managed policies attached (ReadOnlyAccess). This sample's page says the role allows two Bedrock actions and nothing else, which would not be true of this run. Remove them, or set POD_IDENTITY_ROLE_NAME in .env to a free name and re-run.
+error: IAM role brain-and-hands-brain is tagged as this sample's but has managed policies attached (ReadOnlyAccess). This sample's page describes the only policies it attaches to this role, which would not match what is on it for this run. Remove them, or set POD_IDENTITY_ROLE_NAME in .env to a free name and re-run.
 ```
 
 That block is from a separate run, against a role in that state: the check needs a role that
@@ -798,14 +814,14 @@ kubectl -n $NAMESPACE get sandboxclaim,sandboxwarmpool,pods
 ```
 
 ```text
-I released the sandbox. The claim is deleted and its pod is torn down. The pool will boot a replacement.
+I released the sandbox. Its pod is torn down, and the pool will boot a replacement.
 
 NAME                                                    READY   DESIRED   AGE
-sandboxwarmpool.extensions.agents.x-k8s.io/hands-pool   1       1         3m11s
+sandboxwarmpool.extensions.agents.x-k8s.io/hands-pool   1       1         2m46s
 
 NAME                         READY   STATUS    RESTARTS   AGE
-pod/brain-76bdc6c966-4826j   1/1     Running   0          3m9s
-pod/hands-pool-l48gp         1/1     Running   0          53s
+pod/brain-78fd6689db-jkb5w   1/1     Running   0          2m44s
+pod/hands-pool-7vjnj         1/1     Running   0          53s
 ```
 
 Back to one warm pod waiting, about 40 seconds after the release.
@@ -824,14 +840,23 @@ Back to one warm pod waiting, about 40 seconds after the release.
   and warm-pool pods have generated names. Keep only the brain and the hands in this
   namespace. The sandbox tool's refusal to take a pod name is an application-level control on
   top, not a second enforcement point.
-- **A warm pod can fail to start and not recover by itself.** In this run one pool
-  replacement went into `CrashLoopBackOff` with a `StartError` from the sandbox runtime
-  (`mount_host_image: gave up after 10s: no single guest disk reports serial ... yet`), and
-  the kubelet's restarts did not clear it, so the pool sat at `readyReplicas` empty while the
-  pod retried. Deleting that one `Sandbox` by name let the pool boot another, which started
-  normally. The Amazon EKS User Guide does not document this, so treat it as something to
-  watch for rather than a known limit: read `readyReplicas` on the pool, not just the pool's
-  existence, before you rely on a claim being fast.
+- **A warm pod can fail to start and not recover by itself.** Once, on one of the runs behind
+  this page, a pool replacement went into `CrashLoopBackOff` with a `StartError` from the
+  sandbox runtime (`mount_host_image: gave up after 10s: no single guest disk reports serial
+  ... yet`), and the kubelet's restarts did not clear it, so the pool sat with no ready
+  replica while the pod retried. Deleting that one `Sandbox` **by name** let the pool create
+  another, which started normally on the same node:
+
+  ```bash
+  kubectl -n $NAMESPACE delete sandbox <the-stuck-sandbox>
+  ```
+
+  Never by label selector, which would take the pool's healthy pods with it. It happened once
+  and the Amazon EKS User Guide does not document it, so treat it as something to watch for
+  rather than a known limit; it is recorded with the full output in
+  [issue #111](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/111). The
+  practical consequence is worth taking either way: read `status.readyReplicas` on the pool,
+  not just that the pool exists, before you rely on a claim being served in about a second.
 - **`claude -p` needs the project already trusted.** [`brain/claude.json`](brain/claude.json)
   marks `/workspace` trusted and the MCP server enabled. Without it a non-interactive run
   stops at the trust prompt, which leaves `settings.json` unread and the sandbox tool never
@@ -876,7 +901,7 @@ role.rbac.authorization.k8s.io "brain" deleted from brain-and-hands namespace
 serviceaccount "brain" deleted from brain-and-hands namespace
 
 == 6/9 delete the Pod Identity association ==
-  Pod Identity association a-ww5lc0yeiw7mednmu is gone
+  Pod Identity association a-jkiuyy64p0auccs0s is gone
 
 == 7/9 delete the IAM role brain-and-hands-brain ==
   IAM role brain-and-hands-brain is gone

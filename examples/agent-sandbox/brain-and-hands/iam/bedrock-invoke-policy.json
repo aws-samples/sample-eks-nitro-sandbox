@@ -11,13 +11,13 @@
       "Resource": "arn:aws:bedrock:<AWS_REGION>:<ACCOUNT_ID>:inference-profile/<BEDROCK_MODEL_ID>"
     },
     {
-      "Sid": "InvokeTheFoundationModelThatProfileRoutesTo",
+      "Sid": "InvokeTheFoundationModelsThatProfileRoutesTo",
       "Effect": "Allow",
       "Action": [
         "bedrock:InvokeModel",
         "bedrock:InvokeModelWithResponseStream"
       ],
-      "Resource": "arn:aws:bedrock:*::foundation-model/<BASE_MODEL_ID>*"
+      "Resource": ["<FOUNDATION_MODEL_ARNS>"]
     }
   ]
 }
