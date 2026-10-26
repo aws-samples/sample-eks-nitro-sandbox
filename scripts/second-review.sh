@@ -74,9 +74,68 @@ refuse() { printf 'second-review: %s: %s\n' "$1" "$2" >&2; exit 1; }
 cannot_check() { printf 'second-review: E_NO_TOOL: %s\n' "$1" >&2; exit 2; }
 note() { printf 'second-review: %s\n' "$1"; }
 
+# No path this script is given may hold a line break, and that is checked for every one of
+# them -- as given and as resolved -- before anything is read, created or cleared. The reason
+# is a single seam, and it runs through every path here: "$( )" strips TRAILING newlines, so
+# realpath, dirname, basename and "command -v" each hand back a SIBLING path, and the run
+# then acts on a file or directory the caller did not name -- while reporting success,
+# because nothing failed. Measured four times, each a different path and each exit 0: a
+# --tree whose name ends in one was fingerprinted, reviewed and certified while the sibling
+# was the tree actually read; an --out whose name ends in one cleared and wrote the sibling
+# directory, destroying the earlier review in it, and left the directory named empty; a
+# --brief whose name ends in one passed -f, -s and -r on the name given and then handed the
+# reviewer the sibling file's text; and a link target ending in one sent the command-chain
+# walk to a different path, leaving every later hop unchecked (see the walk below).
+# On the codex backend there is a second effect: codex prints "workdir: <tree>" inside the
+# preamble this script parses back out of its trace, on a line ahead of the "model:",
+# "sandbox:" and "approval:" lines, so a path with a line break in it lands inside that
+# block and could pass itself off as codex's own report of how it ran. That path comes from
+# the caller and not from the brief -- a caller who wanted to lie could lie in
+# --implementer-model just as cheaply -- so that half closes a seam rather than an attack,
+# and the nonce check still bounds what the BRIEF can reach.
+# The path is not repeated in the message, for the reason check_model_charset gives: it
+# would break the message across lines. $2 names the input, $3 is the tag to refuse with:
+# each path refuses under the tag its own option already uses, except --out, which had no tag
+# of its own and now has E_OUT.
+# The message says only the part that is true of every site. The codex-preamble half above
+# is NOT: only the tree path is a path codex is told about and prints back, and the two
+# claude variables never reach codex at all, so stating it in the shared message would claim
+# something untrue of eleven of the thirteen sites.
+no_line_break() {
+  case "$1" in
+    *$'\n'*) refuse "$3" \
+      "$2 contains a line break. Resolving such a path quietly drops a trailing one, so this run would read, clear or write a sibling path rather than the one named -- and report success. Use a path with no line break in it." ;;
+  esac
+}
+
+# The same rule on what a path RESOLVES to, which cannot be done on the plain
+# "$(realpath ...)" every site below uses: that substitution has already stripped the very
+# newline being looked for, so the value handed back is the sibling and a test on it passes.
+# Measured: --out naming an ordinary symbolic link whose target's last component ends in a
+# newline resolved to the sibling directory, which the cleanup then cleared of its earlier
+# review, with both the as-given and the as-resolved test passing -- exit 0. So read
+# realpath's answer with a sentinel after it, take the sentinel and the one newline realpath
+# itself prints back off, and test what is left. Checked on a target ending in one newline
+# and in two: the plain form loses them, this form keeps them.
+# Refusing here is also what makes every plain "$(realpath ...)" later in this script safe,
+# because once this has passed there is no trailing newline left for one to lose. -m so that
+# an --out which does not exist yet still resolves; a path realpath cannot resolve at all is
+# left to the site's own check, which reports it with the right cause.
+no_line_break_resolved() {
+  local out
+  out=$(realpath -m -- "$1" 2>/dev/null && printf X) || return 0
+  out=${out%X}
+  no_line_break "${out%$'\n'}" "$2" "$3"
+}
+
 # Resolve the script itself first: invoked through a symbolic link from somewhere else,
 # "dirname $0" is the link's directory, and the containment check below would then approve
-# that directory's tmp/ instead of this repository's.
+# that directory's tmp/ instead of this repository's. Byte-exact and refused for a line
+# break for the same reason as every other path, and before REPO_ROOT is derived rather than
+# after: REPO_ROOT is what the whole tmp/ containment boundary is measured against, so a
+# stripped trailing newline here would move that boundary to a sibling repository root.
+no_line_break "$0" "the path this script was invoked by" E_SELF
+no_line_break_resolved "$0" "the resolved path of this script" E_SELF
 SELF=$(realpath "$0" 2>/dev/null || printf '%s' "$0")
 REPO_ROOT=$(cd "$(dirname "$SELF")/.." && pwd)
 
@@ -178,33 +237,6 @@ check_model_name "$IMPLEMENTER" "$impl_model" "--implementer-model"
 
 # --- the tools and the paths --------------------------------------------------------------
 
-# No path this script is given may hold a line break, and that is checked for each of them
-# before anything is read, created or cleared. The reason is one seam, and it runs through
-# every path here: "$( )" strips TRAILING newlines, so realpath, dirname, basename and
-# "command -v" each hand back a SIBLING path, and the run then acts on a file or directory
-# the caller did not name -- while reporting success, because nothing failed. Measured on
-# three of them: a --tree whose name ends in one was fingerprinted, reviewed and certified
-# as the tree named, with the sibling the directory actually read, exit 0; an --out whose
-# name ends in one cleared and wrote the sibling directory, destroying an earlier result
-# there, exit 0, with the directory named left empty; and a link target ending in one sent
-# the command-chain walk to a different path, leaving every later hop unchecked (see the
-# walk below). On the codex backend there is a second effect: codex prints "workdir: <tree>"
-# inside the preamble this script parses back out of its trace, on a line ahead of the
-# "model:", "sandbox:" and "approval:" lines, so a path with a line break in it lands inside
-# that block and could pass itself off as codex's own report of how it ran. That path comes
-# from the caller and not from the brief -- a caller who wanted to lie could lie in
-# --implementer-model just as cheaply -- so that half closes a seam rather than an attack,
-# and the nonce check still bounds what the BRIEF can reach.
-# The path is not repeated in the message, for the reason check_model_charset gives: it
-# would break the message across lines. $2 names the input, $3 is the tag to refuse with, so
-# each path refuses under the tag its own option already uses.
-no_line_break() {
-  case "$1" in
-    *$'\n'*) refuse "$3" \
-      "$2 contains a line break. Resolving such a path quietly drops a trailing one, so this run would read, clear or write a sibling path rather than the one named -- and report success -- and on the codex backend it would also land inside the block this script parses back out of codex's own preamble. Use a path with no line break in it." ;;
-  esac
-}
-
 case "$BACKEND" in
   codex)  BACKEND_CMD="${SECOND_REVIEW_CODEX_CMD:-codex}"
           BACKEND_ENV=SECOND_REVIEW_CODEX_CMD ;;
@@ -295,13 +327,13 @@ in_repo_tmp() {
   refuse E_NOT_IN_TMP \
     "$2 '$p' is not under this repository's gitignored tmp/ ('$TMP_ABS'). The brief, the review and the backend's trace live there: the trace can hold credential details, and anything in a tracked folder is one 'git add' from being published."
 }
+# What they resolve to, checked BEFORE they are resolved here: in_repo_tmp returns its answer
+# through a command substitution, so by the time OUT_ABS holds a value any trailing newline
+# is already gone and a test on it would be a test on the sibling.
+no_line_break_resolved "$OUT" "the resolved --out path" E_OUT
+no_line_break_resolved "$BRIEF" "the resolved --brief path" E_BRIEF
 OUT_ABS=$(in_repo_tmp "$OUT" --out)
 BRIEF_ABS=$(in_repo_tmp "$BRIEF" --brief)
-# And again on what they resolved to. The checks above were on the names as given, which is
-# where a trailing newline hides; these catch one that a PARENT directory's real name
-# carries, which a path given through a symbolic link does not show.
-no_line_break "$OUT_ABS" "the resolved --out path" E_OUT
-no_line_break "$BRIEF_ABS" "the resolved --brief path" E_BRIEF
 not_an_output_name "$BRIEF_ABS" "$OUT_ABS" "the brief" E_BRIEF
 # The backend command is an input path too. A backend binary living inside --out under one
 # of these eleven names is far-fetched, but the command path is taken from the environment,
@@ -398,12 +430,11 @@ cmd_target=$(realpath -- "$resolved_cmd" 2>/dev/null) || refuse E_CMD_MISSING \
 [ "$cmd_target" = "$resolved_cmd" ] || \
   not_an_output_name "$cmd_target" "$OUT_ABS" "the $BACKEND command resolves to," E_CMD_MISSING
 
+# The tree, for the second time in the same vein, and again before the line that resolves it.
+# Refused on both backends -- only codex has a preamble to forge a line of, but neither
+# backend can be given the wrong tree.
+no_line_break_resolved "$TREE" "the resolved --tree path" E_TREE
 TREE_ABS=$(realpath "$TREE")
-
-# The tree, for the third time in the same vein: $TREE was checked as given, and this is
-# what the line above resolved it to. Refused on both backends -- only codex has a preamble
-# to forge a line of, but neither backend can be given the wrong tree.
-no_line_break "$TREE_ABS" "the resolved --tree path" E_TREE
 
 # This script's own output inside the tree would show up as the tree changing, and read
 # as a reviewer that wrote to it. Keep them apart rather than explain the false alarm.
@@ -465,13 +496,13 @@ if [ "$BACKEND" = claude ]; then
       "the \$SECOND_REVIEW_CLAUDE_SETTINGS path" E_CLAUDE_SETTINGS
     [ -f "$SECOND_REVIEW_CLAUDE_SETTINGS" ] || refuse E_CLAUDE_SETTINGS \
       "\$SECOND_REVIEW_CLAUDE_SETTINGS names '$SECOND_REVIEW_CLAUDE_SETTINGS', which is not a file."
+    # The file it is checked for and the file claude is handed must be the same one: a name
+    # that RESOLVES to one ending in a newline would otherwise pass -f and then resolve to
+    # its SIBLING, which is the file the content allowlist reads and the one claude gets.
+    no_line_break_resolved "$SECOND_REVIEW_CLAUDE_SETTINGS" \
+      "the resolved \$SECOND_REVIEW_CLAUDE_SETTINGS path" E_CLAUDE_SETTINGS
     claude_settings_abs=$(realpath "$SECOND_REVIEW_CLAUDE_SETTINGS") || refuse E_CLAUDE_SETTINGS \
       "could not resolve \$SECOND_REVIEW_CLAUDE_SETTINGS '$SECOND_REVIEW_CLAUDE_SETTINGS'."
-    # The file it is checked for and the file claude is handed must be the same one: without
-    # the test above, a name ending in a newline passed -f and then resolved to its SIBLING,
-    # which is the file the content allowlist read and the one claude got.
-    no_line_break "$claude_settings_abs" \
-      "the resolved \$SECOND_REVIEW_CLAUDE_SETTINGS path" E_CLAUDE_SETTINGS
     settings_verdict=$(python3 -I -c '
 import json, sys
 ALLOWED = {"awsCredentialExport", "apiKeyHelper"}
@@ -523,11 +554,12 @@ print("OK")
     # nothing in it with no sign of why.
     [ -r "$SECOND_REVIEW_CONTEXT_DIR" ] || note \
       "\$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR' can be searched but cannot be listed, so a file the brief names by its full path still reads, while the reviewer's Glob finds nothing there and its Grep searches only a file it is given by full path."
-    context_abs=$(realpath "$SECOND_REVIEW_CONTEXT_DIR") || refuse E_CONTEXT_DIR \
-      "could not resolve \$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR'."
     # As for the settings file: the directory checked and the directory handed to --add-dir
     # have to be the same one, and a trailing newline is where they came apart.
-    no_line_break "$context_abs" "the resolved \$SECOND_REVIEW_CONTEXT_DIR path" E_CONTEXT_DIR
+    no_line_break_resolved "$SECOND_REVIEW_CONTEXT_DIR" \
+      "the resolved \$SECOND_REVIEW_CONTEXT_DIR path" E_CONTEXT_DIR
+    context_abs=$(realpath "$SECOND_REVIEW_CONTEXT_DIR") || refuse E_CONTEXT_DIR \
+      "could not resolve \$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR'."
     # Compare against a prefix that always ends in exactly one slash. The obvious
     # "$dir"/* is wrong when the directory is "/", because realpath returns that with
     # its own trailing slash and the pattern becomes //*, which matches no ordinary

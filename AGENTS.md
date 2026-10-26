@@ -220,15 +220,19 @@ SECOND_REVIEW_CONTEXT_DIR="$round/context" \
   script refuses anything else. Why: it writes the backend's trace into `--out`, and a
   trace can hold credential details, so it must never land in a tracked folder.
 - **No path you give it may contain a line break** — `--tree`, `--out`, `--brief`, the
-  backend command, `SECOND_REVIEW_CONTEXT_DIR` or `SECOND_REVIEW_CLAUDE_SETTINGS` — and the
-  script refuses one that does, before it reads, creates or clears anything. Why: a trailing
-  newline is stripped by the shell wherever a path goes through `realpath`, `dirname`,
-  `basename` or `command -v`, so the run acted on the *sibling* path while reporting
-  success. Measured on three of them: such a `--tree` was reviewed and certified while the
-  sibling was the directory actually read; such an `--out` cleared and wrote the sibling,
-  destroying the earlier review in it, and left the directory named empty; and such a link
-  target sent the backend-command check to a different path, so a hop of the chain inside
-  `--out` went unchecked and the cleanup then unlinked it.
+  backend command, `SECOND_REVIEW_CONTEXT_DIR`, `SECOND_REVIEW_CLAUDE_SETTINGS`, or the path
+  you invoke the script by — and the script refuses one that does, before it reads, creates
+  or clears anything. **Including a path that merely *resolves* to one** through a symbolic
+  link or a renamed parent directory. Why: a trailing newline is stripped by the shell
+  wherever a path goes through `realpath`, `dirname`, `basename` or `command -v`, so the run
+  acted on the *sibling* path while reporting success. Measured on five of them: such a
+  `--tree` was reviewed and certified while the sibling was the directory actually read;
+  such an `--out` cleared and wrote the sibling, destroying the earlier review in it, and
+  left the directory named empty; such a `--brief` passed its own readability checks and the
+  reviewer was then handed the sibling file's text; such a link target sent the
+  backend-command check to a different path, so a hop of the chain inside `--out` went
+  unchecked and the cleanup then unlinked it; and such a path to the script itself moved
+  `REPO_ROOT`, which is what the whole `tmp/` containment boundary is measured against.
 - **Never paste a trace** (`review.err`) into a pull request, an issue or Slack. Read it
   with `tail` or a targeted search.
 - **`review-record.txt` is what goes in the pull request**: the backend, the model that
