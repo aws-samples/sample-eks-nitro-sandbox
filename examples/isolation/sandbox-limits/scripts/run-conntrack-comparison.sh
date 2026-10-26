@@ -144,7 +144,10 @@ read_cluster_dns() {
     DNS_TRIED="${DNS_TRIED:+$DNS_TRIED }$node"
     ip="$(kubectl get --raw "/api/v1/nodes/$node/proxy/configz" --request-timeout=10s \
       | sed -n 's/.*"clusterDNS":\["\([^"]*\)".*/\1/p')" || ip=""
-    if [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+    # Canonical dotted-quad only: every octet alternative is either one digit or starts 1-9,
+    # so 999.999.999.999 and a leading-zero form such as 01.2.3.4 are refused by construction
+    # rather than by extra clauses bolted on for each.
+    if [[ "$ip" =~ ^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])$ ]]; then
       COREDNS_IP="$ip" DNS_NODE="$node"
       return 0
     fi

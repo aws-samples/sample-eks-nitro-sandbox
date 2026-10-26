@@ -156,7 +156,8 @@ COREDNS_IP=""
 for DNS_NODE in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
     | awk '$2 == "True" {print $1}'); do
   COREDNS_IP=$(kubectl get --raw "/api/v1/nodes/$DNS_NODE/proxy/configz" --request-timeout=10s \
-    | sed -n 's/.*"clusterDNS":\["\([^"]*\)".*/\1/p' | grep -Ex '[0-9]{1,3}(\.[0-9]{1,3}){3}')
+    | sed -n 's/.*"clusterDNS":\["\([^"]*\)".*/\1/p' \
+    | grep -Ex '((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])')
   [ -n "$COREDNS_IP" ] && break
 done
 : "${COREDNS_IP:?could not read the cluster DNS address from any Ready node; check permission to list nodes and get nodes/proxy}" &&
