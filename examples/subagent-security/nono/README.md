@@ -631,10 +631,9 @@ PASS the supplier API refuses an invalid key with 401
 PASS no supplier key appears in the evidence or the report
 ```
 
-Nothing here prints or stores either value. The placeholder the reader holds is 64
-characters, and the comparison that decides "not the real supplier key" is between
-HMAC-SHA256 digests taken under a per-run key the controller generates. Three choices are
-deliberate:
+Nothing here prints or stores either value. The comparison that decides "not the real
+supplier key" is between salted digests taken under a per-run key the controller generates.
+Three choices are deliberate:
 
 - **The digest is salted and deliberately slow** — PBKDF2-HMAC-SHA256 under the per-run
   key, 200,000 iterations — rather than a bare or single-pass hash, because a fast digest
@@ -642,9 +641,10 @@ deliberate:
 - **The digest is not kept.** It does its job in that one comparison and is then dropped
   from the run's record, so `calls.json` and `evidence.json` carry no commitment to either
   credential. The outcome is in the checks list by name, which is what you see above.
-- **The real key's own length is not recorded either.** It is a fact about a credential and
-  it adds nothing the comparison has not already settled, and these files leave the pod and
-  get read by people. What the record keeps is the placeholder's length and nothing else. The `401` is the upstream control: the supplier
+- **No measurement of either credential is recorded.** Not a length, not a present flag,
+  not a digest. These files leave the pod and get read by people, and each comparison's
+  outcome is already in the checks list above by name, so writing its inputs down adds
+  nothing. What persists from that call is the three lists of variable *names*. The `401` is the upstream control: the supplier
 API really does check the header, so the `200` the reader gets through the proxy is the
 proxy having substituted a valid key and not the server waving anything through.
 

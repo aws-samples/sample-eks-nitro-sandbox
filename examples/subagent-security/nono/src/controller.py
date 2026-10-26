@@ -325,13 +325,18 @@ class Run:
         self.check("the reader holds a supplier credential", result["api_key_present"])
         self.check("the reader's credential is not the real supplier key",
                    result["api_key_digest"] != keyed_digest(self.digest_key, real))
-        # The digest has now done its only job. It is not kept: a digest of credential
-        # material in the run's record is a published commitment to that credential, and
-        # the outcome of the comparison is already in the checks list by name. So the
-        # record ends up holding nothing derived from either credential's value -- not the
-        # real key, not the placeholder, and not a digest of either.
-        entry["result"] = {k: v for k, v in entry["result"].items()
-                           if k != "api_key_digest"}
+        # Every field computed from a credential's value has now done its only job, in
+        # the checks above, and none of it is kept. What persists from this call is the
+        # three lists of variable NAMES; the digest, the length and the present flag are
+        # all measurements of a credential, and the run record leaves the pod and gets
+        # read by people. Each comparison's outcome is in the checks list by name, which
+        # is what the page shows, so nothing is lost by not writing the inputs down.
+        #
+        # An allowlist rather than a denylist: a field added to the shared worker later is
+        # then dropped here by default instead of being persisted because nobody updated
+        # this line.
+        keep = ("aws_names", "aws_credential_names", "model_key_names")
+        entry["result"] = {k: v for k, v in entry["result"].items() if k in keep}
         self.save_calls()
         # nono sets AWS_CA_BUNDLE so an AWS SDK inside a role would trust its proxy's
         # certificate. That is not a credential, so the check names the variables that
@@ -339,7 +344,6 @@ class Run:
         self.check("the reader has no AWS credential variable; its AWS environment is "
                    f"{result['aws_names']}", result["aws_credential_names"] == [])
         self.check("the reader has no model API key", result["model_key_names"] == [])
-        self.placeholder_length = result["api_key_length"]
         # Neither the real key's length nor anything else derived from its contents is
         # kept on the run. The comparison above is recorded in the checks list by name,
         # which is what the page shows.
@@ -457,10 +461,6 @@ class Run:
             "run_id": self.id, "case_id": CASE, "aws_arn": self.arn,
             "credential_provider": "container-role", "model_id": os.environ["BEDROCK_MODEL_ID"],
             "model_usage": self.usage, "report_prefix": prefix,
-            # The role placeholder's length only. Whether it differs from the real key is
-            # in the checks list by name, and recording it here too would put a second
-            # value derived from the key's contents into this file.
-            "supplier_credential": {"role_placeholder_length": self.placeholder_length},
             "comparison": comparison, "report_choice": payload["recommended_supplier"],
             "checks": self.checks, "calls": self.calls,
         }
