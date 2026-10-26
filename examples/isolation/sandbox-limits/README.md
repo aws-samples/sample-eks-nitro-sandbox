@@ -137,7 +137,8 @@ The comparison script checks this setting rather than changing this shared setti
 identical but for one line: `probe-sandboxed` sets `runtimeClassName: isolated-sandbox`,
 `probe-standard` does not. The egress policy selects both and allows only DNS to CoreDNS. Fill in
 `<COREDNS_IP>` with your cluster's DNS address, read from the kubelet configuration of the first
-Ready node that answers (the script does this for you). That read needs permission to **list
+Ready node that answers with a canonical IPv4 address as its first `clusterDNS` entry (the script
+does this for you). That read needs permission to **list
 `nodes`** and to **get `nodes/proxy`**; without both, the lookup below prints the API server's
 denial and applies no policy and no pod.
 [How the network policy works](#how-the-network-policy-works) gives the other ways to reach the
@@ -155,10 +156,12 @@ kubectl create -f deploy/namespace.yaml
 COREDNS_IP=""
 for DNS_NODE in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
     | awk '$2 == "True" {print $1}'); do
-  COREDNS_IP=$(kubectl get --raw "/api/v1/nodes/$DNS_NODE/proxy/configz" --request-timeout=10s \
-    | sed -n 's/.*"clusterDNS":\["\([^"]*\)".*/\1/p' \
-    | grep -m1 -Ex '((25[012345]|2[01234][0123456789]|1[0123456789][0123456789]|[123456789][0123456789]|[0123456789])\.){3}(25[012345]|2[01234][0123456789]|1[0123456789][0123456789]|[123456789][0123456789]|[0123456789])')
-  [ -n "$COREDNS_IP" ] && break
+  DNS_READ=$(kubectl get --raw "/api/v1/nodes/$DNS_NODE/proxy/configz" --request-timeout=10s \
+    | sed -n 's/.*"clusterDNS":\["\([^"]*\)".*/\1/p')
+  if [[ "$DNS_READ" =~ ^((25[012345]|2[01234][0123456789]|1[0123456789][0123456789]|[123456789][0123456789]|[0123456789])\.){3}(25[012345]|2[01234][0123456789]|1[0123456789][0123456789]|[123456789][0123456789]|[0123456789])$ ]]; then
+    COREDNS_IP="$DNS_READ"
+    break
+  fi
 done
 : "${COREDNS_IP:?no Ready node returned an IPv4 clusterDNS; check permission to list nodes and get nodes/proxy, and that the first clusterDNS entry is IPv4}" &&
 echo "cluster DNS address: $COREDNS_IP" &&
