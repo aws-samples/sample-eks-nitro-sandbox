@@ -6,8 +6,6 @@ metadata:
   labels:
     app.kubernetes.io/name: s3-encrypted-file-plain
     app.kubernetes.io/managed-by: s3-encrypted-file
-    # Deliberately not app: s3-encrypted-file. The egress policy selects that label, and
-    # this pod is the control for the machine readings, not for the policy.
   annotations:
     karpenter.sh/do-not-disrupt: "true"
 spec:

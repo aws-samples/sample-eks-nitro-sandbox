@@ -7,13 +7,10 @@ whose attestation matches. So this program:
   1. prints what it can read about the machine it is running on, which is how the page
      shows it ran in a sandbox and not on the node (exec is denied by the Cedar policy, so
      the pod has to report on itself);
-  2. waits for its network policy to be in force on the node, then tries one destination
-     the policy denies, so the page can show a refused connection as well as the allowed
-     ones this program needs;
-  3. reads the manifest and the ciphertext from S3, which the bucket policy permits;
-  4. asks KMS to decrypt the wrapped data key, presenting an attestation document, and
+  2. reads the manifest and the ciphertext from S3, which the bucket policy permits;
+  3. asks KMS to decrypt the wrapped data key, presenting an attestation document, and
      requires the answer to come back encrypted to that document's public key;
-  5. decrypts the file with AES-256-GCM in memory, checks it against the length and
+  4. decrypts the file with AES-256-GCM in memory, checks it against the length and
      SHA-256 the Cedar policy pins in this container's environment, and prints the marker.
 
 Nothing here prints the file. The only things it says about the plaintext are its length
@@ -34,9 +31,6 @@ import json
 import os
 import re
 import sys
-import time
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 
 import boto3
@@ -74,21 +68,6 @@ def print_readings() -> None:
     except OSError as error:
         product = f"unavailable ({error.strerror})"
     print(f"product: {product}")
-
-
-def probe_blocked(url: str) -> bool:
-    """One request to a destination the network policy denies. True if it connected."""
-    try:
-        with urllib.request.urlopen(url, timeout=15) as response:  # noqa: S310
-            print(f"blocked: {url} CONNECTED (HTTP {response.status})")
-            return True
-    except urllib.error.HTTPError as error:
-        # An HTTP status is still a completed connection, so this is the allowed case too.
-        print(f"blocked: {url} CONNECTED (HTTP {error.code})")
-        return True
-    except (urllib.error.URLError, OSError) as error:
-        print(f"blocked: {url} refused ({type(error).__name__}: {error})")
-        return False
 
 
 def _get_object(s3_client, bucket: str, key: str) -> bytes:
@@ -180,16 +159,6 @@ def main() -> int:
     if args.readings_only:
         print("s3-encrypted-file-readings-done")
         return 0
-
-    # A pod's network policy is programmed on the node a few seconds after the pod starts,
-    # so a probe in the pod's first seconds can reach a destination the policy denies and
-    # say nothing about the policy. Waiting means every connection below is made under it.
-    wait_seconds = int(os.environ.get("NETWORK_POLICY_WAIT_SECONDS", "75"))
-    print(f"waiting: {wait_seconds}s for the network policy to be in force on the node")
-    sys.stdout.flush()
-    time.sleep(wait_seconds)
-    probe_blocked(os.environ["BLOCKED_PROBE_URL"])
-    sys.stdout.flush()
 
     config = Config(
         retries={"total_max_attempts": 4, "mode": "adaptive"},

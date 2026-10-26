@@ -7,8 +7,6 @@ metadata:
   # long base64 string, so it is never kept in this file; the rendered pod setup.sh applies
   # is written to the repository's tmp/.
   labels:
-    # The network policy in egress-policy.yaml selects this label.
-    app: s3-encrypted-file
     app.kubernetes.io/name: s3-encrypted-file-demo
     app.kubernetes.io/managed-by: s3-encrypted-file
   annotations:
@@ -73,15 +71,6 @@ spec:
           value: <EXPECTED_SHA256>
         - name: EXPECTED_LENGTH
           value: "<EXPECTED_LENGTH>"
-        # One destination the egress policy denies, probed once so the page can show a
-        # refused connection beside the allowed ones.
-        - name: BLOCKED_PROBE_URL
-          value: https://example.com/
-        # A pod's network policy is programmed on the node a few seconds after the pod
-        # starts. The application waits this long before it connects to anything, so every
-        # connection it makes is made under the policy.
-        - name: NETWORK_POLICY_WAIT_SECONDS
-          value: "75"
         # The one pinned value scripts/changed-pod.sh changes. The application only prints
         # it; what matters is that the policy pins it, so changing it changes PCR17.
         - name: SAMPLE_VARIANT

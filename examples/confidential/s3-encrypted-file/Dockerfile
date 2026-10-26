@@ -9,9 +9,9 @@
 # Cedar policy measurement KMS checks.
 FROM python:3.12.11-slim-bookworm
 
-# The pod has no route to the instance metadata service, and no business asking it for
-# credentials: they come from EKS Pod Identity. Turning the metadata provider off keeps
-# the SDK from waiting on an address the network policy denies.
+# The pod has no business asking the instance metadata service for credentials: they come
+# from EKS Pod Identity. Turning the metadata provider off keeps the SDK from falling back
+# to the node's own role if the Pod Identity endpoint is slow to answer.
 ENV AWS_EC2_METADATA_DISABLED=true \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1

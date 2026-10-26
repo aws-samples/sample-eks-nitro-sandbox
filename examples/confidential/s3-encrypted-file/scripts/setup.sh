@@ -12,8 +12,7 @@
 # Every AWS resource it creates is tagged ManagedBy=s3-encrypted-file, and it reuses an
 # existing one only when that tag is on it. The namespace carries a matching
 # app.kubernetes.io/managed-by label, which clean.sh checks before it deletes anything
-# inside. The script changes nothing that is shared by the whole cluster: it checks that
-# network policy enforcement is on and stops with the command when it is not.
+# inside. The script changes nothing that is shared by the whole cluster.
 set -euo pipefail
 
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -147,15 +146,6 @@ registry="$account_id.dkr.ecr.$AWS_REGION.amazonaws.com"
 echo "  context:  $(kc config current-context)"
 kc get runtimeclass confidential-sandbox -o name >/dev/null 2>&1 ||
   die "the confidential-sandbox runtime class is not on this cluster; run the Getting started samples first"
-
-# Network policy enforcement is a cluster-wide setting, so this script never changes it:
-# the page has the reader make that change once, and this stops with the command.
-np_enabled="$(kc get configmap amazon-vpc-cni -n kube-system \
-  -o jsonpath='{.data.enable-network-policy-controller}' 2>/dev/null || true)"
-[[ "$np_enabled" == "true" ]] || die "network policy enforcement is off on this cluster, so the sandbox's egress would not be restricted. Turn it on once, for the whole cluster, with the step on the page:
-    kubectl apply -f deploy/enable-network-policy.yaml
-  then re-run this script."
-echo "  network policy enforcement: on"
 
 : > "$STATE_FILE"
 chmod 600 "$STATE_FILE"
@@ -483,7 +473,7 @@ jq -e --arg role "$role_arn" --arg bucket "$S3_BUCKET" \
 echo "  the bucket policy grants the pod s3:GetObject on the two objects and nothing else"
 
 # ------------------------------------- 4/9 namespace, service account and the association
-echo "== 4/9 create the namespace, the service account, the association and the egress policy =="
+echo "== 4/9 create the namespace, the service account and the association =="
 
 ns_name_filter="$(printf '.metadata.name = %s' "$(jq -n --arg v "$NAMESPACE" '$v')")"
 ns_filter="$(printf '.metadata.namespace = %s' "$(jq -n --arg v "$NAMESPACE" '$v')")"
@@ -542,50 +532,6 @@ else
 fi
 state_put SERVICE_ACCOUNT "$SERVICE_ACCOUNT"
 state_put ASSOCIATION_ID "$assoc_id"
-
-# The egress policy goes on now, well before any pod, and not in the same breath as the
-# pods at the end. A pod created in the moments after a new policy appears in its namespace
-# can come up with a datapath that does not match the policy, and stay that way: a pod the
-# policy does not select was left with no egress at all for as long as it lived, and a pod it
-# does select reached a host the policy denies. Everything between here and step 8 takes
-# minutes, which is time the policy agent uses to settle.
-coredns_ip="$(kc get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')"
-[[ -n "$coredns_ip" ]] || die "could not read the CoreDNS Service address"
-# And it has to be an address. An ApplicationNetworkPolicy does not validate ipBlock.cidr:
-# a value that is not a CIDR block is stored as written rather than refused, so a lookup
-# that came back with anything else would be substituted into the DNS rule, the rule would
-# match nothing, and the page would be showing a policy whose first rule does nothing. This
-# command block is the only check there is, so it is made here.
-#
-# The digit class is written out rather than written as the range 0-9, because bash matches
-# a bracket range against the locale's collating order: under en_US.utf8 the range form also
-# accepts non-ASCII digits, which are not an address either.
-valid_ipv4() {  # valid_ipv4 <string>
-  local digit='[0123456789]' octet
-  [[ "$1" =~ ^$digit{1,3}\.$digit{1,3}\.$digit{1,3}\.$digit{1,3}$ ]] || return 1
-  for octet in ${1//./ }; do
-    # A leading zero first: bash arithmetic reads 010 as octal and 08 as an error, so the
-    # range test below cannot be the one that runs on it.
-    [[ "$octet" == "0" || "${octet#0}" == "$octet" ]] || return 1
-    (( octet <= 255 )) || return 1
-  done
-  return 0
-}
-valid_ipv4 "$coredns_ip" ||
-  die "the CoreDNS Service address came back as '$coredns_ip', which is not an IPv4 address. An ApplicationNetworkPolicy stores an ipBlock.cidr it cannot parse instead of refusing it, so applying this would leave the sandbox with a DNS rule that matches nothing. Check 'kubectl get svc -n kube-system kube-dns'."
-sed -e "s|<COREDNS_IP>|$coredns_ip|g" -e "s|<AWS_REGION>|$AWS_REGION|g" \
-    -e "s|<S3_BUCKET>|$S3_BUCKET|g" \
-  "$SAMPLE_DIR/deploy/egress-policy.yaml" > "$TMP_DIR/egress-policy.yaml"
-kc apply -n "$NAMESPACE" -f "$TMP_DIR/egress-policy.yaml"
-# The PolicyEndpoint is how the controller says it has handed the policy to the nodes.
-endpoints=0
-for _ in $(seq 60); do
-  endpoints="$(kc get policyendpoints -n "$NAMESPACE" -o name 2>/dev/null | wc -l | tr -d ' ')"
-  if [[ "$endpoints" != "0" ]]; then break; fi
-  sleep 2
-done
-[[ "$endpoints" != "0" ]] || die "no PolicyEndpoint appeared for the egress policy in $NAMESPACE; the policy is not in force on the nodes"
-echo "  egress policy applied and handed to the nodes ($endpoints PolicyEndpoint)"
 
 # ------------------------------------------------------- 5/9 build and push the image
 echo "== 5/9 build the application image and push it to ECR =="
@@ -911,13 +857,7 @@ grep -Eq '^attested-s3-ok bytes=[0123456789]+ sha256=[0123456789abcdef]{64}$' <<
   die "the approved pod ended Succeeded but printed no validation marker; read $TMP_DIR/approved-pod.log"
 grep -Fq "attested-s3-ok bytes=$expected_length sha256=$plaintext_sha256" <<<"$approved_log" ||
   die "the approved pod validated a file that is not the one this run uploaded; read $TMP_DIR/approved-pod.log"
-# The refused connection the page shows. A probe that connected is not a reading of the
-# policy: it means the pod ran before the policy was in force on its node, and the run has
-# to be repeated rather than reported.
-grep -q '^blocked: .* refused ' <<<"$approved_log" ||
-  die "the sandboxed pod's probe of a destination the egress policy denies was not refused. The policy was not in force on the node when the pod ran, so this run does not show the policy working. Read $TMP_DIR/approved-pod.log and run this script again."
 echo "  $POD_NAME ended Succeeded: $(grep -E '^attested-s3-ok' <<<"$approved_log")"
-echo "  its probe of a denied destination was refused"
 
 # The ordinary pod: the same image and the same code, with --readings-only, on the same node,
 # so the page can show what an ordinary pod reads for the same four readings.
@@ -943,12 +883,12 @@ echo "== 9/9 the same role, with no attestation document =="
 fill "$SAMPLE_DIR/deploy/credentials-pod.yaml" "$TMP_DIR/rendered-credentials-pod.json"
 no_placeholders_left "$TMP_DIR/rendered-credentials-pod.json" "credentials pod"
 
-# This pod is started up to three times, because a pod can come up on a recycled pod IP
-# whose datapath still carries the deleted pod's state and then never reach AWS at all.
-# Observed on a busy cluster: a pod sat with no egress for its whole life while a pod
-# created minutes later, on the same node, reached AWS first time. A pod that reached no
-# decision is not evidence either way about the key policy, so it is replaced rather than
-# reported. Only a pod that got an answer from KMS ends the loop.
+# This pod is started up to three times, because a pod can come up with a datapath that is
+# not ready and then never reach AWS at all. Observed on a busy cluster: a pod sat with no
+# egress for its whole life while a pod created minutes later, on the same node, reached AWS
+# first time. A pod that reached no decision is not evidence either way about the key policy,
+# so it is replaced rather than reported. Only a pod that got an answer from KMS ends the
+# loop.
 credentials_log=""
 credentials_answered=false
 for pod_attempt in 1 2 3; do

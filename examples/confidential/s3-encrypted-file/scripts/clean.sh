@@ -132,8 +132,6 @@ case "$ns_state" in
       kc delete pod "$p" -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=5m \
         || note_fail "could not delete pod $p"
     done
-    kc delete applicationnetworkpolicy s3-encrypted-file-egress -n "$NAMESPACE" --ignore-not-found \
-      || note_fail "could not delete the egress policy"
     kc delete serviceaccount "$SERVICE_ACCOUNT" -n "$NAMESPACE" --ignore-not-found \
       || note_fail "could not delete the service account"
     echo "Deleting namespace $NAMESPACE (carries app.kubernetes.io/managed-by=$MANAGED_BY)..."
@@ -328,7 +326,6 @@ if [[ "$failed" == 0 ]]; then
   else
     echo "Clean up complete. The KMS key is scheduled, not yet destroyed; AWS removes it after its waiting period."
   fi
-  echo "Network policy enforcement stays on for the cluster: it is shared, and other workloads may rely on it."
 else
   echo "Clean up finished with items left behind (see the INCOMPLETE lines above)." >&2
 fi
