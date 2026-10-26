@@ -811,7 +811,10 @@ spec:
 Enforcement is turned on once per cluster with the `amazon-vpc-cni` ConfigMap in
 `kube-system`, which `scripts/setup.sh` checks and stops without. It is enforced on the
 node, outside the guest: the node's network policy agent attaches to the pod's host-side
-interface, so a command in the runner, even as root, cannot change it. `setup.sh` waits for
+interface, so nothing in the runner pod can change it, whatever UID it runs as — not even a
+root command in a build container on the pod's own Docker daemon. `containerMode: dind` puts
+that daemon in the pod as a privileged `docker:dind` sidecar, and Step 7's `docker build`
+records exactly that case: its `RUN id` prints `uid=0(root)`. `setup.sh` waits for
 the policy's `PolicyEndpoint` before you queue a job, because that is how the controller
 says it has handed the policy to the nodes.
 

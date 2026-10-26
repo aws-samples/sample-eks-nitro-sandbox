@@ -144,10 +144,43 @@ sample that has no policy.
   nodes; start the workload after it appears. (Coding agent, step 5; Claude Managed Agents,
   step 5.)
 - **It is enforced on the node, outside the guest.** The node's network policy agent
-  attaches eBPF programs to the pod's host-side interface, so a command inside the sandbox,
-  even as root, cannot change the policy. Kubernetes always allows traffic between a pod and
-  its own node. (`examples/managed-agents/claude-managed-agents/README.md`, "How the network
+  attaches eBPF programs to the pod's host-side interface, which the guest has no access to,
+  so nothing inside the sandbox can change the policy, whatever UID it runs as. Kubernetes
+  always allows traffic between a pod and its own node.
+  (`examples/managed-agents/claude-managed-agents/README.md`, "How the network
   policy works".)
+- **Do not write "even as root" unless the pod can actually be root.** The point above holds
+  at any UID, so it needs no root hypothetical — and most samples here set
+  `runAsNonRoot: true`, which makes root a state the sample cannot be in. A reader who tries
+  to check such a claim gets the pod's own UID instead, so say what that UID is and keep the
+  claim to what the sample shows. **Exactly one sample records UID 0 directly:**
+  `examples/ai-agents/coding-agents-for-developers` sets `runAsUser: 0` with
+  `allowPrivilegeEscalation: true`, and its page prints `id -u` as `0`. Two more are
+  root-capable but record something narrower, and the gap is the thing to notice:
+  `examples/ci-cd/docker-builds` records full privilege over the guest kernel — step 5 writes
+  `/proc/sys/vm/swappiness` from a `privileged: true` container — but never records the
+  process UID; and `examples/ci-cd/github-actions` records `uid=0(root)` only inside a build
+  container on the pod's own `docker:dind` daemon, not in any container of its PodSpec.
+  (`AGENTS.md`, "Say only what your sample actually limits".)
+- **`privileged: true` is not by itself evidence of UID 0**, and neither is the absence of a
+  `securityContext`: both leave the identity to the image's own `USER`. Nor is a root-only
+  *looking* operation, because a capability such as `CAP_SYS_ADMIN` lets a non-root process do
+  it — which is why `docker-builds`' sysctl write above is privilege evidence and not UID
+  evidence. So cite the UID the sample records, and **name the exact execution context that
+  evidence covers.** `examples/ci-cd/github-actions` is the worked example: its `uid=0(root)`
+  comes from a `docker build` `RUN` step on the job's nested daemon, so it says nothing about
+  the UID of the *runner container*, whose image's own `USER` is not root. That sentence once
+  said "a command in the runner"; it now names the build container on the pod's own daemon,
+  which is what the output actually pins. **Widening a noun is not a fix if the wider noun is
+  still not what the evidence pins** — "the runner pod" was an improvement and still too loose,
+  because a build container on the in-pod daemon is not a container of the PodSpec. Name the
+  context, do not just enlarge it (issue #103).
+- **"Cannot change the policy" is not "cannot get data out".** A filter can stay unmodified
+  and still be routed around — through an allowed `domainNames` host that serves something
+  else, over open port 53, or to the pod's own node. Write "cannot change" or "cannot
+  reconfigure" for the enforcement point, and claim "cannot bypass" only where the sample
+  establishes that separately. Every page here states the policy's own limits in the same
+  section as this claim; keep that pairing.
 - **Refusals can look different.** A blocked host can time out on IPv4 or fail at once with
   "Network is unreachable" when it also publishes IPv6 addresses; both are the same block.
   (Same section.)
