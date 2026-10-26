@@ -92,6 +92,70 @@ shared volume, and changing an fsGroup its owner chose would change how that con
 This is a question for whoever owns that install. Run this sample on a cluster whose Argo
 Rollouts install you own."
 
+# Our step NAMES being free is not the same as them being ours. An entry under one
+# of our names pointing at a different binary is somebody else's registration that
+# happens to have picked the same name, and overwriting it would swap the code
+# their controller loads. Checked separately from the foreign-name scan above,
+# which by construction skips our own names.
+loc_rc=0
+reg_pairs="$(registered_step_plugin_locations)" || loc_rc=$?
+[[ $loc_rc -eq 2 ]] && die "could not read the step-plugin locations from configmap argo-rollouts-config in namespace $ARGO_NAMESPACE; stopping rather than write over a registration I cannot read"
+while read -r p_name p_loc; do
+  [[ -z "$p_name" ]] && continue
+  [[ "$p_name" == "$STEP_PATCH" || "$p_name" == "$STEP_DRAIN" ]] || continue
+  [[ "$p_loc" == "file://$PLUGIN_PATH" ]] && continue
+  die "step plugin $p_name is already registered on the controller in namespace $ARGO_NAMESPACE, but against
+  $p_loc
+rather than this sample's
+  file://$PLUGIN_PATH
+Something else owns that name here. Overwriting it would change which binary that
+controller loads, which is a question for whoever owns the install. Nothing has been
+changed."
+done <<<"$reg_pairs"
+
+# The two cluster-scoped RBAC objects. They are applied by name, and `apply` over
+# an object somebody else created would take it over, so each is checked for this
+# sample's mark first. Absent is fine; present and ours is fine (a re-run);
+# present and unmarked is not.
+for rbac in clusterrole clusterrolebinding; do
+  rbac_rc=0
+  resource_exists kc_cluster "$rbac" argo-rollouts-sandbox-warmpool || rbac_rc=$?
+  case $rbac_rc in
+    1) continue ;;   # absent, which is the ordinary first run
+    2) die "could not read $rbac argo-rollouts-sandbox-warmpool, so whether it is this sample's could not be determined; stopping rather than apply over it" ;;
+  esac
+  owner="$(kc_cluster get "$rbac" argo-rollouts-sandbox-warmpool \
+    -o "jsonpath={.metadata.labels.app\\.kubernetes\\.io/managed-by}" 2>/dev/null)" || owner="?"
+  [[ "$owner" == "?" ]] \
+    && die "could not read the labels on $rbac argo-rollouts-sandbox-warmpool; stopping rather than apply over it"
+  [[ "$owner" == "$MANAGED_BY" ]] \
+    || die "$rbac argo-rollouts-sandbox-warmpool already exists and is not labelled app.kubernetes.io/managed-by=$MANAGED_BY (it says '${owner:-<no label>}'), so it is not this sample's. Applying over it would take over an object something else created. Nothing has been changed."
+done
+
+# Collisions on the controller Deployment. Staging the binary adds an
+# initContainer named copy-sandbox-warmpool-plugin, a volume named plugins and a
+# /plugins mount on the controller container. The initContainer's name is what
+# marks all three as ours: if the volume or the mount is there WITHOUT it, they
+# belong to something else that stages its own plugins, and the strategic merge
+# would silently redefine them.
+dep_json_rc=0
+dep_init="$(kc_cluster -n "$ARGO_NAMESPACE" get deploy argo-rollouts \
+  -o jsonpath='{range .spec.template.spec.initContainers[*]}{.name}{"\n"}{end}' 2>/dev/null)" || dep_json_rc=$?
+dep_vols="$(kc_cluster -n "$ARGO_NAMESPACE" get deploy argo-rollouts \
+  -o jsonpath='{range .spec.template.spec.volumes[*]}{.name}{"\n"}{end}' 2>/dev/null)" || dep_json_rc=$?
+dep_mounts="$(kc_cluster -n "$ARGO_NAMESPACE" get deploy argo-rollouts \
+  -o jsonpath='{range .spec.template.spec.containers[?(@.name=="argo-rollouts")].volumeMounts[*]}{.mountPath}{"\n"}{end}' 2>/dev/null)" || dep_json_rc=$?
+[[ $dep_json_rc -ne 0 ]] \
+  && die "could not read deployment $ARGO_NAMESPACE/argo-rollouts, so whether staging the binary would collide with something already on it could not be determined"
+ours_staged=""
+printf '%s\n' "$dep_init" | grep -Fxq "copy-sandbox-warmpool-plugin" && ours_staged=1
+if [[ -z "$ours_staged" ]]; then
+  printf '%s\n' "$dep_vols" | grep -Fxq "plugins" \
+    && die "deployment $ARGO_NAMESPACE/argo-rollouts already has a volume named 'plugins' that this sample did not put there (there is no copy-sandbox-warmpool-plugin init container on it). Staging the binary would redefine that volume, which is a question for whoever owns the install. Nothing has been changed."
+  printf '%s\n' "$dep_mounts" | grep -Fxq "/plugins" \
+    && die "the argo-rollouts container in deployment $ARGO_NAMESPACE/argo-rollouts already mounts /plugins, and this sample did not put it there. Staging the binary would redefine that mount. Nothing has been changed."
+fi
+
 : "${AWS_REGION:?set AWS_REGION in .env (the Region your ECR repository should live in)}"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)" \
   || die "could not read the AWS account; check your credentials"

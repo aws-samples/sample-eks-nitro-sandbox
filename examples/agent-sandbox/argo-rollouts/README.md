@@ -227,13 +227,67 @@ own. Read the plan, then apply it:
 ```
 
 This block and the plan above it come from a separate run, taken when the registration was
-performed against the shared controller, rather than from the walkthrough that follows; the
-`docker build` layers were already cached on that machine, so a first build takes
-noticeably longer. Everything from Step 3 on comes from one fresh walkthrough run.
+performed against the shared controller, rather than from the walkthrough that follows.
+Everything from Step 3 on comes from one fresh walkthrough run. Two things about it: the
+`docker build` layers were already cached on that machine, so your first build will take
+noticeably longer than the 0.3 seconds shown, and the build's long digest and command lines
+are abridged here to keep them readable.
 
 ```text
-TODO: output from the fresh run
+$ GOPROXY=direct ./scripts/register-step-plugin.sh apply
+context: sandbox-demo (pinned)   namespace: argo-rollouts-sample
+reusing the Argo Rollouts install in namespace argo-rollouts as it is (quay.io/argoproj/argo-rollouts:v1.10.1); this sample was built against Argo Rollouts v1.10.1
+
+== 1/6 the ECR repository nitro-sample-argo-rollouts-stepplugin ==
+  reusing nitro-sample-argo-rollouts-stepplugin (tagged ManagedBy=argo-rollouts)
+
+== 2/6 build the plugin for amd64 and push it ==
+[+] Building 0.3s (14/14) FINISHED                                       docker:default
+ => [internal] load build definition from Dockerfile                               0.0s
+ => [internal] load metadata for public.ecr.aws/docker/library/golang:1.26         0.2s
+ => [internal] load metadata for public.ecr.aws/docker/library/busybox:1.36        0.2s
+ => [internal] load .dockerignore                                                  0.0s
+ => [build 1/6] FROM public.ecr.aws/docker/library/golang:1.26@sha256:672c944c...   0.0s
+ => [stage-1 1/2] FROM public.ecr.aws/docker/library/busybox:1.36@sha256:73aaf0...  0.0s
+ => [internal] load build context                                                  0.0s
+ => CACHED [build 2/6] WORKDIR /src                                                0.0s
+ => CACHED [build 3/6] COPY go.mod go.sum ./                                       0.0s
+ => CACHED [build 4/6] RUN go mod download                                         0.0s
+ => CACHED [build 5/6] COPY main.go plugin.go ./                                   0.0s
+ => CACHED [build 6/6] RUN go build -trimpath -ldflags="-s -w" ...                 0.0s
+ => CACHED [stage-1 2/2] COPY --from=build /bin/sandbox-warmpool-stepplugin ...    0.0s
+ => exporting to image                                                             0.0s
+ => => naming to <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-argo-rollouts-stepplugin:v1.10.1
+  pushed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-argo-rollouts-stepplugin:v1.10.1
+
+== 3/6 the built binary's sha256 ==
+  sha256 6dcc356cf0458496fd4093383e807ebad041581720a3694eabf528dcff8033dc
+
+== 4/6 register the plugin in configmap argo-rollouts-config ==
+  merged the stepPlugins key into the existing configmap, leaving its other keys alone
+
+== 5/6 the ClusterRole the plugin acts with ==
+clusterrole.rbac.authorization.k8s.io/argo-rollouts-sandbox-warmpool created
+clusterrolebinding.rbac.authorization.k8s.io/argo-rollouts-sandbox-warmpool created
+
+== 6/6 stage the binary on the controller pod ==
+deployment.apps/argo-rollouts patched
+Waiting for deployment "argo-rollouts" rollout to finish: 1 old replicas are pending termination...
+deployment "argo-rollouts" successfully rolled out
+
+the step plugin is registered and staged at /plugins/sandbox-warmpool-stepplugin on <CONTROLLER_POD>
+
+The step plugin is registered. Drive the rollout:  ./scripts/run-rollout.sh
 ```
+
+Step 4/6 is the one to read twice: it says **merged**, not created. The ConfigMap already
+existed on this cluster, so only the `stepPlugins` key was patched in and every other key in
+it was left as it was. Step 1/6 says **reusing** for the same reason: the ECR repository was
+already there carrying this sample's `ManagedBy` tag, so it was adopted rather than recreated.
+
+The `sha256` in step 3/6 is the hash the controller verifies before it will load the plugin,
+and it is the hash of the binary that was just built from the source in
+[`plugin/`](plugin/). Build it twice and you get the same value.
 
 **If your host cannot reach `proxy.golang.org`**, the build fails on a TLS or certificate
 error rather than a timeout, because the `,direct` in the Dockerfile's default `GOPROXY`
