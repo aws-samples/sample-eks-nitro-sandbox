@@ -28,8 +28,8 @@ An agent that both runs arbitrary code and talks to a model does both of those t
 one process, on one pod, with one set of credentials. This sample takes the agent apart
 along that line. The **brain** reasons and holds the credentials, and has no tool that runs
 a command. The **hands** run every command, in a pre-booted Nitro sandbox pod claimed from
-a warm pool, with no network device at all. The only connection between them is the
-Kubernetes API.
+a warm pool, with no network device at all. The Kubernetes API is the only way the brain
+reaches them.
 
 Be precise about what that buys, because it is easy to overstate. Code the model decides to
 run never runs on the half that has the network, and it cannot open a connection of its
@@ -75,9 +75,9 @@ sample is the worked version of it.
   Kubernetes API what its ServiceAccount may do, and shows it refused creating or deleting
   pods, port-forward, Secrets, another namespace and anything cluster-scoped.
 
-*Figure 1: The brain and the hands, in two pods. The brain reasons and holds the credentials but has no tool that runs a command; the hands run every command and have no network device; the Kubernetes API is the only wire between them.*
+*Figure 1: The brain and the hands, in two pods. The brain reasons and holds the credentials but has no tool that runs a command; the hands run every command and have no network device; the Kubernetes API is the only way the brain reaches them.*
 
-![Inside an AWS Cloud frame and an Amazon EKS cluster whose sub line reads that one namespace holds both halves, the two halves sit side by side. On the left, an Operator glyph labelled kubectl exec connects into the brain pod frame, marked an ordinary pod with no runtimeClassName, which holds Claude Code labelled no tool that runs a command. A red dashed arrow labelled no network path runs from the brain pod straight across to the Nitro sandbox pods frame on the right, marked isolated-sandbox plus network-isolated, which holds a claimed pod box labelled runs every command and a warm pod box labelled pre-booted, waiting. Below the middle, a Kubernetes API gear labelled the only wire to the hands connects by a two-way arrow left to the brain pod, labelled claim, exec, cp, logs, and by a two-way arrow up into the claimed pod, labelled the sandbox control channel. To its right a SandboxWarmPool document stack labelled replicas: 1 connects up into the claimed pod over an arrow labelled adopt a pre-booted pod in about 1 s, and up into the warm pod over an arrow labelled pool boots a replacement. Below the cluster, an arrow from the brain pod labelled InvokeModel over HTTPS reaches Amazon Bedrock, labelled Claude model, which is joined by a plain line to a red Pod Identity role glyph labelled bedrock:InvokeModel only. A note below the figure reads that the hands have no network device, so no route, no DNS, no instance metadata and no Pod Identity, and that they hold no ServiceAccount token and no IAM role, so a command the model runs finds no credential.](images/figure-1-brain-and-hands.png)
+![Inside an AWS Cloud frame and an Amazon EKS cluster whose sub line reads that one namespace holds both halves, the two halves sit side by side. On the left, an Operator glyph labelled kubectl exec connects into the brain pod frame, marked an ordinary pod with no runtimeClassName, which holds Claude Code labelled no tool that runs a command. A red dashed arrow labelled not over the network runs from the brain pod straight across to the Nitro sandbox pods frame on the right, marked isolated-sandbox plus network-isolated, which holds a claimed pod box labelled runs every command and a warm pod box labelled pre-booted, waiting. Below the middle, a Kubernetes API gear labelled the only wire to the hands connects by a two-way arrow left to the brain pod, labelled claim, exec, cp, logs, and by a two-way arrow up into the claimed pod, labelled the sandbox control channel. To its right a SandboxWarmPool document stack labelled replicas: 1 connects up into the claimed pod over an arrow labelled adopt a pre-booted pod in about 1 s, and up into the warm pod over an arrow labelled pool boots a replacement. Below the cluster, an arrow from the brain pod labelled InvokeModel over HTTPS reaches Amazon Bedrock, labelled Claude model, which is joined by a plain line to a red Pod Identity role glyph labelled bedrock:InvokeModel only. A note below the figure reads that the hands have no network device, so no route, no DNS, no instance metadata and no Pod Identity, and that they hold no ServiceAccount token and no IAM role, so a command the model runs finds no credential.](images/figure-1-brain-and-hands.png)
 
 ### What this sample does not limit
 
@@ -228,7 +228,7 @@ created IAM role brain-and-hands-brain, tagged ManagedBy=brain-and-hands
 serviceaccount/brain created
 role.rbac.authorization.k8s.io/brain created
 rolebinding.rbac.authorization.k8s.io/brain created
-  created Pod Identity association a-jkiuyy64p0auccs0s for brain-and-hands/brain
+  created Pod Identity association a-f5zgbz0ucutoz8gip for brain-and-hands/brain
 
 == 6/6 the hands, then the brain ==
 sandboxtemplate.extensions.agents.x-k8s.io/hands created
@@ -259,8 +259,8 @@ NAME                    READY   UP-TO-DATE   AVAILABLE   AGE
 deployment.apps/brain   1/1     1            1           11s
 
 NAME                         READY   STATUS    RESTARTS   AGE
-pod/brain-78fd6689db-jkb5w   1/1     Running   0          11s
-pod/hands-pool-lnb4j         1/1     Running   0          13s
+pod/brain-78fd6689db-h2p6k   1/1     Running   0          11s
+pod/hands-pool-t28kz         1/1     Running   0          13s
 ```
 
 Two pods: an ordinary one and a sandboxed one waiting to be claimed.
@@ -407,17 +407,17 @@ kubectl -n $NAMESPACE exec deploy/brain -- \
 ```
 
 ```text
-I claimed sandbox pod `hands-pool-lnb4j`. It came from the warm pool and was ready in 0.26s. I haven't released it yet.
+I claimed sandbox pod `hands-pool-t28kz`. It came from the warm pool and was ready in 0.25s. I haven't released it yet.
 
-- **`uname -rv`** succeeded (exit 0) and printed `6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026`.
-- **Python fetch of https://example.com** failed (exit 1). `urllib` raised `URLError: <urlopen error [Errno -3] Temporary failure in name resolution>`, so the hostname never resolved. This matches the tool description, which says the sandbox has no network.
+- **`uname -rv`:** It succeeded with exit code 0 and printed `6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026`.
+- **Fetching https://example.com with python3:** It failed with exit code 1. `urllib.request.urlopen` raised `URLError: <urlopen error [Errno -3] Temporary failure in name resolution>`. The sandbox has no network, so DNS lookup failed and no connection was attempted. I didn't try anything beyond the single fetch.
 
 Do you want me to release the sandbox?
 ```
 
 That is the whole pattern in one turn: the model decided to run a command, the command ran
 in a pre-booted sandbox pod a quarter of a second away, and the attempt to reach the
-network from there failed because there is no network to reach it on. The turn took 7.4
+network from there failed because there is no network to reach it on. The turn took 7.3
 seconds and five model turns.
 
 **Step 7: The claim adopted a pod that was already running, and the pool refilled.** A
@@ -428,10 +428,9 @@ kubectl -n $NAMESPACE exec deploy/brain -- claude -p 'Claim a sandbox and report
 ```
 
 ```text
-I claimed a sandbox, and the claim took **0.21 s** from claim to Ready. That's wall-clock time and includes the tool's kubectl calls.
+The claim took 0.23 s, measured as wall-clock time from claim to Ready. That figure includes the tool's own kubectl calls.
 
-- **Pod:** `hands-pool-bkq4g`
-- **Launch type:** warm. It was adopted from the pre-booted pool, so nothing had to be started from scratch.
+The sandbox is pod `hands-pool-k8f9z`. It was adopted from the warm pool, so it was already booted and not started fresh.
 ```
 
 The tool measures its own wall clock, from just before it creates the claim to the moment
@@ -452,11 +451,11 @@ kubectl -n $NAMESPACE get sandboxwarmpool hands-pool
 
 ```text
 NAME            READY   SANDBOX            REASON              AGE
-brain-session   True    hands-pool-bkq4g   DependenciesReady   3s
+brain-session   True    hands-pool-k8f9z   DependenciesReady   2s
 
 NAME               LAUNCH-TYPE
-hands-pool-7vjnj   warm
-hands-pool-bkq4g   warm
+hands-pool-k8f9z   warm
+hands-pool-nl86m   warm
 
 NAME         READY   DESIRED   AGE
 hands-pool   1       1         34s
@@ -485,17 +484,17 @@ kubectl -n $NAMESPACE exec deploy/brain -- sh -c \
 kernel:        6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
 product name:  m8i.enclave
 disks:         dm-0 vda vdb vdc
-uptime:        92.77s
+uptime:        110.30s
 --- the pool's replacement pod, on the same node ---
 kernel:        6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
 product name:  m8i.enclave
 disks:         dm-0 vda vdb vdc
-uptime:        7.58s
+uptime:        7.11s
 --- the brain, an ordinary pod ---
 kernel:        6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
 product name:  m8a.2xlarge
 disks:         dm-0 nvme0n1 nvme1n1 zram0
-uptime:        47525.64s
+uptime:        51322.71s
 ```
 
 Read the three rows against each other:
@@ -505,12 +504,12 @@ Read the three rows against each other:
 | `uname -rv` | `6.18.54 #1`, the guest kernel | `6.18.54 #2`, its node's kernel |
 | `/sys/class/dmi/id/product_name` | `m8i.enclave`, the VM | `m8a.2xlarge`, the EC2 instance |
 | `ls /sys/block` | `vda vdb vdc`, virtio devices | `nvme0n1 nvme1n1`, the instance's disks |
-| `/proc/uptime` | 93s and 8s, each pod's own age | 47525s, the node's uptime |
+| `/proc/uptime` | 110s and 7s, each pod's own age | 51322s, the node's uptime |
 
 The version string is the same, `6.18.54`, and the build is not: `#1` against `#2`. That is
 why `uname -r` alone is not evidence. The two uptimes are the clearest reading of all: both
-sandbox pods are on the same node, and each reports its own boot, a minute and a half
-apart, because each got its own VM.
+sandbox pods are on the same node, and each reports its own boot, over a minute and a
+half apart, because each got its own VM.
 
 ```bash
 kubectl -n $NAMESPACE get pods \
@@ -519,9 +518,9 @@ kubectl -n $NAMESPACE get pods \
 
 ```text
 NAME                    NODE       RUNTIMECLASS
-brain-78fd6689db-jkb5w   <NODE_A>   <none>
-hands-pool-bkq4g        <NODE_B>   isolated-sandbox
-hands-pool-7vjnj        <NODE_B>   isolated-sandbox
+brain-78fd6689db-h2p6k   <NODE_A>   <none>
+hands-pool-k8f9z        <NODE_B>   isolated-sandbox
+hands-pool-nl86m        <NODE_B>   isolated-sandbox
 ```
 
 The runtime class shows what was asked for rather than what ran, which is why the readings
@@ -597,6 +596,34 @@ command terminated with exit code 1
 
 Both legs matter: the first could be DNS alone, and the second rules that out by skipping
 DNS entirely.
+
+**The other direction, and what it does not mean.** The pod still gets an address from the
+CNI, even though nothing in the guest has one. That address is not a way in to the hands, but
+it is not a black hole either, and the difference is worth reading rather than assuming. Try
+a closed port on the brain's own address, which has an ordinary network stack behind it, and
+then the same on the claimed pod's address:
+
+```bash
+kubectl -n $NAMESPACE exec deploy/brain -- python3 -c '<connect to the brain its own address>'
+kubectl -n $NAMESPACE exec deploy/brain -- python3 -c '<connect to the claimed hands pod address>'
+kubectl -n $NAMESPACE get pod $HANDS -o jsonpath='{.status.podIP}'
+```
+
+```text
+ConnectionRefusedError: [Errno 111] Connection refused  (after 0.0s)
+
+ConnectionRefusedError: [Errno 111] Connection refused  (after 0.0s)
+
+192.168.155.80
+```
+
+Both are refused, immediately and identically. So **do not read this as "there is no network
+path to the hands"**: something on the node answers at the pod's address, and a refusal is an
+answer. What the sample does enforce is narrower and is what the readings above show: inside
+the guest there is no interface and no route, so no process in the hands can send anything out
+or receive anything in, and the Kubernetes API is the only way the brain reaches them. Neither
+pod runs a server here, so this pair of readings says nothing about either one's ports; it is
+shown only to keep the first claim from being read as the second.
 
 **Step 10: `exec`, `cp` and `logs` all reach that same pod anyway.** They travel on the
 sandbox's internal control channel rather than over a network device, which is why they keep
@@ -680,7 +707,7 @@ aws eks list-pod-identity-associations --cluster-name $CLUSTER_NAME --namespace 
 +----------------------+------------------+
 |     associationId    | serviceAccount   |
 +----------------------+------------------+
-|  a-jkiuyy64p0auccs0s |  brain           |
+|  a-f5zgbz0ucutoz8gip |  brain           |
 +----------------------+------------------+
 ```
 
@@ -820,8 +847,8 @@ NAME                                                    READY   DESIRED   AGE
 sandboxwarmpool.extensions.agents.x-k8s.io/hands-pool   1       1         2m46s
 
 NAME                         READY   STATUS    RESTARTS   AGE
-pod/brain-78fd6689db-jkb5w   1/1     Running   0          2m44s
-pod/hands-pool-7vjnj         1/1     Running   0          53s
+pod/brain-78fd6689db-h2p6k   1/1     Running   0          2m44s
+pod/hands-pool-nl86m         1/1     Running   0          53s
 ```
 
 Back to one warm pod waiting, about 40 seconds after the release.
@@ -901,7 +928,7 @@ role.rbac.authorization.k8s.io "brain" deleted from brain-and-hands namespace
 serviceaccount "brain" deleted from brain-and-hands namespace
 
 == 6/9 delete the Pod Identity association ==
-  Pod Identity association a-jkiuyy64p0auccs0s is gone
+  Pod Identity association a-f5zgbz0ucutoz8gip is gone
 
 == 7/9 delete the IAM role brain-and-hands-brain ==
   IAM role brain-and-hands-brain is gone
