@@ -31,6 +31,7 @@ import json
 import os
 import re
 import sys
+import traceback
 from collections.abc import Callable
 
 import boto3
@@ -43,12 +44,28 @@ from attested_recipient import AttestedRecipient
 # Nothing identifying reaches the logs. An AWS error names the full role session, and an
 # EKS Pod Identity session name is built from the cluster and the pod names, so an
 # unredacted KMS denial would carry the account and the cluster into this pod's output.
-_ACCOUNT_ID = re.compile(r"\d{12}")
-_ROLE_SESSION = re.compile(r"(assumed-role/[^/]+/)[^\s\"\\]+")
+#
+# The account id is matched only where an account id actually appears: between the colons of
+# an ARN, or before ".dkr.ecr." in a registry reference. An unanchored twelve-digit pattern
+# also matches twelve consecutive digits inside a SHA-256, and this program prints digests:
+# it rewrote part of one into <ACCOUNT_ID> and so reported a file as validated against a
+# digest that was never computed. Anchoring is what keeps a digest intact.
+_ACCOUNT_ID = re.compile(r"(?<=:)\d{12}(?=:)")
+_REGISTRY_ACCOUNT = re.compile(r"\d{12}(?=\.dkr\.ecr\.)")
+_ROLE_SESSION = re.compile(r"(assumed-role/[^/]+/)[^\s\"']+")
+
+# The failures this program expects: a refusal from AWS, a response or a manifest that does
+# not match what it pinned, a missing environment value, the attested recipient's own
+# errors. Anything outside this set is this program being wrong rather than being refused,
+# which is the only thing the traceback below is for.
+EXPECTED_FAILURES = (ClientError, BotoCoreError, KeyError, ValueError, RuntimeError)
 
 
 def redact(text: str) -> str:
-    return _ROLE_SESSION.sub(r"\1<session>", _ACCOUNT_ID.sub("<ACCOUNT_ID>", text))
+    """Replace the account ID and the role session name in text with placeholders."""
+    text = _ACCOUNT_ID.sub("<ACCOUNT_ID>", text)
+    text = _REGISTRY_ACCOUNT.sub("<ACCOUNT_ID>", text)
+    return _ROLE_SESSION.sub(r"\1<session>", text)
 
 
 def print_readings() -> None:
@@ -177,8 +194,28 @@ def main() -> int:
             os.environ["EXPECTED_SHA256"],
             int(os.environ["EXPECTED_LENGTH"]),
         )
-    except (ClientError, BotoCoreError, KeyError, ValueError, RuntimeError) as error:
-        print(f"attested-s3-error: {redact(str(error))}", file=sys.stderr)
+    except Exception as error:  # noqa: BLE001
+        # Every failure leaves by this one path, and everything the path emits is passed
+        # through redact() before it is printed. A clause that listed its exception types
+        # was the defect this replaces: a type it did not list left main() as an unhandled
+        # traceback, which never reached redact(), so a KMS denial's role session name and
+        # the account id went into the pod's log intact. The catch is broad so that the
+        # redaction is a guarantee rather than a list that has to be kept in step with
+        # every library in the call path.
+        #
+        # Nothing is hidden by it. The exit status is still non-zero, the report still goes
+        # to standard error, and the exception's type is named, because a redacted message
+        # on its own cannot be told apart from a bug in this program: ClientError is the
+        # refusal the sample is about, anything else is this code being wrong.
+        report = f"attested-s3-error: {type(error).__name__}: {error}"
+        # The frames, for an unexpected type only. For the refusals this sample shows, the
+        # one line is the whole story and a stack through botocore would bury it; for
+        # anything else the frames are the only way a reader finds where it broke.
+        if not isinstance(error, EXPECTED_FAILURES):
+            report += "\n" + "".join(
+                traceback.format_exception(type(error), error, error.__traceback__)
+            )
+        print(redact(report), file=sys.stderr)
         return 1
 
     print(result)
