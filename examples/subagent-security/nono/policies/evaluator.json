@@ -1,0 +1,32 @@
+{
+  "meta": {
+    "name": "analyst-evaluator",
+    "version": "1.0.0"
+  },
+  "workdir": {
+    "access": "none"
+  },
+  "filesystem": {
+    "read": [
+      "/opt/analyst",
+      "/var/lib/analyst/<RUN>/evaluator/in"
+    ],
+    "allow": [
+      "/var/lib/analyst/<RUN>/evaluator/out"
+    ]
+  },
+  "environment": {
+    "allow_vars": [
+      "PATH",
+      "HOME",
+      "LANG",
+      "LC_ALL",
+      "PYTHONPATH",
+      "PYTHONDONTWRITEBYTECODE",
+      "ANALYST_DIGEST_KEY"
+    ]
+  },
+  "network": {
+    "block": true
+  }
+}

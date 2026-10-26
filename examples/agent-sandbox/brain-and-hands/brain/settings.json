@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "defaultMode": "default",
+    "deny": [
+      "Bash",
+      "PowerShell",
+      "Monitor",
+      "LSP",
+      "Workflow",
+      "Agent",
+      "Skill",
+      "EnterWorktree",
+      "ExitWorktree",
+      "WebFetch",
+      "WebSearch"
+    ],
+    "allow": [
+      "mcp__hands",
+      "Read",
+      "Glob",
+      "Grep"
+    ]
+  },
+  "enableAllProjectMcpServers": true
+}

@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s3-encrypted-file-plain
+  # setup.sh fills in the namespace, the image and the node at apply time.
+  labels:
+    app.kubernetes.io/name: s3-encrypted-file-plain
+    app.kubernetes.io/managed-by: s3-encrypted-file
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"
+spec:
+  # No runtimeClassName: an ordinary pod. It runs the SAME image as the sandboxed pod and
+  # the same code, with --readings-only so it prints the machine readings and stops. That
+  # is what makes the comparison on the page a comparison of where the container ran, and
+  # not of what it was running.
+  #
+  # setup.sh pins it to the node the sandboxed pod landed on, so the two sets of readings
+  # come from one machine.
+  nodeName: <NODE_NAME>
+  serviceAccountName: s3-encrypted-file-pod
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsUser: 65534
+    runAsGroup: 65534
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: main
+      image: <APP_IMAGE_URI>
+      imagePullPolicy: IfNotPresent
+      # Readings only: this pod reads no object and decrypts nothing.
+      args:
+        - --readings-only
+      env:
+        - name: SAMPLE_VARIANT
+          value: plain
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
