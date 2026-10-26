@@ -1,0 +1,4 @@
+# Local values the sample needs. Machine-local; never committed.
+# Everything else a run writes, including the plaintext file, the ciphertext and its record
+# of the resource IDs, goes to the repository's tmp/, which is ignored at the root.
+.env

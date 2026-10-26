@@ -1,0 +1,92 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s3-encrypted-file-demo
+  # setup.sh fills in the namespace, the placeholders below and the
+  # sandbox.amazonaws.com/policy annotation at apply time. The policy annotation is one
+  # long base64 string, so it is never kept in this file; the rendered pod setup.sh applies
+  # is written to the repository's tmp/.
+  labels:
+    app.kubernetes.io/name: s3-encrypted-file-demo
+    app.kubernetes.io/managed-by: s3-encrypted-file
+  annotations:
+    # The pod decrypts and exits, and its logs are the result the page reads. Auto Mode's
+    # node consolidation would otherwise be free to remove the node under it, taking the
+    # finished pod and its logs with it.
+    karpenter.sh/do-not-disrupt: "true"
+spec:
+  # Confidential mode treats the node as untrusted. It is what binds key release to the
+  # Cedar policy this pod carries: the guest measures that policy into PCR17, and the KMS
+  # key policy releases the data key only for the measurement it was set to expect.
+  runtimeClassName: confidential-sandbox
+  serviceAccountName: s3-encrypted-file-pod
+  # Pinned by the generated policy, so it stays the same for the approved pod and for the
+  # changed pod: the only pinned difference between them is SAMPLE_VARIANT.
+  hostname: s3-encrypted-file-demo
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  # The application decrypts, validates and exits. Never restarting is what makes its
+  # terminal phase the result: Succeeded for the approved pod, Failed for the one KMS
+  # refuses. Both stay for inspection afterwards.
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    # Numeric ids, matching the image's USER, so the generator can pin the identity
+    # exactly; supplementalGroupsPolicy: Strict keeps the image's own group list out of it.
+    runAsUser: 65534
+    runAsGroup: 65534
+    runAsNonRoot: true
+    supplementalGroupsPolicy: Strict
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: main
+      # The application image in the sample's ECR repository. The generated policy pins
+      # this image by digest, so the pod runs this build of this code or nothing.
+      image: <APP_IMAGE_URI>
+      imagePullPolicy: IfNotPresent
+      # Every value here is pinned by the generated Cedar policy, which is measured into
+      # PCR17 and therefore part of what KMS checks. That is what makes the expected length
+      # and digest trustworthy to the application: an operator who changes either of them,
+      # to make the pod accept a different file, changes the measurement and the data key
+      # is not released at all.
+      env:
+        # Both names, set to the same Region, on purpose. With only AWS_REGION declared,
+        # the EKS Pod Identity webhook leaves out the AWS_DEFAULT_REGION it would otherwise
+        # inject, while a policy generated with --with-pod-identity still expects it in the
+        # pinned environment, and the guest then refuses to create the container.
+        - name: AWS_REGION
+          value: <AWS_REGION>
+        - name: AWS_DEFAULT_REGION
+          value: <AWS_REGION>
+        - name: S3_BUCKET
+          value: <S3_BUCKET>
+        - name: S3_MANIFEST_KEY
+          value: <S3_MANIFEST_KEY>
+        # The full key ARN, not an alias: the application names the key it expects in the
+        # Decrypt call and refuses an answer from any other key.
+        - name: KMS_KEY_ARN
+          value: <KMS_KEY_ARN>
+        - name: EXPECTED_SHA256
+          value: <EXPECTED_SHA256>
+        - name: EXPECTED_LENGTH
+          value: "<EXPECTED_LENGTH>"
+        # The one pinned value scripts/changed-pod.sh changes. The application only prints
+        # it; what matters is that the policy pins it, so changing it changes PCR17.
+        - name: SAMPLE_VARIANT
+          value: approved
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      # This pod sets requests, where most samples here set none. The application imports
+      # boto3 and cryptography, generates a 4096-bit RSA key for the attestation document,
+      # and holds the file in memory, which does not fit the small default VM. Requests
+      # only, and no limits: a sandbox is sized from its requests, so a limit above the
+      # request would not give the VM any more room.
+      resources:
+        requests:
+          cpu: "1"
+          memory: 512Mi

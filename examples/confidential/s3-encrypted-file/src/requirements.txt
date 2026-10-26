@@ -1,0 +1,13 @@
+# The four packages the application imports directly, each pinned to the release that was
+# current when the sample was built. pip resolves their dependencies (botocore, s3transfer,
+# cffi and the rest) to versions these four accept.
+#
+#   boto3         the AWS SDK for Python, for Amazon S3 and AWS KMS
+#   cryptography  AES-256-GCM, and the RSA and AES primitives that unwrap the KMS
+#                 CiphertextForRecipient response
+#   cbor2         encodes the attestation request the Nitro Secure Module expects
+#   asn1crypto    parses the CMS EnvelopedData structure KMS returns
+asn1crypto==1.5.1
+boto3==1.43.118
+cbor2==6.1.5
+cryptography==50.0.2
