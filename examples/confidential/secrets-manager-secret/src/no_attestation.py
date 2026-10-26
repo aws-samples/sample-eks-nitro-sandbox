@@ -79,7 +79,10 @@ def main() -> int:
     # nothing either way, which is a failure too, not a pass.
     outcome = "no decision"
     role_line = "role:    unavailable (no answer from STS)"
-    secret_line = "secret:  not read"
+    # Named for what it carries: a line about the ciphertext ENVELOPE, never about the
+    # secret. Nothing assigned to it below holds the secret value, and the secret value is
+    # never in this process to begin with -- this pod is refused the decrypt.
+    envelope_line = "secret:  not read"
     detail = "no answer from AWS"
 
     # The whole sequence is retried, not just the decrypt. A pod's datapath can take a few
@@ -99,19 +102,25 @@ def main() -> int:
             ciphertext = read_envelope(secrets, secret_id, key_arn)
         except (ClientError, BotoCoreError) as error:
             if _is_denial(error):
-                secret_line = f"secret:  refused ({redact(str(error))})"
+                envelope_line = f"secret:  refused ({redact(str(error))})"
                 outcome = "read refused"
                 break
             print(f"retry:   attempt {attempt} could not reach Secrets Manager, retrying", flush=True)
             time.sleep(_RETRY_SLEEP_SECONDS)
             continue
         except (ValueError, KeyError) as error:
-            secret_line = f"secret:  unusable ({redact(str(error))})"
+            envelope_line = f"secret:  unusable ({redact(str(error))})"
             outcome = "envelope not this sample's"
             break
-        secret_line = (
-            f"secret:  read {len(ciphertext)} bytes of ciphertext, "
-            f"sha256 {hashlib.sha256(ciphertext).hexdigest()}"
+        # A byte count and a digest of the CIPHERTEXT, computed into their own locals so
+        # that what reaches the line is plainly an int and a hex string and not the bytes
+        # themselves. The ciphertext is what Secrets Manager stores; it is not the secret,
+        # and the page prints both so the reader can compare them with the sandbox's.
+        ciphertext_bytes = len(ciphertext)
+        ciphertext_digest = hashlib.sha256(ciphertext).hexdigest()
+        envelope_line = (
+            f"secret:  read {ciphertext_bytes} bytes of ciphertext, "
+            f"sha256 {ciphertext_digest}"
         )
 
         try:
@@ -133,7 +142,7 @@ def main() -> int:
         break
 
     print(role_line, flush=True)
-    print(secret_line, flush=True)
+    print(envelope_line, flush=True)
     print("request: kms:Decrypt on that ciphertext, with no attestation document", flush=True)
     print(f"result:  {outcome}", flush=True)
     print(f"detail:  {detail}", flush=True)
