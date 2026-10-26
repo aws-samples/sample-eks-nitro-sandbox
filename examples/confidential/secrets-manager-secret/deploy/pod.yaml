@@ -1,0 +1,88 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secrets-manager-secret-demo
+  # setup.sh fills in the namespace, the image URI, the Region, the secret, the key ARN and
+  # the two pinned expectations at apply time, and adds the sandbox.amazonaws.com/policy
+  # annotation. That annotation is one long base64 string, so it is never kept in this
+  # file; the rendered pod setup.sh applies is written to the repository's tmp/.
+  labels:
+    # Names the workload. The sample applies no network policy, so nothing selects this
+    # label; it is here so the three pods can be told apart.
+    app: secrets-manager-secret
+    app.kubernetes.io/name: secrets-manager-secret-demo
+    app.kubernetes.io/managed-by: secrets-manager-secret
+spec:
+  # Confidential mode treats the node as untrusted. It is what binds key release to the
+  # Cedar policy this pod carries: the guest measures that policy into PCR17, and the KMS
+  # key policy releases the secret only to the measurement it was set to expect.
+  runtimeClassName: confidential-sandbox
+  serviceAccountName: secrets-manager-secret-pod
+  # The application runs once and exits, so the pod ends Succeeded and stays for
+  # inspection rather than being restarted. Its logs are the result, and a pod that
+  # restarted would ask KMS to decrypt again on every attempt.
+  restartPolicy: Never
+  # Pinned by the generated policy, so it must stay the same for the approved pod and the
+  # changed pod: the only pinned difference between them is the one environment variable
+  # scripts/changed-pod.sh changes.
+  hostname: secrets-manager-secret-demo
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    # Numeric user and group IDs, and supplementalGroupsPolicy: Strict, so the generator
+    # can pin the identity exactly rather than permitting additional groups.
+    runAsUser: 65534
+    runAsGroup: 65534
+    runAsNonRoot: true
+    supplementalGroupsPolicy: Strict
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: main
+      # The application image this sample builds, in its own ECR repository. setup.sh
+      # renders this placeholder with the tagged URI it pushed.
+      image: <APP_IMAGE_URI>
+      env:
+        # Both names, set to the same Region, on purpose. With only AWS_REGION declared,
+        # the EKS Pod Identity webhook leaves out the AWS_DEFAULT_REGION it would otherwise
+        # inject, while a policy generated with --with-pod-identity still expects it in the
+        # pinned environment, and the guest then refuses to create the container. Declaring
+        # both keeps the manifest and the policy agreed.
+        - name: AWS_REGION
+          value: <AWS_REGION>
+        - name: AWS_DEFAULT_REGION
+          value: <AWS_REGION>
+        # The secret holding the ciphertext envelope, and the key the envelope belongs to.
+        # Neither is a secret: one is a name and the other is a key ARN.
+        - name: SECRET_ID
+          value: <SECRET_ID>
+        - name: KMS_KEY_ARN
+          value: <KMS_KEY_ARN>
+        # What the application checks the decrypted value against, so that a decrypt which
+        # returned the wrong bytes is a failure rather than a silent pass. These are a byte
+        # count and a digest of a value setup.sh generated at random for this run, so they
+        # disclose nothing about it: a SHA-256 of 64 random bytes cannot be reversed.
+        - name: EXPECTED_LENGTH
+          value: <EXPECTED_LENGTH>
+        - name: EXPECTED_SHA256
+          value: <EXPECTED_SHA256>
+        # The one pinned value scripts/changed-pod.sh changes, to move the measurement
+        # without changing anything else about what the pod does.
+        - name: DEMO_VARIANT
+          value: approved
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      # This pod sets requests, where most samples here set none. The guest unpacks the
+      # image inside the sandbox before the container starts, and then the application runs
+      # CPython with boto3 and generates a 4096-bit RSA key, which the small default VM has
+      # neither the memory nor the time for. Requests only, and no limits: a sandbox is
+      # sized from its requests, so a limit above the request would not give the VM more.
+      resources:
+        requests:
+          cpu: "1"
+          memory: 1Gi
