@@ -56,6 +56,7 @@ The same procurement analyst three ways, with a second policy layer confining th
 Samples that use `runtimeClassName: confidential-sandbox`, where the node is untrusted and AWS KMS releases a key only to a sandbox whose attestation matches. The [section page](examples/confidential/README.md) covers what they share.
 
 - [Encrypted image](examples/confidential/encrypted-image/README.md): a container image whose every layer is ciphertext in Amazon ECR, decrypted inside the sandbox by the guest image runtime once KMS has checked the attested policy measurement, while the same credentials used from outside the sandbox are refused.
+- [Secrets Manager secret](examples/confidential/secrets-manager-secret/README.md): a secret stored as a KMS ciphertext envelope in AWS Secrets Manager, read and decrypted by the application inside the sandbox under an attestation KMS accepts, while an ordinary pod holding the same role can read the ciphertext and is refused the value.
 
 ## Preview the site locally
 
