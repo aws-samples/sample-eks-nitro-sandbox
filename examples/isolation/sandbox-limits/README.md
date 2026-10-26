@@ -160,7 +160,7 @@ for DNS_NODE in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.nam
     | grep -m1 -Ex '((25[012345]|2[01234][0123456789]|1[0123456789][0123456789]|[123456789][0123456789]|[0123456789])\.){3}(25[012345]|2[01234][0123456789]|1[0123456789][0123456789]|[123456789][0123456789]|[0123456789])')
   [ -n "$COREDNS_IP" ] && break
 done
-: "${COREDNS_IP:?could not read the cluster DNS address from any Ready node; check permission to list nodes and get nodes/proxy}" &&
+: "${COREDNS_IP:?no Ready node returned an IPv4 clusterDNS; check permission to list nodes and get nodes/proxy, and that the first clusterDNS entry is IPv4}" &&
 echo "cluster DNS address: $COREDNS_IP" &&
 sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f - &&
 kubectl apply -f deploy/probe-standard.yaml &&

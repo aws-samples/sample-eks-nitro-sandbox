@@ -144,9 +144,11 @@ read_cluster_dns() {
     # so 999.999.999.999 and a leading-zero form such as 01.2.3.4 are refused by construction
     # rather than by extra clauses bolted on for each. The digits are written out instead of
     # as [0-9] because bash matches a bracket RANGE against the collating order of the current
-    # locale: under en_US.utf8, [0-9] also accepts non-ASCII digits, so "1.2.3.<Arabic-Indic 4>"
-    # passed here while grep on the page rejected it. An explicit list is the same in every
-    # locale and in every grep, including BSD grep on macOS.
+    # locale: under en_US.utf8, [0-9] also accepted non-ASCII digit-like characters, so
+    # "1.2.3.<Arabic-Indic 4>", "1.2.3.<superscript 2>" and "1.2.3.<one half>" passed here
+    # while grep on the page rejected them. POSIX leaves only ranges to the locale, so a
+    # bracket list of single characters matches just those characters, and this check and the
+    # grep on the page agree.
     if [[ "$ip" =~ ^((25[012345]|2[01234][0123456789]|1[0123456789][0123456789]|[123456789][0123456789]|[0123456789])\.){3}(25[012345]|2[01234][0123456789]|1[0123456789][0123456789]|[123456789][0123456789]|[0123456789])$ ]]; then
       COREDNS_IP="$ip" DNS_NODE="$node"
       return 0
