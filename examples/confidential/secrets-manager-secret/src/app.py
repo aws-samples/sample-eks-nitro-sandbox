@@ -38,13 +38,21 @@ from readings import print_machine_readings
 # session, and an EKS Pod Identity session name is built from the cluster name and the pod
 # name, so an unredacted error would put this account and this cluster into the logs and
 # onto the page.
-_ACCOUNT_ID = re.compile(r"\d{12}")
+#
+# The account id is matched only where one actually appears: between two colons of an ARN, or
+# in front of an ECR registry host. Matching any run of twelve digits also rewrites part of a
+# SHA-256 digest, which happens often enough to matter and corrupts the very value this
+# sample asks the reader to compare.
+_ACCOUNT_ID = re.compile(r"(?<=:)\d{12}(?=:)")
+_REGISTRY_ACCOUNT = re.compile(r"\d{12}(?=\.dkr\.ecr\.)")
 _ROLE_SESSION = re.compile(r"(assumed-role/[^/]+/)[^\s\"']+")
 
 
 def redact(text: str) -> str:
     """Replace the account ID and the role session name in text with placeholders."""
-    return _ROLE_SESSION.sub(r"\1<session>", _ACCOUNT_ID.sub("<ACCOUNT_ID>", text))
+    text = _ACCOUNT_ID.sub("<ACCOUNT_ID>", text)
+    text = _REGISTRY_ACCOUNT.sub("<ACCOUNT_ID>", text)
+    return _ROLE_SESSION.sub(r"\1<session>", text)
 
 
 def read_envelope(secrets_client, secret_id: str, key_arn: str) -> bytes:

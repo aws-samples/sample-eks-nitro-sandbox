@@ -102,6 +102,14 @@ read_predicted_pcr17() {
 # An AWS error names the full role session, and an EKS Pod Identity session name is built
 # from the cluster name and the pod name, so an unredacted message would put this account
 # and this cluster into a file the page is copied from.
+#
+# The account id is matched only where one actually appears -- between two colons of an ARN,
+# or in front of an ECR registry host -- and not as any run of twelve digits. A SHA-256 hex
+# digest contains twelve consecutive decimal digits surprisingly often, and the blunt pattern
+# rewrote part of an image digest into <ACCOUNT_ID>, which silently corrupted the evidence
+# this output is read for.
 redact() {
-  sed -e 's/[0-9]\{12\}/<ACCOUNT_ID>/g' -e 's|\(assumed-role/[^/]*/\)[^ "]*|\1<session>|g'
+  sed -e 's/:[0-9]\{12\}:/:<ACCOUNT_ID>:/g' \
+      -e 's/[0-9]\{12\}\(\.dkr\.ecr\.\)/<ACCOUNT_ID>\1/g' \
+      -e 's|\(assumed-role/[^/]*/\)[^ "]*|\1<session>|g'
 }
