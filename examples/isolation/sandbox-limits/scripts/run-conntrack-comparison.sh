@@ -133,7 +133,9 @@ say "Deploy the egress NetworkPolicy, the sink and the two probe pods"
 # cluster's Service CIDR are the same address, and need less permission -- see the page).
 # Reading it this way needs permission to list nodes and get nodes/proxy. Nodes are replaced
 # often and a node on its way out does not answer, so try the Ready nodes in turn, each with
-# a short timeout, and keep the first clusterDNS that is an IPv4 address. Sets COREDNS_IP,
+# a short timeout, and keep the first Ready node whose FIRST clusterDNS entry is a dotted-quad
+# IPv4 address. Only the first entry is read, so a dual-stack node listing an IPv6 address first
+# is skipped rather than searched for its IPv4 entry. Sets COREDNS_IP,
 # DNS_NODE (the node that answered) and DNS_TRIED (the nodes asked, in order).
 read_cluster_dns() {
   local node ip nodes
@@ -144,10 +146,14 @@ read_cluster_dns() {
     DNS_TRIED="${DNS_TRIED:+$DNS_TRIED }$node"
     ip="$(kubectl get --raw "/api/v1/nodes/$node/proxy/configz" --request-timeout=10s \
       | sed -n 's/.*"clusterDNS":\["\([^"]*\)".*/\1/p')" || ip=""
-    # Canonical dotted-quad only: every octet alternative is either one digit or starts 1-9,
+    # Canonical dotted quad only: every octet alternative is either one digit or starts 1-9,
     # so 999.999.999.999 and a leading-zero form such as 01.2.3.4 are refused by construction
-    # rather than by extra clauses bolted on for each.
-    if [[ "$ip" =~ ^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])$ ]]; then
+    # rather than by extra clauses bolted on for each. The digits are written out instead of
+    # as [0-9] because bash matches a bracket RANGE against the collating order of the current
+    # locale: under en_US.utf8, [0-9] also accepts non-ASCII digits, so "1.2.3.<Arabic-Indic 4>"
+    # passed here while grep on the page rejected it. An explicit list is the same in every
+    # locale and in every grep, including BSD grep on macOS.
+    if [[ "$ip" =~ ^((25[012345]|2[01234][0123456789]|1[0123456789][0123456789]|[123456789][0123456789]|[0123456789])\.){3}(25[012345]|2[01234][0123456789]|1[0123456789][0123456789]|[123456789][0123456789]|[0123456789])$ ]]; then
       COREDNS_IP="$ip" DNS_NODE="$node"
       return 0
     fi
