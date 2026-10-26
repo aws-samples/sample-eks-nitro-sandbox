@@ -204,7 +204,10 @@ def decrypt_file(
 
 
 def main() -> int:
-    parser = _RedactingArgumentParser(description=__doc__)
+    # prog is given, rather than left to default to sys.argv[0]: argparse puts it in the
+    # usage line that --help prints, and an invocation path is not something this program
+    # should be echoing. A constant is better here than redacting a value.
+    parser = _RedactingArgumentParser(prog="app.py", description=__doc__)
     parser.add_argument(
         "--readings-only",
         action="store_true",
@@ -212,24 +215,27 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # Redacted like everything else this program prints. The value is pinned by the pod's
-    # Cedar policy, so an operator cannot change it without losing the data key, but the
-    # guarantee this program makes about its output should not rest on that. This print is
-    # outside the try below, so it uses the form of redact() that cannot raise.
-    print(f"variant: {_safe_redact(os.environ.get('SAMPLE_VARIANT', 'unset'))}")
-    print_readings()
-    if args.readings_only:
-        print("s3-encrypted-file-readings-done")
-        return 0
-
-    config = Config(
-        retries={"total_max_attempts": 4, "mode": "adaptive"},
-        connect_timeout=5,
-        read_timeout=30,
-    )
-    session = boto3.Session(region_name=os.environ["AWS_REGION"])
-
+    # Everything from here on is inside the protected block, not just the decrypt. Reading
+    # the machine, building the botocore configuration and opening the session can all fail,
+    # and a failure outside this block would get Python's own unredacted traceback, which is
+    # the escape the block exists to close.
     try:
+        # The variant is redacted like everything else this program prints. The value is
+        # pinned by the pod's Cedar policy, so an operator cannot change it without losing
+        # the data key, but the guarantee should not rest on that. _safe_redact keeps the
+        # line printable even if redact() fails, rather than losing the whole run to it.
+        print(f"variant: {_safe_redact(os.environ.get('SAMPLE_VARIANT', 'unset'))}")
+        print_readings()
+        if args.readings_only:
+            print("s3-encrypted-file-readings-done")
+            return 0
+
+        config = Config(
+            retries={"total_max_attempts": 4, "mode": "adaptive"},
+            connect_timeout=5,
+            read_timeout=30,
+        )
+        session = boto3.Session(region_name=os.environ["AWS_REGION"])
         result = decrypt_file(
             session.client("s3", config=config),
             session.client("kms", config=config),
