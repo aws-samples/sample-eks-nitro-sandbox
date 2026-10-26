@@ -139,18 +139,13 @@ and for a labelled edge `fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Ar
 
 Colour and dash carry meaning, so use them only as the table says.
 
-A refused edge, a refused destination and a network policy control are **claims**, so draw
-one only where the sample you are drawing enforces it. A new sample ships no network policy
-(`AGENTS.md`, Security rules), so it has no network policy control to draw, and its sandbox
-reaches what any pod reaches. "No route out" from a pod booted with
-`sandbox.amazonaws.com/network-isolated: "true"` is still right: that pod really has no
-network.
-
-**Every sample merged before 2026-10-26 keeps its policy and its policy figures**, not only
-the ones the table above happens to name. Do not remove, redesign or recolour an existing
-figure to follow the rule for new samples: those figures are correct, they match pages that
-were proved with the policies they show, and the rule above is for figures you are drawing
-now. That is why NP, F2 and CMA still use these styles.
+The rows for a policy control, a refused destination and a refused edge apply where the
+sample includes a network policy or any other policy: a Cedar policy in the guest, an IAM
+policy, a KMS key policy, an admission policy. Those are what make the refusal true, so the
+figure shows it as above. Where a sample includes no policy, those elements do not arise and
+the figure has none to draw. A pod booted with
+`sandbox.amazonaws.com/network-isolated: "true"` has no network at all, so its "no route
+out" comes from the sandbox rather than from a policy, and is drawn as the table says.
 
 **Routing:** segments are horizontal or vertical. Anchor both ends (`exitX`, `exitY`, `entryX`,
 `entryY`, plus `exitDx`/`entryDx` for a few pixels' nudge) and give every bend as a waypoint in

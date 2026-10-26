@@ -91,11 +91,9 @@ know your cluster names, user names or what the page states, so read every label
 ## Make a new figure
 
 1. **Brief.** Write the figure's one idea in one sentence, then list what it shows: the actors,
-   the boundaries (they become frames), each connection with its label, and what is refused
-   **where the sample enforces a refusal**. Take each fact from the page the figure goes on, and
-   draw no boundary the page does not have: a new sample ships no network policy, so it has no
-   policy control and no refused egress to draw (`AGENTS.md`, Security rules, and the end of
-   `references/house-style.md`). Open the existing figure closest to yours (the
+   the boundaries (they become frames), each connection with its label, and, where the sample
+   includes a network policy or any other policy, what is refused. Take
+   each fact from the page the figure goes on. Open the existing figure closest to yours (the
    home page's isolation boundary, the coding agent's egress, the warm pool, Claude Managed
    Agents and its network policy) and its PNG, and reuse its arrangement where it fits.
 
@@ -180,13 +178,8 @@ know your cluster names, user names or what the page states, so read every label
 
    The caption names the idea in a few words, then says what to notice. The alt text walks the
    figure in reading order (each boundary, what runs in it, each connection with its label, and
-   what is refused where the sample refuses it) so a reader who cannot see the image gets the
-   same facts. Write both as plain sentences, as the pages do: no em dashes.
-
-   That example is the Claude Managed Agents figure, which belongs to a sample merged before
-   2026-10-26 and keeps its policy. Copy its shape, not its subject: a new sample ships no
-   network policy, so it has no policy figure, and its caption and alt text claim a refusal
-   only where the sample enforces one. See the end of `references/house-style.md`.
+   any refusal the figure shows) so a reader who cannot see the image gets the same facts. Write
+   both as plain sentences, as the pages do: no em dashes.
 
 ## Edit an existing figure
 
