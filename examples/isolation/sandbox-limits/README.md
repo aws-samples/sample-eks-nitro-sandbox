@@ -270,9 +270,20 @@ The probe pods have a network, so the sample restricts their egress with a stand
 the DNS the DNS probe needs and the TCP egress to the sink the connection probe needs, and denies
 everything else. `<COREDNS_IP>` is filled in at apply time with
 the cluster's DNS address: the kubelet's `clusterDNS`, which pods use as their nameserver, read
-from a node as in step 2 (this needs permission to get `nodes/proxy`). On EKS Auto Mode DNS is
-served on the node and there is no kube-dns Service; the policy allows DNS to that address as the
-Amazon EKS User Guide, *Use Network Policies with EKS Auto Mode*, does
+from a node as in step 2 (this needs permission to list `nodes` and to get `nodes/proxy`).
+
+On EKS Auto Mode CoreDNS runs on each node rather than as pods in `kube-system`, so the `kube-dns`
+Service is still there and still carries this address, but with no endpoints behind it. Three ways
+of reading the address all give the same number: the kubelet's `clusterDNS`, the `kube-dns`
+ClusterIP, and the `.10` address of the cluster's Service CIDR, which is the one the Amazon EKS
+User Guide derives in *Use Network Policies with EKS Auto Mode*, under *Determining the CoreDNS IP
+address*. This sample reads the kubelet's `clusterDNS` because that is the nameserver the probe
+pods themselves use — the same `nameserver=` the probe output above prints — so the address the
+policy allows cannot differ from the one the probes measured against, and reading it needs no AWS
+API call and no cluster name. The guide's method and the
+`kubectl get svc -n kube-system kube-dns` lookup the other samples here use are equally valid and
+need less permission. Either way the policy allows DNS with an `ipBlock` on the address, as the
+guide's own example does
 (<https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html>):
 
 ```yaml
@@ -307,7 +318,7 @@ spec:
 | `podSelector: app: dns-probe` | Selects every probe pod, the sandboxed and the ordinary one alike |
 | `policyTypes: [Ingress, Egress]` | Makes both directions default-deny for the selected pods, so anything not allowed below is refused |
 | no `ingress:` rule | Denies all ingress to the probe pods |
-| `egress` to the CoreDNS `ipBlock` on UDP and TCP 53 | DNS to the cluster resolver, which the DNS probe needs. The address is the kubelet's `clusterDNS`: node-local DNS on EKS Auto Mode, which has no kube-dns Service. An `ipBlock`, as [Getting started > Coding agent](../../getting-started/coding-agent/README.md) uses |
+| `egress` to the CoreDNS `ipBlock` on UDP and TCP 53 | DNS to the cluster resolver, which the DNS probe needs. The address is the kubelet's `clusterDNS`, which on EKS Auto Mode is the same address as the `kube-dns` ClusterIP, served by CoreDNS on the node. An `ipBlock`, as [Getting started > Coding agent](../../getting-started/coding-agent/README.md) uses |
 | `egress` to the `conntrack-sink` pod on TCP 9000 | The connection sink, which the connection-limit probe opens held-open outbound flows to. Nothing else is reachable, so the probe cannot leave the cluster |
 
 The policy is enforced on the node, outside the guest: the node's network policy agent attaches

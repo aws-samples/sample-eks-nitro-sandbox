@@ -121,8 +121,11 @@ kubectl delete -f "$DEPLOY/probe-standard.yaml"         --ignore-not-found --wai
 
 say "Deploy the egress NetworkPolicy and the two probe pods"
 # The cluster's DNS address is the kubelet's clusterDNS, the nameserver pods use. EKS Auto
-# Mode serves DNS on the node and has no kube-dns Service, so read it from a node's kubelet
-# configuration (this needs permission to get nodes and nodes/proxy). Nodes are replaced
+# Mode serves DNS on the node, so the kube-dns Service still carries this address but has no
+# endpoints behind it; this reads it from a node's kubelet configuration instead, which is the
+# resolver the probe pods themselves use (the kube-dns ClusterIP and the .10 address of the
+# cluster's Service CIDR are the same address, and need less permission -- see the page).
+# Reading it this way needs permission to list nodes and get nodes/proxy. Nodes are replaced
 # often and a node on its way out does not answer, so try the Ready nodes in turn, each with
 # a short timeout, and keep the first clusterDNS that is an IPv4 address. Sets COREDNS_IP,
 # DNS_NODE (the node that answered) and DNS_TRIED (the nodes asked, in order).
@@ -148,7 +151,7 @@ if ! read_cluster_dns; then
   line "Ready nodes tried: ${DNS_TRIED:-<no Ready node found>}"
   line "It comes from kubeletconfig.clusterDNS in:"
   line "  kubectl get --raw /api/v1/nodes/<node>/proxy/configz"
-  line "Reading it needs permission to get nodes (to list the Ready ones) and nodes/proxy. Applied no policy or pod."
+  line "Reading it needs permission to list nodes (to find the Ready ones) and to get nodes/proxy. Applied no policy or pod."
   exit 1
 fi
 line "cluster DNS address (kubelet clusterDNS on $DNS_NODE): $COREDNS_IP"

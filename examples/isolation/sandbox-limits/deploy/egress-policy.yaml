@@ -19,11 +19,14 @@
 #
 # This is networking.k8s.io/v1, the standard Kubernetes NetworkPolicy. <COREDNS_IP>
 # is your cluster's DNS address, the kubelet's clusterDNS, filled in by the script
-# (or by hand, from one node; needs permission to get nodes/proxy):
+# (or by hand, from one node; needs permission to list nodes and get nodes/proxy):
 #   kubectl get --raw "/api/v1/nodes/$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')/proxy/configz"
 #   and take kubeletconfig.clusterDNS[0]
-# On EKS Auto Mode DNS is node-local and there is no kube-dns Service, so DNS egress
-# is allowed with an ipBlock on the clusterDNS address, as the guide below does.
+# On EKS Auto Mode CoreDNS runs on the node, so the kube-dns Service still carries
+# this address but has no endpoints behind it. The kubelet's clusterDNS, the kube-dns
+# ClusterIP and the .10 address of the cluster's Service CIDR (which is what the guide
+# below derives) are all the same address; DNS egress is allowed with an ipBlock on
+# it, as the guide's own example does.
 # https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
