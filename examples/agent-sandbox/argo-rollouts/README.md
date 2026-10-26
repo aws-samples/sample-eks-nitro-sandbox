@@ -116,7 +116,10 @@ missing, and the clean up never undoes either.
 
 **Both are cluster-wide changes.** The second one in particular changes the Argo Rollouts
 controller itself, so it affects **every `Rollout` on the cluster**, not just this sample's.
-On a shared cluster, make sure that is yours to do before you run it.
+Once it is applied, every other workload's Rollouts run with that initContainer on the
+controller and with the plugin registered, and the sample's clean up does not undo any of
+it. On a shared cluster, make sure that is yours to do before you run it, and read
+"What stays" under Clean up first so you know what you are leaving behind.
 
 Installing the controller but skipping the registration is the easy mistake to make, and
 it does not fail quietly. `setup.sh` stops with exactly what is missing:
@@ -223,15 +226,28 @@ own. Read the plan, then apply it:
 ./scripts/register-step-plugin.sh apply
 ```
 
+This block and the plan above it come from a separate run, taken when the registration was
+performed against the shared controller, rather than from the walkthrough that follows; the
+`docker build` layers were already cached on that machine, so a first build takes
+noticeably longer. Everything from Step 3 on comes from one fresh walkthrough run.
+
 ```text
 TODO: output from the fresh run
 ```
 
-If your host cannot reach `proxy.golang.org`, add `--build-arg GOPROXY=direct` to the
-`docker build` the registration runs, by exporting `GOPROXY=direct` before you run it. The
-toolchain then fetches each module from its source repository, and every one is still
-verified against the committed `go.sum`. Nothing else needs changing: do not turn `GOSUMDB`
-off, which would drop that verification rather than route around the proxy.
+**If your host cannot reach `proxy.golang.org`**, the build fails on a TLS or certificate
+error rather than a timeout, because the `,direct` in the Dockerfile's default `GOPROXY`
+only falls through on a 404 or 410, not on a proxy that cannot be verified or resolved. Run
+the registration with `GOPROXY=direct` and nothing else:
+
+```bash
+GOPROXY=direct ./scripts/register-step-plugin.sh apply
+```
+
+The toolchain then fetches each module from its source repository, and every one is still
+verified against the committed `go.sum`. Do not reach for `GOSUMDB=off`, `GOFLAGS=-mod=mod`
+or `GOPRIVATE`: those drop the verification rather than route around the proxy, and none of
+them is needed.
 
 The registration refuses to write over an install that is not yours. If the ConfigMap
 already registers step plugins that are not this sample's, or if the Deployment already sets
@@ -292,10 +308,35 @@ against. It changes nothing outside its own namespace.
 ```
 
 ```text
-TODO: output from the fresh run
+context: sandbox-demo (pinned)   namespace: argo-rollouts-sample
+reusing the Argo Rollouts install in namespace argo-rollouts as it is (quay.io/argoproj/argo-rollouts:v1.10.1); this sample was built against Argo Rollouts v1.10.1
+the step plugin is registered and staged at /plugins/sandbox-warmpool-stepplugin on <CONTROLLER_POD>
+
+== 1/4 namespace argo-rollouts-sample ==
+namespace/argo-rollouts-sample created
+namespace/argo-rollouts-sample labeled
+created namespace argo-rollouts-sample, labelled app.kubernetes.io/managed-by=argo-rollouts
+
+== 2/4 apply the SandboxTemplate at rev-1 and the SandboxWarmPool ==
+sandboxtemplate.extensions.agents.x-k8s.io/rollout-agent created
+sandboxwarmpool.extensions.agents.x-k8s.io/rollout-agent-pool created
+
+== 3/4 apply the ordinary pod the sandbox readings are compared with ==
+pod/ordinary-pod created
+
+== 4/4 wait for the pool to be warm at one template revision ==
+  readyReplicas=0/2  distinct template hashes=1
+NAME                 READY   DESIRED   AGE
+rollout-agent-pool   2       2         14s
+
+the SandboxTemplate says TEMPLATE_REVISION=rev-1
+the pool's sandboxes carry agents.x-k8s.io/sandbox-template-hash:
+  cbed2ff8
 ```
 
-The pool comes up warm at `rev-1`, with its two sandboxes agreeing on one template hash.
+The first two lines are the prerequisite checks passing: the controller is reused as it
+stands, and the step plugin is found already registered and staged. Then the pool comes up
+warm at `rev-1`, with its two sandboxes agreeing on one template hash, `cbed2ff8`.
 Here is the part of [`deploy/warm-pool.yaml`](deploy/warm-pool.yaml) that matters, the
 revision marker and the two annotations:
 
@@ -367,7 +408,7 @@ anything: the hash label on the pool's sandboxes is a Kubernetes-observable witn
 context: sandbox-demo (pinned)   namespace: argo-rollouts-sample
 
   the SandboxTemplate now says          : TEMPLATE_REVISION=rev-2
-  the claim adopted pod                 : rollout-agent-pool-dtsnz
+  the claim adopted pod                 : rollout-agent-pool-qc5fh
   that pod's TEMPLATE_REVISION (env)    : rev-1
   /tmp/template-revision (at boot)      : rev-1
   agents.x-k8s.io/launch-type           : warm
@@ -429,8 +470,8 @@ kubectl -n argo-rollouts-sample get sandbox -l agents.x-k8s.io/warm-pool-sandbox
 
 ```text
 NAME                       READY   REASON              AGE   SANDBOX-TEMPLATE-HASH
-rollout-agent-pool-jkj6g   True    DependenciesReady   49s   5e642565
-rollout-agent-pool-jp697   True    DependenciesReady   33s   5e642565
+rollout-agent-pool-p8ll2   True    DependenciesReady   13s   5e642565
+rollout-agent-pool-xhwjg   True    DependenciesReady   13s   5e642565
 ```
 
 The selector hash `fc450e7f` is the pool's own, from its `status.selector`. Read it from
@@ -454,7 +495,7 @@ exists to leave behind.
 context: sandbox-demo (pinned)   namespace: argo-rollouts-sample
 
   the SandboxTemplate now says          : TEMPLATE_REVISION=rev-2
-  the claim adopted pod                 : rollout-agent-pool-jtn5v
+  the claim adopted pod                 : rollout-agent-pool-p8ll2
   that pod's TEMPLATE_REVISION (env)    : rev-2
   /tmp/template-revision (at boot)      : rev-2
   agents.x-k8s.io/launch-type           : warm
@@ -496,7 +537,7 @@ reading from [`deploy/ordinary-pod.yaml`](deploy/ordinary-pod.yaml), which is th
 container with the single line `runtimeClassName: isolated-sandbox` left out.
 
 ```bash
-kubectl -n argo-rollouts-sample exec rollout-agent-pool-jtn5v -- sh -c \
+kubectl -n argo-rollouts-sample exec rollout-agent-pool-p8ll2 -- sh -c \
   'uname -rv; cat /proc/uptime; ls /sys/block; cat /sys/class/dmi/id/product_name'
 kubectl -n argo-rollouts-sample exec ordinary-pod -- sh -c \
   'uname -rv; cat /proc/uptime; ls /sys/block; cat /sys/class/dmi/id/product_name'
@@ -505,9 +546,9 @@ kubectl -n argo-rollouts-sample exec ordinary-pod -- sh -c \
 | Reading | Claimed sandbox pod | Ordinary pod on the same cluster |
 |---|---|---|
 | `uname -rv` | `6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026` | `6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026` |
-| `cat /proc/uptime` | `36.73 33.55` | `44058.78 350101.26` |
-| `ls /sys/block` | `dm-0 vda vdb vdc` | `dm-0 nvme0n1 nvme1n1 zram0` |
-| `cat /sys/class/dmi/id/product_name` | `m8i.enclave` | `m8a.2xlarge` |
+| `cat /proc/uptime` | `27.05 23.89` | `51981.78 98102.47` |
+| `ls /sys/block` | `dm-0 vda vdb vdc` | `dm-0 nvme0n1 nvme1n1 nvme2n1 zram0` |
+| `cat /sys/class/dmi/id/product_name` | `m8i.enclave` | `c6i.large` |
 
 The kernel **version** is the same, 6.18.54, which is exactly why `uname -r` on its own is
 not evidence. The **build** is not: `#1` built at 17:38 against `#2` built at 00:16. The
@@ -519,20 +560,22 @@ The uptime is the reading that needs its own evidence, because "36 seconds" only
 something next to when the pod started:
 
 ```bash
-kubectl -n argo-rollouts-sample get pod rollout-agent-pool-jtn5v ordinary-pod \
+kubectl -n argo-rollouts-sample get pod rollout-agent-pool-p8ll2 ordinary-pod \
   -o custom-columns='NAME:.metadata.name,RUNTIMECLASS:.spec.runtimeClassName,START:.status.startTime'
 ```
 
 ```text
 NAME                       RUNTIMECLASS       START
-rollout-agent-pool-jtn5v   isolated-sandbox   2026-10-26T12:09:47Z
-ordinary-pod               <none>             2026-10-26T12:09:04Z
+rollout-agent-pool-p8ll2   isolated-sandbox   2026-10-26T14:23:36Z
+ordinary-pod               <none>             2026-10-26T14:22:56Z
 ```
 
-The readings above were taken at about 12:10:24. The sandboxed pod started at 12:09:47, so
-its 36 seconds of uptime is its own age: the VM booted with the pod. The ordinary pod
-started 43 seconds earlier but reports 44058 seconds, because it is reading the node's
-uptime, not its own.
+The readings above were taken at about 14:24:03. The sandboxed pod started at 14:23:36, so
+its 27 seconds of uptime is its own age: the VM booted with the pod. The ordinary pod
+started 40 seconds earlier but reports 51981 seconds, because it is reading the node's
+uptime, not its own. The two pods also sit on different instance types here, which is why
+the product names are not a matched pair: what matters is that one reads a VM and the other
+reads the instance it runs on.
 
 ## No network to restrict
 
@@ -553,8 +596,8 @@ Rather than assert the isolation, here it is read from the claimed pod, with the
 pod beside it:
 
 ```bash
-kubectl -n argo-rollouts-sample exec rollout-agent-pool-jtn5v -- sh -c 'ip -o addr; ip route'
-kubectl -n argo-rollouts-sample exec rollout-agent-pool-jtn5v -- nslookup example.com
+kubectl -n argo-rollouts-sample exec rollout-agent-pool-p8ll2 -- sh -c 'ip -o addr; ip route'
+kubectl -n argo-rollouts-sample exec rollout-agent-pool-p8ll2 -- nslookup example.com
 ```
 
 ```text
@@ -592,8 +635,49 @@ the way. This step runs the same two operations as canary steps of an Argo Rollo
 ```
 
 ```text
-TODO: output from the fresh run
+context: sandbox-demo (pinned)   namespace: argo-rollouts-sample
+reusing the Argo Rollouts install in namespace argo-rollouts as it is (quay.io/argoproj/argo-rollouts:v1.10.1); this sample was built against Argo Rollouts v1.10.1
+the step plugin is registered and staged at /plugins/sandbox-warmpool-stepplugin on <CONTROLLER_POD>
+
+before the rollout: the template says TEMPLATE_REVISION=rev-2, the pool wants 2 replicas
+
+== seed the Rollout at rev-2, the revision the template already holds ==
+Argo Rollouts skips the canary steps on a Rollout's first creation, so the first
+apply is made at the current revision: the skip then changes nothing, and the bump
+below is a real update whose steps do run.
+rollout.argoproj.io/template-bump created
+  seeded and Healthy at rev-2
+
+== apply the Rollout at rev-3 ==
+rollout.argoproj.io/template-bump configured
+
+== watch the canary steps ==
+  step=1 phase=Paused  template=rev-3  poolReplicas=2  revisions=rev-2,
+  step=2 phase=Progressing  template=rev-3  poolReplicas=0  revisions=
+  step=2 phase=Progressing  template=rev-3  poolReplicas=2  revisions=rev-3,
+  step=4 phase=Healthy  template=rev-3  poolReplicas=2  revisions=rev-3,
+
+== what the rollout left behind ==
+  the template says TEMPLATE_REVISION=rev-3
+  the pool's sandboxes booted at: rev-3
+  template hashes: 0ea1ee76
+  readyReplicas=2/2
+
+  PASS  the patch step put TEMPLATE_REVISION=rev-3 on the SandboxTemplate (read: rev-3)
+  PASS  the drain step left every pool sandbox booted at rev-3 (read: rev-3)
+  PASS  the pool is warm again at 2 replicas (read: 2)
+
+3/3 checks passed: the Rollout drove the template patch and the pool drain
 ```
+
+Those four progress lines are the whole sample in miniature, so read them in order:
+
+| Line | What it says |
+|---|---|
+| `step=1 phase=Paused  template=rev-3  poolReplicas=2  revisions=rev-2` | The patch step has run and the pause is holding. **This is the hazard, mid-rollout**: the template already says `rev-3` while the pool's two warm pods still report `rev-2`. A claim landing here adopts a stale pod. |
+| `step=2 ... poolReplicas=0  revisions=` | The drain step has scaled the pool to zero. No warm capacity at all for the length of one pod boot. |
+| `step=2 ... poolReplicas=2  revisions=rev-3` | The pool is back at two, and the replacements booted from the patched template. |
+| `step=4 phase=Healthy ... revisions=rev-3` | `setWeight: 100` has finished the canary, and the template hash has moved to `0ea1ee76`. |
 
 Here are the canary steps from [`deploy/rollout.yaml`](deploy/rollout.yaml):
 
@@ -668,8 +752,47 @@ rollout on purpose to show it.
 ```
 
 ```text
-TODO: output from the fresh run
+context: sandbox-demo (pinned)   namespace: argo-rollouts-sample
+reusing the Argo Rollouts install in namespace argo-rollouts as it is (quay.io/argoproj/argo-rollouts:v1.10.1); this sample was built against Argo Rollouts v1.10.1
+the step plugin is registered and staged at /plugins/sandbox-warmpool-stepplugin on <CONTROLLER_POD>
+
+before the rollout: the template says TEMPLATE_REVISION=rev-3, the pool wants 2 replicas
+rollout/template-bump already exists, with its marker at rev-3
+
+== apply the Rollout at rev-4 ==
+rollout.argoproj.io/template-bump configured
+
+== wait for the drain step to scale the pool to 0, then abort ==
+  pool spec.replicas=2, rollout step=1
+  pool spec.replicas=2, rollout step=1
+  pool spec.replicas=2, rollout step=1
+  pool spec.replicas=2, rollout step=1
+  pool spec.replicas=2, rollout step=1
+  pool spec.replicas=2, rollout step=1
+  pool spec.replicas=2, rollout step=1
+  pool spec.replicas=2, rollout step=1
+  pool spec.replicas=2, rollout step=1
+  pool spec.replicas=2, rollout step=2
+  the drain has scaled the pool to spec.replicas=0 (rollout step 2); aborting now
+  aborted rollout/template-bump
+
+== the pool's replica count after the abort ==
+
+  PASS  the plugin's Abort restored the pool to spec.replicas=2 (read: 2)
+  rollout phase: Degraded
+
+warm capacity was not left stranded at zero. The pool re-warms at whichever
+revision the template holds; read it with: ./scripts/claim.sh after-abort
+
+1/1 checks passed: abort mid-drain restores the pool's replica count
 ```
+
+The pool is caught at `spec.replicas=0` on the tenth poll, just after the rollout moves to
+step 2, and the abort lands there. The replica count comes back to 2 without the drain ever
+finishing, which is the plugin's `Abort` doing it: the step was interrupted between its
+scale-to-zero and its scale-back, and the count it had recorded is what gets restored. The
+rollout itself ends `Degraded`, which is the correct outcome for an aborted rollout, and the
+pool re-warms at whatever the template now holds.
 
 The script polls the pool's `spec.replicas` and aborts only once it has actually observed
 zero, so the abort really does land inside the window rather than before or after it. If the
@@ -731,7 +854,28 @@ cp .env.example .env    # if you have not already; set KUBE_CONTEXT and NAMESPAC
 ```
 
 ```text
-TODO: output from the fresh run
+context: sandbox-demo (pinned)   namespace: argo-rollouts-sample
+
+== 1/1 the sample's namespace argo-rollouts-sample ==
+  deleting the warm pool first, so it stops booting replacements
+sandboxwarmpool.extensions.agents.x-k8s.io "rollout-agent-pool" deleted from argo-rollouts-sample namespace
+  deleting the namespace and everything in it
+namespace "argo-rollouts-sample" deleted
+  deleted namespace argo-rollouts-sample
+
+Left in place, because a reader sets these up as prerequisites and the whole
+cluster shares them:
+  - the Argo Rollouts install in namespace argo-rollouts
+  - the step-plugin registration: the stepPlugins key in configmap
+    argo-rollouts/argo-rollouts-config, the initContainer on deployment
+    argo-rollouts/argo-rollouts, and clusterrole/clusterrolebinding
+    argo-rollouts-sandbox-warmpool
+  - the ECR repository nitro-sample-argo-rollouts-stepplugin, which holds the plugin image
+  - the agent-sandbox controller
+The page's "What stays" section has the commands to remove them, and what to
+check first.
+
+clean up complete: the sample's namespace and everything in it are gone.
 ```
 
 The clean up checks the namespace carries the sample's label before it deletes anything
