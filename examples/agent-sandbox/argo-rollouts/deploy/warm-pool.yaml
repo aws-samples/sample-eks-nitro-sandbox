@@ -1,0 +1,88 @@
+# This sample's own SandboxTemplate and SandboxWarmPool, in the sample's own
+# namespace. Nothing here touches another warm pool on the cluster.
+#
+# The template carries a revision marker, TEMPLATE_REVISION. It is the witness
+# the whole sample turns on: a claimed pod reports the revision of the template
+# it was BOOTED from, which after a bare template patch is not the revision the
+# template now holds. The container reads the variable at boot and writes it to a
+# file, so the marker can be read two ways from inside the guest.
+#
+# __NAMESPACE__ is filled in at apply time by the scripts from the NAMESPACE
+# variable, so an overridden name reaches this object too. Never apply this file
+# with the placeholder in place.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: rollout-agent
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: argo-rollouts
+spec:
+  podTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: argo-rollouts
+      annotations:
+        # No network besides loopback: no route out, no DNS, no instance
+        # metadata and no Pod Identity credentials. There is no egress to
+        # restrict, so this sample ships no network policy. kubectl exec, cp and
+        # logs keep working, because they use the guest's internal control
+        # channel, which is how the page reads the revision marker.
+        sandbox.amazonaws.com/network-isolated: "true"
+        # Pin the node while a warm pod sits Ready and idle in the pool. Nothing
+        # would reschedule a pre-booted warm pod if voluntary disruption
+        # (consolidation, drift, expiry) removed the node under it, and the
+        # reader would see the pool's revisions change for reasons that have
+        # nothing to do with the rollout. The pods go away on the drain, so this
+        # does not hold a node open after the pool is scaled to zero.
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      # The one line that puts the pod in a Nitro sandbox. No node selector,
+      # toleration or sidecar: the RuntimeClass carries the scheduling
+      # constraints, and EKS Auto Mode brings up a sandbox-capable node.
+      runtimeClassName: isolated-sandbox
+      # No API credential inside the sandbox. A pod built from a SandboxTemplate
+      # has this defaulted to false already, so this is saying out loud what the
+      # pod relies on rather than changing it: a warm pod runs untrusted code and
+      # has no reason to hold a token for the cluster it runs on.
+      automountServiceAccountToken: false
+      containers:
+        - name: agent
+          image: public.ecr.aws/docker/library/busybox:1.36
+          imagePullPolicy: IfNotPresent
+          # The revision marker, readable from inside the guest two ways: the
+          # environment variable itself, and the file written once at boot. The
+          # file is what makes the marker provenance rather than a current
+          # reading: it records the value this pod booted with, so it cannot be
+          # confused with a value changed on the template afterwards.
+          env:
+            - name: TEMPLATE_REVISION
+              value: "rev-1"
+          command:
+            - sh
+            - -c
+            - |
+              printf %s "$TEMPLATE_REVISION" > /tmp/template-revision
+              echo "booted TEMPLATE_REVISION=$TEMPLATE_REVISION"
+              exec sleep infinity
+          # No CPU or memory requests or limits. This sample is about WHICH
+          # template revision a pod booted from, not how big each pod is, so it
+          # leaves sizing to the reader and the guest gets a small default size.
+          # A real workload sets the requests it needs: the guest is sized from
+          # them.
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: rollout-agent-pool
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: argo-rollouts
+spec:
+  # Two, not one, so "every pool pod carries the same template hash" is a real
+  # reading rather than one that cannot fail. The drain waits for exactly one
+  # distinct hash across the pool, which with a single pod would be true however
+  # the drain behaved.
+  replicas: 2
+  sandboxTemplateRef:
+    name: rollout-agent

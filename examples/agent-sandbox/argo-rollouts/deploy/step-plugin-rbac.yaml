@@ -1,0 +1,51 @@
+# The permissions the step plugin acts with.
+#
+# The plugin runs inside the Argo Rollouts controller process, so it uses the
+# controller's ServiceAccount. These two objects are the sample's own, created by
+# the page's registration step, and the clean up removes them: granting a shared
+# controller access to the agent-sandbox CRDs is this sample's change to the
+# cluster, so it is also this sample's to undo.
+#
+# They are cluster-scoped, so they are outside the sample's namespace and cannot
+# be marked by it. They carry the sample's label instead, and the clean up checks
+# for that label before deleting either one.
+#
+# __ARGO_NAMESPACE__ is filled in at apply time by
+# scripts/register-step-plugin.sh. Never apply this file with the placeholder in
+# place.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argo-rollouts-sandbox-warmpool
+  labels:
+    app.kubernetes.io/part-of: argo-rollouts
+    app.kubernetes.io/managed-by: argo-rollouts
+rules:
+  # SandboxWarmPool and SandboxTemplate are in the extensions group. The plugin
+  # updates the template's revision marker and patches the pool's replicas, so it
+  # needs patch and update as well as the reads.
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxwarmpools", "sandboxtemplates"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # Sandbox objects are in the CORE agents.x-k8s.io group, not extensions. The
+  # plugin only READS them, to count what is still present during a drain and to
+  # read the template-hash label, so there is no write verb here.
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: argo-rollouts-sandbox-warmpool
+  labels:
+    app.kubernetes.io/part-of: argo-rollouts
+    app.kubernetes.io/managed-by: argo-rollouts
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: argo-rollouts-sandbox-warmpool
+subjects:
+  - kind: ServiceAccount
+    name: argo-rollouts
+    namespace: __ARGO_NAMESPACE__

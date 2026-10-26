@@ -99,6 +99,7 @@ nav:
       - Pause and resume: agent-sandbox/pause-resume/README.md
       - Warm pool autoscaling with KEDA: agent-sandbox/warm-pool-autoscaling-keda/README.md
       - IDE in the browser: agent-sandbox/ide/README.md
+      - Roll out a SandboxTemplate change with Argo Rollouts: agent-sandbox/argo-rollouts/README.md
   - Storage:
       - EBS volumes: storage/ebs/README.md
       - Shared EFS storage: storage/efs/README.md

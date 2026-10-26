@@ -39,6 +39,7 @@ The same procurement analyst three ways, with a second policy layer confining th
 - [Pause and resume](examples/agent-sandbox/pause-resume/README.md): suspend a sandbox to release its compute and keep its EBS workspace, then resume onto a new guest with the data intact.
 - [Warm pool autoscaling with KEDA](examples/agent-sandbox/warm-pool-autoscaling-keda/README.md): KEDA reads a count of `SandboxClaim` objects and drives a warm pool's `spec.replicas` up and back down with it, with a no-autoscaler control that stays flat under the same demand.
 - [IDE in the browser](examples/agent-sandbox/ide/README.md): code-server (VS Code in the browser) in a sandbox on a persistent EBS workspace, reached only by `kubectl port-forward`, with its password an argon2 hash from a Kubernetes Secret.
+- [Roll out a SandboxTemplate change with Argo Rollouts](examples/agent-sandbox/argo-rollouts/README.md): patching a `SandboxTemplate` leaves the warm pool serving pods built from the old one, so a claim can adopt a stale pod; an Argo Rollouts canary step plugin patches the template and then drains and re-warms the pool.
 
 ## Storage
 
