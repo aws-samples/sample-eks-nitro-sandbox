@@ -139,9 +139,13 @@ identical but for one line: `probe-sandboxed` sets `runtimeClassName: isolated-s
 `<COREDNS_IP>` with your cluster's DNS address, read from the kubelet configuration of the first
 Ready node that answers (the script does this for you). That read needs permission to **list
 `nodes`** and to **get `nodes/proxy`**; without both, the lookup below prints the API server's
-denial and stops before it applies anything.
+denial and applies no policy and no pod.
 [How the network policy works](#how-the-network-policy-works) gives the other ways to reach the
 same address, which need less permission.
+
+Paste the block whole: everything after the lookup is chained to a check that it found an
+address, so a missing permission cannot leave the probe pods running with no policy, or with a
+policy pinned to a stale `COREDNS_IP` left over in your environment.
 
 `kubectl create` refuses a `sandbox-limits` namespace that already exists, so a namespace this
 sample did not make is never relabeled as its own:
@@ -155,8 +159,6 @@ for DNS_NODE in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.nam
     | sed -n 's/.*"clusterDNS":\["\([^"]*\)".*/\1/p' | grep -Ex '[0-9]{1,3}(\.[0-9]{1,3}){3}')
   [ -n "$COREDNS_IP" ] && break
 done
-# Everything below is chained to this check, so a missing permission cannot leave the probes
-# running with no policy or with a policy pinned to a stale address left in your environment.
 : "${COREDNS_IP:?could not read the cluster DNS address from any Ready node; check permission to list nodes and get nodes/proxy}" &&
 echo "cluster DNS address: $COREDNS_IP" &&
 sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f - &&
@@ -273,13 +275,14 @@ the cluster's DNS address: the kubelet's `clusterDNS`, which pods use as their n
 from a node as in step 2 (this needs permission to list `nodes` and to get `nodes/proxy`).
 
 On EKS Auto Mode CoreDNS runs on each node rather than as pods in `kube-system`, so the `kube-dns`
-Service is still there and still carries this address, but with no endpoints behind it. Three ways
-of reading the address all give the same number: the kubelet's `clusterDNS`, the `kube-dns`
-ClusterIP, and the `.10` address of the cluster's Service CIDR, which is the one the Amazon EKS
-User Guide derives in *Use Network Policies with EKS Auto Mode*, under *Determining the CoreDNS IP
-address*. This sample reads the kubelet's `clusterDNS` because that is the nameserver the probe
-pods themselves use — the same `nameserver=` the probe output above prints — so the address the
-policy allows cannot differ from the one the probes measured against, and reading it needs no AWS
+Service is still there and still carries this address, but with no endpoints behind it. On an IPv4
+cluster, three ways of reading the address all give the same number: the kubelet's `clusterDNS`,
+the `kube-dns` ClusterIP, and the `.10` address of the cluster's Service CIDR, which is the one
+the Amazon EKS User Guide derives in *Use Network Policies with EKS Auto Mode*, under
+*Determining the CoreDNS IP address* (an IPv6 cluster uses a different address, and this sample
+accepts only IPv4). This sample reads the kubelet's `clusterDNS` because that is the nameserver
+the probe pods themselves use — the same `nameserver=` the probe output above prints — so the
+address the policy allows is the one the probes measured against, and reading it needs no AWS
 API call and no cluster name. The guide's method and the
 `kubectl get svc -n kube-system kube-dns` lookup the other samples here use are equally valid and
 need less permission. Either way the policy allows DNS with an `ipBlock` on the address, as the
