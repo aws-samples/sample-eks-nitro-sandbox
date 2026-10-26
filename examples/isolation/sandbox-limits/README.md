@@ -202,17 +202,38 @@ The comparison script checks this setting rather than changing this shared setti
 **Step 2: Deploy the namespace, the egress policy and the two probe pods.** The probe pods are
 identical but for one line: `probe-sandboxed` sets `runtimeClassName: isolated-sandbox`,
 `probe-standard` does not. The egress policy selects both and allows only DNS to CoreDNS. Fill in
-`<COREDNS_IP>` with your cluster's CoreDNS address (the script does this for you):
+`<COREDNS_IP>` with your cluster's DNS address, read from the kubelet configuration of the first
+Ready node that answers with a canonical IPv4 address as its first `clusterDNS` entry (the script
+does this for you). That read needs permission to **list
+`nodes`** and to **get `nodes/proxy`**; without both, the lookup below prints the API server's
+denial and applies no policy and no pod.
+[How the network policy works](#how-the-network-policy-works) gives the other ways to reach the
+same address, which need less permission.
+
+Paste the block whole: everything after the lookup is chained to a check that it found an
+address, so a missing permission cannot leave the probe pods running with no policy, or with a
+policy pinned to a stale `COREDNS_IP` left over in your environment.
 
 `kubectl create` refuses a `sandbox-limits` namespace that already exists, so a namespace this
 sample did not make is never relabeled as its own:
 
 ```bash
 kubectl create -f deploy/namespace.yaml
-COREDNS_IP=$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')
-sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f -
-kubectl apply -f deploy/probe-standard.yaml
-kubectl apply -f deploy/probe-sandboxed.yaml
+COREDNS_IP=""
+for DNS_NODE in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+    | awk '$2 == "True" {print $1}'); do
+  DNS_READ=$(kubectl get --raw "/api/v1/nodes/$DNS_NODE/proxy/configz" --request-timeout=10s \
+    | sed -n 's/.*"clusterDNS":\["\([^"]*\)".*/\1/p')
+  if [[ "$DNS_READ" =~ ^((25[012345]|2[01234][0123456789]|1[0123456789][0123456789]|[123456789][0123456789]|[0123456789])\.){3}(25[012345]|2[01234][0123456789]|1[0123456789][0123456789]|[123456789][0123456789]|[0123456789])$ ]]; then
+    COREDNS_IP="$DNS_READ"
+    break
+  fi
+done
+: "${COREDNS_IP:?no Ready node returned an IPv4 clusterDNS; check permission to list nodes and get nodes/proxy, and that the first clusterDNS entry is IPv4}" &&
+echo "cluster DNS address: $COREDNS_IP" &&
+sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f - &&
+kubectl apply -f deploy/probe-standard.yaml &&
+kubectl apply -f deploy/probe-sandboxed.yaml &&
 for p in probe-standard probe-sandboxed; do
   kubectl -n sandbox-limits wait pod/$p --for=condition=Ready --timeout=300s
 done
@@ -256,8 +277,8 @@ kubectl -n sandbox-limits exec -i probe-sandboxed -- env OFFERED_QPS=50 python3 
 
 ```text
 offered~50qps window=5.0s drain=1.0s nameserver=10.100.0.10 qname=kubernetes.default.svc.cluster.local
-sent=250 answered=250 elapsed=6.00s answered_rate=50.0qps (over the 5.0s offer window)
-RESULT offered=250 answered=250 elapsed=6.00 rate=50.0
+sent=250 answered=250 elapsed=6.48s answered_rate=50.0qps (over the 5.0s offer window)
+RESULT offered=250 answered=250 elapsed=6.48 rate=50.0
 ```
 
 At 50 queries a second, below the limit, the sandboxed pod answers all 250 of them: 50 answered a
@@ -276,12 +297,12 @@ kubectl -n sandbox-limits exec -i probe-sandboxed -- env OFFERED_QPS=400 python3
 ```text
 control  (probe-standard)  @ 400 qps:
 offered~400qps window=5.0s drain=1.0s nameserver=10.100.0.10 qname=kubernetes.default.svc.cluster.local
-sent=2000 answered=2000 elapsed=6.00s answered_rate=400.0qps (over the 5.0s offer window)
-RESULT offered=2000 answered=2000 elapsed=6.00 rate=400.0
+sent=2000 answered=2000 elapsed=6.50s answered_rate=400.0qps (over the 5.0s offer window)
+RESULT offered=2000 answered=2000 elapsed=6.50 rate=400.0
 symptom  (probe-sandboxed) @ 400 qps:
 offered~400qps window=5.0s drain=1.0s nameserver=10.100.0.10 qname=kubernetes.default.svc.cluster.local
-sent=2000 answered=599 elapsed=6.00s answered_rate=119.8qps (over the 5.0s offer window)
-RESULT offered=2000 answered=599 elapsed=6.00 rate=119.8
+sent=2000 answered=599 elapsed=6.49s answered_rate=119.8qps (over the 5.0s offer window)
+RESULT offered=2000 answered=599 elapsed=6.49 rate=119.8
 ```
 
 Offered the same 400 queries a second, the ordinary pod answers all 2000 (400 a second) while the
@@ -310,13 +331,33 @@ qps offered it plateaued at 119.8 qps while the ordinary control answered 400.0
 qps. The measured plateau is near the documented 100 qps per family (EKS User Guide).
 ```
 
+The block is abridged: it starts at `=== Results ===`. Before that the script creates the
+namespace, prints the cluster DNS address it read, applies the policy and the two pods, and
+prints each probe's answered rate.
+
 ## How the network policy works
 
 The probe pods have a network, so the sample restricts their egress with a standard
 `networking.k8s.io/v1` `NetworkPolicy` and shows the whole policy here. It allows just two things,
 the DNS the DNS probe needs and the TCP egress to the sink the connection probe needs, and denies
-everything else. `<COREDNS_IP>` is filled in at apply time from
-`kubectl get svc -n kube-system kube-dns`:
+everything else. `<COREDNS_IP>` is filled in at apply time with
+the cluster's DNS address: the kubelet's `clusterDNS`, which pods use as their nameserver, read
+from a node as in step 2 (this needs permission to list `nodes` and to get `nodes/proxy`).
+
+On EKS Auto Mode CoreDNS runs on each node rather than as pods in `kube-system`, so the `kube-dns`
+Service is still there and still carries this address, but with no endpoints behind it. On an IPv4
+cluster, three ways of reading the address all give the same number: the kubelet's `clusterDNS`,
+the `kube-dns` ClusterIP, and the `.10` address of the cluster's Service CIDR, which is the one
+the Amazon EKS User Guide derives in *Use Network Policies with EKS Auto Mode*, under
+*Determining the CoreDNS IP address* (an IPv6 cluster uses a different address, and this sample
+accepts only IPv4). This sample reads the kubelet's `clusterDNS` because that is the nameserver
+the probe pods themselves use — the same `nameserver=` the probe output above prints — so the
+address the policy allows is the one the probes measured against, and reading it needs no AWS
+API call and no cluster name. The guide's method and the
+`kubectl get svc -n kube-system kube-dns` lookup the other samples here use are equally valid and
+need less permission. Either way the policy allows DNS with an `ipBlock` on the address, as the
+guide's own example does
+(<https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html>):
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -350,14 +391,14 @@ spec:
 | `podSelector: app: dns-probe` | Selects every probe pod, the sandboxed and the ordinary one alike |
 | `policyTypes: [Ingress, Egress]` | Makes both directions default-deny for the selected pods, so anything not allowed below is refused |
 | no `ingress:` rule | Denies all ingress to the probe pods |
-| `egress` to the CoreDNS `ipBlock` on UDP and TCP 53 | DNS to the cluster resolver, which the DNS probe needs. EKS Auto Mode runs CoreDNS locally on each node and the Network Policy Controller matches DNS by that fixed Service IP, the same way [Getting started > Coding agent](../../getting-started/coding-agent/README.md) allows it |
+| `egress` to the CoreDNS `ipBlock` on UDP and TCP 53 | DNS to the cluster resolver, which the DNS probe needs. The address is the kubelet's `clusterDNS`, which on EKS Auto Mode is the same address as the `kube-dns` ClusterIP, served by CoreDNS on the node. An `ipBlock`, as [Getting started > Coding agent](../../getting-started/coding-agent/README.md) uses |
 | `egress` to the `conntrack-sink` pod on TCP 9000 | The connection sink, which the connection-limit probe opens held-open outbound flows to. Nothing else is reachable, so the probe cannot leave the cluster |
 
 The policy is enforced on the node, outside the guest: the node's network policy agent attaches
 the enforcement to the pod's host-side interface, so a command run inside the sandbox, even as
 root, is subject to it. A `domainNames` rule, where a sample uses one, allows the addresses a
 name resolves to, so other names on the same addresses are reachable too; this policy allows
-CoreDNS by its fixed Service IP and needs no name rule. A pod can always reach its own node.
+DNS by the kubelet's `clusterDNS` address and needs no name rule. A pod can always reach its own node.
 
 Apply the policy and wait for its `PolicyEndpoint` before relying on enforcement: it shows the
 controller has handed the policy to the nodes. The `PolicyEndpoint` name ends in a random suffix,
@@ -369,14 +410,15 @@ kubectl -n sandbox-limits get networkpolicies,policyendpoints
 
 ```text
 NAME                                               POD-SELECTOR    AGE
-networkpolicy.networking.k8s.io/dns-probe-egress   app=dns-probe   3m3s
+networkpolicy.networking.k8s.io/dns-probe-egress   app=dns-probe   22m
 
-NAME                                                      AGE
-policyendpoint.networking.k8s.aws/dns-probe-egress-ttrfn  3m4s
+NAME                                                       AGE
+policyendpoint.networking.k8s.aws/dns-probe-egress-t75lm   22m
 ```
 
 Show it working, one allowed and one refused. DNS to CoreDNS on 53 is allowed; the same host on
-port 80, which no rule allows, is refused and the connection runs to a timeout:
+port 80, which no rule allows, is refused and the connection runs to a timeout. Replace
+`<COREDNS_IP>` in the second command with the address from step 2 (`echo $COREDNS_IP`):
 
 ```bash
 # allowed: a DNS query to CoreDNS on 53 is answered
@@ -390,7 +432,7 @@ except Exception as e: print("refused:", type(e).__name__)'
 ```
 
 ```text
-RESULT offered=50 answered=50 elapsed=2.00 rate=50.0
+RESULT offered=50 answered=50 elapsed=2.48 rate=50.0
 refused: TimeoutError
 ```
 
@@ -434,6 +476,8 @@ qps offered it plateaued at 119.8 qps while the ordinary control answered 400.0
 qps. The measured plateau is near the documented 100 qps per family (EKS User Guide).
 With the limit raised to 300, the plateau moved to 319.8 qps: direct evidence the plateau is that limit.
 ```
+
+Abridged as above: the block starts at `=== Results ===`.
 
 With the annotation at 300, the plateau moves from about 100 to about 300 (again a little above,
 by the same burst allowance), while the default-limit pod still plateaus near 100. The plateau
@@ -507,7 +551,7 @@ scripts/run-conntrack-comparison.sh
 ```
 
 ```text
-sink pod IP: 192.168.103.243
+sink pod IP: 192.168.106.177
 
 === CONTROL: ordinary probe opens up to 6000 outbound flows to the sink ===
 established=6000 first-fail-errno=NONE
@@ -526,6 +570,10 @@ probe plateaued at 4096 established flows, the next connection timed out (ETIMED
 and the guest connection-tracking count read 4097 at the plateau, near the documented
 4096 per family (EKS User Guide).
 ```
+
+The block is abridged: it starts at `sink pod IP:`. Before that the script reuses the
+sample's namespace, deletes the pods left from an earlier run, and applies the policy, the
+sink and the two probe pods.
 
 The ordinary control opens all 6000 flows against the same sink with no drop, so neither the sink
 nor port exhaustion is the limit (4096 is far below the roughly 28000 ephemeral ports available).
@@ -564,6 +612,9 @@ standard, up to 6000 flows (control)           established=6000 new-conn=NONE
 sandbox,  up to 6000 flows (symptom)           established=4096 new-conn=ETIMEDOUT ct=4097
 sandbox,  limit raised to 8192                 established=6000 new-conn=NONE ct=-1
 ```
+
+The block is abridged to the `=== Results ===` table. The script's output before it is as in
+Step C1, plus the raised pod; after it comes the same verdict, with one line on the raised pod.
 
 The default-limit pod still plateaus at 4096, while the pod with the limit raised to 8192 opens
 the full 6000 flows the probe offers with no drop (`new-conn=NONE`), so its limit is above the
@@ -619,17 +670,19 @@ done
 ```text
 # probe-sandboxed
 6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-52.54
+72.62
 dm-0 vda vdb vdc
 # probe-standard
 6.18.51 #2 SMP PREEMPT_DYNAMIC Wed Oct  7 22:33:11 UTC 2026
-160685.39
-dm-0 nvme0n1 nvme1n1 nvme2n1 nvme3n1 zram0
+2413.84
+dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0
 ```
 
-The sandboxed probe's uptime (about 53 seconds) matches its pod's age, because the VM booted with
+The run printed a space at the end of each disk list; the block trims it.
+
+The sandboxed probe's uptime (about 73 seconds) matches its pod's age, because the VM booted with
 the pod, and it sees virtio disks (`vda`, `vdb`, `vdc`); the ordinary probe reports the node's
-uptime (about 45 hours) and the instance's `nvme` disks. The kernel version string is the same
+uptime (about 40 minutes) and the node's `loop` and `nvme` devices. The kernel version string is the same
 for both, `6.18.51`; the build (`#1` versus `#2`, and the date) and the boot are not.
 
 ## Clean up
