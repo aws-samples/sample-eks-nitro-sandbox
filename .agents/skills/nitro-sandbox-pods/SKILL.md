@@ -153,18 +153,24 @@ sample that has no policy.
   at any UID, so it needs no root hypothetical — and most samples here set
   `runAsNonRoot: true`, which makes root a state the sample cannot be in. A reader who tries
   to check such a claim gets the pod's own UID instead, so say what that UID is and keep the
-  claim to what the sample shows. Two samples do establish root, each differently, and the
-  difference is the point: `examples/ai-agents/coding-agents-for-developers` sets
-  `runAsUser: 0` with `allowPrivilegeEscalation: true` and its page prints `id -u` as `0`;
-  `examples/ci-cd/docker-builds` declares the build container `privileged: true` and its
-  step 5 writes `/proc/sys/vm/swappiness` from inside the pod, which only root can do.
+  claim to what the sample shows. Three samples do establish root, each by a different route,
+  and the differences are the point: `examples/ai-agents/coding-agents-for-developers` sets
+  `runAsUser: 0` with `allowPrivilegeEscalation: true`, and its page prints `id -u` as `0`;
+  `examples/ci-cd/docker-builds` declares the build container `privileged: true`, and its
+  step 5 writes `/proc/sys/vm/swappiness` from inside the pod, which only root can do; and
+  `examples/ci-cd/github-actions` gets root from the privileged `docker:dind` sidecar that
+  `containerMode: dind` puts in the runner pod, where its step 7 build prints `uid=0(root)`.
   (`AGENTS.md`, "Say only what your sample actually limits".)
 - **`privileged: true` is not by itself evidence of UID 0**, and neither is the absence of a
   `securityContext`: both leave the identity to the image's own `USER`. So cite the UID the
-  sample shows, or a root-only operation it records — not the privilege flag. Watch where a
-  recorded `uid=0(root)` actually came from: in `examples/ci-cd/github-actions` the only one
-  on the page is printed by a `docker build` `RUN` step on the job's own nested daemon, which
-  says nothing about the UID of the runner container that the page's sentence is about.
+  sample shows, or a root-only operation it records — not the privilege flag. And check the
+  evidence is about the thing your sentence names. `examples/ci-cd/github-actions` records
+  `uid=0(root)` only from a `docker build` `RUN` step on the job's own nested daemon, which
+  says nothing about the UID of the *runner container* — that image's own `USER` is not root.
+  Its sentence used to say "a command in the runner"; the fix was to widen it to "the runner
+  pod", which the privileged sidecar does establish, rather than to drop the claim. Match the
+  noun to the evidence, and prefer widening the subject to deleting a point that is true
+  (issue #103).
 - **"Cannot change the policy" is not "cannot get data out".** A filter can stay unmodified
   and still be routed around — through an allowed `domainNames` host that serves something
   else, over open port 53, or to the pod's own node. Write "cannot change" or "cannot
