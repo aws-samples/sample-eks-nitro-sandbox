@@ -4,15 +4,17 @@
 #
 #   ./scripts/setup.sh
 #
-# It checks the shared installs it needs and creates nothing when one is missing,
-# so a missing prerequisite stops the run clean with no leftovers. It never
-# installs, upgrades or reconfigures any of them: the runtime class and the
-# agent-sandbox controller belong to the cluster, and another workload may depend
-# on the version that is there.
+# It checks the shared prerequisites it needs and creates nothing when one is
+# missing, so a missing prerequisite stops the run clean with no leftovers. It
+# never installs, upgrades or reconfigures any of them: the runtime class, the
+# agent-sandbox controller, the Argo Rollouts controller and the step-plugin
+# registration all belong to the cluster, and another workload may depend on the
+# version and the settings that are there.
 #
-# Argo Rollouts is NOT checked here. The page shows the drain as a plain script
-# first, which needs no controller; ./scripts/run-rollout.sh is what requires
-# Argo Rollouts and the registered step plugin.
+# All four are checked here, before anything is created, because all four are
+# things the READER sets up: the page lists them as prerequisites, and this
+# script's job is to tell you plainly when one of them is not done rather than
+# to do it for you. The clean up never undoes any of them either.
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "$HERE/common.sh"
@@ -24,8 +26,16 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 require_commands kubectl sed grep sort
 show_context
 
-# --- the shared installs, checked before anything is created ----------------
+# --- the shared prerequisites, checked before anything is created -----------
+# Order matters only for the message you get first: the agent-sandbox CRDs are
+# what the sample's own objects need, and the Argo Rollouts controller plus the
+# step-plugin registration are what Step 10's rollout needs. Checking the
+# registration here rather than only in run-rollout.sh means a reader who
+# installed the controller but skipped the registration finds out now, before
+# the pool is booted, instead of several steps later.
 require_agent_sandbox
+require_argo_rollouts
+require_step_plugin
 
 # --- the sample's own objects ------------------------------------------------
 

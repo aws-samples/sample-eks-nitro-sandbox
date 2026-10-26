@@ -218,15 +218,31 @@ resource_exists() {
 # require_agent_sandbox : the controller and the three extension CRDs this sample
 # uses. Getting started > Warm pool is where they are installed.
 require_agent_sandbox() {
-  kc_cluster get runtimeclass isolated-sandbox >/dev/null 2>&1 \
-    || die "runtimeclass isolated-sandbox not found; run the Hello sandbox sample first"
+  # Every check here tells "it is not there" apart from "the cluster could not be
+  # reached". `kubectl get ... || die "not found"` cannot: expired credentials or
+  # an unreachable API server both come back non-zero, and the reader is then
+  # told to install something that may already be installed, on a cluster this
+  # script never actually read. resource_exists returns 2 for a failed read, and
+  # a failed read is never an answer.
+  local rc=0
+  resource_exists kc_cluster runtimeclass isolated-sandbox || rc=$?
+  case $rc in
+    1) die "runtimeclass isolated-sandbox not found on this cluster; run the Hello sandbox sample first" ;;
+    2) die "could not read the cluster's runtime classes, so whether isolated-sandbox exists could not be determined. Check that your credentials are current and that the context is the cluster you mean:
+  kubectl ${KUBE_CONTEXT:+--context $KUBE_CONTEXT }get runtimeclass" ;;
+  esac
+
   local crd
   for crd in sandboxtemplates.extensions.agents.x-k8s.io \
              sandboxwarmpools.extensions.agents.x-k8s.io \
              sandboxclaims.extensions.agents.x-k8s.io; do
-    kc_cluster get crd "$crd" >/dev/null 2>&1 \
-      || die "the agent-sandbox CRD $crd is not installed. Install agent-sandbox $AGENT_SANDBOX_VERSION as Getting started > Warm pool step 1 does:
-  kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$AGENT_SANDBOX_VERSION/sandbox-with-extensions.yaml"
+    rc=0
+    resource_exists kc_cluster crd "$crd" || rc=$?
+    case $rc in
+      1) die "the agent-sandbox CRD $crd is not installed. Install agent-sandbox $AGENT_SANDBOX_VERSION as Getting started > Warm pool step 1 does:
+  kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$AGENT_SANDBOX_VERSION/sandbox-with-extensions.yaml" ;;
+      2) die "could not read the cluster's CRDs, so whether agent-sandbox is installed could not be determined; stopping rather than tell you to install over an install that may already be there" ;;
+    esac
   done
 }
 
@@ -299,15 +315,56 @@ registered_step_plugins() {
     | sed -E 's/^[[:space:]]*-[[:space:]]*name:[[:space:]]*//; s/[[:space:]]*$//; s/^"//; s/"$//' || true
 }
 
-# require_step_plugin : check the plugin is registered on the controller, the
-# controller has the RBAC the plugin needs, and the binary is staged where the
-# ConfigMap says it is. Every part of this is shared, cluster-wide state, so this
-# only ever READS and stops with the command when something is missing.
+# registered_step_plugin_locations : one "<name> <location>" line per registered
+# entry, so a caller can tell "our step name is registered" apart from "our step
+# name is registered and points at our binary". Same return codes as
+# registered_step_plugins.
+registered_step_plugin_locations() {
+  local out rc=0
+  out="$(kc_cluster -n "$ARGO_NAMESPACE" get configmap argo-rollouts-config \
+    --ignore-not-found -o jsonpath='{.data.stepPlugins}' 2>/dev/null)" || rc=$?
+  [[ $rc -ne 0 ]] && return 2
+  local nsrc=0
+  resource_exists kc_cluster -n "$ARGO_NAMESPACE" configmap argo-rollouts-config || nsrc=$?
+  case $nsrc in
+    1) return 1 ;;
+    2) return 2 ;;
+  esac
+  # Pair each "- name:" with the "location:" that follows it, before the next
+  # entry starts. Comments are stripped first so a commented-out line is never
+  # read as real, and both patterns are anchored.
+  printf '%s' "$out" | sed -E 's/#.*$//' | awk '
+    /^[[:space:]]*-[[:space:]]*name:/ {
+      if (n != "") print n, l
+      n = $0; sub(/^[[:space:]]*-[[:space:]]*name:[[:space:]]*/, "", n)
+      gsub(/^"|"$|[[:space:]]+$/, "", n); l = ""
+      next
+    }
+    /^[[:space:]]*location:/ {
+      l = $0; sub(/^[[:space:]]*location:[[:space:]]*/, "", l)
+      gsub(/^"|"$|[[:space:]]+$/, "", l)
+      next
+    }
+    END { if (n != "") print n, l }
+  ' || true
+}
+
+# require_step_plugin : check the plugin is registered on the controller, that
+# the registration points at THIS sample's binary, that the controller has the
+# RBAC the plugin needs, and that the binary is staged where the ConfigMap says
+# it is.
+#
+# The registration is a PREREQUISITE the reader performs, like the controller
+# install itself: it changes the controller's own ConfigMap and Deployment and
+# adds a cluster-scoped ClusterRole, all of which every Rollout on the cluster
+# shares. So this only ever READS, and stops with the command when a part is
+# missing. It never applies any of it, and the clean up never undoes it.
 require_step_plugin() {
   local names rc=0
   names="$(registered_step_plugins)" || rc=$?
   case $rc in
-    1) die "the Argo Rollouts controller has no argo-rollouts-config ConfigMap, so this sample's step plugin is not registered. Registering it changes a controller the whole cluster shares, so the page has you do it as a step:
+    1) die "the Argo Rollouts controller has no argo-rollouts-config ConfigMap, so this sample's step plugin is not registered. It is a prerequisite you run yourself, because it changes a controller the whole cluster shares:
+  ./scripts/register-step-plugin.sh          # plan: changes nothing
   ./scripts/register-step-plugin.sh apply" ;;
     2) die "could not read configmap argo-rollouts-config in namespace $ARGO_NAMESPACE, so whether the step plugin is registered could not be determined; stopping rather than guess" ;;
   esac
@@ -319,19 +376,47 @@ require_step_plugin() {
   if ((${#missing[@]})); then
     die "the Argo Rollouts controller does not have this sample's step plugin registered (missing: ${missing[*]}).
 It currently registers: ${names:-<none>}
-Registering a step plugin changes a controller the whole cluster shares, so the page has you do it as a step:
+The registration is a prerequisite you run yourself, because it changes a controller the
+whole cluster shares:
+  ./scripts/register-step-plugin.sh          # plan: changes nothing
   ./scripts/register-step-plugin.sh apply"
   fi
 
+  # Our step names being present is not the same as them pointing at our binary.
+  # A registration that names this sample's steps against somebody else's image
+  # is NOT this sample's registration, and running the rollout against it would
+  # execute code this sample did not build. Stop and say what was found rather
+  # than overwrite it: that is the owner's choice, not this script's.
+  local pairs prc=0
+  pairs="$(registered_step_plugin_locations)" || prc=$?
+  [[ $prc -eq 2 ]] && die "could not read the step-plugin locations from configmap argo-rollouts-config in namespace $ARGO_NAMESPACE; stopping rather than guess"
+  local pname ploc
+  while read -r pname ploc; do
+    [[ -z "$pname" ]] && continue
+    [[ "$pname" == "$STEP_PATCH" || "$pname" == "$STEP_DRAIN" ]] || continue
+    [[ "$ploc" == "file://$PLUGIN_PATH" ]] && continue
+    die "step plugin $pname is registered on the controller in namespace $ARGO_NAMESPACE, but against
+  $ploc
+rather than this sample's
+  file://$PLUGIN_PATH
+So the registration under that name is not this sample's. Changing it would change a
+controller other workloads depend on, which is a question for whoever owns that install.
+Nothing has been created."
+  done <<<"$pairs"
+
   # The RBAC the plugin acts with. Without it the steps fail at the API call
   # rather than at load, which reads as a broken drain instead of a missing grant.
-  local crrc=0
-  resource_exists kc_cluster clusterrolebinding argo-rollouts-sandbox-warmpool || crrc=$?
-  case $crrc in
-    1) die "clusterrolebinding argo-rollouts-sandbox-warmpool is missing, so the Argo Rollouts controller has no permission on the agent-sandbox CRDs and both plugin steps would fail. Apply it with the rest of the registration:
+  # Both halves are checked: a binding with no role grants nothing.
+  local obj crrc
+  for obj in clusterrole clusterrolebinding; do
+    crrc=0
+    resource_exists kc_cluster "$obj" argo-rollouts-sandbox-warmpool || crrc=$?
+    case $crrc in
+      1) die "$obj argo-rollouts-sandbox-warmpool is missing, so the Argo Rollouts controller has no permission on the agent-sandbox CRDs and both plugin steps would fail. It is part of the registration prerequisite:
   ./scripts/register-step-plugin.sh apply" ;;
-    2) die "could not read clusterrolebinding argo-rollouts-sandbox-warmpool; stopping rather than guess" ;;
-  esac
+      2) die "could not read $obj argo-rollouts-sandbox-warmpool; stopping rather than guess" ;;
+    esac
+  done
 
   # The binary the ConfigMap points at. A registration whose location does not
   # resolve on the controller pod makes the controller fail the step with a load

@@ -103,6 +103,39 @@ current context:
 cp .env.example .env
 ```
 
+## Prerequisites on the cluster
+
+This sample needs **two** things set up before it will run, and you set up both yourself.
+Step 3's `setup.sh` checks for them and stops without creating anything when either is
+missing, and the clean up never undoes either.
+
+| Prerequisite | What it is | Where |
+|---|---|---|
+| The Argo Rollouts controller, pinned to **v1.10.1** | A cluster-wide controller. Another workload on your cluster may already depend on the version and settings it has. | Step 1 |
+| The step-plugin registration | The `stepPlugins` key in the controller's own `argo-rollouts-config` ConfigMap, an initContainer on its Deployment, a cluster-scoped `ClusterRole`, and an ECR repository holding the plugin image. | Step 2 |
+
+**Both are cluster-wide changes.** The second one in particular changes the Argo Rollouts
+controller itself, so it affects **every `Rollout` on the cluster**, not just this sample's.
+On a shared cluster, make sure that is yours to do before you run it.
+
+Installing the controller but skipping the registration is the easy mistake to make, and
+it does not fail quietly. `setup.sh` stops with exactly what is missing:
+
+```text
+context: sandbox-demo (pinned)   namespace: argo-rollouts-sample
+reusing the Argo Rollouts install in namespace argo-rollouts as it is (quay.io/argoproj/argo-rollouts:v1.10.1); this sample was built against Argo Rollouts v1.10.1
+error: the Argo Rollouts controller does not have this sample's step plugin registered (missing: eks-nitro-sandbox/sandbox-template-patch eks-nitro-sandbox/sandbox-warmpool-drain).
+It currently registers: <none>
+The registration is a prerequisite you run yourself, because it changes a controller the
+whole cluster shares:
+  ./scripts/register-step-plugin.sh          # plan: changes nothing
+  ./scripts/register-step-plugin.sh apply
+```
+
+That block comes from a separate run, with the controller installed and the registration
+absent, rather than from the walkthrough below. Nothing was created by it: the sample's
+namespace did not exist before it and did not exist after.
+
 ## Step 1: Install Argo Rollouts, or reuse the install that is there
 
 Argo Rollouts is a cluster-wide controller, and another workload on your cluster may already
@@ -138,10 +171,15 @@ registering a step plugin means changing the controller: its ConfigMap, a `Clust
 lets it act on the agent-sandbox CRDs, and an initContainer on its Deployment that stages the
 binary.
 
-**This step changes state the whole cluster shares.** That is why it is a step you run, not
-something `setup.sh` does: the other scripts only ever read the registration and stop with
-this command when it is missing. Run it on a cluster whose Argo Rollouts install is yours to
-change. It defaults to a plan that changes nothing.
+**This step changes the Argo Rollouts controller, so it affects every `Rollout` on the
+cluster, not just this sample's.** The controller loads its step plugins at start-up from
+that one ConfigMap, and applying the registration restarts it. There is no per-namespace way
+to register a step plugin. That is why this is a prerequisite you run yourself rather than
+something `setup.sh` does: every script here only ever *reads* the registration and stops
+with this command when it is missing, and the clean up never undoes it. Run it on a cluster
+whose Argo Rollouts install is yours to change.
+
+It defaults to a plan that changes nothing.
 
 The plan below comes from a separate run, taken against the shared controller before the
 walkthrough; everything from Step 3 on is from the one fresh walkthrough run.
@@ -243,41 +281,21 @@ is no write verb for them.
 
 ## Step 3: Set up the sample
 
-This creates the sample's own namespace, labelled so the other scripts can tell it is the
-sample's, and applies the `SandboxTemplate` at `rev-1`, the `SandboxWarmPool` at two
-replicas, and the ordinary pod the sandbox readings are compared against. Nothing here
-touches the controller.
+This first checks all four prerequisites, and creates nothing when one of them is missing,
+as the refusal above shows. Then it creates the sample's own namespace, labelled so the
+other scripts can tell it is the sample's, and applies the `SandboxTemplate` at `rev-1`, the
+`SandboxWarmPool` at two replicas, and the ordinary pod the sandbox readings are compared
+against. It changes nothing outside its own namespace.
 
 ```bash
 ./scripts/setup.sh
 ```
 
 ```text
-context: sandbox-demo (pinned)   namespace: argo-rollouts-sample
-
-== 1/4 namespace argo-rollouts-sample ==
-namespace/argo-rollouts-sample created
-namespace/argo-rollouts-sample labeled
-created namespace argo-rollouts-sample, labelled app.kubernetes.io/managed-by=argo-rollouts
-
-== 2/4 apply the SandboxTemplate at rev-1 and the SandboxWarmPool ==
-sandboxtemplate.extensions.agents.x-k8s.io/rollout-agent created
-sandboxwarmpool.extensions.agents.x-k8s.io/rollout-agent-pool created
-
-== 3/4 apply the ordinary pod the sandbox readings are compared with ==
-pod/ordinary-pod created
-
-== 4/4 wait for the pool to be warm at one template revision ==
-  readyReplicas=0/2  distinct template hashes=1
-NAME                 READY   DESIRED   AGE
-rollout-agent-pool   2       2         15s
-
-the SandboxTemplate says TEMPLATE_REVISION=rev-1
-the pool's sandboxes carry agents.x-k8s.io/sandbox-template-hash:
-  cbed2ff8
+TODO: output from the fresh run
 ```
 
-The pool is warm at `rev-1`, and its two sandboxes agree on one template hash, `cbed2ff8`.
+The pool comes up warm at `rev-1`, with its two sandboxes agreeing on one template hash.
 Here is the part of [`deploy/warm-pool.yaml`](deploy/warm-pool.yaml) that matters, the
 revision marker and the two annotations:
 
@@ -334,9 +352,9 @@ The pool has NOT been rebooted. Its sandboxes still carry:
 Claim a pod now and it adopts one of those:  ./scripts/claim.sh stale
 ```
 
-The template now says `rev-2`. The pool still holds the two pods it booted from `rev-1`, at
-the same hash `cbed2ff8` it had before the patch. This is the stale-adoption window, and it
-is open right now. Note that you can see it without claiming anything or exec'ing into
+The template now says `rev-2`, and the script reads the pool straight back: its sandboxes
+booted at `rev-1` and carry template hash `cbed2ff8`. The patch moved the template and left
+the warm pods alone. This is the stale-adoption window, and it is open right now. Note that you can see it without claiming anything or exec'ing into
 anything: the hash label on the pool's sandboxes is a Kubernetes-observable witness.
 
 ## Step 5: Claim a pod, and read the stale revision by value
@@ -701,9 +719,11 @@ itself before returning failure.
 
 ## Clean up
 
-Set the variables again if you are in a new shell. By default the clean up removes only the
-sample's own objects and leaves the shared Argo Rollouts install, its ConfigMap key and the
-ECR repository in place, printing what stays:
+Set the variables again if you are in a new shell. The clean up removes the sample's own
+namespace and everything in it, and nothing else. It takes no arguments: there is
+deliberately no flag that undoes the prerequisites, because the controller and the
+registration are shared with every `Rollout` on the cluster and a reader set them up before
+the sample ran.
 
 ```bash
 cp .env.example .env    # if you have not already; set KUBE_CONTEXT and NAMESPACE
@@ -711,96 +731,52 @@ cp .env.example .env    # if you have not already; set KUBE_CONTEXT and NAMESPAC
 ```
 
 ```text
-context: sandbox-demo (pinned)   namespace: argo-rollouts-sample
-
-== 1/3 the sample's namespace argo-rollouts-sample ==
-  deleting the warm pool first, so it stops booting replacements
-sandboxwarmpool.extensions.agents.x-k8s.io "rollout-agent-pool" deleted from argo-rollouts-sample namespace
-  deleting the namespace and everything in it
-namespace "argo-rollouts-sample" deleted
-  deleted namespace argo-rollouts-sample
-
-== 2/3 the ClusterRole and ClusterRoleBinding ==
-  clusterrolebinding/argo-rollouts-sandbox-warmpool does not exist; nothing to remove
-  clusterrole/argo-rollouts-sandbox-warmpool does not exist; nothing to remove
-
-== 3/3 the registration on the Argo Rollouts controller ==
-  Left in place, because it is shared with the rest of the cluster:
-    - the Argo Rollouts install in namespace argo-rollouts
-    - the stepPlugins key in configmap argo-rollouts/argo-rollouts-config
-    - the initContainer on deployment argo-rollouts/argo-rollouts that stages the binary
-    - the ECR repository nitro-sample-argo-rollouts-stepplugin
-  Undo all four, in a safe order, with:
-    ./scripts/cleanup.sh --unregister
-
-clean up complete.
-```
-
-Two things to read carefully in that output. The `ClusterRole` and `ClusterRoleBinding` are
-reported absent because this run of the walkthrough never registered the step plugin, so
-there was nothing for it to remove. And the four items under 3/3 are what the clean up
-*leaves* rather than a list of things it found: it prints them whether or not they are
-there, so run `--unregister` to be sure they are gone.
-
-To undo the registration as well, in an order that cannot break the controller, add
-`--unregister`. It takes the initContainer off the Deployment first, then removes the
-`stepPlugins` key, and only then deletes the ECR repository: deleting the repository while
-the controller still names its image would stop the controller starting the next time it
-restarted, which would break it for every workload on the cluster rather than just this
-sample.
-
-```bash
-./scripts/cleanup.sh --unregister
-```
-
-The block below is from the run that reset this cluster before the fresh run on this page,
-so it is real output taken at a different point in the session rather than from the final
-clean up above:
-
-```text
-context: sandbox-demo (pinned)   namespace: argo-rollouts-sample
-
-== 1/3 the sample's namespace argo-rollouts-sample ==
-  deleting the warm pool first, so it stops booting replacements
-sandboxwarmpool.extensions.agents.x-k8s.io "rollout-agent-pool" deleted from argo-rollouts-sample namespace
-  deleting the namespace and everything in it
-namespace "argo-rollouts-sample" deleted
-  deleted namespace argo-rollouts-sample
-
-== 2/3 the ClusterRole and ClusterRoleBinding ==
-clusterrolebinding.rbac.authorization.k8s.io "argo-rollouts-sandbox-warmpool" deleted
-  deleted clusterrolebinding/argo-rollouts-sandbox-warmpool
-clusterrole.rbac.authorization.k8s.io "argo-rollouts-sandbox-warmpool" deleted
-  deleted clusterrole/argo-rollouts-sandbox-warmpool
-
-== 3/3 the registration on the Argo Rollouts controller ==
-  took the initContainer and the /plugins volume off deployment argo-rollouts
-deployment "argo-rollouts" successfully rolled out
-  removed the stepPlugins key from configmap argo-rollouts-config
-  deleted ECR repository nitro-sample-argo-rollouts-stepplugin
-
-  Still installed, because other workloads on the cluster may use it:
-    - Argo Rollouts in namespace argo-rollouts
-    - the agent-sandbox controller
-  If nothing else on this cluster uses Argo Rollouts, remove it with:
-    kubectl -n argo-rollouts delete -f \
-      https://github.com/argoproj/argo-rollouts/releases/download/v1.10.1/install.yaml
-    kubectl delete namespace argo-rollouts
-
-clean up complete.
+TODO: output from the fresh run
 ```
 
 The clean up checks the namespace carries the sample's label before it deletes anything
-inside it, deletes the pool first so it stops booting replacements, and checks the sample's
-label on each cluster-scoped object before removing it. It removes the `stepPlugins` key
-only when that key holds exactly this sample's two entries, and the ECR repository only when
-it carries this sample's `ManagedBy` tag. A lookup that fails means "could not determine",
-which it reports as a failure rather than as "gone", and the script exits non-zero when it
-skipped something, so an incomplete clean up is never reported as done.
+inside it, and deletes the pool first so it stops booting replacements. Inside a namespace
+it has confirmed is the sample's, the namespace label is the mark, so it does not re-check
+each object. A lookup that fails means "could not determine", which it reports as a failure
+rather than as "gone", and the script exits non-zero when it skipped something, so an
+incomplete clean up is never reported as done.
 
-**What stays.** Two shared installs, because another workload on the cluster may rely on
-either:
+**What stays.** Everything you set up as a prerequisite, because the whole cluster shares it:
 
+- **The step-plugin registration.** Remove it only if nothing else on the cluster uses a
+  step plugin. The order matters: take the staging off the controller *before* deleting the
+  image it pulls, or the controller cannot start the next time it restarts, which would
+  break it for every workload rather than just this sample.
+
+  ```bash
+  kubectl -n argo-rollouts patch deployment argo-rollouts --type=strategic -p '
+  spec:
+    template:
+      spec:
+        securityContext:
+          fsGroup: null
+        initContainers:
+          - name: copy-sandbox-warmpool-plugin
+            $patch: delete
+        volumes:
+          - name: plugins
+            $patch: delete
+        containers:
+          - name: argo-rollouts
+            volumeMounts:
+              - mountPath: /plugins
+                $patch: delete'
+  kubectl -n argo-rollouts rollout status deploy/argo-rollouts --timeout=180s
+  kubectl -n argo-rollouts patch configmap argo-rollouts-config \
+    --type=json -p '[{"op":"remove","path":"/data/stepPlugins"}]'
+  kubectl delete clusterrolebinding argo-rollouts-sandbox-warmpool
+  kubectl delete clusterrole argo-rollouts-sandbox-warmpool
+  aws ecr delete-repository --repository-name nitro-sample-argo-rollouts-stepplugin \
+    --region "$AWS_REGION" --force
+  ```
+
+  Check the ConfigMap first: if `stepPlugins` holds entries that are not this sample's two,
+  remove only this sample's rather than the whole key, and leave the rest alone.
 - **Argo Rollouts.** Remove it only if nothing else uses it. Check first, across the whole
   cluster, and only then uninstall:
 
