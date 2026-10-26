@@ -90,10 +90,13 @@ is refused.*
 
 ![A setup machine outside the cluster holds the file as plaintext and an encrypt and wrap step using AES-256-GCM. Three flows leave the setup machine: step 1 encrypt, from the file to the encrypt and wrap step; step 2, kms:Encrypt wraps the data key, running along the top of the AWS Cloud frame to AWS KMS on the far right; and step 3, upload ciphertext and manifest, to Amazon S3, which holds the ciphertext and the manifest. Inside the AWS Cloud frame, an Amazon EKS cluster frame contains an EKS node frame labelled parent instance, untrusted, and inside that a Nitro sandbox pod frame with runtimeClassName confidential-sandbox, holding a main container that decrypts in guest memory. Step 4, read the ciphertext, runs from Amazon S3 down into the Nitro sandbox pod frame, so the guest reads the object itself rather than the node reading it. The main container exchanges two flows with AWS KMS, outside the cluster to the right: step 5, an attested kms:Decrypt, and step 6, the data key returned for the sandbox. Lower in the same EKS cluster sits an ordinary pod, not a sandbox, holding the sandbox's own Pod Identity role. Its request to AWS KMS is drawn as a red dashed line labelled refused, no attestation, so the same credentials without an attestation document get nothing.](images/figure-1-s3-encrypted-file.png)
 
-**The sandbox's network reach.** This sample ships no network policy: the pod has a network,
-and what limits it is the key policy and the bucket policy, not the datapath. The
+**The sandbox's network reach.** This sample ships no network policy, so the pod's egress is
+unrestricted. What the key policy and the bucket policy limit is access to this data key and
+these two S3 objects; neither of them limits where the pod can connect, and neither would
+stop an application that chose to send the plaintext somewhere else. Restricting the
+datapath is a separate thing, and the
 [network policy](../../isolation/network-policy/README.md) sample under Isolation is where
-the mechanism is shown, on a sandboxed pod, with one connection allowed and one refused.
+that mechanism is shown, on a sandboxed pod, with one connection allowed and one refused.
 
 ## Versions
 
@@ -466,9 +469,10 @@ Delete it before you finish with the sample:  ./scripts/changed-pod.sh --delete
 ```
 
 Abridged: the generator's own policy output is cut from step 2 of 4. The two measurements
-differ in the first character onward, from one changed environment value. The pod did
-everything the approved pod did, including reading the same ciphertext, and stopped at the
-decrypt with the same explicit deny the credentials pod got.
+differ in the first character onward, from one changed environment value. The pod followed the
+same path as the approved pod as far as reading the same ciphertext, by the same digest, and
+then stopped at the decrypt with the same explicit deny the credentials pod got. It never
+received the data key, so it decrypted nothing, validated nothing and printed no marker.
 
 The script checks the changed pod differs from the approved one in nothing but that one
 value, that its predicted measurement really is different, and that the live key policy is
