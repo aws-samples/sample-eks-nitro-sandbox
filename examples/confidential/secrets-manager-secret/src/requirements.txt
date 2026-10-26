@@ -1,0 +1,13 @@
+# The application's four direct dependencies, each pinned. The README's Versions table
+# names them. Pinning matters more here than in most samples: the image digest is what the
+# Cedar policy pins, and the measurement the KMS key is gated on comes from that policy, so
+# a rebuild that resolved a different dependency set would be a different approved image.
+#
+# boto3            Secrets Manager GetSecretValue, KMS Decrypt with a Recipient, STS
+# cryptography     the ephemeral RSA key, and the AES unwrap of CiphertextForRecipient
+# cbor2            the Nitro Secure Module's request and response encoding
+# asn1crypto       reading the CMS EnvelopedData structure KMS returns
+boto3==1.43.118
+cryptography==50.0.2
+cbor2==6.1.5
+asn1crypto==1.5.1

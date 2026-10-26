@@ -129,7 +129,7 @@ to the release that was current when the sample was built.
 | [`deploy/service-account.yaml`](deploy/service-account.yaml) | The pod's service account, which the Pod Identity association names |
 | [`../_shared/confidential-profile.yaml`](../_shared/confidential-profile.yaml) | The generator profile the Confidential samples share |
 | [`../_shared/kms-key-policy.json`](../_shared/kms-key-policy.json) | The attestation gate: allow on a match, explicitly deny otherwise |
-| `../_shared/attested_recipient.py` | The shared attested KMS recipient: ephemeral key, attestation document, unwrap `CiphertextForRecipient` |
+| [`../_shared/attested_recipient.py`](../_shared/attested_recipient.py) | The shared attested KMS recipient: ephemeral key, attestation document, unwrap `CiphertextForRecipient` |
 | [`../_shared/pod-identity/role-trust-policy.json`](../_shared/pod-identity/role-trust-policy.json) | The role trust policy, scoped to one cluster, namespace and service account |
 | [`scripts/setup.sh`](scripts/setup.sh) | The whole flow, ending with the pods finished |
 | [`scripts/kms-gate-check.jq`](scripts/kms-gate-check.jq) | The one reading of a live key policy that both scripts use |
@@ -335,7 +335,8 @@ and `Recipient` and `CiphertextForRecipient` are the
 parameters.
 
 **Step 7: The approved pod reads the file.** The application does the attested decrypt
-itself, through the shared recipient in `../_shared/attested_recipient.py`: it generates an
+itself, through the shared recipient in
+[`../_shared/attested_recipient.py`](../_shared/attested_recipient.py): it generates an
 ephemeral RSA key, asks the Nitro Secure Module for a document carrying the public key,
 passes that document to `kms:Decrypt` as the `Recipient`, and requires the answer to come
 back as `CiphertextForRecipient` and from the key it pinned. A response carrying a

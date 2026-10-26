@@ -50,6 +50,7 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 Samples that use `runtimeClassName: confidential-sandbox`, where the node is untrusted and AWS KMS releases a key only to a sandbox whose attestation matches. The [section page](examples/confidential/README.md) covers what they share.
 
 - [Encrypted image](examples/confidential/encrypted-image/README.md): a container image whose every layer is ciphertext in Amazon ECR, decrypted inside the sandbox by the guest image runtime once KMS has checked the attested policy measurement, while the same credentials used from outside the sandbox are refused.
+- [Secrets Manager secret](examples/confidential/secrets-manager-secret/README.md): a secret stored as a KMS ciphertext envelope in AWS Secrets Manager, read and decrypted by the application inside the sandbox under an attestation KMS accepts, while an ordinary pod holding the same role can read the ciphertext and is refused the value.
 - [S3 encrypted file](examples/confidential/s3-encrypted-file/README.md): a file encrypted with AES-256-GCM before it is uploaded to Amazon S3, whose data key AWS KMS releases only to an approved sandbox, so the application decrypts it in guest memory while a holder of the same credentials outside the sandbox can read the object and not the file.
 
 ## Preview the site locally
