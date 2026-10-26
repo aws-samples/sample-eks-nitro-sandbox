@@ -86,11 +86,19 @@ def availability_from_reply(reply: dict) -> dict:
     # enough: an envelope wrapped a second time would pass that and hand compare() a map
     # whose keys are "case_id" and "availability", which is the same silent "no supplier
     # qualifies" one level further in. Every value has to carry the flag compare() reads.
-    malformed = sorted(key for key, record in availability.items()
-                       if not isinstance(record, dict) or "available" not in record)
+    #
+    # The flag has to be a real boolean, not merely present. compare() reads its
+    # truthiness, and the dangerous direction is a truthy non-boolean: the string "false",
+    # like any non-empty string, is truthy in Python, so a reply carrying
+    # {"available": "false"} would qualify a supplier the lookup meant to exclude. That is
+    # worse than the envelope bug this function was added for, because it changes the
+    # answer rather than emptying it.
+    malformed = sorted(
+        key for key, record in availability.items()
+        if not isinstance(record, dict) or type(record.get("available")) is not bool)
     if malformed:
         raise ValueError(
-            "the supplier availability reply has no 'available' flag for "
+            "the supplier availability reply has no boolean 'available' flag for "
             f"{malformed}, so it is not an availability map: {reply!r}")
     return availability
 

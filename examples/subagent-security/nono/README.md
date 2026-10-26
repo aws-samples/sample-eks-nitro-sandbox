@@ -37,7 +37,7 @@ Amazon ECR. A run costs one Bedrock turn, a few small Amazon S3 objects, and one
 pod plus one small ordinary pod kept running until you clean up.
 
 Every output block on this page is from one real run of this sample, run id
-`23afa487ea1a4ff68714964f6c8d204c`. Values from the account and cluster it ran on are
+`073d573a126b4921ba17f1cf9cd9f61f`. Values from the account and cluster it ran on are
 replaced by the same placeholders the commands use, because this repository is public:
 `<ACCOUNT_ID>`, `<CLUSTER_NAME>` and `<NODE_NAME>`. The Region is left as
 `us-west-2`, the default this repository's samples share. Run ids, pod names, kernel
@@ -75,7 +75,7 @@ governs, including the supplier key and nono's own proxy, sits inside the sandbo
 including nono's proxy and the supplier key; inside it, each tool role runs under its own
 nono profile, and only the trusted controller reaches AWS.*
 
-![An AWS Cloud frame holds an Amazon EKS cluster frame. Inside the cluster, a red Nitro sandbox frame labelled runtimeClassName colon isolated-sandbox contains an Analyst pod box. In that box a trusted controller sits on the left, described as owning AWS and the profiles, with three arrows running right, labelled starts each role under its profile, to three container icons: a Reader with one proposal and GET only, an Evaluator with no network, and a Writer with a draft POST allowed. The Reader and the Writer each have an arrow to a red nono proxy that holds the supplier key, which is still inside the Analyst pod and so still inside the sandbox. One arrow leaves the proxy, labelled approved host and operation, and reaches a Supplier API icon in a separate Supplier API pod box outside the sandbox frame, marked an ordinary pod and ClusterIP only. A red dashed arrow runs from the Writer to that same Supplier API, labelled direct connection refused, so a role cannot reach the API except through the proxy. Two more arrows leave the trusted controller on its left side, pass below every frame and reach Amazon Bedrock, for the model turn, and Amazon S3, holding the proposals and reports; they are labelled EKS Pod Identity, and no arrow to either service starts at a tool role.](images/subagent-security-nono.png)
+![An AWS Cloud frame holds an Amazon EKS cluster frame. Inside the cluster, a red Nitro sandbox frame labelled runtimeClassName colon isolated-sandbox contains an Analyst pod box. In that box a trusted controller sits on the left, described as owning AWS and the profiles, with three arrows running right, labelled starts each role under its profile, to three container icons: a Reader with one proposal and GET only, an Evaluator with no network, and a Writer with a draft POST allowed. The Reader and the Writer each have an arrow to a red nono proxy that holds the supplier key, which is still inside the Analyst pod and so still inside the sandbox. One arrow leaves the proxy, labelled approved host and operation, and reaches a Supplier API icon in a separate Supplier API pod box outside the sandbox frame, marked an ordinary pod and ClusterIP only. A red dashed arrow runs from the Writer to that same Supplier API, labelled direct connection refused, which is the probe in which a role's own connection to that address was refused. Two more arrows leave the trusted controller on its left side, pass below every frame and reach Amazon Bedrock, for the model turn, and Amazon S3, holding the proposals and reports; they are labelled EKS Pod Identity, and no arrow to either service starts at a tool role.](images/subagent-security-nono.png)
 
 ## Versions
 
@@ -213,7 +213,7 @@ configmap/supplier-ca created
 
 ==> 4/7 the synthetic supplier API
   created the ECR repository pod-isolation/subagent-analyst-nono-supplier-api
-  built and pushed pod-isolation/subagent-analyst-nono-supplier-api:b0eea969f059b16ed134
+  built and pushed pod-isolation/subagent-analyst-nono-supplier-api:e61ac45fc627ffe35d60
 service/supplier-api created
 service/supplier-api-alias created
 deployment.apps/supplier-api created
@@ -226,12 +226,12 @@ deployment "supplier-api" successfully rolled out
 
 ==> 6/7 the IAM role and its EKS Pod Identity association
   created the IAM role subagent-analyst-nono
-  created the Pod Identity association a-m1honr415gkplljan
+  created the Pod Identity association a-tmvqvibm8amvsk3de
 
 ==> 7/7 the nono analyst image and its sandboxed pod
 the committed profiles match the generator for: reader, evaluator, writer
   created the ECR repository pod-isolation/subagent-analyst-nono
-  built and pushed pod-isolation/subagent-analyst-nono:b4497645cc48d8affac0
+  built and pushed pod-isolation/subagent-analyst-nono:4ffe0e88b0b256f5b6cb
 pod/analyst created
 pod/analyst condition met
 
@@ -330,17 +330,17 @@ PASS the report object round-trips through S3: recommendation.md
 PASS the report object round-trips through S3: comparison.json
 PASS no supplier key appears in the evidence or the report
 
-ANALYST_COMPLETE=23afa487ea1a4ff68714964f6c8d204c
+ANALYST_COMPLETE=073d573a126b4921ba17f1cf9cd9f61f
 67 checks passed
   66 checks passed in the sandbox
   12 requests correlated with the supplier API's own log (6 allowed arrived once each, 5 refused never arrived)
-  model usage: 2631 tokens on global.anthropic.claude-sonnet-4-5-20250929-v1:0
+  model usage: 2618 tokens on global.anthropic.claude-sonnet-4-5-20250929-v1:0
 
 ==> done
-  run id:         23afa487ea1a4ff68714964f6c8d204c
-  recommendation: /path/to/sample-eks-nitro-sandbox/tmp/nono/runs/23afa487ea1a4ff68714964f6c8d204c/recommendation.md
-  evidence:       /path/to/sample-eks-nitro-sandbox/tmp/nono/runs/23afa487ea1a4ff68714964f6c8d204c/evidence.json
-  S3 report:      s3://subagent-analyst-nono-<ACCOUNT_ID>/reports/rfp-001/23afa487ea1a4ff68714964f6c8d204c/
+  run id:         073d573a126b4921ba17f1cf9cd9f61f
+  recommendation: /path/to/sample-eks-nitro-sandbox/tmp/nono/runs/073d573a126b4921ba17f1cf9cd9f61f/recommendation.md
+  evidence:       /path/to/sample-eks-nitro-sandbox/tmp/nono/runs/073d573a126b4921ba17f1cf9cd9f61f/evidence.json
+  S3 report:      s3://subagent-analyst-nono-<ACCOUNT_ID>/reports/rfp-001/073d573a126b4921ba17f1cf9cd9f61f/
 ```
 
 The last three lines are the cross-check in [`scripts/correlate.py`](scripts/correlate.py),
@@ -365,42 +365,44 @@ cat ../../../tmp/nono/runs/<RUN_ID>/recommendation.md
 
 **Recommended supplier:** Northstar Office Systems (`northstar`)
 
-## Procurement Analysis: 100 Workstations for Customer Service Office
+## Procurement Analysis: 100 Workstation Office Setup
 
-### Requirements
-- **Budget:** $125,000 USD
-- **Delivery:** Maximum 30 days
-- **Warranty:** Minimum 24 months
+**Requirements:**
+- Budget: $125,000 USD
+- Delivery: ≤30 days
+- Warranty: ≥24 months
 
 ### Supplier Comparison
 
-#### Northstar Office Systems ✓ ELIGIBLE
-**Source:** `proposals/rfp-001/northstar.json`
+#### ✅ Northstar Office Systems (RECOMMENDED)
+*Source: `proposals/rfp-001/northstar.json`*
+
 - **Price:** $120,000 (within budget, $5,000 under)
 - **Delivery:** 28 days (meets requirement)
-- **Warranty:** 36 months (exceeds minimum by 12 months)
-- **Status:** Meets all requirements
+- **Warranty:** 36 months (exceeds requirement)
+- **Status:** Fully compliant with all requirements
 
-#### Harbor Supply Partners ✗ INELIGIBLE
-**Source:** `proposals/rfp-001/harbor.json`
-- **Price:** $105,000 (within budget)
-- **Delivery:** 45 days (**fails** - exceeds 30-day maximum)
+#### ❌ Harbor Supply Partners
+*Source: `proposals/rfp-001/harbor.json`*
+
+- **Price:** $105,000 (within budget, lowest bid)
+- **Delivery:** 45 days (**FAILS** - exceeds 30-day maximum)
 - **Warranty:** 24 months (meets requirement)
-- **Status:** Disqualified due to late delivery
+- **Status:** Ineligible due to late delivery
 
-#### Cedar Workplace Group ✗ INELIGIBLE
-**Source:** `proposals/rfp-001/cedar.json`
-- **Price:** $130,000 (**fails** - exceeds $125,000 budget)
+#### ❌ Cedar Workplace Group
+*Source: `proposals/rfp-001/cedar.json`*
+
+- **Price:** $130,000 (**FAILS** - exceeds $125,000 budget)
 - **Delivery:** 21 days (meets requirement)
-- **Warranty:** 36 months (exceeds minimum)
-- **Status:** Disqualified due to budget overrun
+- **Warranty:** 36 months (exceeds requirement)
+- **Status:** Ineligible due to budget overrun
 
 ### Recommendation
 
-**Northstar Office Systems** is the only eligible supplier, meeting all three procurement
-requirements. Their proposal offers the best value with superior warranty coverage (36
-months) while staying $5,000 under budget and delivering within the required timeframe.
+**Northstar Office Systems** is the only eligible supplier meeting all three procurement requirements. They offer competitive pricing at $120,000, timely delivery within 28 days, and superior warranty coverage at 36 months.
 ```
+
 
 Everything from the second heading down is the model's own prose, and it cites all three
 proposal keys. The two lines above it are rendered by the sample from the checked
@@ -680,9 +682,9 @@ kubectl exec analyst -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f1 /proc/upti
 
 ```text
 isolated-sandbox
-pod age: 3m24s
+pod age: 49s
 6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-203.55
+47.44
 dm-0 vda vdb vdc
 m8i.enclave
 ```
@@ -701,7 +703,7 @@ kubectl exec ordinary-comparison -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f
 
 ```text
 6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
-45893.97
+47590.39
 dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0
 m8i.xlarge
 ```
@@ -711,13 +713,13 @@ Three readings differ, and each says something:
 | Reading | Sandboxed analyst | Ordinary pod on the same node |
 |---|---|---|
 | `uname -rv` | `6.18.54 #1`, built Oct 22 17:38 | `6.18.54 #2`, built Oct 22 00:16 |
-| `/proc/uptime` | `203.55`, against a pod age of 3m24s | `45893.97`, about 12.7 hours — the node's |
+| `/proc/uptime` | `47.44`, against a pod age of 49s | `47590.39`, about 13.2 hours — the node's |
 | `/sys/block` | `vda vdb vdc`, virtio | `nvme0n1 nvme1n1`, the instance's own |
 | `product_name` | `m8i.enclave` | `m8i.xlarge` |
 
-The analyst pod runs its **own kernel build**, and the uptime is the giveaway: 203 seconds
-against a pod 3m24s old, because the sandbox booted when the pod did, while the ordinary pod
-reports the node's half-day uptime. It sees virtio disks where the ordinary pod sees the
+The analyst pod runs its **own kernel build**, and the uptime is the giveaway: 47 seconds
+against a pod 49s old, because the sandbox booted when the pod did, while the ordinary pod
+reports the node's thirteen-hour uptime. It sees virtio disks where the ordinary pod sees the
 instance's `nvme` devices, and it names the enclave rather than the instance type.
 
 Note that the kernel **version** is the same in both here — `6.18.54`. It is the build
@@ -745,7 +747,10 @@ pattern to copy.
   tool process it starts. `network.block` makes `socket()` itself fail for the evaluator;
   for the online roles, the request goes through nono's proxy, which decides on the host and
   then on the method and path. The run shows a role refused a direct connection to the
-  supplier API's own address, so a role cannot step around the proxy by dialling the IP.
+  supplier API's own address, so that probe did not get out of the process by dialling the
+  IP. What the run shows is that one refusal, for a role at uid 1000 making an IPv4 TCP
+  connection to the resolved Service address. It is not a demonstration that the proxy
+  cannot be routed around by any process or any other means.
 - **It does not bound the pod.** The analyst pod has no network policy in this sample, so the
   pod's egress is whatever the cluster and VPC allow. The trusted controller runs under no
   nono profile and reaches Amazon Bedrock, Amazon S3 and the supplier API directly. A reader
@@ -815,7 +820,7 @@ deployment.apps "supplier-api" deleted from subagent-security-nono namespace
 namespace "subagent-security-nono" deleted
 
 ==> 2/4 the EKS Pod Identity association
-  deleted the association a-m1honr415gkplljan.
+  deleted the association a-tmvqvibm8amvsk3de.
 
 ==> 3/4 the AWS resources
   deleted the bucket subagent-analyst-nono-<ACCOUNT_ID>.

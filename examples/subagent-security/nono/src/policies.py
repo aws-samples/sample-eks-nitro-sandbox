@@ -82,8 +82,10 @@ def profile(role: str, workspace, api_url: str) -> dict:
     if role == "writer":
         allow.append({"method": "POST", "path": f"/cases/{CASE}/recommendations"})
     policy["network"] = {
-        # One host, with its port: nothing else resolves through the proxy, and the role
-        # cannot reach the API without it.
+        # One host, with its port. This is what the proxy will forward; it is not by
+        # itself a demonstration that a role has no other route to the API. The run
+        # probes that separately, by having a role try the resolved address directly,
+        # and records the one refusal it gets rather than a general claim.
         "allow_domain": [api_url.split("://", 1)[1]],
         "credentials": ["supplier"],
         "custom_credentials": {

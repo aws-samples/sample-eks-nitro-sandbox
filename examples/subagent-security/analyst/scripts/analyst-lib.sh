@@ -84,9 +84,13 @@ require_managed_by() { # <description> <actual-tag-value>
 # did not arrive leaves its <PLACEHOLDER> in the file, and Kubernetes would take it as a
 # literal: a namespace really called "<NAMESPACE>", or a pod whose image is the string
 # "<ANALYST_IMAGE>". Some of these are caught by the API server and some are not, so the
-# check does not depend on which. Comment lines are stripped first, so a manifest that
-# mentions something like "<bucket>.s3.<Region>" in its own explanation is not mistaken
-# for one; the pattern is the all-caps placeholder convention these manifests use.
+# check does not depend on which.
+#
+# Whole comment lines are dropped first, so a manifest that mentions something like
+# "<bucket>.s3.<Region>" in its own explanation is not mistaken for one. Only whole lines:
+# cutting from the first "#" anywhere on a line would also cut a "#" inside a quoted YAML
+# value, and a placeholder after it would escape the guard. The pattern is the all-caps
+# placeholder convention these manifests use.
 analyst_render() { # <manifest> <out> [extra sed expressions...]
   local src="$1" out="$2"; shift 2
   sed -e "s|<NAMESPACE>|$NAMESPACE|g" \
@@ -96,7 +100,8 @@ analyst_render() { # <manifest> <out> [extra sed expressions...]
   # when it matches nothing. Under the callers' "set -euo pipefail" an unguarded grep
   # would make the whole assignment fail and exit the script with no message at all.
   local left
-  left="$(sed 's/#.*//' "$out" | { grep -oE '<[A-Z_]+>' || true; } | sort -u | tr '\n' ' ')"
+  left="$(sed '/^[[:space:]]*#/d' "$out" | { grep -oE '<[A-Z_]+>' || true; } |
+    sort -u | tr '\n' ' ')"
   [[ -z "$left" ]] ||
     die "$(basename "$src") still holds the placeholder(s) $left after rendering, so a value this run needed was empty. Nothing was applied from it."
 }
@@ -371,10 +376,28 @@ analyst_role() {
   if [[ "$rc" == 0 ]]; then
     require_managed_by "the IAM role $ROLE_NAME" \
       "$(jq -r '.Role.Tags[]? | select(.Key=="ManagedBy") | .Value' <<<"$existing")"
+
+    # The tag says the role is this sample's; it does not say the role still carries only
+    # what this sample grants. An interrupted run, a hand edit or another version of the
+    # sample could have left a second inline policy or an attached managed policy, and
+    # putting the analyst policy back would not remove it. The page then shows
+    # AccessDenied as evidence of least privilege while the role in fact holds more, so
+    # refuse rather than reuse. The clean up makes the same check before it deletes.
+    local inline attached extra
+    inline="$(aws iam list-role-policies --role-name "$ROLE_NAME" --output json)" ||
+      die "could not list the inline policies on the IAM role $ROLE_NAME, so it is unknown whether it carries only this sample's; changed nothing."
+    attached="$(aws iam list-attached-role-policies --role-name "$ROLE_NAME" --output json)" ||
+      die "could not list the attached policies on the IAM role $ROLE_NAME, so it is unknown whether it carries only this sample's; changed nothing."
+    extra="$(jq -r '.PolicyNames[] | select(. != "analyst")' <<<"$inline" | tr '\n' ' ')"
+    [[ -z "$extra" ]] ||
+      die "the IAM role $ROLE_NAME carries inline policies this sample did not create ($extra), so reusing it would leave the controller with more than this sample grants; changed nothing. Delete the role, or set a new ROLE_NAME in .env."
+    [[ "$(jq '.AttachedPolicies | length' <<<"$attached")" == 0 ]] ||
+      die "the IAM role $ROLE_NAME has managed policies attached ($(jq -r '[.AttachedPolicies[].PolicyName] | join(", ")' <<<"$attached")), so reusing it would leave the controller with more than this sample grants; changed nothing. Delete the role, or set a new ROLE_NAME in .env."
+
     aws iam update-assume-role-policy --role-name "$ROLE_NAME" \
       --policy-document "file://$TMP_DIR/role-trust-policy.json"
     ROLE_ARN="$(jq -r '.Role.Arn' <<<"$existing")"
-    echo "  reusing the IAM role $ROLE_NAME"
+    echo "  reusing the IAM role $ROLE_NAME (it carries only this sample's analyst policy)"
   else
     ROLE_ARN="$(aws iam create-role --role-name "$ROLE_NAME" \
       --assume-role-policy-document "file://$TMP_DIR/role-trust-policy.json" \
