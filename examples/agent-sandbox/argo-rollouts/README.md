@@ -460,6 +460,12 @@ which was already `rev-2`. So a pool in the stale window does not serve uniforml
 pods, it serves a mixture, and which one a given claim gets depends on which pod the
 controller hands it. That is worse than a clean failure, because it is intermittent.
 
+That is the whole progression Steps 4 to 6 just walked through, in one picture:
+
+*Figure 2: The same rollout as a progression over time. Notice the third state: inside the stale window the pool holds one pod of each revision, so staleness here is intermittent rather than total, which is harder to notice.*
+
+![Four states of the same warm pool, left to right, each drawn as a red Nitro sandbox frame holding two warm pod boxes. The first is titled pool at rev-1, with the sub line template rev-1, hash cbed2ff8, and holds two pods both labelled rev-1. An arrow labelled 1. patch the template leads to the second state, titled the stale window, with the sub line template rev-2, pods still rev-1, which also holds two pods both labelled rev-1: the template has moved on but the warm pods have not. An arrow labelled 2. a claim refills it leads to the third state, titled the mixed pool, with the sub line template rev-2, pool refilling, and this one holds one pod labelled rev-1 and one labelled rev-2. Below it a SandboxClaim document, labelled once it is mixed, points up into that frame along an arrow labelled may adopt either revision. An arrow labelled 3. drain and re-warm leads to the fourth state, titled pool at rev-2, with the sub line template rev-2, hash 5e642565, holding two pods both labelled rev-2. Below it a second SandboxClaim document, labelled after the drain, points up into that frame along an arrow labelled adopts rev-2. A note below the figure reads that the pool goes mixed rather than uniformly stale, because inside the window each claim takes a pod out and the pool refills it from the template as it now stands, so which revision a claim gets depends on which pod it is handed; that the drain replaces them all; and that every warm pod runs with runtimeClassName isolated-sandbox and has no network besides loopback.](images/figure-2-rollout-progression.png)
+
 After the drain the pool is at one hash, `5e642565`, and every sandbox reports `rev-2`. The
 witness reads the same way straight from the API:
 
