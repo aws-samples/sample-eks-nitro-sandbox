@@ -1,0 +1,92 @@
+# The analyst pod: one Nitro sandbox holding the trusted controller and, inside it, the
+# three nono tool roles.
+#
+# runtimeClassName: isolated-sandbox is the one line that puts the whole pod in a Nitro
+# sandbox. EKS runs its containers and their own kernel in a lightweight VM inside a
+# hardware-isolated Nitro partition, and that is the boundary around nono's controls and
+# around the supplier key.
+#
+# automountServiceAccountToken: false removes the ordinary Kubernetes token from the pod.
+# EKS Pod Identity still delivers AWS credentials, through its own endpoint served inside
+# the sandbox, so the controller reaches Amazon S3 and Amazon Bedrock and the restricted
+# roles find no Kubernetes token on disk.
+#
+# <NAMESPACE>, <MANAGED_BY>, <ANALYST_IMAGE>, <AWS_REGION>, <BUCKET>, <ROLE_NAME> and
+# <BEDROCK_MODEL_ID> are replaced at apply time by scripts/setup.sh.
+#
+# It sets CPU and memory requests, which most samples here do not. A pod with no requests
+# gets a small default VM, and this one has to hold a Python interpreter, the Strands
+# Agents and AWS SDK packages, nono's proxy and three short-lived tool processes at once.
+# Requests size the sandbox; the limits are higher on purpose, to show they need not match.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: analyst
+  namespace: <NAMESPACE>
+  labels:
+    app: analyst
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+spec:
+  runtimeClassName: isolated-sandbox
+  serviceAccountName: analyst
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  # The container runs as an ordinary user, and fsGroup is what lets it read the supplier
+  # key at mode 0440. That is deliberate, and it is what makes the refusals on this page
+  # mean something: the key file is readable by the user every tool role also runs as, so
+  # a role refused it was refused by its nono profile and not by a file mode. The run
+  # shows the controller reading the same file the role cannot open.
+  #
+  # nono's own controls are Landlock and seccomp, which need no privilege, so this pod
+  # keeps the hardening the other sandboxed pods here use. allowPrivilegeEscalation: false
+  # sets no_new_privs, which Landlock requires in any case for an unprivileged process, so
+  # it is a precondition of the confinement this sample shows rather than a cost of it.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: analyst
+      image: <ANALYST_IMAGE>
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
+      env:
+        - { name: AWS_REGION, value: "<AWS_REGION>" }
+        - { name: AWS_DEFAULT_REGION, value: "<AWS_REGION>" }
+        - { name: ANALYST_BUCKET, value: "<BUCKET>" }
+        - { name: ANALYST_ROLE_NAME, value: "<ROLE_NAME>" }
+        - { name: BEDROCK_MODEL_ID, value: "<BEDROCK_MODEL_ID>" }
+        - { name: SUPPLIER_API_URL,
+            value: "https://supplier-api.<NAMESPACE>.svc.cluster.local:8443" }
+        - { name: SUPPLIER_API_ALIAS_URL,
+            value: "https://supplier-api-alias.<NAMESPACE>.svc.cluster.local:8443" }
+      resources:
+        requests: { cpu: "1", memory: 1Gi }
+        limits: { cpu: "2", memory: 2Gi }
+      readinessProbe:
+        exec: { command: ["test", "-r", "/opt/supplier-key/api-key"] }
+      volumeMounts:
+        # The real supplier key. The controller may read it; no nono profile grants it to
+        # a role, and the run shows a role refused it.
+        - { name: supplier-key, mountPath: /opt/supplier-key, readOnly: true }
+        - { name: supplier-ca, mountPath: /opt/supplier-ca, readOnly: true }
+        - { name: state, mountPath: /var/lib/analyst }
+        # The root filesystem is read-only, so the one writable path outside the run's own
+        # state directory is an explicit mount.
+        - { name: tmp, mountPath: /tmp }
+  volumes:
+    - name: supplier-key
+      secret: { secretName: supplier-key, defaultMode: 0440 }
+    - name: supplier-ca
+      configMap: { name: supplier-ca }
+    - name: state
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}

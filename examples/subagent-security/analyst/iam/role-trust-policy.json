@@ -1,0 +1,23 @@
+{
+  "_comment": [
+    "The analyst's EKS Pod Identity role trust policy, shared by every Subagent security",
+    "sample. Pod Identity sets the two request tags below from the pod's namespace and",
+    "ServiceAccount, so this role can be assumed only for the analyst ServiceAccount in",
+    "this sample's own namespace. A setup script drops this key and fills in <NAMESPACE>.",
+    "Nothing is attached to the role beyond the inline policy in permissions-policy.json."
+  ],
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "Service": "pods.eks.amazonaws.com" },
+      "Action": ["sts:AssumeRole", "sts:TagSession"],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/kubernetes-namespace": "<NAMESPACE>",
+          "aws:RequestTag/kubernetes-service-account": "analyst"
+        }
+      }
+    }
+  ]
+}

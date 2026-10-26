@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="drawio" type="device">
+  <diagram id="argo-rollouts-progression" name="Diagram">
+    <mxGraphModel dx="0" dy="0" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="2220" pageHeight="860" math="0" shadow="0" background="#ffffff">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="s1" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;pool at rev-1&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;template rev-1, hash cbed2ff8&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#DD344C;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#DD344C;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="60" y="160" width="360" height="260" as="geometry" />
+        </mxCell>
+        <mxCell id="tab-s1" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalAlign=top;align=center;html=1;fontSize=12;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;" vertex="1" parent="1">
+          <mxGeometry x="60" y="160" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="s1p1" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;rev-1&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;warm pod&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="100" y="260" width="120" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="s1p2" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;rev-1&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;warm pod&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="260" y="260" width="120" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="s2" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;the stale window&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;template rev-2, pods still rev-1&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#DD344C;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#DD344C;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="640" y="160" width="360" height="260" as="geometry" />
+        </mxCell>
+        <mxCell id="tab-s2" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalAlign=top;align=center;html=1;fontSize=12;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;" vertex="1" parent="1">
+          <mxGeometry x="640" y="160" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="s2p1" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;rev-1&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;warm pod&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="680" y="260" width="120" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="s2p2" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;rev-1&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;warm pod&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="840" y="260" width="120" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="s3" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;the mixed pool&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;template rev-2, pool refilling&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#DD344C;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#DD344C;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1220" y="160" width="360" height="260" as="geometry" />
+        </mxCell>
+        <mxCell id="tab-s3" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalAlign=top;align=center;html=1;fontSize=12;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;" vertex="1" parent="1">
+          <mxGeometry x="1220" y="160" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="s3p1" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;rev-1&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;warm pod&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1260" y="260" width="120" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="s3p2" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;rev-2&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;warm pod&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1420" y="260" width="120" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="s4" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;pool at rev-2&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;template rev-2, hash 5e642565&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#DD344C;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#DD344C;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1800" y="160" width="360" height="260" as="geometry" />
+        </mxCell>
+        <mxCell id="tab-s4" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalAlign=top;align=center;html=1;fontSize=12;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;" vertex="1" parent="1">
+          <mxGeometry x="1800" y="160" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="s4p1" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;rev-2&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;warm pod&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1840" y="260" width="120" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="s4p2" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;rev-2&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;warm pod&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="2000" y="260" width="120" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="claim-mixed" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;SandboxClaim&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;once it is mixed&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.document;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1360" y="510" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="claim-fresh" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;SandboxClaim&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;after the drain&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.document;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1940" y="510" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="e-s1-s2" value="1. patch the template" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="s1" target="s2">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="0" y="-15" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-s2-s3" value="2. a claim refills it" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="s2" target="s3">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="0" y="-15" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-s3-s4" value="3. drain and re-warm" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="s3" target="s4">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="0" y="-15" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-claim-mixed" value="may adopt either revision" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;align=left;verticalAlign=middle;" edge="1" parent="1" source="claim-mixed" target="s3">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="12" y="0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-claim-fresh" value="adopts rev-2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;align=left;verticalAlign=middle;" edge="1" parent="1" source="claim-fresh" target="s4">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="12" y="0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="note" value="&lt;div style=&quot;line-height:20px&quot;&gt;&lt;b&gt;The pool goes mixed, not uniformly stale:&lt;/b&gt; inside the window each claim takes a pod out, and the pool refills it from the template as it&lt;/div&gt;&lt;div style=&quot;line-height:20px&quot;&gt;now stands, so which revision a claim gets depends on which pod it is handed. The drain replaces them all. Every warm pod runs with&lt;/div&gt;&lt;div style=&quot;line-height:20px&quot;&gt;runtimeClassName: isolated-sandbox and has no network besides loopback.&lt;/div&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;fontColor=#5F6B7A;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="60" y="680" width="1460" height="80" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
