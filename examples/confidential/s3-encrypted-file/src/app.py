@@ -68,6 +68,20 @@ def redact(text: str) -> str:
     return _ROLE_SESSION.sub(r"\1<session>", text)
 
 
+class _RedactingArgumentParser(argparse.ArgumentParser):
+    """An argument parser whose error path is redacted like every other output.
+
+    argparse writes the offending value back out verbatim, so without this a command line
+    carrying an account id or a role session name would put it on standard error before any
+    of the code below ran. The pod's arguments are pinned by its Cedar policy, so an
+    operator cannot change them without losing the data key, but the guarantee this program
+    makes about its output should not rest on that.
+    """
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        self.exit(2, redact(f"{self.prog}: error: {message}\n"))
+
+
 def print_readings() -> None:
     """What this container can see of the machine it is running on.
 
@@ -163,7 +177,7 @@ def decrypt_file(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = _RedactingArgumentParser(description=__doc__)
     parser.add_argument(
         "--readings-only",
         action="store_true",
@@ -207,15 +221,28 @@ def main() -> int:
         # to standard error, and the exception's type is named, because a redacted message
         # on its own cannot be told apart from a bug in this program: ClientError is the
         # refusal the sample is about, anything else is this code being wrong.
-        report = f"attested-s3-error: {type(error).__name__}: {error}"
-        # The frames, for an unexpected type only. For the refusals this sample shows, the
-        # one line is the whole story and a stack through botocore would bury it; for
-        # anything else the frames are the only way a reader finds where it broke.
-        if not isinstance(error, EXPECTED_FAILURES):
-            report += "\n" + "".join(
-                traceback.format_exception(type(error), error, error.__traceback__)
-            )
-        print(redact(report), file=sys.stderr)
+        # Building the report is itself done inside a try. Formatting {error} calls the
+        # exception's own __str__, which is arbitrary code; so is traceback formatting, and
+        # redact() has to allocate. If any of them raises, the new exception would leave this
+        # handler before anything had been redacted, and Python would print its traceback,
+        # which is the very escape this clause exists to close.
+        try:
+            report = f"attested-s3-error: {type(error).__name__}: {error}"
+            # The frames, for an unexpected type only. For the refusals this sample shows,
+            # the one line is the whole story and a stack through botocore would bury it;
+            # for anything else the frames are the only way a reader finds where it broke.
+            if not isinstance(error, EXPECTED_FAILURES):
+                report += "\n" + "".join(
+                    traceback.format_exception(type(error), error, error.__traceback__)
+                )
+            report = redact(report)
+        except Exception:  # noqa: BLE001
+            # The type's name is a plain attribute of a class. Reading it runs none of the
+            # failed exception's own code and allocates almost nothing, so it is the one
+            # thing that can always be said here. Everything else is dropped rather than
+            # risked: a report that cannot be redacted is not printed.
+            report = f"attested-s3-error: {type(error).__name__}: report unavailable"
+        print(report, file=sys.stderr)
         return 1
 
     print(result)
