@@ -78,14 +78,17 @@ note() { printf 'second-review: %s\n' "$1"; }
 # them -- as given and as resolved -- before anything is read, created or cleared. The reason
 # is a single seam, and it runs through every path here: "$( )" strips TRAILING newlines, so
 # realpath, dirname, basename and "command -v" each hand back a SIBLING path, and the run
-# then acts on a file or directory the caller did not name -- while reporting success,
-# because nothing failed. Measured five times, each a different path and each exit 0: a
-# --tree whose name ends in one was fingerprinted, reviewed and certified while the sibling
-# was the tree actually read; an --out whose name ends in one cleared and wrote the sibling
-# directory, destroying the earlier review in it, and left the directory named empty; a
-# --brief whose name ends in one passed -f, -s and -r on the name given and then handed the
-# reviewer the sibling file's text; and a link target ending in one sent the command-chain
-# walk to a different path, leaving every later hop unchecked (see the walk below).
+# then acts on a file or directory the caller did not name. Measured five times, each a
+# different path, four of them with the run reporting success: a --tree whose name ends in
+# one was fingerprinted, reviewed and certified while the sibling was the tree actually read
+# (exit 0); an --out whose name ends in one cleared and wrote the sibling directory,
+# destroying the earlier review in it, and left the directory named empty (exit 0); a --brief
+# whose name ends in one passed -f, -s and -r on the name given and then handed the reviewer
+# the sibling file's text (exit 0); a path to THIS SCRIPT ending in one moved REPO_ROOT to
+# the sibling root, whose tmp/ the run then approved and reviewed under (exit 0); and a link
+# target ending in one sent the command-chain walk to a different path, leaving every later
+# hop unchecked -- that one does not report success, it reaches the backend call and fails
+# E_RUN_FAILED (126), with the earlier review in --out already cleared (see the walk below).
 # On the codex backend there is a second effect: codex prints "workdir: <tree>" inside the
 # preamble this script parses back out of its trace, on a line ahead of the "model:",
 # "sandbox:" and "approval:" lines, so a path with a line break in it lands inside that
@@ -100,7 +103,7 @@ note() { printf 'second-review: %s\n' "$1"; }
 # The message says only the part that is true of every site. The codex-preamble half above
 # is NOT: only the tree path is a path codex is told about and prints back, and the two
 # claude variables never reach codex at all, so stating it in the shared message would claim
-# something untrue of thirteen of the fifteen sites.
+# something untrue of fourteen of the sixteen sites.
 no_line_break() {
   case "$1" in
     *$'\n'*) refuse "$3" \
@@ -276,7 +279,11 @@ no_line_break "$resolved_cmd" "the $BACKEND command's path" E_CMD_MISSING
 # in a DIRECTORY component of the command path is collapsed by realpath alone. A directory
 # component that resolves to a name holding a line break therefore reached both
 # not_an_output_name's "realpath -m" and the cmd_target substitution further down with the
-# newline silently gone, so each compared a sibling directory. Checked before either.
+# newline silently gone, so each compared a sibling directory.
+# This makes the cmd_target comparison exact, because that is the same path this resolves.
+# It does NOT make not_an_output_name's exact when the command's own LAST component is a
+# link: this follows the link, that resolves only the dirname, so it still meets the
+# exception the helper's comment above records. Fails closed there, as that comment says.
 no_line_break_resolved "$resolved_cmd" "the resolved $BACKEND command path" E_CMD_MISSING
 
 command -v python3 >/dev/null 2>&1 || cannot_check "python3 is needed to read the backend's record of which model answered."

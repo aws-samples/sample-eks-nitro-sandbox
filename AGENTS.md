@@ -225,14 +225,15 @@ SECOND_REVIEW_CONTEXT_DIR="$round/context" \
   or clears anything. **Including a path that merely *resolves* to one** through a symbolic
   link, or through a parent directory whose real name holds one. Why: a trailing newline is stripped by the shell
   wherever a path goes through `realpath`, `dirname`, `basename` or `command -v`, so the run
-  acted on the *sibling* path while reporting success. Measured on five of them: such a
-  `--tree` was reviewed and certified while the sibling was the directory actually read;
-  such an `--out` cleared and wrote the sibling, destroying the earlier review in it, and
-  left the directory named empty; such a `--brief` passed its own readability checks and the
-  reviewer was then handed the sibling file's text; such a link target sent the
-  backend-command check to a different path, so a hop of the chain inside `--out` went
-  unchecked and the cleanup then unlinked it; and such a path to the script itself moved
-  `REPO_ROOT`, which is what the whole `tmp/` containment boundary is measured against.
+  acted on the *sibling* path. Measured on five of them, four of which reported success:
+  such a `--tree` was reviewed and certified while the sibling was the directory actually
+  read; such an `--out` cleared and wrote the sibling, destroying the earlier review in it,
+  and left the directory named empty; such a `--brief` passed its own readability checks and
+  the reviewer was then handed the sibling file's text; and such a path to the script itself
+  moved `REPO_ROOT`, which is what the whole `tmp/` containment boundary is measured against.
+  The fifth does not report success: such a link target sent the backend-command check to a
+  different path, so a hop of the chain inside `--out` went unchecked, the cleanup unlinked
+  it, and the run then failed at the backend call with the earlier review already gone.
 - **Never paste a trace** (`review.err`) into a pull request, an issue or Slack. Read it
   with `tail` or a targeted search.
 - **`review-record.txt` is what goes in the pull request**: the backend, the model that
