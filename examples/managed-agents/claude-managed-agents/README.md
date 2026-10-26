@@ -445,8 +445,13 @@ attached to the Pod veth interface will then filter egress traffic ... based on 
 in place. This ensures pods can only send cluster-external traffic to the IPs of allow
 listed domains."
 ([EKS network policy documentation](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html).)
-Because the filtering lives on the node rather than in the guest, a command the model runs
-inside the sandbox, even as root, cannot change it.
+Because the filtering lives on the node rather than in the guest, which has no access to
+that interface, nothing the model runs inside the sandbox can change it, whatever UID it
+runs as. In this sample that UID is 1000: the sandbox template sets `runAsNonRoot: true`
+with `runAsUser: 1000`, which the API server enforces at admission, so root is not a state
+this sandbox can be in. Changing the policy is a separate matter from reaching a host it
+already allows — the `domainNames` caveat above, and "No reusable credential" below, are
+what bound that.
 
 **Why the two refused hosts fail differently.** Both hosts are refused the same way: their
 IPv4 addresses are not in the allow list, so an IPv4 connection attempt gets no reply and

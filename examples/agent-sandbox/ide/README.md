@@ -727,8 +727,13 @@ needed one would also need egress to `169.254.170.23` on TCP 80.
 ![In the middle, an Amazon EKS node frame is captioned "the network policy agent enforces the policy here, outside the guest" and contains a red Nitro sandbox pod frame marked runtimeClassName isolated-sandbox, holding code-server described as editor and terminal. From the left, a pod labelled "Any other pod, pod IP or Service name" has a red dashed arrow to the pod frame labelled "in: refused". Below it, an operator running kubectl port-forward connects "via the API server" to the kubelet on the node, which reaches the pod over an arrow labelled "from the node: always allowed", and a second kubelet arrow into the pod is labelled "readiness probe: always allowed". An ApplicationNetworkPolicy icon named ide-egress, with sub lines "Ingress, Egress" and "eBPF, host-side interface", points up at the pod labelled "governs this pod". On the right, three green arrows leave the pod: "out: DNS 53 (UDP/TCP)" to CoreDNS at the kube-dns ClusterIP, "out: HTTPS 443" to an extension registry labelled open-vsx.org and openvsx.eclipsecontent.org, and "out: HTTPS 443" to github.com for git clone, fetch and push. A fourth, red dashed arrow leaves the pod downward and is labelled "refused", ending at an Internet icon labelled "Everything else", example.com and sts.us-west-2.amazonaws.com.](images/figure-2-ide-network-policy.png)
 
 **Where it is enforced.** On the node, outside the guest. The node's network policy agent
-attaches eBPF programs to the pod's host-side interface, so a command run inside the editor's
-terminal cannot change the policy, even as root.
+attaches eBPF programs to the pod's host-side interface, which the guest has no access to, so
+nothing run inside the editor's terminal can change the policy, whatever UID it runs as. In
+this sample that UID is 1000: the pod sets `runAsNonRoot: true` with `runAsUser: 1000`, which
+the API server enforces at admission, so root is not a state this editor can be in. Step 5
+reads those fields back off the live pod and Step 8 prints `uid=1000(coder)` from inside it.
+Changing the policy is a separate matter from reaching a host it already allows: see "Its
+limits" below for what this policy does and does not stop.
 
 **Why `kubectl port-forward` still works with all ingress denied.** Kubernetes always allows
 traffic between a pod and its own node, and the port-forward stream arrives from the node.

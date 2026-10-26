@@ -144,10 +144,26 @@ sample that has no policy.
   nodes; start the workload after it appears. (Coding agent, step 5; Claude Managed Agents,
   step 5.)
 - **It is enforced on the node, outside the guest.** The node's network policy agent
-  attaches eBPF programs to the pod's host-side interface, so a command inside the sandbox,
-  even as root, cannot change the policy. Kubernetes always allows traffic between a pod and
-  its own node. (`examples/managed-agents/claude-managed-agents/README.md`, "How the network
+  attaches eBPF programs to the pod's host-side interface, which the guest has no access to,
+  so nothing inside the sandbox can change the policy, whatever UID it runs as. Kubernetes
+  always allows traffic between a pod and its own node.
+  (`examples/managed-agents/claude-managed-agents/README.md`, "How the network
   policy works".)
+- **Do not write "even as root" unless the pod can actually be root.** The point above holds
+  at any UID, so it needs no root hypothetical — and most samples here set
+  `runAsNonRoot: true`, which makes root a state the sample cannot be in. A reader who tries
+  to check such a claim gets the pod's own UID instead, so say what that UID is and keep the
+  claim to what the sample shows. Where the pod really does run as root the phrase is
+  accurate and worth keeping: `examples/ai-agents/coding-agents-for-developers`
+  (`runAsUser: 0`, and the page prints `id -u`), `examples/ci-cd/docker-builds` and
+  `examples/ci-cd/github-actions` (both `privileged: true`, and both print `uid=0(root)`).
+  (`AGENTS.md`, "Say only what your sample actually limits".)
+- **"Cannot change the policy" is not "cannot get data out".** A filter can stay unmodified
+  and still be routed around — through an allowed `domainNames` host that serves something
+  else, over open port 53, or to the pod's own node. Write "cannot change" or "cannot
+  reconfigure" for the enforcement point, and claim "cannot bypass" only where the sample
+  establishes that separately. Every page here states the policy's own limits right after
+  this claim; keep that pairing.
 - **Refusals can look different.** A blocked host can time out on IPv4 or fail at once with
   "Network is unreachable" when it also publishes IPv6 addresses; both are the same block.
   (Same section.)
