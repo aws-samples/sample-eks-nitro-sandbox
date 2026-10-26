@@ -216,9 +216,11 @@ passing the document to AWS.
   Manager as a KMS ciphertext envelope, read and decrypted by the application itself inside
   the guest. An ordinary pod holding the same role can read the envelope and is refused the
   value.
+- [s3-encrypted-file](s3-encrypted-file/README.md): a file encrypted with AES-256-GCM before
+  it is uploaded to Amazon S3, with its data key wrapped by KMS. The application in the
+  sandbox makes the attested decrypt call itself, then decrypts the file in guest memory.
 
-One more is planned, also calling the attested decrypt from the application itself: an
-encrypted file read from Amazon S3. See the
+All three planned samples for this section are now here. See the
 [roadmap](https://github.com/aws-samples/sample-eks-nitro-sandbox/blob/main/docs/ROADMAP.md).
 
 ## Before you run one

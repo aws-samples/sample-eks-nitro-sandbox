@@ -1,0 +1,14 @@
+# Keep the pages, diagrams and operator scripts out of every image built from this
+# section folder: only the analyst's code, its fixtures and a sample's own src/ belong in
+# one.
+# policies/ is deliberately NOT excluded: the generated nono profiles go into the image,
+# so a run can check that what the page shows is what the generator produces.
+**/README.md
+**/images/
+**/scripts/
+**/deploy/
+**/iam/
+**/.env
+**/.env.example
+**/__pycache__/
+**/*.pyc

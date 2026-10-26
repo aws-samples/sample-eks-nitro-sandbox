@@ -1,0 +1,44 @@
+# How the Argo Rollouts controller is told about this sample's step plugin.
+#
+# THIS CONFIGMAP IS SHARED, CLUSTER-WIDE STATE: it lives in the controller's own
+# namespace and it changes how a controller other workloads may use behaves. So
+# scripts/setup.sh never writes it, only reads it and stops with the command when
+# the registration is missing. The page has you register the plugin yourself as a
+# step, and scripts/register-step-plugin.sh does it with the checks that keep it
+# from writing over somebody else's registration.
+#
+# It is never applied with `kubectl apply`. A ConfigMap of this name may already
+# exist holding OTHER keys, such as trafficRouterPlugins, and apply would
+# reconcile those away. register-step-plugin.sh creates it when it is absent and
+# otherwise merge-patches this one key, leaving every other key alone.
+#
+# Placeholders filled in at apply time by scripts/register-step-plugin.sh:
+#   __ARGO_NAMESPACE__  the namespace the Argo Rollouts controller runs in
+#   __PLUGIN_SHA256__   the sha256 of the binary that was just built
+# Never apply this file with the placeholders in place.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argo-rollouts-config
+  namespace: __ARGO_NAMESPACE__
+data:
+  # One entry per step name deploy/rollout.yaml uses, both pointing at the SAME
+  # binary: the plugin dispatches on RpcStepContext.PluginName, so one binary
+  # serves both steps.
+  #
+  # location is file:// because the binary is staged onto the controller pod by
+  # an initContainer (see register-step-plugin.sh), not downloaded by the
+  # controller. sha256 is the hash of that binary, which the controller verifies
+  # before it will load it.
+  #
+  # The prefix before the slash is required: Argo Rollouts validates step-plugin
+  # names against ^([a-zA-Z0-9\-]+)/([a-zA-Z0-9_\-.]+)$ and rejects a bare name.
+  # It is an opaque string the controller never resolves, NOT a Kubernetes
+  # namespace, so it does not change when you override NAMESPACE.
+  stepPlugins: |
+    - name: eks-nitro-sandbox/sandbox-template-patch
+      location: "file:///plugins/sandbox-warmpool-stepplugin"
+      sha256: "__PLUGIN_SHA256__"
+    - name: eks-nitro-sandbox/sandbox-warmpool-drain
+      location: "file:///plugins/sandbox-warmpool-stepplugin"
+      sha256: "__PLUGIN_SHA256__"

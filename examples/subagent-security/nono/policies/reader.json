@@ -1,0 +1,58 @@
+{
+  "meta": {
+    "name": "analyst-reader",
+    "version": "1.0.0"
+  },
+  "workdir": {
+    "access": "none"
+  },
+  "filesystem": {
+    "read": [
+      "/opt/analyst",
+      "/var/lib/analyst/<RUN>/reader/in"
+    ],
+    "allow": [
+      "/var/lib/analyst/<RUN>/reader/out"
+    ]
+  },
+  "environment": {
+    "allow_vars": [
+      "PATH",
+      "HOME",
+      "LANG",
+      "LC_ALL",
+      "PYTHONPATH",
+      "PYTHONDONTWRITEBYTECODE",
+      "ANALYST_DIGEST_KEY"
+    ]
+  },
+  "network": {
+    "allow_domain": [
+      "supplier-api.<NAMESPACE>.svc.cluster.local:8443"
+    ],
+    "credentials": [
+      "supplier"
+    ],
+    "custom_credentials": {
+      "supplier": {
+        "upstream": "https://supplier-api.<NAMESPACE>.svc.cluster.local:8443",
+        "credential_key": "file:///opt/supplier-key/api-key",
+        "env_var": "SUPPLIER_API_KEY",
+        "inject_header": "X-Api-Key",
+        "credential_format": "{}",
+        "tls_ca": "/opt/supplier-ca/ca.crt",
+        "endpoint_policy": {
+          "default": {
+            "decision": "deny"
+          },
+          "allow": [
+            {
+              "method": "GET",
+              "path": "/cases/rfp-001/suppliers"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

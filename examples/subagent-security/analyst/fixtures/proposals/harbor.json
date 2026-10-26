@@ -1,0 +1,17 @@
+{
+  "id": "harbor",
+  "name": "Harbor Supply Partners",
+  "submitted": "2026-02-09",
+  "contact": "tenders@harbor.example",
+  "summary": "100 workstations of the same specification, shipped from a single depot in two consignments.",
+  "terms": {
+    "price_usd": 105000,
+    "delivery_days": 45,
+    "warranty_months": 24
+  },
+  "notes": [
+    "Lowest price of the three proposals.",
+    "Lead time is 45 days because the displays ship from a second depot.",
+    "Warranty is return to base for 24 months."
+  ]
+}
