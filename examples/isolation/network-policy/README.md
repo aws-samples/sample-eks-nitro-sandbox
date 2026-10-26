@@ -39,8 +39,8 @@ shows a sandboxed and an ordinary pod leveraging each of the two, on Auto Mode.
   begin with. The page shows that opening state, then the after state, for both clients in one
   run.
 - **Enforced on the node, outside the guest.** The node's network policy agent attaches the
-  enforcement to the pod's host-side interface, so a command run inside the sandbox, even as
-  root, is subject to the policy and cannot reach the denied server.
+  enforcement to the pod's host-side interface, not to anything inside the guest, so a command
+  run inside the sandbox is subject to the policy and cannot reach the denied server.
 - **It opts in with one line.** `runtimeClassName: isolated-sandbox` is the only spec field
   that differs between the two clients.
 
@@ -128,14 +128,24 @@ metadata:                                   metadata:
   name: client-standard                       name: client-sandboxed
   labels:                                     labels:
     app: netpol-client                          app: netpol-client
-    role: standard                              role: sandboxed
 spec:                                       spec:
                                               runtimeClassName: isolated-sandbox   # <-- only this
+  automountServiceAccountToken: false         automountServiceAccountToken: false
+  securityContext: { ... }                    securityContext: { ... }
   containers:                                 containers:
     - name: client                              - name: client
       image: .../alpine:3.20                      image: .../alpine:3.20
       command: ["sh","-c", ...]                   command: ["sh","-c", ...]
+      securityContext: { ... }                    securityContext: { ... }
 ```
+
+The pod-level and container-level `securityContext: { ... }` entries are identical on both
+sides: `runAsNonRoot: true` with `runAsUser: 10001` and `runAsGroup: 10001` and the
+`RuntimeDefault` seccomp profile on the pod, and all capabilities dropped, no privilege
+escalation and a read-only root filesystem on the container. `automountServiceAccountToken:
+false`, shown in full above, keeps the API token out of both. So the clients run as UID 10001,
+not as root, and the hardening is identical on both sides — the only spec field that still
+differs between them is `runtimeClassName`. The two servers are hardened the same way.
 
 The first sandboxed pod on a new cluster waits for Auto Mode to launch a sandbox-capable node;
 after that a new one is Ready in about 5 to 6 seconds.
@@ -157,10 +167,10 @@ done
 ```
 
 ```text
-client-standard  -> web-allowed (192.168.165.37): reached
-client-standard  -> web-blocked (192.168.165.36): reached
-client-sandboxed -> web-allowed (192.168.165.37): reached
-client-sandboxed -> web-blocked (192.168.165.36): reached
+client-standard -> web-allowed (192.168.121.112): reached
+client-standard -> web-blocked (192.168.121.114): reached
+client-sandboxed -> web-allowed (192.168.121.112): reached
+client-sandboxed -> web-blocked (192.168.121.114): reached
 ```
 
 **Step 4: Apply the policy and wait for its `PolicyEndpoint`.**
@@ -168,10 +178,37 @@ client-sandboxed -> web-blocked (192.168.165.36): reached
 `NetworkPolicy` — the kind platform teams already use, with no sandbox-specific fields. It
 selects both clients (`app: netpol-client`), allows egress to `web-allowed` on 8080 and to
 CoreDNS on 53, and lists `Egress` in `policyTypes`, which makes everything else the default-deny
-for the selected pods. CoreDNS is allowed by its Service IP with an `ipBlock`: EKS Auto Mode runs
-CoreDNS locally on each node and matches DNS by that fixed Service IP, the same way
-[Getting started > Coding agent](../../getting-started/coding-agent/README.md) allows it. Fill in
-`<COREDNS_IP>` with your cluster's CoreDNS address (the script does this for you):
+for the selected pods. DNS is allowed with an `ipBlock` on the cluster's DNS address: the
+kubelet's `clusterDNS`, which is the nameserver pods are given. On EKS Auto Mode CoreDNS runs
+locally on each instance, at an address derived from the cluster's service CIDR that stays fixed
+for the life of the cluster — which is what makes it safe to write into a policy at all (Amazon
+EKS User Guide, *Use Network Policies with EKS Auto Mode*, under *Determining the CoreDNS IP
+address*: <https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html>).
+
+That one address can be read three ways, each asking for a different permission:
+
+| Read | Permission it needs |
+|---|---|
+| `kubeletconfig.clusterDNS[0]`, from a node's kubelet configuration — what the command below does | cluster-scoped `list` on `nodes`, and `get` on `nodes/proxy` |
+| The `kube-dns` Service's ClusterIP: `kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'` — what the other samples in this repository do | `get` on `services` in `kube-system` |
+| The guide's own method: `aws eks describe-cluster --name <CLUSTER_NAME> --query 'cluster.kubernetesNetworkConfig.serviceIpv4Cidr'`, then the `.10` address of that CIDR | `eks:DescribeCluster` in IAM, and no Kubernetes permission at all |
+
+The first row is the widest of the three: `nodes/proxy` is a cluster-scoped subresource that
+proxies requests through the API server to the kubelet's own API, so it is a much larger grant
+than reading one Service in one namespace. Weigh that before you add it for this.
+
+This page reads the kubelet because `clusterDNS` is the value kubelets hand to pods, rather
+than a value that merely ought to match it. The command below reads it and fills in
+`<COREDNS_IP>` for you, as the script does. It reads the first Ready node that answers, not
+the client's own node, which is sound here only because the address is fixed for the cluster
+as the guide states.
+
+The `kube-dns` Service does still exist on Auto Mode and carries that same ClusterIP. On a
+cluster whose nodes are all Auto Mode it has no endpoints, because the `coredns` Deployment is
+scaled to zero and CoreDNS runs on each instance instead; a cluster that also runs the CoreDNS
+add-on on other nodes would have endpoints as well. Either way the ClusterIP is the same
+address, so if you do not have `nodes/proxy`, read it from there instead — the note after this
+step has the commands.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -201,28 +238,70 @@ spec:
 Egress to `web-blocked` matches no allow rule, so it is refused. Apply the policy and wait for
 its `PolicyEndpoint` before you judge enforcement: it shows the controller has picked the policy
 up and handed it to the nodes, and the datapath is programmed a few seconds after the policy
-lands. The `until` loop below is bounded so it cannot hang: if no `PolicyEndpoint` appears within
+lands. The wait loop below is bounded so it cannot hang: if no `PolicyEndpoint` appears within
 about two minutes, it stops and tells you the controller has not programmed the policy (check the
 `amazon-vpc-cni` enforcement setting from step 1 and the network-policy-agent pods).
 
+Nothing is applied unless the lookup found an address. If no Ready node answers — which is what
+a reader without the `nodes` permission gets — the block says so and leaves the policy unapplied,
+rather than filling `<COREDNS_IP>` in from whatever `COREDNS_IP` happened to hold in your shell
+already (other pages in this repository have you set it from the `kube-dns` Service, so that is a
+realistic state). Nor does it hide the API server's refusal: that is the message that tells you
+which permission you are missing.
+
 ```bash
-COREDNS_IP=$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')
-sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f -
-for i in $(seq 1 60); do
-  kubectl get policyendpoints -o name 2>/dev/null \
-    | grep -q '^policyendpoint.networking.k8s.aws/netpol-client-egress-' && break
-  [ "$i" = 60 ] && { echo "no PolicyEndpoint after ~2m -- is enforcement on? (step 1)"; break; }
-  sleep 2
+COREDNS_IP=""
+for DNS_NODE in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+    | awk '$2 == "True" {print $1}'); do
+  COREDNS_IP=$(kubectl get --raw "/api/v1/nodes/$DNS_NODE/proxy/configz" --request-timeout=10s \
+    | sed -n 's/.*"clusterDNS":\["\([^"]*\)".*/\1/p' | grep -Ex '[0-9]{1,3}(\.[0-9]{1,3}){3}')
+  [ -n "$COREDNS_IP" ] && break
 done
-kubectl get networkpolicies,policyendpoints
+if [ -z "$COREDNS_IP" ]; then
+  echo "could not read the cluster DNS address -- applied no policy."
+  echo "It needs list on nodes and get on nodes/proxy; without them, read the kube-dns Service."
+else
+  echo "cluster DNS address: $COREDNS_IP"
+  sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f -
+  for i in $(seq 1 60); do
+    kubectl get policyendpoints -o name 2>/dev/null \
+      | grep -q '^policyendpoint.networking.k8s.aws/netpol-client-egress-' && break
+    [ "$i" = 60 ] && { echo "no PolicyEndpoint after ~2m -- is enforcement on? (step 1)"; break; }
+    sleep 2
+  done
+  kubectl get networkpolicies,policyendpoints
+fi
+```
 
 ```text
+cluster DNS address: 10.100.0.10
+networkpolicy.networking.k8s.io/netpol-client-egress created
 NAME                                                   POD-SELECTOR        AGE
-networkpolicy.networking.k8s.io/netpol-client-egress   app=netpol-client   12s
+networkpolicy.networking.k8s.io/netpol-client-egress   app=netpol-client   2s
 
 NAME                                                           AGE
-policyendpoint.networking.k8s.aws/netpol-client-egress-m7bn4   6s
+policyendpoint.networking.k8s.aws/netpol-client-egress-rh6gc   2s
 ```
+
+!!! note "Without permission to get `nodes/proxy`"
+    The block above, and both scripts, stop and apply nothing if they cannot read a node's
+    kubelet configuration. Read the same address from the `kube-dns` Service, which needs only
+    `get` on `services` in `kube-system`, and apply this step's policy with it yourself:
+
+    ```bash
+    COREDNS_IP=$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')
+    if [ -z "$COREDNS_IP" ]; then
+      echo "could not read the kube-dns Service address -- applied no policy."
+    else
+      echo "cluster DNS address: $COREDNS_IP"
+      sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f -
+    fi
+    ```
+
+    Then wait for the `PolicyEndpoint` as above, and run steps 3 and 5 by hand, because
+    `run-comparison.sh` takes the kubelet route only. The optional variant has no by-hand
+    path on this page: `run-dns-comparison.sh` also fills in `<AWS_REGION>`, so taking that
+    route means rendering `deploy/app-egress-policy.yaml` with both values yourself.
 
 **Step 5: After the policy, each client keeps `web-allowed` and loses `web-blocked`.** Run the
 same four requests again. A refused egress shows up as a connection that never completes: the
@@ -239,18 +318,25 @@ done
 ```
 
 ```text
-client-standard  -> web-allowed: reached
-client-standard  -> web-blocked: timed out (refused)
+client-standard -> web-allowed: reached
+client-standard -> web-blocked: wget: download timed out
+command terminated with exit code 1
+timed out (refused)
 client-sandboxed -> web-allowed: reached
-client-sandboxed -> web-blocked: timed out (refused)
+client-sandboxed -> web-blocked: wget: download timed out
+command terminated with exit code 1
+timed out (refused)
 ```
 
 Both clients lost exactly the one egress the policy denies and both kept the one it allows. The
 sandboxed path behaved exactly as the ordinary path.
 
-**From inside the sandbox.** The enforcement lives on the node, so a command run inside the
-sandbox, even as root, cannot bypass it. Exec into the sandboxed client and make the same request
-to `web-blocked`:
+**From inside the sandbox.** The enforcement lives on the node, outside the guest, so a command
+run inside the sandbox cannot bypass it. Exec into the sandboxed client and make the same request
+to `web-blocked`. The run below shows that for a command issued inside the guest *after* the pod
+is running, as UID 10001 (step 2). That it holds for any UID in the guest, root included, is the
+architectural point above — the filter is on the host side of the interface, which processes
+inside the guest cannot reconfigure or bypass — not something this sample runs:
 
 ```bash
 kubectl exec client-sandboxed -- wget -q -T 8 -O /dev/null "http://$BLOCKED_IP:8080/" \
@@ -258,6 +344,8 @@ kubectl exec client-sandboxed -- wget -q -T 8 -O /dev/null "http://$BLOCKED_IP:8
 ```
 
 ```text
+wget: download timed out
+command terminated with exit code 1
 timed out (refused)
 ```
 
@@ -301,17 +389,19 @@ done
 ```text
 # client-sandboxed
 6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-71.71
+135.25
 dm-0 vda vdb vdc
 # client-standard
 6.18.51 #2 SMP PREEMPT_DYNAMIC Wed Oct  7 22:33:11 UTC 2026
-155191.57
-dm-0 nvme0n1 nvme1n1 nvme2n1 nvme3n1 zram0
+441.12
+dm-0 nvme0n1 nvme1n1 zram0
 ```
 
-The sandboxed client's uptime (about 72 seconds) matches its pod's age, and it sees virtio disks
-(`vda`, `vdb`, `vdc`); the ordinary client reports the node's uptime (about 43 hours) and the
-instance's `nvme` disks. The kernel version string is the same for both, `6.18.51`; the build
+The run printed a space at the end of each disk list; the block trims it.
+
+The sandboxed client's uptime (about 135 seconds) matches its pod's age, and it sees virtio disks
+(`vda`, `vdb`, `vdc`); the ordinary client reports the node's uptime (441 seconds, about 7
+minutes) and its `nvme` devices. The kernel version string is the same for both, `6.18.51`; the build
 (`#1` versus `#2`, and the date) and the boot are not.
 
 ## Optional: egress by hostname
@@ -326,8 +416,8 @@ side-by-side result for name-based egress: a second identical client pair
 [`app-egress-policy.yaml`](deploy/app-egress-policy.yaml) allows CoreDNS and
 `sts.<AWS_REGION>.amazonaws.com`, and nothing else, so `kms.<AWS_REGION>.amazonaws.com` is
 refused. Run it with [`scripts/run-dns-comparison.sh`](scripts/run-dns-comparison.sh) (set
-`AWS_REGION` first; it fills in your CoreDNS address from the cluster, so no account value is
-written into a tracked file):
+`AWS_REGION` first; it fills in your cluster's DNS address, the kubelet's `clusterDNS` read from
+a Ready node as in step 4, so no account value is written into a tracked file):
 
 ```bash
 export AWS_REGION=us-west-2
@@ -335,16 +425,24 @@ scripts/run-dns-comparison.sh
 ```
 
 Like the main script, it proves the open control state first (both clients reach both endpoints
-before the policy), then applies the policy and re-reads, then prints a verdict. Abridged:
+before the policy), then applies the policy and re-reads, then prints a verdict. Abridged: the
+block starts at `=== BEFORE the policy`; before it the script deletes the pair left from an
+earlier run and deploys the second client pair. The run printed a space at the end of each
+client line; the block trims it.
 
 ```text
 === BEFORE the policy: each client reaches both endpoints (the open control state) ===
-client-standard-dns    allowed(sts.us-west-2.amazonaws.com)=reached    blocked(kms.us-west-2.amazonaws.com)=reached
-client-sandboxed-dns   allowed(sts.us-west-2.amazonaws.com)=reached    blocked(kms.us-west-2.amazonaws.com)=reached
+client-standard-dns    allowed(sts.us-west-2.amazonaws.com)=reached   blocked(kms.us-west-2.amazonaws.com)=reached
+client-sandboxed-dns   allowed(sts.us-west-2.amazonaws.com)=reached   blocked(kms.us-west-2.amazonaws.com)=reached
+
+=== Apply the ApplicationNetworkPolicy (allows sts.us-west-2.amazonaws.com by name) ===
+applicationnetworkpolicy.networking.k8s.aws/netpol-client-dns-egress created
+Waiting for the netpol-client-dns-egress PolicyEndpoint ...
+netpol-client-dns-egress-59p7v   2s
 
 === AFTER the policy: sts.us-west-2.amazonaws.com allowed, kms.us-west-2.amazonaws.com refused ===
-client-standard-dns    allowed(sts.us-west-2.amazonaws.com)=reached    blocked(kms.us-west-2.amazonaws.com)=refused
-client-sandboxed-dns   allowed(sts.us-west-2.amazonaws.com)=reached    blocked(kms.us-west-2.amazonaws.com)=refused
+client-standard-dns    allowed(sts.us-west-2.amazonaws.com)=reached   blocked(kms.us-west-2.amazonaws.com)=refused
+client-sandboxed-dns   allowed(sts.us-west-2.amazonaws.com)=reached   blocked(kms.us-west-2.amazonaws.com)=refused
 
 === Verdict ===
 RESULT: name-based egress is enforced on the sandboxed path exactly as on the
