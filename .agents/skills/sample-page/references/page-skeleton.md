@@ -25,11 +25,13 @@ cluster.>
 a Nitro sandbox.>
 
 - **<Bold claim>.** <What runs where.>
-- **<Bold claim>.** <What each part can reach, and what is refused.>
+- **<Bold claim>.** <What each part connects to. Claim a limit only where this sample is
+  what enforces it: the pod's Pod Identity role, or a sandbox booted with no network at
+  all. With no network policy, a sandbox that has a network reaches what any pod reaches.>
 
 *Figure 1: <Title>. <One or two sentences on what the reader should notice.>*
 
-![<Alt text in reading order: each boundary, what runs inside it, each connection with its label, and what is refused.>](images/<name>.png)
+![<Alt text in reading order: each boundary, what runs inside it, and each connection with its label. Draw a refused destination only where this sample refuses it.>](images/<name>.png)
 
 This folder was built against these releases:
 
@@ -59,39 +61,31 @@ The files:
 
 <One sentence on what to look at in the output.>
 
-**Step 2: Apply the network policy.** [`egress-policy.yaml`](deploy/egress-policy.yaml)
-selects the sandbox pods. Here it is in full, without its header comment;
-[How the network policy works](#how-the-network-policy-works) explains each rule:
+**Step 2: Give the pod a role.** <The ServiceAccount, the Pod Identity association, and the
+role's policy document in full. This is the limit the sample enforces, so show what it
+permits and nothing wider.>
 
 ```yaml
-<the complete policy>
+<the policy document, verbatim>
 ```
 
 ```bash
-COREDNS_IP=$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')
-sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f -
-until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/<policy-name>-'; do sleep 2; done
+<command>
+```
+
+```text
+<output from a fresh run>
 ```
 
 **Step 3: Look inside the sandbox.** <Show the proof: runtime class, guest kernel build,
 uptime, virtio disks, credential variable names without values.>
 
-## How the network policy works
-
-| In the YAML | What it does |
-|---|---|
-| `podSelector`, `<label>` | <Which pods it selects> |
-| `policyTypes`, `Ingress` and `Egress` | Makes the selected pods default-deny in both directions. |
-| `egress`, to `<COREDNS_IP>/32` on UDP and TCP 53 | Lets the sandbox look up names with CoreDNS. |
-| `egress`, to `domainNames: <host>` on TCP 443 | <Why the sandbox needs it> |
-
-**Where it is enforced.** <On the node, outside the guest.>
-
-<The limits: addresses, not names; the pod's own node.>
-
 ## Good to know
 
 - **<Limit>.** <What it means for the reader.>
+- **This sample does not restrict where the pod can connect.** It has a network, so it
+  reaches what any pod on the cluster reaches. To restrict it, see the
+  [network policy](../../isolation/network-policy/README.md) sample.
 
 ## Clean up
 

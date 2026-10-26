@@ -112,6 +112,20 @@ These support a claim but do not prove the pod ran in a sandbox on their own:
 
 ## Network policy
 
+How the mechanism works on this platform. All of it is still true; what changed is who
+uses it. **A new sample ships no network policy**: `examples/isolation/network-policy` is
+the one sample about it, and a new page links there instead of having its own policy and
+its own "How the network policy works" section (the maintainers set this on 2026-10-26, and
+`AGENTS.md`, Security rules has it). The samples merged before that date ship the policies
+they were proved with and are cited below as the evidence for these facts; they are not
+edited to match the change. Read this section to get the facts right when you explain, work
+on or review the dedicated sample, or when you need to know what *is not* limited in a
+sample that has no policy.
+
+- **With no policy, a sandbox that has a network reaches what any pod reaches.** Nothing
+  about a sandbox runtime class restricts the network; the boundary a sandbox adds is the
+  VM. So a page for a sample with no policy must not claim the workload's reach is limited
+  (`AGENTS.md`, "Say only what your sample actually limits").
 - **Turn enforcement on, once per cluster.** EKS Auto Mode accepts network policies without
   enforcing them until the `amazon-vpc-cni` ConfigMap in `kube-system` sets
   `enable-network-policy-controller: "true"`. It affects the whole cluster; pods no policy
@@ -140,8 +154,12 @@ These support a claim but do not prove the pod ran in a sandbox on their own:
 - **`networkPolicyManagement: Unmanaged` on a `SandboxTemplate`.** With the default,
   `Managed`, the agent-sandbox controller creates its own `NetworkPolicy` for the template's
   pods, which with no rules of your own allows the public internet. Network policies are
-  additive, so that policy would undo yours. Set `Unmanaged` when the sample ships its own
-  policy. (`examples/managed-agents/claude-managed-agents/README.md`; upstream
+  additive, so that policy would undo yours. Set `Unmanaged` only when the sample ships its
+  own policy, which a new sample does not: leave the default.
+  **Then do not read that controller-created policy as a limit.** A template at the default
+  has a `NetworkPolicy` object attached to its pods that restricts nothing, which is easy to
+  mistake for one on a page or in a diagram.
+  (`examples/managed-agents/claude-managed-agents/README.md`; upstream
   [API reference](https://github.com/kubernetes-sigs/agent-sandbox/blob/v1.0.6/docs/api.md#networkpolicymanagement).)
 
 ## Pod Identity and the metadata service
@@ -153,12 +171,17 @@ These support a claim but do not prove the pod ran in a sandbox on their own:
 - **The pod gets both endpoints.** With a network, the pod gets the in-guest endpoints that
   serve instance metadata and Pod Identity credentials
   (`examples/getting-started/hello-sandbox/README.md`).
-- **Pod Identity requests go through the network policy.** The sandbox passes credential
-  requests to `169.254.170.23` on to the Pod Identity Agent on the node (Amazon EKS User
-  Guide, *Security model and parent instance trust assumptions*), and an egress policy
-  applies to them: without a rule allowing `169.254.170.23` on TCP 80 they time out, from a
-  sandboxed pod as from an ordinary one. Every egress policy for a pod with a Pod Identity
-  association needs that rule. (`examples/getting-started/coding-agent/egress-policy.yaml`.)
+- **The role is the limit a sample enforces.** For a sample with no network policy, the Pod
+  Identity role is the only boundary it creates in the reader's account, so scope it to what
+  the sample needs and show its policy document on the page. That is a limit the page can
+  claim, because the sample is what makes it true.
+- **Pod Identity requests go through a network policy, where there is one.** The sandbox
+  passes credential requests to `169.254.170.23` on to the Pod Identity Agent on the node
+  (Amazon EKS User Guide, *Security model and parent instance trust assumptions*), and an
+  egress policy applies to them: without a rule allowing `169.254.170.23` on TCP 80 they
+  time out, from a sandboxed pod as from an ordinary one. So any egress policy for a pod
+  with a Pod Identity association needs that rule.
+  (`examples/getting-started/coding-agent/egress-policy.yaml`.)
 - **The metadata service holds no role.** At `169.254.169.254` it answers with placement and
   service details only, and its `iam/` paths return 404, so a pod with no Pod Identity
   association has no role to assume. (`examples/managed-agents/claude-managed-agents/README.md`,
@@ -207,7 +230,7 @@ step 1).
 | Resource | API group | What it is | Source |
 |---|---|---|---|
 | `Sandbox` | `agents.x-k8s.io/v1beta1` | One stateful pod with a stable identity. `volumeClaimTemplates` gives it persistent storage (immutable after creation); `operatingMode: Suspended` terminates the pod but keeps the Sandbox and its volumes, and `Running` brings a pod back. | Upstream [README](https://github.com/kubernetes-sigs/agent-sandbox/blob/v1.0.6/README.md) and [API reference](https://github.com/kubernetes-sigs/agent-sandbox/blob/v1.0.6/docs/api.md) |
-| `SandboxTemplate` | `extensions.agents.x-k8s.io/v1beta1` | A reusable pod template. Set `runtimeClassName` here, and `networkPolicyManagement: Unmanaged` when you ship your own policy. A pod made from a template has `automountServiceAccountToken` defaulted to `false` unless the template sets it. | Warm pool and Claude Managed Agents pages; upstream API reference |
+| `SandboxTemplate` | `extensions.agents.x-k8s.io/v1beta1` | A reusable pod template. Set `runtimeClassName` here. Leave `networkPolicyManagement` at its default unless the sample ships its own policy, which a new sample does not. A pod made from a template has `automountServiceAccountToken` defaulted to `false` unless the template sets it. | Warm pool and Claude Managed Agents pages; upstream API reference |
 | `SandboxWarmPool` | `extensions.agents.x-k8s.io/v1beta1` | Keeps `replicas` sandboxes booted from a template, and refills after a claim. | Warm pool page |
 | `SandboxClaim` | `extensions.agents.x-k8s.io/v1beta1` | Created per session or task with a `warmPoolRef`; adopts a warm pod. `status.sandbox.name` names it. Setting `env` or `volumeClaimTemplates` on a claim forces a cold start. | Warm pool page; upstream API reference |
 

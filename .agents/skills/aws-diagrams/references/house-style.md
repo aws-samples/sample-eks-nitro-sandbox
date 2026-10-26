@@ -139,6 +139,14 @@ and for a labelled edge `fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Ar
 
 Colour and dash carry meaning, so use them only as the table says.
 
+A refused edge, a refused destination and a network policy control are **claims**, so draw
+one only where the sample you are drawing enforces it. A new sample ships no network policy
+(`AGENTS.md`, Security rules), so it has no network policy control to draw, and its sandbox
+reaches what any pod reaches. "No route out" from a pod booted with
+`sandbox.amazonaws.com/network-isolated: "true"` is still right: that pod really has no
+network. The figures listed as NP, F2 and CMA belong to samples merged before 2026-10-26 and
+keep their policies, which is why they still use these styles.
+
 **Routing:** segments are horizontal or vertical. Anchor both ends (`exitX`, `exitY`, `entryX`,
 `entryY`, plus `exitDx`/`entryDx` for a few pixels' nudge) and give every bend as a waypoint in
 `<Array as="points">`, so draw.io draws the route you planned instead of inventing one. NP's

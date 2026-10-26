@@ -1,6 +1,6 @@
 ---
 name: sample-page
-description: Build a sample in this repository and write its page (the sample folder's README.md) so it matches the existing samples - folder layout, stages that pair a short explanation with a diagram, the real code and the observed result, the network policy section, clean up, the nav entry and the roadmap update. Use after the sample's spec issue exists, when implementing a sample, writing or revising a sample page, or checking one before a pull request.
+description: Build a sample in this repository and write its page (the sample folder's README.md) so it matches the existing samples - folder layout, stages that pair a short explanation with a diagram, the real code and the observed result, what to say about the network and what to link instead of a policy, clean up, the nav entry and the roadmap update. Use after the sample's spec issue exists, when implementing a sample, writing or revising a sample page, or checking one before a pull request.
 ---
 
 # Build a sample and write its page
@@ -14,15 +14,26 @@ Paths below are relative to the repository root. Before you start:
 1. **The spec issue exists and is agreed.** If it does not, use the `sample-spec` skill
    first. The pull request will say `Closes #<issue>`.
 2. **Read the closest samples** and reuse their patterns:
-   - `examples/getting-started/hello-sandbox/README.md`: the one-line opt-in and the proof
-     that the pod runs in a VM.
-   - `examples/getting-started/coding-agent/README.md`: Pod Identity, a Secret read from a
-     file, and an egress network policy with hostnames.
+   - `examples/getting-started/hello-sandbox/README.md`: the one-line opt-in, the proof
+     that the pod runs in a VM, and a network-isolated pod shown to have only loopback.
+   - `examples/getting-started/coding-agent/README.md`: Pod Identity, and a Secret read
+     from a file.
    - `examples/getting-started/warm-pool/README.md`: agent-sandbox `SandboxTemplate`,
      `SandboxWarmPool` and `SandboxClaim`.
    - `examples/managed-agents/claude-managed-agents/README.md`: the full layout (`deploy/`,
-     `scripts/`, `src/`), a versions table, "How the network policy works", an optional
-     mode, "Good to know" and a thorough clean up.
+     `scripts/`, `src/`), a versions table, an optional mode, "Good to know" and a
+     thorough clean up.
+   - `examples/isolation/network-policy/README.md`: the one sample that is about network
+     policy. Link it from your page; do not copy it.
+
+   **One thing in those pages is not the pattern to copy: their network policies.** Most of
+   them ship an egress policy and explain it in a "How the network policy works" section,
+   because that was the rule until the maintainers changed it on 2026-10-26. A new sample
+   does not, and
+   [The network: what to say, and what to link](#the-network-what-to-say-and-what-to-link)
+   below says what to do instead. **Those pages are correct as they stand: they were proved
+   with the policies they show, and nobody edits them to match this change.** Reuse
+   everything else about them.
 3. **Use the `nitro-sandbox-pods` skill** for every statement about how the sandbox works,
    and the `aws-diagrams` skill for every figure.
 
@@ -64,15 +75,19 @@ Follow this order. `references/page-skeleton.md` has it as a starting file.
    call on the reader's machine (for example `notation` or `oras`) with the version the
    run used and where to get it, and what a run costs beyond the cluster.
 3. **Overview.** Two or three short paragraphs and a few bullets, each led by a bold claim:
-   what runs in the sandbox, what stays an ordinary pod, what each part can reach. Then the
-   overview figure.
+   what runs in the sandbox, what stays an ordinary pod, and what each part reaches. Write
+   what the sample's own mechanisms limit and nothing more:
+   [The network: what to say, and what to link](#the-network-what-to-say-and-what-to-link)
+   below. Then the overview figure.
 4. **Versions** table when anything is pinned, and a **files** table linking each file.
 5. **Steps.** `**Step N: <Action>.**` leads each one, as on the existing pages.
-6. **How the network policy works**, when the sandbox has a network: the complete policy
-   YAML, a table that explains each part, where it is enforced, and its limits.
-7. **Optional variants** as `## Optional: <variant>` sections.
-8. **Good to know**: the limits that change what a reader can rely on, kept visible.
-9. **Clean up.**
+6. **Optional variants** as `## Optional: <variant>` sections.
+7. **Good to know**: the limits that change what a reader can rely on, kept visible.
+8. **Clean up.**
+
+There is no network policy section, and no step that applies a policy. That is deliberate,
+and [The network: what to say, and what to link](#the-network-what-to-say-and-what-to-link)
+says what the page does instead.
 
 Put long reference material (a reading of the enforcement on a node, a second mode's clean
 up) in a collapsible block. The existing pages use `<details><summary>...</summary>`, which
@@ -83,7 +98,7 @@ which render on the site only. Never hide a limit that changes the headline clai
 
 Each step is one small unit, in this order:
 
-1. **An action lead**: what happens, such as "Apply the network policy" or "Claim one".
+1. **An action lead**: what happens, such as "Give the pod a role" or "Claim one".
 2. **A short explanation**: usually two or three sentences on the input, the component that
    acts on it, and why.
 3. **A focused diagram** when the stage has a new participant, boundary or flow. Hand it to
@@ -93,7 +108,7 @@ Each step is one small unit, in this order:
    warm pool page does.
 4. **The real code or configuration, verbatim.** Copy the excerpt from the file in the
    folder, keep real field names and values, and say when it is trimmed ("Here is the part
-   of `sandbox-template.yaml` that matters"). Never show a fragment as a complete policy.
+   of `sandbox-template.yaml` that matters"). Never show a fragment as a complete file.
    The sample's pods set no CPU or memory requests or limits unless the sample cannot run
    without them; when they do, the page says why, and the requests and limits do not need
    to match ("Sizing and start-up" in the `nitro-sandbox-pods` skill).
@@ -102,30 +117,69 @@ Each step is one small unit, in this order:
    look at in the output. Until you have run it, the block holds only
    `TODO: output from the fresh run`, never output you wrote yourself.
 
-## The network policy section
+## The network: what to say, and what to link
 
-Every sample whose sandbox has a network ships an egress policy and explains it in a "How
-the network policy works" section:
+**A new sample ships no network policy and has no network policy section.** One sample,
+`examples/isolation/network-policy`, is about network policy: it shows a whole policy, each
+of its rules, where it is enforced and its limits. Every other sample is about its own
+subject, and sends a reader there for the mechanism. The maintainers set this on
+2026-10-26. Why: one page that shows every rule of one policy teaches it better than a
+section repeated in every sample.
 
-- the complete policy YAML, without its header comment. When a script fills values in at
-  apply time (the CoreDNS address, a list of AWS address ranges), show the file as it is,
-  placeholders included, and say which script fills each one and from where;
-- a table with one row per part (`podSelector`, `policyTypes`, each rule) and what it does;
-- that enforcement is turned on once per cluster with the `amazon-vpc-cni` ConfigMap, and
-  how the page waits for the `PolicyEndpoint`;
-- that it is enforced on the node, outside the guest;
-- its limits: a `domainNames` rule allows addresses, so other names on the same addresses
-  are reachable, and a pod can always reach its own node;
-- `networkPolicyManagement: Unmanaged` on any `SandboxTemplate`, and why.
+So the page does these three things instead.
 
-Show it working: one allowed connection that connects and one refused that does not. When
-the pod refuses exec, as a `confidential-sandbox` pod does under a policy that denies it,
-put the probes in the container's own command and read the results from its logs. If the
-sample cannot show a connection either way, say on the page what it shows instead and why.
+**1. Link the dedicated sample, once, where a reader would want the mechanism.** One
+sentence in the overview or in "Good to know", not a section:
 
-A sandbox booted with `sandbox.amazonaws.com/network-isolated: "true"` has no network to
-restrict, so it needs no policy. Show that instead: only `lo` has an address, there is no
-route, and a lookup fails, as the hello sandbox page does.
+```markdown
+To restrict where this pod can connect, see the
+[network policy](../../isolation/network-policy/README.md) sample.
+```
+
+Adjust the relative path to your page's depth, and let `mkdocs build --strict` confirm it.
+
+**2. Say only what your sample actually limits.** This is the part that goes wrong. With no
+policy, a sandbox that has a network reaches what any pod on the cluster reaches, including
+the internet. So the page must not say or imply otherwise:
+
+- Do not write that the workload "cannot reach", "is cut off from", "is restricted to" or
+  "only talks to" anything, unless something in this sample makes that true.
+- A bullet such as "**the sandbox reaches only the API it needs**" is a claim about a
+  policy. Without one, write what is actually true: what the sample has the workload
+  connect to, and that nothing in the sample stops it reaching more.
+- An `isolated-sandbox` pod's boundary is the VM, not the network. "Its own kernel, so a
+  container escape does not reach the host" is a claim the sample proves; "it cannot call
+  out" is not.
+- Check the figures and their alt text too. A refused-destination arrow in red draws a
+  boundary the sample does not have, and the `aws-diagrams` skill reserves that colour for
+  exactly that meaning.
+
+**3. Where the real boundary is an IAM role, scope it and show it.** For most samples this
+is the limit that is actually enforced: the pod's EKS Pod Identity role is what code in the
+sandbox can use in the reader's account. Give it only what the sample needs, show the
+policy document on the page, and name what it permits. That is a limit you can claim,
+because the sample creates it.
+
+**A sandbox that has no network at all is a different thing, and worth showing.** A pod
+booted with `sandbox.amazonaws.com/network-isolated: "true"` has no interface to restrict:
+only `lo` has an address, there is no route, and a lookup fails, as the hello sandbox page
+shows. That is a property of the sandbox the sample asked for, not a claim about a policy,
+so show it with real output and say so plainly. If the workload connects nowhere, prefer
+this to leaving it on the network with nothing said.
+
+**What not to do.** Do not add a policy to a new sample "to be safe": it makes the page
+about network policy, and the dedicated sample covers it better. Do not delete or rewrite a
+merged sample's policy or its "How the network policy works" section either. Those pages
+predate 2026-10-26, were proved with the policies they show, and are correct as they stand;
+this rule is for new samples only. If you think one of them is wrong, raise it with the
+maintainers rather than editing it.
+
+**One platform fact this makes load-bearing.** A `SandboxTemplate` left at the default
+`networkPolicyManagement: Managed` gets a controller-created `NetworkPolicy` that, with no
+rules of your own, allows the public internet. So a new sample's template has a policy
+object attached to it that restricts nothing. Do not point at it as though it limited
+anything, and do not set `Unmanaged` unless the sample ships a policy, which a new one does
+not. The `nitro-sandbox-pods` skill has the detail.
 
 ## Clean up
 
@@ -138,8 +192,8 @@ route, and a lookup fails, as the hello sandbox page does.
   label, checks the label before deleting anything inside the namespace, and exits
   non-zero when it skipped something or could not check it ("Shared accounts, clusters and
   machines" in `AGENTS.md`).
-- Say what stays and why: cluster-wide settings such as network policy enforcement, and
-  shared installs such as agent-sandbox, with the command to remove them.
+- Say what stays and why: any cluster-wide setting the reader turned on as a step, and
+  shared installs such as agent-sandbox or a CSI driver, with the command to remove them.
 - Link the hello sandbox clean up for removing the namespace and the cluster.
 
 ## Nav and roadmap
@@ -221,10 +275,14 @@ not copied into the description.
 - [ ] The page opens with the prerequisites link and the `git clone` and `cd` block.
 - [ ] Each stage pairs an explanation, the real config verbatim and output from a fresh run.
 - [ ] Each figure has a `.drawio` source, a `.png`, a caption and full alt text.
-- [ ] For a sandbox with a network: "How the network policy works" shows the complete
-      policy, and the page shows one allowed and one refused connection. For a
-      network-isolated sandbox: the page shows it has only loopback.
-- [ ] Every `SandboxTemplate` with its own policy sets `networkPolicyManagement: Unmanaged`.
+- [ ] The page ships no network policy and has no network policy section, and links the
+      `network-policy` sample once where a reader would want the mechanism.
+- [ ] No sentence, bullet, figure or alt text on the page says or implies the workload
+      cannot reach the network, or that its reach is restricted, unless this sample is what
+      restricts it. For a network-isolated sandbox: the page shows it has only loopback,
+      with output from the run.
+- [ ] The pod's Pod Identity role grants only what the sample needs, and the page shows the
+      policy document.
 - [ ] No Ingress, LoadBalancer or NodePort anywhere in the folder.
 - [ ] No values from your own account or environment (account IDs, keys, tokens, names of
       your clusters or hosts, user names, internal URLs) in any tracked file, including

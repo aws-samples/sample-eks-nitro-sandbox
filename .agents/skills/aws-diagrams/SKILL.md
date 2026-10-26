@@ -176,9 +176,14 @@ know your cluster names, user names or what the page states, so read every label
    ```
 
    The caption names the idea in a few words, then says what to notice. The alt text walks the
-   figure in reading order (each boundary, what runs in it, each connection with its label, what
-   is refused) so a reader who cannot see the image gets the same facts. Write both as plain
-   sentences, as the pages do: no em dashes.
+   figure in reading order (each boundary, what runs in it, each connection with its label, and
+   what is refused where the sample refuses it) so a reader who cannot see the image gets the
+   same facts. Write both as plain sentences, as the pages do: no em dashes.
+
+   That example is the Claude Managed Agents figure, which belongs to a sample merged before
+   2026-10-26 and keeps its policy. Copy its shape, not its subject: a new sample ships no
+   network policy, so it has no policy figure, and its caption and alt text claim a refusal
+   only where the sample enforces one. See the end of `references/house-style.md`.
 
 ## Edit an existing figure
 
