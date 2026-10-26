@@ -881,8 +881,8 @@ Back to one warm pod waiting, about 40 seconds after the release.
   pool is short a ready replica while the pod retries. Through the retries that were watched it
   never started, and the node's logs show why restarting is the wrong lever: the kubelet
   restarts the *container* and not the sandbox, so every retry re-enters the same guest, and
-  that guest had stopped seeing newly attached disks. Ten disks were attached to it over three
-  minutes and it saw none of them, so waiting through those retries did not rescue it.
+  that guest had stopped seeing newly attached disks. Ten disks were attached to it over about
+  three minutes and it saw none of them, so waiting through those retries did not rescue it.
 
   **In the occurrence traced here, the pool repaired itself.** The agent-sandbox warm pool
   controller deleted the stuck sandbox at an age of 334 seconds — about five and a half minutes
