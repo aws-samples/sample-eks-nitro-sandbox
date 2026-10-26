@@ -61,6 +61,33 @@ _ROLE_SESSION = re.compile(r"(assumed-role/[^/]+/)[^\s\"']+")
 EXPECTED_FAILURES = (ClientError, BotoCoreError, KeyError, ValueError, RuntimeError)
 
 
+def _safe_redact(text: str) -> str:
+    """redact(), for a place where redact() failing must not be what escapes.
+
+    Every print in this program that could carry an identifier goes through here. redact()
+    allocates and runs regular expressions, so it can fail; when it does, the text is
+    dropped rather than printed, because text that could not be redacted is exactly what
+    must not reach the log. The only print that does not use this is the failure report in
+    main(), which drops its message and keeps the exception's type instead.
+    """
+    try:
+        return redact(text)
+    except BaseException:  # noqa: BLE001
+        return "<text withheld: it could not be redacted>"
+
+
+def _type_name(error: BaseException) -> str:
+    """The name of an exception's class, read so that the class cannot intervene.
+
+    type(error).__name__ goes through the metaclass, and a metaclass may override
+    __getattribute__ to raise or to hand back something that is not a string. Going straight
+    to type.__getattribute__ reads the real attribute, which CPython guarantees is a string.
+    This is the one fact about a failed exception that can be stated without running any of
+    its own code, so it is what the guards in main() fall back to.
+    """
+    return type.__getattribute__(type(error), "__name__")
+
+
 def redact(text: str) -> str:
     """Replace the account ID and the role session name in text with placeholders."""
     text = _ACCOUNT_ID.sub("<ACCOUNT_ID>", text)
@@ -185,7 +212,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    print(f"variant: {os.environ.get('SAMPLE_VARIANT', 'unset')}")
+    # Redacted like everything else this program prints. The value is pinned by the pod's
+    # Cedar policy, so an operator cannot change it without losing the data key, but the
+    # guarantee this program makes about its output should not rest on that. This print is
+    # outside the try below, so it uses the form of redact() that cannot raise.
+    print(f"variant: {_safe_redact(os.environ.get('SAMPLE_VARIANT', 'unset'))}")
     print_readings()
     if args.readings_only:
         print("s3-encrypted-file-readings-done")
@@ -226,8 +257,13 @@ def main() -> int:
         # redact() has to allocate. If any of them raises, the new exception would leave this
         # handler before anything had been redacted, and Python would print its traceback,
         # which is the very escape this clause exists to close.
+        # BaseException, not Exception, on both guards below. The outer clause catching
+        # Exception is deliberate: a KeyboardInterrupt in the middle of the work should stop
+        # the program, not be reported as a decrypt failure. These two exist only to stop an
+        # escape, so anything that gets past them defeats their whole purpose.
         try:
-            report = f"attested-s3-error: {type(error).__name__}: {error}"
+            name = _type_name(error)
+            report = f"attested-s3-error: {name}: {error}"
             # The frames, for an unexpected type only. For the refusals this sample shows,
             # the one line is the whole story and a stack through botocore would bury it;
             # for anything else the frames are the only way a reader finds where it broke.
@@ -236,12 +272,14 @@ def main() -> int:
                     traceback.format_exception(type(error), error, error.__traceback__)
                 )
             report = redact(report)
-        except Exception:  # noqa: BLE001
-            # The type's name is a plain attribute of a class. Reading it runs none of the
-            # failed exception's own code and allocates almost nothing, so it is the one
-            # thing that can always be said here. Everything else is dropped rather than
-            # risked: a report that cannot be redacted is not printed.
-            report = f"attested-s3-error: {type(error).__name__}: report unavailable"
+        except BaseException:  # noqa: BLE001
+            # The message and the frames are dropped rather than risked: a report that could
+            # not be redacted is not printed. The type's name is still worth saying, because
+            # it is what tells a refusal from a bug.
+            try:
+                report = f"attested-s3-error: {_type_name(error)}: report unavailable"
+            except BaseException:  # noqa: BLE001
+                report = "attested-s3-error: report unavailable"
         print(report, file=sys.stderr)
         return 1
 

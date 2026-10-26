@@ -541,6 +541,18 @@ looking at it:
   the EC2 instance id, so anyone who receives one can tell which instance the sandbox ran on.
   Do not treat placement as confidential if you share attestation documents with third
   parties (Amazon EKS User Guide, *Security model and parent instance trust assumptions*).
+- **The pods redact their own output, and the page shows the result.** `<ACCOUNT_ID>` and
+  `<session>` in the blocks above are not this page editing a log: the application and the
+  credentials pod each replace them before printing. An AWS error names the full role
+  session, and an EKS Pod Identity session name is built from the cluster and the pod names,
+  so an unredacted denial would carry the account and the cluster into a log that anyone who
+  can read the pod can read. The application catches every exception on one path and passes
+  the whole report, type name and frames included, through that replacement before printing
+  it, rather than listing the exception types it expects: a type that was not on such a list
+  used to leave as an unhandled traceback, which never reached the replacement at all. The
+  account id is matched only where an account id appears, between the colons of an ARN or
+  before `.dkr.ecr.`, because a bare twelve-digit pattern also matches twelve digits inside a
+  SHA-256 and this application prints digests.
 - **The workload is outside the confidentiality boundary.** Confidential mode keeps the node
   from reading the plaintext. It does nothing about what the application does with it once it
   has it: this one validates it by length and digest and prints neither the file nor the data
