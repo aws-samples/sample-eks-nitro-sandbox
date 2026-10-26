@@ -510,8 +510,16 @@ same offline process producing the result the recommendation is checked against.
 
 **Step 7: Allow one host, and a short list of operations.** Permission to reach the supplier
 is not permission to perform every supplier operation. The writer's profile names one host,
-then defaults to deny and lists the exact method and path pairs allowed. Here is that part
-of [`policies/writer.json`](policies/writer.json):
+then defaults to deny and lists the exact method and path pairs allowed.
+
+*Figure 2: What nono confines, at the level it confines it. The profile attaches to the
+tool process the controller starts, not to the pod, and the proxy decides one operation at
+a time: on the one approved host, the writer's draft submission is allowed and a purchase
+order is refused.*
+
+![A focused view of one tool role under nono. An Amazon EKS cluster frame holds a red Nitro sandbox frame labelled runtimeClassName colon isolated-sandbox, and inside that an Analyst pod box whose sub line reads that nono confines the processes it starts, not the pod. In the pod, a red nono profile icon sits above a writer tool process icon and is joined to it by a plain line labelled confines this process, so the control attaches to that one process rather than to the pod or to the sandbox. Along the bottom row of the pod, a Trusted controller icon described as owning AWS and having no profile has an arrow labelled 1. starts the writer to the writer tool process, described as one role, one action; the writer has an arrow labelled 2. request with a placeholder to a red nono proxy icon described as holding the supplier key. Two arrows leave the proxy for a Supplier API icon in a separate Supplier API pod box outside the sandbox, marked an ordinary pod reached by ClusterIP: a green one labelled 3. allowed colon GET suppliers, POST draft, and a red dashed one labelled refused at the proxy colon POST slash purchase-orders. Both name the same host, so the difference between them is the operation and not the destination. No frame encloses the pod's network and no arrow shows a route out of the pod being refused, because nothing in this sample restricts the pod's egress.](images/subagent-security-nono-tool-boundary.png)
+
+Here is that part of [`policies/writer.json`](policies/writer.json):
 
 ```json
         "endpoint_policy": {
