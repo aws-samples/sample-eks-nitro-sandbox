@@ -137,23 +137,31 @@ The comparison script checks this setting rather than changing this shared setti
 identical but for one line: `probe-sandboxed` sets `runtimeClassName: isolated-sandbox`,
 `probe-standard` does not. The egress policy selects both and allows only DNS to CoreDNS. Fill in
 `<COREDNS_IP>` with your cluster's DNS address, read from the kubelet configuration of the first
-Ready node that answers (the script does this for you):
+Ready node that answers (the script does this for you). That read needs permission to **list
+`nodes`** and to **get `nodes/proxy`**; without both, the lookup below prints the API server's
+denial and stops before it applies anything.
+[How the network policy works](#how-the-network-policy-works) gives the other ways to reach the
+same address, which need less permission.
 
 `kubectl create` refuses a `sandbox-limits` namespace that already exists, so a namespace this
 sample did not make is never relabeled as its own:
 
 ```bash
 kubectl create -f deploy/namespace.yaml
+COREDNS_IP=""
 for DNS_NODE in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
     | awk '$2 == "True" {print $1}'); do
-  COREDNS_IP=$(kubectl get --raw "/api/v1/nodes/$DNS_NODE/proxy/configz" --request-timeout=10s 2>/dev/null \
+  COREDNS_IP=$(kubectl get --raw "/api/v1/nodes/$DNS_NODE/proxy/configz" --request-timeout=10s \
     | sed -n 's/.*"clusterDNS":\["\([^"]*\)".*/\1/p' | grep -Ex '[0-9]{1,3}(\.[0-9]{1,3}){3}')
   [ -n "$COREDNS_IP" ] && break
 done
-echo "cluster DNS address: $COREDNS_IP"
-sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f -
-kubectl apply -f deploy/probe-standard.yaml
-kubectl apply -f deploy/probe-sandboxed.yaml
+# Everything below is chained to this check, so a missing permission cannot leave the probes
+# running with no policy or with a policy pinned to a stale address left in your environment.
+: "${COREDNS_IP:?could not read the cluster DNS address from any Ready node; check permission to list nodes and get nodes/proxy}" &&
+echo "cluster DNS address: $COREDNS_IP" &&
+sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f - &&
+kubectl apply -f deploy/probe-standard.yaml &&
+kubectl apply -f deploy/probe-sandboxed.yaml &&
 for p in probe-standard probe-sandboxed; do
   kubectl -n sandbox-limits wait pod/$p --for=condition=Ready --timeout=300s
 done
