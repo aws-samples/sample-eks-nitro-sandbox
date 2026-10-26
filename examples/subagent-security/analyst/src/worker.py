@@ -24,7 +24,6 @@ Each probe takes the remaining argument list and returns a JSON-serialisable obj
 """
 import errno
 import hashlib
-import hmac
 import json
 import os
 import socket
@@ -169,16 +168,28 @@ def act_credential_env(args):
                                   if k.endswith("_API_KEY") and k != "SUPPLIER_API_KEY"),
         "api_key_present": bool(value),
         "api_key_length": len(value),
-        "api_key_hmac": keyed_digest(digest_key, value),
+        "api_key_digest": keyed_digest(digest_key, value),
     }
 
 
+# Deliberately expensive, and not negotiable down for speed: this runs twice per run.
+DIGEST_ITERATIONS = 200_000
+
+
 def keyed_digest(digest_key: str, value: str) -> str:
-    """An HMAC-SHA256 of value under digest_key, as hex.
+    """A salted, deliberately slow digest of value under digest_key, as hex.
 
     Shared so the controller and the role compute the comparison the same way.
+
+    PBKDF2-HMAC-SHA256 rather than a single HMAC or a bare hash. The digest a role reports
+    is written into the run's own calls.json, so it is a published commitment to credential
+    material: it wants a salt, which digest_key supplies per run, and a work factor, so
+    that the commitment cannot be checked cheaply against a list of candidate credentials.
+    A single SHA-256 or HMAC is fast by design and is the wrong primitive for anything
+    derived from a credential that is then written down.
     """
-    return hmac.new(digest_key.encode(), value.encode(), hashlib.sha256).hexdigest()
+    return hashlib.pbkdf2_hmac(
+        "sha256", value.encode(), digest_key.encode(), DIGEST_ITERATIONS).hex()
 
 
 def act_socket(args):

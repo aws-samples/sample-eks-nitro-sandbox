@@ -321,7 +321,7 @@ class Run:
         result, _ = self.call("reader", "credential-env")
         self.check("the reader holds a supplier credential", result["api_key_present"])
         self.check("the reader's credential is not the real supplier key",
-                   result["api_key_hmac"] != keyed_digest(self.digest_key, real))
+                   result["api_key_digest"] != keyed_digest(self.digest_key, real))
         # nono sets AWS_CA_BUNDLE so an AWS SDK inside a role would trust its proxy's
         # certificate. That is not a credential, so the check names the variables that
         # would authenticate and reports the rest rather than claiming there are none.
@@ -329,12 +329,9 @@ class Run:
                    f"{result['aws_names']}", result["aws_credential_names"] == [])
         self.check("the reader has no model API key", result["model_key_names"] == [])
         self.placeholder_length = result["api_key_length"]
-        # The real key's own length is deliberately NOT kept. It is a fact about a
-        # credential, it adds nothing the keyed-digest comparison above has not already
-        # established, and the evidence file is written out of the pod and read by people.
-        # What is recorded is that the two differ.
-        self.credential_differs = (
-            result["api_key_hmac"] != keyed_digest(self.digest_key, real))
+        # Neither the real key's length nor anything else derived from its contents is
+        # kept on the run. The comparison above is recorded in the checks list by name,
+        # which is what the page shows.
 
         result, _ = self.call("reader", "connect", "169.254.170.23", "80")
         self.check("the reader cannot reach the Pod Identity endpoint directly",
@@ -449,16 +446,24 @@ class Run:
             "run_id": self.id, "case_id": CASE, "aws_arn": self.arn,
             "credential_provider": "container-role", "model_id": os.environ["BEDROCK_MODEL_ID"],
             "model_usage": self.usage, "report_prefix": prefix,
-            "supplier_credential": {
-                "role_placeholder_length": self.placeholder_length,
-                "differs_from_the_real_key": self.credential_differs},
+            # The role placeholder's length only. Whether it differs from the real key is
+            # in the checks list by name, and recording it here too would put a second
+            # value derived from the key's contents into this file.
+            "supplier_credential": {"role_placeholder_length": self.placeholder_length},
             "comparison": comparison, "report_choice": payload["recommended_supplier"],
             "checks": self.checks, "calls": self.calls,
         }
         serialised = json.dumps(evidence, indent=2)
-        self.check("no supplier key appears in the evidence or the report",
-                   Path(SUPPLIER_KEY_FILE).read_text().strip()
-                   not in serialised + report)
+        # Enforced by raising, not by recording a flag computed from the key's contents.
+        # The flag used to be appended to self.checks, which is itself inside the evidence
+        # this scan covers, so a value derived from the key ended up in the file being
+        # checked. Reaching the line after the raise IS the result, so that is what gets
+        # recorded.
+        if Path(SUPPLIER_KEY_FILE).read_text().strip() in serialised + report:
+            raise AssertionError(
+                "the supplier key appears in the evidence or the report; nothing written")
+        self.check("the evidence and the report were scanned for the supplier key before "
+                   "being written, and the run was stopped if it appeared", True)
         (self.root / "evidence.json").write_text(serialised)
         (ROOT / "latest").write_text(self.id)
         print(f"\nANALYST_COMPLETE={self.id}", flush=True)

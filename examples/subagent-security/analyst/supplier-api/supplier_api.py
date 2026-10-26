@@ -17,6 +17,7 @@ arrived at all.
 """
 import hmac
 import json
+import uuid
 import os
 import ssl
 import sys
@@ -31,6 +32,8 @@ from business import AVAILABILITY_FIXTURE, CASE, load_json  # noqa: E402
 KEY_FILE = Path(os.environ.get("SUPPLIER_KEY_FILE", "/opt/supplier-key/api-key"))
 TLS_DIR = Path(os.environ.get("SUPPLIER_TLS_DIR", "/opt/supplier-tls"))
 STATE = Path(os.environ.get("SUPPLIER_STATE_DIR", "/var/lib/supplier"))
+# Submitted drafts, under server-generated names.
+DRAFTS = STATE / "drafts"
 PORT = int(os.environ.get("SUPPLIER_PORT", "8443"))
 
 KEY = KEY_FILE.read_text().strip()
@@ -85,17 +88,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(413, {"error": "draft too large"})
                 return
             draft = json.loads(self.rfile.read(length))
-            # The request id is already restricted to alphanumerics and "-" above, so it
-            # cannot contain "/" or ".." and cannot traverse. This re-checks containment on
-            # the resolved path anyway, so the guarantee is local to the write instead of
-            # resting on a character test fifteen lines earlier: a later edit that relaxed
-            # that test would otherwise silently turn this into a path traversal.
-            target = (STATE / f"{request_id}.json").resolve()
-            if target.parent != STATE.resolve():
-                self.reply(400, {"error": "invalid request id"})
-                return
+            # The file name is generated here and no part of it comes from the request.
+            # The request id is recorded inside the file instead. An earlier version named
+            # the file after the id and leaned on the character test above to keep it from
+            # traversing; nothing reads these files by name, so depending on request data
+            # for a path bought nothing and left a traversal one relaxed test away.
             with LOCK:
-                target.write_text(json.dumps(draft))
+                DRAFTS.mkdir(parents=True, exist_ok=True)
+                (DRAFTS / f"{uuid.uuid4().hex}.json").write_text(
+                    json.dumps({"request_id": request_id, "draft": draft}))
             self.reply(201, {"saved": True, "request_id": request_id})
         elif ((self.command == "PATCH" and path.startswith("/suppliers/"))
               or (self.command == "POST" and path == "/purchase-orders")):
