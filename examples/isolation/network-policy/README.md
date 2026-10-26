@@ -139,12 +139,13 @@ spec:                                       spec:
       securityContext: { ... }                    securityContext: { ... }
 ```
 
-The two `securityContext: { ... }` entries stand for identical content, and both clients are
-hardened the same way: no mounted service account token, `runAsNonRoot: true` with
-`runAsUser: 10001`, the `RuntimeDefault` seccomp profile, all capabilities dropped, no privilege
-escalation and a read-only root filesystem. So the clients run as UID 10001, not as root, and
-the hardening is identical on both sides — the only spec field that still differs between them is
-`runtimeClassName`. The two servers are hardened the same way.
+The pod-level and container-level `securityContext: { ... }` entries are identical on both
+sides: `runAsNonRoot: true` with `runAsUser: 10001` and `runAsGroup: 10001` and the
+`RuntimeDefault` seccomp profile on the pod, and all capabilities dropped, no privilege
+escalation and a read-only root filesystem on the container. `automountServiceAccountToken:
+false`, shown in full above, keeps the API token out of both. So the clients run as UID 10001,
+not as root, and the hardening is identical on both sides — the only spec field that still
+differs between them is `runtimeClassName`. The two servers are hardened the same way.
 
 The first sandboxed pod on a new cluster waits for Auto Mode to launch a sandbox-capable node;
 after that a new one is Ready in about 5 to 6 seconds.
@@ -188,17 +189,26 @@ That one address can be read three ways, each asking for a different permission:
 
 | Read | Permission it needs |
 |---|---|
-| `kubeletconfig.clusterDNS[0]`, from a node's kubelet configuration — what the command below does | cluster-scoped `get nodes` and `nodes/proxy` |
-| The `kube-dns` Service's ClusterIP: `kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'` — what the other samples in this repository do | `get services` in `kube-system` |
+| `kubeletconfig.clusterDNS[0]`, from a node's kubelet configuration — what the command below does | cluster-scoped `list` on `nodes`, and `get` on `nodes/proxy` |
+| The `kube-dns` Service's ClusterIP: `kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'` — what the other samples in this repository do | `get` on `services` in `kube-system` |
 | The guide's own method: `aws eks describe-cluster --name <CLUSTER_NAME> --query 'cluster.kubernetesNetworkConfig.serviceIpv4Cidr'`, then the `.10` address of that CIDR | `eks:DescribeCluster` in IAM, and no Kubernetes permission at all |
 
-This page reads the kubelet, because `clusterDNS` is the value the kubelet hands the pod, so it
-cannot differ from the address the client actually resolves against. The command below reads it
-and fills in `<COREDNS_IP>` for you, as the script does.
+The first row is the widest of the three: `nodes/proxy` is a cluster-scoped subresource that
+proxies requests through the API server to the kubelet's own API, so it is a much larger grant
+than reading one Service in one namespace. Weigh that before you add it for this.
 
-The `kube-dns` Service does still exist on Auto Mode and carries that same ClusterIP — what it
-has no endpoints for is CoreDNS, which runs on each instance rather than in a Deployment. If you
-do not have `nodes/proxy`, read it from there instead; the note after this step has the commands.
+This page reads the kubelet because `clusterDNS` is the value kubelets hand to pods, rather
+than a value that merely ought to match it. The command below reads it and fills in
+`<COREDNS_IP>` for you, as the script does. It reads the first Ready node that answers, not
+the client's own node, which is sound here only because the address is fixed for the cluster
+as the guide states.
+
+The `kube-dns` Service does still exist on Auto Mode and carries that same ClusterIP. On a
+cluster whose nodes are all Auto Mode it has no endpoints, because the `coredns` Deployment is
+scaled to zero and CoreDNS runs on each instance instead; a cluster that also runs the CoreDNS
+add-on on other nodes would have endpoints as well. Either way the ClusterIP is the same
+address, so if you do not have `nodes/proxy`, read it from there instead — the note after this
+step has the commands.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -249,7 +259,7 @@ for DNS_NODE in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.nam
 done
 if [ -z "$COREDNS_IP" ]; then
   echo "could not read the cluster DNS address -- applied no policy."
-  echo "It needs get nodes and nodes/proxy; without them, read the kube-dns Service instead."
+  echo "It needs list on nodes and get on nodes/proxy; without them, read the kube-dns Service."
 else
   echo "cluster DNS address: $COREDNS_IP"
   sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f -
@@ -276,15 +286,22 @@ policyendpoint.networking.k8s.aws/netpol-client-egress-rh6gc   2s
 !!! note "Without permission to get `nodes/proxy`"
     The block above, and both scripts, stop and apply nothing if they cannot read a node's
     kubelet configuration. Read the same address from the `kube-dns` Service, which needs only
-    `get services` in `kube-system`, and apply the policy with it yourself:
+    `get` on `services` in `kube-system`, and apply this step's policy with it yourself:
 
     ```bash
     COREDNS_IP=$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')
-    sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f -
+    if [ -z "$COREDNS_IP" ]; then
+      echo "could not read the kube-dns Service address -- applied no policy."
+    else
+      echo "cluster DNS address: $COREDNS_IP"
+      sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f -
+    fi
     ```
 
-    Then wait for the `PolicyEndpoint` as above. The comparison scripts take the kubelet route
-    only, so run steps 3 and 5 by hand if you go this way.
+    Then wait for the `PolicyEndpoint` as above, and run steps 3 and 5 by hand, because
+    `run-comparison.sh` takes the kubelet route only. The optional variant has no by-hand
+    path on this page: `run-dns-comparison.sh` also fills in `<AWS_REGION>`, so taking that
+    route means rendering `deploy/app-egress-policy.yaml` with both values yourself.
 
 **Step 5: After the policy, each client keeps `web-allowed` and loses `web-blocked`.** Run the
 same four requests again. A refused egress shows up as a connection that never completes: the
@@ -316,9 +333,10 @@ sandboxed path behaved exactly as the ordinary path.
 
 **From inside the sandbox.** The enforcement lives on the node, outside the guest, so a command
 run inside the sandbox cannot bypass it. Exec into the sandboxed client and make the same request
-to `web-blocked`. Both clients run as UID 10001 (step 2), so what this shows is that a command
-issued inside the guest *after* the pod is running is still subject to the policy — not what a
-root user inside the guest could do, which this sample does not run:
+to `web-blocked`. The run below shows that for a command issued inside the guest *after* the pod
+is running, as UID 10001 (step 2). That it holds for any UID in the guest, root included, is the
+architectural point above — the filter is on the host side of the interface, where nothing in the
+guest reaches it — not something this sample runs:
 
 ```bash
 kubectl exec client-sandboxed -- wget -q -T 8 -O /dev/null "http://$BLOCKED_IP:8080/" \
