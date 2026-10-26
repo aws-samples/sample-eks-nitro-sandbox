@@ -211,9 +211,12 @@ passing the document to AWS.
 - [encrypted-image](encrypted-image/README.md): an image whose every layer is ciphertext in
   Amazon ECR, decrypted inside the sandbox by the guest image runtime after KMS checks the
   attestation. The workload image carries no decryption code.
+- [s3-encrypted-file](s3-encrypted-file/README.md): a file encrypted with AES-256-GCM before
+  it is uploaded to Amazon S3, with its data key wrapped by KMS. The application in the
+  sandbox makes the attested decrypt call itself, then decrypts the file in guest memory.
 
-Two more are planned, both calling the attested decrypt from the application itself: a
-secret read from AWS Secrets Manager, and an encrypted file read from Amazon S3. See the
+One more is planned, also calling the attested decrypt from the application itself: a
+secret read from AWS Secrets Manager. See the
 [roadmap](https://github.com/aws-samples/sample-eks-nitro-sandbox/blob/main/docs/ROADMAP.md).
 
 ## Before you run one

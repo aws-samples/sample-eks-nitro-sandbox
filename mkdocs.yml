@@ -106,3 +106,4 @@ nav:
   - Confidential:
       - Confidential sandboxes: confidential/README.md
       - Encrypted image: confidential/encrypted-image/README.md
+      - S3 encrypted file: confidential/s3-encrypted-file/README.md
