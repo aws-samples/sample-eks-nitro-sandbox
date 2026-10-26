@@ -83,12 +83,11 @@ data key without an attestation.
   it against the length and SHA-256 its policy pins, and prints only a marker with those two
   values. Nothing on this page, and nothing in any log, is the file.
 
-*Figure 1: An encrypted file from the setup machine to the sandbox, and the attestation gate
-in the middle. Only ciphertext reaches Amazon S3, and what unlocks it inside the sandbox is
-the attestation, not the credentials: an ordinary pod holding the very same Pod Identity role
-is refused.*
+*Figure 1: The file's journey, from the setup machine to the sandbox that reads it back. Only
+ciphertext and a wrapped key reach Amazon S3; KMS only ever handles the small data key, which
+is what lets the file be any size. Who KMS will release that key to is Figure 2.*
 
-![A setup machine outside the cluster holds the file as plaintext and an encrypt and wrap step using AES-256-GCM. Three flows leave the setup machine: step 1 encrypt, from the file to the encrypt and wrap step; step 2, kms:Encrypt wraps the data key, running along the top of the AWS Cloud frame to AWS KMS on the far right; and step 3, upload ciphertext and manifest, to Amazon S3, which holds the ciphertext and the manifest. Inside the AWS Cloud frame, an Amazon EKS cluster frame contains an EKS node frame labelled parent instance, untrusted, and inside that a Nitro sandbox pod frame with runtimeClassName confidential-sandbox, holding a main container that decrypts in guest memory. Step 4, read the ciphertext, runs from Amazon S3 down into the Nitro sandbox pod frame, so the guest reads the object itself rather than the node reading it. The main container exchanges two flows with AWS KMS, outside the cluster to the right: step 5, an attested kms:Decrypt, and step 6, the data key returned for the sandbox. Lower in the same EKS cluster sits an ordinary pod, not a sandbox, holding the sandbox's own Pod Identity role. Its request to AWS KMS is drawn as a red dashed line labelled refused, no attestation, so the same credentials without an attestation document get nothing.](images/figure-1-s3-encrypted-file.png)
+![A setup machine outside the cluster holds the file as plaintext and an encrypt and wrap step using AES-256-GCM. Three flows leave the setup machine: step 1 encrypt, from the file to the encrypt and wrap step; step 2, kms:Encrypt wraps the data key, running along the top of the AWS Cloud frame to AWS KMS on the far right, labelled the attestation gate; and step 3, upload ciphertext and manifest, to Amazon S3, which holds the ciphertext and the manifest. Inside the AWS Cloud frame, an Amazon EKS cluster frame contains an EKS node frame labelled parent instance, untrusted, and inside that a Nitro sandbox pod frame with runtimeClassName confidential-sandbox, holding a main container that decrypts in guest memory. Step 4, read the ciphertext, runs from Amazon S3 down into the Nitro sandbox pod frame, so the guest reads the object itself rather than the node reading it. The main container exchanges two flows with AWS KMS, outside the cluster to the right: step 5, an attested kms:Decrypt, and step 6, the data key returned for the sandbox](images/figure-1-s3-encrypted-file.png)
 
 **The sandbox's network reach.** This sample ships no network policy, so the pod's egress is
 unrestricted. What the key policy and the bucket policy limit is access to this data key and
@@ -405,6 +404,12 @@ data key. The only thing it does not have is an attestation document. In confide
 this stands for the node itself as much as for an operator: the parent instance can obtain
 the same Pod Identity credentials the workload uses (Amazon EKS User Guide, *Security model
 and parent instance trust assumptions*).
+
+*Figure 2: What AWS KMS will release the data key to. Both pods hold the same Pod Identity
+role and ask for the same thing; only the one that can present an attestation the key policy
+accepts gets an answer. The credential is not the boundary.*
+
+![A focused view of the attestation gate. Inside an AWS Cloud frame, an Amazon EKS cluster frame holds two pods, one above the other. The upper one is a Nitro sandbox pod frame, labelled confidential-sandbox, same Pod Identity role, holding a main container that presents an attestation. The lower one is an Ordinary pod frame, labelled not a sandbox, same Pod Identity role, holding a main container that presents none. To the right, outside the cluster, is AWS KMS, which holds the data key. Two solid arrows connect the sandbox pod's container and AWS KMS: an attested kms:Decrypt going out, and the data key released coming back. From the ordinary pod's container a single red dashed arrow runs to AWS KMS labelled refused, no attestation. Below AWS KMS a red dotted note headed key policy reads: allow kms:Decrypt only on a matching attestation, and explicitly deny otherwise.](images/figure-2-attestation-gate.png)
 
 ```bash
 kubectl -n s3-encrypted-file-sample logs s3-encrypted-file-credentials -c main

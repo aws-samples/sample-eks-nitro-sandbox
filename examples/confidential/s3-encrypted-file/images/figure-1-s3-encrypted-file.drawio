@@ -21,7 +21,7 @@
 
         <!-- AWS Cloud frame -->
         <mxCell id="cloud" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;AWS Cloud&lt;/div&gt;" style="shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_aws_cloud_alt;grStroke=1;grIconSize=48;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=6;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
-          <mxGeometry x="600" y="240" width="1680" height="1260" as="geometry" />
+          <mxGeometry x="600" y="240" width="1680" height="1000" as="geometry" />
         </mxCell>
 
         <!-- Amazon S3 -->
@@ -36,7 +36,7 @@
 
         <!-- EKS cluster frame -->
         <mxCell id="cluster" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;Amazon EKS cluster&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#ED7100;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=6;fontSize=14;fontStyle=1;fontColor=#ED7100;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
-          <mxGeometry x="1080" y="620" width="800" height="840" as="geometry" />
+          <mxGeometry x="1080" y="620" width="800" height="520" as="geometry" />
         </mxCell>
         <mxCell id="tab-cluster" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalAlign=top;align=center;html=1;fontSize=12;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.eks;" vertex="1" parent="1">
           <mxGeometry x="1080" y="620" width="48" height="48" as="geometry" />
@@ -61,15 +61,6 @@
         <!-- The container that reads the object and decrypts it -->
         <mxCell id="container" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;main container&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;decrypts in guest memory&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.container_1;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
           <mxGeometry x="1440" y="880" width="80" height="80" as="geometry" />
-        </mxCell>
-
-        <!-- An ordinary pod with the same role -->
-        <mxCell id="ordinary" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;Ordinary pod&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;not a sandbox&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
-          <mxGeometry x="1120" y="1140" width="320" height="280" as="geometry" />
-        </mxCell>
-
-        <mxCell id="role" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Pod Identity role&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;the sandbox's role&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#DD344C;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.role;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
-          <mxGeometry x="1220" y="1240" width="80" height="80" as="geometry" />
         </mxCell>
 
         <!-- 1. the file -> encrypt and wrap -->
@@ -131,16 +122,6 @@
           </mxGeometry>
         </mxCell>
 
-        <!-- Refused: the same role, no attestation -->
-        <mxCell id="e-role-refused" value="refused: no attestation" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#DD344C;strokeWidth=2.5;dashed=1;dashPattern=8 6;fixDash=1;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="role" target="kms">
-          <mxGeometry relative="1" as="geometry">
-            <Array as="points">
-              <mxPoint x="2150" y="1280" />
-              <mxPoint x="2150" y="1120" />
-            </Array>
-            <mxPoint x="200" y="-15" as="offset" />
-          </mxGeometry>
-        </mxCell>
       </root>
     </mxGraphModel>
   </diagram>
