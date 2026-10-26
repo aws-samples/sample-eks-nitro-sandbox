@@ -205,9 +205,12 @@ def decrypt_file(
 
 def main() -> int:
     # prog is given, rather than left to default to sys.argv[0]: argparse puts it in the
-    # usage line that --help prints, and an invocation path is not something this program
-    # should be echoing. A constant is better here than redacting a value.
-    parser = _RedactingArgumentParser(prog="app.py", description=__doc__)
+    # usage line that --help prints, and the invocation filename is not something this
+    # program should be echoing. argparse takes the basename, so a directory in the path is
+    # dropped either way, but the filename itself is not. A constant display name is better
+    # here than redacting a value, and it is a display name rather than the real file, which
+    # the image runs as /app/main.py.
+    parser = _RedactingArgumentParser(prog="s3-encrypted-file", description=__doc__)
     parser.add_argument(
         "--readings-only",
         action="store_true",
