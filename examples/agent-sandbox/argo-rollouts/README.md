@@ -119,11 +119,15 @@ kubectl -n argo-rollouts rollout status deploy/argo-rollouts --timeout=180s
 If Argo Rollouts already lives somewhere other than `argo-rollouts` on your cluster, set
 `ARGO_NAMESPACE` in `.env` instead of installing a second copy. When the install is present
 the scripts say so and move on, naming the image they found so you can see what you are
-reusing:
+reusing. This line comes from a separate run against the already-installed controller, not
+from the walkthrough below:
 
 ```text
 reusing the Argo Rollouts install in namespace argo-rollouts as it is (quay.io/argoproj/argo-rollouts:v1.10.1); this sample was built against Argo Rollouts v1.10.1
 ```
+
+Nothing in this sample installs, upgrades or reconfigures Argo Rollouts. It was already
+installed at v1.10.1 on the cluster these runs used, and was reused exactly as it stood.
 
 ## Step 2: Register the step plugin on the controller
 
@@ -137,7 +141,10 @@ binary.
 **This step changes state the whole cluster shares.** That is why it is a step you run, not
 something `setup.sh` does: the other scripts only ever read the registration and stop with
 this command when it is missing. Run it on a cluster whose Argo Rollouts install is yours to
-change. It defaults to a plan that changes nothing:
+change. It defaults to a plan that changes nothing.
+
+The plan below comes from a separate run, taken against the shared controller before the
+walkthrough; everything from Step 3 on is from the one fresh walkthrough run.
 
 ```bash
 ./scripts/register-step-plugin.sh
@@ -257,7 +264,7 @@ pod/ordinary-pod created
 == 4/4 wait for the pool to be warm at one template revision ==
   readyReplicas=0/2  distinct template hashes=1
 NAME                 READY   DESIRED   AGE
-rollout-agent-pool   2       2         13s
+rollout-agent-pool   2       2         15s
 
 the SandboxTemplate says TEMPLATE_REVISION=rev-1
 the pool's sandboxes carry agents.x-k8s.io/sandbox-template-hash:
@@ -336,7 +343,7 @@ anything: the hash label on the pool's sandboxes is a Kubernetes-observable witn
 context: sandbox-demo (pinned)   namespace: argo-rollouts-sample
 
   the SandboxTemplate now says          : TEMPLATE_REVISION=rev-2
-  the claim adopted pod                 : rollout-agent-pool-55d92
+  the claim adopted pod                 : rollout-agent-pool-dtsnz
   that pod's TEMPLATE_REVISION (env)    : rev-1
   /tmp/template-revision (at boot)      : rev-1
   agents.x-k8s.io/launch-type           : warm
@@ -397,9 +404,9 @@ kubectl -n argo-rollouts-sample get sandbox -l agents.x-k8s.io/warm-pool-sandbox
 ```
 
 ```text
-NAME                       READY   REASON              AGE     SANDBOX-TEMPLATE-HASH
-rollout-agent-pool-qmb49   True    DependenciesReady   2m52s   5e642565
-rollout-agent-pool-w7cxz   True    DependenciesReady   2m24s   5e642565
+NAME                       READY   REASON              AGE   SANDBOX-TEMPLATE-HASH
+rollout-agent-pool-jkj6g   True    DependenciesReady   49s   5e642565
+rollout-agent-pool-jp697   True    DependenciesReady   33s   5e642565
 ```
 
 The selector hash `fc450e7f` is the pool's own, from its `status.selector`. Read it from
@@ -423,7 +430,7 @@ exists to leave behind.
 context: sandbox-demo (pinned)   namespace: argo-rollouts-sample
 
   the SandboxTemplate now says          : TEMPLATE_REVISION=rev-2
-  the claim adopted pod                 : rollout-agent-pool-n4987
+  the claim adopted pod                 : rollout-agent-pool-jtn5v
   that pod's TEMPLATE_REVISION (env)    : rev-2
   /tmp/template-revision (at boot)      : rev-2
   agents.x-k8s.io/launch-type           : warm
@@ -465,7 +472,7 @@ reading from [`deploy/ordinary-pod.yaml`](deploy/ordinary-pod.yaml), which is th
 container with the single line `runtimeClassName: isolated-sandbox` left out.
 
 ```bash
-kubectl -n argo-rollouts-sample exec rollout-agent-pool-n4987 -- sh -c \
+kubectl -n argo-rollouts-sample exec rollout-agent-pool-jtn5v -- sh -c \
   'uname -rv; cat /proc/uptime; ls /sys/block; cat /sys/class/dmi/id/product_name'
 kubectl -n argo-rollouts-sample exec ordinary-pod -- sh -c \
   'uname -rv; cat /proc/uptime; ls /sys/block; cat /sys/class/dmi/id/product_name'
@@ -474,16 +481,34 @@ kubectl -n argo-rollouts-sample exec ordinary-pod -- sh -c \
 | Reading | Claimed sandbox pod | Ordinary pod on the same cluster |
 |---|---|---|
 | `uname -rv` | `6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026` | `6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026` |
-| `cat /proc/uptime` | `65.05 61.37` | `42618.04 338641.00` |
+| `cat /proc/uptime` | `36.73 33.55` | `44058.78 350101.26` |
 | `ls /sys/block` | `dm-0 vda vdb vdc` | `dm-0 nvme0n1 nvme1n1 zram0` |
 | `cat /sys/class/dmi/id/product_name` | `m8i.enclave` | `m8a.2xlarge` |
 
 The kernel **version** is the same, 6.18.54, which is exactly why `uname -r` on its own is
 not evidence. The **build** is not: `#1` built at 17:38 against `#2` built at 00:16. The
-uptime is 65 seconds, which is the age of the pod, because the VM booted with it; the
-ordinary pod reports the node's 42618 seconds. The block devices are virtio disks, `vda`
-through `vdc`, where the ordinary pod sees the instance's NVMe devices. And the DMI product
-name reads the VM in the sandbox rather than the EC2 instance type the ordinary pod reads.
+block devices are virtio disks, `vda` through `vdc`, where the ordinary pod sees the
+instance's NVMe devices. And the DMI product name reads the VM in the sandbox rather than
+the EC2 instance type the ordinary pod reads.
+
+The uptime is the reading that needs its own evidence, because "36 seconds" only means
+something next to when the pod started:
+
+```bash
+kubectl -n argo-rollouts-sample get pod rollout-agent-pool-jtn5v ordinary-pod \
+  -o custom-columns='NAME:.metadata.name,RUNTIMECLASS:.spec.runtimeClassName,START:.status.startTime'
+```
+
+```text
+NAME                       RUNTIMECLASS       START
+rollout-agent-pool-jtn5v   isolated-sandbox   2026-10-26T12:09:47Z
+ordinary-pod               <none>             2026-10-26T12:09:04Z
+```
+
+The readings above were taken at about 12:10:24. The sandboxed pod started at 12:09:47, so
+its 36 seconds of uptime is its own age: the VM booted with the pod. The ordinary pod
+started 43 seconds earlier but reports 44058 seconds, because it is reading the node's
+uptime, not its own.
 
 ## No network to restrict
 
@@ -504,8 +529,8 @@ Rather than assert the isolation, here it is read from the claimed pod, with the
 pod beside it:
 
 ```bash
-kubectl -n argo-rollouts-sample exec rollout-agent-pool-n4987 -- sh -c 'ip -o addr; ip route'
-kubectl -n argo-rollouts-sample exec rollout-agent-pool-n4987 -- nslookup example.com
+kubectl -n argo-rollouts-sample exec rollout-agent-pool-jtn5v -- sh -c 'ip -o addr; ip route'
+kubectl -n argo-rollouts-sample exec rollout-agent-pool-jtn5v -- nslookup example.com
 ```
 
 ```text
@@ -522,7 +547,7 @@ and a default route:
 
 ```text
 1: lo    inet 127.0.0.1/8 scope host lo\       valid_lft forever preferred_lft forever
-3: eth0    inet 192.168.127.129/32 scope global eth0\       valid_lft forever preferred_lft forever
+3: eth0    inet <POD_IP>/32 scope global eth0\       valid_lft forever preferred_lft forever
 
 default via 169.254.1.1 dev eth0
 169.254.1.1 dev eth0 scope link
@@ -680,8 +705,36 @@ cp .env.example .env    # if you have not already; set KUBE_CONTEXT and NAMESPAC
 ```
 
 ```text
-TODO: output from the fresh run
+context: sandbox-demo (pinned)   namespace: argo-rollouts-sample
+
+== 1/3 the sample's namespace argo-rollouts-sample ==
+  deleting the warm pool first, so it stops booting replacements
+sandboxwarmpool.extensions.agents.x-k8s.io "rollout-agent-pool" deleted from argo-rollouts-sample namespace
+  deleting the namespace and everything in it
+namespace "argo-rollouts-sample" deleted
+  deleted namespace argo-rollouts-sample
+
+== 2/3 the ClusterRole and ClusterRoleBinding ==
+  clusterrolebinding/argo-rollouts-sandbox-warmpool does not exist; nothing to remove
+  clusterrole/argo-rollouts-sandbox-warmpool does not exist; nothing to remove
+
+== 3/3 the registration on the Argo Rollouts controller ==
+  Left in place, because it is shared with the rest of the cluster:
+    - the Argo Rollouts install in namespace argo-rollouts
+    - the stepPlugins key in configmap argo-rollouts/argo-rollouts-config
+    - the initContainer on deployment argo-rollouts/argo-rollouts that stages the binary
+    - the ECR repository nitro-sample-argo-rollouts-stepplugin
+  Undo all four, in a safe order, with:
+    ./scripts/cleanup.sh --unregister
+
+clean up complete.
 ```
+
+Two things to read carefully in that output. The `ClusterRole` and `ClusterRoleBinding` are
+reported absent because this run of the walkthrough never registered the step plugin, so
+there was nothing for it to remove. And the four items under 3/3 are what the clean up
+*leaves* rather than a list of things it found: it prints them whether or not they are
+there, so run `--unregister` to be sure they are gone.
 
 To undo the registration as well, in an order that cannot break the controller, add
 `--unregister`. It takes the initContainer off the Deployment first, then removes the
