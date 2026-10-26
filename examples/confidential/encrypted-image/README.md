@@ -58,7 +58,7 @@ in its original plaintext form so the page can show what an ordinary pod reads, 
 holds the sandboxed pod's own IAM role and tries to decrypt the layer key without an
 attestation.
 
-- **Nothing but ciphertext leaves the build machine.** Every layer descriptor in the
+- **Every published filesystem layer is ciphertext.** Every layer descriptor in the
   published image carries an encrypted media type and an annotation holding the layer key
   wrapped by KMS. The manifest and the image configuration stay readable, by design, so
   registries and runtimes can still inspect them. A layer blob pulled straight from ECR
@@ -75,12 +75,13 @@ attestation.
   no AWS or KMS code in it. The guest's image runtime decrypts and unpacks the layers before
   the container's first instruction runs.
 
-*Figure 1: An encrypted image from the build machine to a running container, and the
-attestation gate in the middle. Only ciphertext leaves the build machine, and what unlocks
-it inside the sandbox is the attestation, not the credentials: an ordinary pod holding the
-very same Pod Identity role is refused.*
+*Figure 1: The image's journey, from the build machine to the container that runs it. Every
+layer published to Amazon ECR is ciphertext, and the layer key that opens them travels wrapped
+by AWS KMS; the layers are decrypted inside the sandbox by the guest's own image runtime,
+which is why the workload image needs no decryption code. Who KMS will release that layer key
+to is Figure 2.*
 
-![A build machine outside the cluster holds a source image with plaintext layers and runs skopeo with the keyprovider, which encrypts every layer. Three flows leave the build machine: step 1 encrypt, from the source image to skopeo; step 2, kms:Encrypt wraps the layer key, running along the top of the AWS Cloud to AWS KMS on the far right; and step 3, push ciphertext, to Amazon ECR, which holds every layer as ciphertext. Inside the AWS Cloud, an Amazon EKS cluster frame contains an EKS node frame labelled parent instance, which sees only ciphertext, and step 4, pull ciphertext, runs from Amazon ECR down into that node. Inside the node is a Nitro sandbox pod frame with runtimeClassName confidential-sandbox, holding a guest image runtime that decrypts the layers and a main container that starts after decryption. The guest image runtime exchanges two flows with AWS KMS, outside the cluster to the right: step 5, an attested kms:Decrypt, and step 6, the key returned for the sandbox. Step 7, start the container, runs from the guest image runtime to the main container. Lower in the same EKS cluster sits an ordinary pod, not a sandbox, holding the sandbox's own Pod Identity role. Its request to AWS KMS is drawn as a red dashed line labelled refused, no attestation, so the same credentials without an attestation document get nothing.](images/figure-1-encrypted-image.png)
+![A build machine outside the cluster holds a source image with plaintext layers and runs skopeo with the keyprovider, which encrypts every layer. Three flows leave the build machine: step 1 encrypt, from the source image to skopeo; step 2, kms:Encrypt wraps the layer key, running along the top of the AWS Cloud to AWS KMS on the far right, labelled the attestation gate; and step 3, push ciphertext, to Amazon ECR, which holds every layer as ciphertext. Inside the AWS Cloud, an Amazon EKS cluster frame contains an EKS node frame labelled parent instance, which sees only ciphertext, and step 4, pull ciphertext, runs from Amazon ECR down into that node. Inside the node is a Nitro sandbox pod frame with runtimeClassName confidential-sandbox, holding a guest image runtime that decrypts the layers and a main container that starts after decryption. The guest image runtime exchanges two flows with AWS KMS, outside the cluster to the right: step 5, an attested kms:Decrypt, and step 6, the key returned for the sandbox. Step 7, start the container, runs from the guest image runtime to the main container.](images/figure-1-encrypted-image.png)
 
 ## Versions
 
@@ -649,6 +650,12 @@ and can obtain these same credentials: the Amazon EKS User Guide, *Security mode
 parent instance trust assumptions*, says to treat Pod Identity credentials as visible to
 the parent instance and to assume anything the role permits is reachable from it. Here the
 role permits nothing without an attestation KMS accepts.
+
+*Figure 2: What AWS KMS will release the layer key to. Both pods hold the same Pod Identity
+role and ask for the same thing; only the one that can present an attestation the key policy
+accepts gets an answer. The credential is not the boundary.*
+
+![A focused view of the attestation gate. Inside an AWS Cloud frame, an Amazon EKS cluster frame holds two pods, one above the other. The upper one is a Nitro sandbox pod frame, labelled confidential-sandbox, same Pod Identity role, holding a guest image runtime that presents an attestation. The lower one is an Ordinary pod frame, labelled not a sandbox, same Pod Identity role, holding a main container that presents none. To the right, outside the cluster, is AWS KMS, labelled the attestation gate. Two solid arrows connect the guest image runtime and AWS KMS: an attested kms:Decrypt going out, and the layer key released coming back. From the ordinary pod's container a single red dashed arrow runs to AWS KMS, labelled refused, no attestation. Below AWS KMS a red dotted note headed key policy reads: allow kms:Decrypt only on a matching attestation, and explicitly deny otherwise.](images/figure-2-attestation-gate.png)
 
 **Step 11: Change one pinned value and KMS refuses.** This script renders the same pod with
 one extra environment variable, regenerates its policy, confirms the measurement really did

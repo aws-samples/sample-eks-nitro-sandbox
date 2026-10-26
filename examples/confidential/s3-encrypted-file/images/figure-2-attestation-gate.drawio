@@ -41,7 +41,7 @@
         </mxCell>
 
         <!-- AWS KMS, which decides -->
-        <mxCell id="kms" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;AWS KMS&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;holds the data key&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fillColor=#DD344C;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.key_management_service;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+        <mxCell id="kms" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;AWS KMS&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;the attestation gate&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fillColor=#DD344C;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.key_management_service;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
           <mxGeometry x="1400" y="460" width="80" height="80" as="geometry" />
         </mxCell>
 

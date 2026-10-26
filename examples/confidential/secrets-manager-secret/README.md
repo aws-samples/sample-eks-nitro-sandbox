@@ -73,11 +73,12 @@ attestation.
   the length and SHA-256 its pod spec pins and logs only those two numbers. The setup script
   reads all three pods' logs back and fails if the value is in any of them.
 
-*Figure 1: A secret stored as ciphertext in AWS Secrets Manager, and the attestation that
-releases it. The ordinary pod holds the same Pod Identity role and can read the ciphertext,
-but only the sandbox's attestation gets the value out of AWS KMS.*
+*Figure 1: The secret's journey, from the setup machine to the sandbox that reads it back.
+What AWS Secrets Manager holds is a ciphertext envelope, and the parent instance never sees
+the value: it starts on the setup machine, which is trusted with it, and is recovered inside
+the guest. Who AWS KMS will release it to is Figure 2.*
 
-![A setup machine outside the cluster, labelled trusted with the value, holds a 64-byte token in plaintext. Two flows leave it. Step 1, kms:Encrypt, runs along the top of the AWS Cloud frame to AWS KMS on the far right; step 2, store the ciphertext, runs to AWS Secrets Manager, which holds the ciphertext envelope, in the upper left of the AWS Cloud frame. Inside the AWS Cloud frame an Amazon EKS cluster frame contains an EKS node frame labelled parent instance, which never sees the value. Inside the node is a Nitro sandbox pod frame with runtimeClassName confidential-sandbox, holding a Python application that decrypts in the guest and, to its left, the decrypted plaintext, which stays in the guest. Step 3, read the ciphertext envelope, runs from AWS Secrets Manager across and down into the Python application. The Python application then exchanges two flows with AWS KMS, outside the cluster to the right, whose label reads that it checks the attested PCR17 against the approved policy: step 4, an attested kms:Decrypt, and step 5, the value returned for this guest only. Step 6, validate by length and SHA-256, runs from the Python application back to the plaintext box inside the sandbox. Lower in the same EKS cluster frame, outside the node frame, sits an ordinary pod with the same Pod Identity role and no sandbox, holding the sandbox's own Pod Identity role. Two flows leave that role. A solid line runs up the left of the cluster to AWS Secrets Manager, labelled reads the ciphertext: allowed. A red dashed line runs right to AWS KMS, labelled refused, no attestation, so the same credentials without an attestation document get the ciphertext but never the value.](images/figure-1-secrets-manager-secret.png)
+![A setup machine outside the cluster, labelled trusted with the value, holds a 64-byte token in plaintext. Two flows leave it. Step 1, kms:Encrypt, runs along the top of the AWS Cloud frame to AWS KMS on the far right; step 2, store the ciphertext, runs to AWS Secrets Manager, which holds the ciphertext envelope, in the upper left of the AWS Cloud frame. Inside the AWS Cloud frame an Amazon EKS cluster frame contains an EKS node frame labelled parent instance, which never sees the value. Inside the node is a Nitro sandbox pod frame with runtimeClassName confidential-sandbox, holding a Python application that decrypts in the guest and, to its left, the decrypted plaintext, which stays in the guest. Step 3, read the ciphertext envelope, runs from AWS Secrets Manager across and down into the Python application. The Python application then exchanges two flows with AWS KMS, outside the cluster to the right, whose label reads that it checks the attested PCR17 against the approved policy: step 4, an attested kms:Decrypt, and step 5, the value returned for this guest only. Step 6, validate by length and SHA-256, runs from the Python application back to the plaintext box inside the sandbox.](images/figure-1-secrets-manager-secret.png)
 
 ## Versions
 
@@ -717,6 +718,12 @@ delivered, or mint them itself from the kubelet's own credentials, and that IAM 
 such as `aws:SourceVpc` and session tags do not tell the sandbox apart from it. So the role is
 given nothing that is not conditional: the read it is allowed returns ciphertext, and the
 decrypt it is not allowed is refused by an explicit deny.
+
+*Figure 2: What AWS KMS will release the secret to. Both pods hold the same Pod Identity role
+and read the very same ciphertext envelope; only the one that can present an attestation the
+key policy accepts gets the value. The credential is not the boundary.*
+
+![A focused view of the attestation gate. On the left, inside an AWS Cloud frame, is AWS Secrets Manager, holding the ciphertext envelope. To its right an Amazon EKS cluster frame holds two pods, one above the other. The upper one is a Nitro sandbox pod frame, labelled confidential-sandbox, same Pod Identity role, holding a Python application that presents an attestation. The lower one is an Ordinary pod frame, labelled not a sandbox, same Pod Identity role, holding a main container that presents none. Two solid arrows leave AWS Secrets Manager: one up and to the right into the Python application, labelled reads the ciphertext, and one down and to the right into the main container, labelled the same read, allowed. On the far right, outside the cluster, is AWS KMS, labelled the attestation gate. Two solid arrows connect the Python application and AWS KMS: an attested kms:Decrypt going out, and the value released coming back. From the ordinary pod's container a single red dashed arrow runs to AWS KMS, labelled refused, no attestation. Below AWS KMS a red dotted note headed key policy reads: allow kms:Decrypt only on a matching attestation, and explicitly deny otherwise.](images/figure-2-attestation-gate.png)
 
 **Step 10: Change one pinned value and KMS refuses.** This script renders the same pod with
 `DEMO_VARIANT` set to `changed`, regenerates its policy, confirms the measurement really did
