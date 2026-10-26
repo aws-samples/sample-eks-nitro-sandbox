@@ -875,21 +875,21 @@ Back to one warm pod waiting, about 40 seconds after the release.
   and warm-pool pods have generated names. Keep only the brain and the hands in this
   namespace. The sandbox tool's refusal to take a pod name is an application-level control on
   top, not a second enforcement point.
-- **A warm pod can fail to start, and the kubelet's restarts will not clear it.** A pool
+- **A warm pod can fail to start, and the kubelet's restarts did not clear it.** A pool
   replacement goes into `CrashLoopBackOff` with a `StartError` from the sandbox runtime
-  (`mount_host_image: gave up after 10s: no single guest disk reports serial ... yet`) and
-  never starts, so the pool is short a ready replica while the pod retries. Restarting does
-  not help, because the kubelet restarts the *container* and not the sandbox: every retry
-  re-enters the same guest, and that guest has stopped seeing newly attached disks at all. On
-  the occurrence that was traced through the node's logs, ten disks were attached to it over
-  three minutes and it saw none of them, so waiting longer would not have rescued it either.
+  (`mount_host_image: gave up after 10s: no single guest disk reports serial ... yet`), so the
+  pool is short a ready replica while the pod retries. Through the retries that were watched it
+  never started, and the node's logs show why restarting is the wrong lever: the kubelet
+  restarts the *container* and not the sandbox, so every retry re-enters the same guest, and
+  that guest had stopped seeing newly attached disks. Ten disks were attached to it over three
+  minutes and it saw none of them, so waiting through those retries did not rescue it.
 
-  **The pool does repair itself, after about five and a half minutes.** The agent-sandbox warm
-  pool controller sweeps a sandbox left stuck like this and the pool boots a healthy
-  replacement a few seconds later. So the cost is a pool below its desired replica count for
-  roughly five and a half minutes, not a pool that stays broken until somebody notices. With
-  `replicas: 1`, which is what this sample runs, that window has no warm capacity at all, so a
-  claim arriving inside it pays a cold start.
+  **In the occurrence traced here, the pool repaired itself.** The agent-sandbox warm pool
+  controller deleted the stuck sandbox at an age of 334 seconds — about five and a half minutes
+  — and a healthy replacement started four seconds later. That is a single observation, with no
+  threshold documented anywhere behind it, so read it as what happened once rather than as a
+  guaranteed sweep on a fixed interval. What it does show is that this is not necessarily
+  yours to clear by hand.
 
   Deleting the stuck `Sandbox` **by name** is the fast fix and still worth knowing:
 
@@ -899,21 +899,21 @@ Back to one warm pod waiting, about 40 seconds after the release.
 
   Never by label selector, which would take the pool's healthy pods with it.
 
-  Two limits on the above. The sweep belongs to the **warm pool** controller, so it is not a
-  general guarantee: a standalone `Sandbox`, or an ordinary pod using the runtime class, has no
-  such sweep and may stay stuck indefinitely. That was not tested. And on frequency, a run that
-  set out to measure it hit this on 2 of 41 replacements forced by a claim adopting a warm pod,
-  and on 0 of 40 forced by deleting a warm `Sandbox` by name — but those two runs were
-  sequential rather than interleaved and every pod landed on one node, so "a claim makes it
-  more likely" and "that node degraded over twenty minutes" fit the figures equally well. The
-  Amazon EKS User Guide does not document the failure, so treat it as something to watch for
-  rather than a known limit; it is recorded, with the full output and the measurements, in
+  What this does not establish. The recovery seen was the **warm pool** controller's, so it is
+  no evidence either way about a standalone `Sandbox`, or an ordinary pod using the runtime
+  class: those were not tested and may stay stuck. On frequency, a run that set out to measure
+  it hit this on 2 of 41 replacements forced by a claim adopting a warm pod, and on 0 of 40
+  forced by deleting a warm `Sandbox` by name — but those two runs were sequential rather than
+  interleaved and every pod landed on one node, so "a claim makes it more likely" and "that
+  node degraded between the runs" fit the figures equally well. The Amazon EKS User Guide does
+  not document the failure, so treat it as something to watch for rather than a known limit; it
+  is recorded, with the full output and the measurements, in
   [issue #111](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/111).
 
-  The practical consequence survives the automatic recovery: read `status.readyReplicas` on the
-  pool, not just that the pool exists, before you rely on a claim being served in about a
-  second. The pool heals without you, but not instantly, and for those few minutes it has less
-  warm capacity than you asked for.
+  Either way, read `status.readyReplicas` on the pool, not just that the pool exists, before
+  you rely on a claim being served in about a second. Recovery, where it happens, still leaves
+  a degraded interval behind it: with `replicas: 1`, which is what this sample runs, that
+  window has no ready warm capacity at all.
 - **`claude -p` needs the project already trusted.** [`brain/claude.json`](brain/claude.json)
   marks `/workspace` trusted and the MCP server enabled. Without it a non-interactive run
   stops at the trust prompt, which leaves `settings.json` unread and the sandbox tool never
