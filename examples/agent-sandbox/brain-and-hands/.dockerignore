@@ -1,4 +1,9 @@
 # Only brain/ goes into the image. Everything else, including the gitignored
 # .env with your own cluster name, stays out of the build context.
+#
+# brain/ and brain/** are both listed on purpose: the first re-includes the
+# directory, the second everything under it, so the Dockerfile's COPY brain/...
+# lines cannot be left without a source.
 *
 !brain/
+!brain/**

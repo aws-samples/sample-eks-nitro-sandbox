@@ -33,6 +33,15 @@ done
 # Load .env as defaults. A value already set in the environment wins over the
 # file, so `NAMESPACE=other ./scripts/setup.sh` overrides it.
 _ENV_KEYS='CLUSTER_NAME|AWS_REGION|KUBE_CONTEXT|NAMESPACE|BEDROCK_MODEL_ID|ECR_REPOSITORY|POD_IDENTITY_ROLE_NAME'
+# A .env that exists but cannot be read would be parsed as an empty file: the
+# grep below runs inside a process substitution, where its failure does not trip
+# `set -e`. The run would then quietly use the default names and whatever
+# context the machine happens to be on, which is the one failure here that
+# changes which cluster is targeted.
+if [[ -f "$SAMPLE_DIR/.env" && ! -r "$SAMPLE_DIR/.env" ]]; then
+  echo "error: $SAMPLE_DIR/.env exists but is not readable, so it would be parsed as empty and the run would fall back to the default names and the machine's current context. Fix its permissions and re-run." >&2
+  exit 1
+fi
 if [[ -f "$SAMPLE_DIR/.env" ]]; then
   while IFS='=' read -r _k _v; do
     case "$_k" in
@@ -240,6 +249,29 @@ wait_pool_warm() {
 # "not found" means gone; one that succeeds means still there; any other failure
 # means could not determine, which is never read as deleted.
 # ---------------------------------------------------------------------------
+# aws_exists <not-found-pattern> -- <command...> : does this AWS resource exist?
+#   0  it exists
+#   1  it is genuinely absent  (the service said so: the error matched the pattern)
+#   2  could not determine     (any other failure: denied, throttled, no network)
+#
+# The distinction is the whole point. `aws iam get-role >/dev/null 2>&1` fails the
+# same way for "no such role" as it does for AccessDenied, a throttle or a
+# broken connection, so reading its exit status alone turns every one of those
+# into "absent". In the clean up that means reporting a role gone that is still
+# there; in setup it means trying to create one on top of a read that never
+# answered. Both scripts go through here instead.
+aws_exists() {
+  local pattern=$1; shift
+  [[ "$1" == "--" ]] && shift
+  local out rc=0
+  out="$("$@" 2>&1)" || rc=$?
+  [[ $rc -eq 0 ]] && return 0
+  grep -q "$pattern" <<<"$out" && return 1
+  AWS_LAST_ERROR="$(tr '\n' ' ' <<<"$out")"
+  return 2
+}
+AWS_LAST_ERROR=""
+
 AWS_CLEAN_FAIL=0
 # aws_verify_absent "<what>" <not-found-pattern> -- <command...>
 aws_verify_absent() {

@@ -141,7 +141,11 @@ else
 fi
 
 step "7/9 delete the IAM role $POD_IDENTITY_ROLE_NAME"
-if aws iam get-role --role-name "$POD_IDENTITY_ROLE_NAME" >/dev/null 2>&1; then
+role_rc=0
+aws_exists NoSuchEntity -- aws iam get-role --role-name "$POD_IDENTITY_ROLE_NAME" || role_rc=$?
+if [[ $role_rc -eq 2 ]]; then
+  note_fail "could not read IAM role $POD_IDENTITY_ROLE_NAME, so whether it is gone is unknown (a failed read is not 'gone'): $AWS_LAST_ERROR"
+elif [[ $role_rc -eq 0 ]]; then
   tags_rc=0
   tags="$(aws iam list-role-tags --role-name "$POD_IDENTITY_ROLE_NAME" \
     --query "Tags[?Key=='ManagedBy'].Value" --output text 2>/dev/null)" || tags_rc=$?
@@ -162,13 +166,16 @@ else
 fi
 
 step "8/9 delete the ECR repository $ECR_REPOSITORY"
-repo_arn_rc=0
-repo_arn="$(aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" \
-  --region "$AWS_REGION" --query 'repositories[0].repositoryArn' --output text 2>/dev/null)" \
-  || repo_arn_rc=$?
-if [[ $repo_arn_rc -ne 0 ]]; then
+repo_rc=0
+aws_exists RepositoryNotFoundException -- aws ecr describe-repositories \
+  --repository-names "$ECR_REPOSITORY" --region "$AWS_REGION" || repo_rc=$?
+if [[ $repo_rc -eq 2 ]]; then
+  note_fail "could not read ECR repository $ECR_REPOSITORY, so whether it is gone is unknown (a failed read is not 'gone'): $AWS_LAST_ERROR"
+elif [[ $repo_rc -eq 1 ]]; then
   echo "  ECR repository $ECR_REPOSITORY not present"
 else
+  repo_arn="$(aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" \
+    --region "$AWS_REGION" --query 'repositories[0].repositoryArn' --output text 2>/dev/null)"
   tags_rc=0
   tags="$(aws ecr list-tags-for-resource --resource-arn "$repo_arn" --region "$AWS_REGION" \
     --query "tags[?Key=='ManagedBy'].Value" --output text 2>/dev/null)" || tags_rc=$?

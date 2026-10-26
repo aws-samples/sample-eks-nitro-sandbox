@@ -112,7 +112,16 @@ spec:
         raise RuntimeError(
             f"claim '{CLAIM}' never named a pod. Is the warm pool '{WARMPOOL}' ready?"
         )
-    _kubectl(["wait", "--for=condition=Ready", f"pod/{pod}", "--timeout=120s"], timeout=130)
+    # The exit status matters: a timeout or a refusal here means the pod is NOT
+    # Ready, and reporting the elapsed time anyway would hand the model, and the
+    # page, a "claim to Ready" figure for a claim that was never served.
+    code, out = _kubectl(
+        ["wait", "--for=condition=Ready", f"pod/{pod}", "--timeout=120s"], timeout=130
+    )
+    if code != 0:
+        raise RuntimeError(
+            f"claim '{CLAIM}' named pod '{pod}', but it did not become Ready: {_decode(out)}"
+        )
     seconds = time.monotonic() - started
     launch_type = _jsonpath(
         "sandbox", pod, r".metadata.labels.agents\.x-k8s\.io/launch-type"

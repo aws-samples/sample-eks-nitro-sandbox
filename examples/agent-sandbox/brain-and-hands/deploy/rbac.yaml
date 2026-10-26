@@ -36,19 +36,24 @@ metadata:
   labels:
     app.kubernetes.io/part-of: brain-and-hands
 rules:
-  # Claim: create a SandboxClaim, watch it until it names a pod, and delete it
-  # when the session ends. Reading the Sandbox is how the tool resolves the pod.
+  # Claim: create a SandboxClaim, read it until it names a pod, and delete it
+  # when the session ends. Each verb here is one the sandbox tool calls: create,
+  # a named get in a loop, and delete. No list and no watch, because it never
+  # enumerates claims.
   - apiGroups: ["extensions.agents.x-k8s.io"]
     resources: ["sandboxclaims"]
-    verbs: ["create", "get", "list", "watch", "delete"]
+    verbs: ["create", "get", "delete"]
+  # Reading the Sandbox by name is how the tool reads the launch-type label.
   - apiGroups: ["agents.x-k8s.io"]
     resources: ["sandboxes"]
-    verbs: ["get", "list", "watch"]
-  # Read pods, to wait for the claimed one to be Ready. No create, no delete:
-  # the brain cannot make a pod of its own, sandboxed or not.
+    verbs: ["get"]
+  # Read the claimed pod, and wait for it to be Ready. `kubectl wait` needs
+  # watch as well as get. No list: the brain never enumerates the pods in its
+  # namespace. No create and no delete: it cannot make a pod of its own,
+  # sandboxed or not.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "watch"]
   # Run commands and move files. Both verbs on pods/exec: kubectl's WebSocket
   # exec executor issues a GET and falls back to a SPDY POST, so an exec that
   # works whatever the client version needs create and get. kubectl cp goes
