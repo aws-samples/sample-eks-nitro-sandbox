@@ -1,5 +1,6 @@
 # client-sandboxed: the sandboxed client. Identical to client-standard in every field
-# the egress NetworkPolicy could select on, differing only in the one line below.
+# the egress NetworkPolicy could select on, and in its hardening, differing only in the
+# one line below.
 #
 #   runtimeClassName: isolated-sandbox
 #
@@ -15,6 +16,13 @@ metadata:
     app: netpol-client        # the SAME label the policy selects on client-standard
 spec:
   runtimeClassName: isolated-sandbox   # <-- the only field that differs from client-standard
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
   containers:
     - name: client
       image: public.ecr.aws/docker/library/alpine:3.20
@@ -25,6 +33,11 @@ spec:
           echo "kernel:  $(uname -r)"
           echo "disks:   $(ls /sys/block | tr '\n' ' ')"
           sleep infinity
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
       resources:
         requests: { cpu: "250m", memory: 128Mi }
         limits:   { cpu: "500m", memory: 256Mi }
