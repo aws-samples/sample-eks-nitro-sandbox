@@ -1,0 +1,237 @@
+version: 1
+admission_policy: |+
+  // Container: main
+  permit(
+      principal,
+      action == Agent::Action::"CreateContainer",
+      resource == Workload::Container::"main"
+  )
+  when {
+      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:3a814fee227d2df52e90774a37ab3410ede230b8010156fe1c092365e50ab3ca" &&
+      context.working_dir == "/app" &&
+      context.run_as_user == 65534 &&
+      context.run_as_group == 65534 &&
+      context.additional_gids == [65534] &&
+      context.read_only_rootfs == true &&
+      context.capabilities_effective.isEmpty() &&
+      context.capabilities_bounding.isEmpty() &&
+      context.capabilities_ambient.isEmpty() &&
+      context.capabilities_inheritable.isEmpty() &&
+      context.capabilities_permitted.isEmpty() &&
+      context.no_new_privileges == true &&
+      context.masked_paths.containsAll(["/proc/asound", "/proc/acpi",
+                                    "/proc/interrupts", "/proc/kcore",
+                                    "/proc/keys", "/proc/latency_stats",
+                                    "/proc/timer_list", "/proc/timer_stats",
+                                    "/proc/sched_debug", "/proc/scsi",
+                                    "/sys/firmware",
+                                    "/sys/devices/virtual/powercap"]) &&
+      context.readonly_paths.containsAll(["/proc/bus", "/proc/fs", "/proc/irq",
+                                      "/proc/sys", "/proc/sysrq-trigger"]) &&
+      context.mounts == [
+                     {"destination": "/proc", "source": "proc",
+                      "mount_type": "proc",
+                      "options": ["nosuid", "noexec", "nodev"]},
+                     {"destination": "/dev", "source": "tmpfs",
+                      "mount_type": "tmpfs",
+                      "options": ["nosuid", "strictatime", "mode=755", "size=65536k"]},
+                     {"destination": "/dev/pts", "source": "devpts",
+                      "mount_type": "devpts",
+                      "options": ["nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620", "gid=5"]},
+                     {"destination": "/dev/shm", "source": "shm",
+                      "mount_type": "tmpfs",
+                      "options": ["nosuid", "noexec", "nodev", "mode=1777", "size=65536k"]},
+                     {"destination": "/dev/mqueue", "source": "mqueue",
+                      "mount_type": "mqueue",
+                      "options": ["nosuid", "noexec", "nodev"]},
+                     {"destination": "/sys", "source": "sysfs",
+                      "mount_type": "sysfs",
+                      "options": ["nosuid", "noexec", "nodev", "ro"]},
+                     {"destination": "/sys/fs/cgroup", "source": "cgroup",
+                      "mount_type": "cgroup",
+                      "options": ["nosuid", "noexec", "nodev", "relatime", "ro"]},
+                     {"destination": "/dev/termination-log",
+                      "source": "/var/lib/kubelet/pods/<pod-uid>/containers/main/<termination-log-hash>",
+                      "mount_type": "bind",
+                      "options": ["rbind", "rprivate", "rw"]},
+                     {"destination": "/etc/hosts",
+                      "source": "/var/lib/kubelet/pods/<pod-uid>/etc-hosts",
+                      "mount_type": "bind",
+                      "options": ["rbind", "rprivate", "rw"]},
+                     {
+                      "destination": "/var/run/secrets/pods.eks.amazonaws.com/serviceaccount",
+                      "source": "/var/lib/kubelet/pods/<pod-uid>/volumes/kubernetes.io~projected/eks-pod-identity-token",
+                      "mount_type": "bind",
+                      "options": ["rbind", "rprivate", "ro"]}] &&
+      context.hostname == "secrets-manager-secret-demo" &&
+      // WARNING: only the default action is checked; individual syscall rules vary by architecture and kernel version and are confined to the guest
+      context.linux_seccomp_default_action == "SCMP_ACT_ERRNO" &&
+      context.apparmor_profile == "" &&
+      context.process_args == "[\"python\",\"/app/app.py\"]" &&
+      // Guest networking: the VM owns the network stack, so no network namespace
+      // exists in the OCI spec. The pod hostNetwork setting has no effect.
+      context.host_network == true &&
+      context.host_pid == false &&
+      context.host_ipc == false &&
+      context.shared_pid == false &&
+      context.linux_namespace_types == ["pid", "ipc", "uts", "mnt", "cgroup"] &&
+      context.sysctls.isEmpty() &&
+      context.env.containsAll([
+                           {"name": "PATH",
+                            "value": "/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+                           {"name": "LANG", "value": "C.UTF-8"},
+                           {"name": "GPG_KEY",
+                            "value": "7169605F62C751356D054A26A821E680E5FA6305"},
+                           {"name": "PYTHON_VERSION", "value": "3.12.15"},
+                           {"name": "PYTHON_SHA256",
+                            "value": "c2c4321961fab0fb999d66e0cecf521c2ab3994c7992873ea99e306c1094fd5a"},
+                           {"name": "PYTHONDONTWRITEBYTECODE", "value": "1"},
+                           {"name": "PYTHONUNBUFFERED", "value": "1"},
+                           {"name": "AWS_REGION", "value": "us-west-2"},
+                           {"name": "AWS_DEFAULT_REGION", "value": "us-west-2"},
+                           {"name": "SECRET_ID",
+                            "value": "arn:aws:secretsmanager:us-west-2:<ACCOUNT_ID>:secret:secrets-manager-secret-sample-rPeKf0"},
+                           {"name": "KMS_KEY_ARN",
+                            "value": "arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/29cf5d0b-3042-49ea-8f3c-a2ea33b10d17"},
+                           {"name": "EXPECTED_LENGTH", "value": "64"},
+                           {"name": "EXPECTED_SHA256",
+                            "value": "8ad93a5f0ede70677bb580a4dcbc30f04993f0a1ac2e0aa6753f203aa097bbbf"},
+                           {"name": "DEMO_VARIANT", "value": "approved"},
+                           {"name": "AWS_STS_REGIONAL_ENDPOINTS",
+                            "value": "regional"},
+                           {"name": "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+                            "value": "http://169.254.170.23/v1/credentials"},
+                           {"name": "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+                            "value": "/var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token"}]) &&
+      context.env_names == ["PATH", "LANG", "GPG_KEY", "PYTHON_VERSION",
+                        "PYTHON_SHA256", "PYTHONDONTWRITEBYTECODE",
+                        "PYTHONUNBUFFERED", "AWS_REGION",
+                        "AWS_DEFAULT_REGION", "SECRET_ID", "KMS_KEY_ARN",
+                        "EXPECTED_LENGTH", "EXPECTED_SHA256", "DEMO_VARIANT",
+                        "AWS_STS_REGIONAL_ENDPOINTS",
+                        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+                        "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+                        "KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT",
+                        "KUBERNETES_SERVICE_PORT_HTTPS", "KUBERNETES_PORT",
+                        "KUBERNETES_PORT_443_TCP",
+                        "KUBERNETES_PORT_443_TCP_PROTO",
+                        "KUBERNETES_PORT_443_TCP_PORT",
+                        "KUBERNETES_PORT_443_TCP_ADDR"]
+  };
+  
+  
+  // Admission: the ECS execute-command annotation (sandbox.amazonaws.com/ecs-exec-enabled) is
+  // forbidden on EKS. It drives SSM binary mount injection in the
+  // guest agent, which EKS never uses.
+  forbid(
+      principal,
+      action == Agent::Action::"CreateContainer",
+      resource
+  )
+  when {
+      context.ecs_exec_enabled
+  };
+  
+  // PrepareImage: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:3a814fee227d2df52e90774a37ab3410ede230b8010156fe1c092365e50ab3ca
+  permit(
+      principal,
+      action == Agent::Action::"PrepareImage",
+      resource
+  )
+  when {
+      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:3a814fee227d2df52e90774a37ab3410ede230b8010156fe1c092365e50ab3ca"
+  };
+  
+  
+  // Admission: host image mounting is disabled (no permit policy)
+  
+runtime_policy: |+
+  // Runtime: stdin writes are denied (no permit policy)
+  // Blocks: kubectl attach -i, kubectl exec -i, kubectl cp (to pod)
+  // Runtime: exec is denied (no permit policy)
+  // Blocks: kubectl exec, kubectl cp
+  // Runtime: agent log streaming is disabled (no permit policy)
+  // Runtime: SetupVolume is denied (no CSI volumes)
+  
+  // Runtime: allow log reading
+  permit(
+      principal,
+      action == Agent::Action::"ReadLogs",
+      resource
+  );
+  // Runtime: allow reading termination logs
+  permit(
+      principal,
+      action == Agent::Action::"ReadTerminationLog",
+      resource
+  );
+  // Runtime: allow file write (exact) /var/lib/kubelet/pods/<pod-uid>/etc-hosts
+  // Runtime: allow file write (exact) /var/lib/kubelet/pods/<pod-uid>/containers/main/<termination-log-hash>
+  // Runtime: allow file write (directory) /var/lib/kubelet/pods/<pod-uid>/volumes/kubernetes.io~projected/eks-pod-identity-token
+  permit(
+      principal,
+      action == Agent::Action::"WriteFile",
+      resource
+  )
+  when {
+      (context.path == "/var/lib/kubelet/pods/<pod-uid>/etc-hosts" ||
+   context.path == "/var/lib/kubelet/pods/<pod-uid>/containers/main/<termination-log-hash>" ||
+   context.path like "/var/lib/kubelet/pods/<pod-uid>/volumes/kubernetes.io~projected/eks-pod-identity-token/*")
+  };
+  // Runtime: allow stats
+  permit(
+      principal,
+      action == Agent::Action::"Stats",
+      resource
+  );
+  // Runtime: allow guest metadata init
+  permit(
+      principal,
+      action == Agent::Action::"InitGuestMetadata",
+      resource
+  );
+  // Runtime: allow guest metadata update
+  permit(
+      principal,
+      action == Agent::Action::"UpdateGuestMetadata",
+      resource
+  );
+  // Runtime: allow sandbox setup
+  permit(
+      principal,
+      action == Agent::Action::"SetupSandbox",
+      resource
+  )
+  when {
+      context.sysctls.isEmpty() &&
+      context.fsgroup == -1 &&
+      context.host_entries.isEmpty() &&
+      context.deny_all_egress == false &&
+      context.hostname == "secrets-manager-secret-demo" &&
+      // the agent creates exactly the pod's mounted emptyDir volumes
+      context.volume_paths.isEmpty()
+  };
+  
+  // Runtime: allow OOM event watching
+  permit(
+      principal,
+      action == Agent::Action::"WatchOomEvents",
+      resource
+  );
+  // Runtime: allow guest container resource reclamation on removal
+  permit(
+      principal,
+      action == Agent::Action::"RemoveContainer",
+      resource
+  );
+  // Runtime: allow task creation (no binary logger)
+  permit(
+      principal,
+      action == Agent::Action::"CreateTask",
+      resource
+  )
+  when {
+      context.binary_logger_path == "" &&
+      context.binary_logger_args.isEmpty()
+  };
+  

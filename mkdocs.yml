@@ -107,3 +107,4 @@ nav:
   - Confidential:
       - Confidential sandboxes: confidential/README.md
       - Encrypted image: confidential/encrypted-image/README.md
+      - Secrets Manager secret: confidential/secrets-manager-secret/README.md
