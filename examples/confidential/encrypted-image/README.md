@@ -58,7 +58,7 @@ in its original plaintext form so the page can show what an ordinary pod reads, 
 holds the sandboxed pod's own IAM role and tries to decrypt the layer key without an
 attestation.
 
-- **Nothing but ciphertext leaves the build machine.** Every layer descriptor in the
+- **Every published filesystem layer is ciphertext.** Every layer descriptor in the
   published image carries an encrypted media type and an annotation holding the layer key
   wrapped by KMS. The manifest and the image configuration stay readable, by design, so
   registries and runtimes can still inspect them. A layer blob pulled straight from ECR
