@@ -79,7 +79,7 @@ note() { printf 'second-review: %s\n' "$1"; }
 # is a single seam, and it runs through every path here: "$( )" strips TRAILING newlines, so
 # realpath, dirname, basename and "command -v" each hand back a SIBLING path, and the run
 # then acts on a file or directory the caller did not name -- while reporting success,
-# because nothing failed. Measured four times, each a different path and each exit 0: a
+# because nothing failed. Measured five times, each a different path and each exit 0: a
 # --tree whose name ends in one was fingerprinted, reviewed and certified while the sibling
 # was the tree actually read; an --out whose name ends in one cleared and wrote the sibling
 # directory, destroying the earlier review in it, and left the directory named empty; a
@@ -95,12 +95,12 @@ note() { printf 'second-review: %s\n' "$1"; }
 # and the nonce check still bounds what the BRIEF can reach.
 # The path is not repeated in the message, for the reason check_model_charset gives: it
 # would break the message across lines. $2 names the input, $3 is the tag to refuse with:
-# each path refuses under the tag its own option already uses, except --out, which had no tag
-# of its own and now has E_OUT.
+# each path refuses under the tag its own option already uses, except --out and this script's
+# own path, which had no tag of their own and now have E_OUT and E_SELF.
 # The message says only the part that is true of every site. The codex-preamble half above
 # is NOT: only the tree path is a path codex is told about and prints back, and the two
 # claude variables never reach codex at all, so stating it in the shared message would claim
-# something untrue of eleven of the thirteen sites.
+# something untrue of thirteen of the fifteen sites.
 no_line_break() {
   case "$1" in
     *$'\n'*) refuse "$3" \
@@ -117,13 +117,27 @@ no_line_break() {
 # realpath's answer with a sentinel after it, take the sentinel and the one newline realpath
 # itself prints back off, and test what is left. Checked on a target ending in one newline
 # and in two: the plain form loses them, this form keeps them.
-# Refusing here is also what makes every plain "$(realpath ...)" later in this script safe,
-# because once this has passed there is no trailing newline left for one to lose. -m so that
-# an --out which does not exist yet still resolves; a path realpath cannot resolve at all is
-# left to the site's own check, which reports it with the right cause.
+# Refusing here is what makes the plain realpath each of these sites runs NEXT safe, because
+# once this has passed that path has no trailing newline left for one to lose. Not every
+# plain realpath in the script, which an earlier version of this comment claimed: the
+# "realpath -m" inside not_an_output_name resolves a DIRNAME, and when the path it is given
+# is a command or one of the walk's hops that dirname can still end in a newline and lose it.
+# That one fails CLOSED -- the stripped directory is the one that can equal $OUT_ABS, so the
+# comparison refuses rather than passes -- but the message it refuses with then names the
+# wrong file, and fixing that belongs with the redesign in issue #100 rather than here.
+# -m so that an --out which does not exist yet still resolves.
+# A realpath that cannot answer refuses, rather than returning and leaving the site's own
+# later check to report it. The first version of this function did the latter -- "|| return
+# 0" -- which is the fail-open shape this whole guard exists to remove, written into the
+# guard removing it for the third time. It was not even safe by accident: most callers do
+# refuse an unresolvable path afterwards, but $TREE's assignment is unguarded and ends the
+# run untagged, and $0 falls back to the UNRESOLVED spelling below, which is the case that
+# moves REPO_ROOT. And between a "return 0" here and the later resolution the path can
+# change, so the byte-exact check would have been skipped on a path that then resolved fine.
 no_line_break_resolved() {
   local out
-  out=$(realpath -m -- "$1" 2>/dev/null && printf X) || return 0
+  out=$(realpath -m -- "$1" 2>/dev/null && printf X) || refuse "$3" \
+    "$2 cannot be resolved, so it cannot be shown to be free of the line break that would make this run act on a sibling path. A guard that cannot answer must refuse."
   out=${out%X}
   no_line_break "${out%$'\n'}" "$2" "$3"
 }
@@ -134,6 +148,11 @@ no_line_break_resolved() {
 # break for the same reason as every other path, and before REPO_ROOT is derived rather than
 # after: REPO_ROOT is what the whole tmp/ containment boundary is measured against, so a
 # stripped trailing newline here would move that boundary to a sibling repository root.
+# realpath's availability is checked HERE rather than with the other tools below, because
+# the next line is the script's first use of it: without this, a host with no realpath got
+# "E_SELF: ... cannot be resolved" and exit 1, where the honest answer is "could not check"
+# and exit 2. Measured as a failing case.
+command -v realpath >/dev/null 2>&1 || cannot_check "realpath is needed to check that no path this script is given holds a line break, and that the output path stays under the repository's tmp/."
 no_line_break "$0" "the path this script was invoked by" E_SELF
 no_line_break_resolved "$0" "the resolved path of this script" E_SELF
 SELF=$(realpath "$0" 2>/dev/null || printf '%s' "$0")
@@ -252,10 +271,16 @@ resolved_cmd=$(command -v -- "$BACKEND_CMD" 2>/dev/null) || resolved_cmd=''
 # Again on what "command -v" came back with: a bare name is looked up on $PATH, so a $PATH
 # entry holding a line break puts one in a path the caller never typed.
 no_line_break "$resolved_cmd" "the $BACKEND command's path" E_CMD_MISSING
+# And on what it RESOLVES to, which is a third site and the one the class-closed claim was
+# missing: the chain walk below follows only each path's LAST component, so a symbolic link
+# in a DIRECTORY component of the command path is collapsed by realpath alone. A directory
+# component that resolves to a name holding a line break therefore reached both
+# not_an_output_name's "realpath -m" and the cmd_target substitution further down with the
+# newline silently gone, so each compared a sibling directory. Checked before either.
+no_line_break_resolved "$resolved_cmd" "the resolved $BACKEND command path" E_CMD_MISSING
 
 command -v python3 >/dev/null 2>&1 || cannot_check "python3 is needed to read the backend's record of which model answered."
 command -v sha256sum >/dev/null 2>&1 || cannot_check "sha256sum is needed to show the reviewer did not change the tree."
-command -v realpath >/dev/null 2>&1 || cannot_check "realpath is needed to check the output path stays under the repository's tmp/."
 command -v readlink >/dev/null 2>&1 || cannot_check "readlink is needed to check every link the backend command points through."
 
 # Each caller-supplied path, before it is used for anything at all: --out first, because it

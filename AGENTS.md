@@ -223,7 +223,7 @@ SECOND_REVIEW_CONTEXT_DIR="$round/context" \
   backend command, `SECOND_REVIEW_CONTEXT_DIR`, `SECOND_REVIEW_CLAUDE_SETTINGS`, or the path
   you invoke the script by — and the script refuses one that does, before it reads, creates
   or clears anything. **Including a path that merely *resolves* to one** through a symbolic
-  link or a renamed parent directory. Why: a trailing newline is stripped by the shell
+  link, or through a parent directory whose real name holds one. Why: a trailing newline is stripped by the shell
   wherever a path goes through `realpath`, `dirname`, `basename` or `command -v`, so the run
   acted on the *sibling* path while reporting success. Measured on five of them: such a
   `--tree` was reviewed and certified while the sibling was the directory actually read;
