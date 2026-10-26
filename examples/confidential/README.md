@@ -202,6 +202,7 @@ introduces these readings.
 | [`_shared/confidential-profile.yaml`](_shared/confidential-profile.yaml) | The generator profile the samples pass to `--profile`: the confidential posture, reduced to the fields the current preview guest's policy schema defines |
 | [`_shared/kms-key-policy.json`](_shared/kms-key-policy.json) | The key policy template described above, with placeholders a setup script fills in |
 | [`_shared/pod-identity/role-trust-policy.json`](_shared/pod-identity/role-trust-policy.json) | The Pod Identity role trust policy, scoped to one cluster, namespace and service account |
+| [`_shared/attested_recipient.py`](_shared/attested_recipient.py) | The attested decrypt above, as Python: the ephemeral key, the attestation document from the Nitro Secure Module, and the unwrap of `CiphertextForRecipient`. Used by the samples whose workload calls KMS itself |
 
 Each template keeps its explanation in a `_comment` key, which a setup script drops before
 passing the document to AWS.
@@ -211,9 +212,13 @@ passing the document to AWS.
 - [encrypted-image](encrypted-image/README.md): an image whose every layer is ciphertext in
   Amazon ECR, decrypted inside the sandbox by the guest image runtime after KMS checks the
   attestation. The workload image carries no decryption code.
+- [secrets-manager-secret](secrets-manager-secret/README.md): a secret stored in AWS Secrets
+  Manager as a KMS ciphertext envelope, read and decrypted by the application itself inside
+  the guest. An ordinary pod holding the same role can read the envelope and is refused the
+  value.
 
-Two more are planned, both calling the attested decrypt from the application itself: a
-secret read from AWS Secrets Manager, and an encrypted file read from Amazon S3. See the
+One more is planned, also calling the attested decrypt from the application itself: an
+encrypted file read from Amazon S3. See the
 [roadmap](https://github.com/aws-samples/sample-eks-nitro-sandbox/blob/main/docs/ROADMAP.md).
 
 ## Before you run one
