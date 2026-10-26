@@ -96,12 +96,16 @@ if [[ "$b_std_allowed" != reached || "$b_std_blocked" != reached \
 fi
 
 say "Apply the ApplicationNetworkPolicy (allows $ALLOWED_HOST by name)"
-# The cluster's DNS address is the kubelet's clusterDNS, the nameserver pods use. EKS Auto
-# Mode serves DNS on the node and has no kube-dns Service, so read it from a node's kubelet
-# configuration (this needs permission to get nodes and nodes/proxy). Nodes are replaced
-# often and a node on its way out does not answer, so try the Ready nodes in turn, each with
-# a short timeout, and keep the first clusterDNS that is an IPv4 address. Sets COREDNS_IP,
-# DNS_NODE (the node that answered) and DNS_TRIED (the nodes asked, in order).
+# The cluster's DNS address is the kubelet's clusterDNS, the nameserver pods are given. On EKS
+# Auto Mode CoreDNS runs locally on each instance, at an address derived from the cluster's
+# service CIDR that is fixed for the life of the cluster. The kube-dns Service does exist there
+# and carries that same ClusterIP -- it just has no endpoints, because CoreDNS is on the node and
+# not in a Deployment -- and the EKS User Guide derives the address from serviceIpv4Cidr; all
+# three reads agree. This one reads the kubelet, the value actually handed to the pod, which
+# needs permission to get nodes and nodes/proxy. Nodes are replaced often and a node on its way
+# out does not answer, so try the Ready nodes in turn, each with a short timeout, and keep the
+# first node whose clusterDNS[0] -- what the sed below captures -- is an IPv4 address. Sets
+# COREDNS_IP, DNS_NODE (the node that answered) and DNS_TRIED (the nodes asked, in order).
 read_cluster_dns() {
   local node ip nodes
   COREDNS_IP="" DNS_NODE="" DNS_TRIED=""
@@ -124,7 +128,10 @@ if ! read_cluster_dns; then
   printf '%s\n' "Ready nodes tried: ${DNS_TRIED:-<no Ready node found>}"
   printf '%s\n' "It comes from kubeletconfig.clusterDNS in:"
   printf '%s\n' "  kubectl get --raw /api/v1/nodes/<node>/proxy/configz"
-  printf '%s\n' "Reading it needs permission to get nodes (to list the Ready ones) and nodes/proxy. Applied no policy."
+  printf '%s\n' "Reading it needs permission to get nodes (to list the Ready ones) and nodes/proxy."
+  printf '%s\n' "Without that, read the same address from the kube-dns Service and fill in <COREDNS_IP> by hand:"
+  printf '%s\n' "  kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'"
+  printf '%s\n' "Applied no policy."
   exit 1
 fi
 sed -e "s|<COREDNS_IP>|$COREDNS_IP|" -e "s|<AWS_REGION>|$AWS_REGION|" \
