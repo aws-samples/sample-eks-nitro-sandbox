@@ -152,7 +152,7 @@ policy, sets the gate to the policy's measurement, and runs the pods.
   created S3 bucket <S3_BUCKET>
   the bucket blocks public access (all four) and encrypts at rest (AES256)
   created ECR repository s3-encrypted-file-sample
-  created KMS key arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/46ca2c4c-cc26-450c-8e59-a0324cc3ceb9
+  created KMS key arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/2fe74de7-aa4c-4020-b1a2-5e1f4372875f
   it denies every decrypt already: created with a policy, not the default one
 == 3/9 create the pod's IAM role, the born-denied key policy and the bucket policy ==
   created IAM role arn:aws:iam::<ACCOUNT_ID>:role/s3-encrypted-file-sample-pod
@@ -163,9 +163,9 @@ policy, sets the gate to the policy's measurement, and runs the pods.
 == 4/9 create the namespace, the service account and the association ==
 namespace/s3-encrypted-file-sample created
 serviceaccount/s3-encrypted-file-pod created
-  created Pod Identity association a-hsr3ttqcqqnkgq9vb
+  created Pod Identity association a-vrlasehkuzkpmdez3
 == 5/9 build the application image and push it to ECR ==
-  pushed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/s3-encrypted-file-sample:v1-0f88f502eed2
+  pushed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/s3-encrypted-file-sample:v1-ba8e83ed80ca
 ```
 
 Abridged: the container build and push output is cut, and steps 6 to 9 are the ones below.
@@ -208,9 +208,9 @@ if the length is not the file's plus the 16 byte GCM tag.
 {
   "algorithm": "AES-256-GCM",
   "ciphertext_key": "confidential/report.bin",
-  "encrypted_data_key": "AQICAHgx9SHGk113KSnPGFcoHwkbFRJRph+l7p8y2J6aOh1PtQEX2J/iQ0SJQ3A/Ha88ug/fAAAAfjB8BgkqhkiG9w0BBwagbzBtAgEAMGgGCSqGSIb3DQEHATAeBglghkgBZQMEAS4wEQQMDeAc5xW5vlCf2sdlAgEQgDvgGlhYqdP9WB6J0PtPJHM2eP8ZLcRaZkvzsYhzoojXQ9GAxoIvkyk72tueFpAvYROQikjCRva9M1aaWA==",
-  "key_arn": "arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/46ca2c4c-cc26-450c-8e59-a0324cc3ceb9",
-  "nonce": "gJ87H0Oof1LEug/t",
+  "encrypted_data_key": "AQICAHgtmiCOaE13rK/gzGl8tHWhAMfSqbGjinLYt3n/ASMTbQFAgXr3JCkWHhDC8YTcXZO8AAAAfjB8BgkqhkiG9w0BBwagbzBtAgEAMGgGCSqGSIb3DQEHATAeBglghkgBZQMEAS4wEQQMsmwOv0RryMLWESHdAgEQgDvaP5/VhZa/wnIkbXFfFyFxMgGiNldYYDG1RjlkjnPJ9TLNQC6kVO9GFC+JadeALTrVulGiJuaoUFrWpQ==",
+  "key_arn": "arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/2fe74de7-aa4c-4020-b1a2-5e1f4372875f",
+  "nonce": "MqvhRTTcbtEDUacz",
   "version": 1
 }
 ```
@@ -257,16 +257,16 @@ expected length and digest, then installs the gate and reads it back.
 ```text
 == 7/9 generate the Cedar policy and set the gate to its measurement ==
 --- Predicted PCR17 ---
-fc73afe250bc50cc75486ec29c69cd56096db7adde132dd3fcf6bd08a53687c1b57f08138a18e08502e1b40576016569
+4274742b571865293d96d2fabc2d7d042d5fdf198227eed16154a9c6a35296e51bcea1d34864875cb693e724d6c43fed
 --- KMS Key Policy Condition ---
 "Condition": {
   "StringEqualsIgnoreCase": {
-    "kms:RecipientAttestation:PCR17": "fc73afe250bc50cc75486ec29c69cd56096db7adde132dd3fcf6bd08a53687c1b57f08138a18e08502e1b40576016569",
+    "kms:RecipientAttestation:PCR17": "4274742b571865293d96d2fabc2d7d042d5fdf198227eed16154a9c6a35296e51bcea1d34864875cb693e724d6c43fed",
     "kms:RecipientAttestation:PCR8:ServiceName": "eks.amazonaws.com"
   }
 }
-  predicted PCR17: fc73afe250bc50cc75486ec29c69cd56096db7adde132dd3fcf6bd08a53687c1b57f08138a18e08502e1b40576016569
-  image digest pinned under the CreateContainer permit: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/s3-encrypted-file-sample@sha256:a12108f5938d30b904e0119ac70b747035b9561b0dd523cc96f06918c5fd6de3
+  predicted PCR17: 4274742b571865293d96d2fabc2d7d042d5fdf198227eed16154a9c6a35296e51bcea1d34864875cb693e724d6c43fed
+  image digest pinned under the CreateContainer permit: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/s3-encrypted-file-sample@sha256:49731c64b80922507071112f3b1fd096837facc5db264f6be5d4720c6db04aae
   the policy pins the bucket, the manifest key, the key ARN, and the expected length and digest
   the gate now releases the data key only to this measurement
 ```
@@ -295,7 +295,7 @@ administration statements above them are in
   "Condition": {
     "StringEqualsIgnoreCase": {
       "kms:RecipientAttestation:PCR8:ServiceName": "eks.amazonaws.com",
-      "kms:RecipientAttestation:PCR17": "fc73afe250bc50cc75486ec29c69cd56096db7adde132dd3fcf6bd08a53687c1b57f08138a18e08502e1b40576016569"
+      "kms:RecipientAttestation:PCR17": "4274742b571865293d96d2fabc2d7d042d5fdf198227eed16154a9c6a35296e51bcea1d34864875cb693e724d6c43fed"
     }
   }
 },
@@ -310,7 +310,7 @@ administration statements above them are in
   "Resource": "*",
   "Condition": {
     "StringNotEqualsIgnoreCase": {
-      "kms:RecipientAttestation:PCR17": "fc73afe250bc50cc75486ec29c69cd56096db7adde132dd3fcf6bd08a53687c1b57f08138a18e08502e1b40576016569"
+      "kms:RecipientAttestation:PCR17": "4274742b571865293d96d2fabc2d7d042d5fdf198227eed16154a9c6a35296e51bcea1d34864875cb693e724d6c43fed"
     }
   }
 }
@@ -353,13 +353,13 @@ kubectl -n s3-encrypted-file-sample logs s3-encrypted-file-demo -c main
 ```text
 variant: approved
 kernel:  6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-uptime:  5.43s
+uptime:  4.94s
 disks:   dm-0 dm-1 dm-2 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 vda vdb vdc
 product: m8i.enclave
 manifest: version=1 algorithm=AES-256-GCM wrapped_data_key=184B nonce=12B
-s3:      read 102416 bytes of ciphertext sha256=759182ca5be9f8105dfa4155555108b82fce6c38f993ba1c6905b1b45ae42c99
+s3:      read 102416 bytes of ciphertext sha256=128fec5b79b5e3986b3b5a61663cc913bb4c53151bb6c47a5187703e13e1b08d
 kms:     CiphertextForRecipient 749B, no plaintext field
-attested-s3-ok bytes=102400 sha256=5a0b447be5fe7fe656b9c90020a242ae663d853466010abd8779e7c7f31e0b53
+attested-s3-ok bytes=102400 sha256=840c79394c8bbb695485b4ebd7cf4a97264f6e0d966a721fcfbf0803d3a37fec
 ```
 
 Those are the whole logs of the approved pod, unabridged. `kms: CiphertextForRecipient 749B,
@@ -381,7 +381,7 @@ kubectl -n s3-encrypted-file-sample logs s3-encrypted-file-plain -c main
 ```text
 variant: plain
 kernel:  6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
-uptime:  45637.22s
+uptime:  1958.99s
 disks:   dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0
 product: m8i.xlarge
 s3-encrypted-file-readings-done
@@ -390,7 +390,7 @@ s3-encrypted-file-readings-done
 | Reading | Sandboxed pod | Ordinary pod, same node |
 |---|---|---|
 | Kernel | `6.18.54 #1`, built `Thu Oct 22 17:38:11 UTC 2026` | `6.18.54 #2`, built `Thu Oct 22 00:16:59 UTC 2026` |
-| Uptime | `5.43s`, which is the pod's age: the VM booted with the pod | `45637.22s`, the node's uptime |
+| Uptime | `4.94s`, which is the pod's age: the VM booted with the pod | `1958.99s`, the node's uptime |
 | Disks | `vda vdb vdc`, virtio devices, plus the `dm-` devices of the encrypted overlay | `nvme0n1 nvme1n1`, the instance's own devices |
 | Product name | `m8i.enclave`, the VM in the sandbox | `m8i.xlarge`, the EC2 instance type |
 
@@ -417,11 +417,11 @@ kubectl -n s3-encrypted-file-sample logs s3-encrypted-file-credentials -c main
 
 ```text
 role:    arn:aws:sts::<ACCOUNT_ID>:assumed-role/s3-encrypted-file-sample-pod/<session>
-s3:      read 102416 bytes of ciphertext, sha256 759182ca5be9f8105dfa4155555108b82fce6c38f993ba1c6905b1b45ae42c99
+s3:      read 102416 bytes of ciphertext, sha256 128fec5b79b5e3986b3b5a61663cc913bb4c53151bb6c47a5187703e13e1b08d
 request: kms:Decrypt on the file's wrapped data key, with no attestation document
 exit:    254
 
-An error occurred (AccessDeniedException) when calling the Decrypt operation: User: arn:aws:sts::<ACCOUNT_ID>:assumed-role/s3-encrypted-file-sample-pod/<session> is not authorized to perform: kms:Decrypt on resource: arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/46ca2c4c-cc26-450c-8e59-a0324cc3ceb9 with an explicit deny in a resource-based policy
+An error occurred (AccessDeniedException) when calling the Decrypt operation: User: arn:aws:sts::<ACCOUNT_ID>:assumed-role/s3-encrypted-file-sample-pod/<session> is not authorized to perform: kms:Decrypt on resource: arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/2fe74de7-aa4c-4020-b1a2-5e1f4372875f with an explicit deny in a resource-based policy
 s3-encrypted-file-credentials-done
 ```
 
@@ -451,9 +451,9 @@ long it retries.
   SAMPLE_VARIANT=changed; the rest of the spec is unchanged
 == 2/4 generate the policy for the changed pod ==
 --- Predicted PCR17 ---
-f8c1e7b7a112ac65047028884029c0fea18651f9ff60ec7fa47db63ae66ec5f35854390e1c2bc4d176003a2c72b84bfb
-  approved PCR17: fc73afe250bc50cc75486ec29c69cd56096db7adde132dd3fcf6bd08a53687c1b57f08138a18e08502e1b40576016569
-  changed  PCR17: f8c1e7b7a112ac65047028884029c0fea18651f9ff60ec7fa47db63ae66ec5f35854390e1c2bc4d176003a2c72b84bfb
+9fda03eb071ec3b691e2aa4482059b485536e587753c5381345aa5563ed7b3b892770eb82e1e75f84749739649885964
+  approved PCR17: 4274742b571865293d96d2fabc2d7d042d5fdf198227eed16154a9c6a35296e51bcea1d34864875cb693e724d6c43fed
+  changed  PCR17: 9fda03eb071ec3b691e2aa4482059b485536e587753c5381345aa5563ed7b3b892770eb82e1e75f84749739649885964
 == 3/4 confirm the gate still expects the approved measurement ==
   the gate is bound to the approved measurement, unchanged
 == 4/4 start the changed pod and wait for the refusal ==
@@ -463,12 +463,12 @@ s3-encrypted-file-changed   0/1     Error    0          13s
 
 variant: changed
 kernel:  6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-uptime:  4.61s
+uptime:  4.66s
 disks:   dm-0 dm-1 dm-2 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 vda vdb vdc
 product: m8i.enclave
 manifest: version=1 algorithm=AES-256-GCM wrapped_data_key=184B nonce=12B
-s3:      read 102416 bytes of ciphertext sha256=759182ca5be9f8105dfa4155555108b82fce6c38f993ba1c6905b1b45ae42c99
-attested-s3-error: An error occurred (AccessDeniedException) when calling the Decrypt operation: User: arn:aws:sts::<ACCOUNT_ID>:assumed-role/s3-encrypted-file-sample-pod/<session> is not authorized to perform: kms:Decrypt on resource: arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/46ca2c4c-cc26-450c-8e59-a0324cc3ceb9 with an explicit deny in a resource-based policy
+s3:      read 102416 bytes of ciphertext sha256=128fec5b79b5e3986b3b5a61663cc913bb4c53151bb6c47a5187703e13e1b08d
+attested-s3-error: ClientError: An error occurred (AccessDeniedException) when calling the Decrypt operation: User: arn:aws:sts::<ACCOUNT_ID>:assumed-role/s3-encrypted-file-sample-pod/<session> is not authorized to perform: kms:Decrypt on resource: arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/2fe74de7-aa4c-4020-b1a2-5e1f4372875f with an explicit deny in a resource-based policy
 
 The changed pod was refused the data key by KMS and could not read the file.
 Delete it before you finish with the sample:  ./scripts/changed-pod.sh --delete
@@ -594,15 +594,15 @@ pod "s3-encrypted-file-demo" deleted from s3-encrypted-file-sample namespace
 serviceaccount "s3-encrypted-file-pod" deleted from s3-encrypted-file-sample namespace
 Deleting namespace s3-encrypted-file-sample (carries app.kubernetes.io/managed-by=s3-encrypted-file)...
 namespace "s3-encrypted-file-sample" deleted
-Deleting Pod Identity association a-hsr3ttqcqqnkgq9vb...
+Deleting Pod Identity association a-vrlasehkuzkpmdez3...
 Deleting IAM role s3-encrypted-file-sample-pod...
 Deleting ECR repository s3-encrypted-file-sample and the image in it...
 Emptying S3 bucket <S3_BUCKET> (carries ManagedBy=s3-encrypted-file)...
   deleting 2 object version(s)...
 Deleting S3 bucket <S3_BUCKET>...
 Deleting the alias alias/s3-encrypted-file-sample...
-Scheduling the KMS key 46ca2c4c-cc26-450c-8e59-a0324cc3ceb9 for deletion in 7 days (the shortest AWS allows)...
-arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/46ca2c4c-cc26-450c-8e59-a0324cc3ceb9	2026-11-02T12:34:27.185000+00:00
+Scheduling the KMS key 2fe74de7-aa4c-4020-b1a2-5e1f4372875f for deletion in 7 days (the shortest AWS allows)...
+arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/2fe74de7-aa4c-4020-b1a2-5e1f4372875f	2026-11-02T14:33:47.590000+00:00
 Deleting the run files under .../tmp/s3-encrypted-file, including the plaintext file...
 
 Clean up complete. The KMS key is scheduled, not yet destroyed; AWS removes it after its waiting period.
