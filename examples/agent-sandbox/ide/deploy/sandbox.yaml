@@ -49,8 +49,9 @@ spec:
       # The editor calls no Kubernetes API, so it mounts no ServiceAccount token.
       automountServiceAccountToken: false
       securityContext:
-        # code-server runs as uid 1000 (coder) in this image. runAsNonRoot makes
-        # "never root" explicit and enforced at admission.
+        # code-server runs as uid 1000 (coder) in this image. runAsUser pins that
+        # identity, and runAsNonRoot makes "never root" explicit: the kubelet
+        # refuses to start the container if the image would resolve to root.
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000

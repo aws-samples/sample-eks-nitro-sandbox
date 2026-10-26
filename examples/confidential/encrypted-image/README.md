@@ -812,8 +812,13 @@ Guide, *Encrypted container images*). The only call the guest makes out of the p
 sample is the one `kms:Decrypt`.
 
 **It is enforced on the node, outside the guest.** The node's network policy agent attaches
-eBPF programs to the pod's host-side interface, so a command inside the sandbox cannot
-change it, even as root. Kubernetes always allows traffic between a pod and its own node.
+eBPF programs to the pod's host-side interface, which the guest has no access to, so nothing
+inside the sandbox can change it, whatever UID it runs as. In this sample that UID is 65534:
+the pod sets `runAsUser: 65534` with `runAsNonRoot: true` (step 6), and the generated Cedar
+policy pins `context.run_as_user == 65534` (step 7), so root is refused twice over — once by
+the kubelet, which will not start a container that would resolve to root, and again by the
+guest agent, whose `CreateContainer` policy permits only that one UID. Kubernetes always
+allows traffic between a pod and its own node.
 
 **Both directions, from the pod's own logs.** Exec is denied, so the pod probes for itself
 and prints the results, which are the last two readings in step 9:
