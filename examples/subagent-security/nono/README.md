@@ -194,8 +194,60 @@ outside this sample's own namespace and changes no cluster-wide setting.
 Abridged: the two image builds' own output is cut, and your names will differ.
 
 ```text
-TODO: output from the fresh run
+==> 1/7 tools, cluster and cluster-wide settings
+  account:  <ACCOUNT_ID>
+  region:   us-west-2
+  context:  <CLUSTER_NAME>
+  model:    global.anthropic.claude-sonnet-4-5-20250929-v1:0
+
+==> 2/7 namespace subagent-security-nono and the analyst ServiceAccount
+namespace/subagent-security-nono created
+serviceaccount/analyst created
+
+==> 3/7 the supplier API key and its sample certificate authority
+secret/supplier-key created
+  created the supplier-key Secret
+secret/supplier-tls created
+configmap/supplier-ca created
+  created a 30-day sample certificate authority and the supplier-tls Secret
+
+==> 4/7 the synthetic supplier API
+  created the ECR repository pod-isolation/subagent-analyst-nono-supplier-api
+  built and pushed pod-isolation/subagent-analyst-nono-supplier-api:b0eea969f059b16ed134
+service/supplier-api created
+service/supplier-api-alias created
+deployment.apps/supplier-api created
+Waiting for deployment "supplier-api" rollout to finish: 0 of 1 updated replicas are available...
+deployment "supplier-api" successfully rolled out
+
+==> 5/7 the S3 bucket and the proposals
+  created the bucket subagent-analyst-nono-<ACCOUNT_ID>
+  seeded the case, 3 proposals and one other case's object
+
+==> 6/7 the IAM role and its EKS Pod Identity association
+  created the IAM role subagent-analyst-nono
+  created the Pod Identity association a-m1honr415gkplljan
+
+==> 7/7 the nono analyst image and its sandboxed pod
+the committed profiles match the generator for: reader, evaluator, writer
+  created the ECR repository pod-isolation/subagent-analyst-nono
+  built and pushed pod-isolation/subagent-analyst-nono:b4497645cc48d8affac0
+pod/analyst created
+pod/analyst condition met
+
+==> ready
+  namespace:  subagent-security-nono
+  bucket:     subagent-analyst-nono-<ACCOUNT_ID>
+  role:       subagent-analyst-nono
+  model:      global.anthropic.claude-sonnet-4-5-20250929-v1:0
+  run record: /path/to/sample-eks-nitro-sandbox/tmp/nono/state.env
+
+Run one procurement case:
+  ./scripts/run.sh
 ```
+
+The run record under the repository's `tmp/` is what `run.sh` and `clean.sh` read, so
+neither needs anything set again.
 
 **Step 3: Run one procurement case.** The controller runs in the sandbox and prints every
 check as it reaches it. Each run gets a fresh id and its own directories inside the pod, so
@@ -464,7 +516,30 @@ then defaults to deny and lists the exact method and path pairs allowed. Here is
 of [`policies/writer.json`](policies/writer.json):
 
 ```json
-TODO: output from the fresh run
+        "endpoint_policy": {
+          "default": {
+            "decision": "deny"
+          },
+          "allow": [
+            {
+              "method": "GET",
+              "path": "/cases/rfp-001/suppliers"
+            },
+            {
+              "method": "POST",
+              "path": "/cases/rfp-001/recommendations"
+            }
+          ]
+        }
+```
+
+The host it may reach at all is one entry, `allow_domain`, naming the approved Service name
+and its port:
+
+```json
+    "allow_domain": [
+      "supplier-api.<NAMESPACE>.svc.cluster.local:8443"
+    ],
 ```
 
 The reader's profile is the same with the `POST` left out, which is what makes the draft
@@ -480,16 +555,56 @@ method and path with the real key, from outside the role boundary, and the serve
 Without these, a refusal could be the server's own doing or an unreachable address.
 
 ```text
-TODO: output from the fresh run
+PASS reader: GET /cases/rfp-001/suppliers returns 200
+PASS the nono audit records GET /cases/rfp-001/suppliers
+PASS the nono audit decision is allow
+PASS reader: a direct connection to the supplier API is refused
+PASS a second DNS name for the same server is refused
+PASS the nono audit records the refused host
+PASS the same server answers on that second name, with the same key, outside the role boundary
+PASS reader: POST /cases/rfp-001/recommendations returns 403
+PASS the nono audit records POST /cases/rfp-001/recommendations
+PASS the nono audit decision is deny
+PASS writer: PATCH /suppliers/northstar returns 403
+PASS the nono audit records PATCH /suppliers/northstar
+PASS the nono audit decision is deny
+PASS the supplier API accepts PATCH /suppliers/northstar with the real key, outside the role boundary
+PASS writer: POST /purchase-orders returns 403
+PASS the nono audit records POST /purchase-orders
+PASS the nono audit decision is deny
+PASS the supplier API accepts POST /purchase-orders with the real key, outside the role boundary
+PASS writer: GET /cases/rfp-other/suppliers returns 403
+PASS the nono audit records GET /cases/rfp-other/suppliers
+PASS the nono audit decision is deny
+PASS the supplier API accepts GET /cases/rfp-other/suppliers with the real key, outside the role boundary
+PASS writer: POST /cases/rfp-001/recommendations returns 201
+PASS the nono audit records POST /cases/rfp-001/recommendations
+PASS the nono audit decision is allow
 ```
+
+Each refusal is read twice over: the role's own result, and nono's audit record for that
+call naming the same method, path and decision. The `201` on the last three lines is the
+writer's draft submission, the operation the reader is refused two blocks up, which is what
+makes the difference between the two profiles visible rather than asserted.
 
 **Step 8: Keep the real key with the proxy.** The profile tells nono where the real
 credential is, which environment variable to put a placeholder in, and which header to
 substitute it into:
 
 ```json
-TODO: output from the fresh run
+    "custom_credentials": {
+      "supplier": {
+        "upstream": "https://supplier-api.<NAMESPACE>.svc.cluster.local:8443",
+        "credential_key": "file:///opt/supplier-key/api-key",
+        "env_var": "SUPPLIER_API_KEY",
+        "inject_header": "X-Api-Key",
+        "credential_format": "{}",
+        "tls_ca": "/opt/supplier-ca/ca.crt",
 ```
+
+`credential_key` is where the proxy reads the real key, and it is a path no role's
+`filesystem.read` list contains. `env_var` is the variable the role is handed a placeholder
+in, and `inject_header` is the header the proxy substitutes the real key into.
 
 The tool's own code is ordinary, and reads only the variable:
 
@@ -502,8 +617,25 @@ The run shows the role holds a credential, that it is not the real one, and that
 open the key file. Nothing prints a value: the comparison is by length and by digest.
 
 ```text
-TODO: output from the fresh run
+PASS the reader holds a supplier credential
+PASS the reader's credential is not the real supplier key
+PASS the reader has no AWS credential variable; its AWS environment is ['AWS_CA_BUNDLE']
+PASS the reader has no model API key
+PASS the reader cannot open the supplier key file
+PASS the supplier API refuses an invalid key with 401
+PASS no supplier key appears in the evidence or the report
 ```
+
+The run records the two lengths rather than the two values: the real key is 44 characters
+and the placeholder the reader holds is 64, and the comparison that decides "not the real
+supplier key" is between SHA-256 digests. The `401` is the upstream control: the supplier
+API really does check the header, so the `200` the reader gets through the proxy is the
+proxy having substituted a valid key and not the server waving anything through.
+
+`AWS_CA_BUNDLE` is reported rather than hidden. nono sets it so that an AWS SDK inside a
+role would trust the proxy's certificate; it is not a credential, which is why the check
+names the variables that would authenticate and prints the rest instead of claiming the
+role's AWS environment is empty.
 
 **Step 9: Check what the tool roles cannot reach in AWS.** The controller holds the pod's
 Pod Identity credentials; the roles get an environment the controller builds rather than
@@ -511,8 +643,25 @@ inherits, and are refused both the projected token file and the Pod Identity end
 not nono, decides what the controller itself may do with Amazon S3.
 
 ```text
-TODO: output from the fresh run
+PASS the AWS SDK uses the Pod Identity container credential provider
+PASS the caller is this sample's Pod Identity role
+PASS the reader cannot open the Pod Identity token file
+PASS the reader cannot reach the Pod Identity endpoint directly
+PASS IAM returns AccessDenied for overwriting a source proposal
+PASS IAM returns AccessDenied for deleting a source proposal
+PASS IAM returns AccessDenied for reading another case's object
+PASS the S3 proposal matches the case entry for northstar
+PASS the S3 proposal matches the case entry for harbor
+PASS the S3 proposal matches the case entry for cedar
+PASS the image's fixtures match the objects in S3
 ```
+
+The three `AccessDenied` lines are IAM's doing, not nono's: the role's policy grants
+`s3:GetObject` on this case's proposals and reports and `s3:PutObject` on the reports prefix
+only, so overwriting a source, deleting one, and reading another case's object are each
+outside it. The other case's object is really there — `setup.sh` seeds it — so the denial
+names an object that exists and is readable with other credentials, rather than being a
+missing key.
 
 No model API key is placed in the sandbox. The controller checks that by variable name,
 printing the names it looked for rather than any value.
@@ -520,14 +669,22 @@ printing the names it looked for rather than any value.
 **Step 10: Show that the pod ran in a sandbox.** Read the analyst pod's runtime class, then
 its own account of the machine it is running on.
 
+The pod's age is read too, because the uptime below only means anything beside it.
+
 ```bash
 export NAMESPACE=subagent-security-nono
 kubectl get pod analyst -n $NAMESPACE -o jsonpath='{.spec.runtimeClassName}{"\n"}'
+kubectl get pod analyst -n $NAMESPACE --no-headers | awk '{print "pod age: "$5}'
 kubectl exec analyst -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f1 /proc/uptime; ls /sys/block | tr "\n" " "; echo; cat /sys/class/dmi/id/product_name'
 ```
 
 ```text
-TODO: output from the fresh run
+isolated-sandbox
+pod age: 3m24s
+6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
+203.55
+dm-0 vda vdb vdc
+m8i.enclave
 ```
 
 Now the same readings from an ordinary pod on the same node. Pinning the node is the point:
@@ -543,15 +700,30 @@ kubectl exec ordinary-comparison -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f
 ```
 
 ```text
-TODO: output from the fresh run
+6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
+45893.97
+dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0
+m8i.xlarge
 ```
 
-The analyst pod runs its own kernel build, its uptime matches the pod's age because the
-sandbox booted with the pod, and it sees virtio disks where the ordinary pod sees the
-instance's `nvme` devices. Note that the kernel **version** can be the same in both: it is
-the build and the boot that differ, so compare `uname -rv` and not `uname -r`. The runtime
-class on the pod shows what was asked for, not what ran, so it supports the claim without
-proving it.
+Three readings differ, and each says something:
+
+| Reading | Sandboxed analyst | Ordinary pod on the same node |
+|---|---|---|
+| `uname -rv` | `6.18.54 #1`, built Oct 22 17:38 | `6.18.54 #2`, built Oct 22 00:16 |
+| `/proc/uptime` | `203.55`, against a pod age of 3m24s | `45893.97`, about 12.7 hours — the node's |
+| `/sys/block` | `vda vdb vdc`, virtio | `nvme0n1 nvme1n1`, the instance's own |
+| `product_name` | `m8i.enclave` | `m8i.xlarge` |
+
+The analyst pod runs its **own kernel build**, and the uptime is the giveaway: 203 seconds
+against a pod 3m24s old, because the sandbox booted when the pod did, while the ordinary pod
+reports the node's half-day uptime. It sees virtio disks where the ordinary pod sees the
+instance's `nvme` devices, and it names the enclave rather than the instance type.
+
+Note that the kernel **version** is the same in both here — `6.18.54`. It is the build
+number and the boot that differ, so compare `uname -rv` and not `uname -r`. And the runtime
+class on the pod shows what was *asked for*, not what ran, so it supports the claim without
+proving it; the readings inside the guest are what prove it.
 
 Everything in step 5 to step 9 happened inside that boundary. nono's profiles, its proxy
 and the supplier key are all in this pod, so they are what the sandbox contains, not what
@@ -603,6 +775,15 @@ pattern to copy.
 - **The negative controls are what make the refusals mean something.** The supplier API
   accepts an authenticated purchase order, and the alias Service reaches the same pod the
   approved one does. Without those, a refusal could be the server's doing or a broken route.
+- **The pod is hardened, and nono still works under it.** The pod runs as uid 1000 with
+  `runAsNonRoot`, `seccompProfile: RuntimeDefault`, every capability dropped,
+  `allowPrivilegeEscalation: false`, a read-only root filesystem and
+  `automountServiceAccountToken: false`. nono's controls are Landlock and seccomp, which
+  need no privilege, and Landlock requires `no_new_privs` for an unprivileged process
+  anyway, so `allowPrivilegeEscalation: false` is a precondition of this confinement rather
+  than a cost of it. A sample about isolation should not have to give any of this up to
+  demonstrate itself, and this one does not: the run whose output is on this page passed
+  every file and network refusal with all of the above set.
 - **The gates are task-specific correctness checks, not a defence against prompt injection.**
   They check that the model's explicit choice matches a comparison computed without it and
   that it cited the originals. They say nothing about whether the prose is otherwise sound.
@@ -628,8 +809,35 @@ cd sample-eks-nitro-sandbox/examples/subagent-security/nono
 ```
 
 ```text
-TODO: output from the fresh run
+==> 1/4 the namespace's own objects
+pod "analyst" deleted from subagent-security-nono namespace
+deployment.apps "supplier-api" deleted from subagent-security-nono namespace
+namespace "subagent-security-nono" deleted
+
+==> 2/4 the EKS Pod Identity association
+  deleted the association a-m1honr415gkplljan.
+
+==> 3/4 the AWS resources
+  deleted the bucket subagent-analyst-nono-<ACCOUNT_ID>.
+  deleted the IAM role subagent-analyst-nono.
+  deleted the ECR repository pod-isolation/subagent-analyst-nono.
+  deleted the ECR repository pod-isolation/subagent-analyst-nono-supplier-api.
+
+==> 4/4 the local run files
+  removed /path/to/sample-eks-nitro-sandbox/tmp/nono.
+
+==> what stays
+  This sample changed no cluster-wide setting and installed nothing shared, so there is
+  nothing of that kind to undo.
+
+  The isolated-sandbox RuntimeClass and the cluster itself are not this sample's. The
+  hello sandbox sample's clean up covers removing the cluster.
+
+Clean up complete.
 ```
+
+`--delete-aws` also removes the run record under the repository's `tmp/`, which is where
+`run.sh` copied the recommendation, so copy anything you want to keep out of there first.
 
 It deletes in reverse order of creation, starting with the sandboxed pod, which is what
 holds sandbox capacity other workloads on the cluster share. It touches a namespace only
