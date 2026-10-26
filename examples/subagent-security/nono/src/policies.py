@@ -28,10 +28,15 @@ from pathlib import Path
 
 CASE = "rfp-001"
 
-# Paths inside the sandbox. CODE and the fixtures are read-only in the image; SECRET and
-# CA are Secret and ConfigMap mounts on the pod.
+# Paths inside the sandbox. CODE and the fixtures are read-only in the image;
+# SUPPLIER_KEY_FILE and CA are Secret and ConfigMap mounts on the pod.
+#
+# SUPPLIER_KEY_FILE is a path, not a key. It is named for what it holds: the profile below
+# puts this path in front of nono's proxy so the proxy reads the key, and the path itself
+# is written into each role's profile where no role can read it, so a name suggesting the
+# key itself would say the opposite of the truth about a value that is written to a file.
 CODE = "/opt/analyst"
-SECRET = "/opt/supplier-key/api-key"
+SUPPLIER_KEY_FILE = "/opt/supplier-key/api-key"
 CA = "/opt/supplier-ca/ca.crt"
 
 ROLES = ("reader", "evaluator", "writer")
@@ -49,7 +54,12 @@ PLACEHOLDER_WORKSPACE = f"/var/lib/analyst/{PLACEHOLDER_RUN}"
 # in this list, so they are not inherited: an empty AWS environment is not on its own
 # proof of credential isolation, which is why the sample also shows the role refused the
 # Pod Identity token file and the Pod Identity endpoint.
-ALLOW_VARS = ["PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE"]
+# ANALYST_DIGEST_KEY is the per-run key the controller supplies for the credential
+# comparison in the shared worker. It is not a credential for anything: its only job is to
+# key the digest a role reports, so the run's own calls.json holds no unsalted commitment
+# to credential material.
+ALLOW_VARS = ["PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE",
+              "ANALYST_DIGEST_KEY"]
 
 
 def profile(role: str, workspace, api_url: str) -> dict:
@@ -94,7 +104,7 @@ def profile(role: str, workspace, api_url: str) -> dict:
                 # The real key stays a file the proxy reads. The role is given a
                 # placeholder in SUPPLIER_API_KEY and sends it in the ordinary header;
                 # the proxy substitutes the real key for an approved request.
-                "credential_key": "file://" + SECRET,
+                "credential_key": "file://" + SUPPLIER_KEY_FILE,
                 "env_var": "SUPPLIER_API_KEY",
                 "inject_header": "X-Api-Key",
                 "credential_format": "{}",

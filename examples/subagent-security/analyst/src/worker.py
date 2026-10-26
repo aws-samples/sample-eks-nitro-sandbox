@@ -24,6 +24,7 @@ Each probe takes the remaining argument list and returns a JSON-serialisable obj
 """
 import errno
 import hashlib
+import hmac
 import json
 import os
 import socket
@@ -137,14 +138,30 @@ AWS_CREDENTIAL_VARS = (
 
 
 def act_credential_env(args):
-    """Report which credentials this role holds, by name and digest, never by value.
+    """Report which credentials this role holds, by name and keyed digest, never by value.
 
     The digest is what lets the controller show the role's placeholder differs from the
     real key without either value appearing anywhere. aws_names is reported in full
     alongside aws_credential_names, so a page can say which AWS variables the layer set
     and why, instead of claiming there are none.
+
+    It is an HMAC under a per-run key the controller supplies in ANALYST_DIGEST_KEY, not a
+    bare SHA-256. The digest is written into the run's own calls.json, so a bare hash would
+    publish an unsalted commitment to credential material; that is the wrong pattern for a
+    sample to be copied from even where the input has enough entropy to make it academic.
+    The controller compares this against the same HMAC of the real key.
+
+    Every Subagent security sample has to pass ANALYST_DIGEST_KEY into the role's
+    environment, and its confinement layer has to allow that variable through. A missing
+    key is a setup error and raises, rather than coming back as a refusal.
     """
     value = os.environ.get("SUPPLIER_API_KEY", "")
+    digest_key = os.environ.get("ANALYST_DIGEST_KEY", "")
+    if not digest_key:
+        raise ValueError(
+            "ANALYST_DIGEST_KEY is not set in this role's environment, so the credential "
+            "digest cannot be keyed. The controller sets it, and the role's profile has to "
+            "allow it through.")
     return {
         "aws_names": sorted(k for k in os.environ if k.startswith("AWS_")),
         "aws_credential_names": sorted(k for k in AWS_CREDENTIAL_VARS if k in os.environ),
@@ -152,8 +169,16 @@ def act_credential_env(args):
                                   if k.endswith("_API_KEY") and k != "SUPPLIER_API_KEY"),
         "api_key_present": bool(value),
         "api_key_length": len(value),
-        "api_key_sha256": hashlib.sha256(value.encode()).hexdigest(),
+        "api_key_hmac": keyed_digest(digest_key, value),
     }
+
+
+def keyed_digest(digest_key: str, value: str) -> str:
+    """An HMAC-SHA256 of value under digest_key, as hex.
+
+    Shared so the controller and the role compute the comparison the same way.
+    """
+    return hmac.new(digest_key.encode(), value.encode(), hashlib.sha256).hexdigest()
 
 
 def act_socket(args):

@@ -85,8 +85,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(413, {"error": "draft too large"})
                 return
             draft = json.loads(self.rfile.read(length))
+            # The request id is already restricted to alphanumerics and "-" above, so it
+            # cannot contain "/" or ".." and cannot traverse. This re-checks containment on
+            # the resolved path anyway, so the guarantee is local to the write instead of
+            # resting on a character test fifteen lines earlier: a later edit that relaxed
+            # that test would otherwise silently turn this into a path traversal.
+            target = (STATE / f"{request_id}.json").resolve()
+            if target.parent != STATE.resolve():
+                self.reply(400, {"error": "invalid request id"})
+                return
             with LOCK:
-                (STATE / f"{request_id}.json").write_text(json.dumps(draft))
+                target.write_text(json.dumps(draft))
             self.reply(201, {"saved": True, "request_id": request_id})
         elif ((self.command == "PATCH" and path.startswith("/suppliers/"))
               or (self.command == "POST" and path == "/purchase-orders")):
@@ -103,6 +112,10 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    # PROTOCOL_TLS_SERVER on its own still permits TLS 1.0 and 1.1 on some builds, and a
+    # sample is copied as-is, so the floor is set explicitly rather than left to the
+    # platform's OpenSSL defaults.
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(TLS_DIR / "tls.crt", TLS_DIR / "tls.key")
     server.socket = context.wrap_socket(server.socket, server_side=True)
     print(f"supplier API listening on {PORT}", flush=True)

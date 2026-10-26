@@ -22,7 +22,8 @@
       "LANG",
       "LC_ALL",
       "PYTHONPATH",
-      "PYTHONDONTWRITEBYTECODE"
+      "PYTHONDONTWRITEBYTECODE",
+      "ANALYST_DIGEST_KEY"
     ]
   },
   "network": {

@@ -37,7 +37,7 @@ Amazon ECR. A run costs one Bedrock turn, a few small Amazon S3 objects, and one
 pod plus one small ordinary pod kept running until you clean up.
 
 Every output block on this page is from one real run of this sample, run id
-`073d573a126b4921ba17f1cf9cd9f61f`. Values from the account and cluster it ran on are
+`6dd529702ae64cfba5ba2f979003faf5`. Values from the account and cluster it ran on are
 replaced by the same placeholders the commands use, because this repository is public:
 `<ACCOUNT_ID>`, `<CLUSTER_NAME>` and `<NODE_NAME>`. The Region is left as
 `us-west-2`, the default this repository's samples share. Run ids, pod names, kernel
@@ -213,7 +213,7 @@ configmap/supplier-ca created
 
 ==> 4/7 the synthetic supplier API
   created the ECR repository pod-isolation/subagent-analyst-nono-supplier-api
-  built and pushed pod-isolation/subagent-analyst-nono-supplier-api:e61ac45fc627ffe35d60
+  built and pushed pod-isolation/subagent-analyst-nono-supplier-api:89408513f9b9fa9c2b5c
 service/supplier-api created
 service/supplier-api-alias created
 deployment.apps/supplier-api created
@@ -226,12 +226,12 @@ deployment "supplier-api" successfully rolled out
 
 ==> 6/7 the IAM role and its EKS Pod Identity association
   created the IAM role subagent-analyst-nono
-  created the Pod Identity association a-tmvqvibm8amvsk3de
+  created the Pod Identity association a-eapize6hxkzjha7qz
 
 ==> 7/7 the nono analyst image and its sandboxed pod
 the committed profiles match the generator for: reader, evaluator, writer
   created the ECR repository pod-isolation/subagent-analyst-nono
-  built and pushed pod-isolation/subagent-analyst-nono:4ffe0e88b0b256f5b6cb
+  built and pushed pod-isolation/subagent-analyst-nono:d3ef65d78c403e5b9eb6
 pod/analyst created
 pod/analyst condition met
 
@@ -330,17 +330,17 @@ PASS the report object round-trips through S3: recommendation.md
 PASS the report object round-trips through S3: comparison.json
 PASS no supplier key appears in the evidence or the report
 
-ANALYST_COMPLETE=073d573a126b4921ba17f1cf9cd9f61f
+ANALYST_COMPLETE=6dd529702ae64cfba5ba2f979003faf5
 67 checks passed
   66 checks passed in the sandbox
   12 requests correlated with the supplier API's own log (6 allowed arrived once each, 5 refused never arrived)
-  model usage: 2618 tokens on global.anthropic.claude-sonnet-4-5-20250929-v1:0
+  model usage: 2602 tokens on global.anthropic.claude-sonnet-4-5-20250929-v1:0
 
 ==> done
-  run id:         073d573a126b4921ba17f1cf9cd9f61f
-  recommendation: /path/to/sample-eks-nitro-sandbox/tmp/nono/runs/073d573a126b4921ba17f1cf9cd9f61f/recommendation.md
-  evidence:       /path/to/sample-eks-nitro-sandbox/tmp/nono/runs/073d573a126b4921ba17f1cf9cd9f61f/evidence.json
-  S3 report:      s3://subagent-analyst-nono-<ACCOUNT_ID>/reports/rfp-001/073d573a126b4921ba17f1cf9cd9f61f/
+  run id:         6dd529702ae64cfba5ba2f979003faf5
+  recommendation: /path/to/sample-eks-nitro-sandbox/tmp/nono/runs/6dd529702ae64cfba5ba2f979003faf5/recommendation.md
+  evidence:       /path/to/sample-eks-nitro-sandbox/tmp/nono/runs/6dd529702ae64cfba5ba2f979003faf5/evidence.json
+  S3 report:      s3://subagent-analyst-nono-<ACCOUNT_ID>/reports/rfp-001/6dd529702ae64cfba5ba2f979003faf5/
 ```
 
 The last three lines are the cross-check in [`scripts/correlate.py`](scripts/correlate.py),
@@ -365,43 +365,45 @@ cat ../../../tmp/nono/runs/<RUN_ID>/recommendation.md
 
 **Recommended supplier:** Northstar Office Systems (`northstar`)
 
-## Procurement Analysis: 100 Workstation Office Setup
+## Procurement Analysis: 100 Workstations for Customer Service Office
 
 **Requirements:**
-- Budget: $125,000 USD
-- Delivery: ≤30 days
-- Warranty: ≥24 months
+- Budget: $125,000 maximum
+- Delivery: 30 days maximum
+- Warranty: 24 months minimum
 
 ### Supplier Comparison
 
 #### ✅ Northstar Office Systems (RECOMMENDED)
-*Source: `proposals/rfp-001/northstar.json`*
+**Source:** `proposals/rfp-001/northstar.json`
 
 - **Price:** $120,000 (within budget, $5,000 under)
 - **Delivery:** 28 days (meets requirement)
-- **Warranty:** 36 months (exceeds requirement)
-- **Status:** Fully compliant with all requirements
+- **Warranty:** 36 months (exceeds requirement by 12 months)
+- **Status:** Eligible - meets all requirements
 
 #### ❌ Harbor Supply Partners
-*Source: `proposals/rfp-001/harbor.json`*
+**Source:** `proposals/rfp-001/harbor.json`
 
-- **Price:** $105,000 (within budget, lowest bid)
-- **Delivery:** 45 days (**FAILS** - exceeds 30-day maximum)
+- **Price:** $105,000 (within budget)
+- **Delivery:** 45 days (**fails requirement** - 15 days late)
 - **Warranty:** 24 months (meets requirement)
-- **Status:** Ineligible due to late delivery
+- **Status:** Ineligible - delivery exceeds maximum
 
 #### ❌ Cedar Workplace Group
-*Source: `proposals/rfp-001/cedar.json`*
+**Source:** `proposals/rfp-001/cedar.json`
 
-- **Price:** $130,000 (**FAILS** - exceeds $125,000 budget)
+- **Price:** $130,000 (**fails requirement** - $5,000 over budget)
 - **Delivery:** 21 days (meets requirement)
 - **Warranty:** 36 months (exceeds requirement)
-- **Status:** Ineligible due to budget overrun
+- **Status:** Ineligible - exceeds budget
 
 ### Recommendation
 
-**Northstar Office Systems** is the only eligible supplier meeting all three procurement requirements. They offer competitive pricing at $120,000, timely delivery within 28 days, and superior warranty coverage at 36 months.
+**Northstar Office Systems** is the only eligible supplier, meeting all procurement requirements with competitive pricing, timely delivery, and superior warranty coverage.
 ```
+
+
 
 
 Everything from the second heading down is the model's own prose, and it cites all three
@@ -489,7 +491,8 @@ needs nothing from the network, so its profile blocks it outright. Here is
       "LANG",
       "LC_ALL",
       "PYTHONPATH",
-      "PYTHONDONTWRITEBYTECODE"
+      "PYTHONDONTWRITEBYTECODE",
+      "ANALYST_DIGEST_KEY"
     ]
   },
   "network": {
@@ -628,9 +631,19 @@ PASS the supplier API refuses an invalid key with 401
 PASS no supplier key appears in the evidence or the report
 ```
 
-The run records the two lengths rather than the two values: the real key is 44 characters
-and the placeholder the reader holds is 64, and the comparison that decides "not the real
-supplier key" is between SHA-256 digests. The `401` is the upstream control: the supplier
+Nothing here prints or stores either value. The placeholder the reader holds is 64
+characters, and the comparison that decides "not the real supplier key" is between
+HMAC-SHA256 digests taken under a per-run key the controller generates. Three choices are
+deliberate:
+
+- **The digest is keyed, not a bare hash.** The role's digest is written into the run's own
+  `calls.json`, and a bare hash there would be an unsalted commitment to credential
+  material — the wrong thing for a sample to be copied from.
+- **The per-run key is not written to the evidence,** so the digest cannot afterwards be
+  checked against a guessed credential.
+- **The real key's own length is not recorded either.** It is a fact about a credential, it
+  adds nothing the digest comparison has not already settled, and the evidence file leaves
+  the pod and gets read by people. The record says only that the two differ. The `401` is the upstream control: the supplier
 API really does check the header, so the `200` the reader gets through the proxy is the
 proxy having substituted a valid key and not the server waving anything through.
 
@@ -682,9 +695,9 @@ kubectl exec analyst -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f1 /proc/upti
 
 ```text
 isolated-sandbox
-pod age: 49s
+pod age: 40s
 6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-47.44
+38.91
 dm-0 vda vdb vdc
 m8i.enclave
 ```
@@ -703,7 +716,7 @@ kubectl exec ordinary-comparison -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f
 
 ```text
 6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
-47590.39
+48589.93
 dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0
 m8i.xlarge
 ```
@@ -713,12 +726,12 @@ Three readings differ, and each says something:
 | Reading | Sandboxed analyst | Ordinary pod on the same node |
 |---|---|---|
 | `uname -rv` | `6.18.54 #1`, built Oct 22 17:38 | `6.18.54 #2`, built Oct 22 00:16 |
-| `/proc/uptime` | `47.44`, against a pod age of 49s | `47590.39`, about 13.2 hours — the node's |
+| `/proc/uptime` | `38.91`, against a pod age of 40s | `48589.93`, about 13.5 hours — the node's |
 | `/sys/block` | `vda vdb vdc`, virtio | `nvme0n1 nvme1n1`, the instance's own |
 | `product_name` | `m8i.enclave` | `m8i.xlarge` |
 
-The analyst pod runs its **own kernel build**, and the uptime is the giveaway: 47 seconds
-against a pod 49s old, because the sandbox booted when the pod did, while the ordinary pod
+The analyst pod runs its **own kernel build**, and the uptime is the giveaway: 38 seconds
+against a pod 40s old, because the sandbox booted when the pod did, while the ordinary pod
 reports the node's thirteen-hour uptime. It sees virtio disks where the ordinary pod sees the
 instance's `nvme` devices, and it names the enclave rather than the instance type.
 
@@ -820,7 +833,7 @@ deployment.apps "supplier-api" deleted from subagent-security-nono namespace
 namespace "subagent-security-nono" deleted
 
 ==> 2/4 the EKS Pod Identity association
-  deleted the association a-tmvqvibm8amvsk3de.
+  deleted the association a-eapize6hxkzjha7qz.
 
 ==> 3/4 the AWS resources
   deleted the bucket subagent-analyst-nono-<ACCOUNT_ID>.

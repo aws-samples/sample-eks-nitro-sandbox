@@ -24,10 +24,10 @@ own doing rather than nono's, a trusted request on the same path with the same k
 the server would have accepted it.
 """
 import errno
-import hashlib
 import json
 import os
 import re
+import secrets
 import socket
 import ssl
 import subprocess
@@ -54,9 +54,10 @@ from business import (CASE, FIXTURES, availability_from_reply, load_json,  # noq
                       proposal_matches_case, compare, render_report,
                       report_choice_matches, report_cites_sources)
 from analyst_agent import ModelTurn  # noqa: E402
-from policies import (CA, CODE, ROLES, SECRET, check_committed,  # noqa: E402
+from policies import (CA, CODE, ROLES, SUPPLIER_KEY_FILE,  # noqa: E402
+                      check_committed,
                       committed_for, dump, profile)
-from worker import MARKER  # noqa: E402
+from worker import MARKER, keyed_digest  # noqa: E402
 
 ROOT = Path("/var/lib/analyst")
 COMMITTED_PROFILES = Path("/opt/nono/policies")
@@ -89,7 +90,7 @@ def trusted_request(path, method, request_id, key=None, base_url=API):
     not the server's.
     """
     if key is None:
-        key = Path(SECRET).read_text().strip()
+        key = Path(SUPPLIER_KEY_FILE).read_text().strip()
     data = None if method == "GET" else b'{"control":true}'
     req = urllib.request.Request(
         base_url + path, data=data,
@@ -109,6 +110,10 @@ def trusted_request(path, method, request_id, key=None, base_url=API):
 class Run:
     def __init__(self):
         self.id = uuid.uuid4().hex
+        # A per-run key for the credential comparison in credential_boundary(). It is not
+        # written to the evidence: the digest a role reports is then a commitment that
+        # cannot be checked against a guessed credential after the run.
+        self.digest_key = secrets.token_hex(32)
         self.root = ROOT / self.id
         self.root.mkdir(parents=True, mode=0o700)
         self.calls = []
@@ -142,7 +147,8 @@ class Run:
         # own state for this call stays outside every role's write grant.
         env = {"PATH": os.environ["PATH"], "HOME": str(broker), "LANG": "C.UTF-8",
                "PYTHONPATH": CODE, "PYTHONDONTWRITEBYTECODE": "1",
-               "NONO_NO_SAVE_PROMPT": "1", "NONO_NO_MIGRATE": "1"}
+               "NONO_NO_SAVE_PROMPT": "1", "NONO_NO_MIGRATE": "1",
+               "ANALYST_DIGEST_KEY": self.digest_key}
         command = ["python3", "/opt/nono/ptyrun.py",
                    "nono", "-s", "run", "--no-rollback", "--profile", str(policy_path),
                    "--", "python3", f"{CODE}/worker.py", action, *map(str, args)]
@@ -298,7 +304,7 @@ class Run:
         result, _ = self.call("reader", "read", sibling)
         self.check("the reader cannot read the writer's private file", refused(result))
 
-        for label, path in (("the supplier key file", SECRET),
+        for label, path in (("the supplier key file", SUPPLIER_KEY_FILE),
                             ("the Pod Identity token file",
                              os.environ["AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE"])):
             result, _ = self.call("reader", "read", path)
@@ -311,11 +317,11 @@ class Run:
                    result.get("written") == str(destination) and destination.exists())
 
     def credential_boundary(self):
-        real = Path(SECRET).read_text().strip()
+        real = Path(SUPPLIER_KEY_FILE).read_text().strip()
         result, _ = self.call("reader", "credential-env")
         self.check("the reader holds a supplier credential", result["api_key_present"])
         self.check("the reader's credential is not the real supplier key",
-                   result["api_key_sha256"] != hashlib.sha256(real.encode()).hexdigest())
+                   result["api_key_hmac"] != keyed_digest(self.digest_key, real))
         # nono sets AWS_CA_BUNDLE so an AWS SDK inside a role would trust its proxy's
         # certificate. That is not a credential, so the check names the variables that
         # would authenticate and reports the rest rather than claiming there are none.
@@ -323,7 +329,12 @@ class Run:
                    f"{result['aws_names']}", result["aws_credential_names"] == [])
         self.check("the reader has no model API key", result["model_key_names"] == [])
         self.placeholder_length = result["api_key_length"]
-        self.real_length = len(real)
+        # The real key's own length is deliberately NOT kept. It is a fact about a
+        # credential, it adds nothing the keyed-digest comparison above has not already
+        # established, and the evidence file is written out of the pod and read by people.
+        # What is recorded is that the two differ.
+        self.credential_differs = (
+            result["api_key_hmac"] != keyed_digest(self.digest_key, real))
 
         result, _ = self.call("reader", "connect", "169.254.170.23", "80")
         self.check("the reader cannot reach the Pod Identity endpoint directly",
@@ -438,14 +449,16 @@ class Run:
             "run_id": self.id, "case_id": CASE, "aws_arn": self.arn,
             "credential_provider": "container-role", "model_id": os.environ["BEDROCK_MODEL_ID"],
             "model_usage": self.usage, "report_prefix": prefix,
-            "supplier_credential": {"real_key_length": self.real_length,
-                                    "role_placeholder_length": self.placeholder_length},
+            "supplier_credential": {
+                "role_placeholder_length": self.placeholder_length,
+                "differs_from_the_real_key": self.credential_differs},
             "comparison": comparison, "report_choice": payload["recommended_supplier"],
             "checks": self.checks, "calls": self.calls,
         }
         serialised = json.dumps(evidence, indent=2)
         self.check("no supplier key appears in the evidence or the report",
-                   Path(SECRET).read_text().strip() not in serialised + report)
+                   Path(SUPPLIER_KEY_FILE).read_text().strip()
+                   not in serialised + report)
         (self.root / "evidence.json").write_text(serialised)
         (ROOT / "latest").write_text(self.id)
         print(f"\nANALYST_COMPLETE={self.id}", flush=True)

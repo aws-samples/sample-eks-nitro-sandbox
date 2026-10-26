@@ -139,6 +139,10 @@ restricting a sandbox's egress on the node.
 3. Refuse the network entirely for the evaluator.
 4. For the online roles, allow one supplier host, and nothing else.
 5. Keep the real supplier key out of the role's reach, by file and by environment.
+6. Pass `ANALYST_DIGEST_KEY` into the role's environment, and allow that variable through.
+   The shared worker keys its credential digest with it, so the run's own record holds no
+   unsalted commitment to credential material; a role started without it raises rather
+   than reporting a refusal.
 
 A layer that cannot do one of these is worth saying so about on its page, rather than
 leaving the comparison looking even.
