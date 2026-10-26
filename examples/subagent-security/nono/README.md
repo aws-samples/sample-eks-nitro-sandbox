@@ -636,14 +636,15 @@ characters, and the comparison that decides "not the real supplier key" is betwe
 HMAC-SHA256 digests taken under a per-run key the controller generates. Three choices are
 deliberate:
 
-- **The digest is keyed, not a bare hash.** The role's digest is written into the run's own
-  `calls.json`, and a bare hash there would be an unsalted commitment to credential
-  material — the wrong thing for a sample to be copied from.
-- **The per-run key is not written to the evidence,** so the digest cannot afterwards be
-  checked against a guessed credential.
-- **The real key's own length is not recorded either.** It is a fact about a credential, it
-  adds nothing the digest comparison has not already settled, and the evidence file leaves
-  the pod and gets read by people. The record says only that the two differ. The `401` is the upstream control: the supplier
+- **The digest is salted and deliberately slow** — PBKDF2-HMAC-SHA256 under the per-run
+  key, 200,000 iterations — rather than a bare or single-pass hash, because a fast digest
+  of credential material can be checked cheaply against a list of candidates.
+- **The digest is not kept.** It does its job in that one comparison and is then dropped
+  from the run's record, so `calls.json` and `evidence.json` carry no commitment to either
+  credential. The outcome is in the checks list by name, which is what you see above.
+- **The real key's own length is not recorded either.** It is a fact about a credential and
+  it adds nothing the comparison has not already settled, and these files leave the pod and
+  get read by people. What the record keeps is the placeholder's length and nothing else. The `401` is the upstream control: the supplier
 API really does check the header, so the `200` the reader gets through the proxy is the
 proxy having substituted a valid key and not the server waving anything through.
 

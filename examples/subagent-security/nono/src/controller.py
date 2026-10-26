@@ -173,8 +173,11 @@ class Run:
                  "session_id": sessions[0].parent.name,
                  "network_events": audit.get("network_events", [])}
         self.calls.append(entry)
-        (self.root / "calls.json").write_text(json.dumps(self.calls, indent=2))
+        self.save_calls()
         return result, entry
+
+    def save_calls(self):
+        (self.root / "calls.json").write_text(json.dumps(self.calls, indent=2))
 
     def api(self, role, method, path, expected, body_file=None, bypass_proxy=False):
         """Send one supplier request from a role and check the outcome and the audit."""
@@ -318,10 +321,18 @@ class Run:
 
     def credential_boundary(self):
         real = Path(SUPPLIER_KEY_FILE).read_text().strip()
-        result, _ = self.call("reader", "credential-env")
+        result, entry = self.call("reader", "credential-env")
         self.check("the reader holds a supplier credential", result["api_key_present"])
         self.check("the reader's credential is not the real supplier key",
                    result["api_key_digest"] != keyed_digest(self.digest_key, real))
+        # The digest has now done its only job. It is not kept: a digest of credential
+        # material in the run's record is a published commitment to that credential, and
+        # the outcome of the comparison is already in the checks list by name. So the
+        # record ends up holding nothing derived from either credential's value -- not the
+        # real key, not the placeholder, and not a digest of either.
+        entry["result"] = {k: v for k, v in entry["result"].items()
+                           if k != "api_key_digest"}
+        self.save_calls()
         # nono sets AWS_CA_BUNDLE so an AWS SDK inside a role would trust its proxy's
         # certificate. That is not a credential, so the check names the variables that
         # would authenticate and reports the rest rather than claiming there are none.
