@@ -14,7 +14,7 @@ Closes #
 
 - [ ] For a sample: ran it end to end from a fresh run on a live cluster, every output block on the page comes from that run, and no `TODO: output from the fresh run` marker is left
 - [ ] For a sample: the page shows the pod's own kernel build, boot and virtio disks, each with what an ordinary pod shows instead
-- [ ] For a sample: the page claims no network limit that nothing in the sample enforces, and a network-isolated sandbox is shown to have only loopback, no route and no DNS
+- [ ] For a sample: the page claims no network limit that nothing in the sample enforces, and, where the sample has a network-isolated sandbox, it is shown to have only loopback, no route and no DNS
 - [ ] For a sample: the clean up ran after the last run, and anything it could not remove is listed in this description
 - [ ] For a sample: added to the `mkdocs.yml` nav (`--strict` does not catch a missing entry), and `docs/ROADMAP.md` (linked, `(available now)`) and the root `README.md` updated
 - [ ] `mkdocs build --strict`, `./scripts/check-agent-files.sh` and `./scripts/check-sample-index.sh` pass

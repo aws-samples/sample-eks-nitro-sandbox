@@ -130,7 +130,7 @@ still run on a cluster that has no suitable default.
 - [ ] Runs end to end on a cluster that has finished Getting started, from a fresh run.
 - [ ] The README shows the sandbox pod running in a sandbox (its own kernel build, boot and virtio disks, each with what an ordinary pod shows instead), plus the sample's own claims, each with output from the run.
 - [ ] No Ingress, LoadBalancer or NodePort.
-- [ ] The sample ships no network policy, and the page claims no network limit that nothing in the sample enforces. A sandbox that needs no network boots with `sandbox.amazonaws.com/network-isolated: "true"`, and the page shows it has only loopback, no route and no DNS.
+- [ ] The sample ships no network policy, and the page claims no network limit that nothing in the sample enforces. Where the sample has a sandbox that needs no network, it boots with `sandbox.amazonaws.com/network-isolated: "true"` and the page shows it has only loopback, no route and no DNS.
 - [ ] If the sample gives the pod AWS permissions, its Pod Identity role grants only what the sample needs and the page shows its policy document. If it gives none, the page says so and claims no limit from a role.
 - [ ] No values from your own account or environment (account ID, keys, tokens, names of your clusters or hosts, user names, internal URLs) in tracked files. Local values come from a gitignored env file.
 - [ ] A clean-up section removes everything the sample created.

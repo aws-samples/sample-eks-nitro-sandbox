@@ -495,6 +495,15 @@ skip those because you are not on this machine.
   rebuild the shared one, and say in the pull request which source commit you built. Why:
   the shared build once predated the handling of `network-isolated`, so the guest refused
   the pod; and other demos' policies, and the PCR17 a key is released to, come from it.
+- **`kubectl` failing with `exec: executable aws failed with exit code 253` while
+  `aws sts get-caller-identity` works in the same shell is a credentials problem, not a
+  `PATH` one.** The kubeconfig's EKS exec credential plugin pins `AWS_PROFILE=eks-sandbox`,
+  and vending credentials into a named profile clears the `default` profile, so work that
+  uses both `kubectl` and the AWS CLI needs credentials in both places: vend twice, once
+  for the named profile and once for `default`. Why: exit code 253 from a plugin named
+  `aws` reads as a missing binary or a broken kubectl, and the CLI succeeding beside it
+  makes credentials look like the one thing that is fine; diagnosing it that way cost two
+  runs.
 - **Write stub tools with your agent's file tool**, not a heredoc in a shell command, then
   `chmod +x` the file by its path alone. Why: the agent host on this workstation blocks
   some commands by pattern, and a heredoc holding `/usr/bin/env` trips its `chmod` rule.
@@ -503,8 +512,9 @@ skip those because you are not on this machine.
   clusters and machines" says. Why: the blocks are the host owner's policy, and getting
   around one hides from them that an agent needed it.
 
-The two repository URLs, the backend commands and wrapper named above and the preview
-generator's name are the only internal values this file holds, at the maintainers' choice.
+The two repository URLs, the backend commands and wrapper named above, the preview
+generator's name and the kubeconfig's profile name are the only internal values this file
+holds, at the maintainers' choice.
 Remove them before this repository is made public, which needs Nitro sandboxes to be
 generally available first: until then the pages above, and any sample that quotes them,
 describe an unreleased feature. `scripts/second-review.sh` itself holds none of them: it
