@@ -15,10 +15,22 @@ FROM public.ecr.aws/docker/library/golang:1.26 AS build
 ARG TARGETARCH=amd64
 
 # Go's defaults, left in place so the module proxy and the checksum database
-# verify every dependency. Override them only on a network that cannot reach
-# proxy.golang.org, where `--build-arg GOPROXY=direct --build-arg GOSUMDB=off`
-# fetches straight from the source repositories instead; the committed go.sum
-# still verifies every module by hash either way.
+# verify every dependency.
+#
+# On a network that cannot reach proxy.golang.org, pass `--build-arg
+# GOPROXY=direct` and nothing else: the toolchain then fetches each module from
+# its source repository, and every one is still verified against the committed
+# go.sum. Note that the default value below does NOT fall back on its own. The
+# ",direct" suffix only covers a proxy that answers 404 or 410, so a proxy that
+# fails to resolve, times out or serves the wrong TLS certificate fails the
+# build rather than falling through.
+#
+# Do NOT reach for GOSUMDB=off, GOFLAGS=-mod=mod, GONOSUMDB or GOPRIVATE to get
+# a build to go green. Each of those turns off part of the supply-chain
+# verification this sample relies on, and none of them is needed to build
+# without the proxy: GOPROXY=direct alone leaves go.sum checking fully in
+# force. A tampered hash in go.sum fails the build with "SECURITY ERROR:
+# checksum mismatch", which is the behaviour to keep.
 ARG GOPROXY=https://proxy.golang.org,direct
 ARG GOSUMDB=sum.golang.org
 

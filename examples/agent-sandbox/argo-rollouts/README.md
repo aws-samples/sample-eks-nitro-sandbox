@@ -189,6 +189,12 @@ own. Read the plan, then apply it:
 TODO: output from the fresh run
 ```
 
+If your host cannot reach `proxy.golang.org`, add `--build-arg GOPROXY=direct` to the
+`docker build` the registration runs, by exporting `GOPROXY=direct` before you run it. The
+toolchain then fetches each module from its source repository, and every one is still
+verified against the committed `go.sum`. Nothing else needs changing: do not turn `GOSUMDB`
+off, which would drop that verification rather than route around the proxy.
+
 The registration refuses to write over an install that is not yours. If the ConfigMap
 already registers step plugins that are not this sample's, or if the Deployment already sets
 a different `securityContext.fsGroup` from the one staging the binary needs, it stops and
