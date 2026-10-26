@@ -330,7 +330,9 @@ and the host-specific options on the maintainers' workstation.
 - **Keep the brief, the output and any trace in the round's folder under `tmp/`.** The script refuses an
   `--out` outside the repository's gitignored `tmp/`. A trace (`review.err`) can hold
   credential details: read it with `tail` or a targeted search, and never paste it into a
-  pull request, an issue or Slack.
+  pull request, an issue or Slack. It also refuses any path you give it that holds a line
+  break, for the reason [Running it](../../../AGENTS.md#running-it) gives: the shell strips a
+  trailing newline, so the run would act on the sibling path and report success.
 - **A sub agent of your own tool works too**, as long as it starts with no context from
   your session and runs on a different model. **Name the model explicitly**: a sub agent
   inherits the parent's model by default, which would have the implementing model review

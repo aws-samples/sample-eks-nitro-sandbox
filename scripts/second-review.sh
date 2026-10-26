@@ -178,20 +178,59 @@ check_model_name "$IMPLEMENTER" "$impl_model" "--implementer-model"
 
 # --- the tools and the paths --------------------------------------------------------------
 
+# No path this script is given may hold a line break, and that is checked for each of them
+# before anything is read, created or cleared. The reason is one seam, and it runs through
+# every path here: "$( )" strips TRAILING newlines, so realpath, dirname, basename and
+# "command -v" each hand back a SIBLING path, and the run then acts on a file or directory
+# the caller did not name -- while reporting success, because nothing failed. Measured on
+# three of them: a --tree whose name ends in one was fingerprinted, reviewed and certified
+# as the tree named, with the sibling the directory actually read, exit 0; an --out whose
+# name ends in one cleared and wrote the sibling directory, destroying an earlier result
+# there, exit 0, with the directory named left empty; and a link target ending in one sent
+# the command-chain walk to a different path, leaving every later hop unchecked (see the
+# walk below). On the codex backend there is a second effect: codex prints "workdir: <tree>"
+# inside the preamble this script parses back out of its trace, on a line ahead of the
+# "model:", "sandbox:" and "approval:" lines, so a path with a line break in it lands inside
+# that block and could pass itself off as codex's own report of how it ran. That path comes
+# from the caller and not from the brief -- a caller who wanted to lie could lie in
+# --implementer-model just as cheaply -- so that half closes a seam rather than an attack,
+# and the nonce check still bounds what the BRIEF can reach.
+# The path is not repeated in the message, for the reason check_model_charset gives: it
+# would break the message across lines. $2 names the input, $3 is the tag to refuse with, so
+# each path refuses under the tag its own option already uses.
+no_line_break() {
+  case "$1" in
+    *$'\n'*) refuse "$3" \
+      "$2 contains a line break. Resolving such a path quietly drops a trailing one, so this run would read, clear or write a sibling path rather than the one named -- and report success -- and on the codex backend it would also land inside the block this script parses back out of codex's own preamble. Use a path with no line break in it." ;;
+  esac
+}
+
 case "$BACKEND" in
   codex)  BACKEND_CMD="${SECOND_REVIEW_CODEX_CMD:-codex}"
           BACKEND_ENV=SECOND_REVIEW_CODEX_CMD ;;
   claude) BACKEND_CMD="${SECOND_REVIEW_CLAUDE_CMD:-claude}"
           BACKEND_ENV=SECOND_REVIEW_CLAUDE_CMD ;;
 esac
+# Before "command -v", whose own substitution would strip a trailing newline and hand back
+# the sibling command to run instead.
+no_line_break "$BACKEND_CMD" "the \$$BACKEND_ENV command path" E_CMD_MISSING
 resolved_cmd=$(command -v -- "$BACKEND_CMD" 2>/dev/null) || resolved_cmd=''
 [ -n "$resolved_cmd" ] && [ -x "$resolved_cmd" ] || refuse E_CMD_MISSING \
   "cannot run the $BACKEND backend: '$BACKEND_CMD' is not an executable command. Install it, or name the command to use in \$$BACKEND_ENV."
+# Again on what "command -v" came back with: a bare name is looked up on $PATH, so a $PATH
+# entry holding a line break puts one in a path the caller never typed.
+no_line_break "$resolved_cmd" "the $BACKEND command's path" E_CMD_MISSING
 
 command -v python3 >/dev/null 2>&1 || cannot_check "python3 is needed to read the backend's record of which model answered."
 command -v sha256sum >/dev/null 2>&1 || cannot_check "sha256sum is needed to show the reviewer did not change the tree."
 command -v realpath >/dev/null 2>&1 || cannot_check "realpath is needed to check the output path stays under the repository's tmp/."
 command -v readlink >/dev/null 2>&1 || cannot_check "readlink is needed to check every link the backend command points through."
+
+# Each caller-supplied path, before it is used for anything at all: --out first, because it
+# is the one whose sibling gets CLEARED.
+no_line_break "$OUT" "the --out path" E_OUT
+no_line_break "$BRIEF" "the --brief path" E_BRIEF
+no_line_break "$TREE" "the --tree path" E_TREE
 
 [ -f "$BRIEF" ] || refuse E_BRIEF "no brief at '$BRIEF'. Write one from the second-review skill's assets/review-brief.md."
 [ -s "$BRIEF" ] || refuse E_BRIEF "the brief at '$BRIEF' is empty; a reviewer given nothing to check finds nothing."
@@ -258,6 +297,11 @@ in_repo_tmp() {
 }
 OUT_ABS=$(in_repo_tmp "$OUT" --out)
 BRIEF_ABS=$(in_repo_tmp "$BRIEF" --brief)
+# And again on what they resolved to. The checks above were on the names as given, which is
+# where a trailing newline hides; these catch one that a PARENT directory's real name
+# carries, which a path given through a symbolic link does not show.
+no_line_break "$OUT_ABS" "the resolved --out path" E_OUT
+no_line_break "$BRIEF_ABS" "the resolved --brief path" E_BRIEF
 not_an_output_name "$BRIEF_ABS" "$OUT_ABS" "the brief" E_BRIEF
 # The backend command is an input path too. A backend binary living inside --out under one
 # of these eleven names is far-fetched, but the command path is taken from the environment,
@@ -289,8 +333,28 @@ while [ -L "$cmd_hop" ]; do
   cmd_hops=$((cmd_hops + 1))
   [ "$cmd_hops" -le 64 ] || refuse E_CMD_MISSING \
     "the $BACKEND command '$resolved_cmd' points through more than 64 symbolic links, so where it leads cannot be established. A guard that cannot answer must refuse."
-  cmd_link=$(readlink -- "$cmd_hop") || refuse E_CMD_MISSING \
+  # "&& printf X", then both the X and the one newline readlink itself prints taken back
+  # off, because "$( )" strips EVERY trailing newline and a link target may legally end in
+  # one. Read the plain way, such a target came back as a different path and the walk
+  # followed that instead: it stopped at a path with an innocent name while the kernel went
+  # on through the real chain, so every later hop went unchecked. "&&" rather than ";" keeps
+  # readlink's own failure as the substitution's exit status.
+  cmd_link=$(readlink -- "$cmd_hop" && printf X) || refuse E_CMD_MISSING \
     "could not read the symbolic link '$cmd_hop' that the $BACKEND command '$resolved_cmd' points through, so where it leads cannot be established. A guard that cannot answer must refuse."
+  cmd_link=${cmd_link%X}
+  cmd_link=${cmd_link%$'\n'}
+  # A target that holds a line break is refused rather than carried, for the reason
+  # no_line_break gives: dirname and basename strip one too, so not_an_output_name would be
+  # answering about a sibling of the path the kernel actually uses. Measured against the
+  # previous commit, where the stripping happened silently: a chain whose first target ended
+  # in a newline was ACCEPTED with its hop at an output name in --out never looked at, and
+  # the cleanup then destroyed the earlier result sitting there -- by two routes, one making
+  # the walk's stopping point the command's own inode, so the "-ef" arrival check below was
+  # true, and one making it the command's own resolved path, so comparing resolved paths
+  # would have been true as well. No arrival check can see either; only keeping the target's
+  # bytes and refusing the line break can. With this refusal and the ones on $resolved_cmd
+  # above, every path the walk builds is free of newlines, so the dirname below is exact.
+  no_line_break "$cmd_link" "a symbolic-link target the $BACKEND command points through" E_CMD_MISSING
   case "$cmd_link" in
     /*) cmd_hop="$cmd_link" ;;
     *)  cmd_hop="$(dirname -- "$cmd_hop")/$cmd_link" ;;
@@ -298,17 +362,22 @@ while [ -L "$cmd_hop" ]; do
   not_an_output_name "$cmd_hop" "$OUT_ABS" "the $BACKEND command points through," E_CMD_MISSING
 done
 # The walk above ends on "[ -L ] is false", which means BOTH "this is the end of the chain"
-# and "this path could not be looked at" -- and the second one silently leaves every hop
-# after it unchecked, which is the fail-open shape this commit exists to remove, in the guard
-# added to remove it. Two ways to get there, both caller-built: a relative target is
-# concatenated rather than normalised, so a chain of long relative targets grows the path
-# string past PATH_MAX while the kernel still resolves the chain one target at a time
-# (measured: five hops of 960 characters end the walk at 4816 characters, with -x on the
-# command still passing); and a component or target ending in a newline loses it to "$( )",
-# sending the walk to a different path. So require that the walk arrived at the same file the
-# command actually is. -ef compares device and inode with links followed, so it is true
-# whenever the walk completed -- including when the command is not a link at all, where
-# cmd_hop is still the command -- and false exactly when the walk ended somewhere else.
+# and "this path could not be looked at" -- and the second silently leaves every hop after it
+# unchecked, which is the fail-open shape this guard exists to remove. One way to get there
+# is left once targets are carried exactly: a relative target is concatenated rather than
+# normalised, so a chain of long relative targets grows the path STRING past PATH_MAX while
+# the kernel still resolves the chain one target at a time (measured: five hops of 960
+# characters end the walk at 4816 characters, with -x on the command still passing). So
+# require that the walk arrived at the command's own file.
+# What this establishes, exactly, because the first version of this comment claimed more than
+# it does: -ef compares device and inode with links followed, so it is true whenever the walk
+# completed -- including when the command is not a link at all, where cmd_hop is still the
+# command -- and false whenever the path the walk stopped at cannot be stat'd, which is the
+# PATH_MAX case. It is NOT "false exactly when the walk ended somewhere else": a stopping
+# point that is the same file under another name, a hard link or a bind mount, passes it.
+# That is why the newline is refused up in the walk instead of being caught here -- a
+# measured bypass did exactly that -- and reaching this line at a stat-able wrong path now
+# needs the walk to lose information some other way than the two that were found.
 [ "$cmd_hop" -ef "$resolved_cmd" ] || refuse E_CMD_MISSING \
   "could not follow every link the $BACKEND command '$resolved_cmd' points through -- the walk ended at a path that is not the command's own file -- so the chain cannot be shown to stay clear of --out. A guard that cannot answer must refuse."
 # ...and where it ends up with every DIRECTORY component resolved as well. Being exact about
@@ -331,24 +400,10 @@ cmd_target=$(realpath -- "$resolved_cmd" 2>/dev/null) || refuse E_CMD_MISSING \
 
 TREE_ABS=$(realpath "$TREE")
 
-# A newline in the tree's path breaks two things, so it is refused rather than carried.
-# First, codex prints "workdir: <tree>" inside its own preamble, on a line ahead of the
-# "model:", "sandbox:" and "approval:" lines this script reads back from it, so such a path
-# lands inside the block the preamble check parses and could pass itself off as codex's own
-# report of how it ran. That path comes from the caller and not from the brief -- a caller who
-# wanted to lie could lie in --implementer-model just as cheaply -- so this closes a seam
-# rather than an attack, and the nonce check still bounds what the BRIEF can reach.
-# Second, and worse, the line above silently loses a TRAILING newline: "$( )" strips it along
-# with realpath's own, so a directory genuinely named "tree\n" resolves to the sibling path
-# "tree" and the run would fingerprint and review a different tree than the one named.
-# Checked: that is what happens, and the run reports no problem when the sibling exists.
-# Both are tested on $TREE as well as $TREE_ABS, because only $TREE still holds a newline the
-# substitution stripped. Refused on both backends: only codex has a preamble, but neither can
-# be given the wrong tree.
-case "$TREE$TREE_ABS" in
-  *$'\n'*) refuse E_TREE \
-    "the tree path contains a line break. Resolving it would quietly drop a trailing one and review a different directory, and on the codex backend such a path lands inside the block this script parses back out of codex's own preamble, where it could pass itself off as codex's report of the mode it ran in. Extract the commit somewhere whose path has no line break in it." ;;
-esac
+# The tree, for the third time in the same vein: $TREE was checked as given, and this is
+# what the line above resolved it to. Refused on both backends -- only codex has a preamble
+# to forge a line of, but neither backend can be given the wrong tree.
+no_line_break "$TREE_ABS" "the resolved --tree path" E_TREE
 
 # This script's own output inside the tree would show up as the tree changing, and read
 # as a reviewer that wrote to it. Keep them apart rather than explain the false alarm.
@@ -406,10 +461,17 @@ tree_fingerprint() {
 claude_settings_abs='' context_abs=''
 if [ "$BACKEND" = claude ]; then
   if [ -n "${SECOND_REVIEW_CLAUDE_SETTINGS:-}" ]; then
+    no_line_break "$SECOND_REVIEW_CLAUDE_SETTINGS" \
+      "the \$SECOND_REVIEW_CLAUDE_SETTINGS path" E_CLAUDE_SETTINGS
     [ -f "$SECOND_REVIEW_CLAUDE_SETTINGS" ] || refuse E_CLAUDE_SETTINGS \
       "\$SECOND_REVIEW_CLAUDE_SETTINGS names '$SECOND_REVIEW_CLAUDE_SETTINGS', which is not a file."
     claude_settings_abs=$(realpath "$SECOND_REVIEW_CLAUDE_SETTINGS") || refuse E_CLAUDE_SETTINGS \
       "could not resolve \$SECOND_REVIEW_CLAUDE_SETTINGS '$SECOND_REVIEW_CLAUDE_SETTINGS'."
+    # The file it is checked for and the file claude is handed must be the same one: without
+    # the test above, a name ending in a newline passed -f and then resolved to its SIBLING,
+    # which is the file the content allowlist read and the one claude got.
+    no_line_break "$claude_settings_abs" \
+      "the resolved \$SECOND_REVIEW_CLAUDE_SETTINGS path" E_CLAUDE_SETTINGS
     settings_verdict=$(python3 -I -c '
 import json, sys
 ALLOWED = {"awsCredentialExport", "apiKeyHelper"}
@@ -444,6 +506,8 @@ print("OK")
       "the settings file \$SECOND_REVIEW_CLAUDE_SETTINGS names," E_CLAUDE_SETTINGS
   fi
   if [ -n "${SECOND_REVIEW_CONTEXT_DIR:-}" ]; then
+    no_line_break "$SECOND_REVIEW_CONTEXT_DIR" \
+      "the \$SECOND_REVIEW_CONTEXT_DIR path" E_CONTEXT_DIR
     [ -d "$SECOND_REVIEW_CONTEXT_DIR" ] || refuse E_CONTEXT_DIR \
       "\$SECOND_REVIEW_CONTEXT_DIR names '$SECOND_REVIEW_CONTEXT_DIR', which is not a directory."
     # Searchable is the hard requirement: without it nothing inside can be opened at all,
@@ -461,6 +525,9 @@ print("OK")
       "\$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR' can be searched but cannot be listed, so a file the brief names by its full path still reads, while the reviewer's Glob finds nothing there and its Grep searches only a file it is given by full path."
     context_abs=$(realpath "$SECOND_REVIEW_CONTEXT_DIR") || refuse E_CONTEXT_DIR \
       "could not resolve \$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR'."
+    # As for the settings file: the directory checked and the directory handed to --add-dir
+    # have to be the same one, and a trailing newline is where they came apart.
+    no_line_break "$context_abs" "the resolved \$SECOND_REVIEW_CONTEXT_DIR path" E_CONTEXT_DIR
     # Compare against a prefix that always ends in exactly one slash. The obvious
     # "$dir"/* is wrong when the directory is "/", because realpath returns that with
     # its own trailing slash and the pattern becomes //*, which matches no ordinary
@@ -510,8 +577,11 @@ mkdir -p "$OUT_ABS"
 #     message. The same for a full disk, and the same later at tree-at-return.sha256;
 #   * becoming unwritable after the baseline fingerprint, claude path: the next thing is the
 #     mktemp for the reviewer's working directory, which IS guarded -- E_NO_CWD;
-#   * a redirection failing at the backend call lands in run_status, so it is reported as
-#     E_RUN_FAILED and reads as the backend's fault rather than --out's;
+#   * a redirection failing at the backend call lands in run_status -- but that is reported
+#     as E_RUN_FAILED, and reads as the backend's fault rather than --out's, only if --out is
+#     writable again by then: the next thing after the call is the tree-at-return
+#     fingerprint, whose own redirection fails for the same reason and ends the run untagged
+#     under set -e before the run_status check is reached;
 #   * an --out that mkdir -p above cannot create at all is untagged too.
 #
 # None of these records a review, and none of them removes anything from the tree. Tagging
