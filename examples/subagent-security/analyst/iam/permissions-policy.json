@@ -1,0 +1,40 @@
+{
+  "_comment": [
+    "Everything the analyst's trusted controller may do in AWS, shared by every Subagent",
+    "security sample. A setup script drops this key and fills in <BUCKET> and the Bedrock",
+    "<MODEL_RESOURCES> list, which it reads from the configured inference profile.",
+    "",
+    "The prefixes are what make the page's refusals real rather than arranged: reading a",
+    "proposal is allowed, overwriting one is not, and another case's objects are outside",
+    "every Resource here. s3:PutObject is granted on the reports prefix only, so the",
+    "controller can save a recommendation and cannot change a source document.",
+    "",
+    "The restricted tool roles have no AWS role at all. They are processes inside the",
+    "pod, not pods of their own, so they have no Pod Identity association, and the",
+    "sample shows them refused the projected token file and the Pod Identity endpoint."
+  ],
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadTheProposalsAndTheReports",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject"],
+      "Resource": [
+        "arn:aws:s3:::<BUCKET>/proposals/rfp-001/*",
+        "arn:aws:s3:::<BUCKET>/reports/rfp-001/*"
+      ]
+    },
+    {
+      "Sid": "WriteTheReportsOnly",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject"],
+      "Resource": "arn:aws:s3:::<BUCKET>/reports/rfp-001/*"
+    },
+    {
+      "Sid": "InvokeTheConfiguredModel",
+      "Effect": "Allow",
+      "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+      "Resource": "<MODEL_RESOURCES>"
+    }
+  ]
+}

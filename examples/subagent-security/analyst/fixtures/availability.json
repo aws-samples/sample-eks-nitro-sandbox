@@ -1,0 +1,5 @@
+{
+  "northstar": { "available": true, "lead_time_note": "stock confirmed for the quoted quantity" },
+  "harbor": { "available": true, "lead_time_note": "stock confirmed, shipped from a single depot" },
+  "cedar": { "available": true, "lead_time_note": "stock confirmed, expedited freight included" }
+}
