@@ -515,11 +515,22 @@ takes every command from the environment.
 - **No Ingress, LoadBalancer or NodePort.** Reach a service with ClusterIP and
   `kubectl port-forward`. Why: a sample must never put a public endpoint on a reader's
   account.
-- **Restrict the egress of every sandbox that has a network with a network policy, and
-  show the whole policy on the page.** Why: the policy is what limits where code in the
-  sandbox can connect, so a reader needs to see every rule. A sandbox booted with
-  `sandbox.amazonaws.com/network-isolated: "true"` has no network to restrict; show that
-  instead.
+- **A new sample ships no network policy; only the dedicated sample does.** A new sample
+  has no network policy section on its page either; where a reader would want the
+  mechanism, link to `examples/isolation/network-policy`. Why: one page that shows every
+  rule of one policy teaches it better than a section repeated in every sample, and a
+  sample's own subject is what its page should be about. Set by the maintainers on
+  2026-10-26. The samples merged before that date keep the policies they were proved
+  with, so their pages are not the pattern to copy on this point.
+- **Say only what your sample actually limits.** Without a policy, a sandbox that has a
+  network can reach it, so a page must not write or imply that a workload cannot reach
+  the network, or that its reach is restricted, unless something in the sample restricts
+  it. A sandbox booted with `sandbox.amazonaws.com/network-isolated: "true"` has no
+  network at all; show that instead, because it is a property of the sandbox rather than
+  a claim about a policy. Where the boundary that matters is an IAM role through EKS Pod
+  Identity, scope it to what the sample needs and show it. Why: the egress rule used to
+  carry this, and removing the rule must not leave a page claiming a limit nothing
+  enforces.
 - **No values from your own account or environment in tracked files**: no account IDs,
   keys, tokens, names of your clusters or hosts, user names or internal URLs. The only
   exceptions are the internal values in
@@ -776,7 +787,7 @@ usually conflicts in those files.
 | Skill | Use it to |
 |---|---|
 | `sample-spec` | Write a new sample's spec as a GitHub issue, before any implementation. |
-| `sample-page` | Build the sample and write its page: layout, stages, network policy section, clean up, nav entry and roadmap update. |
+| `sample-page` | Build the sample and write its page: layout, stages, what to say about the network and what to link, clean up, nav entry and roadmap update. |
 | `nitro-sandbox-pods` | Get the facts right about how a Nitro sandbox pod works, in `isolated-sandbox` and `confidential-sandbox` mode, and how a sample proves it ran in one. |
 | `aws-diagrams` | Draw draw.io architecture diagrams in the style of the existing figures, exported to PNG. |
 | `slack-updates` | Post a status update to the maintainers' Slack channel, checked and confirmed, using the local settings a maintainer gives you. |
