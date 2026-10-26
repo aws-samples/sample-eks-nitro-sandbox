@@ -139,6 +139,14 @@ and for a labelled edge `fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Ar
 
 Colour and dash carry meaning, so use them only as the table says.
 
+The rows for a policy control, a refused destination and a refused edge apply where the
+sample includes a network policy or any other policy: a Cedar policy in the guest, an IAM
+policy, a KMS key policy, an admission policy. Those are what make the refusal true, so the
+figure shows it as above. Where a sample includes no policy, those elements do not arise and
+the figure has none to draw. A pod booted with
+`sandbox.amazonaws.com/network-isolated: "true"` has no network at all, so its "no route
+out" comes from the sandbox rather than from a policy, and is drawn as the table says.
+
 **Routing:** segments are horizontal or vertical. Anchor both ends (`exitX`, `exitY`, `entryX`,
 `entryY`, plus `exitDx`/`entryDx` for a few pixels' nudge) and give every bend as a waypoint in
 `<Array as="points">`, so draw.io draws the route you planned instead of inventing one. NP's
