@@ -1,5 +1,6 @@
 # OPTIONAL variant: the sandboxed client for the hostname-egress (ApplicationNetworkPolicy)
-# comparison. Identical to client-standard-dns, differing only in the one line below.
+# comparison. Identical to client-standard-dns (including its hardening), differing only in
+# the one line below.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -8,11 +9,23 @@ metadata:
     app: netpol-client-dns      # the SAME label the policy selects on client-standard-dns
 spec:
   runtimeClassName: isolated-sandbox   # <-- the only field that differs
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
   containers:
     - name: client
       image: public.ecr.aws/docker/library/alpine:3.20
       imagePullPolicy: IfNotPresent
       command: ["sh", "-c", "sleep infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
       resources:
         requests: { cpu: "250m", memory: 128Mi }
         limits:   { cpu: "500m", memory: 256Mi }

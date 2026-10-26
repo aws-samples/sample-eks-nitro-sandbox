@@ -96,7 +96,46 @@ if [[ "$b_std_allowed" != reached || "$b_std_blocked" != reached \
 fi
 
 say "Apply the ApplicationNetworkPolicy (allows $ALLOWED_HOST by name)"
-COREDNS_IP="$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')"
+# The cluster's DNS address is the kubelet's clusterDNS, the nameserver pods are given. On EKS
+# Auto Mode CoreDNS runs locally on each instance, at an address derived from the cluster's
+# service CIDR that is fixed for the life of the cluster. The kube-dns Service does exist there
+# and carries that same ClusterIP -- where every node is Auto Mode it has no endpoints, because
+# CoreDNS is on the node and the coredns Deployment is scaled to zero -- and the EKS User Guide derives the address from serviceIpv4Cidr; all
+# three reads agree. This one reads the kubelet, the value actually handed to the pod, which
+# needs "list" on nodes and "get" on nodes/proxy. Nodes are replaced often and a node on its way
+# out does not answer, so try the Ready nodes in turn, each with a short timeout, and keep the
+# first node whose clusterDNS[0] -- what the sed below captures -- is an IPv4 address. Sets
+# COREDNS_IP, DNS_NODE (the node that answered) and DNS_TRIED (the nodes asked, in order).
+read_cluster_dns() {
+  local node ip nodes
+  COREDNS_IP="" DNS_NODE="" DNS_TRIED=""
+  nodes="$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+    | awk '$2 == "True" {print $1}')" || nodes=""
+  for node in $nodes; do
+    DNS_TRIED="${DNS_TRIED:+$DNS_TRIED }$node"
+    ip="$(kubectl get --raw "/api/v1/nodes/$node/proxy/configz" --request-timeout=10s \
+      | sed -n 's/.*"clusterDNS":\["\([^"]*\)".*/\1/p')" || ip=""
+    if [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+      COREDNS_IP="$ip" DNS_NODE="$node"
+      return 0
+    fi
+    printf '%s\n' "  node $node: no IPv4 clusterDNS (read '${ip}'), skipping"
+  done
+  return 1
+}
+if ! read_cluster_dns; then
+  printf '%s\n' "ERROR: could not read the cluster DNS address: none of the Ready nodes answered with an IPv4 clusterDNS."
+  printf '%s\n' "Ready nodes tried: ${DNS_TRIED:-<no Ready node found>}"
+  printf '%s\n' "It comes from kubeletconfig.clusterDNS in:"
+  printf '%s\n' "  kubectl get --raw /api/v1/nodes/<node>/proxy/configz"
+  printf '%s\n' "Reading it needs 'list' on nodes (to find the Ready ones) and 'get' on nodes/proxy."
+  printf '%s\n' "Without that, read the same address from the kube-dns Service:"
+  printf '%s\n' "  kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'"
+  printf '%s\n' "then render deploy/app-egress-policy.yaml yourself with BOTH <COREDNS_IP> and"
+  printf '%s\n' "<AWS_REGION> filled in, since this variant's policy carries the Region too."
+  printf '%s\n' "Applied no policy."
+  exit 1
+fi
 sed -e "s|<COREDNS_IP>|$COREDNS_IP|" -e "s|<AWS_REGION>|$AWS_REGION|" \
   "$DEPLOY/app-egress-policy.yaml" | kubectl apply -f -
 printf 'Waiting for the netpol-client-dns-egress PolicyEndpoint ...\n'
