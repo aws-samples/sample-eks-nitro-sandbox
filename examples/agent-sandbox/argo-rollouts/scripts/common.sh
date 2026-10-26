@@ -18,22 +18,34 @@ ORDINARY_POD=ordinary-pod
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAMPLE_DIR="$(cd "$HERE/.." && pwd)"
 
-# grep and sed are checked HERE, before .env is read, and not left to
-# require_commands further down. The parser below pipes through both inside a
-# process substitution, where a failure does not trip `set -e`: a missing grep
-# would silently leave .env unread, and the run would then use the default
-# namespace and whatever context the machine happens to be on. Every other
-# missing command fails the run; this one would have changed which cluster was
-# targeted, which is the one failure that must not be quiet.
-for _c in grep sed; do
-  command -v "$_c" >/dev/null 2>&1 \
-    || { echo "error: missing required command: $_c, which is needed to read .env; refusing to fall back to the default namespace and the machine's current context" >&2; exit 1; }
-done
-
 # Load .env if present, as defaults. A value already set in the environment wins
 # over .env, so `NAMESPACE=other ./scripts/setup.sh` overrides the file.
+#
+# This parses with bash builtins only, reading the file through a plain
+# redirect, and deliberately uses NO pipeline and NO process substitution. In
+# `< <(grep ... | sed ...)` a failure does not trip `set -e` and does not reach
+# the loop: an unreadable file, or a missing grep, simply delivers nothing, and
+# the run then falls back to the default namespace and whatever context the
+# machine happens to be on. That is the one failure that must never be quiet,
+# because it changes which cluster is targeted. A redirect from a file that
+# cannot be read fails the command, so `set -e` stops the run; the explicit test
+# below says why rather than leaving a bare redirect error.
 if [[ -f "$SAMPLE_DIR/.env" ]]; then
-  while IFS='=' read -r _k _v; do
+  [[ -r "$SAMPLE_DIR/.env" ]] \
+    || { echo "error: $SAMPLE_DIR/.env exists but cannot be read; refusing to fall back to the default namespace and the machine's current context" >&2; exit 1; }
+  # `|| [[ -n "$_line" ]]` so a final line with no newline is still read.
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    # Trim surrounding whitespace, then skip blanks and whole-line comments. An
+    # inline "#" is NOT treated as a comment: it would silently truncate a value
+    # that legitimately contains one.
+    _line="${_line#"${_line%%[![:space:]]*}"}"
+    _line="${_line%"${_line##*[![:space:]]}"}"
+    [[ -z "$_line" || "$_line" == '#'* ]] && continue
+    [[ "$_line" != *=* ]] && continue
+    _k="${_line%%=*}"
+    _v="${_line#*=}"
+    _k="${_k%"${_k##*[![:space:]]}"}"
+    _v="${_v#"${_v%%[![:space:]]*}"}"
     case "$_k" in
       NAMESPACE)      NAMESPACE="${NAMESPACE:-$_v}" ;;
       KUBE_CONTEXT)   KUBE_CONTEXT="${KUBE_CONTEXT:-$_v}" ;;
@@ -41,8 +53,7 @@ if [[ -f "$SAMPLE_DIR/.env" ]]; then
       AWS_REGION)     AWS_REGION="${AWS_REGION:-$_v}" ;;
       PLUGIN_REPO)    PLUGIN_REPO="${PLUGIN_REPO:-$_v}" ;;
     esac
-  done < <(grep -E '^[[:space:]]*(NAMESPACE|KUBE_CONTEXT|ARGO_NAMESPACE|AWS_REGION|PLUGIN_REPO)[[:space:]]*=' "$SAMPLE_DIR/.env" \
-             | sed -E 's/^[[:space:]]*//; s/[[:space:]]*=[[:space:]]*/=/')
+  done < "$SAMPLE_DIR/.env"
 fi
 
 NAMESPACE="${NAMESPACE:-argo-rollouts-sample}"
@@ -451,31 +462,86 @@ pool_sandbox_revisions() {
   printf '%s' "$out" | grep -v '^$' | sort -u || true
 }
 
+# pool_sandbox_revisions_each / pool_hashes_each : ONE LINE PER POOL SANDBOX,
+# holding that sandbox's revision marker (or template hash) followed by a "|".
+# Unlike the de-duplicated readings above, these neither drop the sandboxes that
+# reported nothing nor collapse duplicates, which is what lets a caller tell
+# "every sandbox reported" apart from "the ones that reported agree".
+#
+# The trailing "|" is load-bearing. A missing value has to stay visible, and a
+# bare empty line cannot do that: `$(...)` strips trailing newlines, so a pool
+# whose LAST sandbox had no marker would come back indistinguishable from one
+# with no such sandbox at all. With the delimiter every line is non-empty, so
+# nothing is lost, and "|" on its own means "this sandbox reported nothing".
+pool_sandbox_revisions_each() {
+  local sel out rc=0
+  sel="$(pool_selector)" || return 1
+  out="$(kc get sandbox -l "$sel" \
+    -o "jsonpath={range .items[*]}{.spec.podTemplate.spec.containers[0].env[?(@.name=='$REVISION_ENV')].value}{\"|\\n\"}{end}" 2>/dev/null)" || rc=$?
+  [[ $rc -ne 0 ]] && return 1
+  printf '%s' "$out"
+}
+
+pool_hashes_each() {
+  local sel out rc=0
+  sel="$(pool_selector)" || return 1
+  out="$(kc get sandbox -l "$sel" \
+    -o "jsonpath={range .items[*]}{.metadata.labels.$LABEL_TEMPLATE_HASH_JP}{\"|\\n\"}{end}" 2>/dev/null)" || rc=$?
+  [[ $rc -ne 0 ]] && return 1
+  printf '%s' "$out"
+}
+
+# all_agree_on <expected> : read "<value>|" lines on standard input, one per
+# sandbox, and succeed only when there is at least one, none of them is empty,
+# and all of them equal <expected>. With <expected> empty, any single shared
+# value will do.
+#
+# This is the check that stops a pool holding one pod at the new revision and one
+# that reported nothing from looking converged.
+all_agree_on() {
+  local expected="${1:-}" line val first="" n=0
+  while IFS= read -r line; do
+    val="${line%|}"
+    [[ -z "$val" ]] && return 1           # a sandbox that reported nothing
+    n=$((n + 1))
+    [[ -z "$first" ]] && first="$val"
+    [[ "$val" == "$first" ]] || return 1  # two sandboxes disagree
+  done
+  ((n > 0)) || return 1                   # no sandboxes at all
+  [[ -z "$expected" || "$first" == "$expected" ]]
+}
+
 # pool_is_current : 0 when every pool sandbox booted with the revision the
 # template now holds, 1 when at least one did not, and 2 when that could not be
 # determined. A pool with no sandboxes at all is NOT current (1): there is
-# nothing warm, so the re-warm half of the drain still has work to do.
+# nothing warm, so the re-warm half of the drain still has work to do, and
+# neither is a pool holding a sandbox whose marker could not be read.
 pool_is_current() {
-  local want revs count
+  local want each
   want="$(template_revision)" || return 2
-  revs="$(pool_sandbox_revisions)" || return 2
-  count="$(printf '%s' "$revs" | grep -c . || true)"
-  [[ "$count" == "1" && "$revs" == "$want" ]]
+  each="$(pool_sandbox_revisions_each)" || return 2
+  all_agree_on "$want" <<<"$each"
 }
 
 # wait_pool_warm <timeout-s> : wait until readyReplicas meets spec.replicas with
 # one consistent template hash across the pool. Every read fails closed: a read
 # that failed leaves the loop waiting rather than concluding the pool is warm.
 wait_pool_warm() {
-  local timeout=${1:-900} ready want hashes count
+  local timeout=${1:-900} ready want each hashes count agreed
   local deadline=$((SECONDS + timeout))
   while :; do
     ready="$(pool_ready_replicas)" || ready=""
     want="$(pool_spec_replicas)" || want=""
+    # The hash condition is "every pool sandbox carries the same, non-empty
+    # hash", not "the hashes I could read were all the same": a sandbox with no
+    # hash label yet is one that has not converged.
+    each="$(pool_hashes_each)" || each=""
+    agreed=1
+    [[ -n "$each" ]] && { all_agree_on "" <<<"$each" && agreed=0; }
     hashes="$(pool_template_hashes)" || hashes=""
     count="$(printf '%s' "$hashes" | grep -c . || true)"
     if [[ -n "$ready" && -n "$want" && "$ready" == "$want" && "$ready" != "0" \
-          && "$count" == "1" ]]; then
+          && "$agreed" -eq 0 ]]; then
       return 0
     fi
     printf '  readyReplicas=%s/%s  distinct template hashes=%s\n' \

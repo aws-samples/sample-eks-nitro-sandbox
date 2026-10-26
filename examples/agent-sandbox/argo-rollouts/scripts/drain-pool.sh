@@ -102,8 +102,13 @@ fi
 echo "[drain] spec.replicas=$want (will scale to 0, then back to $want)"
 
 # --- 2) scale to zero -------------------------------------------------------
-kc patch sandboxwarmpool "$POOL" --type=merge -p '{"spec":{"replicas":0}}' >/dev/null
+# RESTORE_TO is armed BEFORE the patch, not after it. Between the patch and the
+# assignment there is a window in which an INT or a TERM would leave the trap
+# with no restore target and the pool at zero. Arming it first closes that
+# window: if the patch never lands, the trap's restore is a patch back to the
+# value the pool already has, which is a harmless no-op.
 RESTORE_TO="$want"
+kc patch sandboxwarmpool "$POOL" --type=merge -p '{"spec":{"replicas":0}}' >/dev/null
 echo "[drain] patched spec.replicas=0; waiting for the pool to empty (timeout ${DRAIN_TIMEOUT_SECS}s)"
 
 deadline=$((SECONDS + DRAIN_TIMEOUT_SECS))

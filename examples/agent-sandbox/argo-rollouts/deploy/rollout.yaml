@@ -78,6 +78,12 @@ spec:
             config:
               namespace: __NAMESPACE__
               pool: rollout-agent-pool
+              # The revision every pool sandbox must have booted with before the
+              # step is done. Without it the step could only check that the pool
+              # agrees with ITSELF on one template hash, which a pool still
+              # uniformly on the OLD template also satisfies: that is the very
+              # state the drain exists to leave behind.
+              revision: __REVISION__
               # Wait for the pool's sandboxes to carry the template hash the
               # controller computes for the patched template, not just for
               # readyReplicas to come back. Without this a pool that has only

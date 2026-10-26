@@ -56,9 +56,9 @@ patch-then-drain progression from an Argo Rollouts canary timeline.
   `sandbox.amazonaws.com/network-isolated: "true"`, so they have no network to restrict and
   the sample ships no network policy.
 
-*Figure 1: Rolling a SandboxTemplate change through a warm pool with Argo Rollouts. The controller stays an ordinary pod and runs the step plugin in process; its first plugin step patches the SandboxTemplate and its second drains and re-warms the SandboxWarmPool, so a later SandboxClaim adopts a pod booted from the new template.*
+*Figure 1: Rolling a SandboxTemplate change through a warm pool with Argo Rollouts. The controller stays an ordinary pod and runs the step plugin in-process; notice that patching the template and draining the pool are two separate steps, because the patch alone leaves the already-warm pods on the old revision.*
 
-![TODO: alt text from the figure](images/figure-1-argo-rollouts.png)
+![Inside an AWS Cloud frame sits an Amazon EKS cluster. On the left of the cluster, a box labelled argo-rollouts controller pod, an ordinary pod with no runtimeClassName, holds the Argo Rollouts controller, which runs the step plugin in-process. Two arrows leave the controller. The first, labelled 1. patch the revision marker, goes up and to the right to a SandboxTemplate named rollout-agent. The second, labelled 3. drain and re-warm the pool, goes down and to the right to a SandboxWarmPool named rollout-agent-pool. From the SandboxTemplate, an arrow labelled warm pods boot from the template as it stands runs right and then down into a red Nitro sandbox pods frame, marked isolated-sandbox plus network-isolated, which holds three boxes each labelled warm pod. From the SandboxWarmPool, a short arrow labelled keeps replicas booted points right into that same frame. At the bottom left, a SandboxClaim made after the rollout sends a long arrow right and then up into one of the warm pods, labelled adopts a pre-booted pod, at the revision the pool last re-warmed at. A note below the figure says that patching the template alone does not reboot the pool, because pods already warm keep the revision they booted with, so a claim made after the patch can adopt a stale pod, and that the drain step replaces them and the warm pods have no network besides loopback.](images/figure-1-argo-rollouts.png)
 
 ## Versions
 
@@ -495,11 +495,13 @@ metadata:
     sandbox.amazonaws.com/network-isolated: "true"
 ```
 
-The guest then comes up with only loopback: no route out, no DNS, no instance metadata and
-no Pod Identity credentials. There is no egress for a network policy to allow or deny, so
-this sample ships none, and the `SandboxTemplate` leaves `networkPolicyManagement` at its
-default because the pod has no interface for a policy to apply to. Rather than assert that,
-here it is read from the claimed pod, with the ordinary pod beside it:
+The guest then comes up with only loopback: no route out and no DNS. This sample ships no
+network policy, because a pod with no network interface gives a policy nothing to allow or
+deny. For a sandbox that does have a network, and how to restrict where it can reach, see
+the [network policy](../../isolation/network-policy/README.md) sample.
+
+Rather than assert the isolation, here it is read from the claimed pod, with the ordinary
+pod beside it:
 
 ```bash
 kubectl -n argo-rollouts-sample exec rollout-agent-pool-n4987 -- sh -c 'ip -o addr; ip route'
