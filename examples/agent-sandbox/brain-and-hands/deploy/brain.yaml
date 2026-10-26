@@ -1,0 +1,74 @@
+# The brain: an ordinary pod, with model access and no shell of its own.
+#
+# There is no runtimeClassName here on purpose. The brain is not sandboxed: it
+# reasons, and it holds the credentials, so it is the part that has a network.
+# The sandbox is the OTHER pod. What keeps a prompt injection from turning code
+# execution into exfiltration is that the two are different pods: this one can
+# reach Amazon Bedrock but has no tool that runs a command locally, and the one
+# it runs commands in has no network at all.
+#
+# ./scripts/setup.sh fills in <NAMESPACE>, <BRAIN_IMAGE>, <AWS_REGION> and
+# <BEDROCK_MODEL_ID> at apply time. Never apply this file with a placeholder in
+# place.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brain
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: brain-and-hands
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: brain
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: brain-and-hands
+        # What the Deployment's own selector matches.
+        app: brain
+    spec:
+      serviceAccountName: brain
+      # No <SERVICE>_HOST/_PORT variables injected into the agent's environment.
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: brain
+          image: <BRAIN_IMAGE>
+          imagePullPolicy: IfNotPresent
+          # Idle. You drive the agent yourself with kubectl exec, so nothing
+          # this sample shows depends on a loop running here.
+          command: ["sleep", "infinity"]
+          env:
+            # Send the agent's model calls to Amazon Bedrock. The credentials
+            # come from the EKS Pod Identity association on this pod's
+            # ServiceAccount, resolved by the AWS SDK's default chain.
+            - { name: CLAUDE_CODE_USE_BEDROCK, value: "1" }
+            - { name: AWS_REGION,              value: <AWS_REGION> }
+            - { name: AWS_DEFAULT_REGION,      value: <AWS_REGION> }
+            - { name: ANTHROPIC_MODEL,         value: <BEDROCK_MODEL_ID> }
+            # Read by brain/sandbox_tool.py. The pool it claims from and the
+            # namespace it claims in are configuration, never tool arguments,
+            # so the model cannot point the tool somewhere else.
+            - { name: HANDS_NAMESPACE, value: <NAMESPACE> }
+            - { name: HANDS_WARMPOOL,  value: hands-pool }
+            - { name: HANDS_CLAIM,     value: brain-session }
+            - { name: HANDS_CONTAINER, value: hands }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          # No CPU or memory requests or limits: the brain is an ordinary pod,
+          # and what it needs is whatever model client you put in it.
+          #
+          # No volumes either. The image's own /workspace and /home/agent are
+          # writable by the user the container runs as, which is where the agent
+          # keeps its session state and where the sandbox tool stages a file on
+          # its way into or out of the hands. An emptyDir over /home/agent would
+          # hide the agent configuration the image bakes in there.
