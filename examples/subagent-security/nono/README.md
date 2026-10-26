@@ -73,7 +73,7 @@ governs, including the supplier key and nono's own proxy, sits inside the sandbo
 
 *Figure 1: The two boundaries around the analyst. The Nitro sandbox holds the whole pod,
 including nono's proxy and the supplier key; inside it, each tool role runs under its own
-nono profile, and only the trusted controller reaches AWS.*
+nono profile, and only the trusted controller holds AWS credentials.*
 
 ![An AWS Cloud frame holds an Amazon EKS cluster frame. Inside the cluster, a red Nitro sandbox frame labelled runtimeClassName colon isolated-sandbox contains an Analyst pod box. In that box a trusted controller sits on the left, described as owning AWS and the profiles, with three arrows running right, labelled starts each role under its profile, to three container icons: a Reader with one proposal and GET only, an Evaluator with no network, and a Writer with a draft POST allowed. The Reader and the Writer each have an arrow to a red nono proxy that holds the supplier key, which is still inside the Analyst pod and so still inside the sandbox. One arrow leaves the proxy, labelled approved host and operation, and reaches a Supplier API icon in a separate Supplier API pod box outside the sandbox frame, marked an ordinary pod and ClusterIP only. A red dashed arrow runs from the Writer to that same Supplier API, labelled direct connection refused, which is the probe in which a role's own connection to that address was refused. Two more arrows leave the trusted controller on its left side, pass below every frame and reach Amazon Bedrock, for the model turn, and Amazon S3, holding the proposals and reports; they are labelled EKS Pod Identity, and no arrow to either service starts at a tool role.](images/subagent-security-nono.png)
 
@@ -531,8 +531,8 @@ of [`policies/writer.json`](policies/writer.json):
         }
 ```
 
-The host it may reach at all is one entry, `allow_domain`, naming the approved Service name
-and its port:
+The host the proxy will forward to is one entry, `allow_domain`, naming the approved
+Service name and its port:
 
 ```json
     "allow_domain": [
