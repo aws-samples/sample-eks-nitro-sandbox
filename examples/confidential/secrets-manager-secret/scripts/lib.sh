@@ -80,6 +80,29 @@ verify_key_policy() {
     die "the live KMS key policy is not the gate this sample installs (read back into $TMP_DIR/kms-key-policy.live.json). A denial only means the measurement was refused if the gate that produced it is the gate we believe is there."
 }
 
+# Was this pod's failure an authorization denial of kms:Decrypt, and not of something else?
+#
+# Both refusal claims in this sample rest on it, so it is one predicate rather than a copy in
+# each script. Two conditions, and the second is the one that earns its place:
+#
+#   * the authorization wording. A non-zero exit on its own is not enough, because
+#     throttling, a network failure and an expired credential all produce one.
+#   * the wording has to name the DECRYPT operation. The log a caller passes here mixes the
+#     application's own output with the guest's container message, and the application reads
+#     the secret before it decrypts, so an AccessDenied on secretsmanager:GetSecretValue --
+#     or on any other call made on the way -- would otherwise satisfy the first condition and
+#     be reported as the measurement being refused. botocore puts the operation name in the
+#     message ("when calling the Decrypt operation"), and because the read happens first, an
+#     error naming Decrypt also establishes that the ciphertext read had already succeeded.
+#
+#   assert_decrypt_denial <logfile> <what-to-read-on-failure>
+assert_decrypt_denial() {
+  grep -Eiq 'AccessDenied|not authorized|explicit deny' "$1" ||
+    die "the pod failed, but not with an authorization denial, so the refusal cannot be attributed to the attestation condition. $2"
+  grep -Eiq 'calling the Decrypt operation' "$1" ||
+    die "the pod was refused, but the denial does not name the Decrypt operation, so it was something other than kms:Decrypt that was refused and this run does not show the gate refusing the measurement. $2"
+}
+
 # The generator prints the measurement it predicts for a policy, under a header line, and a
 # ready-to-paste KMS condition after it. Take the first 96-hex-character line after the
 # header: a SHA-384, which is what the agent extends into PCR17 (Amazon EKS User Guide,

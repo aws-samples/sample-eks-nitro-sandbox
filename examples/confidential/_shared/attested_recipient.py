@@ -215,7 +215,24 @@ class AttestedRecipient:
         }
 
     def unwrap(self, ciphertext_for_recipient: bytes) -> bytes:
-        """Return the plaintext KMS encrypted to this recipient's public key."""
+        """Return the plaintext KMS encrypted to this recipient's public key.
+
+        A malformed structure is refused as a ValueError, whatever shape the malformation
+        takes. The checks in `_unwrap_cms` raise ValueError themselves, but reaching them
+        means walking a structure that arrived over the network, and an absent or
+        wrong-typed ASN.1 field surfaces as whatever the parser raises instead -- a
+        TypeError or an AttributeError from subscripting a value that is not a mapping.
+        This helper is shared, so those are turned into the one exception every caller
+        already has to handle: a consumer that catches ValueError must not be brought down
+        by a field it never asked about.
+        """
         if self._private_key is None:
             raise RuntimeError("AttestedRecipient must be used as a context manager")
-        return _unwrap_cms(self._private_key, ciphertext_for_recipient)
+        try:
+            return _unwrap_cms(self._private_key, ciphertext_for_recipient)
+        except ValueError:
+            raise
+        except (TypeError, AttributeError, KeyError, IndexError) as error:
+            raise ValueError(
+                f"KMS CMS envelope is malformed: {type(error).__name__}: {error}"
+            ) from error

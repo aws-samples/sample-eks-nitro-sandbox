@@ -129,9 +129,11 @@ echo
 [[ "$phase" == Failed ]] ||
   die "the changed pod ended $phase, so the gate released the secret to a measurement it was not set to expect"
 # "attested-secret-error" on its own is only the application saying something went wrong:
-# throttling, a network error and an expired credential all wear it. The authorization
-# wording is what the attestation condition, and only it, produces here.
-grep -Eiq 'AccessDenied|not authorized|explicit deny' "$TMP_DIR/changed-pod.log" ||
-  die "the changed pod failed, but not with an authorization denial, so this run does not show the gate refusing the measurement. Output above; full pod in: kubectl -n $NAMESPACE describe pod $CHANGED_POD_NAME"
+# throttling, a network error and an expired credential all wear it. The shared predicate
+# requires the authorization wording AND that it names the Decrypt operation, so an
+# AccessDenied on the Secrets Manager read on the way there is not counted as the
+# measurement being refused.
+assert_decrypt_denial "$TMP_DIR/changed-pod.log" \
+  "Output above; full pod in: kubectl -n $NAMESPACE describe pod $CHANGED_POD_NAME"
 echo "The changed pod was refused the secret by KMS and ended Failed."
 echo "Delete it before you finish with the sample:  ./scripts/changed-pod.sh --delete"

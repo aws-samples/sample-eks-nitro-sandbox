@@ -7,7 +7,7 @@ admission_policy: |+
       resource == Workload::Container::"main"
   )
   when {
-      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:8ed32283b06ae41ed8df79579c07f62cf0ccc3304c7bcf2504a999219294145f" &&
+      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:c67229b7a5746d197790ad49771cecd8c2b624f6b9221e647f9785d130eacc61" &&
       context.working_dir == "/app" &&
       context.run_as_user == 65534 &&
       context.run_as_group == 65534 &&
@@ -90,12 +90,12 @@ admission_policy: |+
                            {"name": "AWS_REGION", "value": "us-west-2"},
                            {"name": "AWS_DEFAULT_REGION", "value": "us-west-2"},
                            {"name": "SECRET_ID",
-                            "value": "arn:aws:secretsmanager:us-west-2:<ACCOUNT_ID>:secret:secrets-manager-secret-sample-SgiigM"},
+                            "value": "arn:aws:secretsmanager:us-west-2:<ACCOUNT_ID>:secret:secrets-manager-secret-sample-vdni3W"},
                            {"name": "KMS_KEY_ARN",
-                            "value": "arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/bf3ff5d0-1422-4408-a68b-9b050b9a3ccc"},
+                            "value": "arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/9282764e-13d9-4dd3-ae75-38bef7dafc42"},
                            {"name": "EXPECTED_LENGTH", "value": "64"},
                            {"name": "EXPECTED_SHA256",
-                            "value": "0599fedcb8b9c45422761d6479d1527025c66879a801280021455ad1a240e468"},
+                            "value": "edf39a9839691fd8c71e9b5544fb13bc699313f45627333f072b472e04e5dfc5"},
                            {"name": "DEMO_VARIANT", "value": "approved"},
                            {"name": "AWS_STS_REGIONAL_ENDPOINTS",
                             "value": "regional"},
@@ -132,14 +132,14 @@ admission_policy: |+
       context.ecs_exec_enabled
   };
   
-  // PrepareImage: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:8ed32283b06ae41ed8df79579c07f62cf0ccc3304c7bcf2504a999219294145f
+  // PrepareImage: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:c67229b7a5746d197790ad49771cecd8c2b624f6b9221e647f9785d130eacc61
   permit(
       principal,
       action == Agent::Action::"PrepareImage",
       resource
   )
   when {
-      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:8ed32283b06ae41ed8df79579c07f62cf0ccc3304c7bcf2504a999219294145f"
+      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:c67229b7a5746d197790ad49771cecd8c2b624f6b9221e647f9785d130eacc61"
   };
   
   

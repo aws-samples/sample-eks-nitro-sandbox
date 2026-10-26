@@ -769,8 +769,8 @@ grep -Eq '^secret:[[:space:]]+read [0-9]+ bytes of ciphertext' "$TMP_DIR/credent
   die "the no-attestation pod could not read the ciphertext, so this run does not show that the role is allowed the read and refused the decrypt. Read: kubectl -n $NAMESPACE logs $CREDENTIALS_POD_NAME -c main"
 grep -Eq '^result:[[:space:]]+refused$' "$TMP_DIR/credentials-pod.log" ||
   die "the no-attestation pod's kms:Decrypt was NOT refused. The key policy's explicit deny is not refusing a request that carries no attestation document, so this run does not show attestation as the boundary. Read: kubectl -n $NAMESPACE logs $CREDENTIALS_POD_NAME -c main"
-grep -Eiq 'AccessDenied|not authorized|explicit deny' "$TMP_DIR/credentials-pod.log" ||
-  die "the no-attestation pod's kms:Decrypt failed, but not with an authorization denial, so the refusal cannot be attributed to the attestation condition. Read: kubectl -n $NAMESPACE logs $CREDENTIALS_POD_NAME -c main"
+assert_decrypt_denial "$TMP_DIR/credentials-pod.log" \
+  "Read: kubectl -n $NAMESPACE logs $CREDENTIALS_POD_NAME -c main"
 echo "  the same role, with no attestation, could read the ciphertext and was refused the secret"
 
 # Last, and the point of the whole sample: the secret itself is in none of the three pods'

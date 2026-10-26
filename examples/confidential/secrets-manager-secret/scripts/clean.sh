@@ -259,8 +259,13 @@ elif [[ "$keep_aws" == true ]]; then
   echo "Keeping the run files under $TMP_DIR: they hold the ids of the AWS resources that were kept."
 else
   echo "Deleting the run files under $TMP_DIR..."
-  rm -rf "$TMP_DIR"
-  rmdir "$(dirname "$TMP_DIR")" 2>/dev/null || true
+  # Inspected, because this script runs without set -e: an rm that failed would otherwise
+  # leave the run files, holding this account's ARNs, behind under a "Clean up complete".
+  if rm -rf "$TMP_DIR"; then
+    rmdir "$(dirname "$TMP_DIR")" 2>/dev/null || true
+  else
+    note_fail "could not remove the run files under $TMP_DIR; they hold this account's resource ids"
+  fi
 fi
 
 echo

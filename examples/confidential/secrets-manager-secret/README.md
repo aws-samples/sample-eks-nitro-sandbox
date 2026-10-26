@@ -137,7 +137,7 @@ policy's measurement, and runs the pods.
   context:  <your-context>
 == 2/8 create the ECR repository and the KMS key ==
   created ECR repository secrets-manager-secret-sample
-  created KMS key arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/bf3ff5d0-1422-4408-a68b-9b050b9a3ccc
+  created KMS key arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/9282764e-13d9-4dd3-ae75-38bef7dafc42
   it denies every decrypt already: created with a policy, not the default one
 == 3/8 create the pod's IAM role and the born-denied key policy ==
   created IAM role arn:aws:iam::<ACCOUNT_ID>:role/secrets-manager-secret-sample-pod
@@ -145,17 +145,17 @@ policy's measurement, and runs the pods.
   waiting for the new IAM role to be visible to KMS...
   the key policy allows no decrypt yet (gated on an all-zero measurement)
 == 4/8 create the namespace, the service account and the association ==
-  created Pod Identity association a-d1juc3dtrnu2y0gsw
+  created Pod Identity association a-oeilzo0fhjrwkankg
 == 5/8 build the application image and push it to ECR ==
-  published <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample:v1-d2075b0f0c6d
+  published <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample:v1-47c41dcf7bfa
 == 6/8 encrypt the secret value and store the ciphertext in Secrets Manager ==
   created secret secrets-manager-secret-sample
   the secret's resource policy grants this role secretsmanager:GetSecretValue and nothing else
-  stored 220 bytes of ciphertext (sha256 c9d281f085084b181fda0cdf187e641bad5e68144e3fe2eb09f477d1ee8cedfe)
-  the plaintext (64 bytes, sha256 0599fedcb8b9c45422761d6479d1527025c66879a801280021455ad1a240e468) does not appear in it
+  stored 220 bytes of ciphertext (sha256 9695095ef44a67f067bb34c1af639ff701295600119e865b4381a80744087f34)
+  the plaintext (64 bytes, sha256 edf39a9839691fd8c71e9b5544fb13bc699313f45627333f072b472e04e5dfc5) does not appear in it
 == 7/8 generate the Cedar policy and set the gate to its measurement ==
-  predicted PCR17: 7fb0f48d48e81ac8bc03defa7d7fa1af05baf9b9d656e30b3489fe98a571668af36096486e4b27fc998c7dd2a7ed5463
-  image digest pinned under the CreateContainer permit: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:8ed32283b06ae41ed8df79579c07f62cf0ccc3304c7bcf2504a999219294145f
+  predicted PCR17: feceb7e852d183d387a70cb1df1c287918d48c8715bb401faa6d42608e038653420abfa62b58ee94a66cda3936b4c5b6
+  image digest pinned under the CreateContainer permit: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:c67229b7a5746d197790ad49771cecd8c2b624f6b9221e647f9785d130eacc61
   the gate now releases the secret only to this measurement
 == 8/8 run the pods ==
   the approved pod is on <NODE_INSTANCE_ID>
@@ -204,11 +204,11 @@ jq -r .ciphertext stored.json | base64 -d | sha256sum
 ```text
 {
   "version": 1,
-  "key_arn": "arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/bf3ff5d0-1422-4408-a68b-9b050b9a3ccc",
+  "key_arn": "arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/9282764e-13d9-4dd3-ae75-38bef7dafc42",
   "ciphertext_base64_chars": 296
 }
 220
-c9d281f085084b181fda0cdf187e641bad5e68144e3fe2eb09f477d1ee8cedfe  -
+9695095ef44a67f067bb34c1af639ff701295600119e865b4381a80744087f34  -
 ```
 
 The byte count is taken by decoding the base64 and counting bytes, not with `jq`'s
@@ -227,8 +227,8 @@ gated, so a ciphertext left over from an earlier run under a different key is ca
 rather than appearing later as a decrypt denial that reads like a measurement mismatch.
 
 ```text
-  stored 220 bytes of ciphertext (sha256 c9d281f085084b181fda0cdf187e641bad5e68144e3fe2eb09f477d1ee8cedfe)
-  the plaintext (64 bytes, sha256 0599fedcb8b9c45422761d6479d1527025c66879a801280021455ad1a240e468) does not appear in it
+  stored 220 bytes of ciphertext (sha256 9695095ef44a67f067bb34c1af639ff701295600119e865b4381a80744087f34)
+  the plaintext (64 bytes, sha256 edf39a9839691fd8c71e9b5544fb13bc699313f45627333f072b472e04e5dfc5) does not appear in it
 ```
 
 The stored digest there is the same one the command above read back off the service, and the
@@ -367,7 +367,7 @@ permit(
     resource == Workload::Container::"main"
 )
 when {
-    context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:8ed32283b06ae41ed8df79579c07f62cf0ccc3304c7bcf2504a999219294145f" &&
+    context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:c67229b7a5746d197790ad49771cecd8c2b624f6b9221e647f9785d130eacc61" &&
     context.working_dir == "/app" &&
     context.run_as_user == 65534 &&
     context.run_as_group == 65534 &&
@@ -391,12 +391,12 @@ moves. This is the part of it the pod spec sets:
                          {"name": "AWS_REGION", "value": "us-west-2"},
                          {"name": "AWS_DEFAULT_REGION", "value": "us-west-2"},
                          {"name": "SECRET_ID",
-                          "value": "arn:aws:secretsmanager:us-west-2:<ACCOUNT_ID>:secret:secrets-manager-secret-sample-SgiigM"},
+                          "value": "arn:aws:secretsmanager:us-west-2:<ACCOUNT_ID>:secret:secrets-manager-secret-sample-vdni3W"},
                          {"name": "KMS_KEY_ARN",
-                          "value": "arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/bf3ff5d0-1422-4408-a68b-9b050b9a3ccc"},
+                          "value": "arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/9282764e-13d9-4dd3-ae75-38bef7dafc42"},
                          {"name": "EXPECTED_LENGTH", "value": "64"},
                          {"name": "EXPECTED_SHA256",
-                          "value": "0599fedcb8b9c45422761d6479d1527025c66879a801280021455ad1a240e468"},
+                          "value": "edf39a9839691fd8c71e9b5544fb13bc699313f45627333f072b472e04e5dfc5"},
                          {"name": "DEMO_VARIANT", "value": "approved"},
 ```
 
@@ -413,11 +413,11 @@ the raw value changes with it (Amazon EKS User Guide, *Cedar policies*).
 
 ```text
 --- Predicted PCR17 ---
-7fb0f48d48e81ac8bc03defa7d7fa1af05baf9b9d656e30b3489fe98a571668af36096486e4b27fc998c7dd2a7ed5463
+feceb7e852d183d387a70cb1df1c287918d48c8715bb401faa6d42608e038653420abfa62b58ee94a66cda3936b4c5b6
 --- KMS Key Policy Condition ---
 "Condition": {
   "StringEqualsIgnoreCase": {
-    "kms:RecipientAttestation:PCR17": "7fb0f48d48e81ac8bc03defa7d7fa1af05baf9b9d656e30b3489fe98a571668af36096486e4b27fc998c7dd2a7ed5463",
+    "kms:RecipientAttestation:PCR17": "feceb7e852d183d387a70cb1df1c287918d48c8715bb401faa6d42608e038653420abfa62b58ee94a66cda3936b4c5b6",
     "kms:RecipientAttestation:PCR8:ServiceName": "eks.amazonaws.com"
   }
 }
@@ -452,7 +452,7 @@ aws kms get-key-policy --key-id "$KMS_KEY_ARN" --policy-name default \
     "Condition": {
       "StringEqualsIgnoreCase": {
         "kms:RecipientAttestation:PCR8:ServiceName": "eks.amazonaws.com",
-        "kms:RecipientAttestation:PCR17": "7fb0f48d48e81ac8bc03defa7d7fa1af05baf9b9d656e30b3489fe98a571668af36096486e4b27fc998c7dd2a7ed5463"
+        "kms:RecipientAttestation:PCR17": "feceb7e852d183d387a70cb1df1c287918d48c8715bb401faa6d42608e038653420abfa62b58ee94a66cda3936b4c5b6"
       }
     }
   },
@@ -467,7 +467,7 @@ aws kms get-key-policy --key-id "$KMS_KEY_ARN" --policy-name default \
     "Resource": "*",
     "Condition": {
       "StringNotEqualsIgnoreCase": {
-        "kms:RecipientAttestation:PCR17": "7fb0f48d48e81ac8bc03defa7d7fa1af05baf9b9d656e30b3489fe98a571668af36096486e4b27fc998c7dd2a7ed5463"
+        "kms:RecipientAttestation:PCR17": "feceb7e852d183d387a70cb1df1c287918d48c8715bb401faa6d42608e038653420abfa62b58ee94a66cda3936b4c5b6"
       }
     }
   }
@@ -573,11 +573,11 @@ kubectl -n secrets-manager-secret-sample logs secrets-manager-secret-demo -c mai
 
 ```text
 kernel:  6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-uptime:  4.77s
+uptime:  5.28s
 disks:   dm-0 dm-1 dm-2 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 vda vdb vdc
 product: m8i.enclave
 secrets-manager-secret-ready
-attested-secret-ok bytes=64 sha256=0599fedcb8b9c45422761d6479d1527025c66879a801280021455ad1a240e468
+attested-secret-ok bytes=64 sha256=edf39a9839691fd8c71e9b5544fb13bc699313f45627333f072b472e04e5dfc5
 ```
 
 The last line is the result: 64 bytes, and a digest equal to the `EXPECTED_SHA256` the pod
@@ -592,14 +592,14 @@ kubectl -n secrets-manager-secret-sample logs secrets-manager-secret-plain -c ma
 
 ```text
 kernel:  6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
-uptime:  45694.48s
+uptime:  46912.85s
 disks:   dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0
 product: m8i.xlarge
 ```
 
 The kernel version is the same in both, `6.18.54`, and the build is not: `#1 ... Oct 22
 17:38` against `#2 ... Oct 22 00:16`. The guest runs its own kernel. The uptime is under five
-seconds against about twelve and a half hours, because the VM booted with the pod while the
+seconds against about thirteen hours, because the VM booted with the pod while the
 ordinary pod reads the node's uptime. The disks are `vda vdb vdc`, the guest's virtio
 devices, where the ordinary pod sees the instance's `nvme`; confidential mode's encrypted
 overlay adds the `dm-` devices. And `product_name` reads `m8i.enclave` against the
@@ -619,21 +619,23 @@ kubectl -n secrets-manager-secret-sample get pod secrets-manager-secret-plain \
 
 ```text
 2026-10-25T23:28:42+00:00
-2026-10-26T12:10:23Z
-2026-10-26T12:10:21Z
+2026-10-26T12:30:43Z
+2026-10-26T12:30:40Z
 ```
 
-The ordinary pod's container started at 12:10:21 on 26 October and read 45694.48 seconds,
+The ordinary pod's container started at 12:30:40 on 26 October and read 46912.85 seconds,
 which puts the boot it is reporting at 23:28:47 the previous evening, about five seconds
 after the node was launched at 23:28:42: it is reading the machine's own boot. The sandbox
-pod's container started two seconds later, at 12:10:23, and read 4.77 seconds, which puts its
-boot at 12:10:18 the same morning, about twelve hours and forty-two minutes after the node's.
-By the time the sandbox read that number the machine had been up for more than twelve hours,
-so the 4.77 seconds cannot be the machine's: it is a boot of its own, which happened when the
-pod started. (Both figures are really lower bounds, since each uptime is read a moment after
-the container starts rather than exactly at `startedAt`. Both start times are read from
-`state.terminated.startedAt`, because both pods run once and exit and had finished by the
-time these commands ran.)
+pod's container started three seconds later, at 12:30:43, and read 5.28 seconds, which puts
+its boot at 12:30:38 the same morning, about thirteen hours and two minutes after the node's.
+By the time the sandbox read that number the machine had been up for thirteen hours, so the
+5.28 seconds cannot be the machine's: it is a boot of its own, which happened when the pod
+started. (Each uptime is read a moment after its container starts rather than exactly at
+`startedAt`, so as a measure of uptime *at* `startedAt` both readings are upper bounds, and
+each derived boot time is correspondingly a little early. The gap the argument rests on is
+thirteen hours, so a skew of milliseconds does not touch it. Both start times are
+read from `state.terminated.startedAt`, because both pods run once and exit and had finished
+by the time these commands ran.)
 
 The runtime class and the policy annotation are on the pod:
 
@@ -663,7 +665,7 @@ kubectl -n secrets-manager-secret-sample exec secrets-manager-secret-demo -c mai
 ```text
 yes
 error: Internal error occurred: Internal error occurred: error executing command in
-container: failed to exec in container: failed to create exec "599636412a7e...": policy
+container: failed to exec in container: failed to create exec "66a9ce983495...": policy
 denied Agent::Action::"Exec" on container "main" reasons=[] errors=[]
 ```
 
@@ -685,13 +687,13 @@ kubectl -n secrets-manager-secret-sample logs secrets-manager-secret-credentials
 
 ```text
 role:    arn:aws:sts::<ACCOUNT_ID>:assumed-role/secrets-manager-secret-sample-pod/<session>
-secret:  read 220 bytes of ciphertext, sha256 c9d281f085084b181fda0cdf187e641bad5e68144e3fe2eb09f477d1ee8cedfe
+secret:  read 220 bytes of ciphertext, sha256 9695095ef44a67f067bb34c1af639ff701295600119e865b4381a80744087f34
 request: kms:Decrypt on that ciphertext, with no attestation document
 result:  refused
 detail:  An error occurred (AccessDeniedException) when calling the Decrypt operation: User:
 arn:aws:sts::<ACCOUNT_ID>:assumed-role/secrets-manager-secret-sample-pod/<session> is not
 authorized to perform: kms:Decrypt on resource:
-arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/bf3ff5d0-1422-4408-a68b-9b050b9a3ccc with an explicit
+arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/9282764e-13d9-4dd3-ae75-38bef7dafc42 with an explicit
 deny in a resource-based policy
 no-attestation-done
 ```
@@ -729,8 +731,8 @@ key policy, so this pod cannot succeed.
 == 1/4 render the same pod with one pinned value changed ==
   set env DEMO_VARIANT=changed; the rest of the spec is unchanged
 == 2/4 generate the policy for the changed pod ==
-  approved PCR17: 7fb0f48d48e81ac8bc03defa7d7fa1af05baf9b9d656e30b3489fe98a571668af36096486e4b27fc998c7dd2a7ed5463
-  changed  PCR17: 90f0cc9d84da43095fd4ee12ea6feabacbd076ef4b8dbe7affa93210b2ed8c111c65ece5800a687a547873b917502f08
+  approved PCR17: feceb7e852d183d387a70cb1df1c287918d48c8715bb401faa6d42608e038653420abfa62b58ee94a66cda3936b4c5b6
+  changed  PCR17: 4f57755889c2b65f3e4de0f4a178d9afad2aae5e29aa1a04b480867ac83e13e786fb5d3d9dd178228f2b96aa9ba3587d
 == 3/4 confirm the gate still expects the approved measurement ==
   the gate is bound to the approved measurement, unchanged
 == 4/4 run the changed pod and wait for the refusal ==
@@ -739,14 +741,14 @@ NAME                             READY   STATUS   RESTARTS   AGE
 secrets-manager-secret-changed   0/1     Error    0          14s
 
 kernel:  6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-uptime:  4.36s
+uptime:  4.52s
 disks:   dm-0 dm-1 dm-2 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 vda vdb vdc
 product: m8i.enclave
 secrets-manager-secret-ready
 attested-secret-error: An error occurred (AccessDeniedException) when calling the Decrypt
 operation: User: arn:aws:sts::<ACCOUNT_ID>:assumed-role/secrets-manager-secret-sample-pod/<session>
 is not authorized to perform: kms:Decrypt on resource:
-arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/bf3ff5d0-1422-4408-a68b-9b050b9a3ccc with an explicit
+arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/9282764e-13d9-4dd3-ae75-38bef7dafc42 with an explicit
 deny in a resource-based policy
 
 The changed pod was refused the secret by KMS and ended Failed.
@@ -757,8 +759,8 @@ here to fit. The application redacts the account ID and the role session itself 
 prints an error, and the script redacts the logs again on the way out, so nothing identifying
 reaches either.
 
-One environment variable's value moved the measurement completely, from `7fb0f48d...` to
-`90f0cc9d...`. `STATUS` reads `Error`, which is how `kubectl` shows a pod in phase `Failed`
+One environment variable's value moved the measurement completely, from `feceb7e8...` to
+`4f577558...`. `STATUS` reads `Error`, which is how `kubectl` shows a pod in phase `Failed`
 whose container exited non-zero. Everything before the last line went exactly as it did for
 the approved pod: the same image, the same readings, the same network, and the same read of
 the same ciphertext. Only the decrypt was refused, and refused with an authorization denial,
@@ -870,13 +872,13 @@ pod "secrets-manager-secret-demo" deleted from secrets-manager-secret-sample nam
 serviceaccount "secrets-manager-secret-pod" deleted from secrets-manager-secret-sample namespace
 Deleting namespace secrets-manager-secret-sample (carries app.kubernetes.io/managed-by=secrets-manager-secret)...
 namespace "secrets-manager-secret-sample" deleted
-Deleting Pod Identity association a-d1juc3dtrnu2y0gsw...
+Deleting Pod Identity association a-oeilzo0fhjrwkankg...
 Deleting the secret secrets-manager-secret-sample and the ciphertext in it...
 Deleting IAM role secrets-manager-secret-sample-pod...
 Deleting ECR repository secrets-manager-secret-sample and the application image in it...
 Deleting the alias alias/secrets-manager-secret-sample...
-Scheduling the KMS key bf3ff5d0-1422-4408-a68b-9b050b9a3ccc for deletion in 7 days (the shortest AWS allows)...
-arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/bf3ff5d0-1422-4408-a68b-9b050b9a3ccc	2026-11-02T12:14:48.805000+00:00
+Scheduling the KMS key 9282764e-13d9-4dd3-ae75-38bef7dafc42 for deletion in 7 days (the shortest AWS allows)...
+arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/9282764e-13d9-4dd3-ae75-38bef7dafc42	2026-11-02T12:32:22.381000+00:00
 Deleting the run files under .../tmp/secrets-manager-secret/run...
 
 Clean up complete. The KMS key is scheduled, not yet destroyed; AWS removes it after its waiting period.
