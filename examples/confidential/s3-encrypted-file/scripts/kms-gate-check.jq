@@ -12,7 +12,8 @@
 #
 # In gate mode, true only when all four hold:
 #   * exactly one Allow action anywhere in the policy can reach a decrypt;
-#   * that one is AttestedDecryptOnly, bound to this role and to both expected conditions;
+#   * that one is AttestedDecryptOnly, whose principal block names this role and no other
+#     principal of any type, and which carries both expected conditions;
 #   * the PCR17 deny is there, on every principal, and still covers kms:Decrypt;
 #   * the PCR8:ServiceName deny is there, on every principal, and still covers it too.
 #
@@ -65,6 +66,14 @@ def gate:
     | select(actions | map(ascii_downcase) | any(reaches_decrypt))
     # The ARN or the role unique id: KMS stores the id when the put lands while the role is
     # still propagating. Both name this one role and nothing else.
+    #
+    # "AWS" has to be the ONLY key in the principal block. Reading .Principal.AWS on its own
+    # would pass a statement such as
+    #   "Principal": {"AWS": "<the role>", "Service": "something.amazonaws.com"}
+    # which grants the conditional allow to a second principal as well, and the page's claim
+    # is that this one allow is bound to the pod's role.
+    | select((.Principal | type) == "object")
+    | select((.Principal | keys) == ["AWS"])
     | select((.Principal.AWS | if type == "array" then . else [.] end)
              | . == [$role] or . == [$roleid])
     | select(.Condition.StringEqualsIgnoreCase["kms:RecipientAttestation:PCR17"] == $pcr17)

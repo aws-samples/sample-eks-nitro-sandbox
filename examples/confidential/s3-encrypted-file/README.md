@@ -144,8 +144,31 @@ policy, sets the gate to the policy's measurement, and runs the pods.
 ```
 
 ```text
-TODO: output from the fresh run
+== 1/9 check the tools, the cluster and the Region ==
+  context:  <your-context>
+== 2/9 create the private bucket, the ECR repository and the KMS key ==
+  created S3 bucket <S3_BUCKET>
+  the bucket blocks public access (all four) and encrypts at rest (AES256)
+  created ECR repository s3-encrypted-file-sample
+  created KMS key arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/46ca2c4c-cc26-450c-8e59-a0324cc3ceb9
+  it denies every decrypt already: created with a policy, not the default one
+== 3/9 create the pod's IAM role, the born-denied key policy and the bucket policy ==
+  created IAM role arn:aws:iam::<ACCOUNT_ID>:role/s3-encrypted-file-sample-pod
+  the role has no identity policies (0 inline, 0 attached)
+  waiting for the new IAM role to be visible to KMS...
+  the key policy allows no decrypt yet (gated on an all-zero measurement)
+  the bucket policy grants the pod s3:GetObject on the two objects and nothing else
+== 4/9 create the namespace, the service account and the association ==
+namespace/s3-encrypted-file-sample created
+serviceaccount/s3-encrypted-file-pod created
+  created Pod Identity association a-hsr3ttqcqqnkgq9vb
+== 5/9 build the application image and push it to ECR ==
+  pushed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/s3-encrypted-file-sample:v1-0f88f502eed2
 ```
+
+Abridged: the container build and push output is cut, and steps 6 to 9 are the ones below.
+The account ID, the kube context and the bucket name are replaced with `<ACCOUNT_ID>`,
+`<your-context>` and `<S3_BUCKET>`; the run used a bucket name of its own, as you will.
 
 **The key is created with a policy, never with the default one.** `kms:CreateKey` with no
 `--policy` attaches the
@@ -167,7 +190,10 @@ longer decrypts. The application derives that string from its own pinned environ
 than reading it out of the manifest.
 
 ```text
-TODO: output from the fresh run
+== 6/9 encrypt the file, wrap its data key and upload both ==
+  encrypted 102400 bytes with AES-256-GCM into 102416 bytes of ciphertext
+  uploaded s3://<S3_BUCKET>/confidential/report.bin and the manifest beside it
+  the stored object differs from the file and is 16 bytes longer (the GCM tag)
 ```
 
 The script reads the object back out of S3 rather than trusting what it uploaded, and stops
@@ -176,8 +202,15 @@ if the length is not the file's plus the 16 byte GCM tag.
 
 **Step 3: The manifest that travels beside the ciphertext.** This is the whole object:
 
-```text
-TODO: output from the fresh run
+```json
+{
+  "algorithm": "AES-256-GCM",
+  "ciphertext_key": "confidential/report.bin",
+  "encrypted_data_key": "AQICAHgx9SHGk113KSnPGFcoHwkbFRJRph+l7p8y2J6aOh1PtQEX2J/iQ0SJQ3A/Ha88ug/fAAAAfjB8BgkqhkiG9w0BBwagbzBtAgEAMGgGCSqGSIb3DQEHATAeBglghkgBZQMEAS4wEQQMDeAc5xW5vlCf2sdlAgEQgDvgGlhYqdP9WB6J0PtPJHM2eP8ZLcRaZkvzsYhzoojXQ9GAxoIvkyk72tueFpAvYROQikjCRva9M1aaWA==",
+  "key_arn": "arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/46ca2c4c-cc26-450c-8e59-a0324cc3ceb9",
+  "nonce": "gJ87H0Oof1LEug/t",
+  "version": 1
+}
 ```
 
 Nothing in it is a secret. `encrypted_data_key` is the data key as KMS wrapped it, and only
@@ -220,8 +253,24 @@ it just published and that the policy pins the bucket, the manifest key, the key
 expected length and digest, then installs the gate and reads it back.
 
 ```text
-TODO: output from the fresh run
+== 7/9 generate the Cedar policy and set the gate to its measurement ==
+--- Predicted PCR17 ---
+fc73afe250bc50cc75486ec29c69cd56096db7adde132dd3fcf6bd08a53687c1b57f08138a18e08502e1b40576016569
+--- KMS Key Policy Condition ---
+"Condition": {
+  "StringEqualsIgnoreCase": {
+    "kms:RecipientAttestation:PCR17": "fc73afe250bc50cc75486ec29c69cd56096db7adde132dd3fcf6bd08a53687c1b57f08138a18e08502e1b40576016569",
+    "kms:RecipientAttestation:PCR8:ServiceName": "eks.amazonaws.com"
+  }
+}
+  predicted PCR17: fc73afe250bc50cc75486ec29c69cd56096db7adde132dd3fcf6bd08a53687c1b57f08138a18e08502e1b40576016569
+  image digest pinned under the CreateContainer permit: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/s3-encrypted-file-sample@sha256:a12108f5938d30b904e0119ac70b747035b9561b0dd523cc96f06918c5fd6de3
+  the policy pins the bucket, the manifest key, the key ARN, and the expected length and digest
+  the gate now releases the data key only to this measurement
 ```
+
+Abridged: the generator also prints the whole admission and runtime policy, several hundred
+lines of it, between the two headers above.
 
 The condition block the generator prints is what `setup.sh` pastes into the key policy, with
 no register added by hand. Why exactly these two conditions, and what they do and do not
@@ -232,8 +281,37 @@ whether the data key is released, from `aws kms get-key-policy` on this run's ke
 administration statements above them are in
 [`../_shared/kms-key-policy.json`](../_shared/kms-key-policy.json).
 
-```text
-TODO: output from the fresh run
+```json
+{
+  "Sid": "AttestedDecryptOnly",
+  "Effect": "Allow",
+  "Principal": {
+    "AWS": "arn:aws:iam::<ACCOUNT_ID>:role/s3-encrypted-file-sample-pod"
+  },
+  "Action": "kms:Decrypt",
+  "Resource": "*",
+  "Condition": {
+    "StringEqualsIgnoreCase": {
+      "kms:RecipientAttestation:PCR8:ServiceName": "eks.amazonaws.com",
+      "kms:RecipientAttestation:PCR17": "fc73afe250bc50cc75486ec29c69cd56096db7adde132dd3fcf6bd08a53687c1b57f08138a18e08502e1b40576016569"
+    }
+  }
+},
+{
+  "Sid": "DenyUnlessThePolicyMeasurementMatches",
+  "Effect": "Deny",
+  "Principal": "*",
+  "Action": [
+    "kms:Decrypt",
+    "kms:ReEncryptFrom"
+  ],
+  "Resource": "*",
+  "Condition": {
+    "StringNotEqualsIgnoreCase": {
+      "kms:RecipientAttestation:PCR17": "fc73afe250bc50cc75486ec29c69cd56096db7adde132dd3fcf6bd08a53687c1b57f08138a18e08502e1b40576016569"
+    }
+  }
+}
 ```
 
 A third statement, `DenyUnlessTheAttestationComesFromAnEKSSandbox`, is the same deny for
@@ -270,8 +348,23 @@ kubectl -n s3-encrypted-file-sample logs s3-encrypted-file-demo -c main
 ```
 
 ```text
-TODO: output from the fresh run
+variant: approved
+kernel:  6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
+uptime:  5.43s
+disks:   dm-0 dm-1 dm-2 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 vda vdb vdc
+product: m8i.enclave
+manifest: version=1 algorithm=AES-256-GCM wrapped_data_key=184B nonce=12B
+s3:      read 102416 bytes of ciphertext sha256=759182ca5be9f8105dfa4155555108b82fce6c38f993ba1c6905b1b45ae42c99
+kms:     CiphertextForRecipient 749B, no plaintext field
+attested-s3-ok bytes=102400 sha256=5a0b447be5fe7fe656b9c90020a242ae663d853466010abd8779e7c7f31e0b53
 ```
+
+Those are the whole logs of the approved pod, unabridged. `kms: CiphertextForRecipient 749B,
+no plaintext field` is the attested decrypt: KMS returned the data key encrypted to the
+attestation document's public key and no plaintext at all, and only the private key inside
+this guest could unwrap it. The last line is the result, 102400 bytes matching the digest
+the setup machine recorded. The ciphertext the pod read has a different digest, so the object
+in S3 is not the file.
 
 **Step 8: The same readings from an ordinary pod on the same node.** `setup.sh` pins a plain
 pod to the node the sandboxed pod landed on, running the same image and the same code with
@@ -283,8 +376,20 @@ kubectl -n s3-encrypted-file-sample logs s3-encrypted-file-plain -c main
 ```
 
 ```text
-TODO: output from the fresh run
+variant: plain
+kernel:  6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
+uptime:  45637.22s
+disks:   dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0
+product: m8i.xlarge
+s3-encrypted-file-readings-done
 ```
+
+| Reading | Sandboxed pod | Ordinary pod, same node |
+|---|---|---|
+| Kernel | `6.18.54 #1`, built `Thu Oct 22 17:38:11 UTC 2026` | `6.18.54 #2`, built `Thu Oct 22 00:16:59 UTC 2026` |
+| Uptime | `5.43s`, which is the pod's age: the VM booted with the pod | `45637.22s`, the node's uptime |
+| Disks | `vda vdb vdc`, virtio devices, plus the `dm-` devices of the encrypted overlay | `nvme0n1 nvme1n1`, the instance's own devices |
+| Product name | `m8i.enclave`, the VM in the sandbox | `m8i.xlarge`, the EC2 instance type |
 
 The kernel *version* is the same in both, which is why `uname -r` on its own is not evidence.
 It is the build number and date, the boot, the disks and the product name that differ.
@@ -302,8 +407,19 @@ kubectl -n s3-encrypted-file-sample logs s3-encrypted-file-credentials -c main
 ```
 
 ```text
-TODO: output from the fresh run
+role:    arn:aws:sts::<ACCOUNT_ID>:assumed-role/s3-encrypted-file-sample-pod/<session>
+s3:      read 102416 bytes of ciphertext, sha256 759182ca5be9f8105dfa4155555108b82fce6c38f993ba1c6905b1b45ae42c99
+request: kms:Decrypt on the file's wrapped data key, with no attestation document
+exit:    254
+
+An error occurred (AccessDeniedException) when calling the Decrypt operation: User: arn:aws:sts::<ACCOUNT_ID>:assumed-role/s3-encrypted-file-sample-pod/<session> is not authorized to perform: kms:Decrypt on resource: arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/46ca2c4c-cc26-450c-8e59-a0324cc3ceb9 with an explicit deny in a resource-based policy
+s3-encrypted-file-credentials-done
 ```
+
+It read the same 102416 bytes of ciphertext the sandboxed pod read, by the same digest, and
+was then refused the data key by an explicit deny in the key policy. The pod itself replaces
+the account ID and the role session name before printing, which is why they appear here as
+placeholders.
 
 `setup.sh` requires both halves: a pod that could not read the object would not show that
 reading it is not enough, and a non-zero exit on its own is not enough either, because
@@ -322,8 +438,37 @@ long it retries.
 ```
 
 ```text
-TODO: output from the fresh run
+== 1/4 render the same pod with one pinned value changed ==
+  SAMPLE_VARIANT=changed; the rest of the spec is unchanged
+== 2/4 generate the policy for the changed pod ==
+--- Predicted PCR17 ---
+f8c1e7b7a112ac65047028884029c0fea18651f9ff60ec7fa47db63ae66ec5f35854390e1c2bc4d176003a2c72b84bfb
+  approved PCR17: fc73afe250bc50cc75486ec29c69cd56096db7adde132dd3fcf6bd08a53687c1b57f08138a18e08502e1b40576016569
+  changed  PCR17: f8c1e7b7a112ac65047028884029c0fea18651f9ff60ec7fa47db63ae66ec5f35854390e1c2bc4d176003a2c72b84bfb
+== 3/4 confirm the gate still expects the approved measurement ==
+  the gate is bound to the approved measurement, unchanged
+== 4/4 start the changed pod and wait for the refusal ==
+pod/s3-encrypted-file-changed created
+NAME                        READY   STATUS   RESTARTS   AGE
+s3-encrypted-file-changed   0/1     Error    0          13s
+
+variant: changed
+kernel:  6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
+uptime:  4.61s
+disks:   dm-0 dm-1 dm-2 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 vda vdb vdc
+product: m8i.enclave
+manifest: version=1 algorithm=AES-256-GCM wrapped_data_key=184B nonce=12B
+s3:      read 102416 bytes of ciphertext sha256=759182ca5be9f8105dfa4155555108b82fce6c38f993ba1c6905b1b45ae42c99
+attested-s3-error: An error occurred (AccessDeniedException) when calling the Decrypt operation: User: arn:aws:sts::<ACCOUNT_ID>:assumed-role/s3-encrypted-file-sample-pod/<session> is not authorized to perform: kms:Decrypt on resource: arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/46ca2c4c-cc26-450c-8e59-a0324cc3ceb9 with an explicit deny in a resource-based policy
+
+The changed pod was refused the data key by KMS and could not read the file.
+Delete it before you finish with the sample:  ./scripts/changed-pod.sh --delete
 ```
+
+Abridged: the generator's own policy output is cut from step 2 of 4. The two measurements
+differ in the first character onward, from one changed environment value. The pod did
+everything the approved pod did, including reading the same ciphertext, and stopped at the
+decrypt with the same explicit deny the credentials pod got.
 
 The script checks the changed pod differs from the approved one in nothing but that one
 value, that its predicted measurement really is different, and that the live key policy is

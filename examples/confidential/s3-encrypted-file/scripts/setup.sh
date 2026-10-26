@@ -683,6 +683,11 @@ fill() {  # fill <manifest> <out>  (substitutes <PLACEHOLDER>s and the namespace
 # an unfilled placeholder would otherwise be measured into the policy and read on the page
 # as if it were a value. The pattern wants the whole JSON string to be the placeholder, so
 # it does not match the "<ACCOUNT_ID>" the credentials pod's own redaction writes.
+#
+# The ranges here are deliberate, where the patterns that read a measurement write their
+# character classes out. This one stops the script when it MATCHES, so a range that the
+# locale widens makes it stop more often, never less: the risk runs the safe way. Narrowing
+# it to the 26 ASCII letters would be the change that could let a placeholder through.
 no_placeholders_left() {  # no_placeholders_left <rendered-json> <what>
   ! grep -qE '"<[A-Z0-9_]+>"' "$1" ||
     die "the rendered $2 still holds an unfilled placeholder: $(grep -oE '"<[A-Z0-9_]+>"' "$1" | sort -u | tr '\n' ' ')"
