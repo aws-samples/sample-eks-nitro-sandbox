@@ -91,8 +91,11 @@ know your cluster names, user names or what the page states, so read every label
 ## Make a new figure
 
 1. **Brief.** Write the figure's one idea in one sentence, then list what it shows: the actors,
-   the boundaries (they become frames), each connection with its label, and what is refused. Take
-   each fact from the page the figure goes on. Open the existing figure closest to yours (the
+   the boundaries (they become frames), each connection with its label, and what is refused
+   **where the sample enforces a refusal**. Take each fact from the page the figure goes on, and
+   draw no boundary the page does not have: a new sample ships no network policy, so it has no
+   policy control and no refused egress to draw (`AGENTS.md`, Security rules, and the end of
+   `references/house-style.md`). Open the existing figure closest to yours (the
    home page's isolation boundary, the coding agent's egress, the warm pool, Claude Managed
    Agents and its network policy) and its PNG, and reuse its arrangement where it fits.
 

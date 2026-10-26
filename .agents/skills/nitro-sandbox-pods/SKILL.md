@@ -171,10 +171,13 @@ sample that has no policy.
 - **The pod gets both endpoints.** With a network, the pod gets the in-guest endpoints that
   serve instance metadata and Pod Identity credentials
   (`examples/getting-started/hello-sandbox/README.md`).
-- **The role is the limit a sample enforces.** For a sample with no network policy, the Pod
-  Identity role is the only boundary it creates in the reader's account, so scope it to what
-  the sample needs and show its policy document on the page. That is a limit the page can
-  claim, because the sample is what makes it true.
+- **Where there is a role, it is a limit the sample enforces.** For a sample with no network
+  policy that gives the pod AWS permissions, the Pod Identity role is the boundary it creates
+  in the reader's account, so scope it to what the sample needs and show its policy document
+  on the page. That is a limit the page can claim, because the sample is what makes it true.
+  It is not the *only* boundary a sample can have, and a sample that calls no AWS API has no
+  role at all: the VM boundary of the runtime class, a sandbox booted network-isolated, and
+  Kubernetes RBAC are limits too. Claim the ones the sample actually creates.
 - **Pod Identity requests go through a network policy, where there is one.** The sandbox
   passes credential requests to `169.254.170.23` on to the Pod Identity Agent on the node
   (Amazon EKS User Guide, *Security model and parent instance trust assumptions*), and an

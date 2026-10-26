@@ -21,7 +21,7 @@ Closes #
 - [ ] The branch has the latest `main` merged in (no rebase or force-push), with conflicts resolved as AGENTS.md says, and the checks pass on its current head
 - [ ] Only the files this pull request means to change are changed; logs, captured output, stubs and hand-off scripts stay in `tmp/`
 - [ ] No values from your own account or environment (account IDs, keys, tokens, names of your clusters or hosts, user names, internal URLs) in the changed files
-- [ ] No Ingress, LoadBalancer or NodePort; a new sample ships no network policy, and its IAM role through Pod Identity grants only what it needs
+- [ ] No Ingress, LoadBalancer or NodePort; a new sample ships no network policy, and where it gives the pod AWS permissions its Pod Identity role grants only what it needs
 - [ ] Any check added or changed is proved both ways: an input it must accept, and an input it must reject
 - [ ] A second reviewer looked at any change to a check, a credential path or a security claim (see "Second review")
 

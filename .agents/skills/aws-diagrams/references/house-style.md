@@ -144,8 +144,13 @@ one only where the sample you are drawing enforces it. A new sample ships no net
 (`AGENTS.md`, Security rules), so it has no network policy control to draw, and its sandbox
 reaches what any pod reaches. "No route out" from a pod booted with
 `sandbox.amazonaws.com/network-isolated: "true"` is still right: that pod really has no
-network. The figures listed as NP, F2 and CMA belong to samples merged before 2026-10-26 and
-keep their policies, which is why they still use these styles.
+network.
+
+**Every sample merged before 2026-10-26 keeps its policy and its policy figures**, not only
+the ones the table above happens to name. Do not remove, redesign or recolour an existing
+figure to follow the rule for new samples: those figures are correct, they match pages that
+were proved with the policies they show, and the rule above is for figures you are drawing
+now. That is why NP, F2 and CMA still use these styles.
 
 **Routing:** segments are horizontal or vertical. Anchor both ends (`exitX`, `exitY`, `entryX`,
 `entryY`, plus `exitDx`/`entryDx` for a few pixels' nudge) and give every bend as a waypoint in

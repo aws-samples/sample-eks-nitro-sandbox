@@ -154,11 +154,17 @@ the internet. So the page must not say or imply otherwise:
   boundary the sample does not have, and the `aws-diagrams` skill reserves that colour for
   exactly that meaning.
 
-**3. Where the real boundary is an IAM role, scope it and show it.** For most samples this
-is the limit that is actually enforced: the pod's EKS Pod Identity role is what code in the
-sandbox can use in the reader's account. Give it only what the sample needs, show the
-policy document on the page, and name what it permits. That is a limit you can claim,
-because the sample creates it.
+**3. Where the real boundary is an IAM role, scope it and show it.** When the sample gives
+the pod AWS permissions, this is usually the limit that is actually enforced: the pod's EKS
+Pod Identity role is what code in the sandbox can use in the reader's account. Give it only
+what the sample needs, show the policy document on the page, and name what it permits. That
+is a limit you can claim, because the sample creates it.
+
+A sample that calls no AWS API has no role, and must not grow one to have a boundary to
+show. Say on the page that it creates no Pod Identity association, and claim no limit from
+one. The limits such a sample can claim are the ones it really has: the VM boundary of the
+sandbox runtime class, a sandbox booted with no network, and whatever Kubernetes RBAC it
+creates.
 
 **A sandbox that has no network at all is a different thing, and worth showing.** A pod
 booted with `sandbox.amazonaws.com/network-isolated: "true"` has no interface to restrict:
@@ -281,8 +287,9 @@ not copied into the description.
       cannot reach the network, or that its reach is restricted, unless this sample is what
       restricts it. For a network-isolated sandbox: the page shows it has only loopback,
       with output from the run.
-- [ ] The pod's Pod Identity role grants only what the sample needs, and the page shows the
-      policy document.
+- [ ] If the sample gives the pod AWS permissions, its Pod Identity role grants only what
+      the sample needs and the page shows the policy document. If it gives none, the page
+      says the sample creates no Pod Identity association, and claims no limit from one.
 - [ ] No Ingress, LoadBalancer or NodePort anywhere in the folder.
 - [ ] No values from your own account or environment (account IDs, keys, tokens, names of
       your clusters or hosts, user names, internal URLs) in any tracked file, including

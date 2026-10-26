@@ -47,8 +47,10 @@ the roadmap, or that it is new.
 
 **What the sample shows.** Three to five bullets, each led by a short bold claim. Every
 claim must be something the page will show with real output from a run: the pod's own
-kernel, boot and disks, a key that is absent, a connection that is refused. Leave out
-claims the sample cannot demonstrate. Mark optional variants as optional.
+kernel, boot and disks, a key that is absent, a connection that succeeds, or a refusal
+something in the sample enforces. Leave out claims the sample cannot demonstrate, and see
+[Network](#network) before you write a refusal: a new sample ships no network policy, so a
+networked one usually has no refused connection to show. Mark optional variants as optional.
 
 **Proposed layout.** A text tree under `examples/<section>/<sample>/`, following
 `docs/ROADMAP.md`: a named folder (never numbered), the page as `README.md`, diagrams in
@@ -80,9 +82,11 @@ links it rather than repeating it. The maintainers set this on 2026-10-26.
   the workload cannot reach anything else**, because nothing in the sample stops it: write
   the criterion as "the page shows the agent reaching `<service>`", never "the page shows
   the agent cannot reach the internet".
-- Either way, name the limit the sample *does* enforce, which for most samples is the Pod
-  Identity role: the criterion is that the role grants only what the sample needs and the
-  page shows its policy document.
+- Either way, name the limit the sample *does* enforce. Where the sample gives the pod AWS
+  permissions, that is usually the Pod Identity role, and the criterion is that the role
+  grants only what the sample needs and the page shows its policy document. Where it gives
+  none, do not invent a role for the spec to point at: the limits to name are the ones the
+  sample really has, such as the VM boundary, a sandbox with no network, or its RBAC.
 
 Why: a spec that asks for a restriction the sample has no mechanism for puts a claim on the
 page that nothing enforces, and a reader would believe it. One earlier spec also gave a
@@ -127,7 +131,7 @@ still run on a cluster that has no suitable default.
 - [ ] The README shows the sandbox pod running in a sandbox (its own kernel build, boot and virtio disks, each with what an ordinary pod shows instead), plus the sample's own claims, each with output from the run.
 - [ ] No Ingress, LoadBalancer or NodePort.
 - [ ] The sample ships no network policy, and the page claims no network limit that nothing in the sample enforces. A sandbox that needs no network boots with `sandbox.amazonaws.com/network-isolated: "true"`, and the page shows it has only loopback, no route and no DNS.
-- [ ] The pod's Pod Identity role grants only what the sample needs, and the page shows its policy document.
+- [ ] If the sample gives the pod AWS permissions, its Pod Identity role grants only what the sample needs and the page shows its policy document. If it gives none, the page says so and claims no limit from a role.
 - [ ] No values from your own account or environment (account ID, keys, tokens, names of your clusters or hosts, user names, internal URLs) in tracked files. Local values come from a gitignored env file.
 - [ ] A clean-up section removes everything the sample created.
 - [ ] Added to the `mkdocs.yml` nav, and `mkdocs build --strict` passes.

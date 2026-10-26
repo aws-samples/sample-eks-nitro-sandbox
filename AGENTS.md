@@ -515,8 +515,8 @@ takes every command from the environment.
 - **No Ingress, LoadBalancer or NodePort.** Reach a service with ClusterIP and
   `kubectl port-forward`. Why: a sample must never put a public endpoint on a reader's
   account.
-- **Only the network policy sample uses a network policy.** A new sample does not ship
-  one and has no network policy section on its page; where a reader would want the
+- **A new sample ships no network policy; only the dedicated sample does.** A new sample
+  has no network policy section on its page either; where a reader would want the
   mechanism, link to `examples/isolation/network-policy`. Why: one page that shows every
   rule of one policy teaches it better than a section repeated in every sample, and a
   sample's own subject is what its page should be about. Set by the maintainers on

@@ -61,9 +61,13 @@ The files:
 
 <One sentence on what to look at in the output.>
 
+<Step 2 only when the sample gives the pod AWS permissions. A sample that calls no AWS API
+creates no role; delete this step and say on the page that it creates no Pod Identity
+association.>
+
 **Step 2: Give the pod a role.** <The ServiceAccount, the Pod Identity association, and the
-role's policy document in full. This is the limit the sample enforces, so show what it
-permits and nothing wider.>
+role's policy document in full. This is a limit the sample enforces, so show what it permits
+and nothing wider.>
 
 ```yaml
 <the policy document, verbatim>
@@ -83,9 +87,17 @@ uptime, virtio disks, credential variable names without values.>
 ## Good to know
 
 - **<Limit>.** <What it means for the reader.>
+
+<Then exactly one of the two bullets below, whichever is true of this sample. Delete the
+other: they contradict each other, and the wrong one is a claim the sample does not back.>
+
 - **This sample does not restrict where the pod can connect.** It has a network, so it
   reaches what any pod on the cluster reaches. To restrict it, see the
   [network policy](../../isolation/network-policy/README.md) sample.
+- **This sandbox has no network at all.** It boots with
+  `sandbox.amazonaws.com/network-isolated: "true"`, so only `lo` has an address, there is no
+  route and a lookup fails, as the step above shows. To restrict a sandbox that does have a
+  network, see the [network policy](../../isolation/network-policy/README.md) sample.
 
 ## Clean up
 
