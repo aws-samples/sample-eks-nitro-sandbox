@@ -153,17 +153,24 @@ sample that has no policy.
   at any UID, so it needs no root hypothetical — and most samples here set
   `runAsNonRoot: true`, which makes root a state the sample cannot be in. A reader who tries
   to check such a claim gets the pod's own UID instead, so say what that UID is and keep the
-  claim to what the sample shows. Where the pod really does run as root the phrase is
-  accurate and worth keeping: `examples/ai-agents/coding-agents-for-developers`
-  (`runAsUser: 0`, and the page prints `id -u`), `examples/ci-cd/docker-builds` and
-  `examples/ci-cd/github-actions` (both `privileged: true`, and both print `uid=0(root)`).
+  claim to what the sample shows. Two samples do establish root, each differently, and the
+  difference is the point: `examples/ai-agents/coding-agents-for-developers` sets
+  `runAsUser: 0` with `allowPrivilegeEscalation: true` and its page prints `id -u` as `0`;
+  `examples/ci-cd/docker-builds` declares the build container `privileged: true` and its
+  step 5 writes `/proc/sys/vm/swappiness` from inside the pod, which only root can do.
   (`AGENTS.md`, "Say only what your sample actually limits".)
+- **`privileged: true` is not by itself evidence of UID 0**, and neither is the absence of a
+  `securityContext`: both leave the identity to the image's own `USER`. So cite the UID the
+  sample shows, or a root-only operation it records — not the privilege flag. Watch where a
+  recorded `uid=0(root)` actually came from: in `examples/ci-cd/github-actions` the only one
+  on the page is printed by a `docker build` `RUN` step on the job's own nested daemon, which
+  says nothing about the UID of the runner container that the page's sentence is about.
 - **"Cannot change the policy" is not "cannot get data out".** A filter can stay unmodified
   and still be routed around — through an allowed `domainNames` host that serves something
   else, over open port 53, or to the pod's own node. Write "cannot change" or "cannot
   reconfigure" for the enforcement point, and claim "cannot bypass" only where the sample
-  establishes that separately. Every page here states the policy's own limits right after
-  this claim; keep that pairing.
+  establishes that separately. Every page here states the policy's own limits in the same
+  section as this claim; keep that pairing.
 - **Refusals can look different.** A blocked host can time out on IPv4 or fail at once with
   "Network is unreachable" when it also publishes IPv6 addresses; both are the same block.
   (Same section.)

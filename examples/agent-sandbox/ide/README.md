@@ -729,9 +729,10 @@ needed one would also need egress to `169.254.170.23` on TCP 80.
 **Where it is enforced.** On the node, outside the guest. The node's network policy agent
 attaches eBPF programs to the pod's host-side interface, which the guest has no access to, so
 nothing run inside the editor's terminal can change the policy, whatever UID it runs as. In
-this sample that UID is 1000: the pod sets `runAsNonRoot: true` with `runAsUser: 1000`, which
-the API server enforces at admission, so root is not a state this editor can be in. Step 5
-reads those fields back off the live pod and Step 8 prints `uid=1000(coder)` from inside it.
+this sample that UID is 1000: the pod sets `runAsUser: 1000`, which fixes the identity the
+container starts with, and `runAsNonRoot: true`, which has the kubelet refuse to start the
+container at all if the image would resolve to root. Step 5 reads those fields back off the
+live pod and Step 8 prints `uid=1000(coder)` from inside it.
 Changing the policy is a separate matter from reaching a host it already allows: see "Its
 limits" below for what this policy does and does not stop.
 
