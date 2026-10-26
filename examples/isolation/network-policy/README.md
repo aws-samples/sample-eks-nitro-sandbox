@@ -335,8 +335,8 @@ sandboxed path behaved exactly as the ordinary path.
 run inside the sandbox cannot bypass it. Exec into the sandboxed client and make the same request
 to `web-blocked`. The run below shows that for a command issued inside the guest *after* the pod
 is running, as UID 10001 (step 2). That it holds for any UID in the guest, root included, is the
-architectural point above — the filter is on the host side of the interface, where nothing in the
-guest reaches it — not something this sample runs:
+architectural point above — the filter is on the host side of the interface, which processes
+inside the guest cannot reconfigure — not something this sample runs:
 
 ```bash
 kubectl exec client-sandboxed -- wget -q -T 8 -O /dev/null "http://$BLOCKED_IP:8080/" \
