@@ -190,7 +190,8 @@ COREDNS_IP=
 for DNS_NODE in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
     | awk '$2 == "True" {print $1}'); do
   COREDNS_IP=$(kubectl get --raw "/api/v1/nodes/$DNS_NODE/proxy/configz" --request-timeout=10s 2>/dev/null \
-    | sed -n 's/.*"clusterDNS":\["\([^"]*\)".*/\1/p' | grep -Ex '[0-9]{1,3}(\.[0-9]{1,3}){3}')
+    | sed -n 's/.*"clusterDNS":\["\([^"]*\)".*/\1/p' | grep -Ex '[0-9]{1,3}(\.[0-9]{1,3}){3}' \
+    | awk -F. '$1<=255 && $2<=255 && $3<=255 && $4<=255')
   [ -n "$COREDNS_IP" ] && break
 done
 if [ -z "$COREDNS_IP" ]; then
