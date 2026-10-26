@@ -421,7 +421,15 @@ network from there failed because there is no network to reach it on. The turn t
 seconds and five model turns.
 
 **Step 7: The claim adopted a pod that was already running, and the pool refilled.** A
-`SandboxClaim` with a `warmPoolRef` adopts a booted pod rather than starting one:
+`SandboxClaim` with a `warmPoolRef` adopts a booted pod rather than starting one. That is
+the whole reason a claim is fast: nothing boots on the claim path. The pool does the booting
+beforehand, and again afterwards, so the cost moves off the path a session waits on.
+
+*Figure 2: The life of one claim against a warm pool. A claim adopts a pod that is already booted, so it is served in 0.23 s; the pool boots a replacement behind it, and the pool is back to one warm pod about 40 s after the release.*
+
+![Inside an AWS Cloud frame and an Amazon EKS cluster whose sub line reads one namespace, three red Nitro sandbox frames stand left to right as the three states of one claim, each carrying the sub line network-isolated: no route out. The first, titled 1. at rest, holds a single warm pod box labelled pre-booted, waiting. An arrow right from it, labelled 2. adopts the pre-booted pod, Ready in 0.23 s, launch-type: warm, reaches the second frame, titled 2. while a claim is held, which holds two pod boxes side by side: a claimed pod labelled launch-type: warm, and a replacement pod labelled booted in about 10 s. An arrow right from that frame, labelled 4. claim deleted, pod torn down, back to one warm pod in about 40 s, reaches the third frame, titled 3. after release, which holds a single warm pod box labelled pre-booted, waiting, the same state the figure started in. Below the row sit two document glyphs. On the left, SandboxClaim, labelled one per session, connects up and right into the second frame over an arrow labelled 1. the tool creates a SandboxClaim. On the right, SandboxWarmPool, labelled replicas: 1, connects up and left into the replacement pod over an arrow labelled 3. pool boots a replacement, readyReplicas: 1 again in about 10 s. A note below the figure reads that these pods are network-isolated, so the annotation boots each sandbox with no network device and there is no route out, no DNS and no instance metadata; that this is a property of the sandbox and not a network policy, which this sample does not ship; and that while a claim is held the node runs two of them, this run having measured their uptimes 110 s and 7 s, each guest having booted with its own pod.](images/figure-2-claim-lifecycle.png)
+
+Ask the agent to claim one and time it:
 
 ```bash
 kubectl -n $NAMESPACE exec deploy/brain -- claude -p 'Claim a sandbox and report how long the claim took.'
@@ -434,7 +442,7 @@ The sandbox is pod `hands-pool-k8f9z`. It was adopted from the warm pool, so it 
 ```
 
 The tool measures its own wall clock, from just before it creates the claim to the moment
-the pod is Ready, so the figure includes its `kubectl` round trips. That overstates the
+the pod is Ready, so that number includes its `kubectl` round trips. That overstates the
 adoption and never understates it. The claim object's own `Ready` condition has one-second
 granularity, which for a warm claim reads as zero, so it is the looser number that is
 honest here.
