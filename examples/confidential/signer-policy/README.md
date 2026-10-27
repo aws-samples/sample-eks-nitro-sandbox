@@ -111,19 +111,21 @@ generator rather than assumed.
   `// WARNING: image_ref not checked; any image signed by the trusted signers will be
   allowed`. The two have the same effect on a single-container pod, and this sample uses
   `--skip-image-ref-container` so that the policy a reader reads says what was traded away.
-- **The help for `--skip-image-ref-container` names a flag that does not exist.** It refers
-  to trust established "via `--require-signer`"; the real flags are `--require-any-signer`
-  and `--require-all-signers`. The quotation above is edited for that reason and no other.
+- **The help for `--skip-image-ref-container` names a flag that does not exist.** Where it
+  says image trust is established "via" a signer flag, it gives a flag name the generator
+  does not have, so the quotation in the table is edited at exactly that point and nowhere
+  else. The two real flags are `--require-any-signer` and `--require-all-signers`.
 
 ## Versions
 
 | Component | This run |
 |---|---|
-| Cedar policy generator (`eks-nitro-sandbox-genpolicy`) | TODO: output from the fresh run |
-| Notation CLI ([notaryproject/notation](https://github.com/notaryproject/notation/releases)) | TODO: output from the fresh run |
-| AWS Signer Notation plugin | TODO: output from the fresh run |
+| `eks-nitro-sandbox-genpolicy` | Reports no version string of its own. What it pinned is in the generated policy, which step 3 reads back. |
+| Notation CLI ([notaryproject/notation](https://github.com/notaryproject/notation/releases)) | 1.3.1 |
+| AWS Signer plugin for Notation | 1.0.2292 |
 | AWS Signer signing platform | `Notation-OCI-SHA384-ECDSA` |
-| Docker | TODO: output from the fresh run |
+| Docker | 25.0.14 |
+| Base image for the provider's releases | `public.ecr.aws/amazonlinux/amazonlinux:minimal`, by tag rather than digest, so an unrelated rebuild of the base changes the releases' digests too |
 
 The AWS Signer plugin is published as a `latest` artifact rather than a fixed version
 string, so the version above is what it resolved to at run time, read with
@@ -227,8 +229,42 @@ cp .env.example .env     # then edit CLUSTER_NAME, AWS_REGION and the two releas
 ./scripts/setup.sh
 ```
 
+Abridged: the Docker build and layer-push lines are left out.
+
 ```text
-TODO: output from the fresh run
+== 1/7 check the cluster and read the identity ==
+  kube context: <KUBE_CONTEXT>
+  account <ACCOUNT_ID>, region us-west-2, cluster <CLUSTER_NAME>
+
+== 2/7 ensure the AWS Signer signing profile ==
+  created signing profile nitro_sample_signed_release (Notation-OCI-SHA384-ECDSA)
+
+== 3/7 ensure the ECR repository ==
+  created ECR repository nitro-sample-signer-policy (IMMUTABLE tags)
+
+== 4/7 the provider builds, pushes and signs release 1.0.0 ==
+  AWS Signer plugin version: 1.0.2292
+1.0.0: digest: sha256:ff38cb18774c9a86c9eafe7ea0b8d4631233f09bfec1fc74da65c6e432a6f991 size: 736
+Successfully signed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-signer-policy@sha256:ff38cb18774c9a86c9eafe7ea0b8d4631233f09bfec1fc74da65c6e432a6f991
+  pushed and signed nitro-sample-signer-policy:1.0.0
+  digest: sha256:ff38cb18774c9a86c9eafe7ea0b8d4631233f09bfec1fc74da65c6e432a6f991
+
+== 5/7 give the pod a role that can only check this profile's revocation status ==
+  created IAM role nitro-sample-signer-policy-verify
+namespace/signer-policy-sample created
+serviceaccount/signer-policy-pod created
+  created the Pod Identity association for signer-policy-pod
+
+== 6/7 generate the two policies from the same pod spec ==
+info: fetching image configs from the registry to resolve pin_image, pin_working_dir, pin_identity, pin_args, pin_env (pulling layers for pin_identity)
+info: fetching image config for <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-signer-policy:1.0.0
+  signer policy: .../tmp/signer-policy/policy.signer.yaml
+  digest-pinned policy: .../tmp/signer-policy/policy.pinned.yaml (pins sha256:ff38cb18774c9a86c9eafe7ea0b8d4631233f09bfec1fc74da65c6e432a6f991)
+
+== 7/7 start the pod under the signer policy ==
+pod/signer-policy-demo created
+
+signer-policy-demo is Ready on release 1.0.0, admitted because it is signed.
 ```
 
 **Step 3: Read the two policies.** `setup.sh` generates both from the same pod spec and
@@ -262,12 +298,47 @@ There is no `--image-architecture` here, which is worth a word because it is eas
 for: that flag narrows a multi-arch image index to one architecture, and the provider's
 image is built for a single platform, so it is one manifest rather than an index. Passing
 it makes the generator stop with `user requested specific architecture amd64 for a
-non-index image`. The two policies differ in exactly one place, which is the point of the
-sample:
+non-index image`.
+
+The two policies differ in exactly one way, and the diff between them is the point of the
+sample. The substitution appears twice because the image is named in two permits,
+`PrepareImage` and `CreateContainer`: the digest-pinned policy requires the exact
+`image_ref` in both, and the signer-based one requires a verified signer in both instead.
 
 ```text
-TODO: output from the fresh run
+$ diff tmp/signer-policy/policy.pinned.yaml tmp/signer-policy/policy.signer.yaml
+10c10,11
+<       context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-signer-policy@sha256:ff38cb18774c9a86c9eafe7ea0b8d4631233f09bfec1fc74da65c6e432a6f991" &&
+---
+>       // WARNING: image_ref not checked; any image signed by the trusted signers will be allowed
+>       context.image_signers.contains("arn:aws:signer:us-west-2:<ACCOUNT_ID>:/signing-profiles/nitro_sample_signed_release") &&
+122c123,124
+<       context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-signer-policy@sha256:ff38cb18774c9a86c9eafe7ea0b8d4631233f09bfec1fc74da65c6e432a6f991"
+---
+>       // WARNING: image_ref not checked; any image signed by the trusted signers will be allowed
+>       context.image_signers.contains("arn:aws:signer:us-west-2:<ACCOUNT_ID>:/signing-profiles/nitro_sample_signed_release")
 ```
+
+Here is the whole `PrepareImage` permit from the signer-based policy, which is what the
+guest evaluated before it prepared each release:
+
+```text
+  // PrepareImage: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-signer-policy@sha256:ff38cb18774c9a86c9eafe7ea0b8d4631233f09bfec1fc74da65c6e432a6f991
+  permit(
+      principal,
+      action == Agent::Action::"PrepareImage",
+      resource
+  )
+  when {
+      // WARNING: image_ref not checked; any image signed by the trusted signers will be allowed
+      context.image_signers.contains("arn:aws:signer:us-west-2:<ACCOUNT_ID>:/signing-profiles/nitro_sample_signed_release")
+  };
+```
+
+**The digest on that first line is a comment, not a constraint.** The generator records the
+image the policy was generated from above each permit, so release one's digest is still
+written in a policy that no longer checks it. Read the `when` block for what is enforced;
+`setup.sh` checks for `image_ref ==` rather than searching for the digest for this reason.
 
 **Step 4: The pod is running on release one.** The confidential profile denies exec, so the
 container prints its evidence at start-up and `kubectl logs` reads it, which the policy
@@ -281,17 +352,32 @@ kubectl -n signer-policy-sample get pod signer-policy-demo \
 ```
 
 ```text
-TODO: output from the fresh run
+release: 1.0.0
+kernel:  6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
+uptime:  33.46s
+disks:   dm-0 dm-1 dm-2 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 vda vdb vdc
+signer-policy-ready
+
+NAME                 RC                     IMAGE
+signer-policy-demo   confidential-sandbox   <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-signer-policy:1.0.0
 ```
 
 The kernel build, the uptime and the disk list are what show it ran in a sandbox rather
-than as an ordinary pod. An ordinary pod on the same cluster shows a different kernel
-build, the instance's `nvme` devices rather than the guest's virtio ones, and the node's
-uptime rather than the pod's:
+than as an ordinary pod. Running the same three readings in an ordinary pod on the same
+cluster, from the same image, gives a different answer to each of them:
 
 ```text
-TODO: output from the fresh run
+kernel:  6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
+uptime:  125299.64s
+disks:   dm-0 nvme0n1 nvme1n1 zram0
 ```
+
+The kernel *version* is the same, `6.18.54`, which is why it is not evidence on its own.
+The build is not: `#1` built at 17:38 in the sandbox against `#2` built at 00:16 on the
+node. The sandboxed pod's uptime of 33 seconds is its own VM's, booted with the pod, where
+the ordinary pod reports the node's 125,299 seconds. And the sandbox's disks are the
+guest's virtio devices, `vda`, `vdb` and `vdc`, where the ordinary pod sees the instance's
+`nvme` devices.
 
 **Step 5: The provider ships the next release.** `scripts/new-version.sh` builds a different
 image, pushes it under the second release's tag, signs it with the same profile, and
@@ -304,9 +390,32 @@ proved something else.
 ./scripts/new-version.sh
 ```
 
+Abridged in the same way: the build and layer-push lines are left out.
+
 ```text
-TODO: output from the fresh run
+== 1/4 the provider builds, pushes and signs release 1.1.0 ==
+1.1.0: digest: sha256:db32b50088a6138bc7dab2d78837044f97d09062129581ab3983e261ef20b54e size: 736
+Successfully signed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-signer-policy@sha256:db32b50088a6138bc7dab2d78837044f97d09062129581ab3983e261ef20b54e
+  release 1.0.0 was sha256:ff38cb18774c9a86c9eafe7ea0b8d4631233f09bfec1fc74da65c6e432a6f991
+  release 1.1.0 is  sha256:db32b50088a6138bc7dab2d78837044f97d09062129581ab3983e261ef20b54e
+
+== 2/4 point the pod at the new tag, with the policy untouched ==
+  policy annotation sha256: 6bd0407815364e80f4c15acde7eff975fdd01a0f3b00942d168b4f5593020e3d (unchanged since setup.sh)
+  the spec differs from the approved pod in the image tag and nothing else
+
+== 3/4 restart the pod on the new release ==
+pod/signer-policy-demo created
+
+== 4/4 read back what is running ==
+NAME                 READY   IMAGE                              IMAGEID
+signer-policy-demo   true    .../nitro-sample-signer-policy:1.1.0   ...@sha256:db32b50088a6138bc7dab2d78837044f97d09062129581ab3983e261ef20b54e
+
+signer-policy-demo is Ready on release 1.1.0, under the policy generated for release 1.0.0.
+Nothing was regenerated: the annotation is the same string, sha256 6bd0407815364e80f4c15acde7eff975fdd01a0f3b00942d168b4f5593020e3d.
 ```
+
+The `IMAGE` and `IMAGEID` columns are abridged to their last part so the table fits; the
+registry prefix is the same as everywhere else on this page.
 
 Two digests, two tags, one policy. The `IMAGEID` is read from the running pod rather than
 from the registry, so it is the digest the guest actually prepared.
@@ -322,8 +431,26 @@ pod apart from the image, so a refusal is a refusal of the image:
 ```
 
 ```text
-TODO: output from the fresh run
+== 1/3 confirm the pinned policy pins release 1.0.0, not release 1.1.0 ==
+  it pins sha256:ff38cb18774c9a86c9eafe7ea0b8d4631233f09bfec1fc74da65c6e432a6f991 and does not mention sha256:db32b50088a6138bc7dab2d78837044f97d09062129581ab3983e261ef20b54e
+
+== 2/3 start the pinned pod on release 1.1.0's image ==
+  the spec differs from the approved pod in the image tag and the policy only
+pod/signer-policy-pinned created
+
+== 3/3 wait for the guest to refuse it ==
+NAME                   READY   STATUS              RESTARTS   AGE
+signer-policy-pinned   0/1     RunContainerError   0          36s
+
+failed to create containerd task: failed to create shim task: Others("Other: prepare_image: rpc status: Status { code: PERMISSION_DENIED, message: \"policy denied Agent::Action::\\\"PrepareImage\\\" for image \\\"<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-signer-policy@sha256:db32b50088a6138bc7dab2d78837044f97d09062129581ab3983e261ef20b54e\\\" reasons=[] errors=[]\", details: [], special_fields: SpecialFields { unknown_fields: UnknownFields { fields: None }, cached_size: CachedSize { size: 0 } } }")
+
+The digest-pinned policy refused release 1.1.0, which it had never seen.
 ```
+
+`policy denied Agent::Action::"PrepareImage"` is the guest naming the action its policy
+refused, and the digest in the message is release 1.1.0's. So the image never reached a
+container: the refusal came at the point the guest prepares the image, which is the same
+permit the signer-based policy admitted both releases under.
 
 The script fails if that pod becomes Ready, and also fails if it merely did not start
 without the guest naming the policy, because a pull failure or an expired credential looks
@@ -405,7 +532,44 @@ pinned arm's pod first if you ran it, then the rest:
 ```
 
 ```text
-TODO: output from the fresh run
+$ ./scripts/pinned-arm.sh --delete
+pod "signer-policy-pinned" deleted from signer-policy-sample namespace
+
+$ ./scripts/clean.sh
+
+== 1/5 the pods and the namespace ==
+  deleted pod signer-policy-demo (if it was there)
+  deleted pod signer-policy-pinned (if it was there)
+  deleted namespace signer-policy-sample
+
+== 2/5 the Pod Identity association ==
+  deleted Pod Identity association <ASSOCIATION_ID>
+
+== 3/5 AWS resources kept ==
+  the ECR repository, the IAM role and the signing profile are still there.
+  Remove them with: ./scripts/clean.sh --delete-aws-resources
+
+Clean up complete.
+AWS resources kept; see --delete-aws-resources above.
+
+$ ./scripts/clean.sh --delete-aws-resources
+
+== 1/5 the pods and the namespace ==
+  namespace signer-policy-sample is already gone
+
+== 2/5 the Pod Identity association ==
+  no Pod Identity association for signer-policy-sample/signer-policy-pod
+
+== 3/5 the IAM role ==
+  deleted IAM role nitro-sample-signer-policy-verify
+
+== 4/5 the ECR repository ==
+  deleted ECR repository nitro-sample-signer-policy and the images and signatures in it
+
+== 5/5 the signing profile ==
+  canceled signing profile nitro_sample_signed_release (the name stays taken; set a new SIGNING_PROFILE in .env to run again)
+
+Clean up complete.
 ```
 
 `clean.sh` deletes only what carries this sample's mark: it checks the namespace label

@@ -220,6 +220,12 @@ passing the document to AWS.
   it is uploaded to Amazon S3, with its data key wrapped by KMS. The application in the
   sandbox makes the attested decrypt call itself, then decrypts the file in guest memory.
 
+One more page in this section is a reference rather than a sample:
+
+- [signer-policy](signer-policy/README.md): how a generated Cedar policy pins the container
+  to an exact image reference, and how naming an AWS Signer signing profile instead relaxes
+  that one pin. The three samples above link to it where they show their own image pin.
+
 All three planned samples for this section are now here. See the
 [roadmap](https://github.com/aws-samples/sample-eks-nitro-sandbox/blob/main/docs/ROADMAP.md).
 
