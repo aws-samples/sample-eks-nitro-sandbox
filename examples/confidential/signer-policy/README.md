@@ -251,7 +251,7 @@ Abridged: the Docker build and layer-push lines are left out.
   account <ACCOUNT_ID>, region us-west-2, cluster <CLUSTER_NAME>
 
 == 2/7 ensure the AWS Signer signing profile ==
-  created signing profile nitro_sample_release_trust (Notation-OCI-SHA384-ECDSA)
+  created signing profile nitro_sample_trusted_release (Notation-OCI-SHA384-ECDSA)
 
 == 3/7 ensure the ECR repository ==
   created ECR repository nitro-sample-signer-policy (IMMUTABLE tags)
@@ -277,7 +277,7 @@ info: fetching image config for <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nit
 
 == 7/7 start the pod under the signer policy ==
 pod/signer-policy-demo created
-  the running pod carries the generated policy, sha256 cb662b5b22790943a8260fb48bb9b62e28532fc44e239239e676d4df8fcdd43d
+  the running pod carries the generated policy, sha256 0adb0ab275bb90b3b5b94c0098b575bd88566ed46bc90deaebd8231c9508ed75
 
 signer-policy-demo is Ready on release 1.0.0, under a policy that requires this signer.
 ```
@@ -331,12 +331,12 @@ $ diff tmp/signer-policy/policy.pinned.yaml tmp/signer-policy/policy.signer.yaml
 <       context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-signer-policy@sha256:ff38cb18774c9a86c9eafe7ea0b8d4631233f09bfec1fc74da65c6e432a6f991" &&
 ---
 >       // WARNING: image_ref not checked; any image signed by the trusted signers will be allowed
->       context.image_signers.contains("arn:aws:signer:us-west-2:<ACCOUNT_ID>:/signing-profiles/nitro_sample_release_trust") &&
+>       context.image_signers.contains("arn:aws:signer:us-west-2:<ACCOUNT_ID>:/signing-profiles/nitro_sample_trusted_release") &&
 122c123,124
 <       context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-signer-policy@sha256:ff38cb18774c9a86c9eafe7ea0b8d4631233f09bfec1fc74da65c6e432a6f991"
 ---
 >       // WARNING: image_ref not checked; any image signed by the trusted signers will be allowed
->       context.image_signers.contains("arn:aws:signer:us-west-2:<ACCOUNT_ID>:/signing-profiles/nitro_sample_release_trust")
+>       context.image_signers.contains("arn:aws:signer:us-west-2:<ACCOUNT_ID>:/signing-profiles/nitro_sample_trusted_release")
 ```
 
 Here is the whole `PrepareImage` permit from the signer-based policy, which is what the
@@ -351,7 +351,7 @@ guest evaluated before it prepared each release:
   )
   when {
       // WARNING: image_ref not checked; any image signed by the trusted signers will be allowed
-      context.image_signers.contains("arn:aws:signer:us-west-2:<ACCOUNT_ID>:/signing-profiles/nitro_sample_release_trust")
+      context.image_signers.contains("arn:aws:signer:us-west-2:<ACCOUNT_ID>:/signing-profiles/nitro_sample_trusted_release")
   };
 ```
 
@@ -374,7 +374,7 @@ kubectl -n signer-policy-sample get pod signer-policy-demo \
 ```text
 release: 1.0.0
 kernel:  6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-uptime:  34.45s
+uptime:  33.56s
 disks:   dm-0 dm-1 dm-2 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 vda vdb vdc
 signer-policy-ready
 
@@ -388,14 +388,14 @@ cluster, from the same image, gives a different answer to each of them:
 
 ```text
 kernel:  6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
-uptime:  126229.38s
-disks:   dm-0 nvme0n1 nvme1n1 zram0
+uptime:  126783.84s
+disks:   dm-0 nvme0n1 nvme1n1 nvme2n1 zram0
 ```
 
 The kernel *version* is the same, `6.18.54`, which is why it is not evidence on its own.
 The build is not: `#1` built at 17:38 in the sandbox against `#2` built at 00:16 on the
-node. The sandboxed pod's uptime of 34 seconds is its own VM's, booted with the pod, where
-the ordinary pod reports the node's 126,229 seconds. And the sandbox's disks are the
+node. The sandboxed pod's uptime of 33 seconds is its own VM's, booted with the pod, where
+the ordinary pod reports the node's 126,783 seconds. And the sandbox's disks are the
 guest's virtio devices, `vda`, `vdb` and `vdc`, where the ordinary pod sees the instance's
 `nvme` devices.
 
@@ -423,7 +423,7 @@ Successfully signed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-si
   release 1.1.0 is  sha256:db32b50088a6138bc7dab2d78837044f97d09062129581ab3983e261ef20b54e
 
 == 2/4 point the pod at the new tag, with the policy untouched ==
-  policy annotation sha256: cb662b5b22790943a8260fb48bb9b62e28532fc44e239239e676d4df8fcdd43d (unchanged since setup.sh)
+  policy annotation sha256: 0adb0ab275bb90b3b5b94c0098b575bd88566ed46bc90deaebd8231c9508ed75 (unchanged since setup.sh)
   the spec differs from the approved pod in the image tag and nothing else
 
 == 3/4 restart the pod on the new release ==
@@ -432,10 +432,10 @@ pod/signer-policy-demo created
 == 4/4 read back what is running ==
 NAME                 READY   IMAGE                              IMAGEID
 signer-policy-demo   true    .../nitro-sample-signer-policy:1.1.0   ...@sha256:db32b50088a6138bc7dab2d78837044f97d09062129581ab3983e261ef20b54e
-  read back from the API: the running pod carries that same policy, sha256 cb662b5b22790943a8260fb48bb9b62e28532fc44e239239e676d4df8fcdd43d
+  read back from the API: the running pod carries that same policy, sha256 0adb0ab275bb90b3b5b94c0098b575bd88566ed46bc90deaebd8231c9508ed75
 
 signer-policy-demo is Ready on release 1.1.0, under the policy generated for release 1.0.0.
-Nothing was regenerated: the annotation is the same string, sha256 cb662b5b22790943a8260fb48bb9b62e28532fc44e239239e676d4df8fcdd43d.
+Nothing was regenerated: the annotation is the same string, sha256 0adb0ab275bb90b3b5b94c0098b575bd88566ed46bc90deaebd8231c9508ed75.
 ```
 
 That is the same hash step 2 printed for the release 1.0.0 pod, read back off the API both
@@ -496,7 +496,10 @@ profile the generated policy still pins the process arguments, the environment, 
 directory, the hostname, the mount set, the user and group IDs, the capabilities, the
 security settings, the masked and read-only paths, the seccomp default action, the AppArmor
 profile, the namespace configuration and the sysctls, and it still denies exec and stdin.
-So the trade is narrower than "the policy stops checking the image":
+Its `SetupSandbox` permit also pins how the sandbox itself is brought up, down to
+`context.deny_all_egress == false`, so a sandbox set up differently from the one the policy
+was generated for does not match it. So the trade is narrower than "the policy stops
+checking the image":
 
 - **What the provider gains** is the freedom to change the image's *content* without the
   operator doing anything.
@@ -521,23 +524,20 @@ much you trust the provider's release process, and only you can make it.
 
 ## Good to know
 
-- **The policy does not grant the pod its network, but it does pin the posture.** Both
-  modes run pods with full network access unless the pod sets
-  `sandbox.amazonaws.com/network-isolated` (Amazon EKS User Guide, *Isolated and
-  confidential pods overview*), so this pod has a network because it does not set that
-  annotation, not because the policy allowed it. The Amazon Time Sync Service and the EKS
-  Pod Identity Agent are not policy-controlled at all: the sandbox always reaches them
-  directly (*Cedar policies*), which is how the credentials the verification uses arrive.
-  What the policy does is record the posture it was generated for: its `SetupSandbox`
-  permit requires `context.deny_all_egress == false`, which is the posture of a pod that is
-  not network-isolated, pinned rather than granted. That is a constraint on the sandbox
-  matching the policy, not on where the pod may connect. To restrict that, see the
+- **What the Cedar policy governs.** Container admission, the runtime operations such as
+  exec and log reading, and the IMDS surrogate (Amazon EKS User Guide, *Cedar policies*).
+  The Amazon Time Sync Service and the EKS Pod Identity Agent are not policy-controlled:
+  the sandbox always reaches them directly (same page), which is how the credentials the
+  verification uses arrive without the policy granting them. This sample ships no network
+  policy. To restrict where this pod can connect, see the
   [network policy](../../isolation/network-policy/README.md) sample.
 - **What this run establishes, and what it does not.** It shows that the signer-based policy
   admitted a release it had never seen, and that the digest-pinned policy refused that same
   release. It does **not** include an unsigned or wrong-signer image, so it does not by
-  itself demonstrate that the signature is what the guest required: that rests on the
-  policy text in step 3, where `image_signers` is the only constraint left on the image, and
+  itself demonstrate that the signature is what the guest required: that rests on the policy
+  text in step 3, where `image_signers` is the only constraint left on the image's
+  *identity*, the working directory and environment it derives from the image being pinned
+  still, and
   on the Amazon EKS User Guide, which states that the agent verifies the signature inside
   the sandbox before allowing the container to start and denies container creation if
   verification fails or the image is unsigned (*Cedar policies*). If you want that arm, add
@@ -612,7 +612,7 @@ $ ./scripts/clean.sh --delete-aws-resources
   deleted ECR repository nitro-sample-signer-policy and the images and signatures in it
 
 == 5/5 the signing profile ==
-  canceled signing profile nitro_sample_release_trust (the name stays taken; set a new SIGNING_PROFILE in .env to run again)
+  canceled signing profile nitro_sample_trusted_release (the name stays taken; set a new SIGNING_PROFILE in .env to run again)
 
 Clean up complete.
 ```

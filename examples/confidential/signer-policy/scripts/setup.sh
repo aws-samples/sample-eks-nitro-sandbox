@@ -286,9 +286,12 @@ state_put POD_NAME "$POD_NAME"
 # applied. This is the baseline scripts/new-version.sh compares the next release against,
 # so it has to be what the API server actually holds for the pod that was admitted: a
 # mutating webhook, or anything else acting at admission, would otherwise be invisible.
+# Hashed exactly as the API serves it, with no whitespace stripped: the claim is that the
+# next release runs under the same string, so the comparison has to be of the same string
+# and not of a normalised form of it.
 applied_sha="$(kc get pod "$POD_NAME" -n "$NAMESPACE" \
   -o jsonpath='{.metadata.annotations.sandbox\.amazonaws\.com/policy}' \
-  | tr -d '\r\n' | sha256sum | cut -d' ' -f1)"
+  | sha256sum | cut -d' ' -f1)"
 [[ "$applied_sha" == "$(cat "$TMP_DIR/policy.signer.sha256")" ]] ||
   die "the policy annotation on the running pod (sha256 $applied_sha) is not the one this script generated. Something changed it at admission, so the next release would not be compared against the policy that is really enforced."
 echo "  the running pod carries the generated policy, sha256 $applied_sha"

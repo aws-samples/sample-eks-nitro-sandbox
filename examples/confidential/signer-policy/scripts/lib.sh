@@ -35,11 +35,17 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 step() { printf '\n== %s ==\n' "$*"; }
 
 # The guest's own wording when its Cedar policy refuses an operation, as a fixed string.
-# It must stay this specific. An earlier version matched "denied|not permitted|policy",
-# and this sample's own image reference contains the word "policy"
-# (nitro-sample-signer-policy), so any pull failure, throttle or expired credential whose
-# message quoted the image name was read as a policy refusal, which is the one thing the
-# refusal arm exists to tell apart.
+# It must stay at least this specific. An earlier version matched
+# "denied|not permitted|policy", and this sample's own image reference contains the word
+# "policy" (nitro-sample-signer-policy), so any pull failure, throttle or expired
+# credential whose message quoted the image name was read as a policy refusal.
+#
+# This one is used only to stop waiting early, in wait_for_pod below, where ANY policy
+# refusal is the right thing to match: a refusal does not change once it has happened, so
+# there is nothing to wait for whichever action it names. It is deliberately not the
+# evidence check. scripts/pinned-arm.sh decides whether a refusal is the one the sample
+# claims, and tests for the action and the digest on one line itself; do not replace that
+# with this string.
 POLICY_DENIAL='policy denied Agent::Action::'
 
 require_commands() {

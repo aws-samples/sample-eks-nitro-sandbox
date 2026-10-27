@@ -80,9 +80,11 @@ grep -q "$digest_two" <<<"$running_id" ||
 # sides of it are read back from the API rather than from the files this script applied:
 # setup.sh recorded the hash of the annotation on the admitted release-one pod, and this is
 # the annotation on the admitted release-two pod.
+# Exactly as the API serves it, with nothing stripped, for the same reason setup.sh does:
+# "the same string" has to be compared as the same string.
 running_sha="$(kc get pod "$POD_NAME" -n "$NAMESPACE" \
   -o jsonpath='{.metadata.annotations.sandbox\.amazonaws\.com/policy}' \
-  | tr -d '\r\n' | sha256sum | cut -d' ' -f1)"
+  | sha256sum | cut -d' ' -f1)"
 observed="${POLICY_SIGNER_SHA256_OBSERVED:-}"
 [[ -n "$observed" ]] ||
   die "the run record has no POLICY_SIGNER_SHA256_OBSERVED, so there is no observed release $RELEASE_ONE annotation to compare against. Run ./scripts/clean.sh and start again with the current scripts."
