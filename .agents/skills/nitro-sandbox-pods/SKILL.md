@@ -25,9 +25,10 @@ hypervisor"). **"Nitro Partition" is an internal name that the guide never uses:
 it on a page, in a figure, in a manifest comment or in a skill.** Where a sentence is about
 the hardware mechanism rather than the product, name what the guide names: the AWS Nitro
 System, and the Nitro hypervisor, which enforces the CPU and memory isolation between a
-sandbox and its parent instance. In running prose and in figure labels this site writes
-"Nitro sandbox" with a lower-case "s", and capitalises "Nitro Sandboxes" only in a title or
-where it names the product itself.
+sandbox and its parent instance. Prefer "Nitro sandbox" with a lower-case "s", which is the
+form this site uses in running prose and in every figure label; the capitalised "Nitro
+Sandbox" is reserved for a title, a quoted document title, or a sentence naming the product
+itself, as the home page's heading and the blog post's title do.
 
 ## What changes and what does not
 
