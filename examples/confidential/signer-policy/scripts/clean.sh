@@ -10,6 +10,11 @@
 # anything inside the namespace is removed, and every AWS resource is checked for its
 # ManagedBy tag. A lookup that fails means "could not determine", which is a failure and
 # never "gone", so the script says what it could not do and exits non-zero.
+#
+# What "gone" rests on, per resource, so the summary below is not read as more than it is:
+# the namespace and the signing profile are read back after the delete; the IAM role, the
+# ECR repository and the Pod Identity association rest on their delete call returning
+# success, which under set -e stops the script when it does not.
 set -euo pipefail
 
 # shellcheck source=lib.sh
@@ -56,7 +61,14 @@ else
   # The namespace carries this sample's label, so everything in it is this sample's:
   # deleting it takes the ServiceAccount with it.
   kc delete namespace "$NAMESPACE" --ignore-not-found --wait=true --timeout=10m >/dev/null
-  if [[ -n "$(kc get namespace "$NAMESPACE" --ignore-not-found -o name 2>/dev/null)" ]]; then
+  # The read-back needs its own status. Without it a failed lookup returns empty output,
+  # which is indistinguishable from "gone" and would report a namespace that is still
+  # there as deleted.
+  gone_rc=0
+  still="$(kc get namespace "$NAMESPACE" --ignore-not-found -o name 2>/dev/null)" || gone_rc=$?
+  if [[ "$gone_rc" != 0 ]]; then
+    note_incomplete "could not determine whether namespace $NAMESPACE is gone after the delete (the kubectl lookup failed)"
+  elif [[ -n "$still" ]]; then
     note_incomplete "namespace $NAMESPACE is still present after the delete"
   else
     echo "  deleted namespace $NAMESPACE"
@@ -134,10 +146,20 @@ else
   step "5/5 the signing profile"
   # AWS Signer has no hard delete. Canceling retires the profile; it lingers until its
   # signatures expire (about 141 months by default) and the name cannot be reused.
-  status="$(aws signer get-signing-profile --profile-name "$SIGNING_PROFILE" \
-    --region "$AWS_REGION" --query 'status' --output text 2>/dev/null || true)"
-  if [[ -z "$status" || "$status" == "None" ]]; then
+  # Only the documented not-found response means the profile is absent. Suppressing every
+  # failure here would report a profile this sample created, and could not reach, as gone.
+  prof_rc=0
+  status="$(lookup ResourceNotFoundException signer get-signing-profile \
+    --profile-name "$SIGNING_PROFILE" --region "$AWS_REGION" \
+    --query 'status' --output text)" || prof_rc=$?
+  if [[ "$prof_rc" != 0 && "$prof_rc" != 2 ]]; then
+    note_incomplete "could not determine the state of the signing profile $SIGNING_PROFILE"
+    status="__undetermined__"
+  fi
+  if [[ "$prof_rc" == 2 ]]; then
     echo "  signing profile $SIGNING_PROFILE is not there"
+  elif [[ "$status" == "__undetermined__" ]]; then
+    : # already recorded as incomplete above
   elif [[ "$status" == "Canceled" ]]; then
     echo "  signing profile $SIGNING_PROFILE is already Canceled"
   else

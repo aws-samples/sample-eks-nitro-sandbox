@@ -61,8 +61,15 @@ state_put SIGNING_PROFILE "$SIGNING_PROFILE"
 state_put SIGNING_PROFILE_ARN "$SIGNING_PROFILE_ARN"
 
 step "2/7 ensure the AWS Signer signing profile"
-profile_status="$(aws signer get-signing-profile --profile-name "$SIGNING_PROFILE" \
-  --region "$AWS_REGION" --query 'status' --output text 2>/dev/null || true)"
+# Through lookup(), so that only the documented not-found response means absent. Suppressing
+# every failure here would let a denied or misdirected call read as "the name is free", and
+# the script would then try to create a profile whose state it never established.
+prof_rc=0
+profile_status="$(lookup ResourceNotFoundException signer get-signing-profile \
+  --profile-name "$SIGNING_PROFILE" --region "$AWS_REGION" \
+  --query 'status' --output text)" || prof_rc=$?
+stop_if_undetermined "$prof_rc" "the signing profile $SIGNING_PROFILE"
+[[ "$prof_rc" == 0 ]] || profile_status=""
 if [[ "$profile_status" == "Active" ]]; then
   tag="$(aws signer list-tags-for-resource --resource-arn "$SIGNING_PROFILE_ARN" \
     --region "$AWS_REGION" 2>/dev/null | jq -r '.tags.ManagedBy // empty')"
@@ -135,6 +142,16 @@ if [[ "$role_rc" == 0 ]]; then
   tag="$(aws iam list-role-tags --role-name "$IAM_ROLE_NAME" \
     | jq -r '[.Tags[]? | select(.Key=="ManagedBy") | .Value] | first // empty')"
   require_managed_by "the IAM role $IAM_ROLE_NAME" "$tag"
+  # Decide whether this role can be adopted BEFORE changing it. The checks below run again
+  # as a post-condition once the sample's own policy is installed, but a role that is going
+  # to be refused must be refused before its trust policy is rewritten or anything is
+  # granted on it: a refusal is inert, a grant is not.
+  attached_now="$(aws iam list-attached-role-policies --role-name "$IAM_ROLE_NAME" --query 'length(AttachedPolicies)' --output text)"
+  [[ "$attached_now" == "0" ]] ||
+    die "the role $IAM_ROLE_NAME carries $attached_now attached managed policies. This sample's claim is that the pod can do nothing but check revocation status, so remove them or set a new IAM_ROLE_NAME in .env. Changed nothing."
+  inline_now="$(aws iam list-role-policies --role-name "$IAM_ROLE_NAME" --query 'PolicyNames' --output json | jq -r 'sort | join(",")')"
+  [[ -z "$inline_now" || "$inline_now" == "$SIGNER_POLICY_NAME" ]] ||
+    die "the role $IAM_ROLE_NAME carries inline policies this sample did not put there [$inline_now]. Remove them or set a new IAM_ROLE_NAME in .env. Changed nothing."
   aws iam update-assume-role-policy --role-name "$IAM_ROLE_NAME" \
     --policy-document "file://$TMP_DIR/role-trust-policy.json"
   echo "  reusing IAM role $IAM_ROLE_NAME"
@@ -167,9 +184,17 @@ state_put IAM_ROLE_ARN "$IAM_ROLE_ARN"
 
 ensure_namespace
 kc apply -f <(sed "s|namespace: signer-policy-sample|namespace: $NAMESPACE|" "$SAMPLE_DIR/deploy/service-account.yaml")
+# Not "|| true": a denied, misdirected or throttled call would come back empty and the
+# script would create a second association for a service account that may already have one.
+# An empty list is a successful call that found nothing, which is different.
+assoc_rc=0
 assoc="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" \
   --namespace "$NAMESPACE" --service-account "$SERVICE_ACCOUNT" --region "$AWS_REGION" \
-  --query 'associations[0].associationId' --output text 2>/dev/null || true)"
+  --query 'associations[0].associationId' --output text 2>"$TMP_DIR/aws.err")" || assoc_rc=$?
+[[ "$assoc_rc" == 0 ]] || {
+  cat "$TMP_DIR/aws.err" >&2
+  die "could not determine whether a Pod Identity association already exists for $NAMESPACE/$SERVICE_ACCOUNT (the AWS call failed; check the cluster name, Region and permissions). Created no association."
+}
 if [[ -z "$assoc" || "$assoc" == "None" ]]; then
   assoc="$(aws eks create-pod-identity-association --cluster-name "$CLUSTER_NAME" \
     --namespace "$NAMESPACE" --service-account "$SERVICE_ACCOUNT" \
@@ -257,7 +282,19 @@ if ! wait_for_pod "$POD_NAME" 900; then
 fi
 state_put POD_NAME "$POD_NAME"
 
-printf '\n%s is Ready on release %s, admitted because it is signed.\n' "$POD_NAME" "$RELEASE_ONE"
+# Read the annotation back off the running pod, rather than trusting the file that was
+# applied. This is the baseline scripts/new-version.sh compares the next release against,
+# so it has to be what the API server actually holds for the pod that was admitted: a
+# mutating webhook, or anything else acting at admission, would otherwise be invisible.
+applied_sha="$(kc get pod "$POD_NAME" -n "$NAMESPACE" \
+  -o jsonpath='{.metadata.annotations.sandbox\.amazonaws\.com/policy}' \
+  | tr -d '\r\n' | sha256sum | cut -d' ' -f1)"
+[[ "$applied_sha" == "$(cat "$TMP_DIR/policy.signer.sha256")" ]] ||
+  die "the policy annotation on the running pod (sha256 $applied_sha) is not the one this script generated. Something changed it at admission, so the next release would not be compared against the policy that is really enforced."
+echo "  the running pod carries the generated policy, sha256 $applied_sha"
+state_put POLICY_SIGNER_SHA256_OBSERVED "$applied_sha"
+
+printf '\n%s is Ready on release %s, under a policy that requires this signer.\n' "$POD_NAME" "$RELEASE_ONE"
 echo "Read the policy:        less $TMP_DIR/policy.signer.yaml"
 echo "Ship the next release:  ./scripts/new-version.sh"
 echo "Tear down:              ./scripts/clean.sh"

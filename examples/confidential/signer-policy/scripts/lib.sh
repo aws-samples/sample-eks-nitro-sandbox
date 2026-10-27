@@ -34,6 +34,14 @@ GENPOLICY="${GENPOLICY:-eks-nitro-sandbox-genpolicy}"
 die() { echo "ERROR: $*" >&2; exit 1; }
 step() { printf '\n== %s ==\n' "$*"; }
 
+# The guest's own wording when its Cedar policy refuses an operation, as a fixed string.
+# It must stay this specific. An earlier version matched "denied|not permitted|policy",
+# and this sample's own image reference contains the word "policy"
+# (nitro-sample-signer-policy), so any pull failure, throttle or expired credential whose
+# message quoted the image name was read as a policy refusal, which is the one thing the
+# refusal arm exists to tell apart.
+POLICY_DENIAL='policy denied Agent::Action::'
+
 require_commands() {
   local c
   for c in "$@"; do command -v "$c" >/dev/null 2>&1 || die "$c is required"; done
@@ -234,8 +242,9 @@ wait_for_pod() {  # wait_for_pod <name> <seconds>; 0 = Ready, 1 = not Ready
         + [ .status.conditions[]? | select(.type=="PodScheduled") | .message? ]
         | map(select(. != null and . != "")) | unique | join("\n")' <<<"$json")"
       # A policy refusal is reported by the guest and does not change once it has
-      # happened, so there is no point waiting out the rest of the timeout.
-      if grep -Eiq 'denied|not permitted|policy' <<<"$POD_MESSAGE"; then return 1; fi
+      # happened, so there is no point waiting out the rest of the timeout. Any other
+      # failure is left to the timeout, because only this one is known to be final.
+      if grep -qF "$POLICY_DENIAL" <<<"$POD_MESSAGE"; then return 1; fi
     fi
     sleep 5
   done

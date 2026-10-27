@@ -73,11 +73,16 @@ echo
 
 [[ "$became_ready" == no ]] ||
   die "the pinned pod became Ready, so the digest pin admitted an image it had never seen. The sample's claim about the pin is wrong; do not publish this run."
-# A pod that simply failed to start is not evidence. The message has to name the policy
-# refusing the operation, which is what a digest that does not match produces here: a
-# pull failure, a throttle or an expired credential all look like "not Ready" too.
-grep -Eiq 'denied|not permitted|policy' "$TMP_DIR/pinned-pod-message.txt" ||
-  die "the pinned pod did not start, but its message is not a policy refusal, so this run does not show the digest pin refusing the image. Message above; full pod in: kubectl -n $NAMESPACE describe pod $PINNED_POD_NAME"
+# A pod that simply failed to start is not evidence. The message has to be the guest
+# naming its own policy as refusing the operation: a pull failure, a throttle or an
+# expired credential all look like "not Ready" too. Matched as a fixed string, because
+# this sample's image reference itself contains the word "policy".
+grep -qF "$POLICY_DENIAL" "$TMP_DIR/pinned-pod-message.txt" ||
+  die "the pinned pod did not start, but its message is not a policy refusal from the guest, so this run does not show the digest pin refusing the image. Message above; full pod in: kubectl -n $NAMESPACE describe pod $PINNED_POD_NAME"
+# ...and it has to be refusing THIS image. Without this, a refusal aimed at any other
+# field the policy pins would read as the digest pin rejecting the new release.
+grep -qF "$DIGEST_TWO" "$TMP_DIR/pinned-pod-message.txt" ||
+  die "the guest refused the pinned pod, but its message does not name release $RELEASE_TWO's digest ($DIGEST_TWO), so the refusal is not shown to be about this image. Message above."
 
 printf '\nThe digest-pinned policy refused release %s, which it had never seen.\n' "$RELEASE_TWO"
 echo "Delete it before you finish:  ./scripts/pinned-arm.sh --delete"

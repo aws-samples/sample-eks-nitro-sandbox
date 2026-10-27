@@ -76,6 +76,20 @@ running_id="$(kc get pod "$POD_NAME" -n "$NAMESPACE" \
 grep -q "$digest_two" <<<"$running_id" ||
   die "the pod is running, but its imageID ($running_id) does not carry release $RELEASE_TWO's digest, so this is not the new image"
 
+# The whole claim is that THIS pod ran under the policy the FIRST pod ran under, so both
+# sides of it are read back from the API rather than from the files this script applied:
+# setup.sh recorded the hash of the annotation on the admitted release-one pod, and this is
+# the annotation on the admitted release-two pod.
+running_sha="$(kc get pod "$POD_NAME" -n "$NAMESPACE" \
+  -o jsonpath='{.metadata.annotations.sandbox\.amazonaws\.com/policy}' \
+  | tr -d '\r\n' | sha256sum | cut -d' ' -f1)"
+observed="${POLICY_SIGNER_SHA256_OBSERVED:-}"
+[[ -n "$observed" ]] ||
+  die "the run record has no POLICY_SIGNER_SHA256_OBSERVED, so there is no observed release $RELEASE_ONE annotation to compare against. Run ./scripts/clean.sh and start again with the current scripts."
+[[ "$running_sha" == "$observed" ]] ||
+  die "the running pod's policy annotation (sha256 $running_sha) is not the one the release $RELEASE_ONE pod ran under ($observed), so this run does not show one unchanged policy admitting both releases."
+echo "  read back from the API: the running pod carries that same policy, sha256 $running_sha"
+
 printf '\n%s is Ready on release %s, under the policy generated for release %s.\n' \
   "$POD_NAME" "$RELEASE_TWO" "$RELEASE_ONE"
 echo "Nothing was regenerated: the annotation is the same string, sha256 $now_sha."
