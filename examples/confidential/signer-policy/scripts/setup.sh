@@ -207,8 +207,13 @@ state_put IMAGE_URI_ONE "$image_uri"
 # when the provider ships again. --skip-image-ref-container names the container whose
 # image_ref constraint is dropped; the generator annotates the policy it writes with its
 # own warning that the digest is no longer checked.
+#
+# Deliberately no --image-architecture: that flag narrows a multi-arch image index to one
+# architecture, and the provider's image here is built for one platform, so it is a single
+# manifest rather than an index. Passing it makes the generator stop with "user requested
+# specific architecture amd64 for a non-index image".
 HOME="$GENPOLICY_HOME" "$GENPOLICY" \
-  --profile "$PROFILE" --with-pod-identity --image-architecture amd64 \
+  --profile "$PROFILE" --with-pod-identity \
   --require-signatures \
   --require-any-signer "$SIGNING_PROFILE_ARN" \
   --skip-image-ref-container "$CONTAINER_NAME" \
@@ -225,7 +230,7 @@ echo "  signer policy: $TMP_DIR/policy.signer.yaml"
 # under it now. It is generated here, from this release, because that is what an operator
 # who took the default would be holding when the next release arrived.
 HOME="$GENPOLICY_HOME" "$GENPOLICY" \
-  --profile "$PROFILE" --with-pod-identity --image-architecture amd64 \
+  --profile "$PROFILE" --with-pod-identity \
   --output-file-b64 "$TMP_DIR/policy.pinned.b64" \
   "$TMP_DIR/pod-input.json" > "$TMP_DIR/genpolicy.pinned.log"
 decode_policy "$TMP_DIR/policy.pinned.b64" "$TMP_DIR/policy.pinned.yaml"

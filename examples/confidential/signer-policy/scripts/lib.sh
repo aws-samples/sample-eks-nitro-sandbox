@@ -106,6 +106,13 @@ require_managed_by() {  # require_managed_by <what> <tag-value>
 # DOCKER_CONFIG for docker. The password never reaches a command line: a command line is
 # readable from /proc by any local user on this machine, and this is a live registry
 # credential.
+#
+# Both get the authorization token itself rather than a credential helper. Pointing docker
+# at the "ecr-login" helper would be tidier, because nothing in the file would expire, but
+# it needs docker-credential-ecr-login installed: without it docker fails the push with
+# "no basic auth credentials", and the sample would need a prerequisite that earns a
+# reader nothing. The token lasts about 12 hours, which outlives a run, and both files are
+# written under the repository's gitignored tmp/ with mode 600.
 write_registry_credentials() {  # write_registry_credentials <registry>
   local registry="$1" token
   GENPOLICY_HOME="$TMP_DIR/genpolicy-home"
@@ -133,8 +140,8 @@ write_registry_credentials() {  # write_registry_credentials <registry>
     | type == "string" and . != "QVdTOg==" and length > 8
   ' "$GENPOLICY_HOME/.docker/config.json" >/dev/null ||
     die "could not write the registry credentials the policy generator needs"
-  # docker gets the credential helper rather than the password, so nothing expires in it.
-  printf '{"credHelpers":{"%s":"ecr-login"}}\n' "$registry" > "$DOCKER_CFG_DIR/config.json"
+  # docker reads the same credentials from its own config, so the push needs no helper.
+  ( umask 077; cp "$GENPOLICY_HOME/.docker/config.json" "$DOCKER_CFG_DIR/config.json" )
   export DOCKER_CONFIG="$DOCKER_CFG_DIR"
 }
 
@@ -149,9 +156,14 @@ build_push_sign() {  # build_push_sign <release> <registry> <signing-profile-arn
        --image-ids "imageTag=$release" --region "$AWS_REGION" >/dev/null 2>&1; then
     die "the tag $release already exists in $ECR_REPOSITORY, and the repository has IMMUTABLE tags. Set a release name it does not hold in .env, or remove the repository with ./scripts/clean.sh --delete-aws-resources."
   fi
+  # Both are checked explicitly rather than left to set -e: this function runs inside a
+  # command substitution, and a failure here would otherwise surface further down as an
+  # unrelated "could not read back the digest", which hides what actually went wrong.
   DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-1}" docker build --platform linux/amd64 \
-    --build-arg "RELEASE=$release" --tag "$uri" "$SAMPLE_DIR" >&2
-  docker push "$uri" >&2
+    --build-arg "RELEASE=$release" --tag "$uri" "$SAMPLE_DIR" >&2 ||
+    die "docker build failed for release $release"
+  docker push "$uri" >&2 ||
+    die "docker push failed for $uri. If it reported \"no basic auth credentials\", the authorization token this script wrote has expired or the account does not have access to the repository; run this again."
   digest="$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
     --image-ids "imageTag=$release" --region "$AWS_REGION" \
     --query 'imageDetails[0].imageDigest' --output text)"
