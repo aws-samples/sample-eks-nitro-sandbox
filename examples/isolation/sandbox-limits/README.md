@@ -123,7 +123,7 @@ load, and the only pod that plateaus is the sandboxed one.
   differs between the two probes.
 
 *Figure 1: The same DNS probe on two pods under one egress NetworkPolicy. `probe-sandboxed` runs
-in a lightweight VM in a Nitro sandbox; `probe-standard` is an ordinary pod. Both offer the same
+in a Nitro sandbox, a lightweight VM with its own kernel; `probe-standard` is an ordinary pod. Both offer the same
 DNS rate to CoreDNS through the policy; the ordinary pod answers the full rate while the
 sandboxed pod's answered rate plateaus at the per-sandbox DNS limit.*
 

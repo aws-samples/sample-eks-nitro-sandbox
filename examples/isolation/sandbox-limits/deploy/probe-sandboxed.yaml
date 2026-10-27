@@ -4,8 +4,8 @@
 #
 #   runtimeClassName: isolated-sandbox
 #
-# That line makes the pod's containers run inside a lightweight VM of their own, with
-# their own kernel, in a hardware-isolated Nitro sandbox. There is no node selector,
+# That line makes the pod's containers run inside a Nitro sandbox of their own: a
+# hardware-isolated lightweight VM with its own kernel. There is no node selector,
 # toleration or sidecar: the RuntimeClass carries the scheduling constraints, and
 # Auto Mode brings up a sandbox-capable node if none is available. The pod's DNS
 # traffic leaves through the sandbox network path, which is where the per-sandbox

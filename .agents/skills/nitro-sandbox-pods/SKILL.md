@@ -24,21 +24,27 @@ hardware-isolated environment with its own Linux kernel, created by the AWS Nitr
 hypervisor"). **"Nitro Partition" is an internal name that the guide never uses: never write
 it on a page, in a figure, in a manifest comment or in a skill.** Where a sentence is about
 the hardware mechanism rather than the product, name what the guide names: the AWS Nitro
-System, and the Nitro hypervisor, which enforces the CPU and memory isolation between a
-sandbox and its parent instance. Prefer "Nitro sandbox" with a lower-case "s", which is the
-form this site uses in running prose and in every figure label; the capitalised "Nitro
-Sandbox" is reserved for a title, a quoted document title, or a sentence naming the product
-itself, as the home page's heading and the blog post's title do.
+System, and the Nitro hypervisor, which enforces the CPU and memory isolation **between
+sandboxes**. The sandbox *is* the lightweight VM with its own kernel, and it runs as a
+first-level guest, "not through emulation or nested virtualization" (*overview*): so never
+write that a VM runs *inside* a Nitro sandbox, which claims a layer that does not exist.
+
+Prefer "Nitro sandbox" with a lower-case "s", which is the form this site uses in running
+prose and in every figure label; the capitalised "Nitro Sandbox" is reserved for a title, a
+quoted document title, or a sentence naming the product itself, as the home page's heading
+and the blog post's title do.
 
 ## What changes and what does not
 
 From the outside a sandboxed pod is an ordinary pod: the scheduler places it, it gets an IP
 from your VPC, it mounts volumes through the same CSI drivers, and it answers to
 `kubectl exec`, `logs` and `port-forward`. What changes is what sits between the kubelet and
-the containers: EKS asks EC2 for a Nitro sandbox, a hardware-isolated environment the Nitro
-hypervisor carves out of the instance's CPU and memory, boots a lightweight VM inside it and
-starts the containers in that VM. The pod's containers share a kernel with each other, and
-that kernel belongs to the pod alone. (`examples/README.md`, "How it works", and Figure 1.)
+the containers: containerd on the node launches a Nitro sandbox for the pod, a dedicated
+hardware-isolated environment with its own kernel, created by the Nitro hypervisor, which
+enforces the CPU and memory isolation between sandboxes. The sandbox is a lightweight VM,
+and a first-level guest rather than anything emulated or nested, so the pod's containers run
+in it and share its kernel with each other, and that kernel belongs to the pod alone.
+(`examples/README.md`, "How it works", and Figure 1.)
 
 | Runs in the guest VM | Stays outside the guest |
 |---|---|
@@ -260,8 +266,9 @@ sample that has no policy.
   reservation, not usage: expect fewer, larger pods per node than with ordinary containers.
   (`examples/getting-started/warm-pool/README.md`, "Sizing".)
 - After the first node is up, a new sandboxed pod is Ready in about 5 to 6 seconds, most of
-  it EC2 creating the sandbox. A warm-pool claim adopts a pod that is already running and
-  is Ready in under 1 second. (`examples/getting-started/hello-sandbox/README.md`;
+  it the sandbox being created and booting its kernel. A warm-pool claim adopts a pod that
+  is already running and is Ready in under 1 second.
+  (`examples/getting-started/hello-sandbox/README.md`;
   `examples/getting-started/warm-pool/README.md`.)
 - Size a warm pool's `replicas` to the peak claim rate, not the total number of sessions.
   (`examples/getting-started/warm-pool/README.md`.)

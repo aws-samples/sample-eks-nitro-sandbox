@@ -10,8 +10,8 @@ git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/getting-started/warm-pool
 ```
 
-A sandboxed pod does more work at startup than a regular pod: EC2 creates the pod's Nitro
-sandbox and boots its kernel before the containers start. That adds about 5 to 6 seconds
+A sandboxed pod does more work at startup than a regular pod: containerd launches the pod's
+Nitro sandbox, which boots with its own kernel, before the containers start. That adds about 5 to 6 seconds
 on a warm node. For an interactive agent, where a user or a model is waiting for a code
 cell to run, that is the difference between a tool that feels instant and one that feels
 slow.
@@ -159,7 +159,7 @@ gantt
     dateFormat  s
     axisFormat  %S s
     section Cold start
-    create sandbox, boot guest :a1, 0, 3s
+    create sandbox, boot its kernel :a1, 0, 3s
     pull image, start containers :a2, after a1, 3s
     first command runs           :milestone, m1, after a2, 0s
     section Warm pool claim

@@ -48,8 +48,8 @@ it says so.
 ## Overview
 
 **Two boundaries, doing different jobs.** `runtimeClassName: isolated-sandbox` is the one
-line that puts the whole pod in a Nitro sandbox: its containers and their own kernel run in
-a lightweight VM inside that hardware-isolated sandbox, which is what separates this
+line that puts the whole pod in a Nitro sandbox: a hardware-isolated lightweight VM with its
+own kernel, which its containers run in, and which is what separates this
 workload from the node and from every other pod on it. nono is the boundary *inside* that
 pod, between the trusted controller and the three tool processes it starts. Everything nono
 governs, including the supplier key and nono's own proxy, sits inside the sandbox.
