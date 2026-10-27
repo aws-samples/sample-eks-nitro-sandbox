@@ -26,8 +26,8 @@ usual answer is Docker-in-Docker with `privileged: true`, or the node's containe
 mounted in. On a shared node either one hands the build, which is often running code from a
 pull request, what amounts to root on the machine every other pod is using.
 
-A Nitro sandbox changes the trade. EKS asks EC2 for a Nitro Partition, boots a lightweight VM
-inside it and runs the pod's containers there, on a kernel that belongs to that pod alone, so
+A Nitro sandbox changes the trade. The pod gets a sandbox of its own, a lightweight VM with
+its own kernel, and its containers run in it, on a kernel that belongs to that pod alone, so
 `privileged: true` reaches only the pod's own guest. The build tooling gets everything it
 needs, stock and unmodified, and the node, its kubelet, the other pods and the node's IAM role
 stay out of reach. The Amazon EKS User Guide states the support plainly: privileged pods are
@@ -191,8 +191,8 @@ Tear down:        NAMESPACE=docker-builds-sample ./scripts/clean.sh
 Setup chose the cluster's own default StorageClass because it fits: the Auto Mode provisioner,
 gp3 and encrypted. This sample never creates or changes a StorageClass, since that is a
 cluster-wide object; when no default fits, setup stops and tells you to name one with
-`STORAGE_CLASS`. The pod was Ready 15 seconds after it was created, most of that EC2 creating
-the Nitro Partition and the guest booting.
+`STORAGE_CLASS`. The pod was Ready 15 seconds after it was created, most of that the Nitro
+sandbox being created and its guest booting.
 
 **Step 3: Build and run an image by hand.** Exec in and use the daemon as you would any
 Docker host. Nothing here knows it is in a sandbox.
