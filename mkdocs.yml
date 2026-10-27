@@ -86,7 +86,6 @@ nav:
       - Network policy: isolation/network-policy/README.md
       - Sandbox limits: isolation/sandbox-limits/README.md
   - Policy:
-      - Image signing: policy/image-signing/README.md
       - Cedar policy: policy/cedar-policy/README.md
   - AI agents:
       - Coding agents for developers: ai-agents/coding-agents-for-developers/README.md
@@ -113,3 +112,6 @@ nav:
       - Encrypted image: confidential/encrypted-image/README.md
       - Secrets Manager secret: confidential/secrets-manager-secret/README.md
       - S3 encrypted file: confidential/s3-encrypted-file/README.md
+      # Last on purpose: a reference the three samples above point at, rather than one
+      # of them.
+      - Image trust by signer: confidential/signer-policy/README.md

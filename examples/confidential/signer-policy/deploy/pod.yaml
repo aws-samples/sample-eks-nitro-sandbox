@@ -1,0 +1,90 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: signer-policy-demo
+  # scripts/setup.sh fills in the namespace, the image URI, the Region and the
+  # sandbox.amazonaws.com/policy annotation at apply time. The policy annotation is one
+  # long base64 string, so it is never kept in this file; the rendered pod the script
+  # applies is written to the repository's tmp/.
+  labels:
+    app.kubernetes.io/name: signer-policy-demo
+  annotations:
+    # Pin the node while this long-lived demo pod runs: Auto Mode's node consolidation
+    # would otherwise remove the node, and nothing recreates a bare pod.
+    karpenter.sh/do-not-disrupt: "true"
+spec:
+  # Confidential mode treats the node as untrusted, and a Cedar policy is mandatory under
+  # it: the guest enforces strict default-deny, so a pod with no
+  # sandbox.amazonaws.com/policy annotation does not start at all. The guest is also where
+  # the signature is verified, before any container is created.
+  runtimeClassName: confidential-sandbox
+  serviceAccountName: signer-policy-pod
+  # Pinned by the generated policy, so it is the same in both arms of the sample. The
+  # digest-pinned arm runs under a policy generated from this very spec, so its pod keeps
+  # this hostname and differs from the approved pod only in metadata.name and the image:
+  # that is what makes its refusal a refusal of the image, and not of something else.
+  hostname: signer-policy-demo
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    # Numeric user and group IDs, with supplementalGroupsPolicy: Strict, keep the pinned
+    # identity readable from the pod spec rather than resolved out of the image. A release
+    # that changed the image's own USER, or its /etc/passwd, would otherwise change a
+    # pinned value and the policy would refuse it.
+    runAsUser: 65534
+    runAsGroup: 65534
+    runAsNonRoot: true
+    supplementalGroupsPolicy: Strict
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: app
+      # The provider's release, by tag, in the sample's ECR repository. scripts/setup.sh
+      # renders this placeholder with the tag it pushed and signed. A tag, not a digest:
+      # under the signer policy the guest does not check which digest the tag resolves
+      # to, which is the whole point of the sample.
+      image: <IMAGE_URI>
+      # Always, not IfNotPresent: the guest prepares and verifies the image on each pull,
+      # and that verification is the thing this sample shows. A node that already held
+      # prepared state for this image would otherwise skip it.
+      imagePullPolicy: Always
+      env:
+        # Both names, set to the same Region, on purpose. With only AWS_REGION declared,
+        # the EKS Pod Identity webhook leaves out the AWS_DEFAULT_REGION it would
+        # otherwise inject, while a policy generated with --with-pod-identity still
+        # expects it in the pinned environment, and the guest then refuses to create the
+        # container.
+        - name: AWS_REGION
+          value: <AWS_REGION>
+        - name: AWS_DEFAULT_REGION
+          value: <AWS_REGION>
+      # The confidential profile denies exec, so the container prints its own evidence at
+      # start-up and the page reads it with kubectl logs, which the policy permits:
+      #   release                  which of the provider's releases this image is
+      #   kernel, uptime, disks    that it ran in a lightweight VM of its own
+      # The release file is the only thing that differs between the two releases, and it
+      # is not a value the policy pins.
+      command:
+        - /bin/sh
+        - -c
+        - >-
+          echo "release: $(cat /app/release)";
+          echo "kernel:  $(uname -rv)";
+          echo "uptime:  $(cut -d' ' -f1 /proc/uptime)s";
+          echo "disks:   $(ls /sys/block | tr '\n' ' ')";
+          echo signer-policy-ready;
+          exec sleep 3600
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      # The guest unpacks every layer inside the sandbox before the container starts, so
+      # this pod does set a size: on the smallest VM the unpack has nowhere to go.
+      # Requests only, no limits; a sandbox is sized from its requests.
+      resources:
+        requests:
+          cpu: "1"
+          memory: 1Gi
