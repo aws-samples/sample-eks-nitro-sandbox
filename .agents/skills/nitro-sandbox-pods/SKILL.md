@@ -18,15 +18,26 @@ The pages call the running unit you pool, claim, exec into and delete a **pod**.
 and for the isolation boundary around the pod, and never **VM** or **microVM** for the
 claimed thing; **VM** appears only where they explain how the boundary works.
 
+The boundary's public name is **Nitro sandbox**, which is what the Amazon EKS User Guide
+uses throughout (*Isolated and confidential pods overview*, "Concepts": "A dedicated
+hardware-isolated environment with its own Linux kernel, created by the AWS Nitro
+hypervisor"). **"Nitro Partition" is an internal name that the guide never uses: never write
+it on a page, in a figure, in a manifest comment or in a skill.** Where a sentence is about
+the hardware mechanism rather than the product, name what the guide names: the AWS Nitro
+System, and the Nitro hypervisor, which enforces the CPU and memory isolation between a
+sandbox and its parent instance. In running prose and in figure labels this site writes
+"Nitro sandbox" with a lower-case "s", and capitalises "Nitro Sandboxes" only in a title or
+where it names the product itself.
+
 ## What changes and what does not
 
 From the outside a sandboxed pod is an ordinary pod: the scheduler places it, it gets an IP
 from your VPC, it mounts volumes through the same CSI drivers, and it answers to
 `kubectl exec`, `logs` and `port-forward`. What changes is what sits between the kubelet and
-the containers: EKS asks EC2 for a Nitro Partition, a hardware-isolated slice of the
-instance's CPU and memory, boots a lightweight VM inside it and starts the containers in
-that VM. The pod's containers share a kernel with each other, and that kernel belongs to the
-pod alone. (`examples/README.md`, "How it works", and Figure 1.)
+the containers: EKS asks EC2 for a Nitro sandbox, a hardware-isolated environment the Nitro
+hypervisor carves out of the instance's CPU and memory, boots a lightweight VM inside it and
+starts the containers in that VM. The pod's containers share a kernel with each other, and
+that kernel belongs to the pod alone. (`examples/README.md`, "How it works", and Figure 1.)
 
 | Runs in the guest VM | Stays outside the guest |
 |---|---|
@@ -248,7 +259,7 @@ sample that has no policy.
   reservation, not usage: expect fewer, larger pods per node than with ordinary containers.
   (`examples/getting-started/warm-pool/README.md`, "Sizing".)
 - After the first node is up, a new sandboxed pod is Ready in about 5 to 6 seconds, most of
-  it EC2 creating the partition. A warm-pool claim adopts a pod that is already running and
+  it EC2 creating the sandbox. A warm-pool claim adopts a pod that is already running and
   is Ready in under 1 second. (`examples/getting-started/hello-sandbox/README.md`;
   `examples/getting-started/warm-pool/README.md`.)
 - Size a warm pool's `replicas` to the peak claim rate, not the total number of sessions.

@@ -11,8 +11,8 @@ Every one of them puts the whole workload in a Nitro sandbox. So there are two b
 on each page, and they do different jobs:
 
 - **The Nitro sandbox** is the hardware-level isolation around the pod. EKS runs the pod's
-  containers and their own kernel in a lightweight VM inside a Nitro Partition, which is
-  what separates this workload from the node and from every other pod on it.
+  containers and their own kernel in a lightweight VM inside that sandbox, which is what
+  separates this workload from the node and from every other pod on it.
 - **The confinement layer** is the boundary *inside* the pod, between the trusted
   application and the tool processes it starts. It is what decides which files a tool can
   open, whether it has a network at all, and which credential it holds.

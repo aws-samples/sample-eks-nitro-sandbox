@@ -72,6 +72,11 @@ These rules apply to every label, title and note on a figure, and to its caption
   `SandboxClaim`, `SandboxWarmPool`: "1. claim a sandbox", "claim a warm sandbox") and the
   isolation boundary. **Never "VM" or "microVM" for the claimed thing**; say "VM" only to explain
   how the boundary works: the pod's containers run in a lightweight VM with its own kernel.
+- **"Nitro sandbox" for the isolation boundary**, which is the name the Amazon EKS User Guide
+  uses (*Isolated and confidential pods overview*, "Concepts"). **Never "Nitro Partition"**: it is
+  an internal name that the guide never uses, and it leaked onto the published site once. Where a
+  label is about the hardware rather than the product, name what the guide names: the AWS Nitro
+  System, or the Nitro hypervisor.
 - **"network policy"**, never "fence".
 - **"hardware-level isolation"**, never "strongest" or another superlative.
 - **No tooling or testing words:** a figure shows what the feature does, not how the sample was
@@ -84,9 +89,10 @@ These rules apply to every label, title and note on a figure, and to its caption
 - **Only facts the page shows or AWS documentation states.** If the figure needs a claim the page
   does not make, add it to the page with its evidence first, or leave it off the figure.
 
-`check_drawio.py` refuses the common forms of these (fence, superlatives, tooling words, account
-IDs, ARNs, node names, emails, internal hostnames, a stated minimum, a claimed "VM"). It cannot
-know your cluster names, user names or what the page states, so read every label for those too.
+`check_drawio.py` refuses the common forms of these ("Nitro Partition", fence, superlatives,
+tooling words, account IDs, ARNs, node names, emails, internal hostnames, a stated minimum, a
+claimed "VM"). It cannot know your cluster names, user names or what the page states, so read
+every label for those too.
 
 ## Make a new figure
 

@@ -1,6 +1,6 @@
 # Amazon EKS Nitro sandbox samples
 
-Runnable samples for Nitro Sandboxes on Amazon EKS: hardware-enforced workload isolation where each pod runs its containers inside a lightweight VM carved from a Nitro Partition. The samples are rendered as a documentation site, and a path on the site is the path in this repository.
+Runnable samples for Nitro Sandboxes on Amazon EKS: hardware-enforced workload isolation where each pod runs its containers inside its own Nitro sandbox, a hardware-isolated environment with its own kernel. The samples are rendered as a documentation site, and a path on the site is the path in this repository.
 
 ## Getting started
 

@@ -2,9 +2,9 @@
 # three nono tool roles.
 #
 # runtimeClassName: isolated-sandbox is the one line that puts the whole pod in a Nitro
-# sandbox. EKS runs its containers and their own kernel in a lightweight VM inside a
-# hardware-isolated Nitro partition, and that is the boundary around nono's controls and
-# around the supplier key.
+# sandbox. EKS runs its containers and their own kernel in a lightweight VM inside that
+# hardware-isolated sandbox, and that is the boundary around nono's controls and around
+# the supplier key.
 #
 # automountServiceAccountToken: false removes the ordinary Kubernetes token from the pod.
 # EKS Pod Identity still delivers AWS credentials, through its own endpoint served inside

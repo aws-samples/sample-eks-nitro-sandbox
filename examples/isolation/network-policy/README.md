@@ -45,11 +45,11 @@ shows a sandboxed and an ordinary pod leveraging each of the two, on Auto Mode.
   that differs between the two clients.
 
 *Figure 1: The same egress NetworkPolicy on two clients. `client-sandboxed` runs in a
-lightweight VM in a Nitro Partition; `client-standard` is an ordinary pod. The policy, enforced
+lightweight VM in a Nitro sandbox; `client-standard` is an ordinary pod. The policy, enforced
 on the node outside the guest, allows each client to CoreDNS and to `web-allowed`, and refuses
 `web-blocked` on both paths alike.*
 
-![An EKS Auto Mode node holds two client pods that one Kubernetes NetworkPolicy selects by the label app netpol-client: client-standard, an ordinary pod that shares the node kernel, and client-sandboxed, a Nitro sandbox pod whose containers run in a lightweight VM inside a Nitro Partition with runtimeClassName isolated-sandbox as the only differing field. Both clients make the same egress requests to two ordinary server pods reached by pod IP on ClusterIP port 8080, web-allowed and web-blocked, and to CoreDNS. The egress NetworkPolicy is drawn as an enforcement filter that the node's network policy agent applies on each pod's host-side interface, outside the guest; its allowed paths in green are each client to web-allowed on TCP 8080 and to CoreDNS on UDP and TCP 53, and its refused path in red dashed is each client to web-blocked, refused identically on the ordinary and the sandboxed path.](images/figure-1-network-policy.png)
+![An EKS Auto Mode node holds two client pods that one Kubernetes NetworkPolicy selects by the label app netpol-client: client-standard, an ordinary pod that shares the node kernel, and client-sandboxed, a Nitro sandbox pod whose containers run in a lightweight VM inside its own Nitro sandbox, with runtimeClassName isolated-sandbox as the only differing field. Both clients make the same egress requests to two ordinary server pods reached by pod IP on ClusterIP port 8080, web-allowed and web-blocked, and to CoreDNS. The egress NetworkPolicy is drawn as an enforcement filter that the node's network policy agent applies on each pod's host-side interface, outside the guest; its allowed paths in green are each client to web-allowed on TCP 8080 and to CoreDNS on UDP and TCP 53, and its refused path in red dashed is each client to web-blocked, refused identically on the ordinary and the sandboxed path.](images/figure-1-network-policy.png)
 
 The files:
 
