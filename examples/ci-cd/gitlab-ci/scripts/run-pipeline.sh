@@ -213,7 +213,7 @@ for name in "${pod_order[@]}"; do
 done
 [[ -z "$unsandboxed" ]] \
   || die "a job pod did not carry runtimeClassName isolated-sandbox, so that job did not run in a sandbox:
-$unsandboxed  Check that runner/config.toml.template's runtime_class_name reached the Secret, that the runner manager was restarted after it changed, and that the runner image is v17.5.3 or later."
+$unsandboxed  Check that runner/config.toml.template's runtime_class_name reached the Secret, that the runner manager was restarted after it changed, and that the runner release supports runtime_class_name; the run on the page used v19.5.0."
 
 uid_count="$(printf '%s\n' "${pod_uid[@]}" | sort -u | grep -c .)"
 echo "  distinct pod UIDs: $uid_count (one per job, so no job reused another's pod)"
