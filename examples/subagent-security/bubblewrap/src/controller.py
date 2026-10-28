@@ -112,25 +112,39 @@ def no_capabilities(fields) -> bool:
     return all(int(fields[name], 16) == 0 for name in CAPABILITY_SETS)
 
 
-def files_holding(root: Path, secret: str) -> list:
-    """Every file under root whose bytes contain secret, as paths relative to root.
+def scan_files(root: Path, secret: str):
+    """Scan every file under root for secret. Returns (scanned, holding).
 
-    A named function returning the findings rather than a check that raises, so that it
-    can be run against a tree that must come back empty and a tree that must not.
+    Both lists come from **one** traversal, as paths relative to root: `scanned` is every
+    file it read, `holding` the ones whose bytes contain the secret. One traversal because
+    a second one to count what the first scanned would be counting a different set: a file
+    can be written, removed or changed in between, and then "every one of the N files was
+    scanned" is a sentence about two different Ns.
 
-    The caller passes the whole of the run's own directory. That is broader than the two
-    documents that leave the pod, and deliberately: the run also stages facts between
-    roles, records every call it made, and keeps each role's output, and all of it sits
-    under that one directory. Scanning the directory rather than a list of names cannot
-    be left stale by a later stage writing one more file.
+    A function returning its findings rather than a check that raises, so it can be run
+    against a tree that must come back empty and a tree that must not.
 
-    Decoded with errors="replace" so that a file that is not text is still scanned rather
-    than skipped: a credential in a file this function could not decode would otherwise
-    be the one it missed.
+    The comparison is on bytes, not on decoded text. The secret is encoded once and looked
+    for in each file's bytes, so there is no decoding step that could alter what is
+    searched, and a file that is not text is scanned exactly like one that is.
+
+    What this does and does not cover is worth being exact about, because the claim rests
+    on it. It covers the literal secret, contiguous, in any file under root that it can
+    read. It does not cover an encoded, encrypted, hashed or split representation of the
+    secret, and it says nothing about a file outside root or about standard output. A read
+    that fails raises rather than being skipped: a scan that could not read a candidate
+    must not report success.
     """
-    return sorted(str(path.relative_to(root)) for path in root.rglob("*")
-                  if path.is_file()
-                  and secret in path.read_bytes().decode("utf-8", "replace"))
+    needle = secret.encode()
+    scanned, holding = [], []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        name = str(path.relative_to(root))
+        scanned.append(name)
+        if needle in path.read_bytes():
+            holding.append(name)
+    return scanned, holding
 
 
 def same_file(reported, actual) -> bool:
@@ -605,36 +619,41 @@ class Run:
             "supplier_requests": self.supplier_requests,
             "checks": self.checks, "calls": self.calls,
         }
-        serialised = json.dumps(evidence, indent=2)
         secret = Path(SUPPLIER_KEY_FILE).read_text().strip()
-        # Enforced by raising, not by recording a flag computed from the key's contents.
-        # Reaching the line after the raise IS the result, so that is what gets recorded.
+        # Two scans, and the order of what follows is the whole of their value.
         #
-        # This one runs before the write, so the two documents that leave the pod are
-        # never written at all if the key is in them. Note what it already covers:
-        # self.checks is inside evidence, and self.checks holds every check name this run
-        # printed, so scanning it scans every check line that went to standard output.
+        # The first is in memory and runs before either document is written, so neither
+        # reaches the disk at all if the key is in it. Enforced by raising, not by
+        # recording a flag computed from the key's contents: reaching the line after the
+        # raise IS the result, so that is what gets recorded.
+        serialised = json.dumps(evidence, indent=2)
         if secret in serialised + report:
             raise AssertionError(
                 "the supplier key appears in the evidence or the report; nothing written")
         self.check("the evidence and the report were scanned for the supplier key before "
                    "being written, and the run was stopped if it appeared", True)
-        (self.root / "evidence.json").write_text(serialised)
+
+        # The second reads the disk, so it has to come after every write. These three are
+        # the last writes this process makes: evidence.json is re-serialised so that it
+        # holds the check above, checks.json is written here and not in the exception
+        # handler at the bottom of this file, and nothing below touches the filesystem.
+        # An earlier version wrote checks.json before the scan and then again afterwards
+        # from a finally, which left the run's very last write unscanned.
+        evidence["checks"] = self.checks
+        (self.root / "evidence.json").write_text(json.dumps(evidence, indent=2))
         (self.root / "checks.json").write_text(json.dumps(self.checks, indent=2))
 
-        # And then the whole of the run's own directory, on disk. The scan above can only
-        # see what the controller holds in memory, and the run writes more than that: the
-        # facts staged for the evaluator, the comparison staged for the writer, each
-        # role's output, and the record of every call. Those are the files run.sh copies
-        # out of the pod beside the two above.
-        holding = files_holding(self.root, secret)
+        scanned, holding = scan_files(self.root, secret)
         if holding:
             raise AssertionError(
                 f"the supplier key appears in {holding}, under this run's directory")
-        written = sum(1 for path in self.root.rglob("*") if path.is_file())
-        self.check(f"and every one of the {written} files this run wrote was scanned on "
-                   "disk too, including the facts staged between roles and the record of "
-                   "every call", True)
+        # Reported from the same traversal that did the scanning, so the number is the
+        # number of files actually read and not a second count of a set that may have
+        # changed. This line is printed and deliberately not written anywhere: it is the
+        # result of scanning the files, so it is the one thing it cannot be inside.
+        self.check(f"and so was every one of the {len(scanned)} files left in the pod for "
+                   "this run, read off the disk after the last write: " + ", ".join(scanned),
+                   True)
         print(f"\nANALYST_COMPLETE={self.id}", flush=True)
         print(f"{len(self.checks)} checks passed", flush=True)
         print(f"  bubblewrap {self.pin['pinned_version']}, source commit "
@@ -665,5 +684,11 @@ if __name__ == "__main__":
     run_ = Run()
     try:
         run_.execute()
-    finally:
+    except BaseException:
+        # Only on the failure path. A successful run has already written this file and
+        # then scanned it for the supplier key, and writing it again here would make the
+        # run's last write the one write the scan never saw. A failed run is not copied
+        # out of the pod at all, because run.sh stops on the non-zero exit, so recording
+        # the checks it reached is for reading in place.
         (run_.root / "checks.json").write_text(json.dumps(run_.checks, indent=2))
+        raise

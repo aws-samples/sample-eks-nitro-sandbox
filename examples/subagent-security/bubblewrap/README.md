@@ -909,12 +909,31 @@ PASS and every one of the 10 files this run wrote was scanned on disk too, inclu
 ```
 
 The first runs before either document is written, so neither reaches the disk if the key is
-in it, and because the run's own check list is inside the evidence it covers every check
-line that went to standard output as well. The second reads every file under the run's own
-directory back off the disk, which is the rest of what `run.sh` copies out: the facts staged
-for the evaluator, the comparison staged for the writer, each role's output and the record
-of every call. Either one raises rather than recording a flag, so the line after it is the
-result. No model API key is placed in the sandbox, and the controller checks
+in it. The second reads back, off the disk, every file left in the pod for this run and
+names them: the two documents, the record of every call, the facts staged for the
+evaluator, the comparison staged for the writer and each role's output. That is more than
+`run.sh` copies out, which is `recommendation.md`, `evidence.json`, `checks.json` and
+`calls.json`; the rest stay in the pod until the clean up deletes it, and they are scanned
+because they exist, not because they travel.
+
+Three things about the second scan are deliberate, and the first two are what make the
+sentence true rather than nearly true.
+
+- **It runs after the last write.** Nothing below it in the controller touches the
+  filesystem, and `checks.json` is written just above it rather than afterwards. An earlier
+  version wrote that file again on the way out, which left the run's very last write as the
+  one write the scan had never seen.
+- **The count comes from the traversal that did the scanning**, not from a second walk. Two
+  walks can see two different sets of files, and then "every one of the N files" is a
+  sentence about two different Ns.
+- **It looks for the literal key, in bytes.** Not a decoded string, so a file that is not
+  text is scanned the same way; and not an encoded, hashed or split form of the key, which
+  it would not find. A read it cannot perform raises rather than being skipped, because a
+  scan that could not read a candidate must not report success.
+
+Either scan raises rather than recording a flag, so the line after it is the result. The
+second line is the one thing not inside the files it covers, because it is the result of
+covering them. No model API key is placed in the sandbox, and the controller checks
 that by variable name, printing the names it looked for rather than any value.
 
 **Step 11: Show that the pod ran in a sandbox.** Read the analyst pod's runtime class, then
