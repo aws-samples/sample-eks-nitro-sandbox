@@ -112,7 +112,7 @@ The same procurement analyst agent three ways. Inside its sandbox, a second poli
 The [Subagent security section page](../examples/subagent-security/README.md) holds what they share: the analyst, the case, the shared `analyst/` folder and what a confinement layer has to supply.
 
 - [nono](../examples/subagent-security/nono/README.md) (available now): the analyst confined by nono, doing useful work with bounded access. Spec: [#34](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/34).
-- bubblewrap: the analyst whose tool processes are confined by bubblewrap, with no network for the restricted tools. Spec: [#35](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/35).
+- [bubblewrap](../examples/subagent-security/bubblewrap/README.md) (available now): the analyst whose tool processes are confined by bubblewrap, with no network for the restricted tools. Spec: [#35](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/35).
 - openshell: the analyst confined by OpenShell, whose supervisor holds the real credentials in its own pod outside the sandbox. Spec: [#36](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/36).
 
 ### OpenShell (`openshell`)
