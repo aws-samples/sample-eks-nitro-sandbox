@@ -105,11 +105,14 @@ ANALYST_REPOSITORY="pod-isolation/subagent-analyst-$SAMPLE"
 # resources with nothing pointing at them, and a later clean up could report "already gone"
 # for names that were never created and exit zero.
 #
-# Everything above this line reads and creates nothing, so a run that stops above it leaves
-# the account, the cluster and the filesystem exactly as it found them.
+# Everything above this line reads, so a run that stops above it has created no run
+# directory and nothing at all in the cluster or the account. mkdir's own error is left on
+# standard error rather than suppressed: it is the difference between "an earlier run is
+# here" and a permission, quota or read-only filesystem problem, and the message below
+# would otherwise diagnose the second as the first.
 mkdir -p "$REPO_ROOT/tmp"
-mkdir -m 700 "$TMP_DIR" 2>/dev/null ||
-  die "there is already something at $TMP_DIR, so an earlier run's resources may still be named only there. Finish that run with ./scripts/clean.sh --delete-aws. If you want to keep its AWS resources, move $TMP_DIR aside rather than deleting it: it is the only place their names are written down, and it also holds that run's supplier API key and sample certificate authority. Created and changed nothing."
+mkdir -m 700 "$TMP_DIR" ||
+  die "could not create $TMP_DIR, and mkdir's own reason is above. If something is already there, an earlier run's resources may still be named only in it: finish that run with ./scripts/clean.sh --delete-aws, or, to keep its AWS resources, move $TMP_DIR aside rather than deleting it, because it is the only place their names are written down and it also holds that run's supplier API key and sample certificate authority. Created nothing in the cluster or the account."
 
 : > "$STATE_FILE"
 state_put SAMPLE "$SAMPLE"
