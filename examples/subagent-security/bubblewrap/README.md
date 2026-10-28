@@ -909,9 +909,9 @@ PASS the evidence and the report were scanned for the supplier key before being 
 PASS and so was every one of the 10 files left in the pod for this run, read off the disk after the last write: calls.json, checks.json, evaluator/in/facts.json, evidence.json, reader/in/case.json, recommendation.md, writer/in/comparison.json, writer/in/private.json, writer/out/comparison.json, writer/out/draft.txt
 ```
 
-The first runs before either document is written, so neither reaches the disk if the key is
-in it. The second reads back, off the disk, every file left in the pod for this run and
-names them: the two documents, the record of every call, the facts staged for the
+The first runs over exactly the bytes that are about to be written, and then writes those
+bytes, so neither document reaches the disk if the key is in it. The second reads back, off
+the disk, every file left in the pod for this run and names them: the two documents, the record of every call, the facts staged for the
 evaluator, the comparison staged for the writer and each role's output. That is more than
 `run.sh` copies out, which is `recommendation.md`, `evidence.json`, `checks.json` and
 `calls.json`; the rest stay in the pod until the clean up deletes it, and they are scanned
@@ -921,9 +921,10 @@ Three things about the second scan are deliberate, and the first two are what ma
 sentence true rather than nearly true.
 
 - **It runs after the last write.** Nothing below it in the controller touches the
-  filesystem, and `checks.json` is written just above it rather than afterwards. An earlier
-  version wrote that file again on the way out, which left the run's very last write as the
-  one write the scan had never seen.
+  filesystem, and nothing on the way out of the program does either: `checks.json` is
+  written just above the scan, and the program's last statement runs the analyst and
+  nothing else. `checks.json` is the one file the first scan cannot have covered, because
+  it holds the first scan's own result, so the second scan is what covers it.
 - **The count comes from the traversal that did the scanning**, not from a second walk. Two
   walks can see two different sets of files, and then "every one of the N files" is a
   sentence about two different Ns.
@@ -986,7 +987,7 @@ Four readings differ, and each says something:
 |---|---|---|
 | `uname -rv` | `6.18.54 #1`, built Oct 22 17:38 | `6.18.54 #2`, built Oct 22 00:16 |
 | `/proc/uptime` | `185.96`, against a pod age of 3m6s | `2344.23`, about 39 minutes, which is the node's own age |
-| `/sys/block` | `vda vdb vdc`, virtio | `nvme0n1 nvme1n1`, the instance's own |
+| `/sys/block` | `dm-0 vda vdb vdc`, virtio | `dm-0 loop0` to `loop7`, `nvme0n1 nvme1n1`, `zram0`, the instance's own |
 | `product_name` | `m8i.enclave` | `m8i.xlarge` |
 
 The analyst pod runs its **own kernel build**, and the uptime is the giveaway: 186 seconds

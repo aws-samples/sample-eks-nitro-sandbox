@@ -210,11 +210,6 @@ class Run:
         # Every supplier call this run makes, so the server's own request log can be
         # checked against it afterwards by scripts/correlate.py.
         self.supplier_requests = []
-        # Set once the terminal credential scan has read every file off the disk. After
-        # that point nothing may write under self.root, including the diagnostic write in
-        # the handler at the bottom of this file: a print() that failed after the scan
-        # would otherwise land there and make the run's last write an unscanned one.
-        self.scan_complete = False
         for role in ROLES:
             for directory in ("in", "out"):
                 (self.root / role / directory).mkdir(parents=True)
@@ -610,7 +605,6 @@ class Run:
             stored = s3.get_object(Bucket=BUCKET,
                                    Key=f"{prefix}/{name}")["Body"].read().decode()
             self.check(f"the report object round-trips through S3: {name}", stored == body)
-        (self.root / "recommendation.md").write_text(report)
 
         evidence = {
             "run_id": self.id, "case_id": CASE, "aws_arn": self.arn,
@@ -630,27 +624,31 @@ class Run:
             "checks": list(self.checks), "calls": self.calls,
         }
         secret = Path(SUPPLIER_KEY_FILE).read_text().strip()
-        # Two scans, and the order of what follows is the whole of their value.
+        # Two scans. The first is in memory, over exactly the bytes that are about to be
+        # written, and the second reads the disk after the last write.
         #
-        # The first is in memory and runs before either document is written, so neither
-        # reaches the disk at all if the key is in it. Enforced by raising, not by
-        # recording a flag computed from the key's contents: reaching the line after the
-        # raise IS the result, so that is what gets recorded.
+        # "Exactly the bytes" is load-bearing. An earlier version serialised the evidence,
+        # scanned that string, then appended a check and serialised again before writing,
+        # so the bytes written were a superset of the bytes scanned and the claim about
+        # them was false. What is serialised here is what is written, unchanged.
+        #
+        # Enforced by raising, not by recording a flag computed from the key's contents:
+        # reaching the line after the raise IS the result, so that is what gets recorded.
         serialised = json.dumps(evidence, indent=2)
         if secret in serialised + report:
             raise AssertionError(
                 "the supplier key appears in the evidence or the report; nothing written")
+        (self.root / "evidence.json").write_text(serialised)
+        (self.root / "recommendation.md").write_text(report)
         self.check("the evidence and the report were scanned for the supplier key before "
                    "being written, and the run was stopped if it appeared", True)
 
-        # The second reads the disk, so it has to come after every write. These three are
-        # the last writes this process makes: evidence.json is re-serialised so that it
-        # holds the check above, checks.json is written here and not in the exception
-        # handler at the bottom of this file, and nothing below touches the filesystem.
-        # An earlier version wrote checks.json before the scan and then again afterwards
-        # from a finally, which left the run's very last write unscanned.
-        evidence["checks"] = list(self.checks)
-        (self.root / "evidence.json").write_text(json.dumps(evidence, indent=2))
+        # checks.json holds the check above, so it cannot be inside the string that scan
+        # read. It is written before the disk scan instead, which is what covers it. And
+        # it is written here rather than on the way out of the program: nothing below the
+        # scan may touch the filesystem, and an earlier version wrote this file again from
+        # a handler, which made the run's very last write the one write the scan had not
+        # seen.
         (self.root / "checks.json").write_text(json.dumps(self.checks, indent=2))
 
         scanned, holding = scan_files(self.root, secret)
@@ -664,9 +662,6 @@ class Run:
         self.check(f"and so was every one of the {len(scanned)} files left in the pod for "
                    "this run, read off the disk after the last write: " + ", ".join(scanned),
                    True)
-        # From here on nothing may write under self.root, and this is what stops the
-        # handler below from doing so if a print() fails.
-        self.scan_complete = True
         print(f"\nANALYST_COMPLETE={self.id}", flush=True)
         print(f"{len(self.checks)} checks passed", flush=True)
         print(f"  bubblewrap {self.pin['pinned_version']}, source commit "
@@ -693,16 +688,11 @@ class Run:
         self.save(s3, case, comparison, payload)
 
 
+# Nothing here writes, deliberately. An earlier version recorded the checks a failed run
+# had reached into checks.json from a finally, and later from a guarded handler, and both
+# shapes could put a write after the terminal credential scan. They were also redundant:
+# run.sh tees every line this program prints into controller.log on the operator's machine,
+# so a failed run's checks are already there to read. Deleting the write removes the second
+# path rather than guarding it, which is why there is no flag here to get the polarity of.
 if __name__ == "__main__":
-    run_ = Run()
-    try:
-        run_.execute()
-    except BaseException:
-        # Only when the terminal scan has not run. Writing here afterwards would make the
-        # run's last write the one write the scan never saw, and "afterwards" is reachable:
-        # a print() that fails after the scan raises, and lands exactly here. A failed run
-        # is not copied out of the pod at all, because run.sh stops on the non-zero exit,
-        # so recording the checks it reached is for reading in place.
-        if not run_.scan_complete:
-            (run_.root / "checks.json").write_text(json.dumps(run_.checks, indent=2))
-        raise
+    Run().execute()
