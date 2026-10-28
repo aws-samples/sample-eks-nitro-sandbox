@@ -1,0 +1,71 @@
+# The pipeline this sample runs on the in-cluster GitLab. Two jobs, two stages, two job
+# pods, and nothing in this file about sandboxes: the runner puts every job pod it creates
+# in one, so a pipeline written before the runner was configured is isolated too.
+#
+# scripts/create-project.sh commits this file to the project it creates.
+
+stages:
+  - evidence
+  - build
+
+# An ordinary CI job. No privileges, no services, nothing unusual: it reads the three things
+# that tell a pod running in a Nitro sandbox apart from any pod on the node, so a reader can
+# see that the plain job is isolated and not only the build.
+sandbox-evidence:
+  stage: evidence
+  image: public.ecr.aws/docker/library/alpine:3.24.3
+  script:
+    - echo "pod $(hostname), job $CI_JOB_ID of pipeline $CI_PIPELINE_ID"
+    - echo "--- its own kernel (an ordinary pod reports the node's) ---"
+    - uname -rv
+    - echo "--- its own boot (matches this pod's age, not the node's uptime) ---"
+    - cut -d' ' -f1 /proc/uptime
+    - echo "--- virtio disks (an ordinary pod sees the instance's nvme devices) ---"
+    - ls /sys/block
+    - echo "--- what the guest reports as its product (an ordinary pod reads the EC2 instance type) ---"
+    - cat /sys/class/dmi/id/product_name
+    - echo "--- the process this job script runs as ---"
+    - id
+
+# The privileged job: a Docker daemon of its own, a real multi-stage build and a run of the
+# image it produced, all inside this job pod's sandbox. `privileged = true` in the runner's
+# config.toml is what lets the daemon start; it is privileged over this pod's own guest
+# kernel, and the node never has a privileged daemon on it.
+docker-build:
+  stage: build
+  image: public.ecr.aws/docker/library/docker:29.9.2-cli
+  services:
+    - name: public.ecr.aws/docker/library/docker:29.9.2-dind
+      alias: docker
+  variables:
+    # The service container shares the job pod's network namespace, inside the guest, so the
+    # daemon is on the build container's own loopback.
+    DOCKER_HOST: tcp://localhost:2375
+    # Plain TCP on loopback inside one sandbox: the daemon and its only client are in the
+    # same VM, and nothing outside the pod can reach this port.
+    DOCKER_TLS_CERTDIR: ""
+  script:
+    - echo "pod $(hostname), job $CI_JOB_ID of pipeline $CI_PIPELINE_ID"
+    - echo "--- the same three readings, from the build job's own pod ---"
+    - uname -rv
+    - cut -d' ' -f1 /proc/uptime
+    - ls /sys/block
+    - echo "--- waiting for the daemon this pod started ---"
+    - |
+      i=0
+      until docker info >/dev/null 2>&1; do
+        i=$((i + 1))
+        [ "$i" -lt 90 ] || { echo "the daemon did not answer within 180s"; exit 1; }
+        sleep 2
+      done
+    - docker info --format 'daemon {{.ServerVersion}}, storage driver {{.Driver}}, {{.NCPU}} CPU, kernel {{.KernelVersion}}'
+    - echo "--- a multi-stage build context ---"
+    - mkdir -p build-context
+    - cp ci/main.go ci/go.mod ci/Dockerfile build-context/
+    - cd build-context
+    - echo "--- docker build, in this pod's sandbox ---"
+    - docker build -t hello-nitro:$CI_PIPELINE_ID .
+    - echo "--- docker run, of the image this build produced ---"
+    - docker run --rm hello-nitro:$CI_PIPELINE_ID
+    - echo "--- and what a nested container sees: still this pod's guest ---"
+    - docker run --rm public.ecr.aws/docker/library/alpine:3.24.3 sh -c 'uname -rv; ls /sys/block; id'

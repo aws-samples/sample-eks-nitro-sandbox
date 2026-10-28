@@ -1,0 +1,125 @@
+# The GitLab Runner manager: an ordinary pod that creates one job pod per CI job.
+#
+# Nothing here carries runtimeClassName. The manager is the long-lived component that holds
+# the runner authentication token and talks to GitLab; the job pods it creates are what run
+# pipeline code, and those are the sandboxes. Which runtime class they get is decided in
+# runner/config.toml.template, not here.
+#
+# The Role is namespaced, not cluster-wide: the manager creates job pods only in this
+# sample's own namespace, which is what `namespace` in config.toml names.
+#
+# scripts/register-runner.sh renders <NAMESPACE> and <RUNNER_SECRET> before applying.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitlab-runner
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: gitlab-ci
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gitlab-runner
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: gitlab-ci
+rules:
+  # What the Kubernetes executor needs to build, watch, stream and tear down a job pod.
+  # Taken from the GitLab Runner Kubernetes executor documentation.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete", "update"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/attach"]
+    verbs: ["create", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gitlab-runner
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: gitlab-ci
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gitlab-runner
+subjects:
+  - kind: ServiceAccount
+    name: gitlab-runner
+    namespace: <NAMESPACE>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitlab-runner
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: gitlab-ci
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gitlab-runner
+  template:
+    metadata:
+      labels:
+        app: gitlab-runner
+        app.kubernetes.io/part-of: gitlab-ci
+    spec:
+      serviceAccountName: gitlab-runner
+      containers:
+        - name: runner
+          image: gitlab/gitlab-runner:v19.5.0
+          # The config, token and all, is mounted from the Secret at /config and copied to
+          # the working copy at start-up: gitlab-runner rewrites its own config file when it
+          # reloads, and a Secret mount is read-only. The copy lives in an emptyDir that
+          # never leaves this pod.
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              install -m 600 /config/config.toml /etc/gitlab-runner/config.toml
+              exec gitlab-runner run --working-directory=/home/gitlab-runner \
+                --config=/etc/gitlab-runner/config.toml --user=root
+          volumeMounts:
+            - { name: config-secret, mountPath: /config,            readOnly: true }
+            - { name: config,        mountPath: /etc/gitlab-runner }
+          resources:
+            # The manager polls GitLab and talks to the API server; the work happens in the
+            # job pods. These are this sample's values, not a GitLab Runner minimum.
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: config-secret
+          secret:
+            secretName: <RUNNER_SECRET>
+            defaultMode: 0400
+        - name: config
+          emptyDir: {}

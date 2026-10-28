@@ -1,0 +1,73 @@
+# The GitLab Runner configuration, and the whole of what makes this sample work.
+#
+# scripts/register-runner.sh renders <GITLAB_URL>, <NAMESPACE> and <RUNNER_TOKEN>, then
+# stores the result in a Kubernetes Secret with `kubectl create secret --from-file`, so the
+# token never appears on a command line. The runner manager mounts that Secret.
+#
+# Two lines in [runners.kubernetes] are the sample: `runtime_class_name` puts every job pod
+# in a Nitro sandbox, and `privileged` lets the Docker daemon the build job starts run
+# inside that sandbox. No pipeline has to know about either.
+
+concurrent = 2
+check_interval = 3
+log_level = "info"
+
+[[runners]]
+  name = "nitro-sandbox-runner"
+  # Where the manager talks to GitLab. The in-cluster Service address, not the external_url
+  # GitLab builds its own page links from, which is the port-forward on the reader's machine.
+  url = "<GITLAB_URL>"
+  token = "<RUNNER_TOKEN>"
+  executor = "kubernetes"
+  # Where a job pod clones from. A job pod is inside the cluster, so it needs the Service
+  # address too; without this it would be handed external_url and the clone would fail.
+  clone_url = "<GITLAB_URL>"
+
+  [runners.kubernetes]
+    namespace = "<NAMESPACE>"
+
+    # Every job pod this runner creates gets this RuntimeClass, so every CI job in every
+    # pipeline runs in its own Nitro sandbox. No .gitlab-ci.yml changes.
+    runtime_class_name = "isolated-sandbox"
+
+    # Lets the build job start its own Docker daemon. The daemon is privileged over the
+    # sandbox's kernel, which belongs to the job pod, and not over the node's.
+    privileged = true
+
+    # The image a job gets when its .gitlab-ci.yml names none.
+    image = "public.ecr.aws/docker/library/alpine:3.24.3"
+
+    # The job pod is a sandbox, so it boots a VM, pulls its images and starts a Docker
+    # daemon before the script runs. The default of 180s is not enough for that on a node
+    # that has to be provisioned first.
+    poll_timeout = 900
+
+    # Sizes. A sandbox is sized when it boots and cannot be resized in place (Amazon EKS
+    # User Guide, "Isolated and confidential pods limitations", In-place resource resize),
+    # so a job pod asks for what the job needs up front. With no request at all the VM gets
+    # the small default size and a build toolchain is killed for running out of memory, with
+    # no log to say so. These are this sample's values, not a platform minimum.
+    cpu_request = "1"
+    cpu_limit = "1"
+    memory_request = "2Gi"
+    memory_limit = "2Gi"
+    helper_cpu_request = "250m"
+    helper_cpu_limit = "500m"
+    helper_memory_request = "512Mi"
+    helper_memory_limit = "512Mi"
+    # The Docker daemon the build job runs as a service container, in the same job pod and
+    # so in the same sandbox.
+    service_cpu_request = "1"
+    service_cpu_limit = "1"
+    service_memory_request = "2Gi"
+    service_memory_limit = "2Gi"
+
+    # The label every job pod carries, so one selector names them while they run and the
+    # clean up can confirm none are left.
+    [runners.kubernetes.pod_labels]
+      app = "gitlab-ci-job"
+      "app.kubernetes.io/part-of" = "gitlab-ci"
+
+    # The pinned helper and Docker images are amd64, so keep the job pods there.
+    [runners.kubernetes.node_selector]
+      "kubernetes.io/arch" = "amd64"
