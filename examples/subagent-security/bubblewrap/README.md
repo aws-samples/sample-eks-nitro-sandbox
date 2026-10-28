@@ -1155,12 +1155,13 @@ named at the end and makes it exit non-zero.
 
 Without `--delete-aws` it removes the cluster objects and the Pod Identity association and
 keeps the S3 bucket, the IAM role and the images, so a second run skips the build. It keeps
-the run record too, and `setup.sh` refuses to start while one exists: the record is the only
-place an earlier run's names are written down, and every copy of this sample marks its
-resources the same way, so a clean up that had lost them could report "already gone" for
-names that were never created. To start another run, finish that one with `--delete-aws`.
-If you want to keep its AWS resources, move the run record directory aside rather than
-deleting it: it is the only place their names are written down, and it also holds that
+the run directory too, and `setup.sh` refuses to start while that directory exists:
+creating it is how `setup.sh` checks that no other run is using these names. What is in it
+is the only place an earlier run's names are written down, and every copy of this sample
+marks its resources the same way, so a clean up that had lost them could report "already
+gone" for names that were never created. To start another run, finish that one with
+`--delete-aws`. If you want to keep its AWS resources, move the run directory aside rather
+than deleting it: it is the only place their names are written down, and it also holds that
 run's supplier API key and sample certificate authority.
 
 This sample changes no cluster-wide setting and installs nothing shared, so the clean up has

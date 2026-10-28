@@ -84,32 +84,34 @@ ANALYST_REPOSITORY="pod-isolation/subagent-analyst-$SAMPLE"
 # It is also why the record is touched here and not earlier: everything above creates
 # nothing, so a run that stops above this line leaves both the account and the record
 # exactly as it found them.
-# One run's record at a time, and this refuses rather than comparing. It is the fifth
-# shape this check has had and the first that cannot be got wrong: there is nothing to
-# parse, no key to enumerate and no value to compare, so the six defects the comparing
-# versions had across review rounds 9 to 11 have no equivalent here.
+# One run at a time, and the run directory is what says so. Creating it is the check:
+# mkdir fails if anything is already at that path, whatever kind of thing it is, in one
+# syscall that cannot be interleaved with anything else. So there is nothing to parse, no
+# key to compare and no path type to enumerate.
 #
-# Creating the file *is* the check, under noclobber, rather than a test followed by a
-# truncate. One operation, so there is no window between deciding and acting, and no path
-# type to enumerate: measured, `set -C` refuses an existing file, a directory and a
-# dangling symbolic link, and succeeds only when nothing is there. The version before this
-# tested `[[ ! -e ]]`, which a dangling symbolic link passes, and the truncate after it
-# would then have created the link's target.
+# This is the sixth shape this check has had and the five before it each failed somewhere.
+# Comparing the record's names missed the Region, the cluster, the context and the account,
+# and treated an absent key like an empty value. Deleting the check was worse. Testing
+# [[ ! -e ]] before truncating passed a dangling symbolic link, and the truncate then
+# created the link's target. Creating the record under noclobber passed a FIFO, where the
+# open would block instead, and a character device. mkdir rejects all of those.
 #
-# Why it has to be a refusal and not an overwrite, which is the reasoning I had wrong: the
+# Why it refuses rather than replacing, which is the reasoning I had wrong twice: the
 # record is the only place the names of what a run created are written down, and clean.sh's
 # ownership checks do not make losing it safe. Every copy of this sample marks its
 # resources ManagedBy=bubblewrap and labels its namespace the same way, so those checks
 # stop a foreign resource and not another copy's. The path .env.example invites, changing
-# BUCKET and ROLE_NAME to run a second copy, would therefore have replaced the first
-# copy's record and left its resources with nothing pointing at them, and a later clean up
-# could have reported "already gone" for names that were never created and exited zero.
+# BUCKET and ROLE_NAME to run a second copy, would therefore have left the first copy's
+# resources with nothing pointing at them, and a later clean up could report "already gone"
+# for names that were never created and exit zero.
 #
 # Everything above this line reads and creates nothing, so a run that stops above it leaves
-# the account, the cluster and the record exactly as it found them.
-mkdir -p "$TMP_DIR"
-( set -C; : > "$STATE_FILE" ) 2>/dev/null ||
-  die "there is already something at $STATE_FILE, so an earlier run's resources may still be named only there. Finish that run with ./scripts/clean.sh --delete-aws. If you want to keep its AWS resources, move $TMP_DIR aside rather than deleting it: it is the only place their names are written down, and it also holds that run's supplier API key and sample certificate authority. Created and changed nothing."
+# the account, the cluster and the filesystem exactly as it found them.
+mkdir -p "$REPO_ROOT/tmp"
+mkdir -m 700 "$TMP_DIR" 2>/dev/null ||
+  die "there is already something at $TMP_DIR, so an earlier run's resources may still be named only there. Finish that run with ./scripts/clean.sh --delete-aws. If you want to keep its AWS resources, move $TMP_DIR aside rather than deleting it: it is the only place their names are written down, and it also holds that run's supplier API key and sample certificate authority. Created and changed nothing."
+
+: > "$STATE_FILE"
 state_put SAMPLE "$SAMPLE"
 state_put NAMESPACE "$NAMESPACE"
 state_put BUCKET "$BUCKET"
