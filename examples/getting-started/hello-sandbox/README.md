@@ -124,8 +124,8 @@ devices (`vda`, `vdb`, and so on) where a regular pod sees the instance's `nvme`
 Your instance types may differ. `exec` works as it does for any pod.
 
 The first sandboxed pod on a new cluster waits for Auto Mode to launch a node. After that,
-a new sandboxed pod is Ready in about 5 to 6 seconds, most of it EC2 creating the
-partition.
+a new sandboxed pod is Ready in about 5 to 6 seconds, most of it the sandbox being
+created and booting its kernel.
 
 One more check: the VM booted with the pod, so its uptime (in seconds) matches the pod's
 age, while a regular pod reports the uptime of the node it runs on.

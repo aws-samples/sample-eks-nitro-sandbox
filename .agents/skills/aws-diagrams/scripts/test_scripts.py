@@ -228,6 +228,18 @@ class CheckDrawio(unittest.TestCase):
         # ambiguous: may describe the boundary, so it is a warning for the author to read
         self.assertEqual(wording("one kernel per VM"), {"WARN"})
 
+    def test_internal_name_for_the_boundary(self):
+        # "Nitro Partition" is an internal name; the Amazon EKS User Guide never uses it
+        for bad in ("Nitro Partition", "nitro partition", "Nitro Partitions",
+                    "a hardware-isolated Nitro&lt;br&gt;Partition"):
+            with self.subTest(bad=bad):
+                self.assertIn("wording", errors(broken("&gt;starts a task&lt;", f"&gt;{bad}&lt;")))
+        # the public name, and the mechanism named as the guide names it
+        for good in ("Nitro sandbox", "Nitro Sandbox", "Nitro sandbox pod",
+                     "Nitro hypervisor", "AWS Nitro System"):
+            with self.subTest(good=good):
+                self.assertNotIn("wording", errors(broken("&gt;starts a task&lt;", f"&gt;{good}&lt;")))
+
 
 class MeasureText(unittest.TestCase):
     def test_widths(self):

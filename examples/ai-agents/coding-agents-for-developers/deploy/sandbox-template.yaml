@@ -1,0 +1,86 @@
+# One SandboxTemplate + SandboxWarmPool per CLI. setup.sh renders this once for each
+# CLI in the agent list, substituting <CLI> (claude-code, codex, kiro-cli, opencode,
+# pi, oh-my-pi), <ACCOUNT_ID>, <AWS_REGION>, <POOL_REPLICAS> and <IMAGE_TAG>.
+#
+# The pods boot warm with NO workspace: a SandboxClaim that adds a volume forces a cold
+# start, so the session folder is mounted inside the guest after the claim instead (see
+# the app and the base image's session-entrypoint.sh). The template ships its own egress
+# policy, so it sets networkPolicyManagement: Unmanaged.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: agent-<CLI>
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+spec:
+  networkPolicyManagement: Unmanaged   # egress-policy.yaml is the policy for these pods
+  podTemplate:
+    metadata:
+      labels:
+        app: agent-session
+        agent-cli: <CLI>
+        app.kubernetes.io/part-of: coding-agents-for-developers
+      # Nitro sandbox throttle annotations. Absent, they default to 100 Mbit/s ingress and
+      # egress (capped by a 1500 packets/second bucket), a 400 Mbit/s overlay (scratch) disk
+      # and 1500 overlay IOPS -- tight for an interactive coding agent that pulls model
+      # responses, clones repos and installs packages, which showed up as a slow launch.
+      # Turn the network and ephemeral-disk limits off for a responsive session. The value
+      # must be the string "disabled": `0` is rejected and leaves the pod stuck creating.
+      # Bandwidth and packet rate are independent token buckets, so BOTH must be disabled to
+      # actually uncap the network. rootfs-disk-* is already unlimited by default, and
+      # conntrack-limit cannot be turned off, so neither is set here.
+      annotations:
+        # A session pod holds a live CLI and its in-memory conversation. EKS Auto Mode's
+        # node consolidation (Karpenter) otherwise evicts pods on an "Underutilized" node to
+        # pack them elsewhere, which kills the session mid-turn. do-not-disrupt keeps the
+        # node from being consolidated while this pod runs; the claim's release still ends it.
+        karpenter.sh/do-not-disrupt: "true"
+        sandbox.amazonaws.com/ingress-bandwidth: "disabled"
+        sandbox.amazonaws.com/ingress-packets-per-second: "disabled"
+        sandbox.amazonaws.com/egress-bandwidth: "disabled"
+        sandbox.amazonaws.com/egress-packets-per-second: "disabled"
+        sandbox.amazonaws.com/overlay-disk-bandwidth: "disabled"
+        sandbox.amazonaws.com/overlay-disk-iops: "disabled"
+    spec:
+      runtimeClassName: isolated-sandbox
+      # The pod holds no AWS identity of its own: the mount credential arrives per
+      # session through exec, and the model credential (for the Bedrock CLIs) comes
+      # from the serviceAccount's Pod Identity role, which may only invoke models.
+      serviceAccountName: <SESSION_SA>   # agent-session-codex for codex, agent-session for the rest
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      containers:
+        - name: agent
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/coding-agents-for-developers-<CLI>:<IMAGE_TAG>
+          imagePullPolicy: IfNotPresent
+          # No sign-in credential is injected into the pod. Kiro CLI signs in with the
+          # developer's own identity through the device flow, in the terminal; see the README.
+          # The mount inside the guest needs root + SYS_ADMIN; the CLI then runs as the
+          # unprivileged dev user. runAsNonRoot is intentionally not set: the entrypoint
+          # mounts as root, then setpriv drops to uid 1000 for the CLI. SETUID/SETGID are
+          # exactly what setpriv needs to make that drop; without them the CLI would have
+          # to run as root. All other capabilities stay dropped.
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["SYS_ADMIN", "SETUID", "SETGID"]
+          # A memory request, and nothing else. The Nitro sandbox's memory comes from
+          # resources.requests.memory (Amazon EKS User Guide, "Isolated and confidential pods
+          # limitations"). With no request the guest has about 129 MiB, and on the fresh run
+          # Claude Code could not start and exec into a Codex pod failed. No CPU request and
+          # no limits. The README has the measurement.
+          resources:
+            requests: { memory: 1536Mi }
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: agent-<CLI>
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+spec:
+  replicas: <POOL_REPLICAS>
+  sandboxTemplateRef:
+    name: agent-<CLI>

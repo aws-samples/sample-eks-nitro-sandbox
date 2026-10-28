@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# setup.sh -- everything the procurement analyst needs on your cluster, with its tool
+# roles confined by nono inside one Nitro sandbox.
+#
+# Usage:
+#   cp .env.example .env && $EDITOR .env
+#   ./scripts/setup.sh
+#
+# What it does, in order:
+#   1. checks the tools, the kube context, the isolated-sandbox RuntimeClass and that the
+#      Bedrock model is reachable;
+#   2. creates the namespace when it is absent, and the analyst ServiceAccount;
+#   3. generates the supplier API key and a sample certificate authority;
+#   4. builds and pushes the supplier API image and starts it as an ordinary pod;
+#   5. creates the S3 bucket and seeds the case, the three proposals and another case's
+#      object;
+#   6. creates the IAM role and the EKS Pod Identity association;
+#   7. builds and pushes the analyst image, then starts the sandboxed analyst pod.
+#
+# This sample ships no network policy, so it does not restrict the analyst pod's egress
+# and does not touch the cluster-wide network policy setting. nono confines the tool
+# processes the controller starts, inside the pod; see examples/isolation/network-policy
+# for restricting a sandbox's egress on the node.
+#
+# It never changes a cluster-wide setting and never reuses a resource that is not this
+# sample's: it stops instead, and says what it found.
+#
+# Overridable in .env (the defaults match the page):
+#   CLUSTER_NAME AWS_REGION KUBE_CONTEXT NAMESPACE BEDROCK_MODEL_ID BUCKET ROLE_NAME
+set -euo pipefail
+
+SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SECTION_DIR="$(cd "$SAMPLE_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SECTION_DIR/../.." && pwd)"
+
+SAMPLE="nono"
+# The run record and every scratch file go under the repository's tmp/, which git
+# ignores, and never in the sample folder: they hold this account's ARNs and this run's
+# key material.
+TMP_DIR="$REPO_ROOT/tmp/$SAMPLE"
+STATE_FILE="$TMP_DIR/state.env"
+
+for arg in "$@"; do
+  case "$arg" in
+    --help|-h) sed -n '2,28p' "$0"; exit 0 ;;
+    *) echo "unknown argument: $arg" >&2; exit 2 ;;
+  esac
+done
+
+mkdir -p "$TMP_DIR"
+if [[ -f "$SAMPLE_DIR/.env" ]]; then set -a; . "$SAMPLE_DIR/.env"; set +a; fi
+
+CLUSTER_NAME="${CLUSTER_NAME:-}"
+AWS_REGION="${AWS_REGION:-}"
+KUBE_CONTEXT="${KUBE_CONTEXT:-}"
+NAMESPACE="${NAMESPACE:-subagent-security-nono}"
+BEDROCK_MODEL_ID="${BEDROCK_MODEL_ID:-global.anthropic.claude-sonnet-4-5-20250929-v1:0}"
+
+# shellcheck source=../../analyst/scripts/analyst-lib.sh
+. "$SECTION_DIR/analyst/scripts/analyst-lib.sh"
+
+: > "$STATE_FILE"
+state_put SAMPLE "$SAMPLE"
+state_put NAMESPACE "$NAMESPACE"
+
+analyst_preflight
+
+# These names carry the account id, so they are computed after the preflight read it and
+# are overridable in .env for a second run beside the first.
+BUCKET="${BUCKET:-subagent-analyst-$SAMPLE-$ACCOUNT_ID}"
+ROLE_NAME="${ROLE_NAME:-subagent-analyst-$SAMPLE}"
+SUPPLIER_API_REPOSITORY="pod-isolation/subagent-analyst-$SAMPLE-supplier-api"
+ANALYST_REPOSITORY="pod-isolation/subagent-analyst-$SAMPLE"
+state_put BUCKET "$BUCKET"
+state_put ROLE_NAME "$ROLE_NAME"
+state_put CLUSTER_NAME "$CLUSTER_NAME"
+state_put AWS_REGION "$AWS_REGION"
+state_put KUBE_CONTEXT "$KUBE_CONTEXT"
+state_put SUPPLIER_API_REPOSITORY "$SUPPLIER_API_REPOSITORY"
+state_put ANALYST_REPOSITORY "$ANALYST_REPOSITORY"
+
+analyst_namespace
+analyst_supplier_secrets
+analyst_supplier_api
+analyst_bucket
+analyst_role
+
+# ---------------------------------------------------------------------------
+# 7/7 the analyst image and its sandboxed pod
+# ---------------------------------------------------------------------------
+
+say "7/7 the nono analyst image and its sandboxed pod"
+
+# The committed profiles are what the page shows, so a stale copy would make the page
+# disagree with the run. Regenerate them with scripts/profiles.sh if this fails.
+python3 "$SAMPLE_DIR/src/policies.py" "$SAMPLE_DIR/policies" --check ||
+  die "the profiles in policies/ are not what src/policies.py produces. Run ./scripts/profiles.sh to regenerate them, then re-run this script."
+
+analyst_image "$ANALYST_REPOSITORY" nono/Dockerfile \
+  nono/src/controller.py nono/src/policies.py nono/src/ptyrun.py \
+  nono/policies/reader.json nono/policies/evaluator.json nono/policies/writer.json \
+  analyst/requirements.txt analyst/src/business.py analyst/src/worker.py \
+  analyst/src/analyst_agent.py analyst/fixtures/case.json analyst/fixtures/availability.json \
+  analyst/fixtures/proposals/northstar.json analyst/fixtures/proposals/harbor.json \
+  analyst/fixtures/proposals/cedar.json
+ANALYST_POD_IMAGE="$ANALYST_IMAGE"
+state_put ANALYST_IMAGE "$ANALYST_POD_IMAGE"
+
+analyst_render "$SAMPLE_DIR/deploy/analyst-pod.yaml" "$TMP_DIR/analyst-pod.yaml" \
+  "s|<ANALYST_IMAGE>|$ANALYST_POD_IMAGE|g" \
+  "s|<AWS_REGION>|$AWS_REGION|g" \
+  "s|<BUCKET>|$BUCKET|g" \
+  "s|<ROLE_NAME>|$ROLE_NAME|g" \
+  "s|<BEDROCK_MODEL_ID>|$BEDROCK_MODEL_ID|g"
+
+# Replace this sample's own pod rather than adopting it, so an image, identity or
+# environment change can never be hidden by a pod that was already running. The pod is
+# in this sample's own namespace, which the steps above confirmed carries its label.
+kc delete pod analyst -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=3m
+kc apply -f "$TMP_DIR/analyst-pod.yaml"
+kc wait --for=condition=Ready pod/analyst -n "$NAMESPACE" --timeout=10m ||
+  die "the analyst pod did not become ready; 'kubectl describe pod analyst -n $NAMESPACE' says why"
+
+say "ready"
+cat <<EOF
+  namespace:  $NAMESPACE
+  bucket:     $BUCKET
+  role:       $ROLE_NAME
+  model:      $BEDROCK_MODEL_ID
+  run record: $STATE_FILE
+
+Run one procurement case:
+  ./scripts/run.sh
+EOF

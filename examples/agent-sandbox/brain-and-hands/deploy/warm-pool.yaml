@@ -1,0 +1,102 @@
+# The hands: a SandboxTemplate with no network, and a pool that keeps one booted.
+#
+# Every command the brain decides to run happens in a pod stamped from this
+# template. The template is where the isolation is asked for, so these two lines
+# are the whole of it: the runtime class puts the pod's containers in a Nitro
+# sandbox, and the annotation boots that sandbox with no network device.
+#
+# <NAMESPACE> is filled in at apply time by ./scripts/setup.sh from the
+# NAMESPACE variable, so an overridden name reaches this object too. Never apply
+# this file with the placeholder in place.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: hands
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: brain-and-hands
+spec:
+  # The hands boot with no network device, so there is no egress to restrict and
+  # this sample ships no network policy for them. Left at the default, Managed,
+  # the agent-sandbox controller would add one of its own, and with no rules
+  # from us that policy allows 0.0.0.0/0 less the private ranges: the public
+  # internet. It is inert against a pod that has no network, but it would be the
+  # standing permission the moment anyone dropped the annotation below. Say no
+  # instead, so the only reason the hands cannot reach the network is that they
+  # have no network.
+  networkPolicyManagement: Unmanaged
+  podTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: brain-and-hands
+        app: hands
+      annotations:
+        # No network besides loopback: no route out, no DNS, no instance
+        # metadata and no Pod Identity credentials. So there is no egress to
+        # restrict and this sample ships no network policy for these pods; the
+        # page shows the absence instead. kubectl exec, cp and logs keep
+        # working, because they use the sandbox's internal control channel
+        # rather than a network device, and that is the brain's only way in.
+        sandbox.amazonaws.com/network-isolated: "true"
+        # Pin the node while a warm pod sits Ready and idle in the pool.
+        # Nothing would reschedule a pre-booted warm pod if voluntary
+        # disruption (consolidation, drift, expiry) removed the node under it.
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      # The one line that puts the pod in a Nitro sandbox. No node selector,
+      # toleration or sidecar: the RuntimeClass carries the scheduling
+      # constraints, and EKS Auto Mode brings up a sandbox-capable node.
+      runtimeClassName: isolated-sandbox
+      # No Kubernetes API credential inside the hands. A pod built from a
+      # SandboxTemplate has this defaulted to false already, so this says out
+      # loud what the pod relies on rather than changing it: the hands run
+      # whatever the model decided to run and have no reason to hold a token
+      # for the cluster they run on. With no Pod Identity association either,
+      # a command finds no AWS role and no model credential.
+      automountServiceAccountToken: false
+      # Leave out the <SERVICE>_HOST and <SERVICE>_PORT variables for the other
+      # Services in this namespace, so a command the model runs finds nothing in
+      # the environment that names one. The KUBERNETES_* variables for the
+      # cluster's own API Service are injected whatever this says; they name an
+      # address these pods have no route to.
+      enableServiceLinks: false
+      containers:
+        - name: hands
+          image: public.ecr.aws/docker/library/python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          # Print one line at boot, then wait. The line is what `kubectl logs`
+          # returns, which is how the page shows that the log stream reaches a
+          # pod with no network: it rides the sandbox's control channel, the
+          # same as exec and cp.
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "hands ready in a sandbox: kernel $(uname -rv), disks $(ls /sys/block | tr '\n' ' ')"
+              sleep infinity
+          workingDir: /work
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - { name: work, mountPath: /work }
+          # No CPU or memory requests or limits. The commands this sample runs
+          # in the hands are small, so it leaves sizing to the reader and the
+          # sandbox gets a small default size. A real workload sets the requests
+          # it needs: the sandbox is sized from them.
+      volumes:
+        - { name: work, emptyDir: {} }
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: hands-pool
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: brain-and-hands
+spec:
+  # One pod booted and waiting. A claim adopts it and the pool boots a
+  # replacement, so while a session holds a pod the steady state is two.
+  replicas: 1
+  sandboxTemplateRef:
+    name: hands

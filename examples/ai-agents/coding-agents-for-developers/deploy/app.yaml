@@ -1,0 +1,69 @@
+# The web app: a single Deployment behind a ClusterIP Service, reached only with
+# `kubectl port-forward`. setup.sh fills <ACCOUNT_ID>, <AWS_REGION>, <NAMESPACE>,
+# <S3_FILES_FS_ID>, <S3_BUCKET_NAME>, <S3_PREFIX>, <MOUNT_ROLE_ARN>, <AGENT_CLIS> and
+# <IMAGE_TAG>.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-app
+  labels:
+    app: agent-app
+    app.kubernetes.io/part-of: coding-agents-for-developers
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-app
+  template:
+    metadata:
+      labels:
+        app: agent-app
+        app.kubernetes.io/part-of: coding-agents-for-developers
+    spec:
+      serviceAccountName: agent-app
+      containers:
+        - name: app
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/coding-agents-for-developers-app:<IMAGE_TAG>
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: AWS_REGION
+              value: "<AWS_REGION>"
+            - name: NAMESPACE
+              value: "<NAMESPACE>"
+            - name: S3_FILES_FS_ID
+              value: "<S3_FILES_FS_ID>"
+            - name: S3_BUCKET_NAME
+              value: "<S3_BUCKET_NAME>"
+            - name: S3_PREFIX
+              value: "<S3_PREFIX>"
+            - name: MOUNT_ROLE_ARN
+              value: "<MOUNT_ROLE_ARN>"
+            # Comma-separated CLI ids, each with a warm pool: claude-code,codex,...
+            - name: AGENT_CLIS
+              value: "<AGENT_CLIS>"
+            # Minutes of no terminal activity before a session's pod is released.
+            - name: IDLE_MINUTES
+              value: "30"
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-app
+  labels:
+    app: agent-app
+    app.kubernetes.io/part-of: coding-agents-for-developers
+spec:
+  type: ClusterIP                 # reached only with kubectl port-forward; no Ingress
+  selector:
+    app: agent-app
+  ports:
+    - port: 8080
+      targetPort: 8080
