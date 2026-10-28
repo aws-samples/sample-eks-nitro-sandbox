@@ -39,7 +39,7 @@ minute or two longer than a plain image. A run costs one Bedrock turn, a few sma
 objects, and one sandboxed pod plus one small ordinary pod kept running until you clean up.
 
 Every output block on this page is from one real run of this sample, run id
-`e7eb0357ca5e4716a59cbf5c5b8cae74`. Values from the account and cluster it ran on are
+`4c438711e8734bfa89833e47115af1cb`. Values from the account and cluster it ran on are
 replaced by the same placeholders the commands use, because this repository is public:
 `<ACCOUNT_ID>`, `<CLUSTER_NAME>` and `<NODE_NAME>`. The Region is left as `us-west-2`, the
 default this repository's samples share. Run ids, pod names, kernel builds, uptimes, device
@@ -249,11 +249,11 @@ deployment "supplier-api" successfully rolled out
 
 ==> 6/7 the IAM role and its EKS Pod Identity association
   created the IAM role subagent-analyst-bubblewrap
-  created the Pod Identity association a-g0ply2stiyj1cdktu
+  created the Pod Identity association a-ukgzay0f1bqiwe8d7
 
 ==> 7/7 the bubblewrap analyst image and its sandboxed pod
   created the ECR repository pod-isolation/subagent-analyst-bubblewrap
-  built and pushed pod-isolation/subagent-analyst-bubblewrap:793cab160b7f6ec88b50
+  built and pushed pod-isolation/subagent-analyst-bubblewrap:f6af88872b629e5c0a14
 pod/analyst created
 pod/analyst condition met
 {
@@ -375,16 +375,17 @@ PASS the citation gate rejects an answer missing one source key
 PASS the report object round-trips through S3: recommendation.md
 PASS the report object round-trips through S3: comparison.json
 PASS the evidence and the report were scanned for the supplier key before being written, and the run was stopped if it appeared
-ANALYST_COMPLETE=e7eb0357ca5e4716a59cbf5c5b8cae74
-72 checks passed
+PASS and every one of the 10 files this run wrote was scanned on disk too, including the facts staged between roles and the record of every call
+ANALYST_COMPLETE=4c438711e8734bfa89833e47115af1cb
+73 checks passed
   bubblewrap 0.13.1, source commit 362936aea0d5c6e70f7af75d2d44b5a914cb4ba2
-  model usage: 2652 tokens on global.anthropic.claude-sonnet-4-5-20250929-v1:0
+  model usage: 2649 tokens on global.anthropic.claude-sonnet-4-5-20250929-v1:0
   2 authenticated requests correlated with the supplier API's own log, each arriving once, and no other request from this run
 ==> done
-  run id:         e7eb0357ca5e4716a59cbf5c5b8cae74
-  recommendation: /path/to/sample-eks-nitro-sandbox/tmp/bubblewrap/runs/e7eb0357ca5e4716a59cbf5c5b8cae74/recommendation.md
-  evidence:       /path/to/sample-eks-nitro-sandbox/tmp/bubblewrap/runs/e7eb0357ca5e4716a59cbf5c5b8cae74/evidence.json
-  S3 report:      s3://subagent-analyst-bubblewrap-<ACCOUNT_ID>/reports/rfp-001/e7eb0357ca5e4716a59cbf5c5b8cae74/
+  run id:         4c438711e8734bfa89833e47115af1cb
+  recommendation: /path/to/sample-eks-nitro-sandbox/tmp/bubblewrap/runs/4c438711e8734bfa89833e47115af1cb/recommendation.md
+  evidence:       /path/to/sample-eks-nitro-sandbox/tmp/bubblewrap/runs/4c438711e8734bfa89833e47115af1cb/evidence.json
+  S3 report:      s3://subagent-analyst-bubblewrap-<ACCOUNT_ID>/reports/rfp-001/4c438711e8734bfa89833e47115af1cb/
 ```
 
 The order is deliberate: the layer first, then what it made of a tool process, and only then
@@ -418,39 +419,32 @@ cat ../../../tmp/bubblewrap/runs/<RUN_ID>/recommendation.md
 ## Procurement Analysis: 100 Workstations for Customer Service Office
 
 **Requirements:**
-- Budget: $125,000 USD
-- Maximum delivery: 30 days
-- Minimum warranty: 24 months
+- Budget: $125,000
+- Delivery: Within 30 days
+- Warranty: Minimum 24 months
 
 ### Supplier Comparison
 
-#### Northstar Office Systems ✓ ELIGIBLE
-**Source:** `proposals/rfp-001/northstar.json`
+| Supplier | Price | Delivery | Warranty | Status |
+|----------|-------|----------|----------|--------|
+| **Northstar Office Systems** | $120,000 | 28 days | 36 months | ✅ **Eligible** |
+| Harbor Supply Partners | $105,000 | 45 days | 24 months | ❌ Late delivery |
+| Cedar Workplace Group | $130,000 | 21 days | 36 months | ❌ Over budget |
 
-- **Price:** $120,000 (within budget, $5,000 under)
-- **Delivery:** 28 days (meets requirement)
-- **Warranty:** 36 months (exceeds minimum)
-- **Status:** Meets all requirements
+### Analysis
 
-#### Harbor Supply Partners ✗ INELIGIBLE
-**Source:** `proposals/rfp-001/harbor.json`
+**Northstar Office Systems** (`proposals/rfp-001/northstar.json`) is the only eligible supplier, meeting all requirements:
+- **Price:** $120,000 (within $125,000 budget)
+- **Delivery:** 28 days (within 30-day requirement)
+- **Warranty:** 36 months (exceeds 24-month minimum)
 
-- **Price:** $105,000 (lowest bid, $20,000 under budget)
-- **Delivery:** 45 days (**fails requirement** - 15 days late)
-- **Warranty:** 24 months (meets minimum)
-- **Failure:** Late delivery
+**Harbor Supply Partners** (`proposals/rfp-001/harbor.json`) offers the lowest price at $105,000 but cannot deliver within the required 30-day timeframe (45 days), making them ineligible.
 
-#### Cedar Workplace Group ✗ INELIGIBLE
-**Source:** `proposals/rfp-001/cedar.json`
-
-- **Price:** $130,000 (**fails requirement** - $5,000 over budget)
-- **Delivery:** 21 days (fastest delivery)
-- **Warranty:** 36 months (exceeds minimum)
-- **Failure:** Over budget
+**Cedar Workplace Group** (`proposals/rfp-001/cedar.json`) provides fast delivery (21 days) and excellent warranty coverage (36 months) but exceeds the budget at $130,000.
 
 ### Recommendation
 
-**Northstar Office Systems** is the only eligible supplier, meeting all procurement requirements. While Harbor offers the lowest price, their 45-day delivery timeline exceeds our 30-day maximum. Cedar provides the fastest delivery but exceeds budget constraints. Northstar delivers the best balance: competitive pricing within budget, timely delivery, and superior 36-month warranty coverage.
+Award the contract to **Northstar Office Systems** for $120,000. They provide the best value while meeting all procurement requirements, with delivery in 28 days and superior 36-month warranty coverage.
 ```
 
 Everything from the second heading down is the model's own prose, and it cites all three
@@ -647,7 +641,7 @@ per call and are not in this list.
 <summary>The full argument list this run passed, one argument per line</summary>
 
 ```bash
-jq -r '.bwrap_argument_list[]' ../../../tmp/bubblewrap/runs/e7eb0357ca5e4716a59cbf5c5b8cae74/evidence.json
+jq -r '.bwrap_argument_list[]' ../../../tmp/bubblewrap/runs/4c438711e8734bfa89833e47115af1cb/evidence.json
 ```
 
 ```text
@@ -719,10 +713,10 @@ usr/lib64
 --tmpfs
 /tmp
 --ro-bind
-/var/lib/analyst/e7eb0357ca5e4716a59cbf5c5b8cae74/reader/in
+/var/lib/analyst/4c438711e8734bfa89833e47115af1cb/reader/in
 /input
 --bind
-/var/lib/analyst/e7eb0357ca5e4716a59cbf5c5b8cae74/reader/out
+/var/lib/analyst/4c438711e8734bfa89833e47115af1cb/reader/out
 /output
 --chdir
 /output
@@ -903,7 +897,24 @@ PASS the controller submits the writer's draft, which the supplier API accepts w
 
 The `401` is the supplier API's own control: the server really does check the header, so the
 `200` and the `201` the controller gets are a valid key being accepted and not the server
-waving anything through. No model API key is placed in the sandbox, and the controller checks
+waving anything through.
+
+The controller holds the real key for all three of those calls, so the last thing the run
+does is look for that key in what it is about to leave behind. Two scans, and the second is
+the broader one:
+
+```text
+PASS the evidence and the report were scanned for the supplier key before being written, and the run was stopped if it appeared
+PASS and every one of the 10 files this run wrote was scanned on disk too, including the facts staged between roles and the record of every call
+```
+
+The first runs before either document is written, so neither reaches the disk if the key is
+in it, and because the run's own check list is inside the evidence it covers every check
+line that went to standard output as well. The second reads every file under the run's own
+directory back off the disk, which is the rest of what `run.sh` copies out: the facts staged
+for the evaluator, the comparison staged for the writer, each role's output and the record
+of every call. Either one raises rather than recording a flag, so the line after it is the
+result. No model API key is placed in the sandbox, and the controller checks
 that by variable name, printing the names it looked for rather than any value.
 
 **Step 11: Show that the pod ran in a sandbox.** Read the analyst pod's runtime class, then
@@ -923,10 +934,10 @@ kubectl exec analyst -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f1 /proc/upti
 
 ```text
 isolated-sandbox
-pod age:  53s
-node age: 12m
+pod age:  43s
+node age: 51m
 6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-52.23
+42.71
 dm-0 vda vdb vdc 
 m8i.enclave
 ```
@@ -944,8 +955,8 @@ kubectl exec ordinary-comparison -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f
 
 ```text
 6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
-765.09
-dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0 
+3098.75
+dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 nvme2n1 zram0 
 m8i.xlarge
 ```
 
@@ -954,13 +965,13 @@ Four readings differ, and each says something:
 | Reading | Sandboxed analyst | Ordinary pod on the same node |
 |---|---|---|
 | `uname -rv` | `6.18.54 #1`, built Oct 22 17:38 | `6.18.54 #2`, built Oct 22 00:16 |
-| `/proc/uptime` | `52.23`, against a pod age of 53s | `765.09`, about 12.8 minutes, which is the node's own age |
+| `/proc/uptime` | `42.71`, against a pod age of 43s | `3098.75`, about 51 minutes, which is the node's own age |
 | `/sys/block` | `vda vdb vdc`, virtio | `nvme0n1 nvme1n1 nvme3n1`, the instance's own |
 | `product_name` | `m8i.enclave` | `m8i.xlarge` |
 
-The analyst pod runs its **own kernel build**, and the uptime is the giveaway: 52 seconds
-against a pod 53s old, because the sandbox booted when the pod did, while the ordinary pod
-reports the node's uptime, which matches the node's own 12 minute age and not the pod's. It
+The analyst pod runs its **own kernel build**, and the uptime is the giveaway: 42 seconds
+against a pod 43s old, because the sandbox booted when the pod did, while the ordinary pod
+reports the node's uptime, which matches the node's own 51 minute age and not the pod's. It
 sees virtio disks where the ordinary pod sees the instance's `nvme` devices, and it names the
 enclave rather than the instance type.
 
@@ -1087,7 +1098,7 @@ deployment.apps "supplier-api" deleted from subagent-security-bubblewrap namespa
 namespace "subagent-security-bubblewrap" deleted
 
 ==> 2/4 the EKS Pod Identity association
-  deleted the association a-g0ply2stiyj1cdktu.
+  deleted the association a-ukgzay0f1bqiwe8d7.
 
 ==> 3/4 the AWS resources
   deleted the bucket subagent-analyst-bubblewrap-<ACCOUNT_ID>.

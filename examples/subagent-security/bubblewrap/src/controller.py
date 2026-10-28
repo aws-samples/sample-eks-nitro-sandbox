@@ -112,6 +112,27 @@ def no_capabilities(fields) -> bool:
     return all(int(fields[name], 16) == 0 for name in CAPABILITY_SETS)
 
 
+def files_holding(root: Path, secret: str) -> list:
+    """Every file under root whose bytes contain secret, as paths relative to root.
+
+    A named function returning the findings rather than a check that raises, so that it
+    can be run against a tree that must come back empty and a tree that must not.
+
+    The caller passes the whole of the run's own directory. That is broader than the two
+    documents that leave the pod, and deliberately: the run also stages facts between
+    roles, records every call it made, and keeps each role's output, and all of it sits
+    under that one directory. Scanning the directory rather than a list of names cannot
+    be left stale by a later stage writing one more file.
+
+    Decoded with errors="replace" so that a file that is not text is still scanned rather
+    than skipped: a credential in a file this function could not decode would otherwise
+    be the one it missed.
+    """
+    return sorted(str(path.relative_to(root)) for path in root.rglob("*")
+                  if path.is_file()
+                  and secret in path.read_bytes().decode("utf-8", "replace"))
+
+
 def same_file(reported, actual) -> bool:
     """True when a child's (device, inode) reading names the file the controller holds.
 
@@ -585,14 +606,35 @@ class Run:
             "checks": self.checks, "calls": self.calls,
         }
         serialised = json.dumps(evidence, indent=2)
+        secret = Path(SUPPLIER_KEY_FILE).read_text().strip()
         # Enforced by raising, not by recording a flag computed from the key's contents.
         # Reaching the line after the raise IS the result, so that is what gets recorded.
-        if Path(SUPPLIER_KEY_FILE).read_text().strip() in serialised + report:
+        #
+        # This one runs before the write, so the two documents that leave the pod are
+        # never written at all if the key is in them. Note what it already covers:
+        # self.checks is inside evidence, and self.checks holds every check name this run
+        # printed, so scanning it scans every check line that went to standard output.
+        if secret in serialised + report:
             raise AssertionError(
                 "the supplier key appears in the evidence or the report; nothing written")
         self.check("the evidence and the report were scanned for the supplier key before "
                    "being written, and the run was stopped if it appeared", True)
         (self.root / "evidence.json").write_text(serialised)
+        (self.root / "checks.json").write_text(json.dumps(self.checks, indent=2))
+
+        # And then the whole of the run's own directory, on disk. The scan above can only
+        # see what the controller holds in memory, and the run writes more than that: the
+        # facts staged for the evaluator, the comparison staged for the writer, each
+        # role's output, and the record of every call. Those are the files run.sh copies
+        # out of the pod beside the two above.
+        holding = files_holding(self.root, secret)
+        if holding:
+            raise AssertionError(
+                f"the supplier key appears in {holding}, under this run's directory")
+        written = sum(1 for path in self.root.rglob("*") if path.is_file())
+        self.check(f"and every one of the {written} files this run wrote was scanned on "
+                   "disk too, including the facts staged between roles and the record of "
+                   "every call", True)
         print(f"\nANALYST_COMPLETE={self.id}", flush=True)
         print(f"{len(self.checks)} checks passed", flush=True)
         print(f"  bubblewrap {self.pin['pinned_version']}, source commit "
