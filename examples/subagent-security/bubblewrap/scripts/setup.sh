@@ -85,34 +85,26 @@ ANALYST_REPOSITORY="pod-isolation/subagent-analyst-$SAMPLE"
 # It is also why the record is touched here and not earlier: everything above creates
 # nothing, so a run that stops above this line leaves both the account and the record
 # exactly as it found them.
-# The six keys are the ones that decide what the clean up would delete and where it would
-# look for it: the three names, and the Region, cluster and context that route every call
-# it makes. A second run with the same names against a different cluster would otherwise
-# replace the routing values and leave the first run's resources unreachable. The two
-# repository names are not here because both are fixed derivations of SAMPLE, so they
-# cannot differ between runs of this sample.
+# There is no check here that the record names the same resources as this run, and that
+# is deliberate. One was added, and three review rounds then found six defects in it: it
+# did not compare the Region, the cluster or the context; an absent key and an empty value
+# were treated alike; an empty KUBE_CONTEXT does not identify the context a run actually
+# used; the account id was not compared either; and the sed that read the record discarded
+# its own exit status. Each fix made it longer and the next round found the next gap, which
+# is the shape AGENTS.md names: a check that grew because each round bolted another on,
+# defending a local scratch file nobody will hand-edit.
 #
-# A record that is present but cannot be read, or that does not name all six, is refused
-# rather than skipped: "there is nothing to lose" is a claim about a record this script
-# could read, and an empty value is not the same thing as a key this script's own
-# state_put would never have written.
-RECORD_KEYS=(NAMESPACE BUCKET ROLE_NAME AWS_REGION CLUSTER_NAME KUBE_CONTEXT)
-if [[ -f "$STATE_FILE" ]]; then
-  [[ -r "$STATE_FILE" ]] ||
-    die "there is a run record at $STATE_FILE and it cannot be read, so it is unknown what an earlier run created. Created and changed nothing. Make it readable, or move it aside once you are sure."
-  for key in "${RECORD_KEYS[@]}"; do
-    # KUBE_CONTEXT is the one key a run may legitimately have written empty, because
-    # leaving it empty in .env means "use the current context". So it is compared when
-    # the record has a line for it, and its value may be empty on both sides.
-    mapfile -t previous < <(sed -n "s/^$key=//p" "$STATE_FILE")
-    if [[ "${#previous[@]}" == 0 ]]; then
-      die "the run record at $STATE_FILE has no $key line, so it is unknown what an earlier run created or where. Created and changed nothing. Run ./scripts/clean.sh --delete-aws for that run first, or move the record aside."
-    fi
-    [[ "${previous[-1]}" == "${!key}" ]] ||
-      die "the run record at $STATE_FILE says the last run used $key=${previous[-1]} and this one would use ${!key}. Run ./scripts/clean.sh --delete-aws for that one first, or move the record aside; created and changed nothing, and the record is untouched."
-  done
-fi
-
+# What a lost record can actually cost is bounded, and by something already here rather
+# than by anything in this file. clean.sh deletes an AWS resource only when it carries
+# ManagedBy=bubblewrap and touches a namespace only when it carries this sample's
+# managed-by label, so a missing or stale record cannot make it delete the wrong thing. It
+# can only make the clean up incomplete, which it reports as INCOMPLETE and exits non-zero
+# for. If you change a name in .env, finish the previous run with
+# ./scripts/clean.sh --delete-aws first.
+#
+# What is kept from that round is the ordering, which is the part that was free: nothing
+# above this line creates anything, so a run that stops above it leaves the account, the
+# cluster and the record as it found them.
 : > "$STATE_FILE"
 state_put SAMPLE "$SAMPLE"
 state_put NAMESPACE "$NAMESPACE"
