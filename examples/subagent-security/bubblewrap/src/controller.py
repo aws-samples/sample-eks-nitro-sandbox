@@ -44,7 +44,7 @@ import sys
 import urllib.error
 import urllib.request
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
 import boto3
@@ -130,12 +130,41 @@ def run_files(root: Path) -> list:
         # So a link is a state the run stops on.
         if path.is_symlink():
             raise AssertionError(
-                f"{path.relative_to(root)}, under this run's directory, is a symbolic "
-                "link. Nothing this sample creates there is one, and following it would "
-                "read outside the directory the scan covers, so the run stops here.")
+                f"{str(path.relative_to(root))!r}, under this run's directory, is a "
+                "symbolic link. Nothing this sample creates there is one, and following "
+                "it would read outside the directory the scan covers, so the run stops "
+                "here. The name is quoted because a tool process can choose it: it writes "
+                "its own /output, which is under this directory.")
         if path.is_file():
             names.append(str(path.relative_to(root)))
     return sorted(names)
+
+
+def open_under(root_fd: int, name: str) -> int:
+    """Open name relative to root_fd, refusing a symbolic link at every component.
+
+    O_NOFOLLOW on the whole path only guards the *final* component, which round 17 found:
+    the listing refusing links and a final-component no-follow still left the gap between
+    the two passes open, because something could replace an intermediate directory with a
+    link to one outside root and the read would follow it. So each component is opened
+    relative to the previous one with O_DIRECTORY|O_NOFOLLOW, and the last with
+    O_NOFOLLOW. A link anywhere on the way down fails with ELOOP, and because every open
+    is relative to a descriptor this function already holds, the resolution cannot be
+    redirected after it has started.
+
+    Returns a file descriptor the caller owns.
+    """
+    parts = PurePosixPath(name).parts
+    parent_fd, opened = root_fd, []
+    try:
+        for part in parts[:-1]:
+            parent_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=parent_fd)
+            opened.append(parent_fd)
+        return os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    finally:
+        for descriptor in opened:
+            os.close(descriptor)
 
 
 def count_files_holding(root: Path, names, needle: bytes) -> int:
@@ -154,22 +183,19 @@ def count_files_holding(root: Path, names, needle: bytes) -> int:
 
     What this does and does not cover: the literal bytes, contiguous, in each named file.
     Not an encoded, hashed or split representation of them, and nothing outside root,
-    which the no-follow open below is what makes true. A read it cannot perform raises
-    rather than being skipped, which also covers a file that disappeared between the
-    listing and the read: a scan that could not read a candidate must not report success.
+    which open_under() below is what makes true. A read it cannot perform raises rather
+    than being skipped, which also covers a file that disappeared between the listing and
+    the read: a scan that could not read a candidate must not report success.
     """
-    def no_follow(path, flags):
-        # O_NOFOLLOW, so a link swapped in between the listing above and this read fails
-        # with ELOOP rather than being followed. The listing refusing links and this
-        # refusing to follow one are two halves of the same boundary: without the second,
-        # the gap between the two passes is a window.
-        return os.open(path, flags | os.O_NOFOLLOW)
-
     found = 0
-    for name in names:
-        with open(root / name, "rb", opener=no_follow) as handle:
-            if needle in handle.read():
-                found += 1
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for name in names:
+            with os.fdopen(open_under(root_fd, name), "rb") as handle:
+                if needle in handle.read():
+                    found += 1
+    finally:
+        os.close(root_fd)
     return found
 
 

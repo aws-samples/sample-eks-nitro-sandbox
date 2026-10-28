@@ -175,7 +175,9 @@ kc wait --for=condition=Ready pod/analyst -n "$NAMESPACE" --timeout=10m ||
 # something they need only retry, so the second attempt is what decides and the message
 # below names both possibilities rather than only the one this check exists for.
 preflight_failure=""
+preflight_attempts=0
 for attempt in 1 2; do
+  preflight_attempts="$attempt"
   if preflight_output="$(kc exec analyst -n "$NAMESPACE" -- \
        python3 /opt/bubblewrap/preflight.py 2>&1)"; then
     printf '%s\n' "$preflight_output"
@@ -191,8 +193,12 @@ for attempt in 1 2; do
     <<<"$preflight_output" || break
   [[ "$attempt" == 1 ]] && sleep 10
 done
+# Said as it happened: a guest failure is not retried, so reporting "twice" for it would
+# be false, which is what round 17 found.
+if [[ "$preflight_attempts" == 1 ]]; then preflight_tried="once"
+else preflight_tried="twice, ten seconds apart"; fi
 [[ -z "$preflight_failure" ]] ||
-  die "bubblewrap could not start a tool process in the guest, twice, ten seconds apart, and what it said is below. If that names a namespace or a procfs mount, the pod's enable-guest-userns init container and its privileged working container are what make those possible: 'kubectl logs analyst -c enable-guest-userns -n $NAMESPACE' and 'kubectl describe pod analyst -n $NAMESPACE' say what happened. If it is a connection error instead, the exec did not reach the pod and re-running this script is the thing to try.
+  die "bubblewrap could not start a tool process in the guest, $preflight_tried, and what it said is below. If that names a namespace or a procfs mount, the pod's enable-guest-userns init container and its privileged working container are what make those possible: 'kubectl logs analyst -c enable-guest-userns -n $NAMESPACE' and 'kubectl describe pod analyst -n $NAMESPACE' say what happened. If it is a connection error instead, the exec did not reach the pod and re-running this script is the thing to try.
 $preflight_failure"
 
 say "ready"
