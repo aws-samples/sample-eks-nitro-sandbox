@@ -214,12 +214,19 @@ class Run:
                    os.getuid() == 1000 and os.getgid() == 1000)
         # The working container is privileged, which is what lets bwrap mount a private
         # procfs in the guest. It does not give this process any capability: a non-root
-        # exec starts with an empty permitted set, so CapEff is zero while the bounding
-        # set the container was given is not.
-        self.check("the trusted controller has no effective capabilities (CapEff "
-                   f"{fields['CapEff']}), although the privileged container's bounding "
-                   f"set is CapBnd {fields['CapBnd']}",
-                   int(fields["CapEff"], 16) == 0)
+        # exec starts with an empty permitted set, so CapPrm and CapEff are both zero
+        # while the bounding set the container was given is everything.
+        #
+        # The three readings after the condition are the cost of that privilege, and they
+        # are reported rather than asserted. Asserting them would mean a run failing if a
+        # future runtime hardened a privileged container, which is not a regression this
+        # sample should refuse to run on; the page reads them as the trade bubblewrap's
+        # requirements force here.
+        self.check("the trusted controller has no capability it can use (CapEff "
+                   f"{fields['CapEff']}, CapPrm {fields['CapPrm']}); the privileged "
+                   f"container's other readings are CapBnd {fields['CapBnd']}, "
+                   f"NoNewPrivs {fields['NoNewPrivs']} and Seccomp {fields['Seccomp']}",
+                   int(fields["CapEff"], 16) == 0 and int(fields["CapPrm"], 16) == 0)
         # The rendered list for one role, written into the evidence so that the page can
         # show what this run actually passed rather than only the code that builds it.
         # The two file descriptors and the action are appended by sandbox.run(), and

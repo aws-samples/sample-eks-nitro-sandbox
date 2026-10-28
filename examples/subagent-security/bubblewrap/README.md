@@ -458,9 +458,9 @@ belongs to this pod; it is not a node setting, and no other pod on the node is a
 
 The init container alone is not enough. `bwrap` also mounts a private procfs for its child's
 PID namespace, and the ordinary container procfs masks refuse that with `EPERM`, so the
-working container runs privileged too. Here are both parts of
-[`deploy/analyst-pod.yaml`](deploy/analyst-pod.yaml), from the folder rather than from a
-run:
+working container runs privileged too. Here are the two parts of
+[`deploy/analyst-pod.yaml`](deploy/analyst-pod.yaml) that carry those settings, trimmed
+from the file in the folder rather than taken from a run:
 
 ```yaml
 spec:
@@ -505,10 +505,19 @@ PASS the trusted controller has no effective capabilities (CapEff 00000000000000
 ```
 
 The controller is a process in a privileged container and still has no capability it can
-use: a non-root `exec` starts with an empty permitted set, so `CapEff` is zero while the
-bounding set the container was given is everything. What it does not have is
-`no_new_privs` or a seccomp filter, because `privileged: true` is incompatible with the
-first and overrides the second.
+use: a non-root `exec` starts with an empty permitted set, so `CapPrm` and `CapEff` are
+both zero. The three readings after that are the cost, and the run reports them rather
+than asserting them.
+
+- **`CapBnd` is everything.** The bounding set is the ceiling, so although the controller
+  holds nothing now, a setuid binary in the image could put a capability back. The tool
+  processes have no such ceiling: `--cap-drop ALL` empties their bounding set too, which
+  the next block shows.
+- **`NoNewPrivs` is 0.** `privileged: true` cannot be combined with
+  `allowPrivilegeEscalation: false`, which is the setting that would raise it.
+- **`Seccomp` is 0**, so no filter applies to the controller. This pod does not set
+  `seccompProfile`, because a privileged container does not get the container runtime's
+  default profile even when the pod asks for one.
 
 The tool processes do have both, and that is bubblewrap's doing rather than the pod's:
 
