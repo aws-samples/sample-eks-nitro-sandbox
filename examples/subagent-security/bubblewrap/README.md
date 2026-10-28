@@ -39,7 +39,7 @@ minute or two longer than a plain image. A run costs one Bedrock turn, a few sma
 objects, and one sandboxed pod plus one small ordinary pod kept running until you clean up.
 
 Every output block on this page is from one real run of this sample, run id
-`9a03ee25e8b34dcfb86a5f6d9cf6dd03`. Values from the account and cluster it ran on are
+`0eb808c7a8244688b2ceb854d71ed07a`. Values from the account and cluster it ran on are
 replaced by the same placeholders the commands use, because this repository is public:
 `<ACCOUNT_ID>`, `<CLUSTER_NAME>` and `<NODE_NAME>`. The Region is left as `us-west-2`, the
 default this repository's samples share. Run ids, pod names, kernel builds, uptimes, device
@@ -249,11 +249,11 @@ deployment "supplier-api" successfully rolled out
 
 ==> 6/7 the IAM role and its EKS Pod Identity association
   created the IAM role subagent-analyst-bubblewrap
-  created the Pod Identity association a-bchptvfjnbcgbgnqw
+  created the Pod Identity association a-ii5fm9m9dhqcylvdq
 
 ==> 7/7 the bubblewrap analyst image and its sandboxed pod
   created the ECR repository pod-isolation/subagent-analyst-bubblewrap
-  built and pushed pod-isolation/subagent-analyst-bubblewrap:9a7c6ee1bd1181d6070b
+  built and pushed pod-isolation/subagent-analyst-bubblewrap:34ac654e944cad3fd2c9
 pod/analyst created
 pod/analyst condition met
 {
@@ -334,7 +334,7 @@ PASS IAM returns AccessDenied for deleting a source proposal
 PASS IAM returns AccessDenied for reading another case's object
 PASS the reader reads its assigned case at /input/case.json
 PASS the reader's own read probe opens the same file
-PASS and /input/case.json is the controller's own file, device 64786 inode 8388783
+PASS and /input/case.json is the controller's own file, device 64786 inode 8388785
 PASS the controller may write that same file at the same UID, and left it unchanged
 PASS so the reader's write is refused by the read-only bind mount, not by a file mode: EROFS
 PASS the controller opens the writer's private file at the same UID
@@ -377,16 +377,16 @@ PASS the report object round-trips through S3: recommendation.md
 PASS the report object round-trips through S3: comparison.json
 PASS the evidence and the report were scanned for the supplier key before being written, and the run was stopped if it appeared
 PASS and so was every one of the 10 files left in the pod for this run, read off the disk after the last write: calls.json, checks.json, evaluator/in/facts.json, evidence.json, reader/in/case.json, recommendation.md, writer/in/comparison.json, writer/in/private.json, writer/out/comparison.json, writer/out/draft.txt
-ANALYST_COMPLETE=9a03ee25e8b34dcfb86a5f6d9cf6dd03
+ANALYST_COMPLETE=0eb808c7a8244688b2ceb854d71ed07a
 74 checks passed
   bubblewrap 0.13.1, source commit 362936aea0d5c6e70f7af75d2d44b5a914cb4ba2
-  model usage: 2633 tokens on global.anthropic.claude-sonnet-4-5-20250929-v1:0
+  model usage: 2637 tokens on global.anthropic.claude-sonnet-4-5-20250929-v1:0
   2 authenticated requests correlated with the supplier API's own log, each arriving once, and no other request from this run
 ==> done
-  run id:         9a03ee25e8b34dcfb86a5f6d9cf6dd03
-  recommendation: /path/to/sample-eks-nitro-sandbox/tmp/bubblewrap/runs/9a03ee25e8b34dcfb86a5f6d9cf6dd03/recommendation.md
-  evidence:       /path/to/sample-eks-nitro-sandbox/tmp/bubblewrap/runs/9a03ee25e8b34dcfb86a5f6d9cf6dd03/evidence.json
-  S3 report:      s3://subagent-analyst-bubblewrap-<ACCOUNT_ID>/reports/rfp-001/9a03ee25e8b34dcfb86a5f6d9cf6dd03/
+  run id:         0eb808c7a8244688b2ceb854d71ed07a
+  recommendation: /path/to/sample-eks-nitro-sandbox/tmp/bubblewrap/runs/0eb808c7a8244688b2ceb854d71ed07a/recommendation.md
+  evidence:       /path/to/sample-eks-nitro-sandbox/tmp/bubblewrap/runs/0eb808c7a8244688b2ceb854d71ed07a/evidence.json
+  S3 report:      s3://subagent-analyst-bubblewrap-<ACCOUNT_ID>/reports/rfp-001/0eb808c7a8244688b2ceb854d71ed07a/
 ```
 
 The order is deliberate: the layer first, then what it made of a tool process, and only then
@@ -419,37 +419,33 @@ cat ../../../tmp/bubblewrap/runs/<RUN_ID>/recommendation.md
 
 ## Procurement Analysis: 100 Workstations for Customer Service Office
 
-**Requirements:**
-- Budget: $125,000
-- Delivery: ≤30 days
-- Warranty: ≥24 months
+### Requirements
+- **Budget:** $125,000 USD
+- **Delivery:** Within 30 days
+- **Warranty:** Minimum 24 months
 
-**Supplier Comparison:**
+### Supplier Comparison
 
-### Northstar Office Systems ✓ ELIGIBLE
-**Source:** `proposals/rfp-001/northstar.json`
-- **Price:** $120,000 (within budget)
-- **Delivery:** 28 days (meets requirement)
-- **Warranty:** 36 months (exceeds requirement)
-- **Status:** Meets all requirements
+| Supplier | Price | Delivery | Warranty | Status |
+|----------|-------|----------|----------|--------|
+| **Northstar Office Systems** | $120,000 | 28 days | 36 months | ✅ Eligible |
+| Harbor Supply Partners | $105,000 | 45 days | 24 months | ❌ Late delivery |
+| Cedar Workplace Group | $130,000 | 21 days | 36 months | ❌ Over budget |
 
-### Harbor Supply Partners ✗ INELIGIBLE
-**Source:** `proposals/rfp-001/harbor.json`
-- **Price:** $105,000 (within budget)
-- **Delivery:** 45 days (**fails: exceeds 30-day limit**)
-- **Warranty:** 24 months (meets requirement)
-- **Disqualification:** Late delivery (45 days vs. 30-day maximum)
+### Analysis
 
-### Cedar Workplace Group ✗ INELIGIBLE
-**Source:** `proposals/rfp-001/cedar.json`
-- **Price:** $130,000 (**fails: exceeds $125,000 budget**)
-- **Delivery:** 21 days (meets requirement)
-- **Warranty:** 36 months (exceeds requirement)
-- **Disqualification:** Over budget by $5,000
+**Northstar Office Systems** (`proposals/rfp-001/northstar.json`) is the only eligible supplier, meeting all three requirements:
+- Under budget by $5,000 (96% of budget)
+- Delivers within timeline (28 of 30 days allowed)
+- Exceeds warranty minimum with 36 months coverage
 
-## Recommendation
+**Harbor Supply Partners** (`proposals/rfp-001/harbor.json`) offers the lowest price at $105,000 but fails the delivery requirement with 45 days, exceeding the 30-day maximum by 15 days.
 
-**Northstar Office Systems** is the only eligible supplier, meeting all three requirements. Their proposal offers excellent value with a 36-month warranty (12 months beyond the minimum requirement) and delivery within 28 days, while staying $5,000 under budget.
+**Cedar Workplace Group** (`proposals/rfp-001/cedar.json`) provides the fastest delivery at 21 days and strong 36-month warranty but exceeds the budget by $5,000.
+
+### Recommendation
+
+Award to **Northstar Office Systems** as the sole compliant bidder offering excellent value with extended warranty coverage while staying under budget and meeting delivery requirements.
 ```
 
 Everything from the second heading down is the model's own prose, and it cites all three
@@ -646,7 +642,7 @@ per call and are not in this list.
 <summary>The full argument list this run passed, one argument per line</summary>
 
 ```bash
-jq -r '.bwrap_argument_list[]' ../../../tmp/bubblewrap/runs/9a03ee25e8b34dcfb86a5f6d9cf6dd03/evidence.json
+jq -r '.bwrap_argument_list[]' ../../../tmp/bubblewrap/runs/0eb808c7a8244688b2ceb854d71ed07a/evidence.json
 ```
 
 ```text
@@ -718,10 +714,10 @@ usr/lib64
 --tmpfs
 /tmp
 --ro-bind
-/var/lib/analyst/9a03ee25e8b34dcfb86a5f6d9cf6dd03/reader/in
+/var/lib/analyst/0eb808c7a8244688b2ceb854d71ed07a/reader/in
 /input
 --bind
-/var/lib/analyst/9a03ee25e8b34dcfb86a5f6d9cf6dd03/reader/out
+/var/lib/analyst/0eb808c7a8244688b2ceb854d71ed07a/reader/out
 /output
 --chdir
 /output
@@ -747,7 +743,7 @@ where the same thing succeeds. These lines are from the step 3 output:
 PASS the tool process's whole mount list is ['/', '/dev', '/dev/full', '/dev/null', '/dev/pts', '/dev/random', '/dev/tty', '/dev/urandom', '/dev/zero', '/input', '/opt/analyst', '/opt/bubblewrap', '/output', '/proc', '/tmp', '/usr'], and neither the supplier key's directory, nor the Pod Identity token's, nor /var/run/secrets is in it
 PASS the reader reads its assigned case at /input/case.json
 PASS the reader's own read probe opens the same file
-PASS and /input/case.json is the controller's own file, device 64786 inode 8388783
+PASS and /input/case.json is the controller's own file, device 64786 inode 8388785
 PASS the controller may write that same file at the same UID, and left it unchanged
 PASS so the reader's write is refused by the read-only bind mount, not by a file mode: EROFS
 PASS the controller opens the writer's private file at the same UID
@@ -969,10 +965,10 @@ kubectl exec analyst -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f1 /proc/upti
 
 ```text
 isolated-sandbox
-pod age:  73s
-node age: 59s
+pod age:  43s
+node age: 15m
 6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-54.78
+42.73
 dm-0 vda vdb vdc 
 m8i.enclave
 ```
@@ -990,7 +986,7 @@ kubectl exec ordinary-comparison -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f
 
 ```text
 6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
-69.82
+946.95
 dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0 
 m8i.xlarge
 ```
@@ -1000,24 +996,23 @@ Four readings differ, and each says something:
 | Reading | Sandboxed analyst | Ordinary pod on the same node |
 |---|---|---|
 | `uname -rv` | `6.18.54 #1`, built Oct 22 17:38 | `6.18.54 #2`, built Oct 22 00:16 |
-| `/proc/uptime` | `54.78`, against a pod age of 73s | `69.82`, the node's own, and this node was 59s old |
+| `/proc/uptime` | `42.73`, against a pod age of 43s | `946.95`, about 16 minutes, which is the node's own age of 15m |
 | `/sys/block` | `dm-0 vda vdb vdc`, virtio | `dm-0 loop0` to `loop7`, `nvme0n1 nvme1n1`, `zram0`, the instance's own |
 | `product_name` | `m8i.enclave` | `m8i.xlarge` |
 
-The analyst pod runs its **own kernel build**, built 17 hours after the node's. It sees
-virtio disks where the ordinary pod sees the instance's `nvme` devices, and it names the
-enclave rather than the instance type. It
-sees virtio disks where the ordinary pod sees the instance's `nvme` devices, and it names the
-enclave rather than the instance type.
+The analyst pod runs its **own kernel build**, built 17 hours after the node's, and the
+uptime is the giveaway: 42 seconds against a pod 43s old, because the sandbox booted when
+the pod did, while the ordinary pod reports the node's uptime and the node had been up 16
+minutes. It sees virtio disks where the ordinary pod sees the instance's `nvme` devices,
+and it names the enclave rather than the instance type.
 
-**The uptime row is the one to read carefully on this run**, and it is worth knowing why.
-Each pod reports the uptime of the kernel it is running on, so the analyst reports its
-sandbox's and the ordinary pod reports the node's. That is usually a large difference, but
-EKS Auto Mode had provisioned this node seconds before the pod, so the node had been up
-69.82s against the sandbox's 54.78s. The two numbers are close here and the comparison does
-not rest on them: the kernel build, the disks and the product name are what carry it. On a
-node that has been up for hours, which is the ordinary case, the ordinary pod's uptime is
-hours and the analyst's is the age of the pod.
+**One thing to know about the uptime row before you read your own.** Each pod reports the
+uptime of the kernel it is running on, so the analyst reports its sandbox's and the
+ordinary pod reports the node's. How large that difference is depends on how long the node
+has been up, and EKS Auto Mode may have provisioned it moments before the pod: on one run
+here the node had been up 69.82s against the sandbox's 54.78s, which is correct and not
+striking. The comparison does not rest on that row. The kernel build, the disks and the
+product name differ whatever the node's age.
 
 Note that the kernel **version** can be the same in both. It is the build number and the
 boot that differ, so compare `uname -rv` and not `uname -r`. And the runtime class on the
@@ -1142,7 +1137,7 @@ deployment.apps "supplier-api" deleted from subagent-security-bubblewrap namespa
 namespace "subagent-security-bubblewrap" deleted
 
 ==> 2/4 the EKS Pod Identity association
-  deleted the association a-bchptvfjnbcgbgnqw.
+  deleted the association a-ii5fm9m9dhqcylvdq.
 
 ==> 3/4 the AWS resources
   deleted the bucket subagent-analyst-bubblewrap-<ACCOUNT_ID>.

@@ -40,6 +40,7 @@ import json
 import os
 import socket
 import ssl
+import stat
 import sys
 import urllib.error
 import urllib.request
@@ -135,8 +136,18 @@ def run_files(root: Path) -> list:
                 "it would read outside the directory the scan covers, so the run stops "
                 "here. The name is quoted because a tool process can choose it: it writes "
                 "its own /output, which is under this directory.")
-        if path.is_file():
-            names.append(str(path.relative_to(root)))
+        if path.is_dir():
+            continue
+        if not path.is_file():
+            # Refused like a link, and for the same reason: a FIFO, a socket or a device
+            # under the run directory is not something this sample creates, is_file() is
+            # False for it so the earlier version skipped it silently, and a skipped
+            # entry is one that is neither scanned nor reported.
+            raise AssertionError(
+                f"{str(path.relative_to(root))!r}, under this run's directory, is not a "
+                "regular file. Nothing this sample creates there is anything else, so "
+                "the run stops here rather than leaving it unscanned.")
+        names.append(str(path.relative_to(root)))
     return sorted(names)
 
 
@@ -148,9 +159,18 @@ def open_under(root_fd: int, name: str) -> int:
     the two passes open, because something could replace an intermediate directory with a
     link to one outside root and the read would follow it. So each component is opened
     relative to the previous one with O_DIRECTORY|O_NOFOLLOW, and the last with
-    O_NOFOLLOW. A link anywhere on the way down fails with ELOOP, and because every open
-    is relative to a descriptor this function already holds, the resolution cannot be
-    redirected after it has started.
+    O_NOFOLLOW. Because every open is relative to a descriptor this function already
+    holds, the resolution cannot be redirected once it has started.
+
+    A link is refused with ELOOP at the final component and with ENOTDIR at an
+    intermediate one, and the difference is the flags rather than an inconsistency: an
+    intermediate is opened O_DIRECTORY|O_NOFOLLOW, so the kernel declines to follow the
+    link and then finds the link itself is not a directory.
+
+    The final component is also opened O_NONBLOCK and its type is checked. Round 18:
+    without O_NONBLOCK, a listed file replaced by a FIFO made the open wait for a writer
+    and the scan hung, which a tool process can arrange because it writes its own
+    /output. A type that is not a regular file is refused rather than read.
 
     Returns a file descriptor the caller owns.
     """
@@ -161,10 +181,23 @@ def open_under(root_fd: int, name: str) -> int:
             parent_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                                 dir_fd=parent_fd)
             opened.append(parent_fd)
-        return os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
-    finally:
-        for descriptor in opened:
+        descriptor = os.open(parts[-1],
+                             os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=parent_fd)
+        try:
+            mode = os.fstat(descriptor).st_mode
+            if not stat.S_ISREG(mode):
+                raise AssertionError(
+                    f"{name!r}, under this run's directory, is {stat.filemode(mode)} and "
+                    "not a regular file. The listing saw a regular file, so it has been "
+                    "replaced since; the run stops here rather than reading it.")
+        except BaseException:
             os.close(descriptor)
+            raise
+        return descriptor
+    finally:
+        for intermediate in opened:
+            os.close(intermediate)
 
 
 def count_files_holding(root: Path, names, needle: bytes) -> int:
@@ -191,7 +224,15 @@ def count_files_holding(root: Path, names, needle: bytes) -> int:
     root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         for name in names:
-            with os.fdopen(open_under(root_fd, name), "rb") as handle:
+            descriptor = open_under(root_fd, name)
+            try:
+                handle = os.fdopen(descriptor, "rb")
+            except BaseException:
+                # os.fdopen takes ownership only once it has succeeded, so until it has
+                # the descriptor is still this function's to close.
+                os.close(descriptor)
+                raise
+            with handle:
                 if needle in handle.read():
                     found += 1
     finally:
