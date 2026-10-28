@@ -39,7 +39,7 @@ minute or two longer than a plain image. A run costs one Bedrock turn, a few sma
 objects, and one sandboxed pod plus one small ordinary pod kept running until you clean up.
 
 Every output block on this page is from one real run of this sample, run id
-`9881f815341243c08e5567af7524b898`. Values from the account and cluster it ran on are
+`e7eb0357ca5e4716a59cbf5c5b8cae74`. Values from the account and cluster it ran on are
 replaced by the same placeholders the commands use, because this repository is public:
 `<ACCOUNT_ID>`, `<CLUSTER_NAME>` and `<NODE_NAME>`. The Region is left as `us-west-2`, the
 default this repository's samples share. Run ids, pod names, kernel builds, uptimes, device
@@ -249,11 +249,11 @@ deployment "supplier-api" successfully rolled out
 
 ==> 6/7 the IAM role and its EKS Pod Identity association
   created the IAM role subagent-analyst-bubblewrap
-  created the Pod Identity association a-dzj4jpvmhvbzwr8zd
+  created the Pod Identity association a-g0ply2stiyj1cdktu
 
 ==> 7/7 the bubblewrap analyst image and its sandboxed pod
   created the ECR repository pod-isolation/subagent-analyst-bubblewrap
-  built and pushed pod-isolation/subagent-analyst-bubblewrap:30fe3e9c94fd9d6e516b
+  built and pushed pod-isolation/subagent-analyst-bubblewrap:793cab160b7f6ec88b50
 pod/analyst created
 pod/analyst condition met
 {
@@ -307,9 +307,9 @@ PASS bwrap reports the pinned version: bubblewrap 0.13.1
 PASS the image records the upstream source commit bwrap was built from: 362936aea0d5c6e70f7af75d2d44b5a914cb4ba2
 PASS the guest allows user namespaces: /proc/sys/user/max_user_namespaces is 128
 PASS the trusted controller runs as UID/GID 1000
-PASS the trusted controller has no effective capabilities (CapEff 0000000000000000), although the privileged container's bounding set is CapBnd 000001ffffffffff
+PASS the trusted controller has no capability it can use (CapEff 0000000000000000, CapPrm 0000000000000000); the privileged container's other readings are CapBnd 000001ffffffffff, NoNewPrivs 0 and Seccomp 0
 PASS the tool process runs as UID/GID 1000, mapped alone in its own user namespace: uid_map 1000 0 1
-PASS the tool process has no capabilities at all: CapEff 0000000000000000 and the bounding set CapBnd 0000000000000000 are both empty
+PASS the tool process has no capabilities at all: CapInh 0000000000000000, CapPrm 0000000000000000, CapEff 0000000000000000, CapBnd 0000000000000000, CapAmb 0000000000000000 are all empty
 PASS the tool process cannot gain privilege through exec: NoNewPrivs is 1
 PASS the tool process runs under one seccomp filter, the baseline this application compiled: Seccomp mode 2, Seccomp_filters 1
 PASS the tool process has its own user namespace
@@ -334,7 +334,7 @@ PASS IAM returns AccessDenied for deleting a source proposal
 PASS IAM returns AccessDenied for reading another case's object
 PASS the reader reads its assigned case at /input/case.json
 PASS the reader's own read probe opens the same file
-PASS and /input/case.json is the controller's own file, inode 8388783
+PASS and /input/case.json is the controller's own file, device 64786 inode 8388783
 PASS the controller may write that same file at the same UID, and left it unchanged
 PASS so the reader's write is refused by the read-only bind mount, not by a file mode: EROFS
 PASS the controller opens the writer's private file at the same UID
@@ -353,8 +353,12 @@ PASS three seccomp filters are loaded in the child: the baseline and the two thi
 PASS and with both added, getppid returns EPERM
 PASS and with both added, uname returns EPERM
 PASS the controller reaches the supplier API's own address and port
-PASS the tool process's interface list is loopback alone: ['lo']
-PASS so a tool process has no route to that same address: ENETUNREACH
+PASS the reader's interface list is loopback alone: ['lo']
+PASS so the reader has no route to that same address: ENETUNREACH
+PASS the evaluator's interface list is loopback alone: ['lo']
+PASS so the evaluator has no route to that same address: ENETUNREACH
+PASS the writer's interface list is loopback alone: ['lo']
+PASS so the writer has no route to that same address: ENETUNREACH
 PASS the supplier API answers the controller's authenticated read with 200
 PASS the supplier API refuses an invalid key with 401
 PASS the offline comparison names the one supplier that meets every requirement
@@ -371,16 +375,16 @@ PASS the citation gate rejects an answer missing one source key
 PASS the report object round-trips through S3: recommendation.md
 PASS the report object round-trips through S3: comparison.json
 PASS the evidence and the report were scanned for the supplier key before being written, and the run was stopped if it appeared
-ANALYST_COMPLETE=9881f815341243c08e5567af7524b898
-68 checks passed
+ANALYST_COMPLETE=e7eb0357ca5e4716a59cbf5c5b8cae74
+72 checks passed
   bubblewrap 0.13.1, source commit 362936aea0d5c6e70f7af75d2d44b5a914cb4ba2
-  model usage: 2663 tokens on global.anthropic.claude-sonnet-4-5-20250929-v1:0
+  model usage: 2652 tokens on global.anthropic.claude-sonnet-4-5-20250929-v1:0
   2 authenticated requests correlated with the supplier API's own log, each arriving once, and no other request from this run
 ==> done
-  run id:         9881f815341243c08e5567af7524b898
-  recommendation: /path/to/sample-eks-nitro-sandbox/tmp/bubblewrap/runs/9881f815341243c08e5567af7524b898/recommendation.md
-  evidence:       /path/to/sample-eks-nitro-sandbox/tmp/bubblewrap/runs/9881f815341243c08e5567af7524b898/evidence.json
-  S3 report:      s3://subagent-analyst-bubblewrap-<ACCOUNT_ID>/reports/rfp-001/9881f815341243c08e5567af7524b898/
+  run id:         e7eb0357ca5e4716a59cbf5c5b8cae74
+  recommendation: /path/to/sample-eks-nitro-sandbox/tmp/bubblewrap/runs/e7eb0357ca5e4716a59cbf5c5b8cae74/recommendation.md
+  evidence:       /path/to/sample-eks-nitro-sandbox/tmp/bubblewrap/runs/e7eb0357ca5e4716a59cbf5c5b8cae74/evidence.json
+  S3 report:      s3://subagent-analyst-bubblewrap-<ACCOUNT_ID>/reports/rfp-001/e7eb0357ca5e4716a59cbf5c5b8cae74/
 ```
 
 The order is deliberate: the layer first, then what it made of a tool process, and only then
@@ -415,35 +419,38 @@ cat ../../../tmp/bubblewrap/runs/<RUN_ID>/recommendation.md
 
 **Requirements:**
 - Budget: $125,000 USD
-- Delivery: ≤30 days
-- Warranty: ≥24 months
+- Maximum delivery: 30 days
+- Minimum warranty: 24 months
 
 ### Supplier Comparison
 
-#### ✅ Northstar Office Systems (RECOMMENDED)
-- **Price:** $120,000 USD (under budget by $5,000)
-- **Delivery:** 28 days (within requirement)
-- **Warranty:** 36 months (exceeds requirement)
-- **Source:** `proposals/rfp-001/northstar.json`
-- **Status:** Fully compliant with all requirements
+#### Northstar Office Systems ✓ ELIGIBLE
+**Source:** `proposals/rfp-001/northstar.json`
 
-#### ❌ Harbor Supply Partners
-- **Price:** $105,000 USD (under budget by $20,000)
-- **Delivery:** 45 days (⚠️ **EXCEEDS 30-day requirement**)
-- **Warranty:** 24 months (meets requirement)
-- **Source:** `proposals/rfp-001/harbor.json`
-- **Status:** Ineligible due to late delivery
+- **Price:** $120,000 (within budget, $5,000 under)
+- **Delivery:** 28 days (meets requirement)
+- **Warranty:** 36 months (exceeds minimum)
+- **Status:** Meets all requirements
 
-#### ❌ Cedar Workplace Group
-- **Price:** $130,000 USD (⚠️ **EXCEEDS $125,000 budget**)
-- **Delivery:** 21 days (within requirement)
-- **Warranty:** 36 months (exceeds requirement)
-- **Source:** `proposals/rfp-001/cedar.json`
-- **Status:** Ineligible due to budget overrun
+#### Harbor Supply Partners ✗ INELIGIBLE
+**Source:** `proposals/rfp-001/harbor.json`
+
+- **Price:** $105,000 (lowest bid, $20,000 under budget)
+- **Delivery:** 45 days (**fails requirement** - 15 days late)
+- **Warranty:** 24 months (meets minimum)
+- **Failure:** Late delivery
+
+#### Cedar Workplace Group ✗ INELIGIBLE
+**Source:** `proposals/rfp-001/cedar.json`
+
+- **Price:** $130,000 (**fails requirement** - $5,000 over budget)
+- **Delivery:** 21 days (fastest delivery)
+- **Warranty:** 36 months (exceeds minimum)
+- **Failure:** Over budget
 
 ### Recommendation
 
-**Northstar Office Systems** is the only eligible supplier meeting all three requirements. While Harbor offers the lowest price, their 45-day delivery timeline would delay office operations. Cedar's fast delivery is offset by budget non-compliance. Northstar provides excellent value with enhanced warranty coverage (36 vs. 24 months minimum), on-time delivery, and $5,000 budget savings.
+**Northstar Office Systems** is the only eligible supplier, meeting all procurement requirements. While Harbor offers the lowest price, their 45-day delivery timeline exceeds our 30-day maximum. Cedar provides the fastest delivery but exceeds budget constraints. Northstar delivers the best balance: competitive pricing within budget, timely delivery, and superior 36-month warranty coverage.
 ```
 
 Everything from the second heading down is the model's own prose, and it cites all three
@@ -505,7 +512,7 @@ PASS bwrap reports the pinned version: bubblewrap 0.13.1
 PASS the image records the upstream source commit bwrap was built from: 362936aea0d5c6e70f7af75d2d44b5a914cb4ba2
 PASS the guest allows user namespaces: /proc/sys/user/max_user_namespaces is 128
 PASS the trusted controller runs as UID/GID 1000
-PASS the trusted controller has no effective capabilities (CapEff 0000000000000000), although the privileged container's bounding set is CapBnd 000001ffffffffff
+PASS the trusted controller has no capability it can use (CapEff 0000000000000000, CapPrm 0000000000000000); the privileged container's other readings are CapBnd 000001ffffffffff, NoNewPrivs 0 and Seccomp 0
 ```
 
 The controller is a process in a privileged container and still has no capability it can
@@ -530,7 +537,7 @@ The tool processes do have both, and that is bubblewrap's doing rather than the 
 
 ```text
 PASS the tool process runs as UID/GID 1000, mapped alone in its own user namespace: uid_map 1000 0 1
-PASS the tool process has no capabilities at all: CapEff 0000000000000000 and the bounding set CapBnd 0000000000000000 are both empty
+PASS the tool process has no capabilities at all: CapInh 0000000000000000, CapPrm 0000000000000000, CapEff 0000000000000000, CapBnd 0000000000000000, CapAmb 0000000000000000 are all empty
 PASS the tool process cannot gain privilege through exec: NoNewPrivs is 1
 PASS the tool process runs under one seccomp filter, the baseline this application compiled: Seccomp mode 2, Seccomp_filters 1
 ```
@@ -640,7 +647,7 @@ per call and are not in this list.
 <summary>The full argument list this run passed, one argument per line</summary>
 
 ```bash
-jq -r '.bwrap_argument_list[]' ../../../tmp/bubblewrap/runs/9881f815341243c08e5567af7524b898/evidence.json
+jq -r '.bwrap_argument_list[]' ../../../tmp/bubblewrap/runs/e7eb0357ca5e4716a59cbf5c5b8cae74/evidence.json
 ```
 
 ```text
@@ -712,10 +719,10 @@ usr/lib64
 --tmpfs
 /tmp
 --ro-bind
-/var/lib/analyst/9881f815341243c08e5567af7524b898/reader/in
+/var/lib/analyst/e7eb0357ca5e4716a59cbf5c5b8cae74/reader/in
 /input
 --bind
-/var/lib/analyst/9881f815341243c08e5567af7524b898/reader/out
+/var/lib/analyst/e7eb0357ca5e4716a59cbf5c5b8cae74/reader/out
 /output
 --chdir
 /output
@@ -741,7 +748,7 @@ where the same thing succeeds. These lines are from the step 3 output:
 PASS the tool process's whole mount list is ['/', '/dev', '/dev/full', '/dev/null', '/dev/pts', '/dev/random', '/dev/tty', '/dev/urandom', '/dev/zero', '/input', '/opt/analyst', '/opt/bubblewrap', '/output', '/proc', '/tmp', '/usr'], and none of ['/opt/supplier-key', '/var/run/secrets', '/var/run/secrets/pods.eks.amazonaws.com/serviceaccount'] is in it
 PASS the reader reads its assigned case at /input/case.json
 PASS the reader's own read probe opens the same file
-PASS and /input/case.json is the controller's own file, inode 8388783
+PASS and /input/case.json is the controller's own file, device 64786 inode 8388783
 PASS the controller may write that same file at the same UID, and left it unchanged
 PASS so the reader's write is refused by the read-only bind mount, not by a file mode: EROFS
 PASS the controller opens the writer's private file at the same UID
@@ -835,14 +842,23 @@ loopback. There is no destination policy to write, because there is no route.
 
 ```text
 PASS the controller reaches the supplier API's own address and port
-PASS the tool process's interface list is loopback alone: ['lo']
-PASS so a tool process has no route to that same address: ENETUNREACH
+PASS the reader's interface list is loopback alone: ['lo']
+PASS so the reader has no route to that same address: ENETUNREACH
+PASS the evaluator's interface list is loopback alone: ['lo']
+PASS so the evaluator has no route to that same address: ENETUNREACH
+PASS the writer's interface list is loopback alone: ['lo']
+PASS so the writer has no route to that same address: ENETUNREACH
 ```
 
 The control is the controller itself. It resolves the supplier API's Service name, opens a
-TCP connection to that address and port, and only then asks a tool process to connect to the
-very same address and port. One reaches it; the other gets `ENETUNREACH`. Without that pair
-the refusal could be a wrong address or a cluster with no route at all.
+TCP connection to that address and port, and only then asks each tool process to connect to
+the very same address and port. The controller reaches it; all three get `ENETUNREACH`.
+Without that pair the refusal could be a wrong address or a cluster with no route at all.
+
+All three roles are measured rather than one. The launcher builds the same namespace list
+for each of them, so a single reading would be a fair inference, but this page and its first
+figure say "a tool process" rather than "the reader", and a claim about three processes is
+worth reading three times.
 
 This is also the whole of what bubblewrap decides about the network here. It has no hostname
 allowlist and no HTTP method or path filter, so there is no "allowed host" to show and no
@@ -907,10 +923,10 @@ kubectl exec analyst -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f1 /proc/upti
 
 ```text
 isolated-sandbox
-pod age:  55s
-node age: 13m
+pod age:  53s
+node age: 12m
 6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-54.60
+52.23
 dm-0 vda vdb vdc 
 m8i.enclave
 ```
@@ -928,8 +944,8 @@ kubectl exec ordinary-comparison -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f
 
 ```text
 6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
-813.79
-dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 nvme3n1 zram0 
+765.09
+dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0 
 m8i.xlarge
 ```
 
@@ -938,13 +954,13 @@ Four readings differ, and each says something:
 | Reading | Sandboxed analyst | Ordinary pod on the same node |
 |---|---|---|
 | `uname -rv` | `6.18.54 #1`, built Oct 22 17:38 | `6.18.54 #2`, built Oct 22 00:16 |
-| `/proc/uptime` | `54.60`, against a pod age of 55s | `813.79`, about 13.6 minutes, which is the node's own age |
+| `/proc/uptime` | `52.23`, against a pod age of 53s | `765.09`, about 12.8 minutes, which is the node's own age |
 | `/sys/block` | `vda vdb vdc`, virtio | `nvme0n1 nvme1n1 nvme3n1`, the instance's own |
 | `product_name` | `m8i.enclave` | `m8i.xlarge` |
 
-The analyst pod runs its **own kernel build**, and the uptime is the giveaway: 54 seconds
-against a pod 55s old, because the sandbox booted when the pod did, while the ordinary pod
-reports the node's uptime, which matches the node's own 13 minute age and not the pod's. It
+The analyst pod runs its **own kernel build**, and the uptime is the giveaway: 52 seconds
+against a pod 53s old, because the sandbox booted when the pod did, while the ordinary pod
+reports the node's uptime, which matches the node's own 12 minute age and not the pod's. It
 sees virtio disks where the ordinary pod sees the instance's `nvme` devices, and it names the
 enclave rather than the instance type.
 
@@ -1071,7 +1087,7 @@ deployment.apps "supplier-api" deleted from subagent-security-bubblewrap namespa
 namespace "subagent-security-bubblewrap" deleted
 
 ==> 2/4 the EKS Pod Identity association
-  deleted the association a-dzj4jpvmhvbzwr8zd.
+  deleted the association a-g0ply2stiyj1cdktu.
 
 ==> 3/4 the AWS resources
   deleted the bucket subagent-analyst-bubblewrap-<ACCOUNT_ID>.
