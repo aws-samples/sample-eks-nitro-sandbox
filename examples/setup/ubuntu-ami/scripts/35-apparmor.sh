@@ -25,46 +25,40 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/common.sh"
 
 PROFILE_NAME=ubuntu-ami-sample-profile
-DEST=/etc/apparmor.d/$PROFILE_NAME
+DEST="$SYSROOT/etc/apparmor.d/$PROFILE_NAME"
+AA_FS="$SYSROOT/sys/kernel/security/apparmor"   # SYSROOT: clusterless tests only
 
 command -v apparmor_parser >/dev/null 2>&1 || die "apparmor_parser not found: the apparmor package must be installed on the base AMI"
-[ -d /sys/kernel/security/apparmor ] || die "AppArmor is not enabled on this kernel (/sys/kernel/security/apparmor absent); this sample requires AppArmor enabled host-wide"
+[ -d "$AA_FS" ] || die "AppArmor is not enabled on this kernel ($AA_FS absent); this sample requires AppArmor enabled host-wide"
 
 SRC=""
 for cand in \
   "$HERE/../manifests/$PROFILE_NAME" \
-  "/usr/local/share/ubuntu-ami-sample/manifests/$PROFILE_NAME" \
-  "/usr/local/share/ubuntu-ami-sample/$PROFILE_NAME"; do
+  "/usr/local/share/ubuntu-ami-sample/manifests/$PROFILE_NAME"; do
   [ -f "$cand" ] && { SRC="$cand"; break; }
 done
 [ -n "$SRC" ] || die "profile source $PROFILE_NAME not found next to this script or under /usr/local/share/ubuntu-ami-sample"
 
 log "installing AppArmor profile $PROFILE_NAME from $SRC to $DEST"
-sudo install -m 0644 "$SRC" "$DEST"
+sudo install -D -m 0644 "$SRC" "$DEST"
 
-# Load it now, and keep it loaded across reboots. apparmor.service reloads every profile
-# under /etc/apparmor.d/ at boot, so enabling the service is what carries this profile onto
-# every instance launched from the baked AMI.
+# Load it now, in enforce mode, and keep it loaded across reboots: apparmor.service reloads
+# every profile under /etc/apparmor.d/ at boot, so the service must be enabled, and that is
+# checked, not assumed. A failure of either stops the stage.
 log "loading profile with apparmor_parser -r"
-sudo apparmor_parser -r "$DEST"
-sudo systemctl enable apparmor.service 2>/dev/null || true
+sudo apparmor_parser -r "$DEST" || die "apparmor_parser could not load $DEST"
+sudo systemctl enable apparmor.service || die "could not enable apparmor.service; the profile would not be reloaded at boot"
+enabled=$(systemctl is-enabled apparmor.service 2>/dev/null || true)
+[ "$enabled" = enabled ] || die "apparmor.service is '${enabled:-unknown}' after enable, not 'enabled'; the profile would not be reloaded at boot"
 
-# Verify it actually loaded. aa-status lists loaded profiles; the profile must be present
-# (enforce or complain). Fail the stage loudly if it is not, rather than baking an image
-# whose accept-control pod would be refused at run time.
-if command -v aa-status >/dev/null 2>&1; then
-  loaded="$(sudo aa-status --json 2>/dev/null | python3 -c \
-    'import json,sys; d=json.load(sys.stdin); print(d.get("profiles",{}).get("'"$PROFILE_NAME"'","absent"))' 2>/dev/null || true)"
-else
-  loaded="$(sudo grep -Fx "$PROFILE_NAME (enforce)" /sys/kernel/security/apparmor/profiles >/dev/null 2>&1 && echo enforce || echo absent)"
-fi
-log "AppArmor profile $PROFILE_NAME state: ${loaded:-absent}"
-case "$loaded" in
-  enforce|complain) : ;;
-  *) die "AppArmor profile $PROFILE_NAME did not load (state: ${loaded:-absent}); the accept-control pod would be refused" ;;
-esac
+# The kernel's own list of loaded profiles is the authority: the profile must be there, and in
+# ENFORCE mode. A complain-mode profile only logs, so the /etc/shadow denial the sample shows
+# would not happen; that is a failure here, not a pass.
+mode=$(sed -n "s/^$PROFILE_NAME (\\(.*\\))\$/\\1/p" "$AA_FS/profiles" 2>/dev/null | head -n 1)
+log "AppArmor profile $PROFILE_NAME mode: ${mode:-not loaded}"
+[ "$mode" = enforce ] || die "AppArmor profile $PROFILE_NAME is '${mode:-not loaded}', not 'enforce'; the scoped profile would not deny what the sample says it denies"
 
-echo "apparmor profile $PROFILE_NAME installed to $DEST and loaded ($loaded); apparmor.service enabled; $(date -u +%FT%TZ)" \
+echo "apparmor profile $PROFILE_NAME installed to /etc/apparmor.d and loaded in enforce mode; apparmor.service enabled; $(date -u +%FT%TZ)" \
   | sudo tee -a "$IMAGE_MANIFEST"
 
-echo "APPARMOR: PASS (profile $PROFILE_NAME loaded and enforcing; host AppArmor left enabled)"
+echo "APPARMOR: PASS (profile $PROFILE_NAME loaded in enforce mode; apparmor.service enabled; host AppArmor left enabled)"

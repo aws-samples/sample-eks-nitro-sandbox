@@ -5,8 +5,8 @@
 #
 #   packages/fetch-runtime-artifacts.sh
 #
-# The archive is preview-gated: there is no public download, so this script never downloads
-# it. The operator obtains nitro-sandbox-binaries-2026-10-28.zip from their AWS account team
+# The archive is an operator-supplied preview archive, checksum-pinned, with no public download, so this script never
+# downloads it. The operator obtains nitro-sandbox-binaries-2026-10-28.zip from their AWS account team
 # and places it at RUNTIME_ARTIFACTS_DIR/RUNTIME_ARTIFACT_FILE. When it is absent this script
 # prints the documented prerequisite and exits 3, which setup.sh and 00-preflight.sh treat as
 # the documented stop, not a build failure.
@@ -37,8 +37,8 @@ prerequisite_message() {
 PREREQUISITE NOT MET: the Nitro sandbox runtime archive is required and was not found at
   $ARCHIVE
 The archive (the containerd shim and CRI proxy, Firecracker and its jailer, the guest boot
-image and root disk, the policy generator, the key provider and the guest agent) is in
-preview and has no public download. This sample never downloads it and never substitutes an
+image and root disk, the policy generator, the key provider and the guest agent) is an
+operator-supplied preview archive, checksum-pinned, with no public download. This sample never downloads it and never substitutes an
 internal source tree or a private URL for it.
 
 To proceed:

@@ -204,6 +204,68 @@ assert_true "the rejection names a missing archive, not a generic error" \
   $(grep -q "missing or empty archive" "$WORK/consume-missing.log"; echo $?)
 
 echo
+echo "== 5/5 consume (REJECT controls): sources.lock is the trust root, members checked first ==="
+# craft <dir> <case>: an archive + manifest that agree with EACH OTHER (the manifest records the
+# crafted archive's real SHA-256), built from the good bundle, then changed one way per case.
+craft() {
+  local d="$1" case="$2"
+  mkdir -p "$d"
+  python3 - "$OUT1" "$d" "$case" <<'PY'
+import hashlib, io, json, sys, tarfile
+src, d, case = sys.argv[1:4]
+man = json.load(open(f"{src}/dependency-bundle.manifest.json"))
+with tarfile.open(f"{src}/dependency-bundle.tar") as t:
+    files = {m.name: t.extractfile(m).read() for m in t.getmembers()}
+extra = []
+if case == "lock-mismatch":     # the reviewer's probe: a changed component, consistent manifest
+    name = next(n for n in files if n.startswith("fixture-a-"))
+    files[name] = b"replaced content that sources.lock never pinned\n"
+    for c in man["components"]:
+        if c["id"] == "fixture-a":
+            c["sha256"] = hashlib.sha256(files[name]).hexdigest()
+elif case == "extra-member":
+    files["unlisted-extra.sh"] = b"#!/bin/sh\necho not in the lock\n"
+elif case == "missing-component":
+    man["components"] = [c for c in man["components"] if c["id"] != "fixture-b"]
+def add(t, name, data=b"", kind=tarfile.REGTYPE, link=""):
+    ti = tarfile.TarInfo(name); ti.type = kind; ti.linkname = link; ti.size = len(data) if kind == tarfile.REGTYPE else 0
+    t.addfile(ti, io.BytesIO(data) if kind == tarfile.REGTYPE else None)
+buf = io.BytesIO()
+with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
+    for n in sorted(files):
+        add(t, n, files[n])
+    if case == "symlink-member":
+        add(t, "fixture-link", kind=tarfile.SYMTYPE, link="/etc/passwd")
+    if case == "traversal-member":
+        add(t, "../escaped-by-bundle", b"outside\n")
+    if case == "duplicate-member":
+        n = next(n for n in files if n.startswith("fixture-b-"))
+        add(t, n, b"second copy\n")
+data = buf.getvalue()
+open(f"{d}/dependency-bundle.tar", "wb").write(data)
+man["archive"]["sha256"] = hashlib.sha256(data).hexdigest()
+json.dump(man, open(f"{d}/dependency-bundle.manifest.json", "w"), indent=2)
+PY
+}
+while IFS='|' read -r case rx why; do
+  [ -n "$case" ] || continue
+  craft "$WORK/craft-$case" "$case"
+  rc=0
+  LOCK_FILE="$TEST_LOCK" bash "$HERE/make-bundle.sh" consume "$WORK/craft-$case" "$WORK/craft-$case/x" > "$WORK/craft-$case.log" 2>&1 || rc=$?
+  assert_rc "$why" 1 "$rc"
+  assert_true "  ... and the refusal says why ($rx)" $(grep -qE -- "$rx" "$WORK/craft-$case.log"; echo $?)
+done <<'CASES'
+lock-mismatch|disagrees with sources.lock|REJECT a self-consistent archive + manifest whose component disagrees with sources.lock
+extra-member|not the lock file.s|REJECT an archive with an unlisted extra member, before extraction
+symlink-member|not regular files with flat names|REJECT an archive with a symbolic-link member
+traversal-member|not regular files with flat names: \['\.\./escaped-by-bundle'\]|REJECT an archive member that escapes the extract folder (..)
+duplicate-member|more than one member named|REJECT an archive with a duplicate member
+missing-component|are not the lock file.s bundleable inputs|REJECT a manifest that leaves out a component the lock file pins
+CASES
+assert_true "no rejected bundle wrote anything: no extract folder has a file, nothing escaped" \
+  $([[ -z "$(find "$WORK"/craft-*/x -type f 2>/dev/null)" && ! -e "$WORK/escaped-by-bundle" && ! -e "$WORK/craft-traversal-member/escaped-by-bundle" ]]; echo $?)
+
+echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]] || exit 1
-echo "make-bundle.sh proven both ways: good bundle accepted, tampered/missing bundle rejected fail-closed, two builds deterministic."
+echo "make-bundle.sh proven both ways: good bundle accepted; tampered, missing, lock-disagreeing and unsafe bundles rejected fail-closed; two builds deterministic."

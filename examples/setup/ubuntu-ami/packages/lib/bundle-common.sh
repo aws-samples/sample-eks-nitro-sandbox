@@ -200,50 +200,65 @@ bundle_write_manifest() { # bundle_write_manifest <manifest-json> <lock-file> <s
   bundle_log "wrote manifest: $manifest"
 }
 
-# bundle_verify_archive <archive-file> <manifest-json> <lock-file> : offline-consume path.
-# Fails closed (non-zero exit, clear message) if the archive is missing/empty, the
-# manifest is missing/unparseable, the archive's own SHA-256 disagrees with the manifest,
-# or any component extracted from the archive disagrees with its sources.lock pin. Never
-# falls back to fetching: a restricted-network consumer gets a hard failure, not a retry
+# bundle_member_name <lock-file> <id> : the archive member name bundle_fetch_file gives an
+# input, <id>-<ref>.<ext>, derived from the lock file alone.
+bundle_member_name() {
+  local lock_file="$1" id="$2" ref source_url ext
+  ref="$(bundle_lock_field "$lock_file" "$id" ref)" || return 1
+  source_url="$(bundle_lock_field "$lock_file" "$id" source)" || return 1
+  case "$source_url" in
+    *.tar.gz) ext=tar.gz ;;
+    *.tar.xz) ext=tar.xz ;;
+    *.tar.bz2) ext=tar.bz2 ;;
+    *.tgz) ext=tgz ;;
+    *) ext="${source_url##*.}" ;;
+  esac
+  printf '%s-%s.%s\n' "$id" "$ref" "$ext"
+}
+
+# bundle_expected <lock-file> : one "<id> <ref> <sha256> <member-name>" line per input the
+# lock file says belongs in a bundle (kind=file, status=available, a concrete SHA-256): the same
+# rule `make-bundle.sh build` applies.
+bundle_expected() {
+  local lock_file="$1" id kind status sha ref
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    kind="$(bundle_lock_field "$lock_file" "$id" kind)" || continue
+    status="$(bundle_lock_field "$lock_file" "$id" status)" || continue
+    sha="$(bundle_lock_field "$lock_file" "$id" sha256)" || continue
+    [[ "$kind" == file && "$status" == available && "$sha" =~ ^[0-9a-f]{64}$ ]] || continue
+    ref="$(bundle_lock_field "$lock_file" "$id" ref)" || bundle_die "sources.lock has no ref= for $id"
+    printf '%s %s %s %s\n' "$id" "$ref" "$sha" "$(bundle_member_name "$lock_file" "$id")"
+  done < <(bundle_lock_ids "$lock_file")
+}
+
+# bundle_verify_archive <archive-file> <manifest-json> <lock-file> <extract-dir> : offline-consume
+# path. sources.lock is the TRUST ROOT; the manifest and the archive are only accepted where they
+# agree with it. Fails closed (non-zero exit, clear message, nothing extracted) unless:
+#   1. the archive and the manifest exist and parse;
+#   2. the manifest's components are EXACTLY the inputs the lock file says belong in a bundle,
+#      each with the lock's version and SHA-256 (a self-consistent archive plus manifest that
+#      disagree with the lock are refused);
+#   3. the archive's SHA-256 is the one its manifest records;
+#   4. BEFORE anything is extracted, the archive's members are exactly the member names derived
+#      from the lock, each once, each a regular file with a flat name (no folder, no '..', no
+#      link, no device);
+#   5. after extraction, every file's SHA-256 is its lock pin.
+# Never falls back to fetching: a restricted-network consumer gets a hard failure, not a retry
 # that silently reaches the internet.
 bundle_verify_archive() { # bundle_verify_archive <archive-file> <manifest-json> <lock-file> <extract-dir>
   local archive="$1" manifest="$2" lock_file="$3" extract_dir="$4"
   [[ -s "$archive" ]] || bundle_die "bundle-verify: missing or empty archive: $archive"
   [[ -s "$manifest" ]] || bundle_die "bundle-verify: missing or empty manifest: $manifest"
+  [[ -s "$lock_file" ]] || bundle_die "bundle-verify: missing or empty lock file: $lock_file"
   command -v python3 >/dev/null 2>&1 || bundle_die "bundle-verify: python3 is required to parse the manifest"
 
-  local manifest_archive_sha actual_archive_sha
-  manifest_archive_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["archive"]["sha256"])' "$manifest")" \
-    || bundle_die "bundle-verify: could not parse archive.sha256 from manifest $manifest"
-  actual_archive_sha="$(bundle_sha256_of "$archive")"
-  if [[ "$actual_archive_sha" != "$manifest_archive_sha" ]]; then
-    bundle_die "bundle-verify: archive SHA-256 does not match its own manifest
-  manifest says: $manifest_archive_sha
-  archive is:    $actual_archive_sha
-The bundle is tampered, truncated, or does not belong with this manifest. Rejected, no
-override flag."
-  fi
-  bundle_log "archive sha256 matches manifest: $actual_archive_sha"
+  local expected
+  expected="$(bundle_expected "$lock_file")"
+  [[ -n "$expected" ]] || bundle_die "bundle-verify: $lock_file names no bundleable input; refusing to accept a bundle"
 
   mkdir -p "$extract_dir"
-  tar -xf "$archive" -C "$extract_dir"
-
-  local ids_json id version sha file found=0 checked=0
-  ids_json="$(python3 -c 'import json,sys; [print(c["id"]) for c in json.load(open(sys.argv[1]))["components"]]' "$manifest")" \
-    || bundle_die "bundle-verify: could not parse components[] from manifest $manifest"
-  while IFS= read -r id; do
-    [[ -n "$id" ]] || continue
-    sha="$(python3 -c 'import json,sys; d=[c for c in json.load(open(sys.argv[1]))["components"] if c["id"]==sys.argv[2]][0]; print(d["sha256"])' "$manifest" "$id")" \
-      || bundle_die "bundle-verify: manifest has no sha256 for component $id"
-    found=0
-    for file in "$extract_dir"/"${id}"-*; do
-      [[ -f "$file" ]] || continue
-      found=1
-      bundle_verify_sha256 "$file" "$sha" "$id (extracted from bundle)"
-      checked=$((checked + 1))
-    done
-    [[ "$found" == 1 ]] || bundle_die "bundle-verify: component $id listed in the manifest was not found in the extracted archive"
-  done <<< "$ids_json"
-  [[ "$checked" -gt 0 ]] || bundle_die "bundle-verify: no components were verified; refusing to accept an empty bundle"
-  bundle_log "bundle verified offline: $checked component(s) match sources.lock, extracted to $extract_dir"
+  printf '%s\n' "$expected" | python3 "$BUNDLE_LIB_HERE/bundle_verify.py" "$archive" "$manifest" "$extract_dir" \
+    || bundle_die "bundle-verify: rejected (see the message above); nothing from $archive is accepted"
+  bundle_log "bundle verified offline against $(basename "$lock_file"): $(printf '%s\n' "$expected" | wc -l) component(s), extracted to $extract_dir"
 }

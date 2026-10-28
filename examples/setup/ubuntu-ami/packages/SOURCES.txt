@@ -30,7 +30,7 @@
 #      repositories, verified by apt's own signed repository metadata; see id=distro-packages.
 #      containerd comes with the base AMI and is checked, never installed or changed.
 #
-# 2. OPERATOR-SUPPLIED, PINNED, CHECKSUMMED (preview; no public download)
+# 2. OPERATOR-SUPPLIED PREVIEW ARCHIVE, CHECKSUM-PINNED, WITH NO PUBLIC DOWNLOAD
 #    - The Nitro sandbox runtime archive, nitro-sandbox-binaries-2026-10-28.zip: one flat zip
 #      holding the containerd shim (also the CRI proxy), Firecracker and its jailer, the guest
 #      boot image latest.eif (guest kernel 6.18.54) and root disk latest-disk.img, the policy

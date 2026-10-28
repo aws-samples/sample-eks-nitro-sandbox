@@ -1,119 +1,262 @@
 #!/usr/bin/env bash
-# clean.sh: remove what this sample created, in one of three modes that match the README's
-# three documented invocations. Every AWS resource it removes must carry the ownership tag
-# ManagedBy=<RESOURCE_PREFIX>; a lookup that fails is "could not determine", never "gone", and
-# leaves the clean up incomplete (exit 1).
+# clean.sh: remove what ONE run of this sample created. Every AWS resource the sample creates
+# carries two tags, ManagedBy=<RESOURCE_PREFIX> and RunId=<RUN_ID>; this script lists, and
+# deletes, only resources that carry BOTH for the run named, and re-reads both tags of each
+# resource immediately before deleting it. A lookup that fails is "could not determine", never
+# "gone", and leaves the clean up incomplete (exit 1).
 #
-#   ./clean.sh --dry-run               # list only run-owned resources; change nothing
-#   ./clean.sh                         # remove the Kubernetes validation workload only
-#   ./clean.sh --delete-aws-resources  # also remove the owned AWS infrastructure and AMI
+#   ./clean.sh --dry-run                       # list this run's resources; change nothing
+#   ./clean.sh                                 # remove this run's Kubernetes workload only
+#   ./clean.sh --delete-aws-resources          # also remove this run's AWS resources
+#   ./clean.sh --delete-aws-resources --keep-ami
+#                                              # the same, but keep the run's AMI and its
+#                                              #   snapshot (issue #11 builds on that AMI)
+#   ./clean.sh --run-id <id> ...               # a run other than the last one setup.sh started
+#   ./clean.sh --list-runs                     # every marked resource, grouped by RunId; read
+#                                              #   only, needs no run id (for a lost run id)
 #
-# The bare run removes only the Kubernetes workload (the namespace, after confirming its
-# ownership label), so a reader can tear down the pods and the network policy without deleting
-# the node group and AMI a longer investigation still needs. --delete-aws-resources does the full
-# teardown: workload, node group, instances, AMIs and snapshots, launch templates, the build
-# security group, the staging buckets, the instance profile and roles, then re-lists every
-# category to confirm absence.
+# The run is the one recorded in the run state ($OUT_DIR/run-state.env, the repository's
+# gitignored tmp/issue10/run/out/run-state.env by default), or the one --run-id names. With
+# neither, nothing is deleted: only --list-runs works, and it changes nothing.
+#
+# kubectl runs only with --context "$KUBE_CONTEXT", checked against CLUSTER_NAME's API endpoint
+# before the namespace is touched. IAM roles and the instance profile are found by their per-run
+# names through IAM (the Resource Groups Tagging API does not list IAM roles).
 #
 # Never removed, because they are not the sample's: the vpc-cni add-on and the isolated-sandbox
-# RuntimeClass (shared installs the reader set up; the README says how to remove them).
+# RuntimeClass (shared installs the reader set up; the README says how to remove the add-on).
 set -uo pipefail
 SAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/common.sh
 . "$SAMPLE_DIR/scripts/lib/common.sh"
-KUBECTL="${KUBECTL:-kubectl}"
 
-DRY_RUN=0
-DELETE_AWS=0
-for arg in "$@"; do
-  case "$arg" in
+DRY_RUN=0; DELETE_AWS=0; KEEP_AMI=0; LIST_RUNS=0; RUN_ID_ARG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
     --dry-run) DRY_RUN=1 ;;
     --delete-aws-resources) DELETE_AWS=1 ;;
-    *) die "unknown argument: $arg (supported: --dry-run, --delete-aws-resources)" ;;
+    --keep-ami) KEEP_AMI=1 ;;
+    --list-runs) LIST_RUNS=1 ;;
+    --run-id) [ $# -ge 2 ] || die "--run-id needs a value"; RUN_ID="$2"; RUN_ID_ARG="$2"; shift ;;
+    --run-id=*) RUN_ID="${1#--run-id=}"; RUN_ID_ARG="$RUN_ID" ;;
+    *) die "unknown argument: $1 (supported: --dry-run, --delete-aws-resources, --keep-ami, --run-id <id>, --list-runs)" ;;
   esac
+  shift
 done
+[[ "$RESOURCE_PREFIX" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "RESOURCE_PREFIX '$RESOURCE_PREFIX' must be lowercase letters, digits and hyphens"
+[[ "$KEEP_AMI" == 0 || "$DELETE_AWS" == 1 || "$DRY_RUN" == 1 ]] || die "--keep-ami goes with --delete-aws-resources (or --dry-run)"
 
 incomplete=0
 warn_inc() { printf 'warning: %s\n' "$*" >&2; incomplete=1; }
+ERR=$(mktemp); trap 'rm -f "$ERR"' EXIT
 
-NODEGROUP_NAME="${NODEGROUP_NAME:-${RESOURCE_PREFIX}-ng}"
-TAG_FILTER="Name=tag:${TAGS_OWNER_KEY},Values=${TAGS_OWNER_VALUE}"
-
-# owned <var> <description> <command...>: run a lookup; on failure record "could not determine"
-# (never an empty "none") and mark the clean up incomplete.
-owned() {
-  local __var="$1" what="$2" out rc errf; shift 2
-  errf=$(mktemp)
-  out=$("$@" 2>"$errf"); rc=$?
-  if [[ $rc -ne 0 ]]; then
-    warn_inc "could not determine $what (lookup failed, not a report that none exist): $(head -n 2 "$errf")"
-    out="<could not determine>"
-  fi
-  rm -f "$errf"
-  [[ "$out" == None ]] && out=""
-  printf -v "$__var" '%s' "$out"
-}
-list_instances()  { aws ec2 describe-instances --region "$AWS_REGION" --filters "$TAG_FILTER" \
-  --query 'Reservations[].Instances[?State.Name!=`terminated`].[InstanceId,State.Name,Tags[?Key==`Name`]|[0].Value]' --output text; }
-list_images()     { aws ec2 describe-images --region "$AWS_REGION" --owners self --filters "$TAG_FILTER" \
-  --query 'Images[].[ImageId,Name]' --output text; }
-list_snapshots()  { aws ec2 describe-snapshots --region "$AWS_REGION" --owner-ids self --filters "$TAG_FILTER" \
-  --query 'Snapshots[].[SnapshotId,VolumeSize]' --output text; }
-list_sgs()        { aws ec2 describe-security-groups --region "$AWS_REGION" --filters "$TAG_FILTER" \
-  --query 'SecurityGroups[].[GroupId,GroupName]' --output text; }
-list_lts()        { aws ec2 describe-launch-templates --region "$AWS_REGION" --filters "$TAG_FILTER" \
-  --query 'LaunchTemplates[].[LaunchTemplateId,LaunchTemplateName]' --output text; }
-# Tag-based, like the rest: scripts/00a-iam.sh tags the roles it creates, and
-# scripts/00b-stage-bucket.sh tags each staging bucket. The tagging API can still list a
-# resource for a while after it is deleted, so each one is re-checked before it is touched.
-list_roles()      { aws resourcegroupstaggingapi get-resources --region "$AWS_REGION" --resource-type-filters iam:role \
-  --tag-filters "Key=${TAGS_OWNER_KEY},Values=${TAGS_OWNER_VALUE}" --query 'ResourceTagMappingList[].ResourceARN' --output text \
-  | tr '\t' '\n' | sed -n 's#^arn:[^:]*:iam::[0-9]*:role/\(.*\)$#\1#p' | sed 's#.*/##'; }
-list_buckets()    { aws resourcegroupstaggingapi get-resources --region "$AWS_REGION" --resource-type-filters s3 \
-  --tag-filters "Key=${TAGS_OWNER_KEY},Values=${TAGS_OWNER_VALUE}" --query 'ResourceTagMappingList[].ResourceARN' --output text \
-  | tr '\t' '\n' | sed -n 's#^arn:[^:]*:s3:::\(.*\)$#\1#p'; }
-# nodegroup_state: the node group's status, "absent" only on ResourceNotFoundException.
-nodegroup_state() {
-  local out
-  if out=$(aws eks describe-nodegroup --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" \
-      --nodegroup-name "$NODEGROUP_NAME" --query 'nodegroup.[status,tags.'"$TAGS_OWNER_KEY"']' --output text 2>&1); then
-    printf '%s\n' "$out"
-  elif [[ "$out" == *ResourceNotFoundException* ]]; then
-    echo absent
+# --list-runs: read only, and needs no run id. Lists every resource marked
+# ManagedBy=<RESOURCE_PREFIX>, grouped by its RunId, so a reader who lost the run id can find what
+# a run left behind and then clean it with --run-id. Nothing is deleted in this mode.
+if [[ "$LIST_RUNS" == 1 ]]; then
+  [[ "$DRY_RUN$DELETE_AWS$KEEP_AMI" == 000 && -z "${RUN_ID_ARG:-}" ]] || die "--list-runs takes no other option"
+  rows=""
+  lr() { # lr <kind> <python expr giving [(id, tags)]> <aws args...>
+    local kind="$1" expr="$2" js; shift 2
+    if ! js=$(aws "$@" --region "$AWS_REGION" --output json 2>"$ERR"); then
+      warn_inc "could not determine the marked $kind (lookup failed): $(head -n 2 "$ERR")"; return
+    fi
+    rows+="$(printf '%s' "$js" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+for rid, tags in eval(sys.argv[1], {"d": d}):
+    t = tags if isinstance(tags, dict) else {x["Key"]: x["Value"] for x in tags or []}
+    print("%s\t%s\t%s" % (t.get(sys.argv[2], "<no RunId tag>"), sys.argv[3], rid))
+' "$expr" "$TAGS_RUN_KEY" "$kind")"$'\n'
+  }
+  MB="Name=tag:${TAGS_OWNER_KEY},Values=${TAGS_OWNER_VALUE}"
+  lr "EC2 instance" '[(x["InstanceId"], x.get("Tags", [])) for r in d["Reservations"] for x in r["Instances"] if x["State"]["Name"] != "terminated"]' ec2 describe-instances --filters "$MB"
+  lr AMI '[(x["ImageId"], x.get("Tags", [])) for x in d["Images"]]' ec2 describe-images --owners self --filters "$MB"
+  lr "EBS snapshot" '[(x["SnapshotId"], x.get("Tags", [])) for x in d["Snapshots"]]' ec2 describe-snapshots --owner-ids self --filters "$MB"
+  lr "security group" '[(x["GroupId"], x.get("Tags", [])) for x in d["SecurityGroups"]]' ec2 describe-security-groups --filters "$MB"
+  lr "launch template" '[(x["LaunchTemplateId"], x.get("Tags", [])) for x in d["LaunchTemplates"]]' ec2 describe-launch-templates --filters "$MB"
+  lr "S3 bucket" '[(m["ResourceARN"].split(":::", 1)[-1], m.get("Tags", [])) for m in d["ResourceTagMappingList"]]' \
+    resourcegroupstaggingapi get-resources --resource-type-filters s3 --tag-filters "Key=${TAGS_OWNER_KEY},Values=${TAGS_OWNER_VALUE}"
+  # IAM roles and node groups by their per-run name pattern, then their own tags.
+  if js=$(aws iam list-roles --output json 2>"$ERR"); then
+    for r in $(printf '%s' "$js" | json_get "[x['RoleName'] for x in d['Roles'] if __import__('re').fullmatch(r'${RESOURCE_PREFIX}-[a-z0-9]{1,20}-(build|node)', x['RoleName'])]"); do
+      lr "IAM role" "[(\"$r\", d[\"Tags\"])]" iam list-role-tags --role-name "$r"
+    done
   else
-    printf '%s\n' "$out" >&2; return 1
+    warn_inc "could not determine the marked IAM roles (list-roles failed): $(head -n 2 "$ERR")"
+  fi
+  if js=$(aws eks list-nodegroups --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --output json 2>"$ERR"); then
+    for n in $(printf '%s' "$js" | json_get "[x for x in d['nodegroups'] if __import__('re').fullmatch(r'${RESOURCE_PREFIX}-[a-z0-9]{1,20}-ng', x)]"); do
+      lr "EKS node group" "[(\"$n\", d[\"nodegroup\"].get(\"tags\", {}))]" eks describe-nodegroup --cluster-name "$CLUSTER_NAME" --nodegroup-name "$n"
+    done
+  else
+    warn_inc "could not determine the marked node groups of $CLUSTER_NAME (list-nodegroups failed): $(head -n 2 "$ERR")"
+  fi
+  echo "== resources marked ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} in $AWS_REGION, by ${TAGS_RUN_KEY} =="
+  printf '%s' "$rows" | awk -F'\t' 'NF == 3' | sort | awk -F'\t' '$1 != run { run = $1; print "run " run ":" } { print "  " $2 " " $3 }'
+  [ -n "$(printf '%s' "$rows" | awk 'NF')" ] || echo "  (none)"
+  echo
+  echo "--list-runs: nothing was deleted. Remove a run's resources with ./clean.sh --run-id <id> --delete-aws-resources."
+  [[ "$incomplete" -eq 0 ]] || { echo "Some lookups failed; the list above is incomplete." >&2; exit 1; }
+  exit 0
+fi
+require_run_id
+FILTERS=("Name=tag:${TAGS_OWNER_KEY},Values=${TAGS_OWNER_VALUE}" "Name=tag:${TAGS_RUN_KEY},Values=${RUN_ID}")
+UNKNOWN="<could not determine>"
+
+# aws_json <var> <what> <aws args...>: the call's JSON in <var>, or $UNKNOWN (and the clean up
+# marked incomplete) when the call fails.
+aws_json() {
+  local __v="$1" what="$2" out; shift 2
+  if out=$(aws "$@" --region "$AWS_REGION" --output json 2>"$ERR"); then
+    printf -v "$__v" '%s' "$out"
+  else
+    warn_inc "could not determine $what (lookup failed, not a report that none exist): $(head -n 2 "$ERR")"
+    printf -v "$__v" '%s' "$UNKNOWN"
   fi
 }
-# bucket_state <bucket>: "absent" only when S3 answers 404; "owned" when it carries the tag.
-bucket_state() {
-  local b="$1" out tag
-  if ! out=$(aws s3api head-bucket --bucket "$b" --region "$AWS_REGION" 2>&1); then
-    [[ "$out" == *"Not Found"* || "$out" == *"404"* ]] && { echo absent; return 0; }
-    printf '%s\n' "$out" >&2; return 1
+# list <var> <what> <python expr producing a list> <aws args...>
+list() {
+  local __v="$1" what="$2" expr="$3" js; shift 3
+  aws_json js "$what" "$@"
+  if [ "$js" = "$UNKNOWN" ]; then printf -v "$__v" '%s' "$UNKNOWN"; return; fi
+  printf -v "$__v" '%s' "$(printf '%s' "$js" | json_get "$expr")"
+}
+name_tag='next((t["Value"] for t in x.get("Tags", []) if t["Key"] == "Name"), "-")'
+list_all() {
+  list instances "this run's EC2 instances" \
+    "[(x[\"InstanceId\"], x[\"State\"][\"Name\"], $name_tag) for r in d[\"Reservations\"] for x in r[\"Instances\"] if x[\"State\"][\"Name\"] != \"terminated\"]" \
+    ec2 describe-instances --filters "${FILTERS[@]}"
+  list images "this run's AMIs" "[(x[\"ImageId\"], x.get(\"Name\", \"-\")) for x in d[\"Images\"]]" \
+    ec2 describe-images --owners self --filters "${FILTERS[@]}"
+  list snapshots "this run's EBS snapshots" "[(x[\"SnapshotId\"], x.get(\"VolumeSize\", \"-\")) for x in d[\"Snapshots\"]]" \
+    ec2 describe-snapshots --owner-ids self --filters "${FILTERS[@]}"
+  list sgs "this run's security groups" "[(x[\"GroupId\"], x[\"GroupName\"]) for x in d[\"SecurityGroups\"]]" \
+    ec2 describe-security-groups --filters "${FILTERS[@]}"
+  list lts "this run's launch templates" "[(x[\"LaunchTemplateId\"], x[\"LaunchTemplateName\"]) for x in d[\"LaunchTemplates\"]]" \
+    ec2 describe-launch-templates --filters "${FILTERS[@]}"
+  list buckets "this run's S3 staging buckets" "[m[\"ResourceARN\"].split(\":::\", 1)[-1] for m in d[\"ResourceTagMappingList\"]]" \
+    resourcegroupstaggingapi get-resources --resource-type-filters s3 \
+    --tag-filters "Key=${TAGS_OWNER_KEY},Values=${TAGS_OWNER_VALUE}" "Key=${TAGS_RUN_KEY},Values=${RUN_ID}"
+  # The bucket name setup.sh recorded for this run is checked too, in case the tagging API has
+  # not caught up with it yet (bucket_state re-reads its tags before anything is deleted).
+  local recorded
+  recorded=$(sed -n "s/^export STAGE_BUCKET=//p" "$RUN_STATE_DIR/stage.env" 2>/dev/null | tail -n 1)
+  if [[ "$recorded" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ && "$buckets" != "$UNKNOWN" ]]; then
+    buckets=$(printf '%s\n%s\n' "$buckets" "$recorded" | awk 'NF' | sort -u)
   fi
-  tag=$(aws s3api get-bucket-tagging --bucket "$b" --region "$AWS_REGION" \
-    --query "TagSet[?Key=='${TAGS_OWNER_KEY}'].Value | [0]" --output text 2>&1) || { printf '%s\n' "$tag" >&2; return 1; }
-  [[ "$tag" == "$TAGS_OWNER_VALUE" ]] && echo owned || echo not-owned
+  # IAM roles and the instance profile are read by their per-run names through IAM itself: the
+  # Resource Groups Tagging API's GetResources does not support IAM roles.
+  iam_state role_build role "$BUILD_ROLE_NAME"
+  iam_state role_node role "$NODE_ROLE_NAME"
+  iam_state profile_build profile "$INSTANCE_PROFILE"
+  nodegroup_state ng_state
+}
+# iam_state <var> <role|profile> <name>: "absent", "owned", "not-owned", or $UNKNOWN (and the
+# clean up marked incomplete) when the tags cannot be read for a reason other than NoSuchEntity.
+iam_state() {
+  local __v="$1" kind="$2" name="$3" st
+  st=$(recheck "$kind" "$name")
+  case "$st" in
+    match) printf -v "$__v" '%s' owned ;;
+    mismatch) printf -v "$__v" '%s' not-owned ;;
+    gone) printf -v "$__v" '%s' absent ;;
+    *) warn_inc "could not determine IAM $kind $name (the lookup failed, not a report that it is absent): $(head -n 2 "$ERR")"
+       printf -v "$__v" '%s' "$UNKNOWN" ;;
+  esac
+}
+# nodegroup_state <var>: "absent", "owned <status>", "not-owned", or $UNKNOWN.
+nodegroup_state() {
+  local __v="$1" out
+  if out=$(aws eks describe-nodegroup --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" \
+             --nodegroup-name "$NODEGROUP_NAME" --output json 2>"$ERR"); then
+    if printf '%s' "$out" | json_pick 'd["nodegroup"].get("tags", {})' | tags_match; then
+      printf -v "$__v" 'owned %s' "$(printf '%s' "$out" | json_get 'd["nodegroup"].get("status", "?")')"
+    else
+      printf -v "$__v" '%s' "not-owned"
+    fi
+  elif aws_err_is "$ERR" ResourceNotFoundException; then
+    printf -v "$__v" '%s' "absent"
+  else
+    warn_inc "could not determine node group $NODEGROUP_NAME: $(head -n 2 "$ERR")"
+    printf -v "$__v" '%s' "$UNKNOWN"
+  fi
+}
+# recheck <kind> <id>: read the resource's tags again, by id, right before a delete. Prints
+# match | mismatch | gone | error.
+recheck() {
+  local kind="$1" id="$2" args expr nf out
+  case "$kind" in
+    instance) args=(ec2 describe-instances --instance-ids "$id"); expr='d["Reservations"][0]["Instances"][0].get("Tags", [])'; nf=InvalidInstanceID.NotFound ;;
+    image)    args=(ec2 describe-images --image-ids "$id"); expr='d["Images"][0].get("Tags", [])'; nf=InvalidAMIID.NotFound ;;
+    snapshot) args=(ec2 describe-snapshots --snapshot-ids "$id"); expr='d["Snapshots"][0].get("Tags", [])'; nf=InvalidSnapshot.NotFound ;;
+    sg)       args=(ec2 describe-security-groups --group-ids "$id"); expr='d["SecurityGroups"][0].get("Tags", [])'; nf=InvalidGroup.NotFound ;;
+    lt)       args=(ec2 describe-launch-templates --launch-template-ids "$id"); expr='d["LaunchTemplates"][0].get("Tags", [])'; nf=InvalidLaunchTemplateId.NotFound ;;
+    role)     args=(iam list-role-tags --role-name "$id"); expr='d["Tags"]'; nf=NoSuchEntity ;;
+    profile)  args=(iam list-instance-profile-tags --instance-profile-name "$id"); expr='d["Tags"]'; nf=NoSuchEntity ;;
+    *) echo error; return ;;
+  esac
+  if out=$(aws "${args[@]}" --region "$AWS_REGION" --output json 2>"$ERR"); then
+    if printf '%s' "$out" | json_pick "$expr" 2>/dev/null | tags_match; then echo match; else echo mismatch; fi
+  elif aws_err_is "$ERR" "$nf"; then
+    echo gone
+  else
+    echo error
+  fi
+}
+# owned_then <kind> <id> <description> <command...>: run the delete only when the re-check says
+# the resource still carries both tags.
+owned_then() {
+  local kind="$1" id="$2" what="$3" st; shift 3
+  st=$(recheck "$kind" "$id")
+  case "$st" in
+    match) "$@" >/dev/null 2>"$ERR" || warn_inc "could not delete $what: $(head -n 2 "$ERR")" ;;
+    gone) echo "$what is already gone." ;;
+    mismatch) warn_inc "$what no longer carries ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; refusing to delete it" ;;
+    *) warn_inc "could not re-read the tags of $what before deleting it; left in place" ;;
+  esac
+  [ "$st" = match ]
 }
 
-echo "== resources tagged ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} in $AWS_REGION =="
-owned instances "owned EC2 instances" list_instances
-owned images "owned AMIs" list_images
-owned snapshots "owned EBS snapshots" list_snapshots
-owned sgs "owned security groups" list_sgs
-owned lts "owned launch templates" list_lts
-owned roles "owned IAM roles" list_roles
-owned buckets "owned S3 staging buckets" list_buckets
-owned ng_state "the managed node group $NODEGROUP_NAME" nodegroup_state
+echo "== run $RUN_ID: resources tagged ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID} in $AWS_REGION =="
+list_all
 
-echo "EC2 instances:"; printf '%s\n' "${instances:-  (none)}"
-echo "AMIs:"; printf '%s\n' "${images:-  (none)}"
-echo "EBS snapshots:"; printf '%s\n' "${snapshots:-  (none)}"
-echo "Security groups:"; printf '%s\n' "${sgs:-  (none)}"
-echo "Launch templates:"; printf '%s\n' "${lts:-  (none)}"
-echo "S3 staging buckets:"; printf '%s\n' "${buckets:-  (none)}"
-echo "IAM roles (and their instance profiles):"; printf '%s\n' "${roles:-  (none)}"
-echo "EKS managed node group $NODEGROUP_NAME: ${ng_state:-<unknown>}"
+# --keep-ami: the run's AMIs and the snapshots behind them stay, and are reported as kept.
+kept_images=""; kept_snaps=""
+if [[ "$KEEP_AMI" == 1 && "$images" != "$UNKNOWN" && -n "$images" ]]; then
+  kept_images="$images"
+  for img in $(printf '%s\n' "$images" | awk '{print $1}'); do
+    aws_json idesc "the snapshots behind AMI $img" ec2 describe-images --image-ids "$img"
+    if [ "$idesc" = "$UNKNOWN" ]; then continue; fi
+    kept_snaps+="$(printf '%s' "$idesc" | json_get '[b["Ebs"]["SnapshotId"] for x in d["Images"] for b in x.get("BlockDeviceMappings", []) if "Ebs" in b and b["Ebs"].get("SnapshotId")]')"$'\n'
+  done
+fi
+is_kept_snap() { printf '%s\n' "$kept_snaps" | grep -qxF -- "$1"; }
+show() { echo "$1:"; if [ -z "$2" ]; then echo "  (none)"; else printf '%s\n' "$2" | sed 's/^/  /'; fi; }
+show "EC2 instances" "$instances"
+if [[ "$KEEP_AMI" == 1 && "$images" != "$UNKNOWN" ]]; then
+  show "AMIs" "${images:+$(printf '%s\n' "$images" | sed 's/$/   left in place (kept on request)/')}"
+else
+  show "AMIs" "$images"
+fi
+snap_lines=""
+if [ "$snapshots" != "$UNKNOWN" ] && [ -n "$snapshots" ]; then
+  while read -r sid size; do
+    [ -n "$sid" ] || continue
+    if is_kept_snap "$sid"; then snap_lines+="$sid $size   left in place (kept on request)"$'\n'; else snap_lines+="$sid $size"$'\n'; fi
+  done <<< "$snapshots"
+  snap_lines="${snap_lines%$'\n'}"
+else
+  snap_lines="$snapshots"
+fi
+show "EBS snapshots" "$snap_lines"
+show "Security groups" "$sgs"
+show "Launch templates" "$lts"
+show "S3 staging buckets" "$buckets"
+echo "IAM (by this run's names):"
+printf '  role %s: %s\n  role %s: %s\n  instance profile %s: %s\n' "$BUILD_ROLE_NAME" "$role_build" \
+  "$NODE_ROLE_NAME" "$role_node" "$INSTANCE_PROFILE" "$profile_build"
+echo "EKS managed node group $NODEGROUP_NAME: $ng_state"
 echo "Left in place (shared, not the sample's): the vpc-cni add-on and the isolated-sandbox RuntimeClass on cluster $CLUSTER_NAME"
 
 if [[ "$DRY_RUN" == 1 ]]; then
@@ -125,24 +268,22 @@ fi
 
 echo
 echo "== deleting the validation workload (namespace $NAMESPACE) =="
-ns_label_err="$(mktemp)"
-ns_label="$($KUBECTL get namespace "$NAMESPACE" --ignore-not-found \
-  -o "jsonpath={.metadata.labels.app\.kubernetes\.io/part-of}" 2>"$ns_label_err")"
-ns_rc=$?
-ns_err_msg="$(sed 's/^/  /' "$ns_label_err")"; rm -f "$ns_label_err"
-if [[ $ns_rc -ne 0 ]]; then
-  warn_inc "could not read namespace $NAMESPACE's ownership label (the read failed, not a report it is absent): $ns_err_msg"
-elif [[ -z "$ns_label" ]]; then
-  if $KUBECTL get namespace "$NAMESPACE" >/dev/null 2>&1; then
-    warn_inc "namespace $NAMESPACE exists but carries no app.kubernetes.io/part-of label; refusing to delete a namespace this sample may not own."
+# The first change this script makes: stop here, with nothing deleted, unless KUBE_CONTEXT is set
+# and is cluster CLUSTER_NAME (every kubectl call passes --context "$KUBE_CONTEXT").
+require_kube_context
+if ns_json=$(kc get namespace "$NAMESPACE" -o json 2>"$ERR"); then
+  ns_owner=$(printf '%s' "$ns_json" | json_get 'd["metadata"].get("labels", {}).get("app.kubernetes.io/part-of", "")')
+  ns_run=$(printf '%s' "$ns_json" | json_get 'd["metadata"].get("labels", {}).get("app.kubernetes.io/instance", "")')
+  if [[ "$ns_owner" == "$RESOURCE_PREFIX" && "$ns_run" == "$RUN_ID" ]]; then
+    kc delete namespace "$NAMESPACE" --wait=true --timeout=5m >/dev/null 2>"$ERR" \
+      || warn_inc "could not confirm namespace $NAMESPACE was deleted: $(head -n 2 "$ERR")"
   else
-    echo "namespace $NAMESPACE does not exist; nothing namespaced to delete."
+    warn_inc "namespace $NAMESPACE is not labelled app.kubernetes.io/part-of=$RESOURCE_PREFIX and app.kubernetes.io/instance=$RUN_ID (has '${ns_owner:-none}' and '${ns_run:-none}'); refusing to delete a namespace this run may not own."
   fi
-elif [[ "$ns_label" != "$RESOURCE_PREFIX" ]]; then
-  warn_inc "namespace $NAMESPACE is not labelled app.kubernetes.io/part-of=$RESOURCE_PREFIX; refusing to delete objects inside a namespace this sample may not own."
+elif grep -q 'NotFound' "$ERR"; then
+  echo "namespace $NAMESPACE does not exist; nothing namespaced to delete."
 else
-  $KUBECTL delete namespace "$NAMESPACE" --wait=true --timeout=5m \
-    || warn_inc "could not confirm namespace $NAMESPACE was deleted"
+  warn_inc "could not read namespace $NAMESPACE (the read failed, not a report it is absent): $(head -n 2 "$ERR")"
 fi
 
 if [[ "$DELETE_AWS" != 1 ]]; then
@@ -151,161 +292,226 @@ if [[ "$DELETE_AWS" != 1 ]]; then
     printf 'Workload clean up INCOMPLETE: see the warnings above.\n' >&2
     exit 1
   fi
-  echo "Workload removed. The owned AWS infrastructure (node group, instances, AMI, launch"
-  echo "template, security group, staging bucket, instance profile and roles) is left in place."
-  echo "Re-run with --delete-aws-resources to remove it, or ./clean.sh --dry-run to see what remains."
+  echo "Workload removed. Run $RUN_ID's AWS resources (node group, instances, AMI, launch template,"
+  echo "security group, staging bucket, instance profile and roles) are left in place. Re-run with"
+  echo "--delete-aws-resources to remove them, or ./clean.sh --dry-run to see what remains."
   exit 0
 fi
 
 echo "== deleting the managed node group =="
 case "$ng_state" in
   absent) echo "no node group named $NODEGROUP_NAME; nothing to delete." ;;
-  "<could not determine>") warn_inc "skipping the node group: its state could not be determined" ;;
-  *)
-    ng_owner=$(printf '%s' "$ng_state" | awk '{print $2}')
-    if [[ "$ng_owner" != "$TAGS_OWNER_VALUE" ]]; then
-      warn_inc "node group $NODEGROUP_NAME does not carry ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE}; refusing to delete it"
-    else
-      aws eks delete-nodegroup --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --nodegroup-name "$NODEGROUP_NAME" >/dev/null \
-        || warn_inc "could not issue delete-nodegroup for $NODEGROUP_NAME"
-      aws eks wait nodegroup-deleted --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --nodegroup-name "$NODEGROUP_NAME" \
+  "$UNKNOWN") warn_inc "skipping the node group: its state could not be determined" ;;
+  not-owned) warn_inc "node group $NODEGROUP_NAME does not carry ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; refusing to delete it" ;;
+  owned*)
+    nodegroup_state ng_now
+    if [[ "$ng_now" == owned* ]]; then
+      aws eks delete-nodegroup --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --nodegroup-name "$NODEGROUP_NAME" --output json >/dev/null 2>"$ERR" \
+        || warn_inc "could not issue delete-nodegroup for $NODEGROUP_NAME: $(head -n 2 "$ERR")"
+      aws eks wait nodegroup-deleted --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --nodegroup-name "$NODEGROUP_NAME" 2>"$ERR" \
         || warn_inc "could not confirm node group $NODEGROUP_NAME was deleted"
+    else
+      warn_inc "node group $NODEGROUP_NAME changed before the delete ($ng_now); left in place"
     fi ;;
 esac
 
-echo "== terminating owned EC2 instances (build + verification hosts) =="
-if [[ "$instances" == "<could not determine>" ]]; then :
-elif [[ -n "$instances" ]]; then
-  ids=$(printf '%s\n' "$instances" | awk '{print $1}')
-  # shellcheck disable=SC2086
-  aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids $ids >/dev/null \
-    || warn_inc "could not issue terminate-instances for: $ids"
-  # shellcheck disable=SC2086
-  aws ec2 wait instance-terminated --region "$AWS_REGION" --instance-ids $ids \
-    || warn_inc "could not confirm termination for: $ids"
-else
-  echo "no owned instances found; nothing to terminate."
-fi
+echo "== terminating this run's EC2 instances (build and verification hosts) =="
+if [ "$instances" != "$UNKNOWN" ] && [ -n "$instances" ]; then
+  terminated=()
+  while read -r iid _rest; do
+    [ -n "$iid" ] || continue
+    owned_then instance "$iid" "instance $iid" aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids "$iid" --output json \
+      && terminated+=("$iid")
+  done <<< "$instances"
+  if [ "${#terminated[@]}" -gt 0 ]; then
+    aws ec2 wait instance-terminated --region "$AWS_REGION" --instance-ids "${terminated[@]}" 2>"$ERR" \
+      || warn_inc "could not confirm termination of: ${terminated[*]}"
+  fi
+elif [ -z "$instances" ]; then echo "none."; fi
 
-echo "== deregistering owned AMIs, then deleting owned snapshots =="
-if [[ "$images" == "<could not determine>" ]]; then :
-elif [[ -n "$images" ]]; then
+echo "== deregistering this run's AMIs, then deleting its snapshots =="
+if [[ "$KEEP_AMI" == 1 ]]; then
+  echo "--keep-ami: AMIs left in place: $(printf '%s\n' "$images" | awk 'NF{print $1}' | tr '\n' ' ')"
+elif [ "$images" != "$UNKNOWN" ] && [ -n "$images" ]; then
   while read -r image_id _name; do
-    [[ -z "$image_id" ]] && continue
-    aws ec2 deregister-image --region "$AWS_REGION" --image-id "$image_id" \
-      || warn_inc "could not deregister AMI $image_id"
+    [ -n "$image_id" ] || continue
+    owned_then image "$image_id" "AMI $image_id" aws ec2 deregister-image --region "$AWS_REGION" --image-id "$image_id" --output json || true
   done <<< "$images"
-else
-  echo "no owned AMIs found; nothing to deregister."
-fi
+elif [ -z "$images" ]; then echo "no AMIs."; fi
 # Snapshots are tagged at create-image time, so this also catches a snapshot whose AMI never
-# finished registering.
-owned snapshots "owned EBS snapshots" list_snapshots
-if [[ "$snapshots" == "<could not determine>" ]]; then :
-elif [[ -n "$snapshots" ]]; then
+# finished registering. A snapshot behind a kept AMI stays.
+list snapshots "this run's EBS snapshots" "[(x[\"SnapshotId\"], x.get(\"VolumeSize\", \"-\")) for x in d[\"Snapshots\"]]" \
+  ec2 describe-snapshots --owner-ids self --filters "${FILTERS[@]}"
+if [ "$snapshots" != "$UNKNOWN" ] && [ -n "$snapshots" ]; then
   while read -r snap _size; do
-    [[ -z "$snap" ]] && continue
-    aws ec2 delete-snapshot --region "$AWS_REGION" --snapshot-id "$snap" \
-      || warn_inc "could not delete snapshot $snap"
+    [ -n "$snap" ] || continue
+    if is_kept_snap "$snap"; then echo "snapshot $snap backs a kept AMI; left in place."; continue; fi
+    owned_then snapshot "$snap" "snapshot $snap" aws ec2 delete-snapshot --region "$AWS_REGION" --snapshot-id "$snap" --output json || true
   done <<< "$snapshots"
-else
-  echo "no owned snapshots found; nothing to delete."
-fi
+elif [ -z "$snapshots" ]; then echo "no snapshots."; fi
 
-echo "== deleting owned launch templates =="
-if [[ "$lts" == "<could not determine>" ]]; then :
-elif [[ -n "$lts" ]]; then
+echo "== deleting this run's launch templates =="
+if [ "$lts" != "$UNKNOWN" ] && [ -n "$lts" ]; then
   while read -r lt_id _name; do
-    [[ -z "$lt_id" ]] && continue
-    aws ec2 delete-launch-template --region "$AWS_REGION" --launch-template-id "$lt_id" >/dev/null \
-      || warn_inc "could not delete launch template $lt_id"
+    [ -n "$lt_id" ] || continue
+    owned_then lt "$lt_id" "launch template $lt_id" aws ec2 delete-launch-template --region "$AWS_REGION" --launch-template-id "$lt_id" --output json || true
   done <<< "$lts"
-else
-  echo "no owned launch templates found; nothing to delete."
-fi
+elif [ -z "$lts" ]; then echo "none."; fi
 
-echo "== deleting the owned build security group =="
-if [[ "$sgs" == "<could not determine>" ]]; then :
-elif [[ -n "$sgs" ]]; then
+echo "== deleting this run's build security group =="
+if [ "$sgs" != "$UNKNOWN" ] && [ -n "$sgs" ]; then
   while read -r sg_id _name; do
-    [[ -z "$sg_id" ]] && continue
-    aws ec2 delete-security-group --region "$AWS_REGION" --group-id "$sg_id" \
-      || warn_inc "could not delete security group $sg_id (it may still be referenced; retry once dependent resources are gone)"
+    [ -n "$sg_id" ] || continue
+    owned_then sg "$sg_id" "security group $sg_id" aws ec2 delete-security-group --region "$AWS_REGION" --group-id "$sg_id" --output json || true
   done <<< "$sgs"
-else
-  echo "no owned security groups found; nothing to delete."
-fi
+elif [ -z "$sgs" ]; then echo "none."; fi
 
-echo "== emptying and deleting owned S3 staging buckets =="
-if [[ "$buckets" == "<could not determine>" ]]; then :
-elif [[ -n "$buckets" ]]; then
-  for b in $buckets; do
-    if ! st=$(bucket_state "$b"); then warn_inc "could not determine the state of bucket $b"; continue; fi
-    case "$st" in
-      absent) echo "bucket $b is already gone." ;;
-      not-owned) warn_inc "bucket $b does not carry ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE}; refusing to delete it" ;;
-      owned)
-        aws s3 rm "s3://$b" --recursive --region "$AWS_REGION" >/dev/null \
-          || warn_inc "could not empty bucket $b"
-        aws s3api delete-bucket --bucket "$b" --region "$AWS_REGION" \
-          || warn_inc "could not delete bucket $b" ;;
-    esac
+echo "== emptying and deleting this run's S3 staging buckets =="
+# bucket_state <bucket>: absent | owned | not-owned, or non-zero when it cannot be determined.
+# Every S3 call names the expected bucket owner (the caller's account), so a same-named bucket
+# in another account is never read or emptied.
+bucket_state() {
+  local b="$1" t
+  if ! aws s3api head-bucket --bucket "$b" --region "$AWS_REGION" --expected-bucket-owner "$ACCOUNT" --output json >/dev/null 2>"$ERR"; then
+    grep -qE '\(404\)|Not Found|NoSuchBucket' "$ERR" && { echo absent; return 0; }
+    return 1
+  fi
+  t=$(aws s3api get-bucket-tagging --bucket "$b" --region "$AWS_REGION" --expected-bucket-owner "$ACCOUNT" --output json 2>"$ERR") || return 1
+  if printf '%s' "$t" | json_pick 'd["TagSet"]' | tags_match; then echo owned; else echo not-owned; fi
+}
+empty_bucket() { # delete every object, a page at a time, naming the expected owner on each call
+  local b="$1" page keys n=0
+  while :; do
+    page=$(aws s3api list-objects-v2 --bucket "$b" --region "$AWS_REGION" --expected-bucket-owner "$ACCOUNT" --max-keys 1000 --output json 2>"$ERR") || return 1
+    keys=$(printf '%s' "$page" | json_pick '{"Objects": [{"Key": o["Key"]} for o in d.get("Contents", [])], "Quiet": True}')
+    [ "$(printf '%s' "$keys" | json_get 'len(d["Objects"])')" -gt 0 ] || return 0
+    aws s3api delete-objects --bucket "$b" --region "$AWS_REGION" --expected-bucket-owner "$ACCOUNT" --delete "$keys" --output json >/dev/null 2>"$ERR" || return 1
+    n=$((n + 1)); [ "$n" -lt 1000 ] || return 1
   done
-else
-  echo "no owned staging buckets found; nothing to delete."
-fi
+}
+ACCOUNT=""
+if [ "$buckets" != "$UNKNOWN" ] && [ -n "$buckets" ]; then
+  if ACCOUNT=$(aws sts get-caller-identity --output json 2>"$ERR" | json_get 'd["Account"]') && [[ "$ACCOUNT" =~ ^[0-9]{12}$ ]]; then
+    for b in $buckets; do
+      if ! st=$(bucket_state "$b"); then warn_inc "could not determine the state of bucket $b: $(head -n 2 "$ERR")"; continue; fi
+      case "$st" in
+        absent) echo "bucket $b is already gone." ;;
+        not-owned) warn_inc "bucket $b does not carry ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; refusing to delete it" ;;
+        owned)
+          if empty_bucket "$b"; then
+            aws s3api delete-bucket --bucket "$b" --region "$AWS_REGION" --expected-bucket-owner "$ACCOUNT" --output json 2>"$ERR" \
+              || warn_inc "could not delete bucket $b: $(head -n 2 "$ERR")"
+          else
+            warn_inc "could not empty bucket $b: $(head -n 2 "$ERR")"
+          fi ;;
+      esac
+    done
+  else
+    warn_inc "could not read the caller's account, so the staging buckets were not touched: $(head -n 2 "$ERR")"
+  fi
+elif [ -z "$buckets" ]; then echo "none."; fi
 
-echo "== deleting owned IAM instance profiles and roles =="
-if [[ "$roles" == "<could not determine>" ]]; then :
-elif [[ -n "$roles" ]]; then
-  for role in $roles; do
-    role_owner=$(aws iam list-role-tags --role-name "$role" --query "Tags[?Key=='${TAGS_OWNER_KEY}'].Value | [0]" --output text 2>&1)
-    if [[ "$role_owner" == *NoSuchEntity* ]]; then echo "role $role is already gone."; continue; fi
-    [[ "$role_owner" == "$TAGS_OWNER_VALUE" ]] || { warn_inc "role $role does not carry ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} (read: $role_owner); refusing to delete it"; continue; }
-    profiles=$(aws iam list-instance-profiles-for-role --role-name "$role" --query 'InstanceProfiles[].InstanceProfileName' --output text 2>/dev/null)
-    for profile in $profiles; do
-      aws iam remove-role-from-instance-profile --instance-profile-name "$profile" --role-name "$role" 2>/dev/null || true
-      aws iam delete-instance-profile --instance-profile-name "$profile" \
-        || warn_inc "could not delete instance profile $profile"
-    done
-    policies=$(aws iam list-attached-role-policies --role-name "$role" --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null)
-    for policy_arn in $policies; do
-      aws iam detach-role-policy --role-name "$role" --policy-arn "$policy_arn" || warn_inc "could not detach $policy_arn from $role"
-    done
-    # Inline policies (the per-run staging read) block delete-role until removed.
-    inline_policies=$(aws iam list-role-policies --role-name "$role" --query 'PolicyNames[]' --output text 2>/dev/null)
-    for policy_name in $inline_policies; do
-      aws iam delete-role-policy --role-name "$role" --policy-name "$policy_name" || warn_inc "could not delete inline policy $policy_name from $role"
-    done
-    aws iam delete-role --role-name "$role" \
-      || warn_inc "could not delete IAM role $role"
+echo "== deleting this run's IAM instance profile and roles (by their per-run names) =="
+# The instance profile first: remove the roles it holds (it is this run's profile, so they are
+# this run's build role), then delete it.
+case "$profile_build" in
+  absent) echo "instance profile $INSTANCE_PROFILE does not exist." ;;
+  "$UNKNOWN") warn_inc "skipping instance profile $INSTANCE_PROFILE: its state could not be determined" ;;
+  not-owned) warn_inc "instance profile $INSTANCE_PROFILE does not carry ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; refusing to delete it" ;;
+  owned)
+    aws_json pdesc "the roles in instance profile $INSTANCE_PROFILE" iam get-instance-profile --instance-profile-name "$INSTANCE_PROFILE"
+    if [ "$pdesc" != "$UNKNOWN" ]; then
+      pblocked=0
+      for prole in $(printf '%s' "$pdesc" | json_get '[r["RoleName"] for r in d["InstanceProfile"].get("Roles", [])]'); do
+        owned_then profile "$INSTANCE_PROFILE" "instance profile $INSTANCE_PROFILE (removing role $prole)" \
+          aws iam remove-role-from-instance-profile --instance-profile-name "$INSTANCE_PROFILE" --role-name "$prole" --output json \
+          || pblocked=1
+      done
+      if [ "$pblocked" = 0 ]; then
+        owned_then profile "$INSTANCE_PROFILE" "instance profile $INSTANCE_PROFILE" \
+          aws iam delete-instance-profile --instance-profile-name "$INSTANCE_PROFILE" --output json || true
+      else
+        warn_inc "instance profile $INSTANCE_PROFILE left in place: see the warnings above"
+      fi
+    fi ;;
+esac
+# delete_role <name> <state>: detach and delete its policies, then the role. Every lookup it
+# depends on is checked: a failed one leaves the role in place and the clean up incomplete.
+delete_role() {
+  local role="$1" st="$2" blocked=0 profs att inl p
+  case "$st" in
+    absent) echo "role $role does not exist."; return ;;
+    "$UNKNOWN") warn_inc "skipping role $role: its state could not be determined"; return ;;
+    not-owned) warn_inc "role $role does not carry ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; refusing to delete it"; return ;;
+  esac
+  aws_json profs "the instance profiles that hold $role" iam list-instance-profiles-for-role --role-name "$role"
+  [ "$profs" != "$UNKNOWN" ] || { warn_inc "role $role left in place: see the warning above"; return; }
+  p=$(printf '%s' "$profs" | json_get '[x["InstanceProfileName"] for x in d["InstanceProfiles"]]' | tr '\n' ' ')
+  [ -z "${p// /}" ] || { warn_inc "role $role is still in instance profile(s) ${p% }; left in place"; return; }
+  aws_json att "the attached policies of $role" iam list-attached-role-policies --role-name "$role"
+  [ "$att" != "$UNKNOWN" ] || { warn_inc "role $role left in place: see the warning above"; return; }
+  for p in $(printf '%s' "$att" | json_get '[x["PolicyArn"] for x in d["AttachedPolicies"]]'); do
+    aws iam detach-role-policy --role-name "$role" --policy-arn "$p" --output json >/dev/null 2>"$ERR" \
+      || { warn_inc "could not detach $p from $role: $(head -n 2 "$ERR")"; blocked=1; }
   done
-else
-  echo "no owned IAM roles found; nothing to delete."
-fi
+  aws_json inl "the inline policies of $role" iam list-role-policies --role-name "$role"
+  [ "$inl" != "$UNKNOWN" ] || { warn_inc "role $role left in place: see the warning above"; return; }
+  for p in $(printf '%s' "$inl" | json_get 'd["PolicyNames"]'); do
+    aws iam delete-role-policy --role-name "$role" --policy-name "$p" --output json >/dev/null 2>"$ERR" \
+      || { warn_inc "could not delete inline policy $p from $role: $(head -n 2 "$ERR")"; blocked=1; }
+  done
+  [ "$blocked" = 0 ] || { warn_inc "role $role left in place: see the warnings above"; return; }
+  owned_then role "$role" "IAM role $role" aws iam delete-role --role-name "$role" --output json || true
+}
+delete_role "$BUILD_ROLE_NAME" "$role_build"
+delete_role "$NODE_ROLE_NAME" "$role_node"
 
 echo "== verifying absence =="
-owned r_instances "owned EC2 instances" list_instances
-owned r_images "owned AMIs" list_images
-owned r_snapshots "owned EBS snapshots" list_snapshots
-owned r_sgs "owned security groups" list_sgs
-owned r_lts "owned launch templates" list_lts
-owned r_ng "the managed node group $NODEGROUP_NAME" nodegroup_state
-[[ -z "$r_instances" ]] || warn_inc "owned instances still present after cleanup: $r_instances"
-[[ -z "$r_images" ]]    || warn_inc "owned AMIs still present after cleanup: $r_images"
-[[ -z "$r_snapshots" ]] || warn_inc "owned snapshots still present after cleanup: $r_snapshots"
-[[ -z "$r_sgs" ]]       || warn_inc "owned security groups still present after cleanup: $r_sgs"
-[[ -z "$r_lts" ]]       || warn_inc "owned launch templates still present after cleanup: $r_lts"
-[[ "$r_ng" == absent ]] || warn_inc "node group $NODEGROUP_NAME still present after cleanup: $r_ng"
-# Roles and buckets are confirmed directly (the tagging API lags deletions).
-for role in $( [[ "$roles" == "<could not determine>" ]] || printf '%s\n' "$roles" ); do
-  out=$(aws iam get-role --role-name "$role" 2>&1) && warn_inc "IAM role $role still present after cleanup" \
-    || [[ "$out" == *NoSuchEntity* ]] || warn_inc "could not confirm IAM role $role is gone: $out"
+first_buckets="$buckets"
+list_all
+# Confirm every bucket the first listing found, as well as any the second one finds.
+buckets=$(printf '%s\n%s\n' "$first_buckets" "$buckets" | awk 'NF' | sort -u)
+for pair in "instances:EC2 instances" "sgs:security groups" "lts:launch templates"; do
+  v="${pair%%:*}"; what="${pair#*:}"
+  [ -z "${!v}" ] || [ "${!v}" = "$UNKNOWN" ] || warn_inc "this run's $what still present after cleanup: $(printf '%s' "${!v}" | tr '\n' ' ')"
 done
-for b in $( [[ "$buckets" == "<could not determine>" ]] || printf '%s\n' "$buckets" ); do
-  st=$(bucket_state "$b") || { warn_inc "could not confirm bucket $b is gone"; continue; }
-  [[ "$st" == absent ]] || warn_inc "bucket $b still present after cleanup ($st)"
+if [[ "$KEEP_AMI" == 1 ]]; then
+  [ "$images" = "$UNKNOWN" ] || [ "$(printf '%s\n' "$images" | awk 'NF{print $1}' | sort)" = "$(printf '%s\n' "$kept_images" | awk 'NF{print $1}' | sort)" ] \
+    || warn_inc "the AMIs present ($images) are not the kept ones ($kept_images)"
+else
+  [ -z "$images" ] || [ "$images" = "$UNKNOWN" ] || warn_inc "this run's AMIs still present after cleanup: $(printf '%s' "$images" | tr '\n' ' ')"
+fi
+if [ -n "$snapshots" ] && [ "$snapshots" != "$UNKNOWN" ]; then
+  while read -r snap _s; do
+    [ -n "$snap" ] || continue
+    is_kept_snap "$snap" || warn_inc "this run's snapshot $snap still present after cleanup"
+  done <<< "$snapshots"
+fi
+[ "$ng_state" = absent ] || [ "$ng_state" = "$UNKNOWN" ] || warn_inc "node group $NODEGROUP_NAME still present after cleanup: $ng_state"
+# The roles and the profile were re-read by name in list_all; buckets are confirmed directly (the
+# tagging API can list a bucket for a while after it is deleted).
+for pair in "role_build:IAM role $BUILD_ROLE_NAME" "role_node:IAM role $NODE_ROLE_NAME" "profile_build:instance profile $INSTANCE_PROFILE"; do
+  v="${pair%%:*}"; what="${pair#*:}"
+  case "${!v}" in
+    absent|"$UNKNOWN") ;;   # UNKNOWN is reported by the loop at the end
+    *) warn_inc "$what still present after cleanup (${!v})" ;;
+  esac
 done
+if [ -n "$ACCOUNT" ]; then
+  while read -r b; do
+    [ -n "$b" ] && [ "$b" != "$UNKNOWN" ] || continue
+    st=$(bucket_state "$b") || { warn_inc "could not confirm bucket $b is gone"; continue; }
+    [ "$st" = absent ] || warn_inc "bucket $b still present after cleanup ($st)"
+  done <<< "$buckets"
+elif [ -n "$buckets" ]; then
+  warn_inc "the staging buckets' absence could not be confirmed (no caller account)"
+fi
+for v in instances images snapshots sgs lts buckets ng_state role_build role_node profile_build; do
+  printf '%s\n' "${!v}" | grep -qxF -- "$UNKNOWN" && warn_inc "absence of this run's $v could not be confirmed"
+done
+if [[ "$KEEP_AMI" == 1 && -n "$kept_images" ]]; then
+  echo "Left in place (kept on request): AMI(s) $(printf '%s\n' "$kept_images" | awk 'NF{print $1}' | tr '\n' ' ')and snapshot(s) $(printf '%s\n' "$kept_snaps" | awk 'NF' | tr '\n' ' ')"
+fi
 echo "Left in place (shared, not the sample's): the vpc-cni add-on and the isolated-sandbox RuntimeClass on cluster $CLUSTER_NAME; see the README's Clean up section for how to remove the add-on."
 
 if [[ "$incomplete" -ne 0 ]]; then
@@ -313,4 +519,4 @@ if [[ "$incomplete" -ne 0 ]]; then
   exit 1
 fi
 echo
-echo "Clean up complete: validation workload, node group, instances, AMIs and snapshots, launch template, security group, staging bucket, instance profile and roles are gone."
+echo "Clean up of run $RUN_ID complete: validation workload, node group, instances, $([[ "$KEEP_AMI" == 1 ]] || echo 'AMIs and snapshots, ')launch template, security group, staging bucket, instance profile and roles are gone."

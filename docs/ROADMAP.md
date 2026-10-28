@@ -80,10 +80,11 @@ for an existing cluster, not creating or managing the cluster itself.
 
 - [ubuntu-ami](../examples/setup/ubuntu-ami/README.md): build a custom Ubuntu 24.04 node
   AMI for EKS Pod Isolation and add one dedicated, tainted managed node group to an
-  existing cluster. Every public input (base AMI, kernel 6.18.39, erofs-utils 1.8.10,
-  distro packages) is pinned and checksum-verified; authored and static-verified, but
-  blocked on the public release of the EKS Pod Isolation runtime and the host-kernel
-  patch series, neither of which exists yet, so no live run has been performed. Spec:
+  existing cluster. Every public input (base AMI, kernel 6.18.56 plus AWS's public
+  host-kernel commit 1e66c960, erofs-utils 1.8.10, distro packages) is pinned and
+  checksum-verified. The Nitro sandbox runtime is an operator-supplied preview archive,
+  checksum-pinned, with no public download. Authored and checked without a cluster; no
+  live run has been performed yet. Spec:
   [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10).
 
 ### Isolation (`isolation`)

@@ -13,27 +13,29 @@
 #     asserts "a fresh instance from this AMI passed verification", so it must never be
 #     applied at scripts/50-bake-prep.sh or create-image time, and never when verification
 #     fails or has not run.
-#   - The AMI must already carry this sample's own ownership tag
-#     (ManagedBy=$TAGS_OWNER_VALUE) before it is tagged. An AMI missing or mismatching that
-#     tag is refused, non-zero exit, with a clear message: this function never writes to an
-#     AMI it does not already own.
+#   - The AMI must already carry this run's two tags (ManagedBy=$TAGS_OWNER_VALUE and
+#     RunId=$RUN_ID) before it is tagged. An AMI missing or mismatching either tag is refused,
+#     non-zero exit, with a clear message: this function never writes to an AMI this run does
+#     not own.
 #   - ManagedBy is preserved (never overwritten with a different value; create-tags only
 #     adds BtfValidated and the metadata tags below, it does not touch ManagedBy).
 #
 # Requires scripts/lib/common.sh to already be sourced (TAGS_OWNER_KEY, TAGS_OWNER_VALUE,
-# AWS_REGION, log/die/warn). Does not set -e itself: callers choose their own discipline, as
+# TAGS_RUN_KEY, RUN_ID, AWS_REGION, tags_match, json_pick, log/die/warn). Does not set -e itself: callers choose their own discipline, as
 # common.sh's own header documents.
 
-# btf_ami_is_owned <ami-id> : 0 if the AMI carries this run's ManagedBy=$TAGS_OWNER_VALUE
-# ownership tag, 1 otherwise (including "could not read the AMI's tags", which must never be
+# btf_ami_is_owned <ami-id> : 0 if the AMI carries ManagedBy=$TAGS_OWNER_VALUE and
+# RunId=$RUN_ID, 1 otherwise (including "could not read the AMI's tags", which must never be
 # treated as "owned"). Never guesses: a describe-images call that fails, or an AMI with no
 # Tags at all, both fail closed.
 btf_ami_is_owned() {
-  local ami_id="$1" owner_value
+  local ami_id="$1" js
   [[ -n "$ami_id" ]] || { warn "btf_ami_is_owned: no AMI id given"; return 1; }
-  owner_value=$(aws ec2 describe-images --region "$AWS_REGION" --image-ids "$ami_id" \
-    --query "Images[0].Tags[?Key=='${TAGS_OWNER_KEY}'].Value | [0]" --output text 2>/dev/null)
-  [[ "$owner_value" == "$TAGS_OWNER_VALUE" ]]
+  [[ -n "${RUN_ID:-}" ]] || { warn "btf_ami_is_owned: no RUN_ID"; return 1; }
+  js=$(aws ec2 describe-images --region "$AWS_REGION" --image-ids "$ami_id" --output json 2>/dev/null) || return 1
+  # Both run tags: ManagedBy=<RESOURCE_PREFIX> AND RunId=<RUN_ID> (an AMI another run built is
+  # not this run's to mark verified).
+  printf '%s' "$js" | json_pick 'd["Images"][0].get("Tags", []) if d.get("Images") else []' 2>/dev/null | tags_match
 }
 
 # btf_tag_ami_if_verified <ami-id> <verify-status> [metadata-tag-cli ...] : the one decision
@@ -59,7 +61,7 @@ btf_tag_ami_if_verified() {
   [[ -n "$ami_id" ]] || { die "btf_tag_ami_if_verified: no AMI id given"; }
 
   if ! btf_ami_is_owned "$ami_id"; then
-    warn "refusing to tag $ami_id BtfValidated=true: it does not carry ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} (not this run's AMI, or the id is wrong)"
+    warn "refusing to tag $ami_id BtfValidated=true: it does not carry ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID} (not this run's AMI, the id is wrong, or its tags could not be read)"
     return 1
   fi
 

@@ -9,21 +9,32 @@
     following MUST happen:
 
     1. **Settle how a reader gets the runtime archive.** The runtime binaries and guest
-       image ship as one archive that is still in preview: a reader obtains it from their
-       AWS account team, and there is no public download. Its exact name and every SHA-256
-       are pinned below. The maintainers decide whether that meets the Issue #10 criterion
-       that every required input is available to an external reader, or the sample waits
-       for a public channel; its license and redistribution terms are recorded with that
-       decision.
+       image ship as one operator-supplied preview archive, checksum-pinned, with no public
+       download: a reader obtains it from their AWS account team. Its exact name and every
+       SHA-256 are pinned below. The maintainers decide whether that meets the Issue #10
+       criterion that every required input is available to an external reader, or the
+       sample waits for a public channel; its license and redistribution terms are recorded
+       with that decision.
     2. **Run the whole thing live.** Run a fresh AMI build, a fresh second-instance
        verification, and the node-join and sandbox-pod tests on a live cluster.
-    3. **Replace every placeholder with real captured output.** Every
+    3. **Settle the AppArmor contradiction on that run.** The GA bundle says an Ubuntu
+       sandbox pod needs `appArmorProfile.type: Unconfined`, because a host profile is
+       forwarded into the guest and fails there. Issue #10 asks for the scoped `Localhost`
+       profile this sample uses. This page makes **no claim that the profile is enforced
+       on the sandbox** until a live run shows it: `./test.sh` counts the sandbox's failed
+       `/etc/shadow` write as AppArmor's only with AppArmor evidence (the sandbox process's
+       own label names the profile in enforce mode, or the node logs an AppArmor denial).
+       If the sandbox does not start, or the evidence is missing, the first failure and its
+       root cause go to the maintainers before anything changes.
+    4. **Replace every placeholder with real captured output.** Every
        `TODO: output from the fresh run` block below must hold real captured output from
        that run, nothing written by hand.
-    4. **Run the cleanup and confirm absence.** Run `./clean.sh --delete-aws-resources`
-       after the last run and confirm it reports every owned resource gone.
+    5. **Run the cleanup and confirm absence.** Run
+       `./clean.sh --delete-aws-resources --keep-ami` after the last run (issue #11 builds
+       on the AMI), confirm it reports every other resource of the run gone, and say what is
+       left.
 
-    Until all four are done, this sample stays a draft and is not marked `(available now)`.
+    Until all five are done, this sample stays a draft and is not marked `(available now)`.
 
 !!! warning "Status: authored and static-verified against the GA bundle; no live run yet"
 
@@ -47,12 +58,13 @@ and this sample never replaces or reconfigures an existing node group.
 
     The Nitro sandbox runtime archive (`nitro-sandbox-binaries-2026-10-28.zip`: the
     containerd shim and CRI proxy, Firecracker and its jailer, the guest boot image and root
-    disk, the policy generator and the key provider) is **in preview, with no public
-    download**. Every other input is public, pinned and checksum-verified, including the
+    disk, the policy generator and the key provider) is an **operator-supplied preview
+    archive, checksum-pinned, with no public download**. Every other input is public, pinned
+    and checksum-verified, including the
     host-kernel change, which is AWS's public kernel commit on GitHub. Until you place the
     archive where `config.env` says, `./setup.sh --prepare` stops cleanly at that
     prerequisite rather than substituting an internal or private artifact. See
-    [The runtime archive](#the-runtime-archive-operator-supplied-in-preview).
+    [The runtime archive](#the-runtime-archive).
 
 ```mermaid
 flowchart TB
@@ -130,6 +142,21 @@ it.
   `--resolve-conflicts NONE` makes the install fail rather than overwrite an existing
   `amazon-vpc-cni` ConfigMap. Record the version you chose as `VPC_CNI_ADDON_VERSION` in
   `config.env`; each run records the version it found.
+
+  **Network policy enforcement is cluster-wide.** Turning it on makes every NetworkPolicy
+  object already on the cluster start being enforced, for every workload, not only this
+  sample's, so a policy that was written but never enforced can then cut traffic another team
+  relies on. Review them first
+  (`kubectl --context <your-context> get networkpolicy --all-namespaces`) and test the change
+  on a cluster that is not production before you make it on a shared one. The sample never
+  installs or changes the add-on: it checks it and stops with the command above.
+
+- **A kubectl context for the same cluster, named in `KUBE_CONTEXT`.** Every `kubectl` call
+  the scripts make passes `--context "$KUBE_CONTEXT"`; there is no fallback to the current
+  context, and nothing runs `kubectl config use-context`. Before the first change,
+  `./setup.sh`, `./test.sh` and `./clean.sh` compare that context's server URL with the API
+  endpoint `aws eks describe-cluster` reports for `CLUSTER_NAME`, and stop on a mismatch or
+  an unreadable context, so the kubectl side and the AWS side are always the same cluster.
 - Private subnets in the cluster's VPC with egress to Ubuntu's `apt` mirrors, kernel.org,
   git.kernel.org, github.com, Amazon S3, and the EKS, EC2 and SSM APIs. This sample creates
   no network infrastructure.
@@ -157,8 +184,18 @@ it.
     `AmazonEKSWorkerNodePolicy`, `AmazonEC2ContainerRegistryReadOnly`, `AmazonEKS_CNI_Policy`
     and `AmazonSSMManagedInstanceCore`).
 
-  Both are tagged `ManagedBy=<RESOURCE_PREFIX>` so `./clean.sh --delete-aws-resources`
-  removes them. Neither is an admin role.
+  Both are named for the run (`<RESOURCE_PREFIX>-<RUN_ID>-build` and `-node`) and tagged
+  `ManagedBy=<RESOURCE_PREFIX>` and `RunId=<RUN_ID>`, so `./clean.sh --delete-aws-resources`
+  removes them and nothing else. A same-named role is reused only when it carries both tags,
+  the trust policy above, exactly the managed policies above and no inline policy; anything
+  else stops the run. Neither is an admin role.
+- **IMDSv2 only, hop limit 1, on every instance the sample launches.** The build host, the
+  verification instance and the node group's nodes (through the launch template) all require
+  IMDSv2 tokens with a response hop limit of 1, so a container cannot reach the instance's
+  credentials through the metadata service. A pod that needs AWS access uses
+  EKS Pod Identity, never the node's role. Each launch spec is rendered, checked
+  ([`scripts/lib/launch_spec.py`](scripts/lib/launch_spec.py)) and sent to EC2 as that same
+  file.
 - **SSM-based build-host access, no inbound rule.** The build security group opens no
   inbound port (`./setup.sh` checks it has none); you reach the build and verification
   instances over SSM, which needs no bastion, no SSH key and no open port.
@@ -218,11 +255,10 @@ host-kernel patch, erofs-utils) with its SBOM, license summary and provenance re
 a restricted-network host with `packages/make-bundle.sh consume <bundle-dir>`. The runtime
 archive is never bundled.
 
-### The runtime archive (operator-supplied, in preview)
+### The runtime archive
 
 The runtime ships as one flat zip, `nitro-sandbox-binaries-2026-10-28.zip`, with a
-`SHA256SUMS` inside that covers all eight files. While Nitro sandboxes are in preview there
-is no public download: **ask your AWS account team for it**. Never commit it, and never put
+`SHA256SUMS` inside that covers all eight files. It is an operator-supplied preview archive, checksum-pinned, with no public download: **ask your AWS account team for it**. Never commit it, and never put
 it in this sample folder.
 
 | File | SHA-256 | Installed on the node as |
@@ -250,9 +286,10 @@ re-packed archive whose `SHA256SUMS` was edited to match is still refused.
 ```bash
 cd examples/setup/ubuntu-ami
 cp config.env.example config.env
-# Set BUILD_SUBNET_ID, NODE_SUBNET_IDS and VPC_CNI_ADDON_VERSION. Your usual CLUSTER_NAME,
-# AWS_REGION and AWS_PROFILE remain in effect. Pin the kube context for this shell with
-# KUBECTL="kubectl --context <your-context>" rather than changing the current context.
+# Set KUBE_CONTEXT (the kubectl context of CLUSTER_NAME), BUILD_SUBNET_ID, NODE_SUBNET_IDS and
+# VPC_CNI_ADDON_VERSION. Your usual CLUSTER_NAME, AWS_REGION and AWS_PROFILE remain in effect.
+# The scripts pass --context "$KUBE_CONTEXT" to every kubectl call and never change the
+# current context.
 $EDITOR config.env
 
 ./setup.sh --prepare   # local only: verify every pinned input and the runtime archive
@@ -275,16 +312,32 @@ flowchart TB
   H --> I["Join tainted node group; wait for nitro-sandbox capacity; apply pods"]
 ```
 
+**Every run has its own id.** `./setup.sh` picks a run id (a UTC timestamp such as
+`20261028t221500z`, or the `RUN_ID` you pass to resume a run) and records it in
+`tmp/issue10/run/out/run-state.env`; the run's private evidence goes under
+`tmp/issue10/run/out/runs/<run-id>/evidence/`. Every name the run creates is derived from it
+(`<RESOURCE_PREFIX>-<RUN_ID>-build` for the build role and instance profile, `-node` for the
+node role, `-build-sg`, `-lt`, `-ng`, `-verify`, `-stage-read` for the staging policy, and
+`<RESOURCE_PREFIX>-stage-<RUN_ID>-<6 hex>` for the bucket), checked against the IAM, EKS and
+S3 name limits, and every AWS resource it creates carries both `ManagedBy=<RESOURCE_PREFIX>`
+and `RunId=<RUN_ID>`, including the verification instance and, through the launch template,
+every node instance and volume. A resource with the run's name is reused only when it carries
+both tags; a mismatch or a failed lookup stops the run. The namespace carries
+`app.kubernetes.io/part-of=<RESOURCE_PREFIX>` and `app.kubernetes.io/instance=<RUN_ID>`.
+
 **1. Check the inputs and the cluster.** `./setup.sh --prepare` verifies every pinned input
 and the runtime archive on your workstation and creates nothing. A full `./setup.sh` then
 reads two cluster-wide prerequisites before it creates anything: the `vpc-cni` add-on is
 `ACTIVE` with network policy on, and the shared `isolated-sandbox` RuntimeClass selects only
 labels the sample's node will carry. It stops with the command to run if either is not so.
+It also checks that the cluster's DNS pods in `kube-system` carry `k8s-app=kube-dns`, the
+label the sandbox's network policy allows DNS to.
 
 **2. Resolve the base AMI.** The build resolves the Canonical EKS Ubuntu 24.04 AMI for
 Kubernetes 1.36 from the public SSM parameter path for your Region at run time, and records
 the image ID, name and serial it got in the run's private evidence (under
-`tmp/issue10/run/out/evidence/<run-id>/`). It never hard-codes an AMI ID or serial.
+`tmp/issue10/run/out/runs/<run-id>/evidence/`), not on the image. It never hard-codes an AMI
+ID or serial.
 
 **3. Stage the files through a private, per-run S3 bucket.** The runtime archive is about
 150 MB and its guest disk unpacks to 2 GiB, so nothing large is pushed through an SSM shell.
@@ -295,8 +348,10 @@ default encryption (SSE-S3) and the TLS-only policy in
 sample's scripts and the archive with their SHA-256 (S3 checks it on receipt) and grants the
 build-host role read on this run's prefix only. The build host downloads them with its
 instance profile and checks each SHA-256 against the value `./setup.sh` sends over SSM, not
-one read from the bucket. Then the staged objects and the build role's read are deleted; the
-empty bucket stays until `./clean.sh --delete-aws-resources` removes it.
+one read from the bucket. Then the staged objects and the build role's read are deleted, and
+the revocation confirms both are gone: if either is still there, it records what is left in
+the run's state and the run stops. The empty bucket stays until
+`./clean.sh --delete-aws-resources` removes it.
 
 **4. Check containerd, then build the host kernel.** The build host's first preflight reads
 the booted base image's containerd: the GA shim runs on containerd 2.1.x, 2.2.x and 2.3.x,
@@ -313,7 +368,10 @@ because `olddefconfig` silently drops a symbol whose menu gate is off:
 - `CONFIG_CMA=y`, `CONFIG_DEBUG_INFO_BTF=y` and `CONFIG_DEBUG_INFO_BTF_MODULES=y` (kernel and
   module BTF for eBPF, which Cilium's datapath needs);
 - `CONFIG_VHOST_VSOCK`, `CONFIG_EROFS_FS` and `CONFIG_TUN`, built in or modules;
-- the menu gates `CONFIG_VIRT_DRIVERS`, `CONFIG_VSOCKETS` and `CONFIG_VHOST_MENU`.
+- the menu gates `CONFIG_VIRT_DRIVERS`, `CONFIG_VSOCKETS` and `CONFIG_VHOST_MENU`;
+- `CONFIG_EXT4_FS`, built in or a module. The build sets it built in (`y`), which needs no
+  module at boot; if `olddefconfig` leaves it a module, the build requires `ext4.ko` in the
+  new initramfs.
 
 It installs `dwarves` (pahole, which builds BTF from DWARF), `gawk` (Ubuntu ships `mawk`,
 and the link step needs `gawk`) and `libdw-dev` (Canonical's config sets
@@ -342,7 +400,19 @@ containerd's own `config migrate` and `config dump` show both, points kubelet's 
 `unix:///run/nitro-sandbox/cri-proxy.sock` in `/usr/local/share/eks/bootstrap.sh`, and adds
 the `snap.kubelet-eks.daemon.service.d/50-cri-proxy.conf` ordering drop-in. Both files are
 templates because Canonical's bootstrap regenerates the live ones at join.
-[`scripts/35-apparmor.sh`](scripts/35-apparmor.sh) loads the sample's scoped AppArmor profile.
+[`scripts/35-apparmor.sh`](scripts/35-apparmor.sh) loads the sample's scoped AppArmor profile
+and stops unless the kernel reports it in enforce mode and its load service is enabled
+(`systemctl enable` and `is-enabled` both checked).
+[`scripts/36-hold-packages.sh`](scripts/36-hold-packages.sh) holds the package that owns
+`containerd` (`containerd-app` on Ubuntu 24.04) and the installed Ubuntu kernel
+meta-packages, with `apt-mark hold` and in `Unattended-Upgrade::Package-Blacklist`, so an
+unattended upgrade can neither move containerd past the GA shim's range nor pull a stock
+kernel that GRUB could boot instead of `6.18.56-nitro-ga`. Everything else keeps the base
+AMI's update policy: package-list refresh and unattended security upgrades stay on.
+
+> **Trade-off: held packages get updates only through a new AMI build.** containerd and the
+> held kernel meta-packages receive no security fix on a running node. Rebuild the AMI to
+> pick them up, and replace the node group's nodes with it.
 
 **Observe:** a completed `./setup.sh` writes a plain-text manifest on the image,
 `/etc/ubuntu-ami-sample-manifest`, recording the kernel release and the SHA-256 of its
@@ -353,7 +423,9 @@ so a later reader can audit the image without the build host.
 **7. Verify a fresh instance, then tag the AMI `BtfValidated=true`.** Before baking,
 [`scripts/50-bake-prep.sh`](scripts/50-bake-prep.sh) removes the kernel tree, the downloaded
 kernel tarball and patch, the archives, the staged downloads, the build toolchain, SSH host
-keys and the machine ID, and refuses to continue if any of them is still there. After the AMI
+keys and the machine ID, and refuses to continue if any of them is still there, or if its scan
+for them fails ("could not determine" is a failure, never a pass). It does not change the
+base AMI's apt update policy. After the AMI
 is registered, `./setup.sh` launches a SECOND, fresh instance from it
 ([`scripts/verify-fresh-instance.sh`](scripts/verify-fresh-instance.sh)) and runs
 [`scripts/verify-image.py`](scripts/verify-image.py) and `40-smoke.sh` on that instance, never
@@ -361,12 +433,14 @@ on the build host's own run. `verify-image.py` checks the kernel release
 `6.18.56-nitro-ga`, `/dev/nitro_enclaves`, BTF, a CMA reservation, vsock, TUN, EROFS,
 AppArmor with the scoped profile loaded, containerd 2.1.x to 2.3.x, both handlers, the kubelet
 endpoint, `mkfs.erofs` 1.8.10 with zstd as a service sees it, and every installed runtime file
-against `SHA256SUMS` and its pin. Only once both checks pass does the script tag the AMI
+against `SHA256SUMS` and its pin, the AppArmor profile in enforce mode, and the package
+holds. Each check raises its own failure (no Python `assert`, which `python3 -O` would
+remove). Only once both checks pass does the script tag the AMI
 `BtfValidated=true` ([`scripts/lib/btf-tag.sh`](scripts/lib/btf-tag.sh)), alongside the
 `ManagedBy=<RESOURCE_PREFIX>` ownership tag, the pinned kernel and erofs-utils versions and
 the verification run's id. If verification fails, the AMI never receives `BtfValidated=true`,
-and the tagging step refuses any AMI that does not already carry this run's own `ManagedBy`
-tag. This tag is the contract the `cilium-ubuntu` sample's (issue #11) AMI preflight checks:
+and the tagging step refuses any AMI that does not already carry both of this run's tags
+(`ManagedBy` and `RunId`). The verification instance is terminated however the script ends. This tag is the contract the `cilium-ubuntu` sample's (issue #11) AMI preflight checks:
 `BtfValidated=true` means "a fresh instance booted from this AMI passed this sample's
 host-readiness and BTF checks," never "an AMI was merely created."
 
@@ -377,7 +451,12 @@ applies the node group's labels and taints only after the node registers, so the
 them itself through Canonical's `bootstrap.sh --kubelet-extra-args`:
 `--node-labels=eks.amazonaws.com/nodegroup=<NODEGROUP_NAME>,eks.amazonaws.com/nitro-sandbox=true,sandbox.preview/nitro=true`
 and `--register-with-taints=sandbox.preview/ubuntu-ami=true:NoSchedule`, checked in the
-rendered user data before the launch template is created. Before any pod is applied,
+rendered user data before the launch template is created: with comments and blank lines
+stripped, the script must hold exactly one `/etc/eks/bootstrap.sh` command for this cluster,
+with nothing after it, and the labels and taint are read from that command's own
+`--kubelet-extra-args`. The launch template data (IMDSv2 required, hop limit 1, enclaves on,
+both run tags on every node instance and volume) is checked the same way, and the template
+and the node group are named and tagged for the run. Before any pod is applied,
 [`scripts/wait-node-ready.sh`](scripts/wait-node-ready.sh) waits until the node is `Ready`
 and advertises allocatable `eks.amazonaws.com/nitro-sandbox` greater than zero (the extended
 resource the RuntimeClass's overhead requests), and stops with a clear message if it does not.
@@ -416,6 +495,7 @@ that accepts everything.
 | Control | Accepts | Refuses |
 |---|---|---|
 | Kernel config assertion | every required symbol present after `olddefconfig` | `CONFIG_NITRO_ENCLAVES=m`, BTF off or missing, module BTF off, CMA off, `VHOST_VSOCK` or `TUN` dropped, the `VIRT_DRIVERS` gate off |
+| Root filesystem at boot | `CONFIG_EXT4_FS=y` with or without `ext4.ko`; `=m` with `ext4.ko` (plain or compressed) in the initramfs | `=m` with no `ext4.ko`, a file that only starts with `ext4.ko`, EXT4 not set |
 | Host kernel | the node reports `6.18.56-nitro-ga` | any other release |
 | BTF presence | `/sys/kernel/btf/vmlinux` present and non-empty | the same probe on a path that does not exist |
 | Nitro Enclaves device | `/dev/nitro_enclaves` present after reboot | the same probe on a device that does not exist |
@@ -425,14 +505,19 @@ that accepts everything.
 | containerd | 2.1.x, 2.2.x, 2.3.x | 2.4.0 and later, 2.0.x and earlier, unreadable versions |
 | Runtime archive | the pinned archive, every payload listed once and matching | a wrong archive hash, a tampered payload, a payload missing from `SHA256SUMS`, an unlisted extra file, a duplicate entry, a re-packed payload |
 | Runtime wiring | both handlers in containerd's migrated config dump, the endpoint at the CRI proxy | a handler name that is not registered |
-| Node labels and taint | the user data carries all three labels and the taint | user data missing any one of them |
+| Node labels and taint | one active `bootstrap.sh` command for this cluster whose `--kubelet-extra-args` carry all three labels and the taint | any one missing, the strings only in a comment, an `exit` before the command, two commands, a command for another cluster |
+| Launch specs | IMDSv2 required, hop limit 1, enclaves on, `ManagedBy` and `RunId` on instance and volume | IMDSv1 allowed, hop limit 2, no metadata options, IMDS off, enclaves off, a volume without `RunId`, another run's `RunId` |
+| Kube context | the context's server is `CLUSTER_NAME`'s API endpoint | another cluster's server, an unknown context, no `KUBE_CONTEXT` |
+| AppArmor stage | the profile loaded in enforce mode, its service enabled | complain mode, a failed `systemctl enable`, a service that is not enabled |
+| Package holds | the containerd owner and the kernel meta-packages held and blacklisted | a hold missing from `apt-mark showhold` or from the blacklist |
+| Bake residue | no build residue left | residue present, or a scan that fails |
 | Sandbox capacity | the node advertises `eks.amazonaws.com/nitro-sandbox` > 0 | zero, absent, or a node that is not `Ready` |
 
 **`BtfValidated=true` applied only after fresh-instance verification passes.** The AMI tag
 `cilium-ubuntu`'s (issue #11) AMI preflight requires before it will use an AMI from this
 sample. Written by `scripts/verify-fresh-instance.sh` via `scripts/lib/btf-tag.sh`, never at
 `create-image` time, and never when verification fails or the AMI is not this run's own
-(`ManagedBy=<RESOURCE_PREFIX>` checked first).
+(`ManagedBy=<RESOURCE_PREFIX>` and `RunId=<RUN_ID>` checked first).
 
 ```text
 TODO: output from the fresh run
@@ -442,16 +527,22 @@ TODO: output from the fresh run
 host. The node loads one scoped profile,
 [`manifests/ubuntu-ami-sample-profile`](manifests/ubuntu-ami-sample-profile), installed onto
 the AMI by [`scripts/35-apparmor.sh`](scripts/35-apparmor.sh); the isolated-sandbox pod
-selects it with `securityContext.appArmorProfile` (`type: Localhost`), and the profile denies
-a write to `/etc/shadow` while the pod otherwise runs. The reject control
+selects it with `securityContext.appArmorProfile` (`type: Localhost`). The profile is written
+to deny a write to `/etc/shadow` while the pod otherwise runs, but a failed write alone is not
+counted as AppArmor's: `./test.sh` passes it only with AppArmor evidence, either the sandbox
+process's own label (`/proc/self/attr/current`) naming the profile in enforce mode or an
+AppArmor denial of that write in the node's kernel log, and it reads the same two things on
+the ordinary pod and on a profile the node never loaded as the controls. The reject control
 ([`deploy/pod-apparmor-reject.yaml`](deploy/pod-apparmor-reject.yaml)) is an ordinary pod on
 the same node that asks for a profile the node never loaded, and is refused for the AppArmor
 reason.
 
 The runtime's Ubuntu build notes say that on an AppArmor host every sandbox pod needs
 `appArmorProfile` `type: Unconfined`, because the requested profile is forwarded into the
-guest, where it does not exist. The fresh run records which of the two holds for the scoped
-profile, and this section shows that result rather than a weakened profile.
+guest, where it does not exist. Until the fresh run settles which holds, this page claims
+**no AppArmor enforcement on the sandbox**. The run records the result, and this section
+shows it rather than a weakened profile; a sandbox that does not start goes to the
+maintainers with its first failure and root cause.
 
 ```text
 TODO: output from the fresh run
@@ -461,8 +552,13 @@ TODO: output from the fresh run
 
 The isolated-sandbox pod has a network, so its egress is restricted by this policy,
 [`deploy/network-policy.yaml`](deploy/network-policy.yaml), shown here in full. It denies all
-ingress and allows egress only to DNS (UDP and TCP port 53). The `vpc-cni` add-on's network
-policy support, a prerequisite above, enforces it on the sample's node. The sample creates no
+ingress, and allows egress only on UDP and TCP port 53, and only to pods labelled
+`k8s-app=kube-dns` in the `kube-system` namespace: the namespace selector and the pod selector
+are in the same `to` entry, so a destination must match both. Port 53 to any other pod is
+refused. The `vpc-cni` add-on's network policy support, a prerequisite above, enforces it on
+the sample's node. `./setup.sh` checks that the cluster's DNS pods carry `k8s-app=kube-dns`
+before it applies the policy, and `./test.sh` reads the live object back and checks it
+([`scripts/check-network-policy.py`](scripts/check-network-policy.py)). The sample creates no
 Ingress, LoadBalancer or NodePort.
 
 ```yaml
@@ -481,7 +577,12 @@ spec:
   ingress: []
   egress:
     - to:
-        - namespaceSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
       ports:
         - protocol: UDP
           port: 53
@@ -489,7 +590,10 @@ spec:
           port: 53
 ```
 
-**The policy at work: DNS answers, any other destination is refused.**
+**The policy at work.** DNS answers, the API server on 443 is refused, and port 53 to a pod
+that is not DNS is refused too. That pod is the ordinary pod, which listens on TCP 53 with a
+plain HTTP listener; the ordinary pod's own connection to it succeeds, which shows the
+listener is up and the refusal is the policy's.
 
 ```text
 TODO: output from the fresh run
@@ -501,12 +605,15 @@ These run with no AWS account and no cluster, against the real scripts with stub
 first on `PATH` where a live input cannot be made:
 
 ```bash
-bash packages/test-bundle.sh          # deterministic dependency bundle, tamper and missing rejected
-bash packages/test-inputs.sh          # runtime archive and host-kernel patch, both ways
-bash scripts/test-host-gates.sh       # containerd 2.1 to 2.3 gate and the .config assertion
-bash scripts/test-cluster-gates.sh    # vpc-cni and RuntimeClass, user-data labels and taint, node capacity
-bash scripts/test-btf-tag.sh          # BtfValidated=true only after verification, only on an owned AMI
-bash scripts/test-local-paths.sh      # local state stays under the repository's tmp/
+bash packages/test-bundle.sh          # bundle built and consumed against sources.lock; tampered, unlisted and unsafe members refused
+bash packages/test-inputs.sh          # runtime archive and host-kernel patch (cached or downloaded), both ways
+bash scripts/test-host-gates.sh       # containerd gate, .config assertion, root filesystem at boot, IMDS token never on argv
+bash scripts/test-cluster-gates.sh    # kube context, vpc-cni, RuntimeClass, DNS pods, user data, node capacity, namespace, pod wait, egress policy
+bash scripts/test-launch-specs.sh     # IMDSv2 hop limit 1, enclaves and run tags on the node template, verification instance and build host
+bash scripts/test-run-scope.sh        # per-run IAM, run-scoped clean up, IAM by name, every failed lookup, --list-runs, staging revocation
+bash scripts/test-image-checks.sh     # containerd wiring, AppArmor stage, package holds, bake residue, verify-image.py (Python 3.11+)
+bash scripts/test-btf-tag.sh          # BtfValidated=true only after both fresh-instance checks pass, only on this run's AMI
+bash scripts/test-local-paths.sh      # local state only under the repository's tmp/
 ```
 
 ## Cost note
@@ -525,22 +632,40 @@ nothing keeps billing unattended.
 Run clean up right after you finish validating, before moving on:
 
 ```bash
-./clean.sh --dry-run                # list only this run's owned resources; nothing is removed
-./clean.sh                          # remove the demo's Kubernetes workload
-./clean.sh --delete-aws-resources   # also remove the owned AWS infrastructure and AMI
+./clean.sh --dry-run                           # list this run's resources; nothing is removed
+./clean.sh                                     # remove this run's Kubernetes workload
+./clean.sh --delete-aws-resources              # also remove this run's AWS resources and AMI
+./clean.sh --delete-aws-resources --keep-ami   # the same, but keep the AMI and its snapshot
 ```
 
-`./clean.sh --dry-run` lists only resources tagged as this sample's own, and changes nothing.
+`./clean.sh` acts on one run: the one `./setup.sh` recorded in
+`tmp/issue10/run/out/run-state.env`, or the one you name with `--run-id <id>`. With neither it
+deletes nothing. It lists and deletes only resources that carry both `ManagedBy=<RESOURCE_PREFIX>`
+and that run's `RunId`, and re-reads both tags of each resource right before deleting it, so
+another run of this sample in the same account is never touched. The IAM roles and the
+instance profile are found by their per-run names through IAM itself (the Resource Groups
+Tagging API does not list IAM roles). `--dry-run` changes nothing.
+
 A bare `./clean.sh` removes only the Kubernetes validation workload (the sample's namespace,
-after confirming its ownership label), leaving the node group and AMI in place for a longer
-investigation. `./clean.sh --delete-aws-resources` does the full teardown: it removes, in
-order, the Kubernetes workload, the managed node group, the build and verification EC2
-instances, the AMIs and their snapshots, the launch template, the build security group, the
-S3 staging buckets (emptied first, and only when tagged `ManagedBy=<RESOURCE_PREFIX>`), and
-the instance profile and IAM roles the sample created ([`scripts/00a-iam.sh`](scripts/00a-iam.sh),
-found by their `ManagedBy=<RESOURCE_PREFIX>` tag). It then re-lists each category to confirm
-nothing it owns remains, and exits non-zero if anything is still there or any lookup failed,
-rather than reporting success on an incomplete clean up.
+after confirming it carries both of the run's labels), leaving the node group and AMI in place
+for a longer investigation. `./clean.sh --delete-aws-resources` does the full teardown: it
+removes, in order, the Kubernetes workload, the managed node group, the build and
+verification EC2 instances, the AMIs and their snapshots, the launch template, the build
+security group, the S3 staging bucket (emptied first, every call naming your account as the
+expected bucket owner), and the instance profile and IAM roles. It then reads each category
+again to confirm nothing of the run remains, and exits non-zero if anything is still there,
+if anything was skipped as not the run's, or if any lookup failed: a failed lookup is
+"could not determine", never "gone". Before the first delete it checks `KUBE_CONTEXT` against
+the cluster, as setup does.
+
+**`--keep-ami`** keeps the run's AMI and the snapshot behind it, and lists them as
+"left in place (kept on request)" in `--dry-run` and at the end. The `cilium-ubuntu` sample
+(issue #11) builds on that AMI; remove it later with `./clean.sh --run-id <id>
+--delete-aws-resources`.
+
+**A lost run id.** `./clean.sh --list-runs` lists every resource marked
+`ManagedBy=<RESOURCE_PREFIX>` in the Region, grouped by `RunId`, and deletes nothing. Then
+clean each run you find with `./clean.sh --run-id <id> --delete-aws-resources`.
 
 **What stays.** The clean up never removes a shared install. The `isolated-sandbox`
 RuntimeClass stays (Getting started created it). The `vpc-cni` add-on you installed as a
@@ -559,9 +684,10 @@ from every managed node group node.
 <details>
 <summary>Preflight stops with the runtime-archive prerequisite</summary>
 
-Expected until you place `nitro-sandbox-binaries-2026-10-28.zip`, which you obtain from your
-AWS account team while Nitro sandboxes are in preview; see
-[The runtime archive](#the-runtime-archive-operator-supplied-in-preview). Put it in
+Expected until you place `nitro-sandbox-binaries-2026-10-28.zip`, an operator-supplied
+preview archive, checksum-pinned, with no public download, which you obtain from your AWS
+account team; see
+[The runtime archive](#the-runtime-archive). Put it in
 `RUNTIME_ARTIFACTS_DIR` (default `tmp/issue10/run/runtime` at the repository root) and re-run
 `./setup.sh --prepare`. A SHA-256 or `SHA256SUMS` failure means the file is not the pinned
 archive: do not use it.
@@ -604,7 +730,7 @@ download and removed right after.
 
 A node that is never `Ready` usually has no pod network: check the `vpc-cni` add-on
 ([Prerequisites](#prerequisites)). Pods `Pending` on a node selector mean the node lacks a
-label: check `kubectl get node --show-labels` for `eks.amazonaws.com/nodegroup`,
+label: check `kubectl --context <your-context> get node --show-labels` for `eks.amazonaws.com/nodegroup`,
 `eks.amazonaws.com/nitro-sandbox=true` and `sandbox.preview/nitro=true`. Pods `Pending` with
 `Insufficient eks.amazonaws.com/nitro-sandbox` mean the node advertises no sandbox capacity:
 check `cri-proxy.service` and `/dev/nitro_enclaves` on the node. A pod stuck
@@ -627,8 +753,8 @@ changing the tag it names, and this sample's own pin tracks the bytes, not just 
 Ported from the maintainers' internal demo for this node and reconciled with the Nitro
 sandbox GA node-build bundle dated 2026-10-28, following this repository's rule to leave
 behind internal source trees, hosts and URLs. The host kernel is built from public, pinned
-inputs (kernel.org and AWS's public kernel commit), and the runtime is consumed as the
-released, checksum-pinned archive. See
+inputs (kernel.org and AWS's public kernel commit), and the runtime is consumed as an
+operator-supplied preview archive, checksum-pinned, with no public download. See
 [Public inputs, pinned and checksum-verified](#public-inputs-pinned-and-checksum-verified)
 and [`packages/SOURCES.txt`](packages/SOURCES.txt) for the full provenance record.
 

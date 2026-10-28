@@ -160,7 +160,7 @@ plock "$WORK/patch.lock" "$(sha "$WORK/good.patch")"
 rc=0; run_patch good "$WORK/patch.lock" "$WORK/good.patch" || rc=$?
 check "ACCEPT a patch on its pinned SHA-256 whose From line names the pinned commit" 0 "$rc" "$WORK/p-good.log" "verified sha256 .*$COMMIT.patch"
 rc=0; run_patch tampered "$WORK/patch.lock" "$WORK/tampered.patch" || rc=$?
-check "REJECT a tampered patch (SHA-256 mismatch)" 1 "$rc" "$WORK/p-tampered.log" 'SHA-256 mismatch for the host-kernel patch'
+check "REJECT a tampered patch (SHA-256 mismatch)" 1 "$rc" "$WORK/p-tampered.log" 'failed its checks: SHA-256 mismatch'
 [[ ! -e "$WORK/p-tampered/$COMMIT.patch" && ! -e "$WORK/p-tampered/$COMMIT.patch.part" ]]
 check "REJECT leaves no patch under the final name and no .part file" 0 $? "$WORK/p-tampered.log"
 plock "$WORK/patch-other.lock" "$(sha "$WORK/othercommit.patch")"
@@ -168,6 +168,22 @@ rc=0; run_patch other "$WORK/patch-other.lock" "$WORK/othercommit.patch" || rc=$
 check "REJECT a patch on its pinned SHA-256 whose From line names a different commit" 1 "$rc" "$WORK/p-other.log" "does not start with git's 'From $COMMIT' header"
 rc=0; run_patch nofetch "$WORK/patch.lock" "" || rc=$?
 check "REJECT when the download fails (no file is left to apply)" 1 "$rc" "$WORK/p-nofetch.log" 'could not download'
+# A copy already under the final name goes through the same two checks (M10). curl serves nothing
+# in these cases unless a case says so, so a cache hit cannot be confused with a download.
+cached() { mkdir -p "$WORK/p-$1"; cp -- "$2" "$WORK/p-$1/$COMMIT.patch"; }
+cached cache-good "$WORK/good.patch"
+rc=0; run_patch cache-good "$WORK/patch.lock" "" || rc=$?
+check "ACCEPT a cached patch on its pinned SHA-256 whose From line names the pinned commit" 0 "$rc" "$WORK/p-cache-good.log" "cached and verified \(SHA-256 and From $COMMIT\)"
+cached cache-other "$WORK/othercommit.patch"
+rc=0; run_patch cache-other "$WORK/patch-other.lock" "" || rc=$?
+check "REJECT a cached patch on its pinned SHA-256 whose From line names a different commit (the reviewer's probe)" 1 "$rc" "$WORK/p-cache-other.log" "cached $COMMIT.patch failed its checks and was removed: the patch does not start with git's 'From $COMMIT' header"
+[[ ! -e "$WORK/p-cache-other/$COMMIT.patch" ]]
+check "  ... and it is no longer under the final name for 10-kernel.sh" 0 $? "$WORK/p-cache-other.log"
+cached cache-tampered "$WORK/tampered.patch"
+rc=0; run_patch cache-tampered "$WORK/patch.lock" "$WORK/good.patch" || rc=$?
+check "ACCEPT a re-download when the cached copy fails its SHA-256 (the cached copy is replaced)" 0 "$rc" "$WORK/p-cache-tampered.log" 'failed its checks and was removed: SHA-256 mismatch'
+cmp -s "$WORK/p-cache-tampered/$COMMIT.patch" "$WORK/good.patch"
+check "  ... and the file under the final name is now the verified download" 0 $? "$WORK/p-cache-tampered.log"
 
 REAL_PATCH="${REAL_KERNEL_PATCH:-$REPO_ROOT_REAL/tmp/issue10/run/runtime/$(sed -n 's/^file=//p' "$HERE/sources.lock" | grep '\.patch$' | head -n 1)}"
 if [[ -s "$REAL_PATCH" ]]; then
@@ -176,7 +192,7 @@ if [[ -s "$REAL_PATCH" ]]; then
   rc=0; run_patch real "$HERE/sources.lock" "$WORK/real.patch" || rc=$?
   check "ACCEPT the real cached patch against the REAL packages/sources.lock pin" 0 "$rc" "$WORK/p-real.log" 'verified sha256 .*1e66c960b982c94bda76ebd0129eaecf0a68b46e'
   rc=0; run_patch real-tampered "$HERE/sources.lock" "$WORK/real-tampered.patch" || rc=$?
-  check "REJECT the real patch with one byte changed against the REAL pin" 1 "$rc" "$WORK/p-real-tampered.log" 'SHA-256 mismatch for the host-kernel patch'
+  check "REJECT the real patch with one byte changed against the REAL pin" 1 "$rc" "$WORK/p-real-tampered.log" 'failed its checks: SHA-256 mismatch'
 else
   echo "  SKIP  the real pinned patch (not cached at $REAL_PATCH; run packages/fetch-kernel-patch.sh first)"; skip=$((skip+1))
 fi

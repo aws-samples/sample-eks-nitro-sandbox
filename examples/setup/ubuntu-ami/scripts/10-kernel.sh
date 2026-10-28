@@ -6,6 +6,9 @@
 #
 #   sudo scripts/10-kernel.sh                   # the build (on the build host)
 #   scripts/10-kernel.sh --assert-config FILE   # only run the .config assertions on FILE
+#   scripts/10-kernel.sh --check-initramfs CONFIG LISTING
+#                                               # only run the root-filesystem-at-boot check
+#                                               #   on a .config and an lsinitramfs listing
 #
 # Both inputs are public and pinned in packages/sources.lock: the kernel tarball
 # (packages/fetch-kernel.sh) and the patch (packages/fetch-kernel-patch.sh), each verified
@@ -20,9 +23,12 @@
 #     nitro_enclaves.mempool= boot argument does nothing when the driver is a module.
 #   * BTF needs pahole (dwarves) and DWARF debug info: DWARF 4 is selected, and
 #     INSTALL_MOD_STRIP=1 strips the DWARF from the installed modules while their BTF stays.
+#   * The root filesystem driver must be available at boot (check_initramfs_root_fs): the build
+#     sets EXT4_FS built in (y), which needs no module; if olddefconfig leaves it a module (m),
+#     ext4.ko must be in the initramfs.
 #   * GRUB_FORCE_PARTUUID must be emptied (Canonical's cloud image first boots WITHOUT an
-#     initramfs, and this kernel has EXT4_FS=m), and GRUB_DEFAULT is pinned by entry id,
-#     because the stock 7.0 kernel sorts ahead of 6.18.56 and would otherwise boot instead.
+#     initramfs, and this kernel is meant to boot from its own), and GRUB_DEFAULT is pinned by
+#     entry id, because the stock 7.0 kernel sorts ahead of 6.18.56 and would otherwise boot.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/common.sh"
@@ -63,6 +69,30 @@ CHECKS
   return "$bad"
 }
 
+# check_initramfs_root_fs <config-file> <initramfs-listing>: the root filesystem driver is
+# available at boot. Reads CONFIG_EXT4_FS as olddefconfig left it (`scripts/config --enable`
+# sets it to y): built in (y) needs no module; a module (m) must be in the initramfs (ext4.ko,
+# compressed or not); anything else is refused.
+check_initramfs_root_fs() {
+  local cfg="$1" list="$2" v
+  [ -s "$cfg" ] || { echo "FAIL: kernel config $cfg is missing or empty" >&2; return 1; }
+  [ -f "$list" ] || { echo "FAIL: initramfs listing $list is missing" >&2; return 1; }
+  v=$(grep -E '^CONFIG_EXT4_FS=' "$cfg" | tail -n 1 | cut -d= -f2)
+  case "$v" in
+    y) echo "ok: CONFIG_EXT4_FS=y (built in): the root filesystem needs no module in the initramfs" ;;
+    m) if grep -qE '/ext4\.ko(\.(zst|xz|gz))?$' "$list"; then
+         echo "ok: CONFIG_EXT4_FS=m and the initramfs carries $(grep -E '/ext4\.ko(\.(zst|xz|gz))?$' "$list" | head -n 1)"
+       else
+         echo "FAIL: CONFIG_EXT4_FS=m but the initramfs has no ext4.ko: the kernel cannot mount /" >&2; return 1
+       fi ;;
+    *) echo "FAIL: CONFIG_EXT4_FS is '${v:-<unset>}', must be y or m: the root filesystem" >&2; return 1 ;;
+  esac
+}
+
+if [ "${1:-}" = --check-initramfs ]; then
+  [ -n "${2:-}" ] && [ -n "${3:-}" ] || die "usage: 10-kernel.sh --check-initramfs <config-file> <initramfs-listing>"
+  if check_initramfs_root_fs "$2" "$3"; then echo "INITRAMFS OK: $3"; exit 0; else echo "INITRAMFS REFUSED: $3" >&2; exit 1; fi
+fi
 if [ "${1:-}" = --assert-config ]; then
   [ -n "${2:-}" ] || die "usage: 10-kernel.sh --assert-config <config-file>"
   if assert_kernel_config "$2"; then
@@ -71,7 +101,7 @@ if [ "${1:-}" = --assert-config ]; then
     echo "KERNEL CONFIG REFUSED: $2" >&2; exit 1
   fi
 fi
-[ $# -eq 0 ] || die "unknown argument: $1 (supported: --assert-config <config-file>)"
+[ $# -eq 0 ] || die "unknown argument: $1 (supported: --assert-config <config-file>, --check-initramfs <config-file> <initramfs-listing>)"
 
 : "${KERNEL_EXTRA_CMDLINE:=}"
 KREL="${KERNEL_VERSION}${KERNEL_LOCALVERSION}"
@@ -149,12 +179,13 @@ sudo make LOCALVERSION= install   # Ubuntu's installkernel runs initramfs-tools 
 test -s "/boot/vmlinuz-$KREL"; test -s "/boot/initrd.img-$KREL"; test -s "/lib/modules/$KREL/modules.dep"
 sudo install -m 0644 .config "/boot/config-$KREL"
 sudo lsinitramfs "/boot/initrd.img-$KREL" > "$LOG_DIR/initrd-$KREL.list"
-grep -qE '/ext4\.ko' "$LOG_DIR/initrd-$KREL.list" || die "initramfs lacks ext4.ko: cannot mount /"
+check_initramfs_root_fs .config "$LOG_DIR/initrd-$KREL.list" || die "the root filesystem driver is not available at boot (FAIL line above)"
 
 # --- 6. GRUB: boot arguments, no initrd-less first boot, and this entry pinned by id ----------
 sudo tee "$GRUBD" >/dev/null <<GRUBCFG
 # Written by scripts/10-kernel.sh. GRUB_FORCE_PARTUUID='' disables Canonical's initrd-less first
-# boot (this kernel has EXT4_FS=m and needs its initrd); every entry then boots root=UUID=.
+# boot (this kernel is installed with, and boots from, its own initrd); every entry then boots
+# root=UUID=.
 GRUB_FORCE_PARTUUID=
 GRUB_CMDLINE_LINUX="\$GRUB_CMDLINE_LINUX $NE_ARGS $KERNEL_EXTRA_CMDLINE"
 GRUBCFG

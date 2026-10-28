@@ -10,10 +10,12 @@
 #
 # Fails closed, with no override flag: the patch is downloaded (or copied) to a .part file and
 # checked there, so a failed, truncated or altered download is never left under the final name
-# for scripts/10-kernel.sh to apply. Two checks, both against sources.lock:
+# for scripts/10-kernel.sh to apply. Two checks (validate_patch), both against sources.lock, on a
+# copy already under the final name and on a new download alike:
 #   1. its SHA-256 is the pinned sha256;
 #   2. its first line is git's "From <commit> " header naming the pinned commit (ref).
-# On success it prints the verified patch path.
+# A cached copy that fails either check is removed before anything else happens. On success it
+# prints the verified patch path.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/../scripts/lib/common.sh"
@@ -32,10 +34,31 @@ dest_file="$DEST/$file"
 part="$dest_file.part"
 rm -f "$part"
 
-if [[ -s "$dest_file" ]] && echo "$expected_sha  $dest_file" | sha256sum -c --status 2>/dev/null; then
-  log "cached and verified: $file"
-  printf '%s\n' "$dest_file"
-  exit 0
+# validate_patch <file>: both checks, for a cached copy and a new download alike. Prints why on
+# failure and returns non-zero.
+validate_patch() {
+  local f="$1" actual first_line
+  actual="$(sha256sum "$f" | awk '{print $1}')" || { echo "could not hash $f"; return 1; }
+  if [[ "$actual" != "$expected_sha" ]]; then
+    printf 'SHA-256 mismatch\n  expected: %s\n  actual:   %s\nThis is not the patch packages/sources.lock pins. Do not apply it. There is no override flag.\n' "$expected_sha" "$actual"
+    return 1
+  fi
+  first_line="$(head -n 1 "$f")"
+  if [[ "$first_line" != "From $commit "* ]]; then
+    echo "the patch does not start with git's 'From $commit' header (got: '$first_line')"
+    return 1
+  fi
+}
+
+if [[ -s "$dest_file" ]]; then
+  if why=$(validate_patch "$dest_file"); then
+    log "cached and verified (SHA-256 and From $commit): $file"
+    printf '%s\n' "$dest_file"
+    exit 0
+  fi
+  # Never left under the final name for 10-kernel.sh to apply.
+  rm -f "$dest_file"
+  warn "the cached $file failed its checks and was removed: $why"
 fi
 
 if [[ -n "${KERNEL_PATCH_FILE:-}" ]]; then
@@ -50,18 +73,9 @@ fi
 # leaves a stale patch behind for 10-kernel.sh to pick up.
 rm -f "$dest_file"
 
-actual="$(sha256sum "$part" | awk '{print $1}')"
-if [[ "$actual" != "$expected_sha" ]]; then
+if ! why=$(validate_patch "$part"); then
   rm -f "$part"
-  die "SHA-256 mismatch for the host-kernel patch from ${KERNEL_PATCH_FILE:-$source_url}
-  expected: $expected_sha
-  actual:   $actual
-This is not the patch packages/sources.lock pins. Do not apply it. There is no override flag."
-fi
-first_line="$(head -n 1 "$part")"
-if [[ "$first_line" != "From $commit "* ]]; then
-  rm -f "$part"
-  die "the host-kernel patch does not start with git's 'From $commit' header (got: '$first_line')"
+  die "the host-kernel patch from ${KERNEL_PATCH_FILE:-$source_url} failed its checks: $why"
 fi
 
 mv -- "$part" "$dest_file"

@@ -36,9 +36,10 @@ ref=k8s-1.36
 source=/aws/service/canonical/ubuntu/eks/24.04/1.36/stable/current/amd64/hvm/ebs-gp3/ami-id
 sha256=n/a
 verify=Resolved via `aws ssm get-parameter --name <source>` for the build Region. The AMI is
-  signed by Canonical/AWS; there is no separate SHA-256 to pin. The build records the
-  resolved image name and AMI ID it actually used in the on-image manifest and the run
-  evidence; this lock file pins the Kubernetes version, not a Region-specific AMI ID.
+  signed by Canonical/AWS; there is no separate SHA-256 to pin. setup.sh records the
+  resolved image name, serial and AMI ID it actually used in the run's private evidence
+  (under the repository's tmp/), not on the image; this lock file pins the Kubernetes
+  version, not a Region-specific AMI ID.
 status=available
 
 # --- 2. Linux kernel source (kernel.org, public, upstream-published checksum) ---------------
@@ -90,9 +91,9 @@ verify=This is a cgit-generated snapshot of a tag, not an upstream release tarba
   SHA-256 into the on-image manifest.
 status=available
 
-# --- 5. Nitro sandbox runtime binaries + guest image (operator-supplied; preview) -----------
-# One flat zip from the GA node-build bundle. It is preview-gated: there is no public
-# download, so the operator obtains it from their AWS account team and places it at
+# --- 5. Nitro sandbox runtime binaries + guest image (operator-supplied preview archive, checksum-pinned, with no public download)
+# One flat zip from the GA node-build bundle, so the operator obtains it from their AWS
+# account team and places it at
 # RUNTIME_ARTIFACTS_DIR (default: the repository's gitignored tmp/issue10/run/runtime). This
 # sample never fetches, embeds, uploads anywhere public or commits it.
 # packages/fetch-runtime-artifacts.sh verifies the archive SHA-256 below, then fails closed
@@ -102,7 +103,7 @@ id=runtime-archive
 kind=file
 ref=nitro-sandbox-ga-20261028
 file=nitro-sandbox-binaries-2026-10-28.zip
-source=operator-supplied: obtained from your AWS account team while Nitro sandboxes are in preview; no public download
+source=operator-supplied: an operator-supplied preview archive, checksum-pinned, with no public download; obtained from your AWS account team
 sha256=6830dc8d0acb356b06753fed609ebb9f03a182e340eaa27cd9ed171f7667ba40
 size=148284530
 guest_kernel=6.18.54

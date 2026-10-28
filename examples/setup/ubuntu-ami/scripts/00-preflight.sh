@@ -36,8 +36,13 @@ grep -q '^version = 2$' /usr/local/share/eks/containerd-config.toml 2>/dev/null 
 snap list kubelet-eks >/dev/null 2>&1 || fail "kubelet-eks snap missing"
 
 # --- 2. Instance identity (informational; recorded in the run evidence by setup.sh) -------
+# The IMDSv2 session token is a credential: it reaches curl as a config read from standard input
+# (`-K -`, written by the printf builtin), never as an argument any other process could read.
 TOKEN=$(curl -sf -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' || true)
-imds() { [ -n "$TOKEN" ] && curl -sf -H "X-aws-ec2-metadata-token: $TOKEN" "http://169.254.169.254/latest/$1" || true; }
+imds() {
+  [ -n "$TOKEN" ] || return 0
+  printf 'header = "X-aws-ec2-metadata-token: %s"\n' "$TOKEN" | curl -sf -K - "http://169.254.169.254/latest/$1" || true
+}
 log "instance=$(imds meta-data/instance-id) type=$(imds meta-data/instance-type) ami=$(imds meta-data/ami-id) az=$(imds meta-data/placement/availability-zone)"
 
 # --- 3. Secure Boot: this sample's kernel build is unsigned --------------------------------

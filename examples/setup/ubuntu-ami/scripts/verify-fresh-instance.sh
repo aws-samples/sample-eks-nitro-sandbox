@@ -4,16 +4,16 @@
 # This is the "a second fresh instance passes the same host-readiness checks" acceptance
 # criterion: it must not reuse the build host's own verification run.
 #
-#   AMI_ID=<ami-id> INSTANCE_PROFILE=<name> SECURITY_GROUP_ID=<sg-id> SUBNET_ID=<subnet-id> \
+#   RUN_ID=<run-id> AMI_ID=<ami-id> SECURITY_GROUP_ID=<sg-id> SUBNET_ID=<subnet-id> \
 #     scripts/verify-fresh-instance.sh
 #
-# The checks' output is saved under $OUT_DIR/evidence (the repository's gitignored
-# tmp/issue10/run/out/evidence by default), never in the sample folder.
+# The checks' output is saved under $EVIDENCE_DIR (the run's evidence folder in the repository's
+# gitignored tmp/), never in the sample folder.
 #
-# Launches the instance, waits for SSM to report it Online, runs scripts/verify-image.py and
-# scripts/40-smoke.sh on it over SSM Run Command, then terminates it and waits for
-# termination. The instance is tagged ManagedBy=<RESOURCE_PREFIX> like every other resource
-# this sample creates, so clean.sh can find and remove it if this script is interrupted.
+# Launches the instance (IMDSv2 required, hop limit 1, enclaves on; tagged ManagedBy and RunId on
+# the instance and its volume, from a spec scripts/lib/launch_spec.py renders and checks), waits
+# for SSM to report it Online, runs scripts/verify-image.py and scripts/40-smoke.sh on it over SSM
+# Run Command, then terminates it and waits for termination, on success and on failure alike.
 #
 # BtfValidated=true contract (issue #11, Cilium on Ubuntu, reads this tag before trusting an
 # AMI): this script is the ONE place that decides whether $AMI_ID earns that tag. It is
@@ -27,32 +27,29 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/btf-tag.sh"
 
 : "${AMI_ID:?set AMI_ID to the sanitized AMI to verify}"
-: "${INSTANCE_PROFILE:?set INSTANCE_PROFILE to the build instance profile name}"
 : "${SECURITY_GROUP_ID:?set SECURITY_GROUP_ID to the build security group (no inbound rules)}"
 : "${SUBNET_ID:?set SUBNET_ID to a private build subnet}"
+require_run_id   # names (INSTANCE_PROFILE, VERIFY_NAME) and both run tags come from the run id
 
-NAME="${RESOURCE_PREFIX}-verify-$(date -u +%Y%m%dT%H%M%SZ)"
+NAME="$VERIFY_NAME"
 log "launching fresh verification instance $NAME from $AMI_ID"
-
-instance_id=$(aws ec2 run-instances \
-  --region "$AWS_REGION" \
-  --image-id "$AMI_ID" \
-  --instance-type "${VERIFY_INSTANCE_TYPE:-m8i.xlarge}" \
-  --iam-instance-profile "Name=$INSTANCE_PROFILE" \
-  --security-group-ids "$SECURITY_GROUP_ID" \
-  --subnet-id "$SUBNET_ID" \
-  --enclave-options Enabled=true \
-  --tag-specifications \
-    "ResourceType=instance,Tags=[{Key=Name,Value=$NAME},{$(ownership_tag_cli)}]" \
-    "ResourceType=volume,Tags=[{Key=Name,Value=$NAME},{$(ownership_tag_cli)}]" \
-  --query 'Instances[0].InstanceId' --output text)
+# The launch spec is rendered to a file, checked (IMDSv2 required with hop limit 1, enclaves on,
+# ManagedBy and RunId on the instance and its volume), and that same file is what EC2 receives.
+mkdir -p "$RUN_STATE_DIR"
+SPEC="$RUN_STATE_DIR/verify-instance-launch.json"
+launch_spec render-instance --name "$NAME" --image-id "$AMI_ID" --instance-type "${VERIFY_INSTANCE_TYPE:-m8i.xlarge}" \
+  --profile "$INSTANCE_PROFILE" --security-group "$SECURITY_GROUP_ID" --subnet "$SUBNET_ID" > "$SPEC"
+launch_spec check-instance "$SPEC" || die "the verification instance launch spec $SPEC failed its check"
+instance_id=$(aws ec2 run-instances --region "$AWS_REGION" --cli-input-json "file://$SPEC" --output json \
+  | json_get 'd["Instances"][0]["InstanceId"]')
+[[ -n "$instance_id" ]] || die "run-instances returned no instance id"
 log "instance: $instance_id"
 # Terminate the verification instance however this script exits (a failed check included), so
-# a failure never leaves it running; clean.sh would still find it by its ManagedBy tag.
+# a failure never leaves it running; clean.sh would still find it by its ManagedBy and RunId tags.
 terminate_verify_instance() {
   [[ -n "${instance_id:-}" ]] || return 0
   log "terminating verification instance $instance_id"
-  aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids "$instance_id" >/dev/null \
+  aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids "$instance_id" --output json >/dev/null \
     && aws ec2 wait instance-terminated --region "$AWS_REGION" --instance-ids "$instance_id" \
     || warn "could not confirm termination of $instance_id; run ./clean.sh --dry-run"
   instance_id=""
@@ -60,26 +57,28 @@ terminate_verify_instance() {
 trap terminate_verify_instance EXIT
 
 aws ec2 wait instance-status-ok --region "$AWS_REGION" --instance-ids "$instance_id"
-for _ in $(seq 1 30); do
+state=""
+for _ in $(seq 1 "${SSM_ONLINE_TRIES:-30}"); do
   state=$(aws ssm describe-instance-information --region "$AWS_REGION" \
-    --filters "Key=InstanceIds,Values=$instance_id" \
-    --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || true)
+    --filters "Key=InstanceIds,Values=$instance_id" --output json 2>/dev/null \
+    | json_get 'd["InstanceInformationList"][0]["PingStatus"] if d["InstanceInformationList"] else ""' 2>/dev/null || true)
   [[ "$state" == "Online" ]] && break
-  sleep 10
+  sleep "${SSM_POLL_SECONDS:-10}"
 done
 [[ "$state" == "Online" ]] || die "instance $instance_id never reported Online to SSM"
 
-run_remote() { # run_remote <description> <command>
+run_remote() { # run_remote <description> <command>: prints the invocation's Status line, then its output
   local desc="$1" cmd="$2" cmd_id
-  log "running: $desc"
+  log "running: $desc" >&2
   cmd_id=$(aws ssm send-command --region "$AWS_REGION" \
     --instance-ids "$instance_id" \
     --document-name AWS-RunShellScript \
     --parameters "commands=[\"$cmd\"]" \
-    --query 'Command.CommandId' --output text)
+    --output json | json_get 'd["Command"]["CommandId"]') || { echo "SendCommandFailed"; return 0; }
   aws ssm wait command-executed --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$instance_id" || true
-  aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$instance_id" \
-    --query '[Status,StandardOutputContent,StandardErrorContent]' --output text
+  aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$instance_id" --output json \
+    | json_get '[d["Status"], d.get("StandardOutputContent", ""), d.get("StandardErrorContent", "")]' \
+    || echo "GetCommandInvocationFailed"
 }
 
 # VERIFY_STATUS is the explicit, testable signal scripts/lib/btf-tag.sh keys the tagging
@@ -89,7 +88,7 @@ run_remote() { # run_remote <description> <command>
 # on unverified output.
 VERIFY_STATUS=fail
 
-EVIDENCE="${EVIDENCE_DIR:-$OUT_DIR/evidence}"
+EVIDENCE="$EVIDENCE_DIR"
 mkdir -p "$EVIDENCE"
 run_remote "verify-image.py" "sudo python3 /usr/local/share/ubuntu-ami-sample/scripts/verify-image.py" \
   > "$EVIDENCE/fresh-instance-verify-image.txt"

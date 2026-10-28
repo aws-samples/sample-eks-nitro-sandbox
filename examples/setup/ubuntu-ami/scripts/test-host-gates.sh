@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-host-gates.sh: proves two build-host gates both ways, in the REAL scripts, with no
+# test-host-gates.sh: proves the build-host gates both ways, in the REAL scripts, with no
 # build host, no cluster and no AWS:
 #   scripts/30-runtime-install.sh --check-containerd   containerd 2.1.x to 2.3.x only (the GA
 #        shim's range), read from `containerd --version` (a stub first on PATH prints the case)
@@ -25,7 +25,7 @@ check() { # check <description> <expected-rc> <actual-rc> <log> [<regex the log 
   else printf '  FAIL  %s (expected rc=%s%s, got rc=%s)\n' "$1" "$2" "${5:+ and /$5/}" "$3"; sed 's/^/        | /' "$4" | tail -n 6; fail=$((fail+1)); fi
 }
 
-echo "== 1/2 containerd gate: scripts/30-runtime-install.sh --check-containerd ================"
+echo "== 1/4 containerd gate: scripts/30-runtime-install.sh --check-containerd ================"
 STUB="$WORK/bin"; mkdir -p "$STUB"
 # Stub containerd: answers only `--version`, with the line and exit code the case sets.
 cat > "$STUB/containerd" <<'SH'
@@ -64,7 +64,7 @@ grep -q 'newer than the GA shim is tested on' "$WORK/cd-r2.4.0.log"; check "the 
 grep -q 'older than the GA shim supports' "$WORK/cd-r2.0.5.log"; check "the 2.0 REJECT verdict says why (older than supported)" 0 $? "$WORK/cd-r2.0.5.log"
 
 echo
-echo "== 2/2 kernel config assertion: scripts/10-kernel.sh --assert-config =================="
+echo "== 2/4 kernel config assertion: scripts/10-kernel.sh --assert-config =================="
 GOOD="$WORK/config-good"
 cat > "$GOOD" <<'CFG'
 CONFIG_LOCALVERSION="-nitro-ga"
@@ -116,6 +116,90 @@ rc=0; bash "$HERE/10-kernel.sh" --assert-config "$WORK/does-not-exist" > "$WORK/
 check "REJECT a missing .config file" 1 "$rc" "$WORK/kc-missing.log" 'missing or empty'
 
 echo
+echo "== 3/4 root filesystem at boot: scripts/10-kernel.sh --check-initramfs (H4) ============"
+# Listings in the shape `lsinitramfs` prints; the module directory is the kernel release's.
+printf 'usr/lib/modules/6.18.56-nitro-ga/kernel/drivers/nvme/host/nvme.ko.zst\nusr/bin/busybox\n' > "$WORK/initrd-no-ext4.list"
+{ cat "$WORK/initrd-no-ext4.list"; echo 'usr/lib/modules/6.18.56-nitro-ga/kernel/fs/ext4/ext4.ko.zst'; } > "$WORK/initrd-ext4-zst.list"
+{ cat "$WORK/initrd-no-ext4.list"; echo 'usr/lib/modules/6.18.56-nitro-ga/kernel/fs/ext4/ext4.ko'; } > "$WORK/initrd-ext4.list"
+{ cat "$WORK/initrd-no-ext4.list"; echo 'usr/lib/modules/6.18.56-nitro-ga/kernel/fs/ext4/ext4.ko.bak'; } > "$WORK/initrd-ext4-bak.list"
+variant ext4-y 's/^CONFIG_EXT4_FS=m$/CONFIG_EXT4_FS=y/'
+variant ext4-off 's/^CONFIG_EXT4_FS=m$/# CONFIG_EXT4_FS is not set/'
+ci() { bash "$HERE/10-kernel.sh" --check-initramfs "$WORK/config-$2" "$WORK/initrd-$3.list" > "$WORK/ci-$1.log" 2>&1; }
+while IFS='|' read -r name cfg list want rx why; do
+  [ -n "$name" ] || continue
+  rc=0; ci "$name" "$cfg" "$list" || rc=$?
+  check "$why" "$want" "$rc" "$WORK/ci-$name.log" "$rx"
+done <<'CASES'
+y-none|ext4-y|no-ext4|0|CONFIG_EXT4_FS=y \(built in\)|ACCEPT EXT4 built in (y) with no ext4.ko in the initramfs (the R1-A build failed here)
+y-mod|ext4-y|ext4-zst|0|INITRAMFS OK|ACCEPT EXT4 built in (y) whatever else the initramfs holds
+m-zst|good|ext4-zst|0|initramfs carries .*ext4\.ko\.zst|ACCEPT EXT4 as a module (m) with ext4.ko.zst in the initramfs
+m-plain|good|ext4|0|initramfs carries .*ext4\.ko$|ACCEPT EXT4 as a module (m) with an uncompressed ext4.ko
+m-none|good|no-ext4|1|CONFIG_EXT4_FS=m but the initramfs has no ext4\.ko|REJECT EXT4 as a module (m) with no ext4.ko in the initramfs
+m-bak|good|ext4-bak|1|has no ext4\.ko|REJECT a file that only starts with ext4.ko (ext4.ko.bak)
+off|ext4-off|ext4-zst|1|CONFIG_EXT4_FS is '<unset>', must be y or m|REJECT EXT4 not set, whatever the initramfs holds
+CASES
+rc=0; bash "$HERE/10-kernel.sh" --check-initramfs "$WORK/config-good" "$WORK/initrd-missing.list" > "$WORK/ci-nolist.log" 2>&1 || rc=$?
+check "REJECT a missing initramfs listing" 1 "$rc" "$WORK/ci-nolist.log" 'listing .* is missing'
+# The value the build really gets: run the kernel's own scripts/config, with the same --enable the
+# build uses, on a copy of a config that has EXT4_FS=m, then the check on the result.
+KTAR="${KERNEL_TARBALL:-$REPO_ROOT_REAL/tmp/issue10/run/runtime/linux-6.18.56.tar.xz}"
+if [ -s "$KTAR" ] && tar -xJf "$KTAR" -C "$WORK" linux-6.18.56/scripts/config 2>"$WORK/ktar.err"; then
+  cp "$WORK/config-good" "$WORK/config-from-build"
+  rc=0; bash "$WORK/linux-6.18.56/scripts/config" --file "$WORK/config-from-build" --enable EXT4_FS > "$WORK/kcfg.log" 2>&1 || rc=$?
+  grep -qx 'CONFIG_EXT4_FS=y' "$WORK/config-from-build"
+  check "the kernel's own scripts/config --enable EXT4_FS (as 10-kernel.sh runs it) turns m into y" 0 $? "$WORK/kcfg.log"
+  rc=0; ci from-build from-build no-ext4 || rc=$?
+  check "  ... and that config passes the boot check with no ext4.ko in the initramfs" 0 "$rc" "$WORK/ci-from-build.log" 'built in'
+  grep -qE '^\./scripts/config .*--enable EXT4_FS' "$HERE/10-kernel.sh" || grep -qE '^ +--enable OVERLAY_FS --enable EXT4_FS$' "$HERE/10-kernel.sh"
+  check "  ... and 10-kernel.sh still enables EXT4_FS that way" 0 $? "$HERE/10-kernel.sh"
+else
+  echo "  SKIP  the kernel's own scripts/config run (no cached $(basename "$KTAR"); set KERNEL_TARBALL)"
+fi
+grep -qE '^check_initramfs_root_fs \.config "\$LOG_DIR/initrd-\$KREL\.list" \|\| die' "$HERE/10-kernel.sh"
+check "the build calls the same check on its own .config and initramfs listing" 0 $? "$HERE/10-kernel.sh"
+[ "$(grep -c '/ext4' "$HERE/10-kernel.sh")" = "$(grep -c '/ext4\\\.ko(\\\.(zst|xz|gz))?\$' "$HERE/10-kernel.sh")" ]
+check "  ... and every ext4.ko match in 10-kernel.sh is the one inside that check (no unconditional grep left)" 0 $? "$HERE/10-kernel.sh"
+
+echo
+echo "== 4/4 the IMDSv2 token never on a command line: scripts/00-preflight.sh (M12) ========="
+# Stub curl: records every argv (one line per call) and, for `-K -`, the config it reads on
+# standard input. PUT .../api/token prints a sentinel token; a metadata GET answers only when its
+# stdin config carries that token as the header (as IMDSv2 would), else fails like a 401.
+IM="$WORK/imds"; mkdir -p "$IM/bin" "$IM/rt"
+cat > "$IM/bin/curl" <<'SH'
+#!/bin/bash
+printf '%s\n' "$*" >> "$IMDS_ARGV_LOG"
+url=""; for a in "$@"; do case "$a" in http://*) url="$a" ;; esac; done
+case "$url" in
+  */latest/api/token) printf '%s' "$IMDS_SENTINEL" ;;
+  */latest/meta-data/*)
+    cfg=""; for a in "$@"; do [ "$a" = "-" ] && cfg=$(cat); done
+    printf '%s\n' "$cfg" >> "$IMDS_STDIN_LOG"
+    printf '%s\n' "$cfg" | grep -qxF "header = \"X-aws-ec2-metadata-token: $IMDS_SENTINEL\"" || { echo "curl: (22) 401" >&2; exit 22; }
+    case "$url" in */instance-id) printf 'i-0example' ;; */instance-type) printf 'm8i.4xlarge' ;; *) printf 'example' ;; esac ;;
+  *) echo "stub curl: unexpected $*" >&2; exit 97 ;;
+esac
+SH
+chmod +x "$IM/bin/curl"
+SENT="imds-token-sentinel-$$-Zq7"
+rc=0; env PATH="$IM/bin:$PATH" IMDS_SENTINEL="$SENT" IMDS_ARGV_LOG="$IM/argv.log" IMDS_STDIN_LOG="$IM/stdin.log" \
+  RUNTIME_ARTIFACTS_DIR="$IM/rt" bash "$HERE/00-preflight.sh" > "$IM/preflight.log" 2>&1 || rc=$?
+grep -q 'instance=i-0example type=m8i.4xlarge' "$IM/preflight.log"
+check "the real 00-preflight.sh reads instance identity with the token (it then stops, as it should off a build host)" 0 $? "$IM/preflight.log"
+# leak <argv-log>: 0 when the sentinel token is absent from every recorded argv
+leak() { ! grep -qF -- "$SENT" "$1"; }
+ncalls=$(grep -c . "$IM/argv.log")
+[ "$(grep -c '/latest/meta-data/' "$IM/argv.log")" -ge 4 ] && leak "$IM/argv.log"
+check "ACCEPT: none of its $ncalls curl argvs (the token PUT and 4 metadata reads) carries the token" 0 $? "$IM/argv.log"
+[ "$(grep -cxF "header = \"X-aws-ec2-metadata-token: $SENT\"" "$IM/stdin.log")" -ge 4 ]
+check "  ... it reached curl on standard input instead, on every metadata call" 0 $? "$IM/stdin.log"
+: > "$IM/argv-leak.log"
+env PATH="$IM/bin:$PATH" IMDS_SENTINEL="$SENT" IMDS_ARGV_LOG="$IM/argv-leak.log" IMDS_STDIN_LOG="$IM/stdin-leak.log" \
+  curl -sf -H "X-aws-ec2-metadata-token: $SENT" http://169.254.169.254/latest/meta-data/instance-id > /dev/null 2>&1
+leak "$IM/argv-leak.log"
+check "REJECT: the same detector catches the R1-A form (the token in a -H argument)" 1 $? "$IM/argv-leak.log"
+
+echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]] || exit 1
-echo "containerd gate and kernel config assertion proven both ways in the real scripts."
+echo "containerd gate, kernel config assertion, root filesystem boot check and IMDS token handling proven both ways in the real scripts."

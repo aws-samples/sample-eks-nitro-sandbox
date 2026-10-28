@@ -16,7 +16,7 @@
 # target to pin here; see sources.lock block 6).
 #
 # What this never bundles: the Nitro sandbox runtime archive (sources.lock block 5,
-# status=operator-supplied). It is preview-gated, with no public download: `build` skips every
+# status=operator-supplied), an operator-supplied preview archive, checksum-pinned, with no public download: `build` skips every
 # input whose status is not `available`, and the emitted manifest lists it as an external slot
 # the operator fills from their own copy. This command never fetches, embeds or commits it.
 #
