@@ -116,6 +116,29 @@ def test_serving_pod_holds_readiness_port_while_codex_runs(monkeypatch, tmp_path
             pass
 
 
+def test_serving_pod_closes_readiness_port_when_executor_raises(monkeypatch, tmp_path):
+    port = _free_port()
+    _claimed_pod_env(monkeypatch, port)
+    executor_error = RuntimeError("executor failed")
+
+    def _raise_executor(_dispatch):
+        raise executor_error
+
+    monkeypatch.setattr(serve, "_run_executor", _raise_executor)
+    monkeypatch.setattr(serve.guard, "assert_safe", lambda *_a, **_k: None)
+    monkeypatch.setattr(serve.config, "WORKDIR", str(tmp_path))
+
+    with pytest.raises(RuntimeError) as exc_info:
+        serve.main()
+    assert exc_info.value is executor_error
+
+    # The exception path must finish closing the readiness listener before the
+    # original executor exception is re-raised to the caller.
+    with pytest.raises(OSError):
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            pass
+
+
 def test_readiness_listener_accepts_and_a_stopped_accept_loop_tears_it_down():
     """The shared readiness primitives both the warm and serving paths use:
 

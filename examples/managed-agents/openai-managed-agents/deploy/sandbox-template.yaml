@@ -1,9 +1,9 @@
 # The sandbox that runs the agent's tool calls, and a pool that keeps two booted.
 #
 # Each session's codex exec-server runs in a pod stamped from this template, one
-# session per pod. runtimeClassName gives each pod its own VM in a Nitro
-# sandbox, so the Bash and apply-patch tools the model drives run on a kernel
-# no other pod shares.
+# session per pod. runtimeClassName gives each pod its own Nitro sandbox, a
+# lightweight VM, so the Bash and apply-patch tools the model drives run on a
+# kernel no other pod shares.
 #
 # No OpenAI or Codex key is set in this template. A warm pod booted from it holds
 # none. When the launcher claims a sandbox for a session it sets the session and
