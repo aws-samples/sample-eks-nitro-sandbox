@@ -1,7 +1,8 @@
-# REJECT control for test.sh's AppArmor step: this pod names an AppArmor profile that does
-# not exist on the node. It must be refused (Pending with an AppArmor-related event/reason),
-# proving the accept path in pod-isolated-sandbox.yaml is a real, scoped selection and not a
-# no-op. test.sh deletes this pod after reading its status; it is never left running.
+# REJECT control for test.sh's AppArmor step: an ordinary pod on the sample's node that names
+# an AppArmor profile the node never loaded. It must be refused for the AppArmor reason on that
+# node, proving the accept path in pod-isolated-sandbox.yaml is a real, scoped selection and not
+# a no-op. test.sh renders @NODEGROUP@ and the namespace, and deletes this pod by name after
+# reading its status; it is never left running.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -9,9 +10,11 @@ metadata:
   namespace: ubuntu-ami-sample
   labels:
     app: apparmor-reject-control
-  annotations:
-    container.apparmor.security.beta.kubernetes.io/main: localhost/profile-that-does-not-exist
 spec:
+  securityContext:
+    appArmorProfile:
+      type: Localhost
+      localhostProfile: profile-that-does-not-exist
   nodeSelector:
     eks.amazonaws.com/nodegroup: "@NODEGROUP@"
   tolerations:

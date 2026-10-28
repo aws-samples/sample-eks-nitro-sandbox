@@ -1,7 +1,7 @@
 # AppArmor profile for the ubuntu-ami sample's validation sandbox pod.
 #
-# deploy/pod-isolated-sandbox.yaml selects this profile by name
-# (container.apparmor.security.beta.kubernetes.io/main: localhost/ubuntu-ami-sample-profile).
+# deploy/pod-isolated-sandbox.yaml selects this profile by name (securityContext.appArmorProfile
+# type Localhost, localhostProfile ubuntu-ami-sample-profile).
 # A pod can only request a profile the node has already loaded, so this file is installed
 # into /etc/apparmor.d/ and loaded on the baked AMI by scripts/35-apparmor.sh; without that
 # step the kubelet would refuse the pod and the "accept" control would be indistinguishable

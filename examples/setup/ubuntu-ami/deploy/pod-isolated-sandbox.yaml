@@ -1,9 +1,10 @@
 # The validation sandbox pod. Egress is restricted by the COMPLETE NetworkPolicy in
 # network-policy.yaml, shown alongside this pod on the README page (the acceptance
 # criterion requires either no network at all or a shown, complete policy; this sample
-# demonstrates the policy path so the egress rules are visible). The AppArmor annotation
-# scopes a profile to this pod only; it does not change the host's AppArmor default.
-# setup.sh renders @NODEGROUP@ from NODEGROUP_NAME.
+# demonstrates the policy path so the egress rules are visible). The pod's
+# securityContext.appArmorProfile scopes the sample's Localhost profile (loaded on the node by
+# scripts/35-apparmor.sh) to this pod only; it does not change the host's AppArmor default.
+# setup.sh renders @NODEGROUP@ from NODEGROUP_NAME and the namespace from NAMESPACE.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -11,10 +12,12 @@ metadata:
   namespace: ubuntu-ami-sample
   labels:
     app: isolated-sandbox-pod
-  annotations:
-    container.apparmor.security.beta.kubernetes.io/main: localhost/ubuntu-ami-sample-profile
 spec:
   runtimeClassName: isolated-sandbox
+  securityContext:
+    appArmorProfile:
+      type: Localhost
+      localhostProfile: ubuntu-ami-sample-profile
   nodeSelector:
     eks.amazonaws.com/nodegroup: "@NODEGROUP@"
   tolerations:

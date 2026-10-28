@@ -12,6 +12,11 @@
 # pass=0 on failure but keep going) so it can still run its cleanup and print a result after
 # a failed API call, the same continue-on-error discipline test.sh and clean.sh use. -u is
 # on to catch an unset variable rather than let it silently expand empty.
+#
+# GA bundle note: the guest boot image is now latest.eif (the shim config's kernel_path), not a
+# bare guest kernel. This hand boot passes that same path to /boot-source, as the shim does; it
+# has not yet run against the GA archive, so the first live run must confirm Firecracker takes
+# the EIF there and record the result, before this check gates BtfValidated=true.
 [ "$(id -u)" = 0 ] || exec sudo -E bash "$0" "$@"
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,7 +24,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/common.sh"
 LOG="${LOG_DIR:-$HOME/logs}"; mkdir -p "$LOG"
 
-K="$NITRO_SANDBOX_DIR_INSTALL/vmlinuz"; R="$NITRO_SANDBOX_DIR_INSTALL/rootfs.ext4"; FC=/usr/local/bin/firecracker
+# The same paths the shim config (/etc/containerd/nitro-sandbox.toml) names: the GA guest boot
+# image (latest.eif, guest kernel inside) and the rootfs.ext4 symlink to latest-disk.img.
+K="$NITRO_SANDBOX_IMAGE_DIR/latest.eif"; R="$NITRO_SANDBOX_IMAGE_DIR/rootfs.ext4"; FC=/usr/bin/firecracker
 ls -l /dev/nitro_enclaves "$K" "$R" "$FC" || { echo "SMOKE PRECONDITION FAIL"; exit 2; }
 
 BOOT_ARGS="console=ttyS0 reboot=k panic=1 root=/dev/vda ro init=/sbin/nitro-sandbox-agent setup-ephemeral-storage --exec-init overlay_root=vdb rootwait net.ifnames=0 quiet"
@@ -74,5 +81,5 @@ kill "$pid" 2>/dev/null; sleep 2; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev
 ip link del "$TAP" 2>/dev/null; rm -f "$SOCK" "$UDS" "$OVL"
 
 echo "smoke $(date -u +%FT%TZ): $([ "$pass" = 1 ] && [ "$up" = 1 ] && echo PASS || echo FAIL); debug_mode=${SHIM_DEBUG}" \
-  | sudo tee -a /etc/nip-custom-ami-manifest
+  | sudo tee -a "$IMAGE_MANIFEST"
 [ "$pass" = 1 ] && [ "$up" = 1 ]

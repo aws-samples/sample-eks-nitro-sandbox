@@ -15,7 +15,9 @@
 #
 # Two roles:
 #   * build-host role (+ instance profile): AmazonSSMManagedInstanceCore (SSM access, no
-#     inbound rule) plus the scoped inline policy in deploy/iam-build-host-policy.json.
+#     inbound rule) and nothing else at creation. Its only other permission is the per-run
+#     staging read in deploy/iam-build-host-policy.json, which setup.sh puts on the role for
+#     the few minutes the build host downloads its staged files and then deletes.
 #   * node role: the standard EKS worker managed policies, assumed by the managed node
 #     group's instances. This is NOT a broad admin role; it is the documented EKS worker set.
 #
@@ -28,9 +30,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DEPLOY_DIR="$HERE/../deploy"
 TRUST="$DEPLOY_DIR/iam-node-trust-policy.json"
-BUILD_POLICY="$DEPLOY_DIR/iam-build-host-policy.json"
 [ -f "$TRUST" ] || die "missing trust policy $TRUST"
-[ -f "$BUILD_POLICY" ] || die "missing build-host policy $BUILD_POLICY"
 
 BUILD_ROLE="${RESOURCE_PREFIX}-build-host"
 NODE_ROLE="${RESOURCE_PREFIX}-node"
@@ -67,10 +67,13 @@ attach_managed() { # attach_managed <role> <policy-arn>
 # --- build-host role -----------------------------------------------------------------------
 ensure_role "$BUILD_ROLE"
 attach_managed "$BUILD_ROLE" "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-log "attaching scoped inline policy to $BUILD_ROLE from deploy/iam-build-host-policy.json"
-aws iam put-role-policy --role-name "$BUILD_ROLE" \
-  --policy-name "${RESOURCE_PREFIX}-build-host-inline" \
-  --policy-document "$(strip_comment "$BUILD_POLICY")" >/dev/null
+# An earlier version of this sample attached a standing inline policy (EC2 describe and an SSM
+# parameter read) the build host never used. Remove it from a reused role, so the role carries
+# only what this version grants.
+if aws iam get-role-policy --role-name "$BUILD_ROLE" --policy-name "${RESOURCE_PREFIX}-build-host-inline" >/dev/null 2>&1; then
+  log "removing the unused legacy inline policy ${RESOURCE_PREFIX}-build-host-inline from $BUILD_ROLE"
+  aws iam delete-role-policy --role-name "$BUILD_ROLE" --policy-name "${RESOURCE_PREFIX}-build-host-inline"
+fi
 
 if aws iam get-instance-profile --instance-profile-name "$INSTANCE_PROFILE" >/dev/null 2>&1; then
   log "instance profile $INSTANCE_PROFILE already exists; reusing"

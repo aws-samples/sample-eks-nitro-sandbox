@@ -1,25 +1,33 @@
 # Pinned, checksum-verified inputs for the ubuntu-ami sample.
 #
-# One line per input. The fetch/build helpers under packages/ and scripts/ read this file
+# One block per input. The fetch/build helpers under packages/ and scripts/ read this file
 # and fail closed: a value that does not match aborts the step, with no override flag. See
 # packages/SOURCES.txt for the full design record of where each input comes from and why.
 #
 # Format, one input per block:
 #   id=<stable identifier>
-#   kind=<ssm-ami|file>
+#   kind=<ssm-ami|file|runtime-payload>
 #   ref=<version/ref>
-#   source=<public URL or SSM parameter path; never an internal/private location>
-#   sha256=<hex digest, file inputs only; "n/a" for an AMI resolved by signed SSM parameter>
+#   source=<public URL, SSM parameter path, or how an operator-supplied input is obtained;
+#          never an internal/private location>
+#   sha256=<hex digest; required for kind=file and kind=runtime-payload; "n/a" for an AMI
+#          resolved by signed SSM parameter or a capability-asserted input>
 #   verify=<short note on how this input is obtained and verified>
-#   status=<available|pending-public-release>
+#   status=<available|operator-supplied>
+# Extra keys some blocks carry:
+#   file=      the file name the input is fetched or supplied under
+#   subject=   (kernel patch) the commit subject the applied patch must carry
+#   archive=   (runtime-payload) the id of the archive the payload ships in
+#   install=   (runtime-payload) "<absolute path> <octal mode>" on the node, or "none"
+#   guest_kernel= (runtime archive) the guest kernel release inside latest.eif
 #
 # A line is read as `key=value`; a block ends at a blank line. Unknown keys are ignored by
 # the fetch helpers (forward-compatible), but `id`, `kind`, `ref`, `source` and `status` are
-# required for every block, and `sha256` is required whenever kind=file.
+# required for every block.
 #
-# To move a pin: update this file and the corresponding entry in packages/SOURCES.txt together,
-# re-fetch, and let the build re-verify against the new value. Do not edit one without the
-# other.
+# To move a pin: update this file and the corresponding entry in packages/SOURCES.txt and the
+# README pin table together, re-fetch, and let the build re-verify against the new value. Do
+# not edit one without the others.
 
 # --- 1. Ubuntu 24.04 EKS-optimized base AMI (Canonical, public SSM parameter) ---------------
 id=base-ami-ubuntu-2404
@@ -36,67 +44,168 @@ status=available
 # --- 2. Linux kernel source (kernel.org, public, upstream-published checksum) ---------------
 id=linux-kernel-source
 kind=file
-ref=6.18.39
-source=https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.39.tar.xz
-sha256=a7a7e3d2ae9d95e74197223a8d4eb5f6be7aac21b6e6de27e9685d001c1f8cb0
-verify=Verified against kernel.org's own https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc
-  for this release. The fetch helper re-downloads and re-verifies on every run; a mismatch
-  aborts before the tarball is unpacked.
+ref=6.18.56
+file=linux-6.18.56.tar.xz
+source=https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.56.tar.xz
+sha256=4633bbda2ab95eaf2a7af4041236451d6759c72e6946265531af4b3aacefbf89
+verify=The linux-6.18.56.tar.xz line of kernel.org's
+  https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc, whose signature verifies with
+  the Kernel.org checksum autosigner key (fingerprint B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1,
+  from kernel.org's pgpkeys repository). The tarball also verifies against its stable-release
+  developer signature linux-6.18.56.tar.sign (Greg Kroah-Hartman, fingerprint
+  647F28654894E3BD457199BE38DBBDC86092693E). The fetch helper re-downloads and re-verifies on
+  every run; a mismatch aborts before the tarball is unpacked.
 status=available
 
-# --- 3. erofs-utils source (kernel.org cgit snapshot of the tagged release) -----------------
+# --- 3. Host-kernel patch: AWS's public Nitro Sandbox kernel commit (GitHub) ----------------
+# ONE squashed public commit on Amazon Linux's kernel tree, fetched as a git-format patch and
+# applied to the kernel.org 6.18.56 tree above with `git am` in a throwaway repository.
+id=host-kernel-patch
+kind=file
+ref=1e66c960b982c94bda76ebd0129eaecf0a68b46e
+file=1e66c960b982c94bda76ebd0129eaecf0a68b46e.patch
+source=https://github.com/amazonlinux/linux/commit/1e66c960b982c94bda76ebd0129eaecf0a68b46e.patch
+sha256=051ede9dff52d24fb7ff47dd783a9eb2f6b18c742dbf151926cb48304d72924b
+subject=nitro_enclaves: Amazon Nitro Enclaves extension (port onto 6.18.48)
+verify=GitHub serves any commit as a git-format patch at <commit URL>.patch. The SHA-256 is the
+  value the GA node-build bundle (nitro-sandbox-ga-20261028) pins, re-confirmed by this sample
+  on a fresh download. packages/fetch-kernel-patch.sh checks the SHA-256 and that the patch's
+  first line names this commit before the patch takes its final name; scripts/10-kernel.sh
+  checks it applies as exactly one commit with the subject above.
+status=available
+
+# --- 4. erofs-utils source (kernel.org cgit snapshot of the tagged release) -----------------
 id=erofs-utils-source
 kind=file
 ref=1.8.10
+file=erofs-utils-1.8.10.tar.gz
 source=https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git/snapshot/erofs-utils-1.8.10.tar.gz
 sha256=05eb4edebe11decce6ecb34e98d2f80c8cd283c2f2967d8ba7efd58418570514
 verify=This is a cgit-generated snapshot of a tag, not an upstream release tarball with its
   own published checksum, so the SHA-256 is pinned BY THIS SAMPLE (confirmed identical
-  across two independent fetches at the time of writing), not quoted from upstream. A
+  across independent fetches, most recently on 2026-10-28), not quoted from upstream. A
   re-fetch that disagrees means cgit's archive generation changed; re-confirm by hand and
-  update this file and packages/SOURCES.txt together before trusting a new value. Because
-  mkfs.erofs has no stable --version output, the build also records the installed binary's
-  own SHA-256 into the on-image manifest.
+  update this file and packages/SOURCES.txt together before trusting a new value. The build
+  checks `mkfs.erofs --version` reports this version and records the installed binary's own
+  SHA-256 into the on-image manifest.
 status=available
 
-# --- 4. EKS Pod Isolation runtime binaries + guest image (released artifact; pre-GA) --------
-# No public AWS release channel exists yet for this artifact (see packages/SOURCES.txt, "The
-# release artifacts, and the prerequisite the sample stops on"). setup.sh's preflight checks
-# for it at RUNTIME_ARTIFACT_PATH (see config.env.example) and STOPS with this prerequisite
-# and the public download location (cited by page title until the page exists) if absent.
-# It never substitutes an internal source tree or a private URL. Fill in ref/source/sha256
-# here once a public release exists, and re-confirm every pin above against that release.
-id=eks-pod-isolation-runtime
+# --- 5. Nitro sandbox runtime binaries + guest image (operator-supplied; preview) -----------
+# One flat zip from the GA node-build bundle. It is preview-gated: there is no public
+# download, so the operator obtains it from their AWS account team and places it at
+# RUNTIME_ARTIFACTS_DIR (default: the repository's gitignored tmp/issue10/run/runtime). This
+# sample never fetches, embeds, uploads anywhere public or commits it.
+# packages/fetch-runtime-artifacts.sh verifies the archive SHA-256 below, then fails closed
+# unless the SHA256SUMS inside lists every unpacked file exactly once, every hash matches, and
+# every payload matches its runtime-payload pin below.
+id=runtime-archive
 kind=file
-ref=TODO-pin-exact-public-release-version
-source=TODO-public-AWS-release-channel-not-yet-published; see packages/SOURCES.txt
-sha256=TODO-per-artifact-sha256-from-the-release
-verify=TODO: verify against the release's own SHA-256 files for the large binary artifacts
-  (Firecracker fork, jailer, guest EIF, guest disk); for artifacts the release ships without
-  a checksum (shim, agent, policy generator, key provider), record the SHA-256 observed on
-  the fresh run into this file and the on-image manifest, so the set stays auditable.
-status=pending-public-release
+ref=nitro-sandbox-ga-20261028
+file=nitro-sandbox-binaries-2026-10-28.zip
+source=operator-supplied: obtained from your AWS account team while Nitro sandboxes are in preview; no public download
+sha256=6830dc8d0acb356b06753fed609ebb9f03a182e340eaa27cd9ed171f7667ba40
+size=148284530
+guest_kernel=6.18.54
+verify=Archive SHA-256 as shipped in the GA node-build bundle nitro-sandbox-ga-20261028,
+  re-computed by this sample on the operator's copy. Its own SHA256SUMS covers all eight
+  payloads below; each payload is also pinned here, so a re-packed archive whose SHA256SUMS
+  was edited to match is still refused.
+status=operator-supplied
 
-# --- 5. Host-kernel patch series (released artifact; pre-GA) --------------------------------
-# Applied to the pinned kernel.org 6.18.39 tree above to add the sandbox host-kernel support
-# (enclave driver, CMA pool, virtio/vsock). Same prerequisite-stop behavior as block 4: no
-# public release channel yet, so setup.sh's preflight stops cleanly rather than falling back
-# to an internal source tree.
-id=host-kernel-patch-series
-kind=file
-ref=TODO-pin-exact-public-release-version
-source=TODO-public-AWS-release-channel-not-yet-published; see packages/SOURCES.txt
-sha256=TODO-sha256-of-the-patch-series-archive
-verify=TODO: verify against the release's published SHA-256 once a public channel exists;
-  record the applied patch count in the on-image manifest.
-status=pending-public-release
+id=runtime-payload-containerd-shim-nitro-sandbox-v2
+kind=runtime-payload
+archive=runtime-archive
+ref=nitro-sandbox-ga-20261028
+file=containerd-shim-nitro-sandbox-v2
+source=member of runtime-archive
+sha256=991a3786577d19ec3ee5005c90530cc1b2464c052af0218b1064f54c3c2aa7c9
+install=/usr/sbin/containerd-shim-nitro-sandbox-v2 0755
+verify=SHA256SUMS line in runtime-archive; the shim also serves the CRI proxy (cri-proxy subcommand). It reports its version as dev.
+status=operator-supplied
+
+id=runtime-payload-eks-nitro-sandbox-genpolicy
+kind=runtime-payload
+archive=runtime-archive
+ref=nitro-sandbox-ga-20261028
+file=eks-nitro-sandbox-genpolicy
+source=member of runtime-archive
+sha256=8bb076d5f4c631f9a0a91c58f249876f49d1c4f794b7241fbbbb2398da3fbad2
+install=/usr/local/bin/eks-nitro-sandbox-genpolicy 0755
+verify=SHA256SUMS line in runtime-archive.
+status=operator-supplied
+
+id=runtime-payload-firecracker
+kind=runtime-payload
+archive=runtime-archive
+ref=nitro-sandbox-ga-20261028
+file=firecracker
+source=member of runtime-archive
+sha256=13a369b76af5f87039944f52dd6c4ef292cfdfc818a9b6e87d174b86920f5a31
+install=/usr/bin/firecracker 0755
+verify=SHA256SUMS line in runtime-archive.
+status=operator-supplied
+
+id=runtime-payload-jailer
+kind=runtime-payload
+archive=runtime-archive
+ref=nitro-sandbox-ga-20261028
+file=jailer
+source=member of runtime-archive
+sha256=b7067964a02a0f6a35244a54a763f8bc420dac8c5ff4d471b2102845357293a3
+install=/usr/bin/jailer 0755
+verify=SHA256SUMS line in runtime-archive. It unpacks as mode 0644; the install step sets 0755.
+status=operator-supplied
+
+id=runtime-payload-latest-disk-img
+kind=runtime-payload
+archive=runtime-archive
+ref=nitro-sandbox-ga-20261028
+file=latest-disk.img
+source=member of runtime-archive
+sha256=932a251aab211785c10620ab17ac314f5c09da3c2b61f7917acdf2208b6c3eb7
+install=/var/lib/nitro-sandbox-images/latest-disk.img 0644
+verify=SHA256SUMS line in runtime-archive. The guest root disk (2 GiB); rootfs.ext4 is a symlink to it.
+status=operator-supplied
+
+id=runtime-payload-latest-eif
+kind=runtime-payload
+archive=runtime-archive
+ref=nitro-sandbox-ga-20261028
+file=latest.eif
+source=member of runtime-archive
+sha256=31f21cf805e193710295a1dbee2e98847c4d8a0cc040597cb6abc39d3aad5105
+install=/var/lib/nitro-sandbox-images/latest.eif 0644
+verify=SHA256SUMS line in runtime-archive. The guest boot image; it carries guest kernel 6.18.54.
+status=operator-supplied
+
+id=runtime-payload-nitro-sandbox-agent
+kind=runtime-payload
+archive=runtime-archive
+ref=nitro-sandbox-ga-20261028
+file=nitro-sandbox-agent
+source=member of runtime-archive
+sha256=df85d0ea5b5021004110b2322283e2bd35b01c668ffd838573bc8f28bc8b6b8c
+install=none
+verify=SHA256SUMS line in runtime-archive. Not installed on the host: the copy inside latest-disk.img runs in the guest.
+status=operator-supplied
+
+id=runtime-payload-nitro-sandbox-keyprovider
+kind=runtime-payload
+archive=runtime-archive
+ref=nitro-sandbox-ga-20261028
+file=nitro-sandbox-keyprovider
+source=member of runtime-archive
+sha256=57407a2f47e56ee46736bcdce73d48a6a10af25c613dfa08370cd0c081814c3f
+install=/usr/local/bin/nitro-sandbox-keyprovider 0755
+verify=SHA256SUMS line in runtime-archive.
+status=operator-supplied
 
 # --- 6. Distro packages (Ubuntu apt repositories; capability-asserted, not SHA-256 pinned) --
 # Kernel-build toolchain: build-essential flex bison bc gawk libelf-dev libdw-dev libssl-dev
 #   dwarves git curl xz-utils
-# Host runtime prerequisites: iproute2 util-linux unzip
-# containerd: already present on the Canonical EKS AMI; checked (2.1.x or 2.2.x required),
-#   never installed or upgraded/downgraded by this sample.
+# erofs-utils build: libzstd-dev liblz4-dev uuid-dev autoconf automake libtool pkg-config
+# containerd: already present on the Canonical EKS AMI; checked (2.1.x, 2.2.x or 2.3.x
+#   required, 2.4 and later refused), never installed or upgraded/downgraded by this sample.
 id=distro-packages
 kind=file
 ref=capability-asserted-not-version-pinned
@@ -105,7 +214,7 @@ sha256=n/a
 verify=apt verifies its own packages against Ubuntu's signed repository metadata; this
   sample does not re-pin a SHA-256 per apt package (that would be a moving target across a
   reader's apt snapshot). It asserts the capabilities that matter instead (zstd support in
-  erofs-utils, tc present, pahole/dwarves new enough for module BTF, containerd 2.1.x/2.2.x)
-  with an accept control and a reject control for each, and records resolved versions in the
-  on-image manifest and run evidence.
+  erofs-utils, pahole/dwarves new enough for module BTF, gawk, libdw for gendwarfksyms,
+  containerd 2.1.x to 2.3.x) and records resolved versions in the on-image manifest and run
+  evidence.
 status=available

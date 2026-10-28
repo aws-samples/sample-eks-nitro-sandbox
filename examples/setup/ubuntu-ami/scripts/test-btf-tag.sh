@@ -94,6 +94,9 @@ export PATH="$STUB_BIN:$PATH"
 # --- Load the real functions under test, with the env btf-tag.sh/common.sh expect ----------
 export SAMPLE_DIR="$WORK/sample"
 mkdir -p "$SAMPLE_DIR"
+# A private run base under this test's own temp dir: this SAMPLE_DIR is not a repository
+# checkout, so common.sh would otherwise default to the build host's /var/lib path.
+export ISSUE10_RUN_DIR="$WORK/run"
 export AWS_REGION=us-west-2
 export RESOURCE_PREFIX=ubuntu-ami-sample
 export TAGS_OWNER_KEY=ManagedBy
@@ -106,7 +109,7 @@ export TAGS_OWNER_VALUE="$RESOURCE_PREFIX"
 echo "== 1/3 ACCEPT: successful verification on an OWNED AMI -> tagged BtfValidated=true =="
 : > "$STUB_CREATE_TAGS_LOG"
 rc=0
-btf_tag_ami_if_verified "$STUB_AMI_ID" pass "Key=KernelVersion,Value=6.18.39" >"$WORK/out1.log" 2>&1 || rc=$?
+btf_tag_ami_if_verified "$STUB_AMI_ID" pass "Key=KernelVersion,Value=6.18.56" >"$WORK/out1.log" 2>&1 || rc=$?
 cat "$WORK/out1.log"
 assert_rc "pass verification on the owned AMI returns 0 (tagged)" 0 "$rc"
 assert_true "create-tags was called exactly once" \
@@ -116,7 +119,7 @@ assert_true "the create-tags call set BtfValidated=true" \
 assert_true "the create-tags call preserved ManagedBy=${TAGS_OWNER_VALUE}" \
   $(grep -q "Key=${TAGS_OWNER_KEY},Value=${TAGS_OWNER_VALUE}" "$STUB_CREATE_TAGS_LOG"; echo $?)
 assert_true "the create-tags call carried the extra immutable metadata tag" \
-  $(grep -q 'Key=KernelVersion,Value=6.18.39' "$STUB_CREATE_TAGS_LOG"; echo $?)
+  $(grep -q 'Key=KernelVersion,Value=6.18.56' "$STUB_CREATE_TAGS_LOG"; echo $?)
 
 echo
 echo "== 2/3 REJECT: FAILED verification on the SAME owned AMI -> NEVER tagged ============"

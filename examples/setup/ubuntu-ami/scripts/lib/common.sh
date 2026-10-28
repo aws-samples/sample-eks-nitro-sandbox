@@ -5,10 +5,19 @@
 # they can report why they failed instead of stopping at the first non-zero command.
 
 SAMPLE_DIR="${SAMPLE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-# The repository root is four levels up from this sample folder
+# The repository root is three levels up from this sample folder
 # (examples/setup/ubuntu-ami). Local runtime artifacts, logs and output belong under the
 # repository's gitignored tmp/, never inside the sample folder (see AGENTS.md).
 REPO_ROOT="${REPO_ROOT:-$(cd "$SAMPLE_DIR/../../.." && pwd)}"
+# IN_CHECKOUT=1 when this copy of the sample sits in a repository checkout
+# (<repo>/examples/<section>/<sample>, with AGENTS.md at the root). On the build host and on
+# a node the sample is unpacked under /usr/local/share/ubuntu-ami-sample instead, and its
+# local state defaults under /var/lib/ubuntu-ami-sample (setup.sh also passes it explicitly).
+if [ -f "$REPO_ROOT/AGENTS.md" ] && [ "$(basename "$(cd "$SAMPLE_DIR/../.." && pwd)")" = examples ]; then
+  IN_CHECKOUT=1
+else
+  IN_CHECKOUT=0
+fi
 
 # Logging and failure helpers, defined before the path-containment guard below so it can
 # `die` with a clear message. Defined once; the rest of the file uses them too.
@@ -21,7 +30,11 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # repository-root base, tmp/issue10/run, which the root .gitignore already ignores. Nothing
 # defaults inside the sample folder: see AGENTS.md ("Keep local files in the repository's
 # tmp/ ... Never put them in a sample folder or its .gitignore").
-: "${ISSUE10_RUN_DIR:=$REPO_ROOT/tmp/issue10/run}"
+if [ "$IN_CHECKOUT" = 1 ]; then
+  : "${ISSUE10_RUN_DIR:=$REPO_ROOT/tmp/issue10/run}"
+else
+  : "${ISSUE10_RUN_DIR:=/var/lib/ubuntu-ami-sample/run}"
+fi
 : "${LOG_DIR:=$ISSUE10_RUN_DIR/logs}"
 : "${OUT_DIR:=$ISSUE10_RUN_DIR/out}"
 
@@ -39,7 +52,10 @@ unset __common_cfg
 : "${TAGS_OWNER_KEY:=ManagedBy}"
 : "${TAGS_OWNER_VALUE:=$RESOURCE_PREFIX}"
 : "${NAMESPACE:=ubuntu-ami-sample}"
-: "${KERNEL_VERSION:=6.18.39}"
+: "${KERNEL_VERSION:=6.18.56}"
+# The host kernel's local version suffix: the built kernel reports uname -r
+# ${KERNEL_VERSION}${KERNEL_LOCALVERSION} (6.18.56-nitro-ga), as the GA bundle's build does.
+: "${KERNEL_LOCALVERSION:=-nitro-ga}"
 : "${EROFS_UTILS_VERSION:=1.8.10}"
 : "${RUNTIME_ARTIFACTS_DIR:=$ISSUE10_RUN_DIR/runtime}"
 
@@ -50,9 +66,14 @@ unset __common_cfg
 # any directory is created. The check resolves both the override and the examples/ root with a
 # physical `cd`/pwd (realpath equivalent), then prefix-matches, so a relative or symlinked
 # override cannot slip inside. mkdir -p runs after the guard so a refused path is never created.
-# SAMPLE_DIR is examples/<section>/<sample> (examples/setup/ubuntu-ami), so examples/ is two
-# levels up. The containment guard refuses any override that resolves at or under it.
-__examples_root=$(cd "$SAMPLE_DIR/../.." && pwd)
+# In a checkout SAMPLE_DIR is examples/<section>/<sample> (examples/setup/ubuntu-ami), so
+# examples/ is two levels up, and the guard refuses any override that resolves at or under it.
+# Outside a checkout (the build host's unpacked copy) the guarded tree is the sample copy itself.
+if [ "$IN_CHECKOUT" = 1 ]; then
+  __examples_root=$(cd "$SAMPLE_DIR/../.." && pwd)
+else
+  __examples_root=$(cd "$SAMPLE_DIR" && pwd)
+fi
 refuse_inside_examples() { # refuse_inside_examples <var-name> <dir>
   local name="$1" dir="$2" resolved parent
   # Resolve the directory even when it does not exist yet: resolve its nearest existing
@@ -76,8 +97,17 @@ refuse_inside_examples RUNTIME_ARTIFACTS_DIR "$RUNTIME_ARTIFACTS_DIR"
 mkdir -p "$LOG_DIR" "$OUT_DIR" "$RUNTIME_ARTIFACTS_DIR"
 
 : "${LOCK_FILE:=$SAMPLE_DIR/packages/sources.lock}"
-: "${NITRO_SANDBOX_DIR_INSTALL:=/usr/share/nitro-sandbox}"
-: "${SHIM_DEBUG:=true}"
+# Where the guest image is staged on the node (latest.eif, latest-disk.img and the rootfs.ext4
+# symlink), and the shim's own data folder, which must NOT be inside the image folder.
+: "${NITRO_SANDBOX_IMAGE_DIR:=/var/lib/nitro-sandbox-images}"
+: "${NITRO_SANDBOX_DATA_DIR:=/var/lib/nitro-sandbox}"
+# Off by default, the production setting: enclaves attest their real measurements.
+# SHIM_DEBUG=true gives debug-mode enclaves whose attestation PCRs read zero; troubleshooting only.
+: "${SHIM_DEBUG:=false}"
+# The on-image provenance manifest every build stage appends one line to.
+: "${IMAGE_MANIFEST:=/etc/ubuntu-ami-sample-manifest}"
+# Node labels the isolated-sandbox RuntimeClass schedules on; both must be on the node.
+: "${NODE_LABELS:=eks.amazonaws.com/nitro-sandbox=true,sandbox.preview/nitro=true}"
 
 # Assert a condition and say what it means when it does not hold, so a failed build names
 # the prerequisite it is missing rather than only a line number.
@@ -106,6 +136,16 @@ lock_field() { # lock_field <id> <field>
   done < "$LOCK_FILE"
   [[ -n "$val" ]] || return 1
   printf '%s\n' "$val"
+}
+
+# lock_ids_where <field> <value> : print, in file order, the id of every LOCK_FILE block whose
+# <field> line is exactly <field>=<value> (for example `lock_ids_where kind runtime-payload`).
+lock_ids_where() { # lock_ids_where <field> <value>
+  awk -F= -v f="$1" -v want="$2" '
+    /^id=/ { id = substr($0, 4) }
+    /^$/   { id = "" }
+    index($0, f "=") == 1 && substr($0, length(f) + 2) == want && id != "" { print id }
+  ' "$LOCK_FILE"
 }
 
 # verify_sha256 <file> <expected-sha256> : fail closed on any mismatch. No override flag:

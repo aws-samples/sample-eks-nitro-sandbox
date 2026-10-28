@@ -9,19 +9,16 @@
 #                                                   #   extract it, no network reached
 #   packages/make-bundle.sh --version
 #
-# What this bundles: the two public, checksum-verified file inputs in sources.lock today
-# (the Linux kernel source, erofs-utils source). It never bundles the Ubuntu base AMI
-# (resolved per Region from a signed SSM parameter, not a file to archive) or distro apt
-# packages (capability-asserted against a reader's own apt snapshot, not a moving target to
-# pin here; see sources.lock block 6).
+# What this bundles: the public, checksum-verified file inputs in sources.lock (the Linux
+# kernel source, AWS's public host-kernel patch, erofs-utils source). It never bundles the
+# Ubuntu base AMI (resolved per Region from a signed SSM parameter, not a file to archive) or
+# distro apt packages (capability-asserted against a reader's own apt snapshot, not a moving
+# target to pin here; see sources.lock block 6).
 #
-# What this never bundles: the EKS Pod Isolation runtime binaries + guest image, and the
-# host-kernel patch series (sources.lock blocks 4 and 5). Both are unreleased, pre-GA,
-# operator-supplied artifacts with no public AWS release channel yet. `build` always skips
-# them (status=pending-public-release in sources.lock) and the emitted manifest documents
-# both as external, user-supplied slots the operator fills from their own licensed copy;
-# see packages/SOURCES.txt. This command never fetches, embeds or commits either one, by design,
-# not because sources.lock happens to lack a SHA-256 for them today.
+# What this never bundles: the Nitro sandbox runtime archive (sources.lock block 5,
+# status=operator-supplied). It is preview-gated, with no public download: `build` skips every
+# input whose status is not `available`, and the emitted manifest lists it as an external slot
+# the operator fills from their own copy. This command never fetches, embeds or commits it.
 #
 # Determinism: the archive this command produces is byte-identical across two runs over
 # the same inputs (same member order, same mtime/owner/group, no host-dependent metadata),

@@ -3,13 +3,19 @@
 # so the baked AMI carries it. Runs on the build host over SSM, after 31-wire-containerd.sh
 # and before 50-bake-prep.sh (bake-prep must NOT remove /etc/apparmor.d).
 #
-# Why this stage exists: deploy/pod-isolated-sandbox.yaml requests the profile
-# `localhost/ubuntu-ami-sample-profile`. The kubelet only admits a pod whose requested
-# AppArmor profile is already loaded on the node, so without loading this profile on the
+# Why this stage exists: deploy/pod-isolated-sandbox.yaml requests the Localhost profile
+# `ubuntu-ami-sample-profile` (securityContext.appArmorProfile). A pod can only run with a
+# profile already loaded on the node, so without loading this profile on the
 # image the "accept" control would be refused exactly like the reject control
 # (deploy/pod-apparmor-reject.yaml) and the acceptance criterion's "scoped profile that
 # works vs a control that is refused" could not be shown. AppArmor stays enabled host-wide:
 # this adds one named profile, it does not disable, replace or reconfigure the host LSM.
+#
+# Open question for the first live run: the GA bundle states that on an Ubuntu host every
+# sandbox pod needs appArmorProfile type Unconfined, because the shim forwards the requested
+# profile into the guest and runc there fails with "apparmor failed to apply profile". This
+# sample keeps the scoped profile Issue #10 asks for; if the live run shows that failure, record
+# it and its root cause first and take it to the maintainers rather than weakening the profile.
 #
 # The profile text lives at manifests/ubuntu-ami-sample-profile in this sample; on the build
 # host the sample directory is copied under /usr/local/share/ubuntu-ami-sample, so look for
@@ -59,6 +65,6 @@ case "$loaded" in
 esac
 
 echo "apparmor profile $PROFILE_NAME installed to $DEST and loaded ($loaded); apparmor.service enabled; $(date -u +%FT%TZ)" \
-  | sudo tee -a /etc/nip-custom-ami-manifest
+  | sudo tee -a "$IMAGE_MANIFEST"
 
 echo "APPARMOR: PASS (profile $PROFILE_NAME loaded and enforcing; host AppArmor left enabled)"

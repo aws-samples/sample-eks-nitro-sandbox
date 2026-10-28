@@ -3,74 +3,66 @@
 # packages/sources.lock is the machine-checked lock file the build scripts read; this file
 # is the human-readable provenance note the README's "Public inputs" section points to.
 #
-# Three classes of input:
+# The inputs come from the Nitro sandbox GA node-build bundle dated 2026-10-28
+# (nitro-sandbox-ga-20261028). Two classes:
 #
 # 1. PUBLIC, PINNED, CHECKSUMMED (obtainable by an anonymous repository reader today)
-#    - Ubuntu 24.04 EKS base AMI: resolved per Region from Canonical's public SSM
-#      parameter path; see packages/sources.lock, id=base-ami-ubuntu-2404.
-#    - Linux kernel 6.18.39 source: kernel.org release tarball, verified against
-#      kernel.org's own published sha256sums.asc; see id=linux-kernel-source.
+#    - Ubuntu 24.04 EKS base AMI: resolved per Region at run time from Canonical's public SSM
+#      parameter path; see packages/sources.lock, id=base-ami-ubuntu-2404. Canonical republishes
+#      "current" under new serials, so no AMI id or serial is tracked here; each run records the
+#      one it resolved, and the build host checks that image's containerd (2.1.x to 2.3.x)
+#      before it builds anything.
+#    - Linux kernel 6.18.56 source: kernel.org release tarball; its SHA-256 is the
+#      linux-6.18.56.tar.xz line of kernel.org's sha256sums.asc, whose signature verifies with
+#      the Kernel.org checksum autosigner key (B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1). The
+#      tarball also verifies against its stable-release signature linux-6.18.56.tar.sign
+#      (647F28654894E3BD457199BE38DBBDC86092693E). The value equals the one the GA bundle's
+#      build-kernel-ubuntu.sh pins. See id=linux-kernel-source.
+#    - Host-kernel patch: AWS's public commit amazonlinux/linux
+#      1e66c960b982c94bda76ebd0129eaecf0a68b46e ("nitro_enclaves: Amazon Nitro Enclaves
+#      extension (port onto 6.18.48)"), fetched from GitHub as a .patch, SHA-256 pinned as the
+#      GA bundle pins it, applied as exactly one commit with `git am`; see id=host-kernel-patch.
+#      This one public commit replaces the earlier, separately distributed patch series.
 #    - erofs-utils 1.8.10 source: kernel.org cgit snapshot of the tagged release. A cgit
-#      snapshot has no upstream-published checksum, so the SHA-256 is pinned BY THIS
-#      SAMPLE (confirmed identical across two independent fetches); see
-#      id=erofs-utils-source.
-#    - Distro packages (kernel-build toolchain, containerd, iproute2, util-linux, unzip):
-#      Ubuntu apt repositories, verified by apt's own signed repository metadata; see
-#      id=distro-packages.
+#      snapshot has no upstream-published checksum, so the SHA-256 is pinned BY THIS SAMPLE
+#      (confirmed identical across independent fetches); see id=erofs-utils-source.
+#    - Distro packages (kernel-build toolchain, erofs-utils build dependencies): Ubuntu apt
+#      repositories, verified by apt's own signed repository metadata; see id=distro-packages.
+#      containerd comes with the base AMI and is checked, never installed or changed.
 #
-# 2. RELEASED BY AWS TO THE CUSTOMER, PINNED, CHECKSUMMED (not yet anonymously
-#    downloadable at the time of writing)
-#    - EKS Pod Isolation runtime binaries + guest image (containerd shim / CRI proxy,
-#      sandbox hypervisor fork and jailer, guest microVM boot image and root disk, Cedar
-#      policy generator, KMS key provider); see id=eks-pod-isolation-runtime.
-#    - Host-kernel patch series, applied to the pinned kernel.org 6.18.39 tree above
-#      (enclave driver, CMA pool, virtio/vsock); see id=host-kernel-patch-series.
-#    Why not yet public: there is no public GitHub repository or release for the runtime,
-#    the hypervisor fork, or the guest image; the public Amazon EKS User Guide has no page
-#    for the feature yet. This is a property of the feature's pre-GA release stage, not a
-#    gap in this sample. The sample is designed to consume these the moment a public AWS
-#    release channel exists: setup.sh's preflight checks for the two archives at the paths
-#    config.env names, verifies them against packages/sources.lock when present, and stops
-#    cleanly with the documented prerequisite and the public download location when they
-#    are absent. It never substitutes an internal source tree or a private URL.
+# 2. OPERATOR-SUPPLIED, PINNED, CHECKSUMMED (preview; no public download)
+#    - The Nitro sandbox runtime archive, nitro-sandbox-binaries-2026-10-28.zip: one flat zip
+#      holding the containerd shim (also the CRI proxy), Firecracker and its jailer, the guest
+#      boot image latest.eif (guest kernel 6.18.54) and root disk latest-disk.img, the policy
+#      generator, the key provider, the guest agent, and a SHA256SUMS covering all eight. While
+#      Nitro sandboxes are in preview the reader obtains it from their AWS account team; there
+#      is no public URL to cite. The archive SHA-256 and every payload SHA-256 are pinned in
+#      sources.lock (id=runtime-archive and the runtime-payload-* blocks). The build verifies the
+#      archive, then fails closed unless SHA256SUMS lists every unpacked file exactly once, every
+#      hash matches, and every payload matches its sources.lock pin. It is never committed, never
+#      put in the sample folder, and never fetched by this sample: the operator places it in
+#      RUNTIME_ARTIFACTS_DIR (default: the repository's gitignored tmp/issue10/run/runtime), and
+#      setup.sh carries it to the build host through a private, per-run S3 staging bucket.
 #
-# 3. NEVER AN INPUT HERE
-#    Amazon-internal source trees, internal package mirrors, internal hosts, private URLs.
-#    The sample must not require or name any of these.
+# NEVER AN INPUT HERE: Amazon-internal source trees, internal package mirrors, internal hosts,
+# private URLs. The sample must not require or name any of these.
 #
-# Why not compile the runtime from source like the maintainers' internal demo: an external
-# reader cannot clone the internal source trees that demo builds from (not on any public
-# forge), and naming them would both break the build for a reader and violate this
-# repository's rule against internal URLs in tracked files. This sample consumes the
-# runtime as released artifacts instead, which is also the path AWS intends for customers
-# at general availability: prebuilt runtime binaries and a guest image, plus a host-kernel
-# patch series applied to a public kernel.org tree. The customer compiles only the host
-# kernel; everything else is a verified download.
+# A version bump is not a string edit: re-record the new SHA-256 in packages/sources.lock and
+# the README pin table, re-run the clusterless tests (packages/test-inputs.sh,
+# scripts/test-host-gates.sh), rebuild with the kernel config asserted after olddefconfig, and
+# re-run the live checks end to end. Checking a version string alone is not sufficient.
 #
-# A version bump is not a string edit: re-record the new SHA-256 (or resolved AMI name/ID)
-# in packages/sources.lock, re-apply and re-assert the kernel config after olddefconfig,
-# rebuild, and re-run the live checks end to end. Checking a version string alone is not
-# sufficient.
+# The on-image manifest (/etc/ubuntu-ami-sample-manifest), written by the build stages, is the
+# sample's software bill of materials for the node: the kernel release and the SHA-256 of its
+# tarball and patch, the erofs-utils version and installed mkfs.erofs SHA-256, each installed
+# runtime file's path, mode and SHA-256, the observed containerd version, and the shim's debug
+# setting. It names only public inputs and the runtime archive's own file names, and carries no
+# value from the author's account or environment.
 #
-# The on-image manifest (for example /etc/nip-custom-ami-manifest), written by the build
-# stages, is the sample's software bill of materials for the node: base AMI name and ID,
-# kernel release string and source SHA-256, applied patch count, erofs-utils version and
-# installed mkfs.erofs binary SHA-256, each runtime artifact's SHA-256 (including artifacts
-# the release ships without one), the observed containerd version, and resolved distro
-# package versions. It names only public inputs and carries no value from the author's
-# account or environment.
-#
-# Bundle-command interface note: a separate workstream is producing deterministic public
-# dependency bundle tooling and will publish its own short machine-readable manifest under
-# packages/ describing that command's interface. This file does not document the bundle
-# command's exact flags; a later README/docs-folding round reconciles that once the manifest
-# lands.
-#
-# AMI output interface note: the AMI this sample bakes carries two tags a downstream sample
-# can rely on. ManagedBy=<RESOURCE_PREFIX> (every resource this sample creates carries it)
-# marks ownership. BtfValidated=true is set by scripts/verify-fresh-instance.sh, via
-# scripts/lib/btf-tag.sh, ONLY after a SECOND, fresh instance launched from the AMI has
-# PASSED verify-image.py and 40-smoke.sh; it is never set at create-image time and never set
-# when that verification fails, and the tagging step refuses to touch an AMI that does not
-# already carry this run's own ManagedBy tag. The cilium-ubuntu sample (issue #11) reads
-# BtfValidated=true in its own AMI preflight before it will use an AMI this sample produced.
+# AMI output interface: the AMI this sample bakes carries ManagedBy=<RESOURCE_PREFIX> (every
+# resource this sample creates carries it) and RunId, and BtfValidated=true once
+# scripts/verify-fresh-instance.sh, via scripts/lib/btf-tag.sh, has seen a SECOND, fresh
+# instance launched from the AMI pass verify-image.py and 40-smoke.sh. It is never set at
+# create-image time, never set when that verification fails, and never written to an AMI that
+# does not already carry this run's ManagedBy tag. The cilium-ubuntu sample (issue #11) reads
+# BtfValidated=true before it will use an AMI this sample produced.

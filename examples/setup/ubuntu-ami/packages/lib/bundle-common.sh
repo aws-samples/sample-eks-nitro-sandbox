@@ -61,7 +61,7 @@ is no override flag."
 # file to <dest-dir>/<id>-<ref>.<ext-inferred-from-source-url>, verify it against the
 # pinned sha256, and print the resulting path. Caches: a destination file that already
 # verifies is reused rather than re-fetched. Fails closed on a missing ref/source/sha256,
-# a TODO-* placeholder sha256 (the two pending-public-release inputs), or a mismatch.
+# a TODO-* or n/a placeholder sha256, or a mismatch.
 bundle_fetch_file() { # bundle_fetch_file <lock-file> <id> <dest-dir>
   local lock_file="$1" id="$2" dest_dir="$3"
   local ref source_url expected_sha ext file dest_file
@@ -131,8 +131,8 @@ bundle_create_archive() { # bundle_create_archive <output-tar> <staging-dir>
 # Emit the machine-checkable SBOM + license summary + provenance record as one JSON
 # document. <components-csv> is a semicolon-separated list of "id" tokens that were
 # actually bundled (so the manifest lists exactly what is in the archive, not every block
-# in the lock file, which also carries the two pending-public-release placeholders this
-# command never bundles).
+# in the lock file, which also carries the operator-supplied runtime archive this command
+# never bundles).
 bundle_write_manifest() { # bundle_write_manifest <manifest-json> <lock-file> <staging-dir> <archive-file> <components-csv> <command-version>
   local manifest="$1" lock_file="$2" staging="$3" archive="$4" components_csv="$5" cmd_version="$6"
   local tmp
@@ -166,18 +166,28 @@ bundle_write_manifest() { # bundle_write_manifest <manifest-json> <lock-file> <s
       printf '    }'
     done
     printf '\n  ],\n'
+    # Every kind=file input that is not a public, fetchable one (status other than available,
+    # e.g. the operator-supplied runtime archive) is listed as an external slot this bundle
+    # never fetches, embeds or commits, read from the lock file rather than hard-coded.
     printf '  "external_unbundled_slots": [\n'
-    printf '    {\n'
-    printf '      "id": "eks-pod-isolation-runtime",\n'
-    printf '      "status": "external-user-supplied",\n'
-    printf '      "note": "Unreleased pre-GA EKS Pod Isolation runtime binaries and guest image. This bundle command never fetches, embeds or commits this artifact. The operator fills RUNTIME_ARTIFACT_FILE at RUNTIME_ARTIFACTS_DIR from their own licensed copy once a public release exists; see sources.lock and packages/SOURCES.txt."\n'
-    printf '    },\n'
-    printf '    {\n'
-    printf '      "id": "host-kernel-patch-series",\n'
-    printf '      "status": "external-user-supplied",\n'
-    printf '      "note": "Unreleased pre-GA host-kernel patch series. This bundle command never fetches, embeds or commits this artifact. The operator fills PATCH_SERIES_FILE at RUNTIME_ARTIFACTS_DIR from their own licensed copy once a public release exists; see sources.lock and packages/SOURCES.txt."\n'
-    printf '    }\n'
-    printf '  ],\n'
+    local sfirst=1 sid skind sstatus sfile ssha
+    while IFS= read -r sid; do
+      [[ -n "$sid" ]] || continue
+      skind="$(bundle_lock_field "$lock_file" "$sid" kind)" || continue
+      sstatus="$(bundle_lock_field "$lock_file" "$sid" status)" || continue
+      [[ "$skind" == file && "$sstatus" != available ]] || continue
+      sfile="$(bundle_lock_field "$lock_file" "$sid" file)" || sfile="unknown"
+      ssha="$(bundle_lock_field "$lock_file" "$sid" sha256)" || ssha="unknown"
+      [[ "$sfirst" == 1 ]] && sfirst=0 || printf ',\n'
+      printf '    {\n'
+      printf '      "id": "%s",\n' "$sid"
+      printf '      "status": "%s",\n' "$sstatus"
+      printf '      "file": "%s",\n' "$sfile"
+      printf '      "sha256": "%s",\n' "$ssha"
+      printf '      "note": "Not a public download. This bundle command never fetches, embeds or commits it; the operator places it at RUNTIME_ARTIFACTS_DIR and the build verifies it against sources.lock."\n'
+      printf '    }'
+    done < <(bundle_lock_ids "$lock_file")
+    printf '\n  ],\n'
     printf '  "license_summary": "Each component license is recorded per-component above (license=upstream SPDX-style identifier or note from sources.lock; distro packages are not included in this file-bundle). This bundle redistributes upstream source archives unmodified; see each component source_url for its own license text.",\n'
     printf '  "provenance": {\n'
     printf '    "fetched_by": "packages/make-bundle.sh",\n'

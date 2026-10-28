@@ -1,55 +1,170 @@
 #!/usr/bin/env bash
-# 30-runtime-install.sh: unpack and install the EKS Pod Isolation runtime binaries + guest
-# image from the verified released archive (packages/fetch-runtime-artifacts.sh has already
-# checked it is present and matches packages/sources.lock; this script re-verifies before
-# unpacking, since a build can resume hours after preflight ran).
+# 30-runtime-install.sh: check containerd, then install the Nitro sandbox runtime binaries and
+# stage the guest image from the verified runtime archive, write the shim config, and install
+# (not start) cri-proxy.service. Mirrors the GA node-build bundle's install-runtime.sh.
 #
-# This is the one stage that consumes the release artifact described in packages/SOURCES.txt:
-# the containerd shim (also the CRI proxy via a subcommand), the Firecracker fork and its
-# jailer, the guest microVM boot image and root disk, the Cedar policy generator and the
-# KMS key provider. Nothing here is built from an internal source tree; everything is
-# unpacked from the archive at RUNTIME_ARTIFACTS_DIR/RUNTIME_ARTIFACT_FILE.
+#   sudo scripts/30-runtime-install.sh            # the install (on the build host, after the
+#                                                 #   host kernel from 10-kernel.sh is booted)
+#   scripts/30-runtime-install.sh --check-containerd
+#                                                 # only check this host's containerd version
+#   SHIM_DEBUG=true scripts/30-runtime-install.sh # debug-mode enclaves; troubleshooting only
+#
+# containerd is a GATE, not an install: the GA shim runs on containerd 2.1.x, 2.2.x and 2.3.x.
+# 2.4 and later are untested and refused, and so is anything older than 2.1, before anything is
+# installed. Canonical republishes its EKS AMI under new serials, and a new serial can ship a
+# newer containerd, so the check reads the booted host every time; the sample never upgrades
+# or downgrades the base AMI's containerd.
+#
+# Install layout (packages/sources.lock install= lines; the GA bundle's install-runtime.sh):
+#   /usr/sbin/containerd-shim-nitro-sandbox-v2      0755  (also the CRI proxy)
+#   /usr/bin/firecracker, /usr/bin/jailer           0755  (jailer unpacks 0644; set here)
+#   /usr/local/bin/eks-nitro-sandbox-genpolicy      0755
+#   /usr/local/bin/nitro-sandbox-keyprovider        0755
+#   /var/lib/nitro-sandbox-images/latest.eif, latest-disk.img 0644, rootfs.ext4 -> latest-disk.img
+#   nitro-sandbox-agent is not installed on the host: the copy inside latest-disk.img runs.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/common.sh"
 
-bash "$HERE/../packages/fetch-runtime-artifacts.sh"
-ARCHIVE="$RUNTIME_ARTIFACTS_DIR/$RUNTIME_ARTIFACT_FILE"
+# containerd_verdict: read `containerd --version` on stdin and print one line saying the
+# version and whether the GA shim runs on it. Returns 0 only for 2.1.x, 2.2.x or 2.3.x. The
+# version is the third field of the first line, which must start with `containerd`: upstream
+# builds print `v2.1.5`, distro builds print `2.2.1` or `2.3.7+unknown`. Exactly three numeric
+# parts, no leading zeros, an optional `+build` suffix and no pre-release suffix; anything else
+# is refused as unreadable. Same rule as the GA bundle's install-runtime.sh.
+containerd_verdict() {
+  local line prog _repo ver major minor patch
+  IFS= read -r line || true
+  read -r prog _repo ver _ <<<"$line" || true
+  if [ "${prog:-}" != containerd ] || \
+     ! [[ ${ver:-} =~ ^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z.-]+)?$ ]]; then
+    echo "containerd version unreadable: '$line' (expected 'containerd <repo> <version> ...')"
+    return 1
+  fi
+  major=${BASH_REMATCH[1]} minor=${BASH_REMATCH[2]} patch=${BASH_REMATCH[3]}
+  if [ "$major" = 2 ] && { [ "$minor" = 1 ] || [ "$minor" = 2 ] || [ "$minor" = 3 ]; }; then
+    echo "containerd $major.$minor.$patch ($ver): supported by the GA shim (2.1.x to 2.3.x)"
+    return 0
+  fi
+  if [ "${#major}" -gt 3 ] || [ "$major" -gt 2 ] || \
+     { [ "$major" = 2 ] && { [ "${#minor}" -gt 3 ] || [ "$minor" -ge 4 ]; }; }; then
+    echo "containerd $major.$minor.$patch ($ver) is newer than the GA shim is tested on (2.1.x to 2.3.x): build from a base AMI serial whose containerd is 2.3.x or earlier"
+    return 1
+  fi
+  echo "containerd $major.$minor.$patch ($ver) is older than the GA shim supports (2.1.x to 2.3.x)"
+  return 1
+}
 
-STAGE="$HOME/runtime-artifacts"
-rm -rf "$STAGE"; mkdir -p "$STAGE"
-tar -C "$STAGE" -xf "$ARCHIVE"
+# check_containerd: the verdict for the containerd on this host's PATH. A binary whose
+# `--version` fails is refused even when it prints a version line.
+check_containerd() {
+  local bin out rc=0
+  bin=$(command -v containerd) || { echo "containerd not found on the PATH"; return 1; }
+  out=$("$bin" --version 2>&1) || rc=$?
+  if [ "$rc" != 0 ]; then
+    echo "'$bin --version' failed (exit $rc): $(printf '%s\n' "$out" | head -n 1)"
+    return 1
+  fi
+  printf '%s\n' "$out" | containerd_verdict
+}
 
-sudo mkdir -p "$NITRO_SANDBOX_DIR_INSTALL"
-# The release's expected layout, per packages/SOURCES.txt: a shim binary, the Firecracker fork +
-# jailer, a guest kernel/bootable image and root disk, the Cedar policy generator and the
-# KMS key provider. Record each installed artifact's SHA-256 into the manifest, including
-# any the release ships without its own .sha256 (the shim, agent, policy generator and key
-# provider in the pre-GA bundle), so the installed set stays auditable either way.
-declare -A EXPECTED=(
-  [containerd-shim-nitro-sandbox-v2]=/usr/local/bin
-  [firecracker]=/usr/local/bin
-  [jailer]=/usr/local/bin
-  [eks-nitro-sandbox-genpolicy]=/usr/local/bin
-)
-for name in "${!EXPECTED[@]}"; do
-  src=$(find "$STAGE" -name "$name" -type f | head -1)
-  [ -n "$src" ] || die "runtime archive did not contain expected artifact: $name (check the archive layout against packages/SOURCES.txt)"
-  dest="${EXPECTED[$name]}/$name"
-  sudo install -m 0755 "$src" "$dest"
-  echo "installed $dest sha256=$(sha256sum "$dest" | cut -c1-16)" | sudo tee -a /etc/nip-custom-ami-manifest
-done
+if [ "${1:-}" = --check-containerd ]; then
+  verdict=$(check_containerd) && rc=0 || rc=$?
+  printf '%s\n' "$verdict"
+  exit "$rc"
+fi
+[ $# -eq 0 ] || die "unknown argument: $1 (supported: --check-containerd)"
 
-for name in vmlinuz rootfs.ext4; do
-  src=$(find "$STAGE" -name "$name" -type f | head -1)
-  [ -n "$src" ] || die "runtime archive did not contain expected guest image file: $name"
-  sudo install -m 0644 "$src" "$NITRO_SANDBOX_DIR_INSTALL/$name"
-  echo "installed $NITRO_SANDBOX_DIR_INSTALL/$name sha256=$(sha256sum "$NITRO_SANDBOX_DIR_INSTALL/$name" | cut -c1-16)" | sudo tee -a /etc/nip-custom-ami-manifest
-done
+case $SHIM_DEBUG in true|false) ;; *) die "SHIM_DEBUG must be true or false, got '$SHIM_DEBUG'" ;; esac
+CRI_SOCK=/run/nitro-sandbox/cri-proxy.sock
+SHIM=/usr/sbin/containerd-shim-nitro-sandbox-v2
+KUBECONFIG_PATH=/var/lib/kubelet/kubeconfig
+case "$NITRO_SANDBOX_DATA_DIR/" in "$NITRO_SANDBOX_IMAGE_DIR/"*) die "NITRO_SANDBOX_DATA_DIR is inside NITRO_SANDBOX_IMAGE_DIR; the shim needs them apart" ;; esac
 
-/usr/local/bin/firecracker --version 2>&1 | head -2 || true
-/usr/local/bin/jailer --version 2>&1 | head -2 || true
-test -x /usr/local/bin/containerd-shim-nitro-sandbox-v2
+# --- 0. Gates, before anything is installed ---------------------------------------------------
+verdict=$(check_containerd) || die "$verdict"
+echo "$verdict"
+[ -c /dev/nitro_enclaves ] || die "/dev/nitro_enclaves missing: boot the host kernel from 10-kernel.sh (uname -r should be ${KERNEL_VERSION}${KERNEL_LOCALVERSION}) on an instance with Nitro Enclaves enabled"
+command -v losetup >/dev/null 2>&1 || die "losetup (util-linux) missing"
+command -v mkfs.erofs >/dev/null 2>&1 || die "mkfs.erofs missing: run 20-erofs-utils.sh first"
+d=$(mktemp -d); echo x > "$d/f"
+mkfs.erofs -zzstd,1 "$d/t.img" "$d" >/dev/null 2>&1 || { rm -rf "$d"; die "mkfs.erofs has no zstd support: run 20-erofs-utils.sh (erofs-utils ${EROFS_UTILS_VERSION} --with-libzstd)"; }
+rm -rf "$d"
 
-echo "runtime release artifact $RUNTIME_ARTIFACT_FILE installed; patch series $PATCH_SERIES_FILE applied in scripts/10-kernel.sh; $(date -u +%FT%TZ)" \
-  | sudo tee -a /etc/nip-custom-ami-manifest
+# --- 1. Re-verify the archive and every payload (a build can resume hours after preflight) ---
+UNPACKED="$(bash "$HERE/../packages/fetch-runtime-artifacts.sh" | tail -n 1)"
+[ -d "$UNPACKED" ] || die "fetch-runtime-artifacts.sh did not report an unpacked directory"
+( cd "$UNPACKED" && sha256sum -c --strict --quiet SHA256SUMS ) || die "the unpacked runtime payloads no longer match SHA256SUMS"
+
+# --- 2. Install every payload at its sources.lock path and mode --------------------------------
+sudo install -d -m 0755 "$NITRO_SANDBOX_IMAGE_DIR"
+while IFS= read -r id; do
+  [ -n "$id" ] || continue
+  name="$(lock_field "$id" file)" || die "sources.lock block $id has no file="
+  spec="$(lock_field "$id" install)" || die "sources.lock block $id has no install="
+  if [ "$spec" = none ]; then
+    echo "not installed on the host: $name (runs inside the guest image)"
+    continue
+  fi
+  read -r dest mode <<<"$spec"
+  case "$dest" in /*) ;; *) die "sources.lock block $id install path is not absolute: $dest" ;; esac
+  [[ "$mode" =~ ^0[0-7]{3}$ ]] || die "sources.lock block $id install mode is not octal: $mode"
+  sudo install -D -m "$mode" "$UNPACKED/$name" "$dest"
+  got="$(sha256sum "$dest" | awk '{print $1}')"
+  want="$(lock_field "$id" sha256)"
+  [ "$got" = "$want" ] || die "installed $dest has SHA-256 $got, not $want"
+  echo "installed $dest mode $mode sha256=$got" | sudo tee -a "$IMAGE_MANIFEST"
+done < <(lock_ids_where kind runtime-payload)
+# The archive's own SHA256SUMS stays on the image, so verify-image.py can re-check the
+# installed set on a fresh instance after the archive itself is gone (50-bake-prep.sh).
+sudo install -D -m 0644 "$UNPACKED/SHA256SUMS" /usr/local/share/ubuntu-ami-sample/runtime-SHA256SUMS
+"$SHIM" --version 2>&1 | head -n 1
+
+# --- 3. Guest image: the shim opens the disk as rootfs.ext4, next to latest.eif ---------------
+sudo ln -sfn latest-disk.img "$NITRO_SANDBOX_IMAGE_DIR/rootfs.ext4"
+[ "$(readlink "$NITRO_SANDBOX_IMAGE_DIR/rootfs.ext4")" = latest-disk.img ] || die "rootfs.ext4 symlink wrong"
+
+# --- 4. Shim config. debug = false unless SHIM_DEBUG=true ---------------------------------------
+sudo install -d -m 0755 /etc/containerd
+sudo tee /etc/containerd/nitro-sandbox.toml >/dev/null <<TOML
+# Nitro Sandbox shim config, written by scripts/30-runtime-install.sh.
+kernel_path     = "${NITRO_SANDBOX_IMAGE_DIR}/latest.eif"
+rootfs_path     = "${NITRO_SANDBOX_IMAGE_DIR}/rootfs.ext4"
+pcie_slots      = 110          # render from kubelet max-pods (default 110)
+nitro_sandbox   = true         # else Firecracker falls back to KVM and needs /dev/kvm
+cpu_overcommit  = true         # host-schedule enclave vCPUs so a small node fits many sandboxes
+data_base_dir   = "${NITRO_SANDBOX_DATA_DIR}"
+kubeconfig_path = "${KUBECONFIG_PATH}"
+format_overlay  = true
+# debug = true makes DEBUG-MODE enclaves (attestation PCRs read zero). Keep OFF in production.
+debug           = ${SHIM_DEBUG}
+TOML
+sudo chmod 0644 /etc/containerd/nitro-sandbox.toml
+
+# --- 5. cri-proxy.service: the shim binary IS the CRI proxy. Installed and enabled, not started:
+#        it needs kubelet's kubeconfig, which exists only after the node joins. -----------------
+sudo tee /etc/systemd/system/cri-proxy.service >/dev/null <<UNIT
+[Unit]
+Description=CRI Proxy for nitro-sandbox
+After=containerd.service
+Requires=containerd.service
+
+[Service]
+ExecStart=${SHIM} cri-proxy --listen ${CRI_SOCK} --containerd /run/containerd/containerd.sock
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+sudo chmod 0644 /etc/systemd/system/cri-proxy.service
+sudo systemctl daemon-reload
+sudo systemctl enable cri-proxy.service
+
+# --- 6. tun at boot (the shim makes one TAP per VM) ---------------------------------------------
+printf 'tun\n' | sudo tee /etc/modules-load.d/nitro-sandbox-tun.conf >/dev/null
+sudo modprobe tun
+[ -c /dev/net/tun ] || die "/dev/net/tun missing after modprobe tun"
+
+echo "runtime $(lock_field runtime-archive ref) installed from $(lock_field runtime-archive file); ${verdict}; shim config debug=${SHIM_DEBUG}; cri-proxy.service enabled, not started; $(date -u +%FT%TZ)" \
+  | sudo tee -a "$IMAGE_MANIFEST"

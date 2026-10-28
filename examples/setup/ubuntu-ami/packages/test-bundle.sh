@@ -16,7 +16,11 @@
 #   4/4  consume:  a MISSING bundle (no archive file at all) is REJECTED, non-zero exit:
 #        reject control for a missing bundle.
 #
-# The real sources.lock inputs (kernel 6.18.39, erofs-utils 1.8.10) follow this identical
+# The fixtures mirror the real lock file's shapes: two source tarballs, a public .patch input
+# (like host-kernel-patch), a pending input and an operator-supplied archive (like
+# runtime-archive) that build must skip and list as external slots, and an ssm-ami block.
+#
+# The real sources.lock inputs (kernel 6.18.56, the host-kernel patch, erofs-utils 1.8.10) follow this identical
 # code path (bundle_fetch_file -> bundle_verify_sha256 -> bundle_create_archive ->
 # bundle_write_manifest, and bundle_verify_archive on consume); this test exercises that
 # same path end to end with inputs small enough to run with no network and in under a
@@ -58,8 +62,10 @@ FIXTURE_DIR="$WORK/fixtures"
 mkdir -p "$FIXTURE_DIR"
 printf 'fixture-source-content-for-make-bundle-test\n' > "$FIXTURE_DIR/fixture-a-1.0.0.tar.gz"
 printf 'second-fixture-source-content\n' > "$FIXTURE_DIR/fixture-b-2.0.0.tar.gz"
+printf 'From 0123456789abcdef0123456789abcdef01234567 Mon Sep 17 00:00:00 2001\nSubject: [PATCH] fixture\n' > "$FIXTURE_DIR/0123abcd.patch"
 FIXTURE_A_SHA="$(bundle_sha256_of "$FIXTURE_DIR/fixture-a-1.0.0.tar.gz")"
 FIXTURE_B_SHA="$(bundle_sha256_of "$FIXTURE_DIR/fixture-b-2.0.0.tar.gz")"
+FIXTURE_P_SHA="$(bundle_sha256_of "$FIXTURE_DIR/0123abcd.patch")"
 
 TEST_LOCK="$WORK/test-sources.lock"
 cat > "$TEST_LOCK" <<LOCK
@@ -83,12 +89,29 @@ sha256=$FIXTURE_B_SHA
 verify=test fixture, pinned by this test run
 status=available
 
+id=fixture-patch
+kind=file
+ref=0123456789abcdef0123456789abcdef01234567
+source=file://$FIXTURE_DIR/0123abcd.patch
+sha256=$FIXTURE_P_SHA
+verify=mirrors the real host-kernel-patch block: a public .patch input, bundled
+status=available
+
+id=fixture-runtime
+kind=file
+ref=fixture-runtime-1
+file=fixture-runtime.zip
+source=operator-supplied: mirrors the real runtime-archive block
+sha256=0000000000000000000000000000000000000000000000000000000000000000
+verify=mirrors the real operator-supplied runtime archive; must be skipped by build, never fetched
+status=operator-supplied
+
 id=fixture-pending
 kind=file
 ref=TODO-pin-exact-public-release-version
 source=TODO-public-release-not-yet-published
 sha256=TODO-sha256-once-released
-verify=mirrors the real pending-public-release blocks; must be skipped by build, never fetched
+verify=a not-yet-available input; must be skipped by build, never fetched, listed as an external slot
 status=pending-public-release
 
 id=fixture-ami
@@ -125,12 +148,18 @@ python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$OUT1/dependency-bun
 assert_true "the emitted manifest is valid, parseable JSON" "$manifest_parses"
 
 components_count="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["components"]))' "$OUT1/dependency-bundle.manifest.json" 2>/dev/null || echo 0)"
-echo "  manifest lists $components_count component(s) (expect 2: fixture-a, fixture-b)"
-assert_true "manifest lists exactly the two bundleable fixtures (not the pending or ssm-ami ones)" \
-  $([[ "$components_count" -eq 2 ]]; echo $?)
+echo "  manifest lists $components_count component(s) (expect 3: fixture-a, fixture-b, fixture-patch)"
+assert_true "manifest lists exactly the three bundleable fixtures (not the pending, operator-supplied or ssm-ami ones)" \
+  $([[ "$components_count" -eq 3 ]]; echo $?)
+assert_true "the public .patch input is in the archive under its .patch name" \
+  $(tar -tf "$OUT1/dependency-bundle.tar" | grep -qx 'fixture-patch-0123456789abcdef0123456789abcdef01234567.patch'; echo $?)
 
-slots_count="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["external_unbundled_slots"]))' "$OUT1/dependency-bundle.manifest.json" 2>/dev/null || echo 0)"
-assert_true "manifest documents both external unbundled runtime slots" $([[ "$slots_count" -eq 2 ]]; echo $?)
+slots="$(python3 -c 'import json,sys; print(" ".join(sorted(s["id"] for s in json.load(open(sys.argv[1]))["external_unbundled_slots"])))' "$OUT1/dependency-bundle.manifest.json" 2>/dev/null || echo "")"
+echo "  external slots: ${slots:-<none>} (expect: fixture-pending fixture-runtime)"
+assert_true "manifest lists exactly the non-available file inputs as external slots, read from the lock file" \
+  $([[ "$slots" == "fixture-pending fixture-runtime" ]]; echo $?)
+assert_true "the operator-supplied fixture was never fetched into the archive" \
+  $(! tar -tf "$OUT1/dependency-bundle.tar" | grep -q 'fixture-runtime'; echo $?)
 
 echo
 echo "== 2/4 consume (ACCEPT control): a good bundle verifies and extracts offline =========="
