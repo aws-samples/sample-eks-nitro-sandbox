@@ -84,10 +84,17 @@ ANALYST_REPOSITORY="pod-isolation/subagent-analyst-$SAMPLE"
 # It is also why the record is touched here and not earlier: everything above creates
 # nothing, so a run that stops above this line leaves both the account and the record
 # exactly as it found them.
-# One run's record at a time, and this refuses rather than comparing. It is the fourth
+# One run's record at a time, and this refuses rather than comparing. It is the fifth
 # shape this check has had and the first that cannot be got wrong: there is nothing to
 # parse, no key to enumerate and no value to compare, so the six defects the comparing
 # versions had across review rounds 9 to 11 have no equivalent here.
+#
+# Creating the file *is* the check, under noclobber, rather than a test followed by a
+# truncate. One operation, so there is no window between deciding and acting, and no path
+# type to enumerate: measured, `set -C` refuses an existing file, a directory and a
+# dangling symbolic link, and succeeds only when nothing is there. The version before this
+# tested `[[ ! -e ]]`, which a dangling symbolic link passes, and the truncate after it
+# would then have created the link's target.
 #
 # Why it has to be a refusal and not an overwrite, which is the reasoning I had wrong: the
 # record is the only place the names of what a run created are written down, and clean.sh's
@@ -101,10 +108,8 @@ ANALYST_REPOSITORY="pod-isolation/subagent-analyst-$SAMPLE"
 # Everything above this line reads and creates nothing, so a run that stops above it leaves
 # the account, the cluster and the record exactly as it found them.
 mkdir -p "$TMP_DIR"
-[[ ! -e "$STATE_FILE" ]] ||
-  die "a run record already exists at $STATE_FILE, so an earlier run's resources are still named only there. Finish that run with ./scripts/clean.sh --delete-aws, or remove $TMP_DIR yourself if you mean to keep its AWS resources; created and changed nothing."
-
-: > "$STATE_FILE"
+( set -C; : > "$STATE_FILE" ) 2>/dev/null ||
+  die "there is already something at $STATE_FILE, so an earlier run's resources may still be named only there. Finish that run with ./scripts/clean.sh --delete-aws. If you want to keep its AWS resources, move $TMP_DIR aside rather than deleting it: it is the only place their names are written down, and it also holds that run's supplier API key and sample certificate authority. Created and changed nothing."
 state_put SAMPLE "$SAMPLE"
 state_put NAMESPACE "$NAMESPACE"
 state_put BUCKET "$BUCKET"

@@ -1158,8 +1158,10 @@ keeps the S3 bucket, the IAM role and the images, so a second run skips the buil
 the run record too, and `setup.sh` refuses to start while one exists: the record is the only
 place an earlier run's names are written down, and every copy of this sample marks its
 resources the same way, so a clean up that had lost them could report "already gone" for
-names that were never created. To start another run, finish that one with `--delete-aws`, or
-remove the run record directory yourself if you mean to keep its AWS resources.
+names that were never created. To start another run, finish that one with `--delete-aws`.
+If you want to keep its AWS resources, move the run record directory aside rather than
+deleting it: it is the only place their names are written down, and it also holds that
+run's supplier API key and sample certificate authority.
 
 This sample changes no cluster-wide setting and installs nothing shared, so the clean up has
 nothing of that kind to undo. The `isolated-sandbox` RuntimeClass and the cluster are not
