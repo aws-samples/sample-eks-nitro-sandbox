@@ -58,8 +58,13 @@ elif [[ -z "$pvc_present" ]]; then
 elif ! pv_name="$("${KCTL[@]}" get pvc gitlab-data -n "$NAMESPACE" -o jsonpath='{.spec.volumeName}' 2>/dev/null)"; then
   problem "could not read the bound volume of claim gitlab-data in '$NAMESPACE', so its EBS volume cannot be identified or confirmed removed."
 elif [[ -z "$pv_name" ]]; then
-  # Pending, never bound. The provisioner has not made a volume, so there is none to confirm.
-  echo "  claim gitlab-data is not bound to a volume, so there is no EBS volume to confirm."
+  # The claim exists but records no bound volume. That is NOT the same as "no volume was
+  # provisioned": provisioning and binding are asynchronous, so the CSI driver can already
+  # have created an EBS volume that the claim has not yet recorded. This branch used to print
+  # "there is no EBS volume to confirm" and let the clean up finish, which would have reported
+  # success while leaving a volume nobody could name. It is a failure to identify, so it is a
+  # problem.
+  problem "claim gitlab-data in '$NAMESPACE' records no bound volume, so its EBS volume cannot be identified. That is not a report that none was provisioned: binding is asynchronous, so a volume may already exist. Look for one and delete it if it is not wanted: aws ec2 describe-volumes --filters Name=tag:kubernetes.io/created-for/pvc/namespace,Values=$NAMESPACE"
 elif ! ebs_volume="$("${KCTL[@]}" get pv "$pv_name" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null)"; then
   problem "could not read PersistentVolume $pv_name, so the EBS volume behind claim gitlab-data cannot be confirmed removed."
 elif [[ -z "$ebs_volume" ]]; then

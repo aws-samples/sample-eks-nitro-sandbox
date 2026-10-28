@@ -217,9 +217,15 @@ $unsandboxed  Check that runner/config.toml.template's runtime_class_name reache
 
 uid_count="$(printf '%s\n' "${pod_uid[@]}" | sort -u | grep -c .)"
 echo "  distinct pod UIDs: $uid_count (one per job, so no job reused another's pod)"
-# A pod UID is unique in the cluster, so equal counts is what "a fresh pod per job" means. A
-# repeated UID would mean two jobs shared one pod, and a checkout or a build cache could then
-# carry from one to the next.
+# A pod UID is unique in the cluster, so a repeated UID among the pods seen would mean two jobs
+# shared one pod, and a checkout or a build cache could carry from one to the next.
+#
+# What these two counts establish, and what they do not. They are a lower bound: the pods are
+# read every two seconds, so a pod that was created and deleted between two polls is invisible,
+# and a job that ran twice could therefore look like one pod. Comparing against the jobs GitLab
+# reported catches the case that matters here, a job whose pod was never seen at all, which is
+# what a runner ignoring runtime_class_name or a changed pod label would produce. The page says
+# the same, rather than claiming an exact census.
 (( uid_count == pod_count )) \
   || die "$pod_count job pod(s) were seen but only $uid_count distinct pod UID(s), so two jobs shared a pod and nothing separated their checkouts."
 for name in "${pod_order[@]}"; do

@@ -65,15 +65,16 @@ runner authentication token, polls GitLab, and creates and deletes job pods thro
 Kubernetes API. It runs no pipeline code, so it is not what needs isolating, and its pod spec
 carries no `runtimeClassName`. Step 6 reads that back off the running pod.
 
-**One sandbox per job, and nothing between jobs.** A job pod is created when its job starts
-and deleted when the job ends. The two jobs in the pipeline get two pods with two different
-pod UIDs, so no checkout, build cache or leftover credential carries from one to the next.
+**A pod per job, and nothing between jobs.** The Kubernetes executor creates a job pod when a
+job starts and deletes it when the job ends. The run saw two pods for this pipeline's two jobs,
+with two different pod UIDs, so nothing carried from one job to the next: no checkout, no build
+cache, no leftover credential. The pipeline declares no `retry:`, so neither job ran twice.
 
 **The privileged daemon runs against the pod's own kernel.** `privileged = true` in the same
 block is what lets the build job's Docker daemon start. The daemon runs in the job's own
 container, so the sandbox's single `runtimeClassName` covers it, and the kernel it is
-privileged against is the guest's. The run shows that much directly: `docker info` reports the
-guest's kernel build, not the node's, and so does a container the daemon starts. What follows
+privileged against is the guest's. The run shows that much directly: a container the
+daemon starts reports the guest's kernel build, `#1`, and the guest's virtio disks. What follows
 from it, that a privileged container in the guest is not a privileged container on the node,
 is the runtime class's property rather than something this run measures: the Amazon EKS User
 Guide, *Isolated and confidential pods*, describes the boundary and what it protects.
@@ -387,6 +388,10 @@ pipeline code.
 ./scripts/run-pipeline.sh
 ```
 
+Abridged: step 1 of 5 is the context and namespace check Step 2 already showed, and the two job
+logs this output goes on to print are Step 4's and Step 5's blocks. Every line shown is as the
+script printed it.
+
 ```text
 ==> 2/5 starting the pipeline
   pipeline 2 on b9ce282b, with these jobs:
@@ -422,10 +427,16 @@ pipeline code.
   no job pod mounts Secret 'gitlab-runner-config', which is where the runner authentication token is.
 ```
 
-Two pods, two UIDs, both `isolated-sandbox`. The first job asks for no daemon, no service
-container and no privileged operation of its own, and it is isolated all the same. Its
-containers do carry the `privileged` flag, because that is a runner setting rather than a
-per-job one; Step 5 says what that means and what it does not.
+Two pods observed for two jobs, two distinct UIDs, both `isolated-sandbox`. The script compares
+the pods it saw against the jobs GitLab reported and refuses a run where those disagree, which
+catches a job whose pod it never saw. **It cannot rule out a job that ran twice**: it reads the
+pods that exist, every two seconds, so a pod that came and went between two polls would be
+missed. Nothing in this pipeline retries a job, and a reader who adds `retry:` should read
+these counts as a floor rather than an exact census.
+
+The first job asks for no daemon, no service container and no privileged operation of its own,
+and it is isolated all the same. Its containers do carry the `privileged` flag, because that is
+a runner setting rather than a per-job one; Step 5 says what that means and what it does not.
 
 ## Step 4: What a job pod sees, next to what an ordinary pod on the same node sees
 
@@ -520,8 +531,10 @@ evidence. What is, in this run:
 
 - the kernel **build** differs. The job pod is on `#1`, built `Thu Oct 22 17:38:11`; the
   ordinary pod on the same node is on `#2`, built `Thu Oct 22 00:16:59`. Two kernels, not one;
-- the job pod's uptime is `6.35` seconds, which is its own age, where the node's pod reports
-  `7388.76`;
+- the job pod's uptime is `6.35` seconds where the ordinary pod on that same node reports
+  `7388.76`. The guest booted seconds before the job script ran, which is what a VM that boots
+  with its pod looks like; the block carries no pod start timestamp, so read it as consistent
+  with the pod's age rather than measured against it;
 - the job pod's disks are `vda` to `vdd`, virtio devices, where the ordinary pod sees the
   instance's `nvme0n1` and `nvme1n1`;
 - the product name is `m8i.enclave` in the sandbox and `m8i.xlarge` on the node, which is the
@@ -586,7 +599,9 @@ than the ordinary job asks for. To hand privilege only to the daemon, the Kubern
 documentation for the version you pin. This sample keeps the single setting, because the
 sandbox is what it is about.
 
-This is the build job's log:
+This is the build job's log, abridged: BuildKit's own per-layer download and extract progress
+lines are left out, and so are its `[internal]` context-transfer steps. Every line shown is as
+the job printed it, in the order it printed them.
 
 ```text
 ===== job 2 docker-build (success) =====
@@ -701,10 +716,14 @@ Job succeeded
 
 The readings at the top of that log are the second pod's. The kernel build and the disks match
 the first job's, because both guests boot the same sandbox kernel image, and the uptime does
-not: it is this pod's own age, because this is a different VM that booted with this job. `docker info` then reports the kernel
-the daemon is running against, and it is the guest's build, not the node's. The last
-`docker run` is a container started by that daemon, nested inside the job pod's sandbox, and
-its `uname -rv` and `ls /sys/block` match the job pod's rather than the node's.
+not: it is this pod's own age, because this is a different VM that booted with this job.
+
+`docker info` reports `kernel 6.18.54`, which is the **version**, and the node runs that same
+version. It is the `uname -rv` readings that carry the build: the build container's, at the top
+of this log, and the nested container's, at the bottom. That last `docker run` is a container
+started by the daemon the job began, inside the job pod's sandbox, and its `uname -rv` reports
+`6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026` with `vda` to `vdd`: the guest's
+build and the guest's disks, not the node's.
 
 ## Step 6: The runner manager is an ordinary pod
 
@@ -806,11 +825,16 @@ gitlab-runner-846647f959-gxmff
   as a pod-template annotation, which `scripts/bootstrap-runner.sh` renders, so a changed
   config rolls the Deployment. A `resourceVersion` rather than a hash of the config, so no
   part of the credential goes into a pod annotation.
-- **A reader who already runs GitLab can skip Step 1.** Point `url` and `clone_url` in
-  `runner/config.toml.template` at their instance and paste a runner authentication token
-  from it. The only requirements are that the runner manager can reach it and that you can
-  create a runner there. Everything from Step 2 on is unchanged, and nothing about the
-  isolation depends on where GitLab runs.
+- **A reader who already runs GitLab can reuse the runner configuration, but not these
+  scripts.** Nothing about the isolation depends on where GitLab runs:
+  `runner/config.toml.template` with `url`, `clone_url` and a runner authentication token of
+  your own, on a runner manager that can reach your instance, gives you the same sandboxed job
+  pods. What does not transfer is the operator side.
+  `scripts/bootstrap-runner.sh` and `scripts/run-pipeline.sh` drive GitLab by running Ruby on
+  the Rails console **inside this sample's own GitLab pod**, which is how they create the
+  project, mint the token, start the pipeline and read the job logs. Against an instance you
+  already run, do those four things in its web UI or through its REST API instead. Step 1 and
+  the GitLab parts of the clean up do not apply either.
 - **A first `FailedMount` on a brand-new node is not a failure.** When Karpenter has just
   provisioned the node GitLab lands on, the first attach can report `FailedMount` and then
   succeed within seconds. It is worth waiting through before reading it as a problem.
@@ -889,6 +913,9 @@ It then confirms three things rather than assuming them: the namespace is gone, 
 labelled `app=gitlab-ci-job` is left anywhere on the cluster, and the EBS volume behind
 GitLab's claim was deleted. It reads that volume's id before deleting the claim, because
 afterwards there is nothing left to read it from and "no claim" would look like "no volume".
+A claim that exists but records no bound volume is reported as a volume it could not identify,
+not as a volume that was never made: provisioning and binding are asynchronous, so a volume can
+already exist before the claim names it.
 Anything it could not confirm is reported and the script exits non-zero, because a lookup
 that failed means "could not determine" and never "gone".
 
