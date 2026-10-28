@@ -1,9 +1,16 @@
 # Stage 4: the two managed node groups, created only once Cilium is installed and reporting
 # healthy (setup.sh's preflight-daemonset and BTF gates run before this file is applied).
 #
-# setup.sh fills in the ${...} placeholders and writes out/nodegroups.yaml, then runs:
+# setup.sh fills in the ${...} placeholders and writes the result to the repository's
+# gitignored tmp/issue11/run/nodegroups.yaml, then runs:
 #
-#   eksctl create nodegroup -f out/nodegroups.yaml
+#   eksctl create nodegroup -f tmp/issue11/run/nodegroups.yaml
+#
+# Each group's labels below are ALSO the labels its node registers with: setup.sh renders them,
+# plus eks.amazonaws.com/nodegroup=<name>, into kubelet's --node-labels in the launch template's
+# bootstrap user data (scripts/cilium_ubuntu.py, launch_template_data). Both launch templates
+# name an AMI, and Amazon EKS adds no user data to a launch template that names an AMI, so that
+# bootstrap line is what joins each node to the cluster.
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
 
@@ -16,11 +23,10 @@ metadata:
 
 managedNodeGroups:
   # The ordinary Ubuntu 24.04 node: CoreDNS, the Cilium operator and the comparison workloads
-  # this sample runs for contrast with the sandbox node run here. Its launch template (created
-  # by setup.sh, launch-template.json rendering) carries the pinned public Ubuntu 24.04
-  # EKS-optimized AMI (SYSTEM_AMI_ID), the instance type, disk and tags; eksctl's own
-  # amiFamily/overrideBootstrapCommand are not used because the launch template already
-  # supplies the AMI and nodeadm user data.
+  # this sample runs for contrast with the sandbox node. Its launch template (created by
+  # setup.sh) carries the pinned public Ubuntu 24.04 EKS AMI (SYSTEM_AMI_ID), the instance type,
+  # disk, tags and the bootstrap user data. It carries neither isolated-sandbox RuntimeClass
+  # label, so no sandbox pod is ever scheduled here (validate_nodegroups_config refuses one).
   - name: system
     launchTemplate:
       id: ${SYSTEM_LAUNCH_TEMPLATE_ID}
@@ -58,6 +64,10 @@ managedNodeGroups:
     availabilityZones: ["${NODE_ZONE}"]
     labels:
       sandbox.eks-nitro-sandbox.amazonaws.com/dedicated: "true"
+      # The two labels the isolated-sandbox RuntimeClass schedules on (the GA node-build
+      # bundle's UBUNTU.md, sections 4 and 5). A node without both runs no sandbox pod.
+      eks.amazonaws.com/nitro-sandbox: "true"
+      sandbox.preview/nitro: "true"
     taints:
       - key: sandbox.eks-nitro-sandbox.amazonaws.com/dedicated
         value: "true"

@@ -7,30 +7,31 @@ installed: Cilium gives every pod, the sandbox pod included, a real VPC address,
 every Service in eBPF, and is proved to enforce the same network policy on the sandbox pod as
 on an ordinary pod.
 
-> **Status: complete as authored, unvalidated against a live cluster.** This page covers all
-> six stages below: the cluster, the Cilium operator's AWS permissions, the Cilium install
-> itself, the two Ubuntu node groups, the BTF gate, and the sandbox pod / Service boundary /
-> policy evidence (`test.sh`, `clean.sh`, `deploy/workloads.yaml`, `deploy/policy.yaml`) are
-> all committed and documented here. What is **not** yet done is the live run: the output
-> blocks below are `TODO` placeholders, not captured output, and the BTF and
-> `socketLB.hostNamespaceOnly` negative controls remain to be proven on a real cluster. They
-> are marked below wherever this page anticipates them.
+> **Status: complete as authored, unvalidated against a live cluster.** This page covers every
+> stage below: the cluster, the Cilium operator's AWS permissions, the Cilium install itself,
+> the two Ubuntu node groups, the BTF gate, the isolated-sandbox RuntimeClass, and the sandbox
+> pod / Service boundary / policy evidence (`test.sh`, `clean.sh`, `deploy/workloads.yaml`,
+> `deploy/policy.yaml`). The pins follow the GA node-build bundle `nitro-sandbox-ga-20261028`.
+> What is **not** yet done is the live run: every output block below reads
+> `TODO: output from the fresh run`, and the BTF and `socketLB.hostNamespaceOnly` negative
+> controls remain to be captured on a real cluster.
 
 !!! danger "Before this sample is merged to `main` or marked available: a gate, not a suggestion"
 
-    This sample is a draft. Issue #11 stays **blocked** on inputs that have no public release
-    yet (the EKS Pod Isolation runtime and guest image, the host-kernel patch series, and a
-    fresh verified Issue #10 AMI). Every box below MUST be ticked, in order, before this page
-    is merged to `main` or its roadmap entry is changed to `(available now)`. None of them can
-    be ticked from a static read of the manifests; each needs the live run this draft has not
-    done.
+    This sample is a draft. It waits on a fresh, verified Issue #10 AMI built from the GA
+    node-build bundle: its host kernel is now built from public inputs (kernel.org 6.18.56
+    plus AWS's public commit amazonlinux/linux 1e66c960), and its runtime archive is an
+    operator-supplied input whose SHA-256 is recorded in the Versions table. Every box below
+    MUST be ticked, in order, before this page is merged to `main` or its roadmap entry is
+    changed to `(available now)`. None of them can be ticked from a static read of the
+    manifests; each needs the live run this draft has not done.
 
-    - [ ] **Refresh every version pin to the real released version.** Update the Versions
-          table to the officially released EKS Pod Isolation runtime and guest-image release,
-          the host-kernel patch release, and re-check Cilium, EKS/Kubernetes, Ubuntu and
-          eksctl together on a fresh cluster. While no public release exists, the runtime,
-          guest image and kernel-patch rows stay generic placeholders, never a guessed or
-          internal identifier.
+    - [ ] **Re-check every version pin on a fresh cluster.** Confirm the Versions table
+          against the run: the host kernel (`6.18.56-nitro-ga`) on the sandbox node, the guest
+          kernel (`6.18.54`) in the sandbox pod, the runtime archive the #10 AMI was built
+          from (its recorded SHA-256), containerd and erofs-utils on that AMI, and Cilium,
+          EKS/Kubernetes, Ubuntu, eksctl and Helm together. The runtime archive has no public
+          download; it is never committed, embedded or fetched by this sample.
     - [ ] **Consume a fresh, verified Issue #10 AMI.** `SANDBOX_AMI_ID` must be an AMI that
           carries both `ManagedBy=ubuntu-ami-sample` (Issue #10's own ownership tag) and
           `BtfValidated=true`, produced by a fresh Issue #10 build. Never an ordinary Ubuntu
@@ -40,10 +41,13 @@ on an ordinary pod.
           ENI mode with native routing and kube-proxy replacement; the least-privilege
           operator role through EKS Pod Identity; the BTF gate proven both ways, including the
           captured missing-BTF rejection; `socketLB.hostNamespaceOnly` proven with the setting
-          both `true` and `false`; the sandbox, ordinary and system lanes for pod IP, DNS and
-          ClusterIP reachability; L3/L4 allow, deny and the unselected control; L7 allow and
-          deny with the deny-row resolved against real `cilium-dbg monitor --type l7` output;
-          and FQDN allow, deny and the agent fqdn-cache evidence.
+          both `true` and `false`, read from `cilium-dbg status --verbose`; the
+          isolated-sandbox RuntimeClass and both of its node labels on the sandbox node only;
+          the sandbox pod starting with AppArmor `Unconfined`; the sandbox, ordinary and system
+          lanes for pod IP, DNS and ClusterIP reachability; L3/L4 allow, deny and the
+          unselected control; L7 allow and deny with the deny-row resolved against real
+          `cilium-dbg monitor --type l7` output; and FQDN allow, deny and the agent
+          fqdn-cache evidence.
     - [ ] **Replace every `TODO: output from the fresh run` block with real captured output.**
           Save each run's output under the repository's `tmp/` and copy the blocks from there;
           never hand-written output.
@@ -69,7 +73,7 @@ flowchart TB
     rebuilt with kernel BTF enabled; this sample refuses an AMI that is not tagged as such
     (`setup.sh`'s AMI preflight, stage 0 below) rather than discovering the missing BTF only
     after a node joins. `setup.sh` also gates on both running node kernels showing valid BTF
-    (`/sys/kernel/btf/vmlinux`) before treating their Cilium agents as ready (stage 6).
+    (`/sys/kernel/btf/vmlinux`) before treating their Cilium agents as ready (stage 5).
 
 ## This sample depends on #10
 
@@ -86,13 +90,14 @@ an AMI that failed verification, or that is not #10's own, never receives it. Ch
 `ManagedBy` too (not just the AWS account that owns the AMI resource) matches that contract:
 the account-owner check says who can use the AMI, `ManagedBy` says which build produced it.
 
-#10's AMI build itself depends on inputs this sample never fetches or bundles: the public,
-checksummed Linux kernel source and `erofs-utils` are the only two inputs #10's
-`packages/make-bundle.sh` packages. The EKS Pod Isolation runtime binaries and guest image,
-and the host-kernel patch series, are external, user-supplied inputs with no public AWS
-release channel yet (`status=pending-public-release` in #10's `packages/sources.lock`); #10
-never fetches, embeds or commits either one, and this sample inherits that same prerequisite
-through the AMI it consumes. See #10's README for the full dependency chain.
+#10's AMI follows the GA node-build bundle `nitro-sandbox-ga-20261028`, and this sample builds
+none of it. The AMI's host kernel is `6.18.56-nitro-ga`: kernel.org Linux 6.18.56 plus AWS's
+public commit [amazonlinux/linux 1e66c960](https://github.com/amazonlinux/linux/commit/1e66c960b982c94bda76ebd0129eaecf0a68b46e),
+with BTF on. The runtime binaries and the guest image (guest kernel 6.18.54) come in one
+archive, `nitro-sandbox-binaries-2026-10-28.zip`, which the operator supplies to #10's build:
+it has no public download, and #10's build checks its SHA-256 (in the Versions table below)
+before installing anything. This sample never fetches, embeds or commits that archive; it
+reaches the sample only inside the AMI. See #10's README for the full dependency chain.
 
 ## Run it
 
@@ -131,20 +136,25 @@ removes and the cost this cluster accrues while it exists.
 
 ## Versions
 
-Starting pins from the validated Cilium path (issue #11's Versions table). **Re-check every
-pin together on a fresh Ubuntu cluster before trusting a result; a version string alone is
-not sufficient evidence that Cilium health, BTF loading, ENI allocation, Service translation
-and the policy controls still hold.**
+Pins from the GA node-build bundle `nitro-sandbox-ga-20261028` and issue #11's validated
+Cilium path. `scripts/common.sh` holds the same values, and `test.sh` asserts the two kernel
+releases on the live node and pod. **Re-check every pin together on a fresh Ubuntu cluster
+before trusting a result; a version string alone is not sufficient evidence that Cilium
+health, BTF loading, ENI allocation, Service translation and the policy controls still hold.**
 
-| Component | Pin | Latest checked (2026-10-16) |
+| Component | Pin | Latest checked (2026-10-28) |
 |---|---|---|
 | [Amazon EKS Kubernetes](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html) | 1.36 | 1.36 |
-| Ubuntu system and sandbox nodes | Ubuntu 24.04 LTS; record the exact point release and regional base AMI you resolved `SYSTEM_AMI_ID` from | 24.04.5 LTS |
-| Ubuntu EKS Pod Isolation AMI | Output of [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10), rebuilt with kernel BTF enabled | Revalidate after #10 merges |
+| Ubuntu system and sandbox nodes | Ubuntu 24.04 LTS (Canonical's EKS 1.36 AMI); record the exact point release and the serial you resolved `SYSTEM_AMI_ID` from | 24.04.5 LTS |
+| Ubuntu EKS Pod Isolation AMI | Output of [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10), built from the GA bundle and BTF-validated (`ManagedBy` and `BtfValidated=true` tags) | Revalidate with a fresh #10 build |
+| Host kernel on the sandbox node | `6.18.56-nitro-ga`: kernel.org Linux 6.18.56 plus the public commit [amazonlinux/linux 1e66c960](https://github.com/amazonlinux/linux/commit/1e66c960b982c94bda76ebd0129eaecf0a68b46e), built by #10 (this sample builds no kernel) | 6.18.56 |
+| Guest kernel in the sandbox pod | 6.18.54, inside the bundle's guest image `latest.eif` | 6.18.54 |
+| EKS Pod Isolation runtime and guest image | `nitro-sandbox-binaries-2026-10-28.zip`, SHA-256 `6830dc8d0acb356b06753fed609ebb9f03a182e340eaa27cd9ed171f7667ba40`: operator-supplied to #10's build, which verifies it; no public download, never committed or embedded | 2026-10-28 |
+| containerd on the sandbox AMI | 2.2.1, as Canonical's EKS 1.36 Ubuntu AMI ships it; the runtime supports 2.1, 2.2 and 2.3, and its installer refuses 2.4 or later | 2.2.1 |
+| erofs-utils on the sandbox AMI | 1.8.10 with zstd, built by #10 | 1.8.10 |
 | [Cilium](https://github.com/cilium/cilium) Helm chart | 1.20.2 | 1.20.2 |
-| [eksctl](https://github.com/eksctl-io/eksctl) | 0.230.0 or newer; record the exact release you ran | 0.230.0 |
-| [Helm](https://github.com/helm/helm) | Record the exact client release you ran | re-check when implementing |
-| EKS Pod Isolation runtime and guest image | Same exact public release validated by #10 | re-check when implementing |
+| [eksctl](https://github.com/eksctl-io/eksctl) | 0.230.0 or newer; record the exact release you ran. eksctl takes the list of EKS versions from the EKS API (since [0.202.0](https://github.com/eksctl-io/eksctl/releases/tag/v0.202.0)), so 0.230.0 is the release this path was first validated with, not a 1.36-specific minimum | 0.231.0 |
+| [Helm](https://github.com/helm/helm) | Record the exact client release you ran | record on the run |
 
 ## The stages
 
@@ -155,8 +165,9 @@ and the policy controls still hold.**
 | [2. Give the Cilium operator its own AWS role](#2-give-the-cilium-operator-its-own-aws-role) | One Pod Identity association | Node roles without ENI permissions |
 | [3. Install Cilium before any node](#3-install-cilium-before-any-node) | Helm values: ENI mode, kube-proxy replacement, `socketLB.hostNamespaceOnly` | Cilium waiting for nodes |
 | [4. Add the two Ubuntu node groups](#4-add-the-two-ubuntu-node-groups) | Two launch templates | Both nodes Ready on Cilium |
-| [5. Gate on BTF before either agent counts as ready](#5-gate-on-btf-before-either-agent-counts-as-ready) | A running-kernel check, not a config-file guess | Both nodes' Cilium agents confirmed against `/sys/kernel/btf/vmlinux` |
-| [6. The sandbox pod, Service boundary and policy evidence](#evidence-testsh) | `test.sh`, `deploy/workloads.yaml`, `deploy/policy.yaml` | The seven pods Ready and the networking, BTF and policy proofs (output blocks are `TODO` until a live run) |
+| [5. Gate on BTF before either agent counts as ready](#5-gate-on-btf-before-either-agent-counts-as-ready) | A check of the node's own kernel, not of Cilium's status | Both nodes confirmed against `/sys/kernel/btf/vmlinux` |
+| [6. Create the isolated-sandbox RuntimeClass](#6-create-the-isolated-sandbox-runtimeclass) | The GA bundle's RuntimeClass, created only when absent | A RuntimeClass whose two labels only the sandbox node carries |
+| [7. The sandbox pod, Service boundary and policy evidence](#evidence-testsh) | `test.sh`, `deploy/workloads.yaml`, `deploy/policy.yaml` | The seven pods Ready and the networking, BTF and policy proofs (output blocks are `TODO` until a live run) |
 
 ### 0. Prerequisites and the AMI preflight
 
@@ -172,11 +183,20 @@ and the policy controls still hold.**
   refused here, not discovered later as a Cilium agent that never goes ready.
 - `SYSTEM_AMI_ID`: a public Ubuntu 24.04 EKS-optimized AMI id you resolved and pinned
   yourself (this sample does not resolve `latest` at runtime, so a re-run always boots the
-  AMI you validated against). Only existence, state and architecture are checked; this sample
-  does not second-guess a published Canonical/AWS image.
+  AMI you validated against). Canonical publishes each build under a public SSM parameter of
+  the form `/aws/service/canonical/ubuntu/eks/24.04/1.36/stable/<serial>/amd64/hvm/ebs-gp3/ami-id`;
+  pick a serial, read its id with `aws ssm get-parameter --name <that path>`, and record both.
+  Only existence, state and architecture are checked; this sample does not second-guess a
+  published Canonical/AWS image.
 
 Neither check ever substitutes a guessed or published id when the one you gave fails: it
-stops and tells you what did not match.
+stops and tells you what did not match. `setup.sh` also checks `cilium-values.yaml` here
+(`check-cilium-values`): kube-proxy replacement on, the socket load balancer in the host
+namespace only, ENI IPAM and native routing.
+
+```text
+TODO: output from the fresh run
+```
 
 ### 1. Create the cluster without the VPC CNI or kube-proxy
 
@@ -206,8 +226,10 @@ What you see: the cluster has no `aws-node` or `kube-proxy` DaemonSet and no `vp
 
 ```bash
 kubectl -n kube-system get daemonset aws-node kube-proxy
-# Error from server (NotFound): daemonsets.apps "aws-node" not found
-# Error from server (NotFound): daemonsets.apps "kube-proxy" not found
+```
+
+```text
+TODO: output from the fresh run
 ```
 
 ### 2. Give the Cilium operator its own AWS role
@@ -315,13 +337,33 @@ Ubuntu host's socket hooks never see. With `hostNamespaceOnly: true`, the socket
 balancer serves only the node's own network namespace, and every pod (sandboxed and
 ordinary alike) gets the per-packet load balancer instead, which does see the guest's
 packets at the pod's interface. Without this setting, a sandbox pod still reaches pod IPs
-directly, but a ClusterIP Service and Service-based DNS both fail, because Cilium's own
-policy drops the sandbox's still-untranslated packets as unrecognized traffic.
+directly, but neither a ClusterIP Service nor DNS through the `kube-dns` Service answers it:
+its packets leave the pod still addressed to the ClusterIP. That is what the GA node-build
+bundle measured with Cilium 1.20.2 on Amazon Linux 2023 nodes; on Ubuntu nodes this sample's
+run is the first measurement.
 
-**TODO (separate item): the positive/negative Service-boundary proof** (`test.sh` capturing
-each agent's `cilium-dbg status --verbose` and the before/after Service and DNS reachability
-from the sandbox pod, with and without `hostNamespaceOnly`) belongs to the evidence item, not
-this one.
+Read the mode from a running Cilium agent, not from the `cilium-config` ConfigMap, which says
+`bpf-lb-sock: "false"` under both settings. `test.sh` reads each agent's
+`cilium-dbg status --verbose` and requires `KubeProxyReplacement: True` and, under
+`KubeProxyReplacement Details:`, `Status: True`, `Socket LB: Enabled` and
+`Socket LB Coverage: Hostns-only` (`cilium_ubuntu.py kpr-status`; `Full` coverage, a missing
+line or ConfigMap text is refused):
+
+```bash
+kubectl -n kube-system exec ds/cilium -c cilium-agent -- cilium-dbg status --verbose
+```
+
+```text
+TODO: output from the fresh run
+```
+
+The negative control, the sandbox pod's Service and DNS reachability with
+`hostNamespaceOnly: false`, is a separate documented control run: `test.sh` stays read-only
+and never flips the live Helm value. Its output goes here:
+
+```text
+TODO: output from the fresh run
+```
 
 ### 4. Add the two Ubuntu node groups
 
@@ -330,16 +372,32 @@ Both node groups are EKS managed node groups created by eksctl, each from a laun
 sample's tags from the start.
 
 - **`system`**: the ordinary Ubuntu 24.04 node (`SYSTEM_AMI_ID`, `SYSTEM_INSTANCE_TYPE`,
-  default `m7i.large`). CoreDNS, the Cilium operator, and any comparison workloads the
-  follow-on evidence item runs live here.
+  default `m7i.large`). CoreDNS, the Cilium operator and the ordinary comparison workloads
+  run here. It carries neither of the RuntimeClass labels below, so no sandbox pod is ever
+  scheduled on it.
 - **`sandbox`**: the dedicated, tainted Ubuntu 24.04 EKS Pod Isolation node
   (`SANDBOX_AMI_ID`, `SANDBOX_INSTANCE_TYPE`, default `m8i.xlarge`), with Nitro Enclaves
-  enabled on its launch template. Its AMI's own `nodeadm` user data (built by
-  [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10)) wires kubelet to
-  the sandbox CRI proxy and registers the `isolated-sandbox` runtime handler; this sample's
-  launch template only turns on the Nitro Enclaves device and sets the instance type and
-  disk. A taint keeps every ordinary pod off this node; only a pod that tolerates
+  enabled on its launch template, which is how each sandbox pod gets its own microVM. So
+  `SANDBOX_INSTANCE_TYPE` must be a type that supports Nitro Enclaves: if `m8i.xlarge` has
+  no capacity, use another enclave-capable type such as `m8i.2xlarge` or `m7i.xlarge`, not a
+  `.large` size (`m8i.large` and `m7i.large` do not support Nitro Enclaves). The ordinary
+  system node has no such constraint. #10's AMI already holds the runtime, the guest image,
+  and Canonical's `bootstrap.sh` pointed at the sandbox CRI proxy. A taint keeps every
+  ordinary pod off this node; only a pod that tolerates
   `sandbox.eks-nitro-sandbox.amazonaws.com/dedicated=true:NoSchedule` schedules here.
+
+**How each node joins, and with which labels.** Both launch templates name an AMI, and
+Amazon EKS adds no user data to a launch template that names one (Amazon EKS User Guide,
+*Customize managed nodes with launch templates*), so each template carries its own: one
+`/etc/eks/bootstrap.sh` line, as the GA node-build bundle's Ubuntu guide has it, with the
+new cluster's API endpoint, CA and DNS address and the node's labels in
+`--kubelet-extra-args '--node-labels=...'`. The labels come from `eksctl/nodegroups.yaml`
+itself, so eksctl and kubelet always agree. The sandbox node carries the two labels the
+`isolated-sandbox` RuntimeClass (stage 6) schedules on, `eks.amazonaws.com/nitro-sandbox=true`
+and `sandbox.preview/nitro=true`; a node without both runs no sandbox pod. `setup.sh` reads
+each rendered template back before it creates a node group (`check-user-data`), and
+`render-nodegroups` refuses a sandbox group missing either label or a system group carrying
+one.
 
 From [`eksctl/nodegroups.yaml`](eksctl/nodegroups.yaml):
 
@@ -350,17 +408,24 @@ From [`eksctl/nodegroups.yaml`](eksctl/nodegroups.yaml):
       version: "1"
     labels:
       sandbox.eks-nitro-sandbox.amazonaws.com/dedicated: "true"
+      eks.amazonaws.com/nitro-sandbox: "true"
+      sandbox.preview/nitro: "true"
     taints:
       - key: sandbox.eks-nitro-sandbox.amazonaws.com/dedicated
         value: "true"
         effect: NoSchedule
 ```
 
-What you see: both nodes `Ready`, and a Cilium agent running on each, including the tainted
-sandbox node.
+What you see: both nodes `Ready` with their labels, and a Cilium agent running on each,
+including the tainted sandbox node.
 
 ```bash
+kubectl get nodes -L eks.amazonaws.com/nodegroup,eks.amazonaws.com/nitro-sandbox,sandbox.preview/nitro
 kubectl -n kube-system get pods -l k8s-app=cilium -o wide
+```
+
+```text
+TODO: output from the fresh run
 ```
 
 Before the sandbox node group is created, `setup.sh` also checks that the Cilium agent
@@ -373,21 +438,95 @@ caught before a node is created from a launch template that bills.
 ### 5. Gate on BTF before either agent counts as ready
 
 Both Ubuntu node kernels must expose valid BTF (`/sys/kernel/btf/vmlinux`, non-empty) before
-`setup.sh` calls their Cilium agents ready. This is read from the **running** kernel through a
-`kubectl exec` into the Cilium agent pod already scheduled on each node (not inferred from a
-kernel config file, and not read from the `cilium-config` ConfigMap), so the check reflects
-what the kernel actually booted with.
+`setup.sh` calls their Cilium agents ready. **The gate checks the node's BTF, not Cilium's
+status**, because Cilium's status does not show it: on a node whose kernel has no BTF, the GA
+node-build bundle reports that the Cilium agent still reads Ready, `cilium-dbg status --brief`
+says `OK` and kube-proxy replacement reads `True`, yet its datapath never loads. Its log
+repeats `Failed to initialize datapath` with `no BTF found`, and pods there that need a pod
+address, sandbox and ordinary alike, stay `ContainerCreating` with
+`cilium-cni ... unable to create endpoint: Cilium API client timeout exceeded`.
+
+So `check-btf` runs the bundle's own test in the Cilium agent pod on each node. The agent
+container shares its node's kernel, so this reads the node's running kernel, not a kernel
+config file and not the `cilium-config` ConfigMap. Anything but exactly `PRESENT` is refused.
 
 ```bash
 kubectl -n kube-system exec ds/cilium -c cilium-agent -- sh -c 'test -s /sys/kernel/btf/vmlinux && echo PRESENT || echo MISSING'
 ```
 
-**TODO (separate item): the documented negative control.** Issue #11's acceptance criteria
-call for a captured failure showing a missing-BTF kernel rejected before node acceptance.
-This item's `check-btf` command refuses with a clear message when BTF is absent (proved
-against the real command with a stub `kubectl` returning `MISSING`, not a copy of the check);
-capturing that failure from an actual non-BTF Ubuntu build, and the accompanying README
-evidence block, belongs to the evidence item together with the rest of stage 6.
+```text
+TODO: output from the fresh run
+```
+
+`test.sh` then reads each agent's own log for those two failure strings
+(`cilium_ubuntu.py datapath-failures`), and a log in which no line has the agent's
+`time=... level=...` format is refused as unreadable rather than read as clean.
+
+**The missing-BTF rejection.** Issue #11 asks for a failing control or a captured preflight
+failure that shows a missing-BTF kernel rejected before the node is accepted. Unless a real
+node without BTF is cheaply available, the fresh run captures it as a **stub-driven** run of
+the real `cilium_ubuntu.py check-btf` command: a stub `kubectl` first on `PATH` answers the
+agent-pod lookup and returns `MISSING` for the BTF read, so the gate under test is the shipped
+one and only the node is simulated. The block below will say which of the two it is.
+
+```text
+TODO: output from the fresh run
+```
+
+### 6. Create the isolated-sandbox RuntimeClass
+
+A pod selects `runtimeClassName: isolated-sandbox`, which must exist as a Kubernetes
+RuntimeClass whose scheduling labels match the sandbox node's. The GA node-build bundle's
+Ubuntu guide has the cluster's operator apply it once per cluster; this cluster is new, so
+`setup.sh` creates it, only when it is absent, and then requires that whatever is there
+matches the bundle's (`check-runtimeclass`): the same handler, the same per-pod overhead, and
+a nodeSelector on exactly the two labels only the sandbox node carries. It also confirms the
+sandbox node carries both labels and the system node neither (`check-node-labels`).
+
+```yaml
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: isolated-sandbox
+handler: isolated-sandbox
+overhead:
+  podFixed:
+    eks.amazonaws.com/nitro-sandbox: "1"
+    memory: 256Mi
+scheduling:
+  nodeSelector:
+    eks.amazonaws.com/nitro-sandbox: "true"
+    sandbox.preview/nitro: "true"
+```
+
+```bash
+kubectl get runtimeclass isolated-sandbox -o yaml
+```
+
+```text
+TODO: output from the fresh run
+```
+
+**AppArmor on the sandbox pod.** On an Ubuntu node, every `isolated-sandbox` pod sets
+`securityContext.appArmorProfile.type: Unconfined`, and `deploy/workloads.yaml` sets it on the
+`nitro` pod and on no other. The Ubuntu node kernel keeps AppArmor on, so without the setting
+kubelet asks for the `RuntimeDefault` profile, the runtime passes that request into the pod's
+guest microVM, and the pod fails to start with `apparmor failed to apply profile`. This is a
+requirement of the platform on an Ubuntu host, not a weakening of the pod's isolation: the
+profile request is handled by runc inside the guest, so `Unconfined` changes nothing on the
+host, and the microVM, with its own guest kernel, stays that pod's boundary. The ordinary pods
+run directly on the node's kernel, so they keep their default profile, and
+`cilium_ubuntu.py check-workloads` refuses `Unconfined` on any of them (and refuses a sandbox
+pod without it). The GA bundle lists this as an open item it tracks with the service team, and
+Amazon Linux 2023 hosts, which have no AppArmor, need no such setting.
+
+```yaml
+spec:
+  runtimeClassName: isolated-sandbox
+  securityContext:
+    appArmorProfile:
+      type: Unconfined
+```
 
 ## Evidence (`./test.sh`)
 
@@ -411,9 +550,13 @@ What it checks, in order:
 2. **The operator's credentials.** The operator pod gets its AWS credentials from EKS Pod
    Identity, its role allows exactly Cilium's documented ENI actions, and neither node role
    carries `AmazonEKS_CNI_Policy`.
-3. **The sandbox pod has its own guest.** Its guest kernel differs from the node kernel, it
-   sees virtio disks (no node `nvme`), and its boot uptime is its own, while `neighbor`, an
-   ordinary pod on the same node, shares the node kernel and sees the node's `nvme`. The
+3. **The sandbox pod has its own guest.** The `isolated-sandbox` RuntimeClass matches the GA
+   bundle's, the sandbox node carries both of its labels and the system node neither, and the
+   sandbox pod alone runs with AppArmor `Unconfined`. The sandbox node runs the pinned host
+   kernel `6.18.56-nitro-ga` and the sandbox pod the pinned guest kernel `6.18.54`. Its guest
+   kernel differs from the node kernel, it sees virtio disks (no node `nvme`), and its boot
+   uptime is its own, while `neighbor`, an ordinary pod on the same node, shares the node
+   kernel and sees the node's `nvme`. The
    sandbox node itself advertises a positive allocatable `eks.amazonaws.com/nitro-sandbox`
    quantity (the same key and both-ways accept/reject proof as
    [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10)'s own `test.sh`),
@@ -439,15 +582,20 @@ What it checks, in order:
    `auto-delete=no`, and no tracked file holds an account id, AMI id or other account-specific
    value.
 
-> The output blocks for a real run are captured by the coordinated evidence/page item; until
-> that run, treat the command lines above as the shape of the proof, not as recorded output.
+```bash
+./test.sh
+```
+
+```text
+TODO: output from the fresh run
+```
 
 The both-ways negative controls for the L7 and FQDN denies prove the drop is each rule and
 not an unrelated timeout: an unselected control pod reaches the denied destination, and the
 denied name still resolves. The `socketLB.hostNamespaceOnly` negative control (a sandbox pod
-cannot reach a ClusterIP Service or Service-based DNS with the setting off) is a documented
-control run captured by the evidence item; `test.sh` stays read-only and does not flip the
-live Helm value.
+cannot reach a ClusterIP Service or Service-based DNS with the setting off) is the documented
+control run in [stage 3](#3-install-cilium-before-any-node); `test.sh` stays read-only and
+does not flip the live Helm value.
 
 ## What stays running, and cleaning up
 
@@ -458,8 +606,8 @@ ENIs it creates (`cilium-values.yaml`'s `eni.eniTags`).
 
 While it is up, this sample keeps billing: the EKS control plane, one `m7i.large` and one
 `m8i.xlarge` instance with their gp3 volumes, one NAT gateway and its Elastic IP. Use the
-[AWS Pricing Calculator](https://calculator.aws/) for an estimate; the evidence item will add
-a measured duration and cost here from a real run.
+[AWS Pricing Calculator](https://calculator.aws/) for an estimate; the fresh run will add a
+measured duration and cost here.
 
 Run `./clean.sh` when you finish. `./clean.sh --dry-run` lists only the run-owned resources it
 would delete and changes nothing; `./clean.sh` deletes the two node groups, the ENIs Cilium
@@ -469,7 +617,23 @@ reads back that the cluster, the launch templates and the eksctl stacks are gone
 cluster not tagged `Demo=setup-cilium-ubuntu`, deletes ENIs and launch templates only when
 they carry that tag, and exits non-zero if anything it was asked to delete is still there: a
 lookup that fails is recorded as a failure, never read as "gone". Deleting the cluster removes
-the sample's namespace and its pods with it.
+the sample's namespace, its pods and the `isolated-sandbox` RuntimeClass with it.
+
+```bash
+./clean.sh --dry-run
+```
+
+```text
+TODO: output from the fresh run
+```
+
+```bash
+./clean.sh
+```
+
+```text
+TODO: output from the fresh run
+```
 
 ??? note "Files"
 
@@ -480,10 +644,10 @@ the sample's namespace and its pods with it.
     | [`eksctl/pod-identity.yaml`](eksctl/pod-identity.yaml) | Stage 2: the operator's role |
     | [`cilium-values.yaml`](cilium-values.yaml) | Stage 3: Cilium's Helm values |
     | [`eksctl/nodegroups.yaml`](eksctl/nodegroups.yaml) | Stage 4: the node groups |
-    | [`setup.sh`](setup.sh) | Stages 0 through 5: create, render, gate |
-    | [`scripts/common.sh`](scripts/common.sh) | Shared config loading and helpers |
-    | [`scripts/cilium_ubuntu.py`](scripts/cilium_ubuntu.py) | Rendering, AMI preflight, launch templates, the DaemonSet and BTF gates, and the agent-output proofs `test.sh` / `clean.sh` read |
-    | [`deploy/workloads.yaml`](deploy/workloads.yaml) | The sandbox pod, the comparison pods, and the `server` ClusterIP Service |
+    | [`setup.sh`](setup.sh) | Stages 0 through 6: create, render, gate, RuntimeClass |
+    | [`scripts/common.sh`](scripts/common.sh) | Shared config loading, version pins and helpers |
+    | [`scripts/cilium_ubuntu.py`](scripts/cilium_ubuntu.py) | Rendering, AMI preflight, launch templates and their bootstrap user data, the DaemonSet, BTF, RuntimeClass, node-label, AppArmor and Helm-values checks, and the agent-output proofs `test.sh` / `clean.sh` read |
+    | [`deploy/workloads.yaml`](deploy/workloads.yaml) | The sandbox pod (AppArmor `Unconfined`), the comparison pods, and the `server` ClusterIP Service |
     | [`deploy/policy.yaml`](deploy/policy.yaml) | The egress `CiliumNetworkPolicy`: L3/L4, L7 HTTP and FQDN rules |
     | [`test.sh`](test.sh) | Apply the workloads and policy, then prove networking, BTF and policy (see [Evidence](#evidence-testsh)) |
     | [`clean.sh`](clean.sh) | Dry-run and full teardown of the cluster, ENIs, launch templates and IAM |

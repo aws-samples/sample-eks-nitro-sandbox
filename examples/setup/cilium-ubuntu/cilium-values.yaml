@@ -47,10 +47,13 @@ k8sServicePort: 443
 # socket load balancer to the node's own network namespace (host-network pods, kubelet, the
 # Cilium agent itself) and leaves every pod, sandboxed and ordinary alike, on the per-packet
 # path. Without this setting (the chart's default, false) a sandbox pod still reaches pod IPs
-# directly, but a ClusterIP Service and Service-based DNS both time out: the guest's packets
-# leave its interface still addressed to the untranslated Service IP, and Cilium's own policy
-# drops them as traffic the sandbox was never meant to reach. test.sh proves this both ways: a
-# positive control with the setting on, and a documented negative control with it off.
+# directly, but a ClusterIP Service and DNS through the kube-dns Service both time out: the
+# guest's packets leave its interface still addressed to the untranslated Service IP (the GA
+# node-build bundle's measurement with Cilium 1.20.2, on Amazon Linux 2023 nodes). Read the mode
+# from `cilium-dbg status --verbose` (Socket LB Coverage: Hostns-only), never from the
+# cilium-config ConfigMap, which says bpf-lb-sock "false" under both settings. setup.sh's
+# check-cilium-values refuses this file without it; test.sh proves the live mode on each agent,
+# and the page documents the negative control run with the setting off.
 socketLB:
   hostNamespaceOnly: true
 

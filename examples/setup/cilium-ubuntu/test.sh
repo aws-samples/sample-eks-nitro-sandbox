@@ -2,7 +2,10 @@
 # Prove what the page claims about the Cilium-on-Ubuntu cluster setup.sh built:
 #   1. the VPC CNI and kube-proxy are absent; Cilium is the only CNI and replaces kube-proxy,
 #      with its socket load balancer in the host namespace only, fully up on both Ubuntu nodes;
-#   2. the Nitro sandbox pod runs in its own guest kernel on the Ubuntu sandbox node;
+#   2. the Nitro sandbox pod runs in its own guest kernel (the pinned guest release) on the
+#      Ubuntu sandbox node (the pinned host release), scheduled there by the GA isolated-sandbox
+#      RuntimeClass whose two labels only the sandbox node carries, with AppArmor Unconfined
+#      on the sandbox pod alone;
 #   3. its IP is a VPC address, on an ENI of its node, with a CiliumEndpoint;
 #   4. it reaches an ordinary pod and is reached by one, and reaches a Service by DNS, as the
 #      ordinary pods beside it and on the other node do; the node itself reaches the Service;
@@ -70,6 +73,9 @@ absent_ds() {
 # test.sh is safe. The namespace manifest carries the sample's part-of label, which the
 # ownership checks and clean.sh key on.
 step "0. Apply the sample's workloads and the egress network policy"
+# AppArmor Unconfined on the sandbox pod and on no ordinary pod, checked before anything is
+# applied (an Ubuntu host needs it for every isolated-sandbox pod; see the README).
+python3 "$PY" check-workloads || die "deploy/workloads.yaml fails the AppArmor check above"
 kubectl apply -f "$SAMPLE_DIR/deploy/workloads.yaml" >/dev/null || die "could not apply deploy/workloads.yaml"
 kubectl apply -f "$SAMPLE_DIR/deploy/policy.yaml" >/dev/null || die "could not apply deploy/policy.yaml"
 echo "waiting for the seven pods to be Ready (the sandbox pod boots a guest VM, so this can take a few minutes)..."
@@ -163,6 +169,28 @@ control_node="$(jget '{.spec.nodeName}' "${ns[@]}" pod control)"
 assert "pod nitro is Ready with runtimeClassName isolated-sandbox" $?
 [[ -n "$nitro_node" && "$(jget '{.metadata.labels.eks\.amazonaws\.com/nodegroup}' node "$nitro_node")" == sandbox ]]
 assert "pod nitro runs on the Ubuntu sandbox node ($nitro_node)" $?
+# The RuntimeClass the GA bundle defines, and the node labels it schedules on: both on the
+# sandbox node, neither on the ordinary system node.
+# Each message is built from the captured output BEFORE assert runs, so assert gets the check's
+# own exit status, not that of a $(...) in its arguments.
+out="$(kubectl get runtimeclass isolated-sandbox -o json 2>/dev/null | python3 "$PY" check-runtimeclass 2>&1)"; rc=$?
+msg="the isolated-sandbox RuntimeClass matches the GA bundle's ($(tail -n1 <<<"$out"))"
+assert "$msg" "$rc"
+out="$(kubectl get node "$nitro_node" -o json 2>/dev/null | python3 "$PY" check-node-labels sandbox 2>&1)"; rc=$?
+msg="$(tail -n1 <<<"$out")"
+assert "$msg" "$rc"
+out="$(kubectl get node "$control_node" -o json 2>/dev/null | python3 "$PY" check-node-labels system 2>&1)"; rc=$?
+msg="$(tail -n1 <<<"$out"), so no sandbox pod can be scheduled on it"
+assert "$msg" "$rc"
+nitro_apparmor="$(jget '{.spec.securityContext.appArmorProfile.type}' "${ns[@]}" pod nitro)"
+[[ "$nitro_apparmor" == Unconfined ]]
+assert "pod nitro runs with appArmorProfile Unconfined, which an Ubuntu host needs for every sandbox pod" $?
+neighbor_apparmor="$(jget '{.spec.securityContext.appArmorProfile.type}' "${ns[@]}" pod neighbor)"
+[[ "$neighbor_apparmor" != Unconfined ]]
+assert "neighbor: the ordinary pod on the same node keeps its default AppArmor profile (${neighbor_apparmor:-unset})" $?
+sandbox_kernel="$(jget '{.status.nodeInfo.kernelVersion}' node "$nitro_node")"
+python3 "$PY" kernel-release "$HOST_KERNEL_RELEASE" "$sandbox_kernel"
+assert "the sandbox node runs the pinned host kernel $HOST_KERNEL_RELEASE (${sandbox_kernel:-unread})" $?
 # ACCEPT: the node's allocatable capacity for the actual extended resource the EKS Pod
 # Isolation device plugin advertises, not just the RuntimeClass object's existence (a
 # RuntimeClass can exist with no node able to run it). Same key and same both-ways proof as
@@ -180,6 +208,8 @@ nitro_guest="$(kubectl "${ns[@]}" exec nitro -- uname -r 2>/dev/null)"
 nitro_host="$(jget '{.status.nodeInfo.kernelVersion}' node "$nitro_node")"
 [[ -n "$nitro_guest" && -n "$nitro_host" && "$nitro_guest" != "$nitro_host" ]]
 assert "sandbox pod guest kernel ($nitro_guest) differs from its Ubuntu node's kernel ($nitro_host)" $?
+python3 "$PY" kernel-release "$GUEST_KERNEL_RELEASE" "$nitro_guest"
+assert "sandbox pod runs the pinned guest kernel $GUEST_KERNEL_RELEASE from the bundle's guest image (${nitro_guest:-unread})" $?
 control_guest="$(kubectl "${ns[@]}" exec control -- uname -r 2>/dev/null)"
 control_host="$(jget '{.status.nodeInfo.kernelVersion}' node "$control_node")"
 [[ -n "$control_guest" && "$control_guest" == "$control_host" ]]

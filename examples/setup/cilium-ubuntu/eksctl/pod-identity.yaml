@@ -4,7 +4,7 @@
 # eksctl refuses Pod Identity associations in `create cluster` while the cluster has no VPC
 # CNI, so setup.sh adds this association as its own step:
 #
-#   eksctl create podidentityassociation -f out/pod-identity.yaml
+#   eksctl create podidentityassociation -f tmp/issue11/run/pod-identity.yaml
 #
 # It must exist BEFORE Cilium is installed: EKS injects the credentials into the operator pod
 # only when the pod is created, and the operator is the one Cilium component that calls the

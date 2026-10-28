@@ -30,12 +30,32 @@ fi
 export AWS_ACCOUNT_ID AWS_REGION CLUSTER_NAME AVAILABILITY_ZONES SANDBOX_AMI_ID SYSTEM_AMI_ID \
   SANDBOX_AMI_MANAGED_BY_VALUE SANDBOX_INSTANCE_TYPE SYSTEM_INSTANCE_TYPE OWNER_TAG
 
-# Versions this sample was built and tested with. Cilium is pinned exactly; eksctl needs at
-# least the version that knows EKS 1.36. The README's version table must match these.
+# Versions this sample is pinned to. The README's Versions table must match these.
+#
+# Cilium is pinned exactly. eksctl has no per-release list of Kubernetes versions: since
+# eksctl 0.202.0 it accepts whatever versions the EKS DescribeClusterVersions API reports, so
+# 0.230.0 is the floor because it is the release this sample's issue was first validated with,
+# not because it is the first that knows EKS 1.36.
 CILIUM_VERSION=1.20.2
 CILIUM_CHART=oci://quay.io/cilium/charts/cilium
 EKSCTL_MIN_VERSION=0.230.0
 KUBERNETES_VERSION=1.36
+
+# What the sandbox node runs, from the GA node-build bundle nitro-sandbox-ga-20261028 that the
+# ../ubuntu-ami (#10) AMI is built from. This sample builds none of it; test.sh asserts the two
+# kernel releases on the live node and pod.
+#   host kernel   kernel.org linux 6.18.56 plus AWS's public commit amazonlinux/linux 1e66c960,
+#                 local version -nitro-ga (what the sandbox node's `uname -r` shows)
+#   guest kernel  inside the bundle's guest image latest.eif (what the sandbox pod's `uname -r` shows)
+HOST_KERNEL_RELEASE=6.18.56-nitro-ga
+GUEST_KERNEL_RELEASE=6.18.54
+# The runtime binaries and guest image come in one archive the operator supplies to the #10
+# build, which checks this SHA-256 before it installs anything. It has no public download, so
+# this sample never fetches, verifies, embeds or commits it; the values are recorded here so
+# the README and the AMI you consume can be compared against one place.
+RUNTIME_ARCHIVE=nitro-sandbox-binaries-2026-10-28.zip
+RUNTIME_ARCHIVE_SHA256=6830dc8d0acb356b06753fed609ebb9f03a182e340eaa27cd9ed171f7667ba40
+export HOST_KERNEL_RELEASE GUEST_KERNEL_RELEASE RUNTIME_ARCHIVE RUNTIME_ARCHIVE_SHA256
 
 # The sample's namespace and the label that marks it the sample's. A script reuses or deletes
 # the namespace, or anything in it, only when the label is present; otherwise it stops.

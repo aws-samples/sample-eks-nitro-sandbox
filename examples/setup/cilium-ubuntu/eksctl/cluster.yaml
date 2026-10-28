@@ -1,9 +1,9 @@
 # Stage 1: the cluster, with no CNI, no kube-proxy and no nodes.
 #
-# setup.sh fills in the ${...} placeholders from config.env / config.local.env and writes the
-# result to out/cluster.yaml, then runs:
+# setup.sh fills in the ${...} placeholders from config.env.example / config.local.env and
+# writes the result to the repository's gitignored tmp/issue11/run/cluster.yaml, then runs:
 #
-#   eksctl create cluster -f out/cluster.yaml --without-nodegroup
+#   eksctl create cluster -f tmp/issue11/run/cluster.yaml --without-nodegroup
 #
 # The node groups come later (nodegroups.yaml), AFTER Cilium is installed, so no node ever
 # boots without a CNI that can give its pods an address. This cluster is dedicated and

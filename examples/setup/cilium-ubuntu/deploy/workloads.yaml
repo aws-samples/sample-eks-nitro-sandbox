@@ -25,8 +25,10 @@
 #
 # The namespace carries the sample's part-of label so the scripts can confirm the namespace is
 # the sample's before they touch anything in it. The sandbox pod tolerates the dedicated taint
-# and selects the sandbox node group; the ordinary comparison pods select system (control,
-# server, other, api) or the sandbox node group (neighbor, node-probe).
+# and selects the sandbox node group; the isolated-sandbox RuntimeClass adds its own
+# nodeSelector (eks.amazonaws.com/nitro-sandbox and sandbox.preview/nitro, which only the
+# sandbox node carries) and its per-pod overhead. The ordinary comparison pods select system
+# (control, server, other, api) or the sandbox node group (neighbor, node-probe).
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -53,6 +55,15 @@ spec:
       operator: Equal
       value: "true"
       effect: NoSchedule
+  # Required for every isolated-sandbox pod on an Ubuntu host, and set on this pod only. The
+  # Ubuntu node kernel keeps AppArmor on, so without this kubelet asks for the RuntimeDefault
+  # profile, the runtime passes that request into the pod's guest microVM, and runc there fails
+  # with "apparmor failed to apply profile". The microVM, not a host AppArmor profile, is this
+  # pod's isolation boundary. The ordinary pods below keep their default profile, and
+  # `cilium_ubuntu.py check-workloads` refuses Unconfined on any of them.
+  securityContext:
+    appArmorProfile:
+      type: Unconfined
   automountServiceAccountToken: false
   enableServiceLinks: false
   terminationGracePeriodSeconds: 0

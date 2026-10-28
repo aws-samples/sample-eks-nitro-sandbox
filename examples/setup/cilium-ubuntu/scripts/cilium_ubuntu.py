@@ -19,6 +19,7 @@ the sandbox AMI's architecture, owner and expected build metadata before any nod
 created from it.
 """
 import argparse
+import base64
 import getpass
 import ipaddress
 import json
@@ -44,14 +45,37 @@ DEMO_TAG = ("Demo", "setup-cilium-ubuntu")
 SANDBOX_TAINT_KEY = "sandbox.eks-nitro-sandbox.amazonaws.com/dedicated"
 SANDBOX_GROUP = "sandbox"
 SYSTEM_GROUP = "system"
-# The node group name label is what the sample's pods select on; the taint key doubles as a
-# label so the sandbox RuntimeClass's node affinity (if any) and this sample's own selectors
-# agree on one name.
+NODEGROUP_LABEL = "eks.amazonaws.com/nodegroup"
+# The isolated-sandbox RuntimeClass, exactly as the GA node-build bundle's UBUNTU.md (section 5,
+# "Create the RuntimeClass and run a sandbox pod") gives it. Its scheduling.nodeSelector sends
+# every isolated-sandbox pod to a node carrying BOTH labels, so the sandbox node must carry both
+# (UBUNTU.md section 4, "Node labels") and the ordinary system node must carry neither. The
+# bundle says to apply it once per cluster; this sample's cluster is new, so setup.sh creates it.
+RUNTIMECLASS_NAME = "isolated-sandbox"
+RUNTIMECLASS_NODE_SELECTOR = {"eks.amazonaws.com/nitro-sandbox": "true", "sandbox.preview/nitro": "true"}
+RUNTIMECLASS = {
+    "apiVersion": "node.k8s.io/v1",
+    "kind": "RuntimeClass",
+    "metadata": {"name": RUNTIMECLASS_NAME},
+    "handler": RUNTIMECLASS_NAME,
+    "overhead": {"podFixed": {"eks.amazonaws.com/nitro-sandbox": "1", "memory": "256Mi"}},
+    "scheduling": {"nodeSelector": dict(RUNTIMECLASS_NODE_SELECTOR)},
+}
+# The labels the sandbox node carries: its node group name (what this sample's pods select on),
+# the dedicated label that matches its taint, and the two RuntimeClass labels. setup.sh passes
+# them to kubelet through the launch template's bootstrap user data (launch_template_data), and
+# the preflight below checks the Cilium agent DaemonSet would schedule on a node with them.
 SANDBOX_LABELS = {
-    "eks.amazonaws.com/nodegroup": SANDBOX_GROUP,
+    NODEGROUP_LABEL: SANDBOX_GROUP,
     SANDBOX_TAINT_KEY: "true",
+    **RUNTIMECLASS_NODE_SELECTOR,
 }
 KUBELET_LABELS = {"kubernetes.io/os": "linux", "kubernetes.io/arch": "amd64"}
+# A Kubernetes label key (optional DNS prefix, then a name) and value, so every label this
+# sample renders into kubelet's --node-labels is a plain token with nothing a shell or kubelet
+# would read as syntax.
+LABEL_KEY = re.compile(r"^(?:[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?/)?[A-Za-z0-9](?:[A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$")
+LABEL_VALUE = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9._-]{0,61}[A-Za-z0-9])?)?$")
 # Expected shape of the Ubuntu Pod Isolation sandbox AMI, from issue #10's build. This sample
 # does not rebuild or own that AMI; it only verifies the id given in config.local.env matches
 # this shape before using it.
@@ -220,13 +244,38 @@ def validate_nodegroups_config(cfg):
     require(any(t.get("key") == SANDBOX_TAINT_KEY and t.get("effect") == "NoSchedule"
                 for t in sandbox.get("taints", [])),
             "the sandbox node group must carry the dedicated taint")
+    for name, group in groups.items():
+        labels = group.get("labels") or {}
+        require(isinstance(labels, dict) and all(
+                    isinstance(k, str) and isinstance(v, str) and LABEL_KEY.match(k) and LABEL_VALUE.match(v)
+                    for k, v in labels.items()),
+                f"node group {name} has a label that is not a plain Kubernetes label key and string value")
+        require(NODEGROUP_LABEL not in labels,
+                f"node group {name} must not set {NODEGROUP_LABEL}; setup.sh sets it from the group's name")
+    # The GA RuntimeClass schedules isolated-sandbox pods onto nodes with BOTH labels, so the
+    # sandbox node group must carry both, and the ordinary system node group neither: a system
+    # node with one of them could be picked for a sandbox pod it cannot run.
+    sandbox_labels = sandbox.get("labels") or {}
+    missing = [f"{k}={v}" for k, v in RUNTIMECLASS_NODE_SELECTOR.items() if sandbox_labels.get(k) != v]
+    require(not missing, f"the sandbox node group lacks the {RUNTIMECLASS_NAME} RuntimeClass label(s) "
+                         f"{', '.join(missing)}, so no sandbox pod could schedule on it")
+    require(sandbox_labels.get(SANDBOX_TAINT_KEY) == "true",
+            f"the sandbox node group must carry the {SANDBOX_TAINT_KEY}=true label that matches its taint")
+    system_labels = groups[SYSTEM_GROUP].get("labels") or {}
+    stray = sorted(k for k in list(RUNTIMECLASS_NODE_SELECTOR) + [SANDBOX_TAINT_KEY] if k in system_labels)
+    require(not stray, f"the system node group must not carry {', '.join(stray)}: it is an ordinary node")
     return cfg
 
 
-def render_config(template, destination, values, validate):
+def load_config(template, values, validate):
     import yaml  # PyYAML; imported here so offline checks that do not render need not have it
     text = substitute((DEMO / "eksctl" / template).read_text(), values)
-    cfg = validate(yaml.safe_load(text))
+    return validate(yaml.safe_load(text))
+
+
+def render_config(template, destination, values, validate):
+    import yaml
+    cfg = load_config(template, values, validate)
     OUT.mkdir(mode=0o700, parents=True, exist_ok=True)
     destination.write_text(yaml.safe_dump(cfg, sort_keys=False))
     destination.chmod(0o600)
@@ -253,13 +302,33 @@ def cmd_render_cluster(_):
     }, validate_pod_identity_config)
 
 
-def cmd_render_nodegroups(args):
-    render_config("nodegroups.yaml", OUT / "nodegroups.yaml", {
+def nodegroup_values(system_lt, sandbox_lt):
+    return {
         "CLUSTER_NAME": setting("CLUSTER_NAME"), "AWS_REGION": setting("AWS_REGION"),
         "NODE_ZONE": zones()[0],
-        "SYSTEM_LAUNCH_TEMPLATE_ID": args.system_launch_template,
-        "SANDBOX_LAUNCH_TEMPLATE_ID": args.sandbox_launch_template,
-    }, validate_nodegroups_config)
+        "SYSTEM_LAUNCH_TEMPLATE_ID": system_lt,
+        "SANDBOX_LAUNCH_TEMPLATE_ID": sandbox_lt,
+    }
+
+
+def cmd_render_nodegroups(args):
+    render_config("nodegroups.yaml", OUT / "nodegroups.yaml",
+                  nodegroup_values(args.system_launch_template, args.sandbox_launch_template),
+                  validate_nodegroups_config)
+
+
+def node_labels(group):
+    """The labels kubelet registers this group's node with: the node group's name, then every
+    label eksctl/nodegroups.yaml gives the group. Read from the same file eksctl applies, and
+    validated by validate_nodegroups_config first, so the sandbox node always carries both
+    RuntimeClass labels and the system node neither. The launch templates are created before
+    their ids exist in nodegroups.yaml, so a placeholder id fills that field here; only the
+    labels are used."""
+    placeholder = "lt-" + "0" * 17
+    cfg = load_config("nodegroups.yaml", nodegroup_values(placeholder, placeholder), validate_nodegroups_config)
+    found = [g for g in cfg["managedNodeGroups"] if g.get("name") == group]
+    require(len(found) == 1, f"eksctl/nodegroups.yaml has no single node group named {group}")
+    return {NODEGROUP_LABEL: group, **(found[0].get("labels") or {})}
 
 
 # ---------------------------------------------------------------------------
@@ -338,16 +407,97 @@ def tag_specs(group, *resource_types):
             for r in resource_types]
 
 
+BOOTSTRAP = "/etc/eks/bootstrap.sh"
+
+
+def bootstrap_user_data(group, info):
+    """The node's boot script: Canonical's EKS bootstrap, as the GA bundle's UBUNTU.md section 4
+    ("Bake and join") has the launch template run it, with the cluster's API endpoint, CA and
+    DNS address and this group's node labels. Both launch templates name an AMI, and Amazon
+    EKS merges no user data into a launch template that names an AMI (Amazon EKS User Guide,
+    "Customize managed nodes with launch templates"), so without this script no node joins.
+    On the sandbox AMI, #10's build already pointed bootstrap.sh's kubelet at the sandbox CRI
+    proxy; this script only runs it. Every value is checked against a plain charset first, so
+    nothing in it can be read as shell syntax."""
+    cluster = setting("CLUSTER_NAME")
+    endpoint = info.get("endpoint") or ""
+    ca = (info.get("certificateAuthority") or {}).get("data") or ""
+    cidr = (info.get("kubernetesNetworkConfig") or {}).get("serviceIpv4Cidr") or ""
+    require(re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,99}", cluster), f"cluster name '{cluster}' is not a plain name")
+    require(re.fullmatch(r"https://[A-Za-z0-9.-]+", endpoint), f"cluster endpoint '{endpoint}' is not an https host")
+    require(re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", ca), "the cluster's certificate authority is not base64")
+    try:
+        dns = str(ipaddress.ip_network(cidr)[10])
+    except ValueError:
+        raise DemoError(f"the cluster's service CIDR '{cidr}' could not be read")
+    labels = node_labels(group)
+    require(all(LABEL_KEY.match(k) and LABEL_VALUE.match(v) for k, v in labels.items()),
+            f"a {group} node label is not a plain Kubernetes label")
+    joined = ",".join(f"{k}={v}" for k, v in labels.items())
+    return "\n".join([
+        "#!/bin/bash",
+        f"# {cluster}-{group}: rendered by scripts/cilium_ubuntu.py (launch_template_data).",
+        "set -euo pipefail",
+        f"{BOOTSTRAP} {cluster} \\",
+        f"  --apiserver-endpoint {endpoint} \\",
+        f"  --b64-cluster-ca {ca} \\",
+        f"  --dns-cluster-ip {dns} \\",
+        f"  --kubelet-extra-args '--node-labels={joined}'",
+    ]) + "\n"
+
+
+def user_data_node_labels(user_data):
+    """{key: value} from the --node-labels= of a bootstrap user data script, or None when the
+    script holds no single bootstrap.sh line with exactly one --node-labels argument."""
+    text = user_data.replace("\\\n", " ")
+    calls = [line for line in text.splitlines() if line.strip().startswith(BOOTSTRAP + " ")]
+    if len(calls) != 1:
+        return None
+    found = re.findall(r"--node-labels=([^'\s]+)", calls[0])
+    if len(found) != 1:
+        return None
+    pairs = [p.split("=", 1) for p in found[0].split(",")]
+    if not all(len(p) == 2 for p in pairs):
+        return None
+    return dict(pairs)
+
+
+def cmd_check_user_data(args):
+    """Launch-template data JSON on stdin (what `launch-template <group>` writes to RUN_DIR).
+    Exit 0 when its UserData runs bootstrap.sh exactly once with --node-labels that name this
+    node group and fit its role (the sandbox node both RuntimeClass labels, the system node
+    neither); 1 when not; 2 when the input holds no readable UserData (nothing was checked)."""
+    text = sys.stdin.read()
+    try:
+        data = json.loads(text) if text.strip() else None
+        script = base64.b64decode(data["UserData"], validate=True).decode()
+    except (ValueError, TypeError, KeyError):
+        print("no launch-template data with base64 UserData in the input: nothing was checked", file=sys.stderr)
+        sys.exit(2)
+    labels = user_data_node_labels(script)
+    if labels is None:
+        print(f"{args.role} user data does not run {BOOTSTRAP} once with one --node-labels argument")
+        sys.exit(1)
+    ok, summary = node_label_verdict(labels, args.role)
+    if labels.get(NODEGROUP_LABEL) != args.role:
+        ok, summary = False, f"{NODEGROUP_LABEL}={labels.get(NODEGROUP_LABEL)} (expected {args.role}); {summary}"
+    print(f"{args.role} user data: {BOOTSTRAP} with --node-labels {summary}")
+    sys.exit(0 if ok else 1)
+
+
 def launch_template_data(group):
     """The launch template each node group uses. Both are created by this sample, so both
     carry the sample's tags from the moment they exist, and so do the instances, volumes and
-    network interfaces launched from them."""
+    network interfaces launched from them. Both carry the bootstrap user data that joins the
+    node to this cluster with its labels (bootstrap_user_data)."""
+    user_data = bootstrap_user_data(group, cluster_info())
     common = {
         # Hop limit 1: every IMDS consumer on these nodes is host-network (kubelet, the
         # Cilium agent), so a pod, including a sandbox guest, cannot reach the node's
         # credentials through IMDS.
         "MetadataOptions": {"HttpTokens": "required", "HttpPutResponseHopLimit": 1},
         "TagSpecifications": tag_specs(group, "instance", "volume", "network-interface"),
+        "UserData": base64.b64encode(user_data.encode()).decode(),
     }
     if group == SYSTEM_GROUP:
         return {
@@ -367,9 +517,10 @@ def launch_template_data(group):
         **common,
         "ImageId": ami,
         "InstanceType": setting("SANDBOX_INSTANCE_TYPE"),
-        # EKS Pod Isolation runs each sandboxed pod in a guest VM through the Nitro Enclaves
-        # device; the ../ubuntu-ami build enables this on the AMI's own nodeadm user data, so
-        # the launch template only needs the device itself turned on.
+        # EKS Pod Isolation runs each sandboxed pod in a guest microVM through the Nitro
+        # Enclaves device, so the instance must have Nitro Enclaves turned on, and
+        # SANDBOX_INSTANCE_TYPE must be a type that supports it. The runtime, the guest image
+        # and the kubelet wiring are already on the #10 AMI.
         "EnclaveOptions": {"Enabled": True},
         "BlockDeviceMappings": [{"DeviceName": image["RootDeviceName"], "Ebs": {
             "VolumeSize": root["Ebs"]["VolumeSize"], "VolumeType": "gp3", "DeleteOnTermination": True}}],
@@ -476,27 +627,202 @@ def cmd_check_btf(args):
                       "--field-selector", f"spec.nodeName={args.node}").get("items", [])
     require(pods, f"no cilium agent pod is scheduled on node {args.node} (nodegroup {nodegroup})")
     pod_name = pods[0]["metadata"]["name"]
+    # The node's own BTF, the GA bundle's check (README, "Cilium with kube-proxy replacement":
+    # "Check the node's BTF, not Cilium's status"). On a node without BTF the agent still reads
+    # Ready and `cilium-dbg status --brief` says OK, so the agent's status cannot be the gate;
+    # the agent container shares the node's kernel, so this reads the node's /sys/kernel/btf.
     out = run(["kubectl", "-n", "kube-system", "exec", pod_name, "-c", "cilium-agent",
                "--", "sh", "-c", f'test -s {BTF_PATH} && echo PRESENT || echo MISSING'])
-    require("PRESENT" in out,
-            f"node {args.node} (nodegroup {nodegroup}) has no BTF at {BTF_PATH}; its Cilium agent "
-            "cannot load the kube-proxy-replacement datapath. This node's kernel was not built with "
-            "CONFIG_DEBUG_INFO_BTF=y; see ../ubuntu-ami for the BTF-enabled build this sample depends on.")
+    require(out.strip() == "PRESENT",
+            f"node {args.node} (nodegroup {nodegroup}) has no BTF at {BTF_PATH} (read: {out.strip()[:80]!r}); "
+            "its Cilium agent cannot load the kube-proxy-replacement datapath, even though the agent may "
+            "still report Ready. This node's kernel was not built with CONFIG_DEBUG_INFO_BTF=y; see "
+            "../ubuntu-ami for the BTF-enabled build this sample depends on.")
     print(f"BTF present on node {args.node} (nodegroup {nodegroup})")
 
 
 def cmd_runtimeclass(_):
-    """Print the isolated-sandbox RuntimeClass this sample's pods use. Scheduling onto the
-    dedicated sandbox node group is left to the pod spec's own nodeSelector/toleration (as
-    deploy/ shows), not to a RuntimeClass-level node affinity, so the RuntimeClass object
-    itself needs no sample-specific fields beyond the published handler name."""
-    rc = {
-        "apiVersion": "node.k8s.io/v1",
-        "kind": "RuntimeClass",
-        "metadata": {"name": "isolated-sandbox"},
-        "handler": "isolated-sandbox",
-    }
-    print(json.dumps(rc))
+    """Print the isolated-sandbox RuntimeClass, exactly as the GA bundle's UBUNTU.md section 5
+    gives it: the isolated-sandbox handler, the per-pod overhead, and a nodeSelector on the two
+    labels only the sandbox node carries. setup.sh creates it when the cluster has none."""
+    print(json.dumps(RUNTIMECLASS))
+
+
+def runtimeclass_mismatches(rc):
+    """Fields of a live RuntimeClass that differ from RUNTIMECLASS (handler, overhead and the
+    scheduling nodeSelector; tolerations, if any, are not this sample's to set)."""
+    wrong = []
+    if rc.get("handler") != RUNTIMECLASS["handler"]:
+        wrong.append(f"handler {rc.get('handler')!r}")
+    have_selector = (rc.get("scheduling") or {}).get("nodeSelector") or {}
+    if have_selector != RUNTIMECLASS_NODE_SELECTOR:
+        wrong.append(f"scheduling.nodeSelector {have_selector}")
+    have_overhead = (rc.get("overhead") or {}).get("podFixed") or {}
+    if have_overhead != RUNTIMECLASS["overhead"]["podFixed"]:
+        wrong.append(f"overhead.podFixed {have_overhead}")
+    return wrong
+
+
+def cmd_check_runtimeclass(_):
+    """`kubectl get runtimeclass isolated-sandbox -o json` on stdin. Exit 0 when it matches the
+    GA RuntimeClass, 1 when it differs, 2 when the input is not a RuntimeClass named
+    isolated-sandbox (nothing was checked)."""
+    text = sys.stdin.read()
+    try:
+        rc = json.loads(text) if text.strip() else None
+    except ValueError:
+        rc = None
+    if not isinstance(rc, dict) or rc.get("kind") != "RuntimeClass" \
+            or (rc.get("metadata") or {}).get("name") != RUNTIMECLASS_NAME:
+        print(f"no RuntimeClass {RUNTIMECLASS_NAME} in the input: nothing was checked", file=sys.stderr)
+        sys.exit(2)
+    wrong = runtimeclass_mismatches(rc)
+    if wrong:
+        print(f"RuntimeClass {RUNTIMECLASS_NAME} differs from the GA bundle's: {'; '.join(wrong)}")
+        sys.exit(1)
+    print(f"RuntimeClass {RUNTIMECLASS_NAME}: handler {rc['handler']}, nodeSelector "
+          f"{','.join(f'{k}={v}' for k, v in sorted(RUNTIMECLASS_NODE_SELECTOR.items()))}, overhead "
+          f"{','.join(f'{k}={v}' for k, v in sorted(RUNTIMECLASS['overhead']['podFixed'].items()))}")
+
+
+def node_label_verdict(labels, role):
+    """(ok, summary) for a node's labels. role sandbox: both RuntimeClass labels present with
+    value "true". role system: neither present (with any value)."""
+    if role == SANDBOX_GROUP:
+        missing = [f"{k}={v}" for k, v in RUNTIMECLASS_NODE_SELECTOR.items() if labels.get(k) != v]
+        return (not missing), ("carries " + ", ".join(f"{k}={v}" for k, v in RUNTIMECLASS_NODE_SELECTOR.items())
+                               if not missing else "lacks " + ", ".join(missing))
+    stray = sorted(k for k in RUNTIMECLASS_NODE_SELECTOR if k in labels)
+    return (not stray), ("carries neither RuntimeClass label" if not stray else "carries " + ", ".join(stray))
+
+
+def cmd_check_node_labels(args):
+    """`kubectl get node <name> -o json` on stdin. Exit 0 when the node's labels fit its role
+    (a sandbox node carries both RuntimeClass labels, the system node neither), 1 when not, 2
+    when the input is not a Node (nothing was checked)."""
+    text = sys.stdin.read()
+    try:
+        node = json.loads(text) if text.strip() else None
+    except ValueError:
+        node = None
+    labels = (node or {}).get("metadata", {}).get("labels") if isinstance(node, dict) else None
+    if not isinstance(node, dict) or node.get("kind") != "Node" or not isinstance(labels, dict):
+        print("no Node object with labels in the input: nothing was checked", file=sys.stderr)
+        sys.exit(2)
+    ok, summary = node_label_verdict(labels, args.role)
+    print(f"{args.role} node {node['metadata'].get('name', '?')} {summary}")
+    sys.exit(0 if ok else 1)
+
+
+# --- The workloads: AppArmor Unconfined on sandbox pods only ----------------
+# On an Ubuntu host every isolated-sandbox pod needs appArmorProfile type Unconfined, or kubelet
+# requests RuntimeDefault, the shim forwards it into the guest and runc there fails with
+# "apparmor failed to apply profile" (GA bundle UBUNTU.md section 5; an open item the bundle
+# tracks with the service team). The microVM is that pod's boundary. An ordinary pod runs on the
+# host kernel and keeps its default profile, so Unconfined is refused on every ordinary pod.
+APPARMOR_LEGACY_ANNOTATION = "container.apparmor.security.beta.kubernetes.io/"
+
+
+def apparmor_types(pod):
+    """Every AppArmor profile type a Pod sets: pod level, each container (init and ephemeral
+    included), and the legacy per-container annotation ("unconfined" read as Unconfined)."""
+    spec = pod.get("spec") or {}
+    found = []
+    pod_type = ((spec.get("securityContext") or {}).get("appArmorProfile") or {}).get("type")
+    if pod_type is not None:
+        found.append(("pod", pod_type))
+    for field in ("initContainers", "containers", "ephemeralContainers"):
+        for c in spec.get(field) or []:
+            t = ((c.get("securityContext") or {}).get("appArmorProfile") or {}).get("type")
+            if t is not None:
+                found.append((f"container {c.get('name')}", t))
+    for key, value in ((pod.get("metadata") or {}).get("annotations") or {}).items():
+        if key.startswith(APPARMOR_LEGACY_ANNOTATION):
+            found.append((f"annotation {key}", "Unconfined" if str(value) == "unconfined" else str(value)))
+    return found
+
+
+def workload_apparmor_problems(docs):
+    """[problem] for a list of manifest documents: an isolated-sandbox pod without pod-level
+    Unconfined (or with a container overriding it), or an ordinary pod with Unconfined anywhere."""
+    problems, pods = [], 0
+    for d in docs:
+        if not isinstance(d, dict) or d.get("kind") != "Pod":
+            continue
+        pods += 1
+        name = (d.get("metadata") or {}).get("name", "?")
+        types = apparmor_types(d)
+        if (d.get("spec") or {}).get("runtimeClassName") == RUNTIMECLASS_NAME:
+            if ("pod", "Unconfined") not in types:
+                problems.append(f"sandbox pod {name} lacks securityContext.appArmorProfile.type: Unconfined")
+            problems += [f"sandbox pod {name} sets {where} AppArmor {t}" for where, t in types
+                         if where != "pod" and t != "Unconfined"]
+        else:
+            problems += [f"ordinary pod {name} sets {where} AppArmor Unconfined" for where, t in types
+                         if t == "Unconfined"]
+    return pods, problems
+
+
+def cmd_check_workloads(args):
+    """Static check of deploy/workloads.yaml (or --file): AppArmor Unconfined on every
+    isolated-sandbox pod and on no ordinary pod. Exit 0 / 1, 2 when the file holds no Pod."""
+    import yaml
+    path = Path(args.file) if args.file else DEMO / "deploy" / "workloads.yaml"
+    pods, problems = workload_apparmor_problems(list(yaml.safe_load_all(path.read_text())))
+    if not pods:
+        print(f"{path.name} holds no Pod: nothing was checked", file=sys.stderr)
+        sys.exit(2)
+    for p in problems:
+        print(p)
+    print(f"{pods} pods in {path.name}: {len(problems)} AppArmor problem(s)")
+    sys.exit(1 if problems else 0)
+
+
+# --- cilium-values.yaml: the values the page's claims rest on ---------------
+CILIUM_VALUES_EXPECTED = {
+    ("kubeProxyReplacement",): True,
+    ("socketLB", "hostNamespaceOnly"): True,
+    ("eni", "enabled"): True,
+    ("ipam", "mode"): "eni",
+    ("routingMode",): "native",
+}
+
+
+def cilium_values_problems(values):
+    problems = []
+    for path, want in CILIUM_VALUES_EXPECTED.items():
+        node = values
+        for key in path:
+            node = node.get(key) if isinstance(node, dict) else None
+        if node != want or type(node) is not type(want):
+            problems.append(f"{'.'.join(path)} is {node!r}, expected {want!r}")
+    return problems
+
+
+def cmd_check_cilium_values(args):
+    """Static check of cilium-values.yaml (or --file): kube-proxy replacement on, the socket
+    load balancer limited to the host namespace (the setting a Nitro pod needs), ENI IPAM and
+    native routing. Exit 0 / 1."""
+    import yaml
+    path = Path(args.file) if args.file else DEMO / "cilium-values.yaml"
+    values = yaml.safe_load(path.read_text())
+    require(isinstance(values, dict), f"{path.name} is not a YAML mapping")
+    problems = cilium_values_problems(values)
+    for p in problems:
+        print(p)
+    print(f"{path.name}: {len(problems)} problem(s) with kubeProxyReplacement, socketLB.hostNamespaceOnly, "
+          "eni.enabled, ipam.mode, routingMode")
+    sys.exit(1 if problems else 0)
+
+
+def kernel_release_matches(got, want):
+    """True when a `uname -r` value is the pinned release, or the pinned release followed by a
+    '-' or '+' build suffix (6.18.54 matches 6.18.54 and 6.18.54-1, not 6.18.540)."""
+    return bool(got) and (got == want or (got.startswith(want) and got[len(want)] in "-+"))
+
+
+def cmd_kernel_release(args):
+    sys.exit(0 if kernel_release_matches(args.got.strip(), args.want) else 1)
 
 
 # ===========================================================================
@@ -518,27 +844,45 @@ def require_demo_cluster_info(info):
 
 
 # --- The agent log: its eBPF datapath loaded, with the kernel's BTF ---------
-AGENT_LINE = re.compile(r'^time=\S+ level=[a-z]+ msg=')
-DATAPATH_FAILURE = re.compile(r'^time=\S+ level=(?:warn|error) msg="Failed to initialize datapath')
+# On a node whose kernel has no BTF, the GA bundle (README, "Cilium with kube-proxy
+# replacement") has the agent report Ready while its log repeats "Failed to initialize datapath"
+# with "no BTF found". A log line is the agent's when it starts with its key=value prefix,
+# `time=<t> level=<l> `; the message and any other attributes (source=, module=, error=) follow
+# in any order, and the level may be upper or lower case. Only such a line counts, so a line
+# that merely quotes the text (a comment, a grep) is not a failure; and a log in which NO line
+# has that prefix is not a clean log but one this parser cannot read, so it checks nothing.
+AGENT_LINE = re.compile(r'^time=\S+ level=(?P<level>[A-Za-z]+) ')
+FAILURE_LEVELS = {"warn", "warning", "error", "fatal", "panic"}
+DATAPATH_FAILURE = re.compile(r' msg="?Failed to initialize datapath')
 NO_BTF = "no BTF found"
 
 
 def datapath_failures(log_text):
-    """(lines read, failure lines) in a cilium-agent log. Anchored on the agent's log-line
-    prefix, so a line that only quotes the text (a comment, a grep) is not a failure."""
+    """(lines read, agent-format lines, failure lines) in a cilium-agent log."""
     lines = log_text.splitlines()
-    return len(lines), [line for line in lines
-                        if DATAPATH_FAILURE.match(line) or (AGENT_LINE.match(line) and NO_BTF in line)]
+    agent, failures = 0, []
+    for line in lines:
+        match = AGENT_LINE.match(line)
+        if not match:
+            continue
+        agent += 1
+        if NO_BTF in line or (match.group("level").lower() in FAILURE_LEVELS and DATAPATH_FAILURE.search(line)):
+            failures.append(line)
+    return len(lines), agent, failures
 
 
 def cmd_datapath_failures(_):
-    read, failures = datapath_failures(sys.stdin.read())
+    read, agent, failures = datapath_failures(sys.stdin.read())
     if not read:
         print("empty agent log: nothing was checked", file=sys.stderr)
         sys.exit(2)
+    if not agent:
+        print(f"none of {read} lines has the agent's 'time=... level=... ' prefix: nothing was checked",
+              file=sys.stderr)
+        sys.exit(2)
     for line in failures[:3]:
         print(line[:300])
-    print(f"{len(failures)} 'Failed to initialize datapath' / '{NO_BTF}' lines in {read} log lines")
+    print(f"{len(failures)} 'Failed to initialize datapath' / '{NO_BTF}' lines in {agent} agent log lines")
     sys.exit(1 if failures else 0)
 
 
@@ -1079,6 +1423,23 @@ def main():
     p.add_argument("node")
     p.set_defaults(func=cmd_check_btf)
     sub.add_parser("runtimeclass").set_defaults(func=cmd_runtimeclass)
+    sub.add_parser("check-runtimeclass").set_defaults(func=cmd_check_runtimeclass)
+    p = sub.add_parser("check-node-labels")
+    p.add_argument("role", choices=[SYSTEM_GROUP, SANDBOX_GROUP])
+    p.set_defaults(func=cmd_check_node_labels)
+    p = sub.add_parser("check-user-data")
+    p.add_argument("role", choices=[SYSTEM_GROUP, SANDBOX_GROUP])
+    p.set_defaults(func=cmd_check_user_data)
+    p = sub.add_parser("check-workloads")
+    p.add_argument("--file")
+    p.set_defaults(func=cmd_check_workloads)
+    p = sub.add_parser("check-cilium-values")
+    p.add_argument("--file")
+    p.set_defaults(func=cmd_check_cilium_values)
+    p = sub.add_parser("kernel-release")
+    p.add_argument("want")
+    p.add_argument("got")
+    p.set_defaults(func=cmd_kernel_release)
     # test.sh / clean.sh side
     sub.add_parser("datapath-failures").set_defaults(func=cmd_datapath_failures)
     sub.add_parser("kpr-status").set_defaults(func=cmd_kpr_status)
