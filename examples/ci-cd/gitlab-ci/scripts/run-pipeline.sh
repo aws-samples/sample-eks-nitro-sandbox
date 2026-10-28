@@ -94,7 +94,7 @@ puts "PIPELINE_STATUS=#{pipeline.status}"
 pipeline.builds.order(:id).each { |b| puts "JOB_STATUS=#{b.id} #{b.name} #{b.status}" }
 RUBY
 
-declare -A pod_uid pod_rclass pod_node pod_vols pod_volsecrets
+declare -A pod_uid pod_rclass pod_node pod_vols pod_volsecrets pod_priv
 pod_order=()
 pipeline_status=""
 echo "  watching for job pods. Each one is created when its job starts and deleted when it"
@@ -116,7 +116,7 @@ while :; do
   # read as its node, and the table showed "Pending" in the NODE column.
   pods_json="$("${KCTL[@]}" get pod -n "$NAMESPACE" -l "$JOB_POD_SELECTOR" -o json 2>/dev/null)" \
     || die "could not list the job pods in '$NAMESPACE'. That is a failed read, not a report that there are none."
-  while IFS=$'\t' read -r name uid rclass node phase vols volsecrets; do
+  while IFS=$'\t' read -r name uid rclass node phase vols volsecrets priv; do
     [[ -n "$name" ]] || continue
     if [[ -z "${pod_uid[$name]:-}" ]]; then
       pod_order+=("$name")
@@ -126,6 +126,7 @@ while :; do
     pod_rclass[$name]="$rclass"
     pod_vols[$name]="$vols"
     pod_volsecrets[$name]="$volsecrets"
+    pod_priv[$name]="$priv"
     # A pod first seen while Pending has no node yet, so the node is taken from whichever
     # poll first reports one and is never overwritten with the placeholder again. Written as
     # an if, not `[[ ... ]] && ...`: under `set -e` a standalone && list whose test fails
@@ -145,7 +146,9 @@ while :; do
         (.spec.nodeName // "-"),
         .status.phase,
         ([(.spec.volumes // [])[].name] | join(",") | if . == "" then "-" else . end),
-        ([(.spec.volumes // [])[] | .secret.secretName // empty] | join(",") | if . == "" then "-" else . end) ]
+        ([(.spec.volumes // [])[] | .secret.secretName // empty] | join(",") | if . == "" then "-" else . end),
+        ([((.spec.initContainers // []) + (.spec.containers // []))[]
+          | "\(.name)=\(.securityContext.privileged // false)"] | join(" ") | if . == "" then "-" else . end) ]
     | @tsv' <<<"$pods_json")
 
   now=$(date +%s)
@@ -197,9 +200,9 @@ $unsandboxed  Check that runner/config.toml.template's runtime_class_name reache
 uid_count="$(printf '%s\n' "${pod_uid[@]}" | sort -u | grep -c .)"
 echo "  distinct pod UIDs: $uid_count (one per job, so no job reused another's pod)"
 for name in "${pod_order[@]}"; do
-  printf '    %s\n      uid %s  runtime class %s  on %s\n      volumes %s\n      volumes from a Secret %s\n' \
+  printf '    %s\n      uid %s  runtime class %s  on %s\n      containers, privileged flag: %s\n      volumes: %s\n      volumes from a Secret: %s\n' \
     "$name" "${pod_uid[$name]}" "${pod_rclass[$name]}" "${pod_node[$name]}" \
-    "${pod_vols[$name]}" "${pod_volsecrets[$name]}"
+    "${pod_priv[$name]}" "${pod_vols[$name]}" "${pod_volsecrets[$name]}"
 done
 
 # The runner authentication token is in the Secret the MANAGER mounts. A job pod that mounted

@@ -44,18 +44,34 @@ say "2/6 the EBS volume behind GitLab's claim"
 # ---------------------------------------------------------------------------
 # Read now, while the claim still exists: after the namespace goes there is nothing left to
 # read the volume's id from, and "no claim" would then look like "no volume".
+# A claim that is ABSENT and a read that FAILED are three different answers from two, and
+# they are kept apart at every hop below. A clean up that runs after a setup that stopped
+# before GitLab was applied has no claim at all, and that is nothing to confirm, not a
+# failure; a read that came back empty for any other reason is a failure.
 ebs_volume=""
+pvc_present=""
 pv_name=""
-if ! pv_name="$("${KCTL[@]}" get pvc gitlab-data -n "$NAMESPACE" -o jsonpath='{.spec.volumeName}' 2>/dev/null)"; then
-  problem "could not read claim gitlab-data in '$NAMESPACE', so its EBS volume cannot be identified or confirmed removed."
+if ! pvc_present="$("${KCTL[@]}" get pvc gitlab-data -n "$NAMESPACE" -o name --ignore-not-found 2>/dev/null)"; then
+  problem "could not read claim gitlab-data in '$NAMESPACE', so its EBS volume cannot be identified or confirmed removed. That is a failed read, not a report that the claim is absent."
+elif [[ -z "$pvc_present" ]]; then
+  echo "  there is no gitlab-data claim in '$NAMESPACE', so no EBS volume was ever provisioned for it."
+elif ! pv_name="$("${KCTL[@]}" get pvc gitlab-data -n "$NAMESPACE" -o jsonpath='{.spec.volumeName}' 2>/dev/null)"; then
+  problem "could not read the bound volume of claim gitlab-data in '$NAMESPACE', so its EBS volume cannot be identified or confirmed removed."
 elif [[ -z "$pv_name" ]]; then
+  # Pending, never bound. The provisioner has not made a volume, so there is none to confirm.
   echo "  claim gitlab-data is not bound to a volume, so there is no EBS volume to confirm."
+elif ! ebs_volume="$("${KCTL[@]}" get pv "$pv_name" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null)"; then
+  problem "could not read PersistentVolume $pv_name, so the EBS volume behind claim gitlab-data cannot be confirmed removed."
+elif [[ -z "$ebs_volume" ]]; then
+  problem "claim gitlab-data is bound to $pv_name, but that volume has no CSI volume handle, so the EBS volume behind it cannot be confirmed removed. A volume provisioned by something other than a CSI driver does this."
 else
-  ebs_volume="$("${KCTL[@]}" get pv "$pv_name" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null)"
-  if [[ -z "$ebs_volume" ]]; then
-    problem "claim gitlab-data is bound to $pv_name but no CSI volume handle could be read from it, so its EBS volume cannot be confirmed removed."
-  else
-    echo "  claim gitlab-data is EBS volume $ebs_volume, reclaim policy $("${KCTL[@]}" get pv "$pv_name" -o jsonpath='{.spec.persistentVolumeReclaimPolicy}' 2>/dev/null)."
+  reclaim="$("${KCTL[@]}" get pv "$pv_name" -o jsonpath='{.spec.persistentVolumeReclaimPolicy}' 2>/dev/null || true)"
+  echo "  claim gitlab-data is EBS volume $ebs_volume, reclaim policy ${reclaim:-could not be read}."
+  # Retain means the volume outlives the claim on purpose, and the check below would then
+  # report a volume that is working as configured. Say so rather than fail it.
+  if [[ "$reclaim" == Retain ]]; then
+    problem "PersistentVolume $pv_name has reclaim policy Retain, so EBS volume $ebs_volume is kept when the claim goes. Delete it yourself if you do not need it: aws ec2 delete-volume --volume-id $ebs_volume"
+    ebs_volume=""
   fi
 fi
 
@@ -112,35 +128,39 @@ else
 fi
 
 if [[ -n "$ebs_volume" ]]; then
-  if ! command -v aws >/dev/null 2>&1; then
-    problem "the AWS CLI is not on PATH, so it cannot be confirmed that EBS volume $ebs_volume was deleted. Check it yourself: aws ec2 describe-volumes --volume-ids $ebs_volume"
+  # There is deliberately no separate "aws is not on PATH" branch. An AWS CLI that is not
+  # there makes the call below exit non-zero with a message that is not InvalidVolume.NotFound,
+  # which is the same answer as any other failed lookup: could not determine, never gone. A
+  # branch of its own could not be produced on an EKS cluster anyway, because the kubeconfig's
+  # own credential plugin is `aws`: with it off PATH, kubectl cannot authenticate and this
+  # script stops at its first call.
+  #
+  # The Region comes from the cluster's own nodes rather than from .env, so it cannot disagree
+  # with the cluster the rest of this script ran against.
+  region="$("${KCTL[@]}" get node -o jsonpath='{.items[0].metadata.labels.topology\.kubernetes\.io/region}' 2>/dev/null)"
+  if [[ -z "$region" ]]; then
+    problem "could not read the cluster's Region from its nodes, so EBS volume $ebs_volume cannot be confirmed deleted."
   else
-    # The Region comes from the cluster's own nodes rather than from .env, so it cannot
-    # disagree with the cluster the rest of this script ran against.
-    region="$("${KCTL[@]}" get node -o jsonpath='{.items[0].metadata.labels.topology\.kubernetes\.io/region}' 2>/dev/null)"
-    if [[ -z "$region" ]]; then
-      problem "could not read the cluster's Region from its nodes, so EBS volume $ebs_volume cannot be confirmed deleted."
-    else
-      echo "  waiting for EBS volume $ebs_volume to go, in $region."
-      gone=no
-      for _ in $(seq 1 30); do
-        out="$(aws ec2 describe-volumes --region "$region" --volume-ids "$ebs_volume" 2>&1)"
-        rc=$?
-        if (( rc != 0 )); then
-          if grep -q 'InvalidVolume.NotFound' <<<"$out"; then gone=yes; break; fi
-          # Any other failure is a failed lookup, not a deleted volume.
-          problem "could not look up EBS volume $ebs_volume in $region: $(head -n 1 <<<"$out")"
-          gone=unknown
-          break
-        fi
-        sleep 10
-      done
-      case "$gone" in
-        yes)     echo "  EBS volume $ebs_volume is gone." ;;
-        unknown) ;;  # already reported
-        *)       problem "EBS volume $ebs_volume still exists in $region five minutes after its claim was deleted. Delete it yourself if you do not need it: aws ec2 delete-volume --region $region --volume-id $ebs_volume" ;;
-      esac
-    fi
+    echo "  waiting for EBS volume $ebs_volume to go, in $region."
+    gone=no
+    for _ in $(seq 1 30); do
+      out="$(aws ec2 describe-volumes --region "$region" --volume-ids "$ebs_volume" 2>&1)"
+      rc=$?
+      if (( rc != 0 )); then
+        if grep -q 'InvalidVolume.NotFound' <<<"$out"; then gone=yes; break; fi
+        # Any other failure is a failed lookup, not a deleted volume. That covers an AWS CLI
+        # that is missing, one that cannot authenticate, and a call that is denied.
+        problem "could not look up EBS volume $ebs_volume in $region: $(head -n 1 <<<"$out")"
+        gone=unknown
+        break
+      fi
+      sleep 10
+    done
+    case "$gone" in
+      yes)     echo "  EBS volume $ebs_volume is gone." ;;
+      unknown) ;;  # already reported
+      *)       problem "EBS volume $ebs_volume still exists in $region five minutes after its claim was deleted. Delete it yourself if you do not need it: aws ec2 delete-volume --region $region --volume-id $ebs_volume" ;;
+    esac
   fi
 fi
 
@@ -151,9 +171,10 @@ if (( ${#problems[@]} > 0 )); then
   exit 1
 fi
 cat <<EOF
-clean up complete. Removed: namespace $NAMESPACE and everything in it (GitLab, its claim and
-its volume, the runner manager and its RBAC, both Secrets, every job pod), and the ordinary
-comparison pod.
+clean up complete. Removed: namespace $NAMESPACE and whatever was in it, which for a full run
+of this sample is GitLab, its claim and its EBS volume, the runner manager with its
+ServiceAccount, Role and RoleBinding, the root-password and runner-config Secrets, and any
+job pod; plus the ordinary comparison pod, by its exact name.
 
 Nothing is left behind: this sample installs nothing shared, changes no cluster-wide setting,
 and creates no IAM role, Pod Identity association or ECR repository. To remove the sandbox

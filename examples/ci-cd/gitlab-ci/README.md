@@ -277,9 +277,13 @@ requests:
     memory_request = "2Gi"
     memory_limit = "2Gi"
     helper_cpu_request = "250m"
+    helper_cpu_limit = "500m"
     helper_memory_request = "512Mi"
+    helper_memory_limit = "512Mi"
     service_cpu_request = "1"
+    service_cpu_limit = "1"
     service_memory_request = "2Gi"
+    service_memory_limit = "2Gi"
 ```
 
 A sandbox is sized when it boots and cannot be resized in place (Amazon EKS User Guide,
@@ -287,6 +291,10 @@ A sandbox is sized when it boots and cannot be resized in place (Amazon EKS User
 ask for what the job needs up front. With no request at all the VM gets the small default
 size, and a job that unpacks a toolchain is killed for running out of memory with no log line
 to say so. These are this sample's values for this pipeline, not a platform minimum.
+
+A job pod's VM is sized from the whole pod's requests, so the build job's sandbox is the sum
+of its build, helper and service containers: 2.25 CPU and 4.5Gi, plus the RuntimeClass's own
+overhead. The ordinary job has no service container, so its sandbox is smaller.
 
 ## Step 3: Run the pipeline, and watch the job pods while they exist
 
@@ -387,6 +395,18 @@ the whole pod, daemon included, in a sandbox. Because the daemon and its client 
 of the same pod, they are in the same guest: `DOCKER_HOST` is plain TCP on the pod's own
 loopback, inside the VM, and nothing outside the pod can reach that port.
 
+**`privileged` is a runner setting, not a per-job one, and the run shows that.** The pod table
+in Step 3 prints every container of every job pod with its `privileged` flag, and the ordinary
+job's containers carry it too, because one `privileged = true` in `[runners.kubernetes]`
+applies to every pod this runner creates. Only the build job uses it. That is worth knowing
+rather than glossing: the privilege is bounded by each pod's own sandbox, so a job that does
+not need it cannot reach past its own guest kernel either way, but it is more than that job
+asks for. To hand privilege only to the daemon, the Kubernetes executor has
+`allowed_privileged_images` and `allowed_privileged_services`, and a second runner with
+`privileged = false` and its own tag is the other way; check both against the GitLab Runner
+documentation for the version you pin. This sample keeps the single setting, because the
+sandbox is what it is about.
+
 This is the build job's log:
 
 ```text
@@ -431,7 +451,19 @@ TODO: output from the fresh run
 ```
 
 `kube-api-access-*` is the ServiceAccount token every pod gets by default, not this sample's
-Secret. What the job pods mount is the runner's own `/builds` and script volumes.
+Secret. What the job pods mount is the runner's own build and script volumes.
+
+The manager is the other side of that. Its own spec names the Secret, which is the one place
+the token is:
+
+```bash
+kubectl --context <CLUSTER_NAME> -n gitlab-ci-demo get pod -l app=gitlab-runner \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\n  volumes: "}{.spec.volumes[*].name}{"\n  vol secrets: "}{.spec.volumes[*].secret.secretName}{"\n"}{end}'
+```
+
+```text
+TODO: output from the fresh run
+```
 
 ## Good to know
 
@@ -444,8 +476,7 @@ Secret. What the job pods mount is the runner's own `/builds` and script volumes
 - **The job pods have a network, and nothing here restricts it.** They clone from the GitLab
   Service, pull base images from Amazon ECR Public and report status back, and with no network
   policy they can reach anything else the cluster can reach. The sandbox boundary is the VM,
-  not the network. The [network policy](../../isolation/network-policy/README.md) sample is
-  where that mechanism is shown in full.
+  not the network, and the Overview links the sample that shows how to limit the network.
 - **`CI_SERVER_URL` inside a job is the port-forward address, not a reachable one.** GitLab
   builds it from `external_url`, which this sample sets to `http://localhost:8080` so its web
   UI works through `kubectl port-forward`. Cloning is unaffected, because `clone_url` in the
@@ -501,11 +532,16 @@ TODO: output from the fresh run
 
 It deletes the runner manager first, so no new job pod is created while the rest goes, then
 the comparison pod by its exact name, then the namespace, which takes GitLab, its claim, the
-runner's RBAC and both Secrets with it. It then confirms three things rather than assuming
-them: the namespace is gone, no pod labelled `app=gitlab-ci-job` is left anywhere on the
-cluster, and the EBS volume behind GitLab's claim was deleted. Anything it could not confirm
-is reported and the script exits non-zero, because a lookup that failed means "could not
-determine" and never "gone".
+runner's RBAC and both Secrets with it. The project, its pipeline and the runner's record in
+GitLab go with GitLab itself: they were only ever rows in the database on that volume, so
+there is nothing separate to delete and nothing left in any GitLab you own.
+
+It then confirms three things rather than assuming them: the namespace is gone, no pod
+labelled `app=gitlab-ci-job` is left anywhere on the cluster, and the EBS volume behind
+GitLab's claim was deleted. It reads that volume's id before deleting the claim, because
+afterwards there is nothing left to read it from and "no claim" would look like "no volume".
+Anything it could not confirm is reported and the script exits non-zero, because a lookup
+that failed means "could not determine" and never "gone".
 
 Nothing is left behind. This sample installs nothing shared, changes no cluster-wide setting,
 and creates no IAM role, Pod Identity association or ECR repository. To remove the sandbox

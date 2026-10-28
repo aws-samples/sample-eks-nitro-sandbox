@@ -222,15 +222,33 @@ $(sed 's/^RUNNER_TOKEN=.*/RUNNER_TOKEN=<not shown>/' <<<"$runner_out")"
   # The token is substituted by awk reading the token FILE, not by `sed -e "s|...|$token|"`:
   # sed's replacement text would be an argument, which is the one place the token must never
   # be. The rendered file then reaches the Secret with --from-file.
+  #
+  # index and substr, not sub(): in awk's sub() the replacement text is not literal, so an &
+  # in the token stands for the text that was matched. Measured with a token of
+  # glrt-a\1b&c, the sub() form wrote `glrt-a\1b<RUNNER_TOKEN>c` and the splice below wrote
+  # the token. GitLab's tokens have not been seen to contain either character, and in that
+  # one case the placeholder check below happens to catch it, but a rendering that depends on
+  # which characters a credential contains is not worth keeping: the splice interprets none
+  # of them, and the exact-line check below is what confirms the result.
   ( umask 077
     sed -e "s|<GITLAB_URL>|$GITLAB_URL|g" -e "s|<NAMESPACE>|$NAMESPACE|g" \
         "$SAMPLE_DIR/runner/config.toml.template" > "$work/config.toml.pre"
-    awk 'FNR==NR { tok=$0; next } { sub(/<RUNNER_TOKEN>/, tok); print }' \
-        "$work/token" "$work/config.toml.pre" > "$work/config.toml" )
+    awk 'FNR == NR { tok = $0; next }
+         { i = index($0, "<RUNNER_TOKEN>")
+           if (i > 0) $0 = substr($0, 1, i - 1) tok substr($0, i + length("<RUNNER_TOKEN>"))
+           print }' \
+        "$work/token" "$work/config.toml.pre" > "$work/config.toml"
+    # What the token line must be, byte for byte, built from the same file. Compared with
+    # grep -F -x -f so the token is never an argument.
+    { printf '  token = "'; cat "$work/token"; printf '"\n'; } > "$work/token-line" )
   ! grep -q '<RUNNER_TOKEN>' "$work/config.toml" \
     || die "the token was not substituted into config.toml."
   grep -q '^  token = "glrt-' "$work/config.toml" \
     || die "config.toml does not carry a glrt- token after rendering."
+  # The strict one: the rendered line holds exactly the token GitLab returned, not a value
+  # that merely starts the same way.
+  grep -F -x -q -f "$work/token-line" "$work/config.toml" \
+    || die "the token line in the rendered config.toml is not exactly the token GitLab returned. Something altered it between GitLab and the file."
   grep -q '^    runtime_class_name = "isolated-sandbox"$' "$work/config.toml" \
     || die "the rendered config.toml does not set runtime_class_name = \"isolated-sandbox\", so the job pods would not be sandboxes."
 
