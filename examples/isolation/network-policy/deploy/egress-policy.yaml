@@ -16,12 +16,18 @@
 # by pod and never by hostname; the optional variant in app-egress-policy.yaml shows the
 # hostname form.
 #
-# <COREDNS_IP> is your cluster's CoreDNS Service address, filled in by the script (or by
-# hand):
-#   kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'
-# EKS Auto Mode runs CoreDNS locally on each node and the Network Policy Controller
-# matches DNS by that fixed Service IP, so DNS egress is allowed with an ipBlock on it,
-# the same way Getting started > Coding agent allows CoreDNS.
+# <COREDNS_IP> is your cluster's DNS address, the kubelet's clusterDNS, filled in by the
+# script (or by hand, from one node; needs "list" on nodes and "get" on nodes/proxy):
+#   kubectl get --raw "/api/v1/nodes/$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')/proxy/configz"
+#   and take kubeletconfig.clusterDNS[0]
+# On EKS Auto Mode CoreDNS runs locally on each instance, at an address derived from the
+# cluster's service CIDR that is fixed for the life of the cluster, so DNS egress is
+# allowed with an ipBlock on that one address. The same address is also the kube-dns
+# Service's ClusterIP -- that Service does exist on Auto Mode; where every node is
+# Auto Mode it has no endpoints, because CoreDNS is on the node and the coredns
+# Deployment is scaled to zero -- and the guide below derives it
+# from serviceIpv4Cidr instead. All three reads give the same value; the script reads the
+# kubelet because that is the value handed to the pod.
 # https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

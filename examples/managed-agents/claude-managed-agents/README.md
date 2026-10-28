@@ -125,10 +125,12 @@ export REGISTRY=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 aws ecr create-repository --repository-name claude-sandbox-worker --region $AWS_REGION
 aws ecr get-login-password --region $AWS_REGION \
   | docker login --username AWS --password-stdin $REGISTRY
-docker build --platform linux/amd64 -t $REGISTRY/claude-sandbox-worker:latest .
-docker push $REGISTRY/claude-sandbox-worker:latest
+docker build --platform linux/amd64 -t $REGISTRY/claude-sandbox-worker:v1 .
+docker push $REGISTRY/claude-sandbox-worker:v1
 docker logout $REGISTRY
 ```
+
+The workloads set `imagePullPolicy: IfNotPresent` for the fixed `:v1` tag, so a node that already pulled `:v1` keeps using its cached copy; when you rebuild the image, push it under a new tag (for example `:v2`) and update the tag in `deploy/poller.yaml`, `deploy/autoscaler.yaml` and `deploy/sandbox-template.yaml`.
 
 **Step 4: Give the cluster the environment key.** The poller needs the environment key;
 the sandboxes get only the environment id. Both are read from `.env`, so the key never
@@ -209,7 +211,8 @@ spec:
       restartPolicy: Never              # one session, then the pod completes
       containers:
         - name: worker
-          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/claude-sandbox-worker:latest
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/claude-sandbox-worker:v1
+          imagePullPolicy: IfNotPresent
           args: ["serve"]
           env:                          # no Anthropic key: the session's token arrives in the dispatch
             - name: ANTHROPIC_ENVIRONMENT_ID
@@ -442,8 +445,14 @@ attached to the Pod veth interface will then filter egress traffic ... based on 
 in place. This ensures pods can only send cluster-external traffic to the IPs of allow
 listed domains."
 ([EKS network policy documentation](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html).)
-Because the filtering lives on the node rather than in the guest, a command the model runs
-inside the sandbox, even as root, cannot change it.
+Because the filtering lives on the node rather than in the guest, which has no access to
+that interface, nothing the model runs inside the sandbox can change it, whatever UID it
+runs as. In this sample that UID is 1000: the sandbox template sets `runAsUser: 1000`, which
+fixes the identity the container starts with, and `runAsNonRoot: true`, which has the kubelet
+refuse to start the container at all if the image would resolve to root. Changing the policy
+is a separate matter from reaching a host it already allows: the `domainNames` caveat above
+describes the reach that remains, and "No reusable credential" below describes what authority
+a request on that path could carry.
 
 **Why the two refused hosts fail differently.** Both hosts are refused the same way: their
 IPv4 addresses are not in the allow list, so an IPv4 connection attempt gets no reply and
@@ -780,7 +789,7 @@ kubectl delete -f deploy/egress-policy.yaml -f deploy/rbac.yaml --ignore-not-fou
 kubectl delete secret anthropic-env-key --ignore-not-found
 kubectl delete configmap anthropic-env --ignore-not-found
 aws ecr delete-repository --repository-name claude-sandbox-worker --region $AWS_REGION --force
-docker image rm $REGISTRY/claude-sandbox-worker:latest
+docker image rm $REGISTRY/claude-sandbox-worker:v1
 rm -rf .venv
 ```
 

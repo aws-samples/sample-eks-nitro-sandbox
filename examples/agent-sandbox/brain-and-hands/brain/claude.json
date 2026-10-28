@@ -1,0 +1,15 @@
+{
+  "hasCompletedOnboarding": true,
+  "projects": {
+    "/workspace": {
+      "hasTrustDialogAccepted": true,
+      "hasCompletedProjectOnboarding": true,
+      "enableAllProjectMcpServers": true,
+      "enabledMcpjsonServers": ["hands"],
+      "disabledMcpjsonServers": [],
+      "mcpServers": {},
+      "allowedTools": [],
+      "history": []
+    }
+  }
+}

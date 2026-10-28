@@ -1,0 +1,4 @@
+# Your local values and credential paths. Only .env.example is committed.
+.env
+.env.*
+!.env.example

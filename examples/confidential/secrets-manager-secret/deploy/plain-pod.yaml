@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secrets-manager-secret-plain
+  # setup.sh fills in the namespace, the image and the node at apply time.
+  labels:
+    app.kubernetes.io/name: secrets-manager-secret-plain
+    app.kubernetes.io/managed-by: secrets-manager-secret
+    # Deliberately not app: secrets-manager-secret. This pod is the control for the machine
+    # readings, and its own name keeps the two apart.
+spec:
+  # No runtimeClassName: an ordinary pod. It runs the SAME image as the sandboxed pod, and
+  # the same readings.py inside it, and prints the same four readings. That is what makes
+  # the comparison on the page a comparison of where the container ran, and not of what it
+  # was running.
+  #
+  # setup.sh pins it to the node the sandboxed pod landed on, so the two readings come from
+  # one machine.
+  nodeName: <NODE_NAME>
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsUser: 65534
+    runAsGroup: 65534
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: main
+      image: <APP_IMAGE_URI>
+      imagePullPolicy: IfNotPresent
+      # readings.py rather than the image's entrypoint: the four machine readings and
+      # nothing else. This pod has no service account, no secret and no key, so it could
+      # not run the workload even if it were asked to.
+      command: ["python", "/app/readings.py"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi

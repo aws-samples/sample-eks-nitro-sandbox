@@ -163,12 +163,18 @@ def main() -> None:
     # admits nothing to a sandbox.
     ready_stop = threading.Event()
     ready_srv = _readiness_listener(port, ready_stop)
-    threading.Thread(
+    ready_thread = threading.Thread(
         target=_accept_readiness, args=(ready_srv, ready_stop), daemon=True
-    ).start()
+    )
+    ready_thread.start()
     log.info("readiness port :%d open while serving session %s", port, dispatch["session_id"])
-    code = _run_executor(dispatch)
-    ready_stop.set()
+    try:
+        code = _run_executor(dispatch)
+    finally:
+        ready_stop.set()
+        # _accept_readiness uses a one-second socket timeout, so joining here
+        # guarantees the listener is closed before this process reports exit.
+        ready_thread.join()
     log.info("session %s finished (exit %d)", dispatch["session_id"], code)
     sys.exit(0 if code in (0, -signal.SIGTERM, 143) else code)
 

@@ -1,0 +1,4 @@
+# Local values. Only .env.example is committed.
+.env
+.env.*
+!.env.example

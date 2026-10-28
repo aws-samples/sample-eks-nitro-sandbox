@@ -11,18 +11,28 @@ metadata:
     karpenter.sh/do-not-disrupt: "true"
 spec:
   runtimeClassName: isolated-sandbox
+  # The pod calls no Kubernetes API, so it mounts no ServiceAccount token.
+  automountServiceAccountToken: false
   securityContext:
     runAsNonRoot: true
     runAsUser: 1000
     runAsGroup: 1000
     fsGroup: 2000
+    seccompProfile:
+      type: RuntimeDefault
   containers:
     - name: writer
       image: public.ecr.aws/docker/library/busybox:1.37
+      imagePullPolicy: IfNotPresent
       command: ["sh", "-c", "echo second pod started; sleep 3600"]
       resources:
         requests: { cpu: "1", memory: 1Gi }
         limits:   { cpu: "1", memory: 1Gi }
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
       volumeMounts:
         - name: data
           mountPath: /data

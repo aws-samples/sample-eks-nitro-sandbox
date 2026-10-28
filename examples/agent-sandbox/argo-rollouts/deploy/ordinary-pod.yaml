@@ -1,0 +1,32 @@
+# The same container as the warm pool's pods, with the ONE difference that it
+# has no runtimeClassName, so it runs as an ordinary pod on the node rather than
+# in a Nitro sandbox. The page reads the kernel, the boot and the block devices
+# from this pod next to the same readings from a claimed sandbox pod, so each
+# sandbox reading has something to be compared against.
+#
+# __NAMESPACE__ is filled in at apply time by the scripts from the NAMESPACE
+# variable. Never apply this file with the placeholder in place.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ordinary-pod
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: argo-rollouts
+spec:
+  # No runtimeClassName here. That one missing line is the whole difference.
+  automountServiceAccountToken: false
+  containers:
+    - name: agent
+      image: public.ecr.aws/docker/library/busybox:1.36
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: TEMPLATE_REVISION
+          value: "not-from-a-template"
+      command:
+        - sh
+        - -c
+        - |
+          printf %s "$TEMPLATE_REVISION" > /tmp/template-revision
+          echo "booted TEMPLATE_REVISION=$TEMPLATE_REVISION"
+          exec sleep infinity

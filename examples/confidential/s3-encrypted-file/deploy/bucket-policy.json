@@ -1,0 +1,54 @@
+{
+  "_comment": [
+    "The bucket policy for the sample's bucket. scripts/setup.sh drops this _comment key",
+    "(S3 rejects an unknown top-level key), fills in the placeholders and calls",
+    "s3:PutBucketPolicy with the result:",
+    "  <POD_ROLE_ARN>        the pod's dedicated EKS Pod Identity role, which carries no",
+    "                        identity policies of its own, so every permission it has on",
+    "                        this bucket is written here",
+    "  <S3_BUCKET>           the bucket name, from .env",
+    "  <S3_CIPHERTEXT_KEY>   the encrypted file",
+    "  <S3_MANIFEST_KEY>     the manifest holding the wrapped data key and the nonce",
+    "",
+    "The one allow is two object reads, named key by key: no s3:ListBucket, no write, no",
+    "delete, and no prefix wildcard. The pod reads the manifest to find the wrapped data",
+    "key, and the ciphertext to decrypt. Nothing here grants any KMS action: releasing the",
+    "data key is the key policy's decision, and it is conditional on attestation.",
+    "",
+    "This is the whole of the role's access to the bucket. S3 lets a bucket policy grant a",
+    "principal in the same account on its own, so the role needs no identity policy, and",
+    "the sample gives it none.",
+    "",
+    "The second statement refuses any request that is not over TLS, for every principal.",
+    "Sources, both public: bucket policies in the Amazon S3 User Guide,",
+    "'Using bucket policies'; aws:SecureTransport in the IAM User Guide's global condition",
+    "keys."
+  ],
+  "Version": "2012-10-17",
+  "Id": "s3-encrypted-file-sample-ciphertext-reads-only",
+  "Statement": [
+    {
+      "Sid": "PodMayReadTheCiphertextAndItsManifest",
+      "Effect": "Allow",
+      "Principal": { "AWS": "<POD_ROLE_ARN>" },
+      "Action": "s3:GetObject",
+      "Resource": [
+        "arn:aws:s3:::<S3_BUCKET>/<S3_CIPHERTEXT_KEY>",
+        "arn:aws:s3:::<S3_BUCKET>/<S3_MANIFEST_KEY>"
+      ]
+    },
+    {
+      "Sid": "DenyUnencryptedTransport",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::<S3_BUCKET>",
+        "arn:aws:s3:::<S3_BUCKET>/*"
+      ],
+      "Condition": {
+        "Bool": { "aws:SecureTransport": "false" }
+      }
+    }
+  ]
+}

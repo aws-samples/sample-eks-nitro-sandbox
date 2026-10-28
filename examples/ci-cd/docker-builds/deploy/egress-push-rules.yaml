@@ -1,0 +1,19 @@
+    # The rules the optional Amazon ECR push needs, added to the policy's egress list only
+    # when scripts/ecr-setup.sh has created the role and the Pod Identity association.
+    # scripts/setup.sh and scripts/ecr-setup.sh render <AWS_REGION> and <ACCOUNT_ID>.
+    #
+    # The Pod Identity credential address. A sandbox passes a request to 169.254.170.23 on to
+    # the Pod Identity Agent on the node, and this policy applies to it: without this rule
+    # the build pod cannot get a credential at all.
+    - to:
+        - ipBlock: { cidr: 169.254.170.23/32 }
+      ports:
+        - { protocol: TCP, port: 80 }
+    # The two Amazon ECR endpoints a push uses: the API, for the authorization token, and
+    # this account's registry, for the manifest and the layers.
+    - to:
+        - domainNames:
+            - api.ecr.<AWS_REGION>.amazonaws.com
+            - <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com
+      ports:
+        - { protocol: TCP, port: 443 }

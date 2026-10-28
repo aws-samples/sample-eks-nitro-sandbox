@@ -1,0 +1,17 @@
+{
+  "id": "cedar",
+  "name": "Cedar Workplace Group",
+  "submitted": "2026-02-10",
+  "contact": "proposals@cedar.example",
+  "summary": "100 workstations of the same specification with expedited freight, delivered and installed in one visit.",
+  "terms": {
+    "price_usd": 130000,
+    "delivery_days": 21,
+    "warranty_months": 36
+  },
+  "notes": [
+    "Fastest delivery of the three proposals, at 21 days.",
+    "Price is above the stated budget because expedited freight is included.",
+    "Warranty is on-site next business day for 36 months."
+  ]
+}

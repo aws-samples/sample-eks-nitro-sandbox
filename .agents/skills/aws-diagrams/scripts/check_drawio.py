@@ -59,6 +59,9 @@ WORD_RULES = [
     (r"\b(warm|claimed|pooled|pre-booted)\s+(micro)?vms?\b"
      r"|\bclaim(s|ed|ing)?\s+(a|an|the|one|each)?\s*(warm\s+)?(micro)?vms?\b",
      "call what a reader pools or claims a 'pod' (or a 'sandbox', the agent-sandbox resource), never a 'VM'"),
+    # "Nitro Partition" is an internal name the Amazon EKS User Guide never uses.
+    (r"\bnitro\s+partitions?\b",
+     "say 'Nitro sandbox', the public name; 'Nitro Partition' is an internal name"),
 ]
 WORD_WARNINGS = [
     (r"(?<!-)\bbooted\s+(micro)?vms?\b|\b(micro)?vms?\s+per\b|\bper\s+(micro)?vm\b",

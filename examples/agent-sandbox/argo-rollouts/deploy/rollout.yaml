@@ -1,0 +1,99 @@
+# The Rollout that drives the template bump and the pool drain from a canary
+# timeline.
+#
+# THIS BRIDGE IS THIS SAMPLE'S OWN DESIGN, not something the Argo Rollouts
+# documentation describes. Argo Rollouts progresses a Deployment-shaped workload;
+# it does not watch a SandboxTemplate or a SandboxWarmPool and has no concept of
+# warm capacity. Two things close that gap, and both are choices made here:
+#
+#   1. The marker container below. A Rollout needs a pod template to progress, so
+#      this one runs a single container whose only job is to carry the revision
+#      the CI system bumps. It is an ordinary pod: it holds no warm capacity and
+#      nothing claims it. It exists to give Argo Rollouts something to version.
+#   2. The two plugin steps. They are what actually act on the template and the
+#      pool, through the Kubernetes API, from inside the controller process.
+#
+# Placeholders filled in at apply time by scripts/run-rollout.sh:
+#   __NAMESPACE__  from the NAMESPACE variable
+#   __REVISION__   the revision this rollout bumps the template to, from the
+#                  script's argument. It appears twice, on the marker container
+#                  and in the patch step's config, because the two are the point:
+#                  the Rollout carries a revision and the plugin step is what
+#                  puts that revision on the SandboxTemplate.
+# Never apply this file with the placeholders in place.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: template-bump
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: argo-rollouts
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: template-bump
+  template:
+    metadata:
+      labels:
+        app: template-bump
+    spec:
+      containers:
+        - name: revision-marker
+          image: public.ecr.aws/docker/library/busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "echo rollout-revision=$TEMPLATE_REVISION; exec sleep infinity"]
+          env:
+            # The value a CI system bumps to start a rollout. It is the marker
+            # container's own copy; the plugin step below is what writes the
+            # same revision onto the SandboxTemplate.
+            - name: TEMPLATE_REVISION
+              value: "__REVISION__"
+  strategy:
+    canary:
+      steps:
+        # Step 1: patch the SandboxTemplate. On its own this IS the hazard the
+        # page measures: the template now says rev-2 while every pod already
+        # warm in the pool is still rev-1, and a claim made here adopts one of
+        # those.
+        - plugin:
+            name: eks-nitro-sandbox/sandbox-template-patch
+            config:
+              namespace: __NAMESPACE__
+              template: rollout-agent
+              revision: __REVISION__
+        # Step 2: hold, so the hazard state is observable rather than passed
+        # through too fast to read. This is where the page reads the template
+        # and the pool and finds them disagreeing.
+        - pause:
+            duration: 30s
+        # Step 3: drain and re-warm. This is the step whose ABSENCE leaves the
+        # pool serving stale pods. The plugin's Run performs the same operations
+        # as scripts/drain-pool.sh. If the rollout is aborted or terminated
+        # after the pool is scaled to zero but before it is scaled back, the
+        # plugin's Abort and Terminate restore the replica count, so warm
+        # capacity is never stranded at zero.
+        - plugin:
+            name: eks-nitro-sandbox/sandbox-warmpool-drain
+            config:
+              namespace: __NAMESPACE__
+              pool: rollout-agent-pool
+              # The revision every pool sandbox must have booted with before the
+              # step is done. Without it the step could only check that the pool
+              # agrees with ITSELF on one template hash, which a pool still
+              # uniformly on the OLD template also satisfies: that is the very
+              # state the drain exists to leave behind.
+              revision: __REVISION__
+              # Wait for the pool's sandboxes to carry the template hash the
+              # controller computes for the patched template, not just for
+              # readyReplicas to come back. Without this a pool that has only
+              # started replacing pods would look converged, and a claim in
+              # that window could still adopt a rev-1 pod.
+              waitForNewTemplateHash: true
+              timeoutSeconds: 600
+        # Step 4: full weight. setWeight moves the marker Deployment's own pods
+        # and nothing else. A warm pool has ONE active template rather than two
+        # running side by side, so there is no traffic to split and this sample
+        # claims no progressive weighting: the progression it shows is
+        # patch, then drain.
+        - setWeight: 100

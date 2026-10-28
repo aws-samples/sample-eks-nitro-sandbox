@@ -44,14 +44,19 @@ spec:
         app: ebs-sandbox-set
     spec:
       runtimeClassName: isolated-sandbox
+      # The pod calls no Kubernetes API, so it mounts no ServiceAccount token.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: writer
           image: public.ecr.aws/docker/library/busybox:1.37
+          imagePullPolicy: IfNotPresent
           command:
             - sh
             - -c
@@ -65,6 +70,13 @@ spec:
           resources:
             requests: { cpu: "1", memory: 1Gi }
             limits:   { cpu: "1", memory: 1Gi }
+          securityContext:
+            # The writer only appends to /data (the mounted volume), so the root
+            # filesystem can be read-only.
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
           volumeMounts:
             - name: data
               mountPath: /data

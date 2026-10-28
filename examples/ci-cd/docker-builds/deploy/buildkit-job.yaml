@@ -1,0 +1,59 @@
+# Optional: the same image built by a standalone BuildKit daemon instead of Docker, in a
+# Nitro sandbox. buildkitd is privileged and confined to the pod's own guest, exactly as the
+# Docker daemon is.
+#
+# scripts/run-buildkit-job.sh renders <NAMESPACE>.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: buildkit-build
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: docker-builds
+spec:
+  backoffLimit: 0
+  completions: 1
+  template:
+    metadata:
+      labels:
+        app: buildkit-build
+        app.kubernetes.io/part-of: docker-builds
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      runtimeClassName: isolated-sandbox
+      restartPolicy: Never
+      serviceAccountName: docker-builds-builder
+      automountServiceAccountToken: false
+      containers:
+        - name: buildkit
+          # BuildKit is not published on public.ecr.aws, so this image comes from Docker Hub.
+          # The node's containerd pulls it, like any pod image; the build's own pulls, which
+          # the egress policy governs, go to public.ecr.aws.
+          image: moby/buildkit:v0.34.1
+          securityContext:
+            privileged: true       # reaches only this pod's own guest
+          env:
+            - { name: IMAGE, value: "hello-nitro:v1" }
+          command: ["/bin/sh", "/scripts/build.sh"]
+          volumeMounts:
+            # Covers the image's declared VOLUME /var/lib/buildkit with the EBS claim, so
+            # buildkitd's content-addressable cache survives the Job.
+            - name: cache
+              mountPath: /var/lib/buildkit
+            - name: scripts
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: buildkit-cache
+        - name: scripts
+          configMap:
+            name: buildkit-build-script
