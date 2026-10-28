@@ -461,10 +461,12 @@ TODO: output from the fresh run
 ```
 
 `test.sh` then reads each agent's own log for those two failure strings
-(`cilium_ubuntu.py datapath-failures`). A line carrying either string fails the check in any
-format, the agent's `time=... level=...` text or not, so an unknown format cannot hide one;
-and a log with no failure and no line in the agent's format is refused as unreadable rather
-than read as clean.
+(`cilium_ubuntu.py datapath-failures`). It reads both formats the agent logs in, its
+`time=... level=...` text and JSON, with one rule: a warn-or-worse line whose message starts
+with `Failed to initialize datapath` or that carries `no BTF found` is a failure, and an info
+line that only quotes them is not. A line in neither format that carries either string cannot
+be judged, so the check reports that it checked nothing instead of passing; a log with no line
+in either format is refused the same way.
 
 **The missing-BTF rejection.** Issue #11 asks for a failing control or a captured preflight
 failure that shows a missing-BTF kernel rejected before the node is accepted. Unless a real

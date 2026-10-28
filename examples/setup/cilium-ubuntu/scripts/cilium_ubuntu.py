@@ -417,6 +417,38 @@ def tag_specs(group, *resource_types):
 BOOTSTRAP = "/etc/eks/bootstrap.sh"
 
 
+def cluster_bootstrap_values(info):
+    """(endpoint, CA, DNS address) the bootstrap line needs, from a describe-cluster `cluster`
+    object, each checked: the endpoint a plain https host, the CA shell-safe and real base64, and
+    the DNS address the service CIDR plus 10. Raises DemoError when the object is malformed or
+    incomplete, so a caller can tell bad cluster data apart from a mismatch."""
+    require(isinstance(info, dict), "the describe-cluster answer holds no cluster object")
+
+    def field(parent, key):
+        value = parent.get(key) if isinstance(parent, dict) else None
+        return value if value is not None else ""
+
+    endpoint = field(info, "endpoint")
+    ca = field(field(info, "certificateAuthority"), "data")
+    cidr = field(field(info, "kubernetesNetworkConfig"), "serviceIpv4Cidr")
+    require(isinstance(endpoint, str) and re.fullmatch(r"https://[A-Za-z0-9.-]+", endpoint),
+            f"cluster endpoint '{endpoint}' is not an https host")
+    require(isinstance(ca, str) and re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", ca),
+            "the cluster's certificate authority is not base64")
+    # The charset check keeps the value shell-safe; decoding it proves it is real base64 (a
+    # value of the wrong length passes the charset and would only fail later, at node join).
+    try:
+        ca_bytes = base64.b64decode(ca, validate=True)
+    except ValueError:
+        ca_bytes = b""
+    require(ca_bytes, "the cluster's certificate authority is not valid base64")
+    try:
+        dns = str(ipaddress.ip_network(cidr)[10])
+    except (ValueError, TypeError, IndexError):
+        raise DemoError(f"the cluster's service CIDR '{cidr}' could not be read")
+    return endpoint, ca, dns
+
+
 def bootstrap_user_data(group, info):
     """The node's boot script: Canonical's EKS bootstrap, as the GA bundle's UBUNTU.md section 4
     ("Bake and join") has the launch template run it, with the cluster's API endpoint, CA and
@@ -427,23 +459,8 @@ def bootstrap_user_data(group, info):
     proxy; this script only runs it. Every value is checked against a plain charset first, so
     nothing in it can be read as shell syntax."""
     cluster = setting("CLUSTER_NAME")
-    endpoint = info.get("endpoint") or ""
-    ca = (info.get("certificateAuthority") or {}).get("data") or ""
-    cidr = (info.get("kubernetesNetworkConfig") or {}).get("serviceIpv4Cidr") or ""
     require(re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,99}", cluster), f"cluster name '{cluster}' is not a plain name")
-    require(re.fullmatch(r"https://[A-Za-z0-9.-]+", endpoint), f"cluster endpoint '{endpoint}' is not an https host")
-    require(re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", ca), "the cluster's certificate authority is not base64")
-    # The charset check keeps the value shell-safe; decoding it proves it is real base64 (a
-    # value of the wrong length passes the charset and would only fail later, at node join).
-    try:
-        ca_bytes = base64.b64decode(ca, validate=True)
-    except ValueError:
-        ca_bytes = b""
-    require(ca_bytes, "the cluster's certificate authority is not valid base64")
-    try:
-        dns = str(ipaddress.ip_network(cidr)[10])
-    except ValueError:
-        raise DemoError(f"the cluster's service CIDR '{cidr}' could not be read")
+    endpoint, ca, dns = cluster_bootstrap_values(info)
     labels = node_labels(group)
     require(all(LABEL_KEY.match(k) and LABEL_VALUE.match(v) for k, v in labels.items()),
             f"a {group} node label is not a plain Kubernetes label")
@@ -566,12 +583,21 @@ def cmd_check_user_data(args):
         print("no launch-template data with base64 UserData in the input: nothing was checked", file=sys.stderr)
         sys.exit(2)
     cluster = setting("CLUSTER_NAME")
+    # Nothing is compared until the expected script is rendered, so every way that can fail is
+    # exit 2: a failed read, a read whose cluster data is malformed or incomplete (no endpoint, a
+    # CA that is not base64, no service CIDR), or labels that cannot be rendered. Exit 1 is kept
+    # for a rendered expected script that the user data does not match.
     try:
         info = cluster_info()
+        cluster_bootstrap_values(info)
     except DemoError as e:
         print(f"could not read cluster {cluster}: nothing was checked ({e})", file=sys.stderr)
         sys.exit(2)
-    want = bootstrap_user_data(args.role, info)
+    try:
+        want = bootstrap_user_data(args.role, info)
+    except DemoError as e:
+        print(f"could not render the expected {args.role} user data: nothing was checked ({e})", file=sys.stderr)
+        sys.exit(2)
     calls, _ = user_data_parts(script)
     labels = node_labels_arg(bootstrap_call(calls[0])[1].get("--kubelet-extra-args")) if len(calls) == 1 else None
     verdict = f" (--node-labels {node_label_verdict(labels, args.role)[1]})" if labels is not None else ""
@@ -997,7 +1023,10 @@ def cmd_kernel_release(args):
 # ===========================================================================
 
 def cluster_info():
-    return aws("eks", "describe-cluster", "--name", setting("CLUSTER_NAME"))["cluster"]
+    answer = aws("eks", "describe-cluster", "--name", setting("CLUSTER_NAME"))
+    info = answer.get("cluster") if isinstance(answer, dict) else None
+    require(isinstance(info, dict), f"describe-cluster for {setting('CLUSTER_NAME')} returned no cluster object")
+    return info
 
 
 def require_demo_cluster_info(info):
@@ -1008,15 +1037,20 @@ def require_demo_cluster_info(info):
 # --- The agent log: its eBPF datapath loaded, with the kernel's BTF ---------
 # On a node whose kernel has no BTF, the GA bundle (README, "Cilium with kube-proxy
 # replacement") has the agent report Ready while its log repeats "Failed to initialize datapath"
-# with "no BTF found". A log line is the agent's when it starts with its key=value prefix,
-# `time=<t> level=<l> `; the message and any other attributes (source=, module=, error=) follow
-# in any order, and the level may be upper or lower case. In such a line a failure is
-# "no BTF found" anywhere, or a warn-or-worse msg starting "Failed to initialize datapath", so an
-# info line that only mentions the text is not one. Any OTHER line (JSON, a plain line, a
-# continuation) that carries either string is a failure too, whatever its format: a format this
-# parser does not know must never hide one. Only a comment line (starting with #) that quotes
-# the text is not counted. A log with no failure and NO agent-format line is not a clean log but
-# one this parser cannot read, so it checks nothing.
+# with "no BTF found". The agent logs in one of two formats, and this parser reads both with
+# one rule:
+#   text  a line starting with the key=value prefix `time=<t> level=<l> `; the message and any
+#         other attributes (source=, module=, error=) follow in any order;
+#   JSON  one JSON object per line with a string "level" (and usually "msg").
+# The level may be upper or lower case. In either format a line is a failure when its level is
+# warn or worse AND its message starts with "Failed to initialize datapath" or the line carries
+# "no BTF found" (in the message or any attribute, such as error=). An info line that only
+# quotes either string is not a failure. A line in NEITHER format that carries either string
+# cannot be judged: the parser cannot read its level, so it reports that it checked nothing
+# (exit 2) rather than reading the log as clean or as failed. A line in neither format that
+# carries neither string (a banner, a klog line) is counted and otherwise ignored, and a comment
+# line (starting with #) is not evidence at all. A log with no line in either format is not a
+# clean log but one this parser cannot read, so it checks nothing.
 AGENT_LINE = re.compile(r'^time=\S+ level=(?P<level>[A-Za-z]+) ')
 FAILURE_LEVELS = {"warn", "warning", "error", "fatal", "panic"}
 DATAPATH_FAILURE_TEXT = "Failed to initialize datapath"
@@ -1024,40 +1058,73 @@ DATAPATH_FAILURE = re.compile(r' msg="?Failed to initialize datapath')
 NO_BTF = "no BTF found"
 
 
+def agent_log_line(line):
+    """('text' or 'json', level, whether the message starts with the datapath failure) for a
+    line in one of the agent's two log formats, or None for any other line."""
+    match = AGENT_LINE.match(line)
+    if match:
+        return "text", match.group("level"), bool(DATAPATH_FAILURE.search(line))
+    if line.lstrip().startswith("{"):
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            return None
+        level = obj.get("level") if isinstance(obj, dict) else None
+        if isinstance(level, str) and level.isalpha():
+            msg = obj.get("msg")
+            return "json", level, isinstance(msg, str) and msg.startswith(DATAPATH_FAILURE_TEXT)
+    return None
+
+
 def datapath_failures(log_text):
-    """(lines read, agent-format lines, other lines, [(failure line, in agent format)]) in a
-    cilium-agent log. Empty lines and comment lines are neither agent nor other lines."""
+    """(lines read, agent log lines, other lines, [(failure line, format)], [lines in neither
+    format that carry a failure string]) in a cilium-agent log. Empty and comment lines are
+    neither agent nor other lines."""
     lines = log_text.splitlines()
-    agent, other, failures = 0, 0, []
+    agent, other, failures, undecided = 0, 0, [], []
     for line in lines:
         if not line.strip() or line.lstrip().startswith("#"):
             continue
-        match = AGENT_LINE.match(line)
-        if match:
+        parsed = agent_log_line(line)
+        if parsed:
+            fmt, level, starts_with_failure = parsed
             agent += 1
-            if NO_BTF in line or (match.group("level").lower() in FAILURE_LEVELS and DATAPATH_FAILURE.search(line)):
-                failures.append((line, True))
+            if level.lower() in FAILURE_LEVELS and (starts_with_failure or NO_BTF in line):
+                failures.append((line, fmt))
         else:
             other += 1
             if NO_BTF in line or DATAPATH_FAILURE_TEXT in line:
-                failures.append((line, False))
-    return len(lines), agent, other, failures
+                undecided.append(line)
+    return len(lines), agent, other, failures, undecided
 
 
 def cmd_datapath_failures(_):
-    read, agent, other, failures = datapath_failures(sys.stdin.read())
+    """A cilium-agent log on stdin. Exit 0 when it holds agent log lines and no failure; 1 when a
+    text or JSON agent line is a failure (printed); 2 when nothing was checked: an empty log, a
+    log with no agent line, or a line in neither format that carries a failure string."""
+    read, agent, other, failures, undecided = datapath_failures(sys.stdin.read())
     if not read:
         print("empty agent log: nothing was checked", file=sys.stderr)
         sys.exit(2)
-    if not failures and not agent:
-        print(f"none of {read} lines has the agent's 'time=... level=... ' prefix: nothing was checked",
-              file=sys.stderr)
+    summary = (f"{len(failures)} '{DATAPATH_FAILURE_TEXT}' / '{NO_BTF}' lines in {agent} agent log lines "
+               f"and {other} other line(s)")
+    if failures:
+        for line, fmt in failures[:3]:
+            print(("(json) " if fmt == "json" else "") + line[:300])
+        print(summary)
+        sys.exit(1)
+    if undecided:
+        for line in undecided[:3]:
+            print(f"(in neither agent log format) {line[:300]}", file=sys.stderr)
+        print(f"{len(undecided)} line(s) in neither agent log format carry '{DATAPATH_FAILURE_TEXT}' or "
+              f"'{NO_BTF}', so their level cannot be read: nothing was checked", file=sys.stderr)
         sys.exit(2)
-    for line, in_agent_format in failures[:3]:
-        print(("" if in_agent_format else "(not in the agent's text format) ") + line[:300])
-    print(f"{len(failures)} '{DATAPATH_FAILURE_TEXT}' / '{NO_BTF}' lines in {agent} agent log lines "
-          f"and {other} other line(s)")
-    sys.exit(1 if failures else 0)
+    if not agent:
+        print(f"none of {read} lines is an agent log line (key=value text 'time=... level=... ' or JSON "
+              "with a level): nothing was checked", file=sys.stderr)
+        sys.exit(2)
+    print(summary)
+    sys.exit(0)
 
 
 # --- `cilium-dbg status --verbose`: kube-proxy replacement, socket LB host-only ---
