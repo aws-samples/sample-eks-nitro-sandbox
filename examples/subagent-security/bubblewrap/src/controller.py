@@ -210,6 +210,11 @@ class Run:
         # Every supplier call this run makes, so the server's own request log can be
         # checked against it afterwards by scripts/correlate.py.
         self.supplier_requests = []
+        # Set once the terminal credential scan has read every file off the disk. After
+        # that point nothing may write under self.root, including the diagnostic write in
+        # the handler at the bottom of this file: a print() that failed after the scan
+        # would otherwise land there and make the run's last write an unscanned one.
+        self.scan_complete = False
         for role in ROLES:
             for directory in ("in", "out"):
                 (self.root / role / directory).mkdir(parents=True)
@@ -617,7 +622,12 @@ class Run:
             "report_prefix": prefix, "comparison": comparison,
             "report_choice": payload["recommended_supplier"],
             "supplier_requests": self.supplier_requests,
-            "checks": self.checks, "calls": self.calls,
+            # A snapshot, not the live list. The dict used to hold self.checks itself, so
+            # re-serialising it below picked up the check appended in between through the
+            # alias and the update line was a no-op. Copying here makes the update below
+            # the thing that adds it, which is what the two serialisations differing by
+            # one check should look like in the source.
+            "checks": list(self.checks), "calls": self.calls,
         }
         secret = Path(SUPPLIER_KEY_FILE).read_text().strip()
         # Two scans, and the order of what follows is the whole of their value.
@@ -639,7 +649,7 @@ class Run:
         # handler at the bottom of this file, and nothing below touches the filesystem.
         # An earlier version wrote checks.json before the scan and then again afterwards
         # from a finally, which left the run's very last write unscanned.
-        evidence["checks"] = self.checks
+        evidence["checks"] = list(self.checks)
         (self.root / "evidence.json").write_text(json.dumps(evidence, indent=2))
         (self.root / "checks.json").write_text(json.dumps(self.checks, indent=2))
 
@@ -654,6 +664,9 @@ class Run:
         self.check(f"and so was every one of the {len(scanned)} files left in the pod for "
                    "this run, read off the disk after the last write: " + ", ".join(scanned),
                    True)
+        # From here on nothing may write under self.root, and this is what stops the
+        # handler below from doing so if a print() fails.
+        self.scan_complete = True
         print(f"\nANALYST_COMPLETE={self.id}", flush=True)
         print(f"{len(self.checks)} checks passed", flush=True)
         print(f"  bubblewrap {self.pin['pinned_version']}, source commit "
@@ -685,10 +698,11 @@ if __name__ == "__main__":
     try:
         run_.execute()
     except BaseException:
-        # Only on the failure path. A successful run has already written this file and
-        # then scanned it for the supplier key, and writing it again here would make the
-        # run's last write the one write the scan never saw. A failed run is not copied
-        # out of the pod at all, because run.sh stops on the non-zero exit, so recording
-        # the checks it reached is for reading in place.
-        (run_.root / "checks.json").write_text(json.dumps(run_.checks, indent=2))
+        # Only when the terminal scan has not run. Writing here afterwards would make the
+        # run's last write the one write the scan never saw, and "afterwards" is reachable:
+        # a print() that fails after the scan raises, and lands exactly here. A failed run
+        # is not copied out of the pod at all, because run.sh stops on the non-zero exit,
+        # so recording the checks it reached is for reading in place.
+        if not run_.scan_complete:
+            (run_.root / "checks.json").write_text(json.dumps(run_.checks, indent=2))
         raise

@@ -986,7 +986,7 @@ Four readings differ, and each says something:
 |---|---|---|
 | `uname -rv` | `6.18.54 #1`, built Oct 22 17:38 | `6.18.54 #2`, built Oct 22 00:16 |
 | `/proc/uptime` | `185.96`, against a pod age of 3m6s | `2344.23`, about 39 minutes, which is the node's own age |
-| `/sys/block` | `vda vdb vdc`, virtio | `nvme0n1 nvme1n1 nvme3n1`, the instance's own |
+| `/sys/block` | `vda vdb vdc`, virtio | `nvme0n1 nvme1n1`, the instance's own |
 | `product_name` | `m8i.enclave` | `m8i.xlarge` |
 
 The analyst pod runs its **own kernel build**, and the uptime is the giveaway: 186 seconds
