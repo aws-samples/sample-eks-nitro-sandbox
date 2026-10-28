@@ -37,8 +37,13 @@ note_fail() { echo "INCOMPLETE: $*" >&2; failed=1; }
 say() { printf '\n==> %s\n' "$*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-if [[ -f "$STATE_FILE" ]]; then set -a; . "$STATE_FILE"; set +a; fi
+# .env first and the run record second, so the record wins. The record holds the names the
+# run actually created; .env holds what the next run would use, and the two differ exactly
+# when someone has changed a name since. Sourced the other way round, a changed .env would
+# send this script after a namespace and a bucket that were never created and leave the
+# real ones behind.
 if [[ -f "$SAMPLE_DIR/.env" ]]; then set -a; . "$SAMPLE_DIR/.env"; set +a; fi
+if [[ -f "$STATE_FILE" ]]; then set -a; . "$STATE_FILE"; set +a; fi
 
 NAMESPACE="${NAMESPACE:-subagent-security-bubblewrap}"
 AWS_REGION="${AWS_REGION:-}"

@@ -61,16 +61,12 @@ BEDROCK_MODEL_ID="${BEDROCK_MODEL_ID:-global.anthropic.claude-sonnet-4-5-2025092
 # shellcheck source=../../analyst/scripts/analyst-lib.sh
 . "$SECTION_DIR/analyst/scripts/analyst-lib.sh"
 
-# The preflight runs before the run record is touched. It creates nothing, so a run that
-# stops in it has changed nothing, and truncating the record first would have thrown away
-# the names an earlier run's clean up still needs: bucket, role, repositories, namespace.
-# A missing credential or an unreachable model would have cost you the only record of what
-# was left behind.
+# Nothing from here down to the run record below creates anything, which is the point of
+# the order. The record is the only place the names of what a run created are written down
+# (bucket, role, repositories, namespace), and it used to be truncated before any of this:
+# a missing credential or an unreachable model would then have cost you the only record of
+# what an earlier run had left behind.
 analyst_preflight
-
-: > "$STATE_FILE"
-state_put SAMPLE "$SAMPLE"
-state_put NAMESPACE "$NAMESPACE"
 
 # These names carry the account id, so they are computed after the preflight read it and
 # are overridable in .env for a second run beside the first.
@@ -78,6 +74,28 @@ BUCKET="${BUCKET:-subagent-analyst-$SAMPLE-$ACCOUNT_ID}"
 ROLE_NAME="${ROLE_NAME:-subagent-analyst-$SAMPLE}"
 SUPPLIER_API_REPOSITORY="pod-isolation/subagent-analyst-$SAMPLE-supplier-api"
 ANALYST_REPOSITORY="pod-isolation/subagent-analyst-$SAMPLE"
+
+# The run record is the only place the names of what an earlier run created are written
+# down, so this refuses to overwrite one that names something different rather than
+# replacing it. The case that matters is a reader who changes a name in .env to run a
+# second copy: without this, the first copy's names would be gone and its clean up would
+# have nothing to go on. Names that match are this run's own, so replacing the record
+# loses nothing.
+#
+# It is also why the record is touched here and not earlier: everything above creates
+# nothing, so a run that stops above this line leaves both the account and the record
+# exactly as it found them.
+if [[ -f "$STATE_FILE" ]]; then
+  for key in NAMESPACE BUCKET ROLE_NAME; do
+    previous="$(sed -n "s/^$key=//p" "$STATE_FILE" | tail -1)"
+    [[ -z "$previous" || "$previous" == "${!key}" ]] ||
+      die "the run record at $STATE_FILE says the last run used $key=$previous and this one would use ${!key}. Run ./scripts/clean.sh --delete-aws for that one first, or move the record aside; created and changed nothing, and the record is untouched."
+  done
+fi
+
+: > "$STATE_FILE"
+state_put SAMPLE "$SAMPLE"
+state_put NAMESPACE "$NAMESPACE"
 state_put BUCKET "$BUCKET"
 state_put ROLE_NAME "$ROLE_NAME"
 state_put CLUSTER_NAME "$CLUSTER_NAME"
