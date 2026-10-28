@@ -166,8 +166,28 @@ kc wait --for=condition=Ready pod/analyst -n "$NAMESPACE" --timeout=10m ||
 # a user namespace and a private procfs inside the guest, and neither is available there
 # by default: this is where a guest that cannot provide them says so, instead of the
 # first run failing in a way that reads like a bug in the sample.
-kc exec analyst -n "$NAMESPACE" -- python3 /opt/bubblewrap/preflight.py ||
-  die "bubblewrap could not start a tool process in the guest. The pod's enable-guest-userns init container and its privileged working container are what make that possible; 'kubectl logs analyst -c enable-guest-userns -n $NAMESPACE' and 'kubectl describe pod analyst -n $NAMESPACE' say what happened."
+#
+# Twice, not once, with a pause between. The pod is seconds old here and often on a node
+# that is too, and `kubectl exec` to a brand-new node can fail before it reaches the pod
+# at all: one run of this script died on "error dialing backend: remote error: tls:
+# internal error", and the very next command into that same pod worked. Treating that as
+# a guest that cannot run bubblewrap sends a reader to the init container's logs over
+# something they need only retry, so the second attempt is what decides and the message
+# below names both possibilities rather than only the one this check exists for.
+preflight_failure=""
+for attempt in 1 2; do
+  if preflight_output="$(kc exec analyst -n "$NAMESPACE" -- \
+       python3 /opt/bubblewrap/preflight.py 2>&1)"; then
+    printf '%s\n' "$preflight_output"
+    preflight_failure=""
+    break
+  fi
+  preflight_failure="$preflight_output"
+  [[ "$attempt" == 1 ]] && sleep 10
+done
+[[ -z "$preflight_failure" ]] ||
+  die "bubblewrap could not start a tool process in the guest, twice, ten seconds apart, and what it said is below. If that names a namespace or a procfs mount, the pod's enable-guest-userns init container and its privileged working container are what make those possible: 'kubectl logs analyst -c enable-guest-userns -n $NAMESPACE' and 'kubectl describe pod analyst -n $NAMESPACE' say what happened. If it is a connection error instead, the exec did not reach the pod and re-running this script is the thing to try.
+$preflight_failure"
 
 say "ready"
 cat <<EOF

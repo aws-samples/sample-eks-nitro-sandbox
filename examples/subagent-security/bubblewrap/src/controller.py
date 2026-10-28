@@ -112,38 +112,62 @@ def no_capabilities(fields) -> bool:
     return all(int(fields[name], 16) == 0 for name in CAPABILITY_SETS)
 
 
-def scan_files(root: Path, needle: bytes):
-    """Scan every file under root for the bytes in needle. Returns (scanned, holding).
+def run_files(root: Path) -> list:
+    """Every file under root, as paths relative to it, sorted.
 
-    Both lists come from **one** traversal, as paths relative to root: `scanned` is every
-    file it read, `holding` the ones whose bytes contain the needle. One traversal because
-    a second one to count what the first scanned would be counting a different set: a file
-    can be written, removed or changed in between, and then "every one of the N files was
-    scanned" is a sentence about two different Ns.
+    Nothing secret goes into this function and nothing derived from a secret comes out,
+    which is the point of it being separate from the one below. It is also the single list
+    the scan works from: the count the run reports is the length of this list, and every
+    member of it is read, so "every one of the N files was scanned" is one set and one
+    number rather than two traversals that might disagree.
+    """
+    return sorted(str(path.relative_to(root)) for path in root.rglob("*")
+                  if path.is_file())
 
-    A function returning its findings rather than a check that raises, so it can be run
-    against a tree that must come back empty and a tree that must not.
+
+def count_files_holding(root: Path, names, needle: bytes) -> int:
+    """How many of names contain needle. Returns a count, and never a name.
+
+    Split from run_files() above, and returning a number rather than the matching names,
+    so that nothing the credential has touched can flow into anything this program prints
+    or writes. CodeQL flagged the earlier shape for exactly that: one function took the
+    key and returned the list of file names, and that list was interpolated into a check
+    name and printed. The names were not the key, and a value derived from a credential
+    reaching a log line is still a shape to remove rather than to argue about.
 
     The comparison is on bytes, and the caller encodes the secret once and passes those
-    bytes in rather than the string. So nothing encodes or decodes between the scan and a
-    write, and a file that is not text is scanned exactly like one that is.
+    bytes in. So nothing encodes or decodes between a scan and a write, and a file that is
+    not text is read exactly like one that is.
 
-    What this does and does not cover is worth being exact about, because the claim rests
-    on it. It covers the literal bytes, contiguous, in any file under root that it can
-    read. It does not cover an encoded, encrypted, hashed or split representation of them,
-    and it says nothing about a file outside root or about standard output. A read that
-    fails raises rather than being skipped: a scan that could not read a candidate must
-    not report success.
+    What this does and does not cover: the literal bytes, contiguous, in each named file.
+    Not an encoded, hashed or split representation of them, and nothing outside root. A
+    read it cannot perform raises rather than being skipped, which also covers a file that
+    disappeared between the listing and the read: a scan that could not read a candidate
+    must not report success.
     """
-    scanned, holding = [], []
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        name = str(path.relative_to(root))
-        scanned.append(name)
-        if needle in path.read_bytes():
-            holding.append(name)
-    return scanned, holding
+    return sum(1 for name in names if needle in (root / name).read_bytes())
+
+
+def availability_for_the_case(case, reported) -> dict:
+    """The availability map the evaluator is given, rebuilt from the case's own ids.
+
+    `reported` is the validated map from the supplier API's reply. compare() reads only
+    `availability[id]["available"]` for ids that are in the case, so nothing else in the
+    reply is needed and nothing else is passed on: every key here comes from the case
+    document the controller read from Amazon S3, and the only thing taken from the reply
+    is one boolean per supplier. A supplier the reply does not mention comes out False,
+    which is what compare() already did with a missing entry.
+
+    Why rebuild rather than forward, which is what CodeQL's second alert was pointing at:
+    this map is written into a file that is staged into a confined tool process, and the
+    reply it came from is the one input to this run that a supplier controls. Forwarding
+    it would put supplier-controlled strings into that file for no benefit, since
+    compare() ignores everything except these booleans. The shape of `reported` is still
+    checked first, loudly, by availability_from_reply() in the shared business module.
+    """
+    return {supplier["id"]:
+            {"available": reported.get(supplier["id"], {}).get("available") is True}
+            for supplier in case["suppliers"]}
 
 
 def same_file(reported, actual) -> bool:
@@ -532,7 +556,7 @@ class Run:
                        f"{refusal.get('error')}",
                        self.refused(refusal, errno.ENETUNREACH))
 
-    def supplier_calls(self):
+    def supplier_calls(self, case):
         """Every supplier call in this sample is the controller's own."""
         reply = self.supplier("GET", f"/cases/{CASE}/suppliers", "suppliers")
         self.check("the supplier API answers the controller's authenticated read with "
@@ -540,7 +564,17 @@ class Run:
         self.check("the supplier API refuses an invalid key with 401",
                    self.supplier("GET", f"/cases/{CASE}/suppliers", "badkey",
                                  key="not-the-key")["status"] == 401)
-        return availability_from_reply(reply["body"])
+        # Rebuilt from the case's own supplier ids rather than forwarded, so the file the
+        # evaluator is handed carries no string the supplier API chose. The check is
+        # structural: the keys are the case's ids and each value is exactly one boolean.
+        availability = availability_for_the_case(case, availability_from_reply(reply["body"]))
+        self.check("the availability staged for the evaluator holds the case's own supplier "
+                   f"ids and one boolean each: {sorted(availability)}",
+                   sorted(availability) == sorted(s["id"] for s in case["suppliers"])
+                   and all(set(record) == {"available"}
+                           and isinstance(record["available"], bool)
+                           for record in availability.values()))
+        return availability
 
     def do_the_work(self, case, availability):
         facts = self.root / "evaluator/in/facts.json"
@@ -661,16 +695,22 @@ class Run:
         # seen.
         (self.root / "checks.json").write_bytes(json.dumps(self.checks, indent=2).encode())
 
-        scanned, holding = scan_files(self.root, needle)
+        # The listing and the matching are two functions on purpose: `files` has no data
+        # flow from the key, so interpolating it into the check below cannot carry one,
+        # and the matching returns a count rather than names for the same reason.
+        files = run_files(self.root)
+        holding = count_files_holding(self.root, files, needle)
         if holding:
             raise AssertionError(
-                f"the supplier key appears in {holding}, under this run's directory")
+                f"the supplier key appears in {holding} of this run's {len(files)} files "
+                f"under {self.root}; nothing further was written. Search that directory to "
+                "find which.")
         # Reported from the same traversal that did the scanning, so the number is the
         # number of files actually read and not a second count of a set that may have
         # changed. This line is printed and deliberately not written anywhere: it is the
         # result of scanning the files, so it is the one thing it cannot be inside.
-        self.check(f"and so was every one of the {len(scanned)} files left in the pod for "
-                   "this run, read off the disk after the last write: " + ", ".join(scanned),
+        self.check(f"and so was every one of the {len(files)} files left in the pod for "
+                   "this run, read off the disk after the last write: " + ", ".join(files),
                    True)
         print(f"\nANALYST_COMPLETE={self.id}", flush=True)
         print(f"{len(self.checks)} checks passed", flush=True)
@@ -692,7 +732,7 @@ class Run:
         self.file_boundary(case)
         self.process_boundary()
         self.network_boundary()
-        availability = self.supplier_calls()
+        availability = self.supplier_calls(case)
         comparison = self.do_the_work(case, availability)
         payload = self.model_turn(case, comparison)
         self.save(s3, case, comparison, payload)
