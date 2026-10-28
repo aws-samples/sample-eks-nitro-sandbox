@@ -96,6 +96,11 @@ CONTROL_EXPECTED_STATUSES = [200, 200, 200, 200, 200, 401]
 GUEST_DEVICE = re.compile(r"^vd[a-z]+[0-9]*$|^dm-[0-9]+$")
 GUEST_DISK = re.compile(r"^vd[a-z]+$")
 
+# The interpreter src/policies.py names in the policy's `binaries` rule. The supervisor
+# writes it into its own denial records, which is what lets the log check below tie a
+# refusal to the executable the policy matched.
+PYTHON_BINARY = "/usr/local/bin/python3.13"
+
 
 class Problem(RuntimeError):
     """A claim this run makes that did not hold, or that could not be determined.
@@ -959,9 +964,21 @@ class Walkthrough:
                    "the analyst holds a credential and it is an openshell: placeholder")
         keyed_digest = shared_keyed_digest()
         real = keyed_digest(self.run_id, self.real_key)
-        self.check(identity.get("api_key_digest") != real,
-                   "the analyst's credential digest differs from the real supplier key's, "
-                   "so the real key never reached the sandbox")
+        reported = identity.get("api_key_digest")
+        # The digest has to be a digest before it can be compared. Without this, a probe
+        # that did not report the field at all would leave `None != real`, which is true,
+        # and the comparison would pass having measured nothing.
+        self.check(isinstance(reported, str) and len(reported) == 64
+                   and all(c in "0123456789abcdef" for c in reported),
+                   "the analyst reported a credential digest to compare "
+                   f"({reported!r:.80})")
+        # Deliberately narrow wording. This compares the value the analyst holds now
+        # against the real key; it does not establish that the real key was never present
+        # at any earlier moment, nor that it is absent from some channel this run does not
+        # read. The mounts check above is the other half of the evidence.
+        self.check(reported != real,
+                   "the credential the analyst holds is not the real supplier key, by "
+                   "salted digest of each")
 
     def check_the_sandbox(self):
         """That this really ran in a Nitro sandbox guest, and where.
@@ -1154,10 +1171,20 @@ class Walkthrough:
             raise Problem("could not read the supervisor's log, so the refusal has no "
                           f"record from the layer that made it:\n{tail(log.stderr)}")
         (self.run_dir / "supervisor.log").write_text(log.stdout)
+        # Every part of this matters. "DENIED" and the hostname alone would be satisfied by
+        # any earlier or unrelated denial naming the same host, so the line also has to
+        # carry the port, the executable the policy names and OpenShell's own reason for
+        # refusing a connection at the transport layer. That triple is written by the code
+        # path this probe exercises and not by a DNS refusal or a stale entry.
+        wanted_reason = "transparent_tcp_policy_denied"
         matched = [line for line in log.stdout.splitlines()
-                   if "DENIED" in line and self.alias_host in line]
+                   if "DENIED" in line
+                   and f"{self.alias_host}:8443" in line
+                   and PYTHON_BINARY in line
+                   and wanted_reason in line]
         self.check(bool(matched),
-                   "OpenShell's supervisor logged the refusal of the alias host itself")
+                   "OpenShell's supervisor logged this refusal itself, naming the alias "
+                   f"host, port 8443, {PYTHON_BINARY} and reason {wanted_reason}")
 
     def check_the_operations(self):
         """Four operations on a host the policy does allow, each refused by rule.

@@ -10,8 +10,13 @@
 # It does not stop at the first failure. A lookup that fails means "could not determine",
 # which is a failure and never "already gone": anything it could not delete or confirm is
 # named at the end and makes it exit non-zero. It touches a resource only when that
-# resource carries this sample's ManagedBy tag or its managed-by label, or sits inside a
-# namespace carrying that label, and leaves anything else alone.
+# resource is provably this sample's, and leaves anything else alone. "Provably" is one of
+# three things, depending on the resource: this sample's ManagedBy tag or managed-by label;
+# sitting inside a namespace that carries that label; or, for the two cluster-scoped RBAC
+# objects the OpenShell chart creates, Helm's own annotations naming both this release and
+# this namespace. That last case is deliberate and is not the label check: the chart
+# creates those objects, so they never carry this sample's label, and requiring one would
+# mean never deleting them.
 #
 # It never removes a shared install or a cluster-wide setting. This sample has two of
 # those, the RuntimeClass approval label and the agent-sandbox controller, and both are
@@ -28,7 +33,7 @@ delete_aws=false
 for arg in "$@"; do
   case "$arg" in
     --delete-aws) delete_aws=true ;;
-    --help|-h) sed -n '2,19p' "$0"; exit 0 ;;
+    --help|-h) sed -n '2,23p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -180,14 +185,26 @@ else
 
   # helm uninstall rather than deleting the objects: the release's own record goes with it,
   # so a later install of the same name does not meet a release Helm thinks it owns.
-  if helm status "$RELEASE" -n "$NAMESPACE" ${KUBE_CONTEXT:+--kube-context "$KUBE_CONTEXT"} \
-      >/dev/null 2>&1; then
-    helm uninstall "$RELEASE" -n "$NAMESPACE" \
-      ${KUBE_CONTEXT:+--kube-context "$KUBE_CONTEXT"} --wait --timeout 5m >/dev/null ||
-      note_fail "could not uninstall the Helm release $RELEASE from $NAMESPACE"
-    echo "  uninstalled the Helm release $RELEASE."
+  # `helm status` exits non-zero both for a release that is absent and for a Helm, context
+  # or API error, so its exit code alone cannot tell those apart, and treating them alike
+  # would report a release that is still installed as already gone. `helm list` answers the
+  # question directly: a listing this sample can parse means the lookup worked, and the
+  # release is present or absent within it.
+  releases=""
+  if releases="$(helm list -n "$NAMESPACE" \
+      ${KUBE_CONTEXT:+--kube-context "$KUBE_CONTEXT"} -o json 2>/dev/null)" &&
+     present="$(jq -r --arg r "$RELEASE" '[.[] | select(.name == $r)] | length' \
+       <<<"$releases" 2>/dev/null)" && [[ -n "$present" ]]; then
+    if [[ "$present" == 0 ]]; then
+      echo "  no Helm release $RELEASE in $NAMESPACE; already gone."
+    else
+      helm uninstall "$RELEASE" -n "$NAMESPACE" \
+        ${KUBE_CONTEXT:+--kube-context "$KUBE_CONTEXT"} --wait --timeout 5m >/dev/null ||
+        note_fail "could not uninstall the Helm release $RELEASE from $NAMESPACE"
+      echo "  uninstalled the Helm release $RELEASE."
+    fi
   else
-    echo "  no Helm release $RELEASE in $NAMESPACE; already gone."
+    note_fail "could not list the Helm releases in $NAMESPACE, so it is unknown whether the gateway release $RELEASE is still installed; left it alone"
   fi
 
   # The namespace takes the rest with it: the supervisor pods, the model bridge, the
@@ -404,8 +421,15 @@ else
     fi
   fi
 
-  for repo in "${ANALYST_REPOSITORY:-}" "${SUPPLIER_API_REPOSITORY:-}"; do
-    [[ -n "$repo" ]] || continue
+  # Named rather than iterated over values, so a record missing one of them is reported
+  # instead of quietly skipped: an empty name used to `continue` and leave the repository
+  # in the account with the clean up still exiting 0.
+  for repo_var in ANALYST_REPOSITORY SUPPLIER_API_REPOSITORY; do
+    repo="${!repo_var:-}"
+    if [[ -z "$repo" ]]; then
+      note_fail "the run record names no $repo_var, so that ECR repository could not be found or removed"
+      continue
+    fi
     got="$(lookup RepositoryNotFoundException ecr describe-repositories \
       --repository-names "$repo" --output json)"; rc=$?
     if [[ "$rc" == 0 ]]; then
