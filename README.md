@@ -33,6 +33,7 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 The same procurement analyst three ways, with a second policy layer confining the tool processes it runs inside its sandbox. The [section page](examples/subagent-security/README.md) covers the analyst, the case and what the three samples share.
 
 - [Procurement analyst confined by nono](examples/subagent-security/nono/README.md): reader, evaluator and writer run as separate processes under per-role nono profiles inside one sandbox, with nono's proxy holding the supplier API key and allowing one hostname and a short list of HTTP operations, while the analyst still produces a cited recommendation checked against a deterministic comparison.
+- [Procurement analyst confined by OpenShell](examples/subagent-security/openshell/README.md): an OpenShell gateway drives one sandbox, with the analyst's files, process identity, destinations and HTTP operations governed by an OpenShell policy inside the Nitro sandbox, while the supervisor that holds the real supplier key runs as an ordinary pod outside it, and one added rule lets the analyst submit its draft with no restart.
 
 ## Agent sandbox
 

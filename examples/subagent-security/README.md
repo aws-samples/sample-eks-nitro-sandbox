@@ -90,7 +90,7 @@ control, a refusal could be the server's own doing rather than the confinement l
 
 ## Which to pick
 
-| | [nono](nono/README.md) | bubblewrap | OpenShell |
+| | [nono](nono/README.md) | bubblewrap | [OpenShell](openshell/README.md) |
 |---|---|---|---|
 | What it gives you | File and network profiles, plus a credential proxy that brokers an API key and filters HTTP method and path | Namespace and mount isolation for a child process, with no network for the restricted tools | A supervisor that holds the credentials in a pod of its own, outside the sandbox |
 | What you deploy | One pinned binary in your image, driven by your application | One pinned binary in your image | A control plane, with its own pods and charts |
@@ -170,7 +170,11 @@ sandboxed pod and one small ordinary pod running until you clean up.
 - [Procurement analyst confined by nono](nono/README.md): reader, evaluator and writer as
   separate processes under per-role nono profiles, with nono's proxy brokering the supplier
   key and filtering the HTTP method and path.
+- [Procurement analyst confined by OpenShell](openshell/README.md): an OpenShell gateway
+  drives one sandbox, and the analyst's files, process identity, destinations and HTTP
+  operations are governed by an OpenShell policy applied inside the Nitro sandbox. The
+  supervisor that holds the real supplier key is an ordinary pod outside that boundary, and
+  one added rule lets the analyst submit its draft with no restart.
 
-Two more are planned, running the same analyst under bubblewrap and under OpenShell. See
-the
+One more is planned, running the same analyst under bubblewrap. See the
 [roadmap](https://github.com/aws-samples/sample-eks-nitro-sandbox/blob/main/docs/ROADMAP.md).
