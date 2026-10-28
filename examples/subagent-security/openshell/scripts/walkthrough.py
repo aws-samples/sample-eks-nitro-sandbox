@@ -101,6 +101,11 @@ GUEST_DISK = re.compile(r"^vd[a-z]+$")
 # refusal to the executable the policy matched.
 PYTHON_BINARY = "/usr/local/bin/python3.13"
 
+# OpenShell's own reason for refusing a connection at the transport layer, as its
+# supervisor writes it. A DNS-level refusal of the same name carries a different reason,
+# so matching this one keeps the two apart.
+ALIAS_DENIAL_REASON = "transparent_tcp_policy_denied"
+
 
 class Problem(RuntimeError):
     """A claim this run makes that did not hold, or that could not be determined.
@@ -955,8 +960,13 @@ class Walkthrough:
 
         The digest is computed here over the real key with the same salted, deliberately
         slow function the analyst used, so the two are comparable. Equal digests would mean
-        the real credential had reached the analyst, which is the failure this check exists
+        the analyst is holding the real credential, which is the failure this check exists
         to catch, so they fail the run rather than being reported.
+
+        What this does not establish, and what no wording here should imply: that the real
+        key was absent from the sandbox at every earlier moment, or that it is absent from
+        some channel this run does not read. It compares the value the analyst holds when
+        probed. The container-scoped mount check is the other half of the evidence.
         """
         identity = self.identity
         self.check(identity.get("api_key_present") is True
@@ -1147,6 +1157,29 @@ class Walkthrough:
                    "outside OpenShell the supplier API answers every operation the analyst "
                    f"was refused, and refuses a wrong key: {statuses}")
 
+    def count_alias_denials(self, save=False):
+        """How many transport-layer refusals of the alias host the supervisor has recorded.
+
+        Every part of the predicate earns its place. "DENIED" and the hostname alone would
+        match a DNS-level refusal of the same name, so the line also has to carry the port,
+        the executable the policy names and OpenShell's own reason for refusing a
+        connection at the transport layer. None of that makes the line unique to one
+        attempt, though, which is why the caller compares the count before and after its
+        own probe rather than asking whether any such line exists.
+        """
+        log = self.kubectl("logs", self.supervisor["metadata"]["name"], "-c", "supervisor",
+                           check=False)
+        if log.returncode != 0:
+            raise Problem("could not read the supervisor's log, so the refusal has no "
+                          f"record from the layer that made it:\n{tail(log.stderr)}")
+        if save:
+            (self.run_dir / "supervisor.log").write_text(log.stdout)
+        return sum(1 for line in log.stdout.splitlines()
+                   if "DENIED" in line
+                   and f"{self.alias_host}:8443" in line
+                   and PYTHON_BINARY in line
+                   and ALIAS_DENIAL_REASON in line)
+
     def check_the_destination(self):
         """A host the policy does not name, refused at connect, with the layer's own record.
 
@@ -1155,6 +1188,13 @@ class Walkthrough:
         trusted control above already had this same host answer 200, so the refusal is the
         destination rule and not the host being unreachable.
         """
+        # The log is counted before the probe runs, not only after. Matching on the host,
+        # the port, the executable and the reason makes the line specific to this kind of
+        # refusal, but every one of those is fixed for the life of the sandbox, so a line
+        # left by an earlier attempt would match just as well. What distinguishes this
+        # attempt is that the count goes up across it.
+        before = self.count_alias_denials()
+
         request_id = f"{self.run_id}-alias"
         self.denied_request_ids.append(request_id)
         result = self.probe("api", f"{self.alias_url}/cases/{CASE}/suppliers", "GET",
@@ -1164,27 +1204,11 @@ class Walkthrough:
                    "does not name")
 
         # The client's own errno is not the only evidence this run accepts: the layer that
-        # refused has to have said so too.
-        log = self.kubectl("logs", self.supervisor["metadata"]["name"], "-c", "supervisor",
-                           check=False)
-        if log.returncode != 0:
-            raise Problem("could not read the supervisor's log, so the refusal has no "
-                          f"record from the layer that made it:\n{tail(log.stderr)}")
-        (self.run_dir / "supervisor.log").write_text(log.stdout)
-        # Every part of this matters. "DENIED" and the hostname alone would be satisfied by
-        # any earlier or unrelated denial naming the same host, so the line also has to
-        # carry the port, the executable the policy names and OpenShell's own reason for
-        # refusing a connection at the transport layer. That triple is written by the code
-        # path this probe exercises and not by a DNS refusal or a stale entry.
-        wanted_reason = "transparent_tcp_policy_denied"
-        matched = [line for line in log.stdout.splitlines()
-                   if "DENIED" in line
-                   and f"{self.alias_host}:8443" in line
-                   and PYTHON_BINARY in line
-                   and wanted_reason in line]
-        self.check(bool(matched),
+        # refused has to have said so too, and it has to have said so just now.
+        after = self.count_alias_denials(save=True)
+        self.check(after > before,
                    "OpenShell's supervisor logged this refusal itself, naming the alias "
-                   f"host, port 8443, {PYTHON_BINARY} and reason {wanted_reason}")
+                   f"host, port 8443, {PYTHON_BINARY} and reason {ALIAS_DENIAL_REASON}")
 
     def check_the_operations(self):
         """Four operations on a host the policy does allow, each refused by rule.

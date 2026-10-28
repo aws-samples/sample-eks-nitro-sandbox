@@ -10,13 +10,24 @@
 # It does not stop at the first failure. A lookup that fails means "could not determine",
 # which is a failure and never "already gone": anything it could not delete or confirm is
 # named at the end and makes it exit non-zero. It touches a resource only when that
-# resource is provably this sample's, and leaves anything else alone. "Provably" is one of
-# three things, depending on the resource: this sample's ManagedBy tag or managed-by label;
-# sitting inside a namespace that carries that label; or, for the two cluster-scoped RBAC
-# objects the OpenShell chart creates, Helm's own annotations naming both this release and
-# this namespace. That last case is deliberate and is not the label check: the chart
-# creates those objects, so they never carry this sample's label, and requiring one would
-# mean never deleting them.
+# resource is provably this sample's, and leaves anything else alone. What counts as proof
+# differs by resource, and every delete below is one of these four:
+#
+#   * this sample's ManagedBy tag or its managed-by label: the namespace, the two
+#     cluster-scoped admission objects, the IAM role, the bucket and the ECR repositories;
+#   * sitting inside a namespace that carries that label: everything the namespace delete
+#     takes with it, including both sandbox pods and the workspace claims;
+#   * the chart's two cluster-scoped RBAC objects, which never carry this sample's label
+#     because the chart creates them: Helm's annotations naming this release and this
+#     namespace, and the name the chart derives, both required;
+#   * the EKS Pod Identity association, which carries no label this script can read: its
+#     cluster, namespace and service account, and a roleArn equal to the one in the run
+#     record. A different role on that triple means something else wrote it, and it is
+#     left alone.
+#
+# One thing it removes without an ownership test: the local CLI configuration directories
+# under this repository's tmp/, which this sample's own scripts created at a path only they
+# use, and which hold the operator's gateway client certificate and key.
 #
 # It never removes a shared install or a cluster-wide setting. This sample has two of
 # those, the RuntimeClass approval label and the agent-sandbox controller, and both are
@@ -33,7 +44,7 @@ delete_aws=false
 for arg in "$@"; do
   case "$arg" in
     --delete-aws) delete_aws=true ;;
-    --help|-h) sed -n '2,23p' "$0"; exit 0 ;;
+    --help|-h) sed -n '2,34p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -155,7 +166,12 @@ esac
 
 say "3/10 the sandboxes, the OpenShell gateway and the namespace"
 
-if [[ "$ns_state" != owned ]]; then
+if [[ "$ns_state" == absent ]]; then
+  # Nothing to delete and nothing skipped. A second clean up, or one after the namespace
+  # has already gone, is a success: treating it as incomplete would make the script report
+  # a failure for work that is done, and a reader would stop believing its exit code.
+  echo "  nothing to do: the namespace and everything in it are already gone."
+elif [[ "$ns_state" != owned ]]; then
   echo "  skipped: the namespace is not confirmed as this sample's."
   note_fail "the sandboxes, the gateway release and the namespace were left in place because $NAMESPACE is not confirmed as this sample's"
 else
@@ -190,18 +206,27 @@ else
   # would report a release that is still installed as already gone. `helm list` answers the
   # question directly: a listing this sample can parse means the lookup worked, and the
   # release is present or absent within it.
+  # --filter and --max 0 together are what make this answer about this release. `helm
+  # status` exits non-zero both for an absent release and for a Helm, context or API
+  # error, so its exit code alone cannot tell those apart and a still-installed gateway
+  # would read as already gone. A bare `helm list` would not do either: it returns at most
+  # 256 releases by default, so on a busy namespace the one being looked for can simply be
+  # missing from the page and read as absent. --filter is a regular expression, anchored
+  # here, and --max 0 removes the limit.
   releases=""
   if releases="$(helm list -n "$NAMESPACE" \
-      ${KUBE_CONTEXT:+--kube-context "$KUBE_CONTEXT"} -o json 2>/dev/null)" &&
+      ${KUBE_CONTEXT:+--kube-context "$KUBE_CONTEXT"} \
+      --filter "^${RELEASE}\$" --max 0 -o json 2>/dev/null)" &&
      present="$(jq -r --arg r "$RELEASE" '[.[] | select(.name == $r)] | length' \
        <<<"$releases" 2>/dev/null)" && [[ -n "$present" ]]; then
     if [[ "$present" == 0 ]]; then
       echo "  no Helm release $RELEASE in $NAMESPACE; already gone."
-    else
-      helm uninstall "$RELEASE" -n "$NAMESPACE" \
-        ${KUBE_CONTEXT:+--kube-context "$KUBE_CONTEXT"} --wait --timeout 5m >/dev/null ||
-        note_fail "could not uninstall the Helm release $RELEASE from $NAMESPACE"
+    elif helm uninstall "$RELEASE" -n "$NAMESPACE" \
+        ${KUBE_CONTEXT:+--kube-context "$KUBE_CONTEXT"} --wait --timeout 5m >/dev/null; then
       echo "  uninstalled the Helm release $RELEASE."
+    else
+      # Not an "uninstalled" line: an uninstall that failed left the release in place.
+      note_fail "could not uninstall the Helm release $RELEASE from $NAMESPACE"
     fi
   else
     note_fail "could not list the Helm releases in $NAMESPACE, so it is unknown whether the gateway release $RELEASE is still installed; left it alone"
@@ -274,28 +299,42 @@ say "5/10 the ClusterRole and ClusterRoleBinding the chart created"
 # uninstall leaves them, and a cluster-scoped object left behind would be adopted by the
 # next install of the same release name.
 #
-# They are identified by Helm's own annotations, which name both the release and its
-# namespace, so another OpenShell gateway's RBAC in another namespace cannot match.
+# Two conditions, and neither is sufficient alone.
+#
+# Helm's annotations name both the release and its namespace, which rules out another
+# OpenShell gateway's RBAC in another namespace. But an annotation is ordinary mutable
+# metadata, not proof of who created an object: anything at all could carry those two
+# keys, and deleting on them alone would delete it. So the name has to match the one the
+# chart actually derives as well, which is the release name plus a fixed suffix.
+#
+# If the chart ever changes that naming, this stops matching and says so rather than
+# widening: an object left behind and reported is recoverable, one deleted because the
+# check was loose is not.
+EXPECTED_RBAC="$RELEASE-node-reader-$NAMESPACE"
 for kind in clusterrolebinding clusterrole; do
   if ! got="$(kc get "$kind" -o json 2>/dev/null)"; then
     note_fail "could not list the cluster $kind objects, so it is unknown whether the chart's are still there"
     continue
   fi
-  names="$(jq -r --arg r "$RELEASE" --arg ns "$NAMESPACE" '
+  annotated="$(jq -r --arg r "$RELEASE" --arg ns "$NAMESPACE" '
     .items[]
     | select(.metadata.annotations["meta.helm.sh/release-name"] == $r)
     | select(.metadata.annotations["meta.helm.sh/release-namespace"] == $ns)
     | .metadata.name' <<<"$got")"
-  if [[ -z "$names" ]]; then
+  if [[ -z "$annotated" ]]; then
     echo "  no $kind is annotated for the release $RELEASE in $NAMESPACE."
     continue
   fi
   while read -r name; do
     [[ -n "$name" ]] || continue
+    if [[ "$name" != "$EXPECTED_RBAC" ]]; then
+      note_fail "the $kind $name carries this release's Helm annotations but is not the name the chart derives ($EXPECTED_RBAC), so it is not provably this sample's; left it alone"
+      continue
+    fi
     kc delete "$kind" "$name" --ignore-not-found --wait=true --timeout=2m >/dev/null ||
       note_fail "could not delete the $kind $name"
     echo "  deleted the $kind $name."
-  done <<<"$names"
+  done <<<"$annotated"
 done
 
 # ---------------------------------------------------------------------------
