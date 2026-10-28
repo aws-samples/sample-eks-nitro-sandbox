@@ -513,12 +513,13 @@ use: a non-root `exec` starts with an empty permitted set, so `CapPrm` and `CapE
 both zero. The three readings after that are the cost, and the run reports them rather
 than asserting them.
 
-- **`CapBnd` is everything.** The bounding set is the ceiling on what this process or
-  anything it execs can *acquire*; it says nothing about what the process holds now, which
-  is why the run reads the sets separately rather than one off the other. What it means
-  here is that although the controller holds nothing, a setuid binary in the image could
-  put a capability into play. The tool processes have no such ceiling: `--cap-drop ALL`
-  empties their bounding set too, which the next block shows.
+- **`CapBnd` is everything.** The bounding set limits the capabilities this process and
+  its descendants can gain from file privilege during an exec; it says nothing about what
+  the process holds now, which is why the run reads the sets separately rather than one off
+  the other. What it means here is that although the controller holds nothing, a setuid
+  binary in the image could put a capability into play, the more so because `NoNewPrivs` is
+  0. The tool processes have no such opening: `--cap-drop ALL` empties their bounding set
+  too, which the next block shows.
 - **`NoNewPrivs` is 0.** `privileged: true` cannot be combined with
   `allowPrivilegeEscalation: false`, which is the setting that would raise it.
 - **`Seccomp` is 0**, so no filter applies to the controller. This pod does not set
@@ -536,11 +537,13 @@ PASS the tool process runs under one seccomp filter, the baseline this applicati
 
 `uid_map 1000 0 1` is the single-identity mapping `bwrap` sets up: one UID is mapped, and
 it is 1000. All five capability sets are read, and all five are empty. That matters because
-they say different things: `CapEff` is what the process can use now, `CapPrm` what it may
-move into `CapEff`, `CapInh` and `CapAmb` what it carries across an exec, and `CapBnd` the
-ceiling on what it or anything it execs can acquire. An empty `CapBnd` beside a non-empty
-`CapPrm` would be a coherent state, so "no capabilities at all" is only true if each set is
-checked, and the run checks each one.
+they say different things: `CapEff` is what the process can use now; `CapPrm` what it may
+move into `CapEff`; `CapInh` is eligible to contribute across an exec when the executable's
+own file capabilities permit it; `CapAmb` is the set preserved across an ordinary,
+unprivileged exec; and `CapBnd` limits the capabilities this process and its descendants
+can gain from file privilege during an exec. An empty `CapBnd` beside a non-empty `CapPrm`
+would be a coherent state, so "no capabilities at all" is only true if each set is checked,
+and the run checks each one.
 
 **Step 6: Look at the argument list, which is the whole policy.** bubblewrap reads no
 configuration file. [`src/sandbox.py`](src/sandbox.py) assembles the switches for one tool
@@ -756,7 +759,7 @@ bubblewrap rather than about file permissions.
 
 - **`EROFS`, not `EACCES`.** The file the reader cannot write is the controller's own file.
   The run compares the device and inode the child read through `/input` with the device and
-  inode the controller holds, each taken from a descriptor that side has open. Both numbers,
+  inode the controller recorded from a descriptor it had open. Both numbers,
   because an inode number is unique only within one filesystem, so matching inodes on
   different devices would be different files. The mode on that file lets this user write it,
   and the controller does write it, in the same run, without changing a byte. So what

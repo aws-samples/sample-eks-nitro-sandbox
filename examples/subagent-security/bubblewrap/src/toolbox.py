@@ -39,11 +39,13 @@ NAMESPACE_KINDS = ("user", "pid", "net", "ipc", "uts", "mnt", "cgroup")
 
 # /proc/self/status lines worth reporting. All five capability sets are reported, because
 # they say different things and "no capabilities" is a statement about all of them: CapEff
-# is what the process can use now, CapPrm what it may move into CapEff, CapInh and CapAmb
-# what it passes across an exec, and CapBnd the ceiling on what it or anything it execs
-# can *acquire*. CapBnd is not a statement about the current sets: an empty bounding set
-# beside a non-empty permitted set is a coherent state, so the controller checks each set
-# rather than reading one off another.
+# is what the process can use now; CapPrm what it may move into CapEff; CapInh is eligible
+# to contribute across an exec when the executable's own file capabilities permit it;
+# CapAmb is the set preserved across an ordinary, unprivileged exec; and CapBnd limits what
+# this process and its descendants can gain from file privilege during an exec. CapBnd is
+# not a statement about the current sets: an empty bounding set beside a non-empty
+# permitted set is a coherent state, so the controller checks each set rather than reading
+# one off another.
 # Seccomp_filters is the number of filters loaded, which is how stacking is visible
 # directly rather than inferred from a refusal.
 STATUS_FIELDS = ("Uid", "Gid", "CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb",

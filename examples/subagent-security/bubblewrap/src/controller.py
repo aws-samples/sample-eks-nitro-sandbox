@@ -94,8 +94,8 @@ STACKED = ("getppid", "uname")
 
 # The five capability sets /proc/<pid>/status reports. "No capabilities at all" means all
 # five are empty, so the check names all five rather than inferring the rest from CapBnd:
-# the bounding set is the ceiling on what can be *acquired* across an exec, and says
-# nothing about what the process holds now.
+# the bounding set limits what this process and its descendants can gain from file
+# privilege during an exec, and says nothing about what the process holds now.
 CAPABILITY_SETS = ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")
 
 
@@ -121,6 +121,9 @@ def same_file(reported, actual) -> bool:
     so the comparison can be run against a reading it must accept and one it must reject.
     The rejecting reading is a device-only difference, which no two files in this sample
     can produce, so it is a case the sample cannot otherwise reach.
+
+    `actual` is an os.stat_result the controller took from a descriptor it had open, not a
+    descriptor it still holds: it records the identity and compares it later.
     """
     return (reported["device"], reported["inode"]) == (actual.st_dev, actual.st_ino)
 
