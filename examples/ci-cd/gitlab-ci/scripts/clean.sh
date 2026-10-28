@@ -147,7 +147,8 @@ if [[ -n "$ebs_volume" ]]; then
       out="$(aws ec2 describe-volumes --region "$region" --volume-ids "$ebs_volume" 2>&1)"
       rc=$?
       if (( rc != 0 )); then
-        if grep -q 'InvalidVolume.NotFound' <<<"$out"; then gone=yes; break; fi
+        # -F, so the dot is a dot and not "any character".
+        if grep -qF 'InvalidVolume.NotFound' <<<"$out"; then gone=yes; break; fi
         # Any other failure is a failed lookup, not a deleted volume. That covers an AWS CLI
         # that is missing, one that cannot authenticate, and a call that is denied.
         problem "could not look up EBS volume $ebs_volume in $region: $(head -n 1 <<<"$out")"

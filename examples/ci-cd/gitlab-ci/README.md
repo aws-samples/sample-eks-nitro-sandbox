@@ -303,9 +303,12 @@ GitLab's own **Run pipeline** button does, and then polls the namespace for job 
 polling is the only chance to see them: the runner creates a job pod when its job starts and
 deletes it when the job ends, so a `kubectl get pods` afterwards finds nothing.
 
-The script records each pod's name, UID, runtime class and node as it appears, and it refuses
-the run if any job pod turned out not to carry `runtimeClassName: isolated-sandbox`, because
-that would mean the job had run as an ordinary pod on the node.
+The script records each pod's name, UID, runtime class, node, containers with their
+`privileged` flags, and what it mounts, as the pod appears. It then refuses the run on two
+counts: if any job pod turned out not to carry `runtimeClassName: isolated-sandbox`, because
+that job ran as an ordinary pod on the node, and if any job pod mounted the Secret holding
+the runner authentication token, because that credential must not be inside the thing running
+pipeline code.
 
 ```bash
 ./scripts/run-pipeline.sh
@@ -488,6 +491,16 @@ TODO: output from the fresh run
   production each sandbox reserves its full memory request up front, so plan node capacity by
   reservation rather than by usage: expect fewer, larger pods per node than with ordinary
   containers.
+- **A new config.toml needs a new manager pod, and the Deployment carries that for you.**
+  The manager copies the mounted config to a writable path at start-up, because
+  `gitlab-runner` rewrites its own config file and a Secret mount is read only. So a pod that
+  is already running keeps the config it started with, however many times the Secret is
+  rewritten: a re-run that minted a new token left the manager on the old one, GitLab never
+  heard from the new runner, and the only sign was a wait that timed out.
+  [`deploy/runner.yaml`](deploy/runner.yaml) therefore carries the Secret's `resourceVersion`
+  as a pod-template annotation, which `scripts/bootstrap-runner.sh` renders, so a changed
+  config rolls the Deployment. A `resourceVersion` rather than a hash of the config, so no
+  part of the credential goes into a pod annotation.
 - **A reader who already runs GitLab can skip Step 1.** Point `url` and `clone_url` in
   `runner/config.toml.template` at their instance and paste a runner authentication token
   from it. The only requirements are that the runner manager can reach it and that you can

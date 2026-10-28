@@ -89,6 +89,18 @@ spec:
       labels:
         app: gitlab-runner
         app.kubernetes.io/part-of: gitlab-ci
+      annotations:
+        # The resourceVersion of the Secret holding config.toml, rendered by
+        # scripts/bootstrap-runner.sh. It is what makes the Deployment roll when the config
+        # changes: the container copies the mounted config to a writable path at start-up,
+        # so a pod that is already running keeps the config it started with, however many
+        # times the Secret is rewritten. Measured: after a re-run that minted a new token,
+        # the manager carried on with the old one, GitLab never heard from the new runner,
+        # and the only sign was a wait that timed out.
+        #
+        # A resourceVersion and not a hash of the config: it changes on every write to the
+        # Secret, and no part of the credential goes into a pod annotation.
+        gitlab-ci/runner-config-version: "<RUNNER_SECRET_VERSION>"
     spec:
       serviceAccountName: gitlab-runner
       containers:

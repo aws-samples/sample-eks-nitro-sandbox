@@ -265,7 +265,17 @@ fi
 # ---------------------------------------------------------------------------
 say "5/5 the runner manager"
 # ---------------------------------------------------------------------------
+# The Secret's resourceVersion goes into the pod template, so a changed config rolls the
+# manager. Without it a manager that is already running keeps the config it copied at
+# start-up, and a freshly minted token never reaches it.
+secret_version="$("${KCTL[@]}" get secret "$RUNNER_SECRET" -n "$NAMESPACE" \
+  -o jsonpath='{.metadata.resourceVersion}' 2>/dev/null)" \
+  || die "could not read the resourceVersion of Secret '$RUNNER_SECRET'."
+[[ -n "$secret_version" ]] \
+  || die "Secret '$RUNNER_SECRET' reported no resourceVersion, so the runner manager cannot be rolled when its config changes."
+
 sed -e "s|<NAMESPACE>|$NAMESPACE|g" -e "s|<RUNNER_SECRET>|$RUNNER_SECRET|g" \
+    -e "s|<RUNNER_SECRET_VERSION>|$secret_version|g" \
   "$SAMPLE_DIR/deploy/runner.yaml" | "${KCTL[@]}" apply -f - \
   || die "could not apply deploy/runner.yaml."
 "${KCTL[@]}" rollout status deploy/gitlab-runner -n "$NAMESPACE" --timeout=300s \
