@@ -5,7 +5,10 @@
 # it is the long-lived component the runner authenticates to, so it is not what this sample
 # isolates: the job pods are. Nothing here carries runtimeClassName.
 #
-# scripts/setup.sh renders <NAMESPACE> and <STORAGE_CLASS> before applying this file.
+# scripts/setup.sh renders <NAMESPACE>, <STORAGE_CLASS> and <ROOT_SECRET> before applying this
+# file. <ROOT_SECRET> is a name the reader can change in .env, so it has to reach this
+# manifest too: a hard-coded name here would leave GitLab reading a Secret the scripts never
+# wrote.
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -95,7 +98,7 @@ spec:
             - name: GITLAB_ROOT_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: gitlab-root
+                  name: <ROOT_SECRET>
                   key: password
           ports:
             - name: http

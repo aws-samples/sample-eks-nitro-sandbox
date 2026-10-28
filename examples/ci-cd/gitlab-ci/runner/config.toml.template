@@ -30,8 +30,9 @@ log_level = "info"
     # pipeline runs in its own Nitro sandbox. No .gitlab-ci.yml changes.
     runtime_class_name = "isolated-sandbox"
 
-    # Lets the build job start its own Docker daemon. The daemon is privileged over the
-    # sandbox's kernel, which belongs to the job pod, and not over the node's.
+    # Lets the build job start its own Docker daemon. The kernel that daemon is privileged
+    # against is the guest's, which belongs to the job pod. It applies to every job pod this
+    # runner creates, not only to the build job: there is no per-job switch.
     privileged = true
 
     # The image a job gets when its .gitlab-ci.yml names none.
@@ -47,20 +48,22 @@ log_level = "info"
     # so a job pod asks for what the job needs up front. With no request at all the VM gets
     # the small default size and a build toolchain is killed for running out of memory, with
     # no log to say so. These are this sample's values, not a platform minimum.
+    # The build container, which is where a job's script runs and where the build job's own
+    # Docker daemon runs with it.
     cpu_request = "1"
     cpu_limit = "1"
     memory_request = "2Gi"
     memory_limit = "2Gi"
+    # The helper, which clones the repository and uploads artifacts.
     helper_cpu_request = "250m"
     helper_cpu_limit = "500m"
     helper_memory_request = "512Mi"
     helper_memory_limit = "512Mi"
-    # The Docker daemon the build job runs as a service container, in the same job pod and
-    # so in the same sandbox.
-    service_cpu_request = "1"
-    service_cpu_limit = "1"
-    service_memory_request = "2Gi"
-    service_memory_limit = "2Gi"
+    # No service_* settings: no job in this sample declares a `services:` entry. The build
+    # job's daemon runs in the build container on a Unix socket, which is what keeps it off
+    # the cluster network. A pipeline that does declare a service would get the executor's
+    # defaults for it, so set service_cpu_request and service_memory_request too if you add
+    # one.
 
     # The label every job pod carries, so one selector names them while they run and the
     # clean up can confirm none are left.

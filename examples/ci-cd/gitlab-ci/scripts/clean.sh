@@ -79,9 +79,16 @@ fi
 say "3/6 the runner manager"
 # ---------------------------------------------------------------------------
 # First, so the runner stops taking jobs and creating job pods while the rest is removed.
-"${KCTL[@]}" delete deployment gitlab-runner -n "$NAMESPACE" --ignore-not-found --wait \
-  || problem "could not delete Deployment gitlab-runner in '$NAMESPACE'."
-echo "  the runner manager is gone, so no new job pod will be created."
+#
+# The success line is inside the successful branch. It used to come after the `||`, so a
+# delete that failed was reported as a problem and then immediately followed by "the runner
+# manager is gone": the namespace delete below may well remove it, but it has not happened
+# yet, and a clean up must not say a thing is gone that it did not see go.
+if "${KCTL[@]}" delete deployment gitlab-runner -n "$NAMESPACE" --ignore-not-found --wait; then
+  echo "  the runner manager is gone, so no new job pod will be created."
+else
+  problem "could not delete Deployment gitlab-runner in '$NAMESPACE', so it may still be creating job pods while the rest of this clean up runs."
+fi
 
 # ---------------------------------------------------------------------------
 say "4/6 the ordinary comparison pod"

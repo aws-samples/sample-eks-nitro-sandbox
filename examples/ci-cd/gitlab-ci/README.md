@@ -69,20 +69,27 @@ carries no `runtimeClassName`. Step 6 reads that back off the running pod.
 and deleted when the job ends. The two jobs in the pipeline get two pods with two different
 pod UIDs, so no checkout, build cache or leftover credential carries from one to the next.
 
-**The privileged daemon is privileged over the pod's own kernel.** `privileged = true` in the
-same block is what lets the build job's `docker:dind` container start. That container is in
-the job pod, so the sandbox's single `runtimeClassName` covers it: the daemon it runs is root
-inside a kernel that belongs to the job pod. The node never has a privileged daemon on it.
+**The privileged daemon runs against the pod's own kernel.** `privileged = true` in the same
+block is what lets the build job's Docker daemon start. The daemon runs in the job's own
+container, so the sandbox's single `runtimeClassName` covers it, and the kernel it is
+privileged against is the guest's. The run shows that much directly: `docker info` reports the
+guest's kernel build, not the node's, and so does a container the daemon starts. What follows
+from it, that a privileged container in the guest is not a privileged container on the node,
+is the runtime class's property rather than something this run measures: the Amazon EKS User
+Guide, *Isolated and confidential pods*, describes the boundary and what it protects.
 
-**Nothing is exposed outside the cluster.** GitLab is a ClusterIP Service, reached from your
-own machine with `kubectl port-forward`. There is no Ingress, LoadBalancer or NodePort
-anywhere in this folder.
+**The sample publishes no endpoint outside the cluster.** GitLab is a ClusterIP Service, and
+there is no Ingress, LoadBalancer or NodePort anywhere in this folder, so nothing it creates
+is reachable from outside your VPC. Inside the cluster it is an ordinary Service: the runner
+and the job pods reach it, which is how they clone and report status. The operator reaches it
+with `kubectl port-forward`.
 
 **What this sample does not limit.** It ships no network policy, so a job pod, which has a
 network, reaches what any pod on the cluster reaches, including the internet. The boundary
 this sample creates is the sandbox's: the job's containers run in a lightweight VM with a
-kernel of their own, so a container escape inside a job reaches that kernel and not the
-node's. To restrict where a job pod can connect, see the
+kernel of their own, which is what Step 4 and Step 5 show, and what that boundary protects the
+node from is the runtime class's own property (Amazon EKS User Guide, *Isolated and
+confidential pods*). To restrict where a job pod can connect, see the
 [network policy](../../isolation/network-policy/README.md) sample. The sample creates no IAM
 role and no EKS Pod Identity association, so a job pod has no role to assume in your account
 and this page claims no limit from one.
@@ -106,8 +113,8 @@ version you pin.
 | Component | Version | Why this one |
 |---|---|---|
 | [`gitlab/gitlab-ce`](https://hub.docker.com/r/gitlab/gitlab-ce) | `19.5.0-ce.0` | The single-container image: git, Postgres, Redis, Sidekiq and the web app in one pod, so nothing needs an Ingress or a LoadBalancer to come up |
-| [`gitlab/gitlab-runner`](https://hub.docker.com/r/gitlab/gitlab-runner) | `v19.5.0` | The manager. No release older than **v17.5.3**: `runtime_class_name` is what this sample rests on, and an older runner would ignore it and run the job as an ordinary pod |
-| [`docker:29.9.2-dind`](https://gallery.ecr.aws/docker/library/docker) and `29.9.2-cli` | `29.9.2` | The build job's daemon and its client, from Amazon ECR Public rather than Docker Hub, so a run is not subject to Docker Hub's pull limits |
+| [`gitlab/gitlab-runner`](https://hub.docker.com/r/gitlab/gitlab-runner) | `v19.5.0` | The manager. This is the release the run on this page used, and the one `runtime_class_name` was confirmed on; **v17.5.3** is the floor the spec sets, and no older release was tried here |
+| [`docker:29.9.2-dind`](https://gallery.ecr.aws/docker/library/docker) | `29.9.2` | The build job's image, which carries both the daemon it starts and the client it uses. From Amazon ECR Public rather than Docker Hub, so a run is not subject to Docker Hub's pull limits |
 | [`alpine`](https://gallery.ecr.aws/docker/library/alpine) | `3.24.3` | The ordinary job's image, and the comparison pod's |
 | [`golang`](https://gallery.ecr.aws/docker/library/golang) | `1.27.2-alpine3.24` | The first stage of the image the build job builds |
 
@@ -188,8 +195,8 @@ single-container image migrates its database and starts Postgres, Redis, Gitaly,
 Puma and nginx on a first boot, and `kubectl get pods` shows `Running` for several minutes
 before any of that is usable.
 
-To look at it yourself, forward the Service to your own machine. Nothing is published outside
-the cluster, so this is the only way in:
+To look at it yourself, forward the Service to your own machine. The sample publishes nothing
+outside the cluster, so this is how an operator reaches it:
 
 ```bash
 kubectl --context <CLUSTER_NAME> -n gitlab-ci-demo port-forward svc/gitlab 8080:8080
@@ -280,10 +287,6 @@ requests:
     helper_cpu_limit = "500m"
     helper_memory_request = "512Mi"
     helper_memory_limit = "512Mi"
-    service_cpu_request = "1"
-    service_cpu_limit = "1"
-    service_memory_request = "2Gi"
-    service_memory_limit = "2Gi"
 ```
 
 A sandbox is sized when it boots and cannot be resized in place (Amazon EKS User Guide,
@@ -292,9 +295,10 @@ ask for what the job needs up front. With no request at all the VM gets the smal
 size, and a job that unpacks a toolchain is killed for running out of memory with no log line
 to say so. These are this sample's values for this pipeline, not a platform minimum.
 
-A job pod's VM is sized from the whole pod's requests, so the build job's sandbox is the sum
-of its build, helper and service containers: 2.25 CPU and 4.5Gi, plus the RuntimeClass's own
-overhead. The ordinary job has no service container, so its sandbox is smaller.
+A job pod's VM is sized from the whole pod's requests, so each job pod's sandbox is the sum of
+its build and helper containers, 1.25 CPU and 2.5Gi, plus the RuntimeClass's own overhead. No
+job here declares a `services:` entry, so there are no `service_*` settings; a pipeline that
+adds one should set them, or its service container gets the executor's defaults.
 
 ## Step 3: Run the pipeline, and watch the job pods while they exist
 
@@ -318,8 +322,10 @@ pipeline code.
 TODO: output from the fresh run
 ```
 
-Two pods, two UIDs, both `isolated-sandbox`. The first job needed no privileges at all and
-was isolated anyway.
+Two pods, two UIDs, both `isolated-sandbox`. The first job asks for no daemon, no service
+container and no privileged operation of its own, and it is isolated all the same. Its
+containers do carry the `privileged` flag, because that is a runner setting rather than a
+per-job one; Step 5 says what that means and what it does not.
 
 ## Step 4: What a job pod sees, next to what an ordinary pod on the same node sees
 
@@ -373,20 +379,17 @@ names that node in its output, so the two readings being compared come from one 
 
 ## Step 5: The privileged `docker build`, contained to the job's own sandbox
 
-The second job is the case that forces the choice this sample removes. It gets a Docker
-daemon of its own as a service container in the same job pod, builds a two-stage image and
-runs it:
+The second job is the case that forces the choice this sample removes. It starts a Docker
+daemon of its own, builds a two-stage image and runs it:
 
 ```yaml
 docker-build:
   stage: build
-  image: public.ecr.aws/docker/library/docker:29.9.2-cli
-  services:
-    - name: public.ecr.aws/docker/library/docker:29.9.2-dind
-      alias: docker
+  image: public.ecr.aws/docker/library/docker:29.9.2-dind
   variables:
-    DOCKER_HOST: tcp://localhost:2375
-    DOCKER_TLS_CERTDIR: ""
+    DOCKER_HOST: unix:///var/run/docker.sock
+  before_script:
+    - dockerd --host=unix:///var/run/docker.sock >/tmp/dockerd.log 2>&1 &
   script:
     - docker build -t hello-nitro:$CI_PIPELINE_ID .
     - docker run --rm hello-nitro:$CI_PIPELINE_ID
@@ -394,17 +397,26 @@ docker-build:
 
 Nothing in that job asks for a sandbox or for privilege. `privileged = true` in the runner's
 configuration is what lets the daemon run, and the runner's `runtime_class_name` is what puts
-the whole pod, daemon included, in a sandbox. Because the daemon and its client are containers
-of the same pod, they are in the same guest: `DOCKER_HOST` is plain TCP on the pod's own
-loopback, inside the VM, and nothing outside the pod can reach that port.
+the pod, daemon and all, in a sandbox.
+
+**The daemon is on a Unix socket, and that is deliberate.** The usual GitLab shape for this is
+a `services:` entry with `DOCKER_HOST` on TCP, as the GitLab documentation shows. With TLS off,
+`docker:dind` listens on `0.0.0.0:2375`, and a job pod has an address on your VPC, so that
+would put an unauthenticated Docker daemon on the cluster network. This sample ships no network
+policy, so nothing in it would restrict who could reach that port. A socket in the pod has no
+such reach and needs no certificates. The other way round is to keep the service container and
+turn TLS on (`DOCKER_TLS_CERTDIR: "/certs"`), which the GitLab documentation covers; the socket
+is simpler and is what the [Docker builds](../docker-builds/README.md) sample uses. The
+Kubernetes executor runs its own shell as the container's command, so the `docker:dind` image's
+entrypoint never runs and `dockerd` is started by the job.
 
 **`privileged` is a runner setting, not a per-job one, and the run shows that.** The pod table
 in Step 3 prints every container of every job pod with its `privileged` flag, and the ordinary
 job's containers carry it too, because one `privileged = true` in `[runners.kubernetes]`
 applies to every pod this runner creates. Only the build job uses it. That is worth knowing
-rather than glossing: the privilege is bounded by each pod's own sandbox, so a job that does
-not need it cannot reach past its own guest kernel either way, but it is more than that job
-asks for. To hand privilege only to the daemon, the Kubernetes executor has
+rather than glossing: each job pod's privilege is bounded by that pod's own sandbox, which is
+the runtime class's property and not something a privileged job demonstrates, and it is more
+than the ordinary job asks for. To hand privilege only to the daemon, the Kubernetes executor has
 `allowed_privileged_images` and `allowed_privileged_services`, and a second runner with
 `privileged = false` and its own tag is the other way; check both against the GitLab Runner
 documentation for the version you pin. This sample keeps the single setting, because the
@@ -417,9 +429,10 @@ TODO: output from the fresh run
 ```
 
 The readings at the top of that log are the second pod's, and they differ from the first
-job's: a different boot, because it is a different VM. The daemon reports the guest's kernel,
-not the node's. The last `docker run` is a container started by that daemon, nested inside the
-job pod's sandbox, and it still sees the same guest kernel and the same virtio disks.
+job's: a different boot, because it is a different VM. `docker info` then reports the kernel
+the daemon is running against, and it is the guest's build, not the node's. The last
+`docker run` is a container started by that daemon, nested inside the job pod's sandbox, and
+its `uname -rv` and `ls /sys/block` match the job pod's rather than the node's.
 
 ## Step 6: The runner manager is an ordinary pod
 
@@ -470,12 +483,16 @@ TODO: output from the fresh run
 
 ## Good to know
 
-- **The runner floor is a real floor.** `runtime_class_name` is the whole of this sample, and
-  a GitLab Runner older than v17.5.3 does not know the setting. An older runner does not fail:
-  it ignores the line and runs the job as an ordinary pod on the node, which is exactly the
-  outcome the sample exists to avoid. `scripts/run-pipeline.sh` refuses a run in which any job
-  pod lacked `runtimeClassName: isolated-sandbox`, so a runner that ignored it is caught
-  rather than quietly accepted.
+- **A runner that does not know `runtime_class_name` fails quietly, so the run checks for
+  it.** `runtime_class_name` is the whole of this sample. A runner release that does not
+  support the setting does not refuse the configuration: it ignores the line and runs the job
+  as an ordinary pod on the node, which is exactly the outcome the sample exists to avoid.
+  This was measured directly, by taking the line out of the runner's config and running the
+  pipeline: both job pods came up with no runtime class and the jobs ran on the node.
+  `scripts/run-pipeline.sh` refuses such a run, naming the pods, so it is caught rather than
+  quietly accepted. **v17.5.3 is the floor the spec sets**; the run on this page used v19.5.0
+  and no older release was tried, so treat the floor as the spec's and the pinned version as
+  the tested one.
 - **The job pods have a network, and nothing here restricts it.** They clone from the GitLab
   Service, pull base images from Amazon ECR Public and report status back, and with no network
   policy they can reach anything else the cluster can reach. The sandbox boundary is the VM,

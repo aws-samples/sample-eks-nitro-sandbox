@@ -115,6 +115,7 @@ fi
 say "5/5 GitLab"
 # ---------------------------------------------------------------------------
 sed -e "s|<NAMESPACE>|$NAMESPACE|g" -e "s|<STORAGE_CLASS>|$sc|g" \
+    -e "s|<ROOT_SECRET>|$ROOT_SECRET|g" \
   "$SAMPLE_DIR/deploy/gitlab.yaml" | "${KCTL[@]}" apply -f - \
   || die "could not apply deploy/gitlab.yaml."
 

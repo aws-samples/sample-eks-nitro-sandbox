@@ -201,20 +201,34 @@ puts "RUNNER_TOKEN=#{created.token}"
 RUBY
 
   echo "  asking GitLab for a project runner authentication token."
+
+  # Tracing off for the whole of the minting. GitLab's answer holds the token, and bash under
+  # xtrace prints every expansion, including the value assigned to a variable and the text of
+  # a here-string: `bash -x scripts/bootstrap-runner.sh` would have printed the token. The
+  # previous state is restored at the end, so a reader debugging the rest of the script keeps
+  # their tracing.
+  xtrace_was_on=0
+  case "$-" in *x*) xtrace_was_on=1; set +x ;; esac
+
   runner_out="$(gitlab_exec < "$work/runner.rb")" \
     || die "GitLab could not create the runner. Its output is above."
 
   RUNNER_ID="$(sed -n 's/^RUNNER_ID=//p' <<<"$runner_out")"
   ( umask 077; sed -n 's/^RUNNER_TOKEN=//p' <<<"$runner_out" | tr -d '\r\n' > "$work/token" )
+  # GitLab's whole answer is not shown here: it is what holds the token. The marked line is
+  # taken out of the copy this message prints, and the rest is what says what went wrong.
   [[ -s "$work/token" ]] \
-    || die "GitLab reported no runner authentication token. Its output was:
-$(sed 's/^RUNNER_TOKEN=.*/RUNNER_TOKEN=<not shown>/' <<<"$runner_out")"
-  # The prefix is all this prints. glrt- is what a runner created in GitLab 16.0 or later
-  # gets; the deprecated registration tokens it replaced had no prefix.
-  prefix="$(cut -c1-5 < "$work/token")"
-  [[ "$prefix" == "glrt-" ]] \
-    || die "the token GitLab returned does not start with glrt-, so it is not a runner authentication token. Its first five characters were '$prefix'."
-  echo "  runner id $RUNNER_ID, token prefix '$prefix' (the value is not printed)."
+    || die "GitLab reported no runner authentication token. The rest of what it said:
+$(grep -v '^RUNNER_TOKEN=' <<<"$runner_out")"
+  # glrt- is what a runner created in GitLab 16.0 or later gets; the deprecated registration
+  # tokens it replaced had no prefix. The refusal names only the prefix that was expected,
+  # never the characters that came back: those are part of a credential, whatever kind it
+  # turned out to be.
+  if ! grep -q '^glrt-' "$work/token"; then
+    [[ "$xtrace_was_on" == 1 ]] && set -x
+    die "the token GitLab returned does not begin with 'glrt-', so it is not a runner authentication token, and it has not been stored. Its value is not printed. A GitLab older than 16.0 returns a registration token with no prefix, which this sample does not use."
+  fi
+  echo "  runner id $RUNNER_ID, token prefix 'glrt-' (the value is not printed)."
 
   # ---------------------------------------------------------------------------
   say "4/5 the Secret holding config.toml"
@@ -260,6 +274,9 @@ $(sed 's/^RUNNER_TOKEN=.*/RUNNER_TOKEN=<not shown>/' <<<"$runner_out")"
     || die "could not create Secret '$RUNNER_SECRET'."
   "${KCTL[@]}" label secret "$RUNNER_SECRET" -n "$NAMESPACE" "$LABEL_KEY=$LABEL_VALUE" >/dev/null
   echo "  Secret '$RUNNER_SECRET' holds the rendered config.toml, with the token in it."
+  # Tracing back to however the reader had it. Nothing after this point touches the value.
+  [[ "$xtrace_was_on" == 1 ]] && set -x
+  true   # so a restored-tracing branch that was not taken cannot end the script under set -e
 fi
 
 # ---------------------------------------------------------------------------

@@ -139,6 +139,11 @@ while :; do
     # What the pod MOUNTS, by name, never by value: this is how the page shows that the
     # runner authentication token is not in the job pod. Read while the pod exists, because
     # it is deleted when its job ends.
+    #
+    # Both ways a Secret can be mounted are collected: a volume with a `secret` of its own,
+    # and a `projected` volume with a `secret` among its sources. Only the first was read at
+    # first, so a pod mounting the runner's Secret through a projected volume would have
+    # passed the check below.
   done < <(jq -r '(.items // [])[]
     | [ .metadata.name,
         .metadata.uid,
@@ -146,7 +151,10 @@ while :; do
         (.spec.nodeName // "-"),
         .status.phase,
         ([(.spec.volumes // [])[].name] | join(",") | if . == "" then "-" else . end),
-        ([(.spec.volumes // [])[] | .secret.secretName // empty] | join(",") | if . == "" then "-" else . end),
+        ([(.spec.volumes // [])[]
+          | (.secret.secretName // empty),
+            ((.projected.sources // [])[] | .secret.name // empty)]
+         | unique | join(",") | if . == "" then "-" else . end),
         ([((.spec.initContainers // []) + (.spec.containers // []))[]
           | "\(.name)=\(.securityContext.privileged // false)"] | join(" ") | if . == "" then "-" else . end) ]
     | @tsv' <<<"$pods_json")
@@ -176,15 +184,25 @@ echo "  pipeline $PIPELINE_ID finished: $pipeline_status"
 sed -n 's/^JOB_STATUS=/    job /p' <<<"$status_out"
 
 pod_count="${#pod_order[@]}"
+job_count="$(grep -c '^JOB_STATUS=' <<<"$status_out" || true)"
 echo
+echo "  jobs GitLab reported: $job_count"
 echo "  job pods seen: $pod_count"
-(( pod_count > 0 )) \
-  || die "no job pod was ever seen while the pipeline ran, so there is nothing to show that a job was isolated. A pipeline that finished with no jobs at all does this: check that '$PIPELINE_ID' really had jobs, above."
+
+# One pod per job, no fewer. A positive count on its own is not enough: with it, one pod seen
+# out of two jobs would pass, and so would a run in which the label this script discovers pods
+# by had been changed in config.toml, since the pods it could not see would simply be absent
+# from the count. Comparing against the number of jobs GitLab itself reported makes a pod this
+# script could not see a failure rather than a silence.
+(( job_count > 0 )) \
+  || die "GitLab reported no jobs for pipeline $PIPELINE_ID, so there is nothing to show that a job was isolated. A pipeline that was created with no jobs at all does this; its status is above."
+(( pod_count == job_count )) \
+  || die "pipeline $PIPELINE_ID had $job_count job(s) but only $pod_count job pod(s) were seen while it ran. Every job must have had a pod, and every pod must have been visible to this script. The usual cause is that the pod_labels block in runner/config.toml.template no longer carries '$JOB_POD_SELECTOR', so a pod existed and could not be found; the other is a job that never started a pod at all."
 
 # Every job pod must have been a sandbox. One with no runtime class would mean the runner
 # ignored runtime_class_name, which is the whole of what this sample configures, and that job
-# ran as an ordinary pod on the node. A GitLab Runner older than v17.5.3 does exactly that,
-# silently, which is why this is checked rather than assumed.
+# ran as an ordinary pod on the node. A runner release that does not know the setting does
+# exactly that, silently, which is why this is checked rather than assumed.
 unsandboxed=""
 for name in "${pod_order[@]}"; do
   rc="${pod_rclass[$name]}"
@@ -199,6 +217,11 @@ $unsandboxed  Check that runner/config.toml.template's runtime_class_name reache
 
 uid_count="$(printf '%s\n' "${pod_uid[@]}" | sort -u | grep -c .)"
 echo "  distinct pod UIDs: $uid_count (one per job, so no job reused another's pod)"
+# A pod UID is unique in the cluster, so equal counts is what "a fresh pod per job" means. A
+# repeated UID would mean two jobs shared one pod, and a checkout or a build cache could then
+# carry from one to the next.
+(( uid_count == pod_count )) \
+  || die "$pod_count job pod(s) were seen but only $uid_count distinct pod UID(s), so two jobs shared a pod and nothing separated their checkouts."
 for name in "${pod_order[@]}"; do
   printf '    %s\n      uid %s  runtime class %s  on %s\n      containers, privileged flag: %s\n      volumes: %s\n      volumes from a Secret: %s\n' \
     "$name" "${pod_uid[$name]}" "${pod_rclass[$name]}" "${pod_node[$name]}" \
