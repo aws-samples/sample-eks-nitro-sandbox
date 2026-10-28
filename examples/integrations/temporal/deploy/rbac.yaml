@@ -1,0 +1,59 @@
+# The permissions the Worker acts with: exactly what the five activities need,
+# in one namespace, and nothing cluster-wide.
+#
+# The Worker is the trusted orchestrator, so it is the one component here that
+# holds Kubernetes permissions at all. Keeping them to a Role in the sample's own
+# namespace is what bounds them: it can manage the sandboxes it creates and exec
+# into their pods, and it can do nothing anywhere else on the cluster.
+#
+# __NAMESPACE__ is filled in at apply time by scripts/setup.sh. Never apply this
+# file with the placeholder in place.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: temporal-sandbox-worker
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/managed-by: temporal
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: temporal-sandbox-worker
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/managed-by: temporal
+rules:
+  # Sandbox objects are in the core agents.x-k8s.io group, not extensions.
+  # create and delete bracket the lifecycle; patch is how suspend and resume
+  # set operatingMode; get and list are the waits.
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+  # The backing pods, read to get the pod's UID and node and to confirm the pod
+  # is really gone after a suspend. No create, patch or delete: the controller
+  # owns the pods, and the Worker never makes one itself.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # The exec channel the step runs over. pods/exec needs create as well as get,
+  # because opening the stream is a POST.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: temporal-sandbox-worker
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/managed-by: temporal
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: temporal-sandbox-worker
+subjects:
+  - kind: ServiceAccount
+    name: temporal-sandbox-worker
+    namespace: __NAMESPACE__
