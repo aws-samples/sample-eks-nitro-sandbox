@@ -139,10 +139,26 @@ case $repo_rc in
   1) echo "  ECR repository $ECR_REPOSITORY is gone" ;;
   2) note_incomplete "could not read ECR repository $ECR_REPOSITORY, so whether it exists could not be determined: $AWS_LAST_ERROR" ;;
   0)
-    repo_arn="arn:aws:ecr:${AWS_REGION}:$(aws sts get-caller-identity --query Account --output text 2>/dev/null):repository/${ECR_REPOSITORY}"
+    # Read the ARN off the repository that was just read, rather than building
+    # it from the account id. An unchecked `$(aws sts get-caller-identity ...)`
+    # here exits the whole script under `set -e` when STS fails, which skips
+    # note_incomplete and the summary below: the clean up would stop part way
+    # and never say it had.
+    arn_rc=0
+    repo_arn="$(aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" \
+      --region "$AWS_REGION" --query 'repositories[0].repositoryArn' --output text 2>&1)" || arn_rc=$?
+    if [[ $arn_rc -ne 0 || -z "$repo_arn" || "$repo_arn" == "None" ]]; then
+      note_incomplete "ECR repository $ECR_REPOSITORY exists but its ARN could not be read, so whether it is the sample's could not be determined: $(tr '\n' ' ' <<<"$repo_arn")"
+      repo_arn=""
+    fi
     tags_rc=0
-    tags="$(aws ecr list-tags-for-resource --resource-arn "$repo_arn" --region "$AWS_REGION" \
-      --query "tags[?Key=='ManagedBy'].Value | [0]" --output text 2>&1)" || tags_rc=$?
+    tags=""
+    if [[ -n "$repo_arn" ]]; then
+      tags="$(aws ecr list-tags-for-resource --resource-arn "$repo_arn" --region "$AWS_REGION" \
+        --query "tags[?Key=='ManagedBy'].Value | [0]" --output text 2>&1)" || tags_rc=$?
+    else
+      tags_rc=1
+    fi
     if [[ $tags_rc -ne 0 ]]; then
       note_incomplete "ECR repository $ECR_REPOSITORY exists but its tags could not be read, so whether it is the sample's could not be determined: $(tr '\n' ' ' <<<"$tags")"
     elif [[ "$tags" != "$MANAGED_BY" ]]; then

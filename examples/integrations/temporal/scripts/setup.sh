@@ -83,8 +83,17 @@ fi
 
 step "3/6 build and push the Worker image"
 echo "  $WORKER_IMAGE"
-if aws ecr describe-images --repository-name "$ECR_REPOSITORY" --region "$AWS_REGION" \
-     --image-ids "imageTag=$IMAGE_TAG" >/dev/null 2>&1; then
+# Three outcomes, not two. `>/dev/null 2>&1` on its own would send a denied or
+# throttled read down the same branch as "the image is not there", which is the
+# fail-open pattern this sample is at pains to avoid everywhere else. Here the
+# unsafe direction happens to be the harmless one, a rebuild of an image that
+# was already pushed, but the shape is the thing a reader copies.
+img_rc=0
+aws_exists ImageNotFoundException -- aws ecr describe-images \
+  --repository-name "$ECR_REPOSITORY" --region "$AWS_REGION" \
+  --image-ids "imageTag=$IMAGE_TAG" || img_rc=$?
+[[ $img_rc -eq 2 ]] && die "could not read the images in ECR repository $ECR_REPOSITORY, so whether this tag is already pushed could not be determined; stopping rather than guess: $AWS_LAST_ERROR"
+if [[ $img_rc -eq 0 ]]; then
   echo "  already in the repository at this tag; not rebuilding"
 else
   # A docker config of its own, so the login token never lands in the machine's

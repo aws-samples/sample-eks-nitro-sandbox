@@ -34,6 +34,12 @@ spec:
       # The one line that puts the pod's containers in a Nitro sandbox: their
       # own kernel, created by the Nitro hypervisor.
       runtimeClassName: isolated-sandbox
+      # No Kubernetes ServiceAccount token in the sandbox. Without this the
+      # kubelet projects one into every pod, and the step that runs here is
+      # where agent-generated code would run: it has no business holding a
+      # credential for the API that manages it, even one whose ServiceAccount is
+      # bound to nothing.
+      automountServiceAccountToken: false
       containers:
         - name: workspace
           image: public.ecr.aws/docker/library/busybox:1.36

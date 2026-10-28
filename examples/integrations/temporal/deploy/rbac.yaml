@@ -25,19 +25,26 @@ metadata:
     app.kubernetes.io/managed-by: temporal
 rules:
   # Sandbox objects are in the core agents.x-k8s.io group, not extensions.
-  # create and delete bracket the lifecycle; patch is how suspend and resume
-  # set operatingMode; get and list are the waits.
+  # create and delete bracket the lifecycle; patch is how suspend and resume set
+  # operatingMode; get is every wait and every reading. No list and no watch:
+  # the provider only ever reads the one Sandbox it was given the name of, so
+  # granting them would be granting a read of every Sandbox in the namespace for
+  # nothing.
   - apiGroups: ["agents.x-k8s.io"]
     resources: ["sandboxes"]
-    verbs: ["get", "list", "watch", "create", "patch", "delete"]
-  # The backing pods, read to get the pod's UID and node and to confirm the pod
-  # is really gone after a suspend. No create, patch or delete: the controller
-  # owns the pods, and the Worker never makes one itself.
+    verbs: ["get", "create", "patch", "delete"]
+  # The backing pod, read for its UID, its node and its start time, and to
+  # confirm it is really gone after a suspend. get only: no list or watch for
+  # the same reason as above, and no create, patch or delete because the
+  # controller owns the pods and the Worker never makes one itself.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch"]
-  # The exec channel the step runs over. pods/exec needs create as well as get,
-  # because opening the stream is a POST.
+    verbs: ["get"]
+  # The exec channel the step runs over. BOTH verbs are needed, and that was
+  # measured rather than assumed: with only get, the websocket handshake comes
+  # back "403 Forbidden ... pods \"lifecycle\" is forbidden"; with only create,
+  # the same. Only get and create together open the stream. So do not trim
+  # either one on the reasoning that the client opens the stream with a GET.
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["get", "create"]

@@ -98,7 +98,14 @@ class SandboxLifecycleWorkflow:
     async def run(self, request: LifecycleRequest) -> LifecycleResult:
         name = request.sandbox_name
         result = LifecycleResult(sandbox_name=name)
-        provisioned = False
+        # Set BEFORE the provision activity runs, not after it returns. The
+        # activity creates the Sandbox and then waits for it to be Ready, so a
+        # readiness timeout fails the activity with the object already created:
+        # a flag set on success would leave the `finally` below skipping the
+        # delete, and the Sandbox and its billed EBS volume behind. Asking to
+        # delete a Sandbox that was never created is free, because the delete
+        # verb reads a 404 as "already gone".
+        may_exist = True
 
         try:
             result.worker_at_start = await workflow.execute_activity(
@@ -115,7 +122,6 @@ class SandboxLifecycleWorkflow:
                 heartbeat_timeout=HEARTBEAT,
                 retry_policy=LIFECYCLE_RETRY,
             )
-            provisioned = True
             result.pod_uid_before_suspend = state.pod_uid
             result.timeline.append(
                 f"created sandbox/{name}: pod {state.pod_name} uid {state.pod_uid} "
@@ -232,7 +238,7 @@ class SandboxLifecycleWorkflow:
             #    that is deleted and never replaced, or a workflow terminated
             #    rather than cancelled, leaves the sandbox for
             #    `scripts/cleanup.sh`, which deletes it by its exact name.
-            if provisioned:
+            if may_exist:
                 result.deleted = await asyncio.shield(
                     workflow.execute_activity(
                         delete_sandbox,

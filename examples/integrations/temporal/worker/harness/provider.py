@@ -141,9 +141,15 @@ class NitroSandboxProvider:
         except ApiException as exc:
             if exc.status == 409:
                 # Already there. The activity is at-least-once, so a retry after
-                # a successful create that lost its answer lands here, and the
-                # existing object is the one this run just made.
-                log.info("sandbox/%s already exists; adopting it", name)
+                # a create whose answer was lost lands here and the object is
+                # this run's own. But an interrupted earlier run leaves one too,
+                # and `volumeClaimTemplates` is immutable, so an object made
+                # from a different manifest cannot be brought into line with
+                # this one: adopting it would drive a workspace on a class this
+                # run did not choose. So check before adopting, rather than
+                # assume the name means it is ours.
+                self._check_adoptable(name, body)
+                log.info("sandbox/%s already exists and matches; adopting it", name)
             elif _permanent(exc):
                 raise PermanentProviderError(
                     f"the API server refused to create sandbox/{name}: {_describe(exc)}"
@@ -369,6 +375,45 @@ class NitroSandboxProvider:
             node_name=node or "",
         )
 
+    def _check_adoptable(self, name: str, want: dict[str, Any]) -> None:
+        """Refuse to adopt a same-named `Sandbox` that is not this sample's, or
+        whose immutable workspace does not match the manifest this run rendered.
+
+        A read that does not answer refuses too: adopting an object whose state
+        could not be determined is the thing this is here to prevent.
+        """
+        live = self._get_sandbox(name)
+        if live is None:
+            # It was there a moment ago and is not now. Something else is
+            # deleting it, so this run should not race that.
+            raise ProviderError(
+                f"sandbox/{name} reported a conflict on create and then was not there; "
+                "something else is acting on that name"
+            )
+        labels = (live.get("metadata") or {}).get("labels") or {}
+        want_labels = (want.get("metadata") or {}).get("labels") or {}
+        mark_key = "app.kubernetes.io/managed-by"
+        if labels.get(mark_key) != want_labels.get(mark_key):
+            raise PermanentProviderError(
+                f"sandbox/{name} already exists but carries {mark_key}="
+                f"{labels.get(mark_key) or '<none>'}, not {want_labels.get(mark_key)}; "
+                "it is not this sample's, so this run will not drive it"
+            )
+        live_tpl = (live.get("spec") or {}).get("volumeClaimTemplates") or []
+        want_tpl = (want.get("spec") or {}).get("volumeClaimTemplates") or []
+        live_class = _claim_field(live_tpl, "storageClassName")
+        want_class = _claim_field(want_tpl, "storageClassName")
+        live_modes = _claim_field(live_tpl, "accessModes")
+        want_modes = _claim_field(want_tpl, "accessModes")
+        if (live_class, live_modes) != (want_class, want_modes):
+            raise PermanentProviderError(
+                f"sandbox/{name} already exists with a workspace on storageClassName="
+                f"{live_class!r} accessModes={live_modes!r}, and this run rendered "
+                f"{want_class!r} / {want_modes!r}. volumeClaimTemplates is immutable, so "
+                "it cannot be brought into line: delete it with ./scripts/cleanup.sh, "
+                "which also deletes its workspace volume, and start a new run"
+            )
+
     def pod_start_time(self, name: str) -> str:
         """When the kubelet started the sandbox's pod, from the API.
 
@@ -535,6 +580,13 @@ class NitroSandboxProvider:
         except Exception as exc:  # noqa: BLE001 - diagnostics must not raise
             parts.append(f"pod/{name}: could not be read ({exc})")
         return " | ".join(parts)
+
+
+def _claim_field(templates: list[Any], field: str) -> Any:
+    """One field of the first volume claim template, or None when there is none."""
+    if not templates:
+        return None
+    return ((templates[0] or {}).get("spec") or {}).get(field)
 
 
 def _describe(exc: ApiException) -> str:
