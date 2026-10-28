@@ -182,15 +182,22 @@ assert "$msg" "$rc"
 out="$(kubectl get node "$control_node" -o json 2>/dev/null | python3 "$PY" check-node-labels system 2>&1)"; rc=$?
 msg="$(tail -n1 <<<"$out"), so no sandbox pod can be scheduled on it"
 assert "$msg" "$rc"
-nitro_apparmor="$(jget '{.spec.securityContext.appArmorProfile.type}' "${ns[@]}" pod nitro)"
-[[ "$nitro_apparmor" == Unconfined ]]
-assert "pod nitro runs with appArmorProfile Unconfined, which an Ubuntu host needs for every sandbox pod" $?
-neighbor_apparmor="$(jget '{.spec.securityContext.appArmorProfile.type}' "${ns[@]}" pod neighbor)"
-[[ "$neighbor_apparmor" != Unconfined ]]
-assert "neighbor: the ordinary pod on the same node keeps its default AppArmor profile (${neighbor_apparmor:-unset})" $?
+# AppArmor as the API server has it, for every pod at once: Unconfined at pod level on the
+# sandbox pod only, and on no ordinary pod. The read must succeed; a failed read is a FAIL, never
+# "the ordinary pods kept their default profile".
+live_pods="$(kubectl "${ns[@]}" get pods -o json 2>/dev/null)"; rc=$?
+if ((rc == 0)); then
+  out="$(python3 "$PY" check-workloads --file - <<<"$live_pods" 2>&1)"; rc=$?
+  ((rc == 0)) || sed 's/^/    /' <<<"$out"
+  msg="live pods: AppArmor Unconfined at pod level on the sandbox pod only, which an Ubuntu host needs ($(tail -n1 <<<"$out"))"
+else
+  msg="could not read the pods in $NAMESPACE (kubectl exit $rc), so the AppArmor scope is not proven"
+  rc=1
+fi
+assert "$msg" "$rc"
 sandbox_kernel="$(jget '{.status.nodeInfo.kernelVersion}' node "$nitro_node")"
-python3 "$PY" kernel-release "$HOST_KERNEL_RELEASE" "$sandbox_kernel"
-assert "the sandbox node runs the pinned host kernel $HOST_KERNEL_RELEASE (${sandbox_kernel:-unread})" $?
+out="$(python3 "$PY" kernel-release "$HOST_KERNEL_RELEASE" "$sandbox_kernel" 2>&1)"; rc=$?
+assert "the sandbox node runs the pinned host kernel ($out)" "$rc"
 # ACCEPT: the node's allocatable capacity for the actual extended resource the EKS Pod
 # Isolation device plugin advertises, not just the RuntimeClass object's existence (a
 # RuntimeClass can exist with no node able to run it). Same key and same both-ways proof as
@@ -200,16 +207,17 @@ sandbox_capacity="$(jget '{.status.allocatable.eks\.amazonaws\.com/nitro-sandbox
 [[ "${sandbox_capacity:-0}" =~ ^[0-9]+$ && "${sandbox_capacity:-0}" -gt 0 ]]
 assert "sandbox node $nitro_node advertises positive allocatable eks.amazonaws.com/nitro-sandbox (${sandbox_capacity:-0})" $?
 # REJECT: the same lookup against a bogus resource key on the same node must read absent,
-# proving the check discriminates rather than matching any allocatable field.
-no_sandbox_capacity="$(jget '{.status.allocatable.eks\.amazonaws\.com/nitro-sandbox-bogus}' node "$nitro_node")"
-[[ -z "$no_sandbox_capacity" ]]
+# proving the check discriminates rather than matching any allocatable field. The read must
+# succeed and name the node, so a failed read (empty output) is not taken as "absent".
+bogus_read="$(kubectl get node "$nitro_node" -o 'jsonpath={.metadata.name}|{.status.allocatable.eks\.amazonaws\.com/nitro-sandbox-bogus}' 2>/dev/null)"; rc=$?
+[[ "$rc" == 0 && -n "$nitro_node" && "$bogus_read" == "$nitro_node|" ]]
 assert "the capacity check reads absent for a nonexistent allocatable key on $nitro_node (reject control)" $?
 nitro_guest="$(kubectl "${ns[@]}" exec nitro -- uname -r 2>/dev/null)"
 nitro_host="$(jget '{.status.nodeInfo.kernelVersion}' node "$nitro_node")"
 [[ -n "$nitro_guest" && -n "$nitro_host" && "$nitro_guest" != "$nitro_host" ]]
 assert "sandbox pod guest kernel ($nitro_guest) differs from its Ubuntu node's kernel ($nitro_host)" $?
-python3 "$PY" kernel-release "$GUEST_KERNEL_RELEASE" "$nitro_guest"
-assert "sandbox pod runs the pinned guest kernel $GUEST_KERNEL_RELEASE from the bundle's guest image (${nitro_guest:-unread})" $?
+out="$(python3 "$PY" kernel-release "$GUEST_KERNEL_RELEASE" "$nitro_guest" 2>&1)"; rc=$?
+assert "sandbox pod runs the pinned guest kernel from the bundle's guest image ($out)" "$rc"
 control_guest="$(kubectl "${ns[@]}" exec control -- uname -r 2>/dev/null)"
 control_host="$(jget '{.status.nodeInfo.kernelVersion}' node "$control_node")"
 [[ -n "$control_guest" && "$control_guest" == "$control_host" ]]
@@ -235,7 +243,7 @@ for lane in nitro neighbor control; do
   node="$(jget '{.spec.nodeName}' "${ns[@]}" pod "$lane")"
   node_ip="$(jget '{.status.addresses[?(@.type=="InternalIP")].address}' node "$node")"
   [[ -n "$ip" && -n "$node_ip" && "$ip" != "$node_ip" ]] && ((${#cidrs[@]} > 0)) \
-    && python3 "$PY" in-cidrs "$ip" "${cidrs[@]}"
+    && python3 "$PY" in-cidrs "$ip" "${cidrs[@]}" >/dev/null
   assert "$lane: pod IP $ip is in the VPC (${cidrs[*]}) and is not the node's own IP $node_ip" $?
   instance="$(jget '{.spec.providerID}' node "$node")"; instance="${instance##*/}"
   # One row per ENI holding the address: its instance, and whether the address is that ENI's

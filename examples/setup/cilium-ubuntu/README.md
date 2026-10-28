@@ -394,8 +394,10 @@ new cluster's API endpoint, CA and DNS address and the node's labels in
 `--kubelet-extra-args '--node-labels=...'`. The labels come from `eksctl/nodegroups.yaml`
 itself, so eksctl and kubelet always agree. The sandbox node carries the two labels the
 `isolated-sandbox` RuntimeClass (stage 6) schedules on, `eks.amazonaws.com/nitro-sandbox=true`
-and `sandbox.preview/nitro=true`; a node without both runs no sandbox pod. `setup.sh` reads
-each rendered template back before it creates a node group (`check-user-data`), and
+and `sandbox.preview/nitro=true`; a node without both runs no sandbox pod. Before it creates a
+node group, `setup.sh` reads each rendered template back and requires its user data to be,
+byte for byte, the script it renders for the cluster (`check-user-data`), naming any
+difference in the cluster name, endpoint, CA, DNS address, labels or extra lines; and
 `render-nodegroups` refuses a sandbox group missing either label or a system group carrying
 one.
 
@@ -459,8 +461,10 @@ TODO: output from the fresh run
 ```
 
 `test.sh` then reads each agent's own log for those two failure strings
-(`cilium_ubuntu.py datapath-failures`), and a log in which no line has the agent's
-`time=... level=...` format is refused as unreadable rather than read as clean.
+(`cilium_ubuntu.py datapath-failures`). A line carrying either string fails the check in any
+format, the agent's `time=... level=...` text or not, so an unknown format cannot hide one;
+and a log with no failure and no line in the agent's format is refused as unreadable rather
+than read as clean.
 
 **The missing-BTF rejection.** Issue #11 asks for a failing control or a captured preflight
 failure that shows a missing-BTF kernel rejected before the node is accepted. Unless a real
@@ -478,16 +482,23 @@ TODO: output from the fresh run
 A pod selects `runtimeClassName: isolated-sandbox`, which must exist as a Kubernetes
 RuntimeClass whose scheduling labels match the sandbox node's. The GA node-build bundle's
 Ubuntu guide has the cluster's operator apply it once per cluster; this cluster is new, so
-`setup.sh` creates it, only when it is absent, and then requires that whatever is there
-matches the bundle's (`check-runtimeclass`): the same handler, the same per-pod overhead, and
-a nodeSelector on exactly the two labels only the sandbox node carries. It also confirms the
-sandbox node carries both labels and the system node neither (`check-node-labels`).
+`setup.sh` creates it, only when it is absent. A RuntimeClass is cluster-scoped, so the
+namespace's label does not mark it as the sample's: it carries the same
+`app.kubernetes.io/part-of: setup-cilium-ubuntu` label itself, and that label is the only
+thing it adds to the bundle's object. `setup.sh` then requires that whatever is there carries
+the label and is otherwise exactly the bundle's (`check-runtimeclass`): the same handler, the
+same per-pod overhead, a nodeSelector on exactly the two labels only the sandbox node carries,
+and no tolerations or other fields; it stops, changing nothing, on an unmarked or different
+object. It also confirms the sandbox node carries both labels and the system node neither
+(`check-node-labels`).
 
 ```yaml
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass
 metadata:
   name: isolated-sandbox
+  labels:
+    app.kubernetes.io/part-of: setup-cilium-ubuntu   # the sample's mark; not in the bundle
 handler: isolated-sandbox
 overhead:
   podFixed:
@@ -516,9 +527,13 @@ requirement of the platform on an Ubuntu host, not a weakening of the pod's isol
 profile request is handled by runc inside the guest, so `Unconfined` changes nothing on the
 host, and the microVM, with its own guest kernel, stays that pod's boundary. The ordinary pods
 run directly on the node's kernel, so they keep their default profile, and
-`cilium_ubuntu.py check-workloads` refuses `Unconfined` on any of them (and refuses a sandbox
-pod without it). The GA bundle lists this as an open item it tracks with the service team, and
-Amazon Linux 2023 hosts, which have no AppArmor, need no such setting.
+`cilium_ubuntu.py check-workloads` refuses `Unconfined` on any of them. On the sandbox pod it
+accepts the pod-level field only, and refuses a container, init container, ephemeral container
+or legacy annotation setting AppArmor beside it. `test.sh` runs the same check on the pods the
+API server returns. That strict rule relies on Kubernetes 1.34 or later, which this sample's
+EKS 1.36 is: from 1.34 the API server no longer copies the pod-level field into the legacy
+per-container annotation. The GA bundle lists this as an open item it tracks with the service
+team, and Amazon Linux 2023 hosts, which have no AppArmor, need no such setting.
 
 ```yaml
 spec:
@@ -550,9 +565,10 @@ What it checks, in order:
 2. **The operator's credentials.** The operator pod gets its AWS credentials from EKS Pod
    Identity, its role allows exactly Cilium's documented ENI actions, and neither node role
    carries `AmazonEKS_CNI_Policy`.
-3. **The sandbox pod has its own guest.** The `isolated-sandbox` RuntimeClass matches the GA
-   bundle's, the sandbox node carries both of its labels and the system node neither, and the
-   sandbox pod alone runs with AppArmor `Unconfined`. The sandbox node runs the pinned host
+3. **The sandbox pod has its own guest.** The `isolated-sandbox` RuntimeClass carries the
+   sample's mark and otherwise matches the GA bundle's, the sandbox node carries both of its
+   labels and the system node neither, and of the pods the API server returns, the sandbox pod
+   alone runs with AppArmor `Unconfined`. The sandbox node runs the pinned host
    kernel `6.18.56-nitro-ga` and the sandbox pod the pinned guest kernel `6.18.54`. Its guest
    kernel differs from the node kernel, it sees virtio disks (no node `nvme`), and its boot
    uptime is its own, while `neighbor`, an ordinary pod on the same node, shares the node

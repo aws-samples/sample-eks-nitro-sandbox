@@ -132,8 +132,11 @@ if [[ -z "$rc_json" ]]; then
   python3 "$PY" runtimeclass | kubectl create -f -
   rc_json="$(kubectl get runtimeclass isolated-sandbox -o json)" || die "could not read the RuntimeClass back"
 fi
+# A RuntimeClass is cluster-scoped, so the namespace's label does not cover it: an existing one
+# is reused only when it carries the sample's own mark (app.kubernetes.io/part-of, the label the
+# namespace carries) and is otherwise exactly the bundle's, tolerations and metadata included.
 python3 "$PY" check-runtimeclass <<<"$rc_json" \
-  || die "the isolated-sandbox RuntimeClass on $CLUSTER_NAME differs from the GA bundle's; run ./clean.sh, then ./setup.sh"
+  || die "the isolated-sandbox RuntimeClass on $CLUSTER_NAME is not this sample's or differs from the GA bundle's (see above); setup.sh never changes an existing RuntimeClass. Inspect it with: kubectl get runtimeclass isolated-sandbox -o yaml"
 sandbox_node_json="$(kubectl get node "$sandbox_node" -o json)" || die "could not read node $sandbox_node"
 python3 "$PY" check-node-labels sandbox <<<"$sandbox_node_json" \
   || die "the sandbox node does not carry both labels the isolated-sandbox RuntimeClass schedules on"

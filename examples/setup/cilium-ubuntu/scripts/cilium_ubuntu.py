@@ -20,14 +20,17 @@ created from it.
 """
 import argparse
 import base64
+import copy
 import getpass
 import ipaddress
 import json
 import os
 import re
+import shlex
 import string
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 DEMO = Path(__file__).resolve().parent.parent
@@ -51,12 +54,16 @@ NODEGROUP_LABEL = "eks.amazonaws.com/nodegroup"
 # every isolated-sandbox pod to a node carrying BOTH labels, so the sandbox node must carry both
 # (UBUNTU.md section 4, "Node labels") and the ordinary system node must carry neither. The
 # bundle says to apply it once per cluster; this sample's cluster is new, so setup.sh creates it.
+# A RuntimeClass is cluster-scoped, so the namespace's ownership label does not cover it: it
+# carries the same mark itself (OWNER_LABEL, the label common.sh's NS_LABEL_KEY/NS_LABEL_VAL put
+# on the namespace), and setup.sh reuses an existing one only when it carries that mark.
+OWNER_LABEL = ("app.kubernetes.io/part-of", "setup-cilium-ubuntu")
 RUNTIMECLASS_NAME = "isolated-sandbox"
 RUNTIMECLASS_NODE_SELECTOR = {"eks.amazonaws.com/nitro-sandbox": "true", "sandbox.preview/nitro": "true"}
 RUNTIMECLASS = {
     "apiVersion": "node.k8s.io/v1",
     "kind": "RuntimeClass",
-    "metadata": {"name": RUNTIMECLASS_NAME},
+    "metadata": {"name": RUNTIMECLASS_NAME, "labels": {OWNER_LABEL[0]: OWNER_LABEL[1]}},
     "handler": RUNTIMECLASS_NAME,
     "overhead": {"podFixed": {"eks.amazonaws.com/nitro-sandbox": "1", "memory": "256Mi"}},
     "scheduling": {"nodeSelector": dict(RUNTIMECLASS_NODE_SELECTOR)},
@@ -426,6 +433,13 @@ def bootstrap_user_data(group, info):
     require(re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,99}", cluster), f"cluster name '{cluster}' is not a plain name")
     require(re.fullmatch(r"https://[A-Za-z0-9.-]+", endpoint), f"cluster endpoint '{endpoint}' is not an https host")
     require(re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", ca), "the cluster's certificate authority is not base64")
+    # The charset check keeps the value shell-safe; decoding it proves it is real base64 (a
+    # value of the wrong length passes the charset and would only fail later, at node join).
+    try:
+        ca_bytes = base64.b64decode(ca, validate=True)
+    except ValueError:
+        ca_bytes = b""
+    require(ca_bytes, "the cluster's certificate authority is not valid base64")
     try:
         dns = str(ipaddress.ip_network(cidr)[10])
     except ValueError:
@@ -446,27 +460,104 @@ def bootstrap_user_data(group, info):
     ]) + "\n"
 
 
-def user_data_node_labels(user_data):
-    """{key: value} from the --node-labels= of a bootstrap user data script, or None when the
-    script holds no single bootstrap.sh line with exactly one --node-labels argument."""
-    text = user_data.replace("\\\n", " ")
-    calls = [line for line in text.splitlines() if line.strip().startswith(BOOTSTRAP + " ")]
-    if len(calls) != 1:
+def user_data_parts(script):
+    """(bootstrap.sh calls as token lists, every other non-empty logical line with its
+    whitespace collapsed) of a user data script; a trailing backslash joins two lines."""
+    calls, others = [], []
+    for line in script.replace("\\\n", " ").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped == BOOTSTRAP or stripped.startswith(BOOTSTRAP + " "):
+            try:
+                calls.append(shlex.split(stripped))
+            except ValueError:
+                calls.append(stripped.split())
+        else:
+            others.append(" ".join(stripped.split()))
+    return calls, others
+
+
+def bootstrap_call(tokens):
+    """(cluster name, {option: value}, problems) of one bootstrap.sh call's tokens."""
+    rest = tokens[1:]
+    cluster = rest.pop(0) if rest and not rest[0].startswith("--") else None
+    options, problems = {}, []
+    while rest:
+        option = rest.pop(0)
+        if not option.startswith("--"):
+            problems.append(f"user data passes bootstrap.sh argument '{option}' that setup does not render")
+            continue
+        if option in options:
+            problems.append(f"user data passes bootstrap.sh option {option} twice")
+        options[option] = rest.pop(0) if rest else None
+    return cluster, options, problems
+
+
+def node_labels_arg(value):
+    """{key: value} from a --kubelet-extra-args value that is exactly --node-labels=k=v,...,
+    or None when it is anything else."""
+    if not value or not value.startswith("--node-labels=") or any(c.isspace() for c in value):
         return None
-    found = re.findall(r"--node-labels=([^'\s]+)", calls[0])
-    if len(found) != 1:
-        return None
-    pairs = [p.split("=", 1) for p in found[0].split(",")]
-    if not all(len(p) == 2 for p in pairs):
-        return None
-    return dict(pairs)
+    pairs = [p.split("=", 1) for p in value[len("--node-labels="):].split(",")]
+    return dict(pairs) if all(len(p) == 2 for p in pairs) else None
+
+
+def user_data_problems(got, want, role):
+    """Every way the UserData script `got` differs from `want`, the script bootstrap_user_data
+    renders for this cluster and role, as one diagnostic each; [] only when they are equal byte
+    for byte. A difference the diagnostics below do not name is still reported."""
+    if got == want:
+        return []
+    got_calls, got_other = user_data_parts(got)
+    want_calls, want_other = user_data_parts(want)
+    problems = []
+    if len(got_calls) != 1:
+        problems.append(f"user data does not run {BOOTSTRAP} once ({len(got_calls)} calls)")
+    else:
+        got_cluster, got_opts, problems = bootstrap_call(got_calls[0])
+        want_cluster, want_opts, _ = bootstrap_call(want_calls[0])
+        if got_cluster != want_cluster:
+            problems.append(f"user data bootstraps cluster '{got_cluster}', expected '{want_cluster}'")
+        problems += [f"user data lacks bootstrap.sh option {o}" for o in want_opts if o not in got_opts]
+        problems += [f"user data passes bootstrap.sh option {o} that setup does not render"
+                     for o in got_opts if o not in want_opts]
+        for option, want_value in want_opts.items():
+            got_value = got_opts.get(option, want_value)
+            if got_value == want_value:
+                continue
+            if option == "--apiserver-endpoint":
+                problems.append(f"user data --apiserver-endpoint is '{got_value}', expected the cluster's endpoint")
+            elif option == "--b64-cluster-ca":
+                problems.append("user data --b64-cluster-ca is not the cluster's certificate authority")
+            elif option == "--kubelet-extra-args":
+                got_labels, want_labels = node_labels_arg(got_value), node_labels_arg(want_value)
+                if got_labels is None:
+                    problems.append(f"user data --kubelet-extra-args is '{got_value}', expected only "
+                                    "--node-labels=<the node's labels>")
+                    continue
+                if got_labels.get(NODEGROUP_LABEL) != want_labels.get(NODEGROUP_LABEL):
+                    problems.append(f"user data node label {NODEGROUP_LABEL}={got_labels.get(NODEGROUP_LABEL)} "
+                                    f"(expected {want_labels.get(NODEGROUP_LABEL)})")
+                problems += [f"user data lacks node label {k}={v}" for k, v in want_labels.items()
+                             if k != NODEGROUP_LABEL and got_labels.get(k) != v]
+                problems += [f"user data has node label {k}={v} that setup does not render"
+                             for k, v in got_labels.items() if k not in want_labels]
+            else:
+                problems.append(f"user data {option} is '{got_value}', expected '{want_value}'")
+    extra = Counter(got_other) - Counter(want_other)
+    missing = Counter(want_other) - Counter(got_other)
+    problems += [f"user data has a line setup does not render: '{line}'" for line in extra.elements()]
+    problems += [f"user data lacks the line '{line}'" for line in missing.elements()]
+    return problems or ["user data differs from what setup renders only in whitespace or layout"]
 
 
 def cmd_check_user_data(args):
     """Launch-template data JSON on stdin (what `launch-template <group>` writes to RUN_DIR).
-    Exit 0 when its UserData runs bootstrap.sh exactly once with --node-labels that name this
-    node group and fit its role (the sandbox node both RuntimeClass labels, the system node
-    neither); 1 when not; 2 when the input holds no readable UserData (nothing was checked)."""
+    Exit 0 when its UserData is byte for byte the script bootstrap_user_data renders for this
+    role and the live cluster (its name, endpoint, CA, DNS address and the node's labels, and
+    nothing else); 1 when it differs, with one line per difference; 2 when the input holds no
+    readable UserData or the cluster cannot be read (nothing was checked)."""
     text = sys.stdin.read()
     try:
         data = json.loads(text) if text.strip() else None
@@ -474,15 +565,24 @@ def cmd_check_user_data(args):
     except (ValueError, TypeError, KeyError):
         print("no launch-template data with base64 UserData in the input: nothing was checked", file=sys.stderr)
         sys.exit(2)
-    labels = user_data_node_labels(script)
-    if labels is None:
-        print(f"{args.role} user data does not run {BOOTSTRAP} once with one --node-labels argument")
-        sys.exit(1)
-    ok, summary = node_label_verdict(labels, args.role)
-    if labels.get(NODEGROUP_LABEL) != args.role:
-        ok, summary = False, f"{NODEGROUP_LABEL}={labels.get(NODEGROUP_LABEL)} (expected {args.role}); {summary}"
-    print(f"{args.role} user data: {BOOTSTRAP} with --node-labels {summary}")
-    sys.exit(0 if ok else 1)
+    cluster = setting("CLUSTER_NAME")
+    try:
+        info = cluster_info()
+    except DemoError as e:
+        print(f"could not read cluster {cluster}: nothing was checked ({e})", file=sys.stderr)
+        sys.exit(2)
+    want = bootstrap_user_data(args.role, info)
+    calls, _ = user_data_parts(script)
+    labels = node_labels_arg(bootstrap_call(calls[0])[1].get("--kubelet-extra-args")) if len(calls) == 1 else None
+    verdict = f" (--node-labels {node_label_verdict(labels, args.role)[1]})" if labels is not None else ""
+    problems = user_data_problems(script, want, args.role)
+    if not problems:
+        print(f"{args.role} user data is byte-for-byte what setup renders for cluster {cluster}{verdict}")
+        sys.exit(0)
+    for problem in problems:
+        print(problem)
+    print(f"{args.role} user data differs from what setup renders for cluster {cluster}{verdict}")
+    sys.exit(1)
 
 
 def launch_template_data(group):
@@ -642,31 +742,68 @@ def cmd_check_btf(args):
 
 
 def cmd_runtimeclass(_):
-    """Print the isolated-sandbox RuntimeClass, exactly as the GA bundle's UBUNTU.md section 5
-    gives it: the isolated-sandbox handler, the per-pod overhead, and a nodeSelector on the two
-    labels only the sandbox node carries. setup.sh creates it when the cluster has none."""
+    """Print the isolated-sandbox RuntimeClass the GA bundle's UBUNTU.md section 5 gives (the
+    isolated-sandbox handler, the per-pod overhead, and a nodeSelector on the two labels only the
+    sandbox node carries) plus the sample's ownership label. setup.sh creates it when the
+    cluster has none."""
     print(json.dumps(RUNTIMECLASS))
 
 
-def runtimeclass_mismatches(rc):
-    """Fields of a live RuntimeClass that differ from RUNTIMECLASS (handler, overhead and the
-    scheduling nodeSelector; tolerations, if any, are not this sample's to set)."""
+# Fields the API server sets on every object; they say nothing about what the object does.
+SERVER_METADATA = ("uid", "resourceVersion", "generation", "creationTimestamp", "managedFields", "selfLink")
+
+
+def object_diff(want, have, path=""):
+    """One line per field where `have` differs from `want`, walking nested mappings."""
     wrong = []
-    if rc.get("handler") != RUNTIMECLASS["handler"]:
-        wrong.append(f"handler {rc.get('handler')!r}")
-    have_selector = (rc.get("scheduling") or {}).get("nodeSelector") or {}
-    if have_selector != RUNTIMECLASS_NODE_SELECTOR:
-        wrong.append(f"scheduling.nodeSelector {have_selector}")
-    have_overhead = (rc.get("overhead") or {}).get("podFixed") or {}
-    if have_overhead != RUNTIMECLASS["overhead"]["podFixed"]:
-        wrong.append(f"overhead.podFixed {have_overhead}")
+    for key in sorted(set(want) | set(have)):
+        where = f"{path}.{key}" if path else f"field {key}"
+        if key not in have and isinstance(want[key], dict):
+            wrong += object_diff(want[key], {}, f"{path}.{key}" if path else key)
+        elif key not in have:
+            wrong.append(f"{where} is missing (expected {want[key]!r})")
+        elif key not in want:
+            wrong.append(f"{where} {have[key]!r} (the sample's RuntimeClass sets none)")
+        elif isinstance(want[key], dict) and isinstance(have[key], dict):
+            wrong += object_diff(want[key], have[key], f"{path}.{key}" if path else key)
+        elif want[key] != have[key]:
+            wrong.append(f"{where} {have[key]!r}, expected {want[key]!r}")
     return wrong
 
 
+def runtimeclass_ownership(rc):
+    """[] when the RuntimeClass carries the sample's ownership label, else why not."""
+    labels = (rc.get("metadata") or {}).get("labels") or {}
+    key, value = OWNER_LABEL
+    if key not in labels:
+        return [f"RuntimeClass {RUNTIMECLASS_NAME} is not marked as this sample's: it has no {key} label"]
+    if labels[key] != value:
+        return [f"RuntimeClass {RUNTIMECLASS_NAME} is marked {key}={labels[key]}, not {value}"]
+    return []
+
+
+def runtimeclass_mismatches(rc):
+    """Every way a live RuntimeClass differs from RUNTIMECLASS: the whole object (handler,
+    overhead, scheduling with its nodeSelector and any tolerations, and metadata such as
+    annotations, ownerReferences or finalizers) is compared, after removing only the fields the
+    API server sets and the ownership label, which runtimeclass_ownership checks."""
+    want, have = copy.deepcopy(RUNTIMECLASS), copy.deepcopy(rc)
+    have_meta = have.setdefault("metadata", {})
+    for field in SERVER_METADATA:
+        have_meta.pop(field, None)
+    for meta in (want["metadata"], have_meta):
+        labels = meta.pop("labels", None) or {}
+        labels.pop(OWNER_LABEL[0], None)
+        if labels:
+            meta["labels"] = labels
+    return object_diff(want, have)
+
+
 def cmd_check_runtimeclass(_):
-    """`kubectl get runtimeclass isolated-sandbox -o json` on stdin. Exit 0 when it matches the
-    GA RuntimeClass, 1 when it differs, 2 when the input is not a RuntimeClass named
-    isolated-sandbox (nothing was checked)."""
+    """`kubectl get runtimeclass isolated-sandbox -o json` on stdin. Exit 0 when it carries the
+    sample's ownership label and is otherwise exactly the GA RuntimeClass, 1 when it is not the
+    sample's or differs, 2 when the input is not a RuntimeClass named isolated-sandbox (nothing
+    was checked)."""
     text = sys.stdin.read()
     try:
         rc = json.loads(text) if text.strip() else None
@@ -676,11 +813,12 @@ def cmd_check_runtimeclass(_):
             or (rc.get("metadata") or {}).get("name") != RUNTIMECLASS_NAME:
         print(f"no RuntimeClass {RUNTIMECLASS_NAME} in the input: nothing was checked", file=sys.stderr)
         sys.exit(2)
-    wrong = runtimeclass_mismatches(rc)
+    wrong = runtimeclass_ownership(rc) + runtimeclass_mismatches(rc)
     if wrong:
-        print(f"RuntimeClass {RUNTIMECLASS_NAME} differs from the GA bundle's: {'; '.join(wrong)}")
+        print(f"RuntimeClass {RUNTIMECLASS_NAME} is not this sample's or differs from the GA bundle's: "
+              f"{'; '.join(wrong)}")
         sys.exit(1)
-    print(f"RuntimeClass {RUNTIMECLASS_NAME}: handler {rc['handler']}, nodeSelector "
+    print(f"RuntimeClass {RUNTIMECLASS_NAME}: marked {OWNER_LABEL[0]}={OWNER_LABEL[1]}, handler {rc['handler']}, nodeSelector "
           f"{','.join(f'{k}={v}' for k, v in sorted(RUNTIMECLASS_NODE_SELECTOR.items()))}, overhead "
           f"{','.join(f'{k}={v}' for k, v in sorted(RUNTIMECLASS['overhead']['podFixed'].items()))}")
 
@@ -720,6 +858,11 @@ def cmd_check_node_labels(args):
 # "apparmor failed to apply profile" (GA bundle UBUNTU.md section 5; an open item the bundle
 # tracks with the service team). The microVM is that pod's boundary. An ordinary pod runs on the
 # host kernel and keeps its default profile, so Unconfined is refused on every ordinary pod.
+# The sandbox pod may set AppArmor in one place only, the pod-level field: no container, init
+# container, ephemeral container or legacy annotation may set it too. That strict rule holds on
+# pods read back from the API server only on Kubernetes 1.34 or later (this sample pins EKS
+# 1.36): from 1.34 the API server no longer copies the pod-level field into the legacy
+# per-container annotation, as 1.30 to 1.33 did.
 APPARMOR_LEGACY_ANNOTATION = "container.apparmor.security.beta.kubernetes.io/"
 
 
@@ -743,9 +886,10 @@ def apparmor_types(pod):
 
 
 def workload_apparmor_problems(docs):
-    """[problem] for a list of manifest documents: an isolated-sandbox pod without pod-level
-    Unconfined (or with a container overriding it), or an ordinary pod with Unconfined anywhere."""
-    problems, pods = [], 0
+    """(pods, isolated-sandbox pods, [problem]) for a list of manifest documents: an
+    isolated-sandbox pod whose only AppArmor setting is not the pod-level Unconfined, or an
+    ordinary pod with Unconfined anywhere."""
+    problems, pods, sandbox_pods = [], 0, 0
     for d in docs:
         if not isinstance(d, dict) or d.get("kind") != "Pod":
             continue
@@ -753,28 +897,40 @@ def workload_apparmor_problems(docs):
         name = (d.get("metadata") or {}).get("name", "?")
         types = apparmor_types(d)
         if (d.get("spec") or {}).get("runtimeClassName") == RUNTIMECLASS_NAME:
+            sandbox_pods += 1
             if ("pod", "Unconfined") not in types:
                 problems.append(f"sandbox pod {name} lacks securityContext.appArmorProfile.type: Unconfined")
-            problems += [f"sandbox pod {name} sets {where} AppArmor {t}" for where, t in types
-                         if where != "pod" and t != "Unconfined"]
+            problems += [f"sandbox pod {name} sets {where} AppArmor {t}" for where, t in types if where != "pod"]
         else:
             problems += [f"ordinary pod {name} sets {where} AppArmor Unconfined" for where, t in types
                          if t == "Unconfined"]
-    return pods, problems
+    return pods, sandbox_pods, problems
 
 
 def cmd_check_workloads(args):
-    """Static check of deploy/workloads.yaml (or --file): AppArmor Unconfined on every
-    isolated-sandbox pod and on no ordinary pod. Exit 0 / 1, 2 when the file holds no Pod."""
+    """AppArmor check of deploy/workloads.yaml, of another --file, or of --file - (stdin, such as
+    `kubectl get pods -o json`, a List): Unconfined set once, at pod level, on every
+    isolated-sandbox pod, and on no ordinary pod. Exit 0 / 1; 2 when the input holds no Pod or
+    no isolated-sandbox pod (nothing was checked)."""
     import yaml
-    path = Path(args.file) if args.file else DEMO / "deploy" / "workloads.yaml"
-    pods, problems = workload_apparmor_problems(list(yaml.safe_load_all(path.read_text())))
+    if args.file == "-":
+        name, text = "stdin", sys.stdin.read()
+    else:
+        path = Path(args.file) if args.file else DEMO / "deploy" / "workloads.yaml"
+        name, text = path.name, path.read_text()
+    docs = []
+    for d in yaml.safe_load_all(text):
+        docs += (d.get("items") or []) if isinstance(d, dict) and d.get("kind") == "List" else [d]
+    pods, sandbox_pods, problems = workload_apparmor_problems(docs)
     if not pods:
-        print(f"{path.name} holds no Pod: nothing was checked", file=sys.stderr)
+        print(f"{name} holds no Pod: nothing was checked", file=sys.stderr)
+        sys.exit(2)
+    if not sandbox_pods:
+        print(f"no isolated-sandbox pod in {name}: nothing was checked", file=sys.stderr)
         sys.exit(2)
     for p in problems:
         print(p)
-    print(f"{pods} pods in {path.name}: {len(problems)} AppArmor problem(s)")
+    print(f"{pods} pods in {name}: {len(problems)} AppArmor problem(s)")
     sys.exit(1 if problems else 0)
 
 
@@ -822,7 +978,13 @@ def kernel_release_matches(got, want):
 
 
 def cmd_kernel_release(args):
-    sys.exit(0 if kernel_release_matches(args.got.strip(), args.want) else 1)
+    got = args.got.strip()
+    if not got:
+        print(f"kernel release unreadable (empty), expected {args.want}")
+        sys.exit(1)
+    ok = kernel_release_matches(got, args.want)
+    print(f"kernel release {got} {'is' if ok else 'is not'} the pinned {args.want}")
+    sys.exit(0 if ok else 1)
 
 
 # ===========================================================================
@@ -848,41 +1010,53 @@ def require_demo_cluster_info(info):
 # replacement") has the agent report Ready while its log repeats "Failed to initialize datapath"
 # with "no BTF found". A log line is the agent's when it starts with its key=value prefix,
 # `time=<t> level=<l> `; the message and any other attributes (source=, module=, error=) follow
-# in any order, and the level may be upper or lower case. Only such a line counts, so a line
-# that merely quotes the text (a comment, a grep) is not a failure; and a log in which NO line
-# has that prefix is not a clean log but one this parser cannot read, so it checks nothing.
+# in any order, and the level may be upper or lower case. In such a line a failure is
+# "no BTF found" anywhere, or a warn-or-worse msg starting "Failed to initialize datapath", so an
+# info line that only mentions the text is not one. Any OTHER line (JSON, a plain line, a
+# continuation) that carries either string is a failure too, whatever its format: a format this
+# parser does not know must never hide one. Only a comment line (starting with #) that quotes
+# the text is not counted. A log with no failure and NO agent-format line is not a clean log but
+# one this parser cannot read, so it checks nothing.
 AGENT_LINE = re.compile(r'^time=\S+ level=(?P<level>[A-Za-z]+) ')
 FAILURE_LEVELS = {"warn", "warning", "error", "fatal", "panic"}
+DATAPATH_FAILURE_TEXT = "Failed to initialize datapath"
 DATAPATH_FAILURE = re.compile(r' msg="?Failed to initialize datapath')
 NO_BTF = "no BTF found"
 
 
 def datapath_failures(log_text):
-    """(lines read, agent-format lines, failure lines) in a cilium-agent log."""
+    """(lines read, agent-format lines, other lines, [(failure line, in agent format)]) in a
+    cilium-agent log. Empty lines and comment lines are neither agent nor other lines."""
     lines = log_text.splitlines()
-    agent, failures = 0, []
+    agent, other, failures = 0, 0, []
     for line in lines:
-        match = AGENT_LINE.match(line)
-        if not match:
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
-        agent += 1
-        if NO_BTF in line or (match.group("level").lower() in FAILURE_LEVELS and DATAPATH_FAILURE.search(line)):
-            failures.append(line)
-    return len(lines), agent, failures
+        match = AGENT_LINE.match(line)
+        if match:
+            agent += 1
+            if NO_BTF in line or (match.group("level").lower() in FAILURE_LEVELS and DATAPATH_FAILURE.search(line)):
+                failures.append((line, True))
+        else:
+            other += 1
+            if NO_BTF in line or DATAPATH_FAILURE_TEXT in line:
+                failures.append((line, False))
+    return len(lines), agent, other, failures
 
 
 def cmd_datapath_failures(_):
-    read, agent, failures = datapath_failures(sys.stdin.read())
+    read, agent, other, failures = datapath_failures(sys.stdin.read())
     if not read:
         print("empty agent log: nothing was checked", file=sys.stderr)
         sys.exit(2)
-    if not agent:
+    if not failures and not agent:
         print(f"none of {read} lines has the agent's 'time=... level=... ' prefix: nothing was checked",
               file=sys.stderr)
         sys.exit(2)
-    for line in failures[:3]:
-        print(line[:300])
-    print(f"{len(failures)} 'Failed to initialize datapath' / '{NO_BTF}' lines in {agent} agent log lines")
+    for line, in_agent_format in failures[:3]:
+        print(("" if in_agent_format else "(not in the agent's text format) ") + line[:300])
+    print(f"{len(failures)} '{DATAPATH_FAILURE_TEXT}' / '{NO_BTF}' lines in {agent} agent log lines "
+          f"and {other} other line(s)")
     sys.exit(1 if failures else 0)
 
 
@@ -1133,7 +1307,12 @@ def cmd_vpc_cidrs(_):
 
 
 def cmd_in_cidrs(args):
-    sys.exit(0 if ip_in_cidrs(args.ip, args.cidrs) else 1)
+    hits = [c for c in args.cidrs if ip_in_cidrs(args.ip, [c])]
+    if hits:
+        print(f"{args.ip} is in {hits[0]}")
+        sys.exit(0)
+    print(f"{args.ip} is in none of {' '.join(args.cidrs)}")
+    sys.exit(1)
 
 
 def cmd_check_operator_role(_):
