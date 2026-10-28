@@ -58,7 +58,7 @@ sandboxed workload pod, one supervisor pod, one supplier API pod and one bridge 
 running until you clean up, plus the workload pod's own EBS workspace volume.
 
 Every output block on this page is from one real run of this sample, run id
-`1e840076c17841babdbcb1c8a5279d09`. Values from the account and cluster it ran on are
+`31bd77f75e9f4d9ca472483145fcad36`. Values from the account and cluster it ran on are
 replaced by the same placeholders the commands use, because this repository is public:
 `<ACCOUNT_ID>`, `<CLUSTER_NAME>` and `<NODE_NAME>`. The Region is left as `us-west-2`, the
 default this repository's samples share. Run ids, pod names, kernel builds, uptimes, device
@@ -244,14 +244,14 @@ mutatingadmissionpolicybinding.admissionregistration.k8s.io/openshell-analyst-ni
   applied openshell-analyst-nitro-adapter, scoped to namespaces labelled managed-by=openshell
 ==> the model bridge's IAM role and its EKS Pod Identity association
   created the IAM role subagent-analyst-openshell-bridge
-  created the Pod Identity association a-aryxiqdul0f62x3so
+  created the Pod Identity association a-uzpclkhanmtgjtqu4
 ==> the analyst image, the CA-extended supervisor image and the model bridge
   created the ECR repository pod-isolation/subagent-analyst-openshell
   built and pushed pod-isolation/subagent-analyst-openshell:7f17f33c9449acd0c923
 secret/bridge-tls created
 configmap/bridge-ca created
   created a 30-day certificate authority and the bridge-tls Secret
-  built and pushed supervisor-547e9859ad3f022c0006
+  built and pushed supervisor-cd0e44d558481cb4bddb
 service/analyst-bridge created
 deployment.apps/analyst-bridge created
 deployment "analyst-bridge" successfully rolled out
@@ -293,19 +293,19 @@ at the first claim that does not hold, so nothing below is a claim the run skipp
 ```
 
 ```text
-==> run 1e840076c17841babdbcb1c8a5279d09 in tmp/openshell/runs/1e840076c17841babdbcb1c8a5279d09
+==> run 31bd77f75e9f4d9ca472483145fcad36 in tmp/openshell/runs/31bd77f75e9f4d9ca472483145fcad36
 
 ==> connecting to the OpenShell gateway
-  gateway: 127.0.0.1:59779 -> service/openshell-analyst:8080
+  gateway: 127.0.0.1:33385 -> service/openshell-analyst:8080
   imported the provider profile procurement-supplier
   created the provider supplier from the key in this run's Secret
 
 ==> the sandbox
   created the template procurement-analyst
-  creating the sandbox analyst-1e840076c1; this takes a few minutes when a sandbox node has to be provisioned
-  created the sandbox analyst-1e840076c1
-  workload pod:   default--analyst-1e840076c1 on <NODE_NAME>
-  supervisor pod: os-supervisor-cad27bf1-2622-436c-be9f-eb83dc147f3a on <NODE_NAME>
+  creating the sandbox analyst-31bd77f75e; this takes a few minutes when a sandbox node has to be provisioned
+  created the sandbox analyst-31bd77f75e
+  workload pod:   default--analyst-31bd77f75e on <NODE_NAME>
+  supervisor pod: os-supervisor-ecd32f0d-f4f0-4ebf-95a0-0fa4dabbfe7d on <NODE_NAME>
 
 ==> what the sandbox is, and what the analyst holds
 PASS the analyst's workload pod runs with runtimeClassName isolated-sandbox
@@ -318,7 +318,7 @@ PASS NoNewPrivs is set on the analyst process, from the generated pod spec
 PASS the analyst process holds no effective capability (CapEff 0000000000000000)
 PASS the analyst has no AWS variable, no AWS credential variable and no other model key in its environment
 PASS the analyst holds a credential and it is an openshell: placeholder
-PASS the analyst reported a credential digest to compare ('d38691f9b871bc6a1070a65b46c24af4f5f1f42bbd428d3bbe621a73832d3f6e')
+PASS the analyst reported a credential digest to compare, of the expected length and alphabet
 PASS the credential the analyst holds is not the real supplier key, by salted digest of each
 PASS the analyst sees only a sandbox guest's virtio and device-mapper disks and no instance NVMe device (dm-0, vda, vda1, vda2, vdb, vdb1, vdb2, vdc, vdd, vde)
   guest kernel 6.18.54 on a node running 6.18.54
@@ -360,13 +360,13 @@ PASS no container in either pod has restarted
 
 ==> the servers' own records
 PASS the supplier API and the bridge have request logs to correlate against
-PASS the allowed request 1e840076c17841babdbcb1c8a5279d09-allowed arrived upstream exactly once, authenticated
-PASS the allowed request 1e840076c17841babdbcb1c8a5279d09-draft arrived upstream exactly once, authenticated
+PASS the allowed request 31bd77f75e9f4d9ca472483145fcad36-allowed arrived upstream exactly once, authenticated
+PASS the allowed request 31bd77f75e9f4d9ca472483145fcad36-draft arrived upstream exactly once, authenticated
 PASS none of this run's 7 refused requests reached the supplier API or the bridge (none)
 
 ==> done
   checks:         43, all passed
-  run id:         1e840076c17841babdbcb1c8a5279d09
+  run id:         31bd77f75e9f4d9ca472483145fcad36
 ```
 
 Abridged: the two before-and-after pod records printed around the policy update are shown
@@ -424,17 +424,17 @@ sandbox, and a supervisor pod that is an ordinary pod. The label
 ```bash
 export NAMESPACE=subagent-security-openshell
 kubectl get pods -n $NAMESPACE -L openshell.ai/boundary-role
-kubectl get pod default--analyst-1e840076c1 -n $NAMESPACE -o jsonpath='{.spec.runtimeClassName}{"\n"}'
+kubectl get pod default--analyst-31bd77f75e -n $NAMESPACE -o jsonpath='{.spec.runtimeClassName}{"\n"}'
 kubectl get pod -l openshell.ai/boundary-role=supervisor -n $NAMESPACE -o jsonpath='[{.items[0].spec.runtimeClassName}]{"\n"}'
 ```
 
 ```text
 NAME                                                 READY   STATUS    RESTARTS   AGE     BOUNDARY-ROLE
-analyst-bridge-68f7f996f7-78p26                      1/1     Running   0          80s
-default--analyst-1e840076c1                          1/1     Running   0          54s     workload
-openshell-analyst-0                                  1/1     Running   0          72s
-os-supervisor-cad27bf1-2622-436c-be9f-eb83dc147f3a   1/1     Running   0          54s     supervisor
-supplier-api-87ff6fcb6-7zlv8                         1/1     Running   0          115s
+analyst-bridge-68f7f996f7-z8nqw                      1/1     Running   0          78s
+default--analyst-31bd77f75e                          1/1     Running   0          52s     workload
+openshell-analyst-0                                  1/1     Running   0          64s
+os-supervisor-ecd32f0d-f4f0-4ebf-95a0-0fa4dabbfe7d   1/1     Running   0          52s     supervisor
+supplier-api-87ff6fcb6-ch5st                         1/1     Running   0          115s
 
 isolated-sandbox
 []
@@ -450,7 +450,7 @@ The analyst's container mounts no Secret and no projected volume, and the pod tu
 ordinary Kubernetes token:
 
 ```bash
-kubectl get pod default--analyst-1e840076c1 -n $NAMESPACE \
+kubectl get pod default--analyst-31bd77f75e -n $NAMESPACE \
   -o jsonpath='{.spec.automountServiceAccountToken}{"\n"}{range .spec.containers[?(@.name=="agent")].volumeMounts[*]}{.name}{" "}{end}{"\n"}'
 ```
 
@@ -469,8 +469,8 @@ here would find a Secret and look correct while saying nothing about what the an
 reach:
 
 ```bash
-kubectl get pod default--analyst-1e840076c1 -n $NAMESPACE -o jsonpath='{range .spec.volumes[?(@.secret)]}{.name}{"\n"}{end}'
-kubectl get pod default--analyst-1e840076c1 -n $NAMESPACE -o jsonpath='{range .spec.initContainers[*]}{.name}{" "}{end}{"\n"}'
+kubectl get pod default--analyst-31bd77f75e -n $NAMESPACE -o jsonpath='{range .spec.volumes[?(@.secret)]}{.name}{"\n"}{end}'
+kubectl get pod default--analyst-31bd77f75e -n $NAMESPACE -o jsonpath='{range .spec.initContainers[*]}{.name}{" "}{end}{"\n"}'
 ```
 
 ```text
@@ -548,7 +548,7 @@ the image, the UID and the files are identical and the only difference is that t
 was not started under the policy:
 
 ```bash
-kubectl exec default--analyst-1e840076c1 -c agent -n $NAMESPACE -- python3 -c '
+kubectl exec default--analyst-31bd77f75e -c agent -n $NAMESPACE -- python3 -c '
 import os
 print("uid", os.getuid())
 print("canary", open("/protected/canary").read().strip())
@@ -583,7 +583,7 @@ OpenShell's Kubernetes driver generates, which this sample does not write and do
 change:
 
 ```bash
-kubectl get pod default--analyst-1e840076c1 -n $NAMESPACE -o jsonpath='{.spec.containers[0].securityContext}{"\n"}'
+kubectl get pod default--analyst-31bd77f75e -n $NAMESPACE -o jsonpath='{.spec.containers[0].securityContext}{"\n"}'
 ```
 
 ```text
@@ -673,7 +673,7 @@ Errno 13 is `EACCES`, returned at `connect()`. OpenShell's supervisor records th
 refusal from its own side, naming the host, the binary and the reason:
 
 ```bash
-kubectl logs os-supervisor-cad27bf1-2622-436c-be9f-eb83dc147f3a -c supervisor -n $NAMESPACE | grep DENIED
+kubectl logs os-supervisor-ecd32f0d-f4f0-4ebf-95a0-0fa4dabbfe7d -c supervisor -n $NAMESPACE | grep DENIED
 ```
 
 ```text
@@ -760,16 +760,16 @@ plane for the change. `openshell policy set --wait` returns once the running san
 loaded the new revision; `run.sh` does this itself and records the result:
 
 ```text
-before the update: {"workload": {"uid": "559f027e-e9aa-49e2-bd18-0d6b5face8dd", "restarts": {"agent": 0}},
-                    "supervisor": {"uid": "22077c08-3f3b-4f69-8c26-c5cd6311a244", "restarts": {"supervisor": 0}}}
+before the update: {"workload": {"uid": "0985eff5-6e44-43e5-b7f2-68d0abbfcbdb", "restarts": {"agent": 0}},
+                    "supervisor": {"uid": "6454d4a3-57a7-4773-aec3-a317fe75babb", "restarts": {"supervisor": 0}}}
 PASS before the update, the analyst's own draft submission is refused by rule
   applied the one-rule policy update to the running sandbox
 PASS after the update, the identical draft submission is accepted with 201
 PASS after the update, the purchase order is still refused: the update added one rule and nothing else
 PASS both pods are the same objects they were before the update, by uid
 PASS no container in either pod has restarted
-after the update:  {"workload": {"uid": "559f027e-e9aa-49e2-bd18-0d6b5face8dd", "restarts": {"agent": 0}},
-                    "supervisor": {"uid": "22077c08-3f3b-4f69-8c26-c5cd6311a244", "restarts": {"supervisor": 0}}}
+after the update:  {"workload": {"uid": "0985eff5-6e44-43e5-b7f2-68d0abbfcbdb", "restarts": {"agent": 0}},
+                    "supervisor": {"uid": "6454d4a3-57a7-4773-aec3-a317fe75babb", "restarts": {"supervisor": 0}}}
 ```
 
 Reformatted onto two lines each for width, and the second record's label is added; the uids
@@ -787,8 +787,8 @@ and authenticated, and none of this run's seven refused ids reaches the supplier
 bridge at all:
 
 ```text
-PASS the allowed request 1e840076c17841babdbcb1c8a5279d09-allowed arrived upstream exactly once, authenticated
-PASS the allowed request 1e840076c17841babdbcb1c8a5279d09-draft arrived upstream exactly once, authenticated
+PASS the allowed request 31bd77f75e9f4d9ca472483145fcad36-allowed arrived upstream exactly once, authenticated
+PASS the allowed request 31bd77f75e9f4d9ca472483145fcad36-draft arrived upstream exactly once, authenticated
 PASS none of this run's 7 refused requests reached the supplier API or the bridge (none)
 ```
 
@@ -800,23 +800,23 @@ machine it is on, read from inside the guest, then the same readings from an ord
 pinned to the same node.
 
 ```bash
-kubectl exec default--analyst-1e840076c1 -c agent -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f1 /proc/uptime; ls /sys/block | tr "\n" " "; echo; cat /sys/class/dmi/id/product_name'
-kubectl get pod default--analyst-1e840076c1 -n $NAMESPACE --no-headers | awk '{print "pod age: "$5}'
+kubectl exec default--analyst-31bd77f75e -c agent -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f1 /proc/uptime; ls /sys/block | tr "\n" " "; echo; cat /sys/class/dmi/id/product_name'
+kubectl get pod default--analyst-31bd77f75e -n $NAMESPACE --no-headers | awk '{print "pod age: "$5}'
 ```
 
 ```text
 6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-56.36
+52.25
 dm-0 vda vdb vdc vdd vde
 m8i.enclave
-pod age: 69s
+pod age: 65s
 ```
 
 Now an ordinary pod on the same node. Pinning the node is the point: a reading from a pod on
 another instance would compare nothing.
 
 ```bash
-NODE=$(kubectl get pod default--analyst-1e840076c1 -n $NAMESPACE -o jsonpath='{.spec.nodeName}')
+NODE=$(kubectl get pod default--analyst-31bd77f75e -n $NAMESPACE -o jsonpath='{.spec.nodeName}')
 sed -e "s|<NAMESPACE>|$NAMESPACE|g" -e "s|<MANAGED_BY>|openshell|g" -e "s|<NODE_NAME>|$NODE|g" \
   deploy/ordinary-pod.yaml | kubectl apply -f -
 kubectl wait --for=condition=Ready pod/ordinary-comparison -n $NAMESPACE --timeout=2m
@@ -825,7 +825,7 @@ kubectl exec ordinary-comparison -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f
 
 ```text
 6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
-5705.95
+6263.31
 dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 nvme2n1 zram0
 m8i.xlarge
 ```
@@ -835,13 +835,13 @@ Four readings differ, and each says something:
 | Reading | Sandboxed workload pod | Ordinary pod on the same node |
 |---|---|---|
 | `uname -rv` | `6.18.54 #1`, built Oct 22 17:38 | `6.18.54 #2`, built Oct 22 00:16 |
-| `/proc/uptime` | `56.36`, against a pod age of 69s | `5705.95`, about 95 minutes, the node's |
+| `/proc/uptime` | `52.25`, against a pod age of 65s | `6263.31`, about 104 minutes, the node's |
 | `/sys/block` | `vda vdb vdc vdd vde`, virtio | `nvme0n1 nvme1n1 nvme2n1`, the instance's own |
 | `product_name` | `m8i.enclave` | `m8i.xlarge` |
 
-The workload pod runs its **own kernel build**, and the uptime is the giveaway: 56 seconds
-against a pod 69s old, because the sandbox booted when the pod did, while the ordinary pod
-reports the node's ninety-five minutes. It sees virtio disks where the ordinary pod sees the instance's
+The workload pod runs its **own kernel build**, and the uptime is the giveaway: 52 seconds
+against a pod 65s old, because the sandbox booted when the pod did, while the ordinary pod
+reports the node's hundred-odd minutes. It sees virtio disks where the ordinary pod sees the instance's
 `nvme` devices, and it names the enclave rather than the instance type.
 
 Note that the kernel **version** is the same in both, `6.18.54`. It is the build number and
@@ -941,7 +941,7 @@ is what finishes the job:
 ==> 2/10 whose namespace subagent-security-openshell is
   namespace subagent-security-openshell carries app.kubernetes.io/managed-by=openshell.
 ==> 3/10 the sandboxes, the OpenShell gateway and the namespace
-  deleted the Sandbox default--analyst-1e840076c1.
+  deleted the Sandbox default--analyst-31bd77f75e.
   uninstalled the Helm release openshell-analyst.
   deleted namespace subagent-security-openshell and everything in it.
 ==> 4/10 the admission adapter
@@ -951,7 +951,7 @@ is what finishes the job:
   no clusterrolebinding is annotated for the release openshell-analyst in subagent-security-openshell.
   no clusterrole is annotated for the release openshell-analyst in subagent-security-openshell.
 ==> 6/10 the EKS Pod Identity association
-  deleted the association a-aryxiqdul0f62x3so.
+  deleted the association a-uzpclkhanmtgjtqu4.
 ==> 7-9/10 the IAM role, the bucket and the images
   deleted the IAM role subagent-analyst-openshell-bridge.
   deleted the bucket subagent-analyst-openshell-<ACCOUNT_ID>, with this sample's reports in it.

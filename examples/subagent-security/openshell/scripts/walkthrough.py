@@ -978,10 +978,17 @@ class Walkthrough:
         # The digest has to be a digest before it can be compared. Without this, a probe
         # that did not report the field at all would leave `None != real`, which is true,
         # and the comparison would pass having measured nothing.
+        # The digest itself is deliberately not printed, and not put in the check's name
+        # either. It is a salted, slow commitment to credential material, which the shared
+        # worker goes to some trouble to make expensive to test against a candidate list,
+        # and none of that is a reason to publish it: a reader learns nothing from the
+        # value, and this line ends up in a page's output block. CodeQL flagged an earlier
+        # version of this line as clear-text logging of sensitive data, and it was right.
+        # The run's own calls.json under tmp/ keeps both digests as evidence.
         self.check(isinstance(reported, str) and len(reported) == 64
                    and all(c in "0123456789abcdef" for c in reported),
-                   "the analyst reported a credential digest to compare "
-                   f"({reported!r:.80})")
+                   "the analyst reported a credential digest to compare, of the expected "
+                   "length and alphabet")
         # Deliberately narrow wording. This compares the value the analyst holds now
         # against the real key; it does not establish that the real key was never present
         # at any earlier moment, nor that it is absent from some channel this run does not
