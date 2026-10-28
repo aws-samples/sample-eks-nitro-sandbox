@@ -28,7 +28,7 @@ RUNNER_DESCRIPTION="nitro-sandbox-runner"
 # ---------------------------------------------------------------------------
 say "1/5 context and namespace"
 # ---------------------------------------------------------------------------
-need_tools kubectl base64 awk
+need_tools kubectl base64 awk jq
 check_cluster
 require_namespace
 echo "  context '$KUBE_CONTEXT', namespace '$NAMESPACE' is this sample's."
@@ -129,8 +129,7 @@ RUBY
 
 echo "  asking GitLab to create the project and commit the pipeline. Its Rails console"
 echo "  takes about half a minute to start, and this waits for it."
-project_out="$("${KCTL[@]}" exec -i -n "$NAMESPACE" "$(gitlab_pod)" \
-  -- gitlab-rails runner - < "$project_ruby")" \
+project_out="$(gitlab_exec < "$project_ruby")" \
   || die "GitLab could not create the project or commit the pipeline files. Its output is above."
 
 PROJECT_ID="$(sed -n 's/^PROJECT_ID=//p' <<<"$project_out")"
@@ -178,11 +177,13 @@ project = Project.find(PROJECT_ID)
 # list honest: its token is in no Secret any more, so it can never come back online.
 project.runners.where(description: RUNNER_DESCRIPTION).each(&:destroy!)
 
+# The same service GitLab's own "New project runner" form calls. runner_type and scope go
+# inside params, which is where its ProjectRunnerStrategy reads them from.
 result = ::Ci::Runners::CreateRunnerService.new(
   user: user,
-  type: :project_type,
-  scope: project,
   params: {
+    runner_type: 'project_type',
+    scope: project,
     description: RUNNER_DESCRIPTION,
     # The pipeline's jobs carry no tags, so the runner has to accept untagged jobs.
     run_untagged: true,
@@ -190,7 +191,7 @@ result = ::Ci::Runners::CreateRunnerService.new(
   }
 ).execute
 
-raise "could not create the runner: #{result.message}" unless result.success?
+raise "could not create the runner: #{Array(result.message).join(', ')}" unless result.success?
 
 created = result.payload[:runner]
 # Marked, so the value is lifted out of whatever else the Rails console prints, and so
@@ -200,8 +201,7 @@ puts "RUNNER_TOKEN=#{created.token}"
 RUBY
 
   echo "  asking GitLab for a project runner authentication token."
-  runner_out="$("${KCTL[@]}" exec -i -n "$NAMESPACE" "$(gitlab_pod)" \
-    -- gitlab-rails runner - < "$work/runner.rb")" \
+  runner_out="$(gitlab_exec < "$work/runner.rb")" \
     || die "GitLab could not create the runner. Its output is above."
 
   RUNNER_ID="$(sed -n 's/^RUNNER_ID=//p' <<<"$runner_out")"
@@ -278,8 +278,7 @@ RUBY
 status=""
 online_out=""
 for _ in $(seq 1 10); do
-  online_out="$("${KCTL[@]}" exec -i -n "$NAMESPACE" "$(gitlab_pod)" \
-    -- gitlab-rails runner - < "$work/online.rb" 2>/dev/null || true)"
+  online_out="$(gitlab_exec < "$work/online.rb" 2>/dev/null || true)"
   status="$(sed -n 's/^STATUS=//p' <<<"$online_out")"
   [[ "$status" == online ]] && break
   sleep 10

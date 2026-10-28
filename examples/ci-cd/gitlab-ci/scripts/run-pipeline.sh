@@ -51,10 +51,13 @@ project = Project.find_by_full_path("#{user.username}/#{PROJECT_PATH}")
 raise "no project #{user.username}/#{PROJECT_PATH}. Run scripts/bootstrap-runner.sh first." if project.nil?
 
 branch = project.default_branch || 'main'
-# The same path GitLab's own "Run pipeline" button takes.
+# The same call GitLab's own "Run pipeline" button makes, options included.
+# ignore_skip_ci matters: bootstrap-runner.sh committed the pipeline with [ci skip] so the
+# commit would start nothing, and without this the explicit run is skipped too. Measured:
+# the pipeline is created with status "skipped" and no jobs at all.
 response = ::Ci::CreatePipelineService
   .new(project, user, ref: branch)
-  .execute(:web)
+  .execute(:web, ignore_skip_ci: true, save_on_errors: false)
 pipeline = response.payload
 
 if pipeline.nil? || !pipeline.persisted?
@@ -66,8 +69,7 @@ puts "PIPELINE_SHA=#{pipeline.sha}"
 pipeline.builds.order(:id).each { |b| puts "JOB=#{b.id} #{b.name}" }
 RUBY
 
-start_out="$("${KCTL[@]}" exec -i -n "$NAMESPACE" "$(gitlab_pod)" \
-  -- gitlab-rails runner - < "$work/start.rb")" \
+start_out="$(gitlab_exec < "$work/start.rb")" \
   || die "GitLab could not start a pipeline. Its output is above."
 PIPELINE_ID="$(sed -n 's/^PIPELINE_ID=//p' <<<"$start_out")"
 PIPELINE_SHA="$(sed -n 's/^PIPELINE_SHA=//p' <<<"$start_out")"
@@ -92,28 +94,59 @@ puts "PIPELINE_STATUS=#{pipeline.status}"
 pipeline.builds.order(:id).each { |b| puts "JOB_STATUS=#{b.id} #{b.name} #{b.status}" }
 RUBY
 
-: > "$work/pods.tsv"
+declare -A pod_uid pod_rclass pod_node pod_vols pod_volsecrets
+pod_order=()
 pipeline_status=""
 echo "  watching for job pods. Each one is created when its job starts and deleted when it"
 echo "  ends, so this is the only moment they can be read."
-printf '\n  %-46s %-38s %-18s %s\n' POD UID "RUNTIME CLASS" NODE
+printf '\n  %-50s %-38s %-18s %s\n' POD UID "RUNTIME CLASS" PHASE
 
 # Up to 40 minutes: a sandboxed job pod has a node to be provisioned, a VM to boot and its
 # images to pull before the script runs.
 deadline=$(( $(date +%s) + 2400 ))
 last_status_check=0
 while :; do
-  # Record any job pod that is there now and has not been seen before. kubectl goes straight
-  # into jq, and only the fields below are kept.
+  # Record any job pod that is there now. kubectl goes straight into jq, and only the fields
+  # below are kept.
+  #
+  # jq writes "-" for a field it has no value for, rather than an empty string. Tab is an IFS
+  # whitespace character, so bash collapses a run of tabs into one delimiter: an empty field
+  # would vanish and every field after it would shift left. Measured here before the
+  # placeholder went in: a pod first seen while Pending, with no nodeName yet, had its PHASE
+  # read as its node, and the table showed "Pending" in the NODE column.
   pods_json="$("${KCTL[@]}" get pod -n "$NAMESPACE" -l "$JOB_POD_SELECTOR" -o json 2>/dev/null)" \
     || die "could not list the job pods in '$NAMESPACE'. That is a failed read, not a report that there are none."
-  while IFS=$'\t' read -r name uid rclass node phase; do
+  while IFS=$'\t' read -r name uid rclass node phase vols volsecrets; do
     [[ -n "$name" ]] || continue
-    if ! cut -f1 "$work/pods.tsv" | grep -qxF "$name"; then
-      printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$uid" "$rclass" "$node" "$phase" >> "$work/pods.tsv"
-      printf '  %-46s %-38s %-18s %s\n' "$name" "$uid" "${rclass:-<none>}" "${node:-<unscheduled>}"
+    if [[ -z "${pod_uid[$name]:-}" ]]; then
+      pod_order+=("$name")
+      printf '  %-50s %-38s %-18s %s\n' "$name" "$uid" "$rclass" "$phase"
     fi
-  done < <(jq -r '(.items // [])[] | [.metadata.name, .metadata.uid, (.spec.runtimeClassName // ""), (.spec.nodeName // ""), .status.phase] | @tsv' <<<"$pods_json")
+    pod_uid[$name]="$uid"
+    pod_rclass[$name]="$rclass"
+    pod_vols[$name]="$vols"
+    pod_volsecrets[$name]="$volsecrets"
+    # A pod first seen while Pending has no node yet, so the node is taken from whichever
+    # poll first reports one and is never overwritten with the placeholder again. Written as
+    # an if, not `[[ ... ]] && ...`: under `set -e` a standalone && list whose test fails
+    # returns non-zero and ends the script.
+    if [[ "$node" != "-" ]]; then
+      pod_node[$name]="$node"
+    else
+      pod_node[$name]="${pod_node[$name]:-$node}"
+    fi
+    # What the pod MOUNTS, by name, never by value: this is how the page shows that the
+    # runner authentication token is not in the job pod. Read while the pod exists, because
+    # it is deleted when its job ends.
+  done < <(jq -r '(.items // [])[]
+    | [ .metadata.name,
+        .metadata.uid,
+        (.spec.runtimeClassName // "-"),
+        (.spec.nodeName // "-"),
+        .status.phase,
+        ([(.spec.volumes // [])[].name] | join(",") | if . == "" then "-" else . end),
+        ([(.spec.volumes // [])[] | .secret.secretName // empty] | join(",") | if . == "" then "-" else . end) ]
+    | @tsv' <<<"$pods_json")
 
   now=$(date +%s)
   (( now < deadline )) || die "the pipeline had not finished after 40 minutes. Its jobs and the runner manager's log say where it is:
@@ -124,8 +157,7 @@ while :; do
   # read every 30 seconds while the pods are polled every 2.
   if (( now - last_status_check >= 30 )); then
     last_status_check=$now
-    status_out="$("${KCTL[@]}" exec -i -n "$NAMESPACE" "$(gitlab_pod)" \
-      -- gitlab-rails runner - < "$work/status.rb" 2>/dev/null || true)"
+    status_out="$(gitlab_exec < "$work/status.rb" 2>/dev/null || true)"
     pipeline_status="$(sed -n 's/^PIPELINE_STATUS=//p' <<<"$status_out")"
     case "$pipeline_status" in
       success|failed|canceled|skipped) break ;;
@@ -140,20 +172,47 @@ echo
 echo "  pipeline $PIPELINE_ID finished: $pipeline_status"
 sed -n 's/^JOB_STATUS=/    job /p' <<<"$status_out"
 
-pod_count="$(wc -l < "$work/pods.tsv" | tr -d ' ')"
+pod_count="${#pod_order[@]}"
 echo
 echo "  job pods seen: $pod_count"
-# Every job pod must have been a sandbox. A pod with no runtime class would mean the runner
-# ignored runtime_class_name, which is the whole of what this sample configures, and the job
-# would have run as an ordinary pod on the node.
-unsandboxed="$(awk -F'\t' '$3 != "isolated-sandbox" { print $1 " (runtime class: " ($3 == "" ? "<none>" : $3) ")" }' "$work/pods.tsv")"
+(( pod_count > 0 )) \
+  || die "no job pod was ever seen while the pipeline ran, so there is nothing to show that a job was isolated. A pipeline that finished with no jobs at all does this: check that '$PIPELINE_ID' really had jobs, above."
+
+# Every job pod must have been a sandbox. One with no runtime class would mean the runner
+# ignored runtime_class_name, which is the whole of what this sample configures, and that job
+# ran as an ordinary pod on the node. A GitLab Runner older than v17.5.3 does exactly that,
+# silently, which is why this is checked rather than assumed.
+unsandboxed=""
+for name in "${pod_order[@]}"; do
+  rc="${pod_rclass[$name]}"
+  if [[ "$rc" != "isolated-sandbox" ]]; then
+    if [[ "$rc" == "-" ]]; then rc="<none>"; fi
+    unsandboxed+="    $name (runtime class: $rc)"$'\n'
+  fi
+done
 [[ -z "$unsandboxed" ]] \
   || die "a job pod did not carry runtimeClassName isolated-sandbox, so that job did not run in a sandbox:
-$unsandboxed
-  Check that runner/config.toml.template's runtime_class_name reached the Secret, and that the runner manager was restarted after it changed."
-uid_count="$(cut -f2 "$work/pods.tsv" | sort -u | grep -c .)"
+$unsandboxed  Check that runner/config.toml.template's runtime_class_name reached the Secret, that the runner manager was restarted after it changed, and that the runner image is v17.5.3 or later."
+
+uid_count="$(printf '%s\n' "${pod_uid[@]}" | sort -u | grep -c .)"
 echo "  distinct pod UIDs: $uid_count (one per job, so no job reused another's pod)"
-awk -F'\t' '{ printf "    %s  uid %s  on %s\n", $1, $2, $4 }' "$work/pods.tsv"
+for name in "${pod_order[@]}"; do
+  printf '    %s\n      uid %s  runtime class %s  on %s\n      volumes %s\n      volumes from a Secret %s\n' \
+    "$name" "${pod_uid[$name]}" "${pod_rclass[$name]}" "${pod_node[$name]}" \
+    "${pod_vols[$name]}" "${pod_volsecrets[$name]}"
+done
+
+# The runner authentication token is in the Secret the MANAGER mounts. A job pod that mounted
+# it would put the credential inside the thing running pipeline code, which is the one place
+# this sample must keep it out of. Checked rather than asserted on the page.
+for name in "${pod_order[@]}"; do
+  case ",${pod_volsecrets[$name]}," in
+    *",$RUNNER_SECRET,"*)
+      die "job pod $name mounts Secret '$RUNNER_SECRET', which holds the runner authentication token. A job pod must not have it: pipeline code runs in there." ;;
+  esac
+done
+echo "  no job pod mounts Secret '$RUNNER_SECRET', which is where the runner authentication token is."
+
 
 [[ "$pipeline_status" == success ]] \
   || die "the pipeline finished as '$pipeline_status'. The job logs below in GitLab, and the runner manager's log, say why:
@@ -172,8 +231,14 @@ pipeline.builds.order(:id).each do |build|
   puts(build.trace.raw || '(no log)')
 end
 RUBY
-"${KCTL[@]}" exec -i -n "$NAMESPACE" "$(gitlab_pod)" \
-  -- gitlab-rails runner - < "$work/trace.rb" \
+# GitLab stores a job log with a per-line timestamp and stream marker, its own
+# section_start and section_end markers, and the runner's terminal colour codes. None of
+# that is readable here, so it is taken out: the lines, their order and their text are
+# exactly as the job printed them.
+gitlab_exec < "$work/trace.rb" \
+  | sed -E -e 's/\x1b\[[0-9;]*[A-Za-z]//g' \
+           -e 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z [0-9]{2}[A-Za-z][+]? ?//' \
+           -e '/^section_(start|end):[0-9]+:/d' \
   || die "could not read the job logs from GitLab."
 
 # ---------------------------------------------------------------------------
@@ -181,7 +246,13 @@ say "5/5 what an ordinary pod on the same node reports"
 # ---------------------------------------------------------------------------
 # The comparison only means something on the node a job pod actually ran on: a reading from
 # another node compares two unrelated machines.
-NODE_NAME="$(awk -F'\t' '$4 != "" { print $4; exit }' "$work/pods.tsv")"
+NODE_NAME=""
+for name in "${pod_order[@]}"; do
+  if [[ "${pod_node[$name]}" != "-" ]]; then
+    NODE_NAME="${pod_node[$name]}"
+    break
+  fi
+done
 [[ -n "$NODE_NAME" ]] \
   || die "none of the job pods recorded a node, so there is no node to compare against."
 echo "  the job pods ran on $NODE_NAME."

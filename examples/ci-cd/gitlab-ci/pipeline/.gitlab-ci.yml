@@ -67,5 +67,8 @@ docker-build:
     - docker build -t hello-nitro:$CI_PIPELINE_ID .
     - echo "--- docker run, of the image this build produced ---"
     - docker run --rm hello-nitro:$CI_PIPELINE_ID
-    - echo "--- and what a nested container sees: still this pod's guest ---"
+    # Quoted as a YAML string. A plain scalar holding a colon and a space is parsed as a
+    # mapping, and GitLab then refuses the whole job with "script config should be a string
+    # or a nested array of strings".
+    - 'echo "--- and what a nested container sees: the same guest kernel ---"'
     - docker run --rm public.ecr.aws/docker/library/alpine:3.24.3 sh -c 'uname -rv; ls /sys/block; id'

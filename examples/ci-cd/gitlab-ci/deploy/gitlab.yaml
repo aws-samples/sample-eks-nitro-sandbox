@@ -100,25 +100,36 @@ spec:
           ports:
             - name: http
               containerPort: 80
-          # GitLab's own readiness endpoint. The all-in-one image takes several minutes to
-          # migrate the database and start its services on a first boot, so the probe is
-          # given a long window before it starts failing the pod.
-          readinessProbe:
-            httpGet:
-              path: /-/readiness
-              port: http
-            initialDelaySeconds: 120
-            periodSeconds: 15
-            timeoutSeconds: 10
-            failureThreshold: 60
+          # GitLab's own readiness endpoint, reached from inside the container with curl
+          # rather than with an httpGet probe. GitLab serves /-/readiness, /-/liveness and
+          # /-/health only to localhost: every other source address gets 404, including the
+          # node, which is where the kubelet probes from. An httpGet probe therefore never
+          # passes, the pod never becomes Ready, its Service gets no endpoint, and the runner
+          # fails with "connection refused" against a GitLab that is up and well. Measured
+          # on this cluster: /-/readiness answered 200 on localhost and 404 from another pod
+          # at the same moment, while /explore answered 200 to both.
+          #
+          # The alternative is to add the pod's own network to GitLab's health-check address
+          # list in GITLAB_OMNIBUS_CONFIG. The exec probe is preferred here because it needs
+          # no cluster-specific CIDR, and because it asks GitLab the same question GitLab's
+          # own documentation says to ask.
+          #
+          # The startup probe is what carries the long first boot: while it runs, the
+          # readiness probe is not executed, so the readiness probe's own thresholds only
+          # have to cover a GitLab that was once up and has stopped answering.
           startupProbe:
-            httpGet:
-              path: /-/readiness
-              port: http
-            initialDelaySeconds: 120
+            exec:
+              command: ["/bin/sh", "-c", "curl -sf -o /dev/null http://localhost/-/readiness"]
+            initialDelaySeconds: 60
             periodSeconds: 15
             timeoutSeconds: 10
             failureThreshold: 80
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "curl -sf -o /dev/null http://localhost/-/readiness"]
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 4
           resources:
             # GitLab in one container runs Puma, Sidekiq, Postgres, Redis, Gitaly and nginx
             # together, so unlike most pods in these samples it is given a size: with no

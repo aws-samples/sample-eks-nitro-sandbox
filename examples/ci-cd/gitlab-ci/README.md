@@ -31,11 +31,15 @@ cd sample-eks-nitro-sandbox/examples/ci-cd/gitlab-ci
 ```
 
 Besides `kubectl`, the scripts need [`jq`](https://jqlang.github.io/jq/) to read pod JSON,
-`openssl` to generate GitLab's initial root password, `base64` and `awk`. The clean up also
-uses the AWS CLI, to confirm that the EBS volume behind GitLab's data went with its claim.
-The run on this page used `jq` 1.7.1 and AWS CLI 2.31.42. You need no GitLab account and no
-GitLab.com project: the GitLab this sample talks to is the one it installs, and the runner's
-authentication token is minted from it.
+`openssl` to generate GitLab's initial root password, and `base64` and `awk`, which carry
+values into GitLab and the token into the rendered `config.toml` without putting either on a
+command line. The clean up also uses the AWS CLI, to confirm that the EBS volume behind
+GitLab's data went with its claim. They run on `bash`, version 4 or later, for the associative
+arrays `scripts/run-pipeline.sh` keeps the job pods in. The run on this page used `kubectl`
+v1.35.0, `jq` 1.8.1, AWS CLI 2.38.0, OpenSSL 3.5.8 and `bash` 5.2.15.
+
+You need no GitLab account and no GitLab.com project: the GitLab this sample talks to is the
+one it installs, and the runner's authentication token is minted from it.
 
 Every output block on this page is from one run of this sample, after `scripts/clean.sh` had
 removed the previous one, so the run started with none of its resources present. Local names
@@ -83,9 +87,15 @@ node's. To restrict where a job pod can connect, see the
 role and no EKS Pod Identity association, so a job pod has no role to assume in your account
 and this page claims no limit from one.
 
-*Figure 1: TODO: caption from the figure*
+*Figure 1: Only the job pods are sandboxes. GitLab and the runner manager stay ordinary pods
+in `gitlab-ci-demo`, the manager creates one sandbox pod per CI job, and the runner
+authentication token stays with the manager.*
 
-![TODO: alt text from the figure](images/architecture.png)
+![Outside AWS sits the operator's machine, which reaches the cluster only with kubectl port-forward on 8080, and its arrow in is labelled the only way in. Inside the AWS Cloud, an Amazon EKS cluster holds the namespace gitlab-ci-demo. Along the top of that namespace are the long-lived ordinary pods: a ClusterIP Service gitlab, which the operator's arrow reaches and which selects pod gitlab, GitLab CE in one container, and pod gitlab mounts an Amazon EBS volume holding 30Gi of GitLab data. To their right, a Kubernetes Secret holding the runner token has an arrow labelled mounted by the manager running to pod gitlab-runner, the runner manager, which has no runtime class. An arrow from the runner manager down into the namespace is labelled one pod per CI job. Below sit two Nitro sandbox pods framed in red, each carrying runtimeClassName isolated-sandbox and the note one per CI job, deleted when the job ends. The first holds the sandbox-evidence container, the ordinary job. The second holds the docker-build build container beside a docker:dind container that is privileged in the guest. An arrow from each sandbox pod runs back to the Service gitlab, labelled clone and report status, because a job pod uses the in-cluster Service address, and an arrow from each runs out to Amazon ECR Public for base images, labelled pull base images. Below both sandbox pods, inside the cluster, is the shared EC2 node, whose kernel is never the job pod's. A note under the figure says that the sandbox is the boundary: the Docker daemon the docker-build job starts is privileged over its own job pod's guest kernel, never over the shared node's, the runner authentication token stays in the manager and no job pod mounts the Secret, and GitLab has no Ingress, LoadBalancer or NodePort, so the only way in is kubectl port-forward.](images/architecture.png)
+
+The two sandbox pods are side by side in the figure because that is what the runner does with
+them, one per job. In this pipeline the two jobs are in two stages, so they run one after the
+other, and the two pods overlap only while the first is being deleted.
 
 ## Versions
 
@@ -149,6 +159,14 @@ The namespace is created only when it is absent, and is labelled `ManagedBy=gitl
 namespace of that name that exists without the label is refused, because on a shared cluster
 it is someone else's. Every later script checks that one label before it writes anything, and
 the clean up checks it before it deletes anything.
+
+**This sample installs nothing shared, and needs no controller or operator.** Unlike the
+GitHub Actions sample, which needs one Actions Runner Controller for the whole cluster, GitLab
+Runner with the Kubernetes executor is a plain Deployment with a namespaced `Role`: both
+GitLab and the runner manager are this sample's own objects, in this sample's own namespace.
+The one shared thing it relies on is the cluster's EBS CSI driver, which EKS Auto Mode
+provides, and it is used exactly as it is: the script chooses a class, never creates or
+changes one.
 
 The StorageClass is chosen here and never changed. With `STORAGE_CLASS` unset the script
 takes the cluster's default class and checks its provisioner is the EKS Auto Mode EBS CSI
@@ -328,7 +346,19 @@ TODO: output from the fresh run
 The kernel **version** can be the same on both sides, so the version string is not the
 evidence. What is: the kernel **build** differs, the job pod's uptime is its own age rather
 than the node's, and the job pod's disks are `vd*` virtio devices where the ordinary pod sees
-the instance's `nvme*` disks.
+the instance's `nvme*` disks. The product name is a fourth reading in the same direction: the
+job pod reads the VM in its sandbox, the ordinary pod reads the EC2 instance type.
+
+The job also prints `id`, and the UID that prints is worth being exact about. It is the UID of
+the **job script's own process, in the build container of the job pod**, which is UID 0
+because this sample sets no `securityContext` and the job's image runs as root. That says
+nothing about any other container of the pod, each of which has its own image and its own
+`USER`. Both job pods are scheduled on a shared EC2 node, and that root is root inside the
+pod's own guest kernel.
+
+The two job pods do not have to land on the same node, and in this run they did not. The
+script creates the comparison pod on the node the first job pod it saw was scheduled on, and
+names that node in its output, so the two readings being compared come from one machine.
 
 ## Step 5: The privileged `docker build`, contained to the job's own sandbox
 
@@ -390,17 +420,18 @@ sample is cluster-scoped.
 ### Where the token is, and where it is not
 
 The token is in one place, Secret `gitlab-runner-config`, mounted into the manager. The job
-pods do not get it. You can read that off the running job pod's own spec while a job is in
-flight, by the names of what it mounts rather than by any value:
-
-```bash
-kubectl --context <CLUSTER_NAME> -n gitlab-ci-demo get pod -l app=gitlab-ci-job \
-  -o jsonpath='{range .items[*]}{.metadata.name}{"\n  volumes: "}{.spec.volumes[*].name}{"\n  vol secrets: "}{.spec.volumes[*].secret.secretName}{"\n"}{end}'
-```
+pods do not get it, and that is read off each job pod's own spec while its job is in flight,
+by the names of what it mounts rather than by any value. A job pod is deleted when its job
+ends, so there is nothing left to read afterwards: `scripts/run-pipeline.sh` records it during
+the watch and prints it with the pod table in Step 3, and refuses the run if any job pod
+mounted that Secret. These are the lines from that output:
 
 ```text
 TODO: output from the fresh run
 ```
+
+`kube-api-access-*` is the ServiceAccount token every pod gets by default, not this sample's
+Secret. What the job pods mount is the runner's own `/builds` and script volumes.
 
 ## Good to know
 
@@ -434,6 +465,29 @@ TODO: output from the fresh run
 - **A first `FailedMount` on a brand-new node is not a failure.** When Karpenter has just
   provisioned the node GitLab lands on, the first attach can report `FailedMount` and then
   succeed within seconds. It is worth waiting through before reading it as a problem.
+- **GitLab's own health endpoints answer only on localhost, which breaks an `httpGet` probe.**
+  `/-/readiness`, `/-/liveness` and `/-/health` return 404 to every source address but
+  localhost, and the kubelet probes from the node. An `httpGet` readiness probe on
+  `/-/readiness` therefore never passes: the pod stays `0/1 Running` with no error anywhere,
+  its Service gets no endpoint, and the runner reports `connection refused` against a GitLab
+  that is up and healthy. Measured on this cluster: `/-/readiness` answered 200 on localhost
+  and 404 from another pod at the same moment, while `/explore` answered 200 to both.
+  [`deploy/gitlab.yaml`](deploy/gitlab.yaml) therefore uses an `exec` probe that curls
+  localhost inside the container. The other way out is to add the pod's own network to
+  GitLab's health-check address list, which needs a CIDR for your cluster; the `exec` probe
+  needs nothing cluster-specific and asks GitLab the same question.
+- **Nginx inside the GitLab container must not be put on 8080.** GitLab's Puma binds
+  `127.0.0.1:8080` itself, so nginx fails to start with
+  `Address already in use - bind(2) for "127.0.0.1" port 8080` and keeps restarting.
+  `deploy/gitlab.yaml` leaves nginx on GitLab's own port 80 in the container and uses
+  `nginx['listen_port']` to keep `external_url` at the forwarded `localhost:8080`, which is
+  what that setting is for.
+- **A `script:` line in `.gitlab-ci.yml` that holds a colon and a space is parsed as a
+  mapping.** GitLab then refuses the whole job with `jobs:<name>:script config should be a
+  string or a nested array of strings up to 10 levels deep`, which does not mention YAML or
+  point at the line. The one line in
+  [`pipeline/.gitlab-ci.yml`](pipeline/.gitlab-ci.yml) that needs a colon is quoted for that
+  reason.
 
 ## Clean up
 

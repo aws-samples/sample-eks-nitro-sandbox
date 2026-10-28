@@ -67,24 +67,30 @@ require_namespace() {
     || die "namespace '$NAMESPACE' is not labelled $LABEL_KEY=$LABEL_VALUE (found: ${owner:-none}), so it is not this sample's. Set NAMESPACE in .env to a name this sample owns."
 }
 
-# The GitLab pod, by name. Used by the scripts that run an administration command in it.
-gitlab_pod() {
-  local pod
-  pod="$("${KCTL[@]}" get pod -n "$NAMESPACE" -l app=gitlab \
-    -o jsonpath='{range .items[?(@.metadata.deletionTimestamp=="")]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
-    | head -n 1)" \
-    || die "could not list the GitLab pod in '$NAMESPACE'."
-  [[ -n "$pod" ]] \
-    || die "no GitLab pod is running in '$NAMESPACE'. Run scripts/setup.sh first."
-  printf '%s\n' "$pod"
-}
-
 # Run a Ruby script on GitLab's own Rails console, with the script on standard input.
 #
 # This is how the scripts do what the page's reader does in the web UI: create the project,
 # commit the pipeline, mint the runner authentication token, start a pipeline and read a job
 # log. The script is piped in rather than passed as an argument, so nothing it contains ever
-# reaches a command line.
-gitlab_rails() {
-  "${KCTL[@]}" exec -i -n "$NAMESPACE" "$(gitlab_pod)" -- gitlab-rails runner -
+# reaches a command line, and `kubectl exec` has no way to set an environment variable in the
+# container anyway.
+#
+# It returns non-zero rather than calling die, and the pod is resolved on every call. Both
+# matter: a caller runs this inside `$(...)`, where die would exit only the subshell and
+# leave the script running with an empty result, and run-pipeline.sh calls it repeatedly over
+# many minutes, during which GitLab's pod could be replaced and its name go stale.
+#
+# A pod with a deletionTimestamp is not used: a pod being replaced keeps reporting the
+# Running phase while it shuts down, so a `--field-selector` on the phase alone would pick it.
+gitlab_exec() {
+  local pod
+  pod="$("${KCTL[@]}" get pod -n "$NAMESPACE" -l app=gitlab -o json 2>/dev/null \
+    | jq -r '[(.items // [])[] | select(.metadata.deletionTimestamp == null)
+              | select(.status.phase == "Running")] | .[0].metadata.name // ""' 2>/dev/null)" \
+    || return 1
+  if [[ -z "$pod" ]]; then
+    echo "no GitLab pod is Running in namespace '$NAMESPACE'. Run scripts/setup.sh first." >&2
+    return 1
+  fi
+  "${KCTL[@]}" exec -i -n "$NAMESPACE" "$pod" -- gitlab-rails runner -
 }
