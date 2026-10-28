@@ -61,11 +61,16 @@ BEDROCK_MODEL_ID="${BEDROCK_MODEL_ID:-global.anthropic.claude-sonnet-4-5-2025092
 # shellcheck source=../../analyst/scripts/analyst-lib.sh
 . "$SECTION_DIR/analyst/scripts/analyst-lib.sh"
 
+# The preflight runs before the run record is touched. It creates nothing, so a run that
+# stops in it has changed nothing, and truncating the record first would have thrown away
+# the names an earlier run's clean up still needs: bucket, role, repositories, namespace.
+# A missing credential or an unreachable model would have cost you the only record of what
+# was left behind.
+analyst_preflight
+
 : > "$STATE_FILE"
 state_put SAMPLE "$SAMPLE"
 state_put NAMESPACE "$NAMESPACE"
-
-analyst_preflight
 
 # These names carry the account id, so they are computed after the preflight read it and
 # are overridable in .env for a second run beside the first.

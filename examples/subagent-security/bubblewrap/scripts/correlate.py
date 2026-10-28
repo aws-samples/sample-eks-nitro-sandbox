@@ -36,12 +36,26 @@ def main(evidence_path, log_path):
             if not line.strip():
                 continue
             entry = json.loads(line)
-            if entry["request_id"].startswith(run_id):
+            # run_id + "-" rather than run_id, so the boundary is the separator the
+            # controller actually puts between the run id and the suffix, and a different
+            # run whose id merely starts with this one's cannot be counted in.
+            if entry["request_id"].startswith(run_id + "-"):
                 arrived[entry["request_id"]] += 1
                 seen[entry["request_id"]] = (entry["method"], entry["path"])
 
     problems = []
     expected = [r for r in recorded if r["authenticated"]]
+    # Each expected request is checked against the count for its own id, so two recorded
+    # requests sharing an id would both be satisfied by one upstream arrival. The
+    # controller gives every call a distinct suffix, so this is not reachable through it,
+    # but the correlation is the independent half of the evidence and it should not depend
+    # on the thing it is checking to be well formed.
+    duplicates = sorted(id for id, n in Counter(
+        r["request_id"] for r in recorded).items() if n > 1)
+    if duplicates:
+        problems.append("the run recorded the same request id more than once "
+                        f"({duplicates}), so one upstream arrival could satisfy two of "
+                        "them")
     for request in expected:
         count = arrived[request["request_id"]]
         if count != 1:
