@@ -49,7 +49,6 @@ for arg in "$@"; do
   esac
 done
 
-mkdir -p "$TMP_DIR"
 if [[ -f "$SAMPLE_DIR/.env" ]]; then set -a; . "$SAMPLE_DIR/.env"; set +a; fi
 
 CLUSTER_NAME="${CLUSTER_NAME:-}"
@@ -85,26 +84,26 @@ ANALYST_REPOSITORY="pod-isolation/subagent-analyst-$SAMPLE"
 # It is also why the record is touched here and not earlier: everything above creates
 # nothing, so a run that stops above this line leaves both the account and the record
 # exactly as it found them.
-# There is no check here that the record names the same resources as this run, and that
-# is deliberate. One was added, and three review rounds then found six defects in it: it
-# did not compare the Region, the cluster or the context; an absent key and an empty value
-# were treated alike; an empty KUBE_CONTEXT does not identify the context a run actually
-# used; the account id was not compared either; and the sed that read the record discarded
-# its own exit status. Each fix made it longer and the next round found the next gap, which
-# is the shape AGENTS.md names: a check that grew because each round bolted another on,
-# defending a local scratch file nobody will hand-edit.
+# One run's record at a time, and this refuses rather than comparing. It is the fourth
+# shape this check has had and the first that cannot be got wrong: there is nothing to
+# parse, no key to enumerate and no value to compare, so the six defects the comparing
+# versions had across review rounds 9 to 11 have no equivalent here.
 #
-# What a lost record can actually cost is bounded, and by something already here rather
-# than by anything in this file. clean.sh deletes an AWS resource only when it carries
-# ManagedBy=bubblewrap and touches a namespace only when it carries this sample's
-# managed-by label, so a missing or stale record cannot make it delete the wrong thing. It
-# can only make the clean up incomplete, which it reports as INCOMPLETE and exits non-zero
-# for. If you change a name in .env, finish the previous run with
-# ./scripts/clean.sh --delete-aws first.
+# Why it has to be a refusal and not an overwrite, which is the reasoning I had wrong: the
+# record is the only place the names of what a run created are written down, and clean.sh's
+# ownership checks do not make losing it safe. Every copy of this sample marks its
+# resources ManagedBy=bubblewrap and labels its namespace the same way, so those checks
+# stop a foreign resource and not another copy's. The path .env.example invites, changing
+# BUCKET and ROLE_NAME to run a second copy, would therefore have replaced the first
+# copy's record and left its resources with nothing pointing at them, and a later clean up
+# could have reported "already gone" for names that were never created and exited zero.
 #
-# What is kept from that round is the ordering, which is the part that was free: nothing
-# above this line creates anything, so a run that stops above it leaves the account, the
-# cluster and the record as it found them.
+# Everything above this line reads and creates nothing, so a run that stops above it leaves
+# the account, the cluster and the record exactly as it found them.
+mkdir -p "$TMP_DIR"
+[[ ! -e "$STATE_FILE" ]] ||
+  die "a run record already exists at $STATE_FILE, so an earlier run's resources are still named only there. Finish that run with ./scripts/clean.sh --delete-aws, or remove $TMP_DIR yourself if you mean to keep its AWS resources; created and changed nothing."
+
 : > "$STATE_FILE"
 state_put SAMPLE "$SAMPLE"
 state_put NAMESPACE "$NAMESPACE"
