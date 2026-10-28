@@ -909,9 +909,10 @@ PASS the evidence and the report were scanned for the supplier key before being 
 PASS and so was every one of the 10 files left in the pod for this run, read off the disk after the last write: calls.json, checks.json, evaluator/in/facts.json, evidence.json, reader/in/case.json, recommendation.md, writer/in/comparison.json, writer/in/private.json, writer/out/comparison.json, writer/out/draft.txt
 ```
 
-The first runs over exactly the bytes that are about to be written, and then writes those
-bytes, so neither document reaches the disk if the key is in it. The second reads back, off
-the disk, every file left in the pod for this run and names them: the two documents, the record of every call, the facts staged for the
+The first takes each document's bytes, looks for the key's bytes in each one separately,
+and then writes those same byte objects, so neither document reaches the disk if the key is
+in it. The second reads back, off the disk, every file left in the pod for this run and
+names them: the two documents, the record of every call, the facts staged for the
 evaluator, the comparison staged for the writer and each role's output. That is more than
 `run.sh` copies out, which is `recommendation.md`, `evidence.json`, `checks.json` and
 `calls.json`; the rest stay in the pod until the clean up deletes it, and they are scanned
@@ -928,10 +929,12 @@ sentence true rather than nearly true.
 - **The count comes from the traversal that did the scanning**, not from a second walk. Two
   walks can see two different sets of files, and then "every one of the N files" is a
   sentence about two different Ns.
-- **It looks for the literal key, in bytes.** Not a decoded string, so a file that is not
-  text is scanned the same way; and not an encoded, hashed or split form of the key, which
-  it would not find. A read it cannot perform raises rather than being skipped, because a
-  scan that could not read a candidate must not report success.
+- **It looks for the literal key, in bytes.** The key is encoded once, at the top, and
+  both scans and every write use that one byte sequence, so nothing encodes or decodes in
+  between and a file that is not text is scanned the same way as one that is. What it would
+  not find is an encoded, hashed or split form of the key, and it says nothing about
+  anything outside the run's directory. A read it cannot perform raises rather than being
+  skipped, because a scan that could not read a candidate must not report success.
 
 Either scan raises rather than recording a flag, so the line after it is the result. The
 second line is the one thing not inside the files it covers, because it is the result of

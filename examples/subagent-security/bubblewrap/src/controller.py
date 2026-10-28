@@ -112,11 +112,11 @@ def no_capabilities(fields) -> bool:
     return all(int(fields[name], 16) == 0 for name in CAPABILITY_SETS)
 
 
-def scan_files(root: Path, secret: str):
-    """Scan every file under root for secret. Returns (scanned, holding).
+def scan_files(root: Path, needle: bytes):
+    """Scan every file under root for the bytes in needle. Returns (scanned, holding).
 
     Both lists come from **one** traversal, as paths relative to root: `scanned` is every
-    file it read, `holding` the ones whose bytes contain the secret. One traversal because
+    file it read, `holding` the ones whose bytes contain the needle. One traversal because
     a second one to count what the first scanned would be counting a different set: a file
     can be written, removed or changed in between, and then "every one of the N files was
     scanned" is a sentence about two different Ns.
@@ -124,18 +124,17 @@ def scan_files(root: Path, secret: str):
     A function returning its findings rather than a check that raises, so it can be run
     against a tree that must come back empty and a tree that must not.
 
-    The comparison is on bytes, not on decoded text. The secret is encoded once and looked
-    for in each file's bytes, so there is no decoding step that could alter what is
-    searched, and a file that is not text is scanned exactly like one that is.
+    The comparison is on bytes, and the caller encodes the secret once and passes those
+    bytes in rather than the string. So nothing encodes or decodes between the scan and a
+    write, and a file that is not text is scanned exactly like one that is.
 
     What this does and does not cover is worth being exact about, because the claim rests
-    on it. It covers the literal secret, contiguous, in any file under root that it can
-    read. It does not cover an encoded, encrypted, hashed or split representation of the
-    secret, and it says nothing about a file outside root or about standard output. A read
-    that fails raises rather than being skipped: a scan that could not read a candidate
-    must not report success.
+    on it. It covers the literal bytes, contiguous, in any file under root that it can
+    read. It does not cover an encoded, encrypted, hashed or split representation of them,
+    and it says nothing about a file outside root or about standard output. A read that
+    fails raises rather than being skipped: a scan that could not read a candidate must
+    not report success.
     """
-    needle = secret.encode()
     scanned, holding = [], []
     for path in sorted(root.rglob("*")):
         if not path.is_file():
@@ -598,12 +597,17 @@ class Run:
 
     def save(self, s3, case, comparison, payload):
         report = render_report(payload, case)
+        # Encoded once, here, and these are the bytes that go to S3, that get scanned and
+        # that get written to disk. Encoding at each use would mean the scan and the write
+        # were looking at two byte sequences that happen to agree, which is not the same
+        # claim as looking at one.
+        report_bytes = report.encode()
         prefix = f"reports/{CASE}/{self.id}"
-        for name, body in (("recommendation.md", report),
-                           ("comparison.json", json.dumps(comparison, indent=2))):
-            s3.put_object(Bucket=BUCKET, Key=f"{prefix}/{name}", Body=body.encode())
-            stored = s3.get_object(Bucket=BUCKET,
-                                   Key=f"{prefix}/{name}")["Body"].read().decode()
+        for name, body in (("recommendation.md", report_bytes),
+                           ("comparison.json",
+                            json.dumps(comparison, indent=2).encode())):
+            s3.put_object(Bucket=BUCKET, Key=f"{prefix}/{name}", Body=body)
+            stored = s3.get_object(Bucket=BUCKET, Key=f"{prefix}/{name}")["Body"].read()
             self.check(f"the report object round-trips through S3: {name}", stored == body)
 
         evidence = {
@@ -623,23 +627,29 @@ class Run:
             # one check should look like in the source.
             "checks": list(self.checks), "calls": self.calls,
         }
-        secret = Path(SUPPLIER_KEY_FILE).read_text().strip()
+        needle = Path(SUPPLIER_KEY_FILE).read_text().strip().encode()
         # Two scans. The first is in memory, over exactly the bytes that are about to be
         # written, and the second reads the disk after the last write.
         #
-        # "Exactly the bytes" is load-bearing. An earlier version serialised the evidence,
-        # scanned that string, then appended a check and serialised again before writing,
-        # so the bytes written were a superset of the bytes scanned and the claim about
-        # them was false. What is serialised here is what is written, unchanged.
+        # "Exactly the bytes" is load-bearing, and two earlier versions got it wrong in
+        # different ways. One serialised the evidence, scanned that string, then appended
+        # a check and serialised again before writing, so the bytes written were a
+        # superset of the bytes scanned. The next scanned the two documents as one
+        # concatenated string and then let write_text() encode them again: a key split
+        # across the join read as a finding in neither file, which is at least
+        # fail-closed, but the bytes scanned were still not the bytes written.
+        #
+        # So: encode once, scan each document's bytes on its own, and write those same
+        # byte objects.
         #
         # Enforced by raising, not by recording a flag computed from the key's contents:
         # reaching the line after the raise IS the result, so that is what gets recorded.
-        serialised = json.dumps(evidence, indent=2)
-        if secret in serialised + report:
+        evidence_bytes = json.dumps(evidence, indent=2).encode()
+        if needle in evidence_bytes or needle in report_bytes:
             raise AssertionError(
                 "the supplier key appears in the evidence or the report; nothing written")
-        (self.root / "evidence.json").write_text(serialised)
-        (self.root / "recommendation.md").write_text(report)
+        (self.root / "evidence.json").write_bytes(evidence_bytes)
+        (self.root / "recommendation.md").write_bytes(report_bytes)
         self.check("the evidence and the report were scanned for the supplier key before "
                    "being written, and the run was stopped if it appeared", True)
 
@@ -649,9 +659,9 @@ class Run:
         # scan may touch the filesystem, and an earlier version wrote this file again from
         # a handler, which made the run's very last write the one write the scan had not
         # seen.
-        (self.root / "checks.json").write_text(json.dumps(self.checks, indent=2))
+        (self.root / "checks.json").write_bytes(json.dumps(self.checks, indent=2).encode())
 
-        scanned, holding = scan_files(self.root, secret)
+        scanned, holding = scan_files(self.root, needle)
         if holding:
             raise AssertionError(
                 f"the supplier key appears in {holding}, under this run's directory")
