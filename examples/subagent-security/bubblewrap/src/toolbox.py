@@ -37,9 +37,13 @@ import worker
 CLONE_NEWUSER = 0x10000000
 NAMESPACE_KINDS = ("user", "pid", "net", "ipc", "uts", "mnt", "cgroup")
 
-# /proc/self/status lines worth reporting. The four capability sets are reported together
-# because they say different things: CapEff is what the process can use now, CapPrm what
-# it may put into CapEff, and CapBnd the ceiling on both for it and anything it execs.
+# /proc/self/status lines worth reporting. All five capability sets are reported, because
+# they say different things and "no capabilities" is a statement about all of them: CapEff
+# is what the process can use now, CapPrm what it may move into CapEff, CapInh and CapAmb
+# what it passes across an exec, and CapBnd the ceiling on what it or anything it execs
+# can *acquire*. CapBnd is not a statement about the current sets: an empty bounding set
+# beside a non-empty permitted set is a coherent state, so the controller checks each set
+# rather than reading one off another.
 # Seccomp_filters is the number of filters loaded, which is how stacking is visible
 # directly rather than inferred from a refusal.
 STATUS_FIELDS = ("Uid", "Gid", "CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb",
@@ -92,26 +96,45 @@ def probe_status(args):
 def probe_read_file(args):
     """Open one path for reading. Both directions of the read boundary go through here.
 
-    The inode is reported on success so that the controller can show the file the child
-    read through /input is its own file, rather than a copy that happens to match. That
-    is what makes the read-only refusal attributable to the bind mount: same inode, same
-    UID, writable on one side of the mount and EROFS on the other.
+    Only the open is inside the try, and that is deliberate. Every refusal this probe is
+    named for happens at the open: ENOENT for a path the mount list does not contain,
+    EACCES for one the mode refuses. Anything that goes wrong *after* a successful open is
+    not a refusal, it is a fault, and it has to raise so that the run fails instead of
+    recording it as the boundary working. An earlier version had the read and the stat()
+    inside the try as well, so a file that opened and then failed to read came back as
+    though the read had been refused.
+
+    The device and inode are reported on success, from the open descriptor rather than by
+    re-resolving the path, so that the controller can show the file the child read through
+    /input is its own file and not a copy that happens to match. Both numbers, because an
+    inode number is unique only within one filesystem. That identity is what makes the
+    read-only refusal attributable to the bind mount: the same file, the same UID,
+    writable on one side of the mount and EROFS on the other.
     """
-    path = Path(args[0])
     try:
-        text = path.read_text()
-        return {"text": text, "inode": path.stat().st_ino}
+        handle = Path(args[0]).open("rb")
     except OSError as error:
         return failure(error)
+    with handle:
+        text = handle.read().decode()
+        identity = os.fstat(handle.fileno())
+    return {"text": text, "device": identity.st_dev, "inode": identity.st_ino}
 
 
 def probe_write_file(args):
-    """Write one path. Both directions of the write boundary go through here."""
+    """Write one path. Both directions of the write boundary go through here.
+
+    As above, only the open is inside the try: EROFS on a read-only bind mount and EACCES
+    on a mode that refuses both happen there. A write that fails after the file is open is
+    a fault and raises.
+    """
     path, text = Path(args[0]), args[1]
     try:
-        path.write_text(text)
+        handle = path.open("w")
     except OSError as error:
         return failure(error)
+    with handle:
+        handle.write(text)
     return {"written": str(path)}
 
 

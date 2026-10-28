@@ -92,6 +92,38 @@ EXPECTED_CHILD_ENV = sorted({name for name, _ in CHILD_ENVIRONMENT} | {"PWD"})
 # stack, not that these particular calls are dangerous.
 STACKED = ("getppid", "uname")
 
+# The five capability sets /proc/<pid>/status reports. "No capabilities at all" means all
+# five are empty, so the check names all five rather than inferring the rest from CapBnd:
+# the bounding set is the ceiling on what can be *acquired* across an exec, and says
+# nothing about what the process holds now.
+CAPABILITY_SETS = ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")
+
+
+def no_capabilities(fields) -> bool:
+    """True when every capability set in a /proc/<pid>/status reading is empty.
+
+    A named function rather than a condition written inline, so that it can be run
+    against readings it must accept and readings it must reject without copying it. The
+    controller's own reading inside the privileged container is the rejecting case: its
+    CapBnd is the whole set while its CapEff and CapPrm are empty, which is exactly the
+    state an inline "CapEff and CapBnd are zero" check used to accept as "no capabilities
+    at all".
+    """
+    return all(int(fields[name], 16) == 0 for name in CAPABILITY_SETS)
+
+
+def same_file(reported, actual) -> bool:
+    """True when a child's (device, inode) reading names the file the controller holds.
+
+    Both numbers, because an inode number is unique only within one filesystem: two equal
+    inode numbers on different devices are different files, and comparing the inode alone
+    would have accepted that pair. A named function for the same reason as the one above,
+    so the comparison can be run against a reading it must accept and one it must reject.
+    The rejecting reading is a device-only difference, which no two files in this sample
+    can produce, so it is a case the sample cannot otherwise reach.
+    """
+    return (reported["device"], reported["inode"]) == (actual.st_dev, actual.st_ino)
+
 # A nested user namespace can be refused in more than one way, and which one depends on
 # how the kernel reports an exhausted limit. --disable-userns works by setting the
 # child's own limit to zero, so ENOSPC is the usual answer; the run records the one it
@@ -253,10 +285,14 @@ class Run:
         self.check("the tool process runs as UID/GID 1000, mapped alone in its own user "
                    f"namespace: uid_map {' '.join(child['uid_map'])}",
                    child["uid"] == 1000 and child["gid"] == 1000)
-        self.check(f"the tool process has no capabilities at all: CapEff "
-                   f"{fields['CapEff']} and the bounding set CapBnd {fields['CapBnd']} "
-                   "are both empty",
-                   int(fields["CapEff"], 16) == 0 and int(fields["CapBnd"], 16) == 0)
+        # All five sets, because "no capabilities at all" is a statement about all of
+        # them. An empty bounding set says what the process may *acquire* across an exec
+        # and nothing about what it holds now, so reading one off the other would leave
+        # the page's wording broader than the check.
+        self.check("the tool process has no capabilities at all: "
+                   + ", ".join(f"{name} {fields[name]}" for name in CAPABILITY_SETS)
+                   + " are all empty",
+                   no_capabilities(fields))
         self.check("the tool process cannot gain privilege through exec: NoNewPrivs is "
                    f"{fields['NoNewPrivs']}", fields["NoNewPrivs"] == "1")
         self.check("the tool process runs under one seccomp filter, the baseline this "
@@ -333,6 +369,11 @@ class Run:
         """The read and write boundary, each direction, each refusal with its control."""
         case_path = self.root / "reader/in/case.json"
         case_path.write_text(json.dumps(case))
+        # The controller's own identity for that file, from an open descriptor, so the
+        # comparison below is between two fstat readings of a file each side has open
+        # rather than between two path lookups.
+        with case_path.open("rb") as handle:
+            identity = os.fstat(handle.fileno())
 
         # Accept, and real work: the shared worker reads the case it was assigned.
         self.check("the reader reads its assigned case at /input/case.json",
@@ -342,8 +383,12 @@ class Run:
         opened = self.call("reader", "read-file", "/input/case.json")
         self.check("the reader's own read probe opens the same file",
                    json.loads(opened["text"]) == case)
-        self.check("and /input/case.json is the controller's own file, inode "
-                   f"{opened['inode']}", opened["inode"] == case_path.stat().st_ino)
+        # Device and inode, not the inode alone: an inode number is unique only within
+        # one filesystem, so two equal inode numbers on different devices are different
+        # files and would have satisfied the earlier version of this check.
+        self.check("and /input/case.json is the controller's own file, device "
+                   f"{opened['device']} inode {opened['inode']}",
+                   same_file(opened, identity))
 
         # The control for EROFS: the same file, the same inode, the same UID, written by
         # the controller without changing a byte of it.
@@ -428,19 +473,27 @@ class Run:
                            self.refused(refusal, errno.EPERM))
 
     def network_boundary(self):
-        """No route for the tool, and the same address reached by the controller."""
+        """No route for any tool process, and the same address reached by the controller.
+
+        All three roles, not one. The launcher builds the same namespace list for each of
+        them, so one reading would be a fair inference, but the page and its figure say
+        "a tool process" rather than "the reader", and a claim about three processes is
+        worth measuring three times rather than inferring from shared code.
+        """
         address = urlsplit(API)
         ip = socket.gethostbyname(address.hostname)
         with socket.create_connection((ip, address.port), timeout=10):
             reachable = True
         self.check("the controller reaches the supplier API's own address and port",
                    reachable)
-        self.check("the tool process's interface list is loopback alone: "
-                   f"{self.child['interfaces']}", self.child["interfaces"] == ["lo"])
-        refusal = self.call("reader", "connect-to", ip, address.port)
-        self.check("so a tool process has no route to that same address: "
-                   f"{refusal.get('error')}",
-                   self.refused(refusal, errno.ENETUNREACH))
+        for role in ROLES:
+            child = self.child if role == "reader" else self.call(role, "inspect")
+            self.check(f"the {role}'s interface list is loopback alone: "
+                       f"{child['interfaces']}", child["interfaces"] == ["lo"])
+            refusal = self.call(role, "connect-to", ip, address.port)
+            self.check(f"so the {role} has no route to that same address: "
+                       f"{refusal.get('error')}",
+                       self.refused(refusal, errno.ENETUNREACH))
 
     def supplier_calls(self):
         """Every supplier call in this sample is the controller's own."""

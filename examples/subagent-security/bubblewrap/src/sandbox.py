@@ -113,8 +113,10 @@ def run(workspace, action, *arguments, extra=(), fds=(), disable_userns=True,
         does not get to look like a denial.
       * The child printed exactly one result line. The shared worker prints one and only
         one, so zero lines or two mean something else wrote to stdout.
-      * bwrap's own JSON status reports the child exiting zero. That comes from bwrap
-        rather than from the child's own output.
+      * bwrap's own JSON status carries exactly one child exit record and it is zero.
+        That comes from bwrap rather than from the child's own output. Exactly one, not
+        "one of them was zero": a status holding both a zero and a non-zero exit is not a
+        successful call, and reading it with any() would have called it one.
     """
     with tempfile.TemporaryFile() as status, compiled_filter() as baseline:
         args = command(workspace, extra=extra, disable_userns=disable_userns)
@@ -142,9 +144,10 @@ def run(workspace, action, *arguments, extra=(), fds=(), disable_userns=True,
     if len(results) != 1:
         raise RuntimeError(f"bwrap {action} printed {len(results)} result lines, "
                            f"expected 1: {completed.stdout[-1600:]}")
-    if not any(record.get("exit-code") == 0 for record in records):
-        raise RuntimeError(f"bwrap reported no successful child exit for {action}: "
-                           f"{records}")
+    exits = [record["exit-code"] for record in records if "exit-code" in record]
+    if exits != [0]:
+        raise RuntimeError(f"bwrap reported {exits or 'no'} child exit code(s) for "
+                           f"{action}, expected exactly one and zero: {records}")
     return {"result": json.loads(results[0]), "status": records}
 
 

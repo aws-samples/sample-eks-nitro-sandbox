@@ -77,7 +77,11 @@ sandbox.
   model explains it, and two gates check the model's own choice and its citations before the
   recommendation is accepted.
 
-TODO: output from the fresh run
+*Figure 1: The two boundaries around the analyst. The Nitro sandbox holds the whole pod,
+including the supplier key and the AWS credentials; inside it, bubblewrap's boundary is the
+argument list the trusted controller assembles around each tool process it starts.*
+
+![An AWS Cloud frame holds an Amazon EKS cluster frame. Inside the cluster, a red Nitro sandbox frame labelled runtimeClassName colon isolated-sandbox contains an Analyst pod box. In that box a trusted controller sits on the left, described as owning AWS and the supplier key and as assembling every bwrap argument, with three arrows running right, labelled starts with bwrap, to three container icons: a Reader, an Evaluator and a Writer, each carrying the same sub line, own mounts and only lo. One solid arrow leaves the trusted controller, passes out of the Analyst pod box and out of the sandbox frame, and reaches a Supplier API icon in a separate Supplier API pod box, marked an ordinary pod and ClusterIP only; it is labelled TLS and the real key, because the controller makes every supplier call itself and no tool process makes any. A red dashed arrow runs from the Writer to that same Supplier API, labelled no route colon ENETUNREACH, which is the probe in which a tool process's own connection to that address failed while the controller reached the same address and port. Two more arrows leave the trusted controller on its left side, pass below every frame and reach Amazon Bedrock, for the model turn, and Amazon S3, holding the proposals and reports; both are labelled EKS Pod Identity, and no arrow to either service starts at a tool process. Every refusal on the figure starts at a tool process: nothing in this sample restricts the pod's own egress, so no frame encloses the pod's network and no path out of the pod or out of the controller is shown being refused.](images/subagent-security-bubblewrap.png)
 
 ## Versions
 
@@ -509,10 +513,12 @@ use: a non-root `exec` starts with an empty permitted set, so `CapPrm` and `CapE
 both zero. The three readings after that are the cost, and the run reports them rather
 than asserting them.
 
-- **`CapBnd` is everything.** The bounding set is the ceiling, so although the controller
-  holds nothing now, a setuid binary in the image could put a capability back. The tool
-  processes have no such ceiling: `--cap-drop ALL` empties their bounding set too, which
-  the next block shows.
+- **`CapBnd` is everything.** The bounding set is the ceiling on what this process or
+  anything it execs can *acquire*; it says nothing about what the process holds now, which
+  is why the run reads the sets separately rather than one off the other. What it means
+  here is that although the controller holds nothing, a setuid binary in the image could
+  put a capability into play. The tool processes have no such ceiling: `--cap-drop ALL`
+  empties their bounding set too, which the next block shows.
 - **`NoNewPrivs` is 0.** `privileged: true` cannot be combined with
   `allowPrivilegeEscalation: false`, which is the setting that would raise it.
 - **`Seccomp` is 0**, so no filter applies to the controller. This pod does not set
@@ -528,9 +534,13 @@ PASS the tool process cannot gain privilege through exec: NoNewPrivs is 1
 PASS the tool process runs under one seccomp filter, the baseline this application compiled: Seccomp mode 2, Seccomp_filters 1
 ```
 
-`uid_map 1000 0 1` is the single-identity mapping `bwrap` sets up: one UID is mapped, and it
-is 1000. `CapBnd` is empty as well as `CapEff`, which is stronger than dropping the
-effective set alone: there is no capability for the child or anything it runs to put back.
+`uid_map 1000 0 1` is the single-identity mapping `bwrap` sets up: one UID is mapped, and
+it is 1000. All five capability sets are read, and all five are empty. That matters because
+they say different things: `CapEff` is what the process can use now, `CapPrm` what it may
+move into `CapEff`, `CapInh` and `CapAmb` what it carries across an exec, and `CapBnd` the
+ceiling on what it or anything it execs can acquire. An empty `CapBnd` beside a non-empty
+`CapPrm` would be a coherent state, so "no capabilities at all" is only true if each set is
+checked, and the run checks each one.
 
 **Step 6: Look at the argument list, which is the whole policy.** bubblewrap reads no
 configuration file. [`src/sandbox.py`](src/sandbox.py) assembles the switches for one tool
@@ -714,7 +724,12 @@ usr/lib64
 `/input` read-only and `/output` read and write. Nothing else from the pod is mounted, so a
 path the list does not name does not exist for the child.
 
-TODO: output from the fresh run
+*Figure 2: What a tool process can see, at the level bubblewrap confines it. The argument
+list is the whole boundary: the trusted controller opens the supplier key file and the Pod
+Identity token file at UID 1000, and the same two paths are simply absent from the tool
+process's mount list, so it gets ENOENT rather than a permission error.*
+
+![A focused view of one tool process under bubblewrap. An Amazon EKS cluster frame holds a red Nitro sandbox frame labelled runtimeClassName colon isolated-sandbox, and inside that an Analyst pod box whose sub line reads that bubblewrap confines the processes the controller starts, not the pod. Along the bottom of the pod, a Trusted controller icon, described as UID 1000 and as owning AWS and the supplier key, has an arrow labelled assembles the bwrap argument list to a Reader tool process icon, described as UID 1000 and as having its own mount namespace. Two solid arrows leave the top of the trusted controller, each labelled opens at UID 1000, and reach two file icons on the right: a Supplier key file above and a Pod Identity token file below. Two red dashed arrows leave the top of the Reader tool process and reach those same two files, each labelled not in the mount list colon ENOENT, so the tool process is refused the very files the controller opens in the same run as the same UID, and the refusal is the path not being there rather than a permission error. To the right of the Reader tool process, a folder icon labelled slash input, read-only, takes a solid arrow from the tool process labelled reads and a red dashed arrow labelled write refused colon EROFS, so the one mount is shown both accepting a read and refusing a write. Every refusal on the figure starts at the tool process; no frame encloses the pod's network and no route out of the pod is shown being refused, because nothing in this sample restricts the pod's egress.](images/subagent-security-bubblewrap-mount-list.png)
 
 The run exercises the boundary in both directions, and each refusal has a control beside it
 where the same thing succeeds. These lines are from the step 3 output:
@@ -739,11 +754,13 @@ PASS and the controller reads back what the writer wrote
 Two errno values carry the whole argument, and they are the reason this is a claim about
 bubblewrap rather than about file permissions.
 
-- **`EROFS`, not `EACCES`.** The file the reader cannot write is the controller's own file:
-  the run compares the inode the child saw through `/input` with the inode the controller
-  holds, and they are the same. The mode on that file lets this user write it, and the
-  controller does write it, in the same run, without changing a byte. So what refuses the
-  child is the read-only bind mount.
+- **`EROFS`, not `EACCES`.** The file the reader cannot write is the controller's own file.
+  The run compares the device and inode the child read through `/input` with the device and
+  inode the controller holds, each taken from a descriptor that side has open. Both numbers,
+  because an inode number is unique only within one filesystem, so matching inodes on
+  different devices would be different files. The mode on that file lets this user write it,
+  and the controller does write it, in the same run, without changing a byte. So what
+  refuses the child is the read-only bind mount.
 - **`ENOENT`, not `EACCES`.** The supplier key file is mode 0440 and group-owned by the
   group the pod runs as, so the controller, running as that same UID 1000, opens it in this
   very run; the same is true of the Pod Identity token file and of the writer's private
@@ -994,6 +1011,13 @@ copy.
   can read the controller's source, which is published here anyway. What is not in its mount
   list is the credential files and the other roles' directories, and the code it can read is
   code it cannot change.
+- **Two switches in the argument list are there and are not demonstrated.**
+  `--die-with-parent` has the kernel kill the child if whatever started `bwrap` dies, and
+  `--new-session` puts the child in a session of its own so it does not share the
+  controller's terminal. Both are in the list this page shows and neither has a check on
+  this page, so take them as settings the sample uses rather than as behaviour it
+  establishes. The [bubblewrap manual](https://github.com/containers/bubblewrap/blob/v0.13.1/bwrap.xml)
+  at the pinned version is what to read for them.
 - **The child's cgroup namespace is the controller's.** The launcher does not pass
   `--unshare-cgroup`, and the run's evidence records that the one namespace it does not claim
   is shared. bubblewrap can unshare it; this sample does not need to, and the page does not
