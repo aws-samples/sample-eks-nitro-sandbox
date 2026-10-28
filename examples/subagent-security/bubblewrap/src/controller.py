@@ -121,8 +121,21 @@ def run_files(root: Path) -> list:
     member of it is read, so "every one of the N files was scanned" is one set and one
     number rather than two traversals that might disagree.
     """
-    return sorted(str(path.relative_to(root)) for path in root.rglob("*")
-                  if path.is_file())
+    names = []
+    for path in sorted(root.rglob("*")):
+        # Refused, not skipped. Nothing this sample puts under the run directory is a
+        # symbolic link, and a tool process can write its own /output, which is inside it.
+        # Following one would read outside the directory this scan claims to cover, and
+        # skipping one would leave something there that is neither scanned nor reported.
+        # So a link is a state the run stops on.
+        if path.is_symlink():
+            raise AssertionError(
+                f"{path.relative_to(root)}, under this run's directory, is a symbolic "
+                "link. Nothing this sample creates there is one, and following it would "
+                "read outside the directory the scan covers, so the run stops here.")
+        if path.is_file():
+            names.append(str(path.relative_to(root)))
+    return sorted(names)
 
 
 def count_files_holding(root: Path, names, needle: bytes) -> int:
@@ -140,12 +153,24 @@ def count_files_holding(root: Path, names, needle: bytes) -> int:
     not text is read exactly like one that is.
 
     What this does and does not cover: the literal bytes, contiguous, in each named file.
-    Not an encoded, hashed or split representation of them, and nothing outside root. A
-    read it cannot perform raises rather than being skipped, which also covers a file that
-    disappeared between the listing and the read: a scan that could not read a candidate
-    must not report success.
+    Not an encoded, hashed or split representation of them, and nothing outside root,
+    which the no-follow open below is what makes true. A read it cannot perform raises
+    rather than being skipped, which also covers a file that disappeared between the
+    listing and the read: a scan that could not read a candidate must not report success.
     """
-    return sum(1 for name in names if needle in (root / name).read_bytes())
+    def no_follow(path, flags):
+        # O_NOFOLLOW, so a link swapped in between the listing above and this read fails
+        # with ELOOP rather than being followed. The listing refusing links and this
+        # refusing to follow one are two halves of the same boundary: without the second,
+        # the gap between the two passes is a window.
+        return os.open(path, flags | os.O_NOFOLLOW)
+
+    found = 0
+    for name in names:
+        with open(root / name, "rb", opener=no_follow) as handle:
+            if needle in handle.read():
+                found += 1
+    return found
 
 
 def availability_for_the_case(case, reported) -> dict:
@@ -383,8 +408,14 @@ class Run:
         inside = [mount for mount in child["mounts"]
                   if any(mount == prefix or mount.startswith(prefix + "/")
                          for prefix in secret_prefixes)]
-        self.check(f"the tool process's whole mount list is {child['mounts']}, and none "
-                   f"of {secret_prefixes} is in it", not inside)
+        # The name says which directories rather than printing them. They are derived
+        # from the supplier key's path and from AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE,
+        # and a value derived from a credential does not belong on a line this program
+        # prints, whether or not that value is itself secret. The condition below still
+        # compares the real paths.
+        self.check(f"the tool process's whole mount list is {child['mounts']}, and "
+                   "neither the supplier key's directory, nor the Pod Identity token's, "
+                   "nor /var/run/secrets is in it", not inside)
         self.check("the tool process's whole environment is "
                    f"{child['environment']}",
                    child["environment"] == EXPECTED_CHILD_ENV)

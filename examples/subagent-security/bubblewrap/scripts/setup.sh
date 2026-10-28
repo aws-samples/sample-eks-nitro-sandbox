@@ -112,7 +112,7 @@ ANALYST_REPOSITORY="pod-isolation/subagent-analyst-$SAMPLE"
 # would otherwise diagnose the second as the first.
 mkdir -p "$REPO_ROOT/tmp"
 mkdir -m 700 "$TMP_DIR" ||
-  die "could not create $TMP_DIR, and mkdir's own reason is above. If something is already there, an earlier run's resources may still be named only in it: finish that run with ./scripts/clean.sh --delete-aws, or, to keep its AWS resources, move $TMP_DIR aside rather than deleting it, because it is the only place their names are written down and it also holds that run's supplier API key and sample certificate authority. Created nothing in the cluster or the account."
+  die "could not create $TMP_DIR, and mkdir's own reason is above. If something is already there, an earlier run's resources may still be named only in it: finish that run with ./scripts/clean.sh --delete-aws, or, to keep its AWS resources, move $TMP_DIR aside rather than deleting it, because it is the only place their names are written down and it also holds that run's supplier API key and sample certificate authority. It may have created the gitignored $REPO_ROOT/tmp directory, but no run directory, no state file, and nothing in the cluster or the account."
 
 : > "$STATE_FILE"
 state_put SAMPLE "$SAMPLE"
@@ -183,6 +183,12 @@ for attempt in 1 2; do
     break
   fi
   preflight_failure="$preflight_output"
+  # Only the transport condition is retried. A guest that cannot run bubblewrap is
+  # answering the question this check asks, and asking it twice does not make the answer
+  # truer: retrying every failure would let a real one fail once, succeed once and be
+  # discarded, with only the success printed.
+  grep -qE 'error dialing backend|tls: internal error|unable to upgrade connection' \
+    <<<"$preflight_output" || break
   [[ "$attempt" == 1 ]] && sleep 10
 done
 [[ -z "$preflight_failure" ]] ||
