@@ -85,11 +85,31 @@ ANALYST_REPOSITORY="pod-isolation/subagent-analyst-$SAMPLE"
 # It is also why the record is touched here and not earlier: everything above creates
 # nothing, so a run that stops above this line leaves both the account and the record
 # exactly as it found them.
+# The six keys are the ones that decide what the clean up would delete and where it would
+# look for it: the three names, and the Region, cluster and context that route every call
+# it makes. A second run with the same names against a different cluster would otherwise
+# replace the routing values and leave the first run's resources unreachable. The two
+# repository names are not here because both are fixed derivations of SAMPLE, so they
+# cannot differ between runs of this sample.
+#
+# A record that is present but cannot be read, or that does not name all six, is refused
+# rather than skipped: "there is nothing to lose" is a claim about a record this script
+# could read, and an empty value is not the same thing as a key this script's own
+# state_put would never have written.
+RECORD_KEYS=(NAMESPACE BUCKET ROLE_NAME AWS_REGION CLUSTER_NAME KUBE_CONTEXT)
 if [[ -f "$STATE_FILE" ]]; then
-  for key in NAMESPACE BUCKET ROLE_NAME; do
-    previous="$(sed -n "s/^$key=//p" "$STATE_FILE" | tail -1)"
-    [[ -z "$previous" || "$previous" == "${!key}" ]] ||
-      die "the run record at $STATE_FILE says the last run used $key=$previous and this one would use ${!key}. Run ./scripts/clean.sh --delete-aws for that one first, or move the record aside; created and changed nothing, and the record is untouched."
+  [[ -r "$STATE_FILE" ]] ||
+    die "there is a run record at $STATE_FILE and it cannot be read, so it is unknown what an earlier run created. Created and changed nothing. Make it readable, or move it aside once you are sure."
+  for key in "${RECORD_KEYS[@]}"; do
+    # KUBE_CONTEXT is the one key a run may legitimately have written empty, because
+    # leaving it empty in .env means "use the current context". So it is compared when
+    # the record has a line for it, and its value may be empty on both sides.
+    mapfile -t previous < <(sed -n "s/^$key=//p" "$STATE_FILE")
+    if [[ "${#previous[@]}" == 0 ]]; then
+      die "the run record at $STATE_FILE has no $key line, so it is unknown what an earlier run created or where. Created and changed nothing. Run ./scripts/clean.sh --delete-aws for that run first, or move the record aside."
+    fi
+    [[ "${previous[-1]}" == "${!key}" ]] ||
+      die "the run record at $STATE_FILE says the last run used $key=${previous[-1]} and this one would use ${!key}. Run ./scripts/clean.sh --delete-aws for that one first, or move the record aside; created and changed nothing, and the record is untouched."
   done
 fi
 
