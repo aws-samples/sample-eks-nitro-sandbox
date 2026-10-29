@@ -858,6 +858,10 @@ against an ordinary pod on the same sandbox node (`neighbor`) and an ordinary po
 system node (`control`), so every result is shown for the sandbox lane beside the two ordinary
 lanes.
 
+This page is about Cilium enforcing one policy on a Nitro sandbox pod as on an ordinary pod. For
+the general mechanism, restricting a sandbox's egress with a network policy, see the
+[Network policy](../../isolation/network-policy/README.md) sample.
+
 The policy `test.sh` applies is one `CiliumNetworkPolicy`, `clients-egress`. It selects the
 three client pods alike, so each L3/L4, L7 and FQDN verdict below is the same rule, enforced by
 Cilium on the sandbox pod and on the two ordinary pods. This is all of
