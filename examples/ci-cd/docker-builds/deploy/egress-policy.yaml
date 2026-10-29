@@ -3,7 +3,8 @@
 #
 # An EKS Auto Mode ApplicationNetworkPolicy is a NetworkPolicy that also accepts hostnames
 # (domainNames) in an egress rule. It is enforced on the node, on the pod's host-side
-# interface, so a command inside the sandbox cannot change it, even as root.
+# interface, so a command inside the sandbox cannot change it, even from the privileged
+# container.
 #
 # scripts/setup.sh renders:
 #   <NAMESPACE>        the namespace you set

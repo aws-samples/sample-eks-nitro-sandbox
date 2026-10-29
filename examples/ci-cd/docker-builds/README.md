@@ -564,9 +564,9 @@ spec:
 
 It is enforced on the node, by eBPF programs the network policy agent attaches to the pod's
 host-side interface, outside the guest. So a command inside the sandbox cannot change it, even
-as root, and the containers the build daemon runs are covered by it too: their traffic leaves
-through the same pod interface. Try it both ways, from the pod and from a container the build
-daemon runs:
+from the privileged container, and the containers the build daemon runs are covered by it too:
+their traffic leaves through the same pod interface. Try it both ways, from the pod and from a
+container the build daemon runs:
 
 ```bash
 kubectl exec hello-docker -n "$NAMESPACE" -- sh -c \
