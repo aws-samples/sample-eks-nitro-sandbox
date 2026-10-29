@@ -134,9 +134,15 @@ esac
 # Normalise away a vendor prefix, a Bedrock cross-Region prefix, a version suffix and a
 # context-window suffix, so "us.anthropic.claude-sonnet-5-5:0" and "claude-sonnet-5-5"
 # compare equal without collapsing genuinely different names.
+# Does NOT strip internal whitespace: check_model_charset (always called on the input
+# before this) allows a model name to hold a space -- a backend may be pointed at a custom
+# model identifier that contains one -- and already refuses a leading or trailing one.
+# Second-review finding (issue #100 round 3): this used to "tr -d '[:space:]'", so a
+# reported name "a b" normalised to "ab" and was compared equal to an implementer "ab",
+# refusing a review by a genuinely different-looking model as E_REPORTED_SAME_MODEL.
 normalise_model() {
   local m
-  m=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  m=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
   m=$(printf '%s' "$m" | sed -E 's/^(us|eu|apac|global|us-gov)\.//')
   m=$(printf '%s' "$m" | sed -E 's/^(anthropic|openai|amazon|meta|mistral|cohere|ai21|deepseek|qwen|writer|stability|twelvelabs|luma)\.//')
   m=$(printf '%s' "$m" | sed -E 's/\[[^][]*\]:[0-9]+$//; t
@@ -280,8 +286,19 @@ case "$BACKEND" in
     # "codex exec" has no one to answer an escalation prompt, so without it a run can stall
     # or silently refuse -- and NOT as a confinement guard. Nothing below reads the preamble
     # back to check either of them; the tree fingerprint is the evidence now.
+    #
+    # -C points at a workspace of its own (mktemp -d), NOT the tree, mirroring claude below.
+    # Found by actually running it: under --sandbox workspace-write, codex's own sandboxing
+    # creates and removes something directly in its CWD on every shell command it runs --
+    # even a plain "ls", even when the model writes nothing at all -- which changed the
+    # CWD's own mtime every time. Pointed at the tree, that tripped the tree-root check
+    # issue #100's first review round added on every substantive run, with zero write from
+    # the model. Codex still reads an absolute path anywhere regardless of its CWD, so it
+    # reaches the tree exactly as before; the brief names its absolute path.
+    codex_cwd=$(mktemp -d) || refuse E_NO_CWD \
+      "could not make a workspace for the reviewer, so there is nowhere to run it that is outside the tree."
     codex_args=(exec --skip-git-repo-check --sandbox workspace-write
-                -c approval_policy="never" -C "$TREE_ABS" -m "$MODEL")
+                -c approval_policy="never" -C "$codex_cwd" -m "$MODEL")
     # An "[ x ] && y" here would end the script under set -e whenever x is false.
     if [ -n "${SECOND_REVIEW_CODEX_PROVIDER:-}" ]; then
       codex_args+=(-c "model_provider=\"$SECOND_REVIEW_CODEX_PROVIDER\"")
@@ -317,7 +334,7 @@ case "$BACKEND" in
                AWS_CREDENTIAL_FILE=/dev/null AWS_CREDENTIALS_FILE=/dev/null
                AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_EC2_METADATA_DISABLED=true)
     fi
-    permissions="codex ran with --sandbox workspace-write and approval_policy=never (writes and commands permitted; approval_policy is for non-interactivity, not confinement)"
+    permissions="codex ran with --sandbox workspace-write and approval_policy=never in a workspace of its own ($codex_cwd), with the tree reachable by absolute path (writes and commands permitted; approval_policy is for non-interactivity, not confinement)"
     ${timeout_cmd[@]+"${timeout_cmd[@]}"} "${aws_env[@]}" "$resolved_cmd" "${codex_args[@]}" \
       < "$OUT_ABS/codex-stdin.txt" > "$OUT_ABS/review.out" 2> "$OUT_ABS/review.err" || run_status=$?
     ;;
