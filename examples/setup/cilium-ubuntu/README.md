@@ -7,14 +7,15 @@ installed: Cilium gives every pod, the sandbox pod included, a real VPC address,
 every Service in eBPF, and is proved to enforce the same network policy on the sandbox pod as
 on an ordinary pod.
 
-> **Status: complete as authored, unvalidated against a live cluster.** This page covers every
+> **Status: setup and evidence run live; cleanup not yet recorded.** This page covers every
 > stage below: the cluster, the Cilium operator's AWS permissions, the Cilium install itself,
 > the two Ubuntu node groups, the BTF gate, the isolated-sandbox RuntimeClass, and the sandbox
 > pod / Service boundary / policy evidence (`test.sh`, `clean.sh`, `deploy/workloads.yaml`,
 > `deploy/policy.yaml`). The pins follow the GA node-build bundle `nitro-sandbox-ga-20261028`.
-> What is **not** yet done is the live run: every output block below reads
-> `TODO: output from the fresh run`, and the BTF and `socketLB.hostNamespaceOnly` negative
-> controls remain to be captured on a real cluster.
+> The output blocks come from one fresh run on a new cluster, including the missing-BTF and
+> `socketLB.hostNamespaceOnly` negative controls. Four blocks still read
+> `TODO: output from the fresh run`: the two `clean.sh` blocks, which only the teardown can
+> produce, and the stage 4 and stage 6 `kubectl` reads, which that run did not capture.
 
 !!! danger "Before this sample is merged to `main` or marked available: a gate, not a suggestion"
 
@@ -168,7 +169,20 @@ health, BTF loading, ENI allocation, Service translation and the policy controls
 | [5. Gate on BTF before either agent counts as ready](#5-gate-on-btf-before-either-agent-counts-as-ready) | A check of the node's own kernel, not of Cilium's status | Both nodes confirmed against `/sys/kernel/btf/vmlinux` |
 | [6. Create the isolated-sandbox RuntimeClass](#6-create-the-isolated-sandbox-runtimeclass) | The GA bundle's RuntimeClass, created only when absent | A RuntimeClass whose two labels only the sandbox node carries |
 | [7. Tag what AWS created for the cluster](#7-tag-what-aws-created-for-the-cluster) | Nothing: the resources AWS creates with no tag at creation | One line per resource tagged, then the tag audit passing |
-| [8. The sandbox pod, Service boundary and policy evidence](#evidence-testsh) | `test.sh`, `deploy/workloads.yaml`, `deploy/policy.yaml` | The seven pods Ready and the networking, BTF and policy proofs (output blocks are `TODO` until a live run) |
+| [8. The sandbox pod, Service boundary and policy evidence](#evidence-testsh) | `test.sh`, `deploy/workloads.yaml`, `deploy/policy.yaml` | The seven pods Ready and the networking, BTF and policy proofs |
+
+**Where the output blocks come from.** Every block is from one fresh run on a new cluster in
+`us-west-2`, with the default names in `config.env.example`.
+
+- **Stages 0 to 7:** the `setup.sh` blocks are from its first run, at commit `8ae3c30`. That
+  run passed steps 1/8 to 8/8, then stopped in its closing summary on a variable no shell file
+  set.
+- **The summary:** commit `9c2872e` sets that variable and changes nothing else. The summary
+  block at the end of stage 7 is from `setup.sh` run again at `9c2872e` against the same
+  cluster.
+- **The other blocks:** read from that cluster after the second run.
+- **Masking:** values from the run's account and environment are replaced with placeholders such
+  as `<ACCOUNT_ID>` and `<SANDBOX_NODE>`. Each block says what it masks or cuts.
 
 ### 0. Prerequisites and the AMI preflight
 
@@ -195,8 +209,22 @@ stops and tells you what did not match. `setup.sh` also checks `cilium-values.ya
 (`check-cilium-values`): kube-proxy replacement on, the socket load balancer in the host
 namespace only, ENI IPAM and native routing.
 
+From the fresh run's `setup.sh`, step 1/8.
+
+- **Masked:** the caller ARN, the account id, both AMI ids, and the sandbox AMI's name, which is
+  specific to its build.
+- **Not masked:** the system AMI's name. It is Canonical's public name, and its last field is
+  the serial the run pinned.
+
 ```text
-TODO: output from the fresh run
+=== 1/8 prerequisites ===
+Caller: <CALLER_ARN>
+cilium-values.yaml: 0 problem(s) with kubeProxyReplacement, socketLB.hostNamespaceOnly, eni.enabled, ipam.mode, routingMode
+AMI <SANDBOX_AMI_ID>: <SANDBOX_AMI_NAME>
+  architecture=x86_64 virtualization=hvm owner=<ACCOUNT_ID> ManagedBy=ubuntu-ami-sample BtfValidated=true
+sandbox AMI preflight passed
+AMI <SYSTEM_AMI_ID>: ubuntu-eks/k8s_1.36/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-20261027
+system AMI preflight passed
 ```
 
 ### 1. Create the cluster without the VPC CNI or kube-proxy
@@ -229,8 +257,12 @@ What you see: the cluster has no `aws-node` or `kube-proxy` DaemonSet and no `vp
 kubectl -n kube-system get daemonset aws-node kube-proxy
 ```
 
+From the fresh run's `setup.sh`. Step 2/8 runs this command once the control plane is up and
+prints its `NotFound` lines. Nothing is masked.
+
 ```text
-TODO: output from the fresh run
+Error from server (NotFound): daemonsets.apps "aws-node" not found
+Error from server (NotFound): daemonsets.apps "kube-proxy" not found
 ```
 
 ### 2. Give the Cilium operator its own AWS role
@@ -354,16 +386,76 @@ line or ConfigMap text is refused):
 kubectl -n kube-system exec ds/cilium -c cilium-agent -- cilium-dbg status --verbose
 ```
 
+This command, run on the fresh run's cluster after the negative control below had been undone.
+At that point the cluster was on Helm revision 4, with the same values `setup.sh` installed.
+`ds/cilium` picked the system node's agent.
+
+- **Abridged:** 6 of the output's 325 lines, the kube-proxy replacement lines. The interface
+  list on the first line is cut to `[...]`.
+
 ```text
-TODO: output from the fresh run
+KubeProxyReplacement:   True   [...]
+KubeProxyReplacement Details:
+  Status:               True
+  Socket LB:            Enabled
+  Socket LB Tracing:    Enabled
+  Socket LB Coverage:   Hostns-only
 ```
 
 The negative control, the sandbox pod's Service and DNS reachability with
-`hostNamespaceOnly: false`, is a separate documented control run: `test.sh` stays read-only
-and never flips the live Helm value. Its output goes here:
+`hostNamespaceOnly: false`, is a separate control run: `test.sh` stays read-only and never flips
+the live Helm value. On the fresh run's cluster, the control changed only that value.
+
+1. **Off.** It ran the same `helm upgrade` that `setup.sh` runs (the same release, chart,
+   version and values file) with `--set socketLB.hostNamespaceOnly=false` added. That made Helm
+   revision 3.
+2. **Read and probe.** Once the agents had rolled, it read each agent and probed from each pod.
+3. **Back on.** It set the value back with the same command without the override. That made
+   revision 4, whose values are identical to `setup.sh`'s revision 2.
+
+**What it showed:**
+
+- both agents read `Full`, and `cilium_ubuntu.py kpr-status` refused it;
+- the sandbox pod lost the ClusterIP and the `kube-dns` Service, yet still reached the server's
+  pod IP and CoreDNS's pod IP;
+- the ordinary pods and the node kept the ClusterIP.
+
+**About the block:**
+
+- **Abridged:** each agent's part is only the Socket LB lines of `cilium-dbg status --verbose`,
+  and the interface lists are cut to `[...]`.
+- **The capture script's lines:** those that start `==` or `--`, and the `kpr-status rc=`
+  lines.
+- **The probe lines:** `wget` or `nslookup` from each pod, one line each with its exit code.
+- **Masked:** the node names, the agent pod names, and every pod, Service and DNS address.
 
 ```text
-TODO: output from the fresh run
+== 2026-10-29T08:55:19Z <CILIUM_AGENT_SANDBOX> (sandbox node <SANDBOX_NODE>): Socket LB lines of cilium-dbg status --verbose
+KubeProxyReplacement:   True   [...]
+  Status:               True
+  Socket LB:            Enabled
+  Socket LB Tracing:    Enabled
+  Socket LB Coverage:   Full
+-- kpr-status:
+Socket LB Coverage: Full
+kpr-status rc=1
+== 2026-10-29T08:55:22Z <CILIUM_AGENT_SYSTEM> (system node <SYSTEM_NODE>): Socket LB lines of cilium-dbg status --verbose
+KubeProxyReplacement:   True   [...]
+  Status:               True
+  Socket LB:            Enabled
+  Socket LB Tracing:    Enabled
+  Socket LB Coverage:   Full
+-- kpr-status:
+Socket LB Coverage: Full
+kpr-status rc=1
+== 2026-10-29T08:55:26Z server pod <SERVER_POD_IP>, Service server ClusterIP <SERVER_CLUSTER_IP>, kube-dns <KUBE_DNS_IP>, CoreDNS pod <COREDNS_POD_IP>
+nitro      -> server pod IP <SERVER_POD_IP>:8080 rc=0 out=server
+nitro      -> ClusterIP <SERVER_CLUSTER_IP>:80 rc=1 out=wget: download timed out command terminated with exit code 1
+nitro      nslookup server.cilium-ubuntu-demo.svc.cluster.local via kube-dns Service <KUBE_DNS_IP> rc=1 out=;; connection timed out; no servers could be reached  command terminated with exit code 1
+nitro      nslookup server.cilium-ubuntu-demo.svc.cluster.local via CoreDNS pod <COREDNS_POD_IP> rc=0 out=Server:		<COREDNS_POD_IP> Address:	<COREDNS_POD_IP>:53   Name:	server.cilium-ubuntu-demo.svc.cluster.local Address: <SERVER_CLUSTER_IP>
+neighbor   -> ClusterIP <SERVER_CLUSTER_IP>:80 rc=0 out=server
+control    -> ClusterIP <SERVER_CLUSTER_IP>:80 rc=0 out=server
+node-probe -> ClusterIP <SERVER_CLUSTER_IP>:80 rc=0 out=server
 ```
 
 ### 4. Add the two Ubuntu node groups
@@ -436,6 +528,9 @@ kubectl get nodes -L eks.amazonaws.com/nodegroup,eks.amazonaws.com/nitro-sandbox
 kubectl -n kube-system get pods -l k8s-app=cilium -o wide
 ```
 
+The fresh run did not capture the first of these two reads, so this block waits for one that
+does. Stage 6 shows `setup.sh` confirming both nodes' labels on the same run.
+
 ```text
 TODO: output from the fresh run
 ```
@@ -466,8 +561,24 @@ config file and not the `cilium-config` ConfigMap. Anything but exactly `PRESENT
 kubectl -n kube-system exec ds/cilium -c cilium-agent -- sh -c 'test -s /sys/kernel/btf/vmlinux && echo PRESENT || echo MISSING'
 ```
 
+This test, run on the fresh run's cluster in each node's Cilium agent, named directly rather
+than through `ds/cilium`, which picks one agent. An `ls -l /sys/kernel/btf/vmlinux` followed
+the test. `setup.sh`'s own gate on the same run printed `BTF present on node ...` for both nodes
+(step 6/8).
+
+- **The capture script's lines:** those that start `==` and `rc=`.
+- **Masked:** the agent pod names.
+- **Run-specific:** the file sizes.
+
 ```text
-TODO: output from the fresh run
+== 2026-10-29T08:45:14Z <CILIUM_AGENT_SANDBOX> (sandbox node) raw BTF read
+PRESENT
+-r--r--r-- 1 root root 6817864 Oct 29 07:56 /sys/kernel/btf/vmlinux
+rc=0
+== 2026-10-29T08:45:17Z <CILIUM_AGENT_SYSTEM> (system node) raw BTF read
+PRESENT
+-r--r--r-- 1 root root 7160284 Oct 29 07:56 /sys/kernel/btf/vmlinux
+rc=0
 ```
 
 `test.sh` then reads each agent's own log for those two failure strings
@@ -479,14 +590,33 @@ be judged, so the check reports that it checked nothing instead of passing; a lo
 in either format is refused the same way.
 
 **The missing-BTF rejection.** Issue #11 asks for a failing control or a captured preflight
-failure that shows a missing-BTF kernel rejected before the node is accepted. Unless a real
-node without BTF is cheaply available, the fresh run captures it as a **stub-driven** run of
-the real `cilium_ubuntu.py check-btf` command: a stub `kubectl` first on `PATH` answers the
-agent-pod lookup and returns `MISSING` for the BTF read, so the gate under test is the shipped
-one and only the node is simulated. The block below will say which of the two it is.
+failure that shows a missing-BTF kernel rejected before the node is accepted. No node without
+BTF was cheaply available: there is no Ubuntu EKS AMI without `CONFIG_DEBUG_INFO_BTF` to launch
+one from. So the fresh run captured it as a **stub-driven** run of the real
+`cilium_ubuntu.py check-btf` command.
+
+- **What the stub does:** a stub `kubectl`, first on `PATH`, replaces only the BTF read,
+  answering `MISSING`. It passes every other call to the real `kubectl`, so the agent-pod lookup
+  ran against the live cluster.
+- **What is real:** the node, its Cilium agent and the gate under test.
+
+The block shows that stub-driven run first. Then the same command without the stub, one second
+later.
+
+- **The capture script's lines:** those that start `==`, `stub sha256`, `kubectl resolves to`
+  and `rc=`.
+- **Masked:** the node name, the stub's checksum and the local path of the real `kubectl`.
 
 ```text
-TODO: output from the fresh run
+== 2026-10-29T08:49:09Z STUB-DRIVEN: real scripts/cilium_ubuntu.py check-btf sandbox <SANDBOX_NODE>, with tmp/issue11/run/btf-stub/bin first on PATH
+stub sha256 <STUB_SHA256>
+kubectl resolves to: ../../../tmp/issue11/run/btf-stub/bin/kubectl
+error: node <SANDBOX_NODE> (nodegroup sandbox) has no BTF at /sys/kernel/btf/vmlinux (read: 'MISSING'); its Cilium agent cannot load the kube-proxy-replacement datapath, even though the agent may still report Ready. This node's kernel was not built with CONFIG_DEBUG_INFO_BTF=y; see ../ubuntu-ami for the BTF-enabled build this sample depends on.
+rc=1
+== 2026-10-29T08:49:10Z real check-btf sandbox <SANDBOX_NODE>, no stub (accept half, beside the reject)
+kubectl resolves to: <REAL_KUBECTL>
+BTF present on node <SANDBOX_NODE> (nodegroup sandbox)
+rc=0
 ```
 
 ### 6. Create the isolated-sandbox RuntimeClass
@@ -525,6 +655,11 @@ scheduling:
 ```bash
 kubectl get runtimeclass isolated-sandbox -o yaml
 ```
+
+The fresh run did not capture this read, so this block waits for one that does. On that run,
+`setup.sh` step 7/8 created the RuntimeClass and checked it: `runtimeclass.node.k8s.io/isolated-sandbox created`,
+then `RuntimeClass isolated-sandbox: marked app.kubernetes.io/part-of=setup-cilium-ubuntu, handler isolated-sandbox, nodeSelector eks.amazonaws.com/nitro-sandbox=true,sandbox.preview/nitro=true, overhead eks.amazonaws.com/nitro-sandbox=1,memory=256Mi`.
+It also confirmed that the sandbox node carries both labels and the system node neither.
 
 ```text
 TODO: output from the fresh run
@@ -604,8 +739,54 @@ Running `setup.sh` again repeats the sweep, which tags only what is still untagg
 What you see: one `tagged <kind> <id>` line for each resource the sweep tagged, its count, and
 the audit's summary.
 
+From the fresh run's `setup.sh`, step 8/8, and the line that opens its closing summary.
+
+- **Masked:** every resource id and generated name.
+- **The two security groups:** the cluster security group and the VPC's default security group.
+- **The three network interfaces:** the control plane's two and the NAT gateway's.
+
 ```text
-TODO: output from the fresh run
+=== 8/8 tag what AWS created for this cluster without a tag ===
+tagged instance-profile <SANDBOX_INSTANCE_PROFILE>
+tagged instance-profile <SYSTEM_INSTANCE_PROFILE>
+tagged asg <SANDBOX_ASG> (PropagateAtLaunch)
+tagged asg <SYSTEM_ASG> (PropagateAtLaunch)
+tagged security-group <SECURITY_GROUP_ID_1>
+tagged security-group <SECURITY_GROUP_ID_2>
+tagged route-table <MAIN_ROUTE_TABLE_ID>
+tagged network-acl <DEFAULT_NETWORK_ACL_ID>
+tagged network-interface <CONTROL_PLANE_ENI_ID_1>
+tagged network-interface <NAT_GATEWAY_ENI_ID>
+tagged network-interface <CONTROL_PLANE_ENI_ID_2>
+tagged launch-template <SYSTEM_EKS_LAUNCH_TEMPLATE_COPY_ID>
+tagged launch-template <SANDBOX_EKS_LAUNCH_TEMPLATE_COPY_ID>
+tag-sweep: tagged 13 of the 13 resources in its set for cluster nitro-cilium-ubuntu and VPC <VPC_ID>; 0 already carried auto-delete=no, and nothing outside the set was written
+49 resources, 0 without auto-delete=no, 0 coverage gaps
+
+Cluster nitro-cilium-ubuntu is up: Cilium is the only CNI, kube-proxy replacement is active, and both Ubuntu node groups are Ready with valid BTF.
+```
+
+The rest of the closing summary is below.
+
+- **Where it comes from:** it is from `setup.sh` run again at commit `9c2872e` against the same
+  cluster, because the first run stopped before it (see
+  [Where the output blocks come from](#the-stages)).
+- **What else that second run printed:** every step found its resources in place. Its sweep
+  read `tagged 0 of the 13 resources in its set ...; 13 already carried auto-delete=no`, and its
+  audit read the same 49 resources and 0 gaps.
+- **Masked:** the node names.
+
+```text
+What exists now:
+  - cluster:        nitro-cilium-ubuntu (us-west-2)
+  - system node:    <SYSTEM_NODE>  (m7i.large, ordinary Ubuntu 24.04)
+  - sandbox node:   <SANDBOX_NODE>  (m8i.xlarge, Ubuntu Pod Isolation, tainted sandbox.eks-nitro-sandbox.amazonaws.com/dedicated=true:NoSchedule)
+  - Cilium:         1.20.2, ENI IPAM, native routing, kube-proxy replacement, socketLB.hostNamespaceOnly=true
+  - RuntimeClass:   isolated-sandbox (schedules on eks.amazonaws.com/nitro-sandbox=true, sandbox.preview/nitro=true)
+
+Next: run ./test.sh to apply the workloads and policy and prove the networking, BTF and
+policy claims (see the README's Evidence section). This cluster bills while it exists (EKS
+control plane, two EC2 instances, one NAT gateway); see the README for cleanup.
 ```
 
 ## Evidence (`./test.sh`)
@@ -668,8 +849,144 @@ What it checks, in order:
 ./test.sh
 ```
 
+From the fresh run's first `./test.sh`, at commit `9c2872e`, against the cluster `setup.sh`
+had created.
+
+- **Stage 0 on a fresh cluster:** the cluster was new for this run. Before `setup.sh` started,
+  no cluster, eksctl stack or other run-owned resource of this sample existed, and `setup.sh`
+  applies neither the namespace nor the workloads. The seven pods' ages begin with this
+  `test.sh`. No separate read of the namespace before stage 0 was kept.
+- **Masked:** the caller ARN, the node names, the generated pod and role names, the instance and
+  VPC ids, every pod, node, Service and DNS address, and the Cilium endpoint ids.
+- **Run-specific:** the agent log line counts, the sandbox pod's uptime and the resource counts.
+- **Cut:** a start line and an end line that the capture added around `test.sh`. The end line
+  recorded exit code 0.
+
 ```text
-TODO: output from the fresh run
+Caller: <CALLER_ARN>
+
+=== 0. Apply the sample's workloads and the egress network policy ===
+7 pods in workloads.yaml: 0 AppArmor problem(s)
+waiting for the seven pods to be Ready (the sandbox pod boots a guest VM, so this can take a few minutes)...
+all seven pods Ready; the egress policy clients-egress is applied.
+
+=== 1. No VPC CNI and no kube-proxy: Cilium is the only CNI and replaces kube-proxy on both Ubuntu nodes ===
+  [PASS] no aws-node DaemonSet (the VPC CNI was never installed)
+  [PASS] no kube-proxy DaemonSet (kube-proxy was never installed)
+  [PASS] EKS add-ons: no vpc-cni and no kube-proxy; CoreDNS and the Pod Identity agent added back (coredns eks-pod-identity-agent )
+  [PASS] Cilium agent Ready on exactly the system and sandbox Ubuntu nodes (system sandbox)
+  [PASS] cilium-dbg status --brief is OK on both agents (2/2)
+  [PASS] both agents replace kube-proxy, socket load balancer in the host namespace only (system: KubeProxyReplacement True, Socket LB Enabled, coverage Hostns-only; sandbox: KubeProxyReplacement True, Socket LB Enabled, coverage Hostns-only)
+  [PASS] neither Ubuntu node's iptables holds a kube-proxy chain (system: 0 kube-proxy chains in iptables-nft (mangle raw filter nat), ip6tables-nft (mangle filter nat), iptables-legacy (no tables), ip6tables-legacy (no tables); sandbox: 0 kube-proxy chains in iptables-nft (mangle raw filter nat), ip6tables-nft (mangle filter nat), iptables-legacy (no tables), ip6tables-legacy (no tables))
+  [PASS] both Ubuntu node kernels expose valid BTF: both agents loaded their full eBPF datapath (system: 0 'Failed to initialize datapath' / 'no BTF found' lines in 1036 agent log lines and 0 other line(s); sandbox: 0 'Failed to initialize datapath' / 'no BTF found' lines in 875 agent log lines and 0 other line(s))
+  [PASS] Cilium on the sandbox node holds the server ClusterIP in its own load balancer (<SERVER_CLUSTER_IP>:80 -> <SERVER_POD_IP>:8080, active)
+
+=== 1b. The Cilium operator's AWS credentials ===
+  [PASS] the operator pod (<CILIUM_OPERATOR_POD>) gets its credentials from EKS Pod Identity
+operator role nitro-cilium-ubuntu-cilium-operator: 17 actions, exactly Cilium's documented ENI set
+node role <SANDBOX_NODE_ROLE> (sandbox): AmazonEC2ContainerRegistryPullOnly, AmazonEKSWorkerNodePolicy, AmazonSSMManagedInstanceCore
+node role <SYSTEM_NODE_ROLE> (system): AmazonEC2ContainerRegistryPullOnly, AmazonEKSWorkerNodePolicy, AmazonSSMManagedInstanceCore
+  [PASS] the operator's role allows exactly Cilium's documented ENI actions, and no node role has AmazonEKS_CNI_Policy
+
+=== 2. The Nitro sandbox pod runs in its own guest kernel ===
+  [PASS] pod nitro is Ready with runtimeClassName isolated-sandbox
+  [PASS] pod nitro runs on the Ubuntu sandbox node (<SANDBOX_NODE>)
+  [PASS] the isolated-sandbox RuntimeClass matches the GA bundle's (RuntimeClass isolated-sandbox: marked app.kubernetes.io/part-of=setup-cilium-ubuntu, handler isolated-sandbox, nodeSelector eks.amazonaws.com/nitro-sandbox=true,sandbox.preview/nitro=true, overhead eks.amazonaws.com/nitro-sandbox=1,memory=256Mi)
+  [PASS] sandbox node <SANDBOX_NODE> carries eks.amazonaws.com/nitro-sandbox=true, sandbox.preview/nitro=true
+  [PASS] system node <SYSTEM_NODE> carries neither RuntimeClass label, so no sandbox pod can be scheduled on it
+  [PASS] live pods: AppArmor Unconfined at pod level on the sandbox pod only, which an Ubuntu host needs (7 pods in stdin: 0 AppArmor problem(s))
+  [PASS] the sandbox node runs the pinned host kernel (kernel release 6.18.56-nitro-ga is the pinned 6.18.56-nitro-ga)
+  [PASS] sandbox node <SANDBOX_NODE> advertises positive allocatable eks.amazonaws.com/nitro-sandbox (20)
+  [PASS] the capacity check reads absent for a nonexistent allocatable key on <SANDBOX_NODE> (reject control)
+  [PASS] sandbox pod guest kernel (6.18.54) differs from its Ubuntu node's kernel (6.18.56-nitro-ga)
+  [PASS] sandbox pod runs the pinned guest kernel from the bundle's guest image (kernel release 6.18.54 is the pinned 6.18.54)
+  [PASS] control: an ordinary pod shares its node's kernel (7.0.0-1014-aws), so the check above discriminates
+  [PASS] neighbor: an ordinary pod on the same Ubuntu sandbox node runs on that node's kernel (6.18.56-nitro-ga)
+  [PASS] sandbox pod sees its own virtio disks (dm-0 vda vdb vdc ), no node nvme, and its own boot (uptime 75.42s)
+  [PASS] neighbor: the ordinary pod on the same node sees the node's nvme disks (loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 loop8 nvme0n1 ), so the check above discriminates
+
+=== 3. Its IP is a VPC address with a CiliumEndpoint ===
+  [PASS] nitro: pod IP <NITRO_POD_IP> is in the VPC (10.43.0.0/16) and is not the node's own IP <SANDBOX_NODE_IP>
+  [PASS] nitro: <NITRO_POD_IP> is a secondary address on an ENI of its own instance (<SANDBOX_INSTANCE_ID>)
+  [PASS] nitro: CiliumEndpoint is ready and carries <NITRO_POD_IP>
+  [PASS] neighbor: pod IP <NEIGHBOR_POD_IP> is in the VPC (10.43.0.0/16) and is not the node's own IP <SANDBOX_NODE_IP>
+  [PASS] neighbor: <NEIGHBOR_POD_IP> is a secondary address on an ENI of its own instance (<SANDBOX_INSTANCE_ID>)
+  [PASS] neighbor: CiliumEndpoint is ready and carries <NEIGHBOR_POD_IP>
+  [PASS] control: pod IP <CONTROL_POD_IP> is in the VPC (10.43.0.0/16) and is not the node's own IP <SYSTEM_NODE_IP>
+  [PASS] control: <CONTROL_POD_IP> is a secondary address on an ENI of its own instance (<SYSTEM_INSTANCE_ID>)
+  [PASS] control: CiliumEndpoint is ready and carries <CONTROL_POD_IP>
+
+=== 4. Connectivity: pod to pod both ways, ClusterIP Service, DNS; and from the node itself ===
+  [PASS] nitro -> ordinary pod server (<SERVER_POD_IP>:8080)
+  [PASS] ordinary pod server -> nitro (<NITRO_POD_IP>:8080)
+  [PASS] nitro -> ClusterIP Service server (<SERVER_CLUSTER_IP>:80), translated by Cilium before its egress policy
+  [PASS] nitro: DNS through the kube-dns Service resolves server.cilium-ubuntu-demo.svc.cluster.local to the ClusterIP (<SERVER_CLUSTER_IP>)
+  [PASS] nitro: CoreDNS answers at its pod IP <COREDNS_POD_IP> too (DNS works apart from the Service)
+  [PASS] nitro -> http://server.cilium-ubuntu-demo.svc.cluster.local/ (DNS name and Service together)
+  [PASS] neighbor -> ordinary pod server (<SERVER_POD_IP>:8080)
+  [PASS] ordinary pod server -> neighbor (<NEIGHBOR_POD_IP>:8080)
+  [PASS] neighbor -> ClusterIP Service server (<SERVER_CLUSTER_IP>:80), translated by Cilium before its egress policy
+  [PASS] neighbor: DNS through the kube-dns Service resolves server.cilium-ubuntu-demo.svc.cluster.local to the ClusterIP (<SERVER_CLUSTER_IP>)
+  [PASS] neighbor: CoreDNS answers at its pod IP <COREDNS_POD_IP> too (DNS works apart from the Service)
+  [PASS] neighbor -> http://server.cilium-ubuntu-demo.svc.cluster.local/ (DNS name and Service together)
+  [PASS] control -> ordinary pod server (<SERVER_POD_IP>:8080)
+  [PASS] ordinary pod server -> control (<CONTROL_POD_IP>:8080)
+  [PASS] control -> ClusterIP Service server (<SERVER_CLUSTER_IP>:80), translated by Cilium before its egress policy
+  [PASS] control: DNS through the kube-dns Service resolves server.cilium-ubuntu-demo.svc.cluster.local to the ClusterIP (<SERVER_CLUSTER_IP>)
+  [PASS] control: CoreDNS answers at its pod IP <COREDNS_POD_IP> too (DNS works apart from the Service)
+  [PASS] control -> http://server.cilium-ubuntu-demo.svc.cluster.local/ (DNS name and Service together)
+  [PASS] node-probe runs in the sandbox node's own network namespace (hostNetwork, the node's IP)
+  [PASS] the sandbox node itself -> ClusterIP Service server (<SERVER_CLUSTER_IP>:80), by Cilium's socket load balancer
+  [PASS] the sandbox node itself: the kube-dns Service (<KUBE_DNS_IP>) resolves server.cilium-ubuntu-demo.svc.cluster.local to the ClusterIP
+
+=== 5. L3/L4 policy: one CiliumNetworkPolicy, the same verdicts for the sandbox pod and an ordinary pod ===
+  [PASS] Cilium derives the sandbox pod's identity from its labels alone, exactly as for the neighbor and control pods
+  [PASS] control: pod server is not selected by the policy (enforcement: none)
+  [PASS] control: pod other serves (<OTHER_POD_IP>:8080 answers a pod the policy does not select)
+  [PASS] nitro: Cilium enforces egress policy on this endpoint (enforcement: egress)
+  [PASS] nitro -> server:8080 ALLOWED by the policy
+  [PASS] nitro -> other:8080 DENIED by the policy (connection dropped: timed out)
+  [PASS] neighbor: Cilium enforces egress policy on this endpoint (enforcement: egress)
+  [PASS] neighbor -> server:8080 ALLOWED by the policy
+  [PASS] neighbor -> other:8080 DENIED by the policy (connection dropped: timed out)
+  [PASS] control: Cilium enforces egress policy on this endpoint (enforcement: egress)
+  [PASS] control -> server:8080 ALLOWED by the policy
+  [PASS] control -> other:8080 DENIED by the policy (connection dropped: timed out)
+
+=== 6. L7 HTTP policy: the same allow and deny for the sandbox pod and an ordinary pod ===
+  [PASS] a cilium-envoy pod is Running on the sandbox node (<SANDBOX_NODE>), not just on the DaemonSet overall
+  [PASS] nitro -> api:8080/ ALLOWED by the L7 policy, proxy forwarded (endpoint <NITRO_ENDPOINT_ID> :8080/: request verdict=Forwarded, response code=200 (wanted Forwarded/200))
+  [PASS] nitro -> api:8080/admin DENIED by the L7 policy, proxy answered 403 not a timeout (endpoint <NITRO_ENDPOINT_ID> /admin: request verdict=Denied, response code=403 (wanted Denied/403))
+  [PASS] neighbor -> api:8080/ ALLOWED by the L7 policy, proxy forwarded (endpoint <NEIGHBOR_ENDPOINT_ID> :8080/: request verdict=Forwarded, response code=200 (wanted Forwarded/200))
+  [PASS] neighbor -> api:8080/admin DENIED by the L7 policy, proxy answered 403 not a timeout (endpoint <NEIGHBOR_ENDPOINT_ID> /admin: request verdict=Denied, response code=403 (wanted Denied/403))
+  [PASS] control -> api:8080/ ALLOWED by the L7 policy, proxy forwarded (endpoint <CONTROL_ENDPOINT_ID> :8080/: request verdict=Forwarded, response code=200 (wanted Forwarded/200))
+  [PASS] control -> api:8080/admin DENIED by the L7 policy, proxy answered 403 not a timeout (endpoint <CONTROL_ENDPOINT_ID> /admin: request verdict=Denied, response code=403 (wanted Denied/403))
+  [PASS] nitro -> server:8080 is still ALLOWED after the L7 rules
+  [PASS] nitro -> other:8080 is still DENIED after the L7 rules (stage 5's verdict is unchanged)
+
+=== 7. FQDN (toFQDNs) policy: the same allow and deny for the sandbox pod and an ordinary pod ===
+  [PASS] nitro -> checkip.amazonaws.com ALLOWED by the toFQDNs policy
+  [PASS] nitro -> example.net DENIED by the policy (connection dropped: timed out, not a DNS failure)
+  [PASS] nitro: example.net still RESOLVES (4 answer record(s); the deny is the egress policy, not a broken lookup)
+  [PASS] nitro: this lane's node agent fqdn cache recorded a DNS lookup of checkip.amazonaws.com (endpoint <NITRO_ENDPOINT_ID>)
+  [PASS] neighbor -> checkip.amazonaws.com ALLOWED by the toFQDNs policy
+  [PASS] neighbor -> example.net DENIED by the policy (connection dropped: timed out, not a DNS failure)
+  [PASS] neighbor: example.net still RESOLVES (4 answer record(s); the deny is the egress policy, not a broken lookup)
+  [PASS] neighbor: this lane's node agent fqdn cache recorded a DNS lookup of checkip.amazonaws.com (endpoint <NEIGHBOR_ENDPOINT_ID>)
+  [PASS] control -> checkip.amazonaws.com ALLOWED by the toFQDNs policy
+  [PASS] control -> example.net DENIED by the policy (connection dropped: timed out, not a DNS failure)
+  [PASS] control: example.net still RESOLVES (4 answer record(s); the deny is the egress policy, not a broken lookup)
+  [PASS] control: this lane's node agent fqdn cache recorded a DNS lookup of checkip.amazonaws.com (endpoint <CONTROL_ENDPOINT_ID>)
+  [PASS] control: pod server (not selected by the policy) still reaches example.net
+  [PASS] nitro -> server:8080 is still ALLOWED (the toFQDNs and DNS rules changed nothing else)
+
+=== 8. Every AWS resource the cluster owns is tagged auto-delete=no ===
+  [PASS] ENIs in <VPC_ID> (control plane, nodes, Cilium): 6 ENIs, 0 without auto-delete=no
+    49 resources, 0 without auto-delete=no, 0 coverage gaps
+  [PASS] tag audit: 49 resources, 0 without auto-delete=no, 0 coverage gaps
+  [PASS] tracked files under this sample carry no account-specific values: checked 16 files, 0 account-specific values
+
+RESULT: Cilium on Ubuntu, cluster nitro-cilium-ubuntu: 94/94 assertions passed.
 ```
 
 The both-ways negative controls for the L7 and FQDN denies prove the drop is each rule and
