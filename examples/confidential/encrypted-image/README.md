@@ -420,6 +420,8 @@ when {
 because the generator also writes the digest into a comment and a grep would pass on a
 policy that did not enforce it.
 
+See [using a signed image instead of a pinned image reference](../signer-policy/README.md).
+
 The generator prints the measurement the guest will extend this policy into, and a
 ready-to-paste KMS condition with it. `PCR17` measures the policy, and `PCR8` measures the
 certificate that signed the sandbox environment image. The condition always uses

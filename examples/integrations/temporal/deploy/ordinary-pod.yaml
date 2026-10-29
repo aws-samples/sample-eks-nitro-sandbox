@@ -1,0 +1,27 @@
+# The same container as the sandbox the workflow creates, with the single line
+# `runtimeClassName: isolated-sandbox` left out. It is what the page's readings
+# are compared against: same image, same command, same node, no sandbox.
+#
+# It is pinned to the node the workflow's sandbox ran on, so the comparison is
+# not confounded by two different nodes. scripts/compare-sandbox.sh creates it,
+# reads it and deletes it by this exact name.
+#
+# __NAMESPACE__ and __NODE_NAME__ are filled in at apply time. Never apply this
+# file with a placeholder in place.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ordinary-pod
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/managed-by: temporal
+spec:
+  nodeName: __NODE_NAME__
+  restartPolicy: Never
+  containers:
+    - name: workspace
+      image: public.ecr.aws/docker/library/busybox:1.36
+      imagePullPolicy: IfNotPresent
+      command: ["sh", "-c", "mkdir -p /workspace && exec sleep infinity"]
+      # No CPU or memory requests or limits, the same as the sandbox, so the
+      # only difference between the two pods is the runtime class.

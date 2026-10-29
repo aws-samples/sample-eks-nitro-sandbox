@@ -1,0 +1,97 @@
+# Helm values for the Temporal server, chart temporal 1.7.0 (appVersion 1.32.0).
+#
+# Part of the reader's install step, not of this sample's scripts: a Temporal
+# server is a shared install, so a server already on your cluster is reused as it
+# stands and these values are not applied over it.
+#
+# The datastore is the single PostgreSQL in postgresql.yaml, serving both the
+# default store and the visibility store through SQL visibility. Chart 1.7.0
+# ships no database and no add-on subcharts at all, so there is nothing here to
+# turn off: Cassandra, MySQL, PostgreSQL, Prometheus, Grafana and Elasticsearch
+# were all removed as subcharts in 1.0.0-rc.2, and the chart fails the render if
+# you still set their top-level keys.
+#
+# The password is never in this file, and never on a command line. Both stores
+# name the Secret `temporal-postgresql`, key `password`, which the page has you
+# create from standard input.
+
+server:
+  # One replica of each server role. The four roles stay separate, so the Web UI
+  # and the logs look like a real deployment.
+  replicaCount: 1
+  config:
+    # The chart default is "debug,info", which is noisy; info is enough to read
+    # a run.
+    logLevel: "info"
+    persistence:
+      defaultStore: default
+      visibilityStore: visibility
+      # numHistoryShards CANNOT be changed after the first install: changing it
+      # on a live datastore corrupts it. Pinned here at the chart's default and
+      # left alone.
+      numHistoryShards: 512
+      datastores:
+        default:
+          sql:
+            pluginName: postgres12
+            databaseName: temporal
+            connectAddr: "temporal-postgresql:5432"
+            connectProtocol: "tcp"
+            user: temporal
+            # The password comes from the Secret, so it is neither in this file
+            # nor in the rendered server config.
+            existingSecret: temporal-postgresql
+            secretKey: password
+            # The chart's schema Job sets up and updates this store's schema.
+            # Without this the Job does nothing and the server starts against an
+            # empty database.
+            manageSchema: true
+            maxConns: 20
+            maxIdleConns: 20
+            maxConnLifetime: "1h"
+        visibility:
+          sql:
+            pluginName: postgres12
+            databaseName: temporal_visibility
+            connectAddr: "temporal-postgresql:5432"
+            connectProtocol: "tcp"
+            user: temporal
+            existingSecret: temporal-postgresql
+            secretKey: password
+            manageSchema: true
+            maxConns: 10
+            maxIdleConns: 10
+            maxConnLifetime: "1h"
+    namespaces:
+      # Create the Temporal namespace the sample's runs land in. The sample's own
+      # scripts never create it, because this server is a shared install:
+      # setup.sh checks for it and stops with the command when it is missing.
+      create: true
+      namespace:
+        - name: nitro-sandbox
+          retention: 3d
+  frontend:
+    service:
+      # ClusterIP only, reached with kubectl port-forward. No Ingress,
+      # LoadBalancer or NodePort anywhere in this sample.
+      type: ClusterIP
+    ingress:
+      enabled: false
+
+# The admin tools pod: how you run `temporal operator ...` and
+# `temporal workflow ...` against the server from inside the cluster.
+admintools:
+  enabled: true
+
+web:
+  enabled: true
+  service:
+    # ClusterIP, so the Web UI is reached only with kubectl port-forward.
+    type: ClusterIP
+  ingress:
+    enabled: false
+
+schema:
+  # The schema Job runs as a Helm pre-install hook, so PostgreSQL has to be
+  # running and ready before `helm install`.
+  useHelmHooks: true
