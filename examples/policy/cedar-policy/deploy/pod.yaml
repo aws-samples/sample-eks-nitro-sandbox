@@ -35,6 +35,7 @@ spec:
       # pins the digest the tag resolves to at generation time, and the guest
       # enforces that digest. The tag is the amazonlinux minimal image.
       image: public.ecr.aws/amazonlinux/amazonlinux:minimal
+      imagePullPolicy: IfNotPresent
       # Exec is refused by the generated policy, so the pod prints its proof to the
       # logs at start-up instead. Two things: that it ran in a sandbox (the guest's
       # own kernel build, its uptime because the VM booted with the pod, and its

@@ -1,0 +1,95 @@
+# The build the optional BuildKit Job runs: the same build context as the Docker-in-Docker
+# Job, built by a standalone buildkitd and exported as an OCI image onto the cache volume.
+#
+# scripts/setup.sh renders <NAMESPACE>.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildkit-build-script
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: docker-builds
+data:
+  build.sh: |
+    #!/bin/sh
+    # BuildKit is a builder, not a runtime: this Job builds the image and exports it. The
+    # privileged buildkitd, and every base image layer it pulls, stay inside this pod's
+    # sandbox.
+    set -eu
+
+    IMAGE="${IMAGE:-hello-nitro:v1}"
+    TARBALL=/var/lib/buildkit/hello-nitro.oci.tar
+    METADATA=/var/lib/buildkit/build-metadata.json
+
+    echo ">>> starting buildkitd (its state and cache on the EBS volume)"
+    buildkitd --root /var/lib/buildkit/state --addr unix:///run/buildkit/buildkitd.sock \
+      >/var/lib/buildkit/buildkitd.log 2>&1 &
+    i=0
+    until buildctl debug workers >/dev/null 2>&1; do
+      i=$((i + 1))
+      [ "$i" -lt 150 ] || { echo ">>> ERROR: buildkitd did not answer within 300s"; exit 1; }
+      sleep 2
+    done
+    buildctl debug workers
+
+    echo ">>> writing the build context"
+    mkdir -p /workspace && cd /workspace
+    cat > main.go <<'GO'
+    package main
+
+    import (
+    	"fmt"
+    	"os"
+    	"runtime"
+    )
+
+    func main() {
+    	host, _ := os.Hostname()
+    	fmt.Printf("hello from a docker build inside a Nitro sandbox (%s/%s, container %s)\n",
+    		runtime.GOOS, runtime.GOARCH, host)
+    }
+    GO
+
+    cat > go.mod <<'MOD'
+    module hello-nitro
+
+    go 1.27
+    MOD
+
+    cat > Dockerfile <<'DF'
+    FROM public.ecr.aws/docker/library/golang:1.27.2-alpine3.24 AS build
+    WORKDIR /src
+    COPY go.mod main.go ./
+    RUN CGO_ENABLED=0 go build -o /hello main.go
+    FROM public.ecr.aws/docker/library/alpine:3.24.3
+    COPY --from=build /hello /hello
+    ENTRYPOINT ["/hello"]
+    DF
+
+    # An earlier run's artifacts sit on the same volume, so remove the ones this run is read
+    # by: otherwise a failed export could be "proved" by the tarball an earlier run left.
+    rm -f "$TARBALL" "$METADATA"
+
+    echo ">>> buildctl build -> OCI image at $TARBALL"
+    t0=$(date +%s)
+    buildctl build --frontend dockerfile.v0 \
+      --local context=/workspace \
+      --local dockerfile=/workspace \
+      --metadata-file "$METADATA" \
+      --output "type=oci,name=$IMAGE,dest=$TARBALL"
+    echo ">>> build finished in $(( $(date +%s) - t0 ))s"
+
+    [ -f "$TARBALL" ] || { echo ">>> ERROR: $TARBALL was not created"; exit 1; }
+    # buildctl does not fsync the export, and the tarball has been seen as 0 bytes from a
+    # later pod when the node went away first, so flush it before reporting success.
+    sync
+    ls -l "$TARBALL"
+    DIGEST=$(sed -n 's/.*"containerimage.digest": *"\([^"]*\)".*/\1/p' "$METADATA" | head -1)
+    echo ">>> exported digest=${DIGEST:-<none>}"
+
+    echo ">>> the sandbox this build ran in: its own kernel, boot and virtio disks"
+    uname -rv
+    echo "uptime: $(cut -d' ' -f1 /proc/uptime)s"
+    echo "block devices:"; ls /sys/block
+
+    echo ">>> DONE"

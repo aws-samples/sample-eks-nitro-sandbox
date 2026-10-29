@@ -1,0 +1,265 @@
+# Copy this file into your test repository's .github/workflows/ and trigger it.
+#
+# It stands in for an untrusted pull request. On purpose it does the two things
+# that make CI dangerous: a `docker build` of an attacker-shaped Dockerfile,
+# which needs a real Docker daemon, and a unit-test run, which is arbitrary code
+# execution. Both run on the job's own in-pod Docker daemon, inside the job's
+# own sandbox.
+#
+# It is an untrusted-shaped inline workload: it does not check out pull-request
+# contents. The property shown is "a privileged build plus arbitrary code,
+# contained to a per-job sandbox". The sample's page describes running a genuine
+# fork pull request instead.
+#
+# Every step here runs under the sample's egress policy, which allows only DNS,
+# the GitHub hosts this workflow needs and the base-image registry. So no step
+# may reach a package index: the build does not run `apk add`, and the tests use
+# the Python standard library rather than installing pytest. Adding either would
+# need its host on the policy, which the sample's page explains.
+#
+# `runs-on` must equal the Helm release name of the runner scale set, which is
+# RUNNER_SCALE_SET_NAME in the sample's .env (default: github-actions-nitro).
+name: untrusted-pr
+
+# The job's own GITHUB_TOKEN is handed to it in the job message, not in the pod
+# spec, so the sample's "no credential in the runner pod" check cannot see it
+# and it is the credential untrusted code would actually reach. Its reach is set
+# here. Without this block the token gets the repository's default, which on
+# many repositories includes contents: write.
+#
+# This workflow itself needs nothing at all: it has no `uses:` step and checks
+# nothing out, so `permissions: {}` would run it. `contents: read` is here
+# because the sample's page documents running a genuine fork pull request
+# instead, which adds a checkout step, and actions/checkout uses this token.
+#
+# It does NOT bound ACTIONS_RUNTIME_TOKEN, which reaches the repository's
+# Actions cache and this run's artifacts; `permissions:` does not govern that
+# one. The sample's page, Step 8, says which half of that the egress policy
+# limits and which it does not.
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      hold_seconds:
+        description: >-
+          Seconds to hold the runner pod open at the end, so the sample's page
+          can inspect it while it is still running. ARC deletes the pod as soon
+          as the job ends.
+        required: false
+        default: "240"
+  pull_request:
+
+jobs:
+  untrusted-build-and-test:
+    runs-on: github-actions-nitro
+    steps:
+      # 1. What the job can see of the machine it runs on. The page compares
+      #    these three readings with an ordinary pod's on the same node.
+      - name: Sandbox evidence
+        run: |
+          echo "=== SANDBOX-EVIDENCE-BEGIN ==="
+          echo "kernel:        $(uname -rv)"
+          echo "uptime:        $(cut -d' ' -f1 /proc/uptime) seconds"
+          echo "block devices: $(ls /sys/block | tr '\n' ' ')"
+          echo "product name:  $(cat /sys/class/dmi/id/product_name 2>/dev/null || echo unreadable)"
+          echo "cpus:          $(nproc)"
+          grep MemTotal /proc/meminfo
+          echo "=== SANDBOX-EVIDENCE-END ==="
+
+      # 2. No ADMIN credential reached this pod: no github_token,
+      #    github_app_private_key or AWS_ variable. The job does hold its own
+      #    GITHUB_TOKEN, handed to it in the job message rather than in the pod
+      #    spec, which is why this step cannot see it; the page's Step 8 says
+      #    what that token is and what bounds it. Printed by NAME, never by
+      #    value.
+      - name: Admin credentials visible to the job, by name
+        run: |
+          echo "=== CREDENTIAL-NAMES-BEGIN ==="
+          echo "--- GitHub admin credential variable names (expect none) ---"
+          # -x matches a WHOLE variable name. Unanchored, 'github_pat' also
+          # matches GITHUB_PATH, which every Actions job sets and which is not a
+          # credential: a live run printed it under "expect none", which reads
+          # like a leak. Names are listed in full, never values.
+          env | cut -d= -f1 \
+            | grep -ixE 'github_token|github_app_id|github_app_installation_id|github_app_private_key|github_pat' \
+            || echo "none"
+          echo "--- AWS variable names (expect none) ---"
+          env | cut -d= -f1 | grep -E '^AWS_' || echo "none"
+          echo "=== CREDENTIAL-NAMES-END ==="
+
+      # 3. The privileged build. The Dockerfile is written here rather than
+      #    checked out so the job is self-contained. It installs no package:
+      #    the egress policy allows no package index, by design.
+      - name: Untrusted docker build
+        run: |
+          echo "=== DOCKER-BUILD-BEGIN ==="
+          mkdir -p /tmp/app && cd /tmp/app
+          cat > Dockerfile <<'EOF'
+          FROM public.ecr.aws/docker/library/alpine:3.20
+          RUN echo "building untrusted pull request image"
+          RUN id && echo "UNTRUSTED-BUILD-RAN" > /built.txt
+          CMD ["cat", "/built.txt"]
+          EOF
+          docker build -t untrusted-pr:ci .
+          docker run --rm untrusted-pr:ci
+          echo "DOCKER-BUILD-CONFIRMED"
+          echo "=== DOCKER-BUILD-END ==="
+
+      # 4. Arbitrary code execution, in a throwaway container on the job's own
+      #    daemon, which is also how untrusted test code should be run. It uses
+      #    the standard library's unittest, so it needs no package index.
+      - name: Unit tests
+        run: |
+          echo "=== UNIT-TESTS-BEGIN ==="
+          mkdir -p /tmp/tests && cd /tmp/tests
+          cat > test_demo.py <<'EOF'
+          import unittest
+
+
+          def add(a, b):
+              return a + b
+
+
+          class TestDemo(unittest.TestCase):
+              def test_add(self):
+                  self.assertEqual(add(2, 3), 5)
+
+              def test_upper(self):
+                  self.assertEqual("nitro".upper(), "NITRO")
+
+
+          if __name__ == "__main__":
+              unittest.main(verbosity=2)
+          EOF
+          # The test file goes in on stdin: a bind mount would resolve against
+          # the dind daemon's filesystem, not this container's /tmp.
+          docker run --rm -i public.ecr.aws/docker/library/python:3.12-alpine \
+            sh -c 'cat > /test_demo.py && python /test_demo.py' \
+            < test_demo.py
+          echo "UNIT-TESTS-PASSED"
+          echo "=== UNIT-TESTS-END ==="
+
+      # 5. The egress policy, from inside the runner. One host it must allow and
+      #    two it must refuse, so a pass cannot be confused with a policy that
+      #    allows everything.
+      - name: Egress policy, both ways
+        run: |
+          echo "=== EGRESS-BEGIN ==="
+          for url in https://api.github.com https://example.com https://registry-1.docker.io; do
+            # A refused host is the point of this step, so keep curl's exit
+            # status instead of letting it end the step: GitHub runs this with
+            # `bash -e`, where an unguarded non-zero exit would stop here.
+            rc=0
+            curl -sS -o /dev/null --connect-timeout 8 "$url" 2>/dev/null || rc=$?
+            echo "$url -> exit $rc"
+          done
+          echo "=== EGRESS-END ==="
+
+      # 6. Defense in depth, not the proof. These fail closed so a regression
+      #    that did expose the node breaks the job rather than passing quietly.
+      #    Read the page's Step 9 for what they are and are not worth: the
+      #    load-bearing evidence is step 1 above.
+      - name: Escape probes
+        run: |
+          echo "=== ESCAPE-PROBES-BEGIN ==="
+          verdict=0
+
+          # a) the node's instance-metadata credentials. Note this one is
+          #    answered by the egress policy, which does not allow
+          #    169.254.169.254, as well as by the sandbox.
+          tok=$(curl -s --max-time 3 -X PUT "http://169.254.169.254/latest/api/token" \
+                  -H "X-aws-ec2-metadata-token-ttl-seconds: 60" 2>/dev/null || true)
+          hdr=""; [ -n "$tok" ] && hdr="-H X-aws-ec2-metadata-token:$tok"
+          role=$(curl -s --max-time 3 $hdr \
+                  http://169.254.169.254/latest/meta-data/iam/security-credentials/ 2>/dev/null \
+                  | head -n1 | tr -d '\r' || true)
+          creds=""
+          if [ -n "$role" ]; then
+            creds=$(curl -s --max-time 3 $hdr \
+                    "http://169.254.169.254/latest/meta-data/iam/security-credentials/$role" 2>/dev/null || true)
+          fi
+          if printf '%s' "$creds" | grep -q '"AccessKeyId"'; then
+            echo "node-role-credentials: REACHED (bad)"; verdict=1
+          else
+            echo "node-role-credentials: refused"
+          fi
+
+          # b) the node's own EBS volumes, which are nvme devices, from the
+          #    unprivileged runner container.
+          if ls /dev/nvme* >/dev/null 2>&1; then
+            echo "host-nvme-devices: VISIBLE (bad)"; verdict=1
+          else
+            echo "host-nvme-devices: not visible"
+          fi
+
+          # c) the same read from a PRIVILEGED container on the job's own
+          #    daemon. This is the one that matters: in an ordinary pod a
+          #    privileged container does see the node's nvme devices, so a
+          #    sandbox is what makes this read come back empty.
+          #
+          #    It must fail CLOSED. An empty result because `docker run` itself
+          #    failed, for instance the daemon not being up or the image pull
+          #    being refused, would otherwise read as "contained" while nothing
+          #    was measured. The container prints a marker, and a missing marker
+          #    or a non-zero exit is a failure, not a pass.
+          echo "--- privileged container on the job's own daemon ---"
+          priv_rc=0
+          priv=$(docker run --rm --privileged \
+                   public.ecr.aws/docker/library/alpine:3.20 \
+                   sh -c 'echo PRIV-PROBE-RAN; ls /dev/nvme* 2>/dev/null; ls /sys/block | tr "\n" " "' \
+                 2>&1) || priv_rc=$?
+          echo "privileged sees: $priv"
+          if [ "$priv_rc" -ne 0 ] || ! printf '%s' "$priv" | grep -q 'PRIV-PROBE-RAN'; then
+            echo "privileged-host-nvme: PROBE DID NOT RUN (exit $priv_rc) - not a pass"; verdict=1
+          elif printf '%s' "$priv" | grep -q 'nvme'; then
+            echo "privileged-host-nvme: VISIBLE (bad)"; verdict=1
+          else
+            echo "privileged-host-nvme: not visible"
+          fi
+
+          # d) the node's container runtime socket
+          if [ -S /run/containerd/containerd.sock ] || [ -S /host/run/containerd/containerd.sock ]; then
+            echo "node-containerd-socket: VISIBLE (bad)"; verdict=1
+          else
+            echo "node-containerd-socket: not visible"
+          fi
+
+          echo "=== ESCAPE-PROBES-END ==="
+          if [ "$verdict" -eq 0 ]; then
+            echo "ESCAPE-PROBES: all contained"
+          else
+            echo "ESCAPE-PROBES: something reached the node"
+            exit 1
+          fi
+
+      # 7. Hold the pod open. ARC deletes the runner pod as soon as the job
+      #    ends, so without this there is no live pod left to inspect, and the
+      #    page's Step 6 and Step 8 commands would return nothing.
+      - name: Hold the pod open for inspection
+        # The input goes in through the environment, never pasted into the
+        # script text. A `${{ }}` expression inside `run:` is substituted before
+        # the shell parses it, so an input such as `1"; curl ...; "` would run as
+        # code. That is GitHub's documented script-injection pattern, and a
+        # sample about running untrusted CI should not show it.
+        env:
+          HOLD_SECONDS: ${{ github.event.inputs.hold_seconds }}
+        run: |
+          secs="${HOLD_SECONDS:-240}"
+          # Digits only, and capped: a bad or huge value would otherwise hold a
+          # sandbox and a maxRunners slot until the job timeout. The length test
+          # comes first, because a digit string too long for an integer makes
+          # `[ -gt ]` complain instead of comparing.
+          case "$secs" in
+            ''|*[!0-9]*) echo "hold_seconds is not a number; using 240"; secs=240 ;;
+          esac
+          if [ "${#secs}" -gt 4 ] || [ "$secs" -gt 900 ]; then
+            echo "hold_seconds above 900; using 900"
+            secs=900
+          fi
+          echo "=== HOLDING-POD-OPEN for ${secs}s ==="
+          echo "Inspect it now, in the namespace the sample installed the runners in:"
+          echo "  kubectl get pods -n <ARC_RUNNERS_NAMESPACE> -l actions-ephemeral-runner=True"
+          sleep "$secs"
+          echo "=== HOLD-COMPLETE ==="

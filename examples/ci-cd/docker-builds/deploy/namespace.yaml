@@ -1,0 +1,24 @@
+# The sample's namespace and the ServiceAccount the build pods run as.
+#
+# scripts/setup.sh renders <NAMESPACE> with the namespace you set, creates the namespace
+# only when it is absent (so it never relabels a namespace another workload owns), and then
+# applies the ServiceAccount.
+#
+# The ServiceAccount carries no permission of its own. It becomes an identity that can push
+# to Amazon ECR only when scripts/ecr-setup.sh gives it an EKS Pod Identity association with
+# the sample's role, and the build pods name it either way so the optional push needs no
+# change to the Job.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: docker-builds
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: docker-builds-builder
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: docker-builds

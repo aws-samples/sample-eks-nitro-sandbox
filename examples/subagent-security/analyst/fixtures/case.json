@@ -1,0 +1,35 @@
+{
+  "case_id": "rfp-001",
+  "description": "equipping a new customer service office with 100 workstations",
+  "requirements": {
+    "budget_usd": 125000,
+    "max_delivery_days": 30,
+    "min_warranty_months": 24
+  },
+  "suppliers": [
+    {
+      "id": "northstar",
+      "name": "Northstar Office Systems",
+      "price_usd": 120000,
+      "delivery_days": 28,
+      "warranty_months": 36,
+      "source": "proposals/rfp-001/northstar.json"
+    },
+    {
+      "id": "harbor",
+      "name": "Harbor Supply Partners",
+      "price_usd": 105000,
+      "delivery_days": 45,
+      "warranty_months": 24,
+      "source": "proposals/rfp-001/harbor.json"
+    },
+    {
+      "id": "cedar",
+      "name": "Cedar Workplace Group",
+      "price_usd": 130000,
+      "delivery_days": 21,
+      "warranty_months": 36,
+      "source": "proposals/rfp-001/cedar.json"
+    }
+  ]
+}

@@ -1,0 +1,163 @@
+# VS Code in the browser (code-server) in a Nitro sandbox, on a persistent EBS workspace.
+#
+# One agent-sandbox Sandbox. Its pod runs the prebuilt code-server image as a
+# non-root user, serves the VS Code workbench on port 8080 inside the guest, and
+# keeps the project folder on an Amazon EBS volume from volumeClaimTemplates.
+#
+# Nothing publishes that port outside the cluster: there is no Ingress, no
+# LoadBalancer and no NodePort anywhere in this sample. service: true asks the
+# controller for a headless ClusterIP Service, and the way in is
+# `kubectl port-forward` from the operator's own machine. The egress policy
+# refuses every connection from the pod network; see its header for the one
+# thing a network policy cannot deny, the pod's own node.
+#
+# The editor's password is an argon2 hash the operator generated on their own
+# machine, held in the Kubernetes Secret named below. The pod spec carries only a
+# reference to it: no password and no hash appear in this file.
+#
+# __NAMESPACE__, __STORAGE_CLASS__ and __IMAGE__ are filled in at apply time by
+# scripts/setup.sh, so an overridden name reaches this object too. Never apply
+# this file with the placeholders in place.
+apiVersion: agents.x-k8s.io/v1beta1
+kind: Sandbox
+metadata:
+  name: ide
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: ide
+spec:
+  # Ask the controller for the Sandbox's headless Service, so the editor has a
+  # stable in-cluster name. It is a ClusterIP Service with no cluster IP, which
+  # publishes nothing outside the cluster.
+  service: true
+  podTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ide
+        # The egress network policy selects the pod by this label.
+        app: ide
+      annotations:
+        # The workspace claim is ReadWriteOncePod, so the EBS volume is attached
+        # to one node at a time. Pin the node while the pod runs, so Auto Mode
+        # does not consolidate it out from under the attachment.
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      # The one line that puts the pod in a Nitro sandbox. No node selector,
+      # toleration or sidecar: the RuntimeClass carries the scheduling
+      # constraints, and EKS Auto Mode brings up a sandbox-capable node.
+      runtimeClassName: isolated-sandbox
+      # The editor calls no Kubernetes API, so it mounts no ServiceAccount token.
+      automountServiceAccountToken: false
+      securityContext:
+        # code-server runs as uid 1000 (coder) in this image. runAsUser pins that
+        # identity, and runAsNonRoot makes "never root" explicit: the kubelet
+        # refuses to start the container if the image would resolve to root.
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        # A freshly provisioned EBS volume mounts as root:root 0755. fsGroup has
+        # the kubelet set the volume's group owner and make it group-writable on
+        # mount, so uid 1000 can write the workspace with no init container and
+        # no privileged container.
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: code-server
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          # The image's entrypoint runs code-server with its own default flags
+          # appended ("--bind-addr 0.0.0.0:8080 ."). Naming the entrypoint here
+          # replaces those defaults with the flags below, so the command line the
+          # editor runs with is exactly this and nothing is passed twice.
+          command: ["/usr/bin/entrypoint.sh"]
+          args:
+            # Listen on the pod's own interface inside the guest, not only on the
+            # guest's loopback: a kubectl port-forward stream reaches the editor
+            # from the pod's own node, which code-server logs as a connection
+            # from the node's address, so the socket has to accept the pod's
+            # address too. Nothing publishes the port outside the cluster, and
+            # the egress policy denies all ingress from the pod network, so the
+            # port-forward tunnel is the way in.
+            - --bind-addr=0.0.0.0:8080
+            # Keep the editor off the network it does not need: no telemetry and
+            # no update check, so the egress policy has fewer hosts to allow.
+            - --disable-telemetry
+            - --disable-update-check
+            # The folder the workbench opens, which is the EBS workspace below.
+            - /home/coder/project
+          env:
+            # code-server reads the argon2 hash from this variable and prefers it
+            # over a plaintext password (code-server FAQ, "Can I store my password
+            # hashed?"). The value comes from the Secret, so the hash is not in
+            # this file; the plaintext never leaves the operator's machine.
+            - name: HASHED_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ide-password
+                  key: hashed-password
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            # Ready on the Sandbox means its pod is Ready, and an IDE takes longer
+            # to serve than it takes to start. Gate Ready on code-server's own
+            # /healthz endpoint, so `kubectl wait` waits for a serving editor.
+            # The kubelet probes from the node, which Kubernetes always allows
+            # even with all ingress denied.
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          volumeMounts:
+            # This name matches the volumeClaimTemplates entry below. The
+            # controller synthesizes the pod volume; do not add a matching
+            # spec.volumes entry yourself.
+            - name: workspace
+              mountPath: /home/coder/project
+          resources:
+            # The guest VM is sized from the pod's requests, and the small
+            # default guest is not enough for an IDE: code-server's Node.js
+            # server plus the workbench's extension host need the memory below.
+            # Most samples on this site set no requests at all.
+            requests:
+              cpu: "1"
+              memory: 2Gi
+          securityContext:
+            # The sandbox already runs this pod in its own VM; these keep the
+            # container itself least-privileged. Nothing here builds an image, so
+            # no capability and no privileged container is needed. A variant that
+            # built a devcontainer at boot would need root and privileged, which
+            # is the contrast the page draws.
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+  # volumeClaimTemplates is immutable after the Sandbox is created (CEL-validated
+  # on the CRD). Changing the size, class or access mode means deleting and
+  # recreating the Sandbox, which deletes the workspace.
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+        labels:
+          app.kubernetes.io/name: ide
+      spec:
+        accessModes:
+          # ReadWriteOncePod, not ReadWriteOnce: only one pod may mount the
+          # workspace at a time. Plain ReadWriteOnce promises only one node, so
+          # two pods on that node could mount the same workspace together.
+          - ReadWriteOncePod
+        # The class setup chose, rendered in here at apply time. A StorageClass is
+        # chosen, never changed: setup uses the cluster's default when exactly one
+        # fits (ebs.csi.eks.amazonaws.com, gp3, encrypted), otherwise the sample's
+        # own class ide-gp3 from deploy/storage-class.yaml.
+        storageClassName: __STORAGE_CLASS__
+        resources:
+          requests:
+            # Rendered from WORKSPACE_SIZE at apply time, which is also the value
+            # setup compares with an existing Sandbox's claim template.
+            storage: __STORAGE_SIZE__
+# The resulting PVC is named "<template name>-<sandbox name>", that is
+# workspace-ide, and carries the Sandbox as its ownerReference. Deleting the pod
+# leaves the claim and the EBS volume alone, which is why the workspace survives a
+# pod delete and recreate; deleting the Sandbox deletes both.

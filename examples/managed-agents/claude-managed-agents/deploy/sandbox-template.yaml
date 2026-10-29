@@ -2,8 +2,8 @@
 #
 # Every bash, read, write, edit, glob and grep call Claude makes runs in a pod
 # stamped from this template, one session per pod. runtimeClassName gives each
-# pod its own VM in a Nitro Partition, so the commands the model chose run on a
-# kernel no other pod shares.
+# pod its own Nitro sandbox, a lightweight VM, so the commands the model chose
+# run on a kernel no other pod shares.
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
@@ -41,7 +41,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: worker
-          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/claude-sandbox-worker:latest
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/claude-sandbox-worker:v1
+          imagePullPolicy: IfNotPresent
           args: ["serve"]
           ports:
             - name: dispatch

@@ -1,6 +1,16 @@
 # web-blocked: a stock HTTP server, identical to web-allowed, that the egress policy
 # will NOT allow the clients to reach. It is an ordinary pod reached by its pod IP on
 # the ClusterIP Service's port.
+#
+# The readiness/liveness probe is a kubelet-local TCP connect to the container port, so
+# web-blocked is still reachable from the clients BEFORE the policy is applied: the probe
+# does not run through the egress NetworkPolicy and does not change the comparison. After
+# the policy, the clients are refused web-blocked while the kubelet's own probe keeps the
+# pod Ready.
+#
+# python -m http.server runs as an arbitrary non-root UID, serves its working directory
+# (/srv) read-only, and needs no Linux capability on a port above 1024, so the container
+# runs with a read-only root filesystem, all capabilities dropped and a fixed high UID.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -8,13 +18,34 @@ metadata:
   labels:
     app: web-blocked
 spec:
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
   containers:
     - name: web
       image: public.ecr.aws/docker/library/python:3.12-alpine
+      imagePullPolicy: IfNotPresent
       command: ["python3", "-m", "http.server", "8080"]
       workingDir: /srv
       ports:
         - { containerPort: 8080 }
+      readinessProbe:
+        tcpSocket: { port: 8080 }
+        initialDelaySeconds: 2
+        periodSeconds: 10
+      livenessProbe:
+        tcpSocket: { port: 8080 }
+        initialDelaySeconds: 2
+        periodSeconds: 10
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
       resources:
         requests: { cpu: "100m", memory: 64Mi }
         limits:   { cpu: "250m", memory: 128Mi }

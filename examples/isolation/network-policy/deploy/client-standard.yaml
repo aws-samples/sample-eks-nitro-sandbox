@@ -3,10 +3,11 @@
 # app: netpol-client label, exactly as it selects the sandboxed client.
 #
 # This pod is identical to client-sandboxed in every field the policy could select on
-# (image, command, resources, the app label). The ONLY difference between the two
-# clients is that client-sandboxed sets runtimeClassName: isolated-sandbox and this one
-# does not -- so any difference in how the policy affects them is attributable to the
-# sandbox path and nothing else.
+# (image, command, resources, the app label) and in its hardening (securityContext,
+# dropped capabilities, read-only root FS, no mounted API token). The ONLY difference
+# between the two clients is that client-sandboxed sets runtimeClassName: isolated-sandbox
+# and this one does not -- so any difference in how the policy affects them is
+# attributable to the sandbox path and nothing else.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -14,15 +15,28 @@ metadata:
   labels:
     app: netpol-client        # the egress NetworkPolicy selects this label
 spec:
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
   containers:
     - name: client
       image: public.ecr.aws/docker/library/alpine:3.20
+      imagePullPolicy: IfNotPresent
       command: ["sh", "-c"]
       args:
         - |
           echo "kernel:  $(uname -r)"
           echo "disks:   $(ls /sys/block | tr '\n' ' ')"
           sleep infinity
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
       resources:
         requests: { cpu: "250m", memory: 128Mi }
         limits:   { cpu: "500m", memory: 256Mi }

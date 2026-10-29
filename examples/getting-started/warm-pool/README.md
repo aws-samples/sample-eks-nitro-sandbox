@@ -10,8 +10,8 @@ git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/getting-started/warm-pool
 ```
 
-A sandboxed pod does more work at startup than a regular pod: EC2 creates the Nitro
-Partition and boots the pod's sandbox before the containers start. That adds about 5 to 6 seconds
+A sandboxed pod does more work at startup than a regular pod: containerd launches the pod's
+Nitro sandbox, which boots with its own kernel, before the containers start. That adds about 5 to 6 seconds
 on a warm node. For an interactive agent, where a user or a model is waiting for a code
 cell to run, that is the difference between a tool that feels instant and one that feels
 slow.
@@ -48,6 +48,7 @@ spec:
       containers:
         - name: agent
           image: public.ecr.aws/docker/library/python:3.12-slim
+          imagePullPolicy: IfNotPresent
           command: ["sleep", "infinity"]
           resources:
             requests: { cpu: "1", memory: 768Mi }
@@ -149,7 +150,7 @@ the only wire between them.*
 
 ![A driver pod, the brain, reasons by calling Amazon Bedrock and claims a sandbox from the agent-sandbox controller's SandboxWarmPool; the claim adopts an already-booted warm pod in under 1 second and the pool refills itself in the background; the claimed pod, one of the Nitro sandboxes, the hands, runs the generated code with no network besides loopback while the driver pod talks to it only through the Kubernetes API.](images/figure-3-warm-pool.png)
 
-*Figure 4: Time to first command. A cold start pays for partition creation and image
+*Figure 4: Time to first command. A cold start pays for sandbox creation and image
 pull; a warm-pool claim adopts a sandbox that is already running, in under 1 second.*
 
 ```mermaid
@@ -158,7 +159,7 @@ gantt
     dateFormat  s
     axisFormat  %S s
     section Cold start
-    create partition, boot sandbox :a1, 0, 3s
+    create sandbox, boot its kernel :a1, 0, 3s
     pull image, start containers :a2, after a1, 3s
     first command runs           :milestone, m1, after a2, 0s
     section Warm pool claim

@@ -1,0 +1,23 @@
+# The comparison: the same image and the same three readings, with no runtimeClassName.
+#
+# This pod runs as an ordinary container on the node, so what it reports is the node's
+# kernel, the node's uptime and the instance's NVMe disks. Put beside a job pod's readings,
+# that is what shows a job pod ran in a sandbox of its own.
+#
+# scripts/run-pipeline.sh renders <NAMESPACE> and <NODE_NAME>, so this lands on the same
+# node a job pod ran on: a reading from a different node would compare two unrelated things.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gitlab-ci-ordinary
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: gitlab-ci
+spec:
+  # No runtimeClassName. That one absent line is the whole difference.
+  nodeName: <NODE_NAME>
+  restartPolicy: Never
+  containers:
+    - name: probe
+      image: public.ecr.aws/docker/library/alpine:3.24.3
+      command: ["/bin/sh", "-c", "sleep 600"]
