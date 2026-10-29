@@ -87,9 +87,11 @@ helm upgrade --install cilium "$CILIUM_CHART" --version "$CILIUM_VERSION" --name
 python3 "$PY" preflight-daemonset
 
 step "4/8 launch templates, created with this sample's tags and each node's bootstrap user data"
-# Both templates name an AMI, so EKS adds no user data of its own: each carries Canonical's
-# bootstrap.sh line with the cluster's endpoint, CA and DNS address and the node's labels, and
-# the sandbox node's labels include the two the isolated-sandbox RuntimeClass schedules on.
+# Both templates name an AMI, so EKS adds no user data of its own: each carries one call to
+# Canonical's bootstrap.sh in the order its usage prints, bootstrap.sh [options] <cluster-name>:
+# the cluster's endpoint and CA (always as a pair), its DNS address and the node's labels, then
+# the cluster name last. The sandbox node's labels include the two the isolated-sandbox
+# RuntimeClass schedules on.
 lt_system="$(python3 "$PY" launch-template system | tail -n1)"
 lt_sandbox="$(python3 "$PY" launch-template sandbox | tail -n1)"
 [[ "$lt_system" =~ ^lt-[0-9a-f]{17}$ && "$lt_sandbox" =~ ^lt-[0-9a-f]{17}$ ]] \

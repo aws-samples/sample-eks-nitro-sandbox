@@ -390,20 +390,25 @@ sample's tags from the start.
 **How each node joins, and with which labels.** Both launch templates name an AMI, and
 Amazon EKS adds no user data to a launch template that names one (Amazon EKS User Guide,
 *Customize managed nodes with launch templates*), so each template carries its own: one
-`/etc/eks/bootstrap.sh` line, as the GA node-build bundle's Ubuntu guide has it, with the
-new cluster's API endpoint, CA and DNS address and the node's labels in
-`--kubelet-extra-args '--node-labels=...'`. The labels come from `eksctl/nodegroups.yaml`
-itself, so eksctl and kubelet agree on every label the node group lists. The sandbox node
-carries the two labels the `isolated-sandbox` RuntimeClass (stage 6) schedules on,
-`eks.amazonaws.com/nitro-sandbox=true` and `sandbox.preview/nitro=true`; a node without both
-runs no sandbox pod. Only the second is a node group label: the EKS node group API refuses a
-label key that contains
+`/etc/eks/bootstrap.sh` call, as the GA node-build bundle's Ubuntu guide has it, with the
+new cluster's API endpoint and CA (`--apiserver-endpoint` and `--b64-cluster-ca`, which the
+script accepts only as a pair), its DNS address (`--dns-cluster-ip`) and the node's labels in
+`--kubelet-extra-args '--node-labels=...'`, and the cluster name last. That is the order
+Canonical's EKS bootstrap script prints as its usage, `bootstrap.sh [options] <cluster-name>`.
+The call passes no container runtime option: the system node keeps the image's containerd,
+and #10's build already points the sandbox node's kubelet at the sandbox CRI proxy. The
+labels come from `eksctl/nodegroups.yaml` itself, so eksctl and kubelet agree on every label
+the node group lists. The sandbox node carries the two labels the `isolated-sandbox`
+RuntimeClass (stage 6) schedules on, `eks.amazonaws.com/nitro-sandbox=true` and
+`sandbox.preview/nitro=true`; a node without both runs no sandbox pod. Only the second is a
+node group label: the EKS node group API refuses a label key that contains
 `eks.amazonaws.com/` (as it does `kubernetes.io/` and `k8s.io/`), so kubelet sets
 `eks.amazonaws.com/nitro-sandbox=true` and `eks.amazonaws.com/nodegroup=<name>` on its own
 node from the user data, as the GA bundle's guide does. Before it creates a node group,
 `setup.sh` reads each rendered template back and requires its user data to be, byte for byte,
 the script it renders for the cluster (`check-user-data`), naming any difference in the
-cluster name, endpoint, CA, DNS address, labels or extra lines; and `render-nodegroups`
+cluster name or its position, endpoint, CA (or one of the pair without the other), DNS
+address, labels or extra lines; and `render-nodegroups`
 refuses a sandbox group missing `sandbox.preview/nitro`, a system group carrying either
 RuntimeClass label, and any node group label with one of those three prefixes.
 

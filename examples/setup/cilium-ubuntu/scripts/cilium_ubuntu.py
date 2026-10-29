@@ -445,6 +445,11 @@ def tag_specs(group, *resource_types):
 
 
 BOOTSTRAP = "/etc/eks/bootstrap.sh"
+# Canonical's EKS bootstrap script prints usage: bootstrap.sh [options] <cluster-name>. So the
+# cluster name is its one positional argument and goes last, after every option. It documents
+# --apiserver-endpoint and --b64-cluster-ca as each "only valid when used with" the other.
+BOOTSTRAP_USAGE = "bootstrap.sh [options] <cluster-name>"
+BOOTSTRAP_PAIR = ("--apiserver-endpoint", "--b64-cluster-ca")
 
 
 def cluster_bootstrap_values(info):
@@ -486,8 +491,13 @@ def bootstrap_user_data(group, info):
     EKS merges no user data into a launch template that names an AMI (Amazon EKS User Guide,
     "Customize managed nodes with launch templates"), so without this script no node joins.
     On the sandbox AMI, #10's build already pointed bootstrap.sh's kubelet at the sandbox CRI
-    proxy; this script only runs it. Every value is checked against a plain charset first, so
-    nothing in it can be read as shell syntax."""
+    proxy; this script only runs it, and passes no container runtime option and no runtime
+    endpoint of its own (on the system node kubelet keeps the image's containerd). Every value is
+    checked against a plain charset first, so nothing in it can be read as shell syntax.
+
+    The call follows the script's usage, bootstrap.sh [options] <cluster-name>: the four options
+    first, the cluster name last. The endpoint and CA are always passed together, as the script
+    requires; the rendered call is parsed back with bootstrap_call and must show no problem."""
     cluster = setting("CLUSTER_NAME")
     require(re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,99}", cluster), f"cluster name '{cluster}' is not a plain name")
     endpoint, ca, dns = cluster_bootstrap_values(info)
@@ -495,16 +505,22 @@ def bootstrap_user_data(group, info):
     require(all(LABEL_KEY.match(k) and LABEL_VALUE.match(v) for k, v in labels.items()),
             f"a {group} node label is not a plain Kubernetes label")
     joined = ",".join(f"{k}={v}" for k, v in labels.items())
-    return "\n".join([
+    script = "\n".join([
         "#!/bin/bash",
         f"# {cluster}-{group}: rendered by scripts/cilium_ubuntu.py (launch_template_data).",
         "set -euo pipefail",
-        f"{BOOTSTRAP} {cluster} \\",
+        f"{BOOTSTRAP} \\",
         f"  --apiserver-endpoint {endpoint} \\",
         f"  --b64-cluster-ca {ca} \\",
         f"  --dns-cluster-ip {dns} \\",
-        f"  --kubelet-extra-args '--node-labels={joined}'",
+        f"  --kubelet-extra-args '--node-labels={joined}' \\",
+        f"  {cluster}",
     ]) + "\n"
+    calls, _ = user_data_parts(script)
+    got_cluster, options, problems = bootstrap_call(calls[0]) if len(calls) == 1 else (None, {}, ["no single call"])
+    require(not problems and got_cluster == cluster and all(o in options for o in BOOTSTRAP_PAIR),
+            f"the rendered {group} user data does not follow {BOOTSTRAP_USAGE}: {'; '.join(problems)}")
+    return script
 
 
 def user_data_parts(script):
@@ -526,18 +542,50 @@ def user_data_parts(script):
 
 
 def bootstrap_call(tokens):
-    """(cluster name, {option: value}, problems) of one bootstrap.sh call's tokens."""
+    """(cluster name, {option: value}, problems) of one bootstrap.sh call's tokens, read as the
+    script's usage has it, bootstrap.sh [options] <cluster-name>. Every option setup renders
+    takes a value, the next token. The cluster name is the single positional argument, and it is
+    the last token. Each other shape is a problem with its own message:
+      - no positional argument at the end: no cluster name;
+      - a positional argument before the options: the cluster name is in the wrong place (it is
+        still returned, so a wrong name is reported too);
+      - any other positional argument: an argument setup does not render;
+      - one of --apiserver-endpoint and --b64-cluster-ca without the other."""
     rest = tokens[1:]
-    cluster = rest.pop(0) if rest and not rest[0].startswith("--") else None
-    options, problems = {}, []
-    while rest:
-        option = rest.pop(0)
-        if not option.startswith("--"):
-            problems.append(f"user data passes bootstrap.sh argument '{option}' that setup does not render")
+    options, positionals, problems = {}, [], []
+    i = 0
+    while i < len(rest):
+        token = rest[i]
+        if not token.startswith("--"):
+            positionals.append((i, token))
+            i += 1
             continue
-        if option in options:
-            problems.append(f"user data passes bootstrap.sh option {option} twice")
-        options[option] = rest.pop(0) if rest else None
+        if token in options:
+            problems.append(f"user data passes bootstrap.sh option {token} twice")
+        if i + 1 < len(rest):
+            options[token] = rest[i + 1]
+        else:
+            options[token] = None
+            problems.append(f"user data passes bootstrap.sh option {token} with no value")
+        i += 2
+    trailing = positionals[-1] if positionals and positionals[-1][0] == len(rest) - 1 else None
+    leading = positionals[0] if positionals and positionals[0][0] == 0 and positionals[0] != trailing else None
+    cluster = trailing[1] if trailing else (leading[1] if leading else None)
+    for position in positionals:
+        if position == trailing:
+            continue
+        if position == leading:
+            problems.append(f"user data passes the cluster name '{position[1]}' before bootstrap.sh's options; "
+                            f"its usage is {BOOTSTRAP_USAGE}, so the cluster name must be the last argument")
+        else:
+            problems.append(f"user data passes bootstrap.sh argument '{position[1]}' that setup does not render")
+    if not trailing and not leading:
+        problems.append(f"user data passes bootstrap.sh no cluster name as its last argument (usage: {BOOTSTRAP_USAGE})")
+    present = [o for o in BOOTSTRAP_PAIR if o in options]
+    if len(present) == 1:
+        missing = next(o for o in BOOTSTRAP_PAIR if o not in options)
+        problems.append(f"user data passes {present[0]} without {missing}: bootstrap.sh takes "
+                        f"{BOOTSTRAP_PAIR[0]} and {BOOTSTRAP_PAIR[1]} only as a pair")
     return cluster, options, problems
 
 
@@ -564,7 +612,7 @@ def user_data_problems(got, want, role):
     else:
         got_cluster, got_opts, problems = bootstrap_call(got_calls[0])
         want_cluster, want_opts, _ = bootstrap_call(want_calls[0])
-        if got_cluster != want_cluster:
+        if got_cluster is not None and got_cluster != want_cluster:
             problems.append(f"user data bootstraps cluster '{got_cluster}', expected '{want_cluster}'")
         problems += [f"user data lacks bootstrap.sh option {o}" for o in want_opts if o not in got_opts]
         problems += [f"user data passes bootstrap.sh option {o} that setup does not render"
