@@ -4,7 +4,7 @@ prints it) limits the validation sandbox exactly as the README says:
 
   * it selects the sandbox pod (app=isolated-sandbox-pod) and has both policyTypes;
   * it allows no ingress;
-  * every egress rule allows only UDP and TCP port 53, and only to pods labelled
+  * every egress rule allows exactly UDP 53 and TCP 53 (each once), and only to pods labelled
     k8s-app=kube-dns in the namespace kubernetes.io/metadata.name=kube-system, with both
     selectors in the same `to` peer (so a pod must match both);
   * no egress rule has an empty `to` (all destinations), an ipBlock, a namespace-only or
@@ -54,6 +54,9 @@ def problems(np):
         for p in ports or []:
             if p.get("port") != 53 or p.get("protocol", "TCP") not in ("TCP", "UDP") or p.get("endPort"):
                 bad.append(f"egress[{i}] allows {p}, only UDP and TCP port 53 are allowed")
+        got = sorted(f"{p.get('protocol', 'TCP')} {p.get('port')!r}" for p in ports or [])
+        if ports and got != ["TCP 53", "UDP 53"]:
+            bad.append(f"egress[{i}] ports are {got}, must be exactly UDP 53 and TCP 53, each once")
     return bad
 
 

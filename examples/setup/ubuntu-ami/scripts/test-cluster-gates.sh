@@ -113,6 +113,8 @@ case "$args" in
       pending) echo '{"status": {"phase": "Pending", "conditions": [{"type": "Ready", "status": "False"}], "containerStatuses": [{"state": {"waiting": {"reason": "ContainerCreating"}}}]}}' ;;
       absent)  echo 'Error from server (NotFound): pods "x" not found' >&2; exit 1 ;;
       denied)  forbidden pods ;;
+      notjson) echo '<html>502 Bad Gateway</html>' ;;
+      nostatus) echo '{"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "x"}}' ;;
     esac ;;
   *) echo "STUB kubectl: unexpected call: $args" >&2; exit 97 ;;
 esac
@@ -318,6 +320,12 @@ rc=0; wp absent absent || rc=$?
 check "REJECT (timeout) pods that were never created" 1 "$rc" "$WORK/wp-absent.log" 'not created yet'
 rc=0; wp denied denied || rc=$?
 check "REJECT (could not determine) at once when a pod read is forbidden" 1 "$rc" "$WORK/wp-denied.log" 'could not determine the state of pod ordinary-pod'
+# An answer the parser cannot read must stop on the first read, not wait out the timeout.
+for c in notjson nostatus; do
+  : > "$STUB_KUBECTL_LOG"; rc=0; wp "$c" "$c" || rc=$?
+  check "REJECT (could not determine) at once when the pod answer is $c" 1 "$rc" "$WORK/wp-$c.log" 'could not determine the state of pod ordinary-pod in ubuntu-ami-sample \(unreadable pod JSON\)'
+  [ "$(grep -c '^get pod ' "$STUB_KUBECTL_LOG")" = 1 ]; check "  ... after one pod read, without waiting" 0 $? "$STUB_KUBECTL_LOG"
+done
 
 echo
 echo "== 6/6 the sandbox's egress policy: scripts/check-network-policy.py (M2) ================"
@@ -344,6 +352,9 @@ any-namespace|r["to"] = [{"namespaceSelector": {}}]|does not name both a namespa
 two-peers|r["to"] = [{"namespaceSelector": r["to"][0]["namespaceSelector"]}, {"podSelector": r["to"][0]["podSelector"]}]|does not name both|REJECT namespace and pod selectors in separate peers (an OR, not an AND)
 wrong-pod|r["to"][0]["podSelector"] = {"matchLabels": {"app": "decoy"}}|podSelector is|REJECT a pod selector other than k8s-app=kube-dns
 port-443|r["ports"].append({"protocol": "TCP", "port": 443})|only UDP and TCP port 53 are allowed|REJECT an extra port
+udp-only|r["ports"] = [{"protocol": "UDP", "port": 53}]|must be exactly UDP 53 and TCP 53|REJECT UDP 53 alone (TCP 53 missing)
+tcp-only|r["ports"] = [{"protocol": "TCP", "port": 53}]|must be exactly UDP 53 and TCP 53|REJECT TCP 53 alone (UDP 53 missing)
+dup-udp|r["ports"].append({"protocol": "UDP", "port": 53})|must be exactly UDP 53 and TCP 53|REJECT a duplicate UDP 53
 no-ports|r.pop("ports")|allows every port|REJECT a rule with no ports
 ipblock|r["to"].append({"ipBlock": {"cidr": "0.0.0.0/0"}})|is an ipBlock|REJECT an ipBlock peer
 all-dest|r.pop("to")|allows every destination|REJECT a rule with no 'to'

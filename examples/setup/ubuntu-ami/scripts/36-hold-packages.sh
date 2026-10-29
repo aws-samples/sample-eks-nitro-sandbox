@@ -32,12 +32,18 @@ owner=$(dpkg -S "$ctr_real" 2>/dev/null | head -n 1 | cut -d: -f1) || true
 held=("$owner")
 
 # --- installed kernel meta-packages -------------------------------------------------------------
+# The query's output and exit status are captured first: a process substitution's failure never
+# reaches set -e or pipefail, and would leave only containerd held.
+dpkg_rc=0
+pkg_list=$(dpkg-query -W -f='${Package} ${db:Status-Status}\n') || dpkg_rc=$?
+[ "$dpkg_rc" = 0 ] || die "dpkg-query failed (exit $dpkg_rc); cannot list the installed kernel meta-packages to hold"
 while read -r pkg status; do
   [ "$status" = installed ] || continue
   [[ "$pkg" =~ ^linux-(image-|headers-|modules-|modules-extra-|tools-)?(aws|generic|virtual|kvm)([-.a-z0-9]*)?$ ]] || continue
   [[ "$pkg" =~ [0-9]+\.[0-9]+\.[0-9]+-[0-9]+ ]] && continue   # a versioned kernel, not a meta-package
   held+=("$pkg")
-done < <(dpkg-query -W -f='${Package} ${db:Status-Status}\n' 2>/dev/null)
+done <<<"$pkg_list"
+[ "${#held[@]}" -gt 1 ] || die "dpkg-query lists no installed Ubuntu kernel meta-package (linux-aws, linux-image-aws, linux-generic and the like); refusing to bake an image whose stock kernel updates cannot be held"
 log "holding: ${held[*]}"
 
 sudo apt-mark hold "${held[@]}" >/dev/null || die "apt-mark hold failed for: ${held[*]}"

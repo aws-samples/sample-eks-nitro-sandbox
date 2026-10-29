@@ -244,6 +244,9 @@ bundle_expected() {
 #      from the lock, each once, each a regular file with a flat name (no folder, no '..', no
 #      link, no device);
 #   5. after extraction, every file's SHA-256 is its lock pin.
+# <extract-dir> must be missing or empty. Extraction goes to a fresh temporary folder beside it,
+# renamed onto <extract-dir> only once step 5 passes; on any refusal the temporary folder is
+# removed and <extract-dir> is left as it was.
 # Never falls back to fetching: a restricted-network consumer gets a hard failure, not a retry
 # that silently reaches the internet.
 bundle_verify_archive() { # bundle_verify_archive <archive-file> <manifest-json> <lock-file> <extract-dir>
@@ -257,7 +260,6 @@ bundle_verify_archive() { # bundle_verify_archive <archive-file> <manifest-json>
   expected="$(bundle_expected "$lock_file")"
   [[ -n "$expected" ]] || bundle_die "bundle-verify: $lock_file names no bundleable input; refusing to accept a bundle"
 
-  mkdir -p "$extract_dir"
   printf '%s\n' "$expected" | python3 "$BUNDLE_LIB_HERE/bundle_verify.py" "$archive" "$manifest" "$extract_dir" \
     || bundle_die "bundle-verify: rejected (see the message above); nothing from $archive is accepted"
   bundle_log "bundle verified offline against $(basename "$lock_file"): $(printf '%s\n' "$expected" | wc -l) component(s), extracted to $extract_dir"

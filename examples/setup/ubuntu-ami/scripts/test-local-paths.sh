@@ -15,14 +15,18 @@
 #   1  ACCEPT (defaults): with no overrides, all four resolve UNDER repo-root tmp/issue10/run.
 #   2  ACCEPT (override under the repository's tmp/): absolute, relative to the sample folder, and
 #      through a symlink that stays under tmp/; each is honored as its canonical absolute path.
-#   3  REJECT (override anywhere else): outside the repository (a mktemp dir, which R1-A
-#      accepted), inside the sample folder (absolute and relative), elsewhere in the repository,
-#      a `..` that climbs out of tmp/, a symlink under tmp/ that points into the sample, and a
-#      sibling whose name only starts with "tmp". Each is refused with a non-zero exit, and the
-#      refused directory is never created.
+#   3  REJECT (override anywhere else): outside the repository (a path that does not exist,
+#      which R1-A accepted), inside the sample folder (absolute and relative), elsewhere in the
+#      repository, a `..` that climbs out of tmp/, a symlink under tmp/ that points into the
+#      sample, and a sibling whose name only starts with "tmp"; and RUN_STATE_FILE inside the
+#      sample or outside the repository (RR-007). Each is refused with a non-zero exit, and the
+#      refused path is never created.
 #   4  The unpacked copy on a build host (not a checkout): the default stays
 #      /var/lib/ubuntu-ami-sample/run, an override outside the copy is honored, one inside the
 #      copy is refused.
+#   5  EVIDENCE_DIR is guarded the same way, and in a checkout every mktemp lands in a private
+#      tmp/ folder under ISSUE10_RUN_DIR whatever TMPDIR the caller set (RR-007).
+# The test itself creates nothing outside the repository's tmp/.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"            # .../examples/setup/ubuntu-ami/scripts
 SAMPLE_DIR_REAL="$(cd "$HERE/.." && pwd)"                        # .../examples/setup/ubuntu-ami
@@ -31,12 +35,14 @@ RUN_BASE="$REPO_ROOT_REAL/tmp/issue10/run"
 COMMON="$HERE/lib/common.sh"
 VARS=(ISSUE10_RUN_DIR LOG_DIR OUT_DIR RUNTIME_ARTIFACTS_DIR)
 
-# Keep every byte this test writes under the repository's tmp/, except the one outside-the-
-# repository directory section 3 needs, which is removed on exit too.
+# Every byte this test writes stays under the repository's tmp/. The outside-the-repository
+# reject cases point at OUTSIDE, a path beside the repository that does not exist and that this
+# test never creates (it checks at the end that nothing made it either).
 mkdir -p "$REPO_ROOT_REAL/tmp"
 WORK="$(mktemp -d "$REPO_ROOT_REAL/tmp/test-local-paths.XXXXXX")"
-OUTSIDE="$(mktemp -d "${TMPDIR:-/tmp}/ubuntu-ami-paths.XXXXXX")"
-cleanup() { rm -rf "$WORK" "$OUTSIDE"; }
+OUTSIDE="$(dirname "$REPO_ROOT_REAL")/ubuntu-ami-paths-probe-$$-$RANDOM"
+[ ! -e "$OUTSIDE" ] || { echo "FATAL: $OUTSIDE exists; re-run the test" >&2; exit 2; }
+cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
 pass=0
@@ -64,7 +70,7 @@ probe() {
   P_OUT="$(printf '%s' "$out" | sed '/^VALUE=/d')"
 }
 
-echo "== 1/4 ACCEPT defaults: all four dirs resolve under tmp/issue10/run ======================"
+echo "== 1/5 ACCEPT defaults: all four dirs resolve under tmp/issue10/run ======================"
 eval "$(
   env -u LOG_DIR -u OUT_DIR -u RUNTIME_ARTIFACTS_DIR -u ISSUE10_RUN_DIR -u REPO_ROOT SAMPLE_DIR="$SAMPLE_DIR_REAL" \
     bash -c '. "$1" >/dev/null 2>&1; for v in ISSUE10_RUN_DIR LOG_DIR OUT_DIR RUNTIME_ARTIFACTS_DIR; do printf "D_%s=%q\n" "$v" "${!v}"; done' _ "$COMMON"
@@ -77,7 +83,7 @@ done
 [[ "$D_ISSUE10_RUN_DIR" == "$RUN_BASE" ]]; assert_true "ISSUE10_RUN_DIR defaults to exactly repo-root tmp/issue10/run" $?
 
 echo
-echo "== 2/4 ACCEPT overrides under the repository's tmp/ ======================================="
+echo "== 2/5 ACCEPT overrides under the repository's tmp/ ======================================="
 mkdir -p "$WORK/real-target"
 ln -s "$WORK/real-target" "$WORK/link-in-tmp"
 REL_TMP="../../../tmp/$(basename "$WORK")/rel-accept"         # relative to the sample folder
@@ -96,7 +102,7 @@ ISSUE10_RUN_DIR|@WORK@/run-accept/./sub/..|@WORK@/run-accept|ACCEPT an ISSUE10_R
 CASES
 
 echo
-echo "== 3/4 REJECT overrides that do not resolve under the repository's tmp/ ==================="
+echo "== 3/5 REJECT overrides that do not resolve under the repository's tmp/ ==================="
 ln -s "$SAMPLE_DIR_REAL" "$WORK/link-to-sample"
 PROBE_NAME="paths-reject-probe.$$"
 while IFS='|' read -r var val created why; do
@@ -114,7 +120,10 @@ while IFS='|' read -r var val created why; do
   cname="${created##*/}"
   [[ ! -e "$created" ]]; assert_true "  ... and $cname was not created" $?
 done <<'CASES'
-RUNTIME_ARTIFACTS_DIR|@OUTSIDE@/@P@|@OUTSIDE@/@P@|REJECT an override outside the repository (a mktemp dir; R1-A accepted this)
+RUNTIME_ARTIFACTS_DIR|@OUTSIDE@/@P@|@OUTSIDE@/@P@|REJECT an override outside the repository (R1-A accepted this)
+RUN_STATE_FILE|@SAMPLE@/@P@.env|@SAMPLE@/@P@.env|REJECT (RR-007) a run-state file inside the sample folder
+RUN_STATE_FILE|@P@.env|@SAMPLE@/@P@.env|REJECT (RR-007) a relative run-state file, which resolves inside the sample folder
+RUN_STATE_FILE|@OUTSIDE@/@P@.env|@OUTSIDE@/@P@.env|REJECT (RR-007) a run-state file outside the repository
 RUNTIME_ARTIFACTS_DIR|@SAMPLE@/@P@|@SAMPLE@/@P@|REJECT an absolute override inside the sample folder
 LOG_DIR|@P@|@SAMPLE@/@P@|REJECT a relative override, which resolves inside the sample folder
 OUT_DIR|scripts/@P@|@SAMPLE@/scripts/@P@|REJECT a relative override into a subfolder of the sample
@@ -125,7 +134,7 @@ RUNTIME_ARTIFACTS_DIR|@REPO@/tmpx-@P@|@REPO@/tmpx-@P@|REJECT a sibling whose nam
 CASES
 
 echo
-echo "== 4/4 the unpacked copy on a build host (not a checkout) ==============================="
+echo "== 4/5 the unpacked copy on a build host (not a checkout) ==============================="
 HOSTCOPY="$WORK/host/usr/local/share/ubuntu-ami-sample"
 mkdir -p "$HOSTCOPY"
 cp -a "$SAMPLE_DIR_REAL/scripts" "$HOSTCOPY/"
@@ -141,6 +150,29 @@ assert_true "REJECT an override inside the unpacked copy" $?
 [[ ! -e "$HOSTCOPY/out" ]]; assert_true "  ... and it was not created" $?
 probe "$HOSTCOPY" LOG_DIR "logs"
 [[ "$P_RC" -ne 0 && ! -e "$HOSTCOPY/logs" ]]; assert_true "REJECT a relative override, which resolves inside the unpacked copy, and do not create it" $?
+
+echo
+echo "== 5/5 the run's evidence folder and temporary files (RR-007) ==========================="
+# ev <EVIDENCE_DIR or empty>: source common.sh with ISSUE10_RUN_DIR under WORK, derive the run's
+# names, and print EVIDENCE_DIR and where a plain mktemp lands. TMPDIR is set to OUTSIDE (which
+# does not exist): in a checkout common.sh must replace it.
+ev() {
+  EV_RC=0
+  EV_OUT="$(env -u LOG_DIR -u OUT_DIR -u RUNTIME_ARTIFACTS_DIR -u RUN_STATE_FILE -u REPO_ROOT ${1:+EVIDENCE_DIR="$1"} \
+    SAMPLE_DIR="$SAMPLE_DIR_REAL" ISSUE10_RUN_DIR="$WORK/ev-run" TMPDIR="$OUTSIDE" RUN_ID=evrun1 \
+    bash -c '. "$1" 2>&1 && derive_run_names 2>&1 && printf "EVIDENCE=%s\nTMPFILE=%s\nTMPDIR=%s\n" "$EVIDENCE_DIR" "$(mktemp)" "$TMPDIR"' _ "$COMMON" 2>&1)" || EV_RC=$?
+}
+ev ""
+evd=$(printf '%s\n' "$EV_OUT" | sed -n 's/^EVIDENCE=//p'); tf=$(printf '%s\n' "$EV_OUT" | sed -n 's/^TMPFILE=//p')
+[[ "$EV_RC" -eq 0 && "$evd" == "$WORK/ev-run/out/runs/evrun1/evidence" ]]; assert_true "ACCEPT the default EVIDENCE_DIR, under the run's folder in tmp/ ($evd)" $?
+[[ "$tf" == "$WORK/ev-run/tmp/"* && -f "$tf" ]]; assert_true "ACCEPT: a plain mktemp lands in the private tmp/ folder under ISSUE10_RUN_DIR ($tf)" $?
+[[ "$(printf '%s\n' "$EV_OUT" | sed -n 's/^TMPDIR=//p')" == "$WORK/ev-run/tmp" ]]
+assert_true "REJECT the caller's TMPDIR outside the repository: common.sh replaced it" $?
+ev "$SAMPLE_DIR_REAL/evidence-probe.$$"
+[[ "$EV_RC" -ne 0 ]] && printf '%s' "$EV_OUT" | grep -q "FATAL: EVIDENCE_DIR resolves to .* which is not under the repository's tmp/"
+assert_true "REJECT (RR-007) an EVIDENCE_DIR inside the sample folder" $?
+[[ ! -e "$SAMPLE_DIR_REAL/evidence-probe.$$" ]]; assert_true "  ... and it was not created" $?
+[[ ! -e "$OUTSIDE" ]]; assert_true "nothing was created at the outside-the-repository probe path, by this test or by the code under test" $?
 
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"

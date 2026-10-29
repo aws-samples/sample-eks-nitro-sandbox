@@ -107,6 +107,14 @@ guard_state_dir LOG_DIR
 guard_state_dir OUT_DIR
 guard_state_dir RUNTIME_ARTIFACTS_DIR
 mkdir -p "$LOG_DIR" "$OUT_DIR" "$RUNTIME_ARTIFACTS_DIR"
+# In a checkout, every temporary file the workstation scripts make (mktemp, Python's tempfile)
+# goes to a private folder under ISSUE10_RUN_DIR, never the system temp folder; a TMPDIR the
+# caller set is replaced. The build-host copy keeps the host's own default.
+if [ "$IN_CHECKOUT" = 1 ]; then
+  TMPDIR="$ISSUE10_RUN_DIR/tmp"
+  mkdir -p -m 0700 "$TMPDIR"
+  export TMPDIR
+fi
 
 : "${LOCK_FILE:=$SAMPLE_DIR/packages/sources.lock}"
 # Where the guest image is staged on the node (latest.eif, latest-disk.img and the rootfs.ext4
@@ -144,12 +152,27 @@ ownership_tag_cli() { printf 'Key=%s,Value=%s' "$TAGS_OWNER_KEY" "$TAGS_OWNER_VA
 # --- Run scope ---------------------------------------------------------------------------
 # Every AWS resource the sample creates carries TWO tags, ManagedBy=<RESOURCE_PREFIX> and
 # RunId=<RUN_ID>, and has a name derived from both, so two runs in one account never share or
-# delete each other's resources. setup.sh picks RUN_ID (UTC timestamp, lowercase) and persists it
-# in $RUN_STATE_FILE; clean.sh, test.sh and the helper scripts read it from there, or from the
+# delete each other's resources. setup.sh picks RUN_ID (new_run_id: a UTC timestamp plus four
+# random hex digits), reserves its run folder (reserve_run_dir) and persists it in
+# $RUN_STATE_FILE; clean.sh, test.sh and the helper scripts read it from there, or from the
 # RUN_ID environment variable (clean.sh: --run-id).
 : "${TAGS_RUN_KEY:=RunId}"
 : "${RUN_STATE_FILE:=$OUT_DIR/run-state.env}"
+guard_state_dir RUN_STATE_FILE
 valid_run_id() { [[ "${1:-}" =~ ^[a-z0-9]{1,20}$ ]]; }
+# new_run_id: 16 characters of UTC time (20261028t221500z) and 4 random hex digits, 20 in all,
+# so two starts in the same second still get different ids.
+new_run_id() {
+  local r
+  r=$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n') && [[ "$r" =~ ^[0-9a-f]{4}$ ]] || die "could not read /dev/urandom for a run id"
+  printf '%s%s\n' "$(date -u +%Y%m%dt%H%M%Sz)" "$r"
+}
+# reserve_run_dir: create $RUN_STATE_DIR with a plain mkdir (no -p), which fails when the
+# folder already exists, so two runs can never share one.
+reserve_run_dir() {
+  mkdir -p "$OUT_DIR/runs"
+  mkdir "$RUN_STATE_DIR" 2>/dev/null || die "run folder $RUN_STATE_DIR already exists: another run has id $RUN_ID. Start again for a new id, or pass RUN_ID=$RUN_ID only to resume that run."
+}
 # load_run_id: RUN_ID from the environment, else from $RUN_STATE_FILE. Returns 1 when neither
 # has one; dies when the value found is malformed.
 load_run_id() {
@@ -187,6 +210,7 @@ derive_run_names() {
   STAGE_BUCKET_PREFIX="${RESOURCE_PREFIX}-stage-${RUN_ID}"   # + "-<6 hex>" at creation
   RUN_STATE_DIR="$OUT_DIR/runs/$RUN_ID"
   EVIDENCE_DIR="${EVIDENCE_DIR:-$RUN_STATE_DIR/evidence}"
+  guard_state_dir EVIDENCE_DIR
   require_name "IAM role" "$BUILD_ROLE_NAME" 64 '^[A-Za-z0-9+=,.@_-]+$'
   require_name "IAM role" "$NODE_ROLE_NAME" 64 '^[A-Za-z0-9+=,.@_-]+$'
   require_name "IAM instance profile" "$INSTANCE_PROFILE" 128 '^[A-Za-z0-9+=,.@_-]+$'
@@ -201,6 +225,30 @@ derive_run_names() {
 require_run_id() {
   load_run_id || die "no RUN_ID: no RUN_ID environment variable and no run state at $RUN_STATE_FILE. Pass the run id (clean.sh --run-id <id>) or run ./setup.sh first."
   derive_run_names
+}
+# render_policy <template> <bucket>: a deploy/ policy with @STAGE_BUCKET@ and @RUN_ID@ filled in
+# and its human-readable Comment key dropped, as compact JSON.
+render_policy() {
+  python3 -c '
+import json, sys
+text = open(sys.argv[1]).read().replace("@STAGE_BUCKET@", sys.argv[2]).replace("@RUN_ID@", sys.argv[3])
+doc = json.loads(text)
+doc.pop("Comment", None)
+if "@" in json.dumps(doc):
+    sys.exit("unrendered placeholder left in policy")
+print(json.dumps(doc))
+' "$1" "$2" "$RUN_ID"
+}
+# role_policy_is <expected-json>: read `aws iam get-role-policy --output json` on stdin; 0 only
+# when its PolicyDocument (decoded when IAM returns it URL-encoded) equals <expected-json>.
+role_policy_is() {
+  python3 -c '
+import json, sys, urllib.parse
+doc = json.load(sys.stdin)["PolicyDocument"]
+if isinstance(doc, str):
+    doc = json.loads(urllib.parse.unquote(doc))
+sys.exit(0 if json.dumps(doc, sort_keys=True) == json.dumps(json.loads(sys.argv[1]), sort_keys=True) else 1)
+' "$1"
 }
 # run_tags_cli: both tags, as the items a shorthand TagSpecifications Tags=[...] list takes.
 run_tags_cli() { printf '{Key=%s,Value=%s},{Key=%s,Value=%s}' "$TAGS_OWNER_KEY" "$TAGS_OWNER_VALUE" "$TAGS_RUN_KEY" "$RUN_ID"; }

@@ -101,7 +101,7 @@ def parse_filters(opts):
 
 
 FIELD = {"group-name": "GroupName", "vpc-id": "VpcId", "instance-state-name": "State.Name",
-         "launch-template-name": "LaunchTemplateName"}
+         "launch-template-name": "LaunchTemplateName", "status": "State"}
 
 
 def get_field(obj, path):
@@ -162,8 +162,27 @@ def handle(state, service, op, sub, opts):
     # ---------------- EC2
     if service == "ec2":
         e = state.setdefault("ec2", {})
-        for k in ("instances", "images", "snapshots", "security_groups", "launch_templates"):
+        for k in ("instances", "images", "snapshots", "security_groups", "launch_templates", "volumes"):
             e.setdefault(k, [])
+        # EBS volumes: {"VolumeId", "State": "in-use"|"available", "AttachedTo": <instance id>,
+        # "DeleteOnTermination": bool, "Tags"}. Terminating an instance deletes the volumes it
+        # holds with DeleteOnTermination and leaves the others "available", as EC2 does.
+        if op == "describe-volumes":
+            return {"Volumes": ec2_describe(state, "volumes", "VolumeId", "volume-ids", opts, "InvalidVolume.NotFound")}
+        if op == "delete-volume":
+            i = one(opts, "volume-id")
+            hit = [x for x in e["volumes"] if x["VolumeId"] == i]
+            if not hit:
+                raise ApiError("InvalidVolume.NotFound", op, i)
+            if hit[0]["State"] != "available":
+                raise ApiError("VolumeInUse", op, f"Volume {i} is currently attached")
+            e["volumes"] = [x for x in e["volumes"] if x["VolumeId"] != i]
+            return None
+        if op == "wait" and sub == "volume-deleted":
+            for i in opts.get("volume-ids", []):
+                if any(x["VolumeId"] == i for x in e["volumes"]):
+                    raise ApiError("WaiterFailed", "wait", f"{i} not deleted", 255)
+            return None
         if op == "describe-instances":
             inst = ec2_describe(state, "instances", "InstanceId", "instance-ids", opts, "InvalidInstanceID.NotFound")
             return {"Reservations": [{"Instances": inst}] if inst else []}
@@ -182,6 +201,11 @@ def handle(state, service, op, sub, opts):
                 if not hit:
                     raise ApiError("InvalidInstanceID.NotFound", op, i)
                 hit[0]["State"] = {"Name": "terminated"}
+                for v in [v for v in e["volumes"] if v.get("AttachedTo") == i]:
+                    if v.get("DeleteOnTermination"):
+                        e["volumes"].remove(v)
+                    else:
+                        v["State"], v["AttachedTo"] = "available", None
                 out.append({"InstanceId": i})
             return {"TerminatingInstances": out}
         if op == "deregister-image":
@@ -260,6 +284,14 @@ def handle(state, service, op, sub, opts):
             if not c:
                 raise ApiError("ResourceNotFoundException", "DescribeCluster", "No cluster found")
             return {"cluster": c}
+        if op == "describe-addon":
+            ad = k.get("addons", {}).get(f"{cl}/{one(opts, 'addon-name')}")
+            if not ad:
+                raise ApiError("ResourceNotFoundException", "DescribeAddon", f"No addon: {one(opts, 'addon-name')} found in cluster: {cl}")
+            # the one --query 00c-check-cluster.sh passes (the fake ignores every other --query)
+            if one(opts, "query") == "addon.[status,addonVersion,configurationValues]":
+                return [ad.get("status"), ad.get("addonVersion"), ad.get("configurationValues")]
+            return {"addon": ad}
         nk = f"{cl}/{ng}"
         if op == "list-nodegroups":
             return {"nodegroups": sorted(k_.split("/", 1)[1] for k_ in ngs if k_.split("/", 1)[0] == cl)}
@@ -310,7 +342,13 @@ def handle(state, service, op, sub, opts):
                          "Tags": taglist(shorthand_tags(" ".join(opts.get("tags", [])))), "Attached": [], "Inline": {}}
             return {"Role": {"RoleName": rn, "Arn": arn(rn)}}
         if op == "list-role-tags":
-            return {"Tags": role().get("Tags", [])}
+            r = role()
+            # "TagsAfterFirstRead": the tags change after the first read (another owner re-tagged
+            # the role between a listing and a later step).
+            r["TagReads"] = r.get("TagReads", 0) + 1
+            if "TagsAfterFirstRead" in r and r["TagReads"] > 1:
+                return {"Tags": r["TagsAfterFirstRead"]}
+            return {"Tags": r.get("Tags", [])}
         if op == "attach-role-policy":
             r = role()
             p = one(opts, "policy-arn")
@@ -357,6 +395,8 @@ def handle(state, service, op, sub, opts):
                 raise ApiError("EntityAlreadyExists", op, pn)
             profiles[pn] = {"Roles": [], "Tags": taglist(shorthand_tags(" ".join(opts.get("tags", []))))}
             return {"InstanceProfile": {"InstanceProfileName": pn}}
+        if op == "list-instance-profiles":
+            return {"InstanceProfiles": [{"InstanceProfileName": n} for n in sorted(profiles)]}
         if op == "list-instance-profile-tags":
             return {"Tags": prof().get("Tags", [])}
         if op == "add-role-to-instance-profile":
@@ -390,22 +430,39 @@ def handle(state, service, op, sub, opts):
     if service == "ssm":
         m = state.setdefault("ssm", {})
         cmds = m.setdefault("commands", {})
+        # Bound to EC2: only an instance that exists and is pending or running is registered
+        # with SSM, a command targets exactly one such instance, and a wait or an invocation read
+        # must name the command's own instance.
+        live = {x["InstanceId"] for x in state.get("ec2", {}).get("instances", [])
+                if x["State"]["Name"] in ("pending", "running")}
         if op == "describe-instance-information":
-            return {"InstanceInformationList": [{"PingStatus": "Online"}] if m.get("online", True) else []}
+            ids = []
+            for f in opts.get("filters", []):
+                mm = re.fullmatch(r"Key=InstanceIds,Values=(.*)", f)
+                if not mm:
+                    raise ApiError("InvalidFilterKey", op, f"filter {f} not supported by the fake")
+                ids += mm.group(1).split(",")
+            if not ids:
+                raise ApiError("InvalidFilterKey", op, "the fake answers only an InstanceIds filter")
+            online = m.get("online", True)
+            return {"InstanceInformationList": [{"InstanceId": i, "PingStatus": "Online"} for i in ids if online and i in live]}
         if op == "send-command":
+            targets = opts.get("instance-ids", [])
+            if len(targets) != 1 or targets[0] not in live:
+                raise ApiError("InvalidInstanceId", op, f"instance {targets} is not registered with SSM")
             text = " ".join(opts.get("parameters", []))
             res = next((r for r in m.get("results", []) if r["match"] in text), None)
             if res is None:
                 raise ApiError("FakeUnsupported", key, "no ssm result for this command", 97)
             cid = f"cmd-{len(cmds) + 1:03d}"
-            cmds[cid] = dict(res, instance=one(opts, "instance-ids"))
+            cmds[cid] = dict(res, instance=targets[0])
             return {"Command": {"CommandId": cid}}
-        if op == "wait" and sub == "command-executed":
-            return None
-        if op == "get-command-invocation":
+        if op in ("get-command-invocation",) or (op == "wait" and sub == "command-executed"):
             c = cmds.get(one(opts, "command-id"))
-            if c is None:
-                raise ApiError("InvocationDoesNotExist", op, "no such command")
+            if c is None or c["instance"] != one(opts, "instance-id"):
+                raise ApiError("InvocationDoesNotExist", op, "no such command on that instance")
+            if op == "wait":
+                return None
             return {"Status": c["Status"], "StandardOutputContent": c.get("stdout", ""), "StandardErrorContent": c.get("stderr", "")}
     # ---------------- Resource Groups Tagging API
     if key == "resourcegroupstaggingapi get-resources":
@@ -431,6 +488,11 @@ def handle(state, service, op, sub, opts):
         buckets = state.setdefault("s3", {}).setdefault("buckets", {})
         b = one(opts, "bucket")
         exp = one(opts, "expected-bucket-owner")
+        if op == "create-bucket":
+            if b in buckets:
+                raise ApiError("BucketAlreadyOwnedByYou", op, b)
+            buckets[b] = {"owner": a, "Tags": [], "objects": []}
+            return {"Location": f"http://{b}.s3.amazonaws.com/"}
         if b not in buckets:
             if op == "head-bucket":
                 raise ApiError("404", "HeadBucket", "Not Found")
@@ -441,7 +503,20 @@ def handle(state, service, op, sub, opts):
         if op == "head-bucket":
             return {"BucketRegion": "us-west-2"}
         if op == "get-bucket-tagging":
+            if not bk.get("Tags"):
+                raise ApiError("NoSuchTagSet", "GetBucketTagging", "The TagSet does not exist")
             return {"TagSet": bk.get("Tags", [])}
+        if op == "put-bucket-tagging":
+            bk["Tags"] = taglist(shorthand_tags(one(opts, "tagging", "")))
+            return None
+        if op in ("put-public-access-block", "put-bucket-encryption", "put-bucket-policy"):
+            bk.setdefault("config", {})[op] = True
+            return None
+        if op == "put-object":
+            k_ = one(opts, "key")
+            if k_ not in bk.setdefault("objects", []):
+                bk["objects"].append(k_)
+            return {"ChecksumSHA256": one(opts, "checksum-sha256", "")}
         if op == "list-objects-v2":
             objs = bk.get("objects", [])
             return {"Contents": [{"Key": k} for k in objs], "KeyCount": len(objs)} if objs else {"KeyCount": 0}

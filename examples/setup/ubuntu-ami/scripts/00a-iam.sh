@@ -13,11 +13,14 @@
 # Reuse (a resumed run with the same RUN_ID) is allowed only for a role or profile that already
 # carries both tags, and only when it is exactly what this script would have created:
 #   * the trust policy equals deploy/iam-node-trust-policy.json (EC2 may assume the role);
-#   * the attached managed policies are exactly the allowlist below, no more;
-#   * no inline policy other than this run's staging read (build role) or none (node role);
+#   * the attached managed policies are within the allowlist below (missing ones are attached,
+#     then the set must be exactly the allowlist);
+#   * no inline policy, except on the build role the staging read whose DOCUMENT is exactly
+#     deploy/iam-build-host-policy.json rendered for the bucket this run recorded;
 #   * the instance profile holds this run's build role and no other role.
-# Anything else, and any lookup that fails for a reason other than "does not exist", stops the
-# script before it changes anything: it never adopts, re-tags or widens a role it did not create.
+# All of that is read and checked before the first attach. Anything else, and any lookup that
+# fails for a reason other than "does not exist", stops the script before it changes anything:
+# it never adopts, re-tags or widens a role it did not create.
 # Tag, attach and profile-association failures are never swallowed.
 #
 # Roles:
@@ -66,9 +69,14 @@ require_owned_tags() {
     || die "refusing to reuse $1: it does not carry ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID} (tags: $(printf '%s' "$2" | json_get '{t["Key"]: t["Value"] for t in d}'))"
 }
 
+# attached_arns <json>: the PolicyArn of each attached managed policy, one per line.
+attached_arns() { printf '%s' "$1" | json_get '[p["PolicyArn"] for p in d["AttachedPolicies"]]'; }
+
 # ensure_role <role> <allowed-inline-or-empty> <managed-arn>...
+# An existing role is read and validated WHOLE (tags, trust, attached and inline policies, and the
+# document of the one allowed inline policy) before this function changes anything on it.
 ensure_role() {
-  local role="$1" allowed_inline="$2" got tags attached inline extra p; shift 2
+  local role="$1" allowed_inline="$2" got tags attached inline extra p doc stage_bucket have=""; shift 2
   iam_read got "IAM role $role" iam get-role --role-name "$role"
   if [ "$got" = "__absent__" ]; then
     log "creating IAM role $role (tags ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE}, ${TAGS_RUN_KEY}=${RUN_ID})"
@@ -84,26 +92,38 @@ have = json.load(sys.stdin)["Role"].get("AssumeRolePolicyDocument") or {}
 want = json.loads(sys.argv[1])
 sys.exit(0 if json.dumps(have, sort_keys=True) == json.dumps(want, sort_keys=True) else 1)
 ' "$(trust_doc)" || die "refusing to reuse IAM role $role: its trust policy is not deploy/iam-node-trust-policy.json"
-    log "IAM role $role already exists and carries both run tags; checking its policies"
+    # Attached managed policies: none outside the allowlist (missing ones are attached below).
+    iam_read attached "the attached policies of $role" iam list-attached-role-policies --role-name "$role"
+    have=$(attached_arns "$attached")
+    extra=$(printf '%s\n' "$have" | grep -vxF -f <(printf '%s\n' "$@") | tr '\n' ' ' || true)
+    [ -z "${extra// /}" ] || die "refusing to reuse IAM role $role: it has attached managed policies outside the allowlist: $extra"
+    # Inline policies: none but the allowed one, and that one only with exactly this run's
+    # staging read, rendered for the bucket this run recorded.
+    iam_read inline "the inline policies of $role" iam list-role-policies --role-name "$role"
+    for p in $(printf '%s' "$inline" | json_get 'd["PolicyNames"]'); do
+      [ -n "$allowed_inline" ] && [ "$p" = "$allowed_inline" ] || die "refusing to reuse IAM role $role: it has an unexpected inline policy: $p"
+      stage_bucket=$(sed -n 's/^export STAGE_BUCKET=//p' "$RUN_STATE_DIR/stage.env" 2>/dev/null | tail -n 1 || true)
+      [[ "$stage_bucket" == "${STAGE_BUCKET_PREFIX}-"* ]] \
+        || die "refusing to reuse IAM role $role: it has inline policy $p, and this run recorded no staging bucket to check its document against"
+      iam_read doc "inline policy $p of $role" iam get-role-policy --role-name "$role" --policy-name "$p"
+      [ "$doc" != "__absent__" ] || die "inline policy $p of $role disappeared while it was being checked"
+      printf '%s' "$doc" | role_policy_is "$(render_policy "$DEPLOY_DIR/iam-build-host-policy.json" "$stage_bucket")" \
+        || die "refusing to reuse IAM role $role: inline policy $p is not exactly this run's staging read (deploy/iam-build-host-policy.json for $stage_bucket)"
+    done
+    log "IAM role $role already exists, carries both run tags and holds nothing outside this run's policies"
   fi
+  # Only now change it: attach what is missing, then confirm the attached set is exact.
   for p in "$@"; do
+    printf '%s\n' "$have" | grep -qxF -- "$p" && continue
     aws iam attach-role-policy --role-name "$role" --policy-arn "$p" --output json >/dev/null
   done
   iam_read attached "the attached policies of $role" iam list-attached-role-policies --role-name "$role"
-  extra=$(printf '%s' "$attached" | python3 -c '
-import json, sys
-have = {p["PolicyArn"] for p in json.load(sys.stdin)["AttachedPolicies"]}
-want = set(sys.argv[1:])
-print(" ".join(sorted(have ^ want)))
+  extra=$(attached_arns "$attached" | python3 -c '
+import sys
+have = {l.strip() for l in sys.stdin if l.strip()}
+print(" ".join(sorted(have ^ set(sys.argv[1:]))))
 ' "$@")
   [ -z "$extra" ] || die "IAM role $role has attached managed policies other than exactly ${*}: differs by $extra; refusing to use it"
-  iam_read inline "the inline policies of $role" iam list-role-policies --role-name "$role"
-  extra=$(printf '%s' "$inline" | python3 -c '
-import json, sys
-names = json.load(sys.stdin)["PolicyNames"]
-print(" ".join(n for n in names if n != sys.argv[1]))
-' "$allowed_inline")
-  [ -z "$extra" ] || die "IAM role $role has unexpected inline policies: $extra; refusing to use it"
 }
 
 # --- build-host role and its instance profile -----------------------------------------------

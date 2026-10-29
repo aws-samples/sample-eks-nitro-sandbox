@@ -68,6 +68,9 @@ echo "== 2/7 host requirements: ACCEPT and REJECT controls, read on the node its
 # everything would fail here (the repository rule "prove every check both ways"). The negative
 # that needs a whole second kernel (a .config without BTF, NITRO_ENCLAVES=m) is proven on the
 # REAL assertion in scripts/test-host-gates.sh, clusterless.
+# T0: the node's clock (epoch seconds) before this attempt's /etc/shadow write; see section 3.
+T0=$(kc exec "$ORDINARY_POD" -n "$NAMESPACE" -- date -u +%s 2>/dev/null)
+[[ "$T0" =~ ^[0-9]+$ ]] || T0=unreadable
 PROBE='
 echo KERNEL=$(uname -r)
 for p in btf:/sys/kernel/btf/vmlinux btf_bogus:/sys/kernel/btf/vmlinux_absent; do k=${p%%:*}; f=${p#*:}; test -s "$f" && echo "$k=present" || echo "$k=absent"; done
@@ -83,12 +86,14 @@ echo containerd_version=$(containerd --version 2>&1 | head -n 1)
 echo apparmor_enabled=$(cat /sys/module/apparmor/parameters/enabled 2>/dev/null)
 grep -qE "^'"$SAMPLE_PROFILE"' " /sys/kernel/security/apparmor/profiles && echo apparmor_profile=loaded || echo apparmor_profile=absent
 grep -qE "^profile-that-does-not-exist " /sys/kernel/security/apparmor/profiles && echo apparmor_profile_bogus=loaded || echo apparmor_profile_bogus=absent
-echo apparmor_shadow_denials=$( (dmesg 2>/dev/null; journalctl -k --no-pager 2>/dev/null) | grep "apparmor=\"DENIED\"" | grep "profile=\"'"$SAMPLE_PROFILE"'\"" | grep -c "name=\"/etc/shadow\"")
-echo apparmor_bogus_denials=$( (dmesg 2>/dev/null; journalctl -k --no-pager 2>/dev/null) | grep "apparmor=\"DENIED\"" | grep "profile=\"profile-that-does-not-exist\"" | grep -c "name=\"/etc/shadow\"")
+echo apparmor_shadow_denials=$(journalctl -k --no-pager --since "@'"$T0"'" 2>/dev/null | grep "apparmor=\"DENIED\"" | grep "profile=\"'"$SAMPLE_PROFILE"'\"" | grep -c "name=\"/etc/shadow\"")
+echo apparmor_bogus_denials=$(journalctl -k --no-pager --since "@'"$T0"'" 2>/dev/null | grep "apparmor=\"DENIED\"" | grep "profile=\"profile-that-does-not-exist\"" | grep -c "name=\"/etc/shadow\"")
 '
-# The AppArmor evidence in section 3 reads the node's kernel log for a denial of the sandbox's
-# /etc/shadow write, so that write is attempted here, before the probe reads the log. Each pod's
-# own AppArmor label (/proc/self/attr/current) is read first, the ordinary pod's as the control.
+# The AppArmor evidence in section 3 reads the node's kernel journal for a denial of the
+# sandbox's /etc/shadow write, counted only from T0, the node's clock read just before this
+# attempt's write (the ordinary pod shares the node's clock), so a denial an earlier attempt
+# logged cannot count. Without a readable T0 the journal query fails and counts 0. Each pod's own
+# AppArmor label (/proc/self/attr/current) is read too, the ordinary pod's as the control.
 sbx_attr=$(kc exec "$SANDBOX_POD" -n "$NAMESPACE" -- cat /proc/self/attr/current 2>/dev/null | tr -d '\0')
 ord_attr=$(kc exec "$ORDINARY_POD" -n "$NAMESPACE" -- cat /proc/self/attr/current 2>/dev/null | tr -d '\0')
 denied=$(kc exec "$SANDBOX_POD" -n "$NAMESPACE" -- sh -c 'echo test > /etc/shadow 2>&1 || echo DENIED' 2>/dev/null)
@@ -128,10 +133,11 @@ assert "the sandbox pod requests the scoped profile and runs (phase=${sbx_phase:
 assert "the sandbox's write to /etc/shadow fails while the pod otherwise runs (${denied:-<none>})" $([[ "$denied" == *DENIED* || "$denied" == *"Permission denied"* ]]; echo $?)
 # A failed write alone proves nothing about AppArmor (a read-only filesystem or file mode fails it
 # too). It counts only with AppArmor evidence: the sandbox process runs under the scoped profile
-# in enforce mode, or the node logged an AppArmor denial of that write under that profile.
+# in enforce mode, or the node logged an AppArmor denial of that write under that profile since
+# T0 (this attempt's write; an older denial does not count).
 denials="$(v apparmor_shadow_denials)"
-echo "  sandbox attr/current: '${sbx_attr:-<unreadable>}'  ordinary attr/current: '${ord_attr:-<unreadable>}'  node denials: ${denials:-<none>}"
-assert "ACCEPT: the write failure is AppArmor's (attr/current is '$SAMPLE_PROFILE (enforce)', or the node logged a denial)" \
+echo "  sandbox attr/current: '${sbx_attr:-<unreadable>}'  ordinary attr/current: '${ord_attr:-<unreadable>}'  node denials since T0=$T0: ${denials:-<none>}"
+assert "ACCEPT: the write failure is AppArmor's (attr/current is '$SAMPLE_PROFILE (enforce)', or the node logged a denial since this attempt's T0)" \
   $([[ "$sbx_attr" == "$SAMPLE_PROFILE (enforce)" || ( "${denials:-0}" =~ ^[0-9]+$ && "${denials:-0}" -gt 0 ) ]]; echo $?)
 assert "REJECT: the same label read on the ordinary pod does not name $SAMPLE_PROFILE ('${ord_attr:-<unreadable>}')" $([[ "$ord_attr" != "$SAMPLE_PROFILE"* ]]; echo $?)
 assert "REJECT: the same denial count for a profile the node never loaded is 0 ($(v apparmor_bogus_denials))" $([[ "$(v apparmor_bogus_denials)" == 0 ]]; echo $?)

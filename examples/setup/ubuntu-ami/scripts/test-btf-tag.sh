@@ -10,7 +10,9 @@
 #   2  scripts/verify-fresh-instance.sh, the real caller (M11), against the fake's EC2 and SSM:
 #      both remote checks pass -> create-tags, after both invocations reported Success; the image
 #      check fails, the smoke check fails, or SSM never comes Online -> no create-tags. The
-#      verification instance is terminated in every case.
+#      verification instance is terminated in every case; a termination that is not confirmed
+#      (terminate or its waiter fails) also means no create-tags, and the exit trap retries it
+#      (RR-015). The fake's SSM answers only the instance a command was sent to (RR-018).
 #
 # The fake keeps a JSON state file per case and logs every call, so the test asserts what was
 # called, in what order, and what the AMI's tags became. The account id is the AWS
@@ -136,6 +138,34 @@ c-imgfail|Failed|Success|true|1|verify-image.py failed on the fresh instance|1|R
 c-smokefail|Success|Failed|true|1|40-smoke.sh failed on the fresh instance|2|REJECT the smoke check Failed after the image check passed: nothing is tagged
 c-offline|Success|Success|false|1|never reported Online to SSM|0|REJECT an instance SSM never sees Online: nothing runs, nothing is tagged
 CASES
+# RR-015: both checks pass, but the instance's termination is not confirmed: the AMI is not
+# marked, the script fails, and the exit trap (instance_id kept) tries the termination again.
+while IFS='@' read -r name rule why; do
+  [ -n "$name" ] || continue
+  st "$name" "$OWN" "$(ssm Success Success)"; export FAKE_AWS_FAIL="$rule"
+  rc=0; vf "$name" || rc=$?
+  check "$why" 1 "$rc" "$WORK/$name.log" 'was not confirmed terminated; BtfValidated=true was not applied'
+  [ "$(calls "$name" '^ec2 create-tags$')" = 0 ] && [ -z "$(ami_tag BtfValidated)" ] && ! grep -q 'fresh-instance verification PASS' "$WORK/$name.log"
+  ok "  ... no create-tags, the AMI is not marked, and no PASS line" $?
+  [ "$(calls "$name" '^ec2 terminate-instances$')" = 2 ]; ok "  ... and the exit trap tried the termination again (2 terminate calls)" $?
+  unset FAKE_AWS_FAIL
+done <<'CASES'
+c-termfail@ec2 terminate-instances||UnauthorizedOperation@REJECT (RR-015) a refused terminate-instances after both checks passed
+c-waitfail@ec2 wait instance-terminated||WaiterFailed@REJECT (RR-015) a terminate whose instance-terminated waiter fails
+CASES
+# RR-018: the fake binds SSM to EC2, so a wrong-instance call cannot pass. Proven on the fake
+# itself, with the state c-pass left (its instance i-fakerun001 terminated, command cmd-001).
+fa() { FAKE_AWS_STATE="$WORK/c-pass.state.json" FAKE_AWS_LOG="$WORK/fa.calls.jsonl" aws "$@" --region us-west-2 --output json > "$WORK/fa.log" 2>&1; }
+rc=0; fa ssm get-command-invocation --command-id cmd-001 --instance-id i-fakerun001 || rc=$?
+check "ACCEPT (RR-018) the fake answers an invocation read that names the command's own instance" 0 "$rc" "$WORK/fa.log" '"Status": "Success"'
+rc=0; fa ssm get-command-invocation --command-id cmd-001 --instance-id i-0other || rc=$?
+check "REJECT (RR-018) the same read naming another instance" 254 "$rc" "$WORK/fa.log" 'InvocationDoesNotExist'
+rc=0; fa ssm wait command-executed --command-id cmd-001 --instance-id i-0other || rc=$?
+check "REJECT (RR-018) a wait naming another instance" 254 "$rc" "$WORK/fa.log" 'InvocationDoesNotExist'
+rc=0; fa ssm send-command --instance-ids i-fakerun001 --document-name AWS-RunShellScript --parameters 'commands=["verify-image.py"]' || rc=$?
+check "REJECT (RR-018) a command to an instance that is no longer running" 254 "$rc" "$WORK/fa.log" 'is not registered with SSM'
+rc=0; fa ssm describe-instance-information --filters Key=InstanceIds,Values=i-fakerun001 || rc=$?
+check "REJECT (RR-018) SSM registration of a terminated instance: no Online entry" 0 "$rc" "$WORK/fa.log" '"InstanceInformationList": \[\]'
 st c-otherrun '{"ManagedBy": "ubuntu-ami-sample", "RunId": "testrun2"}' "$(ssm Success Success)"
 rc=0; vf c-otherrun || rc=$?
 check "REJECT both checks Success on an AMI from another run: refused, not tagged" 1 "$rc" "$WORK/c-otherrun.log" 'BtfValidated=true was not applied'

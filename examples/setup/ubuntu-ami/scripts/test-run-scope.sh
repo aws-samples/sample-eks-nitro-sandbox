@@ -14,8 +14,19 @@
 #                                    each dependency lookup and the namespace read failed alone
 #                                    (H7); the kube context checked before the first delete (H6);
 #                                    --list-runs for a lost run id, read only (H2)
-#   3  scripts/00b-stage-bucket.sh   revoke confirms the objects and the policy are gone, or fails (M5)
-#   4  scripts/lib/common.sh         derived names checked against the API name limits (H2)
+#                                    volumes listed, deleted when unattached and confirmed gone
+#                                    (RR-003); --list-runs shows only resources whose tags were read
+#                                    and match (RR-005); a role re-tagged before its first change is
+#                                    left alone (RR-009)
+#   3  scripts/00b-stage-bucket.sh   revoke confirms the objects and the policy are gone, or fails
+#                                    (M5), and touches nothing unless the bucket, the role and the
+#                                    policy are this run's (RR-002); create rolls back on any failed
+#                                    step after the bucket exists (RR-004)
+#   4  scripts/lib/common.sh         derived names checked against the API name limits (H2); new
+#                                    run ids are random and their folder is reserved (RR-006)
+#   5  setup.sh                      the current-run pointer survives a read-only stop (RR-014)
+# Section 1 also proves RR-001: an existing role is validated whole, staging-policy document
+# included, before anything is attached.
 #
 # The fake keeps a JSON state file per case and logs every call; a case fails only the call
 # under test (FAKE_AWS_FAIL) and asserts both the exit code and what was, or was not, changed.
@@ -54,6 +65,10 @@ shift 2
 case "$*" in
   "config view --minify -o jsonpath={.clusters[0].cluster.server}")
     printf '%s' "${STUB_SERVER:-https://EXAMPLE0123.gr7.us-west-2.eks.amazonaws.com}" ;;
+  "get runtimeclass isolated-sandbox -o json")
+    echo '{"handler":"isolated-sandbox","scheduling":{"nodeSelector":{"eks.amazonaws.com/nitro-sandbox":"true"}}}' ;;
+  "get pods -n kube-system -l k8s-app=kube-dns -o json")
+    echo '{"items": [{"metadata": {"name": "coredns-a"}}]}' ;;
   "get namespace "*" -o json")
     if [ "${STUB_NS_ERR:-}" = denied ]; then echo 'Error from server (Forbidden): namespaces "x" is forbidden: User "test" cannot get resource' >&2; exit 1; fi
     if [ -n "${STUB_NS_JSON:-}" ]; then printf '%s\n' "$STUB_NS_JSON"; else echo 'Error from server (NotFound): namespaces "x" not found' >&2; exit 1; fi ;;
@@ -91,7 +106,7 @@ PY
 OWN='{"ManagedBy": "ubuntu-ami-sample", "RunId": "testrun1"}'
 iam() { RUN_ID=testrun1 bash "$HERE/00a-iam.sh" > "$WORK/$1.log" 2>&1; }
 
-echo "== 1/4 IAM roles and the instance profile: scripts/00a-iam.sh (H1) ===================="
+echo "== 1/5 IAM roles and the instance profile: scripts/00a-iam.sh (H1) ===================="
 st fresh; echo '{"account": "111122223333"}' > "$FAKE_AWS_STATE"
 rc=0; iam fresh || rc=$?
 check "ACCEPT a fresh run: creates its per-run roles and profile" 0 "$rc" "$WORK/fresh.log" 'IAM: PASS \(run testrun1'
@@ -129,11 +144,38 @@ refuse_iam tagsdenied 'could not determine the tags of IAM role' "REJECT (could 
 st getdenied; echo '{"account": "111122223333"}' > "$FAKE_AWS_STATE"; export FAKE_AWS_FAIL='iam get-role||AccessDenied'
 refuse_iam getdenied 'could not determine IAM role' "REJECT (could not determine) when get-role fails for a reason other than NoSuchEntity"
 st extra; iam_state "$FAKE_AWS_STATE" "$OWN" '["ubuntu-ami-sample-testrun1-build"]' '["arn:aws:iam::aws:policy/AdministratorAccess"]' '{}' "$TRUST"
-rc=0; iam extra || rc=$?
-check "REJECT a reused role with an extra attached managed policy" 1 "$rc" "$WORK/extra.log" 'AdministratorAccess'
+refuse_iam extra 'attached managed policies outside the allowlist: arn:aws:iam::aws:policy/AdministratorAccess' "REJECT a reused role with an extra attached managed policy, before any attach (RR-001)"
 st inline; iam_state "$FAKE_AWS_STATE" "$OWN" '["ubuntu-ami-sample-testrun1-build"]' '[]' '{"unexpected": {"Version": "2012-10-17"}}' "$TRUST"
-rc=0; iam inline || rc=$?
-check "REJECT a reused role with an unexpected inline policy" 1 "$rc" "$WORK/inline.log" 'unexpected inline policies: unexpected'
+refuse_iam inline 'unexpected inline policy: unexpected' "REJECT a reused role with an unexpected inline policy"
+# RR-001: the allowed staging-policy NAME is not enough; its document must be this run's read,
+# rendered for the bucket this run recorded in stage.env.
+STAGE_ENV="$ISSUE10_RUN_DIR/out/runs/testrun1/stage.env"
+read_doc() { python3 -c '
+import json, sys
+t = open(sys.argv[1]).read().replace("@STAGE_BUCKET@", sys.argv[2]).replace("@RUN_ID@", "testrun1")
+d = json.loads(t); d.pop("Comment", None); print(json.dumps(d))' "$SAMPLE/deploy/iam-build-host-policy.json" "$1"; }
+BROAD='{"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s3:*", "Resource": "*"}]}'
+mkdir -p "$(dirname "$STAGE_ENV")"; printf 'export STAGE_BUCKET=ubuntu-ami-sample-stage-testrun1-abcdef\n' > "$STAGE_ENV"
+st broad; iam_state "$FAKE_AWS_STATE" "$OWN" '["ubuntu-ami-sample-testrun1-build"]' '[]' "{\"ubuntu-ami-sample-testrun1-stage-read\": $BROAD}" "$TRUST"
+refuse_iam broad 'inline policy ubuntu-ami-sample-testrun1-stage-read is not exactly this run.s staging read' "REJECT (RR-001) s3:* on every resource under the allowed staging-policy name"
+st otherbucket; iam_state "$FAKE_AWS_STATE" "$OWN" '["ubuntu-ami-sample-testrun1-build"]' '[]' "{\"ubuntu-ami-sample-testrun1-stage-read\": $(read_doc ubuntu-ami-sample-stage-testrun2-abcdef)}" "$TRUST"
+refuse_iam otherbucket 'is not exactly this run.s staging read' "REJECT (RR-001) the staging read rendered for another run's bucket"
+st exactdoc; iam_state "$FAKE_AWS_STATE" "$OWN" '["ubuntu-ami-sample-testrun1-build"]' '[]' "{\"ubuntu-ami-sample-testrun1-stage-read\": $(read_doc ubuntu-ami-sample-stage-testrun1-abcdef)}" "$TRUST"
+rc=0; iam exactdoc || rc=$?
+check "ACCEPT (RR-001) a resumed run whose staging policy is exactly this run's read for its recorded bucket" 0 "$rc" "$WORK/exactdoc.log" 'IAM: PASS'
+ok "  ... and it changed nothing" "$( [ "$(calls exactdoc "$MUTATING")" = 0 ]; echo $?)"
+rm -f "$STAGE_ENV"
+st nostage; iam_state "$FAKE_AWS_STATE" "$OWN" '["ubuntu-ami-sample-testrun1-build"]' '[]' "{\"ubuntu-ami-sample-testrun1-stage-read\": $(read_doc ubuntu-ami-sample-stage-testrun1-abcdef)}" "$TRUST"
+refuse_iam nostage 'this run recorded no staging bucket to check its document against' "REJECT (RR-001) a staging policy when this run recorded no bucket to check it against"
+st partial; iam_state "$FAKE_AWS_STATE" "$OWN" '["ubuntu-ami-sample-testrun1-build"]' '[]' '{}' "$TRUST"
+python3 - "$FAKE_AWS_STATE" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1])); s["iam"]["roles"]["ubuntu-ami-sample-testrun1-node"]["Attached"].pop()
+json.dump(s, open(sys.argv[1], "w"))
+PY
+rc=0; iam partial || rc=$?
+check "ACCEPT a resumed run whose node role lacks one allowed policy: only that one is attached" 0 "$rc" "$WORK/partial.log" 'IAM: PASS'
+[ "$(calls partial '^iam attach-role-policy$')" = 1 ]; ok "  ... exactly one attach call" $?
 st trust; iam_state "$FAKE_AWS_STATE" "$OWN" '["ubuntu-ami-sample-testrun1-build"]' '[]' '{}' '{"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"AWS": "*"}, "Action": "sts:AssumeRole"}]}'
 refuse_iam trust 'trust policy is not deploy/iam-node-trust-policy.json' "REJECT a reused role with a different trust policy"
 st profrole; iam_state "$FAKE_AWS_STATE" "$OWN" '["some-other-role"]' '[]' '{}' "$TRUST"
@@ -156,7 +198,7 @@ rc=0; iam tagfail || rc=$?
 check "REJECT (not swallowed) a create-role-with-tags failure" 254 "$rc" "$WORK/tagfail.log" 'InvalidInput'
 
 echo
-echo "== 2/4 run-scoped clean up: clean.sh (H2, L1) ========================================"
+echo "== 2/5 run-scoped clean up: clean.sh (H2, L1) ========================================"
 # two_runs <file>: resources of run testrun1 and run testrun2, plus one with another ManagedBy
 two_runs() {
   python3 - "$1" "$ACCT" "$OTHER_ACCT" "${2:-}" <<'PY'
@@ -165,13 +207,16 @@ path, acct, other, variant = sys.argv[1:5]
 def tags(run, mb="ubuntu-ami-sample", name=None):
     t = [{"Key": "ManagedBy", "Value": mb}, {"Key": "RunId", "Value": run}]
     return t + ([{"Key": "Name", "Value": name}] if name else [])
-s = {"account": acct, "ec2": {"instances": [], "images": [], "snapshots": [], "security_groups": [], "launch_templates": []},
+s = {"account": acct, "ec2": {"instances": [], "images": [], "snapshots": [], "security_groups": [], "launch_templates": [], "volumes": []},
      "eks": {"nodegroups": {}, "clusters": {"example-cluster": {"endpoint": "https://EXAMPLE0123.gr7.us-west-2.eks.amazonaws.com"}}},
      "iam": {"roles": {}, "profiles": {}}, "s3": {"buckets": {}}}
 e = s["ec2"]
 for run in ("testrun1", "testrun2"):
     p = f"ubuntu-ami-sample-{run}"
     e["instances"].append({"InstanceId": f"i-{run}-build", "State": {"Name": "running"}, "Tags": tags(run, name=p + "-build")})
+    e["volumes"] += [{"VolumeId": f"vol-{run}-root", "State": "in-use", "AttachedTo": f"i-{run}-build", "DeleteOnTermination": True, "Tags": tags(run)},
+                     {"VolumeId": f"vol-{run}-data", "State": "in-use", "AttachedTo": f"i-{run}-build", "DeleteOnTermination": False, "Tags": tags(run)},
+                     {"VolumeId": f"vol-{run}-left", "State": "available", "Tags": tags(run)}]
     e["images"].append({"ImageId": f"ami-{run}", "Name": p, "Tags": tags(run), "BlockDeviceMappings": [{"Ebs": {"SnapshotId": f"snap-{run}-ami"}}]})
     e["snapshots"] += [{"SnapshotId": f"snap-{run}-ami", "VolumeSize": 120, "Tags": tags(run)},
                        {"SnapshotId": f"snap-{run}-orphan", "VolumeSize": 120, "Tags": tags(run)}]
@@ -183,6 +228,15 @@ for run in ("testrun1", "testrun2"):
     s["iam"]["profiles"][p + "-build"] = {"Tags": tags(run), "Roles": [p + "-build"]}
     s["s3"]["buckets"][f"ubuntu-ami-sample-stage-{run}-abcdef"] = {"owner": acct, "Tags": tags(run), "objects": [f"{run}/a.zip", f"{run}/b.tgz"]}
 e["instances"].append({"InstanceId": "i-someone-else", "State": {"Name": "running"}, "Tags": tags("testrun1", mb="other-sample")})
+e["volumes"].append({"VolumeId": "vol-someone-else", "State": "available", "Tags": tags("testrun1", mb="other-sample")})
+# same-pattern IAM and EKS names another owner tagged (--list-runs must not show them)
+s["iam"]["roles"]["ubuntu-ami-sample-otherx-build"] = {"Trust": {}, "Tags": tags("otherx", mb="someone-else"), "Attached": [], "Inline": {}}
+s["iam"]["profiles"]["ubuntu-ami-sample-otherx-build"] = {"Tags": tags("otherx", mb="someone-else"), "Roles": []}
+s["eks"]["nodegroups"]["example-cluster/ubuntu-ami-sample-otherx-ng"] = {"status": "ACTIVE", "tags": {"ManagedBy": "someone-else", "RunId": "otherx"}}
+if variant == "role-drift":  # run 1's node role is re-tagged for another run after the first tag read
+    s["iam"]["roles"]["ubuntu-ami-sample-testrun1-node"]["TagsAfterFirstRead"] = tags("testrun2")
+if variant == "vol-in-use":  # a volume of run 1 still attached to an instance clean.sh does not terminate
+    e["volumes"].append({"VolumeId": "vol-testrun1-stuck", "State": "in-use", "AttachedTo": "i-someone-else", "Tags": tags("testrun1")})
 if variant == "drift":       # the by-id re-check sees another run's tags on run 1's instance
     e["instances"][0]["RecheckTags"] = tags("testrun2")
 if variant == "foreign-bucket":
@@ -203,6 +257,7 @@ remaining() { python3 -c '
 import json, sys
 s = json.load(open(sys.argv[1])); e = s["ec2"]
 ids = [i["InstanceId"] for i in e["instances"] if i["State"]["Name"] != "terminated"] + [x["ImageId"] for x in e["images"]] \
+    + [x["VolumeId"] for x in e.get("volumes", [])] \
     + [x["SnapshotId"] for x in e["snapshots"]] + [x["GroupId"] for x in e["security_groups"]] + [x["LaunchTemplateId"] for x in e["launch_templates"]] \
     + list(s["eks"]["nodegroups"]) + list(s["iam"]["roles"]) + ["profile:" + p for p in s["iam"]["profiles"]] + list(s["s3"]["buckets"])
 print(" ".join(sorted(ids)))' "$FAKE_AWS_STATE"; }
@@ -217,7 +272,9 @@ rc=0; cl dry --dry-run --run-id testrun1 || rc=$?
 check "ACCEPT --dry-run for run testrun1" 0 "$rc" "$WORK/dry.log" 'nothing was deleted'
 grep -q 'i-testrun1-build' "$WORK/dry.log" && grep -q 'ubuntu-ami-sample-stage-testrun1-abcdef' "$WORK/dry.log" && grep -q 'ubuntu-ami-sample-testrun1-node' "$WORK/dry.log"
 ok "  ... lists run testrun1's instance, bucket and roles" $?
-! grep -qE 'testrun2|i-someone-else' "$WORK/dry.log"
+grep -qE '^  vol-testrun1-root\s+in-use$' "$WORK/dry.log" && grep -qE '^  vol-testrun1-left\s+available$' "$WORK/dry.log"
+ok "  ... and its EBS volumes with their state (RR-003)" $?
+! grep -qE 'testrun2|someone-else' "$WORK/dry.log"
 ok "  ... lists nothing of run testrun2 or of another ManagedBy" $?
 ok "  ... changed nothing" "$( [ "$(calls dry "$MUTATING")" = 0 ]; echo $?)"
 python3 - "$FAKE_AWS_LOG" <<'PY'; ok "  ... every EC2 list call filters on BOTH ManagedBy and RunId" $?
@@ -240,7 +297,8 @@ rc=0; STUB_NS_JSON='{"metadata": {"labels": {"app.kubernetes.io/part-of": "ubunt
 check "ACCEPT a full clean up of the run in the run state (testrun1)" 0 "$rc" "$WORK/full.log" 'Clean up of run testrun1 complete'
 left=$(remaining)
 [[ "$left" != *testrun1* ]]; ok "  ... every testrun1 resource is gone (left: $left)" $?
-for want in i-testrun2-build ami-testrun2 snap-testrun2-ami snap-testrun2-orphan sg-testrun2 lt-testrun2 ubuntu-ami-sample-testrun2-node profile:ubuntu-ami-sample-testrun2-build ubuntu-ami-sample-stage-testrun2-abcdef i-someone-else; do
+for want in i-testrun2-build ami-testrun2 snap-testrun2-ami snap-testrun2-orphan sg-testrun2 lt-testrun2 ubuntu-ami-sample-testrun2-node profile:ubuntu-ami-sample-testrun2-build ubuntu-ami-sample-stage-testrun2-abcdef i-someone-else \
+            vol-testrun2-root vol-testrun2-left vol-someone-else; do
   [[ " $left " == *" $want "* ]] || { echo "    missing: $want"; false; }
 done; ok "  ... and every testrun2 resource, and the other sample's instance, is untouched" $?
 python3 - "$FAKE_AWS_LOG" <<'PY'; ok "  ... every S3 call names the expected bucket owner (L1)" $?
@@ -252,10 +310,35 @@ for a in s3:
 PY
 rm -f "$ISSUE10_RUN_DIR/out/run-state.env"
 
+python3 -c 'import json,sys; c=[json.loads(l)["argv"] for l in open(sys.argv[1])]; d=[a for a in c if a[:2]==["ec2","delete-volume"]]; sys.exit(0 if sorted(a[a.index("--volume-id")+1] for a in d)==["vol-testrun1-data","vol-testrun1-left"] else 1)' "$FAKE_AWS_LOG"
+ok "  ... (RR-003) it deleted exactly run testrun1's two available volumes, after its instance was gone (the root volume went with it)" $?
+st volstuck; two_runs "$FAKE_AWS_STATE" vol-in-use
+rc=0; STUB_NS_JSON='{"metadata": {"labels": {"app.kubernetes.io/part-of": "ubuntu-ami-sample", "app.kubernetes.io/instance": "testrun1"}}}' cl volstuck --delete-aws-resources --run-id testrun1 || rc=$?
+check "REJECT (RR-003) a run volume still attached: left in place, the clean up incomplete" 1 "$rc" "$WORK/volstuck.log" 'volume vol-testrun1-stuck is in-use \(still attached\); left in place'
+grep -q 'EBS volumes still present after cleanup: vol-testrun1-stuck' "$WORK/volstuck.log"; ok "  ... and the final absence check names it" $?
+st voldrift; two_runs "$FAKE_AWS_STATE"
+python3 - "$FAKE_AWS_STATE" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+v = [x for x in s["ec2"]["volumes"] if x["VolumeId"] == "vol-testrun1-left"][0]
+v["RecheckTags"] = [{"Key": "ManagedBy", "Value": "ubuntu-ami-sample"}, {"Key": "RunId", "Value": "testrun2"}]
+json.dump(s, open(sys.argv[1], "w"))
+PY
+rc=0; STUB_NS_JSON='{"metadata": {"labels": {"app.kubernetes.io/part-of": "ubuntu-ami-sample", "app.kubernetes.io/instance": "testrun1"}}}' cl voldrift --delete-aws-resources --run-id testrun1 || rc=$?
+check "REJECT (RR-003) deleting a volume whose tags changed since the listing (both re-read first)" 1 "$rc" "$WORK/voldrift.log" 'volume vol-testrun1-left no longer carries'
+[[ " $(remaining) " == *" vol-testrun1-left "* ]]; ok "  ... the volume was not deleted" $?
+
 st drift; two_runs "$FAKE_AWS_STATE" drift
 rc=0; cl drift --delete-aws-resources --run-id testrun1 || rc=$?
 check "REJECT deleting an instance whose tags changed between the listing and the delete (re-check)" 1 "$rc" "$WORK/drift.log" 'instance i-testrun1-build no longer carries'
 [[ " $(remaining) " == *" i-testrun1-build "* ]]; ok "  ... the instance was not terminated" $?
+st roledrift; two_runs "$FAKE_AWS_STATE" role-drift
+rc=0; STUB_NS_JSON='{"metadata": {"labels": {"app.kubernetes.io/part-of": "ubuntu-ami-sample", "app.kubernetes.io/instance": "testrun1"}}}' cl roledrift --delete-aws-resources --run-id testrun1 || rc=$?
+check "REJECT (RR-009) a role re-tagged between the listing and its first change: left in place, no policy detached" 1 "$rc" "$WORK/roledrift.log" 'role ubuntu-ami-sample-testrun1-node no longer carries .* no policy detached'
+python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); r=s["iam"]["roles"]["ubuntu-ami-sample-testrun1-node"]; sys.exit(0 if r["Attached"] else 1)' "$FAKE_AWS_STATE" \
+  && [ "$(python3 -c 'import json,sys; print(sum(1 for l in open(sys.argv[1]) if json.loads(l)["argv"][:2]==["iam","detach-role-policy"] and "ubuntu-ami-sample-testrun1-node" in json.loads(l)["argv"]))' "$FAKE_AWS_LOG")" = 0 ]
+ok "  ... its managed policy is still attached and no detach call named it" $?
+[[ " $(remaining) " != *" ubuntu-ami-sample-testrun1-build "* ]]; ok "  ... while the unchanged build role was removed" $?
 
 st keep; two_runs "$FAKE_AWS_STATE"
 rc=0; cl keepdry --dry-run --keep-ami --run-id testrun1 || rc=$?
@@ -284,7 +367,7 @@ check "REJECT deleting the namespace when it carries another run's instance labe
 OWN_NS='{"metadata": {"labels": {"app.kubernetes.io/part-of": "ubuntu-ami-sample", "app.kubernetes.io/instance": "testrun1"}}}'
 
 echo
-echo "== 2b/4 IAM by per-run name, every lookup checked, the kube context: clean.sh (H5, H7, H6) =="
+echo "== 2b/5 IAM by per-run name, every lookup checked, the kube context: clean.sh (H5, H7, H6) =="
 st iamdry; two_runs "$FAKE_AWS_STATE"
 rc=0; cl iamdry --dry-run --run-id testrun1 || rc=$?
 check "ACCEPT (H5) the run's roles and profile are found by name through IAM" 0 "$rc" "$WORK/iamdry.log" 'role ubuntu-ami-sample-testrun1-node: owned'
@@ -335,7 +418,7 @@ rc=0; KUBE_CONTEXT= STUB_NS_JSON="$OWN_NS" cl h6-unset --run-id testrun1 || rc=$
 check "REJECT (H6) no KUBE_CONTEXT: no fallback to the current context" 1 "$rc" "$WORK/h6-unset.log" 'KUBE_CONTEXT is not set'
 
 echo
-echo "== 2c/4 a lost run id: clean.sh --list-runs (H2) ======================================"
+echo "== 2c/5 a lost run id: clean.sh --list-runs (H2) ======================================"
 st lr; two_runs "$FAKE_AWS_STATE"
 rc=0; cl lr --list-runs || rc=$?
 check "ACCEPT --list-runs with no run id: every marked resource, grouped by RunId" 0 "$rc" "$WORK/lr.log" 'nothing was deleted'
@@ -346,9 +429,12 @@ for run in ("testrun1", "testrun2"):
     block = re.search(rf"^run {run}:\n((?:  .*\n)+)", text, re.M).group(1)
     for want in (f"EC2 instance i-{run}-build", f"AMI ami-{run}", f"EBS snapshot snap-{run}-orphan", f"security group sg-{run}",
                  f"launch template lt-{run}", f"S3 bucket ubuntu-ami-sample-stage-{run}-abcdef", f"IAM role ubuntu-ami-sample-{run}-node",
-                 f"IAM role ubuntu-ami-sample-{run}-build", f"EKS node group ubuntu-ami-sample-{run}-ng"):
+                 f"IAM role ubuntu-ami-sample-{run}-build", f"EKS node group ubuntu-ami-sample-{run}-ng",
+                 f"EBS volume vol-{run}-left", f"IAM instance profile ubuntu-ami-sample-{run}-build"):
         assert want in block, (run, want, block)
-assert "i-someone-else" not in text
+# RR-005: same-pattern names another owner tagged, and another sample's resources, are not listed
+for bad in ("someone-else", "otherx"):
+    assert bad not in text, (bad, text)
 PY
 ok "  ... and changed nothing" "$( [ "$(calls lr "$MUTATING")" = 0 ]; echo $?)"
 st lrfail; two_runs "$FAKE_AWS_STATE"; export FAKE_AWS_FAIL='iam list-roles||AccessDenied'
@@ -356,19 +442,36 @@ rc=0; cl lrfail --list-runs || rc=$?
 check "REJECT (could not determine) --list-runs whose role listing fails: the list is incomplete" 1 "$rc" "$WORK/lrfail.log" 'could not determine the marked IAM roles'
 rc=0; cl lrmix --list-runs --delete-aws-resources || rc=$?
 check "REJECT --list-runs with a delete option (it never deletes)" 1 "$rc" "$WORK/lrmix.log" 'takes no other option'
+st lrtag; two_runs "$FAKE_AWS_STATE"; export FAKE_AWS_FAIL='iam list-instance-profile-tags|ubuntu-ami-sample-testrun1-build|AccessDenied'
+rc=0; cl lrtag --list-runs || rc=$?
+check "REJECT (RR-005) --list-runs when one candidate's tags cannot be read: incomplete, and that candidate not listed" 1 "$rc" "$WORK/lrtag.log" 'could not determine the marked IAM instance profile'
+! grep -q 'IAM instance profile ubuntu-ami-sample-testrun1-build' "$WORK/lrtag.log"; ok "  ... the unread profile is not shown as run testrun1's" $?
+unset FAKE_AWS_FAIL
 unset FAKE_AWS_FAIL
 
 echo
-echo "== 3/4 staging revocation: scripts/00b-stage-bucket.sh revoke (M5) ======================"
+echo "== 3/5 staging: scripts/00b-stage-bucket.sh revoke and create (M5, RR-002, RR-004) ======="
+# stage_state <file> [variant]: run testrun1's tagged bucket with two staged objects, and its
+# tagged build role holding exactly this run's staging read for that bucket.
 stage_state() {
-  python3 - "$1" <<'PY'
+  python3 - "$1" "${2:-}" "$(read_doc ubuntu-ami-sample-stage-testrun1-abcdef)" "$(read_doc ubuntu-ami-sample-stage-testrun2-abcdef)" <<'PY'
 import json, sys
-s = {"account": "111122223333",
-     "iam": {"roles": {"ubuntu-ami-sample-testrun1-build": {"Trust": {}, "Tags": [], "Attached": [], "Inline": {"ubuntu-ami-sample-testrun1-stage-read": {}}}}, "profiles": {}},
-     "s3": {"buckets": {"ubuntu-ami-sample-stage-testrun1-abcdef": {"owner": "111122223333", "Tags": [], "objects": ["testrun1/a.zip", "testrun1/b.tgz"]}}}}
-json.dump(s, open(sys.argv[1], "w"))
+path, variant, doc, other_doc = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), json.loads(sys.argv[4])
+own = [{"Key": "ManagedBy", "Value": "ubuntu-ami-sample"}, {"Key": "RunId", "Value": "testrun1"}]
+role = {"Trust": {}, "Tags": list(own), "Attached": [], "Inline": {"ubuntu-ami-sample-testrun1-stage-read": doc}}
+bucket = {"owner": "111122223333", "Tags": list(own), "objects": ["testrun1/a.zip", "testrun1/b.tgz"]}
+if variant == "bucket-untagged": bucket["Tags"] = []
+if variant == "bucket-other-run": bucket["Tags"] = [own[0], {"Key": "RunId", "Value": "testrun2"}]
+if variant == "role-untagged": role["Tags"] = []
+if variant == "doc-other-bucket": role["Inline"]["ubuntu-ami-sample-testrun1-stage-read"] = other_doc
+if variant == "doc-broad": role["Inline"]["ubuntu-ami-sample-testrun1-stage-read"] = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s3:*", "Resource": "*"}]}
+if variant == "no-bucket": bucket = None
+s = {"account": "111122223333", "iam": {"roles": {"ubuntu-ami-sample-testrun1-build": role}, "profiles": {}},
+     "s3": {"buckets": {"ubuntu-ami-sample-stage-testrun1-abcdef": bucket} if bucket else {}}}
+json.dump(s, open(path, "w"))
 PY
 }
+unchanged() { python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); b=s["s3"]["buckets"]["ubuntu-ami-sample-stage-testrun1-abcdef"]; sys.exit(0 if len(b["objects"])==2 and s["iam"]["roles"]["ubuntu-ami-sample-testrun1-build"]["Inline"] else 1)' "$FAKE_AWS_STATE"; }
 rv() { local c="$1"; shift; RUN_ID=testrun1 bash "$HERE/00b-stage-bucket.sh" revoke "$@" > "$WORK/$c.log" 2>&1; }
 st revok; stage_state "$FAKE_AWS_STATE"
 rc=0; rv revok ubuntu-ami-sample-stage-testrun1-abcdef a.zip b.tgz || rc=$?
@@ -383,12 +486,81 @@ grep -q 'testrun1/a.zip' "$ISSUE10_RUN_DIR/out/runs/testrun1/stage-residue.txt";
 st revpol; stage_state "$FAKE_AWS_STATE"; export FAKE_AWS_FAIL='iam delete-role-policy||AccessDenied'
 rc=0; rv revpol ubuntu-ami-sample-stage-testrun1-abcdef a.zip b.tgz || rc=$?
 check "REJECT a revocation whose role-policy delete fails" 1 "$rc" "$WORK/revpol.log" 'inline policy ubuntu-ami-sample-testrun1-stage-read on ubuntu-ami-sample-testrun1-build: (delete failed|still present)'
-st revconf; stage_state "$FAKE_AWS_STATE"; export FAKE_AWS_FAIL='iam get-role-policy||AccessDenied'
+st revconf; stage_state "$FAKE_AWS_STATE"; export FAKE_AWS_FAIL='iam list-role-policies||AccessDenied'
 rc=0; rv revconf ubuntu-ami-sample-stage-testrun1-abcdef a.zip b.tgz || rc=$?
 check "REJECT a revocation whose policy removal cannot be confirmed" 1 "$rc" "$WORK/revconf.log" 'could not confirm it is gone'
 st revother; stage_state "$FAKE_AWS_STATE"
 rc=0; rv revother ubuntu-ami-sample-stage-testrun2-abcdef a.zip || rc=$?
 check "REJECT revoking with another run's bucket" 1 "$rc" "$WORK/revother.log" "is not this run's staging bucket"
+# RR-002: ownership of the bucket and the role, and the policy's content, before any delete. Each
+# refusal changes nothing (both objects and the policy are still there). R1-F expected the
+# untagged case to succeed; it is now a refusal.
+while IFS='@' read -r name variant rule rx why; do
+  [ -n "$name" ] || continue
+  st "$name"; stage_state "$FAKE_AWS_STATE" "$variant"; [ -z "$rule" ] || export FAKE_AWS_FAIL="$rule"
+  rc=0; rv "$name" ubuntu-ami-sample-stage-testrun1-abcdef a.zip b.tgz || rc=$?
+  check "$why" 1 "$rc" "$WORK/$name.log" "$rx"
+  unchanged && [ "$(calls "$name" 'delete-')" = 0 ]; ok "  ... and nothing was deleted" $?
+  unset FAKE_AWS_FAIL
+done <<'CASES'
+rv-buntag@bucket-untagged@@revoke: could not read the tags of bucket@REJECT (RR-002) an untagged bucket of the run's name (R1-F accepted this)
+rv-bother@bucket-other-run@@bucket ubuntu-ami-sample-stage-testrun1-abcdef does not carry ManagedBy=ubuntu-ami-sample and RunId=testrun1@REJECT (RR-002) a bucket tagged for another run
+rv-btagerr@@s3api get-bucket-tagging||AccessDenied@could not read the tags of bucket@REJECT (RR-002) when the bucket's tags cannot be read
+rv-runtag@role-untagged@@role ubuntu-ami-sample-testrun1-build does not carry@REJECT (RR-002) an untagged build role
+rv-rtagerr@@iam list-role-tags||AccessDenied@could not read the tags of role@REJECT (RR-002) when the role's tags cannot be read
+rv-docother@doc-other-bucket@@is not this run.s read for s3://ubuntu-ami-sample-stage-testrun1-abcdef/testrun1/@REJECT (RR-002) a staging policy for another run's bucket and prefix
+rv-docbroad@doc-broad@@is not this run.s read@REJECT (RR-002) a broad document under the staging-policy name
+rv-docerr@@iam get-role-policy||AccessDenied@could not read inline policy@REJECT (RR-002) when the policy document cannot be read
+CASES
+
+# RR-004: create, and the rollback that runs when any step after the bucket exists fails.
+printf 'scripts\n' > "$WORK/stage-a.tgz"; printf 'runtime\n' > "$WORK/stage-b.zip"
+cr() { local c="$1"; shift; RUN_ID=testrun1 bash "$HERE/00b-stage-bucket.sh" create "$WORK/stage-a.tgz" "$WORK/stage-b.zip" > "$WORK/$c.log" 2>&1; }
+SENV="$ISSUE10_RUN_DIR/out/runs/testrun1/stage.env"
+st cr-ok; stage_state "$FAKE_AWS_STATE" no-bucket
+python3 - "$FAKE_AWS_STATE" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1])); s["iam"]["roles"]["ubuntu-ami-sample-testrun1-build"]["Inline"] = {}
+json.dump(s, open(sys.argv[1], "w"))
+PY
+cp "$FAKE_AWS_STATE" "$WORK/cr-base.json"
+rc=0; cr cr-ok || rc=$?
+check "ACCEPT a create: the bucket is tagged and hardened, both files uploaded, the read granted" 0 "$rc" "$WORK/cr-ok.log" '^STAGE_BUCKET=ubuntu-ami-sample-stage-testrun1-[0-9a-f]{6}$'
+python3 - "$FAKE_AWS_STATE" <<'PY'; ok "  ... the state shows exactly that, and the rollback did not run" $?
+import json, sys
+s = json.load(open(sys.argv[1]))
+(name, b), = s["s3"]["buckets"].items()
+t = {x["Key"]: x["Value"] for x in b["Tags"]}
+assert t["ManagedBy"] == "ubuntu-ami-sample" and t["RunId"] == "testrun1", t
+assert sorted(b["objects"]) == ["testrun1/stage-a.tgz", "testrun1/stage-b.zip"], b
+assert set(b["config"]) == {"put-public-access-block", "put-bucket-encryption", "put-bucket-policy"}, b
+assert list(s["iam"]["roles"]["ubuntu-ami-sample-testrun1-build"]["Inline"]) == ["ubuntu-ami-sample-testrun1-stage-read"]
+PY
+! grep -q 'staging create failed' "$WORK/cr-ok.log" && [ -s "$SENV" ]; ok "  ... and stage.env records the bucket" $?
+while IFS='@' read -r name rule why; do
+  [ -n "$name" ] || continue
+  st "$name"; cp "$WORK/cr-base.json" "$FAKE_AWS_STATE"; rm -f "$SENV"; export FAKE_AWS_FAIL="$rule"
+  rc=0; cr "$name" || rc=$?
+  [ "$rc" -ne 0 ]; ok "$why: create fails (rc=$rc)" $?
+  python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if not s["s3"]["buckets"] and not s["iam"]["roles"]["ubuntu-ami-sample-testrun1-build"]["Inline"] else 1)' "$FAKE_AWS_STATE" \
+    && [ ! -e "$SENV" ] && grep -q 'rollback: removed bucket ubuntu-ami-sample-stage-testrun1-' "$WORK/$name.log"
+  ok "  ... and the rollback removed the bucket, every uploaded object, the policy and stage.env" $?
+  unset FAKE_AWS_FAIL
+done <<'CASES'
+cr-tag@s3api put-bucket-tagging||InternalError@REJECT (RR-004) a failed put-bucket-tagging
+cr-pab@s3api put-public-access-block||AccessDenied@REJECT (RR-004) a failed put-public-access-block
+cr-enc@s3api put-bucket-encryption||AccessDenied@REJECT (RR-004) a failed put-bucket-encryption
+cr-pol@s3api put-bucket-policy||MalformedPolicy@REJECT (RR-004) a failed put-bucket-policy
+cr-obj1@s3api put-object|stage-a.tgz|InternalError@REJECT (RR-004) a failed first upload
+cr-obj2@s3api put-object|stage-b.zip|InternalError@REJECT (RR-004) a failed second upload, after the first one landed
+cr-role@iam put-role-policy||AccessDenied@REJECT (RR-004) a failed put-role-policy, after both uploads (the reviewer's probe)
+CASES
+st cr-rbfail; cp "$WORK/cr-base.json" "$FAKE_AWS_STATE"; rm -f "$SENV"; export FAKE_AWS_FAIL='iam put-role-policy||AccessDenied;s3api delete-object|stage-b.zip|AccessDenied'
+rc=0; cr cr-rbfail || rc=$?
+[ "$rc" -ne 0 ] && grep -q 'the rollback left: object s3://ubuntu-ami-sample-stage-testrun1-[0-9a-f]*/testrun1/stage-b.zip' "$WORK/cr-rbfail.log" \
+  && [ -s "$SENV" ] && grep -q 'stage-b.zip' "$ISSUE10_RUN_DIR/out/runs/testrun1/stage-residue.txt"
+ok "REJECT a rollback that cannot delete an object: it says so, keeps the bucket and stage.env for clean.sh, records the residue" $?
+unset FAKE_AWS_FAIL; rm -f "$SENV" "$ISSUE10_RUN_DIR/out/runs/testrun1/stage-residue.txt"
 # The guard setup.sh arms right after staging (common.sh arm_staging_revoke): a step that fails
 # before the normal revocation still revokes, and the failure's exit status is kept.
 guard() { # guard <case> <body run after arming>
@@ -422,7 +594,7 @@ assert i < j
 PY
 
 echo
-echo "== 4/4 derived per-run names: scripts/lib/common.sh derive_run_names =================="
+echo "== 4/5 run ids and derived names: scripts/lib/common.sh (H2, RR-006) ===================="
 names() { bash -c '. "$1/lib/common.sh" >/dev/null && RUN_ID="$2" && derive_run_names && printf "%s\n" "$BUILD_ROLE_NAME" "$NODE_ROLE_NAME" "$INSTANCE_PROFILE" "$SG_NAME" "$LT_NAME" "$NODEGROUP_NAME" "$STAGE_POLICY_NAME"' _ "$HERE" "$1"; }
 rc=0; out=$(names 20261028t221500z 2>&1) || rc=$?
 printf '%s\n' "$out" > "$WORK/names.log"
@@ -434,6 +606,84 @@ rc=0; RESOURCE_PREFIX=Ubuntu_Sample names 20261028t221500z > "$WORK/names-case.l
 check "REJECT a prefix with characters a bucket name cannot carry" 1 "$rc" "$WORK/names-case.log" 'must be lowercase'
 rc=0; names 'Bad-Run' > "$WORK/names-run.log" 2>&1 || rc=$?
 check "REJECT a malformed run id" 1 "$rc" "$WORK/names-run.log" 'no valid RUN_ID'
+# RR-006: a new id carries random hex, and its run folder is reserved with a plain mkdir.
+ids=$(bash -c '. "$1/lib/common.sh" >/dev/null; for i in $(seq 1 20); do new_run_id; done' _ "$HERE" 2>&1)
+printf '%s\n' "$ids" > "$WORK/ids.log"
+[ "$(printf '%s\n' "$ids" | sort -u | wc -l)" = 20 ] && ! printf '%s\n' "$ids" | grep -qvE '^[0-9]{8}t[0-9]{6}z[0-9a-f]{4}$'
+ok "ACCEPT (RR-006) 20 new run ids made in the same second are all different and well formed (20 characters)" $?
+rc=0; out=$(names "$(printf '%s\n' "$ids" | head -n 1)" 2>&1) || rc=$?
+printf '%s\n' "$out" > "$WORK/names-new.log"
+check "  ... and a new id keeps every derived name within the IAM, node group and S3 limits" 0 "$rc" "$WORK/names-new.log" '-ng$'
+reserve() { RUN_ID="$1" bash -c '. "$1/lib/common.sh" >/dev/null && derive_run_names && reserve_run_dir && echo reserved' _ "$HERE" > "$WORK/$2.log" 2>&1; }
+rc=0; reserve 20261028t221500zbeef res1 || rc=$?
+check "ACCEPT (RR-006) reserving a new run folder" 0 "$rc" "$WORK/res1.log" 'reserved'
+rc=0; reserve 20261028t221500zbeef res2 || rc=$?
+check "REJECT (RR-006) reserving the same run folder a second time (another run already has the id)" 1 "$rc" "$WORK/res2.log" 'already exists: another run has id 20261028t221500zbeef'
+
+echo
+echo "== 5/5 the current-run pointer: setup.sh (RR-014) ======================================="
+# setup.sh run for real, against a fixture lock whose small inputs it verifies like the real
+# ones, the fake aws and the stub kubectl. The previous run's pointer must survive any stop
+# before the first AWS change, and be replaced right before it.
+FX="$ISSUE10_RUN_DIR/runtime"; mkdir -p "$FX"
+python3 - "$FX" "$WORK/fixture.lock" <<'PY'
+import hashlib, sys, warnings, zipfile
+fx, lock = sys.argv[1], sys.argv[2]
+sha = lambda b: hashlib.sha256(b).hexdigest()
+pay = {"fx-shim": b"fixture shim\n", "fx-image": b"fixture image\n"}
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    with zipfile.ZipFile(f"{fx}/fixture.zip", "w") as z:
+        z.writestr("SHA256SUMS", "".join(f"{sha(b)}  {n}\n" for n, b in sorted(pay.items())))
+        for n, b in pay.items():
+            z.writestr(n, b)
+commit = "0123456789abcdef0123456789abcdef01234567"
+files = {"linux-fixture.tar.xz": b"kernel fixture\n", "erofs-utils-fixture.tar.gz": b"erofs fixture\n",
+         f"{commit}.patch": f"From {commit} Mon Sep 17 00:00:00 2001\nSubject: [PATCH] fixture\n".encode()}
+for n, b in files.items():
+    open(f"{fx}/{n}", "wb").write(b)
+blocks = [
+    dict(id="runtime-archive", kind="file", ref="fixture", file="fixture.zip", source="operator-supplied fixture",
+         sha256=sha(open(f"{fx}/fixture.zip", "rb").read()), status="operator-supplied"),
+    *[dict(id=f"runtime-payload-{n}", kind="runtime-payload", archive="runtime-archive", ref="fixture", file=n,
+           source="member of runtime-archive", sha256=sha(b), install="none", status="operator-supplied") for n, b in pay.items()],
+    dict(id="linux-kernel-source", kind="file", ref="fixture", source="https://example.invalid/linux-fixture.tar.xz",
+         sha256=sha(files["linux-fixture.tar.xz"]), status="available"),
+    dict(id="host-kernel-patch", kind="file", ref=commit, file=f"{commit}.patch", source=f"https://example.invalid/{commit}.patch",
+         sha256=sha(files[f"{commit}.patch"]), subject="fixture", status="available"),
+    dict(id="erofs-utils-source", kind="file", ref="fixture", source="https://example.invalid/erofs-utils-fixture.tar.gz",
+         sha256=sha(files["erofs-utils-fixture.tar.gz"]), status="available"),
+]
+open(lock, "w").write("\n".join("".join(f"{k}={v}\n" for k, v in b.items()) for b in blocks))
+PY
+POINTER="$ISSUE10_RUN_DIR/out/run-state.env"
+su() { # su <case>: run the real setup.sh with a previous run recorded as the current one
+  mkdir -p "$(dirname "$POINTER")"; printf 'RUN_ID=oldrun1\n' > "$POINTER"
+  env -u RUN_ID LOCK_FILE="$WORK/fixture.lock" RUNTIME_ARTIFACT_FILE=fixture.zip BUILD_SUBNET_ID=subnet-0example1 \
+    NODE_SUBNET_IDS=subnet-0example2 bash "$SAMPLE/setup.sh" > "$WORK/$1.log" 2>&1
+}
+su_state() { # su_state <with-vpc-cni: yes|no>
+  python3 - "$FAKE_AWS_STATE" "$1" <<'PY'
+import json, sys
+s = {"account": "111122223333", "eks": {"clusters": {"example-cluster": {"endpoint": "https://EXAMPLE0123.gr7.us-west-2.eks.amazonaws.com"}}}}
+if sys.argv[2] == "yes":
+    s["eks"]["addons"] = {"example-cluster/vpc-cni": {"status": "ACTIVE", "addonVersion": "v1.0.0-eksbuild.1", "configurationValues": "{\"enableNetworkPolicy\":\"true\"}"}}
+json.dump(s, open(sys.argv[1], "w"))
+PY
+}
+st su-cni; su_state no
+rc=0; su su-cni || rc=$?
+check "REJECT setup.sh on a cluster without the vpc-cni add-on (the known missing prerequisite)" 1 "$rc" "$WORK/su-cni.log" 'PREREQUISITE NOT MET: cluster example-cluster has no managed vpc-cni add-on'
+grep -q 'all pinned public inputs verified' "$WORK/su-cni.log"; ok "  ... after it verified the fixture inputs (the stop is the cluster check, not the inputs)" $?
+[ "$(cat "$POINTER")" = "RUN_ID=oldrun1" ]; ok "  ... and the previous run's pointer survives (RR-014)" $?
+ok "  ... and it made no AWS change" "$( [ "$(calls su-cni "$MUTATING")" = 0 ]; echo $?)"
+st su-iam; su_state yes; export FAKE_AWS_FAIL='iam get-role||AccessDenied'
+rc=0; su su-iam || rc=$?
+new=$(sed -n 's/.*current run is now \([a-z0-9]*\) .*/\1/p' "$WORK/su-iam.log" | head -n 1)
+check "ACCEPT: with every read-only check passed, the run becomes current just before its first AWS step (which then fails here)" 1 "$rc" "$WORK/su-iam.log" 'could not determine IAM role'
+[[ "$new" =~ ^[0-9]{8}t[0-9]{6}z[0-9a-f]{4}$ ]] && [ "$(cat "$POINTER")" = "RUN_ID=$new" ] && [ -d "$ISSUE10_RUN_DIR/out/runs/$new" ]
+ok "  ... the pointer now names the new run ($new), whose folder was reserved" $?
+unset FAKE_AWS_FAIL
 
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"

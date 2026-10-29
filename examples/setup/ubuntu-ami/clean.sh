@@ -61,16 +61,20 @@ if [[ "$LIST_RUNS" == 1 ]]; then
     if ! js=$(aws "$@" --region "$AWS_REGION" --output json 2>"$ERR"); then
       warn_inc "could not determine the marked $kind (lookup failed): $(head -n 2 "$ERR")"; return
     fi
+    # Only resources whose tags were read and carry ManagedBy=<RESOURCE_PREFIX> and a well-formed
+    # RunId are listed; the EC2 and S3 lookups also filter on ManagedBy on the server side.
     rows+="$(printf '%s' "$js" | python3 -c '
-import json, sys
+import json, re, sys
 d = json.load(sys.stdin)
 for rid, tags in eval(sys.argv[1], {"d": d}):
     t = tags if isinstance(tags, dict) else {x["Key"]: x["Value"] for x in tags or []}
-    print("%s\t%s\t%s" % (t.get(sys.argv[2], "<no RunId tag>"), sys.argv[3], rid))
-' "$expr" "$TAGS_RUN_KEY" "$kind")"$'\n'
+    if t.get(sys.argv[4]) == sys.argv[5] and re.fullmatch(r"[a-z0-9]{1,20}", t.get(sys.argv[2], "")):
+        print("%s\t%s\t%s" % (t[sys.argv[2]], sys.argv[3], rid))
+' "$expr" "$TAGS_RUN_KEY" "$kind" "$TAGS_OWNER_KEY" "$TAGS_OWNER_VALUE")"$'\n'
   }
   MB="Name=tag:${TAGS_OWNER_KEY},Values=${TAGS_OWNER_VALUE}"
   lr "EC2 instance" '[(x["InstanceId"], x.get("Tags", [])) for r in d["Reservations"] for x in r["Instances"] if x["State"]["Name"] != "terminated"]' ec2 describe-instances --filters "$MB"
+  lr "EBS volume" '[(x["VolumeId"], x.get("Tags", [])) for x in d["Volumes"]]' ec2 describe-volumes --filters "$MB"
   lr AMI '[(x["ImageId"], x.get("Tags", [])) for x in d["Images"]]' ec2 describe-images --owners self --filters "$MB"
   lr "EBS snapshot" '[(x["SnapshotId"], x.get("Tags", [])) for x in d["Snapshots"]]' ec2 describe-snapshots --owner-ids self --filters "$MB"
   lr "security group" '[(x["GroupId"], x.get("Tags", [])) for x in d["SecurityGroups"]]' ec2 describe-security-groups --filters "$MB"
@@ -84,6 +88,13 @@ for rid, tags in eval(sys.argv[1], {"d": d}):
     done
   else
     warn_inc "could not determine the marked IAM roles (list-roles failed): $(head -n 2 "$ERR")"
+  fi
+  if js=$(aws iam list-instance-profiles --output json 2>"$ERR"); then
+    for r in $(printf '%s' "$js" | json_get "[x['InstanceProfileName'] for x in d['InstanceProfiles'] if __import__('re').fullmatch(r'${RESOURCE_PREFIX}-[a-z0-9]{1,20}-build', x['InstanceProfileName'])]"); do
+      lr "IAM instance profile" "[(\"$r\", d[\"Tags\"])]" iam list-instance-profile-tags --instance-profile-name "$r"
+    done
+  else
+    warn_inc "could not determine the marked instance profiles (list-instance-profiles failed): $(head -n 2 "$ERR")"
   fi
   if js=$(aws eks list-nodegroups --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --output json 2>"$ERR"); then
     for n in $(printf '%s' "$js" | json_get "[x for x in d['nodegroups'] if __import__('re').fullmatch(r'${RESOURCE_PREFIX}-[a-z0-9]{1,20}-ng', x)]"); do
@@ -123,10 +134,16 @@ list() {
   printf -v "$__v" '%s' "$(printf '%s' "$js" | json_get "$expr")"
 }
 name_tag='next((t["Value"] for t in x.get("Tags", []) if t["Key"] == "Name"), "-")'
+# list_volumes: this run's EBS volumes (the launch specs tag every instance's volumes), with state.
+list_volumes() {
+  list volumes "this run's EBS volumes" "[(x[\"VolumeId\"], x[\"State\"]) for x in d[\"Volumes\"]]" \
+    ec2 describe-volumes --filters "${FILTERS[@]}"
+}
 list_all() {
   list instances "this run's EC2 instances" \
     "[(x[\"InstanceId\"], x[\"State\"][\"Name\"], $name_tag) for r in d[\"Reservations\"] for x in r[\"Instances\"] if x[\"State\"][\"Name\"] != \"terminated\"]" \
     ec2 describe-instances --filters "${FILTERS[@]}"
+  list_volumes
   list images "this run's AMIs" "[(x[\"ImageId\"], x.get(\"Name\", \"-\")) for x in d[\"Images\"]]" \
     ec2 describe-images --owners self --filters "${FILTERS[@]}"
   list snapshots "this run's EBS snapshots" "[(x[\"SnapshotId\"], x.get(\"VolumeSize\", \"-\")) for x in d[\"Snapshots\"]]" \
@@ -188,6 +205,7 @@ recheck() {
   local kind="$1" id="$2" args expr nf out
   case "$kind" in
     instance) args=(ec2 describe-instances --instance-ids "$id"); expr='d["Reservations"][0]["Instances"][0].get("Tags", [])'; nf=InvalidInstanceID.NotFound ;;
+    volume)   args=(ec2 describe-volumes --volume-ids "$id"); expr='d["Volumes"][0].get("Tags", [])'; nf=InvalidVolume.NotFound ;;
     image)    args=(ec2 describe-images --image-ids "$id"); expr='d["Images"][0].get("Tags", [])'; nf=InvalidAMIID.NotFound ;;
     snapshot) args=(ec2 describe-snapshots --snapshot-ids "$id"); expr='d["Snapshots"][0].get("Tags", [])'; nf=InvalidSnapshot.NotFound ;;
     sg)       args=(ec2 describe-security-groups --group-ids "$id"); expr='d["SecurityGroups"][0].get("Tags", [])'; nf=InvalidGroup.NotFound ;;
@@ -234,6 +252,7 @@ fi
 is_kept_snap() { printf '%s\n' "$kept_snaps" | grep -qxF -- "$1"; }
 show() { echo "$1:"; if [ -z "$2" ]; then echo "  (none)"; else printf '%s\n' "$2" | sed 's/^/  /'; fi; }
 show "EC2 instances" "$instances"
+show "EBS volumes" "$volumes"
 if [[ "$KEEP_AMI" == 1 && "$images" != "$UNKNOWN" ]]; then
   show "AMIs" "${images:+$(printf '%s\n' "$images" | sed 's/$/   left in place (kept on request)/')}"
 else
@@ -328,6 +347,27 @@ if [ "$instances" != "$UNKNOWN" ] && [ -n "$instances" ]; then
       || warn_inc "could not confirm termination of: ${terminated[*]}"
   fi
 elif [ -z "$instances" ]; then echo "none."; fi
+
+echo "== deleting this run's EBS volumes that are left once its instances are gone =="
+# Read again now: a terminated instance's DeleteOnTermination volumes go with it, and the rest
+# become available. Only an available (unattached) volume is deleted, after both tags are re-read.
+list_volumes
+if [ "$volumes" != "$UNKNOWN" ] && [ -n "$volumes" ]; then
+  gone_vols=()
+  while read -r vid vstate; do
+    [ -n "$vid" ] || continue
+    case "$vstate" in
+      available) owned_then volume "$vid" "volume $vid" aws ec2 delete-volume --region "$AWS_REGION" --volume-id "$vid" --output json \
+                   && gone_vols+=("$vid") ;;
+      deleting) gone_vols+=("$vid") ;;
+      *) warn_inc "volume $vid is $vstate (still attached); left in place" ;;
+    esac
+  done <<< "$volumes"
+  if [ "${#gone_vols[@]}" -gt 0 ]; then
+    aws ec2 wait volume-deleted --region "$AWS_REGION" --volume-ids "${gone_vols[@]}" 2>"$ERR" \
+      || warn_inc "could not confirm deletion of volume(s): ${gone_vols[*]}"
+  fi
+elif [ -z "$volumes" ]; then echo "none."; fi
 
 echo "== deregistering this run's AMIs, then deleting its snapshots =="
 if [[ "$KEEP_AMI" == 1 ]]; then
@@ -450,12 +490,20 @@ delete_role() {
   [ -z "${p// /}" ] || { warn_inc "role $role is still in instance profile(s) ${p% }; left in place"; return; }
   aws_json att "the attached policies of $role" iam list-attached-role-policies --role-name "$role"
   [ "$att" != "$UNKNOWN" ] || { warn_inc "role $role left in place: see the warning above"; return; }
+  aws_json inl "the inline policies of $role" iam list-role-policies --role-name "$role"
+  [ "$inl" != "$UNKNOWN" ] || { warn_inc "role $role left in place: see the warning above"; return; }
+  # Both tags again, right before the first change to this role: a role re-tagged since the
+  # listing keeps every policy it has.
+  case "$(recheck role "$role")" in
+    match) ;;
+    gone) echo "role $role is already gone."; return ;;
+    mismatch) warn_inc "role $role no longer carries ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; left in place, no policy detached"; return ;;
+    *) warn_inc "could not re-read the tags of role $role before changing it; left in place"; return ;;
+  esac
   for p in $(printf '%s' "$att" | json_get '[x["PolicyArn"] for x in d["AttachedPolicies"]]'); do
     aws iam detach-role-policy --role-name "$role" --policy-arn "$p" --output json >/dev/null 2>"$ERR" \
       || { warn_inc "could not detach $p from $role: $(head -n 2 "$ERR")"; blocked=1; }
   done
-  aws_json inl "the inline policies of $role" iam list-role-policies --role-name "$role"
-  [ "$inl" != "$UNKNOWN" ] || { warn_inc "role $role left in place: see the warning above"; return; }
   for p in $(printf '%s' "$inl" | json_get 'd["PolicyNames"]'); do
     aws iam delete-role-policy --role-name "$role" --policy-name "$p" --output json >/dev/null 2>"$ERR" \
       || { warn_inc "could not delete inline policy $p from $role: $(head -n 2 "$ERR")"; blocked=1; }
@@ -471,7 +519,7 @@ first_buckets="$buckets"
 list_all
 # Confirm every bucket the first listing found, as well as any the second one finds.
 buckets=$(printf '%s\n%s\n' "$first_buckets" "$buckets" | awk 'NF' | sort -u)
-for pair in "instances:EC2 instances" "sgs:security groups" "lts:launch templates"; do
+for pair in "instances:EC2 instances" "volumes:EBS volumes" "sgs:security groups" "lts:launch templates"; do
   v="${pair%%:*}"; what="${pair#*:}"
   [ -z "${!v}" ] || [ "${!v}" = "$UNKNOWN" ] || warn_inc "this run's $what still present after cleanup: $(printf '%s' "${!v}" | tr '\n' ' ')"
 done
@@ -506,7 +554,7 @@ if [ -n "$ACCOUNT" ]; then
 elif [ -n "$buckets" ]; then
   warn_inc "the staging buckets' absence could not be confirmed (no caller account)"
 fi
-for v in instances images snapshots sgs lts buckets ng_state role_build role_node profile_build; do
+for v in instances volumes images snapshots sgs lts buckets ng_state role_build role_node profile_build; do
   printf '%s\n' "${!v}" | grep -qxF -- "$UNKNOWN" && warn_inc "absence of this run's $v could not be confirmed"
 done
 if [[ "$KEEP_AMI" == 1 && -n "$kept_images" ]]; then
@@ -519,4 +567,4 @@ if [[ "$incomplete" -ne 0 ]]; then
   exit 1
 fi
 echo
-echo "Clean up of run $RUN_ID complete: validation workload, node group, instances, $([[ "$KEEP_AMI" == 1 ]] || echo 'AMIs and snapshots, ')launch template, security group, staging bucket, instance profile and roles are gone."
+echo "Clean up of run $RUN_ID complete: validation workload, node group, instances, EBS volumes, $([[ "$KEEP_AMI" == 1 ]] || echo 'AMIs and snapshots, ')launch template, security group, staging bucket, instance profile and roles are gone."

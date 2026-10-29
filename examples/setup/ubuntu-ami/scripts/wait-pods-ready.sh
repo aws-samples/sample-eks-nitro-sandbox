@@ -21,8 +21,9 @@ ERR=$(mktemp); trap 'rm -f "$ERR"' EXIT
 pod_state() { # pod_state <pod>: prints "<ready> <phase> <reason>"; 3 on NotFound; dies (1) on other errors
   local out
   if out=$(kc get pod "$1" -n "$NAMESPACE" -o json 2>"$ERR"); then
-    printf '%s' "$out" | json_get '(lambda s: " ".join([next((c["status"] for c in s.get("conditions", []) if c["type"] == "Ready"), "False"), s.get("phase", "Unknown"), next((x.get("state", {}).get("waiting", {}).get("reason", "") for x in s.get("containerStatuses", []) if x.get("state", {}).get("waiting")), "") or "-"]))(d.get("status", {}))'
-    return 0
+    # A pod object without a status, or an answer that is not JSON, is unreadable, not "not Ready".
+    printf '%s' "$out" | json_get '(lambda s: " ".join([next((c["status"] for c in s.get("conditions", []) if c["type"] == "Ready"), "False"), s.get("phase", "Unknown"), next((x.get("state", {}).get("waiting", {}).get("reason", "") for x in s.get("containerStatuses", []) if x.get("state", {}).get("waiting")), "") or "-"]))(d["status"])' 2>"$ERR" && return 0
+    die "could not determine the state of pod $1 in $NAMESPACE (unreadable pod JSON): $(tail -n 1 "$ERR")"
   fi
   grep -q 'NotFound' "$ERR" && return 3
   die "could not determine the state of pod $1 in $NAMESPACE (kubectl failed): $(head -n 2 "$ERR")"

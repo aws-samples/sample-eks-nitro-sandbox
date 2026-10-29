@@ -7,9 +7,12 @@
 #   RUN_ID=<id> scripts/00b-stage-bucket.sh create <file>...
 #       create the bucket, harden it, upload each file under <run-id>/, and give this run's
 #       build role read on that prefix only; writes STAGE_BUCKET to $RUN_STATE_DIR/stage.env
+#       (a failure at any step after the bucket exists removes what this call created)
 #   RUN_ID=<id> scripts/00b-stage-bucket.sh revoke <bucket> <file-name>...
-#       once the build host has verified its copies: delete the staged objects and the build
-#       role's read policy, then CONFIRM both are gone. Any failure, or anything still present,
+#       once the build host has verified its copies, and only when the bucket and the build role
+#       carry this run's two tags and the role's staging policy is exactly this run's read for
+#       this bucket: delete the staged objects and that policy, then CONFIRM both are gone.
+#       Otherwise it changes nothing and exits 1. Any failure, or anything still present,
 #       is written to $RUN_STATE_DIR/stage-residue.txt and the command exits 1 (setup.sh stops);
 #       it never reports a revocation it could not confirm. The empty bucket stays for clean.sh.
 #
@@ -33,17 +36,7 @@ require_run_id
 DEPLOY_DIR="$HERE/../deploy"
 mkdir -p "$RUN_STATE_DIR"
 
-render() { # render <template> <bucket> : the policy JSON with placeholders filled, no Comment key
-  python3 - "$1" "$2" "$RUN_ID" <<'PY'
-import json, sys
-text = open(sys.argv[1]).read().replace("@STAGE_BUCKET@", sys.argv[2]).replace("@RUN_ID@", sys.argv[3])
-doc = json.loads(text)
-doc.pop("Comment", None)
-if "@" in json.dumps(doc):
-    sys.exit("unrendered placeholder left in policy")
-print(json.dumps(doc))
-PY
-}
+render() { render_policy "$@"; }   # scripts/lib/common.sh
 b64_sha256() { python3 -c 'import base64,hashlib,sys; h=hashlib.sha256(); f=open(sys.argv[1],"rb"); [h.update(c) for c in iter(lambda: f.read(1<<20), b"")]; print(base64.b64encode(h.digest()).decode())' "$1"; }
 caller_account() {
   local a
@@ -69,16 +62,44 @@ case "$cmd" in
       aws s3api create-bucket --bucket "$bucket" --region "$AWS_REGION" \
         --create-bucket-configuration "LocationConstraint=$AWS_REGION" >/dev/null
     fi
+    # From here until the last step succeeds, any failure removes what this call created (the
+    # read policy, the uploaded objects, the bucket) before the script exits; setup.sh's own
+    # guard takes over only after create returns. Anything the rollback cannot remove is
+    # written to stage-residue.txt and the bucket name stays in stage.env for clean.sh.
+    rb_bucket="$bucket"; rb_keys=(); rb_policy=0
+    rollback_create() {
+      local rc=$? left=() k e
+      [ -n "${rb_bucket:-}" ] || return 0
+      e=$(mktemp)
+      warn "staging create failed (exit $rc); removing what this call created in $rb_bucket"
+      if [ "$rb_policy" = 1 ]; then
+        aws iam delete-role-policy --role-name "$BUILD_ROLE_NAME" --policy-name "$STAGE_POLICY_NAME" --output json >/dev/null 2>"$e" \
+          || aws_err_is "$e" NoSuchEntity \
+          || left+=("inline policy $STAGE_POLICY_NAME on $BUILD_ROLE_NAME: delete failed: $(head -n 1 "$e")")
+      fi
+      for k in "${rb_keys[@]}"; do
+        aws s3api delete-object --bucket "$rb_bucket" --key "$k" --region "$AWS_REGION" "${owner[@]}" --output json >/dev/null 2>"$e" \
+          || left+=("object s3://$rb_bucket/$k: delete failed: $(head -n 1 "$e")")
+      done
+      if [ "${#left[@]}" -eq 0 ] && aws s3api delete-bucket --bucket "$rb_bucket" --region "$AWS_REGION" "${owner[@]}" --output json >/dev/null 2>"$e"; then
+        rm -f "$RUN_STATE_DIR/stage.env"
+      else
+        left+=("bucket $rb_bucket: not deleted${left[*]:+ (it still holds the items above)}: $(head -n 1 "$e")")
+      fi
+      rm -f "$e"
+      if [ "${#left[@]}" -gt 0 ]; then
+        printf '%s\n' "${left[@]}" > "$RUN_STATE_DIR/stage-residue.txt"
+        warn "the rollback left: ${left[*]} (recorded in $RUN_STATE_DIR/stage-residue.txt; run ./clean.sh --dry-run)"
+      else
+        log "rollback: removed bucket $rb_bucket and everything this call put in it"
+      fi
+      return "$rc"
+    }
+    trap 'rollback_create' EXIT
     # Record it before anything else can fail, so clean.sh and a re-run know its name.
     printf 'export STAGE_BUCKET=%q\nexport STAGE_ACCOUNT=%q\nexport STAGE_RUN_ID=%q\n' "$bucket" "$account" "$RUN_ID" > "$RUN_STATE_DIR/stage.env"
-    if ! aws s3api put-bucket-tagging --bucket "$bucket" --region "$AWS_REGION" "${owner[@]}" \
-      --tagging "TagSet=[{Key=${TAGS_OWNER_KEY},Value=${TAGS_OWNER_VALUE}},{Key=${TAGS_RUN_KEY},Value=${RUN_ID}},{Key=Name,Value=${bucket}}]"; then
-      # An untagged bucket is one clean.sh will (rightly) refuse to delete, so remove the empty
-      # bucket this call just created before stopping.
-      aws s3api delete-bucket --bucket "$bucket" --region "$AWS_REGION" "${owner[@]}" \
-        || warn "could not delete the untagged bucket $bucket this run just created; delete it by hand"
-      die "could not tag staging bucket $bucket"
-    fi
+    aws s3api put-bucket-tagging --bucket "$bucket" --region "$AWS_REGION" "${owner[@]}" \
+      --tagging "TagSet=[{Key=${TAGS_OWNER_KEY},Value=${TAGS_OWNER_VALUE}},{Key=${TAGS_RUN_KEY},Value=${RUN_ID}},{Key=Name,Value=${bucket}}]"
     aws s3api put-public-access-block --bucket "$bucket" --region "$AWS_REGION" "${owner[@]}" \
       --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
     aws s3api put-bucket-encryption --bucket "$bucket" --region "$AWS_REGION" "${owner[@]}" \
@@ -91,13 +112,17 @@ case "$cmd" in
       [ -s "$f" ] || die "nothing to stage at $f"
       key="$RUN_ID/$(basename "$f")"
       log "uploading $(basename "$f") to s3://$bucket/$key (S3 checks its SHA-256 on receipt)"
+      rb_keys+=("$key")   # before the call: a failed upload may still have written the object
       aws s3api put-object --bucket "$bucket" --key "$key" --body "$f" --region "$AWS_REGION" "${owner[@]}" \
         --checksum-algorithm SHA256 --checksum-sha256 "$(b64_sha256 "$f")" >/dev/null
     done
 
     log "granting $BUILD_ROLE_NAME read on s3://$bucket/$RUN_ID/ only ($STAGE_POLICY_NAME)"
+    rb_policy=1
     aws iam put-role-policy --role-name "$BUILD_ROLE_NAME" --policy-name "$STAGE_POLICY_NAME" \
       --policy-document "$(render "$DEPLOY_DIR/iam-build-host-policy.json" "$bucket")"
+    # Committed: setup.sh's revoke guard owns the objects and the policy from here.
+    rb_bucket=""; trap - EXIT
     echo "STAGE_BUCKET=$bucket"
     ;;
   revoke)
@@ -105,29 +130,43 @@ case "$cmd" in
     [[ "$bucket" == "${STAGE_BUCKET_PREFIX}-"* ]] || die "bucket $bucket is not this run's staging bucket (${STAGE_BUCKET_PREFIX}-*)"
     residue=()
     err=$(mktemp); trap 'rm -f "$err"' EXIT
-    if account=$(caller_account 2>"$err"); then
+    # Ownership first, and nothing is deleted unless all of it holds: the bucket and the build
+    # role carry this run's ManagedBy and RunId, and the role's staging policy is exactly this
+    # run's read for this bucket (its bucket and its <RUN_ID>/ prefix). Missing, mismatched or
+    # unreadable stops here, with nothing changed.
+    account=$(caller_account 2>"$err") || die "revoke: could not read the caller's account; nothing was changed: $(head -n 1 "$err")"
+    btags=$(aws s3api get-bucket-tagging --bucket "$bucket" --region "$AWS_REGION" --expected-bucket-owner "$account" --output json 2>"$err") \
+      || die "revoke: could not read the tags of bucket $bucket; nothing was changed: $(head -n 1 "$err")"
+    printf '%s' "$btags" | json_pick 'd.get("TagSet", [])' | tags_match \
+      || die "revoke: bucket $bucket does not carry ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; nothing was changed"
+    rtags=$(aws iam list-role-tags --role-name "$BUILD_ROLE_NAME" --output json 2>"$err") \
+      || die "revoke: could not read the tags of role $BUILD_ROLE_NAME; nothing was changed: $(head -n 1 "$err")"
+    printf '%s' "$rtags" | json_pick 'd.get("Tags", [])' | tags_match \
+      || die "revoke: role $BUILD_ROLE_NAME does not carry ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; nothing was changed"
+    pdoc=$(aws iam get-role-policy --role-name "$BUILD_ROLE_NAME" --policy-name "$STAGE_POLICY_NAME" --output json 2>"$err") \
+      || die "revoke: could not read inline policy $STAGE_POLICY_NAME of $BUILD_ROLE_NAME; nothing was changed: $(head -n 1 "$err")"
+    printf '%s' "$pdoc" | role_policy_is "$(render "$DEPLOY_DIR/iam-build-host-policy.json" "$bucket")" \
+      || die "revoke: inline policy $STAGE_POLICY_NAME of $BUILD_ROLE_NAME is not this run's read for s3://$bucket/$RUN_ID/; nothing was changed"
+    for name in "$@"; do
+      aws s3api delete-object --bucket "$bucket" --key "$RUN_ID/$name" --region "$AWS_REGION" \
+        --expected-bucket-owner "$account" --output json >/dev/null 2>"$err" \
+        || residue+=("object s3://$bucket/$RUN_ID/$name: delete failed: $(head -n 1 "$err")")
+    done
+    if left=$(aws s3api list-objects-v2 --bucket "$bucket" --prefix "$RUN_ID/" --region "$AWS_REGION" \
+                --expected-bucket-owner "$account" --output json 2>"$err"); then
       for name in "$@"; do
-        aws s3api delete-object --bucket "$bucket" --key "$RUN_ID/$name" --region "$AWS_REGION" \
-          --expected-bucket-owner "$account" --output json >/dev/null 2>"$err" \
-          || residue+=("object s3://$bucket/$RUN_ID/$name: delete failed: $(head -n 1 "$err")")
+        printf '%s' "$left" | json_get '[o["Key"] for o in d.get("Contents", [])]' | grep -qxF -- "$RUN_ID/$name" \
+          && residue+=("object s3://$bucket/$RUN_ID/$name: still present after delete")
       done
-      if left=$(aws s3api list-objects-v2 --bucket "$bucket" --prefix "$RUN_ID/" --region "$AWS_REGION" \
-                  --expected-bucket-owner "$account" --output json 2>"$err"); then
-        for name in "$@"; do
-          printf '%s' "$left" | json_get '[o["Key"] for o in d.get("Contents", [])]' | grep -qxF -- "$RUN_ID/$name" \
-            && residue+=("object s3://$bucket/$RUN_ID/$name: still present after delete")
-        done
-      else
-        residue+=("objects under s3://$bucket/$RUN_ID/: could not confirm they are gone: $(head -n 1 "$err")")
-      fi
     else
-      residue+=("objects under s3://$bucket/$RUN_ID/: not deleted, the caller's account could not be read: $(head -n 1 "$err")")
+      residue+=("objects under s3://$bucket/$RUN_ID/: could not confirm they are gone: $(head -n 1 "$err")")
     fi
     aws iam delete-role-policy --role-name "$BUILD_ROLE_NAME" --policy-name "$STAGE_POLICY_NAME" --output json >/dev/null 2>"$err" \
       || residue+=("inline policy $STAGE_POLICY_NAME on $BUILD_ROLE_NAME: delete failed: $(head -n 1 "$err")")
-    if aws iam get-role-policy --role-name "$BUILD_ROLE_NAME" --policy-name "$STAGE_POLICY_NAME" --output json >/dev/null 2>"$err"; then
-      residue+=("inline policy $STAGE_POLICY_NAME on $BUILD_ROLE_NAME: still present")
-    elif ! aws_err_is "$err" NoSuchEntity; then
+    if names=$(aws iam list-role-policies --role-name "$BUILD_ROLE_NAME" --output json 2>"$err"); then
+      printf '%s' "$names" | json_get 'd["PolicyNames"]' | grep -qxF -- "$STAGE_POLICY_NAME" \
+        && residue+=("inline policy $STAGE_POLICY_NAME on $BUILD_ROLE_NAME: still present")
+    else
       residue+=("inline policy $STAGE_POLICY_NAME on $BUILD_ROLE_NAME: could not confirm it is gone: $(head -n 1 "$err")")
     fi
     if [ "${#residue[@]}" -gt 0 ]; then

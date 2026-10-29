@@ -312,9 +312,11 @@ flowchart TB
   H --> I["Join tainted node group; wait for nitro-sandbox capacity; apply pods"]
 ```
 
-**Every run has its own id.** `./setup.sh` picks a run id (a UTC timestamp such as
-`20261028t221500z`, or the `RUN_ID` you pass to resume a run) and records it in
-`tmp/issue10/run/out/run-state.env`; the run's private evidence goes under
+**Every run has its own id.** `./setup.sh` picks a run id (a UTC timestamp plus four random hex
+digits, such as `20261028t221500z3f9a`, or the `RUN_ID` you pass to resume a run), reserves the
+run's folder so no other start can share it, and records the id as the current run in
+`tmp/issue10/run/out/run-state.env` just before its first AWS change, so a run that stops on a
+read-only check leaves the previous run as the current one; the run's private evidence goes under
 `tmp/issue10/run/out/runs/<run-id>/evidence/`. Every name the run creates is derived from it
 (`<RESOURCE_PREFIX>-<RUN_ID>-build` for the build role and instance profile, `-node` for the
 node role, `-build-sg`, `-lt`, `-ng`, `-verify`, `-stage-read` for the staging policy, and
@@ -348,9 +350,12 @@ default encryption (SSE-S3) and the TLS-only policy in
 sample's scripts and the archive with their SHA-256 (S3 checks it on receipt) and grants the
 build-host role read on this run's prefix only. The build host downloads them with its
 instance profile and checks each SHA-256 against the value `./setup.sh` sends over SSM, not
-one read from the bucket. Then the staged objects and the build role's read are deleted, and
-the revocation confirms both are gone: if either is still there, it records what is left in
-the run's state and the run stops. The empty bucket stays until
+one read from the bucket. If any staging step fails after the bucket exists, the helper removes
+what it created before it stops. Then the staged objects and the build role's read are deleted,
+but only after the bucket and the role are confirmed to carry this run's two tags and the role's
+staging policy is confirmed to be exactly this run's read; the revocation then confirms both
+are gone: if either is still there, it records what is left in the run's state and the run
+stops. The empty bucket stays until
 `./clean.sh --delete-aws-resources` removes it.
 
 **4. Check containerd, then build the host kernel.** The build host's first preflight reads
@@ -523,19 +528,21 @@ sample. Written by `scripts/verify-fresh-instance.sh` via `scripts/lib/btf-tag.s
 TODO: output from the fresh run
 ```
 
-**AppArmor: a working scoped profile vs a refused control.** AppArmor stays enabled on the
+**AppArmor: the planned scoped profile and a refused control.** AppArmor stays enabled on the
 host. The node loads one scoped profile,
 [`manifests/ubuntu-ami-sample-profile`](manifests/ubuntu-ami-sample-profile), installed onto
-the AMI by [`scripts/35-apparmor.sh`](scripts/35-apparmor.sh); the isolated-sandbox pod
-selects it with `securityContext.appArmorProfile` (`type: Localhost`). The profile is written
-to deny a write to `/etc/shadow` while the pod otherwise runs, but a failed write alone is not
-counted as AppArmor's: `./test.sh` passes it only with AppArmor evidence, either the sandbox
-process's own label (`/proc/self/attr/current`) naming the profile in enforce mode or an
-AppArmor denial of that write in the node's kernel log, and it reads the same two things on
-the ordinary pod and on a profile the node never loaded as the controls. The reject control
+the AMI by [`scripts/35-apparmor.sh`](scripts/35-apparmor.sh); the isolated-sandbox pod is set
+to select it with `securityContext.appArmorProfile` (`type: Localhost`). The profile is written
+to deny a write to `/etc/shadow`. Whether the sandbox pod starts under it, and whether the
+profile applies to it, is what the fresh run will show. `./test.sh` counts a failed write as
+AppArmor's only with AppArmor evidence from that attempt: either the sandbox process's own
+label (`/proc/self/attr/current`) naming the profile in enforce mode, or an AppArmor denial of
+that write in the node's kernel journal logged after the node's clock was read just before the
+write. It reads the same two things on the ordinary pod and on a profile the node never
+loaded, as the controls. The reject control
 ([`deploy/pod-apparmor-reject.yaml`](deploy/pod-apparmor-reject.yaml)) is an ordinary pod on
-the same node that asks for a profile the node never loaded, and is refused for the AppArmor
-reason.
+the same node that asks for a profile the node never loaded; the run checks that it is refused
+for the AppArmor reason.
 
 The runtime's Ubuntu build notes say that on an AppArmor host every sandbox pod needs
 `appArmorProfile` `type: Unconfined`, because the requested profile is forwarded into the
@@ -650,9 +657,11 @@ A bare `./clean.sh` removes only the Kubernetes validation workload (the sample'
 after confirming it carries both of the run's labels), leaving the node group and AMI in place
 for a longer investigation. `./clean.sh --delete-aws-resources` does the full teardown: it
 removes, in order, the Kubernetes workload, the managed node group, the build and
-verification EC2 instances, the AMIs and their snapshots, the launch template, the build
+verification EC2 instances, then any of the run's EBS volumes left unattached (an attached one
+is left in place and reported), the AMIs and their snapshots, the launch template, the build
 security group, the S3 staging bucket (emptied first, every call naming your account as the
-expected bucket owner), and the instance profile and IAM roles. It then reads each category
+expected bucket owner), and the instance profile and IAM roles (both tags read again right
+before the first change to each role). It then reads each category
 again to confirm nothing of the run remains, and exits non-zero if anything is still there,
 if anything was skipped as not the run's, or if any lookup failed: a failed lookup is
 "could not determine", never "gone". Before the first delete it checks `KUBE_CONTEXT` against
@@ -664,7 +673,10 @@ the cluster, as setup does.
 --delete-aws-resources`.
 
 **A lost run id.** `./clean.sh --list-runs` lists every resource marked
-`ManagedBy=<RESOURCE_PREFIX>` in the Region, grouped by `RunId`, and deletes nothing. Then
+`ManagedBy=<RESOURCE_PREFIX>` in the Region (instances, volumes, AMIs, snapshots, security
+groups, launch templates, buckets, IAM roles, instance profiles, and the cluster's node groups;
+each shown only when its own tags were read and carry that mark), grouped by `RunId`, and
+deletes nothing. A tag it could not read makes the list incomplete and the command exits 1. Then
 clean each run you find with `./clean.sh --run-id <id> --delete-aws-resources`.
 
 **What stays.** The clean up never removes a shared install. The `isolated-sandbox`

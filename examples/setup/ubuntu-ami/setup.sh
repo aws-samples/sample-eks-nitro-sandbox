@@ -43,9 +43,11 @@ command -v session-manager-plugin >/dev/null 2>&1 || warn "session-manager-plugi
 
 # One run id names and tags everything this run creates (scripts/lib/common.sh derive_run_names).
 # A new run gets a fresh one; RUN_ID=<id> ./setup.sh resumes that run, and every reuse then checks
-# both tags first. The id is persisted in the run state (after --prepare, which creates nothing,
-# so a --prepare never replaces the last real run's id) so clean.sh and test.sh act on this run.
-RUN_ID="${RUN_ID:-$(date -u +%Y%m%dt%H%M%Sz)}"
+# both tags first. A new id is a UTC timestamp plus random hex (new_run_id), and its run folder is
+# reserved with a plain mkdir, so two starts in the same second cannot share one. The id becomes
+# the current run in $RUN_STATE_FILE (what clean.sh and test.sh act on) only just before the
+# first AWS change, so a run that stops on a read-only check never replaces the previous one.
+if [ -n "${RUN_ID:-}" ]; then RESUME=1; else RUN_ID=$(new_run_id); RESUME=0; fi
 export RUN_ID
 derive_run_names
 
@@ -79,8 +81,7 @@ fi
 # server is CLUSTER_NAME's API endpoint, before anything is created anywhere.
 require_kube_context
 
-mkdir -p "$RUN_STATE_DIR"
-printf 'RUN_ID=%s\n' "$RUN_ID" > "$RUN_STATE_FILE"
+if [ "$RESUME" = 1 ]; then mkdir -p "$RUN_STATE_DIR"; else reserve_run_dir; fi
 printf 'RUN_ID=%s\nRESOURCE_PREFIX=%s\nNODEGROUP_NAME=%s\nNAMESPACE=%s\n' "$RUN_ID" "$RESOURCE_PREFIX" "$NODEGROUP_NAME" "$NAMESPACE" > "$RUN_STATE_DIR/run-state.env"
 EVIDENCE="$EVIDENCE_DIR"
 export EVIDENCE_DIR
@@ -100,6 +101,10 @@ bash "$SAMPLE_DIR/scripts/00c-check-cluster.sh"
 # ---- From here on, real AWS mutation. Everything created is tagged ManagedBy=$RESOURCE_PREFIX
 # ---- and RunId=$RUN_ID, so clean.sh can find and remove this run's resources, and only them,
 # ---- even if this run is interrupted.
+
+# Every read-only check passed: this run becomes the current one, just before its first change.
+printf 'RUN_ID=%s\n' "$RUN_ID" > "$RUN_STATE_FILE"
+log "current run is now $RUN_ID (recorded in $RUN_STATE_FILE)"
 
 # --- Step 2: scoped IAM roles + build-host instance profile --------------------------------
 log "Step 2/10: create this run's scoped IAM roles and the build-host instance profile (scripts/00a-iam.sh)"

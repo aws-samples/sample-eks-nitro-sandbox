@@ -53,16 +53,19 @@ SH
 cat > "$STUB/containerd" <<'SH'
 #!/bin/bash
 # --version: STUB_CONTAINERD_LINE. -c FILE config migrate: the v2 file as v3 (cri plugin renamed).
-# -c FILE config dump: the file as is (STUB_DUMP_BREAK=1 breaks the confidential-sandbox handler).
+# -c FILE config dump: the file as is (STUB_DUMP_BREAK=1 breaks the confidential-sandbox handler's
+# runtime_type; STUB_DUMP_BREAK=priv sets privileged_without_host_devices = false on both handlers).
 if [ "${1:-}" = --version ]; then printf '%s\n' "${STUB_CONTAINERD_LINE:-containerd github.com/containerd/containerd/v2 2.2.1 }"; exit 0; fi
 [ "${1:-}" = -c ] || { echo "stub containerd: unexpected call: $*" >&2; exit 97; }
 f="$2"; shift 2
 case "$*" in
   "config migrate") sed -e 's/^version = 2$/version = 3/' -e 's/"io\.containerd\.grpc\.v1\.cri"\.containerd/"io.containerd.cri.v1.runtime".containerd/g' "$f" ;;
   "config dump")
-    if [ "${STUB_DUMP_BREAK:-}" = 1 ]; then
-      awk '/runtimes\.confidential-sandbox\]/{b=1} b && /^runtime_type/{print "runtime_type = \"io.containerd.runc.v2\""; b=0; next} {print}' "$f"
-    else cat "$f"; fi ;;
+    case "${STUB_DUMP_BREAK:-}" in
+      1) awk '/runtimes\.confidential-sandbox\]/{b=1} b && /^runtime_type/{print "runtime_type = \"io.containerd.runc.v2\""; b=0; next} {print}' "$f" ;;
+      priv) sed 's/^privileged_without_host_devices = true$/privileged_without_host_devices = false/' "$f" ;;
+      *) cat "$f" ;;
+    esac ;;
   *) echo "stub containerd: unexpected call: -c $f $*" >&2; exit 97 ;;
 esac
 SH
@@ -93,6 +96,14 @@ esac
 SH
 cat > "$STUB/dpkg-query" <<'SH'
 #!/bin/bash
+# STUB_DPKGQ_FAIL=1: the query itself fails. STUB_DPKGQ_NOKERNEL=1: it succeeds but lists no
+# installed kernel meta-package (only versioned kernels, firmware, and meta-packages not installed).
+[ -n "${STUB_DPKGQ_FAIL:-}" ] && { echo "dpkg-query: error: parsing file '/var/lib/dpkg/status' near line 7: missing 'Package' field" >&2; exit 2; }
+if [ -n "${STUB_DPKGQ_NOKERNEL:-}" ]; then
+  printf '%s\n' "containerd-app installed" "linux-image-7.0.0-1001-aws installed" "linux-modules-7.0.0-1001-aws installed" \
+    "linux-firmware installed" "linux-base installed" "linux-aws not-installed" "linux-generic config-files" "bash installed"
+  exit 0
+fi
 printf '%s\n' "containerd-app installed" "linux-aws installed" "linux-image-aws installed" "linux-headers-aws installed" \
   "linux-image-7.0.0-1001-aws installed" "linux-modules-7.0.0-1001-aws installed" "linux-firmware installed" \
   "linux-base installed" "linux-generic not-installed" "bash installed"
@@ -216,6 +227,22 @@ check "REJECT the stage when the only cri-proxy endpoint in bootstrap.sh is a co
 R5="$WORK/r5"; base_root "$R5"; sed -i 's#^ExecStart=.*#ExecStart=/usr/bin/sleep infinity\n\# ExecStart=/usr/sbin/containerd-shim-nitro-sandbox-v2 cri-proxy --listen /run/nitro-sandbox/cri-proxy.sock --containerd /run/containerd/containerd.sock#' "$R5/etc/systemd/system/cri-proxy.service"
 rc=0; stage 31-wire-containerd.sh "$R5" "$WORK/w-unit.log" || rc=$?
 check "REJECT the stage when cri-proxy.service runs something else (the right ExecStart only in a comment)" 1 "$rc" "$WORK/w-unit.log" 'cri-proxy.service ExecStart is'
+# RR-012: the reviewer's inline-comment probe. The active `snap set` sets a wrong endpoint; the
+# stage's own sed turns the inline comment's value into the cri-proxy socket.
+R6="$WORK/r6"; base_root "$R6"
+sed -i 's#^snap set kubelet-eks container-runtime-endpoint=unix:///run/containerd/containerd.sock$#snap set kubelet-eks container-runtime-endpoint=unix:///run/containerd/other.sock \# container-runtime-endpoint=unix:///run/containerd/containerd.sock#' "$R6/usr/local/share/eks/bootstrap.sh"
+rc=0; stage 31-wire-containerd.sh "$R6" "$WORK/w-inline.log" || rc=$?
+check "REJECT the stage when the active snap set endpoint is wrong and the cri-proxy one follows # on the same line" 1 "$rc" "$WORK/w-inline.log" "sets container-runtime-endpoint to 'unix:///run/containerd/other.sock'"
+grep -qxF 'snap set kubelet-eks container-runtime-endpoint=unix:///run/containerd/other.sock # container-runtime-endpoint=unix:///run/nitro-sandbox/cri-proxy.sock' "$R6/usr/local/share/eks/bootstrap.sh"
+ok "  ... the checked bootstrap.sh line is the reviewer's probe" $?
+# RR-012: a migrated dump whose handlers both say privileged_without_host_devices = false (the
+# template itself is correct, so only the dump check can refuse it).
+R7="$WORK/r7"; base_root "$R7"
+rc=0; stage 31-wire-containerd.sh "$R7" "$WORK/w-priv.log" STUB_DUMP_BREAK=priv || rc=$?
+check "REJECT the stage when containerd's migrated dump has privileged_without_host_devices = false on both handlers" 1 "$rc" "$WORK/w-priv.log" 'dumped handler isolated-sandbox privileged_without_host_devices is False, must be true'
+[ "$(STUB_DUMP_BREAK=priv containerd -c "$R1/usr/local/share/eks/containerd-config.toml" config dump | grep -c '^privileged_without_host_devices = false$')" = 2 ] \
+  && ! STUB_DUMP_BREAK=priv containerd -c "$R1/usr/local/share/eks/containerd-config.toml" config dump | grep -q '^privileged_without_host_devices = true$'
+ok "  ... the probe dump sets it false on both handlers and true on none" $?
 
 echo
 echo "== 2/5 AppArmor: scripts/35-apparmor.sh (M8) ==========================================="
@@ -241,6 +268,13 @@ check "REJECT when apt-mark hold fails" 1 "$rc" "$WORK/h-fail.log" 'apt-mark hol
 RH3="$WORK/holds3"; base_root "$RH3"
 rc=0; stage 36-hold-packages.sh "$RH3" "$WORK/h-noown.log" STUB_DPKG_S_FAIL=1 || rc=$?
 check "REJECT when no package owns containerd (it could not be held)" 1 "$rc" "$WORK/h-noown.log" 'no Debian package owns'
+RH4="$WORK/holds4"; base_root "$RH4"
+rc=0; stage 36-hold-packages.sh "$RH4" "$WORK/h-dpkgq.log" STUB_DPKGQ_FAIL=1 || rc=$?
+check "REJECT when the dpkg-query listing itself fails" 1 "$rc" "$WORK/h-dpkgq.log" 'dpkg-query failed \(exit 2\)'
+RH5="$WORK/holds5"; base_root "$RH5"
+rc=0; stage 36-hold-packages.sh "$RH5" "$WORK/h-nokernel.log" STUB_DPKGQ_NOKERNEL=1 || rc=$?
+check "REJECT when dpkg-query succeeds but lists no installed kernel meta-package" 1 "$rc" "$WORK/h-nokernel.log" 'lists no installed Ubuntu kernel meta-package'
+[ ! -e "$RH4/.held" ] && [ ! -e "$RH5/.held" ]; ok "  ... and neither holds anything (refused before apt-mark hold)" $?
 
 echo
 echo "== 4/5 bake prep: scripts/50-bake-prep.sh (M6, H9) ======================================"
@@ -319,7 +353,8 @@ for mode in plain optimized; do
   rc=0; vi "$G" "$WORK/v-good-$mode.log" "${OPT[@]}" || rc=$?
   check "[$mode] ACCEPT the good image: every check passes" 0 "$rc" "$WORK/v-good-$mode.log" '"image_configuration": "PASS"'
   # one broken image per check: copy, break one thing, expect that check (and only a FAIL) to answer
-  while IFS='|' read -r name failed_check; do
+  # name|failed check[|text the failed check's detail must contain]
+  while IFS='|' read -r name failed_check detail; do
     [ -n "$name" ] || continue
     b="$WORK/bad-$name-$mode"; cp -a "$G" "$b"; env=()
     case "$name" in
@@ -330,6 +365,12 @@ for mode in plain optimized; do
       dump)       env=(STUB_DUMP_BREAK=1) ;;
       dropin)     sed -i 's/^After=cri-proxy.service$/#After=cri-proxy.service/' "$b/etc/systemd/system/snap.kubelet-eks.daemon.service.d/50-cri-proxy.conf" ;;
       debug)      sed -i 's/^debug           = false$/debug           = true/' "$b/etc/containerd/nitro-sandbox.toml" ;;
+      bootinline) sed -i 's#^snap set kubelet-eks container-runtime-endpoint=unix:///run/nitro-sandbox/cri-proxy.sock$#snap set kubelet-eks container-runtime-endpoint=unix:///run/containerd/other.sock \# container-runtime-endpoint=unix:///run/nitro-sandbox/cri-proxy.sock#' "$b/usr/local/share/eks/bootstrap.sh" ;;
+      dumppriv)   env=(STUB_DUMP_BREAK=priv) ;;
+      pcie)       sed -i 's/^pcie_slots      = 110$/pcie_slots      = 1/' "$b/etc/containerd/nitro-sandbox.toml" ;;
+      datadir)    sed -i 's#^data_base_dir   = "/var/lib/nitro-sandbox"$#data_base_dir   = "/wrong/data/path"#' "$b/etc/containerd/nitro-sandbox.toml" ;;
+      kubeconfig) sed -i 's#^kubeconfig_path = "/var/lib/kubelet/kubeconfig"$#kubeconfig_path = "/wrong/kubeconfig"#' "$b/etc/containerd/nitro-sandbox.toml" ;;
+      overlay)    sed -i 's/^format_overlay  = true$/format_overlay  = false/' "$b/etc/containerd/nitro-sandbox.toml" ;;
       jailermode) chmod 0644 "$b/usr/bin/jailer" ;;
       tamper)     echo tampered >> "$b/usr/sbin/containerd-shim-nitro-sandbox-v2" ;;
       hold)       grep -vx containerd-app "$b/.held" > "$b/.held.new"; mv "$b/.held.new" "$b/.held" ;;
@@ -339,6 +380,7 @@ for mode in plain optimized; do
     esac
     rc=0; vi "$b" "$WORK/v-$name-$mode.log" "${OPT[@]}" "${env[@]}" || rc=$?
     check "[$mode] REJECT a broken image ($name): $failed_check fails" 1 "$rc" "$WORK/v-$name-$mode.log" "^image_configuration: FAIL \(failed: ([a-z_]+, )*$failed_check(, [a-z_]+)*\)$"
+    if [ -n "$detail" ]; then grep -qF -- "$detail" "$WORK/v-$name-$mode.log"; ok "  ... [$mode] $failed_check says: $detail" $?; fi
   done <<'CASES'
 kernel|host_kernel
 nedev|nitro_enclaves_device
@@ -347,6 +389,12 @@ discard|runtime_wiring
 dump|runtime_wiring
 dropin|runtime_wiring
 debug|runtime_wiring
+bootinline|runtime_wiring|bootstrap.sh sets container-runtime-endpoint to 'unix:///run/containerd/other.sock'
+dumppriv|runtime_wiring|dumped handler isolated-sandbox privileged_without_host_devices is False, must be true
+pcie|runtime_wiring|pcie_slots is 1, must be 110
+datadir|runtime_wiring|data_base_dir is '/wrong/data/path', must be '/var/lib/nitro-sandbox'
+kubeconfig|runtime_wiring|kubeconfig_path is '/wrong/kubeconfig', must be '/var/lib/kubelet/kubeconfig'
+overlay|runtime_wiring|format_overlay is False, must be true
 jailermode|runtime_payloads
 tamper|runtime_payloads
 hold|package_holds

@@ -15,6 +15,9 @@
 #        clear message: reject control for archive tampering.
 #   4/4  consume:  a MISSING bundle (no archive file at all) is REJECTED, non-zero exit:
 #        reject control for a missing bundle.
+#   6/6  consume:  extraction is staged beside the destination: a good bundle lands with no
+#        temporary folder left; a final-hash failure leaves no destination and no temporary
+#        folder; a non-empty destination is refused with its contents untouched.
 #
 # The fixtures mirror the real lock file's shapes: two source tarballs, a public .patch input
 # (like host-kernel-patch), a pending input and an operator-supplied archive (like
@@ -223,6 +226,9 @@ if case == "lock-mismatch":     # the reviewer's probe: a changed component, con
     for c in man["components"]:
         if c["id"] == "fixture-a":
             c["sha256"] = hashlib.sha256(files[name]).hexdigest()
+elif case == "hash-mismatch":     # manifest and member set still match the lock; one payload does not
+    name = next(n for n in files if n.startswith("fixture-a-"))
+    files[name] = b"payload whose SHA-256 is not the lock pin\n"
 elif case == "extra-member":
     files["unlisted-extra.sh"] = b"#!/bin/sh\necho not in the lock\n"
 elif case == "missing-component":
@@ -264,6 +270,35 @@ missing-component|are not the lock file.s bundleable inputs|REJECT a manifest th
 CASES
 assert_true "no rejected bundle wrote anything: no extract folder has a file, nothing escaped" \
   $([[ -z "$(find "$WORK"/craft-*/x -type f 2>/dev/null)" && ! -e "$WORK/escaped-by-bundle" && ! -e "$WORK/craft-traversal-member/escaped-by-bundle" ]]; echo $?)
+
+echo
+echo "== 6/6 consume: extraction is staged beside the destination and renamed only on success ==="
+# Each case gets its own parent folder, so "ls -A <parent>" shows any temporary folder left behind.
+ATOMIC="$WORK/atomic"
+mkdir -p "$ATOMIC/good" "$ATOMIC/bad" "$ATOMIC/full/dest"
+rc=0
+LOCK_FILE="$TEST_LOCK" bash "$HERE/make-bundle.sh" consume "$OUT1" "$ATOMIC/good/dest" > "$WORK/atomic-good.log" 2>&1 || rc=$?
+assert_rc "ACCEPT a good bundle into a fresh destination" 0 "$rc"
+assert_true "  ... the payload is in the destination and no temporary folder is left beside it" \
+  $([[ "$(ls -A "$ATOMIC/good")" == dest ]] && cmp -s "$ATOMIC/good/dest/fixture-a-1.0.0.tar.gz" "$FIXTURE_DIR/fixture-a-1.0.0.tar.gz"; echo $?)
+
+craft "$WORK/craft-hash-mismatch" hash-mismatch
+rc=0
+LOCK_FILE="$TEST_LOCK" bash "$HERE/make-bundle.sh" consume "$WORK/craft-hash-mismatch" "$ATOMIC/bad/dest" > "$WORK/atomic-bad.log" 2>&1 || rc=$?
+assert_rc "REJECT a bundle whose member set passes but whose final component hash fails" 1 "$rc"
+assert_true "  ... the refusal is the final hash check (sources.lock pins for fixture-a)" \
+  $(grep -q 'sources.lock pins for fixture-a' "$WORK/atomic-bad.log"; echo $?)
+assert_true "  ... the destination does not exist and no temporary folder is left beside it" \
+  $([[ ! -e "$ATOMIC/bad/dest" && -z "$(ls -A "$ATOMIC/bad")" ]]; echo $?)
+
+printf 'existing content\n' > "$ATOMIC/full/dest/keep.txt"
+rc=0
+LOCK_FILE="$TEST_LOCK" bash "$HERE/make-bundle.sh" consume "$OUT1" "$ATOMIC/full/dest" > "$WORK/atomic-full.log" 2>&1 || rc=$?
+assert_rc "REJECT consuming a good bundle into a non-empty destination" 1 "$rc"
+assert_true "  ... the refusal names the non-empty destination" \
+  $(grep -q 'is not an empty folder' "$WORK/atomic-full.log"; echo $?)
+assert_true "  ... the existing contents are untouched and no temporary folder is left beside it" \
+  $([[ "$(ls -A "$ATOMIC/full/dest")" == keep.txt && "$(cat "$ATOMIC/full/dest/keep.txt")" == "existing content" && "$(ls -A "$ATOMIC/full")" == dest ]]; echo $?)
 
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"

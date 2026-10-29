@@ -46,15 +46,20 @@ instance_id=$(aws ec2 run-instances --region "$AWS_REGION" --cli-input-json "fil
 log "instance: $instance_id"
 # Terminate the verification instance however this script exits (a failed check included), so
 # a failure never leaves it running; clean.sh would still find it by its ManagedBy and RunId tags.
+# Returns 0 only once termination is confirmed; otherwise it keeps instance_id, so the exit trap
+# tries again, and returns 1.
 terminate_verify_instance() {
   [[ -n "${instance_id:-}" ]] || return 0
   log "terminating verification instance $instance_id"
-  aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids "$instance_id" --output json >/dev/null \
-    && aws ec2 wait instance-terminated --region "$AWS_REGION" --instance-ids "$instance_id" \
-    || warn "could not confirm termination of $instance_id; run ./clean.sh --dry-run"
-  instance_id=""
+  if aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids "$instance_id" --output json >/dev/null \
+     && aws ec2 wait instance-terminated --region "$AWS_REGION" --instance-ids "$instance_id"; then
+    instance_id=""
+    return 0
+  fi
+  warn "could not confirm termination of $instance_id; run ./clean.sh --dry-run"
+  return 1
 }
-trap terminate_verify_instance EXIT
+trap 'terminate_verify_instance || true' EXIT
 
 aws ec2 wait instance-status-ok --region "$AWS_REGION" --instance-ids "$instance_id"
 state=""
@@ -107,7 +112,8 @@ smoke_line=$(head -n 1 "$EVIDENCE/fresh-instance-smoke.txt")
 
 VERIFY_STATUS=pass
 
-terminate_verify_instance
+# The AMI is marked only once its verification instance is confirmed gone.
+terminate_verify_instance || die "verification instance $instance_id was not confirmed terminated; BtfValidated=true was not applied"
 log "fresh-instance verification PASS"
 
 # --- BtfValidated=true: applied here, and only here, now that VERIFY_STATUS=pass ----------

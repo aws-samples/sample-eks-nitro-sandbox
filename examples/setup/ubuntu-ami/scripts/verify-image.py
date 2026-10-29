@@ -39,6 +39,7 @@ from image_checks import CheckFailed, require  # noqa: E402
 SYSROOT = os.environ.get("SYSROOT", "")
 LOCK_FILE = Path(os.environ.get("LOCK_FILE", SAMPLE_ROOT / "packages" / "sources.lock"))
 IMAGE_DIR = os.environ.get("NITRO_SANDBOX_IMAGE_DIR", "/var/lib/nitro-sandbox-images")
+DATA_DIR = os.environ.get("NITRO_SANDBOX_DATA_DIR", ic.DATA_DIR)
 LOCALVERSION = os.environ.get("KERNEL_LOCALVERSION", "-nitro-ga")
 SHIM_DEBUG = os.environ.get("SHIM_DEBUG", "false") == "true"
 PROFILE_NAME = "ubuntu-ami-sample-profile"
@@ -134,7 +135,7 @@ def checks(lock):
         template = P("/usr/local/share/eks/containerd-config.toml").read_text()
         ic.check_template(template)
         ic.check_bootstrap(P("/usr/local/share/eks/bootstrap.sh").read_text())
-        ic.check_shim(P("/etc/containerd/nitro-sandbox.toml").read_text(), IMAGE_DIR, SHIM_DEBUG)
+        ic.check_shim(P("/etc/containerd/nitro-sandbox.toml").read_text(), IMAGE_DIR, SHIM_DEBUG, DATA_DIR)
         with tempfile.TemporaryDirectory() as d:
             Path(d, "r.toml").write_text(template.replace("SANDBOX_IMAGE", "localhost/pause:3.10"))
             mig = run(["containerd", "-c", f"{d}/r.toml", "config", "migrate"])

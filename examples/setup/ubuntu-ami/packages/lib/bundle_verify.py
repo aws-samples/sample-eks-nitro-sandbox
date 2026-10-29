@@ -9,14 +9,19 @@ in a bundle; sources.lock is the trust root. Exit 0 only when the manifest's com
 exactly those (same versions and SHA-256s), the archive's SHA-256 is the manifest's, the
 archive's members are exactly those member names, each once and each a regular file with a flat
 name (checked BEFORE anything is extracted), and every extracted file hashes to its lock pin.
-Exit 1 with a FATAL line otherwise; on a refusal before extraction nothing is written.
+Extraction goes to a fresh temporary folder beside <extract-dir>, which is renamed onto
+<extract-dir> only after every hash passes; a missing or empty <extract-dir> is required.
+Exit 1 with a FATAL line otherwise; on any refusal <extract-dir> is left as it was and the
+temporary folder is removed.
 """
 import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 import tarfile
+import tempfile
 
 SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -36,6 +41,9 @@ def die(msg):
 
 def main():
     archive, manifest_path, dest = sys.argv[1:4]
+    dest = os.path.abspath(dest)
+    if os.path.lexists(dest) and (os.path.islink(dest) or not os.path.isdir(dest) or os.listdir(dest)):
+        die(f"refusing to extract into {dest}: it exists and is not an empty folder; nothing was changed")
     expected = {}
     for line in sys.stdin.read().splitlines():
         if not line.strip():
@@ -85,22 +93,37 @@ def main():
             if set(names) != set(want_members):
                 die(f"the archive's members {sorted(names)} are not the lock file's {sorted(want_members)} "
                     f"(extra: {sorted(set(names) - set(want_members))}, missing: {sorted(set(want_members) - set(names))})")
-            os.makedirs(dest, exist_ok=True)
-            for m in members:
-                src = t.extractfile(m)
-                out = os.path.join(dest, m.name)
-                with open(out, "wb") as f:
-                    for chunk in iter(lambda: src.read(1 << 20), b""):
-                        f.write(chunk)
+            # Extract into a fresh folder beside dest; it becomes dest only if step 5 passes.
+            parent = os.path.dirname(dest)
+            os.makedirs(parent, exist_ok=True)
+            tmp = tempfile.mkdtemp(prefix=f".{os.path.basename(dest)}.", suffix=".partial", dir=parent)
+            renamed = False
+            try:
+                for m in members:
+                    src = t.extractfile(m)
+                    out = os.path.join(tmp, m.name)
+                    with open(out, "wb") as f:
+                        for chunk in iter(lambda: src.read(1 << 20), b""):
+                            f.write(chunk)
+
+                # 5. Every extracted file against its lock pin.
+                for member, cid in sorted(want_members.items()):
+                    h = sha256(os.path.join(tmp, member))
+                    if h != expected[cid]["sha256"]:
+                        die(f"{member} has SHA-256 {h}, not the {expected[cid]['sha256']} sources.lock pins for {cid}")
+                    print(f"verified sha256 for {cid} (extracted from bundle): {h}")
+                mask = os.umask(0)
+                os.umask(mask)
+                os.chmod(tmp, 0o777 & ~mask)  # mkdtemp makes it 0700; give dest the usual mode
+                os.rename(tmp, dest)  # atomic; fails if dest appeared and is not empty
+                renamed = True
+            except OSError as e:
+                die(f"could not extract into {dest}: {e}")
+            finally:
+                if not renamed:
+                    shutil.rmtree(tmp, ignore_errors=True)
     except tarfile.TarError as e:
         die(f"the archive is not a readable tar: {e}")
-
-    # 5. Every extracted file against its lock pin.
-    for member, cid in sorted(want_members.items()):
-        h = sha256(os.path.join(dest, member))
-        if h != expected[cid]["sha256"]:
-            die(f"{member} has SHA-256 {h}, not the {expected[cid]['sha256']} sources.lock pins for {cid}")
-        print(f"verified sha256 for {cid} (extracted from bundle): {h}")
     return 0
 
 
