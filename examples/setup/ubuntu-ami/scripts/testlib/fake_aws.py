@@ -359,6 +359,16 @@ def handle(state, service, op, sub, opts):
             if not ad:
                 raise ApiError("ResourceNotFoundException", "DescribeAddon", f"No addon: {one(opts, 'addon-name')} found in cluster: {cl}")
             return {"addon": ad}
+        # access entries, keyed "<cluster>/<principal ARN>" (an ARN holds '/', the cluster name never)
+        aes = k.setdefault("access_entries", {})
+        if op == "list-access-entries":
+            return {"accessEntries": sorted(x.split("/", 1)[1] for x in aes if x.split("/", 1)[0] == cl)}
+        if op == "delete-access-entry":
+            ak = f"{cl}/{one(opts, 'principal-arn')}"
+            if ak not in aes:
+                raise ApiError("ResourceNotFoundException", "DeleteAccessEntry", "The specified access entry resource is not found.")
+            del aes[ak]
+            return {}
         nk = f"{cl}/{ng}"
         if op == "list-nodegroups":
             return {"nodegroups": sorted(k_.split("/", 1)[1] for k_ in ngs if k_.split("/", 1)[0] == cl)}

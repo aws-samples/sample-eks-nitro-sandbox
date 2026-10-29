@@ -1,6 +1,6 @@
 # REJECT control for test.sh's AppArmor step: an ordinary pod on the sample's node that names
 # an AppArmor profile the node never loaded. It must be refused for the AppArmor reason on that
-# node, proving the accept path in pod-isolated-sandbox.yaml is a real, scoped selection and not
+# node, proving the accept path in pod-apparmor-scoped.yaml is a real, scoped selection and not
 # a no-op. test.sh renders @NODEGROUP@ and the namespace, and deletes this pod by name after
 # reading its status; it is never left running.
 apiVersion: v1

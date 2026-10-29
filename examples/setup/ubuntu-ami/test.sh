@@ -14,8 +14,13 @@
 # straight after setup.sh does not read pods that are still starting. Expected values come from
 # packages/sources.lock: the host kernel is <linux-kernel-source ref>${KERNEL_LOCALVERSION}
 # (6.18.56-nitro-ga) and the sandbox's guest kernel is the runtime archive's guest_kernel
-# (6.18.54). Every helper pod this script creates (one kubectl debug pod, the AppArmor reject
-# control) lives in the sample's namespace and is deleted by its exact name.
+# (6.18.54). Every helper pod this script creates (one kubectl debug pod, the AppArmor scoped pod
+# and the AppArmor reject control) lives in the sample's namespace and is deleted by its exact
+# name. The scoped AppArmor profile is proven on an ordinary pod on the same node, because the
+# sandbox pod runs Unconfined (deploy/pod-isolated-sandbox.yaml says why). Overridable bounded
+# waits: SCOPED_POD_TRIES (24) and SCOPED_POD_POLL_SECONDS (5) for the scoped pod to run,
+# SCOPED_DELETE_MARGIN (20 s past its grace period) for its delete, REJECT_POD_TRIES (24) and
+# REJECT_POD_POLL_SECONDS (5) for the reject control's refusal.
 set -uo pipefail
 SAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/common.sh
@@ -24,6 +29,7 @@ require_run_id
 
 ORDINARY_POD=ordinary-pod
 SANDBOX_POD=isolated-sandbox-pod
+SCOPED_POD=apparmor-scoped-pod
 SAMPLE_PROFILE=ubuntu-ami-sample-profile
 HOST_KERNEL="$(lock_field linux-kernel-source ref)${KERNEL_LOCALVERSION}"
 GUEST_KERNEL="$(lock_field runtime-archive guest_kernel)"
@@ -68,6 +74,22 @@ echo "== 2/7 host requirements: ACCEPT and REJECT controls, read on the node its
 # everything would fail here (the repository rule "prove every check both ways"). The negative
 # that needs a whole second kernel (a .config without BTF, NITRO_ENCLAVES=m) is proven on the
 # REAL assertion in scripts/test-host-gates.sh, clusterless.
+# The scoped AppArmor profile is shown on an ordinary (runc) pod on the same node: a sandbox pod
+# cannot take a host profile, because runc applies it inside the guest, which has no AppArmor
+# (deploy/pod-isolated-sandbox.yaml). deploy/pod-apparmor-scoped.yaml selects the profile; it is
+# rendered with this run's node group and namespace, applied, waited for (bounded), read below,
+# and deleted by its exact name before the node probe; section 3 asserts what was read.
+scoped_rendered=$(mktemp)
+sed -e "s/@NODEGROUP@/$NODEGROUP_NAME/g" -e "s/^  namespace: ubuntu-ami-sample$/  namespace: $NAMESPACE/" \
+  "$SAMPLE_DIR/deploy/pod-apparmor-scoped.yaml" > "$scoped_rendered"
+kc apply -n "$NAMESPACE" -f "$scoped_rendered" >/dev/null 2>&1
+rm -f "$scoped_rendered"
+scp_phase=""
+for _ in $(seq 1 "${SCOPED_POD_TRIES:-24}"); do
+  scp_phase=$(kc get pod "$SCOPED_POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
+  [[ "$scp_phase" == Running || "$scp_phase" == Failed || "$scp_phase" == Succeeded ]] && break
+  sleep "${SCOPED_POD_POLL_SECONDS:-5}"
+done
 # T0: the node's clock (epoch seconds) before this attempt's /etc/shadow write; see section 3.
 T0=$(kc exec "$ORDINARY_POD" -n "$NAMESPACE" -- date -u +%s 2>/dev/null)
 [[ "$T0" =~ ^[0-9]+$ ]] || T0=unreadable
@@ -86,17 +108,48 @@ echo containerd_version=$(containerd --version 2>&1 | head -n 1)
 echo apparmor_enabled=$(cat /sys/module/apparmor/parameters/enabled 2>/dev/null)
 grep -qE "^'"$SAMPLE_PROFILE"' " /sys/kernel/security/apparmor/profiles && echo apparmor_profile=loaded || echo apparmor_profile=absent
 grep -qE "^profile-that-does-not-exist " /sys/kernel/security/apparmor/profiles && echo apparmor_profile_bogus=loaded || echo apparmor_profile_bogus=absent
+echo apparmor_profile_mode=$(sed -n "s/^'"$SAMPLE_PROFILE"' (\(.*\))$/\1/p" /sys/kernel/security/apparmor/profiles | head -n 1)
+echo apparmor_profile_sha256=$(sha256sum /etc/apparmor.d/'"$SAMPLE_PROFILE"' 2>/dev/null | cut -d" " -f1)
 echo apparmor_shadow_denials=$(journalctl -k --no-pager --since "@'"$T0"'" 2>/dev/null | grep "apparmor=\"DENIED\"" | grep "profile=\"'"$SAMPLE_PROFILE"'\"" | grep -c "name=\"/etc/shadow\"")
 echo apparmor_bogus_denials=$(journalctl -k --no-pager --since "@'"$T0"'" 2>/dev/null | grep "apparmor=\"DENIED\"" | grep "profile=\"profile-that-does-not-exist\"" | grep -c "name=\"/etc/shadow\"")
+echo apparmor_signal_denials=$(journalctl -k --no-pager --since "@'"$T0"'" 2>/dev/null | grep "apparmor=\"DENIED\"" | grep "operation=\"signal\"" | grep -c "profile=\"'"$SAMPLE_PROFILE"'\"")
+echo apparmor_bogus_signal_denials=$(journalctl -k --no-pager --since "@'"$T0"'" 2>/dev/null | grep "apparmor=\"DENIED\"" | grep "operation=\"signal\"" | grep -c "profile=\"profile-that-does-not-exist\"")
 '
-# The AppArmor evidence in section 3 reads the node's kernel journal for a denial of the
-# sandbox's /etc/shadow write, counted only from T0, the node's clock read just before this
-# attempt's write (the ordinary pod shares the node's clock), so a denial an earlier attempt
-# logged cannot count. Without a readable T0 the journal query fails and counts 0. Each pod's own
-# AppArmor label (/proc/self/attr/current) is read too, the ordinary pod's as the control.
-sbx_attr=$(kc exec "$SANDBOX_POD" -n "$NAMESPACE" -- cat /proc/self/attr/current 2>/dev/null | tr -d '\0')
+# The AppArmor evidence in section 3, all gathered from T0 on (the node's clock read just before
+# the scoped pod's writes; the ordinary pod shares it):
+#   * each pod's own AppArmor label (/proc/self/attr/current): the scoped pod's must name the
+#     profile in enforce mode, the ordinary pod's (no profile requested) must not;
+#   * the scoped pod's write to /etc/shadow must fail with EACCES ("Permission denied"), while
+#     the same pod's write to a path the profile does not deny succeeds;
+#   * the node's kernel journal must hold the profile's DENIED line for that write (the profile's
+#     deny rules are `audit deny`), and none for a profile the node never loaded;
+#   * deleted by its exact name, the scoped pod must be gone within its grace period, and the
+#     journal must hold no DENIED line for a signal under the profile (a pod whose profile
+#     refuses runc's stop signals can never be stopped).
+# The sandbox pod's label is printed too: it is the guest's own (SELinux) label, which is why the
+# sandbox runs Unconfined.
+scp_attr=$(kc exec "$SCOPED_POD" -n "$NAMESPACE" -- cat /proc/self/attr/current 2>/dev/null | tr -d '\0')
 ord_attr=$(kc exec "$ORDINARY_POD" -n "$NAMESPACE" -- cat /proc/self/attr/current 2>/dev/null | tr -d '\0')
-denied=$(kc exec "$SANDBOX_POD" -n "$NAMESPACE" -- sh -c 'echo test > /etc/shadow 2>&1 || echo DENIED' 2>/dev/null)
+sbx_attr=$(kc exec "$SANDBOX_POD" -n "$NAMESPACE" -- cat /proc/self/attr/current 2>/dev/null | tr -d '\0')
+# The shell's own error for the failed redirection is caught on stdout ({ ...; } 2>&1), so the
+# check reads the error itself, not only that the write failed.
+denied=$(kc exec "$SCOPED_POD" -n "$NAMESPACE" -- sh -c '{ echo test > /etc/shadow; } 2>&1 || echo WRITE-FAILED' 2>/dev/null)
+# Control for that refusal: the same pod, as the same user, writes a file in /etc the profile does
+# not deny, so the refusal is the profile's deny rule, not a read-only filesystem or file mode.
+allowed=$(kc exec "$SCOPED_POD" -n "$NAMESPACE" -- sh -c '{ echo test > /etc/ubuntu-ami-sample-write-control; } 2>&1 && echo WRITTEN' 2>/dev/null)
+scp_type=$(kc get pod "$SCOPED_POD" -n "$NAMESPACE" -o jsonpath='{.spec.securityContext.appArmorProfile.type}' 2>/dev/null)
+scp_profile=$(kc get pod "$SCOPED_POD" -n "$NAMESPACE" -o jsonpath='{.spec.securityContext.appArmorProfile.localhostProfile}' 2>/dev/null)
+scp_node=$(kc get pod "$SCOPED_POD" -n "$NAMESPACE" -o jsonpath='{.spec.nodeName}' 2>/dev/null)
+scp_grace=$(kc get pod "$SCOPED_POD" -n "$NAMESPACE" -o jsonpath='{.spec.terminationGracePeriodSeconds}' 2>/dev/null)
+[[ "$scp_grace" =~ ^[0-9]+$ ]] || scp_grace=30
+# Delete it by its exact name, before the node probe reads the journal, and time how long it takes
+# to be gone. kubectl waits at most the grace period plus SCOPED_DELETE_MARGIN (20 s), so a pod
+# that cannot be stopped is measured, not waited for forever.
+scp_t=$SECONDS
+kc delete pod "$SCOPED_POD" -n "$NAMESPACE" --ignore-not-found --wait=true --timeout="$((scp_grace + ${SCOPED_DELETE_MARGIN:-20}))s" >/dev/null 2>&1
+scp_gone_s=$((SECONDS - scp_t))
+scp_after=$(kc get pod "$SCOPED_POD" -n "$NAMESPACE" -o name 2>&1)
+if [[ "$scp_after" == *NotFound* ]]; then scp_gone=yes; else scp_gone=no; fi
 dbg_err=$(mktemp)
 kc debug "node/$node" -n "$NAMESPACE" --profile=sysadmin \
   --image=public.ecr.aws/amazonlinux/amazonlinux:2023 -- chroot /host sh -c "$PROBE" >"$dbg_err" 2>&1
@@ -122,46 +175,73 @@ assert "ACCEPT cma: a non-zero CMA pool is reserved (CmaTotal=${cma:-0} kB)" $([
 assert "REJECT cma: the same probe reads nothing for a bogus meminfo key" $([[ -z "$cma_bogus" ]]; echo $?)
 assert "containerd on the node passes the GA shim's 2.1.x to 2.3.x gate ($(v containerd_version))" $([[ "$(v containerd_gate)" == ok ]]; echo $?)
 
-echo "== 3/7 AppArmor: host LSM enabled, scoped profile loaded, refused control ==============="
+echo "== 3/7 AppArmor (criterion 8): host on and enforcing, scoped profile working, refused control"
+echo "  -- 8a: AppArmor is on and enforcing on the host"
 assert "AppArmor is enabled host-wide on the node (enabled=$(v apparmor_enabled))" $([[ "$(v apparmor_enabled)" == "Y" ]]; echo $?)
-assert "ACCEPT: the scoped profile $SAMPLE_PROFILE is loaded on the node" $([[ "$(v apparmor_profile)" == loaded ]]; echo $?)
+assert "ACCEPT: the scoped profile $SAMPLE_PROFILE is loaded on the node in enforce mode (mode=$(v apparmor_profile_mode))" \
+  $([[ "$(v apparmor_profile)" == loaded && "$(v apparmor_profile_mode)" == enforce ]]; echo $?)
 assert "REJECT: the same probe reads absent for a profile the node never loaded" $([[ "$(v apparmor_profile_bogus)" == absent ]]; echo $?)
-sbx_profile=$(kc get pod "$SANDBOX_POD" -n "$NAMESPACE" -o jsonpath='{.spec.securityContext.appArmorProfile.localhostProfile}' 2>/dev/null)
-sbx_phase=$(kc get pod "$SANDBOX_POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
-echo "  sandbox pod: profile=${sbx_profile:-<none>} phase=${sbx_phase:-<none>}"
-assert "the sandbox pod requests the scoped profile and runs (phase=${sbx_phase:-<none>})" $([[ "$sbx_profile" == "$SAMPLE_PROFILE" && "$sbx_phase" == Running ]]; echo $?)
-assert "the sandbox's write to /etc/shadow fails while the pod otherwise runs (${denied:-<none>})" $([[ "$denied" == *DENIED* || "$denied" == *"Permission denied"* ]]; echo $?)
-# A failed write alone proves nothing about AppArmor (a read-only filesystem or file mode fails it
-# too). It counts only with AppArmor evidence: the sandbox process runs under the scoped profile
-# in enforce mode, or the node logged an AppArmor denial of that write under that profile since
-# T0 (this attempt's write; an older denial does not count).
-denials="$(v apparmor_shadow_denials)"
-echo "  sandbox attr/current: '${sbx_attr:-<unreadable>}'  ordinary attr/current: '${ord_attr:-<unreadable>}'  node denials since T0=$T0: ${denials:-<none>}"
-assert "ACCEPT: the write failure is AppArmor's (attr/current is '$SAMPLE_PROFILE (enforce)', or the node logged a denial since this attempt's T0)" \
-  $([[ "$sbx_attr" == "$SAMPLE_PROFILE (enforce)" || ( "${denials:-0}" =~ ^[0-9]+$ && "${denials:-0}" -gt 0 ) ]]; echo $?)
-assert "REJECT: the same label read on the ordinary pod does not name $SAMPLE_PROFILE ('${ord_attr:-<unreadable>}')" $([[ "$ord_attr" != "$SAMPLE_PROFILE"* ]]; echo $?)
-assert "REJECT: the same denial count for a profile the node never loaded is 0 ($(v apparmor_bogus_denials))" $([[ "$(v apparmor_bogus_denials)" == 0 ]]; echo $?)
+want_sha=$(sha256sum "$SAMPLE_DIR/manifests/$SAMPLE_PROFILE" | cut -d' ' -f1)
+assert "the profile on the node is this sample's manifests/$SAMPLE_PROFILE (sha256 $(v apparmor_profile_sha256))" \
+  $([[ -n "$(v apparmor_profile_sha256)" && "$(v apparmor_profile_sha256)" == "$want_sha" ]]; echo $?)
+echo "  -- 8b: the scoped profile works on an ordinary pod on the same node ($SCOPED_POD)"
+echo "  scoped pod: node=${scp_node:-<none>} type=${scp_type:-<none>} profile=${scp_profile:-<none>} phase=${scp_phase:-<none>}"
+assert "the scoped pod requests Localhost $SAMPLE_PROFILE and runs on the sandbox node (phase=${scp_phase:-<none>})" \
+  $([[ "$scp_type" == Localhost && "$scp_profile" == "$SAMPLE_PROFILE" && "$scp_phase" == Running && "$scp_node" == "$node" ]]; echo $?)
+echo "  scoped attr/current: '${scp_attr:-<unreadable>}'  ordinary attr/current: '${ord_attr:-<unreadable>}'"
+assert "ACCEPT: the scoped pod's process is confined by '$SAMPLE_PROFILE (enforce)' (attr/current)" $([[ "$scp_attr" == "$SAMPLE_PROFILE (enforce)" ]]; echo $?)
+assert "REJECT: the same label read on the ordinary pod, which requests no profile, does not name $SAMPLE_PROFILE" \
+  $([[ -n "$ord_attr" && "$ord_attr" != "$SAMPLE_PROFILE"* ]]; echo $?)
+echo "  scoped pod: write to /etc/shadow: $(printf '%s' "${denied:-<none>}" | tr '\n' ' ')"
+echo "  scoped pod: write to /etc/ubuntu-ami-sample-write-control: ${allowed:-<none>}"
+assert "ACCEPT: the scoped pod's write to /etc/shadow is refused with EACCES (Permission denied)" \
+  $([[ "$denied" == *"/etc/shadow: Permission denied"* && "$denied" == *WRITE-FAILED* ]]; echo $?)
+assert "REJECT: the same pod's write to a path the profile does not deny succeeds (so the refusal is the profile's)" \
+  $([[ "$allowed" == WRITTEN ]]; echo $?)
+echo "  node DENIED lines since T0=$T0 for that write: $SAMPLE_PROFILE $(v apparmor_shadow_denials), profile-that-does-not-exist $(v apparmor_bogus_denials)"
+assert "ACCEPT: the node's kernel logged the profile's DENIED line for that write since T0" \
+  $([[ "$(v apparmor_shadow_denials)" =~ ^[0-9]+$ && "$(v apparmor_shadow_denials)" -gt 0 ]]; echo $?)
+assert "REJECT: the same count for a profile the node never loaded is 0" $([[ "$(v apparmor_bogus_denials)" == 0 ]]; echo $?)
+echo "  scoped pod deleted by its exact name: gone=$scp_gone after ${scp_gone_s} s (grace ${scp_grace} s); signal DENIED lines since T0: $SAMPLE_PROFILE $(v apparmor_signal_denials), profile-that-does-not-exist $(v apparmor_bogus_signal_denials)"
+assert "ACCEPT: deleted by its exact name, the scoped pod is gone within its grace period (${scp_gone_s} s <= ${scp_grace} s)" \
+  $([[ "$scp_gone" == yes && "$scp_gone_s" -le "$scp_grace" ]]; echo $?)
+assert "ACCEPT: the node logged no DENIED signal under $SAMPLE_PROFILE since T0 (the profile lets runc stop the pod)" \
+  $([[ "$(v apparmor_signal_denials)" == 0 ]]; echo $?)
+assert "REJECT: the same signal count for a profile the node never loaded is 0" $([[ "$(v apparmor_bogus_signal_denials)" == 0 ]]; echo $?)
+echo "  -- 8c: a pod naming a profile the node never loaded is refused"
 # REJECT control: an ordinary pod on the same node naming a profile the node never loaded. It
 # must be refused for the AppArmor reason, on THIS node (a pod that never schedules would be
-# Pending for the wrong reason). Rendered with this run's node group and namespace.
+# Pending for the wrong reason), with containerd's own message for a missing profile, matched
+# whole. Rendered with this run's node group and namespace.
 REJ=apparmor-reject-control
+REJ_REASON=CreateContainerError
+REJ_MESSAGE='failed to get container spec opts: failed to generate apparmor spec opts: apparmor profile not found profile-that-does-not-exist'
 rendered=$(mktemp)
 sed -e "s/@NODEGROUP@/$NODEGROUP_NAME/g" -e "s/^  namespace: ubuntu-ami-sample$/  namespace: $NAMESPACE/" \
   "$SAMPLE_DIR/deploy/pod-apparmor-reject.yaml" > "$rendered"
 kc apply -n "$NAMESPACE" -f "$rendered" >/dev/null 2>&1
 rm -f "$rendered"
-rej_node=""; rej_text=""
-for _ in $(seq 1 24); do
+rej_node=""; rej_reason=""; rej_msg=""
+for _ in $(seq 1 "${REJECT_POD_TRIES:-24}"); do
   rej_node=$(kc get pod "$REJ" -n "$NAMESPACE" -o jsonpath='{.spec.nodeName}' 2>/dev/null)
-  rej_text=$(kc get pod "$REJ" -n "$NAMESPACE" -o jsonpath='{.status.reason} {.status.message} {.status.containerStatuses[0].state.waiting.reason} {.status.containerStatuses[0].state.waiting.message}' 2>/dev/null)
-  [[ "$rej_text" =~ [Aa]pp[Aa]rmor ]] && break
-  sleep 5
+  rej_reason=$(kc get pod "$REJ" -n "$NAMESPACE" -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null)
+  rej_msg=$(kc get pod "$REJ" -n "$NAMESPACE" -o jsonpath='{.status.containerStatuses[0].state.waiting.message}' 2>/dev/null)
+  [[ "$rej_reason" == "$REJ_REASON" ]] && break
+  sleep "${REJECT_POD_POLL_SECONDS:-5}"
 done
 rej_phase=$(kc get pod "$REJ" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
-echo "  reject control: node=${rej_node:-<none>} phase=${rej_phase:-<none>} status: ${rej_text:-<none>}"
-assert "REJECT: a pod naming an unloaded AppArmor profile is refused on the sandbox node for the AppArmor reason" \
-  $([[ "$rej_node" == "$node" && "$rej_text" =~ [Aa]pp[Aa]rmor && "$rej_phase" != Running ]]; echo $?)
+echo "  reject control: node=${rej_node:-<none>} phase=${rej_phase:-<none>} reason=${rej_reason:-<none>} message: ${rej_msg:-<none>}"
+assert "REJECT: a pod naming an unloaded AppArmor profile is refused on the sandbox node: $REJ_REASON '$REJ_MESSAGE'" \
+  $([[ "$rej_node" == "$node" && "$rej_reason" == "$REJ_REASON" && "$rej_msg" =~ ^"$REJ_MESSAGE"$ && "$rej_phase" != Running ]]; echo $?)
 kc delete pod "$REJ" -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
+echo "  -- why the sandbox pod runs Unconfined"
+# The sandbox pod runs Unconfined: its profile would be applied by runc inside the guest, which runs
+# SELinux and has no AppArmor. Its own label is the guest's.
+sbx_type=$(kc get pod "$SANDBOX_POD" -n "$NAMESPACE" -o jsonpath='{.spec.securityContext.appArmorProfile.type}' 2>/dev/null)
+sbx_phase=$(kc get pod "$SANDBOX_POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
+echo "  sandbox pod: appArmorProfile type=${sbx_type:-<none>} phase=${sbx_phase:-<none>} attr/current (the guest's own label): '${sbx_attr:-<unreadable>}'"
+assert "the sandbox pod runs with appArmorProfile Unconfined, as the GA build notes require (phase=${sbx_phase:-<none>})" \
+  $([[ "$sbx_type" == Unconfined && "$sbx_phase" == Running ]]; echo $?)
 
 echo "== 4/7 positive sandbox capacity ======================================================"
 handler_status=$(kc get runtimeclass isolated-sandbox -o jsonpath='{.metadata.name}' 2>/dev/null)
@@ -202,7 +282,8 @@ assert "the sandbox guest booted after the host (guest uptime < host uptime)" \
   $([[ "${sbx_uptime:-x}" =~ ^[0-9]+$ && "${ord_uptime:-x}" =~ ^[0-9]+$ && "$sbx_uptime" -lt "$ord_uptime" ]]; echo $?)
 
 echo "== 7/7 network boundary of the validation sandbox ====================================="
-kc exec "$SANDBOX_POD" -n "$NAMESPACE" -- sh -c 'ip -o addr show 2>/dev/null' | sed 's/^/  /'
+# The sandbox's interfaces, read from /sys/class/net (the container image has no `ip`).
+kc exec "$SANDBOX_POD" -n "$NAMESPACE" -- sh -c 'for f in /sys/class/net/*; do echo "interface $(basename "$f") $(cat "$f/address") $(cat "$f/operstate")"; done' 2>/dev/null | sed 's/^/  /'
 netpol=$(kc get networkpolicy -n "$NAMESPACE" -o name 2>/dev/null)
 echo "  NetworkPolicy objects: ${netpol:-<none>}"
 assert "the sandbox pod's egress policy is present" $([[ "$netpol" == *isolated-sandbox-pod-policy* ]]; echo $?)
@@ -222,6 +303,11 @@ assert "ALLOW: DNS answers from inside the sandbox" $([[ "$api_ip" =~ ^[0-9.]+$ 
 tcp=$(kc exec "$SANDBOX_POD" -n "$NAMESPACE" -- bash -c "timeout 5 bash -c '</dev/tcp/${api_ip:-0.0.0.0}/443' 2>/dev/null && echo connected || echo refused" 2>/dev/null)
 echo "  sandbox TCP connect to ${api_ip:-?}:443: ${tcp:-<none>}"
 assert "DENY: a TCP connect the policy does not allow is refused" $([[ "$tcp" == refused ]]; echo $?)
+# Control: the same connect from the ordinary pod, which no policy selects, succeeds, so the
+# sandbox's refusal is the policy's, not a closed port.
+tcp_ord=$(kc exec "$ORDINARY_POD" -n "$NAMESPACE" -- bash -c "timeout 5 bash -c '</dev/tcp/${api_ip:-0.0.0.0}/443' 2>/dev/null && echo connected || echo refused" 2>/dev/null)
+echo "  ordinary pod TCP connect to ${api_ip:-?}:443: ${tcp_ord:-<none>}"
+assert "the same connect from the ordinary pod, which no policy selects, succeeds (control for the previous check)" $([[ "$tcp_ord" == connected ]]; echo $?)
 ord_ip=$(kc get pod "$ORDINARY_POD" -n "$NAMESPACE" -o jsonpath='{.status.podIP}' 2>/dev/null)
 decoy=$(kc exec "$ORDINARY_POD" -n "$NAMESPACE" -- bash -c "timeout 5 bash -c '</dev/tcp/${ord_ip:-0.0.0.0}/53' 2>/dev/null && echo connected || echo refused" 2>/dev/null)
 echo "  ordinary pod's own TCP 53 listener at ${ord_ip:-?}:53, from inside it: ${decoy:-<none>}"
@@ -233,4 +319,4 @@ assert "DENY: port 53 to a pod that is not cluster DNS is refused" $([[ "$dns53"
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]] || exit 1
-echo "node ready and labelled, host requirements proven both ways, AppArmor scoped-and-refused, guest boundary shown."
+echo "node ready and labelled, host requirements proven both ways, AppArmor on with the scoped profile working and the control refused, guest boundary and network policy shown."

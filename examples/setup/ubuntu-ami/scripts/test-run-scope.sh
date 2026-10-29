@@ -19,7 +19,12 @@
 #                                    and match (RR-005); a role re-tagged before its first change is
 #                                    left alone (RR-009); both role tags re-read right before every
 #                                    policy detach, inline-policy delete and role delete, so a role
-#                                    re-tagged after its first change keeps the rest (RR2-001)
+#                                    re-tagged after its first change keeps the rest (RR2-001);
+#                                    test.sh's scoped AppArmor pod deleted by its exact name, only
+#                                    in a namespace this run owns; the access entry EKS created for
+#                                    the node role found by its exact ARN and deleted only after
+#                                    the node group and while the role carries both tags, one whose
+#                                    role is gone left with its delete command (N4)
 #   3  scripts/00b-stage-bucket.sh   revoke confirms the objects and the policy are gone, or fails
 #                                    (M5), and touches nothing unless the bucket, the role and the
 #                                    policy are this run's (RR-002), re-read right before each
@@ -67,7 +72,11 @@ cat > "$STUB/kubectl" <<'SH'
 #!/bin/bash
 [ "${1:-}" = --context ] && [ "${2:-}" = "$STUB_CTX" ] || { echo "STUB kubectl: call without --context $STUB_CTX: $*" >&2; exit 97; }
 shift 2
+[ -z "${STUB_KLOG:-}" ] || printf '%s\n' "$*" >> "$STUB_KLOG"
 case "$*" in
+  "delete pod apparmor-scoped-pod -n ubuntu-ami-sample --ignore-not-found --wait=true --timeout=60s")
+    if [ "${STUB_POD_DEL:-}" = stuck ]; then echo 'error: timed out waiting for the condition on pods/apparmor-scoped-pod' >&2; exit 1; fi
+    echo 'pod "apparmor-scoped-pod" deleted' ;;
   "config view --minify -o jsonpath={.clusters[0].cluster.server}")
     printf '%s' "${STUB_SERVER:-https://EXAMPLE0123.gr7.us-west-2.eks.amazonaws.com}" ;;
   "get runtimeclass isolated-sandbox -o json")
@@ -241,12 +250,15 @@ for run in ("testrun1", "testrun2"):
     e["security_groups"].append({"GroupId": f"sg-{run}", "GroupName": p + "-build-sg", "Tags": tags(run)})
     e["launch_templates"].append({"LaunchTemplateId": f"lt-{run}", "LaunchTemplateName": p + "-lt", "Tags": tags(run)})
     s["eks"]["nodegroups"][f"example-cluster/{p}-ng"] = {"status": "ACTIVE", "tags": {"ManagedBy": "ubuntu-ami-sample", "RunId": run}}
+    # the access entry EKS creates for the node group's role (no tags; kept after the role is gone)
+    s["eks"].setdefault("access_entries", {})[f"example-cluster/arn:aws:iam::{acct}:role/{p}-node"] = {"type": "EC2_LINUX"}
     s["iam"]["roles"][p + "-build"] = {"Trust": {}, "Tags": tags(run), "Attached": ["arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"], "Inline": {p + "-stage-read": {}}}
     s["iam"]["roles"][p + "-node"] = {"Trust": {}, "Tags": tags(run), "Attached": ["arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"], "Inline": {}}
     s["iam"]["profiles"][p + "-build"] = {"Tags": tags(run), "Roles": [p + "-build"]}
     s["s3"]["buckets"][f"ubuntu-ami-sample-stage-{run}-abcdef"] = {"owner": acct, "Tags": tags(run), "objects": [f"{run}/a.zip", f"{run}/b.tgz"]}
 e["instances"].append({"InstanceId": "i-someone-else", "State": {"Name": "running"}, "Tags": tags("testrun1", mb="other-sample")})
 e["volumes"].append({"VolumeId": "vol-someone-else", "State": "available", "Tags": tags("testrun1", mb="other-sample")})
+s["eks"]["access_entries"][f"example-cluster/arn:aws:iam::{acct}:role/someone-elses-node-role"] = {"type": "EC2_LINUX"}
 # same-pattern IAM and EKS names another owner tagged (--list-runs must not show them)
 s["iam"]["roles"]["ubuntu-ami-sample-otherx-build"] = {"Trust": {}, "Tags": tags("otherx", mb="someone-else"), "Attached": [], "Inline": {}}
 s["iam"]["profiles"]["ubuntu-ami-sample-otherx-build"] = {"Tags": tags("otherx", mb="someone-else"), "Roles": []}
@@ -263,10 +275,14 @@ if variant == "drift":       # the by-id re-check sees another run's tags on run
     e["instances"][0]["RecheckTags"] = tags("testrun2")
 if variant == "foreign-bucket":
     s["s3"]["buckets"]["ubuntu-ami-sample-stage-testrun1-abcdef"]["owner"] = other
-if variant == "no-iam":       # run 1's roles and profile never created (or already removed)
+if variant in ("no-iam", "orphan-entry"):  # run 1's roles and profile never created (or already removed)
     for n in ("ubuntu-ami-sample-testrun1-build", "ubuntu-ami-sample-testrun1-node"):
         del s["iam"]["roles"][n]
     del s["iam"]["profiles"]["ubuntu-ami-sample-testrun1-build"]
+    if variant == "no-iam":     # never joined, so no access entry; "orphan-entry" keeps it (N4)
+        del s["eks"]["access_entries"][f"example-cluster/arn:aws:iam::{acct}:role/ubuntu-ami-sample-testrun1-node"]
+if variant == "ae-prefix":    # another principal whose role name only starts with run 1's node role name
+    s["eks"]["access_entries"][f"example-cluster/arn:aws:iam::{acct}:role/ubuntu-ami-sample-testrun1-node-copy"] = {"type": "EC2_LINUX"}
 if variant == "foreign-role":  # a same-named node role someone else owns
     s["iam"]["roles"]["ubuntu-ami-sample-testrun1-node"]["Tags"] = tags("testrun1", mb="someone-else")
 if variant == "bare-profile":  # setup stopped after create-instance-profile, before add-role
@@ -281,7 +297,8 @@ s = json.load(open(sys.argv[1])); e = s["ec2"]
 ids = [i["InstanceId"] for i in e["instances"] if i["State"]["Name"] != "terminated"] + [x["ImageId"] for x in e["images"]] \
     + [x["VolumeId"] for x in e.get("volumes", [])] \
     + [x["SnapshotId"] for x in e["snapshots"]] + [x["GroupId"] for x in e["security_groups"]] + [x["LaunchTemplateId"] for x in e["launch_templates"]] \
-    + list(s["eks"]["nodegroups"]) + list(s["iam"]["roles"]) + ["profile:" + p for p in s["iam"]["profiles"]] + list(s["s3"]["buckets"])
+    + list(s["eks"]["nodegroups"]) + list(s["iam"]["roles"]) + ["profile:" + p for p in s["iam"]["profiles"]] + list(s["s3"]["buckets"]) \
+    + ["ae:" + a.split("/", 1)[1] for a in s["eks"].get("access_entries", {})]
 print(" ".join(sorted(ids)))' "$FAKE_AWS_STATE"; }
 
 st norun; two_runs "$FAKE_AWS_STATE"
@@ -296,6 +313,8 @@ grep -q 'i-testrun1-build' "$WORK/dry.log" && grep -q 'ubuntu-ami-sample-stage-t
 ok "  ... lists run testrun1's instance, bucket and roles" $?
 grep -qE '^  vol-testrun1-root\s+in-use$' "$WORK/dry.log" && grep -qE '^  vol-testrun1-left\s+available$' "$WORK/dry.log"
 ok "  ... and its EBS volumes with their state (RR-003)" $?
+grep -qx 'EKS access entry for role ubuntu-ami-sample-testrun1-node: arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node' "$WORK/dry.log"
+ok "  ... and the access entry EKS created for its node role, by that role's exact ARN (N4)" $?
 ! grep -qE 'testrun2|someone-else' "$WORK/dry.log"
 ok "  ... lists nothing of run testrun2 or of another ManagedBy" $?
 ok "  ... changed nothing" "$( [ "$(calls dry "$MUTATING")" = 0 ]; echo $?)"
@@ -320,7 +339,8 @@ check "ACCEPT a full clean up of the run in the run state (testrun1)" 0 "$rc" "$
 left=$(remaining)
 [[ "$left" != *testrun1* ]]; ok "  ... every testrun1 resource is gone (left: $left)" $?
 for want in i-testrun2-build ami-testrun2 snap-testrun2-ami snap-testrun2-orphan sg-testrun2 lt-testrun2 ubuntu-ami-sample-testrun2-node profile:ubuntu-ami-sample-testrun2-build ubuntu-ami-sample-stage-testrun2-abcdef i-someone-else \
-            vol-testrun2-root vol-testrun2-left vol-someone-else; do
+            vol-testrun2-root vol-testrun2-left vol-someone-else \
+            ae:arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun2-node ae:arn:aws:iam::111122223333:role/someone-elses-node-role; do
   [[ " $left " == *" $want "* ]] || { echo "    missing: $want"; false; }
 done; ok "  ... and every testrun2 resource, and the other sample's instance, is untouched" $?
 python3 - "$FAKE_AWS_LOG" <<'PY'; ok "  ... every S3 call names the expected bucket owner (L1)" $?
@@ -345,6 +365,19 @@ for i, a in enumerate(calls):
 # build role: one detach, one inline delete, the delete; node role: one detach, the delete;
 # the profile: remove the build role, the delete
 assert n == 7, n
+PY
+python3 - "$FAKE_AWS_LOG" <<'PY'; ok "  ... (N4) one delete-access-entry, for exactly run testrun1's node role, after the node group is gone, right after a read of that role's tags and before the role's delete" $?
+import json, sys
+calls = [json.loads(l)["argv"] for l in open(sys.argv[1])]
+val = lambda a, o: a[a.index(o) + 1] if o in a else None
+d = [i for i, a in enumerate(calls) if a[:2] == ["eks", "delete-access-entry"]]
+assert len(d) == 1 and val(calls[d[0]], "--principal-arn") == "arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node", [calls[i] for i in d]
+i = d[0]
+w = [j for j, a in enumerate(calls) if a[:3] == ["eks", "wait", "nodegroup-deleted"]]
+assert w and w[0] < i, (w, i)
+assert calls[i - 1][:2] == ["iam", "list-role-tags"] and val(calls[i - 1], "--role-name") == "ubuntu-ami-sample-testrun1-node", calls[i - 1]
+r = [j for j, a in enumerate(calls) if a[:2] == ["iam", "delete-role"] and val(a, "--role-name") == "ubuntu-ami-sample-testrun1-node"]
+assert r and i < r[0], (i, r)
 PY
 rm -f "$ISSUE10_RUN_DIR/out/run-state.env"
 
@@ -376,6 +409,8 @@ check "REJECT (RR-009) a role re-tagged between the listing and its first change
 python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); r=s["iam"]["roles"]["ubuntu-ami-sample-testrun1-node"]; sys.exit(0 if r["Attached"] else 1)' "$FAKE_AWS_STATE" \
   && [ "$(python3 -c 'import json,sys; print(sum(1 for l in open(sys.argv[1]) if json.loads(l)["argv"][:2]==["iam","detach-role-policy"] and "ubuntu-ami-sample-testrun1-node" in json.loads(l)["argv"]))' "$FAKE_AWS_LOG")" = 0 ]
 ok "  ... its managed policy is still attached and no detach call named it" $?
+[ "$(calls roledrift '^eks delete-access-entry$')" = 0 ] && grep -q 'role ubuntu-ami-sample-testrun1-node no longer carries ManagedBy=ubuntu-ami-sample and RunId=testrun1; access entry arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node left in place' "$WORK/roledrift.log"
+ok "  ... (N4) and its access entry is left in place: the role's tags, re-read right before the delete, no longer show it is this run's" $?
 [[ " $(remaining) " != *" ubuntu-ami-sample-testrun1-build "* ]]; ok "  ... while the unchanged build role was removed" $?
 # RR2-001: the reviewer's late re-tag. Read 1 of the build role's tags is the listing (iam_state),
 # read 2 the re-check right before its first change (the detach of its one managed policy). The
@@ -431,6 +466,60 @@ st nsother; two_runs "$FAKE_AWS_STATE"
 rc=0; STUB_NS_JSON='{"metadata": {"labels": {"app.kubernetes.io/part-of": "ubuntu-ami-sample", "app.kubernetes.io/instance": "testrun2"}}}' cl nsother --run-id testrun1 || rc=$?
 check "REJECT deleting the namespace when it carries another run's instance label" 1 "$rc" "$WORK/nsother.log" 'refusing to delete a namespace this run may not own'
 OWN_NS='{"metadata": {"labels": {"app.kubernetes.io/part-of": "ubuntu-ami-sample", "app.kubernetes.io/instance": "testrun1"}}}'
+POD_DEL='delete pod apparmor-scoped-pod -n ubuntu-ami-sample --ignore-not-found --wait=true --timeout=60s'
+st poddel; two_runs "$FAKE_AWS_STATE"
+rc=0; STUB_KLOG="$WORK/poddel.klog" STUB_NS_JSON="$OWN_NS" cl poddel --run-id testrun1 || rc=$?
+check "ACCEPT a workload clean up: test.sh's scoped AppArmor pod is deleted by its exact name, then the namespace" 0 "$rc" "$WORK/poddel.log" 'Workload removed'
+python3 - "$WORK/poddel.klog" "$POD_DEL" <<'PY'; ok "  ... the pod delete names apparmor-scoped-pod exactly, comes before the namespace delete, and no delete uses a selector" $?
+import sys
+c = [l.rstrip("\n") for l in open(sys.argv[1])]
+d = [l for l in c if l.startswith("delete ")]
+assert d[0] == sys.argv[2] and d[1].startswith("delete namespace ubuntu-ami-sample "), d
+assert not any(t in l.split() for l in d for t in ("-l", "--selector", "--all")), d
+PY
+st podstuck; two_runs "$FAKE_AWS_STATE"
+rc=0; STUB_POD_DEL=stuck STUB_KLOG="$WORK/podstuck.klog" STUB_NS_JSON="$OWN_NS" cl podstuck --run-id testrun1 || rc=$?
+check "REJECT a scoped pod whose delete times out: named in the warning, the clean up incomplete" 1 "$rc" "$WORK/podstuck.log" 'could not confirm pod apparmor-scoped-pod in ubuntu-ami-sample was deleted: error: timed out waiting'
+grep -q '^delete namespace ubuntu-ami-sample ' "$WORK/podstuck.klog"; ok "  ... and the namespace delete is still issued" $?
+st podnsother; two_runs "$FAKE_AWS_STATE"
+rc=0; STUB_KLOG="$WORK/podnsother.klog" STUB_NS_JSON='{"metadata": {"labels": {"app.kubernetes.io/part-of": "ubuntu-ami-sample", "app.kubernetes.io/instance": "testrun2"}}}' cl podnsother --run-id testrun1 || rc=$?
+check "REJECT a namespace with another run's label: nothing in it is deleted" 1 "$rc" "$WORK/podnsother.log" 'refusing to delete a namespace this run may not own'
+! grep -q '^delete ' "$WORK/podnsother.klog"; ok "  ... not even the scoped pod by its name: no kubectl delete call at all" $?
+
+# N4: the access entry EKS created for the run's node role, both ways.
+st aeorphan; two_runs "$FAKE_AWS_STATE" orphan-entry
+rc=0; STUB_NS_JSON="$OWN_NS" cl aeorphan --delete-aws-resources --run-id testrun1 || rc=$?
+check "REJECT (N4) an access entry whose role is already gone: left in place with its delete command, the clean up incomplete" 1 "$rc" "$WORK/aeorphan.log" \
+  'access entry arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node names role ubuntu-ami-sample-testrun1-node, which no longer exists, so it cannot be shown to be this run.s; left in place. If it is, remove it with: aws eks delete-access-entry --region us-west-2 --cluster-name example-cluster --principal-arn arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node$'
+[[ " $(remaining) " == *" ae:arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node "* ]] && [ "$(calls aeorphan '^eks delete-access-entry$')" = 0 ]
+ok "  ... the entry is still there and no delete-access-entry call was made" $?
+grep -q 'the access entry for role ubuntu-ami-sample-testrun1-node is still present after cleanup' "$WORK/aeorphan.log" && ! grep -q 'Clean up of run testrun1 complete' "$WORK/aeorphan.log"
+ok "  ... the absence check names it, and no completion line was printed" $?
+st aeprefix; two_runs "$FAKE_AWS_STATE" ae-prefix
+rc=0; STUB_NS_JSON="$OWN_NS" cl aeprefix --delete-aws-resources --run-id testrun1 || rc=$?
+check "ACCEPT (N4) the run's own entry is deleted by its exact role ARN" 0 "$rc" "$WORK/aeprefix.log" 'the node role.s access entry, instance profile and roles are gone'
+left=$(remaining)
+[[ " $left " == *" ae:arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node-copy "* && " $left " != *" ae:arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node "* ]]
+ok "  ... while an entry for a role whose name only starts with the node role's is untouched" $?
+st aelistfail; two_runs "$FAKE_AWS_STATE"; export FAKE_AWS_FAIL='eks list-access-entries||AccessDeniedException'
+rc=0; cl aelistfail --dry-run --run-id testrun1 || rc=$?
+check "REJECT (N4, could not determine) a --dry-run whose access-entry lookup fails" 1 "$rc" "$WORK/aelistfail.log" 'could not determine the access entries of cluster example-cluster \(lookup failed, not a report that none exist\)'
+grep -qx 'EKS access entry for role ubuntu-ami-sample-testrun1-node: <could not determine>' "$WORK/aelistfail.log"; ok "  ... and lists it as could not determine, never none" $?
+while IFS='@' read -r name rule rx why; do
+  [ -n "$name" ] || continue
+  st "$name"; two_runs "$FAKE_AWS_STATE"; export FAKE_AWS_FAIL="$rule"
+  rc=0; STUB_NS_JSON="$OWN_NS" cl "$name" --delete-aws-resources --run-id testrun1 || rc=$?
+  check "$why" 1 "$rc" "$WORK/$name.log" "$rx"
+  lft=$(remaining)
+  [[ " $lft " == *" ubuntu-ami-sample-testrun1-node "* && " $lft " == *" ae:arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node "* && " $lft " != *" ubuntu-ami-sample-testrun1-build "* ]]
+  ok "  ... the entry and the node role that proves it is this run's are both left (the build role is gone)" $?
+  grep -q 'role ubuntu-ami-sample-testrun1-node left in place, so that a re-run can still show its access entry is this run.s' "$WORK/$name.log"; ok "  ... and the warning says why the role is kept" $?
+done <<'CASES'
+aelistdel@eks list-access-entries||AccessDeniedException@skipping the access entry for role ubuntu-ami-sample-testrun1-node: the cluster.s access entries could not be read@REJECT (N4) a clean up whose access-entry lookup fails: no delete
+aedelfail@eks delete-access-entry||AccessDeniedException@could not delete access entry arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node@REJECT (N4) a delete-access-entry that fails
+aengstuck@eks delete-nodegroup||ResourceInUseException@access entry for role ubuntu-ami-sample-testrun1-node left in place: node group ubuntu-ami-sample-testrun1-ng is not gone \(owned ACTIVE\)@REJECT (N4) a node group that is not gone: its nodes still use the entry
+CASES
+unset FAKE_AWS_FAIL
 
 echo
 echo "== 2b/5 IAM by per-run name, every lookup checked, the kube context: clean.sh (H5, H7, H6) =="
@@ -451,6 +540,8 @@ st foreignrole; two_runs "$FAKE_AWS_STATE" foreign-role
 rc=0; STUB_NS_JSON="$OWN_NS" cl foreignrole --delete-aws-resources --run-id testrun1 || rc=$?
 check "REJECT (H5) a same-named role another owner tagged: refused, the clean up incomplete" 1 "$rc" "$WORK/foreignrole.log" 'role ubuntu-ami-sample-testrun1-node does not carry ManagedBy=ubuntu-ami-sample and RunId=testrun1; refusing'
 [[ " $(remaining) " == *" ubuntu-ami-sample-testrun1-node "* ]]; ok "  ... and that role is still there" $?
+[[ " $(remaining) " == *" ae:arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node "* ]] && [ "$(calls foreignrole '^eks delete-access-entry$')" = 0 ]
+ok "  ... (N4) and so is its access entry: no delete-access-entry call" $?
 st bareprof; two_runs "$FAKE_AWS_STATE" bare-profile
 rc=0; STUB_NS_JSON="$OWN_NS" cl bareprof --delete-aws-resources --run-id testrun1 || rc=$?
 check "ACCEPT (H5) an instance profile that holds no role (setup stopped before add-role) is still found and deleted" 0 "$rc" "$WORK/bareprof.log" 'Clean up of run testrun1 complete'

@@ -4,8 +4,9 @@
 
     This sample is **not ready to be merged to `main` and marked available**. It is
     authored against the Nitro sandbox GA node-build bundle dated 2026-10-28 and
-    static-verified (every clusterless check below passes both ways), but no live AWS run
-    has happened yet. Before this sample can merge to `main` as available, all of the
+    static-verified (every clusterless check below passes both ways), but the fresh
+    end-to-end run this page needs has not happened yet. Before this sample can merge to
+    `main` as available, all of the
     following MUST happen:
 
     1. **Settle how a reader gets the runtime archive.** The runtime binaries and guest
@@ -17,15 +18,13 @@
        with that decision.
     2. **Run the whole thing live.** Run a fresh AMI build, a fresh second-instance
        verification, and the node-join and sandbox-pod tests on a live cluster.
-    3. **Settle the AppArmor contradiction on that run.** The GA bundle says an Ubuntu
-       sandbox pod needs `appArmorProfile.type: Unconfined`, because a host profile is
-       forwarded into the guest and fails there. Issue #10 asks for the scoped `Localhost`
-       profile this sample uses. This page makes **no claim that the profile is enforced
-       on the sandbox** until a live run shows it: `./test.sh` counts the sandbox's failed
-       `/etc/shadow` write as AppArmor's only with AppArmor evidence (the sandbox process's
-       own label names the profile in enforce mode, or the node logs an AppArmor denial).
-       If the sandbox does not start, or the evidence is missing, the first failure and its
-       root cause go to the maintainers before anything changes.
+    3. **Show the AppArmor result on that run.** A sandbox pod cannot take a host AppArmor
+       profile: its profile is applied by runc inside the guest, which has no AppArmor, as
+       the GA bundle says and a validation run of this sample showed (see
+       [Evidence](#evidence)). So the sandbox pod runs `Unconfined`, and the scoped
+       `Localhost` profile Issue #10 asks for is proven on an ordinary pod on the same node,
+       next to a refused control. The fresh run must fill all four AppArmor blocks under
+       [Evidence](#evidence).
     4. **Replace every placeholder with real captured output.** Every
        `TODO: output from the fresh run` block below must hold real captured output from
        that run, nothing written by hand.
@@ -39,8 +38,8 @@
 !!! warning "Status: authored and static-verified against the GA bundle; no live run yet"
 
     Every script parses, every pinned input checksum-verifies, and every clusterless check
-    is proven both ways (see [Clusterless checks](#clusterless-checks)), but **no live AWS
-    run has been performed**. See [Evidence](#evidence) for what is still a
+    is proven both ways (see [Clusterless checks](#clusterless-checks)), but **the fresh
+    end-to-end AWS run has not been performed**. See [Evidence](#evidence) for what is still a
     `TODO: output from the fresh run` placeholder.
 
 Build a custom Ubuntu 24.04 node AMI for Amazon EKS Pod Isolation, add one dedicated,
@@ -166,8 +165,9 @@ it.
 - Operator IAM permissions to create and remove EC2 instances, images, snapshots, a
   security group, a launch template, IAM roles, inline role policies and instance profiles,
   an S3 bucket (create, tag, Block Public Access, default encryption, bucket policy, put and
-  delete objects, delete), and an EKS managed node group; to read the cluster, its add-ons
-  and the Canonical SSM parameter; plus SSM Run Command access to the build and
+  delete objects, delete), and an EKS managed node group; to list and delete the cluster's
+  access entries (the clean up removes the one EKS creates for the node role); to read the
+  cluster, its add-ons and the Canonical SSM parameter; plus SSM Run Command access to the build and
   verification instances. These are the credentials you run `./setup.sh` with; the sample
   then creates two **scoped** roles of its own (below).
 - **The two scoped roles the sample creates for the resources it launches.**
@@ -510,7 +510,7 @@ resource the RuntimeClass's overhead requests), and stops with a clear message i
 
 ## Evidence
 
-> **No live run has happened yet.** The blocks below are not yet acceptance evidence. The
+> **The fresh run has not happened yet.** The blocks below are not yet acceptance evidence. The
 > implementation PR replaces every block below with a fresh end-to-end run and says so in
 > the PR description.
 
@@ -552,6 +552,7 @@ that accepts everything.
 | Launch specs | IMDSv2 required, hop limit 1, enclaves on, `ManagedBy` and `RunId` on instance and volume | IMDSv1 allowed, hop limit 2, no metadata options, IMDS off, enclaves off, a volume without `RunId`, another run's `RunId` |
 | Kube context | the context's server is `CLUSTER_NAME`'s API endpoint | another cluster's server, an unknown context, no `KUBE_CONTEXT` |
 | AppArmor stage | the profile loaded in enforce mode, its service enabled | complain mode, a failed `systemctl enable`, a service that is not enabled |
+| AppArmor profile rules | `signal (receive)` from `runc` and `unconfined`, `signal (send,receive)` with itself, `audit deny /etc/shadow* w,`, no plain `deny` | a `signal` rule missing or only in a comment, a plain `deny`, no `/etc/shadow` rule, another profile name |
 | Package holds | the containerd owner and the kernel meta-packages held and blacklisted | a hold missing from `apt-mark showhold` or from the blacklist |
 | Bake residue | no build residue left | residue present, or a scan that fails |
 | Sandbox capacity | the node advertises `eks.amazonaws.com/nitro-sandbox` > 0 | zero, absent, or a node that is not `Ready` |
@@ -566,28 +567,63 @@ sample. Written by `scripts/verify-fresh-instance.sh` via `scripts/lib/btf-tag.s
 TODO: output from the fresh run
 ```
 
-**AppArmor: the planned scoped profile and a refused control.** AppArmor stays enabled on the
-host. The node loads one scoped profile,
+**AppArmor.** AppArmor stays enabled on the host, and the node loads one scoped profile,
 [`manifests/ubuntu-ami-sample-profile`](manifests/ubuntu-ami-sample-profile), installed onto
-the AMI by [`scripts/35-apparmor.sh`](scripts/35-apparmor.sh); the isolated-sandbox pod is set
-to select it with `securityContext.appArmorProfile` (`type: Localhost`). The profile is written
-to deny a write to `/etc/shadow`. Whether the sandbox pod starts under it, and whether the
-profile applies to it, is what the fresh run will show. `./test.sh` counts a failed write as
-AppArmor's only with AppArmor evidence from that attempt: either the sandbox process's own
-label (`/proc/self/attr/current`) naming the profile in enforce mode, or an AppArmor denial of
-that write in the node's kernel journal logged after the node's clock was read just before the
-write. It reads the same two things on the ordinary pod and on a profile the node never
-loaded, as the controls. The reject control
-([`deploy/pod-apparmor-reject.yaml`](deploy/pod-apparmor-reject.yaml)) is an ordinary pod on
-the same node that asks for a profile the node never loaded; the run checks that it is refused
-for the AppArmor reason.
+the AMI by [`scripts/35-apparmor.sh`](scripts/35-apparmor.sh). The profile refuses writes to
+`/etc/shadow` and a few other host paths with `audit deny` rules, so each refusal is logged.
+It lets runc and the host signal the container, as containerd's own default container profile
+does (containerd `contrib/apparmor/template.go`): without those `signal` rules, a pod under
+the profile could never be stopped. `./test.sh` shows four things on the sample's node, each
+next to its control.
 
-The runtime's Ubuntu build notes say that on an AppArmor host every sandbox pod needs
-`appArmorProfile` `type: Unconfined`, because the requested profile is forwarded into the
-guest, where it does not exist. Until the fresh run settles which holds, this page claims
-**no AppArmor enforcement on the sandbox**. The run records the result, and this section
-shows it rather than a weakened profile; a sandbox that does not start goes to the
-maintainers with its first failure and root cause.
+**1. AppArmor is on and enforcing on the host.** The kernel reports AppArmor enabled, the
+scoped profile is loaded in enforce mode, and the node's copy of the profile is this sample's
+file (same sha256). The same probe reads absent for a profile the node never loaded.
+
+```text
+TODO: output from the fresh run
+```
+
+**2. The scoped profile working, on an ordinary pod.**
+[`deploy/pod-apparmor-scoped.yaml`](deploy/pod-apparmor-scoped.yaml) is an ordinary (runc)
+pod on the same node that selects the profile with `securityContext.appArmorProfile`
+(`type: Localhost`). `./test.sh` checks that its process runs under
+`ubuntu-ami-sample-profile (enforce)` (`/proc/self/attr/current`), while the ordinary pod's
+label does not name the profile. It checks that the pod's write to `/etc/shadow` is refused
+with `Permission denied` and the node's kernel logs the profile's `DENIED` line for it, read
+from the node's clock just before the write, while the same pod's write to another file in
+`/etc` succeeds. Then it deletes the pod by its exact name and checks that the pod is gone
+within its 15 s grace period, with no `DENIED` signal logged under the profile. A profile
+the node never loaded has no `DENIED` lines, as the control for both counts.
+
+```text
+TODO: output from the fresh run
+```
+
+**3. A pod naming a profile the node never loaded is refused.** The reject control,
+[`deploy/pod-apparmor-reject.yaml`](deploy/pod-apparmor-reject.yaml), is an ordinary pod on
+the same node that asks for `profile-that-does-not-exist`. `./test.sh` checks that it is
+scheduled on the sample's node, is not running, and waits with reason `CreateContainerError`
+and containerd's message for a missing profile, matched whole:
+`failed to get container spec opts: failed to generate apparmor spec opts: apparmor profile not found profile-that-does-not-exist`.
+
+```text
+TODO: output from the fresh run
+```
+
+**4. Why the sandbox pod runs `Unconfined`.** The isolated-sandbox pod,
+[`deploy/pod-isolated-sandbox.yaml`](deploy/pod-isolated-sandbox.yaml), sets
+`appArmorProfile` `type: Unconfined`. A sandbox pod's profile is not applied on the host: the
+shim passes it into the guest microVM, where runc applies it. The runtime's Ubuntu build notes
+(`UBUNTU.md` in the GA node-build bundle) say that on an AppArmor host "every sandbox pod
+needs `Unconfined`, or kubelet requests the `RuntimeDefault` profile, the shim forwards it
+into the guest, and runc fails with `apparmor failed to apply profile`". A validation run of
+this sample on its own AMI showed exactly that. With `type: Localhost` and the scoped
+profile, the sandbox pod stopped in `StartError` with
+`apparmor failed to apply profile: write fsmount:fscontext:proc/thread-self/attr/exec: invalid argument`
+(the end of the message), because the guest runs SELinux and has no AppArmor: its process
+label is `system_u:system_r:runtime_t:s0:c0.c1023`. The microVM is the sandbox pod's boundary.
+`./test.sh` prints the sandbox's own label and checks that the pod runs with `Unconfined`.
 
 ```text
 TODO: output from the fresh run
@@ -635,10 +671,11 @@ spec:
           port: 53
 ```
 
-**The policy at work.** DNS answers, the API server on 443 is refused, and port 53 to a pod
-that is not DNS is refused too. That pod is the ordinary pod, which listens on TCP 53 with a
-plain HTTP listener; the ordinary pod's own connection to it succeeds, which shows the
-listener is up and the refusal is the policy's.
+**The policy at work.** The sandbox's interfaces are listed first, from `/sys/class/net`. DNS
+answers, and the API server on 443 is refused, while the same connect from the ordinary pod,
+which no policy selects, succeeds. Port 53 to a pod that is not DNS is refused too. That pod is
+the ordinary pod, which listens on TCP 53 with a plain HTTP listener; the ordinary pod's own
+connection to it succeeds, which shows the listener is up and the refusal is the policy's.
 
 ```text
 TODO: output from the fresh run
@@ -655,8 +692,9 @@ bash packages/test-inputs.sh          # runtime archive and host-kernel patch (c
 bash scripts/test-host-gates.sh       # containerd gate, .config assertion, root filesystem at boot, IMDS token never on argv
 bash scripts/test-cluster-gates.sh    # kube context, vpc-cni, RuntimeClass, DNS pods, user data, node capacity, namespace, pod wait, egress policy
 bash scripts/test-launch-specs.sh     # IMDSv2 hop limit 1, enclaves and run tags on the node template, verification instance and build host
-bash scripts/test-run-scope.sh        # per-run IAM, run-scoped clean up, IAM by name, every failed lookup, --list-runs, staging revocation
+bash scripts/test-run-scope.sh        # per-run IAM, run-scoped clean up, IAM by name, the node role's access entry, every failed lookup, --list-runs, staging revocation
 bash scripts/test-image-checks.sh     # containerd wiring, AppArmor stage, package holds, bake residue, verify-image.py (Python 3.11+)
+bash scripts/test-apparmor-checks.sh  # test.sh's AppArmor checks, the Unconfined sandbox and the 443 control; the profile's signal and audit-deny rules
 bash scripts/test-btf-tag.sh          # BtfValidated=true only after both fresh-instance checks pass, only on this run's AMI
 bash scripts/test-setup-flow.sh       # bounded SSM, AMI, status and reboot waits; --ami-only and --join, both ways
 bash scripts/test-local-paths.sh      # local state only under the repository's tmp/
@@ -692,15 +730,21 @@ another run of this sample in the same account is never touched. The IAM roles a
 instance profile are found by their per-run names through IAM itself (the Resource Groups
 Tagging API does not list IAM roles). `--dry-run` changes nothing.
 
-A bare `./clean.sh` removes only the Kubernetes validation workload (the sample's namespace,
-after confirming it carries both of the run's labels), leaving the node group and AMI in place
+A bare `./clean.sh` removes only the Kubernetes validation workload (after confirming the
+sample's namespace carries both of the run's labels: the scoped AppArmor pod by its exact
+name, then the namespace), leaving the node group and AMI in place
 for a longer investigation. `./clean.sh --delete-aws-resources` does the full teardown: it
 removes, in order, the Kubernetes workload, the managed node group, the build and
 verification EC2 instances, then any of the run's EBS volumes left unattached (an attached one
 is left in place and reported), the AMIs and their snapshots, the launch template, the build
 security group, the S3 staging bucket (emptied first, every call naming your account as the
-expected bucket owner), and the instance profile and IAM roles (both tags read again right
-before the first change to each role). It then reads each category
+expected bucket owner), the access entry EKS created for the node role, and the instance
+profile and IAM roles (both tags read again right before the first change to each role). EKS
+does not delete that access entry with the node group or the role (Amazon EKS User Guide,
+*Create access entries*), and it has no tags, so `./clean.sh` finds it by the node role's
+ARN and deletes it only after the node group is gone and while the role still carries both
+tags; an entry whose role is already gone is left, with the command that removes it. It then
+reads each category
 again to confirm nothing of the run remains, and exits non-zero if anything is still there,
 if anything was skipped as not the run's, or if any lookup failed: a failed lookup is
 "could not determine", never "gone". Before the first delete it checks `KUBE_CONTEXT` against

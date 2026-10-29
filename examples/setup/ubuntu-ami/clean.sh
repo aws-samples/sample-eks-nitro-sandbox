@@ -21,7 +21,9 @@
 #
 # kubectl runs only with --context "$KUBE_CONTEXT", checked against CLUSTER_NAME's API endpoint
 # before the namespace is touched. IAM roles and the instance profile are found by their per-run
-# names through IAM (the Resource Groups Tagging API does not list IAM roles).
+# names through IAM (the Resource Groups Tagging API does not list IAM roles). The access entry
+# EKS creates for the node role (it has no tags, and EKS keeps it after the role is deleted) is
+# found by that role's ARN, and deleted only while the role still carries both tags.
 #
 # Never removed, because they are not the sample's: the vpc-cni add-on and the isolated-sandbox
 # RuntimeClass (shared installs the reader set up; the README says how to remove the add-on).
@@ -168,6 +170,18 @@ list_all() {
   iam_state role_node role "$NODE_ROLE_NAME"
   iam_state profile_build profile "$INSTANCE_PROFILE"
   nodegroup_state ng_state
+  access_entry_state ae_node
+}
+# access_entry_state <var>: the principal ARN of the cluster's access entry for exactly this run's
+# node role (none, or one: an IAM principal has at most one entry), or $UNKNOWN. EKS creates that
+# entry for the managed node group and does not delete it with the node group or the role (Amazon
+# EKS User Guide, *Create access entries*), and it carries no tags, so it is found by the role's
+# per-run name and shown to be this run's by the role's own tags.
+access_entry_state() {
+  local __v="$1" js
+  aws_json js "the access entries of cluster $CLUSTER_NAME" eks list-access-entries --cluster-name "$CLUSTER_NAME"
+  if [ "$js" = "$UNKNOWN" ]; then printf -v "$__v" '%s' "$UNKNOWN"; return; fi
+  printf -v "$__v" '%s' "$(printf '%s' "$js" | json_get "[x for x in d['accessEntries'] if __import__('re').fullmatch(r'arn:aws[a-z-]*:iam::[0-9]{12}:role/${NODE_ROLE_NAME}', x)]")"
 }
 # iam_state <var> <role|profile> <name>: "absent", "owned", "not-owned", or $UNKNOWN (and the
 # clean up marked incomplete) when the tags cannot be read for a reason other than NoSuchEntity.
@@ -280,6 +294,7 @@ echo "IAM (by this run's names):"
 printf '  role %s: %s\n  role %s: %s\n  instance profile %s: %s\n' "$BUILD_ROLE_NAME" "$role_build" \
   "$NODE_ROLE_NAME" "$role_node" "$INSTANCE_PROFILE" "$profile_build"
 echo "EKS managed node group $NODEGROUP_NAME: $ng_state"
+echo "EKS access entry for role $NODE_ROLE_NAME: ${ae_node:-none}"
 echo "Left in place (shared, not the sample's): the vpc-cni add-on and the isolated-sandbox RuntimeClass on cluster $CLUSTER_NAME"
 
 if [[ "$DRY_RUN" == 1 ]]; then
@@ -298,6 +313,11 @@ if ns_json=$(kc get namespace "$NAMESPACE" -o json 2>"$ERR"); then
   ns_owner=$(printf '%s' "$ns_json" | json_get 'd["metadata"].get("labels", {}).get("app.kubernetes.io/part-of", "")')
   ns_run=$(printf '%s' "$ns_json" | json_get 'd["metadata"].get("labels", {}).get("app.kubernetes.io/instance", "")')
   if [[ "$ns_owner" == "$RESOURCE_PREFIX" && "$ns_run" == "$RUN_ID" ]]; then
+    # test.sh's scoped AppArmor pod first, by its exact name (test.sh deletes it too; this covers a
+    # run stopped before that): a pod that cannot be stopped is reported here by name, rather
+    # than only as a namespace delete that timed out.
+    kc delete pod apparmor-scoped-pod -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=60s >/dev/null 2>"$ERR" \
+      || warn_inc "could not confirm pod apparmor-scoped-pod in $NAMESPACE was deleted: $(head -n 2 "$ERR")"
     kc delete namespace "$NAMESPACE" --wait=true --timeout=5m >/dev/null 2>"$ERR" \
       || warn_inc "could not confirm namespace $NAMESPACE was deleted: $(head -n 2 "$ERR")"
   else
@@ -316,7 +336,7 @@ if [[ "$DELETE_AWS" != 1 ]]; then
     exit 1
   fi
   echo "Workload removed. Run $RUN_ID's AWS resources (node group, instances, AMI, launch template,"
-  echo "security group, staging bucket, instance profile and roles) are left in place. Re-run with"
+  echo "security group, staging bucket, the node role's access entry, instance profile and roles) are left in place. Re-run with"
   echo "--delete-aws-resources to remove them, or ./clean.sh --dry-run to see what remains."
   exit 0
 fi
@@ -529,7 +549,46 @@ delete_role() {
   OWNED_GONE_FAILS=1 owned_then role "$role" "IAM role $role" aws iam delete-role --role-name "$role" --output json || true
 }
 delete_role "$BUILD_ROLE_NAME" "$role_build"
-delete_role "$NODE_ROLE_NAME" "$role_node"
+# The node role's access entry: after the node group is gone (its nodes authenticate with it) and
+# before the role, whose tags, read again right before the delete, are what show the entry is this
+# run's. An entry whose role is already gone cannot be shown to be this run's, so it is left, with
+# the command that removes it, and the clean up is incomplete.
+echo "== deleting the EKS access entry for this run's node role =="
+# delete_access_entry: non-zero when an entry may still be there while the role that proves it is
+# this run's is still there too; the role is then kept, so a re-run can still delete the entry.
+delete_access_entry() {
+  local arn ng_now
+  case "$ae_node" in
+    "") echo "none."; return 0 ;;
+    "$UNKNOWN") warn_inc "skipping the access entry for role $NODE_ROLE_NAME: the cluster's access entries could not be read"; return 1 ;;
+  esac
+  case "$role_node" in
+    absent)
+      for arn in $ae_node; do
+        warn_inc "access entry $arn names role $NODE_ROLE_NAME, which no longer exists, so it cannot be shown to be this run's; left in place. If it is, remove it with: aws eks delete-access-entry --region $AWS_REGION --cluster-name $CLUSTER_NAME --principal-arn $arn"
+      done
+      return 0 ;;
+    owned) ;;
+    *) warn_inc "access entry for role $NODE_ROLE_NAME left in place: the role is $role_node"; return 0 ;;
+  esac
+  nodegroup_state ng_now
+  [ "$ng_now" = absent ] || { warn_inc "access entry for role $NODE_ROLE_NAME left in place: node group $NODEGROUP_NAME is not gone ($ng_now)"; return 1; }
+  for arn in $ae_node; do
+    case "$(recheck role "$NODE_ROLE_NAME")" in
+      match) aws eks delete-access-entry --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --principal-arn "$arn" --output json >/dev/null 2>"$ERR" \
+               || { warn_inc "could not delete access entry $arn: $(head -n 2 "$ERR")"; return 1; } ;;
+      # Not this run's role any more: the entry stays, and delete_role re-reads and refuses too.
+      gone) warn_inc "role $NODE_ROLE_NAME disappeared after it was listed; access entry $arn left in place"; return 0 ;;
+      mismatch) warn_inc "role $NODE_ROLE_NAME no longer carries ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; access entry $arn left in place"; return 0 ;;
+      *) warn_inc "could not re-read the tags of role $NODE_ROLE_NAME; access entry $arn left in place"; return 1 ;;
+    esac
+  done
+}
+if delete_access_entry; then
+  delete_role "$NODE_ROLE_NAME" "$role_node"
+else
+  warn_inc "role $NODE_ROLE_NAME left in place, so that a re-run can still show its access entry is this run's and delete it"
+fi
 
 echo "== verifying absence =="
 first_buckets="$buckets"
@@ -553,6 +612,7 @@ if [ -n "$snapshots" ] && [ "$snapshots" != "$UNKNOWN" ]; then
   done <<< "$snapshots"
 fi
 [ "$ng_state" = absent ] || [ "$ng_state" = "$UNKNOWN" ] || warn_inc "node group $NODEGROUP_NAME still present after cleanup: $ng_state"
+[ -z "$ae_node" ] || [ "$ae_node" = "$UNKNOWN" ] || warn_inc "the access entry for role $NODE_ROLE_NAME is still present after cleanup: $ae_node"
 # The roles and the profile were re-read by name in list_all; buckets are confirmed directly (the
 # tagging API can list a bucket for a while after it is deleted).
 for pair in "role_build:IAM role $BUILD_ROLE_NAME" "role_node:IAM role $NODE_ROLE_NAME" "profile_build:instance profile $INSTANCE_PROFILE"; do
@@ -571,7 +631,7 @@ if [ -n "$ACCOUNT" ]; then
 elif [ -n "$buckets" ]; then
   warn_inc "the staging buckets' absence could not be confirmed (no caller account)"
 fi
-for v in instances volumes images snapshots sgs lts buckets ng_state role_build role_node profile_build; do
+for v in instances volumes images snapshots sgs lts buckets ng_state ae_node role_build role_node profile_build; do
   printf '%s\n' "${!v}" | grep -qxF -- "$UNKNOWN" && warn_inc "absence of this run's $v could not be confirmed"
 done
 if [[ "$KEEP_AMI" == 1 && -n "$kept_images" ]]; then
@@ -584,4 +644,4 @@ if [[ "$incomplete" -ne 0 ]]; then
   exit 1
 fi
 echo
-echo "Clean up of run $RUN_ID complete: validation workload, node group, instances, EBS volumes, $([[ "$KEEP_AMI" == 1 ]] || echo 'AMIs and snapshots, ')launch template, security group, staging bucket, instance profile and roles are gone."
+echo "Clean up of run $RUN_ID complete: validation workload, node group, instances, EBS volumes, $([[ "$KEEP_AMI" == 1 ]] || echo 'AMIs and snapshots, ')launch template, security group, staging bucket, the node role's access entry, instance profile and roles are gone."

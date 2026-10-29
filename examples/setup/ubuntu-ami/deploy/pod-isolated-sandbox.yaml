@@ -1,9 +1,14 @@
 # The validation sandbox pod. Egress is restricted by the COMPLETE NetworkPolicy in
 # network-policy.yaml, shown alongside this pod on the README page (the acceptance
 # criterion requires either no network at all or a shown, complete policy; this sample
-# demonstrates the policy path so the egress rules are visible). The pod's
-# securityContext.appArmorProfile scopes the sample's Localhost profile (loaded on the node by
-# scripts/35-apparmor.sh) to this pod only; it does not change the host's AppArmor default.
+# demonstrates the policy path so the egress rules are visible).
+# appArmorProfile is Unconfined, as the Nitro sandbox GA build notes require on an Ubuntu host:
+# a sandbox pod's AppArmor profile is not applied on the host. The shim passes it into the
+# guest microVM, where runc applies it, and the guest runs SELinux and has no AppArmor, so any
+# Localhost or RuntimeDefault profile fails there with "apparmor failed to apply profile". The
+# microVM is this pod's boundary. AppArmor stays enabled on the host, and the sample's scoped
+# Localhost profile is shown working on an ordinary pod on the same node
+# (pod-apparmor-scoped.yaml); pod-apparmor-reject.yaml is the refused control.
 # setup.sh renders @NODEGROUP@ from NODEGROUP_NAME and the namespace from NAMESPACE.
 apiVersion: v1
 kind: Pod
@@ -16,8 +21,7 @@ spec:
   runtimeClassName: isolated-sandbox
   securityContext:
     appArmorProfile:
-      type: Localhost
-      localhostProfile: ubuntu-ami-sample-profile
+      type: Unconfined
   nodeSelector:
     eks.amazonaws.com/nodegroup: "@NODEGROUP@"
   tolerations:
