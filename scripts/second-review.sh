@@ -251,6 +251,18 @@ if [ "$BACKEND" = claude ] && [ -n "${SECOND_REVIEW_CONTEXT_DIR:-}" ]; then
   [ -d "$SECOND_REVIEW_CONTEXT_DIR" ] || refuse E_CONTEXT_DIR \
     "\$SECOND_REVIEW_CONTEXT_DIR names '$SECOND_REVIEW_CONTEXT_DIR', which is not a directory."
   CTX_ABS=$(realpath "$SECOND_REVIEW_CONTEXT_DIR")
+  # Second-review finding (issue #100 round 7): with no check here, --out equal to or
+  # nested inside the context directory meant this script's own output (review.out,
+  # review.err, review-record.txt, the fingerprints themselves) landed inside what gets
+  # fingerprinted as the context directory, so the run always reported E_CONTEXT_CHANGED
+  # and wrongly blamed the reviewer. Checked before any fingerprint is taken, mirroring the
+  # --out-inside-the-tree check below -- but that check comes after this one, because OUT_ABS
+  # is already resolved by the time this runs and testing it here is just as cheap.
+  ctx_prefix="${CTX_ABS%/}/"
+  case "$OUT_ABS/" in
+    "$ctx_prefix"*) refuse E_CONTEXT_DIR \
+      "--out '$OUT_ABS' is inside \$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS'; this script's own files would read as the context directory changing. Put --out outside it." ;;
+  esac
 fi
 
 # --- invariant 2: the tree did not change, and here is the evidence ---------------------
