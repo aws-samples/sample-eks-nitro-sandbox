@@ -83,8 +83,8 @@ for an existing cluster, not creating or managing the cluster itself.
   existing cluster. Every public input (base AMI, kernel 6.18.56 plus AWS's public
   host-kernel commit 1e66c960, erofs-utils 1.8.10, distro packages) is pinned and
   checksum-verified. The Nitro sandbox runtime is an operator-supplied preview archive,
-  checksum-pinned, with no public download. Authored and checked without a cluster; no
-  live run has been performed yet. Spec:
+  checksum-pinned, with no public download. Validated end to end on a live cluster; whether
+  that archive meets the spec's public-input criterion is waiting on the maintainers. Spec:
   [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10).
 
 ### Isolation (`isolation`)
