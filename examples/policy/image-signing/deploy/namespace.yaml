@@ -1,9 +1,0 @@
-# A namespace owned solely by this sample. Clean up deletes it, taking every
-# object in it (the three pods and the ServiceAccount) with it.
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: image-signing-sample
-  labels:
-    app.kubernetes.io/part-of: eks-nitro-sandbox-samples
-    sample: image-signing

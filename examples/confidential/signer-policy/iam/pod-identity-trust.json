@@ -14,7 +14,7 @@
         "StringEquals": {
           "aws:RequestTag/eks-cluster-name": "<CLUSTER_NAME>",
           "aws:RequestTag/kubernetes-namespace": "<NAMESPACE>",
-          "aws:RequestTag/kubernetes-service-account": "image-signing-verifier"
+          "aws:RequestTag/kubernetes-service-account": "signer-policy-pod"
         }
       }
     }

@@ -17,7 +17,6 @@ examples/
 │   ├── network-policy/
 │   └── sandbox-limits/
 ├── policy/
-│   ├── image-signing/
 │   └── cedar-policy/
 ├── ai-agents/
 │   ├── coding-agents-for-developers/
@@ -56,7 +55,8 @@ examples/
 └── confidential/
     ├── encrypted-image/
     ├── secrets-manager-secret/
-    └── s3-encrypted-file/
+    ├── s3-encrypted-file/
+    └── signer-policy/
 ```
 
 ## Planned samples by section
@@ -78,7 +78,6 @@ Samples marked ★ are the next six to be added.
 
 Checks that run inside the guest and decide what the pod may run.
 
-- [image-signing](../examples/policy/image-signing/README.md) (available now): an image signed with AWS Signer and verified inside the guest, while an unsigned image is rejected, with an optional no-network variant. Uses `isolated-sandbox`. Spec: [#17](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/17).
 - [cedar-policy](../examples/policy/cedar-policy/README.md) (available now): a Cedar policy generated for a workload and enforced inside the guest, which refuses an operator's exec. Uses `confidential-sandbox`. Spec: [#18](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/18).
 
 ### AI agents (`ai-agents`)
@@ -160,3 +159,4 @@ The [Confidential section page](../examples/confidential/README.md) holds what t
 - [encrypted-image](../examples/confidential/encrypted-image/README.md) (available now): encrypted image layers in Amazon ECR, decrypted inside the sandbox after AWS KMS checks its attested policy. Spec: [#19](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/19).
 - [secrets-manager-secret](../examples/confidential/secrets-manager-secret/README.md) (available now): an AWS Secrets Manager secret released only to an approved sandbox. Spec: [#20](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/20).
 - [s3-encrypted-file](../examples/confidential/s3-encrypted-file/README.md) (available now): a file encrypted before upload to Amazon S3 and decrypted only inside an approved sandbox. Spec: [#21](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/21).
+- [signer-policy](../examples/confidential/signer-policy/README.md) (available now): the section's reference for signer-based image trust. A generated Cedar policy names an AWS Signer profile instead of pinning one digest, so a provider's next release runs with no policy regenerated, shown beside the default digest pin refusing that same release. Spec: [#119](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/119).

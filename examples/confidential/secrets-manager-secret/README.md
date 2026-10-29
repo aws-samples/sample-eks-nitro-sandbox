@@ -381,6 +381,8 @@ The command the container runs is pinned too, which is why the two ordinary pods
 this image without sharing this policy: each of them overrides `command`, and neither is a
 sandbox.
 
+See [using a signed image instead of a pinned image reference](../signer-policy/README.md).
+
 ```text
     context.process_args == "[\"python\",\"/app/app.py\"]" &&
 ```
