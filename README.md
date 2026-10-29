@@ -17,7 +17,6 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 
 ## Policy
 
-- [Image signing](examples/policy/image-signing/README.md): an image signed with AWS Signer and verified with Notation inside the guest, while an unsigned image is rejected, with an optional variant that verifies with no network at all.
 - [Cedar policy](examples/policy/cedar-policy/README.md): a Cedar policy generated from a workload's pod spec and enforced inside a confidential sandbox guest, which admits the expected container and refuses an operator's exec.
 
 ## AI agents
@@ -33,6 +32,7 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 The same procurement analyst three ways, with a second policy layer confining the tool processes it runs inside its sandbox. The [section page](examples/subagent-security/README.md) covers the analyst, the case and what the three samples share.
 
 - [Procurement analyst confined by nono](examples/subagent-security/nono/README.md): reader, evaluator and writer run as separate processes under per-role nono profiles inside one sandbox, with nono's proxy holding the supplier API key and allowing one hostname and a short list of HTTP operations, while the analyst still produces a cited recommendation checked against a deterministic comparison.
+- [Procurement analyst confined by bubblewrap](examples/subagent-security/bubblewrap/README.md): the same analyst with its reader, evaluator and writer started by `bwrap`, where the confinement policy is the argument list the trusted controller assembles: selected mounts, its own namespaces, no capabilities and an application-compiled seccomp filter, and no network at all for the tool processes.
 - [Procurement analyst confined by OpenShell](examples/subagent-security/openshell/README.md): an OpenShell gateway drives one sandbox, with the analyst's files, process identity, destinations and HTTP operations governed by an OpenShell policy inside the Nitro sandbox, while the supervisor that holds the real supplier key runs as an ordinary pod outside it, and one added rule lets the analyst submit its draft with no restart.
 
 ## Agent sandbox
@@ -53,6 +53,11 @@ The same procurement analyst three ways, with a second policy layer confining th
 
 - [Docker builds](examples/ci-cd/docker-builds/README.md): a privileged Docker daemon builds and runs container images inside a sandbox, by hand and as an unattended Job, with an EBS layer cache across Job runs and an optional push to Amazon ECR through a role scoped to one repository.
 - [GitHub Actions runners](examples/ci-cd/github-actions/README.md): the GitHub Actions Runner Controller on EKS, where every ephemeral runner pod for a queued job is its own sandbox, running a privileged `docker build` and arbitrary test code that never reach the shared node, and is deleted when the job ends.
+- [GitLab CI jobs](examples/ci-cd/gitlab-ci/README.md): a self-hosted GitLab and a GitLab Runner on EKS, where one line of runner configuration puts every CI job pod in its own sandbox, including a privileged `docker build` that starts its own Docker daemon, while the runner manager stays an ordinary pod.
+
+## Integrations
+
+- [Temporal workflows](examples/integrations/temporal/README.md): a self-hosted Temporal server where one durable workflow creates a sandbox, runs a step in it, suspends it, resumes it onto a new guest with its workspace intact and deletes it, retrying a failed activity and carrying on through its Worker pod being deleted mid-run.
 
 ## Confidential
 
@@ -61,6 +66,7 @@ Samples that use `runtimeClassName: confidential-sandbox`, where the node is unt
 - [Encrypted image](examples/confidential/encrypted-image/README.md): a container image whose every layer is ciphertext in Amazon ECR, decrypted inside the sandbox by the guest image runtime once KMS has checked the attested policy measurement, while the same credentials used from outside the sandbox are refused.
 - [Secrets Manager secret](examples/confidential/secrets-manager-secret/README.md): a secret stored as a KMS ciphertext envelope in AWS Secrets Manager, read and decrypted by the application inside the sandbox under an attestation KMS accepts, while an ordinary pod holding the same role can read the ciphertext and is refused the value.
 - [S3 encrypted file](examples/confidential/s3-encrypted-file/README.md): a file encrypted with AES-256-GCM before it is uploaded to Amazon S3, whose data key AWS KMS releases only to an approved sandbox, so the application decrypts it in guest memory while a holder of the same credentials outside the sandbox can read the object and not the file.
+- [Image trust by signer](examples/confidential/signer-policy/README.md): the section's reference for signer-based image trust, where a generated Cedar policy names an AWS Signer profile instead of pinning one digest, so a provider's next release runs with no policy regenerated, shown beside the default digest pin refusing that same release.
 
 ## Preview the site locally
 

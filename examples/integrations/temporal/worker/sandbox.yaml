@@ -1,0 +1,68 @@
+# The Sandbox the workflow provisions. The provider reads this file out of the
+# Worker image, fills in the two placeholders and creates the object, so what
+# the page shows is what runs.
+#
+# __NAME__          the sandbox name, SANDBOX_NAME in .env
+# __STORAGE_CLASS__ the EBS StorageClass setup.sh chose
+#
+# The provider refuses to create the object if either placeholder is still in
+# the text after rendering, so this file is never applied as it stands.
+apiVersion: agents.x-k8s.io/v1beta1
+kind: Sandbox
+metadata:
+  name: __NAME__
+  labels:
+    app.kubernetes.io/managed-by: temporal
+    app.kubernetes.io/part-of: nitro-sandbox-lifecycle
+spec:
+  # Running | Suspended. The workflow's suspend and resume activities patch this
+  # one field, and the controller does the rest.
+  operatingMode: Running
+  podTemplate:
+    metadata:
+      annotations:
+        # No network besides loopback. The step this sample runs writes a file
+        # to the workspace and reads it back, so the sandbox needs no outbound
+        # reach at all. kubectl exec still works, because it rides the
+        # sandbox's own internal control channel rather than a network device,
+        # which is what the Worker drives the step over.
+        sandbox.amazonaws.com/network-isolated: "true"
+        # The workspace volume is single-attach, so pin the node while it is
+        # mounted rather than let consolidation stall the detach.
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      # The one line that puts the pod's containers in a Nitro sandbox: their
+      # own kernel, created by the Nitro hypervisor.
+      runtimeClassName: isolated-sandbox
+      # No Kubernetes ServiceAccount token in the sandbox. Without this the
+      # kubelet projects one into every pod, and the step that runs here is
+      # where agent-generated code would run: it has no business holding a
+      # credential for the API that manages it, even one whose ServiceAccount is
+      # bound to nothing.
+      automountServiceAccountToken: false
+      containers:
+        - name: workspace
+          image: public.ecr.aws/docker/library/busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "mkdir -p /workspace && exec sleep infinity"]
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+          # No CPU or memory requests or limits. A customer sizes a sandbox for
+          # their own workload; this one writes a line to a file, so it runs in
+          # the small default VM the sandbox gets with none set.
+  # The workspace that outlives each pod. Immutable after the Sandbox is
+  # created, and deleted with the Sandbox: the claim carries the Sandbox as its
+  # ownerReference.
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+      spec:
+        # Only one pod may mount the workspace at a time. Plain ReadWriteOnce
+        # promises only one node, so two pods on that node could mount it
+        # together, which a per-session workspace must not allow.
+        accessModes: [ReadWriteOncePod]
+        storageClassName: __STORAGE_CLASS__
+        resources:
+          requests:
+            storage: 10Gi

@@ -1,0 +1,154 @@
+# The self-hosted GitLab this sample runs its pipeline on: one pod from the GitLab CE
+# single-container image, a ClusterIP Service and a volume for its data.
+#
+# It is an ordinary pod. It holds the git repositories, the database and the CI state, and
+# it is the long-lived component the runner authenticates to, so it is not what this sample
+# isolates: the job pods are. Nothing here carries runtimeClassName.
+#
+# scripts/setup.sh renders <NAMESPACE>, <STORAGE_CLASS> and <ROOT_SECRET> before applying this
+# file. <ROOT_SECRET> is a name the reader can change in .env, so it has to reach this
+# manifest too: a hard-coded name here would leave GitLab reading a Secret the scripts never
+# wrote.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gitlab-data
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: gitlab-ci
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: <STORAGE_CLASS>
+  resources:
+    requests:
+      storage: 30Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: gitlab-ci
+spec:
+  # ClusterIP, reached from the operator's machine with `kubectl port-forward` only. No
+  # Ingress, LoadBalancer or NodePort: this GitLab is never given a public endpoint.
+  type: ClusterIP
+  selector:
+    app: gitlab
+  ports:
+    - name: http
+      # 8080 on the Service so `port-forward svc/gitlab 8080:8080` matches the external_url
+      # GitLab builds its page links from; 80 in the container, which is where nginx listens.
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitlab
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: gitlab-ci
+spec:
+  replicas: 1
+  strategy:
+    # The data volume is ReadWriteOnce, so the old pod must go before the new one starts.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gitlab
+  template:
+    metadata:
+      labels:
+        app: gitlab
+        app.kubernetes.io/part-of: gitlab-ci
+    spec:
+      containers:
+        - name: gitlab
+          image: gitlab/gitlab-ce:19.5.0-ce.0
+          env:
+            # external_url is what GitLab builds the links on its own pages from, so it is
+            # set to the reader's port-forward and not to the Service: a reader following a
+            # link from http://localhost:8080 has to land back on their forwarded port.
+            # nginx keeps GitLab's own default port, 80, inside the container, which is what
+            # nginx['listen_port'] is for: the port GitLab is *reached* on differs from the
+            # port it *listens* on. It must not be 8080 here, because GitLab's Puma already
+            # binds 127.0.0.1:8080 inside this container and nginx would fail to start.
+            # The runner and the job pods do not use external_url at all: they are given the
+            # in-cluster Service address, which runner/config.toml.template sets as `url`
+            # and `clone_url`.
+            - name: GITLAB_OMNIBUS_CONFIG
+              value: |
+                external_url 'http://localhost:8080'
+                nginx['listen_port'] = 80
+                nginx['listen_https'] = false
+                # Trim the parts a CI demo does not use, so one pod fits a shared cluster.
+                prometheus_monitoring['enable'] = false
+                alertmanager['enable'] = false
+                gitlab_kas['enable'] = false
+                registry['enable'] = false
+                puma['worker_processes'] = 2
+                sidekiq['max_concurrency'] = 9
+                gitlab_rails['gitlab_shell_ssh_port'] = 22
+            # The initial root password, from the Secret scripts/setup.sh creates. It is
+            # never an argument to any command: GitLab reads it from this variable, and the
+            # reader reads it back out of the Secret.
+            - name: GITLAB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: <ROOT_SECRET>
+                  key: password
+          ports:
+            - name: http
+              containerPort: 80
+          # GitLab's own readiness endpoint, reached from inside the container with curl
+          # rather than with an httpGet probe. GitLab serves /-/readiness, /-/liveness and
+          # /-/health only to localhost: every other source address gets 404, including the
+          # node, which is where the kubelet probes from. An httpGet probe therefore never
+          # passes, the pod never becomes Ready, its Service gets no endpoint, and the runner
+          # fails with "connection refused" against a GitLab that is up and well. Measured
+          # on this cluster: /-/readiness answered 200 on localhost and 404 from another pod
+          # at the same moment, while /explore answered 200 to both.
+          #
+          # The alternative is to add the pod's own network to GitLab's health-check address
+          # list in GITLAB_OMNIBUS_CONFIG. The exec probe is preferred here because it needs
+          # no cluster-specific CIDR, and because it asks GitLab the same question GitLab's
+          # own documentation says to ask.
+          #
+          # The startup probe is what carries the long first boot: while it runs, the
+          # readiness probe is not executed, so the readiness probe's own thresholds only
+          # have to cover a GitLab that was once up and has stopped answering.
+          startupProbe:
+            exec:
+              command: ["/bin/sh", "-c", "curl -sf -o /dev/null http://localhost/-/readiness"]
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 80
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "curl -sf -o /dev/null http://localhost/-/readiness"]
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 4
+          resources:
+            # GitLab in one container runs Puma, Sidekiq, Postgres, Redis, Gitaly and nginx
+            # together, so unlike most pods in these samples it is given a size: with no
+            # request it lands on whatever node has room and is the first thing the kubelet
+            # evicts. These are this sample's values, not a GitLab minimum; the GitLab
+            # documentation sizes a production install.
+            requests:
+              cpu: "1"
+              memory: 6Gi
+            limits:
+              memory: 12Gi
+          volumeMounts:
+            - { name: data, mountPath: /var/opt/gitlab,    subPath: opt }
+            - { name: data, mountPath: /etc/gitlab,        subPath: etc }
+            - { name: data, mountPath: /var/log/gitlab,    subPath: log }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: gitlab-data
