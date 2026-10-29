@@ -206,8 +206,13 @@ command -v cmp >/dev/null 2>&1 || cannot_check "cmp is needed to compare the tre
 
 BRIEF_ABS=$(realpath "$BRIEF")
 TREE_ABS=$(realpath "$TREE")
-mkdir -p "$OUT"
-OUT_ABS=$(realpath "$OUT")
+# Resolved with -m, which does not require --out to exist yet, and checked for containment
+# in the tree BEFORE anything creates it. Second-review finding (issue #100 round 5): doing
+# "mkdir -p" first and checking after meant a --out given as a not-yet-existing path inside
+# the tree was created -- mutating the tree under review -- and only then refused, leaving
+# the directory behind: a refusal with a side effect, in the one script whose whole point is
+# that nothing side-effects the tree.
+OUT_ABS=$(realpath -m "$OUT")
 
 # --out must sit outside the tree. This is not confinement -- nothing here stops the
 # reviewer writing -- it is what keeps the evidence readable: this script's own output
@@ -219,6 +224,7 @@ case "$OUT_ABS/" in
   "$tree_prefix"*) refuse E_OUT_IN_TREE \
     "--out '$OUT_ABS' is inside the tree under review '$TREE_ABS'; this script's own files would read as the tree changing. Put --out beside the tree, not in it." ;;
 esac
+mkdir -p "$OUT_ABS"
 
 # --- invariant 2: the tree did not change, and here is the evidence ---------------------
 
