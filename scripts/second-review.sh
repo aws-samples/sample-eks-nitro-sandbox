@@ -195,10 +195,12 @@ normalise_model() {
   # ("us|eu|apac|global|us-gov") was missing "jp", "au" and "ca", all real Bedrock Region
   # prefixes, so a name using one of those kept its Region AND its vendor prefix, comparing
   # as a different model from the same name written without either -- the unsafe direction.
-  # An enumerated list can always be missing the next one; matching by what it precedes
-  # cannot.
-  m=$(printf '%s' "$m" | sed -E 's/^[a-z]+(-[a-z]+)?\.(anthropic|openai|amazon|meta|mistral|cohere|ai21|deepseek|qwen|writer|stability|twelvelabs|luma)\./\2./')
-  m=$(printf '%s' "$m" | sed -E 's/^(anthropic|openai|amazon|meta|mistral|cohere|ai21|deepseek|qwen|writer|stability|twelvelabs|luma)\.//')
+  # An enumerated list of Region codes can always be missing the next one; matching by what
+  # it precedes cannot -- but the vendor list right after it is itself still an enumeration,
+  # and round 10 found it was missing moonshot, google, nvidia, minimax and zai (also real
+  # Bedrock vendor prefixes); added below. Read "cannot" as about the Region half only.
+  m=$(printf '%s' "$m" | sed -E 's/^[a-z]+(-[a-z]+)?\.(anthropic|openai|amazon|meta|mistral|cohere|ai21|deepseek|qwen|writer|stability|twelvelabs|luma|moonshot|google|nvidia|minimax|zai)\./\2./')
+  m=$(printf '%s' "$m" | sed -E 's/^(anthropic|openai|amazon|meta|mistral|cohere|ai21|deepseek|qwen|writer|stability|twelvelabs|luma|moonshot|google|nvidia|minimax|zai)\.//')
   m=$(printf '%s' "$m" | sed -E 's/\[[^][]*\]:[0-9]+$//; t
                                   s/:[0-9]+\[[^][]*\]$//; t
                                   s/\[[^][]*\]$//; t
@@ -221,9 +223,11 @@ normalise_model() {
 # Known remaining ways the same model can still normalise to two different strings
 # (found by a second-review round, not fixed, because none of them was reproduced against
 # a real backend): a trailing Bedrock context-window tag ("...-v1:0:200k"), a full
-# inference-profile ARN, a "-latest" alias, and OpenAI's dashed-date spelling
-# ("gpt-5-2025-08-07") rather than Anthropic's undashed one. This fails open, not closed --
-# the same model could pass as different -- so treat --implementer-model and --model as
+# inference-profile ARN, a "-latest" alias, OpenAI's dashed-date spelling
+# ("gpt-5-2025-08-07") rather than Anthropic's undashed one, and a numbered (not dated)
+# revision such as "openai.gpt-oss-120b-1:0", which the ":[0-9]+$" strip above takes for a
+# context-window suffix and leaves the "-1" in place. This fails open, not closed -- the
+# same model could pass as different -- so treat --implementer-model and --model as
 # needing a form this function already handles, rather than assuming any spelling works.
 
 # Every model name ends up in review-record.txt for a person to read, so it must be a single
@@ -548,6 +552,16 @@ esac
 tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-at-return.sha256" || refuse E_TREE_CHANGED \
   "the tree at $TREE_ABS could not be fingerprinted after the backend returned: it may have been removed, or made unreadable, while the reviewer ran."
 if [ -n "$CTX_ABS" ]; then
+  # Second-review finding (issue #100 round 10): this refusal already carries a context
+  # tag, so the generic swap in refuse() leaves it alone -- but that means a tree write
+  # could be masked by an unrelated context-fingerprint failure, reported only as
+  # E_CONTEXT_CHANGED with the tree write never mentioned. Checked by hand here, the one
+  # place the generic swap cannot reach, because the tag it would produce is the same kind
+  # it is meant to defer to.
+  if ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then
+    refuse E_TREE_CHANGED \
+      "the tree at $TREE_ABS had already changed by the time the backend returned, which takes priority over \$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' also failing to fingerprint at the same point. Compare $OUT_ABS/tree-before.sha256 with tree-at-return.sha256."
+  fi
   tree_fingerprint "$CTX_ABS" > "$OUT_ABS/ctx-at-return.sha256" || refuse E_CONTEXT_CHANGED \
     "\$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' could not be fingerprinted after the backend returned: it may have been removed, or made unreadable, while the reviewer ran."
 fi
@@ -712,6 +726,12 @@ done
 # own, "after" matches, and the run would have been recorded as clean. Refused, not left to
 # "set -e", if the tree cannot be fingerprinted at all now -- the same reasoning as the
 # at-return fingerprint above.
+# Be honest about how much of a window this really gives a process the backend left
+# running: everything between the at-return fingerprint and this one is the invariant-3
+# model-name parsing, typically well under a second in total, not a deliberate wait.
+# Second-review finding (issue #100 round 10): a process that writes and restores a change
+# outside that window -- say, after a two-second sleep -- is not guaranteed to be caught,
+# even though the review it produced was genuinely checked against an unchanged tree.
 tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-after.sha256" || refuse E_TREE_CHANGED \
   "the tree at $TREE_ABS could not be fingerprinted after the run: it may have been removed, or made unreadable."
 if cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-after.sha256" \
