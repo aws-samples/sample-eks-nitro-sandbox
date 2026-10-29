@@ -86,11 +86,56 @@ usage() { awk 'NR>1 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0"; }
 
 # Each refusal carries a stable tag, named in AGENTS.md, so a report can name exactly which
 # check stopped the run.
-refuse() { printf 'second-review: %s: %s\n' "$1" "$2" >&2; exit 1; }
+#
+# Once AT_RETURN_TAKEN is set (after the at-return fingerprint exists, well into the
+# script), every refusal checks the tree and context fingerprints FIRST and swaps in a
+# tree/context tag if either changed, before printing anything. A change takes priority
+# over whatever else is being refused: a backend that wrote to the tree or the context
+# directory and then fell short some other way -- a non-zero exit, a malformed record, a
+# reported model that matches the implementer -- must be reported as the write, not as
+# that other reason with the write never mentioned. Second-review finding (issue #100
+# round 8): an earlier version only did this swap ahead of the run-failure and claude
+# is_error refusals specifically, so a write followed by, say, an unparseable record was
+# refused as E_BAD_RECORD / E_NO_PREAMBLE / E_REPORTED_SAME_MODEL with the write never
+# reported. Centralising the swap here, rather than special-casing each site that might
+# need it, closes that for every refusal from this point on rather than just the ones
+# someone remembered to guard. Harmless before AT_RETURN_TAKEN is set: every refusal
+# before then (bad arguments, a missing brief, a missing tree) has nothing to compare yet.
+AT_RETURN_TAKEN=0
+refuse() {
+  local tag="$1" msg="$2"
+  case "$tag" in
+    E_TREE_CHANGED|E_TREE_RESTORED|E_CONTEXT_CHANGED|E_CONTEXT_RESTORED) ;;
+    *)
+      if [ "$AT_RETURN_TAKEN" = 1 ]; then
+        if ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256" 2>/dev/null; then
+          tag=E_TREE_CHANGED
+          msg="the tree at $TREE_ABS had already changed by the time the backend returned, which takes priority over the reason this run was otherwise being refused for ($msg). Compare $OUT_ABS/tree-before.sha256 with tree-at-return.sha256."
+        elif [ -n "${CTX_ABS:-}" ] && ! cmp -s "$OUT_ABS/ctx-before.sha256" "$OUT_ABS/ctx-at-return.sha256" 2>/dev/null; then
+          tag=E_CONTEXT_CHANGED
+          msg="\$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' had already changed by the time the backend returned, which takes priority over the reason this run was otherwise being refused for ($msg). Compare $OUT_ABS/ctx-before.sha256 with ctx-at-return.sha256."
+        fi
+      fi
+      ;;
+  esac
+  printf 'second-review: %s: %s\n' "$tag" "$msg" >&2
+  exit 1
+}
 cannot_check() { printf 'second-review: E_NO_TOOL: %s\n' "$1" >&2; exit 2; }
 note() { printf 'second-review: %s\n' "$1"; }
 
 command -v realpath >/dev/null 2>&1 || cannot_check "realpath is needed to resolve the tree and output paths."
+
+# codex_cwd and claude_cwd (set once the backend branch runs) are mktemp -d workspaces,
+# never removed otherwise: a reviewer that left its own scratch files there should keep
+# them for inspection, but an empty one is just litter. rmdir only removes an empty
+# directory, so this is silent and safe either way. Second-review finding (issue #100
+# round 8): a round of testing alone left 330 of these behind.
+# "|| true" at the end is load-bearing, not decoration: a script that ends without an
+# explicit "exit N" reports whatever its EXIT trap's own last command returned, and rmdir
+# fails -- correctly -- whenever the reviewer actually used its workspace. A real review's
+# successful exit status was being overwritten by that failure before this was added.
+trap '{ [ -n "${codex_cwd:-}" ] && rmdir "$codex_cwd"; [ -n "${claude_cwd:-}" ] && rmdir "$claude_cwd"; } 2>/dev/null || true' EXIT
 
 BACKEND='' MODEL='' IMPLEMENTER='' BRIEF='tmp/review/brief.md' TREE='tmp/review/tree'
 OUT='tmp/review' TIMEOUT=5400
@@ -143,7 +188,16 @@ esac
 normalise_model() {
   local m
   m=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-  m=$(printf '%s' "$m" | sed -E 's/^(us|eu|apac|global|us-gov)\.//')
+  # A Bedrock cross-Region prefix, stripped by what follows it rather than by an enumerated
+  # list of Region codes: "^[a-z]+(-[a-z]+)?\." matches any such prefix, but only when it is
+  # directly followed by a known vendor name, so it is never stripped off something that
+  # merely looks like one. Second-review finding (issue #100 round 8): the enumerated list
+  # ("us|eu|apac|global|us-gov") was missing "jp", "au" and "ca", all real Bedrock Region
+  # prefixes, so a name using one of those kept its Region AND its vendor prefix, comparing
+  # as a different model from the same name written without either -- the unsafe direction.
+  # An enumerated list can always be missing the next one; matching by what it precedes
+  # cannot.
+  m=$(printf '%s' "$m" | sed -E 's/^[a-z]+(-[a-z]+)?\.(anthropic|openai|amazon|meta|mistral|cohere|ai21|deepseek|qwen|writer|stability|twelvelabs|luma)\./\2./')
   m=$(printf '%s' "$m" | sed -E 's/^(anthropic|openai|amazon|meta|mistral|cohere|ai21|deepseek|qwen|writer|stability|twelvelabs|luma)\.//')
   m=$(printf '%s' "$m" | sed -E 's/\[[^][]*\]:[0-9]+$//; t
                                   s/:[0-9]+\[[^][]*\]$//; t
@@ -164,6 +218,13 @@ normalise_model() {
   m=$(printf '%s' "$m" | sed -E 's/-[0-9]{8}$//')
   printf '%s' "$m"
 }
+# Known remaining ways the same model can still normalise to two different strings
+# (found by a second-review round, not fixed, because none of them was reproduced against
+# a real backend): a trailing Bedrock context-window tag ("...-v1:0:200k"), a full
+# inference-profile ARN, a "-latest" alias, and OpenAI's dashed-date spelling
+# ("gpt-5-2025-08-07") rather than Anthropic's undashed one. This fails open, not closed --
+# the same model could pass as different -- so treat --implementer-model and --model as
+# needing a form this function already handles, rather than assuming any spelling works.
 
 # Every model name ends up in review-record.txt for a person to read, so it must be a single
 # printable-ASCII line with no leading or trailing space: a tab, a newline or an ESC in one
@@ -493,31 +554,13 @@ fi
 
 # --- did a review actually happen -------------------------------------------------------
 
-# A tree or context-directory change takes priority over a reported run failure: a backend
-# that wrote to either and then exited non-zero, or that claude reported as is_error, must
-# be caught as a change rather than let through as a plain run failure with the write never
-# looked at. Checked only here, against the fingerprints already taken above -- not the
-# final ones, which are taken separately near the end of the script specifically so a
-# process the backend left running has another, later point to be caught at (not because
-# much wall-clock time passes before then: only the model-name parsing below runs in
-# between, typically well under a second) -- and would wrongly delay reporting a failure
-# that already shows in what we have.
-# If the review otherwise succeeds, whether either changes later is still caught by the full
-# comparison at the end, below. Verified: a stub that changed a tracked file and then
-# reported is_error:true used to refuse as a plain E_RUN_FAILED with this comparison never
-# made.
-review_otherwise_ok=1
-[ "$run_status" -eq 0 ] || review_otherwise_ok=0
-if [ "$BACKEND" = claude ] && [ "${claude_status:-OK}" != OK ]; then review_otherwise_ok=0; fi
-if [ "$review_otherwise_ok" -ne 1 ] && [ -n "$CTX_ABS" ] \
-   && ! cmp -s "$OUT_ABS/ctx-before.sha256" "$OUT_ABS/ctx-at-return.sha256"; then
-  refuse E_CONTEXT_CHANGED \
-    "the $BACKEND backend reported a failure, and \$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' had already changed by the time it returned. Compare $OUT_ABS/ctx-before.sha256 with ctx-at-return.sha256."
-fi
-if [ "$review_otherwise_ok" -ne 1 ] && ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then
-  refuse E_TREE_CHANGED \
-    "the $BACKEND backend reported a failure, and the tree at $TREE_ABS had already changed by the time it returned. Compare $OUT_ABS/tree-before.sha256 with tree-at-return.sha256."
-fi
+# From here on, every refuse() call checks the tree and context fingerprints first and
+# swaps in a tree/context tag if either changed (see refuse() itself, near the top of the
+# script) -- a change takes priority over whatever else a run is being refused for, so a
+# write followed by some unrelated failure is reported as the write. AT_RETURN_TAKEN is the
+# switch: it must only turn on once tree-at-return.sha256 (and ctx-at-return.sha256, when
+# there is a context directory) actually exist to compare against.
+AT_RETURN_TAKEN=1
 
 # A backend that is missing, unauthenticated or out of credit exits non-zero or says
 # nothing. Either way the review did not happen, so say so rather than reporting a pass.
@@ -631,6 +674,10 @@ print("OK\t%s\t%d" % ("+".join(sorted(usage)), denial_count))
     fi
     reported_models="$field_a"
     permissions="$permissions, $field_b permission request(s) denied"
+    # A non-zero count here is exactly the symptom of the round-6 defect (--tools holding a
+    # tool that --allowedTools does not also pre-approve): worth a note so it is not only
+    # buried in the record, in case the two ever drift apart again.
+    [ "${field_b:-0}" = 0 ] || note "claude reported $field_b denied permission request(s); if that surprises you, confirm --allowedTools still matches --tools."
     ;;
 esac
 
@@ -721,6 +768,9 @@ fi
   printf '                  ownership, ACLs, extended attributes or hard links, a change\n'
   printf '                  whose tracked attributes were all put back, or any write made\n'
   printf '                  outside %s.\n' "$TREE_ABS"
+  if [ -n "$CTX_ABS" ]; then
+    printf '  context         %s, checked the same way (also unchanged)\n' "$CTX_ABS"
+  fi
   printf '  tree            %s\n' "$TREE_ABS"
   printf '  brief           %s\n' "$BRIEF_ABS"
   printf '  review          %s\n' "$OUT_ABS/review.out"
