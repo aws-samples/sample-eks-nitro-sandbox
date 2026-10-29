@@ -141,7 +141,7 @@ The [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) resources,
 
 - [docker-builds](../examples/ci-cd/docker-builds/README.md) (available now): privileged `docker build` and `docker run` inside a sandbox, without exposing the node, with an EBS layer cache across Job runs and an optional push to Amazon ECR. Spec: [#23](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/23).
 - [github-actions](../examples/ci-cd/github-actions/README.md) (available now): GitHub Actions Runner Controller with each untrusted pull request job in its own sandbox, deleted when the job ends. Spec: [#24](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/24).
-- gitlab-ci: a self-hosted GitLab whose CI jobs each run in a sandbox, including a privileged `docker build`. Spec: [#25](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/25).
+- [gitlab-ci](../examples/ci-cd/gitlab-ci/README.md) (available now): a self-hosted GitLab whose CI jobs each run in a sandbox, including a privileged `docker build`. Spec: [#25](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/25).
 
 ### Integrations (`integrations`)
 

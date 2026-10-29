@@ -52,6 +52,7 @@ The same procurement analyst three ways, with a second policy layer confining th
 
 - [Docker builds](examples/ci-cd/docker-builds/README.md): a privileged Docker daemon builds and runs container images inside a sandbox, by hand and as an unattended Job, with an EBS layer cache across Job runs and an optional push to Amazon ECR through a role scoped to one repository.
 - [GitHub Actions runners](examples/ci-cd/github-actions/README.md): the GitHub Actions Runner Controller on EKS, where every ephemeral runner pod for a queued job is its own sandbox, running a privileged `docker build` and arbitrary test code that never reach the shared node, and is deleted when the job ends.
+- [GitLab CI jobs](examples/ci-cd/gitlab-ci/README.md): a self-hosted GitLab and a GitLab Runner on EKS, where one line of runner configuration puts every CI job pod in its own sandbox, including a privileged `docker build` that starts its own Docker daemon, while the runner manager stays an ordinary pod.
 
 ## Integrations
 
