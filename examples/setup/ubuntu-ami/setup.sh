@@ -96,7 +96,7 @@ join_and_apply() {
   log "applying the validation workloads from deploy/ (rendering @NODEGROUP@ = $NODEGROUP_NAME, namespace $NAMESPACE)"
   local f apply_tmp="$RUN_STATE_DIR/rendered"
   mkdir -p "$apply_tmp"
-  for f in pod-ordinary.yaml pod-isolated-sandbox.yaml network-policy.yaml; do
+  for f in pod-ordinary.yaml pod-isolated-sandbox.yaml; do
     sed -e "s/@NODEGROUP@/$NODEGROUP_NAME/g" -e "s/^  namespace: ubuntu-ami-sample$/  namespace: $NAMESPACE/" \
       "$SAMPLE_DIR/deploy/$f" > "$apply_tmp/$f"
   done
@@ -104,7 +104,6 @@ join_and_apply() {
   # carries app.kubernetes.io/part-of=$RESOURCE_PREFIX and app.kubernetes.io/instance=$RUN_ID; a
   # failed lookup stops the run (scripts/ensure-namespace.sh).
   bash "$SAMPLE_DIR/scripts/ensure-namespace.sh"
-  kc apply -n "$NAMESPACE" -f "$apply_tmp/network-policy.yaml"
   kc apply -n "$NAMESPACE" -f "$apply_tmp/pod-ordinary.yaml"
   kc apply -n "$NAMESPACE" -f "$apply_tmp/pod-isolated-sandbox.yaml"
   log "setup.sh complete. AMI=$AMI_ID, node group=$NODEGROUP_NAME. Run ./test.sh to read live evidence."
@@ -179,7 +178,7 @@ open_evidence new
 record RUN_ID "$RUN_ID"
 
 # --- Cluster-wide prerequisites, read only, before anything is created ---------------------
-# The managed vpc-cni add-on with network policy on, and the shared isolated-sandbox
+# The managed vpc-cni add-on (the node's pod network), and the shared isolated-sandbox
 # RuntimeClass. Both are the reader's; this run checks them and stops with the command to run.
 # --ami-only skips them: only the node group (step 10, ./setup.sh --join) needs them.
 if [ "$MODE" = full ]; then

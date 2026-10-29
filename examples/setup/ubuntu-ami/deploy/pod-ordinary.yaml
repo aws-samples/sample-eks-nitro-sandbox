@@ -1,8 +1,8 @@
-# An ordinary (non-sandboxed) pod on the same dedicated Ubuntu node, for the kernel/device
-# comparison in test.sh. It also listens on TCP port 53 (a plain HTTP listener, not DNS), the
-# non-DNS port-53 endpoint test.sh uses to show the sandbox's egress policy refuses port 53 to
-# anything but the cluster DNS pods. No Service exposes it. setup.sh renders @NODEGROUP@ from
-# NODEGROUP_NAME and the namespace from NAMESPACE.
+# An ordinary (non-sandboxed) pod on the same dedicated Ubuntu node, for the kernel, device and
+# uptime comparison in test.sh, and the control for the sandbox's no-network check: the same
+# connect to the cluster's API Service that fails from the sandbox succeeds from this pod. No
+# Service exposes it. setup.sh renders @NODEGROUP@ from NODEGROUP_NAME and the namespace from
+# NAMESPACE.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -30,7 +30,6 @@ spec:
           echo "Node kernel: $(uname -r)"
           echo "Node devices:"
           ls -1 /sys/block
-          python3 -m http.server 53 --bind 0.0.0.0 >/dev/null 2>&1 &
           sleep infinity
       resources:
         requests:

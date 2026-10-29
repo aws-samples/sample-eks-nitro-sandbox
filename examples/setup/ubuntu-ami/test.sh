@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # test.sh: node readiness and labels, host-requirement checks (each with an ACCEPT and a REJECT
-# control), AppArmor working-profile vs refused control, positive sandbox capacity, and a
-# guest-boundary comparison of an ordinary pod against the isolated-sandbox pod. Run after
+# control), AppArmor working-profile vs refused control, positive sandbox capacity, a
+# guest-boundary comparison of an ordinary pod against the isolated-sandbox pod, and that the
+# isolated-sandbox pod, booted network-isolated, has no network (with its control). Run after
 # ./setup.sh has joined the dedicated node group and before ./clean.sh.
 #
 #   KUBE_CONTEXT=<your-context> ./test.sh
@@ -281,42 +282,131 @@ assert "the sandbox guest booted with its pod (uptime <= pod age + 120 s)" \
 assert "the sandbox guest booted after the host (guest uptime < host uptime)" \
   $([[ "${sbx_uptime:-x}" =~ ^[0-9]+$ && "${ord_uptime:-x}" =~ ^[0-9]+$ && "$sbx_uptime" -lt "$ord_uptime" ]]; echo $?)
 
-echo "== 7/7 network boundary of the validation sandbox ====================================="
-# The sandbox's interfaces, read from /sys/class/net (the container image has no `ip`).
-kc exec "$SANDBOX_POD" -n "$NAMESPACE" -- sh -c 'for f in /sys/class/net/*; do echo "interface $(basename "$f") $(cat "$f/address") $(cat "$f/operstate")"; done' 2>/dev/null | sed 's/^/  /'
-netpol=$(kc get networkpolicy -n "$NAMESPACE" -o name 2>/dev/null)
-echo "  NetworkPolicy objects: ${netpol:-<none>}"
-assert "the sandbox pod's egress policy is present" $([[ "$netpol" == *isolated-sandbox-pod-policy* ]]; echo $?)
-# The live object, not the file: egress only to kube-system pods labelled k8s-app=kube-dns, port 53.
-kc get networkpolicy isolated-sandbox-pod-policy -n "$NAMESPACE" -o json 2>/dev/null \
-  | python3 "$SAMPLE_DIR/scripts/check-network-policy.py" | sed 's/^/  /'
-assert "the live policy allows egress only to kube-system/k8s-app=kube-dns on port 53" "${PIPESTATUS[1]}"
-# The policy at work, three ways, from inside the sandbox:
-#   ALLOW DNS: a lookup through the cluster DNS answers;
-#   DENY 443:  a TCP connect to the API Service on 443 is refused;
-#   DENY 53 to a non-DNS pod: the ordinary pod listens on TCP 53 (deploy/pod-ordinary.yaml); the
-#   connect from the sandbox to that pod's IP on 53 is refused, while the same listener answers
-#   inside the ordinary pod (so "refused" is the policy, not a missing listener).
-api_ip=$(kc exec "$SANDBOX_POD" -n "$NAMESPACE" -- sh -c 'getent hosts kubernetes.default.svc.cluster.local | cut -d" " -f1' 2>/dev/null)
-echo "  sandbox DNS lookup of kubernetes.default.svc.cluster.local: ${api_ip:-<no answer>}"
-assert "ALLOW: DNS answers from inside the sandbox" $([[ "$api_ip" =~ ^[0-9.]+$ ]]; echo $?)
-tcp=$(kc exec "$SANDBOX_POD" -n "$NAMESPACE" -- bash -c "timeout 5 bash -c '</dev/tcp/${api_ip:-0.0.0.0}/443' 2>/dev/null && echo connected || echo refused" 2>/dev/null)
-echo "  sandbox TCP connect to ${api_ip:-?}:443: ${tcp:-<none>}"
-assert "DENY: a TCP connect the policy does not allow is refused" $([[ "$tcp" == refused ]]; echo $?)
-# Control: the same connect from the ordinary pod, which no policy selects, succeeds, so the
-# sandbox's refusal is the policy's, not a closed port.
-tcp_ord=$(kc exec "$ORDINARY_POD" -n "$NAMESPACE" -- bash -c "timeout 5 bash -c '</dev/tcp/${api_ip:-0.0.0.0}/443' 2>/dev/null && echo connected || echo refused" 2>/dev/null)
-echo "  ordinary pod TCP connect to ${api_ip:-?}:443: ${tcp_ord:-<none>}"
-assert "the same connect from the ordinary pod, which no policy selects, succeeds (control for the previous check)" $([[ "$tcp_ord" == connected ]]; echo $?)
-ord_ip=$(kc get pod "$ORDINARY_POD" -n "$NAMESPACE" -o jsonpath='{.status.podIP}' 2>/dev/null)
-decoy=$(kc exec "$ORDINARY_POD" -n "$NAMESPACE" -- bash -c "timeout 5 bash -c '</dev/tcp/${ord_ip:-0.0.0.0}/53' 2>/dev/null && echo connected || echo refused" 2>/dev/null)
-echo "  ordinary pod's own TCP 53 listener at ${ord_ip:-?}:53, from inside it: ${decoy:-<none>}"
-assert "the port-53 decoy listener in the ordinary pod answers (control for the next check)" $([[ "$decoy" == connected ]]; echo $?)
-dns53=$(kc exec "$SANDBOX_POD" -n "$NAMESPACE" -- bash -c "timeout 5 bash -c '</dev/tcp/${ord_ip:-0.0.0.0}/53' 2>/dev/null && echo connected || echo refused" 2>/dev/null)
-echo "  sandbox TCP connect to the non-DNS pod ${ord_ip:-?}:53: ${dns53:-<none>}"
-assert "DENY: port 53 to a pod that is not cluster DNS is refused" $([[ "$dns53" == refused ]]; echo $?)
+echo "== 7/7 the validation sandbox has no network ============================================"
+# The sandbox pod is booted with sandbox.amazonaws.com/network-isolated: "true"
+# (deploy/pod-isolated-sandbox.yaml), so its microVM has no network. Shown by what the guest
+# itself reports, and by a connect that cannot leave it:
+#   the annotation, read back from the API (the live pod, not the file);
+#   only loopback has an address: the local IPv4 addresses in /proc/net/fib_trie are 127.0.0.1
+#   only, and /proc/net/if_inet6 lists ::1 on lo only, or nothing, or is absent (no IPv6);
+#   the sandbox has no route: /proc/net/route has its header line and no entry;
+#   every interface in /sys/class/net other than lo is down. They are printed: the guest also
+#   has dummy0, from its image, which is down and has no address;
+#   a TCP connect from the sandbox to the cluster's kubernetes Service ClusterIP on 443 fails with
+#   "Network is unreachable" (ENETUNREACH); a refusal, a timeout, an exec error or empty output
+#   FAILS;
+#   the same connect from the ordinary pod succeeds, so the address and port are reachable from
+#   the node's pod network and the sandbox's failure is its missing network.
+# Each read must show that it ran to its end: an exec that fails, a file the guest could not
+# read, or output without the end marker FAILS. The API still reports a podIP for the sandbox
+# pod: the host side allocates it, and no interface in the guest carries it.
+sbx_iso=$(kc get pod "$SANDBOX_POD" -n "$NAMESPACE" -o 'jsonpath={.metadata.annotations.sandbox\.amazonaws\.com/network-isolated}' 2>/dev/null)
+echo "  sandbox pod annotation sandbox.amazonaws.com/network-isolated: ${sbx_iso:-<absent>}"
+assert "the sandbox pod carries sandbox.amazonaws.com/network-isolated=\"true\" (read back from the API)" $([[ "$sbx_iso" == "true" ]]; echo $?)
+# In the guest: each file whole between BEGIN and END lines (MISSING when it cannot be read,
+# READ-ERROR when cat fails), one IF line per interface with its operstate, then the end marker.
+NET_READ='for f in /proc/net/fib_trie /proc/net/route /proc/net/if_inet6; do
+  if [ -r "$f" ]; then echo "BEGIN $f"; cat "$f" || echo "READ-ERROR $f"; echo "END $f"; else echo "MISSING $f"; fi
+done
+if [ -d /sys/class/net ]; then
+  for d in /sys/class/net/*; do [ -e "$d" ] && echo "IF ${d##*/} $(cat "$d/operstate" 2>/dev/null || echo unreadable)"; done
+else echo "MISSING /sys/class/net"; fi
+echo NET-READ-END'
+# On this machine: what that output shows, as KEY=VALUE lines. Anything it cannot read is a "no".
+NET_PARSE='import ipaddress, re, socket, struct, sys
+sec, cur, ifs, missing, bad, junk = {}, None, [], set(), set(), False
+for l in sys.stdin.read().split("\n"):
+    if cur is not None:
+        if l == "END " + cur: cur = None
+        elif l == "READ-ERROR " + cur: bad.add(cur)
+        else: sec[cur].append(l)
+        continue
+    m = re.fullmatch(r"(BEGIN|MISSING) (/\S+)", l)
+    if m and m.group(1) == "BEGIN": cur = m.group(2); sec[cur] = []
+    elif m: missing.add(m.group(2))
+    elif re.fullmatch(r"IF \S+ \S+", l): ifs.append(tuple(l.split()[1:]))
+    elif l.strip() and l != "NET-READ-END": junk = True
+if cur is not None: bad.add(cur); junk = True
+def got(f):
+    return None if f in bad or f not in sec else [x for x in sec[f] if x.strip()]
+yn = lambda b: "yes" if b else "no"
+fib, leaf, a4 = got("/proc/net/fib_trie"), None, set()
+for x in fib or []:
+    m = re.match(r"\s*\|-- (\S+)$", x)
+    if m: leaf = m.group(1)
+    elif re.match(r"\s*/32 host\b", x) and leaf: a4.add(leaf)
+print("addr4=" + (" ".join(sorted(a4)) or "<none>" if fib else "<unreadable>"))
+print("addr4_ok=" + yn(bool(fib) and a4 == {"127.0.0.1"}))
+v6 = got("/proc/net/if_inet6")
+rows = [x.split() for x in v6 or []]
+v6_ok = v6 is not None and all(len(r) == 6 and re.fullmatch(r"[0-9a-f]{32}", r[0]) for r in rows)
+a6 = [(str(ipaddress.IPv6Address(int(r[0], 16))), r[5]) for r in rows] if v6_ok else []
+if "/proc/net/if_inet6" in missing and v6 is None: print("addr6=absent (no IPv6)"); print("addr6_ok=yes")
+else:
+    print("addr6=" + (", ".join(a + " on " + i for a, i in a6) or "<none>" if v6_ok else "<unreadable>"))
+    print("addr6_ok=" + yn(v6_ok and all(x == ("::1", "lo") for x in a6)))
+rt = got("/proc/net/route")
+def ip(h):  # /proc/net/route writes an IPv4 address as 8 hex digits, little-endian
+    return socket.inet_ntoa(struct.pack("<I", int(h, 16))) if re.fullmatch(r"[0-9A-Fa-f]{8}", h) else h
+def route(x):
+    f = x.split() + ["?", "?", "?"]
+    return "%s dst %s gw %s" % (f[0], ip(f[1]), ip(f[2]))
+if not rt or not rt[0].startswith("Iface"): print("route4=<unreadable>"); print("route4_ok=no")
+else:
+    print("route4=" + ("none (header line only)" if len(rt) == 1 else "; ".join(route(x) for x in rt[1:])))
+    print("route4_ok=" + yn(len(rt) == 1))
+if "/sys/class/net" in missing: print("ifaces=<unreadable>"); print("ifaces_ok=no")
+else:
+    print("ifaces=" + (", ".join(n + " " + s for n, s in ifs) or "<none>"))
+    print("ifaces_ok=" + yn(any(n == "lo" for n, s in ifs) and all(s == "down" for n, s in ifs if n != "lo")))
+print("parse_ok=" + yn(not junk))'
+net_rc=0
+net_out=$(kc exec "$SANDBOX_POD" -n "$NAMESPACE" -- sh -c "$NET_READ" 2>/dev/null) || net_rc=$?
+net_kv=$(printf '%s\n' "$net_out" | python3 -c "$NET_PARSE" 2>/dev/null)
+nv() { local x; x=$(printf '%s\n' "$net_kv" | sed -n "s/^$1=//p" | head -n 1); printf '%s' "${x:-<unread>}"; }
+net_done=1
+[[ "$net_rc" == 0 && "$(printf '%s\n' "$net_out" | grep -cx 'NET-READ-END')" == 1 && "$(printf '%s\n' "$net_out" | tail -n 1)" == NET-READ-END \
+   && "$(nv parse_ok)" == yes ]] && net_done=0
+echo "  sandbox interfaces (/sys/class/net, operstate): $(nv ifaces)"
+echo "  sandbox IPv4 local addresses (/proc/net/fib_trie): $(nv addr4)"
+echo "  sandbox IPv6 addresses (/proc/net/if_inet6): $(nv addr6)"
+echo "  sandbox IPv4 routes (/proc/net/route): $(nv route4)"
+[[ "$net_done" == 0 ]] || echo "  (the sandbox's network read did not complete: exec rc=$net_rc; the next three checks fail)"
+assert "only loopback has an address in the sandbox (IPv4: $(nv addr4); IPv6: $(nv addr6))" \
+  $([[ "$net_done" == 0 && "$(nv addr4_ok)" == yes && "$(nv addr6_ok)" == yes ]]; echo $?)
+assert "the sandbox has no route (/proc/net/route: $(nv route4))" $([[ "$net_done" == 0 && "$(nv route4_ok)" == yes ]]; echo $?)
+assert "every sandbox interface other than lo is down ($(nv ifaces))" $([[ "$net_done" == 0 && "$(nv ifaces_ok)" == yes ]]; echo $?)
+# One connect attempt, in Python (the image has no nc or ip), printing one PROBE line: connected,
+# timeout, or the errno name with its message.
+CONNECT_PROBE='import errno, socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.settimeout(5)
+try:
+    s.connect((sys.argv[1], 443))
+    print("PROBE connected")
+except socket.timeout:
+    print("PROBE timeout")
+except OSError as e:
+    print("PROBE errno=%s (%s)" % (errno.errorcode.get(e.errno, e.errno), e.strerror))'
+api_ip=$(kc get service kubernetes -n default -o 'jsonpath={.spec.clusterIP}' 2>/dev/null)
+echo "  kubernetes Service ClusterIP (read from the API): ${api_ip:-<unreadable>}"
+probe() { # probe <pod>: the PROBE line, or <exec failed: rc=N> / <no PROBE line>
+  local out rc=0
+  [[ "$api_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "<no ClusterIP>"; return; }
+  out=$(kc exec "$1" -n "$NAMESPACE" -- python3 -c "$CONNECT_PROBE" "$api_ip" 2>/dev/null) || rc=$?
+  if [[ "$rc" != 0 ]]; then echo "<exec failed: rc=$rc>"
+  elif [[ "$(printf '%s\n' "$out" | grep -c '^PROBE ')" != 1 ]]; then echo "<no PROBE line>"
+  else printf '%s\n' "$out" | grep '^PROBE ' | sed 's/^PROBE //'; fi
+}
+sbx_conn=$(probe "$SANDBOX_POD")
+echo "  sandbox TCP connect to ${api_ip:-?}:443: $sbx_conn"
+assert "the sandbox's TCP connect to the API Service fails with Network is unreachable (ENETUNREACH)" \
+  $([[ "$sbx_conn" == "errno=ENETUNREACH (Network is unreachable)" ]]; echo $?)
+ord_conn=$(probe "$ORDINARY_POD")
+echo "  ordinary pod TCP connect to ${api_ip:-?}:443: $ord_conn"
+assert "the same connect from the ordinary pod succeeds (control for the previous check)" $([[ "$ord_conn" == connected ]]; echo $?)
 
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]] || exit 1
-echo "node ready and labelled, host requirements proven both ways, AppArmor on with the scoped profile working and the control refused, guest boundary and network policy shown."
+echo "node ready and labelled, host requirements proven both ways, AppArmor on with the scoped profile working and the control refused, guest boundary and the sandbox's missing network shown."

@@ -71,7 +71,6 @@ shift 2
 case "$*" in
   "config view --minify -o jsonpath={.clusters[0].cluster.server}") printf '%s' 'https://EXAMPLE0123.gr7.us-west-2.eks.amazonaws.com' ;;
   "get runtimeclass isolated-sandbox -o json") echo '{"handler":"isolated-sandbox","scheduling":{"nodeSelector":{"eks.amazonaws.com/nitro-sandbox":"true"}}}' ;;
-  "get pods -n kube-system -l k8s-app=kube-dns -o json") echo '{"items": [{"metadata": {"name": "coredns-a"}}]}' ;;
   "get nodes -l eks.amazonaws.com/nodegroup="*" -o jsonpath={.items[0].metadata.name}") printf 'node-a' ;;
   "get node node-a -o jsonpath={.status.conditions[?(@.type==\"Ready\")].status}") printf 'True' ;;
   "get node node-a -o jsonpath={.status.allocatable.eks\\.amazonaws\\.com/nitro-sandbox}") printf '20' ;;
@@ -292,7 +291,8 @@ check "REJECT --ami-only when the kernel stage ends Failed after polling: it sto
 echo
 echo "== 5/7 the node-group half alone: RUN_ID=<id> setup.sh --join (C-4) ===================="
 # join_state <case> <python over s>: the state --ami-only left, changed as the case says, with
-# vpc-cni installed (network policy on) unless the case removes it.
+# vpc-cni installed unless the case removes it (its network policy setting is the reader's own;
+# 00c does not read it).
 join_state() {
   export FAKE_AWS_STATE="$WORK/$1.state.json" FAKE_AWS_LOG="$WORK/$1.calls.jsonl"
   : > "$FAKE_AWS_LOG"; : > "$STUB_KUBECTL_LOG"; unset FAKE_AWS_FAIL
@@ -342,7 +342,27 @@ assert len(lt) == 1 and lt[0]["launch_template_data"]["ImageId"] == "ami-0fa002"
 assert sum(1 for x in c if x["call"] == "eks create-nodegroup") == 1
 assert not any(x["call"] in ("ec2 run-instances", "ec2 create-image", "ssm send-command") for x in c)
 PY
-[ "$(grep -c '^--context example-context apply -n ubuntu-ami-sample -f ' "$STUB_KUBECTL_LOG")" = 3 ]; ok "  ... and applied the three validation manifests" $?
+# The sample ships no network policy (AGENTS.md): setup.sh applies the two validation pods and
+# nothing else, and the sandbox pod it applies is booted network-isolated.
+applied=$(sed -n 's#^--context example-context apply -n ubuntu-ami-sample -f .*/##p' "$STUB_KUBECTL_LOG" | paste -sd' ')
+[ "$applied" = "pod-ordinary.yaml pod-isolated-sandbox.yaml" ]
+ok "  ... and applied the two validation pod manifests and nothing else, no network policy (applied: ${applied:-none})" $?
+python3 - "$ISSUE10_RUN_DIR/out/runs/$RUNID/rendered/pod-isolated-sandbox.yaml" <<'PY'; ok "  ... and the sandbox pod it applied carries metadata.annotations sandbox.amazonaws.com/network-isolated: \"true\"" $?
+import re, sys
+text = open(sys.argv[1]).read()
+meta = re.search(r"^metadata:\n((?:  .*\n|\s*\n)*)", text, re.M)
+ann = meta and re.search(r"^  annotations:\n((?:    .*\n)*)", meta.group(1), re.M)
+assert ann and re.search(r'^    sandbox\.amazonaws\.com/network-isolated: "true"(\s+#.*)?$', ann.group(1), re.M), "no network-isolated annotation"
+PY
+# The page shows that annotation line as the manifest has it, in its no-network section.
+python3 - "$SAMPLE/README.md" "$SAMPLE/deploy/pod-isolated-sandbox.yaml" <<'PY'; ok "  ... and the README's no-network section shows the manifest's annotation line verbatim" $?
+import re, sys
+readme, pod = open(sys.argv[1]).read(), open(sys.argv[2]).read()
+want = [l for l in pod.splitlines() if "sandbox.amazonaws.com/network-isolated" in l and not l.lstrip().startswith("#")]
+sec = readme.split("### The validation sandbox has no network", 1)[1].split("\n### ", 1)[0]
+block = re.search(r"```yaml\n(.*?)```", sec, re.S).group(1)
+assert len(want) == 1 and want[0] in block.splitlines(), (want, block)
+PY
 st def-nocni "${BUILD_RESULTS/@KERNEL@/Success}"; SU_ENV=(KUBE_CONTEXT=example-context)
 rc=0; su def-nocni || rc=$?
 check "REJECT the default path (no flag) on the same cluster with no vpc-cni" 1 "$rc" "$WORK/def-nocni.log" 'PREREQUISITE NOT MET: cluster example-cluster has no managed vpc-cni add-on'

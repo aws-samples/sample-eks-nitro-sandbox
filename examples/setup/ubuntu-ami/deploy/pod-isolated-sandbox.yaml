@@ -1,7 +1,8 @@
-# The validation sandbox pod. Egress is restricted by the COMPLETE NetworkPolicy in
-# network-policy.yaml, shown alongside this pod on the README page (the acceptance
-# criterion requires either no network at all or a shown, complete policy; this sample
-# demonstrates the policy path so the egress rules are visible).
+# The validation sandbox pod. It is booted with no network at all, by the
+# sandbox.amazonaws.com/network-isolated annotation. It needs none: it runs `sleep infinity`, and
+# every check test.sh makes reaches it through kubectl exec. test.sh section 7/7 shows the
+# result: only loopback has an address, the sandbox has no route, and a connect to the cluster's
+# API Service fails with "Network is unreachable".
 # appArmorProfile is Unconfined, as the Nitro sandbox GA build notes require on an Ubuntu host:
 # a sandbox pod's AppArmor profile is not applied on the host. The shim passes it into the
 # guest microVM, where runc applies it, and the guest runs SELinux and has no AppArmor, so any
@@ -17,6 +18,8 @@ metadata:
   namespace: ubuntu-ami-sample
   labels:
     app: isolated-sandbox-pod
+  annotations:
+    sandbox.amazonaws.com/network-isolated: "true"   # <-- boot the VM with no network besides loopback
 spec:
   runtimeClassName: isolated-sandbox
   securityContext:

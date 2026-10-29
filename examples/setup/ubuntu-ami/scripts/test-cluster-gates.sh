@@ -3,9 +3,9 @@
 # `aws` and `kubectl` first on PATH (no AWS account, no cluster):
 #   scripts/lib/common.sh            require_kube_context: KUBE_CONTEXT required, its server must be
 #                                    CLUSTER_NAME's endpoint; every kubectl call names it (H6)
-#   scripts/00c-check-cluster.sh     the reader's vpc-cni add-on (ACTIVE, network policy on), the
-#                                    shared isolated-sandbox RuntimeClass (read only), and the
-#                                    cluster DNS pods the network policy allows
+#   scripts/00c-check-cluster.sh     the reader's vpc-cni add-on (ACTIVE; its network policy
+#                                    setting on or off, which the sample does not need), and the
+#                                    shared isolated-sandbox RuntimeClass (read only)
 #   scripts/join-nodegroup.sh        the launch template user data: comments stripped, ONE active
 #                                    bootstrap.sh command whose --kubelet-extra-args carry all three
 #                                    labels and the taint (M3)
@@ -14,7 +14,6 @@
 #   scripts/ensure-namespace.sh      created with both labels when absent, refused when foreign or
 #                                    when the read fails (M4)
 #   scripts/wait-pods-ready.sh       bounded wait for the validation pods (test.sh)
-#   scripts/check-network-policy.py  the live policy allows only kube-system/k8s-app=kube-dns:53 (M2)
 #
 #   scripts/test-cluster-gates.sh
 #
@@ -32,7 +31,7 @@ export ISSUE10_RUN_DIR="$WORK/run" AWS_REGION=us-west-2 CLUSTER_NAME=example-clu
 unset NODEGROUP_NAME KUBECTL
 NG=ubuntu-ami-sample-testrun1-ng
 
-pass=0; fail=0; skip=0
+pass=0; fail=0
 check() { # check <description> <expected-rc> <actual-rc> <log> [<regex the log must match>]
   local ok=0
   [[ "$3" -eq "$2" ]] || ok=1
@@ -42,19 +41,34 @@ check() { # check <description> <expected-rc> <actual-rc> <log> [<regex the log 
 }
 
 STUB="$WORK/bin"; mkdir -p "$STUB"
+# describe-addon answers from a whole add-on record per case (STUB_ADDON), and applies the call's
+# own --query the way the AWS CLI does for the `addon.[field,...]` form, so the case is the
+# add-on, not the answer a particular query expects.
+cat > "$STUB/addon.py" <<'PY'
+import json, os, re, sys
+a = sys.argv[1:]
+case = os.environ.get("STUB_ADDON", "on")
+if case == "absent":
+    sys.stderr.write("An error occurred (ResourceNotFoundException) when calling the DescribeAddon operation: No addon: vpc-cni found in cluster: example-cluster\n"); sys.exit(254)
+if case == "denied":
+    sys.stderr.write("An error occurred (AccessDeniedException) when calling the DescribeAddon operation: not authorized\n"); sys.exit(254)
+values = {"on": '{"enableNetworkPolicy":"true"}', "yaml-on": 'enableNetworkPolicy: "true"\n', "off": '{"enableNetworkPolicy":"false"}',
+          "none": None, "degraded": '{"enableNetworkPolicy":"true"}'}[case]
+addon = {"addonName": "vpc-cni", "status": "DEGRADED" if case == "degraded" else "ACTIVE", "addonVersion": "v1.0.0-eksbuild.1"}
+if values is not None:
+    addon["configurationValues"] = values
+doc = {"addon": addon}
+if "--query" in a:
+    m = re.fullmatch(r"addon\.\[([A-Za-z,]+)\]", a[a.index("--query") + 1])
+    if not m:
+        sys.exit(f"STUB aws: describe-addon query not modelled: {a}")
+    doc = [addon.get(k) for k in m.group(1).split(",")]
+print(json.dumps(doc))
+PY
 cat > "$STUB/aws" <<'SH'
 #!/bin/bash
 case "$1 $2" in
-  "eks describe-addon")
-    case "${STUB_ADDON:-on}" in
-      on)       printf '%s\n' '["ACTIVE", "v1.0.0-eksbuild.1", "{\"enableNetworkPolicy\":\"true\"}"]' ;;
-      yaml-on)  printf '%s\n' '["ACTIVE", "v1.0.0-eksbuild.1", "enableNetworkPolicy: \"true\"\n"]' ;;
-      off)      printf '%s\n' '["ACTIVE", "v1.0.0-eksbuild.1", "{\"enableNetworkPolicy\":\"false\"}"]' ;;
-      none)     printf '%s\n' '["ACTIVE", "v1.0.0-eksbuild.1", null]' ;;
-      degraded) printf '%s\n' '["DEGRADED", "v1.0.0-eksbuild.1", "{\"enableNetworkPolicy\":\"true\"}"]' ;;
-      absent)   echo "An error occurred (ResourceNotFoundException) when calling the DescribeAddon operation: No addon: vpc-cni found in cluster: example-cluster" >&2; exit 254 ;;
-      denied)   echo "An error occurred (AccessDeniedException) when calling the DescribeAddon operation: not authorized" >&2; exit 254 ;;
-    esac ;;
+  "eks describe-addon") exec python3 "$(dirname "$0")/addon.py" "$@" ;;
   "eks describe-cluster")
     [ "${STUB_CLUSTER:-}" = denied ] && { echo "An error occurred (AccessDeniedException) when calling the DescribeCluster operation: not authorized" >&2; exit 254; }
     printf '%s\n' '{"cluster": {"endpoint": "https://EXAMPLE0123.gr7.us-west-2.eks.amazonaws.com", "certificateAuthority": {"data": "Q0EtREFUQS1GSVhUVVJF"}, "kubernetesNetworkConfig": {"serviceIpv4Cidr": "10.100.0.0/16"}}}' ;;
@@ -85,12 +99,6 @@ case "$args" in
       foreign) echo '{"handler":"isolated-sandbox","scheduling":{"nodeSelector":{"eks.amazonaws.com/nitro-sandbox":"true","example.com/other-pool":"true"}}}' ;;
       handler) echo '{"handler":"some-other-handler","scheduling":{"nodeSelector":{"eks.amazonaws.com/nitro-sandbox":"true"}}}' ;;
       absent)  echo 'Error from server (NotFound): runtimeclasses.node.k8s.io "isolated-sandbox" not found' >&2; exit 1 ;;
-    esac ;;
-  "get pods -n kube-system -l k8s-app=kube-dns -o json")
-    case "${STUB_DNS:-two}" in
-      two)    echo '{"items": [{"metadata": {"name": "coredns-a"}}, {"metadata": {"name": "coredns-b"}}]}' ;;
-      none)   echo '{"items": []}' ;;
-      denied) forbidden pods ;;
     esac ;;
   "get nodes -l eks.amazonaws.com/nodegroup="*" -o jsonpath={.items[0].metadata.name}")
     [ "${STUB_NODE_ERR:-}" = list ] && forbidden nodes; printf '%s' "${STUB_NODE:-}" ;;
@@ -123,7 +131,7 @@ chmod +x "$STUB/aws" "$STUB/kubectl"
 export PATH="$STUB:$PATH" STUB_CREATED="$WORK/created.yaml" KUBE_CONTEXT=example-context STUB_CTX=example-context \
        STUB_KUBECTL_LOG="$WORK/kubectl-calls.log"
 
-echo "== 0/6 the kube context is the cluster the AWS calls use: require_kube_context (H6) ====="
+echo "== 0/5 the kube context is the cluster the AWS calls use: require_kube_context (H6) ====="
 # Run through the real ensure-namespace.sh, the first script that changes the cluster; each
 # refusal must also leave the namespace uncreated.
 kx() { : > "$STUB_CREATED"; env "$@" bash "$HERE/ensure-namespace.sh" > "$WORK/kx-$CASE.log" 2>&1; }
@@ -190,23 +198,28 @@ for v in bare var usectx; do
 done
 echo
 
-echo "== 1/6 cluster prerequisites: scripts/00c-check-cluster.sh =============================="
-cc() { env STUB_ADDON="$2" STUB_RC="$3" STUB_DNS="${4:-two}" bash "$HERE/00c-check-cluster.sh" > "$WORK/cc-$1.log" 2>&1; }
+echo "== 1/5 cluster prerequisites: scripts/00c-check-cluster.sh =============================="
+cc() { env STUB_ADDON="$2" STUB_RC="$3" bash "$HERE/00c-check-cluster.sh" > "$WORK/cc-$1.log" 2>&1; }
+OK_RX='CLUSTER PREREQUISITES OK: vpc-cni v1\.0\.0-eksbuild\.1 ACTIVE; RuntimeClass isolated-sandbox reused as it is'
 rc=0; cc ok on one || rc=$?
-check "ACCEPT vpc-cni ACTIVE with network policy on, a RuntimeClass selecting eks.amazonaws.com/nitro-sandbox=true, and cluster DNS pods" 0 "$rc" "$WORK/cc-ok.log" 'CLUSTER PREREQUISITES OK.*2 cluster DNS pod'
+check "ACCEPT vpc-cni ACTIVE (network policy on) and a RuntimeClass selecting eks.amazonaws.com/nitro-sandbox=true" 0 "$rc" "$WORK/cc-ok.log" "$OK_RX"
 rc=0; cc yaml yaml-on two || rc=$?
-check "ACCEPT network policy given as YAML, and a RuntimeClass selecting both labels the node registers with" 0 "$rc" "$WORK/cc-yaml.log" 'CLUSTER PREREQUISITES OK'
+check "ACCEPT a RuntimeClass selecting both labels the node registers with (add-on values given as YAML)" 0 "$rc" "$WORK/cc-yaml.log" "$OK_RX"
+# The validation sandbox boots with no network, and the sample ships no network policy, so the
+# add-on's network policy setting is the reader's own: on, off or never set, 00c accepts it.
+rc=0; cc off off one || rc=$?
+check "ACCEPT a vpc-cni add-on with network policy off (the sample needs no network policy)" 0 "$rc" "$WORK/cc-off.log" "$OK_RX"
+rc=0; cc none none one || rc=$?
+check "ACCEPT a vpc-cni add-on with no configuration values" 0 "$rc" "$WORK/cc-none.log" "$OK_RX"
+for c in ok off none; do
+  ! grep -qiE 'network ?policy|enableNetworkPolicy|update-addon|WARNING' "$WORK/cc-$c.log"
+  check "  ... the '$c' run neither asks for network policy nor warns about cluster-wide enforcement" 0 $? "$WORK/cc-$c.log"
+done
 rc=0; cc absent absent one || rc=$?
 check "REJECT a cluster with no vpc-cni add-on, printing the create-addon command" 1 "$rc" "$WORK/cc-absent.log" 'aws eks create-addon .*--addon-name vpc-cni'
 grep -q -- '--resolve-conflicts NONE' "$WORK/cc-absent.log"; check "the suggested create-addon command never overwrites an existing amazon-vpc-cni ConfigMap (--resolve-conflicts NONE)" 0 $? "$WORK/cc-absent.log"
-grep -q 'enableNetworkPolicy' "$WORK/cc-absent.log"; check "the suggested create-addon command turns network policy on" 0 $? "$WORK/cc-absent.log"
-grep -q 'Every NetworkPolicy object already on' "$WORK/cc-absent.log"; check "  ... and warns (L3) that every existing NetworkPolicy on the cluster starts being enforced" 0 $? "$WORK/cc-absent.log"
-rc=0; cc off off one || rc=$?
-check "REJECT a vpc-cni add-on with network policy off, printing the update-addon command" 1 "$rc" "$WORK/cc-off.log" 'network policy off.*|update-addon'
-grep -q 'test the change on a cluster that is' "$WORK/cc-off.log"; check "  ... with the same cluster-wide warning (L3)" 0 $? "$WORK/cc-off.log"
-! grep -q 'WARNING: turning network policy' "$WORK/cc-ok.log"; check "  ... which an already-enforcing cluster is not shown" 0 $? "$WORK/cc-ok.log"
-rc=0; cc none none one || rc=$?
-check "REJECT a vpc-cni add-on with no configuration values (network policy defaults off)" 1 "$rc" "$WORK/cc-none.log" 'update-addon'
+! grep -qE 'enableNetworkPolicy|configuration-values|WARNING' "$WORK/cc-absent.log"
+check "  ... and it neither turns network policy on nor carries the cluster-wide enforcement warning" 0 $? "$WORK/cc-absent.log"
 rc=0; cc degraded degraded one || rc=$?
 check "REJECT a vpc-cni add-on that is not ACTIVE" 1 "$rc" "$WORK/cc-degraded.log" 'is DEGRADED, not ACTIVE'
 rc=0; cc denied denied one || rc=$?
@@ -217,13 +230,9 @@ rc=0; cc rc-foreign on foreign || rc=$?
 check "REJECT a RuntimeClass that selects a label the sample's node does not carry (a spec question)" 1 "$rc" "$WORK/cc-rc-foreign.log" 'selects example.com/other-pool=true'
 rc=0; cc rc-handler on handler || rc=$?
 check "REJECT a RuntimeClass whose handler is not isolated-sandbox" 1 "$rc" "$WORK/cc-rc-handler.log" "handler 'some-other-handler'"
-rc=0; cc dns-none on one none || rc=$?
-check "REJECT a cluster whose DNS pods do not carry k8s-app=kube-dns (the policy would block DNS)" 1 "$rc" "$WORK/cc-dns-none.log" 'no pod in kube-system carries k8s-app=kube-dns'
-rc=0; cc dns-denied on one denied || rc=$?
-check "REJECT (could not determine) when the DNS pods cannot be listed" 1 "$rc" "$WORK/cc-dns-denied.log" 'could not list the cluster DNS pods'
 
 echo
-echo "== 2/6 node labels and taint in the user data: scripts/join-nodegroup.sh (M3) =========="
+echo "== 2/5 node labels and taint in the user data: scripts/join-nodegroup.sh (M3) =========="
 rc=0; bash "$HERE/join-nodegroup.sh" --render-user-data > "$WORK/ud-default.sh" 2> "$WORK/ud-default.err" || rc=$?
 check "the user data renders (per-run node group name)" 0 "$rc" "$WORK/ud-default.err"
 for want in '^#!/bin/bash$' "--node-labels=[^' ]*eks\.amazonaws\.com/nodegroup=$NG" "--node-labels=[^' ]*eks\.amazonaws\.com/nitro-sandbox=true" \
@@ -275,7 +284,7 @@ other-cluster|is not given the cluster name 'example-cluster' as its last argume
 CASES
 
 echo
-echo "== 3/6 node Ready with nitro-sandbox capacity: scripts/wait-node-ready.sh (M4) ========"
+echo "== 3/5 node Ready with nitro-sandbox capacity: scripts/wait-node-ready.sh (M4) ========"
 wn() { env STUB_NODE="$2" STUB_READY="$3" STUB_CAP="$4" STUB_NODE_ERR="${5:-}" NODE_READY_TIMEOUT=2 NODE_POLL_SECONDS=1 bash "$HERE/wait-node-ready.sh" > "$WORK/wn-$1.log" 2>&1; }
 rc=0; wn ok node-a True 20 || rc=$?
 check "ACCEPT a Ready node advertising eks.amazonaws.com/nitro-sandbox=20" 0 "$rc" "$WORK/wn-ok.log" 'advertises allocatable eks.amazonaws.com/nitro-sandbox=20'
@@ -294,7 +303,7 @@ rc=0; wn capdenied node-a True 20 cap || rc=$?
 check "REJECT (could not determine) when reading the node's capacity is forbidden" 1 "$rc" "$WORK/wn-capdenied.log" 'could not determine the nitro-sandbox capacity of node node-a'
 
 echo
-echo "== 4/6 the sample's namespace: scripts/ensure-namespace.sh (M4) ======================="
+echo "== 4/5 the sample's namespace: scripts/ensure-namespace.sh (M4) ======================="
 en() { : > "$STUB_CREATED"; env STUB_NS="$2" bash "$HERE/ensure-namespace.sh" > "$WORK/en-$1.log" 2>&1; }
 rc=0; en absent absent || rc=$?
 check "ACCEPT an absent namespace: created in one call" 0 "$rc" "$WORK/en-absent.log" 'created namespace ubuntu-ami-sample'
@@ -311,7 +320,7 @@ check "REJECT (could not determine) when the namespace read is forbidden, never 
 [ ! -s "$STUB_CREATED" ]; check "  ... and nothing was created" 0 $? "$WORK/en-denied.log"
 
 echo
-echo "== 5/6 bounded pod readiness wait: scripts/wait-pods-ready.sh (test.sh) =============="
+echo "== 5/5 bounded pod readiness wait: scripts/wait-pods-ready.sh (test.sh) =============="
 wp() { env STUB_PODS="$2" POD_READY_TIMEOUT=2 POD_POLL_SECONDS=1 bash "$HERE/wait-pods-ready.sh" ordinary-pod isolated-sandbox-pod > "$WORK/wp-$1.log" 2>&1; }
 rc=0; wp ready ready || rc=$?
 check "ACCEPT pods that are Ready" 0 "$rc" "$WORK/wp-ready.log" 'pods Ready in ubuntu-ami-sample'
@@ -329,49 +338,6 @@ for c in notjson nostatus; do
 done
 
 echo
-echo "== 6/6 the sandbox's egress policy: scripts/check-network-policy.py (M2) ================"
-GOOD_NP='{"spec": {"podSelector": {"matchLabels": {"app": "isolated-sandbox-pod"}}, "policyTypes": ["Ingress", "Egress"], "ingress": [],
- "egress": [{"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}, "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}],
-             "ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}]}]}}'
-np() { printf '%s' "$2" | python3 "$HERE/check-network-policy.py" > "$WORK/np-$1.log" 2>&1; }
-mut() { printf '%s' "$GOOD_NP" | python3 -c "import json,sys; d=json.load(sys.stdin); r=d['spec']['egress'][0]; $1; print(json.dumps(d))"; }
-rc=0; np good "$GOOD_NP" || rc=$?
-check "ACCEPT egress only to kube-system pods labelled k8s-app=kube-dns on UDP and TCP 53" 0 "$rc" "$WORK/np-good.log" 'NETWORK POLICY OK'
-if python3 -c 'import yaml' 2>/dev/null; then
-  rc=0; python3 -c 'import json,sys,yaml; print(json.dumps(yaml.safe_load(open(sys.argv[1]))))' "$SAMPLE_DIR_REAL/deploy/network-policy.yaml" \
-    | python3 "$HERE/check-network-policy.py" > "$WORK/np-deploy.log" 2>&1 || rc=$?
-  check "ACCEPT the shipped deploy/network-policy.yaml itself" 0 "$rc" "$WORK/np-deploy.log" 'NETWORK POLICY OK'
-else
-  echo "  SKIP  the shipped deploy/network-policy.yaml (PyYAML not installed; the README sync check below still runs)"; skip=$((skip+1))
-fi
-while IFS='|' read -r name code rx why; do
-  [ -n "$name" ] || continue
-  rc=0; np "$name" "$(mut "$code")" || rc=$?
-  check "$why" 1 "$rc" "$WORK/np-$name.log" "$rx"
-done <<'CASES'
-any-namespace|r["to"] = [{"namespaceSelector": {}}]|does not name both a namespace and a pod selector|REJECT the R1-A policy: namespaceSelector {} (port 53 to any pod)
-two-peers|r["to"] = [{"namespaceSelector": r["to"][0]["namespaceSelector"]}, {"podSelector": r["to"][0]["podSelector"]}]|does not name both|REJECT namespace and pod selectors in separate peers (an OR, not an AND)
-wrong-pod|r["to"][0]["podSelector"] = {"matchLabels": {"app": "decoy"}}|podSelector is|REJECT a pod selector other than k8s-app=kube-dns
-port-443|r["ports"].append({"protocol": "TCP", "port": 443})|only UDP and TCP port 53 are allowed|REJECT an extra port
-udp-only|r["ports"] = [{"protocol": "UDP", "port": 53}]|must be exactly UDP 53 and TCP 53|REJECT UDP 53 alone (TCP 53 missing)
-tcp-only|r["ports"] = [{"protocol": "TCP", "port": 53}]|must be exactly UDP 53 and TCP 53|REJECT TCP 53 alone (UDP 53 missing)
-dup-udp|r["ports"].append({"protocol": "UDP", "port": 53})|must be exactly UDP 53 and TCP 53|REJECT a duplicate UDP 53
-no-ports|r.pop("ports")|allows every port|REJECT a rule with no ports
-ipblock|r["to"].append({"ipBlock": {"cidr": "0.0.0.0/0"}})|is an ipBlock|REJECT an ipBlock peer
-all-dest|r.pop("to")|allows every destination|REJECT a rule with no 'to'
-ingress|d["spec"]["ingress"] = [{}]|ingress is not empty|REJECT any allowed ingress
-CASES
-# The README shows the policy whole: its yaml block must be the shipped file, comments stripped.
-python3 - "$SAMPLE_DIR_REAL/README.md" "$SAMPLE_DIR_REAL/deploy/network-policy.yaml" <<'PY' > "$WORK/np-readme.log" 2>&1; check "the README shows deploy/network-policy.yaml whole (same lines, comments stripped)" 0 $? "$WORK/np-readme.log"
-import re, sys
-readme, policy = open(sys.argv[1]).read(), open(sys.argv[2]).read()
-sec = readme.split("### The validation sandbox's network policy", 1)[1]
-block = re.search(r"```yaml\n(.*?)```", sec, re.S).group(1)
-want = "\n".join(l for l in policy.splitlines() if not l.lstrip().startswith("#")).strip()
-sys.exit(0 if block.strip() == want else print("README block differs from the deploy file") or 1)
-PY
-
-echo
-printf 'passed %d, failed %d, skipped %d\n' "$pass" "$fail" "$skip"
+printf 'passed %d, failed %d\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]] || exit 1
-echo "cluster prerequisites, user data, node capacity, namespace, pod readiness and the egress policy proven both ways in the real scripts."
+echo "kube context, cluster prerequisites, user data, node capacity, namespace and pod readiness proven both ways in the real scripts."

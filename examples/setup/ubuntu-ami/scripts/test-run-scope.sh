@@ -81,8 +81,6 @@ case "$*" in
     printf '%s' "${STUB_SERVER:-https://EXAMPLE0123.gr7.us-west-2.eks.amazonaws.com}" ;;
   "get runtimeclass isolated-sandbox -o json")
     echo '{"handler":"isolated-sandbox","scheduling":{"nodeSelector":{"eks.amazonaws.com/nitro-sandbox":"true"}}}' ;;
-  "get pods -n kube-system -l k8s-app=kube-dns -o json")
-    echo '{"items": [{"metadata": {"name": "coredns-a"}}]}' ;;
   "get namespace "*" -o json")
     if [ "${STUB_NS_ERR:-}" = denied ]; then echo 'Error from server (Forbidden): namespaces "x" is forbidden: User "test" cannot get resource' >&2; exit 1; fi
     if [ -n "${STUB_NS_JSON:-}" ]; then printf '%s\n' "$STUB_NS_JSON"; else echo 'Error from server (NotFound): namespaces "x" not found' >&2; exit 1; fi ;;

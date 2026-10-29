@@ -13,13 +13,16 @@
 
     Until that decision, this sample stays a draft and is not marked `(available now)`.
 
-!!! warning "Status: live-validated end to end on the GA bundle"
+!!! warning "Status: live-validated on the GA bundle, except the new test.sh section 7/7"
 
     Run `20261029t165642z8cdf` built the AMI from the Nitro sandbox GA node-build bundle dated
     2026-10-28, verified it on a second, fresh instance, joined the dedicated node group,
-    passed every `./test.sh` check (53 passed, 0 failed), and was then cleaned up with its AMI
-    kept. Every output block under [Evidence](#evidence) comes from that run, and every
-    clusterless check is proven both ways (see [Clusterless checks](#clusterless-checks)).
+    passed every `./test.sh` check it had then (53 passed, 0 failed), and was then cleaned up
+    with its AMI kept. After that run, the validation sandbox was changed to boot with no
+    network, which replaced `./test.sh` section 7/7. Every output block under
+    [Evidence](#evidence) comes from that run except the new section 7/7, which waits for a
+    fresh run. Every clusterless check is proven both ways (see
+    [Clusterless checks](#clusterless-checks)).
 
 Build a custom Ubuntu 24.04 node AMI for Amazon EKS Pod Isolation, add one dedicated,
 tainted managed node group to an **existing cluster**, and run an isolated pod on that
@@ -99,22 +102,21 @@ it.
   that RuntimeClass as it is and never creates or changes it; it checks that every label
   the RuntimeClass selects (`eks.amazonaws.com/nitro-sandbox=true`) is one the sample's
   node registers with, and stops if not.
-- **The managed `vpc-cni` add-on, with network policy on.** A managed node group node gets
-  its pod network from this add-on's `aws-node` DaemonSet; EKS Auto Mode nodes do not need
-  it, so a cluster that only ran Getting started can lack it, and then the sample's node
-  never becomes `Ready`. Network policy on is what enforces
-  [`deploy/network-policy.yaml`](deploy/network-policy.yaml) on that node. This is a
-  cluster-wide setting, so you install it yourself, at a version you pin; the sample only
-  checks it ([`scripts/00c-check-cluster.sh`](scripts/00c-check-cluster.sh)) and stops with
-  this command when it is missing:
+- **The managed `vpc-cni` add-on.** A managed node group node gets its pod network from
+  this add-on's `aws-node` DaemonSet; EKS Auto Mode nodes do not need it, so a cluster that
+  only ran Getting started can lack it, and then the sample's node never becomes `Ready`.
+  Its network policy setting can be on or off: the sample ships no network policy, and its
+  validation sandbox boots with no network. This is a cluster-wide install, so you install
+  it yourself, at a version you pin; the sample only checks that it is `ACTIVE`
+  ([`scripts/00c-check-cluster.sh`](scripts/00c-check-cluster.sh)) and stops with this
+  command when it is missing:
 
   ```bash
   aws eks describe-addon-versions --region <AWS_REGION> --addon-name vpc-cni \
     --kubernetes-version 1.36 --query 'addons[0].addonVersions[].addonVersion'
   aws eks create-addon --region <AWS_REGION> --cluster-name <CLUSTER_NAME> \
     --addon-name vpc-cni --addon-version <VPC_CNI_ADDON_VERSION> \
-    --resolve-conflicts NONE \
-    --configuration-values '{"enableNetworkPolicy":"true"}'
+    --resolve-conflicts NONE
   ```
 
   `--resolve-conflicts NONE` makes the create fail only when the add-on would have to
@@ -128,14 +130,6 @@ it.
   If some of the cluster's nodes run another CNI, keep `aws-node` off them with the add-on's
   `affinity` configuration value: keep the chart's default node affinity terms and add one
   more, such as `{"key": "<OTHER_CNI_NODE_LABEL>", "operator": "NotIn", "values": ["true"]}`.
-
-  **Network policy enforcement is cluster-wide.** Turning it on makes every NetworkPolicy
-  object already on the cluster start being enforced, for every workload, not only this
-  sample's, so a policy that was written but never enforced can then cut traffic another team
-  relies on. Review them first
-  (`kubectl --context <your-context> get networkpolicy --all-namespaces`) and test the change
-  on a cluster that is not production before you make it on a shared one. The sample never
-  installs or changes the add-on: it checks it and stops with the command above.
 
 - **A kubectl context for the same cluster, named in `KUBE_CONTEXT`.** Every `kubectl` call
   the scripts make passes `--context "$KUBE_CONTEXT"`; there is no fallback to the current
@@ -344,10 +338,8 @@ in "could not determine", which stops the run.
 **1. Check the inputs and the cluster.** `./setup.sh --prepare` verifies every pinned input
 and the runtime archive on your workstation and creates nothing. A full `./setup.sh` then
 reads two cluster-wide prerequisites before it creates anything: the `vpc-cni` add-on is
-`ACTIVE` with network policy on, and the shared `isolated-sandbox` RuntimeClass selects only
-labels the sample's node will carry. It stops with the command to run if either is not so.
-It also checks that the cluster's DNS pods in `kube-system` carry `k8s-app=kube-dns`, the
-label the sandbox's network policy allows DNS to.
+`ACTIVE`, and the shared `isolated-sandbox` RuntimeClass selects only labels the sample's
+node will carry. It stops with the command to run if either is not so.
 
 **2. Resolve the base AMI.** The build resolves the Canonical EKS Ubuntu 24.04 AMI for
 Kubernetes 1.36 from the public SSM parameter path for your Region at run time, and records
@@ -519,9 +511,12 @@ resource the RuntimeClass's overhead requests), and stops with a clear message i
 
 > **Every block on this page is from one fresh run**, `20261029t165642z8cdf`: `./setup.sh
 > --ami-only` (with the fresh-instance verification), then `RUN_ID=20261029t165642z8cdf
-> ./setup.sh --join` and `./test.sh` (53 passed, 0 failed). Lines are copied whole and in
-> order. Values from the test account are shown as placeholders, and the note under each
-> block says which ones, and whether lines were left out.
+> ./setup.sh --join` and `./test.sh` (53 passed, 0 failed, with the section 7/7 it had then).
+> The one exception is the new `./test.sh` section 7/7 under
+> [The validation sandbox has no network](#the-validation-sandbox-has-no-network), which
+> waits for a fresh run. Lines are copied whole and in order. Values from the test account
+> are shown as placeholders, and the note under each block says which ones, and whether
+> lines were left out.
 
 **Node vs guest kernel, and host vs guest block devices.** The same shape Getting started
 uses: the ordinary pod shares the node's kernel, `6.18.56-nitro-ga`, and sees the
@@ -583,6 +578,7 @@ that accepts everything.
 | Package holds | the containerd owner and the kernel meta-packages held and blacklisted | a hold missing from `apt-mark showhold` or from the blacklist |
 | Bake residue | no build residue left | residue present, or a scan that fails |
 | Sandbox capacity | the node advertises `eks.amazonaws.com/nitro-sandbox` > 0 | zero, absent, or a node that is not `Ready` |
+| No network in the validation sandbox | the `network-isolated` annotation read back; only loopback has an address; no route; every interface but `lo` down (a `dummy0` that is down passes); the connect fails with `Network is unreachable` while the ordinary pod's connects | an extra IPv4 or IPv6 address, a route, an interface other than `lo` that is up, a refused or timed-out connect, an unreadable file or an incomplete read |
 
 **`BtfValidated=true` applied only after fresh-instance verification passes.** The AMI tag
 `cilium-ubuntu`'s (issue #11) AMI preflight requires before it will use an AMI from this
@@ -802,78 +798,36 @@ label is `system_u:system_r:runtime_t:s0:c0.c1023`. The microVM is the sandbox p
 
 *`./test.sh` section 3/7, its last three lines, whole. No value was replaced.*
 
-### The validation sandbox's network policy
+### The validation sandbox has no network
 
-The isolated-sandbox pod has a network, so its egress is restricted by this policy,
-[`deploy/network-policy.yaml`](deploy/network-policy.yaml), shown here in full. It denies all
-ingress, and allows egress only on UDP and TCP port 53, and only to pods labelled
-`k8s-app=kube-dns` in the `kube-system` namespace: the namespace selector and the pod selector
-are in the same `to` entry, so a destination must match both. Port 53 to any other pod is
-refused. The `vpc-cni` add-on's network policy support, a prerequisite above, enforces it on
-the sample's node. `./setup.sh` checks that the cluster's DNS pods carry `k8s-app=kube-dns`
-before it applies the policy, and `./test.sh` reads the live object back and checks it
-([`scripts/check-network-policy.py`](scripts/check-network-policy.py)). The sample creates no
-Ingress, LoadBalancer or NodePort.
+The isolated-sandbox pod is booted with no network. It needs none: it runs `sleep infinity`,
+and every check `./test.sh` makes reaches it through `kubectl exec`. One annotation in
+[`deploy/pod-isolated-sandbox.yaml`](deploy/pod-isolated-sandbox.yaml) does it, the same one
+[Getting started](../../getting-started/hello-sandbox/README.md) uses. Here is the part of the
+manifest that matters:
 
 ```yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
 metadata:
-  name: isolated-sandbox-pod-policy
-  namespace: ubuntu-ami-sample
-spec:
-  podSelector:
-    matchLabels:
-      app: isolated-sandbox-pod
-  policyTypes:
-    - Ingress
-    - Egress
-  ingress: []
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
+  annotations:
+    sandbox.amazonaws.com/network-isolated: "true"   # <-- boot the VM with no network besides loopback
 ```
 
-**The policy at work.** The sandbox's interfaces are listed first, from `/sys/class/net`. DNS
-answers, and the API server on 443 is refused, while the same connect from the ordinary pod,
-which no policy selects, succeeds. Port 53 to a pod that is not DNS is refused too. That pod is
-the ordinary pod, which listens on TCP 53 with a plain HTTP listener; the ordinary pod's own
-connection to it succeeds, which shows the listener is up and the refusal is the policy's.
+`./test.sh` section 7/7 reads the annotation back from the API, then reads what the guest
+itself reports: only loopback has an address, the sandbox has no route, and every interface
+other than `lo` is down. The guest also has a `dummy0` interface, from its image, which is
+down and has no address. A TCP connect from the sandbox to the cluster's `kubernetes` Service on port
+443 fails with `Network is unreachable`, while the same connect from the ordinary pod on the
+same node succeeds, so the failure is the sandbox's and not the Service's. The API still
+reports a `podIP` for the sandbox pod: the host side allocates it, and no interface in the
+guest carries it.
 
 ```text
-== 7/7 network boundary of the validation sandbox =====================================
-  interface dummy0 76:e3:b8:b3:30:19 down
-  interface eth0 c6:03:8e:e6:55:14 up
-  interface lo 00:00:00:00:00:00 unknown
-  NetworkPolicy objects: networkpolicy.networking.k8s.io/isolated-sandbox-pod-policy
-  PASS  the sandbox pod's egress policy is present
-  NETWORK POLICY OK: egress only to kube-system/k8s-app=kube-dns on port 53
-  PASS  the live policy allows egress only to kube-system/k8s-app=kube-dns on port 53
-  sandbox DNS lookup of kubernetes.default.svc.cluster.local: 172.20.0.1
-  PASS  ALLOW: DNS answers from inside the sandbox
-  sandbox TCP connect to 172.20.0.1:443: refused
-  PASS  DENY: a TCP connect the policy does not allow is refused
-  ordinary pod TCP connect to 172.20.0.1:443: connected
-  PASS  the same connect from the ordinary pod, which no policy selects, succeeds (control for the previous check)
-  ordinary pod's own TCP 53 listener at <ORDINARY_POD_IP>:53, from inside it: connected
-  PASS  the port-53 decoy listener in the ordinary pod answers (control for the next check)
-  sandbox TCP connect to the non-DNS pod <ORDINARY_POD_IP>:53: refused
-  PASS  DENY: port 53 to a pod that is not cluster DNS is refused
+TODO: output from the fresh run
 ```
 
-*`./test.sh` section 7/7, whole. The ordinary pod's IP is shown as `<ORDINARY_POD_IP>`.
-`172.20.0.1`, the address the DNS lookup returned for the cluster's `kubernetes` Service, is
-kept as printed.*
+The sample ships no network policy, and creates no Ingress, LoadBalancer or NodePort. For
+how a network policy restricts where a sandboxed pod can connect, see the
+[network policy](../../isolation/network-policy/README.md) sample.
 
 ### Clusterless checks
 
@@ -884,11 +838,11 @@ first on `PATH` where a live input cannot be made:
 bash packages/test-bundle.sh          # bundle built and consumed against sources.lock; tampered, unlisted and unsafe members refused
 bash packages/test-inputs.sh          # runtime archive and host-kernel patch (cached or downloaded), both ways
 bash scripts/test-host-gates.sh       # containerd gate, .config assertion, root filesystem at boot, IMDS token never on argv
-bash scripts/test-cluster-gates.sh    # kube context, vpc-cni, RuntimeClass, DNS pods, user data, node capacity, namespace, pod wait, egress policy
+bash scripts/test-cluster-gates.sh    # kube context, vpc-cni ACTIVE (network policy on or off), RuntimeClass, user data, node capacity, namespace, pod wait
 bash scripts/test-launch-specs.sh     # IMDSv2 hop limit 1, enclaves and run tags on the node template, verification instance and build host
 bash scripts/test-run-scope.sh        # per-run IAM, run-scoped clean up, IAM by name, the node role's access entry, every failed lookup, --list-runs, staging revocation
 bash scripts/test-image-checks.sh     # containerd wiring, AppArmor stage, package holds, bake residue, verify-image.py (Python 3.11+)
-bash scripts/test-apparmor-checks.sh  # test.sh's AppArmor checks, the Unconfined sandbox and the 443 control; the profile's signal and audit-deny rules
+bash scripts/test-apparmor-checks.sh  # test.sh's AppArmor checks, the Unconfined sandbox, the no-network checks and their control; the profile's signal and audit-deny rules
 bash scripts/test-btf-tag.sh          # BtfValidated=true only after both fresh-instance checks pass, only on this run's AMI
 bash scripts/test-setup-flow.sh       # bounded SSM, AMI, status and reboot waits; --ami-only and --join, both ways
 bash scripts/test-local-paths.sh      # local state only under the repository's tmp/

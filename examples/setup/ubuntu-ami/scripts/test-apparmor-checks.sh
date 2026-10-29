@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# test-apparmor-checks.sh: proves test.sh's AppArmor checks (criterion 8) and its network-policy
-# control both ways, in the REAL test.sh, with a stub `kubectl` and `aws` first on PATH (no
+# test-apparmor-checks.sh: proves test.sh's AppArmor checks (criterion 8) and its no-network
+# checks (7/7) both ways, in the REAL test.sh, with a stub `kubectl` and `aws` first on PATH (no
 # cluster, no AWS account), and the AppArmor profile's own rules in the REAL
 # scripts/check-apparmor-profile.py. The stub answers every call test.sh makes with a good node;
 # each case changes one answer, and must make exactly its own check fail:
@@ -13,8 +13,15 @@
 #       and deleted by its exact name it is gone within its grace period with no DENIED signal.
 #   8c  the reject control (deploy/pod-apparmor-reject.yaml) is refused with containerd's exact
 #       message for a missing profile.
-#   the sandbox pod runs Unconfined; the 443 refusal from the sandbox has its control (the same
-#   connect from the ordinary pod succeeds).
+#   the sandbox pod runs Unconfined.
+#   7/7 the sandbox has no network: the pod carries sandbox.amazonaws.com/network-isolated="true"
+#       (read from the API); test.sh's own in-guest network read (run here for real, on a fake
+#       guest tree) shows only loopback with an address, no route, and every interface but lo
+#       down (dummy0 down passes; dummy0 up, an extra address, a route, an unreadable file or an
+#       incomplete read fail); test.sh's own connect probe (run here for real, with only
+#       connect() faked) fails from the sandbox with ENETUNREACH (Network is unreachable), never
+#       passing on a connect, a timeout, ECONNREFUSED, EHOSTUNREACH, an exec error or empty
+#       output; and the same connect from the ordinary pod succeeds (the control).
 #   static: the profile carries the signal rules containerd's default profile has and audit-deny
 #   rules only.
 #
@@ -118,6 +125,7 @@ if a[:2] == ["get", "pod"] and len(a) > 2:
         if p == "{.spec.nodeName}": out(E("STUB_SCOPED_NODE", NODE))
         if p == "{.spec.terminationGracePeriodSeconds}": out(E("STUB_GRACE", "15"))
     if pod == "isolated-sandbox-pod":
+        if p == "{.metadata.annotations.sandbox\\.amazonaws\\.com/network-isolated}": out(E("STUB_SBX_ANNOT", "true"))
         if p.endswith("appArmorProfile.type}"): out(E("STUB_SBX_TYPE", "Unconfined"))
         if p == "{.status.phase}": out(E("STUB_SBX_PHASE", "Running"))
         if p == "{.status.startTime}":
@@ -131,10 +139,65 @@ if a[:2] == ["get", "pod"] and len(a) > 2:
         if p.endswith("waiting.message}"):
             out({"refused": REJ_MSG, "running": "", "other": "failed to create containerd container: some other error",
                  "unanchored": "kubelet: " + REJ_MSG + " (retrying)", "imagepull": "pull access denied"}[rej])
-    if pod == "ordinary-pod" and p == "{.status.podIP}":
-        out("10.0.0.9")
+if line == "get service kubernetes -n default -o jsonpath={.spec.clusterIP}":
+    out(E("STUB_API_IP", "172.20.0.1"))
 if a[:1] == ["exec"]:
     pod, cmd = a[1], " ".join(a[a.index("--") + 1:])
+    rest = a[a.index("--") + 1:]
+    def exec_error():
+        sys.stderr.write("error: unable to upgrade connection: container not found\n"); sys.exit(1)
+    # test.sh's own connect probe (python3 -c <code> <ip>) is RUN here, for real, with only the
+    # socket's connect() faked by sitecustomize.py (FAKE_CONNECT: an errno name, timeout or
+    # connected), so the case decides what the network answers and test.sh's code decides the rest.
+    if rest[:2] == ["python3", "-c"] and len(rest) == 4 and "socket" in rest[2]:
+        mode = E("STUB_SBX_CONNECT", "ENETUNREACH") if pod == "isolated-sandbox-pod" else E("STUB_ORD_CONNECT", "connected")
+        if mode == "exec-error": exec_error()
+        if mode == "empty": out("")
+        if rest[3] != E("STUB_API_IP", "172.20.0.1"):
+            sys.exit(f"STUB kubectl: the connect probe is aimed at {rest[3]}, not the API Service's ClusterIP")
+        import subprocess
+        r = subprocess.run([sys.executable, "-c", rest[2], rest[3]], capture_output=True, text=True,
+                           env=dict(os.environ, PYTHONPATH=E("STUB_FAKESOCK"), FAKE_CONNECT=mode))
+        sys.stdout.write(r.stdout); sys.stderr.write(r.stderr); sys.exit(r.returncode)
+    # test.sh's own in-guest network read (sh -c <script>) is RUN here, for real, against a fake
+    # /proc/net and /sys/class/net built from the case: its paths point into that tree, and the
+    # tree's prefix is taken off its output again, so test.sh's code decides everything else.
+    if pod == "isolated-sandbox-pod" and rest[:2] == ["sh", "-c"] and "NET-READ-END" in rest[2]:
+        mode = E("STUB_SBX_NET_EXEC", "ok")
+        if mode == "error": exec_error()
+        import subprocess
+        root = os.path.join(E("STUB_STATE"), "guest")
+        net, sysnet = os.path.join(root, "proc", "net"), os.path.join(root, "sys", "class", "net")
+        os.makedirs(net); os.makedirs(sysnet)
+        nofile, unreadable = E("STUB_SBX_NOFILE", "").split(), E("STUB_SBX_UNREADABLE", "").split()
+        def put(name, text):
+            p = os.path.join(net, name)
+            if name in unreadable: os.makedirs(p)   # [ -r ] passes, cat fails
+            elif name not in nofile: open(p, "w").write(text)
+        addrs = E("STUB_SBX_ADDR4", "127.0.0.1").split()
+        lo = ["  +-- 127.0.0.0/8 2 0 2", "     +-- 127.0.0.0/31 1 0 0", "        |-- 127.0.0.0", "           /8 host LOCAL"] \
+            + (["        |-- 127.0.0.1", "           /32 host LOCAL"] if "127.0.0.1" in addrs else []) \
+            + ["     |-- 127.255.255.255", "        /32 link BROADCAST"]
+        other = [l for x in addrs if x != "127.0.0.1" for l in (f"  +-- {x}/32 1 0 0", f"     |-- {x}", "        /32 host LOCAL")]
+        put("fib_trie", "\n".join(["Main:"] + lo + other + ["Local:"] + lo + other) + "\n")
+        put("route", "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT" + " " * 59 + "\n"
+            + "".join(r.replace(" ", "\t") + "\n" for r in E("STUB_SBX_ROUTE", "").split("+") if r))
+        v6 = E("STUB_SBX_V6", "00000000000000000000000000000001 01 80 10 80       lo")
+        if v6 != "absent":   # one line per '+'-separated entry
+            put("if_inet6", "".join(r + "\n" for r in v6.split("+") if r))
+        if "sysnet" in nofile: os.rmdir(sysnet)
+        for entry in ([] if "sysnet" in nofile else E("STUB_SBX_IFS", "dummy0:down lo:unknown").split()):
+            name, state = entry.split(":")
+            os.makedirs(os.path.join(sysnet, name))
+            if state != "-": open(os.path.join(sysnet, name, "operstate"), "w").write(state + "\n")
+        script = rest[2].replace("/proc/net/", net + "/").replace("/sys/class/net", sysnet)
+        if script.count(root) < 5:
+            sys.exit("STUB kubectl: the network read does not name the files this stub models")
+        r = subprocess.run(["sh", "-c", script], capture_output=True, text=True)
+        text = r.stdout.replace(root, "")
+        if mode == "noend": text = text.replace("NET-READ-END\n", "")
+        if mode == "extra": text = text.replace("NET-READ-END\n", "something else\nNET-READ-END\n")
+        sys.stdout.write(text); sys.exit(r.returncode)
     if cmd == "date -u +%s": out("1700000000\n")
     if cmd == "cat /proc/self/attr/current":
         out({"apparmor-scoped-pod": E("STUB_SCOPED_ATTR", f"{SAMPLE_PROFILE} (enforce)"),
@@ -147,11 +210,6 @@ if a[:1] == ["exec"]:
     if cmd == "uname -r": out("6.18.56-nitro-ga\n" if pod == "ordinary-pod" else "6.18.54\n")
     if "/sys/block" in cmd: out("nvme0n1 " if pod == "ordinary-pod" else "vda vdb vdc ")
     if cmd == "cat /proc/uptime": out("50000.00 1.00\n" if pod == "ordinary-pod" else "100.00 1.00\n")
-    if "/sys/class/net" in cmd: out("interface eth0 0e:00:00:00:00:01 up\ninterface lo 00:00:00:00:00:00 unknown\n")
-    if "getent hosts" in cmd: out("172.20.0.1\n")
-    if "/dev/tcp/172.20.0.1/443" in cmd:
-        out((E("STUB_ORD_443", "connected") if pod == "ordinary-pod" else "refused") + "\n")
-    if "/dev/tcp/10.0.0.9/53" in cmd: out("connected\n" if pod == "ordinary-pod" else "refused\n")
 if a[:1] == ["debug"]:
     sys.stderr.write(f"Creating debugging pod {DBG} with container debugger on node {NODE}.\n"); sys.exit(0)
 if a[:1] == ["wait"]:
@@ -169,15 +227,25 @@ if a[:1] == ["logs"]:
         f"apparmor_signal_denials={E('STUB_SIGNAL_DENIALS', '0')}", f"apparmor_bogus_signal_denials={E('STUB_BOGUS_SIGNAL_DENIALS', '0')}"]) + "\n")
 if line == "get runtimeclass isolated-sandbox -o jsonpath={.metadata.name}":
     out("isolated-sandbox")
-if line == f"get networkpolicy -n {NS} -o name":
-    out("networkpolicy.networking.k8s.io/isolated-sandbox-pod-policy\n")
-if line == f"get networkpolicy isolated-sandbox-pod-policy -n {NS} -o json":
-    peer = {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
-            "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}
-    out(json.dumps({"spec": {"podSelector": {"matchLabels": {"app": "isolated-sandbox-pod"}}, "policyTypes": ["Ingress", "Egress"],
-                             "ingress": [], "egress": [{"to": [peer], "ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}]}]}}))
 sys.exit(f"STUB kubectl: unexpected call: {line}")
 PY
+# sitecustomize.py for the connect probe the stub runs: fakes only socket.connect(), as
+# FAKE_CONNECT says (an errno name such as ENETUNREACH, "timeout", or "connected").
+mkdir -p "$STUB/fakesock"
+cat > "$STUB/fakesock/sitecustomize.py" <<'PY'
+import errno, os, socket
+_mode = os.environ.get("FAKE_CONNECT")
+if _mode:
+    def _connect(self, address):
+        if _mode == "connected":
+            return None
+        if _mode == "timeout":
+            raise socket.timeout("timed out")
+        code = getattr(errno, _mode)
+        raise OSError(code, os.strerror(code))
+    socket.socket.connect = _connect
+PY
+export STUB_FAKESOCK="$STUB/fakesock" PYTHONDONTWRITEBYTECODE=1
 chmod +x "$STUB/aws" "$STUB/kubectl"
 export PATH="$STUB:$PATH"
 
@@ -205,14 +273,36 @@ A_SIGNAL="ACCEPT: the node logged no DENIED signal under ubuntu-ami-sample-profi
 A_BOGUS_SIGNAL="REJECT: the same signal count for a profile the node never loaded is 0"
 A_REJ="REJECT: a pod naming an unloaded AppArmor profile is refused on the sandbox node: CreateContainerError"
 A_SBX="the sandbox pod runs with appArmorProfile Unconfined, as the GA build notes require"
-A_443="the same connect from the ordinary pod, which no policy selects, succeeds (control for the previous check)"
+A_ANNOT='the sandbox pod carries sandbox.amazonaws.com/network-isolated="true" (read back from the API)'
+A_ADDR="only loopback has an address in the sandbox"
+A_ROUTE="the sandbox has no route"
+A_IFDOWN="every sandbox interface other than lo is down"
+A_NOCONN="the sandbox's TCP connect to the API Service fails with Network is unreachable (ENETUNREACH)"
+A_CONNCTL="the same connect from the ordinary pod succeeds (control for the previous check)"
 
-echo "== 1/3 ACCEPT: the scoped profile working on an ordinary pod, the sandbox Unconfined =========="
+echo "== 1/3 ACCEPT: the scoped profile on an ordinary pod, the sandbox Unconfined and with no network ="
 rc=0; t good || rc=$?
 check "ACCEPT the good node: the real test.sh passes every check" 0 "$rc" "$WORK/good.log" '^passed [0-9]+, failed 0$'
 for a in "$A_LOADED" "$A_SHA" "$A_RUNS" "$A_ATTR" "$A_ORD" "$A_EACCES" "$A_CONTROL" "$A_DENIED" "$A_BOGUS" "$A_GONE" \
-         "$A_SIGNAL" "$A_BOGUS_SIGNAL" "$A_REJ" "$A_SBX" "$A_443"; do
+         "$A_SIGNAL" "$A_BOGUS_SIGNAL" "$A_REJ" "$A_SBX" "$A_ANNOT" "$A_ADDR" "$A_ROUTE" "$A_IFDOWN" "$A_NOCONN" "$A_CONNCTL"; do
   [ "$(line good "$a")" = PASS ]; check "  ... PASS: $a" 0 $? "$WORK/good.log"
+done
+grep -qx '  sandbox TCP connect to 172.20.0.1:443: errno=ENETUNREACH (Network is unreachable)' "$WORK/good.log" \
+  && grep -qx '  ordinary pod TCP connect to 172.20.0.1:443: connected' "$WORK/good.log"
+check "  ... test.sh's own connect probe, run for real (only connect() faked), printed the errno for the sandbox and connected for the ordinary pod, at the ClusterIP read from the API" 0 $? "$WORK/good.log"
+grep -qx '  sandbox interfaces (/sys/class/net, operstate): dummy0 down, lo unknown' "$WORK/good.log" \
+  && grep -qx '  sandbox IPv4 local addresses (/proc/net/fib_trie): 127.0.0.1' "$WORK/good.log" \
+  && grep -qx '  sandbox IPv6 addresses (/proc/net/if_inet6): ::1 on lo' "$WORK/good.log" \
+  && grep -qx '  sandbox IPv4 routes (/proc/net/route): none (header line only)' "$WORK/good.log"
+check "  ... test.sh's own network read, run for real on a guest tree like the probe's (dummy0 down, lo), printed every interface, the addresses and no route" 0 $? "$WORK/good.log"
+grep -qx 'get service kubernetes -n default -o jsonpath={.spec.clusterIP}' "$WORK/good.calls" \
+  && ! grep -qE '^get networkpolicy|getent|/dev/tcp' "$WORK/good.calls"
+check "  ... it read the ClusterIP from the API and made no network policy, DNS or /dev/tcp call" 0 $? "$WORK/good.calls"
+# More guests that have no network and must be accepted: no IPv6 at all (no if_inet6), an empty
+# if_inet6 (what a container started with --network none shows), and only lo (no dummy0).
+for c in v6absent:STUB_SBX_V6=absent v6empty:STUB_SBX_V6= loonly:STUB_SBX_IFS=lo:unknown; do
+  rc=0; t "${c%%:*}" "${c#*:}" || rc=$?
+  check "ACCEPT ${c%%:*} (${c#*:}): every check passes" 0 "$rc" "$WORK/${c%%:*}.log" '^passed [0-9]+, failed 0$'
 done
 grep -q 'name: apparmor-scoped-pod' "$WORK/good.applied" && grep -q 'localhostProfile: ubuntu-ami-sample-profile' "$WORK/good.applied" \
   && grep -q 'eks.amazonaws.com/nodegroup: "ubuntu-ami-sample-testrun1-ng"' "$WORK/good.applied" && ! grep -q '@NODEGROUP@' "$WORK/good.applied"
@@ -266,8 +356,49 @@ rejunanchored|STUB_REJ=unanchored|$A_REJ
 rejimagepull|STUB_REJ=imagepull|$A_REJ
 sbxlocalhost|STUB_SBX_TYPE=Localhost|$A_SBX
 sbxfailed|STUB_SBX_PHASE=Failed|$A_SBX
-ord443|STUB_ORD_443=refused|$A_443
+annotfalse|STUB_SBX_ANNOT=false|$A_ANNOT
+annotabsent|STUB_SBX_ANNOT=|$A_ANNOT
+addr4extra|STUB_SBX_ADDR4=127.0.0.1 192.0.2.10|$A_ADDR
+addr4none|STUB_SBX_ADDR4=|$A_ADDR
+addr6extra|STUB_SBX_V6=00000000000000000000000000000001 01 80 10 80       lo+fe80000000000000021122fffe334455 02 40 20 80   dummy0|$A_ADDR
+addr6garbled|STUB_SBX_V6=not an if_inet6 line|$A_ADDR
+fibmissing|STUB_SBX_NOFILE=fib_trie|$A_ADDR
+fibunreadable|STUB_SBX_UNREADABLE=fib_trie|$A_ADDR
+v6unreadable|STUB_SBX_UNREADABLE=if_inet6|$A_ADDR
+route|STUB_SBX_ROUTE=eth0 00000000 0100000A 0003 0 0 0 00000000 0 0 0|$A_ROUTE
+routemissing|STUB_SBX_NOFILE=route|$A_ROUTE
+routeunreadable|STUB_SBX_UNREADABLE=route|$A_ROUTE
+dummy0up|STUB_SBX_IFS=dummy0:up lo:unknown|$A_IFDOWN
+eth0up|STUB_SBX_IFS=eth0:up dummy0:down lo:unknown|$A_IFDOWN
+dummy0unknown|STUB_SBX_IFS=dummy0:unknown lo:unknown|$A_IFDOWN
+nooperstate|STUB_SBX_IFS=dummy0:- lo:unknown|$A_IFDOWN
+nolo|STUB_SBX_IFS=dummy0:down|$A_IFDOWN
+sysnetmissing|STUB_SBX_NOFILE=sysnet|$A_IFDOWN
+sbxconnected|STUB_SBX_CONNECT=connected|$A_NOCONN
+sbxtimeout|STUB_SBX_CONNECT=timeout|$A_NOCONN
+sbxrefused|STUB_SBX_CONNECT=ECONNREFUSED|$A_NOCONN
+sbxhostunreach|STUB_SBX_CONNECT=EHOSTUNREACH|$A_NOCONN
+sbxexecerr|STUB_SBX_CONNECT=exec-error|$A_NOCONN
+sbxempty|STUB_SBX_CONNECT=empty|$A_NOCONN
+ordrefused|STUB_ORD_CONNECT=ECONNREFUSED|$A_CONNCTL
+ordtimeout|STUB_ORD_CONNECT=timeout|$A_CONNCTL
+ordexecerr|STUB_ORD_CONNECT=exec-error|$A_CONNCTL
 CASES
+# No ClusterIP from the API: neither connect can be aimed, so both fail, and nothing else does.
+rc=0; t noip STUB_API_IP= || rc=$?
+[ "$rc" = 1 ] && [ "$(line noip "$A_NOCONN")" = FAIL ] && [ "$(line noip "$A_CONNCTL")" = FAIL ] && [ "$(grep -c '^  FAIL  ' "$WORK/noip.log")" = 2 ] \
+  && grep -qx '  sandbox TCP connect to ?:443: <no ClusterIP>' "$WORK/noip.log"
+check "REJECT noip: with no ClusterIP read from the API, both connect checks fail, and they are the only failing checks" 0 $? "$WORK/noip.log"
+# A network read that did not run to its end proves nothing: the exec fails, the end marker is
+# missing, or a line the read never prints appears. Then the address, route and interface checks
+# all fail, and nothing else does.
+for c in netexecerr:error netnoend:noend netextra:extra; do
+  rc=0; t "${c%%:*}" "STUB_SBX_NET_EXEC=${c#*:}" || rc=$?
+  [ "$rc" = 1 ] && [ "$(line "${c%%:*}" "$A_ADDR")" = FAIL ] && [ "$(line "${c%%:*}" "$A_ROUTE")" = FAIL ] \
+    && [ "$(line "${c%%:*}" "$A_IFDOWN")" = FAIL ] && [ "$(grep -c '^  FAIL  ' "$WORK/${c%%:*}.log")" = 3 ] \
+    && grep -q "the sandbox's network read did not complete" "$WORK/${c%%:*}.log"
+  check "REJECT ${c%%:*} (STUB_SBX_NET_EXEC=${c#*:}): the address, route and interface checks fail, and they are the only failing checks" 0 $? "$WORK/${c%%:*}.log"
+done
 
 echo "== 3/3 static: the profile's own rules, scripts/check-apparmor-profile.py ======================"
 P="$SAMPLE/manifests/ubuntu-ami-sample-profile"
@@ -293,4 +424,4 @@ pm othername   "another profile name" 't.replace("profile ubuntu-ami-sample-prof
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]] || exit 1
-echo "test.sh's AppArmor checks and the 443 control proven both ways in the real script, and the profile's rules in the real checker."
+echo "test.sh's AppArmor checks and its no-network checks proven both ways in the real script, and the profile's rules in the real checker."
