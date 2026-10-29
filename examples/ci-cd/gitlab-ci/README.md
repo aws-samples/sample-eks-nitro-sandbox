@@ -46,8 +46,9 @@ Every output block on this page is from one run of this sample, which began with
 resources present on the cluster: the namespace, GitLab, the runner manager and any job pod
 were all absent before it started. Local names in that output are replaced by the
 placeholders the commands use, because this repository is public: `<CLUSTER_NAME>` for the
-kube context and `<NODE_NAME>` for an EC2 instance id. Pod names, pod UIDs, kernel builds,
-uptimes, device lists and timings are as the run printed them.
+kube context, `<NODE_NAME>` for an EC2 instance id and `<VOLUME_ID>` for the id of the EBS
+volume behind GitLab's claim. Pod names, pod UIDs, kernel builds, uptimes, device lists and
+timings are as the run printed them.
 
 There is no model or API cost. While the sample is up, one GitLab pod and its EBS volume run
 on the general-purpose pool; each pipeline run holds sandbox capacity for the length of its
@@ -438,7 +439,10 @@ runner setting rather than a per-job one; Step 5 says what that bounds and what 
 
 GitLab's own view of the same run is the pipeline page, which is where its **Run pipeline**
 button leads. Forward the Service as Step 1 shows and open the project to see it. This is that
-page for the run above, from the same pipeline the block records:
+page for the run above, from the same pipeline the block records. The account it shows is
+GitLab's own built-in `root` user, whose display name in a fresh GitLab is `Administrator`:
+that is the account Step 1 has you sign in as and the one the scripts work as, not a user this
+sample creates, so a reader's own screen says the same:
 
 *Figure 2: The same pipeline in GitLab's own UI, reached through `kubectl port-forward`. One
 job, `docker-build`, which GitLab shows as passed. Nothing on this page mentions a sandbox or
@@ -869,7 +873,7 @@ gitlab-runner-5b694d4d85-k6x7n
   context '<CLUSTER_NAME>', namespace 'gitlab-ci-demo' is labelled ManagedBy=gitlab-ci.
 
 ==> 2/6 the EBS volume behind GitLab's claim
-  claim gitlab-data is EBS volume vol-017ad45b81d791207, reclaim policy Delete.
+  claim gitlab-data is EBS volume <VOLUME_ID>, reclaim policy Delete.
 
 ==> 3/6 the runner manager
 deployment.apps "gitlab-runner" deleted from gitlab-ci-demo namespace
@@ -885,8 +889,8 @@ namespace "gitlab-ci-demo" deleted
 ==> 6/6 confirming
   namespace 'gitlab-ci-demo' is gone.
   no pod labelled app=gitlab-ci-job is left anywhere on the cluster.
-  waiting for EBS volume vol-017ad45b81d791207 to go, in us-west-2.
-  EBS volume vol-017ad45b81d791207 is gone.
+  waiting for EBS volume <VOLUME_ID> to go, in us-west-2.
+  EBS volume <VOLUME_ID> is gone.
 
 clean up complete. Removed: namespace gitlab-ci-demo and whatever was in it, which for a full run
 of this sample is GitLab, its claim and its EBS volume, the runner manager with its
