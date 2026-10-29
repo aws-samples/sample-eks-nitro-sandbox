@@ -7,15 +7,16 @@ installed: Cilium gives every pod, the sandbox pod included, a real VPC address,
 every Service in eBPF, and is proved to enforce the same network policy on the sandbox pod as
 on an ordinary pod.
 
-> **Status: setup and evidence run live; cleanup not yet recorded.** This page covers every
-> stage below: the cluster, the Cilium operator's AWS permissions, the Cilium install itself,
-> the two Ubuntu node groups, the BTF gate, the isolated-sandbox RuntimeClass, and the sandbox
-> pod / Service boundary / policy evidence (`test.sh`, `clean.sh`, `deploy/workloads.yaml`,
+> **Status: setup, evidence and clean-up run live.** This page covers every stage below: the
+> cluster, the Cilium operator's AWS permissions, the Cilium install itself, the two Ubuntu node
+> groups, the BTF gate, the isolated-sandbox RuntimeClass, and the sandbox pod / Service
+> boundary / policy evidence (`test.sh`, `clean.sh`, `deploy/workloads.yaml`,
 > `deploy/policy.yaml`). The pins follow the GA node-build bundle `nitro-sandbox-ga-20261028`.
-> The output blocks come from one fresh run on a new cluster, including the missing-BTF and
-> `socketLB.hostNamespaceOnly` negative controls. Four blocks still read
-> `TODO: output from the fresh run`: the two `clean.sh` blocks, which only the teardown can
-> produce, and the stage 4 and stage 6 `kubectl` reads, which that run did not capture.
+> The output blocks come from two fresh runs, each on a new cluster. The first fresh run gave
+> every block except four, including the missing-BTF and `socketLB.hostNamespaceOnly` negative
+> controls. The independent walk of this page, a second fresh run at commit `d68f263`, gave the
+> other four: the stage 4 and stage 6 `kubectl` reads, which the first run did not capture, and
+> the two `clean.sh` blocks.
 
 !!! danger "Before this sample is merged to `main` or marked available: a gate, not a suggestion"
 
@@ -146,7 +147,7 @@ health, BTF loading, ENI allocation, Service translation and the policy controls
 | Component | Pin | Latest checked (2026-10-28) |
 |---|---|---|
 | [Amazon EKS Kubernetes](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html) | 1.36 | 1.36 |
-| Ubuntu system and sandbox nodes | Ubuntu 24.04 LTS (Canonical's EKS 1.36 AMI). The fresh run had 24.04.5 LTS on both nodes, and its `SYSTEM_AMI_ID` was Canonical's serial `20261027` | 24.04.5 LTS |
+| Ubuntu system and sandbox nodes | Ubuntu 24.04 LTS (Canonical's EKS 1.36 AMI). The first fresh run had 24.04.5 LTS on both nodes, and its `SYSTEM_AMI_ID` was Canonical's serial `20261027` | 24.04.5 LTS |
 | Ubuntu EKS Pod Isolation AMI | Output of [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10), built from the GA bundle and BTF-validated (`ManagedBy` and `BtfValidated=true` tags) | Revalidate with a fresh #10 build |
 | Host kernel on the sandbox node | `6.18.56-nitro-ga`: kernel.org Linux 6.18.56 plus the public commit [amazonlinux/linux 1e66c960](https://github.com/amazonlinux/linux/commit/1e66c960b982c94bda76ebd0129eaecf0a68b46e), built by #10 (this sample builds no kernel) | 6.18.56 |
 | Guest kernel in the sandbox pod | 6.18.54, inside the bundle's guest image `latest.eif` | 6.18.54 |
@@ -154,12 +155,12 @@ health, BTF loading, ENI allocation, Service translation and the policy controls
 | containerd on the sandbox AMI | 2.2.1, as Canonical's EKS 1.36 Ubuntu AMI ships it; the runtime supports 2.1, 2.2 and 2.3, and its installer refuses 2.4 or later | 2.2.1 |
 | erofs-utils on the sandbox AMI | 1.8.10 with zstd, built by #10 | 1.8.10 |
 | [Cilium](https://github.com/cilium/cilium) Helm chart | 1.20.2 | 1.20.2 |
-| [eksctl](https://github.com/eksctl-io/eksctl) | 0.230.0 or newer; the fresh run used 0.230.0. eksctl takes the list of EKS versions from the EKS API (since [0.202.0](https://github.com/eksctl-io/eksctl/releases/tag/v0.202.0)), so 0.230.0 is the release this path was first validated with, not a 1.36-specific minimum | 0.231.0 |
-| [Helm](https://github.com/helm/helm) | The fresh run used the Helm client v3.19.0 | not checked |
+| [eksctl](https://github.com/eksctl-io/eksctl) | 0.230.0 or newer; the first fresh run used 0.230.0. eksctl takes the list of EKS versions from the EKS API (since [0.202.0](https://github.com/eksctl-io/eksctl/releases/tag/v0.202.0)), so 0.230.0 is the release this path was first validated with, not a 1.36-specific minimum | 0.231.0 |
+| [Helm](https://github.com/helm/helm) | The first fresh run used the Helm client v3.19.0 | not checked |
 
 Where those run values come from:
 
-- **From the fresh run's own output:** the Ubuntu point release (a `kubectl get nodes -o wide`
+- **From the first fresh run's own output:** the Ubuntu point release (a `kubectl get nodes -o wide`
   read on its cluster), the system AMI's serial (the AMI name `setup.sh` printed in step 1/8) and
   eksctl's release (eksctl's first line in step 2/8).
 - **From the tool on the run's host:** the Helm client release, read with `helm version` before
@@ -179,18 +180,23 @@ Where those run values come from:
 | [7. Tag what AWS created for the cluster](#7-tag-what-aws-created-for-the-cluster) | Nothing: the resources AWS creates with no tag at creation | One line per resource tagged, then the tag audit passing |
 | [8. The sandbox pod, Service boundary and policy evidence](#evidence-testsh) | `test.sh`, `deploy/workloads.yaml`, `deploy/policy.yaml` | The seven pods Ready and the networking, BTF and policy proofs |
 
-**Where the output blocks come from.** Every block is from one fresh run on a new cluster in
-`us-west-2`, with the default names in `config.env.example`.
+**Where the output blocks come from.** The blocks are from two fresh runs, each on a new
+cluster in `us-west-2`, with the default names in `config.env.example`.
 
-- **Stages 0 to 7:** the `setup.sh` blocks are from its first run, at commit `8ae3c30`. That
-  run passed steps 1/8 to 8/8, then stopped in its closing summary on a variable no shell file
-  set.
-- **The summary:** commit `9c2872e` sets that variable and changes nothing else. The summary
-  block at the end of stage 7 is from `setup.sh` run again at `9c2872e` against the same
-  cluster.
-- **The other blocks:** read from that cluster after the second run.
-- **Masking:** values from the run's account and environment are replaced with placeholders such
-  as `<ACCOUNT_ID>` and `<SANDBOX_NODE>`. Each block says what it masks or cuts.
+- **The first fresh run, stages 0 to 7:** the `setup.sh` blocks are from its first run, at
+  commit `8ae3c30`. That run passed steps 1/8 to 8/8, then stopped in its closing summary on a
+  variable no shell file set.
+- **The first fresh run, the summary:** commit `9c2872e` sets that variable and changes nothing
+  else. The summary block at the end of stage 7 is from `setup.sh` run again at `9c2872e`
+  against the same cluster.
+- **The first fresh run, the other blocks:** read from that cluster after the second run,
+  except the four below.
+- **The independent walk:** a second fresh run, by a reviewer who followed this page from a
+  clean checkout at commit `d68f263`, on a new cluster of its own. Four blocks are from it: the
+  stage 4 node and agent reads, the stage 6 RuntimeClass read, and the two `clean.sh` blocks.
+  Each of them says so.
+- **Masking:** values from each run's account and environment are replaced with placeholders
+  such as `<ACCOUNT_ID>` and `<SANDBOX_NODE>`. Each block says what it masks or cuts.
 
 ### 0. Prerequisites and the AMI preflight
 
@@ -217,7 +223,7 @@ stops and tells you what did not match. `setup.sh` also checks `cilium-values.ya
 (`check-cilium-values`): kube-proxy replacement on, the socket load balancer in the host
 namespace only, ENI IPAM and native routing.
 
-From the fresh run's `setup.sh`, step 1/8.
+From the first fresh run's `setup.sh`, step 1/8.
 
 - **Masked:** the caller ARN, the account id, both AMI ids, and the sandbox AMI's name, which is
   specific to its build.
@@ -265,7 +271,7 @@ What you see: the cluster has no `aws-node` or `kube-proxy` DaemonSet and no `vp
 kubectl -n kube-system get daemonset aws-node kube-proxy
 ```
 
-From the fresh run's `setup.sh`. Step 2/8 runs this command once the control plane is up and
+From the first fresh run's `setup.sh`. Step 2/8 runs this command once the control plane is up and
 prints its `NotFound` lines. Nothing is masked.
 
 ```text
@@ -394,7 +400,7 @@ line or ConfigMap text is refused):
 kubectl -n kube-system exec ds/cilium -c cilium-agent -- cilium-dbg status --verbose
 ```
 
-This command, run on the fresh run's cluster after the negative control below had been undone.
+This command, run on the first fresh run's cluster after the negative control below had been undone.
 At that point the cluster was on Helm revision 4, with the same values `setup.sh` installed.
 `ds/cilium` picked the system node's agent.
 
@@ -412,7 +418,7 @@ KubeProxyReplacement Details:
 
 The negative control, the sandbox pod's Service and DNS reachability with
 `hostNamespaceOnly: false`, is a separate control run: `test.sh` stays read-only and never flips
-the live Helm value. On the fresh run's cluster, the control changed only that value.
+the live Helm value. On the first fresh run's cluster, the control changed only that value.
 
 1. **Off.** It ran the same `helm upgrade` that `setup.sh` runs (the same release, chart,
    version and values file) with `--set socketLB.hostNamespaceOnly=false` added. That made Helm
@@ -536,11 +542,20 @@ kubectl get nodes -L eks.amazonaws.com/nodegroup,eks.amazonaws.com/nitro-sandbox
 kubectl -n kube-system get pods -l k8s-app=cilium -o wide
 ```
 
-The fresh run did not capture the first of these two reads, so this block waits for one that
-does. Stage 6 shows `setup.sh` confirming both nodes' labels on the same run.
+From the independent walk's fresh run (a second fresh cluster, at commit `d68f263`): the two
+reads above, one after the other, once both nodes had joined. The first run did not capture
+them.
+
+- **Masked:** the node names, the agent pod names and the node addresses.
+- **Run-specific:** the ages.
 
 ```text
-TODO: output from the fresh run
+NAME                                         STATUS   ROLES    AGE     VERSION   NODEGROUP   NITRO-SANDBOX   NITRO
+<SYSTEM_NODE>    Ready    <none>   4m6s    v1.36.4   system
+<SANDBOX_NODE>   Ready    <none>   4m10s   v1.36.4   sandbox     true            true
+NAME           READY   STATUS    RESTARTS   AGE     IP             NODE                                         NOMINATED NODE   READINESS GATES
+<CILIUM_AGENT_SANDBOX>   1/1     Running   0          4m10s   <SANDBOX_NODE_IP>   <SANDBOX_NODE>   <none>           <none>
+<CILIUM_AGENT_SYSTEM>   1/1     Running   0          4m7s    <SYSTEM_NODE_IP>    <SYSTEM_NODE>    <none>           <none>
 ```
 
 Before the sandbox node group is created, `setup.sh` also checks that the Cilium agent
@@ -569,7 +584,7 @@ config file and not the `cilium-config` ConfigMap. Anything but exactly `PRESENT
 kubectl -n kube-system exec ds/cilium -c cilium-agent -- sh -c 'test -s /sys/kernel/btf/vmlinux && echo PRESENT || echo MISSING'
 ```
 
-This test, run on the fresh run's cluster in each node's Cilium agent, named directly rather
+This test, run on the first fresh run's cluster in each node's Cilium agent, named directly rather
 than through `ds/cilium`, which picks one agent. An `ls -l /sys/kernel/btf/vmlinux` followed
 the test. `setup.sh`'s own gate on the same run printed `BTF present on node ...` for both nodes
 (step 6/8).
@@ -600,7 +615,7 @@ in either format is refused the same way.
 **The missing-BTF rejection.** Issue #11 asks for a failing control or a captured preflight
 failure that shows a missing-BTF kernel rejected before the node is accepted. No node without
 BTF was cheaply available: there is no Ubuntu EKS AMI without `CONFIG_DEBUG_INFO_BTF` to launch
-one from. So the fresh run captured it as a **stub-driven** run of the real
+one from. So the first fresh run captured it as a **stub-driven** run of the real
 `cilium_ubuntu.py check-btf` command.
 
 - **What the stub does:** a stub `kubectl`, first on `PATH`, replaces only the BTF read,
@@ -664,13 +679,36 @@ scheduling:
 kubectl get runtimeclass isolated-sandbox -o yaml
 ```
 
-The fresh run did not capture this read, so this block waits for one that does. On that run,
-`setup.sh` step 7/8 created the RuntimeClass and checked it: `runtimeclass.node.k8s.io/isolated-sandbox created`,
+The first fresh run did not capture this read. On that run, `setup.sh` step 7/8 created the
+RuntimeClass and checked it: `runtimeclass.node.k8s.io/isolated-sandbox created`,
 then `RuntimeClass isolated-sandbox: marked app.kubernetes.io/part-of=setup-cilium-ubuntu, handler isolated-sandbox, nodeSelector eks.amazonaws.com/nitro-sandbox=true,sandbox.preview/nitro=true, overhead eks.amazonaws.com/nitro-sandbox=1,memory=256Mi`.
 It also confirmed that the sandbox node carries both labels and the system node neither.
 
+The block is from the independent walk's fresh run (a second fresh cluster, at commit
+`d68f263`), read after its `setup.sh`.
+
+- **Masked:** the object's `uid`.
+- **Run-specific:** `creationTimestamp` and `resourceVersion`.
+
 ```text
-TODO: output from the fresh run
+apiVersion: node.k8s.io/v1
+handler: isolated-sandbox
+kind: RuntimeClass
+metadata:
+  creationTimestamp: "2026-10-29T14:58:37Z"
+  labels:
+    app.kubernetes.io/part-of: setup-cilium-ubuntu
+  name: isolated-sandbox
+  resourceVersion: "2586"
+  uid: <RUNTIMECLASS_UID>
+overhead:
+  podFixed:
+    eks.amazonaws.com/nitro-sandbox: "1"
+    memory: 256Mi
+scheduling:
+  nodeSelector:
+    eks.amazonaws.com/nitro-sandbox: "true"
+    sandbox.preview/nitro: "true"
 ```
 
 **AppArmor on the sandbox pod.** On an Ubuntu node, every `isolated-sandbox` pod sets
@@ -744,10 +782,22 @@ object there that lacks the tag and that the sweep may not write is reported wit
 for example `(Demo=another-demo; not in the set tag-sweep writes, ...)`, and `setup.sh` stops.
 Running `setup.sh` again repeats the sweep, which tags only what is still untagged.
 
+**EKS can replace the control plane's interfaces later, without tags.** On the Round 2 run,
+`setup.sh` tagged the control plane's two network interfaces in its first run (07:40Z to 07:59Z).
+At 09:05Z, about an hour and a half after that run started, EKS replaced both. The new
+interfaces carried no tags, so the tag audit that `test.sh` stage 8 runs, read again at 14:05Z,
+reported both as `MISSING network-interface <id>` (`49 resources, 2 without auto-delete=no`)
+and failed. They are
+EKS's own, for this cluster's control plane, and they went with the cluster: none was left
+after `clean.sh`, which never deletes them itself. Running `./setup.sh` again tags them: its step
+8 finds the control plane's interfaces by their description and the cluster security group,
+whichever ones exist when it runs. That re-tag was proved with a stub-driven run of the real
+step 8, not on a live cluster.
+
 What you see: one `tagged <kind> <id>` line for each resource the sweep tagged, its count, and
 the audit's summary.
 
-From the fresh run's `setup.sh`, step 8/8, and the line that opens its closing summary.
+From the first fresh run's `setup.sh`, step 8/8, and the line that opens its closing summary.
 
 - **Masked:** every resource id and generated name.
 - **The two security groups:** the cluster security group and the VPC's default security group.
@@ -934,7 +984,15 @@ What it checks, in order:
 6. **L7 HTTP policy, both ways.** Each client may `GET /` on `api:8080` (proxy verdict
    `Forwarded`, 200) but not `GET /admin` (proxy verdict `Denied`, 403). The verdict is read
    from the node-local Envoy proxy's own `cilium-dbg monitor --type l7` output, so an
-   app-issued 403 cannot be mistaken for a policy deny.
+   app-issued 403 cannot be mistaken for a policy deny. `test.sh` sends the two requests only
+   after the monitor prints its ready lines (`Listening for events on ...`, then
+   `Press Ctrl-C to quit`), waiting up to 20 seconds, and keeps the capture open for about 6
+   seconds from then and at least a second after the last request. If the lines never come, it
+   sends no request, and that lane's two L7 checks fail with "nothing was checked". An earlier
+   `test.sh` waited a fixed second instead. On the independent walk's first run, the sandbox
+   lane's allow request was missing from its capture, most likely because it came before the
+   monitor was listening, so that one check failed with "nothing was checked". The unchanged
+   rerun passed all 94.
 7. **FQDN policy, both ways.** Each client may reach `checkip.amazonaws.com` (recorded as a
    `lookup` in the agent's FQDN cache) but not `example.net`, which is dropped while it still
    resolves, and the unselected `server` pod still reaches it, so the deny is the policy, not
@@ -948,7 +1006,7 @@ What it checks, in order:
 ./test.sh
 ```
 
-From the fresh run's first `./test.sh`, at commit `9c2872e`, against the cluster `setup.sh`
+From the first fresh run's first `./test.sh`, at commit `9c2872e`, against the cluster `setup.sh`
 had created.
 
 - **Stage 0 on a fresh cluster:** the cluster was new for this run. Before `setup.sh` started,
@@ -1095,7 +1153,7 @@ cannot reach a ClusterIP Service or Service-based DNS with the setting off) is t
 control run in [stage 3](#3-install-cilium-before-any-node); `test.sh` stays read-only and
 does not flip the live Helm value.
 
-**The FQDN cache, read raw (criterion 13).** On the fresh run's cluster, after the FQDN probes from
+**The FQDN cache, read raw (criterion 13).** On the first fresh run's cluster, after the FQDN probes from
 each client pod, each node's Cilium agent was read with
 `kubectl -n kube-system exec <agent pod> -c cilium-agent -- cilium-dbg fqdn cache list`.
 
@@ -1131,11 +1189,17 @@ Endpoint   Source       FQDN                                           TTL   Exp
 <CONTROL_ENDPOINT_ID>        connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
 ```
 
-Each endpoint has three `connection` rows for `checkip.amazonaws.com.` and none for
-`example.net.`, though it has `lookup` rows for both, because the DNS rule sends every lookup
-through the proxy. So the cache records which allowed name each pod connected to. The deny itself
-is shown, as the paragraph above says, by the timeout while the name still resolves and by the
-unselected `server` pod still reaching it, not by the cache.
+This block is the read taken right after those probes. What it shows, and what it does not:
+
+- **The `lookup` rows** show that the DNS proxy saw both names resolve for every client, because
+  the DNS rule sends every lookup through the proxy. That is criterion 13's cache evidence, and
+  `test.sh` checks the `lookup` row for `checkip.amazonaws.com` on each lane.
+- **The `connection` rows** do not show which names a pod reached. Here they happen to be for
+  `checkip.amazonaws.com.` only. But a later read on a second fresh cluster, by the independent
+  walk of this page, had `connection` rows for `example.net.` too (12 of them across the two
+  agents), and no `lookup` rows. `test.sh` asserts nothing about them.
+- **The deny** is shown, as the paragraph above says, by the timeout while the name still
+  resolves, and by the unselected `server` pod still reaching it.
 
 ## What stays running, and cleaning up
 
@@ -1150,8 +1214,28 @@ interfaces) get the same tags in [stage 7](#7-tag-what-aws-created-for-the-clust
 
 While it is up, this sample keeps billing: the EKS control plane, one `m7i.large` and one
 `m8i.xlarge` instance with their gp3 volumes, one NAT gateway and its Elastic IP. Use the
-[AWS Pricing Calculator](https://calculator.aws/) for an estimate; the fresh run will add a
-measured duration and cost here.
+[AWS Pricing Calculator](https://calculator.aws/) for your own estimate.
+
+**How long it took, and what it cost, on the independent walk.** Wall times, from the walk's
+start and end lines around each command:
+
+| Command | Wall time |
+|---|---|
+| `./setup.sh` | 18 min 38 s |
+| `./test.sh` | 4 min 49 s (the passing run; the first run, with the failed L7 check, took 5 min 44 s) |
+| `./clean.sh --dry-run` | 40 s |
+| `./clean.sh` | 8 min 44 s |
+
+These leave out the 30 minutes the walk's first `./clean.sh` waited at its prompt (see below).
+The walk estimated its own spend at about $0.55, or about $1.17 if the whole control-plane
+interval is billed at the EKS extended-support rate. It took the time each billable resource
+existed (the control plane about 1.22 hours, the NAT gateway about 1.19 hours, the sandbox and
+system instances about 0.90 and 0.95 hours) and priced it at conservative working rates: $0.10
+per control-plane hour ($0.60 for the extended-support figure), about $0.1008 an hour for the
+`m7i.large`, $0.252 an hour budgeted for the `m8i.xlarge`, about $0.045 an hour for the NAT
+gateway and $0.005 for its public IPv4 address, plus small allowances for the gp3 volumes and
+data processing. Both figures include that 30-minute wait, which the walk put at
+$0.27 to $0.53 of the total.
 
 Run `./clean.sh` when you finish. `./clean.sh --dry-run` lists only the run-owned resources it
 would delete and changes nothing; `./clean.sh` deletes the two node groups, the ENIs Cilium
@@ -1165,20 +1249,163 @@ anything it was asked to delete is still there: a
 lookup that fails is recorded as a failure, never read as "gone". Deleting the cluster removes
 the sample's namespace, its pods and the `isolated-sandbox` RuntimeClass with it.
 
+**`./clean.sh` asks you to type the cluster name before it deletes anything.** Everything it
+does before that prompt only reads. `CLEAN_CONFIRM=<cluster name> ./clean.sh` answers the prompt,
+for a run with no terminal. If nothing answers it, it waits: the independent walk's first
+`./clean.sh` had no terminal input and waited at the prompt for 30 minutes, with nothing
+deleted, until its host ended the command.
+
 ```bash
 ./clean.sh --dry-run
 ```
 
+From the independent walk's fresh run (a second fresh cluster, at commit `d68f263`), after its
+`test.sh`. The first fresh run's clean-up is not shown here.
+
+- **What it lists:** the 49 resources the cluster owns, the cluster itself among them, no
+  unattached Cilium ENIs, and the two launch templates `setup.sh` created.
+- **Masked:** the caller ARN, the account id, the generated node group, add-on and Pod Identity
+  ids, the generated role names, and every resource id. Ids of one kind are numbered in the order
+  the list gives them. The two launch templates EKS copied from `setup.sh`'s are
+  `<EKS_LAUNCH_TEMPLATE_COPY_ID_1>` and `_2`.
+- **Not shown:** the walk's own start, end and exit-code lines around the command (exit code 0).
+
 ```text
-TODO: output from the fresh run
+Caller: <CALLER_ARN>
+
+=== dry run: what ./clean.sh would delete ===
+Cluster nitro-cilium-ubuntu (ACTIVE) and every resource it owns:
+  eks-cluster        arn:aws:eks:us-west-2:<ACCOUNT_ID>:cluster/nitro-cilium-ubuntu
+  eks-nodegroup      arn:aws:eks:us-west-2:<ACCOUNT_ID>:nodegroup/nitro-cilium-ubuntu/sandbox/<SANDBOX_NODEGROUP_UUID>
+  eks-nodegroup      arn:aws:eks:us-west-2:<ACCOUNT_ID>:nodegroup/nitro-cilium-ubuntu/system/<SYSTEM_NODEGROUP_UUID>
+  eks-addon          arn:aws:eks:us-west-2:<ACCOUNT_ID>:addon/nitro-cilium-ubuntu/coredns/<COREDNS_ADDON_UUID>
+  eks-addon          arn:aws:eks:us-west-2:<ACCOUNT_ID>:addon/nitro-cilium-ubuntu/eks-pod-identity-agent/<EKS_POD_IDENTITY_AGENT_ADDON_UUID>
+  eks-pod-identity   arn:aws:eks:us-west-2:<ACCOUNT_ID>:podidentityassociation/nitro-cilium-ubuntu/<POD_IDENTITY_ASSOCIATION_ID>
+  asg                eks-sandbox-<SANDBOX_NODEGROUP_UUID>
+  asg                eks-system-<SYSTEM_NODEGROUP_UUID>
+  cfn-stack          eksctl-nitro-cilium-ubuntu-nodegroup-system
+  cfn-stack          eksctl-nitro-cilium-ubuntu-nodegroup-sandbox
+  cfn-stack          eksctl-nitro-cilium-ubuntu-podidentityrole-kube-system-cilium-operator
+  cfn-stack          eksctl-nitro-cilium-ubuntu-cluster
+  iam-role           <CLUSTER_SERVICE_ROLE>
+  iam-role           <SANDBOX_NODE_ROLE>
+  iam-role           <SYSTEM_NODE_ROLE>
+  iam-role           nitro-cilium-ubuntu-cilium-operator
+  vpc                <VPC_ID>
+  subnet             <SUBNET_ID_1>
+  subnet             <SUBNET_ID_2>
+  subnet             <SUBNET_ID_3>
+  subnet             <SUBNET_ID_4>
+  route-table        <ROUTE_TABLE_ID_1>
+  route-table        <ROUTE_TABLE_ID_2>
+  route-table        <ROUTE_TABLE_ID_3>
+  route-table        <ROUTE_TABLE_ID_4>
+  internet-gateway   <INTERNET_GATEWAY_ID>
+  nat-gateway        <NAT_GATEWAY_ID>
+  elastic-ip         <ELASTIC_IP_ALLOCATION_ID>
+  security-group     <SECURITY_GROUP_ID_1>
+  security-group     <SECURITY_GROUP_ID_2>
+  security-group     <SECURITY_GROUP_ID_3>
+  security-group     <SECURITY_GROUP_ID_4>
+  network-acl        <NETWORK_ACL_ID>
+  network-interface  <NETWORK_INTERFACE_ID_1>
+  network-interface  <NETWORK_INTERFACE_ID_2>
+  network-interface  <NETWORK_INTERFACE_ID_3>
+  network-interface  <NETWORK_INTERFACE_ID_4>
+  network-interface  <NETWORK_INTERFACE_ID_5>
+  network-interface  <NETWORK_INTERFACE_ID_6>
+  instance           <INSTANCE_ID_1>
+  instance           <INSTANCE_ID_2>
+  volume             <VOLUME_ID_1>
+  volume             <VOLUME_ID_2>
+  instance-profile   eks-<SYSTEM_NODEGROUP_UUID>
+  instance-profile   eks-<SANDBOX_NODEGROUP_UUID>
+  launch-template    <SANDBOX_LAUNCH_TEMPLATE_ID>
+  launch-template    <EKS_LAUNCH_TEMPLATE_COPY_ID_1>
+  launch-template    <SYSTEM_LAUNCH_TEMPLATE_ID>
+  launch-template    <EKS_LAUNCH_TEMPLATE_COPY_ID_2>
+Unattached Cilium ENIs in <VPC_ID>: none
+
+Node launch templates (nitro-cilium-ubuntu-system,nitro-cilium-ubuntu-sandbox): <SANDBOX_LAUNCH_TEMPLATE_ID> <SYSTEM_LAUNCH_TEMPLATE_ID>
+
+Nothing was changed. Run ./clean.sh without --dry-run to delete these.
 ```
 
 ```bash
 ./clean.sh
 ```
 
+From the same walk. Its first `./clean.sh` waited at the prompt with no terminal input, as
+described above, and deleted nothing. This is its second, with the cluster name typed on
+standard input to confirm. Bash shows a `read -p` prompt only when the answer comes from a
+terminal, so the prompt is not in this output.
+
+- **Masked:** the caller ARN, the node names and the launch template ids.
+- **Not shown:** the walk's own start, end and exit-code lines around the command (exit code 0,
+  8 minutes 44 seconds).
+
 ```text
-TODO: output from the fresh run
+Caller: <CALLER_ARN>
+
+=== 1/4 node groups ===
+2026-10-29 15:47:26 [ℹ]  1 nodegroup (sandbox) was included (based on the include/exclude rules)
+2026-10-29 15:47:26 [ℹ]  will drain 1 nodegroup(s) in cluster "nitro-cilium-ubuntu"
+2026-10-29 15:47:26 [ℹ]  starting parallel draining, max in-flight of 1
+2026-10-29 15:47:27 [ℹ]  cordon node "<SANDBOX_NODE>"
+2026-10-29 15:47:27 [!]  deleting Pods not managed by ReplicationController, ReplicaSet, Job, DaemonSet or StatefulSet: cilium-ubuntu-demo/neighbor, cilium-ubuntu-demo/nitro, cilium-ubuntu-demo/node-probe
+2026-10-29 15:47:28 [✔]  drained all nodes: [<SANDBOX_NODE>]
+2026-10-29 15:47:28 [ℹ]  will delete 1 nodegroups from cluster "nitro-cilium-ubuntu"
+2026-10-29 15:47:28 [ℹ]  1 task: { 1 task: { delete nodegroup "sandbox" } }
+2026-10-29 15:47:28 [ℹ]  will delete stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox"
+2026-10-29 15:47:28 [ℹ]  waiting for stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox" to get deleted
+2026-10-29 15:47:28 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox"
+2026-10-29 15:47:59 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox"
+2026-10-29 15:48:54 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox"
+2026-10-29 15:50:08 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox"
+2026-10-29 15:50:08 [✔]  deleted 1 nodegroup(s) from cluster "nitro-cilium-ubuntu"
+2026-10-29 15:50:11 [ℹ]  1 nodegroup (system) was included (based on the include/exclude rules)
+2026-10-29 15:50:11 [ℹ]  will drain 1 nodegroup(s) in cluster "nitro-cilium-ubuntu"
+2026-10-29 15:50:11 [ℹ]  starting parallel draining, max in-flight of 1
+2026-10-29 15:50:11 [ℹ]  cordon node "<SYSTEM_NODE>"
+2026-10-29 15:50:12 [!]  deleting Pods not managed by ReplicationController, ReplicaSet, Job, DaemonSet or StatefulSet: cilium-ubuntu-demo/api, cilium-ubuntu-demo/control, cilium-ubuntu-demo/other, cilium-ubuntu-demo/server
+2026-10-29 15:50:23 [✔]  drained all nodes: [<SYSTEM_NODE>]
+2026-10-29 15:50:23 [ℹ]  will delete 1 nodegroups from cluster "nitro-cilium-ubuntu"
+2026-10-29 15:50:24 [ℹ]  1 task: { 1 task: { delete nodegroup "system" } }
+2026-10-29 15:50:24 [ℹ]  will delete stack "eksctl-nitro-cilium-ubuntu-nodegroup-system"
+2026-10-29 15:50:24 [ℹ]  waiting for stack "eksctl-nitro-cilium-ubuntu-nodegroup-system" to get deleted
+2026-10-29 15:50:24 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-system"
+2026-10-29 15:50:54 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-system"
+2026-10-29 15:51:44 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-system"
+2026-10-29 15:53:20 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-system"
+2026-10-29 15:53:20 [✔]  deleted 1 nodegroup(s) from cluster "nitro-cilium-ubuntu"
+
+=== 2/4 ENIs Cilium created (instances do not always take them along) ===
+
+=== 3/4 cluster, VPC and IAM roles (eksctl stacks) ===
+2026-10-29 15:53:23 [ℹ]  deleting EKS cluster "nitro-cilium-ubuntu"
+2026-10-29 15:53:23 [ℹ]  deleted 0 Fargate profile(s)
+2026-10-29 15:53:24 [✔]  kubeconfig has been updated
+2026-10-29 15:53:24 [ℹ]  cleaning up AWS load balancers created by Kubernetes objects of Kind Service, Ingress, or Gateway
+2026-10-29 15:53:26 [ℹ]
+2 sequential tasks: { deleting IAM resources stack "eksctl-nitro-cilium-ubuntu-podidentityrole-kube-system-cilium-operator", delete cluster control plane "nitro-cilium-ubuntu"
+}
+2026-10-29 15:53:26 [ℹ]  will delete stack "eksctl-nitro-cilium-ubuntu-podidentityrole-kube-system-cilium-operator"
+2026-10-29 15:53:26 [ℹ]  waiting for stack "eksctl-nitro-cilium-ubuntu-podidentityrole-kube-system-cilium-operator" to get deleted
+2026-10-29 15:53:26 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-podidentityrole-kube-system-cilium-operator"
+2026-10-29 15:53:57 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-podidentityrole-kube-system-cilium-operator"
+2026-10-29 15:53:57 [ℹ]  will delete stack "eksctl-nitro-cilium-ubuntu-cluster"
+2026-10-29 15:53:57 [ℹ]  waiting for stack "eksctl-nitro-cilium-ubuntu-cluster" to get deleted
+2026-10-29 15:53:57 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-cluster"
+2026-10-29 15:54:27 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-cluster"
+2026-10-29 15:55:10 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-cluster"
+2026-10-29 15:55:55 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-cluster"
+2026-10-29 15:55:56 [✔]  all cluster resources were deleted
+
+=== 4/4 node launch templates ===
+deleted <SANDBOX_LAUNCH_TEMPLATE_ID>
+deleted <SYSTEM_LAUNCH_TEMPLATE_ID>
+
+CLEAN: the Cilium-on-Ubuntu sample (nitro-cilium-ubuntu): nothing left behind.
 ```
 
 ??? note "Files"

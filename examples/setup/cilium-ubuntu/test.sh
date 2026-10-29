@@ -352,15 +352,42 @@ step "6. L7 HTTP policy: the same allow and deny for the sandbox pod and an ordi
 # makes are the ones in the capture. Runs the capture in the BACKGROUND and the probes in the
 # FOREGROUND of the current shell (not a $( ) around the whole thing, so a monitor that
 # outlives its window does not leave an orphaned kubectl exec). Sets MONITOR_OUT.
+#
+# A request made before the monitor is listening is not in the capture, so the probes wait for
+# the monitor's own ready lines, "Listening for events on <n> CPUs with 64x4096 of shared memory"
+# and then "Press Ctrl-C to quit", for up to MONITOR_READY_WAIT seconds. If they do not come, or
+# the monitor exits first, no probe runs and the lane's L7 checks report "nothing was checked".
+# The capture window is <seconds> from readiness and stays open at least a second after the
+# last probe; then this shell stops its kubectl exec. The timeout inside the pod only bounds a
+# monitor whose output nobody reads any more.
 MONITOR_OUT=""
+MONITOR_READY_WAIT=20
 monitor_l7() {
   local agent=$1 seconds=$2; shift 2
   local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/cilium-l7-monitor.XXXXXX")"
-  kubectl -n kube-system exec "$agent" -c cilium-agent -- timeout "$seconds" cilium-dbg monitor --type l7 \
-    >"$tmp" 2>&1 &
-  local mon_pid=$!
-  sleep 1
-  "$@"
+  kubectl -n kube-system exec "$agent" -c cilium-agent -- \
+    timeout "$((MONITOR_READY_WAIT + seconds + 30))" cilium-dbg monitor --type l7 >"$tmp" 2>&1 &
+  local mon_pid=$! ready=0 i
+  for ((i = 0; i < MONITOR_READY_WAIT * 5; i++)); do
+    if grep -qE '^Listening for events on [0-9]+ CPUs with [0-9]+x[0-9]+ of shared memory$' "$tmp" \
+      && grep -qx 'Press Ctrl-C to quit' "$tmp"; then
+      ready=1
+      break
+    fi
+    kill -0 "$mon_pid" 2>/dev/null || break
+    sleep 0.2
+  done
+  if ((ready)); then
+    local ready_at end last
+    ready_at="$(date +%s)"
+    "$@"
+    end=$((ready_at + seconds)) last=$(($(date +%s) + 2))
+    if ((end < last)); then end=$last; fi
+    while (($(date +%s) < end)) && kill -0 "$mon_pid" 2>/dev/null; do sleep 0.2; done
+  else
+    warn "cilium-dbg monitor on $agent printed no ready line within ${MONITOR_READY_WAIT}s, or exited first: no request was sent, so this lane's L7 checks have nothing to check"
+  fi
+  kill "$mon_pid" 2>/dev/null || true
   wait "$mon_pid" 2>/dev/null || true
   MONITOR_OUT="$(cat "$tmp")"
   rm -f "$tmp"
