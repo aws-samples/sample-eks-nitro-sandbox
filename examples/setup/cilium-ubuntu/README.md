@@ -146,7 +146,7 @@ health, BTF loading, ENI allocation, Service translation and the policy controls
 | Component | Pin | Latest checked (2026-10-28) |
 |---|---|---|
 | [Amazon EKS Kubernetes](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html) | 1.36 | 1.36 |
-| Ubuntu system and sandbox nodes | Ubuntu 24.04 LTS (Canonical's EKS 1.36 AMI); record the exact point release and the serial you resolved `SYSTEM_AMI_ID` from | 24.04.5 LTS |
+| Ubuntu system and sandbox nodes | Ubuntu 24.04 LTS (Canonical's EKS 1.36 AMI). The fresh run had 24.04.5 LTS on both nodes, and its `SYSTEM_AMI_ID` was Canonical's serial `20261027` | 24.04.5 LTS |
 | Ubuntu EKS Pod Isolation AMI | Output of [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10), built from the GA bundle and BTF-validated (`ManagedBy` and `BtfValidated=true` tags) | Revalidate with a fresh #10 build |
 | Host kernel on the sandbox node | `6.18.56-nitro-ga`: kernel.org Linux 6.18.56 plus the public commit [amazonlinux/linux 1e66c960](https://github.com/amazonlinux/linux/commit/1e66c960b982c94bda76ebd0129eaecf0a68b46e), built by #10 (this sample builds no kernel) | 6.18.56 |
 | Guest kernel in the sandbox pod | 6.18.54, inside the bundle's guest image `latest.eif` | 6.18.54 |
@@ -154,8 +154,16 @@ health, BTF loading, ENI allocation, Service translation and the policy controls
 | containerd on the sandbox AMI | 2.2.1, as Canonical's EKS 1.36 Ubuntu AMI ships it; the runtime supports 2.1, 2.2 and 2.3, and its installer refuses 2.4 or later | 2.2.1 |
 | erofs-utils on the sandbox AMI | 1.8.10 with zstd, built by #10 | 1.8.10 |
 | [Cilium](https://github.com/cilium/cilium) Helm chart | 1.20.2 | 1.20.2 |
-| [eksctl](https://github.com/eksctl-io/eksctl) | 0.230.0 or newer; record the exact release you ran. eksctl takes the list of EKS versions from the EKS API (since [0.202.0](https://github.com/eksctl-io/eksctl/releases/tag/v0.202.0)), so 0.230.0 is the release this path was first validated with, not a 1.36-specific minimum | 0.231.0 |
-| [Helm](https://github.com/helm/helm) | Record the exact client release you ran | record on the run |
+| [eksctl](https://github.com/eksctl-io/eksctl) | 0.230.0 or newer; the fresh run used 0.230.0. eksctl takes the list of EKS versions from the EKS API (since [0.202.0](https://github.com/eksctl-io/eksctl/releases/tag/v0.202.0)), so 0.230.0 is the release this path was first validated with, not a 1.36-specific minimum | 0.231.0 |
+| [Helm](https://github.com/helm/helm) | The fresh run used the Helm client v3.19.0 | not checked |
+
+Where those run values come from:
+
+- **From the fresh run's own output:** the Ubuntu point release (a `kubectl get nodes -o wide`
+  read on its cluster), the system AMI's serial (the AMI name `setup.sh` printed in step 1/8) and
+  eksctl's release (eksctl's first line in step 2/8).
+- **From the tool on the run's host:** the Helm client release, read with `helm version` before
+  the run and again after it. The run's own output does not print it.
 
 ## The stages
 
@@ -799,6 +807,97 @@ Nitro sandbox pod (`nitro`, `runtimeClassName: isolated-sandbox`, on the Ubuntu 
 against an ordinary pod on the same sandbox node (`neighbor`) and an ordinary pod on the
 system node (`control`), so every result is shown for the sandbox lane beside the two ordinary
 lanes.
+
+The policy `test.sh` applies is one `CiliumNetworkPolicy`, `clients-egress`. It selects the
+three client pods alike, so each L3/L4, L7 and FQDN verdict below is the same rule, enforced by
+Cilium on the sandbox pod and on the two ordinary pods. This is all of
+[`deploy/policy.yaml`](deploy/policy.yaml), byte for byte. Its comments name each rule's allowed
+and refused destination, which `test.sh` stages 5 to 7 prove both ways.
+
+```yaml
+# One CiliumNetworkPolicy, applied to all three clients alike (the Nitro sandbox pod and the
+# ordinary neighbor and control pods), proving L3/L4, L7 HTTP and FQDN enforcement crosses the
+# Nitro guest boundary exactly as it does for an ordinary container.
+#
+# It selects every pod labelled role=client and turns on egress enforcement for them. With
+# egress enforcement on, a client may make ONLY the connections an egress rule below allows,
+# and nothing else is reachable. Cilium enforces this at the pod's network interface on the
+# Ubuntu host, so it applies to the Nitro pod's guest VM exactly as to an ordinary container.
+#
+# The rules, with their positive and negative controls (test.sh proves each both ways):
+#
+#   L3/L4  -- ALLOW: reach the "server" pods on TCP 8080. DENY (negative control): the "other"
+#             pod, an identical server the selector does not name, is DROPPED. The unselected
+#             "server" pod can still reach "other", which proves the deny is the policy and not
+#             an unavailable destination.
+#
+#   L7     -- ALLOW: GET "/" on "api":8080. DENY (negative control): GET "/admin" is rejected
+#             by the node-local Envoy proxy with an HTTP 403 (verdict Denied), not dropped.
+#             "api" is a SEPARATE toEndpoints target from "server": an L7 HTTP rule on the SAME
+#             toEndpoints/port as an existing L4-only rule would widen that rule to allow-all
+#             (Cilium only drops the L7 portion when it duplicates a plain L4 rule for the
+#             identical selector and port), so the L7 check needs its own target or the deny
+#             would never show. test.sh reads the Request verdict from the proxy, not just the
+#             client's HTTP status, so an app-issued 403 cannot masquerade as a policy deny.
+#
+#   FQDN   -- ALLOW: reach checkip.amazonaws.com on TCP 80, wherever it currently resolves.
+#             DENY (negative control): a resolved name no rule names (example.net) is DROPPED
+#             while it still RESOLVES, which proves the deny is the egress policy and not a
+#             broken lookup. The unselected "server" pod still reaches example.net, which
+#             proves it is not the NAT gateway or the name being down. test.sh reads the Cilium
+#             agent's own fqdn cache as evidence the DNS proxy saw the allowed lookup.
+#
+#   DNS    -- reach CoreDNS (kube-dns) on 53. Cilium's DNS proxy only sees a lookup when a
+#             toEndpoints rule with an L7 DNS rule covers the client's DNS traffic, so the
+#             kube-dns rule carries rules.dns with matchPattern "*": every lookup is visible to
+#             the proxy (and so can seed the toFQDNs allowlist), while the policy still
+#             constrains where the answer may be used.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: clients-egress
+  namespace: cilium-ubuntu-demo
+spec:
+  endpointSelector:
+    matchLabels:
+      role: client
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            app: server
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app: api
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+          rules:
+            http:
+              - method: "GET"
+                path: "/"
+    - toFQDNs:
+        - matchName: "checkip.amazonaws.com"
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
+```
 
 What it checks, in order:
 
