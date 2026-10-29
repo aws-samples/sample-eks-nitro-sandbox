@@ -64,7 +64,7 @@ NS_LABEL_KEY="app.kubernetes.io/part-of"
 NS_LABEL_VAL="setup-cilium-ubuntu"
 
 # The AWS tag every resource this sample creates carries. clean.sh refuses a cluster without
-# it; the tag sweep adds it to resources AWS creates implicitly.
+# it; setup.sh's tag sweep (step 8) adds it to resources AWS creates implicitly.
 DEMO_TAG_KEY="Demo"
 DEMO_TAG_VAL="setup-cilium-ubuntu"
 

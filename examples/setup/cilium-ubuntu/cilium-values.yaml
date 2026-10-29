@@ -15,8 +15,8 @@
 # traffic is routed natively (no overlay, no encapsulation to decode inside the guest).
 eni:
   enabled: true
-  # Tags for the ENIs the operator creates, so clean.sh and the tag sweep can find and delete
-  # them: Cilium does not consult eksctl's cluster tags for its own ENIs.
+  # Tags for the ENIs the operator creates, so clean.sh can find and delete the ones left
+  # behind: Cilium does not consult eksctl's cluster tags for its own ENIs.
   eniTags:
     auto-delete: "no"
     Demo: setup-cilium-ubuntu

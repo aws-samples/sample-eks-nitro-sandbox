@@ -445,6 +445,7 @@ probe nitro "http://$server_ip:8080/"
 assert "nitro -> server:8080 is still ALLOWED (the toFQDNs and DNS rules changed nothing else)" $?
 
 step "8. Every AWS resource the cluster owns is tagged auto-delete=no"
+# setup.sh's step 8 (tag-sweep) tagged what AWS creates without a tag; this stage only reads.
 # ENIs get their own line: they are created by three different parties (EKS for the control
 # plane, the node launch templates for each instance's primary interface, and the Cilium
 # operator for pod addresses), and a CNI's ENIs are the ones most often left untagged.

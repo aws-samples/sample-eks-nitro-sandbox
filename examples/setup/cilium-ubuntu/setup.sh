@@ -25,7 +25,7 @@ SAMPLE_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/common.sh
 source "$SAMPLE_DIR/scripts/common.sh"   # exports RUN_DIR and KUBECONFIG=$RUN_DIR/kubeconfig
 
-step "1/7 prerequisites"
+step "1/8 prerequisites"
 # RUN_DIR is under the repository's gitignored tmp/ (set in common.sh), never the sample
 # folder, so this run's kubeconfig and rendered manifests are never one `git add` from being
 # published. Mode 700 so the kubeconfig written into it stays private.
@@ -43,7 +43,7 @@ python3 "$PY" check-cilium-values
 python3 "$PY" check-sandbox-ami
 python3 "$PY" check-system-ami
 
-step "2/7 cluster: no VPC CNI, no kube-proxy, no nodes"
+step "2/8 cluster: no VPC CNI, no kube-proxy, no nodes"
 python3 "$PY" render-cluster
 state="$(cluster_state)"
 if [[ "$state" == NONE ]]; then
@@ -78,7 +78,7 @@ chmod 600 "$KUBECONFIG"
 echo "$(green "No aws-node or kube-proxy DaemonSet exists on this cluster, now or ever:")"
 kubectl -n kube-system get daemonset aws-node kube-proxy 2>&1 | grep -i notfound || true
 
-step "3/7 Cilium $CILIUM_VERSION (ENI mode, the only CNI, replacing kube-proxy) -- before any node"
+step "3/8 Cilium $CILIUM_VERSION (ENI mode, the only CNI, replacing kube-proxy) -- before any node"
 endpoint="$(aws eks describe-cluster --region "$AWS_REGION" --name "$CLUSTER_NAME" --query cluster.endpoint --output text)"
 helm_args=(--set "cluster.name=$CLUSTER_NAME" --set "k8sServiceHost=${endpoint#https://}")
 [[ -z "$OWNER_TAG" ]] || helm_args+=(--set "eni.eniTags.Owner=$OWNER_TAG")
@@ -86,7 +86,7 @@ helm upgrade --install cilium "$CILIUM_CHART" --version "$CILIUM_VERSION" --name
   -f "$SAMPLE_DIR/cilium-values.yaml" "${helm_args[@]}"
 python3 "$PY" preflight-daemonset
 
-step "4/7 launch templates, created with this sample's tags and each node's bootstrap user data"
+step "4/8 launch templates, created with this sample's tags and each node's bootstrap user data"
 # Both templates name an AMI, so EKS adds no user data of its own: each carries Canonical's
 # bootstrap.sh line with the cluster's endpoint, CA and DNS address and the node's labels, and
 # the sandbox node's labels include the two the isolated-sandbox RuntimeClass schedules on.
@@ -98,7 +98,7 @@ python3 "$PY" check-user-data system <"$RUN_DIR/system-launch-template.json"
 python3 "$PY" check-user-data sandbox <"$RUN_DIR/sandbox-launch-template.json"
 echo "Launch templates: system $lt_system, sandbox $lt_sandbox"
 
-step "5/7 node groups: system (ordinary Ubuntu 24.04) and sandbox (the Ubuntu Pod Isolation AMI, tainted)"
+step "5/8 node groups: system (ordinary Ubuntu 24.04) and sandbox (the Ubuntu Pod Isolation AMI, tainted)"
 python3 "$PY" render-nodegroups --system-launch-template "$lt_system" --sandbox-launch-template "$lt_sandbox"
 # Existing node groups are skipped, so this is safe to re-run.
 eksctl create nodegroup -f "$RUN_DIR/nodegroups.yaml"
@@ -107,21 +107,14 @@ kubectl wait --for=condition=Ready node -l eks.amazonaws.com/nodegroup=sandbox -
 kubectl -n kube-system rollout status daemonset/cilium --timeout=10m
 kubectl -n kube-system rollout status deployment/cilium-operator --timeout=10m
 
-step "6/7 BTF gate: both Ubuntu node kernels must expose valid BTF before their Cilium agents are ready"
+step "6/8 BTF gate: both Ubuntu node kernels must expose valid BTF before their Cilium agents are ready"
 system_node="$(kubectl get nodes -l eks.amazonaws.com/nodegroup=system -o jsonpath='{.items[0].metadata.name}')"
 sandbox_node="$(kubectl get nodes -l eks.amazonaws.com/nodegroup=sandbox -o jsonpath='{.items[0].metadata.name}')"
 [[ -n "$system_node" && -n "$sandbox_node" ]] || die "could not read the system or sandbox node name"
 python3 "$PY" check-btf system "$system_node"
 python3 "$PY" check-btf sandbox "$sandbox_node"
-# EKS does not copy node-group tags to the Auto Scaling groups it creates, and a few other
-# resources have no create-time tag hook at all. A full tag sweep (ASGs, EKS-copied launch
-# template versions, the control plane's and NAT gateway's network interfaces, the VPC's
-# default route table / security group / network ACL, and any ENI Cilium itself created) is
-# clean.sh's job, run alongside its ownership checks; this step only confirms the two launch
-# templates and node groups this script created already carry the tag, which they do from
-# creation.
 
-step "7/7 the isolated-sandbox RuntimeClass"
+step "7/8 the isolated-sandbox RuntimeClass"
 # The GA node-build bundle (UBUNTU.md, section 5) has the operator create this RuntimeClass once
 # per cluster, and this cluster is new, so nobody else has. It is created only when absent, and
 # whatever is there afterwards must match the bundle's: handler isolated-sandbox, the per-pod
@@ -143,6 +136,24 @@ python3 "$PY" check-node-labels sandbox <<<"$sandbox_node_json" \
 system_node_json="$(kubectl get node "$system_node" -o json)" || die "could not read node $system_node"
 python3 "$PY" check-node-labels system <<<"$system_node_json" \
   || die "the ordinary system node carries an isolated-sandbox RuntimeClass label"
+
+step "8/8 tag what AWS created for this cluster without a tag"
+# AWS creates some of this cluster's resources with no way to tag them at creation: the Auto
+# Scaling group behind each managed node group, EKS's copy of each launch template and its
+# instance profile for each node role, the VPC's main route table, default security group and
+# default network ACL, the cluster security group EKS creates, and the network interfaces of the
+# EKS control plane and the NAT gateway. tag-sweep gives each of them that lacks auto-delete=no
+# the sample's tags and prints one line per resource. It reaches them only from this cluster
+# (its node groups, its own eksctl stacks, its own VPC), and refuses, before any write, a cluster
+# or a VPC that does not carry Demo=setup-cilium-ubuntu. This runs last, once every node group
+# exists, and here rather than in test.sh, which stays read-only.
+python3 "$PY" tag-sweep
+# Then the same audit test.sh's stage 8 runs: every resource the cluster owns must now carry
+# auto-delete=no (exit 1 names any that does not; exit 2 means the inventory came up short).
+audit_rc=0; audit_out="$(python3 "$PY" audit-tags 2>&1)" || audit_rc=$?
+sed '/^ok /d' <<<"$audit_out"
+((audit_rc == 0)) \
+  || die "after the sweep the tag audit still finds a resource without auto-delete=no, or a kind it could not reach (above), so test.sh's stage 8 would fail"
 
 printf '\n%s\n' "$(green "Cluster $CLUSTER_NAME is up: Cilium is the only CNI, kube-proxy replacement is active, and both Ubuntu node groups are Ready with valid BTF.")"
 cat <<EOF

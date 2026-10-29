@@ -7,10 +7,12 @@
 #   eksctl create nodegroup -f tmp/issue11/run/nodegroups.yaml
 #
 # Each group's labels below are ALSO the labels its node registers with: setup.sh renders them,
-# plus eks.amazonaws.com/nodegroup=<name>, into kubelet's --node-labels in the launch template's
-# bootstrap user data (scripts/cilium_ubuntu.py, launch_template_data). Both launch templates
-# name an AMI, and Amazon EKS adds no user data to a launch template that names an AMI, so that
-# bootstrap line is what joins each node to the cluster.
+# plus eks.amazonaws.com/nodegroup=<name> and, on the sandbox node,
+# eks.amazonaws.com/nitro-sandbox=true (a prefix the EKS node group API refuses as a label),
+# into kubelet's --node-labels in the launch template's bootstrap user data
+# (scripts/cilium_ubuntu.py, node_labels). Both launch templates name an AMI, and Amazon EKS
+# adds no user data to a launch template that names an AMI, so that bootstrap line is what
+# joins each node to the cluster.
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
 
@@ -64,9 +66,11 @@ managedNodeGroups:
     availabilityZones: ["${NODE_ZONE}"]
     labels:
       sandbox.eks-nitro-sandbox.amazonaws.com/dedicated: "true"
-      # The two labels the isolated-sandbox RuntimeClass schedules on (the GA node-build
-      # bundle's UBUNTU.md, sections 4 and 5). A node without both runs no sandbox pod.
-      eks.amazonaws.com/nitro-sandbox: "true"
+      # One of the two labels the isolated-sandbox RuntimeClass schedules on (the GA node-build
+      # bundle's UBUNTU.md, sections 4 and 5); a node without both runs no sandbox pod. The other,
+      # eks.amazonaws.com/nitro-sandbox=true, cannot be listed here: the EKS node group API
+      # refuses any label key containing eks.amazonaws.com/, so kubelet's --node-labels in the
+      # user data sets it, as the bundle does for both.
       sandbox.preview/nitro: "true"
     taints:
       - key: sandbox.eks-nitro-sandbox.amazonaws.com/dedicated

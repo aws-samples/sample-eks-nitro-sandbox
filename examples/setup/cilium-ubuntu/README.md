@@ -167,7 +167,8 @@ health, BTF loading, ENI allocation, Service translation and the policy controls
 | [4. Add the two Ubuntu node groups](#4-add-the-two-ubuntu-node-groups) | Two launch templates | Both nodes Ready on Cilium |
 | [5. Gate on BTF before either agent counts as ready](#5-gate-on-btf-before-either-agent-counts-as-ready) | A check of the node's own kernel, not of Cilium's status | Both nodes confirmed against `/sys/kernel/btf/vmlinux` |
 | [6. Create the isolated-sandbox RuntimeClass](#6-create-the-isolated-sandbox-runtimeclass) | The GA bundle's RuntimeClass, created only when absent | A RuntimeClass whose two labels only the sandbox node carries |
-| [7. The sandbox pod, Service boundary and policy evidence](#evidence-testsh) | `test.sh`, `deploy/workloads.yaml`, `deploy/policy.yaml` | The seven pods Ready and the networking, BTF and policy proofs (output blocks are `TODO` until a live run) |
+| [7. Tag what AWS created for the cluster](#7-tag-what-aws-created-for-the-cluster) | Nothing: the resources AWS creates with no tag at creation | One line per resource tagged, then the tag audit passing |
+| [8. The sandbox pod, Service boundary and policy evidence](#evidence-testsh) | `test.sh`, `deploy/workloads.yaml`, `deploy/policy.yaml` | The seven pods Ready and the networking, BTF and policy proofs (output blocks are `TODO` until a live run) |
 
 ### 0. Prerequisites and the AMI preflight
 
@@ -392,14 +393,19 @@ Amazon EKS adds no user data to a launch template that names one (Amazon EKS Use
 `/etc/eks/bootstrap.sh` line, as the GA node-build bundle's Ubuntu guide has it, with the
 new cluster's API endpoint, CA and DNS address and the node's labels in
 `--kubelet-extra-args '--node-labels=...'`. The labels come from `eksctl/nodegroups.yaml`
-itself, so eksctl and kubelet always agree. The sandbox node carries the two labels the
-`isolated-sandbox` RuntimeClass (stage 6) schedules on, `eks.amazonaws.com/nitro-sandbox=true`
-and `sandbox.preview/nitro=true`; a node without both runs no sandbox pod. Before it creates a
-node group, `setup.sh` reads each rendered template back and requires its user data to be,
-byte for byte, the script it renders for the cluster (`check-user-data`), naming any
-difference in the cluster name, endpoint, CA, DNS address, labels or extra lines; and
-`render-nodegroups` refuses a sandbox group missing either label or a system group carrying
-one.
+itself, so eksctl and kubelet agree on every label the node group lists. The sandbox node
+carries the two labels the `isolated-sandbox` RuntimeClass (stage 6) schedules on,
+`eks.amazonaws.com/nitro-sandbox=true` and `sandbox.preview/nitro=true`; a node without both
+runs no sandbox pod. Only the second is a node group label: the EKS node group API refuses a
+label key that contains
+`eks.amazonaws.com/` (as it does `kubernetes.io/` and `k8s.io/`), so kubelet sets
+`eks.amazonaws.com/nitro-sandbox=true` and `eks.amazonaws.com/nodegroup=<name>` on its own
+node from the user data, as the GA bundle's guide does. Before it creates a node group,
+`setup.sh` reads each rendered template back and requires its user data to be, byte for byte,
+the script it renders for the cluster (`check-user-data`), naming any difference in the
+cluster name, endpoint, CA, DNS address, labels or extra lines; and `render-nodegroups`
+refuses a sandbox group missing `sandbox.preview/nitro`, a system group carrying either
+RuntimeClass label, and any node group label with one of those three prefixes.
 
 From [`eksctl/nodegroups.yaml`](eksctl/nodegroups.yaml):
 
@@ -410,8 +416,7 @@ From [`eksctl/nodegroups.yaml`](eksctl/nodegroups.yaml):
       version: "1"
     labels:
       sandbox.eks-nitro-sandbox.amazonaws.com/dedicated: "true"
-      eks.amazonaws.com/nitro-sandbox: "true"
-      sandbox.preview/nitro: "true"
+      sandbox.preview/nitro: "true"   # eks.amazonaws.com/nitro-sandbox comes from kubelet
     taints:
       - key: sandbox.eks-nitro-sandbox.amazonaws.com/dedicated
         value: "true"
@@ -545,6 +550,46 @@ spec:
       type: Unconfined
 ```
 
+### 7. Tag what AWS created for the cluster
+
+Everything this run creates by name carries the sample's tags from the start (see
+[What stays running, and cleaning up](#what-stays-running-and-cleaning-up)). AWS also creates
+some resources for the cluster, its VPC and its node groups that have no way to be tagged at
+creation:
+
+- the Amazon EC2 Auto Scaling group behind each managed node group (EKS does not copy the node
+  group's tags to it);
+- the copy EKS makes of each node launch template, and the instance profile it makes for each
+  node role;
+- the VPC's main route table, default security group and default network ACL;
+- the cluster security group EKS creates (EKS gives it only its own `kubernetes.io/cluster/...`,
+  `aws:eks:cluster-name` and `Name` tags);
+- the network interfaces the EKS control plane and the NAT gateway put in the VPC.
+
+They are this cluster's: each exists because of this run and goes when `clean.sh` deletes the
+node groups and the cluster. Issue #11 asks for ownership tags that cover the node groups and
+the interfaces, and `test.sh` stage 8 checks every one, so `setup.sh`'s last step
+(`cilium_ubuntu.py tag-sweep`) gives each of them that lacks `auto-delete=no` the same tags as
+the rest: `auto-delete=no`, `Demo=setup-cilium-ubuntu`, and `Owner` when `OWNER_TAG` is set. It
+writes nothing else and changes no other tag.
+
+The sweep reaches resources only from this cluster: its node groups, its own eksctl stacks
+(matched by the `alpha.eksctl.io/cluster-name` tag eksctl puts on each, not only by name), and
+its own VPC, which every VPC read is filtered by. Before its first write it requires the cluster
+and that VPC to carry `Demo=setup-cilium-ubuntu`, so it never tags inside a VPC this sample did
+not create. Then `setup.sh` runs the same tag audit as `test.sh` stage 8 and stops unless every
+resource the cluster owns carries `auto-delete=no`. The caller needs `ec2:CreateTags`,
+`autoscaling:CreateOrUpdateTags`, `iam:TagRole`, `iam:TagInstanceProfile` and
+`eks:TagResource`. Running `setup.sh` again repeats the sweep, which tags only what is still
+untagged.
+
+What you see: one `tagged <kind> <id>` line for each resource the sweep tagged, its count, and
+the audit's summary.
+
+```text
+TODO: output from the fresh run
+```
+
 ## Evidence (`./test.sh`)
 
 `test.sh` is read-only against the cluster's configuration: it applies the sample's own
@@ -597,8 +642,9 @@ What it checks, in order:
    resolves, and the unselected `server` pod still reaches it, so the deny is the policy, not
    the network.
 8. **Ownership tags.** Every ENI in the VPC and every resource the cluster owns carries
-   `auto-delete=no`, and no tracked file holds an account id, AMI id or other account-specific
-   value.
+   `auto-delete=no` (the ones AWS creates untagged got it in
+   [stage 7](#7-tag-what-aws-created-for-the-cluster); `test.sh` only reads), and no tracked
+   file holds an account id, AMI id or other account-specific value.
 
 ```bash
 ./test.sh
@@ -620,7 +666,11 @@ does not flip the live Helm value.
 Every AWS resource `setup.sh` creates carries `auto-delete=no` and `Demo=setup-cilium-ubuntu`:
 eksctl's CloudFormation stacks tag the VPC, subnets, gateways, security groups and IAM roles;
 the two launch templates tag the instances, volumes and network interfaces; Cilium tags the
-ENIs it creates (`cilium-values.yaml`'s `eni.eniTags`).
+ENIs it creates (`cilium-values.yaml`'s `eni.eniTags`). The resources AWS creates for the
+cluster with no tag at creation (the node groups' Auto Scaling groups, EKS's launch template
+copies and instance profiles, the VPC's main route table, default security group and default
+network ACL, the cluster security group, and the control plane's and NAT gateway's interfaces)
+get the same tags in [stage 7](#7-tag-what-aws-created-for-the-cluster).
 
 While it is up, this sample keeps billing: the EKS control plane, one `m7i.large` and one
 `m8i.xlarge` instance with their gp3 volumes, one NAT gateway and its Elastic IP. Use the
@@ -662,9 +712,9 @@ TODO: output from the fresh run
     | [`eksctl/pod-identity.yaml`](eksctl/pod-identity.yaml) | Stage 2: the operator's role |
     | [`cilium-values.yaml`](cilium-values.yaml) | Stage 3: Cilium's Helm values |
     | [`eksctl/nodegroups.yaml`](eksctl/nodegroups.yaml) | Stage 4: the node groups |
-    | [`setup.sh`](setup.sh) | Stages 0 through 6: create, render, gate, RuntimeClass |
+    | [`setup.sh`](setup.sh) | Stages 0 through 7: create, render, gate, RuntimeClass, tag sweep |
     | [`scripts/common.sh`](scripts/common.sh) | Shared config loading, version pins and helpers |
-    | [`scripts/cilium_ubuntu.py`](scripts/cilium_ubuntu.py) | Rendering, AMI preflight, launch templates and their bootstrap user data, the DaemonSet, BTF, RuntimeClass, node-label, AppArmor and Helm-values checks, and the agent-output proofs `test.sh` / `clean.sh` read |
+    | [`scripts/cilium_ubuntu.py`](scripts/cilium_ubuntu.py) | Rendering, AMI preflight, launch templates and their bootstrap user data, the DaemonSet, BTF, RuntimeClass, node-label, AppArmor and Helm-values checks, the tag sweep and audit, and the agent-output proofs `test.sh` / `clean.sh` read |
     | [`deploy/workloads.yaml`](deploy/workloads.yaml) | The sandbox pod (AppArmor `Unconfined`), the comparison pods, and the `server` ClusterIP Service |
     | [`deploy/policy.yaml`](deploy/policy.yaml) | The egress `CiliumNetworkPolicy`: L3/L4, L7 HTTP and FQDN rules |
     | [`test.sh`](test.sh) | Apply the workloads and policy, then prove networking, BTF and policy (see [Evidence](#evidence-testsh)) |

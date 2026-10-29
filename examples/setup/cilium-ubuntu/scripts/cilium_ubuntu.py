@@ -45,6 +45,10 @@ PLACEHOLDER_IDS = {"ami-0123456789abcdef0", "lt-0123456789abcdef0"}
 
 KEEP = ("auto-delete", "no")
 DEMO_TAG = ("Demo", "setup-cilium-ubuntu")
+# The tag eksctl puts on every CloudFormation stack it creates for a cluster, with the cluster's
+# exact name (eksctl's ClusterNameTag). A stack's name prefix alone also matches every cluster
+# whose name starts with this one's.
+EKSCTL_CLUSTER_TAG = "alpha.eksctl.io/cluster-name"
 SANDBOX_TAINT_KEY = "sandbox.eks-nitro-sandbox.amazonaws.com/dedicated"
 SANDBOX_GROUP = "sandbox"
 SYSTEM_GROUP = "system"
@@ -78,6 +82,14 @@ SANDBOX_LABELS = {
     **RUNTIMECLASS_NODE_SELECTOR,
 }
 KUBELET_LABELS = {"kubernetes.io/os": "linux", "kubernetes.io/arch": "amd64"}
+# The Amazon EKS node group API refuses a node group label whose key contains one of these
+# ("Label cannot contain reserved prefixes [kubernetes.io/, k8s.io/, eks.amazonaws.com/]",
+# InvalidParameterException), and eksctl checks only the first two, so such a key in
+# nodegroups.yaml fails `eksctl create nodegroup` in CloudFormation. Kubelet may still set an
+# eks.amazonaws.com/ label on its own node, which is how the GA bundle sets both RuntimeClass
+# labels: so the sandbox node's eks.amazonaws.com/nitro-sandbox reaches it only through
+# kubelet's --node-labels (node_labels), like eks.amazonaws.com/nodegroup on both nodes.
+RESERVED_LABEL_PREFIXES = ("kubernetes.io/", "k8s.io/", "eks.amazonaws.com/")
 # A Kubernetes label key (optional DNS prefix, then a name) and value, so every label this
 # sample renders into kubelet's --node-labels is a plain token with nothing a shell or kubelet
 # would read as syntax.
@@ -260,10 +272,12 @@ def validate_nodegroups_config(cfg):
         require(NODEGROUP_LABEL not in labels,
                 f"node group {name} must not set {NODEGROUP_LABEL}; setup.sh sets it from the group's name")
     # The GA RuntimeClass schedules isolated-sandbox pods onto nodes with BOTH labels, so the
-    # sandbox node group must carry both, and the ordinary system node group neither: a system
-    # node with one of them could be picked for a sandbox pod it cannot run.
+    # sandbox node must carry both, and the ordinary system node neither: a system node with one
+    # of them could be picked for a sandbox pod it cannot run. The sandbox node group carries the
+    # one the EKS node group API accepts; kubelet adds the eks.amazonaws.com/ one (node_labels).
     sandbox_labels = sandbox.get("labels") or {}
-    missing = [f"{k}={v}" for k, v in RUNTIMECLASS_NODE_SELECTOR.items() if sandbox_labels.get(k) != v]
+    missing = [f"{k}={v}" for k, v in RUNTIMECLASS_NODE_SELECTOR.items()
+               if not reserved_label(k) and sandbox_labels.get(k) != v]
     require(not missing, f"the sandbox node group lacks the {RUNTIMECLASS_NAME} RuntimeClass label(s) "
                          f"{', '.join(missing)}, so no sandbox pod could schedule on it")
     require(sandbox_labels.get(SANDBOX_TAINT_KEY) == "true",
@@ -271,7 +285,17 @@ def validate_nodegroups_config(cfg):
     system_labels = groups[SYSTEM_GROUP].get("labels") or {}
     stray = sorted(k for k in list(RUNTIMECLASS_NODE_SELECTOR) + [SANDBOX_TAINT_KEY] if k in system_labels)
     require(not stray, f"the system node group must not carry {', '.join(stray)}: it is an ordinary node")
+    for name, group in groups.items():
+        refused = sorted(k for k in (group.get("labels") or {}) if reserved_label(k))
+        require(not refused, f"node group {name} sets label(s) {', '.join(refused)}, which the EKS node group API "
+                             f"refuses (reserved prefixes {', '.join(RESERVED_LABEL_PREFIXES)}); kubelet's "
+                             "--node-labels in the launch template's user data sets the sandbox node's instead")
     return cfg
+
+
+def reserved_label(key):
+    """True for a label key the EKS node group API refuses: one containing a reserved prefix."""
+    return any(prefix in key for prefix in RESERVED_LABEL_PREFIXES)
 
 
 def load_config(template, values, validate):
@@ -326,16 +350,22 @@ def cmd_render_nodegroups(args):
 
 def node_labels(group):
     """The labels kubelet registers this group's node with: the node group's name, then every
-    label eksctl/nodegroups.yaml gives the group. Read from the same file eksctl applies, and
-    validated by validate_nodegroups_config first, so the sandbox node always carries both
-    RuntimeClass labels and the system node neither. The launch templates are created before
-    their ids exist in nodegroups.yaml, so a placeholder id fills that field here; only the
-    labels are used."""
+    label eksctl/nodegroups.yaml gives the group, and on the sandbox node the two RuntimeClass
+    labels, in the RuntimeClass's order. Read from the same file eksctl applies, and validated
+    by validate_nodegroups_config first, so the sandbox node always carries both RuntimeClass
+    labels and the system node neither. eks.amazonaws.com/nitro-sandbox is not in that file,
+    because the EKS node group API refuses its prefix (RESERVED_LABEL_PREFIXES), so it comes
+    from the RuntimeClass here. The launch templates are created before their ids exist in
+    nodegroups.yaml, so a placeholder id fills that field here; only the labels are used."""
     placeholder = "lt-" + "0" * 17
     cfg = load_config("nodegroups.yaml", nodegroup_values(placeholder, placeholder), validate_nodegroups_config)
     found = [g for g in cfg["managedNodeGroups"] if g.get("name") == group]
     require(len(found) == 1, f"eksctl/nodegroups.yaml has no single node group named {group}")
-    return {NODEGROUP_LABEL: group, **(found[0].get("labels") or {})}
+    labels = {NODEGROUP_LABEL: group, **(found[0].get("labels") or {})}
+    if group == SANDBOX_GROUP:
+        labels = {k: v for k, v in labels.items() if k not in RUNTIMECLASS_NODE_SELECTOR}
+        labels.update(RUNTIMECLASS_NODE_SELECTOR)
+    return labels
 
 
 # ---------------------------------------------------------------------------
@@ -1444,9 +1474,12 @@ def inventory():
                 "LaunchTemplate", {}).get("LaunchTemplateSpecification", {})
             if spec.get("LaunchTemplateId"):
                 lts.add(spec["LaunchTemplateId"])
+    # This cluster's eksctl stacks: the name eksctl gives them AND the cluster-name tag it puts on
+    # each, because the name prefix alone also matches a cluster named "<cluster>-2".
     prefix = f"eksctl-{cluster}-"
     for stack in aws("cloudformation", "describe-stacks").get("Stacks", []):
-        if stack["StackName"].startswith(prefix) and stack["StackStatus"] != "DELETE_COMPLETE":
+        if (stack["StackName"].startswith(prefix) and stack["StackStatus"] != "DELETE_COMPLETE"
+                and tag_map(stack.get("Tags")).get(EKSCTL_CLUSTER_TAG) == cluster):
             items.append(("cfn-stack", stack["StackName"], tag_map(stack.get("Tags"))))
             for r in aws("cloudformation", "describe-stack-resources", "--stack-name",
                          stack["StackName"]).get("StackResources", []):
@@ -1539,14 +1572,29 @@ def cmd_audit_tags(_):
 
 
 def cmd_tag_sweep(_):
-    """Tag what AWS creates implicitly, where no create-time hook exists: the EKS-managed Auto
-    Scaling groups, the launch-template copies EKS makes, the VPC's default route table,
-    security group and network ACL, and interfaces other services put in the VPC."""
+    """setup.sh's last step. Give the sample's tags to what AWS creates for this cluster with no
+    way to tag it at creation: the Auto Scaling group behind each managed node group, the copy
+    EKS makes of each launch template and the instance profile it makes for each node role, the
+    VPC's main route table, default security group and default network ACL, the cluster security
+    group EKS creates, and the interfaces the EKS control plane and the NAT gateway put in the
+    VPC. Anything else in the inventory without the tag is tagged too, and printed.
+
+    It tags only what inventory() reaches from this cluster: the cluster must carry the sample's
+    mark (inventory() refuses it otherwise), its eksctl stacks are matched by their cluster-name
+    tag, and everything VPC-scoped is read with the cluster's own VPC id as the filter. It also
+    requires that VPC to carry the mark, so it never tags inside a VPC this sample did not
+    create. Both checks run before the first write."""
     tags = demo_tags()
+    items = inventory()
+    vpcs = [(ident, current) for kind, ident, current in items if kind == "vpc"]
+    require(len(vpcs) == 1, f"tag-sweep found {len(vpcs)} VPCs for the cluster, expected exactly 1; nothing was tagged")
+    vpc_id, vpc_tags = vpcs[0]
+    require(vpc_tags.get(DEMO_TAG[0]) == DEMO_TAG[1],
+            f"VPC {vpc_id} does not carry {DEMO_TAG[0]}={DEMO_TAG[1]}, so it is not this sample's; "
+            "tag-sweep tags only inside the VPC setup.sh created, and nothing was tagged")
+    untagged = [(kind, ident) for kind, ident, current in items if current.get(KEEP[0]) != KEEP[1]]
     ec2_ids, asgs = [], []
-    for kind, ident, current in inventory():
-        if current.get(KEEP[0]) == KEEP[1]:
-            continue
+    for kind, ident in untagged:
         if kind == "asg":
             asgs.append(ident)
         elif kind in ("eks-cluster", "eks-nodegroup", "eks-addon", "eks-pod-identity"):
@@ -1574,6 +1622,9 @@ def cmd_tag_sweep(_):
             "--tags", *[f"Key={k},Value={v}" for k, v in tags])
         for kind, ident in batch:
             print(f"tagged {kind} {ident}")
+    tagged = sum(1 for kind, _ in untagged if kind != "cfn-stack")
+    print(f"tag-sweep: tagged {tagged} of {len(items)} resources in cluster {setting('CLUSTER_NAME')} "
+          f"and VPC {vpc_id}; {len(items) - len(untagged)} already carried {KEEP[0]}={KEEP[1]}")
 
 
 def cmd_owned(_):

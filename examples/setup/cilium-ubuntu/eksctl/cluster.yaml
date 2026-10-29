@@ -17,8 +17,8 @@ metadata:
   region: ${AWS_REGION}
   version: "1.36"
   # eksctl passes these to every CloudFormation stack it creates, and CloudFormation copies
-  # them onto the VPC, subnets, route tables, gateways, security groups, IAM roles and node
-  # groups in those stacks, so clean.sh's tag sweep can find all of it from this one tag.
+  # them onto the VPC, subnets, route tables, gateways, security groups and IAM roles in those
+  # stacks; setup.sh's tag sweep (step 8) adds them to what AWS creates without a tag.
   tags:
     auto-delete: "no"
     Demo: setup-cilium-ubuntu
