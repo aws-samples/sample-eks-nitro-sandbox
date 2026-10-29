@@ -1,0 +1,3 @@
+# Local values for your own cluster and account. Everything else this sample writes goes
+# to the repository's tmp/, which git also ignores.
+.env

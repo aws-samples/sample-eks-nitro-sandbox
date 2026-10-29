@@ -1,0 +1,120 @@
+# The analyst pod: one Nitro sandbox holding the trusted controller and, inside it, the
+# reader, evaluator and writer as bubblewrap children.
+#
+# runtimeClassName: isolated-sandbox is the one line that puts the whole pod in a Nitro
+# sandbox: a hardware-isolated lightweight VM with its own kernel, which its containers run
+# in. That is the boundary around bubblewrap's controls, the supplier key and the AWS
+# credentials.
+#
+# automountServiceAccountToken: false removes the ordinary Kubernetes token from the pod.
+# EKS Pod Identity still delivers AWS credentials, through its own endpoint served inside
+# the sandbox, so the controller reaches Amazon S3 and Amazon Bedrock and the tool
+# processes find no Kubernetes token on disk.
+#
+# <NAMESPACE>, <MANAGED_BY>, <ANALYST_IMAGE>, <AWS_REGION>, <BUCKET>, <ROLE_NAME> and
+# <BEDROCK_MODEL_ID> are replaced at apply time by scripts/setup.sh.
+#
+# Two settings here are what bubblewrap needs from the guest, and neither of them reaches
+# the node. They are explained on the page under "What the guest has to allow":
+#
+#   * The init container raises user.max_user_namespaces inside the guest. It defaults to
+#     zero there, and an unprivileged process cannot create any other namespace without a
+#     user namespace first, so bwrap fails with ENOSPC without this.
+#   * The working container is privileged, which is what lets bwrap mount a private
+#     procfs for its child's PID namespace. With the ordinary container procfs masks in
+#     place that mount fails with EPERM, and the init container alone is not enough.
+#
+# privileged: true cannot be combined with allowPrivilegeEscalation: false, and it
+# overrides the container seccomp profile, so this pod does not carry the two settings
+# the other sandboxed pods here use. What the tool processes get instead is bubblewrap's
+# own doing and the run reads it from /proc: UID/GID 1000, an empty capability bounding
+# set, no_new_privs, and a seccomp filter this application compiled.
+#
+# It sets CPU and memory requests, which most samples here do not. A pod with no requests
+# gets a small default VM of about 130 MiB, and this one has to hold a Python interpreter,
+# the Strands Agents and AWS SDK packages and a short-lived tool process at once; without
+# a request it is killed for running out of memory with no output at all. Requests size
+# the sandbox; the limits are higher on purpose, to show they need not match. The init
+# container asks for the same as the working container so that the pod's own request, and
+# so the size of the sandbox, is the same number either way.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: analyst
+  namespace: <NAMESPACE>
+  labels:
+    app: analyst
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+  annotations:
+    # Names the container kubectl exec, logs and cp use, so the init container below does
+    # not make every command print a "Defaulted container" line.
+    kubectl.kubernetes.io/default-container: analyst
+spec:
+  runtimeClassName: isolated-sandbox
+  serviceAccountName: analyst
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  # The controller and every tool process run as an ordinary user. fsGroup is what lets
+  # the controller read the supplier key at mode 0440, and that is deliberate: the key
+  # file is readable by the very user the tool processes also run as, so a tool refused it
+  # was refused by its mount list and not by a file mode. The run shows the controller
+  # opening the same file the tool cannot see.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+  initContainers:
+    - name: enable-guest-userns
+      image: <ANALYST_IMAGE>
+      command:
+        - sh
+        - -ec
+        - |
+          echo 128 > /proc/sys/user/max_user_namespaces
+          test "$(cat /proc/sys/user/max_user_namespaces)" = 128
+      # This writes a sysctl in the Nitro guest's own kernel, which belongs to this pod
+      # alone. It is not a node setting and no other pod on the node is affected.
+      securityContext:
+        privileged: true
+        runAsUser: 0
+        runAsGroup: 0
+        runAsNonRoot: false
+      resources:
+        requests: { cpu: "1", memory: 1Gi }
+        limits: { cpu: "2", memory: 2Gi }
+  containers:
+    - name: analyst
+      image: <ANALYST_IMAGE>
+      command: ["sleep", "infinity"]
+      securityContext:
+        privileged: true
+      env:
+        - { name: AWS_REGION, value: "<AWS_REGION>" }
+        - { name: AWS_DEFAULT_REGION, value: "<AWS_REGION>" }
+        - { name: ANALYST_BUCKET, value: "<BUCKET>" }
+        - { name: ANALYST_ROLE_NAME, value: "<ROLE_NAME>" }
+        - { name: BEDROCK_MODEL_ID, value: "<BEDROCK_MODEL_ID>" }
+        - { name: SUPPLIER_API_URL,
+            value: "https://supplier-api.<NAMESPACE>.svc.cluster.local:8443" }
+      resources:
+        requests: { cpu: "1", memory: 1Gi }
+        limits: { cpu: "2", memory: 2Gi }
+      readinessProbe:
+        exec: { command: ["test", "-r", "/opt/supplier-key/api-key"] }
+      volumeMounts:
+        # The real supplier key. The controller may read it; no tool process has it in
+        # its mount list, and the run shows a tool getting ENOENT for it.
+        - { name: supplier-key, mountPath: /opt/supplier-key, readOnly: true }
+        - { name: supplier-ca, mountPath: /opt/supplier-ca, readOnly: true }
+        - { name: state, mountPath: /var/lib/analyst }
+        - { name: tmp, mountPath: /tmp }
+  volumes:
+    - name: supplier-key
+      secret: { secretName: supplier-key, defaultMode: 0440 }
+    - name: supplier-ca
+      configMap: { name: supplier-ca }
+    - name: state
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}

@@ -314,6 +314,14 @@ analyst_bucket() {
   local rc=0
   lookup NoSuchBucket s3api get-bucket-tagging --bucket "$BUCKET" --output json \
     >"$TMP_DIR/bucket-tags.json" 2>/dev/null || rc=$?
+  # Every other lookup in this file does this, and this one did not: without it, rc=2,
+  # "could not determine", fell into the else branch below with rc=1, "absent". A call
+  # that failed for any reason other than the bucket not being there would then reach
+  # head-bucket, and if that failed too, which the same authorization or service problem
+  # would make likely, go on to create a bucket that may already exist and be somebody
+  # else's. That is the fail-open shape the lookup contract exists to prevent, so only
+  # the service's own not-found answer may mean "create it".
+  stop_if_undetermined "$rc" "the bucket $BUCKET"
   if [[ "$rc" == 0 ]]; then
     require_managed_by "the bucket $BUCKET" \
       "$(jq -r '.TagSet[]? | select(.Key=="ManagedBy") | .Value' "$TMP_DIR/bucket-tags.json")"

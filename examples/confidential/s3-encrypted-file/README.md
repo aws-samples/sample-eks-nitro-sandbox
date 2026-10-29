@@ -254,6 +254,8 @@ is what the key policy is set to expect. The script checks the pinned image dige
 it just published and that the policy pins the bucket, the manifest key, the key ARN and the
 expected length and digest, then installs the gate and reads it back.
 
+See [using a signed image instead of a pinned image reference](../signer-policy/README.md).
+
 ```text
 == 7/9 generate the Cedar policy and set the gate to its measurement ==
 --- Predicted PCR17 ---
