@@ -36,7 +36,12 @@ ENCLAVE_CFG="{\"debug_mode\":${SHIM_DEBUG},\"pcie_mode\":true,\"direct_mode\":fa
 
 put() { local code; code=$(curl -s -o /tmp/smoke-api.out -w '%{http_code}' --unix-socket "$SOCK" -X PUT "http://localhost$1" -H 'Content-Type: application/json' -d "$2")
         echo "PUT $1 -> $code $(cat /tmp/smoke-api.out)"; [[ $code == 2* ]]; }
-mk_overlay() { rm -f "$1"; truncate -s 2G "$1" && sgdisk -Z "$1" >/dev/null 2>&1; sgdisk -n 1:0:0 -t "1:$NONE_GUID" -c 1:SANDBOX-DATA "$1" >/dev/null; }
+# The overlay data disk: a GPT with one partition over the whole disk, type "Linux generic data",
+# named SANDBOX-DATA (the layout `sgdisk -n 1:0:0` gives: first usable LBA 34, partition from
+# sector 2048 to the end). Written with sfdisk (package fdisk, installed on Canonical's EKS
+# image); sgdisk (package gdisk) is not on that image.
+mk_overlay() { rm -f "$1"; truncate -s 2G "$1" \
+  && printf 'label: gpt\nfirst-lba: 34\ntype=%s, name="SANDBOX-DATA"\n' "$NONE_GUID" | sfdisk -q "$1" >/dev/null; }
 mk_tap() { ip link del "$1" 2>/dev/null; ip tuntap add dev "$1" mode tap && ip link set "$1" up; }
 agent_up() { python3 - "$1" <<'PY'
 import socket, sys
