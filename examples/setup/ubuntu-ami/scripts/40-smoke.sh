@@ -3,10 +3,11 @@
 # only on a successful vsock handshake with the guest agent. Runs on the build host after
 # the reboot, and on any instance launched from the finished AMI.
 #
-# Mirror the shim precisely or this test lies: huge_pages 2M, the shim's boot args with the
-# agent as PID 1, a read-only rootfs drive, an overlay data disk, vsock guest_cid 3, one
-# tap network interface, then /enclave and InstanceStart. No /entropy: the shim never adds
-# one. PASS is the vsock "CONNECT 1024" handshake answering "OK <port>", not console text.
+# Mirror the shim precisely or this test lies: no huge pages (the GA archive's Firecracker
+# refuses them for a Nitro Enclave, and the GA shim sends none), the shim's boot args, a
+# read-only rootfs drive, an overlay data disk, vsock guest_cid 3, one tap network interface,
+# then /enclave and InstanceStart. No /entropy: the shim never adds one. PASS is the vsock
+# "CONNECT 1024" handshake answering "OK <port>", not console text.
 #
 # set -uo pipefail, not -e: this script tallies its own pass/fail (the put() PUT calls set
 # pass=0 on failure but keep going) so it can still run its cleanup and print a result after
@@ -63,7 +64,7 @@ mk_tap "$TAP" || { echo "tap creation failed"; exit 1; }
 pid=$!
 for _ in $(seq 1 50); do [ -S "$SOCK" ] && break; sleep 0.1; done
 pass=1
-put /machine-config '{"vcpu_count":2,"mem_size_mib":1024,"huge_pages":"2M"}' || pass=0
+put /machine-config '{"vcpu_count":2,"mem_size_mib":1024}' || pass=0
 put /boot-source "$(printf '{"kernel_image_path":"%s","boot_args":"%s"}' "$K" "$BOOT_ARGS")" || pass=0
 put /drives/rootfs "$(printf '{"drive_id":"rootfs","path_on_host":"%s","is_root_device":false,"is_read_only":true,"cache_type":"Unsafe"}' "$R")" || pass=0
 put /drives/overlay "$(printf '{"drive_id":"overlay","path_on_host":"%s","is_root_device":false,"is_read_only":false,"cache_type":"Unsafe"}' "$OVL")" || pass=0
