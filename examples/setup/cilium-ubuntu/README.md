@@ -811,7 +811,7 @@ lanes.
 The policy `test.sh` applies is one `CiliumNetworkPolicy`, `clients-egress`. It selects the
 three client pods alike, so each L3/L4, L7 and FQDN verdict below is the same rule, enforced by
 Cilium on the sandbox pod and on the two ordinary pods. This is all of
-[`deploy/policy.yaml`](deploy/policy.yaml), byte for byte. Its comments name each rule's allowed
+[`deploy/policy.yaml`](deploy/policy.yaml), line for line. Its comments name each rule's allowed
 and refused destination, which `test.sh` stages 5 to 7 prove both ways.
 
 ```yaml
@@ -1094,6 +1094,48 @@ denied name still resolves. The `socketLB.hostNamespaceOnly` negative control (a
 cannot reach a ClusterIP Service or Service-based DNS with the setting off) is the documented
 control run in [stage 3](#3-install-cilium-before-any-node); `test.sh` stays read-only and
 does not flip the live Helm value.
+
+**The FQDN cache, read raw (criterion 13).** On the fresh run's cluster, after the FQDN probes from
+each client pod, each node's Cilium agent was read with
+`kubectl -n kube-system exec <agent pod> -c cilium-agent -- cilium-dbg fqdn cache list`.
+
+- **Which endpoints:** the first part is the sandbox node's agent, with the `nitro` and `neighbor`
+  endpoints. The second part is the system node's agent, with the `control` endpoint. The
+  unselected `server` pod has no rows in either.
+- **Abridged:** each part keeps its header and the rows for `checkip.amazonaws.com.` and
+  `example.net.`. The one `connection` row each endpoint has for the in-cluster name
+  `server.cilium-ubuntu-demo.svc.cluster.local.` is cut.
+- **Masked:** the endpoint ids and every resolved address (`<RESOLVED_IPS>`).
+- **Run-specific:** the TTLs and expiration times.
+
+```text
+Endpoint   Source       FQDN                                           TTL   ExpirationTime             IPs
+<NITRO_ENDPOINT_ID>       lookup       checkip.amazonaws.com.                         27    2026-10-29T08:48:10.961Z   <RESOLVED_IPS>
+<NITRO_ENDPOINT_ID>       lookup       example.net.                                   27    2026-10-29T08:48:18.342Z   <RESOLVED_IPS>
+<NITRO_ENDPOINT_ID>       lookup       example.net.                                   27    2026-10-29T08:48:18.342Z   <RESOLVED_IPS>
+<NITRO_ENDPOINT_ID>       connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
+<NITRO_ENDPOINT_ID>       connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
+<NITRO_ENDPOINT_ID>       connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
+<NEIGHBOR_ENDPOINT_ID>       lookup       checkip.amazonaws.com.                         17    2026-10-29T08:48:11.140Z   <RESOLVED_IPS>
+<NEIGHBOR_ENDPOINT_ID>       lookup       example.net.                                   17    2026-10-29T08:48:18.371Z   <RESOLVED_IPS>
+<NEIGHBOR_ENDPOINT_ID>       lookup       example.net.                                   17    2026-10-29T08:48:18.371Z   <RESOLVED_IPS>
+<NEIGHBOR_ENDPOINT_ID>       connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
+<NEIGHBOR_ENDPOINT_ID>       connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
+<NEIGHBOR_ENDPOINT_ID>       connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
+Endpoint   Source       FQDN                                           TTL   ExpirationTime             IPs
+<CONTROL_ENDPOINT_ID>        lookup       example.net.                                   4     2026-10-29T08:48:15.365Z   <RESOLVED_IPS>
+<CONTROL_ENDPOINT_ID>        lookup       example.net.                                   4     2026-10-29T08:48:15.365Z   <RESOLVED_IPS>
+<CONTROL_ENDPOINT_ID>        lookup       checkip.amazonaws.com.                         6     2026-10-29T08:48:10.093Z   <RESOLVED_IPS>
+<CONTROL_ENDPOINT_ID>        connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
+<CONTROL_ENDPOINT_ID>        connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
+<CONTROL_ENDPOINT_ID>        connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
+```
+
+Each endpoint has three `connection` rows for `checkip.amazonaws.com.` and none for
+`example.net.`, though it has `lookup` rows for both, because the DNS rule sends every lookup
+through the proxy. So the cache records which allowed name each pod connected to. The deny itself
+is shown, as the paragraph above says, by the timeout while the name still resolves and by the
+unselected `server` pod still reaching it, not by the cache.
 
 ## What stays running, and cleaning up
 
