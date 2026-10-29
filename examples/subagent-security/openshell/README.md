@@ -109,6 +109,61 @@ sample belongs to the model bridge.*
 
 ![An AWS Cloud frame holds an Amazon EKS cluster frame, with an Operator CLI user icon outside the cluster on the left, marked outside the cluster. An arrow labelled kubectl port-forward, mTLS runs from the Operator CLI into an OpenShell gateway pod box, marked ClusterIP, which holds a gear icon labelled OpenShell gateway, policy, template, provider. From the gateway an arrow labelled Kubernetes driver creates one Sandbox reaches a document icon labelled Sandbox resource, and two arrows lead down from that resource: one into a Workload pod box and one into an OpenShell supervisor pod box. The Workload pod box sits inside a red Nitro sandbox frame labelled runtimeClassName colon isolated-sandbox, and its sub line reads no AWS credential inside this boundary. In that pod box, a red OpenShell runtime icon described as applying the policy has an arrow labelled starts the analyst to an orange Procurement analyst icon described as UID 1000 with an openshell colon placeholder. The OpenShell supervisor pod box is outside the red frame but still in the cluster, marked an ordinary pod outside the sandbox, and holds a credentials icon labelled OpenShell supervisor, which holds the real supplier key and the gateway token. One arrow labelled boundary channel runs from the Procurement analyst to that supervisor, and it is the only connection out of the sandbox frame that the analyst makes. Two arrows leave the supervisor, each labelled allowed operation, real key substituted: one to a Supplier API icon marked synthetic in a Supplier API pod box, an ordinary pod reached by ClusterIP, and one to a Model bridge icon described as calling the model in a Model bridge pod box, also an ordinary pod reached by ClusterIP. From the Model bridge one arrow labelled EKS Pod Identity, model-scoped IAM runs down and out of the cluster frame to an Amazon Bedrock icon, for the model turn; no arrow to Amazon Bedrock starts inside the red frame. A red dashed arrow runs from the Procurement analyst to a red icon labelled Unapproved supplier alias, same backend, not in the policy, and its label reads refused by OpenShell's policy colon EACCES at connect: the red dashes mark a connection OpenShell's own policy refuses inside the pod, not a limit on the pod's network, and no frame or arrow in the figure restricts the pod's egress.](images/subagent-security-openshell.png)
 
+## Design: why the model call is outside the sandbox
+
+[nono](../nono/README.md) has its trusted controller call Amazon Bedrock from inside the Nitro
+sandbox, over EKS Pod Identity, and the planned bubblewrap sample does the same. This one does
+not, and that is not a gap against them — it is a different confinement shape, and upstream's
+own design agrees with it.
+
+**What [nono](../nono/README.md) and the planned bubblewrap sample confine, and what OpenShell
+confines, are not the same process.** In nono, the tool's own confinement mechanism wraps the
+*tool* subprocesses — the reader, the evaluator, the writer — and the trusted controller that
+starts them runs in the pod unconfined by that mechanism. That controller keeps the pod's own
+environment, filesystem and network, so it calls `boto3` against Bedrock the same way any pod
+with Pod Identity would. The planned bubblewrap sample (see the
+[section page](../README.md)) confines the same three tool subprocesses with bwrap instead,
+for the same reason. Here, OpenShell confines the **analyst process itself**: there is no
+separate unconfined controller inside this pod. Every file the analyst opens, every
+destination it reaches and every credential it is given passes through OpenShell's policy
+first, with no process in this pod exempt from it the way nono's and bubblewrap's controllers
+are.
+
+**OpenShell's own Bedrock provider profile is bridge-fronted by design, not by this sample's
+choice.** The [`providers/aws-bedrock.yaml`](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/providers/aws-bedrock.yaml)
+profile shipped with the pinned release says so directly:
+
+> This profile supports a bridge-fronted shape only: operators point `BEDROCK_BASE_URL` at a
+> translating bridge or Bedrock-compatible proxy that handles AWS auth in its own pod, and
+> the bridge — not this profile — is responsible for declaring its own egress endpoint and
+> binary attribution. As a result the profile is intentionally non-egress-granting:
+> `endpoints` and `binaries` are empty so that selecting `aws-bedrock` does not implicitly
+> punch a hole to AWS for any sandbox.
+>
+> Direct AWS Bedrock with router-side SigV4 signing is a separate follow-up; until that lands
+> the AWS\_\* credentials below are declarative schema only — none are required, none are
+> auto-discovered, and the router does not consume them.
+
+OpenShell's own network policy documentation adds why a sandbox-side Pod Identity call could
+not work here even with a future endpoint rule: "Network policy never authorizes an outbound
+endpoint whose destination is loopback, link-local, or unspecified, including the cloud
+metadata address `169.254.169.254`" ([*Restrict Destination
+Addresses*](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/docs/how-it-works/policies/network-rules.mdx),
+at the pinned revision). The EKS Pod Identity agent that would hand the analyst its AWS
+credentials sits at a link-local address for the same SSRF-prevention reason, so this is
+blocked unconditionally rather than being a rule this sample could ask an operator to widen.
+Reaching Bedrock from inside the sandbox would need the SigV4-signing follow-up the profile
+above names, which this release does not ship.
+
+**So the bridge is the documented upstream pattern, not a workaround this sample improvised.**
+The model bridge keeps exactly this shape: it is a separate pod, outside the sandbox, that
+holds the real AWS credential through its own EKS Pod Identity role and handles the Bedrock
+call on the analyst's behalf — the pattern the profile above describes, with `analyst-bridge`
+as that translating bridge. The result is the property this page states throughout: the AWS
+credential needed for the model turn stays outside the sandbox at every point, while the
+analyst still gets a real model call for its recommendation. This is an intentional design
+choice, not an omission to close in a later revision of this sample.
+
 ## Versions
 
 Everything is pinned to one OpenShell release, so the operator CLI, the gateway, the
