@@ -5,8 +5,8 @@
 # token never appears on a command line. The runner manager mounts that Secret.
 #
 # Two lines in [runners.kubernetes] are the sample: `runtime_class_name` puts every job pod
-# in a Nitro sandbox, and `privileged` lets the Docker daemon the build job starts run
-# inside that sandbox. No pipeline has to know about either.
+# in a Nitro sandbox, and `privileged` lets the Docker daemon the job starts run inside that
+# sandbox. No pipeline has to know about either.
 
 concurrent = 2
 check_interval = 3
@@ -31,8 +31,9 @@ log_level = "info"
     runtime_class_name = "isolated-sandbox"
 
     # Lets the build job start its own Docker daemon. The kernel that daemon is privileged
-    # against is the guest's, which belongs to the job pod. It applies to every job pod this
-    # runner creates, not only to the build job: there is no per-job switch.
+    # against is the guest's, which belongs to the job pod. It is set here, once, because it
+    # is a runner setting and not a per-job one: there is no per-job switch, so it applies to
+    # every job pod this runner creates.
     privileged = true
 
     # The image a job gets when its .gitlab-ci.yml names none.
@@ -59,9 +60,9 @@ log_level = "info"
     helper_cpu_limit = "500m"
     helper_memory_request = "512Mi"
     helper_memory_limit = "512Mi"
-    # No service_* settings: no job in this sample declares a `services:` entry. The build
-    # job's daemon runs in the build container on a Unix socket, which is what keeps it off
-    # the cluster network. A pipeline that does declare a service would get the executor's
+    # No service_* settings: the job in this sample declares no `services:` entry. Its
+    # daemon runs in the build container on a Unix socket, which is what keeps it off the
+    # cluster network. A pipeline that does declare a service would get the executor's
     # defaults for it, so set service_cpu_request and service_memory_request too if you add
     # one.
 

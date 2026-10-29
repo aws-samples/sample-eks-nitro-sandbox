@@ -1,39 +1,22 @@
-# The pipeline this sample runs on the in-cluster GitLab. Two jobs, two stages, two job
-# pods, and nothing in this file about sandboxes: the runner puts every job pod it creates
-# in one, so a pipeline written before the runner was configured is isolated too.
+# The pipeline this sample runs on the in-cluster GitLab. One job, one job pod, and nothing
+# in this file about sandboxes: the runner puts every job pod it creates in one, so a
+# pipeline written before the runner was ever configured is isolated too.
 #
-# scripts/create-project.sh commits this file to the project it creates.
+# scripts/bootstrap-runner.sh commits this file to the project it creates.
 
 stages:
-  - evidence
   - build
 
-# An ordinary CI job. It asks for nothing unusual: no service container, no daemon, no
-# privileged operation of its own. Its containers are privileged all the same, because
-# `privileged = true` in the runner's config.toml is a runner setting and applies to every job
-# pod this runner creates; this job simply does not use it. What it does is read the things
-# that tell a pod running in a Nitro sandbox apart from any pod on the node, so a reader can
-# see that the plain job is isolated and not only the build.
-sandbox-evidence:
-  stage: evidence
-  image: public.ecr.aws/docker/library/alpine:3.24.3
-  script:
-    - echo "pod $(hostname), job $CI_JOB_ID of pipeline $CI_PIPELINE_ID"
-    - echo "--- its own kernel (an ordinary pod reports the node's) ---"
-    - uname -rv
-    - echo "--- its own boot (matches this pod's age, not the node's uptime) ---"
-    - cut -d' ' -f1 /proc/uptime
-    - echo "--- virtio disks (an ordinary pod sees the instance's nvme devices) ---"
-    - ls /sys/block
-    - echo "--- what the guest reports as its product (an ordinary pod reads the EC2 instance type) ---"
-    - cat /sys/class/dmi/id/product_name
-    - echo "--- the process this job script runs as ---"
-    - id
-
-# The privileged job: a Docker daemon of its own, a real multi-stage build and a run of the
-# image it produced, all inside this job pod's sandbox. `privileged = true` in the runner's
-# config.toml is what lets the daemon start, and the kernel it is privileged against is this
-# pod's own guest, which `docker info` reports below.
+# The job that forces the choice this sample takes away: a Docker daemon of its own, a real
+# multi-stage build and a run of the image it produced, all inside this job pod's sandbox.
+#
+# It reads the sandbox evidence first, at the top of its own step and before the daemon is
+# started or anything is built, so everything that follows is known to have run in a guest of
+# its own: the guest's kernel build from `uname -rv`, this pod's own boot from /proc/uptime,
+# the virtio disks from /sys/block, and the product name the guest reports.
+#
+# `privileged = true` in the runner's config.toml is what lets the daemon start, and the
+# kernel it is privileged against is this pod's own guest, which `docker info` reports below.
 #
 # The daemon runs in the job's own container, on a Unix socket, started the way the
 # docker-builds sample starts it. Not as a `services:` entry with DOCKER_HOST on TCP, which
@@ -46,18 +29,23 @@ docker-build:
   image: public.ecr.aws/docker/library/docker:29.9.2-dind
   variables:
     DOCKER_HOST: unix:///var/run/docker.sock
-  before_script:
-    # The Kubernetes executor runs its own shell as the container's command, so the dind
-    # image's entrypoint does not run and the daemon is started here. `--host` names only the
-    # socket: no TCP listener is opened at all.
-    - dockerd --host=unix:///var/run/docker.sock >/tmp/dockerd.log 2>&1 &
   script:
     - echo "pod $(hostname), job $CI_JOB_ID of pipeline $CI_PIPELINE_ID"
-    - echo "--- the same three readings, from the build job's own pod ---"
+    - echo "--- its own kernel (an ordinary pod reports the node's) ---"
     - uname -rv
+    - echo "--- its own boot (matches this pod's age, not the node's uptime) ---"
     - cut -d' ' -f1 /proc/uptime
+    - echo "--- virtio disks (an ordinary pod sees the instance's nvme devices) ---"
     - ls /sys/block
-    - echo "--- waiting for the daemon this pod started, on its Unix socket ---"
+    - echo "--- what the guest reports as its product (an ordinary pod reads the EC2 instance type) ---"
+    - cat /sys/class/dmi/id/product_name
+    - echo "--- the process this job script runs as ---"
+    - id
+    # The Kubernetes executor runs its own shell as the container's command, so the dind
+    # image's entrypoint does not run and the daemon is started here, after the readings
+    # above. `--host` names only the socket: no TCP listener is opened at all.
+    - echo "--- the daemon this job starts, on its own Unix socket ---"
+    - dockerd --host=unix:///var/run/docker.sock >/tmp/dockerd.log 2>&1 &
     - |
       i=0
       until docker info >/dev/null 2>&1; do

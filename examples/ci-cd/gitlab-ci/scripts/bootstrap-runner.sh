@@ -344,7 +344,7 @@ cat <<EOF
   Token:        in Secret '$RUNNER_SECRET', prefix glrt-, never printed
   Job pods:     runtimeClassName isolated-sandbox, privileged, in namespace $NAMESPACE
 
-Next, start a pipeline and watch its two jobs land in two sandboxes:
+Next, start a pipeline and watch its job land in a sandbox of its own:
 
   ./scripts/run-pipeline.sh
 EOF

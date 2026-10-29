@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # run-pipeline.sh -- start a pipeline, record the job pods while they exist, and print what
-# the two jobs reported.
+# each job reported.
 #
 # Usage:
 #   ./scripts/run-pipeline.sh

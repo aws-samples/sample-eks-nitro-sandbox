@@ -8,9 +8,10 @@ the node's credentials, or it is not privileged and the build cannot be done at 
 This sample takes that choice away for a whole GitLab, not for one hand-written pod. A
 self-hosted GitLab runs in the cluster, a GitLab Runner with the Kubernetes executor runs
 beside it as an ordinary pod, and **one line in the runner's `config.toml` puts every job pod
-it creates in a Nitro sandbox**. A pipeline with two jobs then runs: an ordinary job, and a
-privileged `docker build` that starts its own Docker daemon, builds a multi-stage image and
-runs it. Both land in their own sandbox, with their own kernel. No pipeline has to know.
+it creates in a Nitro sandbox**. A pipeline then runs the hard case: one privileged
+`docker build` job that starts its own Docker daemon, builds a multi-stage image and runs it.
+It reads the evidence that it is in a sandbox of its own before it starts the daemon, and the
+kernel the daemon is then privileged against is that sandbox's. No pipeline has to know.
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and these samples, which this one builds on:
@@ -41,16 +42,16 @@ v1.35.0, `jq` 1.8.1, AWS CLI 2.38.0, OpenSSL 3.5.8 and `bash` 5.2.15.
 You need no GitLab account and no GitLab.com project: the GitLab this sample talks to is the
 one it installs, and the runner's authentication token is minted from it.
 
-Every output block on this page is from one run of this sample, after `scripts/clean.sh` had
-removed the previous one, so the run started with none of its resources present. Local names
-in that output are replaced by the placeholders the commands use, because this repository is
-public: `<CLUSTER_NAME>` for the kube context and `<NODE_NAME>` for an EC2 instance id. Pod
-names, pod UIDs, kernel builds, uptimes, device lists and timings are as the run printed
-them.
+Every output block on this page is from one run of this sample, which began with none of its
+resources present on the cluster: the namespace, GitLab, the runner manager and any job pod
+were all absent before it started. Local names in that output are replaced by the
+placeholders the commands use, because this repository is public: `<CLUSTER_NAME>` for the
+kube context and `<NODE_NAME>` for an EC2 instance id. Pod names, pod UIDs, kernel builds,
+uptimes, device lists and timings are as the run printed them.
 
 There is no model or API cost. While the sample is up, one GitLab pod and its EBS volume run
 on the general-purpose pool; each pipeline run holds sandbox capacity for the length of its
-jobs, and the build pulls its base images over the cluster's existing egress.
+job, and the build pulls its base images over the cluster's existing egress.
 
 ## Overview
 
@@ -65,13 +66,14 @@ runner authentication token, polls GitLab, and creates and deletes job pods thro
 Kubernetes API. It runs no pipeline code, so it is not what needs isolating, and its pod spec
 carries no `runtimeClassName`. Step 6 reads that back off the running pod.
 
-**A pod per job, and nothing between jobs.** The Kubernetes executor creates a job pod when a
-job starts and deletes it when the job ends. The run saw two pods for this pipeline's two jobs,
-with two different pod UIDs, so nothing carried from one job to the next: no checkout, no build
-cache, no leftover credential. The pipeline declares no `retry:`, so neither job ran twice.
+**A pod per job, created and deleted with the job.** The Kubernetes executor creates a job pod
+when a job starts and deletes it when the job ends, so a `kubectl get pods` afterwards finds
+nothing and the pod has to be read while its job is in flight. This pipeline has one job, so
+the run saw one pod, which Step 3 records; the page therefore shows one sandbox and does not
+compare two. The pipeline declares no `retry:`, so that job ran once.
 
 **The privileged daemon runs against the pod's own kernel.** `privileged = true` in the same
-block is what lets the build job's Docker daemon start. The daemon runs in the job's own
+block is what lets the job's Docker daemon start. The daemon runs in the job's own
 container, so the sandbox's single `runtimeClassName` covers it, and the kernel it is
 privileged against is the guest's. The run shows that much directly: a container the
 daemon starts reports the guest's kernel build, `#1`, and the guest's virtio disks. What follows
@@ -99,11 +101,12 @@ and this page claims no limit from one.
 in `gitlab-ci-demo`, the manager creates one sandbox pod per CI job, and the runner
 authentication token stays with the manager.*
 
-![Outside AWS sits the operator's machine, which reaches the cluster with kubectl port-forward on 8080, and its arrow in is labelled operator's way in. Inside the AWS Cloud, an Amazon EKS cluster holds the namespace gitlab-ci-demo. Along the top of that namespace are the long-lived ordinary pods: a ClusterIP Service gitlab, which the operator's arrow reaches and which selects pod gitlab, GitLab CE in one container, and pod gitlab mounts an Amazon EBS volume holding 30Gi of GitLab data. To their right, a Kubernetes Secret holding the runner token has an arrow labelled mounted by the manager running to pod gitlab-runner, the runner manager, which has no runtime class. An arrow from the runner manager down into the namespace is labelled one pod per CI job. Below sit two Nitro sandbox pods framed in red, each carrying runtimeClassName isolated-sandbox and the note one per CI job, deleted when the job ends. The first holds one container, sandbox-evidence, the ordinary job. The second holds one container, docker-build, which runs its own dockerd on a Unix socket. An arrow from each sandbox pod runs back to the Service gitlab, labelled clone and report status, because a job pod uses the in-cluster Service address, and an arrow from each runs out to Amazon ECR Public for base images, labelled pull base images. Below both sandbox pods, inside the cluster, is the shared EC2 node, whose kernel is never the job pod's. A note under the figure says that the sandbox is the boundary: the Docker daemon the docker-build job starts is privileged against its own job pod's guest kernel, which is the kernel the daemon reports, while the boundary that protects the node is the runtime class's, citing the Amazon EKS User Guide, Isolated and confidential pods. It adds that the runner authentication token stays in the manager and no job pod mounts it, and that GitLab has no Ingress, LoadBalancer or NodePort, so the sample publishes no endpoint outside the cluster.](images/architecture.png)
+![Outside AWS sits the operator's machine, which reaches the cluster with kubectl port-forward on 8080, and its arrow in is labelled operator's way in. Inside the AWS Cloud, an Amazon EKS cluster holds the namespace gitlab-ci-demo. Along the top of that namespace are the long-lived ordinary pods: a ClusterIP Service gitlab, which the operator's arrow reaches and which selects pod gitlab, GitLab CE in one container, and pod gitlab mounts an Amazon EBS volume holding 30Gi of GitLab data. To their right, a Kubernetes Secret holding the runner token has an arrow labelled mounted by the manager running to pod gitlab-runner, the runner manager, which has no runtime class. An arrow from the runner manager down and to the left is labelled one pod per CI job, and it ends at a Nitro sandbox pod framed in red, below the long-lived pods and in the middle of the namespace. That frame carries runtimeClassName isolated-sandbox and the note one per CI job, deleted when the job ends, and it holds one container, docker-build, which runs its own dockerd on a Unix socket. An arrow from the sandbox pod runs back up to the Service gitlab, labelled clone and report status, because a job pod uses the in-cluster Service address, and another runs out of the cluster to Amazon ECR Public for base images, labelled pull base images. Below the sandbox pod, inside the cluster and outside that frame, is the shared EC2 node, whose kernel is never the job pod's. A note under the figure says that the sandbox is the boundary: the Docker daemon the docker-build job starts is privileged against its own job pod's guest kernel, which is the kernel the daemon reports, while the boundary that protects the node is the runtime class's, citing the Amazon EKS User Guide, Isolated and confidential pods. It adds that the runner authentication token stays in the manager and no job pod mounts it, and that GitLab has no Ingress, LoadBalancer or NodePort, so the sample publishes no endpoint outside the cluster.](images/architecture.png)
 
-The two sandbox pods are side by side in the figure because that is what the runner does with
-them, one per job. In this pipeline the two jobs are in two stages, so they run one after the
-other, and the two pods overlap only while the first is being deleted.
+One sandbox pod is drawn because this pipeline has one job. The frame's own note is the
+general rule the runner follows: one pod per CI job, deleted when the job ends. A pipeline
+with more jobs gets another such pod for each of them, from the same one line of runner
+configuration and with no change to the pipeline.
 
 ## Versions
 
@@ -115,8 +118,8 @@ version you pin.
 |---|---|---|
 | [`gitlab/gitlab-ce`](https://hub.docker.com/r/gitlab/gitlab-ce) | `19.5.0-ce.0` | The single-container image: git, Postgres, Redis, Sidekiq and the web app in one pod, so nothing needs an Ingress or a LoadBalancer to come up |
 | [`gitlab/gitlab-runner`](https://hub.docker.com/r/gitlab/gitlab-runner) | `v19.5.0` | The manager. This is the release the run on this page used, and the one `runtime_class_name` was confirmed on; **v17.5.3** is the floor the spec sets, and no older release was tried here |
-| [`docker:29.9.2-dind`](https://gallery.ecr.aws/docker/library/docker) | `29.9.2` | The build job's image, which carries both the daemon it starts and the client it uses. From Amazon ECR Public rather than Docker Hub, so a run is not subject to Docker Hub's pull limits |
-| [`alpine`](https://gallery.ecr.aws/docker/library/alpine) | `3.24.3` | The ordinary job's image, and the comparison pod's |
+| [`docker:29.9.2-dind`](https://gallery.ecr.aws/docker/library/docker) | `29.9.2` | The job's image, which carries both the daemon it starts and the client it uses. From Amazon ECR Public rather than Docker Hub, so a run is not subject to Docker Hub's pull limits |
+| [`alpine`](https://gallery.ecr.aws/docker/library/alpine) | `3.24.3` | The comparison pod's image, the runner's default for a job that names none, and the nested container the build job runs at the end |
 | [`golang`](https://gallery.ecr.aws/docker/library/golang) | `1.27.2-alpine3.24` | The first stage of the image the build job builds |
 
 The runner's helper image is left at the runner's own default for its version, which is the
@@ -134,11 +137,11 @@ line of runner configuration, not because of a `SandboxTemplate` or a warm pool.
 | [`deploy/runner.yaml`](deploy/runner.yaml) | The runner manager: ServiceAccount, namespaced Role and RoleBinding, Deployment |
 | [`deploy/ordinary-pod.yaml`](deploy/ordinary-pod.yaml) | An ordinary pod, for the comparison in Step 4 only |
 | [`runner/config.toml.template`](runner/config.toml.template) | The runner configuration, and where this sample happens |
-| [`pipeline/.gitlab-ci.yml`](pipeline/.gitlab-ci.yml) | The pipeline: an ordinary job and a privileged `docker build` job |
+| [`pipeline/.gitlab-ci.yml`](pipeline/.gitlab-ci.yml) | The pipeline: one privileged `docker build` job, which reads the sandbox evidence before it builds |
 | [`pipeline/ci/Dockerfile`](pipeline/ci/Dockerfile), [`pipeline/ci/main.go`](pipeline/ci/main.go), [`pipeline/ci/go.mod`](pipeline/ci/go.mod) | The multi-stage build context the privileged job builds |
 | [`scripts/setup.sh`](scripts/setup.sh) | The namespace and the self-hosted GitLab |
 | [`scripts/bootstrap-runner.sh`](scripts/bootstrap-runner.sh) | The project, the runner authentication token, and the runner manager |
-| [`scripts/run-pipeline.sh`](scripts/run-pipeline.sh) | Starts a pipeline, records the job pods while they exist, prints the logs |
+| [`scripts/run-pipeline.sh`](scripts/run-pipeline.sh) | Starts a pipeline, records each job pod while it exists, prints the logs |
 | [`scripts/clean.sh`](scripts/clean.sh) | Removes everything the sample created, and confirms it is gone |
 | [`scripts/common.sh`](scripts/common.sh) | Shared by the four: `.env`, the pinned context, the namespace check |
 | [`.env.example`](.env.example) | The local values the sample needs; copy to `.env`, which git ignores |
@@ -271,7 +274,7 @@ the run on this page one you can watch from the beginning.
   asking GitLab to create the project and commit the pipeline. Its Rails console
   takes about half a minute to start, and this waits for it.
   project root/sandbox-ci (id 1), branch main
-  committed .gitlab-ci.yml,ci/Dockerfile,ci/go.mod,ci/main.go at b9ce282b, with [ci skip] so no pipeline starts yet.
+  committed .gitlab-ci.yml,ci/Dockerfile,ci/go.mod,ci/main.go at b1cd89e8, with [ci skip] so no pipeline starts yet.
 
 ==> 3/5 the runner authentication token
   asking GitLab for a project runner authentication token.
@@ -288,7 +291,7 @@ deployment.apps/gitlab-runner created
 Waiting for deployment "gitlab-runner" rollout to finish: 0 of 1 updated replicas are available...
 deployment "gitlab-runner" successfully rolled out
   waiting for GitLab to hear from the runner.
-  the runner is online, last seen 2026-10-28 14:10:23 UTC.
+  the runner is online, last seen 2026-10-29 11:24:45 UTC.
 
 ==> the runner is ready
   Project:      root/sandbox-ci (id 1), branch main
@@ -334,8 +337,9 @@ it in the Secret:
     runtime_class_name = "isolated-sandbox"
 
     # Lets the build job start its own Docker daemon. The kernel that daemon is privileged
-    # against is the guest's, which belongs to the job pod. It applies to every job pod this
-    # runner creates, not only to the build job: there is no per-job switch.
+    # against is the guest's, which belongs to the job pod. It is set here, once, because it
+    # is a runner setting and not a per-job one: there is no per-job switch, so it applies to
+    # every job pod this runner creates.
     privileged = true
 ```
 
@@ -388,15 +392,14 @@ pipeline code.
 ./scripts/run-pipeline.sh
 ```
 
-Abridged: step 1 of 5 is the context and namespace check Step 2 already showed, and the two job
-logs this output goes on to print are Step 4's and Step 5's blocks. Every line shown is as the
-script printed it.
+Abridged: step 1 of 5 is the context and namespace check Step 2 already showed, and the job log
+this output goes on to print is Step 4's and Step 5's blocks. Every line shown is as the script
+printed it.
 
 ```text
 ==> 2/5 starting the pipeline
-  pipeline 2 on b9ce282b, with these jobs:
-    1 sandbox-evidence
-    2 docker-build
+  pipeline 2 on b1cd89e8, with these jobs:
+    1 docker-build
 
 ==> 3/5 and 4/5 the job pods, and the pipeline
   watching for job pods. Each one is created when its job starts and deleted when it
@@ -404,50 +407,58 @@ script printed it.
 
   POD                                                UID                                    RUNTIME CLASS      PHASE
   pipeline 2: running
-  runner-fpifxlgji-project-1-concurrent-0-bucye5e8   078ce05a-e8d0-41cc-9bf0-6647d36e46a8   isolated-sandbox   Running
-  runner-fpifxlgji-project-1-concurrent-0-o3xlezgp   daf00686-e58f-4155-96a2-fd8433e11a33   isolated-sandbox   Running
+  runner-ysz4bpies-project-1-concurrent-0-cl7wqyi1   40642bce-0962-480e-8b5c-1ef210908868   isolated-sandbox   Pending
+  pipeline 2: running
 
   pipeline 2 finished: success
-    job 1 sandbox-evidence success
-    job 2 docker-build success
+    job 1 docker-build success
 
-  jobs GitLab reported: 2
-  job pods seen: 2
-  distinct pod UIDs: 2 (one per job, so no job reused another's pod)
-    runner-fpifxlgji-project-1-concurrent-0-bucye5e8
-      uid 078ce05a-e8d0-41cc-9bf0-6647d36e46a8  runtime class isolated-sandbox  on <NODE_NAME>
+  jobs GitLab reported: 1
+  job pods seen: 1
+  distinct pod UIDs: 1 (one per job, so no job reused another's pod)
+    runner-ysz4bpies-project-1-concurrent-0-cl7wqyi1
+      uid 40642bce-0962-480e-8b5c-1ef210908868  runtime class isolated-sandbox  on <NODE_NAME>
       containers, privileged flag: init-permissions=true build=true helper=true
-      volumes: repo,scripts,logs,kube-api-access-25z4x
-      volumes from a Secret: -
-    runner-fpifxlgji-project-1-concurrent-0-o3xlezgp
-      uid daf00686-e58f-4155-96a2-fd8433e11a33  runtime class isolated-sandbox  on <NODE_NAME>
-      containers, privileged flag: init-permissions=true build=true helper=true
-      volumes: repo,scripts,logs,kube-api-access-4nz66
+      volumes: repo,scripts,logs,kube-api-access-vjlrz
       volumes from a Secret: -
   no job pod mounts Secret 'gitlab-runner-config', which is where the runner authentication token is.
 ```
 
-Two pods observed for two jobs, two distinct UIDs, both `isolated-sandbox`. The script compares
+One pod observed for one job, with `runtimeClassName: isolated-sandbox`. The script compares
 the pods it saw against the jobs GitLab reported and refuses a run where those disagree, which
 catches a job whose pod it never saw. **It cannot rule out a job that ran twice**: it reads the
 pods that exist, every two seconds, so a pod that came and went between two polls would be
-missed. Nothing in this pipeline retries a job, and a reader who adds `retry:` should read
-these counts as a floor rather than an exact census.
+missed. Nothing in this pipeline retries a job, and a reader who adds `retry:`, or a second
+job, should read these counts as a floor rather than an exact census. The line about distinct
+pod UIDs says nothing on its own with one pod, as here; it is the check that would catch two
+jobs sharing one pod, and what this run shows is the one pod and its runtime class.
 
-The first job asks for no daemon, no service container and no privileged operation of its own,
-and it is isolated all the same. Its containers do carry the `privileged` flag, because that is
-a runner setting rather than a per-job one; Step 5 says what that means and what it does not.
+Every container of that pod carries the `privileged` flag, because `privileged = true` is a
+runner setting rather than a per-job one; Step 5 says what that bounds and what it does not.
 
-## Step 4: What a job pod sees, next to what an ordinary pod on the same node sees
+GitLab's own view of the same run is the pipeline page, which is where its **Run pipeline**
+button leads. Forward the Service as Step 1 shows and open the project to see it. This is that
+page for the run above, from the same pipeline the block records:
 
-The first job is an ordinary CI job. It is the whole of it below, from
-[`pipeline/.gitlab-ci.yml`](pipeline/.gitlab-ci.yml), and its script reads the things that
-tell a pod running in a Nitro sandbox apart from any pod on the node:
+*Figure 2: The same pipeline in GitLab's own UI, reached through `kubectl port-forward`. One
+job, `docker-build`, which GitLab shows as passed. Nothing on this page mentions a sandbox or
+a runtime class, because that decision is the runner's and not the pipeline's.*
+
+![A screenshot of GitLab's own pipeline page for this run, in a browser reaching the in-cluster GitLab through kubectl port-forward. Down the left is the project's menu, headed Project and the project sandbox-ci, with Members, Work items, Branches and Merge requests pinned above Pipelines, which is highlighted as the current page, and below them Manage, Plan, Code and Build, with Build opened to show Pipelines, Jobs, Pipeline editor, Pipeline schedules and Artifacts. The main panel begins with the breadcrumb Administrator, sandbox-ci, Pipelines, hash 2, then the heading hash 2 and a green Passed badge, followed by the line Created 3 minutes ago by Administrator, finished 1 minute ago. Under it, For commit b1cd89e8, whose message is Add the Nitro sandbox CI pipeline with ci skip in brackets, then In main, then a row reading latest, branch, 1 job, and 1 minute 19 seconds, queued for 2 seconds. Three tabs follow: Pipeline, which is the one shown, Jobs with a count of 1, and Tests with a count of 0. The Pipeline tab holds the pipeline graph, which is a single stage card titled build containing a single job named docker-build with a green tick beside it. Nothing on the page mentions a sandbox, a runtime class or a node.](images/pipeline-ui.png)
+
+## Step 4: What the job pod sees, next to what an ordinary pod on the same node sees
+
+The job reads its sandbox evidence first, at the top of its own step and before it starts a
+daemon or builds anything. This is that part of it, from
+[`pipeline/.gitlab-ci.yml`](pipeline/.gitlab-ci.yml); it reads the things that tell a pod
+running in a Nitro sandbox apart from any pod on the node:
 
 ```yaml
-sandbox-evidence:
-  stage: evidence
-  image: public.ecr.aws/docker/library/alpine:3.24.3
+docker-build:
+  stage: build
+  image: public.ecr.aws/docker/library/docker:29.9.2-dind
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
   script:
     - echo "pod $(hostname), job $CI_JOB_ID of pipeline $CI_PIPELINE_ID"
     - echo "--- its own kernel (an ordinary pod reports the node's) ---"
@@ -460,14 +471,17 @@ sandbox-evidence:
     - cat /sys/class/dmi/id/product_name
     - echo "--- the process this job script runs as ---"
     - id
+    # ... the daemon, the build and the run follow, in Step 5.
 ```
 
-This is what that job printed:
+This is what the job printed, abridged: the block stops where the readings do, at the line
+before the job starts its Docker daemon, and Step 5 picks the same log up from there. Every
+line shown is as the job printed it.
 
 ```text
 Executing "step_script" stage of the job script
 $ echo "pod $(hostname), job $CI_JOB_ID of pipeline $CI_PIPELINE_ID"
-pod runner-fpifxlgji-project-1-concurrent-0-o3xlezgp, job 1 of pipeline 2
+pod runner-ysz4bpies-project-1-concurrent-0-cl7wqyi1, job 1 of pipeline 2
 $ echo "--- its own kernel (an ordinary pod reports the node's) ---"
 --- its own kernel (an ordinary pod reports the node's) ---
 $ uname -rv
@@ -475,7 +489,7 @@ $ uname -rv
 $ echo "--- its own boot (matches this pod's age, not the node's uptime) ---"
 --- its own boot (matches this pod's age, not the node's uptime) ---
 $ cut -d' ' -f1 /proc/uptime
-6.35
+18.52
 $ echo "--- virtio disks (an ordinary pod sees the instance's nvme devices) ---"
 --- virtio disks (an ordinary pod sees the instance's nvme devices) ---
 $ ls /sys/block
@@ -492,14 +506,10 @@ $ echo "--- the process this job script runs as ---"
 --- the process this job script runs as ---
 $ id
 uid=0(root) gid=0(root) groups=0(root),1(bin),2(daemon),3(sys),4(adm),6(disk),10(wheel),11(floppy),20(dialout),26(tape),27(video)
-
-Cleaning up project directory and file based variables
-
-Job succeeded
 ```
 
 And this is what an ordinary pod, on the same node, printed for the same readings. The script
-creates it on the node a job pod ran on, reads it, and deletes it by its exact name:
+creates it on the node the job pod ran on, reads it, and deletes it by its exact name:
 
 ```text
 ==> 5/5 what an ordinary pod on the same node reports
@@ -508,7 +518,7 @@ creates it on the node a job pod ran on, reads it, and deletes it by its exact n
   --- its kernel (the node's, shared with every ordinary pod on it) ---
 6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
   --- its uptime (the node's, not this pod's age) ---
-7388.76
+132.27
   --- its block devices (the instance's NVMe disks) ---
 dm-0
 loop0
@@ -531,10 +541,13 @@ evidence. What is, in this run:
 
 - the kernel **build** differs. The job pod is on `#1`, built `Thu Oct 22 17:38:11`; the
   ordinary pod on the same node is on `#2`, built `Thu Oct 22 00:16:59`. Two kernels, not one;
-- the job pod's uptime is `6.35` seconds where the ordinary pod on that same node reports
-  `7388.76`. The guest booted seconds before the job script ran, which is what a VM that boots
+- the job pod's uptime is `18.52` seconds where the ordinary pod on that same node reports
+  `132.27`. The guest booted seconds before the job script ran, which is what a VM that boots
   with its pod looks like; the block carries no pod start timestamp, so read it as consistent
-  with the pod's age rather than measured against it;
+  with the pod's age rather than measured against it. **The node's own uptime is short in this
+  run** because Karpenter had just provisioned it for the job pod, which the job log in Step 5
+  shows it waiting for; on a node that has been up for hours the gap is hours wide, and what
+  the two readings establish either way is that the clock the pod reports is not the node's;
 - the job pod's disks are `vda` to `vdd`, virtio devices, where the ordinary pod sees the
   instance's `nvme0n1` and `nvme1n1`;
 - the product name is `m8i.enclave` in the sandbox and `m8i.xlarge` on the node, which is the
@@ -544,30 +557,25 @@ The job also prints `id`, and the UID that prints is worth being exact about. It
 the **job script's own process, in the build container of the job pod**, which is UID 0
 because this sample sets no `securityContext` and the job's image runs as root. That says
 nothing about any other container of the pod, each of which has its own image and its own
-`USER`. Both job pods are scheduled on a shared EC2 node, and that root is root inside the
-pod's own guest kernel.
+`USER`. The job pod is scheduled on a shared EC2 node, and that root is root inside the pod's
+own guest kernel.
 
-The two job pods do not have to land on the same node, though in this run both did. The
-script creates the comparison pod on the node the first job pod it saw was scheduled on, and
-names that node in its output, so the two readings being compared always come from one
-machine.
+The comparison pod is created on the node the job pod was scheduled on, and the script names
+that node in its output, so the two readings being compared always come from one machine. A
+pipeline with more jobs would get a pod each, and they need not land on one node, which is why
+the script picks the node from a pod it actually saw rather than from the cluster.
 
 ## Step 5: The privileged `docker build`, contained to the job's own sandbox
 
-The second job is the case that forces the choice this sample removes. It starts a Docker
-daemon of its own, builds a two-stage image and runs it. Here is the part of it that matters,
-without the readings it repeats from the first job and without the loop that waits for the
-daemon:
+The rest of the same job is the case that forces the choice this sample takes away. It starts
+a Docker daemon of its own, builds a two-stage image and runs it. Here is the part of it that
+matters, without the readings Step 4 shows and without the loop that waits for the daemon:
 
 ```yaml
 docker-build:
-  stage: build
-  image: public.ecr.aws/docker/library/docker:29.9.2-dind
-  variables:
-    DOCKER_HOST: unix:///var/run/docker.sock
-  before_script:
-    - dockerd --host=unix:///var/run/docker.sock >/tmp/dockerd.log 2>&1 &
+  # ... the readings in Step 4 come first, then:
   script:
+    - dockerd --host=unix:///var/run/docker.sock >/tmp/dockerd.log 2>&1 &
     - docker build -t hello-nitro:$CI_PIPELINE_ID .
     - docker run --rm hello-nitro:$CI_PIPELINE_ID
 ```
@@ -587,27 +595,31 @@ is simpler and is what the [Docker builds](../docker-builds/README.md) sample us
 Kubernetes executor runs its own shell as the container's command, so the `docker:dind` image's
 entrypoint never runs and `dockerd` is started by the job.
 
-**`privileged` is a runner setting, not a per-job one, and the run shows that.** The pod table
-in Step 3 prints every container of every job pod with its `privileged` flag, and the ordinary
-job's containers carry it too, because one `privileged = true` in `[runners.kubernetes]`
-applies to every pod this runner creates. Only the build job uses it. That is worth knowing
-rather than glossing: each job pod's privilege is bounded by that pod's own sandbox, which is
-the runtime class's property and not something a privileged job demonstrates, and it is more
-than the ordinary job asks for. To hand privilege only to the daemon, the Kubernetes executor has
+**`privileged` is a runner setting, not a per-job one.** It lives in `[runners.kubernetes]`,
+and there is no per-job switch in `.gitlab-ci.yml`, which is why
+[`runner/config.toml.template`](runner/config.toml.template) sets it once: one
+`privileged = true` applies to every job pod that runner creates, whether or not a job uses
+it. The pod table in Step 3 is where that shows, printing every container of the job pod with
+its flag. A reader whose pipeline has jobs that need no daemon should know the setting reaches
+those too: to hand privilege only to the daemon, the Kubernetes executor has
 `allowed_privileged_images` and `allowed_privileged_services`, and a second runner with
 `privileged = false` and its own tag is the other way; check both against the GitLab Runner
 documentation for the version you pin. This sample keeps the single setting, because the
-sandbox is what it is about.
+sandbox is what it is about, and each job pod's privilege is bounded by that pod's own sandbox,
+which is the runtime class's property rather than something a privileged job demonstrates.
 
-This is the build job's log, abridged: BuildKit's own per-layer download and extract progress
-lines are left out, and so are its `[internal]` context-transfer steps. Every line shown is as
-the job printed it, in the order it printed them.
+This is the job's log, abridged three ways: the readings Step 4 shows are left out; so are
+BuildKit's own per-layer download and extract progress lines, its `[internal]`
+context-transfer steps and its sub-second step completions, which is why some steps here show
+no `DONE` line; and a waiting line the runner repeated word for word while a node was
+provisioned for the job pod appears once. Every line shown is as the job printed it, in the
+order it printed them.
 
 ```text
-===== job 2 docker-build (success) =====
+===== job 1 docker-build (success) =====
 Running with gitlab-runner 19.5.0 (70f5c12d)
-  on nitro-sandbox-runner fPiFXLGJi, system ID: r_M2t1ROBNuAmL
-  UUID: 01a182d8-e65a-737f-85fd-f92fd606db7f
+  on nitro-sandbox-runner YsZ4BPIes, system ID: r_fVrvBiajmJKB
+  UUID: 01a18767-9d93-78f1-aa17-ca5d64c9b96b
 Preparing the "kubernetes" executor
 Using Kubernetes namespace: gitlab-ci-demo
 Using Kubernetes executor with image public.ecr.aws/docker/library/docker:29.9.2-dind ...
@@ -617,41 +629,28 @@ Using effective pull policy of [] for container helper
 Using effective pull policy of [] for container init-permissions
 Preparing environment
 Using FF_USE_POD_ACTIVE_DEADLINE_SECONDS, the Pod activeDeadlineSeconds will be set to the job timeout: 1h0m0s...
-Waiting for pod gitlab-ci-demo/runner-fpifxlgji-project-1-concurrent-0-bucye5e8 to be running on the node <NODE_NAME>, status is Pending
-Waiting for pod gitlab-ci-demo/runner-fpifxlgji-project-1-concurrent-0-bucye5e8 to be running on the node <NODE_NAME>, status is Pending
+Waiting for pod gitlab-ci-demo/runner-ysz4bpies-project-1-concurrent-0-cl7wqyi1 to be running on the node <unknown>, status is Pending
+	Unschedulable: "0/3 nodes are available: 3 node(s) didn't match Pod's node affinity/selector. preemption: 0/3 nodes are available: 3 Preemption is not helpful for scheduling."
+Waiting for pod gitlab-ci-demo/runner-ysz4bpies-project-1-concurrent-0-cl7wqyi1 to be running on the node <NODE_NAME>, status is Pending
+	PodSandboxNotReady: "no pod sandbox exists"
 	ContainersNotInitialized: "containers with incomplete status: [init-permissions]"
 	ContainersNotReady: "containers with unready status: [build helper]"
-	ContainersNotReady: "containers with unready status: [build helper]"
-Running on runner-fpifxlgji-project-1-concurrent-0-bucye5e8 via gitlab-runner-846647f959-gxmff...
+Running on runner-ysz4bpies-project-1-concurrent-0-cl7wqyi1 via gitlab-runner-5b694d4d85-k6x7n...
 Running on CPU: Intel(R) Xeon(R) 6975P-C (avx, avx2, avx512f)
 
 Getting source from Git repository
-Gitaly correlation ID: 01M61DMDFG46P76YFMVNS0FND7
+Gitaly correlation ID: 01M63PHS11PEZSYXW89AZMZ2HK
 Fetching changes with git depth set to 20...
 Initialized empty Git repository in /builds/root/sandbox-ci/.git/
 Created fresh repository.
-Checking out b9ce282b as detached HEAD (ref is main)...
+Checking out b1cd89e8 as detached HEAD (ref is main)...
 
 Skipping Git submodules setup
 
 Executing "step_script" stage of the job script
+$ echo "--- the daemon this job starts, on its own Unix socket ---"
+--- the daemon this job starts, on its own Unix socket ---
 $ dockerd --host=unix:///var/run/docker.sock >/tmp/dockerd.log 2>&1 &
-$ echo "pod $(hostname), job $CI_JOB_ID of pipeline $CI_PIPELINE_ID"
-pod runner-fpifxlgji-project-1-concurrent-0-bucye5e8, job 2 of pipeline 2
-$ echo "--- the same three readings, from the build job's own pod ---"
---- the same three readings, from the build job's own pod ---
-$ uname -rv
-6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-$ cut -d' ' -f1 /proc/uptime
-6.28
-$ ls /sys/block
-dm-0
-vda
-vdb
-vdc
-vdd
-$ echo "--- waiting for the daemon this pod started, on its Unix socket ---"
---- waiting for the daemon this pod started, on its Unix socket ---
 $ i=0 # collapsed multi-line command
 $ docker info --format 'daemon {{.ServerVersion}}, storage driver {{.Driver}}, {{.NCPU}} CPU, kernel {{.KernelVersion}}'
 daemon 29.9.2, storage driver overlayfs, 2 CPU, kernel 6.18.54
@@ -665,27 +664,24 @@ $ echo "--- docker build, in this pod's sandbox ---"
 $ docker build -t hello-nitro:$CI_PIPELINE_ID .
 #0 building with "default" instance using docker driver
 
-#6 [build 1/4] FROM public.ecr.aws/docker/library/golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d
-#6 ...
+#6 [stage-1 1/2] FROM public.ecr.aws/docker/library/alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
-#7 [stage-1 1/2] FROM public.ecr.aws/docker/library/alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+#7 [build 1/4] FROM public.ecr.aws/docker/library/golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d
+#7 DONE 8.9s
 
-#6 [build 1/4] FROM public.ecr.aws/docker/library/golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d
-#6 DONE 10.4s
+#7 [build 1/4] FROM public.ecr.aws/docker/library/golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d
+#7 DONE 9.5s
 
-#6 [build 1/4] FROM public.ecr.aws/docker/library/golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d
-#6 DONE 11.1s
-
-#6 [build 1/4] FROM public.ecr.aws/docker/library/golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d
-#6 DONE 11.7s
+#7 [build 1/4] FROM public.ecr.aws/docker/library/golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d
+#7 DONE 10.1s
 
 #8 [build 2/4] WORKDIR /src
-#8 DONE 22.0s
+#8 DONE 21.2s
 
 #9 [build 3/4] COPY go.mod main.go ./
 
 #10 [build 4/4] RUN CGO_ENABLED=0 go build -o /hello main.go
-#10 DONE 4.8s
+#10 DONE 4.7s
 
 #11 [stage-1 2/2] COPY --from=build /hello /hello
 
@@ -693,7 +689,7 @@ $ docker build -t hello-nitro:$CI_PIPELINE_ID .
 $ echo "--- docker run, of the image this build produced ---"
 --- docker run, of the image this build produced ---
 $ docker run --rm hello-nitro:$CI_PIPELINE_ID
-hello from a GitLab CI docker build inside a Nitro sandbox (linux/amd64, container a02fddeb9a47)
+hello from a GitLab CI docker build inside a Nitro sandbox (linux/amd64, container df93b0fdc877)
 $ echo "--- and what a nested container sees: the same guest kernel ---"
 --- and what a nested container sees: the same guest kernel ---
 $ docker run --rm public.ecr.aws/docker/library/alpine:3.24.3 sh -c 'uname -rv; ls /sys/block; id'
@@ -714,16 +710,16 @@ Cleaning up project directory and file based variables
 Job succeeded
 ```
 
-The readings at the top of that log are the second pod's. The kernel build and the disks match
-the first job's, because both guests boot the same sandbox kernel image, and the uptime does
-not: it is this pod's own age, because this is a different VM that booted with this job.
+The daemon starts after the readings, which is the order the job's `script:` puts them in: the
+evidence in Step 4 is read before anything in this block runs, so what the daemon then does is
+known to be happening in that guest.
 
 `docker info` reports `kernel 6.18.54`, which is the **version**, and the node runs that same
-version. It is the `uname -rv` readings that carry the build: the build container's, at the top
-of this log, and the nested container's, at the bottom. That last `docker run` is a container
+version. It is the `uname -rv` readings that carry the build: the build container's, in Step 4,
+and the nested container's, at the bottom of this log. That last `docker run` is a container
 started by the daemon the job began, inside the job pod's sandbox, and its `uname -rv` reports
-`6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026` with `vda` to `vdd`: the guest's
-build and the guest's disks, not the node's.
+`6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026` with `vda` to `vdd`: the guest's build and
+the guest's disks, not the node's.
 
 ## Step 6: The runner manager is an ordinary pod
 
@@ -738,7 +734,7 @@ kubectl --context <CLUSTER_NAME> -n gitlab-ci-demo get pod \
 
 ```text
 POD                              RUNTIME CLASS   SA
-gitlab-runner-846647f959-gxmff   <none>          gitlab-runner
+gitlab-runner-5b694d4d85-k6x7n   <none>          gitlab-runner
 ```
 
 Its RBAC is a namespaced `Role`, not a `ClusterRole`: it creates job pods only in this
@@ -747,32 +743,27 @@ sample is cluster-scoped.
 
 ### Where the token is, and where it is not
 
-The token is in one place, Secret `gitlab-runner-config`, mounted into the manager. The job
-pods do not get it, and that is read off each job pod's own spec while its job is in flight,
-by the names of what it mounts rather than by any value. A job pod is deleted when its job
-ends, so there is nothing left to read afterwards: `scripts/run-pipeline.sh` records it during
-the watch and prints it with the pod table in Step 3, and refuses the run if any job pod
-mounted that Secret. These are the lines from that output:
+The token is in one place, Secret `gitlab-runner-config`, mounted into the manager. A job pod
+does not get it, and that is read off the job pod's own spec while its job is in flight, by
+the names of what it mounts rather than by any value. A job pod is deleted when its job ends,
+so there is nothing left to read afterwards: `scripts/run-pipeline.sh` records it during the
+watch and prints it with the pod table in Step 3, and refuses the run if any job pod mounted
+that Secret. These are the lines from that output:
 
 ```text
-    runner-fpifxlgji-project-1-concurrent-0-bucye5e8
-      uid 078ce05a-e8d0-41cc-9bf0-6647d36e46a8  runtime class isolated-sandbox  on <NODE_NAME>
+    runner-ysz4bpies-project-1-concurrent-0-cl7wqyi1
+      uid 40642bce-0962-480e-8b5c-1ef210908868  runtime class isolated-sandbox  on <NODE_NAME>
       containers, privileged flag: init-permissions=true build=true helper=true
-      volumes: repo,scripts,logs,kube-api-access-25z4x
-      volumes from a Secret: -
-    runner-fpifxlgji-project-1-concurrent-0-o3xlezgp
-      uid daf00686-e58f-4155-96a2-fd8433e11a33  runtime class isolated-sandbox  on <NODE_NAME>
-      containers, privileged flag: init-permissions=true build=true helper=true
-      volumes: repo,scripts,logs,kube-api-access-4nz66
+      volumes: repo,scripts,logs,kube-api-access-vjlrz
       volumes from a Secret: -
   no job pod mounts Secret 'gitlab-runner-config', which is where the runner authentication token is.
 ```
 
-`volumes from a Secret: -` is the line that matters: neither job pod mounted a Secret at all.
+`volumes from a Secret: -` is the line that matters: the job pod mounted no Secret at all.
 `repo`, `scripts` and `logs` are the runner's own working volumes, and `kube-api-access-*` is
 the projected ServiceAccount token every pod gets by default, which is not a Secret volume and
 not this sample's. The `privileged flag` line above it is the one from Step 5: every container
-of both pods carries it, the ordinary job's included.
+of the job pod carries it, because `privileged` is set once for the runner and not per job.
 
 The manager is the other side of that. Its own spec names the Secret, which is the one place
 the token is:
@@ -783,8 +774,8 @@ kubectl --context <CLUSTER_NAME> -n gitlab-ci-demo get pod -l app=gitlab-runner 
 ```
 
 ```text
-gitlab-runner-846647f959-gxmff
-  volumes: config-secret config kube-api-access-6gnb4
+gitlab-runner-5b694d4d85-k6x7n
+  volumes: config-secret config kube-api-access-2q895
   vol secrets: gitlab-runner-config
 ```
 
@@ -794,15 +785,19 @@ gitlab-runner-846647f959-gxmff
   it.** `runtime_class_name` is the whole of this sample. A runner release that does not
   support the setting does not refuse the configuration: it ignores the line and runs the job
   as an ordinary pod on the node, which is exactly the outcome the sample exists to avoid.
-  This was measured directly, by taking the line out of the runner's config and running the
-  pipeline: both job pods came up with no runtime class and the jobs ran on the node.
-  `scripts/run-pipeline.sh` refuses such a run, naming the pods, so it is caught rather than
+  This was measured directly, by taking that line out of the runner's config, with
+  `privileged` taken out beside it so that no privileged container ran on the node, and
+  running the pipeline: the job pod came up with no runtime class, as an ordinary pod on the
+  node, and the readings at the top of its own step were the node's rather than a guest's,
+  kernel build `#2` with the instance's `nvme0n1` and `nvme1n1` and the product name
+  `c6i.large`, where the run above reports `#1`, `vda` to `vdd` and `m8i.enclave`.
+  `scripts/run-pipeline.sh` refuses such a run, naming the pod, so it is caught rather than
   quietly accepted. **v17.5.3 is the floor the spec sets**; the run on this page used v19.5.0
   and no older release was tried, so treat the floor as the spec's and the pinned version as
   the tested one.
-- **The job pods have a network, and nothing here restricts it.** They clone from the GitLab
-  Service, pull base images from Amazon ECR Public and report status back, and with no network
-  policy they can reach anything else the cluster can reach. The sandbox boundary is the VM,
+- **A job pod has a network, and nothing here restricts it.** It clones from the GitLab
+  Service, pulls base images from Amazon ECR Public and reports status back, and with no
+  network policy it can reach anything else the cluster can reach. The sandbox boundary is the VM,
   not the network, and the Overview links the sample that shows how to limit the network.
 - **`CI_SERVER_URL` inside a job is the port-forward address, not a reachable one.** GitLab
   builds it from `external_url`, which this sample sets to `http://localhost:8080` so its web
@@ -874,7 +869,7 @@ gitlab-runner-846647f959-gxmff
   context '<CLUSTER_NAME>', namespace 'gitlab-ci-demo' is labelled ManagedBy=gitlab-ci.
 
 ==> 2/6 the EBS volume behind GitLab's claim
-  claim gitlab-data is EBS volume vol-0c42cf1053a6f5b7d, reclaim policy Delete.
+  claim gitlab-data is EBS volume vol-017ad45b81d791207, reclaim policy Delete.
 
 ==> 3/6 the runner manager
 deployment.apps "gitlab-runner" deleted from gitlab-ci-demo namespace
@@ -890,8 +885,8 @@ namespace "gitlab-ci-demo" deleted
 ==> 6/6 confirming
   namespace 'gitlab-ci-demo' is gone.
   no pod labelled app=gitlab-ci-job is left anywhere on the cluster.
-  waiting for EBS volume vol-0c42cf1053a6f5b7d to go, in us-west-2.
-  EBS volume vol-0c42cf1053a6f5b7d is gone.
+  waiting for EBS volume vol-017ad45b81d791207 to go, in us-west-2.
+  EBS volume vol-017ad45b81d791207 is gone.
 
 clean up complete. Removed: namespace gitlab-ci-demo and whatever was in it, which for a full run
 of this sample is GitLab, its claim and its EBS volume, the runner manager with its
