@@ -68,6 +68,12 @@ NS_LABEL_VAL="setup-cilium-ubuntu"
 DEMO_TAG_KEY="Demo"
 DEMO_TAG_VAL="setup-cilium-ubuntu"
 
+# The key of the taint that keeps ordinary pods off the sandbox node, and of the label that
+# matches it. It must equal SANDBOX_TAINT_KEY in scripts/cilium_ubuntu.py; eksctl/nodegroups.yaml
+# and the tolerations in deploy/workloads.yaml use the same value. setup.sh's closing summary
+# prints it.
+SANDBOX_TAINT_KEY="sandbox.eks-nitro-sandbox.amazonaws.com/dedicated"
+
 PY="$SAMPLE_DIR/scripts/cilium_ubuntu.py"
 
 # The repository root, so this run's local state lands in the repo's gitignored tmp/ rather
