@@ -21,6 +21,15 @@
 #      BtfValidated=true, an AMI of another run, a cluster without vpc-cni, a run with no AMI
 #      recorded, and no RUN_ID; accepts the run's own verified AMI; the default path still
 #      stops on the missing vpc-cni before any AWS change.
+#   6  an explicit RUN_ID (RR2-003): setup.sh acts on a run only when its record
+#      (runs/<id>/run-state.env) names the same RUN_ID, RESOURCE_PREFIX, NODEGROUP_NAME and
+#      NAMESPACE, and only while it holds the run's lock (runs/<id>/run.lock). No record, any
+#      mismatch, a missing line and a second concurrent holder are refused before any AWS call.
+#      With REAL_RUN_STATE=<path to a real run's run-state.env>, that real record is accepted too:
+#      its values are read at run time (the fake gets an image with its AMI_ID), never stored here.
+#   7  the build host's SSM registration (setup.sh ssm_online): repeated read errors stop the run
+#      with "could not determine", an instance never Online keeps its own message, and two failed
+#      reads followed by Online are accepted.
 #
 # The fake keeps a JSON state file per case and logs every call. Poll intervals are 0 here.
 # The account id is the AWS documentation's example id.
@@ -31,7 +40,8 @@ SAMPLE="$(cd "$HERE/.." && pwd)"
 REPO_ROOT_REAL="$(cd "$SAMPLE/../../.." && pwd)"
 mkdir -p "$REPO_ROOT_REAL/tmp"
 WORK="$(mktemp -d "$REPO_ROOT_REAL/tmp/test-setup-flow.XXXXXX")"
-trap '[ -n "${KEEP_WORK:-}" ] && echo "kept $WORK" || rm -rf "$WORK"' EXIT
+HOLDER=""   # section 6's background lock holder, killed by its pid
+trap '[ -z "$HOLDER" ] || kill "$HOLDER" 2>/dev/null; [ -n "${KEEP_WORK:-}" ] && echo "kept $WORK" || rm -rf "$WORK"' EXIT
 export ISSUE10_RUN_DIR="$WORK/run" AWS_REGION=us-west-2 CLUSTER_NAME=example-cluster RESOURCE_PREFIX=ubuntu-ami-sample \
        NAMESPACE=ubuntu-ami-sample SSM_POLL_SECONDS=0 AMI_POLL_SECONDS=0 REBOOT_POLL_SECONDS=0 AWS_READ_RETRIES=3
 unset RUN_ID KUBECTL NODEGROUP_NAME KUBE_CONTEXT
@@ -103,7 +113,7 @@ MUTATING='create-|attach-|put-|tag-|add-|delete-|detach-|remove-|terminate-|dere
 # lib <case> <bash code>: run <code> with the real common.sh and aws-wait.sh sourced
 lib() { bash -c '. "$1/lib/common.sh" && . "$1/lib/aws-wait.sh" && eval "$2"' _ "$HERE" "$2" > "$WORK/$1.log" 2>&1 < /dev/null; }
 
-echo "== 1/5 SSM command results: scripts/lib/aws-wait.sh ssm_run (C-1) ========================"
+echo "== 1/7 SSM command results: scripts/lib/aws-wait.sh ssm_run (C-1) ========================"
 P='$(ssm_shell_params "WHAT" 60)'
 st s-slow
 rc=0; lib s-slow "ssm_run i-0build 60 AWS-RunShellScript \"${P/WHAT/slow}\"; r=\$?; echo \"rc=\$r status=\$SSM_STATUS out=\$SSM_STDOUT\"; exit \$r" || rc=$?
@@ -142,7 +152,7 @@ check "REJECT a send-command that fails: could not determine (rc 2)" 2 "$rc" "$W
 unset FAKE_AWS_FAIL
 
 echo
-echo "== 2/5 the AMI and instance status: wait_image_available, wait_status_ok (C-2) ============"
+echo "== 2/7 the AMI and instance status: wait_image_available, wait_status_ok (C-2) ============"
 img() { # img <pending-reads> <final>: one image create-image would have made
   printf 's["ec2"]["images"].append({"ImageId": "ami-0new", "State": "pending", "Reads": 0, "PendingReads": %s, "Final": "%s", "Tags": []})' "$1" "$2"
 }
@@ -171,9 +181,16 @@ rc=0; lib w-never 'STATUS_OK_ROUNDS=3 wait_status_ok i-0build' || rc=$?
 check "REJECT an instance never status-ok in STATUS_OK_ROUNDS=3 rounds" 1 "$rc" "$WORK/w-never.log" 'did not reach status-ok in 3 waiter rounds'
 [ "$(calls w-never '^ec2 wait instance-status-ok$')" = 3 ]; ok "  ... after exactly 3 waiter runs" $?
 unset FAKE_AWS_FAIL
+# The AMI deadline's default (R3): the live 120 GiB AMI took 54.7 min, so 3600 s left 5 min.
+st w-default
+rc=0; (unset AMI_WAIT_SECONDS; lib w-default 'echo "AMI_WAIT_SECONDS=$AMI_WAIT_SECONDS"') || rc=$?
+check "ACCEPT AMI_WAIT_SECONDS defaults to 7200 when config.env does not set it" 0 "$rc" "$WORK/w-default.log" '^AMI_WAIT_SECONDS=7200$'
+rc=0; AMI_WAIT_SECONDS=1800 lib w-set 'echo "AMI_WAIT_SECONDS=$AMI_WAIT_SECONDS"' || rc=$?
+check "REJECT the default when config.env sets AMI_WAIT_SECONDS: its value (1800) is kept" 0 "$rc" "$WORK/w-set.log" '^AMI_WAIT_SECONDS=1800$'
+grep -qx 'export AMI_WAIT_SECONDS=7200' "$SAMPLE/config.env.example"; ok "  ... and config.env.example sets 7200" $?
 
 echo
-echo "== 3/5 the reboot onto the new kernel: read_boot_info, wait_rebooted (C-3) =================="
+echo "== 3/7 the reboot onto the new kernel: read_boot_info, wait_rebooted (C-3) =================="
 rb() { # rb <case> <state python>: read the boot id, reboot, wait for the new kernel
   st "$1" "$2"
   lib "$1" 'read_boot_info i-0build 60 || exit 9; b=$BOOT_ID; echo "before=$b"
@@ -192,7 +209,7 @@ rc=0; rb r-wrong 's["boot"] = {"after_reboot": "6.8.0-1021-aws"}' || rc=$?
 check "REJECT a new boot on the wrong kernel (GRUB booted the stock one)" 1 "$rc" "$WORK/r-wrong.log" 'onto kernel 6.8.0-1021-aws, not 6.18.56-nitro-ga'
 
 echo
-echo "== 4/5 the AMI half alone: setup.sh --ami-only (C-4, and C-1 to C-3 in the real caller) ===="
+echo "== 4/7 the AMI half alone: setup.sh --ami-only (C-4, and C-1 to C-3 in the real caller) ===="
 FX="$ISSUE10_RUN_DIR/runtime"; mkdir -p "$FX"
 python3 "$HERE/testlib/fixture_inputs.py" "$FX" "$WORK/fixture.lock"
 BUILD_RESULTS='s["ssm"]["results"] = [
@@ -273,7 +290,7 @@ check "REJECT --ami-only when the kernel stage ends Failed after polling: it sto
 [ "$(calls ami-kfail '^ec2 (reboot-instances|create-image)$')" = 0 ]; ok "  ... before any reboot or AMI" $?
 
 echo
-echo "== 5/5 the node-group half alone: RUN_ID=<id> setup.sh --join (C-4) ===================="
+echo "== 5/7 the node-group half alone: RUN_ID=<id> setup.sh --join (C-4) ===================="
 # join_state <case> <python over s>: the state --ami-only left, changed as the case says, with
 # vpc-cni installed (network policy on) unless the case removes it.
 join_state() {
@@ -330,6 +347,109 @@ st def-nocni "${BUILD_RESULTS/@KERNEL@/Success}"; SU_ENV=(KUBE_CONTEXT=example-c
 rc=0; su def-nocni || rc=$?
 check "REJECT the default path (no flag) on the same cluster with no vpc-cni" 1 "$rc" "$WORK/def-nocni.log" 'PREREQUISITE NOT MET: cluster example-cluster has no managed vpc-cni add-on'
 nothing_changed def-nocni; ok "  ... before any AWS change (RR-014 order kept)" $?
+
+echo
+echo "== 6/7 an explicit RUN_ID: the run's record and its lock (RR2-003) ======================"
+# rec_reject <case> <description> <log regex> [<mode flag, default --join>]: setup.sh (with
+# SU_ENV) must stop before any AWS or kubectl call, so nothing in AWS can have changed.
+rec_reject() {
+  local rc=0; su "$1" "${4:---join}" || rc=$?
+  check "$2" 1 "$rc" "$WORK/$1.log" "$3"
+  [ "$(calls "$1" .)" = 0 ] && [ ! -s "$STUB_KUBECTL_LOG" ]
+  ok "  ... before any AWS or kubectl call (no AWS mutation)" $? "$WORK/$1.log"
+}
+REC="$ISSUE10_RUN_DIR/out/runs/$RUNID/run-state.env"
+grep -q 'setup.sh complete\. AMI=ami-0fa002' "$WORK/j-ok.log"
+ok "ACCEPT the synthetic run from 4/7: its record matches, so --join (j-ok in 5/7) took its lock and ran step 10" $? "$WORK/j-ok.log"
+if [ -n "${REAL_RUN_STATE:-}" ]; then
+  # The real run's record, copied into the fixture run folder for its own RUN_ID; the fake gets an
+  # image with that record's AMI_ID and both run tags. Both values are read here, at run time.
+  REAL_ID=$(sed -n 's/^RUN_ID=//p' "$REAL_RUN_STATE" 2>/dev/null | tail -n 1)
+  REAL_AMI=$(sed -n 's/^AMI_ID=//p' "$REAL_RUN_STATE" 2>/dev/null | tail -n 1)
+  if [[ "$REAL_ID" =~ ^[a-z0-9]{1,20}$ && "$REAL_AMI" =~ ^ami-[0-9a-f]+$ ]]; then
+    export REAL_ID REAL_AMI
+    join_state j-real 'e = __import__("os").environ
+s["ec2"]["images"].append({"ImageId": e["REAL_AMI"], "Name": "real-run", "State": "available",
+    "Tags": [{"Key": "ManagedBy", "Value": "ubuntu-ami-sample"}, {"Key": "RunId", "Value": e["REAL_ID"]}, {"Key": "BtfValidated", "Value": "true"}]})'
+    RD="$ISSUE10_RUN_DIR/out/runs/$REAL_ID"; mkdir -p "$RD"
+    cp "$REAL_RUN_STATE" "$RD/run-state.env"
+    sed "s/$RUNID/$REAL_ID/g" "$ISSUE10_RUN_DIR/out/runs/$RUNID/iam.env" > "$RD/iam.env"   # synthetic: the fake's account
+    SU_ENV=(KUBE_CONTEXT=example-context "RUN_ID=$REAL_ID")
+    rc=0; su j-real --join || rc=$?
+    grep -q -- "--join: run $REAL_ID, AMI " "$WORK/j-real.log" && grep -q 'Step 10/10: join' "$WORK/j-real.log"
+    ok "ACCEPT the REAL recorded run ($REAL_RUN_STATE): --join passes its record and lock checks and reaches step 10 (rc=$rc)" $? "$WORK/j-real.log"
+  else
+    ok "ACCEPT the REAL recorded run: REAL_RUN_STATE ($REAL_RUN_STATE) has a RUN_ID and an AMI_ID line" 1
+  fi
+else
+  echo "  SKIP  ACCEPT the REAL recorded run (set REAL_RUN_STATE=<path to its run-state.env> to run it)"
+fi
+join_state j-norec; SU_ENV=(KUBE_CONTEXT=example-context RUN_ID=norecord1)
+rec_reject j-norec "REJECT --join for a RUN_ID with no record" 'run norecord1 has no record at .*/runs/norecord1/run-state.env'
+join_state a-norec; SU_ENV=(RUN_ID=norecord1)
+rec_reject a-norec "REJECT an --ami-only resume for a RUN_ID with no record (every mode checks it)" 'run norecord1 has no record at ' --ami-only
+! grep -q 'Step 1/10' "$WORK/a-norec.log"; ok "  ... before step 1" $?
+join_state j-prefix; SU_ENV=(KUBE_CONTEXT=example-context "RUN_ID=$RUNID" RESOURCE_PREFIX=other-prefix)
+rec_reject j-prefix "REJECT --join with RESOURCE_PREFIX changed since the run started" 'has RESOURCE_PREFIX=ubuntu-ami-sample, but this run has RESOURCE_PREFIX=other-prefix'
+join_state j-ns; SU_ENV=(KUBE_CONTEXT=example-context "RUN_ID=$RUNID" NAMESPACE=other-ns)
+rec_reject j-ns "REJECT --join with NAMESPACE changed since the run started" 'has NAMESPACE=ubuntu-ami-sample, but this run has NAMESPACE=other-ns'
+SU_ENV=(KUBE_CONTEXT=example-context "RUN_ID=$RUNID")
+join_state j-ng; sed -i 's/^NODEGROUP_NAME=.*/NODEGROUP_NAME=ubuntu-ami-sample-otherrun1-ng/' "$REC"
+rec_reject j-ng "REJECT --join when the record names another node group" "has NODEGROUP_NAME=ubuntu-ami-sample-otherrun1-ng, but this run has NODEGROUP_NAME=ubuntu-ami-sample-$RUNID-ng"
+join_state j-nons; sed -i '/^NAMESPACE=/d' "$REC"
+rec_reject j-nons "REJECT --join when the record has no NAMESPACE line (a missing line is a mismatch)" 'has no NAMESPACE line, but this run has NAMESPACE=ubuntu-ami-sample'
+join_state j-otherid; sed -i 's/^RUN_ID=.*/RUN_ID=otherrun1/' "$REC"
+rec_reject j-otherid "REJECT --join when the record in the run's folder names another RUN_ID" "has RUN_ID=otherrun1, but this run has RUN_ID=$RUNID"
+# A second holder: a background process takes the run's lock with the real lock_run and then
+# sleeps; the test kills it by its own pid.
+join_state j-locked; rm -f "$WORK/holder.ready"
+RUN_ID="$RUNID" bash -c '. "$1/lib/common.sh" && derive_run_names && lock_run && echo held > "$2" && exec sleep 300' \
+  _ "$HERE" "$WORK/holder.ready" > "$WORK/holder.log" 2>&1 < /dev/null &
+HOLDER=$!
+for _ in $(seq 1 100); do [ -s "$WORK/holder.ready" ] && break; sleep 0.1; done
+[ -s "$WORK/holder.ready" ] && kill -0 "$HOLDER" 2>/dev/null
+ok "a background process (pid $HOLDER) holds run $RUNID's lock, taken with the real lock_run" $? "$WORK/holder.log"
+rec_reject j-locked "REJECT a second --join for the same run while another process holds its lock" "run $RUNID is in use: another process holds its lock .*/runs/$RUNID/run.lock"
+kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; HOLDER=""
+# The same run folder and lock file (not a fresh copy): the lock is free once its holder is gone.
+export FAKE_AWS_LOG="$WORK/j-unlocked.calls.jsonl"; : > "$FAKE_AWS_LOG"; : > "$STUB_KUBECTL_LOG"
+rc=0; su j-unlocked --join || rc=$?
+grep -q 'Step 10/10: join' "$WORK/j-unlocked.log" && ! grep -q 'is in use' "$WORK/j-unlocked.log"
+ok "ACCEPT the same --join once the holder has been killed: the lock is free again and step 10 runs (rc=$rc)" $? "$WORK/j-unlocked.log"
+
+echo
+echo "== 7/7 the build host's SSM registration: setup.sh ssm_online ============================"
+st o-err "${BUILD_RESULTS/@KERNEL@/Success}"; export FAKE_AWS_FAIL='ssm describe-instance-information||ThrottlingException'
+SU_ENV=(SSM_ONLINE_TRIES=10 SSM_ONLINE_SLEEP=0)
+rc=0; su o-err --ami-only || rc=$?
+check "REJECT --ami-only when every describe-instance-information read fails: could not determine, after AWS_READ_RETRIES=3 retries" 1 "$rc" "$WORK/o-err.log" \
+  'FATAL: could not determine whether build host i-fakerun001 is Online to SSM: 4 reads in a row failed \(last: An error occurred \(ThrottlingException\)'
+[ "$(calls o-err '^ssm describe-instance-information$')" = 4 ] && [ "$(calls o-err '^(ssm send-command|ec2 create-image)$')" = 0 ]
+ok "  ... after exactly 4 reads, and before any SSM command or AMI" $?
+st o-never "${BUILD_RESULTS/@KERNEL@/Success}"$'\n''s["ssm"]["online"] = False'
+SU_ENV=(SSM_ONLINE_TRIES=3 SSM_ONLINE_SLEEP=0)
+rc=0; su o-never --ami-only || rc=$?
+check "REJECT --ami-only when the build host is never Online in SSM_ONLINE_TRIES=3 reads (the message is today's)" 1 "$rc" "$WORK/o-never.log" \
+  'FATAL: build host i-fakerun001 never reported Online to SSM'
+[ "$(calls o-never '^ssm describe-instance-information$')" = 3 ] && ! grep -q 'could not determine whether' "$WORK/o-never.log"
+ok "  ... after exactly 3 reads, and not reported as a read failure" $?
+st o-lasterr "${BUILD_RESULTS/@KERNEL@/Success}"; export FAKE_AWS_FAIL='ssm describe-instance-information||ThrottlingException'
+SU_ENV=(SSM_ONLINE_TRIES=2 SSM_ONLINE_SLEEP=0)
+rc=0; su o-lasterr --ami-only || rc=$?
+check "REJECT --ami-only when the tries run out while the reads still fail (2 tries, fewer than the retry bound): could not determine, not 'never Online'" 1 "$rc" "$WORK/o-lasterr.log" \
+  'FATAL: could not determine whether build host i-fakerun001 is Online to SSM: 2 reads in a row failed'
+! grep -q 'never reported Online' "$WORK/o-lasterr.log"; ok "  ... and it does not say the host was never Online" $?
+st o-flaky "${BUILD_RESULTS/@KERNEL@/Success}"; export FAKE_AWS_FAIL='ssm describe-instance-information||ThrottlingException|2'
+SU_ENV=(SSM_ONLINE_TRIES=5 SSM_ONLINE_SLEEP=0)
+rc=0; su o-flaky --ami-only || rc=$?
+check "ACCEPT two failed reads in a row, then Online: --ami-only completes" 0 "$rc" "$WORK/o-flaky.log" '--ami-only: done\.'
+python3 - "$WORK/o-flaky.calls.jsonl" <<'PY'; ok "  ... after 3 reads of the build host (2 failed, then Online)" $?
+import json, sys
+c = [json.loads(l) for l in open(sys.argv[1])]
+n = sum(1 for x in c if x["call"] == "ssm describe-instance-information" and "Key=InstanceIds,Values=i-fakerun001" in x["argv"])
+assert n == 3, n
+PY
+unset FAKE_AWS_FAIL; SU_ENV=()
 
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"

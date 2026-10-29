@@ -26,8 +26,9 @@
 # Two checks run before anything is created, and fail closed:
 #   * the user data (check_user_data): comments and blank lines are stripped first; the active
 #     script must be `set` lines followed by exactly ONE /etc/eks/bootstrap.sh command for this
-#     cluster and nothing after it, and the labels and taint are read from THAT command's
-#     --kubelet-extra-args, never from anywhere else in the file;
+#     cluster and nothing after it, with every option first and the cluster name as its last
+#     argument (Canonical's usage: bootstrap.sh [options] <cluster-name>), and the labels and
+#     taint are read from THAT command's --kubelet-extra-args, never from anywhere else in the file;
 #   * the launch template data (scripts/lib/launch_spec.py): IMDSv2 required with hop limit 1,
 #     enclaves on, ManagedBy and RunId on the instance and volume TagSpecifications.
 set -euo pipefail
@@ -82,8 +83,11 @@ else:
     if active[i + 1:]:
         bad.append(f"user data runs commands after bootstrap.sh: {' '.join(active[i + 1])!r}")
     argv = active[i]
-    if len(argv) < 2 or argv[1] != cluster:
-        bad.append(f"bootstrap.sh is not given the cluster name {cluster!r} as its first argument")
+    # usage: /etc/eks/bootstrap.sh [options] <cluster-name>: the name is the last word, and not
+    # the value of the option before it.
+    value_flags = ("--apiserver-endpoint", "--b64-cluster-ca", "--dns-cluster-ip", "--kubelet-extra-args")
+    if len(argv) < 2 or argv[-1] != cluster or argv[-2] in value_flags:
+        bad.append(f"bootstrap.sh is not given the cluster name {cluster!r} as its last argument, after every option")
     for flag in ("--apiserver-endpoint", "--b64-cluster-ca", "--dns-cluster-ip"):
         if flag not in argv or argv.index(flag) + 1 >= len(argv):
             bad.append(f"bootstrap.sh lacks {flag} <value>")
@@ -128,11 +132,12 @@ USER_DATA_FILE="$RUN_STATE_DIR/nodegroup-user-data.sh"
 cat > "$USER_DATA_FILE" <<UD
 #!/bin/bash
 set -euo pipefail
-/etc/eks/bootstrap.sh '$CLUSTER_NAME' \\
+/etc/eks/bootstrap.sh \\
   --apiserver-endpoint '$api_endpoint' \\
   --b64-cluster-ca '$cluster_ca' \\
   --dns-cluster-ip '$dns_ip' \\
-  --kubelet-extra-args '--node-labels=$KUBELET_LABELS --register-with-taints=$KUBELET_TAINT'
+  --kubelet-extra-args '--node-labels=$KUBELET_LABELS --register-with-taints=$KUBELET_TAINT' \\
+  '$CLUSTER_NAME'
 UD
 check_user_data "$USER_DATA_FILE" || die "the rendered user data ($USER_DATA_FILE) failed its check; see the FAIL lines above"
 

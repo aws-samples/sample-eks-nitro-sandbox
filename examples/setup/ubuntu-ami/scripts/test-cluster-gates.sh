@@ -248,12 +248,13 @@ printf '#!/bin/bash\n# /etc/eks/bootstrap.sh example-cluster --kubelet-extra-arg
 { head -n 1 "$WORK/ud-default.sh"; echo 'exit 0'; tail -n +2 "$WORK/ud-default.sh"; } > "$WORK/ud-exit-first.sh"
 # the bootstrap twice
 { cat "$WORK/ud-default.sh"; tail -n +3 "$WORK/ud-default.sh"; } > "$WORK/ud-twice.sh"
-# labels and taint only in a trailing comment on the bootstrap line
-sed "s#  --kubelet-extra-args '\\(.*\\)'#  --kubelet-extra-args '--v=2' \\# \\1#" "$WORK/ud-default.sh" > "$WORK/ud-trailing-comment.sh"
+# labels and taint only in a trailing comment on the bootstrap command's last line, after the cluster name
+sed '/^  --kubelet-extra-args /{N;s#^  --kubelet-extra-args '"'"'\(.*\)'"'"' \\\n\(.*\)$#  --kubelet-extra-args '"'"'--v=2'"'"' \\\n\2 \# \1#;}' \
+  "$WORK/ud-default.sh" > "$WORK/ud-trailing-comment.sh"
 # the right command commented out, a different one active
 sed 's#^/etc/eks/bootstrap.sh#true \#/etc/eks/bootstrap.sh#' "$WORK/ud-default.sh" > "$WORK/ud-commented-cmd.sh"
 # another cluster
-sed "s#^/etc/eks/bootstrap.sh 'example-cluster'#/etc/eks/bootstrap.sh 'some-other-cluster'#" "$WORK/ud-default.sh" > "$WORK/ud-other-cluster.sh"
+sed "s#^  'example-cluster'\$#  'some-other-cluster'#" "$WORK/ud-default.sh" > "$WORK/ud-other-cluster.sh"
 while IFS='|' read -r name rx why; do
   [ -n "$name" ] || continue
   cmp -s "$WORK/ud-default.sh" "$WORK/ud-$name.sh" && { echo "  FAIL  the $name mutation did not change the user data"; fail=$((fail+1)); continue; }
@@ -270,7 +271,7 @@ exit-first|runs other commands before bootstrap.sh: 'exit 0'|REJECT user data th
 twice|has 2 active /etc/eks/bootstrap.sh commands|REJECT user data with two bootstrap.sh commands
 trailing-comment|--node-labels lacks|REJECT labels and taint that appear only in a trailing comment
 commented-cmd|has 0 active /etc/eks/bootstrap.sh commands|REJECT a commented-out bootstrap.sh behind another command
-other-cluster|is not given the cluster name 'example-cluster'|REJECT a bootstrap.sh for another cluster
+other-cluster|is not given the cluster name 'example-cluster' as its last argument|REJECT a bootstrap.sh for another cluster
 CASES
 
 echo

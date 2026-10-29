@@ -69,6 +69,10 @@ if [ -n "${RUN_ID:-}" ]; then RESUME=1; else RUN_ID=$(new_run_id); RESUME=0; fi
 [[ "$MODE" != join || "$RESUME" == 1 ]] || die "--join needs RUN_ID=<id>, the run whose AMI ./setup.sh --ami-only built (it prints the id)"
 export RUN_ID
 derive_run_names
+# An explicit RUN_ID, in every mode (--join included), acts only on a run this checkout started
+# with the same settings, and only while no other process holds it: before anything else, the
+# run's record must match (check_run_record) and this process takes the run's lock (lock_run).
+if [ "$RESUME" = 1 ]; then check_run_record; lock_run; fi
 
 # Private run evidence, under the run's folder in the repository's tmp/.
 open_evidence() { # open_evidence <new|append>
@@ -168,7 +172,8 @@ fi
 # it: steps 1 to 9 never read or change the cluster (no kubectl call, no EKS call).
 [ "$MODE" = ami ] || require_kube_context
 
-if [ "$RESUME" = 1 ]; then mkdir -p "$RUN_STATE_DIR"; else reserve_run_dir; fi
+# A new run reserves its folder and takes its lock; a resume was checked and locked above.
+if [ "$RESUME" = 0 ]; then reserve_run_dir; lock_run; fi
 printf 'RUN_ID=%s\nRESOURCE_PREFIX=%s\nNODEGROUP_NAME=%s\nNAMESPACE=%s\n' "$RUN_ID" "$RESOURCE_PREFIX" "$NODEGROUP_NAME" "$NAMESPACE" > "$RUN_STATE_DIR/run-state.env"
 open_evidence new
 record RUN_ID "$RUN_ID"
@@ -267,18 +272,36 @@ build_id=$(aws ec2 run-instances --region "$AWS_REGION" --cli-input-json "file:/
 record BUILD_INSTANCE_ID "$build_id"
 log "build host: $build_id; waiting for status-ok and SSM Online"
 wait_status_ok "$build_id" || die "build host $build_id never reached status-ok"
+# ssm_online <instance-id>: 0 once SSM reports the instance Online; 1 when every read worked and
+# none said Online within SSM_ONLINE_TRIES reads (default 30), SSM_ONLINE_SLEEP s apart (default
+# 10); 2 ("could not determine") when more than AWS_READ_RETRIES reads in a row fail
+# (scripts/lib/aws-wait.sh), or the tries run out while the last read failed. SSM_ONLINE_ERRS is
+# the count of failed reads in a row, SSM_ONLINE_ERR the last error line.
 ssm_online() {
-  local id="$1" state
-  for _ in $(seq 1 30); do
-    state=$(aws ssm describe-instance-information --region "$AWS_REGION" \
-      --filters "Key=InstanceIds,Values=$id" \
-      --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || true)
-    [[ "$state" == "Online" ]] && return 0
-    sleep 10
+  local id="$1" state e errs=0
+  SSM_ONLINE_ERRS=0 SSM_ONLINE_ERR=""
+  e=$(mktemp)
+  for _ in $(seq 1 "${SSM_ONLINE_TRIES:-30}"); do
+    if state=$(aws ssm describe-instance-information --region "$AWS_REGION" \
+        --filters "Key=InstanceIds,Values=$id" \
+        --query 'InstanceInformationList[0].PingStatus' --output text 2>"$e"); then
+      errs=0
+      [[ "$state" == "Online" ]] && { rm -f "$e"; return 0; }
+    else
+      errs=$((errs + 1))
+      SSM_ONLINE_ERR=$(grep . "$e" | tail -n 1 || true)
+      if [ "$errs" -gt "$AWS_READ_RETRIES" ]; then SSM_ONLINE_ERRS=$errs; rm -f "$e"; return 2; fi
+    fi
+    sleep "${SSM_ONLINE_SLEEP:-10}"
   done
+  rm -f "$e"
+  # The tries ran out: "never Online" only when the last read worked.
+  if [ "$errs" -gt 0 ]; then SSM_ONLINE_ERRS=$errs; return 2; fi
   return 1
 }
-ssm_online "$build_id" || die "build host $build_id never reported Online to SSM"
+rc=0; ssm_online "$build_id" || rc=$?
+[ "$rc" != 2 ] || die "could not determine whether build host $build_id is Online to SSM: $SSM_ONLINE_ERRS reads in a row failed (last: ${SSM_ONLINE_ERR:-no error text})"
+[ "$rc" = 0 ] || die "build host $build_id never reported Online to SSM"
 
 # send_and_wait <instance-id> <timeout-seconds> <document> <parameters-json> : run an SSM
 # document, print its output, and fail unless it reports Success. The result is polled until it

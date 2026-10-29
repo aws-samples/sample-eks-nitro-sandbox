@@ -10,7 +10,8 @@ exactly those (same versions and SHA-256s), the archive's SHA-256 is the manifes
 archive's members are exactly those member names, each once and each a regular file with a flat
 name (checked BEFORE anything is extracted), and every extracted file hashes to its lock pin.
 Extraction goes to a fresh temporary folder beside <extract-dir>, which is renamed onto
-<extract-dir> only after every hash passes; a missing or empty <extract-dir> is required.
+<extract-dir> only after every hash passes; a missing or empty <extract-dir> is required. An
+existing empty <extract-dir> keeps its mode and owner; a new one gets 0777 & ~umask.
 Exit 1 with a FATAL line otherwise; on any refusal <extract-dir> is left as it was and the
 temporary folder is removed.
 """
@@ -19,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 import tarfile
 import tempfile
@@ -112,9 +114,21 @@ def main():
                     if h != expected[cid]["sha256"]:
                         die(f"{member} has SHA-256 {h}, not the {expected[cid]['sha256']} sources.lock pins for {cid}")
                     print(f"verified sha256 for {cid} (extracted from bundle): {h}")
-                mask = os.umask(0)
-                os.umask(mask)
-                os.chmod(tmp, 0o777 & ~mask)  # mkdtemp makes it 0700; give dest the usual mode
+                # mkdtemp makes tmp 0700. An existing empty dest keeps its own mode and owner; a
+                # new dest gets the usual mode (0777 & ~umask).
+                try:
+                    keep = os.stat(dest)
+                except FileNotFoundError:
+                    keep = None
+                if keep is None:
+                    mask = os.umask(0)
+                    os.umask(mask)
+                    os.chmod(tmp, 0o777 & ~mask)
+                else:
+                    own = os.stat(tmp)
+                    if (keep.st_uid, keep.st_gid) != (own.st_uid, own.st_gid):
+                        os.chown(tmp, keep.st_uid, keep.st_gid)  # refused below if not permitted
+                    os.chmod(tmp, stat.S_IMODE(keep.st_mode))
                 os.rename(tmp, dest)  # atomic; fails if dest appeared and is not empty
                 renamed = True
             except OSError as e:

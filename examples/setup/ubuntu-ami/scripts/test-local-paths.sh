@@ -26,6 +26,10 @@
 #      copy is refused.
 #   5  EVIDENCE_DIR is guarded the same way, and in a checkout every mktemp lands in a private
 #      tmp/ folder under ISSUE10_RUN_DIR whatever TMPDIR the caller set (RR-007).
+#   6  that private folder (RR2-002): the base ISSUE10_RUN_DIR/tmp is a real 0700 directory, each
+#      process gets its own 0700 folder in it, and a child reuses its parent's; a symlink or a
+#      non-0700 base is refused with nothing written, and an inherited TMPDIR that is a symlink,
+#      outside the base, the base itself or not 0700 is not used.
 # The test itself creates nothing outside the repository's tmp/.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"            # .../examples/setup/ubuntu-ami/scripts
@@ -70,7 +74,7 @@ probe() {
   P_OUT="$(printf '%s' "$out" | sed '/^VALUE=/d')"
 }
 
-echo "== 1/5 ACCEPT defaults: all four dirs resolve under tmp/issue10/run ======================"
+echo "== 1/6 ACCEPT defaults: all four dirs resolve under tmp/issue10/run ======================"
 eval "$(
   env -u LOG_DIR -u OUT_DIR -u RUNTIME_ARTIFACTS_DIR -u ISSUE10_RUN_DIR -u REPO_ROOT SAMPLE_DIR="$SAMPLE_DIR_REAL" \
     bash -c '. "$1" >/dev/null 2>&1; for v in ISSUE10_RUN_DIR LOG_DIR OUT_DIR RUNTIME_ARTIFACTS_DIR; do printf "D_%s=%q\n" "$v" "${!v}"; done' _ "$COMMON"
@@ -83,7 +87,7 @@ done
 [[ "$D_ISSUE10_RUN_DIR" == "$RUN_BASE" ]]; assert_true "ISSUE10_RUN_DIR defaults to exactly repo-root tmp/issue10/run" $?
 
 echo
-echo "== 2/5 ACCEPT overrides under the repository's tmp/ ======================================="
+echo "== 2/6 ACCEPT overrides under the repository's tmp/ ======================================="
 mkdir -p "$WORK/real-target"
 ln -s "$WORK/real-target" "$WORK/link-in-tmp"
 REL_TMP="../../../tmp/$(basename "$WORK")/rel-accept"         # relative to the sample folder
@@ -102,7 +106,7 @@ ISSUE10_RUN_DIR|@WORK@/run-accept/./sub/..|@WORK@/run-accept|ACCEPT an ISSUE10_R
 CASES
 
 echo
-echo "== 3/5 REJECT overrides that do not resolve under the repository's tmp/ ==================="
+echo "== 3/6 REJECT overrides that do not resolve under the repository's tmp/ ==================="
 ln -s "$SAMPLE_DIR_REAL" "$WORK/link-to-sample"
 PROBE_NAME="paths-reject-probe.$$"
 while IFS='|' read -r var val created why; do
@@ -134,7 +138,7 @@ RUNTIME_ARTIFACTS_DIR|@REPO@/tmpx-@P@|@REPO@/tmpx-@P@|REJECT a sibling whose nam
 CASES
 
 echo
-echo "== 4/5 the unpacked copy on a build host (not a checkout) ==============================="
+echo "== 4/6 the unpacked copy on a build host (not a checkout) ==============================="
 HOSTCOPY="$WORK/host/usr/local/share/ubuntu-ami-sample"
 mkdir -p "$HOSTCOPY"
 cp -a "$SAMPLE_DIR_REAL/scripts" "$HOSTCOPY/"
@@ -152,7 +156,7 @@ probe "$HOSTCOPY" LOG_DIR "logs"
 [[ "$P_RC" -ne 0 && ! -e "$HOSTCOPY/logs" ]]; assert_true "REJECT a relative override, which resolves inside the unpacked copy, and do not create it" $?
 
 echo
-echo "== 5/5 the run's evidence folder and temporary files (RR-007) ==========================="
+echo "== 5/6 the run's evidence folder and temporary files (RR-007) ==========================="
 # ev <EVIDENCE_DIR or empty>: source common.sh with ISSUE10_RUN_DIR under WORK, derive the run's
 # names, and print EVIDENCE_DIR and where a plain mktemp lands. TMPDIR is set to OUTSIDE (which
 # does not exist): in a checkout common.sh must replace it.
@@ -165,13 +169,92 @@ ev() {
 ev ""
 evd=$(printf '%s\n' "$EV_OUT" | sed -n 's/^EVIDENCE=//p'); tf=$(printf '%s\n' "$EV_OUT" | sed -n 's/^TMPFILE=//p')
 [[ "$EV_RC" -eq 0 && "$evd" == "$WORK/ev-run/out/runs/evrun1/evidence" ]]; assert_true "ACCEPT the default EVIDENCE_DIR, under the run's folder in tmp/ ($evd)" $?
-[[ "$tf" == "$WORK/ev-run/tmp/"* && -f "$tf" ]]; assert_true "ACCEPT: a plain mktemp lands in the private tmp/ folder under ISSUE10_RUN_DIR ($tf)" $?
-[[ "$(printf '%s\n' "$EV_OUT" | sed -n 's/^TMPDIR=//p')" == "$WORK/ev-run/tmp" ]]
-assert_true "REJECT the caller's TMPDIR outside the repository: common.sh replaced it" $?
+evt=$(printf '%s\n' "$EV_OUT" | sed -n 's/^TMPDIR=//p')
+[[ "$tf" == "$evt/"* && -f "$tf" ]]; assert_true "ACCEPT: a plain mktemp lands in the private TMPDIR common.sh set ($tf)" $?
+[[ "$(dirname "$evt")" == "$WORK/ev-run/tmp" ]]
+assert_true "REJECT the caller's TMPDIR outside the repository: common.sh replaced it with a folder in tmp/ under ISSUE10_RUN_DIR ($evt)" $?
 ev "$SAMPLE_DIR_REAL/evidence-probe.$$"
 [[ "$EV_RC" -ne 0 ]] && printf '%s' "$EV_OUT" | grep -q "FATAL: EVIDENCE_DIR resolves to .* which is not under the repository's tmp/"
 assert_true "REJECT (RR-007) an EVIDENCE_DIR inside the sample folder" $?
 [[ ! -e "$SAMPLE_DIR_REAL/evidence-probe.$$" ]]; assert_true "  ... and it was not created" $?
+
+echo
+echo "== 6/6 the private temporary folder: a real 0700 base, one folder per process (RR2-002) ==="
+# tp <case> <ISSUE10_RUN_DIR> [<inherited TMPDIR>]: source the real common.sh in a clean shell
+# (TMPDIR only when given), make one plain mktemp, and source common.sh again in a child. Sets
+# TP_RC, TP_DIR (the TMPDIR common.sh set), TP_FILE (the mktemp) and TP_CHILD (the child's TMPDIR).
+cat > "$WORK/tp-driver.sh" <<'SH'
+. "$1" || exit 1
+f=$(mktemp) || exit 1
+printf 'TMPDIR=%s\nTMPFILE=%s\n' "$TMPDIR" "$f"
+printf 'CHILD=%s\n' "$(bash -c '. "$1" >/dev/null 2>&1 && printf %s "$TMPDIR"' _ "$1")"
+SH
+tp() {
+  TP_RC=0
+  TP_OUT="$(env -u LOG_DIR -u OUT_DIR -u RUNTIME_ARTIFACTS_DIR -u RUN_STATE_FILE -u REPO_ROOT -u TMPDIR \
+    SAMPLE_DIR="$SAMPLE_DIR_REAL" ISSUE10_RUN_DIR="$2" ${3:+TMPDIR="$3"} bash "$WORK/tp-driver.sh" "$COMMON" 2>&1)" || TP_RC=$?
+  printf '%s\n' "$TP_OUT" > "$WORK/tp-$1.log"
+  TP_DIR=$(printf '%s\n' "$TP_OUT" | sed -n 's/^TMPDIR=//p')
+  TP_FILE=$(printf '%s\n' "$TP_OUT" | sed -n 's/^TMPFILE=//p')
+  TP_CHILD=$(printf '%s\n' "$TP_OUT" | sed -n 's/^CHILD=//p')
+  echo "  $1: rc=$TP_RC TMPDIR=${TP_DIR:-<none>}"
+  printf '%s\n' "$TP_OUT" | grep -m1 FATAL | sed 's/^/    /'
+}
+mode() { stat -c %a "$1" 2>/dev/null; }
+# own_dir <dir> <base>: <dir> is a direct child of <base>, a real directory (not a symlink), mode 700
+own_dir() { [[ -n "$1" && "$(dirname "$1")" == "$2" && -d "$1" && ! -L "$1" && "$(mode "$1")" == 700 ]]; }
+empty_dir() { [[ -d "$1" && -z "$(ls -A "$1")" ]]; }
+
+R1="$WORK/tp-run1"; B1="$R1/tmp"
+tp new "$R1"
+[[ "$TP_RC" -eq 0 ]] && own_dir "$TP_DIR" "$B1" && [[ "$(basename "$TP_DIR")" =~ ^p\.[A-Za-z0-9]{10}$ ]]
+assert_true "ACCEPT: the base ISSUE10_RUN_DIR/tmp is created, and this process gets its own 0700 folder in it with a random name" $?
+[[ -d "$B1" && ! -L "$B1" && "$(mode "$B1")" == 700 ]]; assert_true "  ... the base itself is a real directory, mode 700" $?
+[[ "$(dirname "$TP_FILE")" == "$TP_DIR" && -f "$TP_FILE" ]]; assert_true "  ... and a plain mktemp lands in that folder" $?
+[[ "$TP_CHILD" == "$TP_DIR" ]]; assert_true "ACCEPT: a child that sources common.sh again reuses its parent's folder" $?
+FIRST="$TP_DIR"
+tp second "$R1"
+[[ "$TP_RC" -eq 0 && "$TP_DIR" != "$FIRST" ]] && own_dir "$TP_DIR" "$B1"
+assert_true "ACCEPT: a second process gets a different folder in the same base" $?
+tp inherit "$R1" "$FIRST"
+[[ "$TP_RC" -eq 0 && "$TP_DIR" == "$FIRST" && "$(dirname "$TP_FILE")" == "$FIRST" ]]
+assert_true "ACCEPT: an inherited TMPDIR that is such a folder (a direct 0700 child of the base) is kept" $?
+first_count=$(ls -A "$FIRST" | wc -l)
+
+# A symlink at the base, to a folder outside ISSUE10_RUN_DIR (under this test's tmp/ folder) and,
+# dangling, to the outside-the-repository probe path: refused, and nothing is written where it points.
+R2="$WORK/tp-run2"; mkdir -p "$R2" "$WORK/tp-elsewhere"; ln -s "$WORK/tp-elsewhere" "$R2/tmp"
+tp symlink-base "$R2"
+[[ "$TP_RC" -ne 0 ]] && grep -q "FATAL: $R2/tmp is a symlink" "$WORK/tp-symlink-base.log"
+assert_true "REJECT a base that is a symlink to a folder outside ISSUE10_RUN_DIR" $?
+empty_dir "$WORK/tp-elsewhere"; assert_true "  ... and nothing was written in the folder it points to" $?
+R3="$WORK/tp-run3"; mkdir -p "$R3"; ln -s "$OUTSIDE" "$R3/tmp"
+tp dangling-base "$R3"
+[[ "$TP_RC" -ne 0 ]] && grep -q "FATAL: $R3/tmp is a symlink" "$WORK/tp-dangling-base.log" && [[ ! -e "$OUTSIDE" ]]
+assert_true "REJECT a base that is a symlink to a path outside the repository, and do not create it" $?
+R4="$WORK/tp-run4"; mkdir -p "$R4"; mkdir -m 0755 "$R4/tmp"
+tp open-base "$R4"
+[[ "$TP_RC" -ne 0 ]] && grep -q "FATAL: $R4/tmp must be a directory owned by you with mode 0700" "$WORK/tp-open-base.log" && empty_dir "$R4/tmp"
+assert_true "REJECT a base with mode 755, with nothing written in it" $?
+
+# An inherited TMPDIR that is not one of the base's own 0700 folders is not used: common.sh makes
+# a new folder in the base, and nothing lands in the inherited one.
+mkdir -m 0700 "$WORK/tp-elsewhere-0700" "$B1/p.open"; chmod 0755 "$B1/p.open"
+ln -s "$FIRST" "$B1/p.link"
+while IFS='|' read -r name inherited why; do
+  [ -n "$name" ] || continue
+  inherited="${inherited//@B1@/$B1}"; inherited="${inherited//@WORK@/$WORK}"
+  tp "$name" "$R1" "$inherited"
+  [[ "$TP_RC" -eq 0 && "$TP_DIR" != "$inherited" && "$TP_DIR" != "$FIRST" ]] && own_dir "$TP_DIR" "$B1" && [[ "$(dirname "$TP_FILE")" == "$TP_DIR" ]]
+  assert_true "$why" $?
+done <<'CASES'
+link|@B1@/p.link|REJECT an inherited TMPDIR that is a symlink in the base (to a valid sibling folder): not used, a new folder is made
+outside|@WORK@/tp-elsewhere-0700|REJECT an inherited TMPDIR outside the base (a real 0700 folder elsewhere in tmp/): not used
+base|@B1@|REJECT an inherited TMPDIR that is the base itself: not used
+open|@B1@/p.open|REJECT an inherited TMPDIR in the base with mode 755: not used
+CASES
+[[ "$(ls -A "$FIRST" | wc -l)" == "$first_count" ]] && empty_dir "$WORK/tp-elsewhere-0700" && empty_dir "$B1/p.open"
+assert_true "  ... and nothing was written in any of the inherited folders (or through the symlink)" $?
 [[ ! -e "$OUTSIDE" ]]; assert_true "nothing was created at the outside-the-repository probe path, by this test or by the code under test" $?
 
 echo

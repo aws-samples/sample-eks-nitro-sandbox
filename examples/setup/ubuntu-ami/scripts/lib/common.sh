@@ -110,10 +110,36 @@ mkdir -p "$LOG_DIR" "$OUT_DIR" "$RUNTIME_ARTIFACTS_DIR"
 # In a checkout, every temporary file the workstation scripts make (mktemp, Python's tempfile)
 # goes to a private folder under ISSUE10_RUN_DIR, never the system temp folder; a TMPDIR the
 # caller set is replaced. The build-host copy keeps the host's own default.
+# The base, $ISSUE10_RUN_DIR/tmp, must be a real directory owned by this user with mode 0700
+# (created so when absent); a symlink there is refused, so nothing is written where it points.
+# Each process gets its own folder in the base with an unpredictable name (mktemp -d, mode 0700).
+# A script that sources this file again keeps the TMPDIR it inherited only when that is such a
+# folder: a direct child of the base, not a symlink, owned by this user, mode 0700. Nothing
+# removes these folders on exit.
+private_dir() { # private_dir <path>: 0 when <path> is a directory (not a symlink) owned by this user, mode 0700
+  python3 -c 'import os, stat, sys
+s = os.lstat(sys.argv[1])
+sys.exit(0 if stat.S_ISDIR(s.st_mode) and s.st_uid == os.geteuid() and stat.S_IMODE(s.st_mode) & 0o777 == 0o700 else 1)' "$1" 2>/dev/null
+}
 if [ "$IN_CHECKOUT" = 1 ]; then
-  TMPDIR="$ISSUE10_RUN_DIR/tmp"
-  mkdir -p -m 0700 "$TMPDIR"
+  __tmp_base="$ISSUE10_RUN_DIR/tmp"
+  [ ! -L "$__tmp_base" ] || die "$__tmp_base is a symlink; the private temporary folder must be a real directory under $ISSUE10_RUN_DIR. Remove the link; nothing was written."
+  [ -e "$__tmp_base" ] || { mkdir -p "$ISSUE10_RUN_DIR" && mkdir -m 0700 "$__tmp_base"; } || die "could not create the private temporary folder $__tmp_base"
+  private_dir "$__tmp_base" || die "$__tmp_base must be a directory owned by you with mode 0700, and it is not; fix it (chmod 0700) or remove it."
+  __tmp_base=$(canon_path "$__tmp_base")
+  path_within "$__tmp_base" "$ISSUE10_RUN_DIR" || die "the private temporary folder resolves to '$__tmp_base', which is not under ISSUE10_RUN_DIR ('$ISSUE10_RUN_DIR')"
+  __tmp_in=""
+  if [ -n "${TMPDIR:-}" ] && [ ! -L "$TMPDIR" ]; then
+    __tmp_in=$(canon_path "$TMPDIR")
+    { [ "$(dirname "$__tmp_in")" = "$__tmp_base" ] && private_dir "$__tmp_in"; } || __tmp_in=""
+  fi
+  if [ -n "$__tmp_in" ]; then
+    TMPDIR="$__tmp_in"
+  else
+    TMPDIR=$(mktemp -d "$__tmp_base/p.XXXXXXXXXX") || die "could not create a private temporary folder in $__tmp_base"
+  fi
   export TMPDIR
+  unset __tmp_base __tmp_in
 fi
 
 : "${LOCK_FILE:=$SAMPLE_DIR/packages/sources.lock}"
@@ -172,6 +198,37 @@ new_run_id() {
 reserve_run_dir() {
   mkdir -p "$OUT_DIR/runs"
   mkdir "$RUN_STATE_DIR" 2>/dev/null || die "run folder $RUN_STATE_DIR already exists: another run has id $RUN_ID. Start again for a new id, or pass RUN_ID=$RUN_ID only to resume that run."
+}
+# check_run_record: for an explicit RUN_ID (a resume, or --join), the run's own record
+# $RUN_STATE_DIR/run-state.env must exist, and its RUN_ID, RESOURCE_PREFIX, NODEGROUP_NAME and
+# NAMESPACE lines must all equal this run's values (a missing line is a mismatch). Otherwise it
+# stops, naming the field and both values, before anything is changed.
+check_run_record() {
+  local f="$RUN_STATE_DIR/run-state.env" k got
+  [ -f "$f" ] || die "run $RUN_ID has no record at $f: RUN_ID=<id> only resumes a run this checkout started (leave RUN_ID unset for a new run). Nothing was changed."
+  for k in RUN_ID RESOURCE_PREFIX NODEGROUP_NAME NAMESPACE; do
+    if ! grep -q "^$k=" "$f"; then
+      die "run $RUN_ID's record $f has no $k line, but this run has $k=${!k}; refusing to act on it. Nothing was changed."
+    fi
+    got=$(sed -n "s/^$k=//p" "$f" | tail -n 1)
+    [ "$got" = "${!k}" ] || die "run $RUN_ID's record $f has $k=$got, but this run has $k=${!k}; refusing to act on it with different settings. Nothing was changed."
+  done
+}
+# lock_run: an exclusive, non-blocking lock on $RUN_STATE_DIR/run.lock, held for the rest of this
+# process's life on file descriptor 9 (the kernel releases it when the process exits, however it
+# exits), so two processes never act on one run at once; a second one is refused. The lock is
+# flock(2), taken by Python's fcntl module on the descriptor the shell opened, so no flock
+# command is needed.
+lock_run() {
+  local f="$RUN_STATE_DIR/run.lock" rc=0
+  exec 9>>"$f" || die "could not open the run lock $f"
+  python3 -c 'import errno, fcntl, sys
+try:
+    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except OSError as e:
+    sys.exit(3 if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES) else "flock: %s" % e)' || rc=$?
+  [ "$rc" != 3 ] || die "run $RUN_ID is in use: another process holds its lock $f. Wait for it to finish, then try again. Nothing was changed."
+  [ "$rc" = 0 ] || die "could not lock $f (see the error above)"
 }
 # load_run_id: RUN_ID from the environment, else from $RUN_STATE_FILE. Returns 1 when neither
 # has one; dies when the value found is malformed.

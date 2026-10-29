@@ -10,7 +10,9 @@
 #   2  scripts/join-nodegroup.sh        the node launch template EC2 receives requires IMDSv2 with
 #                                       hop limit 1, has enclaves on and tags nodes and volumes
 #                                       with both tags; the template and node group carry both
-#                                       tags; a failed call stops everything after it
+#                                       tags; a failed call stops everything after it; the
+#                                       user data gives bootstrap.sh every option first and
+#                                       the cluster name last
 #   3  scripts/verify-fresh-instance.sh the verification instance EC2 receives meets the same
 #                                       rules, and a failure after launch terminates it
 #   4  setup.sh                         the build host is launched from the spec it checked
@@ -167,6 +169,57 @@ check "REJECT --check-launch-template on the same data with hop limit 2" 1 "$rc"
 mutate "$RS/nodegroup-launch-template.json" "$WORK/jn-v1.json" 's["MetadataOptions"]["HttpTokens"] = "optional"'
 rc=0; bash "$HERE/join-nodegroup.sh" --check-launch-template "$WORK/jn-v1.json" > "$WORK/jn-v1.log" 2>&1 || rc=$?
 check "REJECT --check-launch-template on the same data with IMDSv1 allowed" 1 "$rc" "$WORK/jn-v1.log" "HttpTokens is 'optional'"
+# the bootstrap argument order; Canonical's usage line: /etc/eks/bootstrap.sh [options] <cluster-name>
+CASE=jn-render; st "$CASE"
+rc=0; bash "$HERE/join-nodegroup.sh" --render-user-data > "$WORK/jn-render.ud.sh" 2> "$WORK/jn-render.err" || rc=$?
+check "ACCEPT --render-user-data: the user data renders" 0 "$rc" "$WORK/jn-render.err"
+python3 - "$WORK/jn-render.ud.sh" > "$WORK/jn-render.order.log" 2>&1 <<'PY'; check "  ... and bootstrap.sh gets all four options first and the cluster name as its last argument (read independently of check_user_data)" 0 $? "$WORK/jn-render.order.log" '^ORDER OK'
+import shlex, sys
+text = open(sys.argv[1]).read().replace("\\\n", " ")
+boots = [shlex.split(l, comments=True) for l in text.split("\n") if l.startswith("/etc/eks/bootstrap.sh")]
+assert len(boots) == 1, boots
+a = boots[0][1:]
+opts = ["--apiserver-endpoint", "--b64-cluster-ca", "--dns-cluster-ip", "--kubelet-extra-args"]
+assert len(a) == 9 and sorted(a[0:8:2]) == sorted(opts) and a[-1] == "example-cluster", a
+print("ORDER OK: " + " ".join(a[0:8:2]) + ", then " + a[-1])
+PY
+rc=0; bash "$HERE/join-nodegroup.sh" --check-user-data "$WORK/jn-render.ud.sh" > "$WORK/jn-render.cu.log" 2>&1 || rc=$?
+check "  ... which passes --check-user-data" 0 "$rc" "$WORK/jn-render.cu.log" 'USER DATA OK'
+# reorder <in> <out> <case>: the rendered user data with its bootstrap.sh words in another order
+reorder() { python3 - "$@" <<'PY'
+import sys
+src, out, case = sys.argv[1:4]
+lines = open(src).read().rstrip("\n").split("\n")
+b = next(i for i, l in enumerate(lines) if l.startswith("/etc/eks/bootstrap.sh"))
+# the command, one "--option 'value'" per line and the name, in whichever order the render used
+words = [l.strip().rstrip(" \\") for l in lines[b:]]
+words = words[0].split(" ", 1) + words[1:]
+cmd, name = words[0], "'example-cluster'"
+opts = [w for w in words[1:] if w.startswith("--")]
+assert len(opts) == 4 and sorted(words[1:]) == sorted(opts + [name]), words
+dns = [o for o in opts if o.startswith("--dns-cluster-ip ")]
+rest = [o for o in opts if o not in dns]
+if case == "name-first":        # the order a2fcb40 rendered
+    body = [f"{cmd} {name}"] + opts
+elif case == "option-after":    # every word kept, one option moved after the name
+    body = [cmd] + rest + [name] + dns
+elif case == "name-as-value":   # the name last, but as the value of a --dns-cluster-ip that has none
+    body = [cmd] + rest + ["--dns-cluster-ip", name]
+out_lines = lines[:b] + [body[0] + " \\"] + ["  " + w + " \\" for w in body[1:-1]] + ["  " + body[-1]]
+open(out, "w").write("\n".join(out_lines) + "\n")
+PY
+}
+while IFS='|' read -r name why; do
+  [ -n "$name" ] || continue
+  reorder "$WORK/jn-render.ud.sh" "$WORK/jn-$name.ud.sh" "$name"
+  rc=0; bash "$HERE/join-nodegroup.sh" --check-user-data "$WORK/jn-$name.ud.sh" > "$WORK/jn-$name.cu.log" 2>&1 || rc=$?
+  check "$why" 1 "$rc" "$WORK/jn-$name.cu.log" "^FAIL: bootstrap.sh is not given the cluster name 'example-cluster' as its last argument, after every option$"
+  [ "$(grep -c '^FAIL: ' "$WORK/jn-$name.cu.log")" = 1 ]; ok "  ... and that is the only problem found" $? "$WORK/jn-$name.cu.log"
+done <<'CASES'
+name-first|REJECT --check-user-data on bootstrap.sh with the cluster name first (the a2fcb40 order)
+option-after|REJECT --check-user-data on bootstrap.sh with an option (--dns-cluster-ip) after the cluster name
+name-as-value|REJECT --check-user-data on bootstrap.sh whose last word is the cluster name taken as --dns-cluster-ip's value
+CASES
 # a failed call stops what follows it
 CASE=jn-lt-denied; st "$CASE"; export FAKE_AWS_FAIL='ec2 create-launch-template||UnauthorizedOperation'
 rc=0; jn || rc=$?

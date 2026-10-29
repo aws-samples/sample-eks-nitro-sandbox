@@ -347,7 +347,8 @@ can take, so [`scripts/lib/aws-wait.sh`](scripts/lib/aws-wait.sh) polls instead.
 command is read about every 15 seconds until it ends, for up to its own `executionTimeout`
 plus 300 seconds, and `Failed`, `Cancelled`, `TimedOut`, `Undeliverable` or `Terminated`
 stops the run. A new AMI is read until it is `available`, for up to `AMI_WAIT_SECONDS`
-(default 3600, in `config.env`); `failed`, `error` or the deadline stops the run and names the
+(default 7200, in `config.env`; this sample's 120 GiB AMI took about 55 minutes); `failed`,
+`error` or the deadline stops the run and names the
 AMI. After the reboot onto the new kernel, the build host must answer with a new boot ID and
 `uname -r` equal to `6.18.56-nitro-ga` within `REBOOT_WAIT_SECONDS` (default 1200) before the
 next stage runs, and the run's evidence records both boot IDs. A read that keeps failing ends
@@ -411,6 +412,15 @@ and the link step needs `gawk`) and `libdw-dev` (Canonical's config sets
 is `6.18.56-nitro-ga`, adds the `nitro_enclaves.mempool` and `nitro_enclaves.ne_cpus` boot
 arguments, and pins the new kernel as the GRUB default (the stock kernel sorts newer).
 
+SSM Run Command returns only the first 24,000 characters of a command's output, and the kernel
+stage prints far more than that, so its `.config` assertion lines do not reach the run's
+evidence. The kernel configuration on this page is therefore read from
+`/boot/config-6.18.56-nitro-ga` on a node launched from the AMI:
+
+```text
+TODO: output from the fresh run
+```
+
 **5. Build erofs-utils with zstd.** The containerd shim builds each container's EROFS
 filesystem with zstd and has no fallback, and Ubuntu 24.04's erofs-utils 1.7.1 has no zstd.
 The build fetches the `1.8.10` snapshot, verifies it, builds it with
@@ -434,9 +444,10 @@ templates because Canonical's bootstrap regenerates the live ones at join.
 [`scripts/35-apparmor.sh`](scripts/35-apparmor.sh) loads the sample's scoped AppArmor profile
 and stops unless the kernel reports it in enforce mode and its load service is enabled
 (`systemctl enable` and `is-enabled` both checked).
-[`scripts/36-hold-packages.sh`](scripts/36-hold-packages.sh) holds the package that owns
-`containerd` (`containerd-app` on Ubuntu 24.04) and the installed Ubuntu kernel
-meta-packages, with `apt-mark hold` and in `Unattended-Upgrade::Package-Blacklist`, so an
+[`scripts/36-hold-packages.sh`](scripts/36-hold-packages.sh) finds the package that owns the
+`containerd` binary with `dpkg -S` and holds what it finds (on Canonical's serial `20261027`
+that was `containerd`), together with the installed Ubuntu kernel meta-packages, with
+`apt-mark hold` and in `Unattended-Upgrade::Package-Blacklist`, so an
 unattended upgrade can neither move containerd past the GA shim's range nor pull a stock
 kernel that GRUB could boot instead of `6.18.56-nitro-ga`. Everything else keeps the base
 AMI's update policy: package-list refresh and unattended security upgrades stay on.
@@ -484,8 +495,9 @@ them itself through Canonical's `bootstrap.sh --kubelet-extra-args`:
 and `--register-with-taints=sandbox.preview/ubuntu-ami=true:NoSchedule`, checked in the
 rendered user data before the launch template is created: with comments and blank lines
 stripped, the script must hold exactly one `/etc/eks/bootstrap.sh` command for this cluster,
-with nothing after it, and the labels and taint are read from that command's own
-`--kubelet-extra-args`. The launch template data (IMDSv2 required, hop limit 1, enclaves on,
+with nothing after it and the cluster name as its last argument, after every option (the
+script's usage is `bootstrap.sh [options] <cluster-name>`), and the labels and taint are read
+from that command's own `--kubelet-extra-args`. The launch template data (IMDSv2 required, hop limit 1, enclaves on,
 both run tags on every node instance and volume) is checked the same way, and the template
 and the node group are named and tagged for the run. Before any pod is applied,
 [`scripts/wait-node-ready.sh`](scripts/wait-node-ready.sh) waits until the node is `Ready`
@@ -536,7 +548,7 @@ that accepts everything.
 | containerd | 2.1.x, 2.2.x, 2.3.x | 2.4.0 and later, 2.0.x and earlier, unreadable versions |
 | Runtime archive | the pinned archive, every payload listed once and matching | a wrong archive hash, a tampered payload, a payload missing from `SHA256SUMS`, an unlisted extra file, a duplicate entry, a re-packed payload |
 | Runtime wiring | both handlers in containerd's migrated config dump, the endpoint at the CRI proxy | a handler name that is not registered |
-| Node labels and taint | one active `bootstrap.sh` command for this cluster whose `--kubelet-extra-args` carry all three labels and the taint | any one missing, the strings only in a comment, an `exit` before the command, two commands, a command for another cluster |
+| Node labels and taint | one active `bootstrap.sh` command for this cluster, its name last after every option, whose `--kubelet-extra-args` carry all three labels and the taint | any one missing, the strings only in a comment, an `exit` before the command, two commands, a command for another cluster, the cluster name first or before an option |
 | Launch specs | IMDSv2 required, hop limit 1, enclaves on, `ManagedBy` and `RunId` on instance and volume | IMDSv1 allowed, hop limit 2, no metadata options, IMDS off, enclaves off, a volume without `RunId`, another run's `RunId` |
 | Kube context | the context's server is `CLUSTER_NAME`'s API endpoint | another cluster's server, an unknown context, no `KUBE_CONTEXT` |
 | AppArmor stage | the profile loaded in enforce mode, its service enabled | complain mode, a failed `systemctl enable`, a service that is not enabled |

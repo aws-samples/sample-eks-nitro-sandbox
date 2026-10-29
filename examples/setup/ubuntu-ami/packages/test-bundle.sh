@@ -17,7 +17,9 @@
 #        reject control for a missing bundle.
 #   6/6  consume:  extraction is staged beside the destination: a good bundle lands with no
 #        temporary folder left; a final-hash failure leaves no destination and no temporary
-#        folder; a non-empty destination is refused with its contents untouched.
+#        folder; a non-empty destination is refused with its contents untouched; an existing
+#        empty destination keeps its mode and owner (0700 stays 0700), and a missing one is
+#        created 0777 & ~umask.
 #
 # The fixtures mirror the real lock file's shapes: two source tarballs, a public .patch input
 # (like host-kernel-patch), a pending input and an operator-supplied archive (like
@@ -299,6 +301,27 @@ assert_true "  ... the refusal names the non-empty destination" \
   $(grep -q 'is not an empty folder' "$WORK/atomic-full.log"; echo $?)
 assert_true "  ... the existing contents are untouched and no temporary folder is left beside it" \
   $([[ "$(ls -A "$ATOMIC/full/dest")" == keep.txt && "$(cat "$ATOMIC/full/dest/keep.txt")" == "existing content" && "$(ls -A "$ATOMIC/full")" == dest ]]; echo $?)
+
+# The destination's mode, under an explicit umask 022: an existing empty folder keeps its own
+# mode and owner; a missing one is created 0777 & ~umask.
+mkdir -p "$ATOMIC/keep/dest" "$ATOMIC/new"
+chmod 0700 "$ATOMIC/keep/dest"
+keep_owner="$(stat -c %u:%g "$ATOMIC/keep/dest")"
+rc=0
+( umask 022; LOCK_FILE="$TEST_LOCK" bash "$HERE/make-bundle.sh" consume "$OUT1" "$ATOMIC/keep/dest" ) > "$WORK/atomic-keep.log" 2>&1 || rc=$?
+assert_rc "ACCEPT a good bundle into an existing empty destination of mode 0700 (umask 022)" 0 "$rc"
+assert_true "  ... all three components are extracted and verified, and no temporary folder is left beside it" \
+  $([[ "$(ls -A "$ATOMIC/keep")" == dest && "$(grep -c '^verified sha256 for ' "$WORK/atomic-keep.log")" -eq 3 ]] \
+    && cmp -s "$ATOMIC/keep/dest/fixture-a-1.0.0.tar.gz" "$FIXTURE_DIR/fixture-a-1.0.0.tar.gz" \
+    && cmp -s "$ATOMIC/keep/dest/fixture-b-2.0.0.tar.gz" "$FIXTURE_DIR/fixture-b-2.0.0.tar.gz" \
+    && cmp -s "$ATOMIC/keep/dest/fixture-patch-0123456789abcdef0123456789abcdef01234567.patch" "$FIXTURE_DIR/0123abcd.patch"; echo $?)
+assert_true "  ... the destination is still mode 0700 with its owner unchanged, not widened to 0755" \
+  $([[ "$(stat -c %a "$ATOMIC/keep/dest")" == 700 && "$(stat -c %u:%g "$ATOMIC/keep/dest")" == "$keep_owner" ]]; echo $?)
+rc=0
+( umask 022; LOCK_FILE="$TEST_LOCK" bash "$HERE/make-bundle.sh" consume "$OUT1" "$ATOMIC/new/dest" ) > "$WORK/atomic-new.log" 2>&1 || rc=$?
+assert_rc "ACCEPT a good bundle into a missing destination (umask 022)" 0 "$rc"
+assert_true "  ... the new destination is created 0777 & ~umask (0755), with the payload in it" \
+  $([[ "$(stat -c %a "$ATOMIC/new/dest")" == 755 ]] && cmp -s "$ATOMIC/new/dest/fixture-a-1.0.0.tar.gz" "$FIXTURE_DIR/fixture-a-1.0.0.tar.gz"; echo $?)
 
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"

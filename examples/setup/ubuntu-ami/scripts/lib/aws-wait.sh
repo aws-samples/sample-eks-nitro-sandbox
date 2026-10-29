@@ -13,7 +13,7 @@
 : "${AWS_READ_RETRIES:=5}"       # consecutive failed reads before "could not determine"
 : "${SSM_POLL_SECONDS:=15}"      # between reads of a command's invocation
 : "${SSM_WAIT_MARGIN:=300}"      # seconds past a command's executionTimeout before giving up
-: "${AMI_WAIT_SECONDS:=3600}"    # how long a new AMI may stay pending (config.env)
+: "${AMI_WAIT_SECONDS:=7200}"    # how long a new AMI may stay pending (config.env); a 120 GiB one took 55 min
 : "${AMI_POLL_SECONDS:=15}"
 : "${REBOOT_WAIT_SECONDS:=1200}" # how long the build host may take to come back on the new kernel
 : "${REBOOT_POLL_SECONDS:=20}"
