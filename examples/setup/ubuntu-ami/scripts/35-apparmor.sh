@@ -3,19 +3,18 @@
 # so the baked AMI carries it. Runs on the build host over SSM, after 31-wire-containerd.sh
 # and before 50-bake-prep.sh (bake-prep must NOT remove /etc/apparmor.d).
 #
-# Why this stage exists: deploy/pod-isolated-sandbox.yaml requests the Localhost profile
-# `ubuntu-ami-sample-profile` (securityContext.appArmorProfile). A pod can only run with a
-# profile already loaded on the node, so without loading this profile on the
-# image the "accept" control would be refused exactly like the reject control
+# Why this stage exists: deploy/pod-apparmor-scoped.yaml, an ordinary (runc) pod, requests
+# the Localhost profile `ubuntu-ami-sample-profile` (securityContext.appArmorProfile). A pod
+# can only run with a profile already loaded on the node, so without loading this profile on
+# the image the "accept" control would be refused exactly like the reject control
 # (deploy/pod-apparmor-reject.yaml) and the acceptance criterion's "scoped profile that
 # works vs a control that is refused" could not be shown. AppArmor stays enabled host-wide:
 # this adds one named profile, it does not disable, replace or reconfigure the host LSM.
 #
-# Open question for the first live run: the GA bundle states that on an Ubuntu host every
-# sandbox pod needs appArmorProfile type Unconfined, because the shim forwards the requested
-# profile into the guest and runc there fails with "apparmor failed to apply profile". This
-# sample keeps the scoped profile Issue #10 asks for; if the live run shows that failure, record
-# it and its root cause first and take it to the maintainers rather than weakening the profile.
+# The isolated-sandbox pod (deploy/pod-isolated-sandbox.yaml) runs Unconfined: the shim
+# forwards a sandbox pod's profile into the guest, where runc applies it, and the guest has no
+# AppArmor, so runc there fails with "apparmor failed to apply profile". The GA bundle says so,
+# and the sample's first live node run showed it (the README's AppArmor section).
 #
 # The profile text lives at manifests/ubuntu-ami-sample-profile in this sample; on the build
 # host the sample directory is copied under /usr/local/share/ubuntu-ami-sample, so look for

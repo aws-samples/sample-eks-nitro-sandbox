@@ -2,45 +2,24 @@
 
 !!! danger "Not ready to merge to `main` as an available sample"
 
-    This sample is **not ready to be merged to `main` and marked available**. It is
-    authored against the Nitro sandbox GA node-build bundle dated 2026-10-28 and
-    static-verified (every clusterless check below passes both ways), but the fresh
-    end-to-end run this page needs has not happened yet. Before this sample can merge to
-    `main` as available, all of the
-    following MUST happen:
+    This sample is **not ready to be merged to `main` and marked available** until the
+    maintainers make one decision. The runtime binaries and guest image ship as one
+    operator-supplied preview archive that a reader obtains from their AWS account team. Its
+    exact name and every SHA-256 are pinned below, and it has no public download. Whether that
+    meets the Issue #10 criterion that every required input is available to an external
+    reader is waiting on the maintainers
+    ([Issue #10 comment](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10#issuecomment-6506808422)).
+    The archive's license and redistribution terms are recorded with that decision.
 
-    1. **Settle how a reader gets the runtime archive.** The runtime binaries and guest
-       image ship as one operator-supplied preview archive, checksum-pinned, with no public
-       download: a reader obtains it from their AWS account team. Its exact name and every
-       SHA-256 are pinned below. The maintainers decide whether that meets the Issue #10
-       criterion that every required input is available to an external reader, or the
-       sample waits for a public channel; its license and redistribution terms are recorded
-       with that decision.
-    2. **Run the whole thing live.** Run a fresh AMI build, a fresh second-instance
-       verification, and the node-join and sandbox-pod tests on a live cluster.
-    3. **Show the AppArmor result on that run.** A sandbox pod cannot take a host AppArmor
-       profile: its profile is applied by runc inside the guest, which has no AppArmor, as
-       the GA bundle says and a validation run of this sample showed (see
-       [Evidence](#evidence)). So the sandbox pod runs `Unconfined`, and the scoped
-       `Localhost` profile Issue #10 asks for is proven on an ordinary pod on the same node,
-       next to a refused control. The fresh run must fill all four AppArmor blocks under
-       [Evidence](#evidence).
-    4. **Replace every placeholder with real captured output.** Every
-       `TODO: output from the fresh run` block below must hold real captured output from
-       that run, nothing written by hand.
-    5. **Run the cleanup and confirm absence.** Run
-       `./clean.sh --delete-aws-resources --keep-ami` after the last run (issue #11 builds
-       on the AMI), confirm it reports every other resource of the run gone, and say what is
-       left.
+    Until that decision, this sample stays a draft and is not marked `(available now)`.
 
-    Until all five are done, this sample stays a draft and is not marked `(available now)`.
+!!! warning "Status: live-validated end to end on the GA bundle"
 
-!!! warning "Status: authored and static-verified against the GA bundle; no live run yet"
-
-    Every script parses, every pinned input checksum-verifies, and every clusterless check
-    is proven both ways (see [Clusterless checks](#clusterless-checks)), but **the fresh
-    end-to-end AWS run has not been performed**. See [Evidence](#evidence) for what is still a
-    `TODO: output from the fresh run` placeholder.
+    Run `20261029t165642z8cdf` built the AMI from the Nitro sandbox GA node-build bundle dated
+    2026-10-28, verified it on a second, fresh instance, joined the dedicated node group,
+    passed every `./test.sh` check (53 passed, 0 failed), and was then cleaned up with its AMI
+    kept. Every output block under [Evidence](#evidence) comes from that run, and every
+    clusterless check is proven both ways (see [Clusterless checks](#clusterless-checks)).
 
 Build a custom Ubuntu 24.04 node AMI for Amazon EKS Pod Isolation, add one dedicated,
 tainted managed node group to an **existing cluster**, and run an isolated pod on that
@@ -138,9 +117,17 @@ it.
     --configuration-values '{"enableNetworkPolicy":"true"}'
   ```
 
-  `--resolve-conflicts NONE` makes the install fail rather than overwrite an existing
-  `amazon-vpc-cni` ConfigMap. Record the version you chose as `VPC_CNI_ADDON_VERSION` in
-  `config.env`; each run records the version it found.
+  `--resolve-conflicts NONE` makes the create fail only when the add-on would have to
+  overwrite a value that is already set; it does not leave an existing `amazon-vpc-cni`
+  ConfigMap alone. If the cluster already has that
+  ConfigMap and nothing owns it, as the cluster this sample was validated on did, the add-on
+  adopts it: it adds its chart's default keys and its Helm labels, and keeps
+  `enable-network-policy-controller` as it was. Record the version you chose as
+  `VPC_CNI_ADDON_VERSION` in `config.env`; each run records the version it found.
+
+  If some of the cluster's nodes run another CNI, keep `aws-node` off them with the add-on's
+  `affinity` configuration value: keep the chart's default node affinity terms and add one
+  more, such as `{"key": "<OTHER_CNI_NODE_LABEL>", "operator": "NotIn", "values": ["true"]}`.
 
   **Network policy enforcement is cluster-wide.** Turning it on makes every NetworkPolicy
   object already on the cluster start being enforced, for every workload, not only this
@@ -418,8 +405,28 @@ evidence. The kernel configuration on this page is therefore read from
 `/boot/config-6.18.56-nitro-ga` on a node launched from the AMI:
 
 ```text
-TODO: output from the fresh run
+SHA256=5b19a3e6b6532ec3f88edafa4f25cff4c27e121d7a7ec59c33c6efa0c50a8f4a
+LINES=12010
+CONFIG_LOCALVERSION="-nitro-ga"
+CONFIG_CMA=y
+CONFIG_VSOCKETS=y
+CONFIG_TUN=y
+CONFIG_VIRT_DRIVERS=y
+CONFIG_NITRO_ENCLAVES=y
+CONFIG_VHOST_MENU=y
+CONFIG_VHOST_VSOCK=m
+CONFIG_EXT4_FS=y
+CONFIG_EROFS_FS=m
+CONFIG_SECURITY_APPARMOR=y
+CONFIG_DEBUG_INFO_DWARF4=y
+CONFIG_DEBUG_INFO_BTF=y
+CONFIG_DEBUG_INFO_BTF_MODULES=y
 ```
+
+*Abridged.* Read on the node of run `20261029t165642z8cdf` through one `kubectl debug node`
+helper pod: the node printed the file's SHA-256 and line count, then the file, and the block
+shows those two lines and the 14 required lines of its 12,010, in file order. No value was
+replaced.
 
 **5. Build erofs-utils with zstd.** The containerd shim builds each container's EROFS
 filesystem with zstd and has no fallback, and Ubuntu 24.04's erofs-utils 1.7.1 has no zstd.
@@ -510,9 +517,11 @@ resource the RuntimeClass's overhead requests), and stops with a clear message i
 
 ## Evidence
 
-> **The fresh run has not happened yet.** The blocks below are not yet acceptance evidence. The
-> implementation PR replaces every block below with a fresh end-to-end run and says so in
-> the PR description.
+> **Every block on this page is from one fresh run**, `20261029t165642z8cdf`: `./setup.sh
+> --ami-only` (with the fresh-instance verification), then `RUN_ID=20261029t165642z8cdf
+> ./setup.sh --join` and `./test.sh` (53 passed, 0 failed). Lines are copied whole and in
+> order. Values from the test account are shown as placeholders, and the note under each
+> block says which ones, and whether lines were left out.
 
 **Node vs guest kernel, and host vs guest block devices.** The same shape Getting started
 uses: the ordinary pod shares the node's kernel, `6.18.56-nitro-ga`, and sees the
@@ -520,15 +529,33 @@ instance's `nvme*` disks; the isolated-sandbox pod reports its own guest kernel,
 (the kernel inside `latest.eif`), and sees only virtio `vd*` disks, no `nvme*`.
 
 ```text
-TODO: output from the fresh run
+== 5/7 guest boundary: kernel and block devices, ordinary pod vs isolated-sandbox pod =====
+  ordinary pod kernel:         6.18.56-nitro-ga
+  ordinary pod /sys/block:     loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 loop8 nvme0n1
+  isolated-sandbox kernel:     6.18.54
+  isolated-sandbox /sys/block: dm-0 vda vdb vdc
+  PASS  the ordinary pod shares the host kernel 6.18.56-nitro-ga
+  PASS  the sandbox pod runs the guest kernel 6.18.54, not the host's
+  PASS  the ordinary pod sees the host's nvme* devices
+  PASS  the sandbox pod sees virtio vd* devices and no nvme*
 ```
+
+*`./test.sh` section 5/7, whole. No value was replaced; the trailing space at the end of the
+two `/sys/block` lines was removed.*
 
 **Boot uptime matches the pod's age**, because the VM boots with the pod, while the ordinary
 pod reads the host's much longer uptime:
 
 ```text
-TODO: output from the fresh run
+== 6/7 guest boundary: boot uptime matches the sandbox pod's age, not the host's =========
+  host uptime (ordinary pod): 582 s
+  sandbox guest uptime:       452 s
+  sandbox pod age:            460 s (started 2026-10-29T19:01:15Z)
+  PASS  the sandbox guest booted with its pod (uptime <= pod age + 120 s)
+  PASS  the sandbox guest booted after the host (guest uptime < host uptime)
 ```
+
+*`./test.sh` section 6/7, whole. No value was replaced.*
 
 **Host-requirement accept/reject controls.** Each control below is proven both ways: one
 input that has the requirement and passes, one that is missing it and is refused, per this
@@ -564,8 +591,104 @@ sample. Written by `scripts/verify-fresh-instance.sh` via `scripts/lib/btf-tag.s
 (`ManagedBy=<RESOURCE_PREFIX>` and `RunId=<RUN_ID>` checked first).
 
 ```text
-TODO: output from the fresh run
+[2026-10-29T18:28:52Z] Step 9/10: fresh-instance verification on a SECOND instance, then tag BtfValidated=true on success (scripts/verify-fresh-instance.sh)
+[2026-10-29T18:28:52Z] launching fresh verification instance ubuntu-ami-sample-20261029t165642z8cdf-verify from <AMI_ID>
+LAUNCH SPEC OK: <repository>/tmp/issue10/run/out/runs/20261029t165642z8cdf/verify-instance-launch.json
+[2026-10-29T18:28:55Z] instance: <INSTANCE_ID>
+[2026-10-29T18:32:44Z] running: verify-image.py
+Success
+{
+  "image_configuration": "PASS",
+  "failed": [],
+  "checks": {
+    "host_kernel": {
+      "ok": true,
+      "detail": "6.18.56-nitro-ga"
+    },
+    "nitro_enclaves_device": {
+      "ok": true,
+      "detail": "/dev/nitro_enclaves"
+    },
+    "btf": {
+      "ok": true,
+      "detail": "/sys/kernel/btf/vmlinux 6817696 bytes"
+    },
+    "cma": {
+      "ok": true,
+      "detail": "CmaTotal 14456832 kB"
+    },
+    "vsock": {
+      "ok": true,
+      "detail": "/dev/vhost-vsock"
+    },
+    "tun": {
+      "ok": true,
+      "detail": "/dev/net/tun"
+    },
+    "erofs": {
+      "ok": true,
+      "detail": "erofs in /proc/filesystems"
+    },
+    "apparmor": {
+      "ok": true,
+      "detail": "enabled; ubuntu-ami-sample-profile loaded in enforce mode"
+    },
+    "containerd_version": {
+      "ok": true,
+      "detail": "containerd 2.2.1 (2.2.1): supported by the GA shim (2.1.x to 2.3.x)"
+    },
+    "runtime_wiring": {
+      "ok": true,
+      "detail": "template, dump, bootstrap endpoint, shim config, drop-in and cri-proxy unit parsed and correct"
+    },
+    "guest_image": {
+      "ok": true,
+      "detail": "/var/lib/nitro-sandbox-images: latest.eif, latest-disk.img, rootfs.ext4 -> latest-disk.img"
+    },
+    "mkfs_erofs": {
+      "ok": true,
+      "detail": "mkfs.erofs (erofs-utils) 1.8.10; zstd ok as a systemd service"
+    },
+    "runtime_payloads": {
+      "ok": true,
+      "detail": "7 installed files match SHA256SUMS and sources.lock, with their modes"
+    },
+    "package_holds": {
+      "ok": true,
+      "detail": "held and blacklisted for unattended upgrades: containerd linux-aws linux-headers-aws linux-image-aws"
+    }
+  }
+}
+image_configuration: PASS (14 checks)
+
+[2026-10-29T18:41:54Z] running: 40-smoke.sh
+Success
+crw-rw---- 1 root root  10, 260 Oct 29 18:29 /dev/nitro_enclaves
+-rwxr-xr-x 1 root root  4763448 Oct 29 17:29 /usr/bin/firecracker
+-rw-r--r-- 1 root root 13004876 Oct 29 17:29 /var/lib/nitro-sandbox-images/latest.eif
+lrwxrwxrwx 1 root root       15 Oct 29 17:29 /var/lib/nitro-sandbox-images/rootfs.ext4 -> latest-disk.img
+PUT /machine-config -> 204
+PUT /boot-source -> 204
+PUT /drives/rootfs -> 204
+PUT /drives/overlay -> 204
+PUT /vsock -> 204
+PUT /network-interfaces/eth0 -> 204
+PUT /enclave -> 204
+PUT /actions -> 204
+vsock handshake reply: 'OK 1073741824'
+--- process alive: yes; agent reachable: 1 after 3s
+smoke 2026-10-29T18:42:01Z: PASS; debug_mode=false
+
+[2026-10-29T18:42:13Z] terminating verification instance <INSTANCE_ID>
+[2026-10-29T18:42:46Z] fresh-instance verification PASS
+[2026-10-29T18:42:49Z] tagged <AMI_ID> BtfValidated=true (fresh-instance verification passed; ManagedBy=ubuntu-ami-sample preserved)
+[2026-10-29T18:42:49Z] --ami-only: done. AMI <AMI_ID> is verified and tagged BtfValidated=true; no node group was created.
 ```
+
+*`./setup.sh --ami-only` step 9, from the step line to the `--ami-only: done` line, whole. The
+AMI id, the verification instance's id and the repository's absolute path are shown as
+`<AMI_ID>`, `<INSTANCE_ID>` and `<repository>`; the trailing space at the end of the eight
+`PUT` lines was removed. The tag is written 3 s after the `PASS` line, never before it.*
 
 **AppArmor.** AppArmor stays enabled on the host, and the node loads one scoped profile,
 [`manifests/ubuntu-ami-sample-profile`](manifests/ubuntu-ami-sample-profile), installed onto
@@ -581,8 +704,20 @@ scoped profile is loaded in enforce mode, and the node's copy of the profile is 
 file (same sha256). The same probe reads absent for a profile the node never loaded.
 
 ```text
-TODO: output from the fresh run
+  node> apparmor_enabled=Y
+  node> apparmor_profile=loaded
+  node> apparmor_profile_bogus=absent
+  node> apparmor_profile_mode=enforce
+  node> apparmor_profile_sha256=b285f498d97bdc427d0303b96d6c68eb86a8caf83a8d9d2b0570e3ba6381548f
+  -- 8a: AppArmor is on and enforcing on the host
+  PASS  AppArmor is enabled host-wide on the node (enabled=Y)
+  PASS  ACCEPT: the scoped profile ubuntu-ami-sample-profile is loaded on the node in enforce mode (mode=enforce)
+  PASS  REJECT: the same probe reads absent for a profile the node never loaded
+  PASS  the profile on the node is this sample's manifests/ubuntu-ami-sample-profile (sha256 b285f498d97bdc427d0303b96d6c68eb86a8caf83a8d9d2b0570e3ba6381548f)
 ```
+
+*Abridged:* the five AppArmor readings `./test.sh` takes on the node in section 2/7, then the
+8a lines of section 3/7. No value was replaced.
 
 **2. The scoped profile working, on an ordinary pod.**
 [`deploy/pod-apparmor-scoped.yaml`](deploy/pod-apparmor-scoped.yaml) is an ordinary (runc)
@@ -597,8 +732,38 @@ within its 15 s grace period, with no `DENIED` signal logged under the profile. 
 the node never loaded has no `DENIED` lines, as the control for both counts.
 
 ```text
-TODO: output from the fresh run
+  -- 8b: the scoped profile works on an ordinary pod on the same node (apparmor-scoped-pod)
+  scoped pod: node=<NODE_NAME> type=Localhost profile=ubuntu-ami-sample-profile phase=Running
+  PASS  the scoped pod requests Localhost ubuntu-ami-sample-profile and runs on the sandbox node (phase=Running)
+  scoped attr/current: 'ubuntu-ami-sample-profile (enforce)'  ordinary attr/current: 'cri-containerd.apparmor.d (enforce)'
+  PASS  ACCEPT: the scoped pod's process is confined by 'ubuntu-ami-sample-profile (enforce)' (attr/current)
+  PASS  REJECT: the same label read on the ordinary pod, which requests no profile, does not name ubuntu-ami-sample-profile
+  scoped pod: write to /etc/shadow: sh: line 1: /etc/shadow: Permission denied WRITE-FAILED
+  scoped pod: write to /etc/ubuntu-ami-sample-write-control: WRITTEN
+  PASS  ACCEPT: the scoped pod's write to /etc/shadow is refused with EACCES (Permission denied)
+  PASS  REJECT: the same pod's write to a path the profile does not deny succeeds (so the refusal is the profile's)
+  node DENIED lines since T0=1793300898 for that write: ubuntu-ami-sample-profile 3, profile-that-does-not-exist 0
+  PASS  ACCEPT: the node's kernel logged the profile's DENIED line for that write since T0
+  PASS  REJECT: the same count for a profile the node never loaded is 0
+  scoped pod deleted by its exact name: gone=yes after 2 s (grace 15 s); signal DENIED lines since T0: ubuntu-ami-sample-profile 0, profile-that-does-not-exist 0
+  PASS  ACCEPT: deleted by its exact name, the scoped pod is gone within its grace period (2 s <= 15 s)
+  PASS  ACCEPT: the node logged no DENIED signal under ubuntu-ami-sample-profile since T0 (the profile lets runc stop the pod)
+  PASS  REJECT: the same signal count for a profile the node never loaded is 0
 ```
+
+*`./test.sh` section 3/7, the 8b lines, whole. The node's host name is shown as `<NODE_NAME>`.*
+
+**Why the profile has `signal` rules and `audit deny`.** The first version of the profile had
+neither, and a validation run of this sample on its own AMI showed what that costs. On Ubuntu
+24.04, runc runs under its own AppArmor profile, `runc`, so the stop signals a pod receives
+come from the peer `runc`. With no `signal` rule, AppArmor refused them: a pod under the
+profile could not be stopped, and kubelet kept logging
+`runc did not terminate successfully: exit status 1: unable to signal init: permission denied`
+(the end of the message). And a plain `deny` rule refuses without logging, so the refused
+`/etc/shadow` write left no `DENIED` line. The profile now has the `signal` rules of
+containerd's default container profile, and every deny rule is `audit deny`. The block above
+shows both on this run: the pod was gone 2 s into its 15 s grace period with 0 signal denials,
+and the refused write left the profile's `DENIED` lines.
 
 **3. A pod naming a profile the node never loaded is refused.** The reject control,
 [`deploy/pod-apparmor-reject.yaml`](deploy/pod-apparmor-reject.yaml), is an ordinary pod on
@@ -608,8 +773,12 @@ and containerd's message for a missing profile, matched whole:
 `failed to get container spec opts: failed to generate apparmor spec opts: apparmor profile not found profile-that-does-not-exist`.
 
 ```text
-TODO: output from the fresh run
+  -- 8c: a pod naming a profile the node never loaded is refused
+  reject control: node=<NODE_NAME> phase=Pending reason=CreateContainerError message: failed to get container spec opts: failed to generate apparmor spec opts: apparmor profile not found profile-that-does-not-exist
+  PASS  REJECT: a pod naming an unloaded AppArmor profile is refused on the sandbox node: CreateContainerError 'failed to get container spec opts: failed to generate apparmor spec opts: apparmor profile not found profile-that-does-not-exist'
 ```
+
+*`./test.sh` section 3/7, the 8c lines, whole. The node's host name is shown as `<NODE_NAME>`.*
 
 **4. Why the sandbox pod runs `Unconfined`.** The isolated-sandbox pod,
 [`deploy/pod-isolated-sandbox.yaml`](deploy/pod-isolated-sandbox.yaml), sets
@@ -626,8 +795,12 @@ label is `system_u:system_r:runtime_t:s0:c0.c1023`. The microVM is the sandbox p
 `./test.sh` prints the sandbox's own label and checks that the pod runs with `Unconfined`.
 
 ```text
-TODO: output from the fresh run
+  -- why the sandbox pod runs Unconfined
+  sandbox pod: appArmorProfile type=Unconfined phase=Running attr/current (the guest's own label): 'system_u:system_r:runtime_t:s0:c0.c1023'
+  PASS  the sandbox pod runs with appArmorProfile Unconfined, as the GA build notes require (phase=Running)
 ```
+
+*`./test.sh` section 3/7, its last three lines, whole. No value was replaced.*
 
 ### The validation sandbox's network policy
 
@@ -678,8 +851,29 @@ the ordinary pod, which listens on TCP 53 with a plain HTTP listener; the ordina
 connection to it succeeds, which shows the listener is up and the refusal is the policy's.
 
 ```text
-TODO: output from the fresh run
+== 7/7 network boundary of the validation sandbox =====================================
+  interface dummy0 76:e3:b8:b3:30:19 down
+  interface eth0 c6:03:8e:e6:55:14 up
+  interface lo 00:00:00:00:00:00 unknown
+  NetworkPolicy objects: networkpolicy.networking.k8s.io/isolated-sandbox-pod-policy
+  PASS  the sandbox pod's egress policy is present
+  NETWORK POLICY OK: egress only to kube-system/k8s-app=kube-dns on port 53
+  PASS  the live policy allows egress only to kube-system/k8s-app=kube-dns on port 53
+  sandbox DNS lookup of kubernetes.default.svc.cluster.local: 172.20.0.1
+  PASS  ALLOW: DNS answers from inside the sandbox
+  sandbox TCP connect to 172.20.0.1:443: refused
+  PASS  DENY: a TCP connect the policy does not allow is refused
+  ordinary pod TCP connect to 172.20.0.1:443: connected
+  PASS  the same connect from the ordinary pod, which no policy selects, succeeds (control for the previous check)
+  ordinary pod's own TCP 53 listener at <ORDINARY_POD_IP>:53, from inside it: connected
+  PASS  the port-53 decoy listener in the ordinary pod answers (control for the next check)
+  sandbox TCP connect to the non-DNS pod <ORDINARY_POD_IP>:53: refused
+  PASS  DENY: port 53 to a pod that is not cluster DNS is refused
 ```
+
+*`./test.sh` section 7/7, whole. The ordinary pod's IP is shown as `<ORDINARY_POD_IP>`.
+`172.20.0.1`, the address the DNS lookup returned for the cluster's `kubernetes` Service, is
+kept as printed.*
 
 ### Clusterless checks
 
@@ -765,14 +959,19 @@ clean each run you find with `./clean.sh --run-id <id> --delete-aws-resources`.
 **What stays.** The clean up never removes a shared install. The `isolated-sandbox`
 RuntimeClass stays (Getting started created it). The `vpc-cni` add-on you installed as a
 prerequisite stays, and `./clean.sh` says so. If you installed it only for this sample, you
-can remove it yourself:
+can remove it from EKS management yourself:
 
 ```bash
-aws eks delete-addon --region <AWS_REGION> --cluster-name <CLUSTER_NAME> --addon-name vpc-cni
+aws eks delete-addon --region <AWS_REGION> --cluster-name <CLUSTER_NAME> --addon-name vpc-cni --preserve
 ```
 
-Check first that nothing else on the cluster uses it: removing it takes pod networking away
-from every managed node group node.
+`--preserve` leaves the add-on's software on the cluster as a self-managed install. Do not
+leave it out: without it, EKS deletes the add-on's software, which can include the
+`amazon-vpc-cni` ConfigMap the add-on adopted and gave its Helm labels. Where that ConfigMap
+was there before the add-on, as on an EKS Auto Mode cluster with network policy turned on, it
+holds `enable-network-policy-controller`, the setting that turns network policy enforcement on,
+so deleting it can turn enforcement off for every workload.
+Removing the software also takes pod networking away from every managed node group node.
 
 ## Troubleshooting
 

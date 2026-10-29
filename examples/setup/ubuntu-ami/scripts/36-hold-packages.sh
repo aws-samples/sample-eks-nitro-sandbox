@@ -6,8 +6,8 @@
 # Held, with `apt-mark hold` AND listed in Unattended-Upgrade::Package-Blacklist
 # (/etc/apt/apt.conf.d/51ubuntu-ami-sample-holds):
 #   * the package that owns /usr/bin/containerd (read with dpkg -S, so the name is the base
-#     image's own: containerd-app on Ubuntu 24.04): the GA shim runs only on containerd 2.1.x to
-#     2.3.x and an upgrade to 2.4 would leave it on a containerd it refuses;
+#     image's own: containerd on Canonical's serial 20261027): the GA shim runs only on
+#     containerd 2.1.x to 2.3.x and an upgrade to 2.4 would leave it on a containerd it refuses;
 #   * the installed Ubuntu kernel META-packages (linux-aws, linux-image-aws, linux-generic and
 #     the like; never a versioned linux-image-<x.y.z-n>-... package): they pull newer stock
 #     kernels, which sort ahead of 6.18.56-nitro-ga and are what GRUB boots if the pinned entry
