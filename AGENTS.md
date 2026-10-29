@@ -298,17 +298,33 @@ when the backend returned, and after.** Neither backend is confined any more, so
 only what each is *permitted* to do and where it runs, which is worth stating because it
 bounds what the fingerprint can and cannot see.
 
-- **Codex** runs `codex exec --sandbox workspace-write -c approval_policy="never"` with the
-  tree as its working directory (`-C`). So it may write and run commands, **including inside
-  the tree** — that is the point, and the fingerprint is what catches it if it does.
+- **Codex** runs `codex exec --sandbox workspace-write -c approval_policy="never"` with its
+  `-C` pointed at a workspace of its own (`mktemp -d`), **not the tree**. It may still write
+  and run commands anywhere it is permitted to, including inside the tree — `workspace-write`
+  was observed to permit a write to an arbitrary absolute path outside its own CWD, not only
+  inside it — and the fingerprint is what catches it if it does. The workspace is there for a
+  narrower reason: a second-review round found that under `workspace-write`, codex's own
+  sandboxing creates and removes something directly in its CWD on every shell command it
+  runs, independent of anything the model does, and pointing `-C` at the tree meant every
+  substantive review tripped the tree-root check through no fault of the model's. Codex
+  still reads any absolute path regardless of its CWD, so it reaches the tree exactly as
+  before; only where that incidental footprint lands has moved off the thing being measured.
   `approval_policy="never"` is still passed, but for a different reason than before: `codex
   exec` has nobody to answer an escalation prompt, so without it a run can stall or silently
   refuse. It is non-interactivity, not confinement, and the script no longer reads it back
   out of the preamble to check. The preamble is still parsed, for one thing only: the
   `model:` line, authenticated by this run's nonce.
-- **Claude** runs with `--restricted --strict-mcp-config --permission-prompts none` and
-  `--tools Read,Grep,Glob,Edit,Write,Bash`, in **a fresh workspace of its own from
-  `mktemp -d`**, with the tree added through `--add-dir`. So it holds a shell and can write.
+- **Claude** runs with `--restricted --strict-mcp-config --permission-prompts none`,
+  `--tools Read,Grep,Glob,Edit,Write,Bash`, **and `--allowedTools` set to the same list**,
+  in **a fresh workspace of its own from `mktemp -d`**, with the tree added through
+  `--add-dir`. So it holds a shell and can write. `--allowedTools` is load-bearing and was
+  missing in an earlier version of this redesign: `--tools` says which tools the reviewer
+  *holds*, but each individual action under them still asks for approval, and with no one
+  able to answer, `--permission-prompts none` denies rather than grants it. A second-review
+  round found this by trying to write and being refused; `--allowedTools`, matching `--tools`
+  exactly, pre-approves the set. Without it, directive 1 was not actually delivered on the
+  claude path at all — every claude run before that round, including one read-only smoke
+  test that never needed to write and so never surfaced it, was silently confined to reads.
   Two deliberate choices about where that workspace is: it is **outside the tree**, so that
   writing in order to verify does not by itself fail the round, and it is **outside `--out`**,
   because that holds the backend's trace and a reviewer with `Bash` could otherwise read it.
@@ -337,7 +353,12 @@ bounds what the fingerprint can and cannot see.
   It is not guaranteed to catch a file created and deleted inside the run if every directory
   that would show the change (via its own mtime) has that mtime put back before the run
   ends. And flatly: **it says nothing at all about writes outside the tree**, which both
-  backends are now able to make.
+  backends are now able to make. `SECOND_REVIEW_CONTEXT_DIR`, when claude is given one, is
+  fingerprinted the same way, at the same three points, for the same reason: `--add-dir`
+  grants claude's file tools write as well as read, so without this the reviewer's own main
+  input (typically the commit's diff) was a fourth place invariant 2 did not reach — found
+  in a second-review round, once the `--allowedTools` fix above gave that write grant its
+  first real test.
 
 #### Limits that apply wherever you run it
 

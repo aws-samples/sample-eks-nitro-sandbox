@@ -149,6 +149,19 @@ normalise_model() {
                                   s/:[0-9]+\[[^][]*\]$//; t
                                   s/\[[^][]*\]$//; t
                                   s/:[0-9]+$//')
+  # Bedrock's own model-ID spelling, e.g. "anthropic.claude-sonnet-4-5-20250929-v1:0", adds
+  # two more things the API name ("claude-sonnet-4-5-20250929" or "claude-sonnet-4-5") never
+  # has: a "-vN" revision and a release date. Second-review finding (issue #100 round 6):
+  # left unstripped, the same underlying model named the Bedrock way on one side and the API
+  # way on the other normalised to two different strings and passed both the same-model and
+  # the reported-same-model refusal -- the unsafe direction, since the whole point of this
+  # comparison is to catch exactly that pairing. Strip both, in this order (the "-vN" is
+  # closer to the end once the Region/vendor/version-suffix stripping above has already run).
+  # Stripping the date also makes two genuinely different dated snapshots compare equal,
+  # which fails closed (a false "same model" refusal) rather than open, so it is the
+  # direction to err in here.
+  m=$(printf '%s' "$m" | sed -E 's/-v[0-9]+$//')
+  m=$(printf '%s' "$m" | sed -E 's/-[0-9]{8}$//')
   printf '%s' "$m"
 }
 
@@ -226,6 +239,20 @@ case "$OUT_ABS/" in
 esac
 mkdir -p "$OUT_ABS"
 
+# Resolved here, before any fingerprint is taken, and only for claude: Codex reads an
+# absolute path anywhere regardless of SECOND_REVIEW_CONTEXT_DIR, which does nothing for
+# it. Second-review finding (issue #100 round 6): --add-dir grants claude's file tools
+# WRITE as well as read, so once the earlier finding gave claude a real write grant, the
+# context directory became a third thing invariant 2 had to cover and did not -- the
+# reviewer's own main input (typically the commit's diff) could change with nothing
+# noticing. Fingerprinted alongside the tree at all three checkpoints below.
+CTX_ABS=''
+if [ "$BACKEND" = claude ] && [ -n "${SECOND_REVIEW_CONTEXT_DIR:-}" ]; then
+  [ -d "$SECOND_REVIEW_CONTEXT_DIR" ] || refuse E_CONTEXT_DIR \
+    "\$SECOND_REVIEW_CONTEXT_DIR names '$SECOND_REVIEW_CONTEXT_DIR', which is not a directory."
+  CTX_ABS=$(realpath "$SECOND_REVIEW_CONTEXT_DIR")
+fi
+
 # --- invariant 2: the tree did not change, and here is the evidence ---------------------
 
 # Every path's type, mode, size, modification time and symlink target, and every regular
@@ -260,6 +287,10 @@ tree_fingerprint "$TREE_ABS" > /dev/null 2>&1 || refuse E_TREE \
   "the tree at '$TREE_ABS' cannot be fully read, so it cannot be fingerprinted: check it exists and that every file and directory in it is readable."
 
 tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-before.sha256"
+if [ -n "$CTX_ABS" ]; then
+  tree_fingerprint "$CTX_ABS" > "$OUT_ABS/ctx-before.sha256" || refuse E_CONTEXT_DIR \
+    "\$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' cannot be fully read, so it cannot be fingerprinted."
+fi
 
 # A short, per-run line the brief cannot already contain, used to authenticate the preamble
 # boundary in codex's trace below. Kept deliberately (maintainer ruling on issue #100): the
@@ -347,16 +378,27 @@ case "$BACKEND" in
   claude)
     # --tools names the tools the reviewer HOLDS, and it now includes Edit, Write and Bash:
     # a reviewer that cannot run the thing cannot find the defects that only appear when you
-    # do. --permission-prompts none means nothing stalls waiting to approve them.
-    # --restricted stays, but for a different reason than before: it makes claude ignore the
-    # user, project and local settings files, which keeps the run reproducible on a
+    # do. --restricted stays, but for a different reason than before: it makes claude ignore
+    # the user, project and local settings files, which keeps the run reproducible on a
     # configured workstation rather than confining it. --strict-mcp-config with no
     # --mcp-config leaves it no MCP server, which is about not reaching other systems, not
     # about the tree.
+    #
+    # --allowedTools, matching --tools exactly, is load-bearing and was MISSING until a
+    # second-review round caught it by trying to write (issue #100 round 6). Holding a tool
+    # is not the same as being allowed to use it: every individual Bash/Edit/Write action
+    # still asks for approval, and --permission-prompts none does not mean "approve
+    # automatically" -- with nobody able to answer, it means every such action is denied.
+    # Confirmed directly: a `touch` in the reviewer's own workspace was refused with
+    # --tools alone, and ran once --allowedTools was added. Without this, the claude path
+    # never actually held directive 1's write-and-execute grant at all; every claude run
+    # before this fix, including an earlier read-only smoke test that never needed to write
+    # and so never surfaced it, was silently back to read-only.
     claude_args=(-p --output-format json --model "$MODEL"
                  --restricted
                  --strict-mcp-config
                  --tools "Read,Grep,Glob,Edit,Write,Bash"
+                 --allowedTools "Read,Grep,Glob,Edit,Write,Bash"
                  --permission-prompts none)
     # Passed through unchecked, deliberately: the allowlist that used to vet this file
     # existed to stop a hooks entry executing a command, and the reviewer now holds Bash, so
@@ -375,12 +417,13 @@ case "$BACKEND" in
     claude_args+=(--add-dir "$TREE_ABS")
     # The brief usually points at the commit's diff, which sits outside the tree, and
     # claude's file tools reach only its workspace and the directories it is given.
-    if [ -n "${SECOND_REVIEW_CONTEXT_DIR:-}" ]; then
-      [ -d "$SECOND_REVIEW_CONTEXT_DIR" ] || refuse E_CONTEXT_DIR \
-        "\$SECOND_REVIEW_CONTEXT_DIR names '$SECOND_REVIEW_CONTEXT_DIR', which is not a directory."
-      claude_args+=(--add-dir "$(realpath "$SECOND_REVIEW_CONTEXT_DIR")")
-    fi
-    permissions="claude ran with --restricted --strict-mcp-config --tools Read,Grep,Glob,Edit,Write,Bash in a workspace of its own ($claude_cwd), with $TREE_ABS added as readable (writes and commands permitted)"
+    # CTX_ABS was already validated and resolved above, before any fingerprint, so this is
+    # only the flag that grants it.
+    if [ -n "$CTX_ABS" ]; then claude_args+=(--add-dir "$CTX_ABS"); fi
+    # "added through --add-dir": not "added as readable". Second-review finding (issue #100
+    # round 6): --add-dir grants claude's file tools read AND WRITE, so the old wording
+    # understated what the reviewer could do to its own main input.
+    permissions="claude ran with --restricted --strict-mcp-config --tools and --allowedTools both Read,Grep,Glob,Edit,Write,Bash, in a workspace of its own ($claude_cwd), with $TREE_ABS${CTX_ABS:+ and $CTX_ABS} added through --add-dir (writes and commands permitted)"
     ( cd "$claude_cwd" && ${timeout_cmd[@]+"${timeout_cmd[@]}"} "$resolved_cmd" "${claude_args[@]}" ) \
       < "$BRIEF_ABS" > "$OUT_ABS/review.json" 2> "$OUT_ABS/review.err" || run_status=$?
     # Any error the backend reports means no review happened, whatever its wording, so the
@@ -431,21 +474,34 @@ esac
 # script with no tag at all.
 tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-at-return.sha256" || refuse E_TREE_CHANGED \
   "the tree at $TREE_ABS could not be fingerprinted after the backend returned: it may have been removed, or made unreadable, while the reviewer ran."
+if [ -n "$CTX_ABS" ]; then
+  tree_fingerprint "$CTX_ABS" > "$OUT_ABS/ctx-at-return.sha256" || refuse E_CONTEXT_CHANGED \
+    "\$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' could not be fingerprinted after the backend returned: it may have been removed, or made unreadable, while the reviewer ran."
+fi
 
 # --- did a review actually happen -------------------------------------------------------
 
-# A tree change takes priority over a reported run failure: a backend that wrote to the
-# tree and then exited non-zero, or that claude reported as is_error, must be caught as a
-# tree change rather than let through as a plain run failure with the write never looked
-# at. Checked only here, against the fingerprint already taken above -- not the final one,
-# which is deliberately captured much later to give a backgrounded write time to happen, and
-# would wrongly delay reporting a failure that already shows in what we have. If the review
-# otherwise succeeds, whether the tree changes later is still caught by the full comparison
-# at the end, below. Verified: a stub that changed a tracked file and then reported
-# is_error:true used to refuse as a plain E_RUN_FAILED with this comparison never made.
+# A tree or context-directory change takes priority over a reported run failure: a backend
+# that wrote to either and then exited non-zero, or that claude reported as is_error, must
+# be caught as a change rather than let through as a plain run failure with the write never
+# looked at. Checked only here, against the fingerprints already taken above -- not the
+# final ones, which are taken separately near the end of the script specifically so a
+# process the backend left running has another, later point to be caught at (not because
+# much wall-clock time passes before then: only the model-name parsing below runs in
+# between, typically well under a second) -- and would wrongly delay reporting a failure
+# that already shows in what we have.
+# If the review otherwise succeeds, whether either changes later is still caught by the full
+# comparison at the end, below. Verified: a stub that changed a tracked file and then
+# reported is_error:true used to refuse as a plain E_RUN_FAILED with this comparison never
+# made.
 review_otherwise_ok=1
 [ "$run_status" -eq 0 ] || review_otherwise_ok=0
 if [ "$BACKEND" = claude ] && [ "${claude_status:-OK}" != OK ]; then review_otherwise_ok=0; fi
+if [ "$review_otherwise_ok" -ne 1 ] && [ -n "$CTX_ABS" ] \
+   && ! cmp -s "$OUT_ABS/ctx-before.sha256" "$OUT_ABS/ctx-at-return.sha256"; then
+  refuse E_CONTEXT_CHANGED \
+    "the $BACKEND backend reported a failure, and \$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' had already changed by the time it returned. Compare $OUT_ABS/ctx-before.sha256 with ctx-at-return.sha256."
+fi
 if [ "$review_otherwise_ok" -ne 1 ] && ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then
   refuse E_TREE_CHANGED \
     "the $BACKEND backend reported a failure, and the tree at $TREE_ABS had already changed by the time it returned. Compare $OUT_ABS/tree-before.sha256 with tree-at-return.sha256."
@@ -545,16 +601,24 @@ if not result.strip():
     print("BAD\tresult is %d character(s) of whitespace, which is not a review"
           % len(result))
     raise SystemExit(0)
+# permission_denials is a count, reported rather than refused on: --allowedTools above
+# should mean this is always zero, and a non-zero count after that fix is a sign something
+# the reviewer tried still needed an approval nobody could give -- worth seeing, not by
+# itself proof the review is bad (it could be a tool outside --tools entirely, which is
+# supposed to be refused).
+denials = d.get("permission_denials")
+denial_count = len(denials) if isinstance(denials, list) else -1
 with open(out, "w") as f:
     f.write(result)
-print("OK\t%s" % "+".join(sorted(usage)))
+print("OK\t%s\t%d" % ("+".join(sorted(usage)), denial_count))
 ' "$OUT_ABS/review.json" "$OUT_ABS/review.out" > "$OUT_ABS/record.tsv" || \
       refuse E_BAD_RECORD "could not read the claude backend's JSON record at $OUT_ABS/review.json at all."
-    IFS=$'\t' read -r verdict field_a < "$OUT_ABS/record.tsv" || verdict=BAD
+    IFS=$'\t' read -r verdict field_a field_b < "$OUT_ABS/record.tsv" || verdict=BAD
     if [ "${verdict:-BAD}" != OK ]; then
       refuse E_BAD_RECORD "the claude backend's JSON record at $OUT_ABS/review.json is not the shape this script can read, so it cannot say which model answered: ${field_a:-no reason given}."
     fi
     reported_models="$field_a"
+    permissions="$permissions, $field_b permission request(s) denied"
     ;;
 esac
 
@@ -603,6 +667,26 @@ if ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-after.sha256"; then
   fi
   refuse E_TREE_CHANGED \
     "the tree at $TREE_ABS changed while the reviewer ran. The reviewer is permitted to write, so this is not a confinement failure -- but it reviewed something other than the commit, so the run cannot stand. Compare $OUT_ABS/tree-before.sha256 with tree-after.sha256."
+fi
+
+# The same three-way comparison, for the context directory, when claude was given one:
+# --add-dir grants write as well as read, so this is a third thing invariant 2 has to cover.
+if [ -n "$CTX_ABS" ]; then
+  tree_fingerprint "$CTX_ABS" > "$OUT_ABS/ctx-after.sha256" || refuse E_CONTEXT_CHANGED \
+    "\$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' could not be fingerprinted after the run: it may have been removed, or made unreadable."
+  if cmp -s "$OUT_ABS/ctx-before.sha256" "$OUT_ABS/ctx-after.sha256" \
+     && ! cmp -s "$OUT_ABS/ctx-before.sha256" "$OUT_ABS/ctx-at-return.sha256"; then
+    refuse E_CONTEXT_RESTORED \
+      "\$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' differed from its fingerprint when the backend returned, and matches again now: a change that was put back afterwards is still a change. Compare $OUT_ABS/ctx-before.sha256 with ctx-at-return.sha256."
+  fi
+  if ! cmp -s "$OUT_ABS/ctx-before.sha256" "$OUT_ABS/ctx-after.sha256"; then
+    if cmp -s "$OUT_ABS/ctx-before.sha256" "$OUT_ABS/ctx-at-return.sha256"; then
+      refuse E_CONTEXT_CHANGED \
+        "\$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' matched its fingerprint when the backend returned and differs now. Compare $OUT_ABS/ctx-at-return.sha256 with ctx-after.sha256."
+    fi
+    refuse E_CONTEXT_CHANGED \
+      "\$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' changed while the reviewer ran. --add-dir grants write as well as read, so this is not a confinement failure -- but the reviewer's own main input changed under it, so the run cannot stand. Compare $OUT_ABS/ctx-before.sha256 with ctx-after.sha256."
+  fi
 fi
 
 # --- the record that goes in the pull request -------------------------------------------
