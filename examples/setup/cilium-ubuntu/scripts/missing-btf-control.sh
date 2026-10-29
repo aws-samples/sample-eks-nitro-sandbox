@@ -14,10 +14,13 @@
 # no stub. It removes the stub folder at the end, however it ends, and says so.
 #
 # Exit codes: 0 the stub-driven run was refused (rc=1, the no-BTF message, the stub answering
-# the BTF read) and the real run accepted (rc=0); 1 either half came out otherwise; 2 it could
-# not run (no kubeconfig, no single sandbox node, or a stub folder outside the repository's
-# tmp/). BTF_STUB_PARENT names the folder the stub folder is made in (default: RUN_DIR, the
-# repository's tmp/issue11/run); anything outside the repository's tmp/ is refused.
+# the BTF read), the real run accepted (rc=0), and the stub folder is removed; 1 either half
+# came out otherwise; 2 it could not run (no kubeconfig, no single sandbox node, or a stub
+# folder outside the repository's tmp/); 3 the control passed but its stub folder could not be
+# removed (the message gives the folder; any other exit code is kept, with the same message);
+# 130 or 143 interrupted, after the cleanup. BTF_STUB_PARENT names the folder the stub folder is
+# made in (default: RUN_DIR, the repository's tmp/issue11/run); anything outside the
+# repository's tmp/ is refused.
 set -uo pipefail
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=scripts/common.sh
@@ -47,14 +50,27 @@ case "$parent_real/" in
   *) cannot "refusing to write the stub to $parent (it resolves to $parent_real), which is not under $REPO_ROOT/tmp/, the repository's gitignored folder" ;;
 esac
 stub_dir="$(mktemp -d "$parent_real/missing-btf-stub.XXXXXX")" || cannot "could not make a stub folder in $parent_real"
+# The removal is part of the result: INT and TERM are ignored while it runs (rm inherits that),
+# and a folder that rm could not remove, or that is still there after it, turns a pass into exit 3.
 cleanup() {
-  local rc=$?
-  rm -rf "$stub_dir" && echo "removed the stub folder $stub_dir"
+  local rc=$? rm_rc=0
+  trap '' INT TERM
+  trap - EXIT
+  rm -rf -- "$stub_dir" || rm_rc=$?
+  if ((rm_rc == 0)) && [[ ! -e "$stub_dir" && ! -L "$stub_dir" ]]; then
+    echo "removed the stub folder $stub_dir"
+  else
+    printf '%s %s\n' "$(_red 'CLEANUP FAILED:')" "could not remove the stub folder $stub_dir (rm exit $rm_rc$([[ -e "$stub_dir" || -L "$stub_dir" ]] && echo '; it is still there')); remove it by hand: rm -rf -- $(printf '%q' "$stub_dir")" >&2
+    if ((rc == 0)); then
+      rc=3
+      echo "missing-btf-control: exit 3: the control passed, but its stub folder is left behind" >&2
+    fi
+  fi
   exit "$rc"
 }
 trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'trap "" INT TERM; exit 130' INT  # a second signal must not cut the cleanup short
+trap 'trap "" INT TERM; exit 143' TERM
 
 {
   printf '%s\n' '#!/usr/bin/env bash' \

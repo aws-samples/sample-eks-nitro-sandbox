@@ -26,6 +26,9 @@
 # 4. Back on, from a trap on EXIT, INT and TERM, so it runs however the script ends once the
 #    change has started: the same upgrade without the override, the roll, then both agents
 #    must read Hostns-only (kpr-status accepts) and the release's values must be setup.sh's.
+#    The restore runs in a session of its own, so a second Ctrl-C or TERM cannot stop it.
+# A probe counts as timed out only when its output is the client's own timeout line, plus at
+# most kubectl exec's exit line; anything else in it, such as an API error, is a failure.
 #
 # Exit codes: 0 every expectation held and the restore is verified. 1 checked, and the cluster,
 # kube context, release or demo is not the sample's or not in the state setup.sh and test.sh
@@ -145,6 +148,20 @@ read_agent() {
   fi
 }
 
+# The clients' own timeout lines, as busybox wget and nslookup print them in the sample's pods.
+WGET_TIMEOUT='wget: download timed out'
+DNS_TIMEOUT=';; connection timed out; no servers could be reached'
+# timed_out <client line> <output> <rc>: 0 when the probe failed and its nonblank output is that
+# line alone, or that line and kubectl exec's own "command terminated with exit code <rc>", in
+# either order (kubectl writes the pod's output and its own line on separate streams). Any other
+# line, such as an API error from kubectl, makes it a failure, not a timeout.
+timed_out() {
+  local lines w="command terminated with exit code $3"
+  (($3 != 0)) || return 1
+  lines="$(grep -v '^[[:space:]]*$' <<<"$2")"
+  [[ "$lines" == "$1" || "$lines" == "$1"$'\n'"$w" || "$lines" == "$w"$'\n'"$1" ]]
+}
+
 # probe <pod> <pod-ip|clusterip|kube-dns|coredns> <ok|timeout>: one probe, one line. 0 when it
 # came out as wanted. Sets GOT to ok, timeout or failed (any other answer, or none).
 GOT=""
@@ -164,11 +181,11 @@ probe() {
   case "$what" in
     pod-ip|clusterip)
       if ((rc == 0)) && [[ "$out" == server ]]; then GOT=ok
-      elif ((rc != 0)) && grep -q 'wget: download timed out' <<<"$out"; then GOT=timeout; fi ;;
+      elif timed_out "$WGET_TIMEOUT" "$out" "$rc"; then GOT=timeout; fi ;;
     *)
       answer="$(awk '/^Name:/{named=1; next} named && /^Address:/{print $2}' <<<"$out" | head -n1)"
       if ((rc == 0)) && [[ "$answer" == "$cluster_ip" ]]; then GOT=ok
-      elif ((rc != 0)) && grep -q 'connection timed out' <<<"$out"; then GOT=timeout; fi ;;
+      elif timed_out "$DNS_TIMEOUT" "$out" "$rc"; then GOT=timeout; fi ;;
   esac
   printf '%-10s %s rc=%s want=%s got=%s%s out=%s\n' "$pod" "$label" "$rc" "$want" "$GOT" \
     "$([[ "$GOT" == "$want" ]] || echo ' UNEXPECTED')" "$(tr '\n' ' ' <<<"$out")"
@@ -214,6 +231,19 @@ restore() {
   values_check "$vals"
 }
 
+# insulate <command...>: runs it in a session of its own and waits for it. Ctrl-C reaches every
+# process in the terminal's foreground job, and helm and kubectl handle INT and TERM themselves
+# (a Go program that asks for a signal gets it even when this shell ignores it), so ignoring
+# them here does not protect the restore; a separate session does. setsid (util-linux) keeps the
+# INT and TERM this shell ignores ignored; where it is missing (macOS), Python does the same,
+# ignoring both itself, since Python replaces an inherited SIGINT disposition with its own.
+INSULATE_PY='import signal, subprocess, sys
+signal.signal(signal.SIGINT, signal.SIG_IGN); signal.signal(signal.SIGTERM, signal.SIG_IGN)
+sys.exit(subprocess.call(sys.argv[1:], start_new_session=True))'
+insulate() {
+  if command -v setsid >/dev/null 2>&1; then setsid --wait "$@"; else python3 -c "$INSULATE_PY" "$@"; fi
+}
+
 CHANGED=0 RESULT=""
 on_exit() {
   local rc=$? kc
@@ -221,8 +251,10 @@ on_exit() {
   trap '' INT TERM
   if ((CHANGED)); then
     case "$rc" in 130) echo; echo "INTERRUPTED (INT): restoring before exit" ;; 143) echo; echo "INTERRUPTED (TERM): restoring before exit" ;; esac
-    step "back on: the same upgrade without the override (Ctrl-C is ignored until this ends)"
-    if restore; then
+    step "back on: the same upgrade without the override, in a session of its own (Ctrl-C cannot stop it)"
+    export -f restore helm_upgrade wait_for_agents node_agent read_agent values_check ts
+    export VALUES_PY PY SAMPLE_DIR CLUSTER_NAME OWNER_TAG host HELM_ARGS_DECL="$(declare -p helm_args)"
+    if insulate bash -c 'set -uo pipefail; eval "$HELM_ARGS_DECL"; restore'; then
       echo "restore verified: both agents read Hostns-only and the release's values are setup.sh's"
     else
       rc=4
@@ -341,8 +373,8 @@ helm_args=(upgrade --install cilium "$CILIUM_CHART" --version "$CILIUM_VERSION" 
 
 # --- 2. off: from here on, the trap restores setup.sh's value however the script ends ----------
 trap on_exit EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'trap "" INT TERM; exit 130' INT  # ignore a second signal before on_exit sets that itself
+trap 'trap "" INT TERM; exit 143' TERM
 CHANGED=1
 step "2. off: socketLB.hostNamespaceOnly=false (this briefly breaks Service routing for the sandbox pod)"
 if ! helm_upgrade --set socketLB.hostNamespaceOnly=false; then

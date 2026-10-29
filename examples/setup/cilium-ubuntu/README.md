@@ -582,7 +582,8 @@ without the stub. It changes nothing on the cluster.
   `rc=0`.
 - **When it passes:** only when the stub-driven run is refused with the no-BTF message and the
   real run is accepted. If `check-btf` accepted the stub's `MISSING`, or the real run failed,
-  the script exits 1. It removes its stub folder at the end and says so.
+  the script exits 1. It removes its stub folder at the end, however it ends, and says so; if
+  the folder cannot be removed, it says where it is and exits 3 instead of 0.
 
 ```bash
 ./scripts/missing-btf-control.sh
@@ -1112,22 +1113,20 @@ kept only for the DNS answer's TTL, until the agent's next clean-up of the cache
 taken a few minutes after `test.sh` may hold none. On the independent walk's second fresh
 cluster, the read right after `test.sh` ended held only `connection` rows. `test.sh` stage 7
 reads each lane's agent right after that lane's own lookups, which is where its `lookup` check
-passes. So this step makes its own lookups first: from the sandbox pod it looks up the allowed
-name and the denied name, then reads the sandbox node's agent straight away, keeping the header
-and the sandbox pod's `lookup` rows.
+passes. So `scripts/fqdn-cache-read.sh` makes its own lookups first: from the sandbox pod it
+looks up the allowed name and the denied name, then reads the sandbox node's agent straight
+away, keeping the header and the sandbox pod's `lookup` rows. Both lookups must answer, since
+the policy drops the denied name's connection, not its lookup. It passes only when the cache
+holds a `lookup` row for the sandbox pod's endpoint for each name. Otherwise it prints why and
+exits 1 (no such row) or 2 (a read or a lookup failed), and prints no rows.
 
 ```bash
-ep="$(kubectl -n cilium-ubuntu-demo get ciliumendpoint nitro -o jsonpath='{.status.id}')"
-node="$(kubectl -n cilium-ubuntu-demo get pod nitro -o jsonpath='{.spec.nodeName}')"
-agent="$(kubectl -n kube-system get pods -l k8s-app=cilium --field-selector spec.nodeName=$node -o jsonpath='{.items[0].metadata.name}')"
-for name in checkip.amazonaws.com example.net; do
-  kubectl -n cilium-ubuntu-demo exec nitro -- nslookup "$name" >/dev/null 2>&1
-done
-kubectl -n kube-system exec "$agent" -c cilium-agent -- cilium-dbg fqdn cache list | grep -E "^(Endpoint |$ep +lookup )"
+./scripts/fqdn-cache-read.sh
 ```
 
-What you see: the cache's header, then `lookup` rows for both names, all for the sandbox pod's
-endpoint.
+What you see: one line per lookup with `rc=0` and its answer count, a line naming the agent,
+its node and the sandbox pod's endpoint, the cache's header, that endpoint's `lookup` rows for
+both names, and `fqdn-cache-read: PASS` with the number of rows for each name.
 
 ```text
 TODO: output from the fresh run
@@ -1165,12 +1164,15 @@ Run it after the first `./test.sh`, which creates the pods it probes from, and t
    refuses. From the sandbox pod, both ordinary pods and the sandbox node's own network
    namespace (`node-probe`), it probes the server pod IP, the ClusterIP Service, DNS through the
    `kube-dns` Service and DNS at the CoreDNS pod IP. Only the sandbox pod's ClusterIP and
-   `kube-dns` Service probes may time out; every other probe must succeed. Any other result, or
-   an empty read, exits 3.
+   `kube-dns` Service probes may time out; every other probe must succeed. A probe counts as
+   timed out only when its output is the client's own timeout line, plus at most `kubectl`'s
+   `command terminated with exit code` line; anything else in it, such as an API error, makes it
+   a failure. Any other result, or an empty read, exits 3.
 4. **Back on, however the script ends** (a trap on `EXIT`, `INT` and `TERM`): the same upgrade
    without the override, the roll, both agents back on `Hostns-only`, and the release's values
-   back to `setup.sh`'s. If the restore fails or cannot be verified, the script exits 4 and
-   prints the exact command to restore by hand; running `./setup.sh` again does the same.
+   back to `setup.sh`'s. The restore runs in a session of its own, so a second Ctrl-C does not
+   stop it. If the restore fails or cannot be verified, the script exits 4 and prints the exact
+   commands to restore by hand; running `./setup.sh` again does the same.
 
 ```bash
 ./scripts/socketlb-control.sh
@@ -1410,6 +1412,7 @@ CLEAN: the Cilium-on-Ubuntu sample (nitro-cilium-ubuntu): nothing left behind.
     | [`deploy/workloads.yaml`](deploy/workloads.yaml) | The sandbox pod (AppArmor `Unconfined`), the comparison pods, and the `server` ClusterIP Service |
     | [`deploy/policy.yaml`](deploy/policy.yaml) | The egress `CiliumNetworkPolicy`: L3/L4, L7 HTTP and FQDN rules |
     | [`test.sh`](test.sh) | Apply the workloads and policy, then prove networking, BTF and policy (see [Evidence](#evidence-testsh)) |
+    | [`scripts/fqdn-cache-read.sh`](scripts/fqdn-cache-read.sh) | The raw FQDN cache read after `./test.sh`: both lookups from the sandbox pod, then its `lookup` rows from the agent, failing when either name has none (read-only) |
     | [`scripts/missing-btf-control.sh`](scripts/missing-btf-control.sh) | Stage 5's failing control: the real BTF gate refusing a stub-driven missing-BTF read, then accepting the node (read-only) |
     | [`scripts/socketlb-control.sh`](scripts/socketlb-control.sh) | The socketLB negative control after `./test.sh`: `hostNamespaceOnly` off, read and probe, then restored and verified |
     | [`clean.sh`](clean.sh) | Dry-run and full teardown of the cluster, ENIs, launch templates and IAM |
