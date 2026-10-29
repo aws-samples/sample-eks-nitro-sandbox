@@ -91,6 +91,7 @@ nav:
       - Coding agents for developers: ai-agents/coding-agents-for-developers/README.md
   - Managed agents:
       - Claude Managed Agents: managed-agents/claude-managed-agents/README.md
+      - OpenAI Managed Agents: managed-agents/openai-managed-agents/README.md
   - Subagent security:
       - Subagent security: subagent-security/README.md
       - Procurement analyst confined by nono: subagent-security/nono/README.md

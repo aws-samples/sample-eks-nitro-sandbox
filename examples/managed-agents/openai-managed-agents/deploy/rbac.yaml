@@ -1,0 +1,42 @@
+# Identities for the launcher and the sandboxes, and what the launcher may do.
+#
+# The launcher creates a SandboxClaim per session, watches it until it is Ready,
+# reads the claimed Sandbox's pod IP, and lists and deletes claims it no longer
+# needs. The CRDs span two API groups. It cannot create, read or exec into pods.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openai-launcher
+---
+# The sandboxes run as this ServiceAccount with no token mounted: the executor
+# reaches OpenAI with the environment key from the dispatch and needs nothing
+# from the Kubernetes API.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openai-sandbox-executor
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openai-launcher
+rules:
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openai-launcher
+subjects:
+  - kind: ServiceAccount
+    name: openai-launcher
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: openai-launcher

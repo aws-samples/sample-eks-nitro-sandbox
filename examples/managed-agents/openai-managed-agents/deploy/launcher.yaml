@@ -1,0 +1,92 @@
+# The launcher: takes a session the operator submits and claims a warm sandbox
+# for it. It runs first-party code and no tool calls, so it is an ordinary pod.
+# It holds the environment key and gives it to each claimed sandbox through the
+# SandboxClaim env (the controller sets it on the claimed pod), so the key never
+# crosses the pod network.
+#
+# The operator reaches the launcher's intake with `kubectl port-forward` to the
+# ClusterIP Service below. There is no Ingress, LoadBalancer or NodePort. Two
+# layers guard the intake: a deny-by-default ingress NetworkPolicy
+# (launcher-ingress.yaml) so no in-cluster pod may reach the Service, and a
+# bearer token on every request (launcher-auth Secret) so a caller that did
+# reach it still cannot drive it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openai-launcher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openai-launcher
+  template:
+    metadata:
+      labels:
+        app: openai-launcher
+    spec:
+      serviceAccountName: openai-launcher
+      enableServiceLinks: false   # keeps injected <SERVICE>_* names out of the guard's way
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: launcher
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/openai-sandbox-executor:latest
+          args: ["launch"]
+          ports:
+            - name: intake
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /
+              port: intake
+            periodSeconds: 5
+          env:
+            # The environment key: the launcher's only credential, held here and
+            # given to each claimed sandbox through the claim env. Never the
+            # application key (guard.py refuses a pod that holds it).
+            - name: OPENAI_EXECUTOR_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: openai-env-key
+                  key: OPENAI_EXECUTOR_API_KEY
+            # The intake's bearer token. The launcher refuses to start without
+            # it (fail closed) and rejects any request whose token does not
+            # match. submit.py/cleanup.py send it from the operator's .env.
+            - name: LAUNCHER_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: launcher-auth
+                  key: LAUNCHER_AUTH_TOKEN
+            - name: SANDBOX_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: SANDBOX_WARMPOOL
+              value: openai-sandbox-executor
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { memory: 512Mi }
+---
+# ClusterIP (the default): reachable only inside the cluster. The operator
+# connects with `kubectl port-forward svc/openai-launcher 8080:8080`. No
+# NodePort, no LoadBalancer, no Ingress.
+apiVersion: v1
+kind: Service
+metadata:
+  name: openai-launcher
+spec:
+  type: ClusterIP
+  selector:
+    app: openai-launcher
+  ports:
+    - name: intake
+      port: 8080
+      targetPort: intake
