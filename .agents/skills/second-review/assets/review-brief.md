@@ -2,7 +2,8 @@ I maintain the sample at examples/<section>/<sample>/ in the repository snapshot
 <absolute path to the round's tree> (a plain extract of commit <commit>; it is not a git
 checkout). Please review my own commit. Its diff is <absolute path to the round's
 context/change.diff -- the folder passed as SECOND_REVIEW_CONTEXT_DIR, because a Claude
-reviewer can only read its own workspace and the directories it is given>.
+reviewer's Read/Grep/Glob tools can only reach its own workspace and the directories it is
+given (Bash is not confined by this and can read anywhere it has permission to)>.
 
 You have write and execute in your own working directory, and you are encouraged to use
 them: run the scripts, run the checks, try the inputs a check is supposed to reject. A
@@ -51,8 +52,10 @@ Also tell me, at the end:
 - **Which model you are**, as your own runtime reports it, not the alias I asked for.
 - **Whether you wrote anything, and where.** Say so plainly even if you believe it was
   harmless or outside the snapshot. If you wrote into the snapshot at any point, say so and
-  say whether you put it back: the fingerprint will catch it either way, and I would rather
-  read it from you.
+  say whether you put it back: the fingerprint will very likely catch either one (it checks
+  every path's type, mode, size, modification time, symlink target and content, including
+  the snapshot's own root directory), but it is not a certainty and I would rather read it
+  from you than rely on it alone.
 
 Label each finding must-fix or optional, and for each must-fix give the smallest change that
 fixes it.

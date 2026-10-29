@@ -27,8 +27,11 @@ override it**. See
 **The reviewer is meant to be able to write and run things.** It gets a workspace of its
 own and a shell, because the findings that matter most come from running the change rather
 than reading it. What keeps the review honest is not a sandbox flag but the fingerprint of
-the reviewed snapshot: if the snapshot differs at all, the round fails. The brief is where
-you ask the reviewer to leave it alone, and
+the reviewed snapshot: any difference the fingerprint can see — in a path's type, mode,
+size, mtime, symlink target or content, including the tree's own root directory — fails the
+round. State the one gap rather than imply there is none: a change whose every directory
+mtime is put back to match is not caught, because nothing else is looked at. The brief is
+where you ask the reviewer to leave it alone, and
 [`assets/review-brief.md`](assets/review-brief.md) already does.
 
 The review is **adversarial**: the reviewer assumes your code is wrong and tries to break

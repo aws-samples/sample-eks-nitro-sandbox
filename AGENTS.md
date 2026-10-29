@@ -157,8 +157,11 @@ reviewer you use:
    only visible by running it, and a reviewer holding no shell cannot make that kind of
    finding at all. So the invariant is carried *afterwards*, by a fingerprint of the
    reviewed tree — every path's type, mode, size, modification time, symlink target and
-   every file's content hash, compared before the run, when the backend returns, and after
-   — and any difference fails the round. Why this way round: a reviewer that reviewed
+   every file's content hash, including the tree's own root directory, compared before the
+   run, when the backend returns, and after — and any difference the fingerprint can see
+   fails the round. State the gap plainly rather than let the word "any" paper over it: a
+   change whose every directory mtime is put back to match leaves nothing else for this
+   fingerprint to see, and is not caught. Why this way round: a reviewer that reviewed
    something other than the commit is useless whether or not a sandbox flag was in the way,
    and a reviewer that cannot execute is useless in a quieter way that is easy to miss.
    Set by the maintainers on 2026-10-25 and implemented in issue #100; before that the
@@ -246,8 +249,8 @@ SECOND_REVIEW_CONTEXT_DIR="$round/context" \
   `realpath` and uses that; it does not check a path for a line break, and does not walk the
   symbolic links a backend command points through. A path with a trailing newline resolves to
   a *sibling* path in the same parent directory — `realpath`, `dirname` and `basename` each
-  drop one silently — and the run then reviews, clears or reads that sibling instead, while
-  the record prints the sibling's name. That machinery was cut in issue #100 along with the
+  drop one silently — and the run then reviews, writes to or reads that sibling instead,
+  while the record prints the sibling's name. That machinery was cut in issue #100 along with the
   rest of the enforcement; the person invoking this script is not the adversary it defends
   against.
 - **Never paste a trace** (`review.err`) into a pull request, an issue or Slack. Read it

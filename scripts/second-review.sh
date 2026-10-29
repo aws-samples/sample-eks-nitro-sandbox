@@ -4,7 +4,11 @@
 #
 #   1. the reviewer runs on a different model from the one that wrote the change;
 #   2. the thing under review did not change, and that is shown -- the tree is fingerprinted
-#      before the run, when the backend returns, and after, and any difference fails the run;
+#      before the run, when the backend returns, and after, and any difference the
+#      fingerprint can see (type, mode, size, mtime, symlink target, content, for every
+#      path including the tree's own root) fails the run. The one gap: a change whose every
+#      mtime is put back to match leaves no trace in a fingerprint that never looked at
+#      anything else;
 #   3. the model that actually answered is recorded, read from the backend's own report
 #      rather than from the name that was asked for.
 #
@@ -215,10 +219,12 @@ esac
 # from writing to the tree, so this is what shows whether it did.
 #
 # What it is not guaranteed to see, stated plainly because nothing else backs the claim up:
-# a file created and deleted inside the run (though that usually changes the mtime of the
-# directory that held it, and every directory below the root is fingerprinted -- unless it
-# was the tree's own root, which -mindepth 1 skips, or the mtime was put back), and any
-# write anywhere outside the tree, which is not looked at at all.
+# a file created and deleted inside the run where the directory that held it has its mtime
+# put back before the run ends, and any write anywhere outside the tree, which is not looked
+# at at all. The root directory's own metadata IS included (-mindepth 0, below): an earlier
+# version excluded it, and a stub both changing the root's mode and creating-and-deleting a
+# file directly in it went uncaught, because the one directory whose mtime would have shown
+# it was the one the fingerprint skipped.
 #
 # Records are NUL-delimited: a path may legally hold a newline or " -> ", and with
 # line-delimited records two different trees could line up to the same fingerprint.
@@ -226,8 +232,8 @@ esac
 # function is also called from an "if" condition, where set -e is off for the whole call.
 tree_fingerprint() {
   ( cd "$1" || exit 1
-    { find . -mindepth 1 -printf '%y %m %s %T@ %p -> %l\0' | LC_ALL=C sort -z; } || exit 1
-    find . -mindepth 1 -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum -z )
+    { find . -mindepth 0 -printf '%y %m %s %T@ %p -> %l\0' | LC_ALL=C sort -z; } || exit 1
+    find . -mindepth 0 -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum -z )
 }
 
 # Read the tree once before the run proper, so that a tree which cannot be read is reported
@@ -352,7 +358,12 @@ case "$BACKEND" in
     # Any error the backend reports means no review happened, whatever its wording, so the
     # record is rejected on is_error alone and the error code only chooses the message. This
     # extractor fails CLOSED: it prints one of three fixed ASCII words, and anything else --
-    # including python failing outright -- refuses the run.
+    # including python failing outright -- refuses the run. Computed here, but NOT acted on
+    # until after the at-return fingerprint below: a reviewer that changes the tree and then
+    # reports an error must still be caught as a tree change, not let through as a plain
+    # E_RUN_FAILED with the write never looked at. Verified: a stub that changed a tracked
+    # file and returned is_error:true used to refuse before any fingerprint after the
+    # baseline existed at all.
     if [ -s "$OUT_ABS/review.json" ]; then
       claude_status=$(python3 -I -c '
 import json, sys
@@ -372,30 +383,56 @@ blob = blob.encode("ascii", "replace").decode("ascii").lower()
 print("ERROR_AUTH" if ("credential" in blob or "authenticat" in blob or "403" in blob)
       else "ERROR_OTHER")
 ' "$OUT_ABS/review.json" 2>/dev/null) || claude_status=EXTRACTOR_FAILED
-      case "$claude_status" in
-        OK) ;;
-        ERROR_AUTH) refuse E_RUN_FAILED \
-          "the claude backend could not authenticate, so no review was produced. The likely cause where claude authenticates through a settings file: --restricted makes it ignore the user settings file, so set \$SECOND_REVIEW_CLAUDE_SETTINGS to a file carrying that authentication setting. Read $OUT_ABS/review.err yourself with tail, and do not paste it into a pull request, an issue or Slack." ;;
-        ERROR_OTHER) refuse E_RUN_FAILED \
-          "the claude backend reported an error, so no review was produced. Read $OUT_ABS/review.json and $OUT_ABS/review.err yourself with tail, and do not paste them into a pull request, an issue or Slack." ;;
-        *) refuse E_BAD_RECORD \
-          "could not tell whether the claude backend reported an error (the check returned '$claude_status'), so this run cannot be recorded as a review. Check $OUT_ABS/review.json." ;;
-      esac
     fi
     ;;
 esac
 
 # Fingerprint as soon as the backend returns, and again at the end. A mismatch here with a
 # match at the end means something put the tree back *after* the backend returned, which a
-# single late fingerprint would have missed.
-tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-at-return.sha256"
+# single late fingerprint would have missed. This must happen before any refusal below,
+# including the claude is_error check and the run_status check: a backend that wrote to the
+# tree and then failed must still be caught as a tree change. It must also be refused,
+# rather than left to "set -e", if it cannot complete: the backend may have removed the
+# tree or made it unreadable, and a bare pipeline failure here would otherwise end the
+# script with no tag at all.
+tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-at-return.sha256" || refuse E_TREE_CHANGED \
+  "the tree at $TREE_ABS could not be fingerprinted after the backend returned: it may have been removed, or made unreadable, while the reviewer ran."
 
 # --- did a review actually happen -------------------------------------------------------
+
+# A tree change takes priority over a reported run failure: a backend that wrote to the
+# tree and then exited non-zero, or that claude reported as is_error, must be caught as a
+# tree change rather than let through as a plain run failure with the write never looked
+# at. Checked only here, against the fingerprint already taken above -- not the final one,
+# which is deliberately captured much later to give a backgrounded write time to happen, and
+# would wrongly delay reporting a failure that already shows in what we have. If the review
+# otherwise succeeds, whether the tree changes later is still caught by the full comparison
+# at the end, below. Verified: a stub that changed a tracked file and then reported
+# is_error:true used to refuse as a plain E_RUN_FAILED with this comparison never made.
+review_otherwise_ok=1
+[ "$run_status" -eq 0 ] || review_otherwise_ok=0
+if [ "$BACKEND" = claude ] && [ "${claude_status:-OK}" != OK ]; then review_otherwise_ok=0; fi
+if [ "$review_otherwise_ok" -ne 1 ] && ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then
+  refuse E_TREE_CHANGED \
+    "the $BACKEND backend reported a failure, and the tree at $TREE_ABS had already changed by the time it returned. Compare $OUT_ABS/tree-before.sha256 with tree-at-return.sha256."
+fi
 
 # A backend that is missing, unauthenticated or out of credit exits non-zero or says
 # nothing. Either way the review did not happen, so say so rather than reporting a pass.
 if [ "$run_status" -ne 0 ]; then
   refuse E_RUN_FAILED "the $BACKEND backend exited $run_status and no review was produced. Read the last lines of $OUT_ABS/review.err yourself with tail, and do not paste them into a pull request, an issue or Slack."
+fi
+
+if [ "$BACKEND" = claude ]; then
+  case "${claude_status:-OK}" in
+    OK) ;;
+    ERROR_AUTH) refuse E_RUN_FAILED \
+      "the claude backend could not authenticate, so no review was produced. The likely cause where claude authenticates through a settings file: --restricted makes it ignore the user settings file, so set \$SECOND_REVIEW_CLAUDE_SETTINGS to a file carrying that authentication setting. Read $OUT_ABS/review.err yourself with tail, and do not paste it into a pull request, an issue or Slack." ;;
+    ERROR_OTHER) refuse E_RUN_FAILED \
+      "the claude backend reported an error, so no review was produced. Read $OUT_ABS/review.json and $OUT_ABS/review.err yourself with tail, and do not paste them into a pull request, an issue or Slack." ;;
+    *) refuse E_BAD_RECORD \
+      "could not tell whether the claude backend reported an error (the check returned '$claude_status'), so this run cannot be recorded as a review. Check $OUT_ABS/review.json." ;;
+  esac
 fi
 
 # --- invariant 3: which model actually answered ------------------------------------------
@@ -510,8 +547,11 @@ done
 
 # Both fingerprints must match the one taken before the run. The "put back afterwards" case
 # is tested first, because it is the one a single late fingerprint would have passed: on its
-# own, "after" matches, and the run would have been recorded as clean.
-tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-after.sha256"
+# own, "after" matches, and the run would have been recorded as clean. Refused, not left to
+# "set -e", if the tree cannot be fingerprinted at all now -- the same reasoning as the
+# at-return fingerprint above.
+tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-after.sha256" || refuse E_TREE_CHANGED \
+  "the tree at $TREE_ABS could not be fingerprinted after the run: it may have been removed, or made unreadable."
 if cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-after.sha256" \
    && ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then
   refuse E_TREE_RESTORED \
@@ -538,11 +578,13 @@ fi
   printf '  model answered  %s\n' "$reported_models"
   printf '  implementer     %s\n' "$IMPLEMENTER"
   printf '  permissions     %s\n' "$permissions"
-  printf '  review tree     unchanged: every path and content hash matches the fingerprint\n'
-  printf '                  taken before the run, and the one taken when the backend\n'
+  printf '  review tree     unchanged in every type, mode, size, mtime, symlink target\n'
+  printf '                  and content hash this script tracks, matching the fingerprint\n'
+  printf '                  taken before the run and the one taken when the backend\n'
   printf '                  returned. The reviewer was NOT prevented from writing to it;\n'
-  printf '                  this is the evidence that it did not. It says nothing about\n'
-  printf '                  writes made outside %s.\n' "$TREE_ABS"
+  printf '                  this is the evidence that it did not, and it does not cover a\n'
+  printf '                  change whose directory mtimes were put back, or any write made\n'
+  printf '                  outside %s.\n' "$TREE_ABS"
   printf '  tree            %s\n' "$TREE_ABS"
   printf '  brief           %s\n' "$BRIEF_ABS"
   printf '  review          %s\n' "$OUT_ABS/review.out"
