@@ -244,7 +244,7 @@ pf() { # pf <case> <root> <uname -r> <dmesg file> [args]: the real 00-preflight.
   env PATH="$PFB:$PATH" SYSROOT="$r" STUB_UNAME="$u" STUB_DMESG_FILE="$d" RUNTIME_ARTIFACTS_DIR="$PF/rt" \
     bash "$HERE/00-preflight.sh" "$@" > "$PF/$c.log" 2>&1
 }
-NE_FAIL="^FAIL: (running kernel |/dev/nitro_enclaves absent|no pcie_slots_total|dmesg has no 'BAR4 notify')"
+NE_FAIL="^FAIL: (running kernel |/dev/nitro_enclaves absent|no pcie_slots_total|dmesg has no 'BAR4 notify)"
 ne_fails() { grep -cE "$NE_FAIL" "$1"; }
 R_BASE=$(pf_root base chr none); R_GOOD=$(pf_root good chr 110)
 R_NODEV=$(pf_root nodev none 110); R_FILE=$(pf_root file file 110)
@@ -274,7 +274,12 @@ pf noslots "$R_BASE" 6.18.56-nitro-ga "$PF/dmesg-bar4" --after-reboot
 check "REJECT --after-reboot with no pcie_slots_total" 0 $? "$PF/noslots.log" '^FAIL: no pcie_slots_total'
 pf nobar4 "$R_GOOD" 6.18.56-nitro-ga "$PF/dmesg-none" --after-reboot
 [ "$(ne_fails "$PF/nobar4.log")" = 1 ]
-check "REJECT --after-reboot with no BAR4 line in dmesg" 0 $? "$PF/nobar4.log" "^FAIL: dmesg has no 'BAR4 notify' line"
+check "REJECT --after-reboot with no BAR4 line in dmesg" 0 $? "$PF/nobar4.log" "^FAIL: dmesg has no 'BAR4 notify mapped' line"
+# The driver's own message when the BAR is NOT mapped also holds "notify BAR4".
+printf 'nitro_enclaves 0000:00:05.0: No notify BAR4, virtqueue kicks unavailable\n' > "$PF/dmesg-nobar4map"
+pf bar4-unmapped "$R_GOOD" 6.18.56-nitro-ga "$PF/dmesg-nobar4map" --after-reboot
+[ "$(ne_fails "$PF/bar4-unmapped.log")" = 1 ]
+check "REJECT --after-reboot when dmesg says 'No notify BAR4, virtqueue kicks unavailable' (the BAR is not mapped)" 0 $? "$PF/bar4-unmapped.log" "^FAIL: dmesg has no 'BAR4 notify mapped' line"
 rc=0; pf badarg "$R_GOOD" 6.18.56-nitro-ga "$PF/dmesg-bar4" --after-rebot || rc=$?
 check "REJECT an unknown argument before any check runs" 1 "$rc" "$PF/badarg.log" '^FATAL: unknown argument: --after-rebot'
 

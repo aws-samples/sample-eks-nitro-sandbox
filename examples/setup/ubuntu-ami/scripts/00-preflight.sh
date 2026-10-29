@@ -104,10 +104,12 @@ if [ "$AFTER_REBOOT" = 1 ]; then
   else fail "/dev/nitro_enclaves absent: Nitro Enclaves is off on this instance, or the driver did not load"; fi
   if [ -n "$slots" ]; then echo "ok: pcie_slots_total=$slots"
   else fail "no pcie_slots_total: this is NOT sandbox-capable hardware/placement"; fi
-  if [ "$(sudo dmesg 2>/dev/null | grep -ciE 'BAR4 notify|notify BAR4')" -ge 1 ]; then
+  # The driver logs "BAR4 notify mapped at ..." when the doorbell BAR is mapped, and
+  # "No notify BAR4, virtqueue kicks unavailable" when it is not; only the first passes.
+  if [ "$(sudo dmesg 2>/dev/null | grep -cE 'BAR4 notify mapped')" -ge 1 ]; then
     echo "ok: dmesg reports BAR4 notify mapped"
   else
-    fail "dmesg has no 'BAR4 notify' line"
+    fail "dmesg has no 'BAR4 notify mapped' line"
   fi
 else
   log "enclave checks not enforced on this run: 00-preflight.sh --after-reboot enforces them on $KREL, after 10-kernel.sh and the reboot"
