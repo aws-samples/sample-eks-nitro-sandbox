@@ -80,7 +80,8 @@ The tab cell is `fillColor=#ED7100;strokeColor=#ffffff;shape=mxgraph.aws4.resour
 48×48, with no value. Copy one from `assets/figure-template.drawio`.
 
 **Nesting** from outside in: AWS Cloud › EKS cluster (or EKS node) › Nitro sandbox › pod box › icons.
-F1 goes EKS node › Nitro sandbox › Lightweight VM › containers. Actors that are not AWS (a user, a
+F1 goes EKS node › Nitro sandbox › containers: the sandbox is the lightweight VM, not a layer
+inside it, so draw one frame, not two. Actors that are not AWS (a user, a
 GitHub issue, GitHub itself) sit outside the AWS Cloud frame: callers on the left, external
 services on the right (F2, F3). A third party's own control plane is a plain `#232F3E` box
 outside AWS (CMA).
