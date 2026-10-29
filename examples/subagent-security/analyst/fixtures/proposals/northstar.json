@@ -1,0 +1,17 @@
+{
+  "id": "northstar",
+  "name": "Northstar Office Systems",
+  "submitted": "2026-02-11",
+  "contact": "bids@northstar.example",
+  "summary": "100 workstations, each a small-form-factor desktop with a 27-inch display, keyboard and mouse, delivered to one site and set out at the desks.",
+  "terms": {
+    "price_usd": 120000,
+    "delivery_days": 28,
+    "warranty_months": 36
+  },
+  "notes": [
+    "Price includes delivery, unpacking and removal of packaging.",
+    "Warranty is on-site next business day for the full 36 months.",
+    "Quoted lead time assumes the order is placed against current stock."
+  ]
+}

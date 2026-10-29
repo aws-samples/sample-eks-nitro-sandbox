@@ -1,0 +1,29 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "MountS3Files",
+      "Effect": "Allow",
+      "Action": ["s3files:ClientMount", "s3files:ClientWrite"],
+      "Resource": "arn:aws:s3files:<AWS_REGION>:<ACCOUNT_ID>:file-system/<S3_FILES_FS_ID>"
+    },
+    {
+      "Sid": "ReadS3FilesObjects",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:GetObjectVersion"],
+      "Resource": "arn:aws:s3:::<S3_BUCKET_NAME>/<S3_PREFIX>/*",
+      "Condition": {
+        "StringEquals": { "aws:ResourceAccount": "<ACCOUNT_ID>" }
+      }
+    },
+    {
+      "Sid": "ListS3FilesBucket",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": "arn:aws:s3:::<S3_BUCKET_NAME>",
+      "Condition": {
+        "StringEquals": { "aws:ResourceAccount": "<ACCOUNT_ID>" }
+      }
+    }
+  ]
+}

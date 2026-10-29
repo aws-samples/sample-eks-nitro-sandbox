@@ -1,0 +1,66 @@
+# The permissions the Worker acts with: exactly what the five activities need,
+# in one namespace, and nothing cluster-wide.
+#
+# The Worker is the trusted orchestrator, so it is the one component here that
+# holds Kubernetes permissions at all. Keeping them to a Role in the sample's own
+# namespace is what bounds them: it can manage the sandboxes it creates and exec
+# into their pods, and it can do nothing anywhere else on the cluster.
+#
+# __NAMESPACE__ is filled in at apply time by scripts/setup.sh. Never apply this
+# file with the placeholder in place.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: temporal-sandbox-worker
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/managed-by: temporal
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: temporal-sandbox-worker
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/managed-by: temporal
+rules:
+  # Sandbox objects are in the core agents.x-k8s.io group, not extensions.
+  # create and delete bracket the lifecycle; patch is how suspend and resume set
+  # operatingMode; get is every wait and every reading. No list and no watch:
+  # the provider only ever reads the one Sandbox it was given the name of, so
+  # granting them would be granting a read of every Sandbox in the namespace for
+  # nothing.
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get", "create", "patch", "delete"]
+  # The backing pod, read for its UID, its node and its start time, and to
+  # confirm it is really gone after a suspend. get only: no list or watch for
+  # the same reason as above, and no create, patch or delete because the
+  # controller owns the pods and the Worker never makes one itself.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+  # The exec channel the step runs over. BOTH verbs are needed, and that was
+  # measured rather than assumed: with only get, the websocket handshake comes
+  # back "403 Forbidden ... pods \"lifecycle\" is forbidden"; with only create,
+  # the same. Only get and create together open the stream. So do not trim
+  # either one on the reasoning that the client opens the stream with a GET.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: temporal-sandbox-worker
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/managed-by: temporal
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: temporal-sandbox-worker
+subjects:
+  - kind: ServiceAccount
+    name: temporal-sandbox-worker
+    namespace: __NAMESPACE__

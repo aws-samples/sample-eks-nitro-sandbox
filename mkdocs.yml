@@ -88,13 +88,38 @@ nav:
       - Network policy: isolation/network-policy/README.md
       - Sandbox limits: isolation/sandbox-limits/README.md
   - Policy:
-      - Image signing: policy/image-signing/README.md
       - Cedar policy: policy/cedar-policy/README.md
+  - AI agents:
+      - Coding agents for developers: ai-agents/coding-agents-for-developers/README.md
   - Managed agents:
       - Claude Managed Agents: managed-agents/claude-managed-agents/README.md
+      - OpenAI Managed Agents: managed-agents/openai-managed-agents/README.md
+  - Subagent security:
+      - Subagent security: subagent-security/README.md
+      - Procurement analyst confined by nono: subagent-security/nono/README.md
+      - Procurement analyst confined by bubblewrap: subagent-security/bubblewrap/README.md
+      - Procurement analyst confined by OpenShell: subagent-security/openshell/README.md
   - Agent sandbox:
       - Pause and resume: agent-sandbox/pause-resume/README.md
+      - Warm pool autoscaling with KEDA: agent-sandbox/warm-pool-autoscaling-keda/README.md
+      - IDE in the browser: agent-sandbox/ide/README.md
+      - Roll out a SandboxTemplate change with Argo Rollouts: agent-sandbox/argo-rollouts/README.md
+      - Brain and hands: agent-sandbox/brain-and-hands/README.md
   - Storage:
       - EBS volumes: storage/ebs/README.md
       - Shared EFS storage: storage/efs/README.md
       - Shared S3 Files storage: storage/s3-files/README.md
+  - CI/CD:
+      - Docker builds: ci-cd/docker-builds/README.md
+      - GitHub Actions runners: ci-cd/github-actions/README.md
+      - GitLab CI jobs: ci-cd/gitlab-ci/README.md
+  - Integrations:
+      - Temporal workflows: integrations/temporal/README.md
+  - Confidential:
+      - Confidential sandboxes: confidential/README.md
+      - Encrypted image: confidential/encrypted-image/README.md
+      - Secrets Manager secret: confidential/secrets-manager-secret/README.md
+      - S3 encrypted file: confidential/s3-encrypted-file/README.md
+      # Last on purpose: a reference the three samples above point at, rather than one
+      # of them.
+      - Image trust by signer: confidential/signer-policy/README.md

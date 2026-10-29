@@ -1,0 +1,92 @@
+# The synthetic supplier API, shared by every Subagent security sample.
+#
+# An ordinary pod, not a sandbox: it stands in for a supplier's system, which in a real
+# deployment would be outside the cluster altogether. It is reached only inside the
+# cluster, on a ClusterIP Service, and there is no Ingress, LoadBalancer or NodePort
+# anywhere in this sample.
+#
+# <NAMESPACE>, <MANAGED_BY> and <SUPPLIER_API_IMAGE> are replaced at apply time by the
+# sample's setup script.
+#
+# Two Services point at the same pod. supplier-api is the name the analyst's confinement
+# profile approves; supplier-api-alias is a second DNS name for the very same backend,
+# which the profile does not approve. That is the negative control for the hostname
+# decision: the refusal cannot be a broken route, because the trusted controller reaches
+# the same server through that name with the same key.
+apiVersion: v1
+kind: Service
+metadata:
+  name: supplier-api
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+spec:
+  type: ClusterIP
+  selector:
+    app: supplier-api
+  ports:
+    - { name: https, port: 8443, targetPort: 8443, protocol: TCP }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: supplier-api-alias
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+spec:
+  type: ClusterIP
+  selector:
+    app: supplier-api
+  ports:
+    - { name: https, port: 8443, targetPort: 8443, protocol: TCP }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: supplier-api
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: supplier-api
+  template:
+    metadata:
+      labels:
+        app: supplier-api
+        app.kubernetes.io/managed-by: <MANAGED_BY>
+    spec:
+      automountServiceAccountToken: false
+      # The container runs as nobody, and a Secret volume is owned by root, so fsGroup is
+      # what lets it read its own key and certificate at mode 0440.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+      containers:
+        - name: api
+          image: <SUPPLIER_API_IMAGE>
+          ports:
+            - { containerPort: 8443, protocol: TCP }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet: { scheme: HTTPS, path: /healthz, port: 8443 }
+          volumeMounts:
+            - { name: supplier-key, mountPath: /opt/supplier-key, readOnly: true }
+            - { name: supplier-tls, mountPath: /opt/supplier-tls, readOnly: true }
+            - { name: state, mountPath: /var/lib/supplier }
+      volumes:
+        - name: supplier-key
+          secret: { secretName: supplier-key, defaultMode: 0440 }
+        - name: supplier-tls
+          secret: { secretName: supplier-tls, defaultMode: 0440 }
+        - name: state
+          emptyDir: {}

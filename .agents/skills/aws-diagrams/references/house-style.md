@@ -46,7 +46,7 @@ sandbox`, `2. exec / cp / logs via the Kubernetes API`): the figures use no numb
 | `#232F3E` | AWS Cloud frame, pod and VM boxes, icon label text | all |
 | `#232F3D` | Fill of the dark glyph icons (user, document, generic application, gear, credentials, git repository, source code) | all |
 | `#ED7100` | EKS cluster and EKS node frames; fill of every 48 px frame tab icon; container glyphs | all |
-| `#DD344C` | Nitro sandbox and Nitro Partition frames; security controls (network policy, Pod Identity role); refused destinations; refused edges | all |
+| `#DD344C` | Nitro sandbox frames; security controls (network policy, Pod Identity role); refused destinations; refused edges | all |
 | `#545B64` | Every ordinary edge | all |
 | `#5F6B7A` | Secondary text: frame sub lines, icon detail lines, notes | all |
 | `#414D5C` | Edge label text | all |
@@ -72,7 +72,7 @@ the 48 px tab.
 |---|---|---|---|---|
 | AWS Cloud | `#232F3E` | `shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_aws_cloud_alt;grStroke=1;grIconSize=48` on the frame itself | `spacingLeft=62` | F2, F3, CMA |
 | EKS cluster, EKS node | `#ED7100` | separate 48×48 cell at the frame's top-left corner, `resIcon=mxgraph.aws4.eks` (F1 draws "EKS node (EC2 instance)" with `ec2`) | `spacingLeft=62` | all |
-| Nitro sandbox, Nitro Partition | `#DD344C` | 48×48 cell, `resIcon=mxgraph.aws4.ec2` | `spacingLeft=62` | all |
+| Nitro sandbox | `#DD344C` | 48×48 cell, `resIcon=mxgraph.aws4.ec2` | `spacingLeft=62` | all |
 | Pod or VM box inside a sandbox frame, a regular pod, a third-party service | `#232F3E` | none | `spacingLeft=16` | F1, F3, CMA |
 | Logical group (a controller) | `#7D8998`, `dashed=1;dashPattern=8 5;fixDash=1`, title `#5A6B86` | none | `spacingLeft=16` | F3, CMA |
 
@@ -80,7 +80,8 @@ The tab cell is `fillColor=#ED7100;strokeColor=#ffffff;shape=mxgraph.aws4.resour
 48×48, with no value. Copy one from `assets/figure-template.drawio`.
 
 **Nesting** from outside in: AWS Cloud › EKS cluster (or EKS node) › Nitro sandbox › pod box › icons.
-F1 goes EKS node › Nitro Partition › Lightweight VM › containers. Actors that are not AWS (a user, a
+F1 goes EKS node › Nitro sandbox › containers: the sandbox is the lightweight VM, not a layer
+inside it, so draw one frame, not two. Actors that are not AWS (a user, a
 GitHub issue, GitHub itself) sit outside the AWS Cloud frame: callers on the left, external
 services on the right (F2, F3). A third party's own control plane is a plain `#232F3E` box
 outside AWS (CMA).
@@ -138,6 +139,14 @@ and for a labelled edge `fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Ar
 | Allowed egress next to refused egress | `strokeColor=#1D8102`, label background `#ffffff` | NP |
 
 Colour and dash carry meaning, so use them only as the table says.
+
+The rows for a policy control, a refused destination and a refused edge apply where the
+sample includes a network policy or any other policy: a Cedar policy in the guest, an IAM
+policy, a KMS key policy, an admission policy. Those are what make the refusal true, so the
+figure shows it as above. Where a sample includes no policy, those elements do not arise and
+the figure has none to draw. A pod booted with
+`sandbox.amazonaws.com/network-isolated: "true"` has no network at all, so its "no route
+out" comes from the sandbox rather than from a policy, and is drawn as the table says.
 
 **Routing:** segments are horizontal or vertical. Anchor both ends (`exitX`, `exitY`, `entryX`,
 `entryY`, plus `exitDx`/`entryDx` for a few pixels' nudge) and give every bend as a waypoint in

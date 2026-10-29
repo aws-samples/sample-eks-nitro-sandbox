@@ -1,0 +1,90 @@
+# Egress policy for the session sandbox pods, one per CLI. setup.sh renders it for each
+# CLI, filling <CLI>, <MOUNT_TARGET_CIDRS> (the S3 Files mount-target IPs, one ipBlock
+# each) and <AWS_REGION>. All ingress is denied: the app reaches the pod only through the
+# Kubernetes exec API, which is not pod network traffic.
+#
+# S3 Files cannot be used on a network-isolated pod (the mount needs a network), so these
+# pods have a network and this policy is what limits where code in the sandbox can connect.
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ApplicationNetworkPolicy
+metadata:
+  name: agent-<CLI>-egress
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+spec:
+  podSelector:
+    matchLabels:
+      agent-cli: <CLI>
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []                              # deny all ingress; exec is not pod traffic
+  egress:
+    # DNS on port 53 to any address. This is a project choice to keep the sample simple:
+    # it does not depend on how a given cluster serves DNS (on EKS Auto Mode the resolver
+    # is node-local rather than a pod behind a ClusterIP). What it allows is wider than
+    # DNS resolution: any process in the sandbox can reach any host on UDP or TCP 53, so
+    # it can send data out over DNS or to anything listening on port 53. What it costs is
+    # that port-53 egress is not confined to the cluster's own resolver. It still opens
+    # only port 53; the allowed hosts below and the mount targets aside, everything else
+    # stays denied.
+    - to:
+        - ipBlock: { cidr: 0.0.0.0/0 }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # The Pod Identity agent on the node, for the model role (Bedrock CLIs). Kubernetes
+    # always allows a pod to reach its own node; this rule is explicit for clarity.
+    - to:
+        - ipBlock: { cidr: 169.254.170.23/32 }
+      ports:
+        - { protocol: TCP, port: 80 }
+    # The Bedrock runtime endpoint the CLIs call their model on, and the short list of
+    # developer hosts the agents fetch from. The S3 Files mount itself needs no 443
+    # endpoint here: it resolves its mount target by DNS and connects over NFS (2049
+    # below). The mount helper's CloudWatch logging, which would otherwise call the
+    # CloudWatch Logs endpoint on mount, is turned off in the base image for this reason.
+    - to:
+        - domainNames:
+            - bedrock-runtime.<AWS_REGION>.amazonaws.com
+            - bedrock-mantle.<AWS_REGION>.api.aws
+            - docs.aws.amazon.com
+            - github.com
+            - codeload.github.com
+            - objects.githubusercontent.com
+            - registry.npmjs.org
+            - pypi.org
+            - files.pythonhosted.org
+      ports:
+        - { protocol: TCP, port: 443 }
+    # The S3 Files mount targets are ENIs in the cluster VPC; the sandbox connects to one
+    # over TLS on 2049. setup.sh resolves this file system's mount-target IPs and fills
+    # <MOUNT_TARGET_CIDRS> with one /32 ipBlock each, so NFS egress is allowed only to the
+    # sample's own mount targets rather than to anything on 2049 in the VPC. (A domainNames
+    # rule cannot cover the NFS connection, because the mount target is reached by its
+    # resolved IP, not a stable name.)
+    - to:
+<MOUNT_TARGET_CIDRS>
+      ports:
+        - { protocol: TCP, port: 2049 }
+    # Per-CLI extra egress. setup.sh fills <KIRO_CLI_EGRESS> only when rendering this
+    # policy for kiro-cli, and empties it for every other CLI. kiro-cli is the one agent
+    # that does NOT use Amazon Bedrock: it reaches the developer's own Kiro / Amazon Q
+    # Developer sign-in and the CodeWhisperer streaming service, which the other CLIs never
+    # call. Two domains are allowed on 443:
+    #   *.amazonaws.com  -- IAM Identity Center OIDC and the CodeWhisperer endpoints, which
+    #     live in the developer's Kiro Region (independent of this cluster's Region), so the
+    #     rule allows the whole suffix rather than pinning a Region -- wide within AWS so a
+    #     developer in any Region works, still AWS-only.
+    #   *.kiro.dev       -- the Kiro desktop service's own domain. kiro-cli uses several of
+    #     its subdomains across different sub-hierarchies: the sign-in device-authorization
+    #     flow calls prod.<region>.auth.desktop.kiro.dev (without it the login hangs with
+    #     "error sending request for url"), and the session also reaches app.kiro.dev,
+    #     runtime.<region>.kiro.dev and the telemetry.*.kiro.dev hosts. Because those span
+    #     .auth.desktop.kiro.dev, .desktop.kiro.dev and kiro.dev directly, the rule allows
+    #     the whole *.kiro.dev suffix -- wide within Kiro's own domain, still a single
+    #     first-party service, no arbitrary internet host.
+    # A deployment that wants it tighter can replace these with the exact
+    # oidc./q./codewhisperer.<region>.amazonaws.com hosts and the specific kiro.dev
+    # subdomains its Kiro Region and workflow use (auth, runtime, app, telemetry).
+<KIRO_CLI_EGRESS>

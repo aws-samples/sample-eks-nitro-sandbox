@@ -15,7 +15,7 @@ cd sample-eks-nitro-sandbox/examples/storage/s3-files
 This sample needs the AWS CLI, which the home page already lists, new enough for the
 `aws s3files` commands (a current 2.x release), for the steps that create the storage and
 read it back. It also needs the **Amazon EFS CSI driver** installed on the cluster as a
-shared prerequisite, at **3.0.0 or newer**, which is the version that adds S3 Files;
+shared prerequisite, at **3.5.1 or newer** for S3 Files;
 [Install the EFS CSI driver for S3 Files](#install-the-efs-csi-driver-for-s3-files) below
 has the one-time setup for a cluster that does not have it. What it costs beyond the cluster
 is the backing S3 bucket, billed for the objects stored and for S3 requests including the
@@ -70,7 +70,7 @@ This folder was built against these releases:
 
 | Component | Version |
 |---|---|
-| Amazon EFS CSI driver add-on ([kubernetes-sigs/aws-efs-csi-driver](https://github.com/kubernetes-sigs/aws-efs-csi-driver)) | `v3.5.1-eksbuild.1` on the run below; the sample needs **3.0.0 or newer** for S3 Files |
+| Amazon EFS CSI driver add-on ([kubernetes-sigs/aws-efs-csi-driver](https://github.com/kubernetes-sigs/aws-efs-csi-driver)) | `v3.5.1-eksbuild.1` on the run below; the sample needs **3.5.1 or newer** for S3 Files |
 | AWS CLI with the `aws s3files` commands ([aws/aws-cli](https://github.com/aws/aws-cli)) | `2.36.47` on the run below; any current 2.x release |
 | `busybox` image ([public.ecr.aws/docker/library/busybox](https://gallery.ecr.aws/docker/library/busybox)) | `1.37` |
 
@@ -99,7 +99,7 @@ export NAMESPACE=nitro-s3-files-sample
 ## Create the storage and deploy the pods
 
 **Step 1: Run setup.** [`scripts/setup.sh`](scripts/setup.sh) does everything the walkthrough
-below needs. It first confirms the Amazon EFS CSI driver is installed at 3.0.0 or newer and
+below needs. It first confirms the Amazon EFS CSI driver is installed at 3.5.1 or newer and
 reads, without changing it, which IAM role the driver's node service account uses. It creates
 the sample's own resources, each tagged `ManagedBy=storage-s3-files` and `auto-delete=no`: a
 versioned, encrypted S3 bucket with Block Public Access and a TLS-only bucket policy; a
@@ -149,7 +149,11 @@ spec:
 
 The run below started on a cluster with none of the sample's AWS resources present. The
 `nitro-s3-files-sample` namespace already existed, empty, from an earlier run (the sample never
-deletes the namespace, only what is inside it), so setup reused it rather than creating it:
+deletes the namespace, only what is inside it), so setup reused it rather than creating it.
+This block is exactly what that run printed, and it predates the correction of the minimum:
+the check then enforced 3.0.0, so its first line reads `(>= 3.0.0)` where the current check
+prints `(>= 3.5.1)`. The driver that run found, `v3.5.1-eksbuild.1`, already met 3.5.1, so
+nothing else in the block is affected.
 
 ```text
 Step 1/6: check the Amazon EFS CSI driver (a shared install; reused, never changed)
@@ -303,6 +307,7 @@ spec:
   containers:
     - name: shell
       image: public.ecr.aws/docker/library/busybox:1.37
+      imagePullPolicy: IfNotPresent
       command: ["sh", "-c", "while true; do sleep 3600; done"]
       resources: { requests: { cpu: "1", memory: 1Gi }, limits: { cpu: "1", memory: 1Gi } }
       securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] }, readOnlyRootFilesystem: true }
@@ -595,16 +600,22 @@ the mount targets.
 
 ## Install the EFS CSI driver for S3 Files
 
-This sample needs the Amazon EFS CSI driver on the cluster, at **3.0.0 or newer**, which is the
-version that adds S3 Files, with EKS Pod Identity roles for its controller and node service
-accounts. On the maintainers' cluster it was already installed; on a cluster without it, install
-it once following the
+This sample needs the Amazon EFS CSI driver on the cluster, at **3.5.1 or newer** for S3 Files,
+with EKS Pod Identity roles for its controller and node service accounts. On the maintainers'
+cluster it was already installed; on a cluster without it, install it once following the
 [S3 Files CSI guide](https://docs.aws.amazon.com/eks/latest/userguide/s3files-csi.html), and
 `setup.sh` will find and reuse it. The driver's node service account must carry a Pod Identity
 association, because S3 Files always mounts with IAM authorization, which needs the mount signed
-with the node role's identity. `setup.sh` stops with the install guidance when the driver is
-absent, older than 3.0.0, or its node service account has no association, and it never creates or
-changes the driver's roles.
+with the node role's identity. `setup.sh` looks for the driver in the two places it can
+recognise — the `aws-efs-csi-driver` EKS add-on, and failing that the `efs-csi-node` daemonset
+in `kube-system` — and compares every component of the version it finds against 3.5.1, not the
+major alone, so a 3.x driver older than 3.5.1 is caught. It then stops with the command that
+fits: `update-addon` when the add-on is too old, `create-addon` when it found neither the add-on
+nor that daemonset, and for a driver running as that daemonset, a note to upgrade it the way it
+was installed rather than a command that would fail. A lookup it cannot make, and a daemonset
+whose containers are not the ones it expects, stop the run saying the version could not be
+determined; neither is read as "not installed". It also stops when the node service account has
+no association, and it never creates or changes the driver's roles.
 
 ## Clean up
 

@@ -72,6 +72,11 @@ These rules apply to every label, title and note on a figure, and to its caption
   `SandboxClaim`, `SandboxWarmPool`: "1. claim a sandbox", "claim a warm sandbox") and the
   isolation boundary. **Never "VM" or "microVM" for the claimed thing**; say "VM" only to explain
   how the boundary works: the pod's containers run in a lightweight VM with its own kernel.
+- **"Nitro sandbox" for the isolation boundary**, which is the name the Amazon EKS User Guide
+  uses (*Isolated and confidential pods overview*, "Concepts"). **Never "Nitro Partition"**: it is
+  an internal name that the guide never uses, and it leaked onto the published site once. Where a
+  label is about the hardware rather than the product, name what the guide names: the AWS Nitro
+  System, or the Nitro hypervisor.
 - **"network policy"**, never "fence".
 - **"hardware-level isolation"**, never "strongest" or another superlative.
 - **No tooling or testing words:** a figure shows what the feature does, not how the sample was
@@ -84,14 +89,16 @@ These rules apply to every label, title and note on a figure, and to its caption
 - **Only facts the page shows or AWS documentation states.** If the figure needs a claim the page
   does not make, add it to the page with its evidence first, or leave it off the figure.
 
-`check_drawio.py` refuses the common forms of these (fence, superlatives, tooling words, account
-IDs, ARNs, node names, emails, internal hostnames, a stated minimum, a claimed "VM"). It cannot
-know your cluster names, user names or what the page states, so read every label for those too.
+`check_drawio.py` refuses the common forms of these ("Nitro Partition", fence, superlatives,
+tooling words, account IDs, ARNs, node names, emails, internal hostnames, a stated minimum, a
+claimed "VM"). It cannot know your cluster names, user names or what the page states, so read
+every label for those too.
 
 ## Make a new figure
 
 1. **Brief.** Write the figure's one idea in one sentence, then list what it shows: the actors,
-   the boundaries (they become frames), each connection with its label, and what is refused. Take
+   the boundaries (they become frames), each connection with its label, and, where the sample
+   includes a network policy or any other policy, what is refused. Take
    each fact from the page the figure goes on. Open the existing figure closest to yours (the
    home page's isolation boundary, the coding agent's egress, the warm pool, Claude Managed
    Agents and its network policy) and its PNG, and reuse its arrangement where it fits.
@@ -176,9 +183,9 @@ know your cluster names, user names or what the page states, so read every label
    ```
 
    The caption names the idea in a few words, then says what to notice. The alt text walks the
-   figure in reading order (each boundary, what runs in it, each connection with its label, what
-   is refused) so a reader who cannot see the image gets the same facts. Write both as plain
-   sentences, as the pages do: no em dashes.
+   figure in reading order (each boundary, what runs in it, each connection with its label, and
+   any refusal the figure shows) so a reader who cannot see the image gets the same facts. Write
+   both as plain sentences, as the pages do: no em dashes.
 
 ## Edit an existing figure
 

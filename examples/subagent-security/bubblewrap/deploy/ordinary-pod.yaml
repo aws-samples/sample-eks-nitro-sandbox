@@ -1,0 +1,28 @@
+# An ordinary pod on the same node as the analyst, for the comparison that shows the
+# analyst ran in a sandbox. No runtimeClassName, so it runs as any pod does: it shares
+# the node's kernel, reports the node's uptime, and sees the instance's own disks.
+#
+# <NAMESPACE>, <MANAGED_BY> and <NODE_NAME> are replaced at apply time. Pinning the node
+# is the point: a reading from a pod on a different instance would compare nothing.
+#
+# Delete it by this exact name when you are done with it:
+#   kubectl delete pod ordinary-comparison -n <NAMESPACE>
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ordinary-comparison
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+spec:
+  nodeName: <NODE_NAME>
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  containers:
+    - name: shell
+      image: public.ecr.aws/docker/library/busybox:1.37.0
+      command: ["sleep", "600"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]

@@ -21,10 +21,12 @@ The other samples are in the left menu, grouped by section.
 From the outside, a sandboxed pod is just a pod: the scheduler places it, it gets an IP
 from your VPC, it mounts volumes through the same CSI drivers, and it answers to
 `kubectl exec`, `logs` and `port-forward`. What changes is what sits between the kubelet
-and your containers. Instead of starting them on the node's kernel, EKS asks EC2 for a
-Nitro Partition, a hardware-isolated slice of the instance's CPU and memory, boots a
-lightweight VM inside it, and starts the containers in that VM. The pod's containers
-share a kernel with each other, and that kernel belongs to the pod alone.
+and your containers. Instead of starting them on the node's kernel, containerd on the node
+launches a Nitro sandbox for the pod: a dedicated hardware-isolated environment with its
+own kernel, created by the Nitro hypervisor, which enforces the CPU and memory isolation
+between sandboxes. The sandbox is a lightweight VM, and a first-level guest rather than
+anything emulated or nested. The pod's containers run in it and share its kernel with each
+other, and that kernel belongs to the pod alone.
 
 Everything you control is a standard pod field:
 
@@ -38,10 +40,10 @@ Everything you control is a standard pod field:
 - **A Cedar policy per pod.** In isolated mode it is generated for you; in confidential
   mode it pins down what the pod may run and becomes part of what the sandbox attests to.
 
-*Figure 1: The isolation boundary. A sandboxed pod runs inside a lightweight VM in a Nitro
-Partition; the node's kubelet still sees an ordinary pod.*
+*Figure 1: The isolation boundary. A sandboxed pod runs in its own Nitro sandbox, a
+lightweight VM with its own kernel; the node's kubelet still sees an ordinary pod.*
 
-![A sandboxed pod's containers run inside a lightweight VM carved out of a Nitro Partition on the EKS node; the node's kubelet and containerd reach the VM through a runtimeClassName of isolated-sandbox for exec, logs, port-forward, volumes and VPC networking, while regular pods with no runtimeClassName keep sharing the node kernel directly.](images/figure-1-isolation-boundary.png)
+![Inside the EKS node, which is an EC2 instance, a frame labelled Nitro sandbox, hardware-isolated CPU and memory, its own kernel, this pod only, holds the pod's containers with their unchanged image and spec; the node's kubelet and containerd reach it through a runtimeClassName of isolated-sandbox for exec, logs, port-forward, volumes and VPC networking, while regular pods with no runtimeClassName keep sharing the node kernel directly.](images/figure-1-isolation-boundary.png)
 
 ## Prerequisites
 

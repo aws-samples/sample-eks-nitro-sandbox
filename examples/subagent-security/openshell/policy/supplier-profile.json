@@ -1,0 +1,19 @@
+{
+  "id": "procurement-supplier",
+  "display_name": "Procurement supplier",
+  "category": "data",
+  "inference_capable": false,
+  "credentials": [
+    {
+      "name": "api_key",
+      "env_vars": [
+        "SUPPLIER_API_KEY"
+      ],
+      "required": true,
+      "auth_style": "header",
+      "header_name": "x-api-key"
+    }
+  ],
+  "endpoints": [],
+  "binaries": []
+}

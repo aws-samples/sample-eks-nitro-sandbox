@@ -19,9 +19,10 @@ follow its shape and its level of detail. Paths below are relative to the reposi
    search the open issues:
    `gh issue list --repo aws-samples/sample-eks-nitro-sandbox --search "<name>" --state all`.
 2. **Read the closest existing samples** under `examples/` before writing anything. Reuse
-   their patterns (the agent-sandbox `SandboxTemplate` and warm pool, Pod Identity, the
-   egress network policy) instead of inventing new ones, and say in the spec which sample
-   it builds on.
+   their patterns (the agent-sandbox `SandboxTemplate` and warm pool, Pod Identity, a
+   Secret read from a file) instead of inventing new ones, and say in the spec which sample
+   it builds on. One pattern not to reuse: most of those pages ship an egress network
+   policy, which a new sample does not. See [Network](#network) below.
 3. **Write the spec** with the sections below.
 4. **File it** with the **Sample spec** issue form (`.github/ISSUE_TEMPLATE/sample-spec.yml`)
    or with `gh`, as shown at the end.
@@ -46,8 +47,10 @@ the roadmap, or that it is new.
 
 **What the sample shows.** Three to five bullets, each led by a short bold claim. Every
 claim must be something the page will show with real output from a run: the pod's own
-kernel, boot and disks, a key that is absent, a connection that is refused. Leave out
-claims the sample cannot demonstrate. Mark optional variants as optional.
+kernel, boot and disks, a key that is absent, a connection that succeeds, or a refusal
+something in the sample enforces. Leave out claims the sample cannot demonstrate, and see
+[Network](#network) before you write a refusal: a new sample ships no network policy, so a
+networked one usually has no refused connection to show. Mark optional variants as optional.
 
 **Proposed layout.** A text tree under `examples/<section>/<sample>/`, following
 `docs/ROADMAP.md`: a named folder (never numbered), the page as `README.md`, diagrams in
@@ -65,21 +68,36 @@ say "Nothing pinned beyond the images in the manifests":
 Call out major-version jumps and what must be re-checked because of them (API calls, not
 only version strings).
 
-**Network.** Decide whether the sandbox needs a network, and write the criterion to match:
+**Network.** Decide whether the sandbox needs a network at all, and write the criterion to
+match. **A new sample does not ship a network policy**, and a spec must not ask for one:
+`examples/isolation/network-policy` is the one sample about that mechanism, and a new page
+links it rather than repeating it. The maintainers set this on 2026-10-26.
 
 - A workload that connects nowhere boots with
-  `sandbox.amazonaws.com/network-isolated: "true"`, and the page shows it has only
-  loopback, no route and no DNS.
-- A workload that does connect gets an egress network policy, and the spec names one
-  allowed and one refused connection the page will show.
-- If the pod's policy refuses exec, as a confidential policy usually does, say how the page
-  shows either one: from probes in the container's own command, read from its logs.
+  `sandbox.amazonaws.com/network-isolated: "true"`, and the criterion is that the page
+  shows it has only loopback, no route and no DNS. That is a property of the sandbox the
+  spec asked for, so it is a limit the sample can claim and prove.
+- A workload that does connect keeps its network, with no policy. The criterion names what
+  it connects to and what the page shows of that connection working. **It must not claim
+  the workload cannot reach anything else**, because nothing in the sample stops it: write
+  the criterion as "the page shows the agent reaching `<service>`", never "the page shows
+  the agent cannot reach the internet".
+- Either way, name the limit the sample *does* enforce. Where the sample gives the pod AWS
+  permissions, that is usually the Pod Identity role, and the criterion is that the role
+  grants only what the sample needs and the page shows its policy document. Where it gives
+  none, do not invent a role for the spec to point at: the limits to name are the ones the
+  sample really has, such as the VM boundary, a sandbox with no network, or its RBAC.
 
-Why: one spec gave a workload that connects nowhere a deny-all egress policy while refusing
-exec, so no run could ever show the policy working.
+Why: a spec that asks for a restriction the sample has no mechanism for puts a claim on the
+page that nothing enforces, and a reader would believe it. One earlier spec also gave a
+workload that connects nowhere a deny-all egress policy while refusing exec, so no run could
+ever have shown the policy working.
 
-**Cluster prerequisites.** Name anything cluster-wide the sample needs, such as network
-policy enforcement or a controller, and make it a step the reader runs once, which the
+Specs written before 2026-10-26, and the samples merged from them, carry the old criterion.
+Leave those pages alone; they were proved with the policies they show.
+
+**Cluster prerequisites.** Name anything cluster-wide the sample needs, such as a
+controller, a CSI driver or an add-on, and make it a step the reader runs once, which the
 sample's setup checks rather than performs. Check each one against the Amazon EKS User Guide
 rather than assuming the platform provides it: EKS Auto Mode does not create a StorageClass,
 for example. Why: one spec said Auto Mode supplied the class, and a test cluster that
@@ -111,7 +129,9 @@ still run on a cluster that has no suitable default.
 - [ ] Pinned versions stated in the README.
 - [ ] Runs end to end on a cluster that has finished Getting started, from a fresh run.
 - [ ] The README shows the sandbox pod running in a sandbox (its own kernel build, boot and virtio disks, each with what an ordinary pod shows instead), plus the sample's own claims, each with output from the run.
-- [ ] No Ingress, LoadBalancer or NodePort. Sandbox egress is restricted by network policy and the page shows the complete policy, or the sandbox boots with no network and the page shows that.
+- [ ] No Ingress, LoadBalancer or NodePort.
+- [ ] The sample ships no network policy, and the page claims no network limit that nothing in the sample enforces. Where the sample has a sandbox that needs no network, it boots with `sandbox.amazonaws.com/network-isolated: "true"` and the page shows it has only loopback, no route and no DNS.
+- [ ] If the sample gives the pod AWS permissions, its Pod Identity role grants only what the sample needs and the page shows its policy document. If it gives none, the page says so and claims no limit from a role.
 - [ ] No values from your own account or environment (account ID, keys, tokens, names of your clusters or hosts, user names, internal URLs) in tracked files. Local values come from a gitignored env file.
 - [ ] A clean-up section removes everything the sample created.
 - [ ] Added to the `mkdocs.yml` nav, and `mkdocs build --strict` passes.

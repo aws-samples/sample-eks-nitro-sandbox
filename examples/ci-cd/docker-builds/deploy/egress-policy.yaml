@@ -1,0 +1,46 @@
+# Egress for every build pod in this sample: DNS and the registry the build pulls its base
+# images from, and nothing else. All ingress is denied.
+#
+# An EKS Auto Mode ApplicationNetworkPolicy is a NetworkPolicy that also accepts hostnames
+# (domainNames) in an egress rule. It is enforced on the node, on the pod's host-side
+# interface, so a command inside the sandbox cannot change it, even as root.
+#
+# scripts/setup.sh renders:
+#   <NAMESPACE>        the namespace you set
+#   <COREDNS_IP>       kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'
+#   <ECR_PUSH_RULES>   the rules the optional push needs (the Pod Identity credential
+#                      address and the Amazon ECR endpoints), and nothing when the push is
+#                      not enabled: by default the build pods have no route to a credential.
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ApplicationNetworkPolicy
+metadata:
+  name: docker-builds-egress
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: docker-builds
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: docker-builds
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []        # deny all ingress; exec, logs and cp do not use the pod network
+  egress:
+    # DNS, to the cluster's CoreDNS Service address only.
+    - to:
+        - ipBlock: { cidr: <COREDNS_IP>/32 }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # The registry the build's base images come from. Amazon ECR Public answers the API and
+    # the manifests on public.ecr.aws and then redirects each layer to a CloudFront host
+    # whose name changes between requests, so the layer hosts are allowed by suffix rather
+    # than one name: wide within CloudFront, and no other host on the internet.
+    - to:
+        - domainNames:
+            - public.ecr.aws
+            - "*.cloudfront.net"
+      ports:
+        - { protocol: TCP, port: 443 }
+<ECR_PUSH_RULES>
