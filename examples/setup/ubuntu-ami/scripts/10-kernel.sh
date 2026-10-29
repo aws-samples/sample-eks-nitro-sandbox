@@ -212,4 +212,4 @@ kernel_sha="$(sha256sum "/boot/vmlinuz-$KREL" | awk '{print $1}')"
 echo "host kernel $KREL from kernel.org linux-${KERNEL_VERSION}.tar.xz sha256=$(lock_field linux-kernel-source sha256) + 1 commit $(lock_field host-kernel-patch ref) patch sha256=$(lock_field host-kernel-patch sha256); grub-default=\"${SUB}>${ENT}\"; vmlinuz sha256=$kernel_sha; $(date -u +%FT%TZ)" \
   | sudo tee -a "$IMAGE_MANIFEST"
 echo "10-kernel.sh done. Reboot now:  sudo systemctl reboot"
-echo "Then run: bash scripts/00-preflight.sh   (uname -r should report $KREL)"
+echo "Then run: bash scripts/00-preflight.sh --after-reboot   (uname -r should report $KREL)"

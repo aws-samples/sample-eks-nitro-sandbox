@@ -343,7 +343,7 @@ wait_rebooted "$build_id" "$BOOT_ID" "$KREL" || die "build host $build_id did no
 record BUILD_HOST_BOOT_ID_AFTER "$BOOT_ID"
 record BUILD_HOST_KERNEL_AFTER_REBOOT "$BOOT_KERNEL"
 log "build host rebooted: boot id $BOOT_ID, kernel $BOOT_KERNEL"
-run_ssm "$build_id" 1800 "$STAGE_ENV/00-preflight.sh" | tee "$EVIDENCE/build-host-preflight-2.txt"   # enclave checks are meaningful now
+run_ssm "$build_id" 1800 "$STAGE_ENV/00-preflight.sh --after-reboot" | tee "$EVIDENCE/build-host-preflight-2.txt"   # the enclave checks are enforced now
 run_ssm "$build_id" 1800 "$STAGE_ENV/20-erofs-utils.sh"
 run_ssm "$build_id" 1800 "$STAGE_ENV/30-runtime-install.sh"
 run_ssm "$build_id" 600  "$STAGE_ENV/31-wire-containerd.sh"

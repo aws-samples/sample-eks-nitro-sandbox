@@ -259,6 +259,13 @@ boot = [i for i, a in sends if "random/boot_id" in a]
 pre2 = [i for i, a in sends if "00-preflight.sh" in a][1]
 assert boot[0] < reboot < boot[1] < pre2, (boot, reboot, pre2)
 PY
+python3 - "$WORK/ami.calls.jsonl" <<'PY'; ok "  ... only the second 00-preflight.sh, after the reboot, is sent with --after-reboot (the enclave checks)" $?
+import json, sys
+c = [json.loads(l) for l in open(sys.argv[1])]
+pre = [" ".join(x["argv"]) for x in c if x["call"] == "ssm send-command" and "00-preflight.sh" in " ".join(x["argv"])]
+assert len(pre) == 2, len(pre)
+assert "--after-reboot" not in pre[0] and "00-preflight.sh --after-reboot" in pre[1], pre
+PY
 cp "$FAKE_AWS_STATE" "$WORK/after-ami.json"; cp -a "$ISSUE10_RUN_DIR/out" "$WORK/after-ami-out"
 st ami-kfail "${BUILD_RESULTS/@KERNEL@/Failed}"
 rc=0; su ami-kfail --ami-only || rc=$?

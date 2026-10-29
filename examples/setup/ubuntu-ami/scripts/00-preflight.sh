@@ -8,7 +8,7 @@
 #      (scripts/30-runtime-install.sh --check-containerd). Canonical republishes the base AMI
 #      under new serials, and a new serial can ship a newer containerd, so this is checked on
 #      every build, before the kernel compile, and fails closed outside that range.
-#   3. Enclave hardware (meaningful only after the reboot onto the host kernel).
+#   3. Enclave hardware, enforced only after the reboot onto the host kernel (--after-reboot).
 #   4. The one prerequisite this sample documents rather than works around: the operator-
 #      supplied runtime archive. packages/fetch-runtime-artifacts.sh verifies it against
 #      packages/sources.lock; when it is absent THIS SCRIPT STOPS (exit 3).
@@ -16,14 +16,27 @@
 # The build toolchain is not checked here: 10-kernel.sh and 20-erofs-utils.sh install their
 # own packages from Ubuntu's signed apt repositories and assert the tools they need.
 #
-# Run it twice: once before 10-kernel.sh, and again after the reboot, when the enclave-device
-# checks become meaningful. Before the reboot the NE device is expected to be absent and this
-# script says so rather than failing.
+# Run it twice: `00-preflight.sh` before 10-kernel.sh, and `00-preflight.sh --after-reboot` once
+# the host has rebooted onto the kernel 10-kernel.sh built. Only the second run enforces the
+# enclave-hardware checks: the base image's own kernel can already have a Nitro Enclaves driver
+# (Canonical's builds it as a module and /dev/nitro_enclaves exists), but not the attributes the
+# driver from AWS's kernel commit adds, so on that kernel the first run reports them and fails on
+# none of them.
+#
+#   SYSROOT (scripts/lib/common.sh) prefixes the enclave device and sysfs paths, for the
+#   clusterless tests only.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/common.sh"
 rc=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; rc=1; }
+AFTER_REBOOT=0
+for a in "$@"; do
+  case "$a" in
+    --after-reboot) AFTER_REBOOT=1 ;;
+    *) die "unknown argument: $a (supported: --after-reboot)" ;;
+  esac
+done
 
 . /etc/os-release 2>/dev/null || true
 log "preflight on $(uname -r), ${PRETTY_NAME:-unknown-os}"
@@ -70,18 +83,34 @@ bavail=$(df -BM --output=avail /boot 2>/dev/null | tail -1 | tr -dc '0-9')
 log "/boot free: ${bavail:-?} MiB"
 [ "${bavail:-0}" -ge 200 ] || fail "less than 200 MiB free on /boot"
 
-# --- 6. Enclave hardware (meaningful only after the host kernel is running) ----------------
-if [ -c /dev/nitro_enclaves ]; then
-  slots=$(cat /sys/class/misc/nitro_enclaves/pcie_slots_total 2>/dev/null || echo "")
-  log "pcie_slots_total=${slots:-<absent>}"
-  [ -n "$slots" ] || fail "no pcie_slots_total: this is NOT sandbox-capable hardware/placement"
+# --- 6. Enclave hardware: enforced only by the --after-reboot run ----------------------------
+# Before the reboot the host runs the base image's own kernel. Canonical's (7.0.0-1014-aws on
+# serial 20261027) has CONFIG_NITRO_ENCLAVES=m: the module is loaded and /dev/nitro_enclaves
+# exists on an instance with enclaves on, but pcie_slots_total and the "BAR4 notify mapped" line
+# come only from the driver in AWS's kernel commit 1e66c960. So the first run reports what it
+# sees and fails on none of it; the --after-reboot run requires the host kernel 10-kernel.sh
+# built, the device, pcie_slots_total and the BAR4 line.
+KREL="${KERNEL_VERSION}${KERNEL_LOCALVERSION}"
+NE_DEV="$SYSROOT/dev/nitro_enclaves"
+NE_SLOTS="$SYSROOT/sys/class/misc/nitro_enclaves/pcie_slots_total"
+running_kernel=$(uname -r)
+slots=$(cat "$NE_SLOTS" 2>/dev/null || echo "")
+if [ -c "$NE_DEV" ]; then ne_dev=present; else ne_dev=absent; fi
+log "enclave hardware on kernel $running_kernel: /dev/nitro_enclaves $ne_dev, pcie_slots_total=${slots:-<absent>}"
+if [ "$AFTER_REBOOT" = 1 ]; then
+  if [ "$running_kernel" = "$KREL" ]; then echo "ok: running the host kernel $KREL"
+  else fail "running kernel $running_kernel, not $KREL: the enclave checks need the host kernel 10-kernel.sh built"; fi
+  if [ "$ne_dev" = present ]; then echo "ok: /dev/nitro_enclaves present"
+  else fail "/dev/nitro_enclaves absent: Nitro Enclaves is off on this instance, or the driver did not load"; fi
+  if [ -n "$slots" ]; then echo "ok: pcie_slots_total=$slots"
+  else fail "no pcie_slots_total: this is NOT sandbox-capable hardware/placement"; fi
   if [ "$(sudo dmesg 2>/dev/null | grep -ciE 'BAR4 notify|notify BAR4')" -ge 1 ]; then
     echo "ok: dmesg reports BAR4 notify mapped"
   else
     fail "dmesg has no 'BAR4 notify' line"
   fi
 else
-  log "/dev/nitro_enclaves absent: expected before the host kernel from 10-kernel.sh is running. Run 10-kernel.sh, reboot, then run this script again."
+  log "enclave checks not enforced on this run: 00-preflight.sh --after-reboot enforces them on $KREL, after 10-kernel.sh and the reboot"
 fi
 
 # --- 7. THE documented prerequisite: the operator-supplied runtime archive -----------------

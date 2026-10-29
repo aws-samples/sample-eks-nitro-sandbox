@@ -5,6 +5,9 @@
 #        shim's range), read from `containerd --version` (a stub first on PATH prints the case)
 #   scripts/10-kernel.sh --assert-config FILE          the required .config symbols, asserted on
 #        the file as olddefconfig left it (fixture .config files)
+#   scripts/10-kernel.sh --check-initramfs              the root filesystem at boot
+#   scripts/00-preflight.sh                             the IMDSv2 token never on a command line, and
+#        the enclave-hardware checks enforced only by its --after-reboot run (SYSROOT fixtures)
 #
 #   scripts/test-host-gates.sh
 set -uo pipefail
@@ -25,7 +28,7 @@ check() { # check <description> <expected-rc> <actual-rc> <log> [<regex the log 
   else printf '  FAIL  %s (expected rc=%s%s, got rc=%s)\n' "$1" "$2" "${5:+ and /$5/}" "$3"; sed 's/^/        | /' "$4" | tail -n 6; fail=$((fail+1)); fi
 }
 
-echo "== 1/4 containerd gate: scripts/30-runtime-install.sh --check-containerd ================"
+echo "== 1/5 containerd gate: scripts/30-runtime-install.sh --check-containerd ================"
 STUB="$WORK/bin"; mkdir -p "$STUB"
 # Stub containerd: answers only `--version`, with the line and exit code the case sets.
 cat > "$STUB/containerd" <<'SH'
@@ -64,7 +67,7 @@ grep -q 'newer than the GA shim is tested on' "$WORK/cd-r2.4.0.log"; check "the 
 grep -q 'older than the GA shim supports' "$WORK/cd-r2.0.5.log"; check "the 2.0 REJECT verdict says why (older than supported)" 0 $? "$WORK/cd-r2.0.5.log"
 
 echo
-echo "== 2/4 kernel config assertion: scripts/10-kernel.sh --assert-config =================="
+echo "== 2/5 kernel config assertion: scripts/10-kernel.sh --assert-config =================="
 GOOD="$WORK/config-good"
 cat > "$GOOD" <<'CFG'
 CONFIG_LOCALVERSION="-nitro-ga"
@@ -116,7 +119,7 @@ rc=0; bash "$HERE/10-kernel.sh" --assert-config "$WORK/does-not-exist" > "$WORK/
 check "REJECT a missing .config file" 1 "$rc" "$WORK/kc-missing.log" 'missing or empty'
 
 echo
-echo "== 3/4 root filesystem at boot: scripts/10-kernel.sh --check-initramfs (H4) ============"
+echo "== 3/5 root filesystem at boot: scripts/10-kernel.sh --check-initramfs (H4) ============"
 # Listings in the shape `lsinitramfs` prints; the module directory is the kernel release's.
 printf 'usr/lib/modules/6.18.56-nitro-ga/kernel/drivers/nvme/host/nvme.ko.zst\nusr/bin/busybox\n' > "$WORK/initrd-no-ext4.list"
 { cat "$WORK/initrd-no-ext4.list"; echo 'usr/lib/modules/6.18.56-nitro-ga/kernel/fs/ext4/ext4.ko.zst'; } > "$WORK/initrd-ext4-zst.list"
@@ -161,7 +164,7 @@ check "the build calls the same check on its own .config and initramfs listing" 
 check "  ... and every ext4.ko match in 10-kernel.sh is the one inside that check (no unconditional grep left)" 0 $? "$HERE/10-kernel.sh"
 
 echo
-echo "== 4/4 the IMDSv2 token never on a command line: scripts/00-preflight.sh (M12) ========="
+echo "== 4/5 the IMDSv2 token never on a command line: scripts/00-preflight.sh (M12) ========="
 # Stub curl: records every argv (one line per call) and, for `-K -`, the config it reads on
 # standard input. PUT .../api/token prints a sentinel token; a metadata GET answers only when its
 # stdin config carries that token as the header (as IMDSv2 would), else fails like a 401.
@@ -200,6 +203,82 @@ leak "$IM/argv-leak.log"
 check "REJECT: the same detector catches the R1-A form (the token in a -H argument)" 1 $? "$IM/argv-leak.log"
 
 echo
+echo "== 5/5 enclave hardware, enforced only after the reboot: scripts/00-preflight.sh --after-reboot"
+# The real 00-preflight.sh with SYSROOT fixtures for /dev/nitro_enclaves (a symlink to /dev/null,
+# which is a character device) and pcie_slots_total, and stubs for uname -r, dmesg, sudo and curl.
+# Off a build host its other sections fail (no bootstrap.sh, no snap) and the runtime archive is
+# absent (exit 3), so each case reads the enclave section's own lines: its FAIL lines, and its ok
+# lines when every check holds. The base-kernel fixture is what a live build host on Canonical's
+# serial 20261027 showed before the kernel build: kernel 7.0.0-1014-aws, CONFIG_NITRO_ENCLAVES=m
+# loaded, the device present, no pcie_slots_total, no BAR4 line.
+PF="$WORK/pf"; PFB="$PF/bin"; mkdir -p "$PFB" "$PF/rt"
+cat > "$PFB/uname" <<'SH'
+#!/bin/bash
+[ "${1:-}" = -r ] && { printf '%s\n' "$STUB_UNAME"; exit 0; }
+exec /usr/bin/uname "$@"
+SH
+cat > "$PFB/dmesg" <<'SH'
+#!/bin/bash
+cat "$STUB_DMESG_FILE"
+SH
+cat > "$PFB/sudo" <<'SH'
+#!/bin/bash
+exec "$@"
+SH
+cat > "$PFB/curl" <<'SH'
+#!/bin/bash
+exit 22
+SH
+chmod +x "$PFB/uname" "$PFB/dmesg" "$PFB/sudo" "$PFB/curl"
+BAR4_OK="nitro_enclaves 0000:00:05.0: BAR4 notify mapped at 00000000a1b2c3d4 (resource [mem 0xfe000000-0xfe003fff], len 16384)"
+printf '%s\n' "$BAR4_OK" > "$PF/dmesg-bar4"
+printf 'nitro_enclaves: loading out-of-tree module taints kernel\n' > "$PF/dmesg-none"
+pf_root() { # pf_root <name> <dev: chr|file|none> <slots value, or none>
+  local r="$PF/root-$1"; mkdir -p "$r/dev" "$r/sys/class/misc/nitro_enclaves"
+  case "$2" in chr) ln -s /dev/null "$r/dev/nitro_enclaves" ;; file) : > "$r/dev/nitro_enclaves" ;; esac
+  [ "$3" = none ] || printf '%s\n' "$3" > "$r/sys/class/misc/nitro_enclaves/pcie_slots_total"
+  printf '%s' "$r"
+}
+pf() { # pf <case> <root> <uname -r> <dmesg file> [args]: the real 00-preflight.sh
+  local c="$1" r="$2" u="$3" d="$4"; shift 4
+  env PATH="$PFB:$PATH" SYSROOT="$r" STUB_UNAME="$u" STUB_DMESG_FILE="$d" RUNTIME_ARTIFACTS_DIR="$PF/rt" \
+    bash "$HERE/00-preflight.sh" "$@" > "$PF/$c.log" 2>&1
+}
+NE_FAIL="^FAIL: (running kernel |/dev/nitro_enclaves absent|no pcie_slots_total|dmesg has no 'BAR4 notify')"
+ne_fails() { grep -cE "$NE_FAIL" "$1"; }
+R_BASE=$(pf_root base chr none); R_GOOD=$(pf_root good chr 110)
+R_NODEV=$(pf_root nodev none 110); R_FILE=$(pf_root file file 110)
+pf base-before "$R_BASE" 7.0.0-1014-aws "$PF/dmesg-none"
+[ "$(ne_fails "$PF/base-before.log")" = 0 ] && grep -qE '^\[.*\] enclave checks not enforced on this run' "$PF/base-before.log" \
+  && grep -qE '/dev/nitro_enclaves present, pcie_slots_total=<absent>$' "$PF/base-before.log"
+check "ACCEPT before the reboot, on the base kernel as the live host had it (device present, no pcie_slots_total, no BAR4): no enclave FAIL, reported only" 0 $? "$PF/base-before.log"
+pf good-after "$R_GOOD" 6.18.56-nitro-ga "$PF/dmesg-bar4" --after-reboot
+[ "$(ne_fails "$PF/good-after.log")" = 0 ] && grep -qx 'ok: running the host kernel 6.18.56-nitro-ga' "$PF/good-after.log" \
+  && grep -qx 'ok: /dev/nitro_enclaves present' "$PF/good-after.log" && grep -qx 'ok: pcie_slots_total=110' "$PF/good-after.log" \
+  && grep -qx 'ok: dmesg reports BAR4 notify mapped' "$PF/good-after.log"
+check "ACCEPT --after-reboot on 6.18.56-nitro-ga with the device, pcie_slots_total=110 and the BAR4 line: all four ok, no enclave FAIL" 0 $? "$PF/good-after.log"
+pf base-after "$R_BASE" 7.0.0-1014-aws "$PF/dmesg-none" --after-reboot
+[ "$(ne_fails "$PF/base-after.log")" = 3 ]
+check "REJECT --after-reboot on the live host's base-kernel state: the kernel, pcie_slots_total and BAR4 all FAIL" 0 $? "$PF/base-after.log"
+pf stock-kernel "$R_GOOD" 7.0.0-1014-aws "$PF/dmesg-bar4" --after-reboot
+[ "$(ne_fails "$PF/stock-kernel.log")" = 1 ]
+check "REJECT --after-reboot on any kernel but 6.18.56-nitro-ga, even with every other check met" 0 $? "$PF/stock-kernel.log" '^FAIL: running kernel 7\.0\.0-1014-aws, not 6\.18\.56-nitro-ga'
+pf nodev "$R_NODEV" 6.18.56-nitro-ga "$PF/dmesg-bar4" --after-reboot
+[ "$(ne_fails "$PF/nodev.log")" = 1 ]
+check "REJECT --after-reboot with no /dev/nitro_enclaves" 0 $? "$PF/nodev.log" '^FAIL: /dev/nitro_enclaves absent'
+pf file "$R_FILE" 6.18.56-nitro-ga "$PF/dmesg-bar4" --after-reboot
+[ "$(ne_fails "$PF/file.log")" = 1 ]
+check "REJECT --after-reboot when /dev/nitro_enclaves is a regular file, not a character device" 0 $? "$PF/file.log" '^FAIL: /dev/nitro_enclaves absent'
+pf noslots "$R_BASE" 6.18.56-nitro-ga "$PF/dmesg-bar4" --after-reboot
+[ "$(ne_fails "$PF/noslots.log")" = 1 ]
+check "REJECT --after-reboot with no pcie_slots_total" 0 $? "$PF/noslots.log" '^FAIL: no pcie_slots_total'
+pf nobar4 "$R_GOOD" 6.18.56-nitro-ga "$PF/dmesg-none" --after-reboot
+[ "$(ne_fails "$PF/nobar4.log")" = 1 ]
+check "REJECT --after-reboot with no BAR4 line in dmesg" 0 $? "$PF/nobar4.log" "^FAIL: dmesg has no 'BAR4 notify' line"
+rc=0; pf badarg "$R_GOOD" 6.18.56-nitro-ga "$PF/dmesg-bar4" --after-rebot || rc=$?
+check "REJECT an unknown argument before any check runs" 1 "$rc" "$PF/badarg.log" '^FATAL: unknown argument: --after-rebot'
+
+echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]] || exit 1
-echo "containerd gate, kernel config assertion, root filesystem boot check and IMDS token handling proven both ways in the real scripts."
+echo "containerd gate, kernel config assertion, root filesystem boot check, IMDS token handling and the post-reboot enclave checks proven both ways in the real scripts."
