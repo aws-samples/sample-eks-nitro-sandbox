@@ -313,7 +313,19 @@ Handling connection for 8080
 Then open <http://127.0.0.1:8080> and pick the `nitro-sandbox` namespace. Temporal's own
 [self-hosted guidance](https://docs.temporal.io/self-hosted-guide/deployment) is to keep
 the server off the public internet, like a database, which is what ClusterIP and the
-port-forward do here.
+port-forward do here. This is the Workflows list it shows:
+
+![The Temporal Web UI's Workflows page for the nitro-sandbox namespace, titled "10
+Workflows" with status chips reading 1 RUNNING, 8 COMPLETED and 1 FAILED. The table lists
+ten sandbox-lifecycle-lifecycle runs of type SandboxLifecycleWorkflow, each with its own
+Run ID and start time, one near the top still shown as RUNNING and one as
+FAILED.](images/temporal-ui-workflows-list.png)
+
+*The Workflows list for the `nitro-sandbox` namespace, reached through the port-forward
+above. This capture is from a separate run of this sample on the same cluster, after the
+walkthrough below, so it could show a mix of statuses rather than only the one completed
+run the rest of this page follows; the RUNNING and FAILED entries are other runs of the
+same workflow, started the same way.*
 
 ## Step 3: Build the Worker and deploy it
 
@@ -882,7 +894,21 @@ clean up at the end of this page confirms the volume behind that claim is gone.
 
 ## Step 10: The activity timeline, out of the durable history
 
-The Web UI's Workflow page lists the run and the ordered activities that drove the sandbox.
+The Web UI's Workflow page lists the run and the ordered activities that drove the sandbox:
+
+![The Temporal Web UI's Workflow page for run 01a182bb-4f30-7e67-ad2f-113c77c2f752 of
+sandbox-lifecycle-lifecycle, status COMPLETED, start and end times and a 3m 27s duration
+matching the text history below. Its Timeline tab is open, showing one bar per activity in
+order: whoami, provision_sandbox, read_sandbox_signals, a run_step marked with a retry icon
+and "2", suspend_sandbox, a long idle gap during the suspend, resume_sandbox, whoami,
+run_step, read_sandbox_signals and delete_sandbox, each against an elapsed-time
+axis.](images/temporal-ui-workflow-timeline.png)
+
+*The Timeline tab for the exact run this step's text history is taken from (Run ID
+`01a182bb-4f30-7e67-ad2f-113c77c2f752`, same start and end timestamps). The retried
+`run_step` shows as "2" on its bar, and the gap between `suspend_sandbox` and
+`resume_sandbox` is the server-side timer this step's notes explain below.*
+
 The same timeline reads out of the server's history as text:
 
 ```bash
