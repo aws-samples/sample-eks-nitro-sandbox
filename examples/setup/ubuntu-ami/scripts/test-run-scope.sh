@@ -17,13 +17,18 @@
 #                                    volumes listed, deleted when unattached and confirmed gone
 #                                    (RR-003); --list-runs shows only resources whose tags were read
 #                                    and match (RR-005); a role re-tagged before its first change is
-#                                    left alone (RR-009)
+#                                    left alone (RR-009); both role tags re-read right before every
+#                                    policy detach, inline-policy delete and role delete, so a role
+#                                    re-tagged after its first change keeps the rest (RR2-001)
 #   3  scripts/00b-stage-bucket.sh   revoke confirms the objects and the policy are gone, or fails
 #                                    (M5), and touches nothing unless the bucket, the role and the
-#                                    policy are this run's (RR-002); create rolls back on any failed
-#                                    step after the bucket exists (RR-004)
+#                                    policy are this run's (RR-002), re-read right before each
+#                                    object delete and the policy delete; create rolls back on any
+#                                    failed step after the bucket exists (RR-004)
 #   4  scripts/lib/common.sh         derived names checked against the API name limits (H2); new
-#                                    run ids are random and their folder is reserved (RR-006)
+#                                    run ids carry entropy and their folder is reserved (RR-006),
+#                                    proven with injected entropy, a forced collision included
+#                                    (RR2-005)
 #   5  setup.sh                      the current-run pointer survives a read-only stop (RR-014)
 # Section 1 also proves RR-001: an existing role is validated whole, staging-policy document
 # included, before anything is attached.
@@ -84,6 +89,19 @@ st() { export FAKE_AWS_STATE="$WORK/$1.state.json" FAKE_AWS_LOG="$WORK/$1.calls.
 # calls <case> <regex>: number of logged calls whose "service op" matches
 calls() { python3 -c 'import json,re,sys; print(sum(1 for l in open(sys.argv[1]) if re.search(sys.argv[2], json.loads(l)["call"])))' "$WORK/$1.calls.jsonl" "$2"; }
 MUTATING='create-|attach-|put-|tag-|add-|delete-|detach-|remove-|terminate-|deregister-'
+# after_read <case> <read call> <option> <name> <n>: the "service op" of every call whose <option>
+# is <name>, after the n-th <read call> with that <option> <name> (exit 3: fewer than n such reads)
+after_read() { python3 -c '
+import json, sys
+log, read, opt, name, n = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
+calls = [json.loads(l) for l in open(log)]
+names = lambda a: any(a[i] == opt and a[i + 1] == name for i in range(len(a) - 1))
+idx = [i for i, c in enumerate(calls) if c["call"] == read and names(c["argv"])]
+if len(idx) < n:
+    sys.exit(3)
+for c in calls[idx[n - 1] + 1:]:
+    if names(c["argv"]):
+        print(c["call"])' "$WORK/$1.calls.jsonl" "$2" "$3" "$4" "$5"; }
 TRUST='{"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"Service": "ec2.amazonaws.com"}, "Action": "sts:AssumeRole"}]}'
 
 # iam_state <file> <role-tags-json> <profile-roles-json> <extra-attached-json> <inline-json> <trust-json>
@@ -235,6 +253,10 @@ s["iam"]["profiles"]["ubuntu-ami-sample-otherx-build"] = {"Tags": tags("otherx",
 s["eks"]["nodegroups"]["example-cluster/ubuntu-ami-sample-otherx-ng"] = {"status": "ACTIVE", "tags": {"ManagedBy": "someone-else", "RunId": "otherx"}}
 if variant == "role-drift":  # run 1's node role is re-tagged for another run after the first tag read
     s["iam"]["roles"]["ubuntu-ami-sample-testrun1-node"]["TagsAfterFirstRead"] = tags("testrun2")
+if variant == "late-retag":  # run 1's build role is re-tagged for another run after two tag reads
+    s["iam"]["roles"]["ubuntu-ami-sample-testrun1-build"]["TagsAfterReads"] = {"after": 2, "tags": tags("testrun2")}
+if variant.startswith("gone-after-"):  # someone else deletes run 1's build role after n tag reads
+    s["iam"]["roles"]["ubuntu-ami-sample-testrun1-build"]["GoneAfterReads"] = int(variant.rsplit("-", 1)[1])
 if variant == "vol-in-use":  # a volume of run 1 still attached to an instance clean.sh does not terminate
     e["volumes"].append({"VolumeId": "vol-testrun1-stuck", "State": "in-use", "AttachedTo": "i-someone-else", "Tags": tags("testrun1")})
 if variant == "drift":       # the by-id re-check sees another run's tags on run 1's instance
@@ -308,6 +330,22 @@ assert s3, "no s3 calls"
 for a in s3:
     assert "--expected-bucket-owner" in a and a[a.index("--expected-bucket-owner") + 1] == "111122223333", a
 PY
+python3 - "$FAKE_AWS_LOG" <<'PY'; ok "  ... (RR2-001) each detach, inline-policy delete and role delete comes right after a read of that role's tags, each profile change right after a read of the profile's" $?
+import json, sys
+calls = [json.loads(l)["argv"] for l in open(sys.argv[1])]
+val = lambda a, o: a[a.index(o) + 1] if o in a else None
+n = 0
+for i, a in enumerate(calls):
+    for ops, read, opt in ((("detach-role-policy", "delete-role-policy", "delete-role"), "list-role-tags", "--role-name"),
+                           (("remove-role-from-instance-profile", "delete-instance-profile"), "list-instance-profile-tags", "--instance-profile-name")):
+        if a[0] == "iam" and a[1] in ops:
+            p = calls[i - 1]
+            assert p[:2] == ["iam", read] and val(p, opt) == val(a, opt), (a, p)
+            n += 1
+# build role: one detach, one inline delete, the delete; node role: one detach, the delete;
+# the profile: remove the build role, the delete
+assert n == 7, n
+PY
 rm -f "$ISSUE10_RUN_DIR/out/run-state.env"
 
 python3 -c 'import json,sys; c=[json.loads(l)["argv"] for l in open(sys.argv[1])]; d=[a for a in c if a[:2]==["ec2","delete-volume"]]; sys.exit(0 if sorted(a[a.index("--volume-id")+1] for a in d)==["vol-testrun1-data","vol-testrun1-left"] else 1)' "$FAKE_AWS_LOG"
@@ -339,6 +377,34 @@ python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); r=s["iam"]["roles"]
   && [ "$(python3 -c 'import json,sys; print(sum(1 for l in open(sys.argv[1]) if json.loads(l)["argv"][:2]==["iam","detach-role-policy"] and "ubuntu-ami-sample-testrun1-node" in json.loads(l)["argv"]))' "$FAKE_AWS_LOG")" = 0 ]
 ok "  ... its managed policy is still attached and no detach call named it" $?
 [[ " $(remaining) " != *" ubuntu-ami-sample-testrun1-build "* ]]; ok "  ... while the unchanged build role was removed" $?
+# RR2-001: the reviewer's late re-tag. Read 1 of the build role's tags is the listing (iam_state),
+# read 2 the re-check right before its first change (the detach of its one managed policy). The
+# other owner re-tags it after that read, while the detach is in flight, so every read from read 3
+# on returns the new tags (TagsAfterReads after=2): read 3 is the re-check right before the delete
+# of its inline staging policy. Nothing may change the role after that.
+st latetag; two_runs "$FAKE_AWS_STATE" late-retag
+rc=0; STUB_NS_JSON='{"metadata": {"labels": {"app.kubernetes.io/part-of": "ubuntu-ami-sample", "app.kubernetes.io/instance": "testrun1"}}}' cl latetag --delete-aws-resources --run-id testrun1 || rc=$?
+check "REJECT (RR2-001) a role re-tagged after its first change: the clean up stops there and is incomplete" 1 "$rc" "$WORK/latetag.log" 'role ubuntu-ami-sample-testrun1-build no longer carries ManagedBy=ubuntu-ami-sample and RunId=testrun1 before deleting inline policy ubuntu-ami-sample-testrun1-stage-read'
+out=$(after_read latetag "iam list-role-tags" --role-name ubuntu-ami-sample-testrun1-build 3) && ! printf '%s\n' "$out" | grep -qE "$MUTATING"
+ok "  ... no mutating IAM call names the role after read 3, the first that returned the new tags" $?
+python3 -c '
+import json, sys
+s = json.load(open(sys.argv[1]))["iam"]["roles"]["ubuntu-ami-sample-testrun1-build"]
+c = [json.loads(l)["argv"] for l in open(sys.argv[2])]
+m = [a[1] for a in c if a[0] == "iam" and a[1] in ("detach-role-policy", "delete-role-policy", "delete-role") and "ubuntu-ami-sample-testrun1-build" in a]
+sys.exit(0 if m == ["detach-role-policy"] and list(s["Inline"]) == ["ubuntu-ami-sample-testrun1-stage-read"] else 1)' "$FAKE_AWS_STATE" "$FAKE_AWS_LOG"
+ok "  ... only the detach made before the re-tag named it: its inline staging policy is still on it and no delete call named it" $?
+# RR2-001: a role that disappears after it was listed. Gone from read 2 (before its first change)
+# and from read 4 (before delete-role): either way the clean up says so and is incomplete, and no
+# change names the role after the read that found it gone.
+for g in 1 3; do
+  st "rgone$g"; two_runs "$FAKE_AWS_STATE" "gone-after-$g"
+  rc=0; STUB_NS_JSON='{"metadata": {"labels": {"app.kubernetes.io/part-of": "ubuntu-ami-sample", "app.kubernetes.io/instance": "testrun1"}}}' cl "rgone$g" --delete-aws-resources --run-id testrun1 || rc=$?
+  check "REJECT (RR2-001) a role that disappears after it was listed, at tag read $((g + 1)): the clean up stops and is incomplete" 1 "$rc" "$WORK/rgone$g.log" \
+    'role ubuntu-ami-sample-testrun1-build disappeared after it was listed'
+  out=$(after_read "rgone$g" "iam list-role-tags" --role-name ubuntu-ami-sample-testrun1-build "$((g + 1))") && ! printf '%s\n' "$out" | grep -qE "$MUTATING"
+  ok "  ... no mutating IAM call names the role after the read that found it gone" $?
+done
 
 st keep; two_runs "$FAKE_AWS_STATE"
 rc=0; cl keepdry --dry-run --keep-ami --run-id testrun1 || rc=$?
@@ -466,6 +532,9 @@ if variant == "role-untagged": role["Tags"] = []
 if variant == "doc-other-bucket": role["Inline"]["ubuntu-ami-sample-testrun1-stage-read"] = other_doc
 if variant == "doc-broad": role["Inline"]["ubuntu-ami-sample-testrun1-stage-read"] = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s3:*", "Resource": "*"}]}
 if variant == "no-bucket": bucket = None
+# another run's tags, set between two reads: from read n + 1 on (bucket) or the second (role)
+if variant in ("bucket-late-1", "bucket-late-2"): bucket["TagsAfterReads"] = {"after": int(variant[-1]), "tags": [own[0], {"Key": "RunId", "Value": "testrun2"}]}
+if variant == "role-late": role["TagsAfterFirstRead"] = [own[0], {"Key": "RunId", "Value": "testrun2"}]
 s = {"account": "111122223333", "iam": {"roles": {"ubuntu-ami-sample-testrun1-build": role}, "profiles": {}},
      "s3": {"buckets": {"ubuntu-ami-sample-stage-testrun1-abcdef": bucket} if bucket else {}}}
 json.dump(s, open(path, "w"))
@@ -512,6 +581,33 @@ rv-docother@doc-other-bucket@@is not this run.s read for s3://ubuntu-ami-sample-
 rv-docbroad@doc-broad@@is not this run.s read@REJECT (RR-002) a broad document under the staging-policy name
 rv-docerr@@iam get-role-policy||AccessDenied@could not read inline policy@REJECT (RR-002) when the policy document cannot be read
 CASES
+# RR2-001 pattern in revoke: the bucket's two tags are read again right before each object delete,
+# and the role's two tags and the policy document right before the policy delete. Bucket read 1 is
+# the ownership check, read 2 the re-check before a.zip, read 3 the one before b.tgz; role read 1
+# is the ownership check, read 2 the re-check before the policy delete.
+RES="$ISSUE10_RUN_DIR/out/runs/testrun1/stage-residue.txt"
+objs() { python3 -c 'import json,sys; print(" ".join(sorted(json.load(open(sys.argv[1]))["s3"]["buckets"]["ubuntu-ami-sample-stage-testrun1-abcdef"]["objects"])))' "$FAKE_AWS_STATE"; }
+st rv-blate1; stage_state "$FAKE_AWS_STATE" bucket-late-1; rm -f "$RES"
+rc=0; rv rv-blate1 ubuntu-ami-sample-stage-testrun1-abcdef a.zip b.tgz || rc=$?
+check "REJECT (RR2-001) a bucket re-tagged after its ownership check: no object deleted, residue recorded" 1 "$rc" "$WORK/rv-blate1.log" 'object s3://ubuntu-ami-sample-stage-testrun1-abcdef/testrun1/a.zip: not deleted: bucket ubuntu-ami-sample-stage-testrun1-abcdef does not carry ManagedBy=ubuntu-ami-sample and RunId=testrun1'
+out=$(after_read rv-blate1 "s3api get-bucket-tagging" --bucket ubuntu-ami-sample-stage-testrun1-abcdef 2) && [ "$(calls rv-blate1 '^s3api delete-object$')" = 0 ] \
+  && [ "$(calls rv-blate1 '^iam delete-role-policy$')" = 0 ] && [ "$(objs)" = "testrun1/a.zip testrun1/b.tgz" ] \
+  && grep -q 'testrun1/b.tgz: not deleted' "$RES" && grep -q 'inline policy ubuntu-ami-sample-testrun1-stage-read on ubuntu-ami-sample-testrun1-build: not deleted' "$RES"
+ok "  ... no delete-object after the re-tag (none at all), both objects and the policy kept and named in the residue" $?
+st rv-blate2; stage_state "$FAKE_AWS_STATE" bucket-late-2; rm -f "$RES"
+rc=0; rv rv-blate2 ubuntu-ami-sample-stage-testrun1-abcdef a.zip b.tgz || rc=$?
+check "REJECT (RR2-001) a bucket re-tagged after the first object delete: the second is not deleted" 1 "$rc" "$WORK/rv-blate2.log" 'object s3://ubuntu-ami-sample-stage-testrun1-abcdef/testrun1/b.tgz: not deleted: bucket .* does not carry'
+out=$(after_read rv-blate2 "s3api get-bucket-tagging" --bucket ubuntu-ami-sample-stage-testrun1-abcdef 3) && ! printf '%s\n' "$out" | grep -qE "$MUTATING" \
+  && [ "$(calls rv-blate2 '^s3api delete-object$')" = 1 ] && [ "$(objs)" = "testrun1/b.tgz" ] && grep -q 'testrun1/b.tgz: not deleted' "$RES"
+ok "  ... only a.zip, deleted before the re-tag, is gone; no mutating call names the bucket after read 3, the first with the new tags" $?
+st rv-rlate; stage_state "$FAKE_AWS_STATE" role-late; rm -f "$RES"
+rc=0; rv rv-rlate ubuntu-ami-sample-stage-testrun1-abcdef a.zip b.tgz || rc=$?
+check "REJECT (RR2-001) a build role re-tagged after its ownership check: its policy is not deleted, residue recorded" 1 "$rc" "$WORK/rv-rlate.log" 'inline policy ubuntu-ami-sample-testrun1-stage-read on ubuntu-ami-sample-testrun1-build: not deleted: role ubuntu-ami-sample-testrun1-build does not carry'
+out=$(after_read rv-rlate "iam list-role-tags" --role-name ubuntu-ami-sample-testrun1-build 2) && ! printf '%s\n' "$out" | grep -qE "$MUTATING" \
+  && [ "$(calls rv-rlate '^iam delete-role-policy$')" = 0 ] && grep -q 'stage-read on ubuntu-ami-sample-testrun1-build: not deleted' "$RES" \
+  && python3 -c 'import json,sys; sys.exit(0 if list(json.load(open(sys.argv[1]))["iam"]["roles"]["ubuntu-ami-sample-testrun1-build"]["Inline"]) == ["ubuntu-ami-sample-testrun1-stage-read"] else 1)' "$FAKE_AWS_STATE"
+ok "  ... no delete-role-policy after the re-tag; the policy is still on the role and named in the residue" $?
+rm -f "$RES"
 
 # RR-004: create, and the rollback that runs when any step after the bucket exists fails.
 printf 'scripts\n' > "$WORK/stage-a.tgz"; printf 'runtime\n' > "$WORK/stage-b.zip"
@@ -606,19 +702,45 @@ rc=0; RESOURCE_PREFIX=Ubuntu_Sample names 20261028t221500z > "$WORK/names-case.l
 check "REJECT a prefix with characters a bucket name cannot carry" 1 "$rc" "$WORK/names-case.log" 'must be lowercase'
 rc=0; names 'Bad-Run' > "$WORK/names-run.log" 2>&1 || rc=$?
 check "REJECT a malformed run id" 1 "$rc" "$WORK/names-run.log" 'no valid RUN_ID'
-# RR-006: a new id carries random hex, and its run folder is reserved with a plain mkdir.
-ids=$(bash -c '. "$1/lib/common.sh" >/dev/null; for i in $(seq 1 20); do new_run_id; done' _ "$HERE" 2>&1)
+# RR-006, RR2-005: the entropy new_run_id reads is injected, so these cases are deterministic.
+# Stubs first on PATH: `od` answers new_run_id's 2-byte read of /dev/urandom with a counter
+# (STUB_OD=count) or with the same two bytes every time (STUB_OD='be ef'), and `date` answers its
+# timestamp format with one fixed second (any other date call goes to the real date).
+ENT="$WORK/entropy"; mkdir -p "$ENT"
+printf '%s\n' '#!/bin/bash' \
+  '[ "$*" = "-An -N2 -tx1 /dev/urandom" ] || { echo "STUB od: unexpected call: $*" >&2; exit 97; }' \
+  'if [ "$STUB_OD" = count ]; then' \
+  '  n=$(( $(cat "$STUB_OD_COUNT" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STUB_OD_COUNT"' \
+  '  printf " %02x %02x\n" $((n / 256)) $((n % 256))' \
+  'else printf " %s\n" "$STUB_OD"; fi' > "$ENT/od"
+printf '%s\n' '#!/bin/bash' \
+  '[ "$*" = "-u +%Y%m%dt%H%M%Sz" ] && { echo 20261028t221500z; exit 0; }' \
+  "exec $(command -v date) \"\$@\"" > "$ENT/date"
+chmod +x "$ENT/od" "$ENT/date"
+newids() { # newids <STUB_OD> <n>: n new_run_id calls in one shell, the stubs first on PATH
+  PATH="$ENT:$PATH" STUB_OD="$1" STUB_OD_COUNT="$WORK/od.count" bash -c '. "$1/lib/common.sh" >/dev/null; for i in $(seq 1 "$2"); do new_run_id; done' _ "$HERE" "$2"
+}
+rm -f "$WORK/od.count"; ids=$(newids count 20 2>&1)
 printf '%s\n' "$ids" > "$WORK/ids.log"
-[ "$(printf '%s\n' "$ids" | sort -u | wc -l)" = 20 ] && ! printf '%s\n' "$ids" | grep -qvE '^[0-9]{8}t[0-9]{6}z[0-9a-f]{4}$'
-ok "ACCEPT (RR-006) 20 new run ids made in the same second are all different and well formed (20 characters)" $?
-rc=0; out=$(names "$(printf '%s\n' "$ids" | head -n 1)" 2>&1) || rc=$?
-printf '%s\n' "$out" > "$WORK/names-new.log"
-check "  ... and a new id keeps every derived name within the IAM, node group and S3 limits" 0 "$rc" "$WORK/names-new.log" '-ng$'
-reserve() { RUN_ID="$1" bash -c '. "$1/lib/common.sh" >/dev/null && derive_run_names && reserve_run_dir && echo reserved' _ "$HERE" > "$WORK/$2.log" 2>&1; }
-rc=0; reserve 20261028t221500zbeef res1 || rc=$?
-check "ACCEPT (RR-006) reserving a new run folder" 0 "$rc" "$WORK/res1.log" 'reserved'
-rc=0; reserve 20261028t221500zbeef res2 || rc=$?
-check "REJECT (RR-006) reserving the same run folder a second time (another run already has the id)" 1 "$rc" "$WORK/res2.log" 'already exists: another run has id 20261028t221500zbeef'
+[ "$(cat "$WORK/od.count")" = 20 ] && [ "$(printf '%s\n' "$ids" | sort -u | wc -l)" = 20 ] && ! printf '%s\n' "$ids" | grep -qvE '^20261028t221500z[0-9a-f]{4}$'
+ok "ACCEPT (RR-006, RR2-005) 20 new run ids in one second, each from its own injected 2 bytes, are all different and well formed (20 characters)" $?
+real=$(bash -c '. "$1/lib/common.sh" >/dev/null; new_run_id' _ "$HERE" 2>&1)
+rc=0; out=$(names "$real" 2>&1) || rc=$?
+printf '%s\n%s\n' "$real" "$out" > "$WORK/names-new.log"
+[[ "$real" =~ ^[0-9]{8}t[0-9]{6}z[0-9a-f]{4}$ ]] || rc=1
+check "  ... and a new id from the real od and date is well formed and keeps every derived name within the IAM, node group and S3 limits" 0 "$rc" "$WORK/names-new.log" '-ng$'
+# The collision path, forced: both stubs give the same second and the same 2 bytes, so two starts
+# get the same id from new_run_id. The plain-mkdir reservation gives the folder to the first start
+# and refuses the second.
+reserve() { # reserve <case>: one start, as setup.sh makes it: a new id, its names, its folder
+  PATH="$ENT:$PATH" STUB_OD='be ef' bash -c '. "$1/lib/common.sh" >/dev/null && RUN_ID=$(new_run_id) && echo "id $RUN_ID" && derive_run_names && reserve_run_dir && echo reserved' _ "$HERE" > "$WORK/$1.log" 2>&1
+}
+rc=0; reserve res1 || rc=$?
+check "ACCEPT (RR-006, RR2-005) the first start reserves the folder of its new id" 0 "$rc" "$WORK/res1.log" '^reserved$'
+rc=0; reserve res2 || rc=$?
+check "REJECT (RR-006, RR2-005) a second start that new_run_id gave the same id (same second, same 2 bytes): its reservation is refused" 1 "$rc" "$WORK/res2.log" 'already exists: another run has id 20261028t221500zbeef'
+grep -qx 'id 20261028t221500zbeef' "$WORK/res1.log" && grep -qx 'id 20261028t221500zbeef' "$WORK/res2.log" && ! grep -q '^reserved$' "$WORK/res2.log"
+ok "  ... both starts got the same id from new_run_id, and only the first reserved it" $?
 
 echo
 echo "== 5/5 the current-run pointer: setup.sh (RR-014) ======================================="

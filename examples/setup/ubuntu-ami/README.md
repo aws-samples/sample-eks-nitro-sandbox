@@ -294,6 +294,9 @@ $EDITOR config.env
 
 ./setup.sh --prepare   # local only: verify every pinned input and the runtime archive
 ./setup.sh             # check the cluster, build, bake, verify, join, and run the pods
+# or in two stages:
+#   ./setup.sh --ami-only              # build, verify and tag the AMI; no cluster needed
+#   RUN_ID=<id> ./setup.sh --join      # later: join that run's AMI and run the pods
 ./test.sh              # read live node and guest evidence again
 ./clean.sh --dry-run   # preview what a full clean up would remove
 ```
@@ -326,6 +329,29 @@ and `RunId=<RUN_ID>`, including the verification instance and, through the launc
 every node instance and volume. A resource with the run's name is reused only when it carries
 both tags; a mismatch or a failed lookup stops the run. The namespace carries
 `app.kubernetes.io/part-of=<RESOURCE_PREFIX>` and `app.kubernetes.io/instance=<RUN_ID>`.
+
+**Build the AMI now, join it later.** `./setup.sh --ami-only` checks the inputs, runs steps 2
+to 7 below through the `BtfValidated=true` tag, records the AMI ID in the run's
+`tmp/issue10/run/out/runs/<run-id>/run-state.env`, and stops. It never reads or changes the
+cluster, so it needs no `KUBE_CONTEXT`, no `vpc-cni` add-on and no `NODE_SUBNET_IDS`. The
+`cilium-ubuntu` sample (issue #11) needs only this AMI. `RUN_ID=<id> ./setup.sh --join` does
+step 8 for that run: before it changes anything, it checks that the run's AMI carries
+`ManagedBy`, the run's `RunId` and `BtfValidated=true`, that `KUBE_CONTEXT` is
+`CLUSTER_NAME`, and that the cluster prerequisites in step 1 hold; then it joins the node group
+and applies the pods. It never builds an AMI. Without either flag, `./setup.sh` does both in
+one run and checks the cluster first, before anything is created.
+
+**Every wait has a deadline.** The AWS CLI waiters give up after about 100 seconds for an SSM
+command and 600 seconds for an AMI, which is less than the kernel build and a large snapshot
+can take, so [`scripts/lib/aws-wait.sh`](scripts/lib/aws-wait.sh) polls instead. An SSM
+command is read about every 15 seconds until it ends, for up to its own `executionTimeout`
+plus 300 seconds, and `Failed`, `Cancelled`, `TimedOut`, `Undeliverable` or `Terminated`
+stops the run. A new AMI is read until it is `available`, for up to `AMI_WAIT_SECONDS`
+(default 3600, in `config.env`); `failed`, `error` or the deadline stops the run and names the
+AMI. After the reboot onto the new kernel, the build host must answer with a new boot ID and
+`uname -r` equal to `6.18.56-nitro-ga` within `REBOOT_WAIT_SECONDS` (default 1200) before the
+next stage runs, and the run's evidence records both boot IDs. A read that keeps failing ends
+in "could not determine", which stops the run.
 
 **1. Check the inputs and the cluster.** `./setup.sh --prepare` verifies every pinned input
 and the runtime archive on your workstation and creates nothing. A full `./setup.sh` then
@@ -620,6 +646,7 @@ bash scripts/test-launch-specs.sh     # IMDSv2 hop limit 1, enclaves and run tag
 bash scripts/test-run-scope.sh        # per-run IAM, run-scoped clean up, IAM by name, every failed lookup, --list-runs, staging revocation
 bash scripts/test-image-checks.sh     # containerd wiring, AppArmor stage, package holds, bake residue, verify-image.py (Python 3.11+)
 bash scripts/test-btf-tag.sh          # BtfValidated=true only after both fresh-instance checks pass, only on this run's AMI
+bash scripts/test-setup-flow.sh       # bounded SSM, AMI, status and reboot waits; --ami-only and --join, both ways
 bash scripts/test-local-paths.sh      # local state only under the repository's tmp/
 ```
 

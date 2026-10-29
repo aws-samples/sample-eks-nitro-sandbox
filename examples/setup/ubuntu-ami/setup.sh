@@ -13,6 +13,18 @@
 #                            #   archive locally; create nothing
 #   ./setup.sh --dry-run     # alias of --prepare (kept for older docs)
 #   ./setup.sh               # run the whole build and join
+#   ./setup.sh --ami-only    # steps 1 to 9 only: build, verify and tag the AMI; no cluster read,
+#                            #   no node group (issue #11 needs only the AMI). Records AMI_ID in
+#                            #   the run's run-state.env.
+#   RUN_ID=<id> ./setup.sh --join
+#                            # step 10 only, for a run whose AMI is built: checks the AMI carries
+#                            #   both run tags and BtfValidated=true, the kube context and the
+#                            #   cluster prerequisites, then joins. It never rebuilds.
+#
+# Waits are bounded polls (scripts/lib/aws-wait.sh), not the AWS CLI waiters, whose caps
+# (about 100 s for an SSM command, 600 s for an AMI) are shorter than the kernel build and the
+# AMI snapshot. After the reboot onto the new kernel, the build host must answer with a new boot
+# id and the new kernel release before the next stage runs.
 #
 # This script does not SSH anywhere: the build host is reached through AWS Systems Manager Run
 # Command, and the build security group carries no inbound rule. Files reach the build host
@@ -28,14 +40,20 @@ set -euo pipefail
 SAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/common.sh
 . "$SAMPLE_DIR/scripts/lib/common.sh"
+# shellcheck source=scripts/lib/aws-wait.sh
+. "$SAMPLE_DIR/scripts/lib/aws-wait.sh"
 
 PREPARE_ONLY=0
+MODE=full
 for arg in "$@"; do
   case "$arg" in
     --prepare|--dry-run) PREPARE_ONLY=1 ;;
-    *) die "unknown argument: $arg (supported: --prepare, --dry-run)" ;;
+    --ami-only) [ "$MODE" = full ] || die "--ami-only and --join go alone"; MODE=ami ;;
+    --join) [ "$MODE" = full ] || die "--ami-only and --join go alone"; MODE=join ;;
+    *) die "unknown argument: $arg (supported: --prepare, --dry-run, --ami-only, --join)" ;;
   esac
 done
+[[ "$PREPARE_ONLY" == 0 || "$MODE" == full ]] || die "--prepare goes alone"
 
 command -v aws >/dev/null 2>&1 || die "aws CLI v2 is required"
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
@@ -48,8 +66,76 @@ command -v session-manager-plugin >/dev/null 2>&1 || warn "session-manager-plugi
 # the current run in $RUN_STATE_FILE (what clean.sh and test.sh act on) only just before the
 # first AWS change, so a run that stops on a read-only check never replaces the previous one.
 if [ -n "${RUN_ID:-}" ]; then RESUME=1; else RUN_ID=$(new_run_id); RESUME=0; fi
+[[ "$MODE" != join || "$RESUME" == 1 ]] || die "--join needs RUN_ID=<id>, the run whose AMI ./setup.sh --ami-only built (it prints the id)"
 export RUN_ID
 derive_run_names
+
+# Private run evidence, under the run's folder in the repository's tmp/.
+open_evidence() { # open_evidence <new|append>
+  EVIDENCE="$EVIDENCE_DIR"
+  export EVIDENCE_DIR
+  mkdir -p "$EVIDENCE"
+  EVIDENCE_ENV="$EVIDENCE/run-evidence.env"
+  SUMMARY="$EVIDENCE/summary.txt"
+  [ "$1" = append ] || { : > "$EVIDENCE_ENV"; : > "$SUMMARY"; }
+}
+record() { printf '%s=%q\n' "$1" "$2" >> "$EVIDENCE_ENV"; printf '%s: %s\n' "$1" "$2" >> "$SUMMARY"; }
+
+# --- Step 10, shared by the full run and --join: the dedicated tainted node group, then the
+# --- validation workloads. Needs AMI_ID and NODE_ROLE_ARN.
+join_and_apply() {
+  log "Step 10/10: join the dedicated tainted managed node group (scripts/join-nodegroup.sh)"
+  AMI_ID="$AMI_ID" NODE_ROLE_ARN="$NODE_ROLE_ARN" bash "$SAMPLE_DIR/scripts/join-nodegroup.sh"
+  # No sandbox pod before the node is Ready and advertises the extended resource the RuntimeClass
+  # overhead requests (eks.amazonaws.com/nitro-sandbox > 0).
+  bash "$SAMPLE_DIR/scripts/wait-node-ready.sh"
+  log "applying the validation workloads from deploy/ (rendering @NODEGROUP@ = $NODEGROUP_NAME, namespace $NAMESPACE)"
+  local f apply_tmp="$RUN_STATE_DIR/rendered"
+  mkdir -p "$apply_tmp"
+  for f in pod-ordinary.yaml pod-isolated-sandbox.yaml network-policy.yaml; do
+    sed -e "s/@NODEGROUP@/$NODEGROUP_NAME/g" -e "s/^  namespace: ubuntu-ami-sample$/  namespace: $NAMESPACE/" \
+      "$SAMPLE_DIR/deploy/$f" > "$apply_tmp/$f"
+  done
+  # The sample's namespace: created (with both labels) only when absent, reused only when it
+  # carries app.kubernetes.io/part-of=$RESOURCE_PREFIX and app.kubernetes.io/instance=$RUN_ID; a
+  # failed lookup stops the run (scripts/ensure-namespace.sh).
+  bash "$SAMPLE_DIR/scripts/ensure-namespace.sh"
+  kc apply -n "$NAMESPACE" -f "$apply_tmp/network-policy.yaml"
+  kc apply -n "$NAMESPACE" -f "$apply_tmp/pod-ordinary.yaml"
+  kc apply -n "$NAMESPACE" -f "$apply_tmp/pod-isolated-sandbox.yaml"
+  log "setup.sh complete. AMI=$AMI_ID, node group=$NODEGROUP_NAME. Run ./test.sh to read live evidence."
+  log "private run evidence: $EVIDENCE_ENV and $SUMMARY"
+  log "run $RUN_ID recorded in $RUN_STATE_FILE; ./test.sh and ./clean.sh act on it"
+}
+
+# --- --join: step 10 only, for a run whose AMI is already built and verified ----------------
+# It reads the AMI the run recorded and changes nothing until that AMI carries both run tags
+# and BtfValidated=true, the kube context is CLUSTER_NAME, and the cluster prerequisites hold.
+if [ "$MODE" = join ]; then
+  : "${NODE_SUBNET_IDS:?set NODE_SUBNET_IDS in config.env (space-separated private subnets)}"
+  [ -f "$RUN_STATE_DIR/run-state.env" ] || die "run $RUN_ID has no run state at $RUN_STATE_DIR/run-state.env; build its AMI first with ./setup.sh --ami-only"
+  AMI_ID=$(sed -n 's/^AMI_ID=//p' "$RUN_STATE_DIR/run-state.env" | tail -n 1 || true)
+  [[ "$AMI_ID" =~ ^ami-[0-9a-f]+$ ]] || die "run $RUN_ID has no AMI_ID in $RUN_STATE_DIR/run-state.env; --join never builds one (./setup.sh --ami-only does)"
+  [ -f "$RUN_STATE_DIR/iam.env" ] || die "run $RUN_ID has no $RUN_STATE_DIR/iam.env (its node role); build its AMI first with ./setup.sh --ami-only"
+  # shellcheck source=/dev/null
+  . "$RUN_STATE_DIR/iam.env"
+  [[ "${NODE_ROLE_ARN:-}" == arn:aws*:iam::*:role/"$NODE_ROLE_NAME" ]] || die "run $RUN_ID's iam.env names no node role $NODE_ROLE_NAME"
+  log "--join: run $RUN_ID, AMI $AMI_ID"
+  ami_json=$(aws ec2 describe-images --region "$AWS_REGION" --image-ids "$AMI_ID" --output json) \
+    || die "could not determine whether AMI $AMI_ID is this run's verified AMI (describe-images failed); nothing was changed"
+  printf '%s' "$ami_json" | json_pick 'd["Images"][0].get("Tags", []) if d.get("Images") else []' | tags_match \
+    || die "AMI $AMI_ID does not carry ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; --join refuses an AMI this run did not build. Nothing was changed."
+  btf=$(printf '%s' "$ami_json" | json_get 'next((t["Value"] for t in (d["Images"][0].get("Tags", []) if d.get("Images") else []) if t["Key"] == "BtfValidated"), "")')
+  [ "$btf" = true ] || die "AMI $AMI_ID does not carry BtfValidated=true: no fresh instance from it has passed verification, so --join will not join it. Nothing was changed."
+  require_kube_context
+  open_evidence append
+  log "checking the cluster-wide prerequisites (scripts/00c-check-cluster.sh, read only)"
+  bash "$SAMPLE_DIR/scripts/00c-check-cluster.sh"
+  printf 'RUN_ID=%s\n' "$RUN_ID" > "$RUN_STATE_FILE"
+  log "current run is now $RUN_ID (recorded in $RUN_STATE_FILE)"
+  join_and_apply
+  exit 0
+fi
 
 # --- Step 1: local preflight (no cloud calls) ---------------------------------------------
 log "Step 1/10: local preflight (lock file, pinned public inputs, the operator-supplied runtime archive)"
@@ -74,29 +160,27 @@ if [[ "$PREPARE_ONLY" == 1 ]]; then
 fi
 
 : "${BUILD_SUBNET_ID:?set BUILD_SUBNET_ID in config.env to a private build subnet}"
-: "${NODE_SUBNET_IDS:?set NODE_SUBNET_IDS in config.env (space-separated private subnets)}"
+[ "$MODE" = ami ] || : "${NODE_SUBNET_IDS:?set NODE_SUBNET_IDS in config.env (space-separated private subnets)}"
 
 # --- The cluster kubectl will talk to: KUBE_CONTEXT, checked against CLUSTER_NAME ----------
 # Every kubectl call below passes --context "$KUBE_CONTEXT"; this stops unless that context's
-# server is CLUSTER_NAME's API endpoint, before anything is created anywhere.
-require_kube_context
+# server is CLUSTER_NAME's API endpoint, before anything is created anywhere. --ami-only skips
+# it: steps 1 to 9 never read or change the cluster (no kubectl call, no EKS call).
+[ "$MODE" = ami ] || require_kube_context
 
 if [ "$RESUME" = 1 ]; then mkdir -p "$RUN_STATE_DIR"; else reserve_run_dir; fi
 printf 'RUN_ID=%s\nRESOURCE_PREFIX=%s\nNODEGROUP_NAME=%s\nNAMESPACE=%s\n' "$RUN_ID" "$RESOURCE_PREFIX" "$NODEGROUP_NAME" "$NAMESPACE" > "$RUN_STATE_DIR/run-state.env"
-EVIDENCE="$EVIDENCE_DIR"
-export EVIDENCE_DIR
-mkdir -p "$EVIDENCE"
-EVIDENCE_ENV="$EVIDENCE/run-evidence.env"
-SUMMARY="$EVIDENCE/summary.txt"
-record() { printf '%s=%q\n' "$1" "$2" >> "$EVIDENCE_ENV"; printf '%s: %s\n' "$1" "$2" >> "$SUMMARY"; }
-: > "$EVIDENCE_ENV"; : > "$SUMMARY"
+open_evidence new
 record RUN_ID "$RUN_ID"
 
 # --- Cluster-wide prerequisites, read only, before anything is created ---------------------
 # The managed vpc-cni add-on with network policy on, and the shared isolated-sandbox
 # RuntimeClass. Both are the reader's; this run checks them and stops with the command to run.
-log "checking the cluster-wide prerequisites (scripts/00c-check-cluster.sh, read only)"
-bash "$SAMPLE_DIR/scripts/00c-check-cluster.sh"
+# --ami-only skips them: only the node group (step 10, ./setup.sh --join) needs them.
+if [ "$MODE" = full ]; then
+  log "checking the cluster-wide prerequisites (scripts/00c-check-cluster.sh, read only)"
+  bash "$SAMPLE_DIR/scripts/00c-check-cluster.sh"
+fi
 
 # ---- From here on, real AWS mutation. Everything created is tagged ManagedBy=$RESOURCE_PREFIX
 # ---- and RunId=$RUN_ID, so clean.sh can find and remove this run's resources, and only them,
@@ -182,7 +266,7 @@ build_id=$(aws ec2 run-instances --region "$AWS_REGION" --cli-input-json "file:/
   --query 'Instances[0].InstanceId' --output text)
 record BUILD_INSTANCE_ID "$build_id"
 log "build host: $build_id; waiting for status-ok and SSM Online"
-aws ec2 wait instance-status-ok --region "$AWS_REGION" --instance-ids "$build_id"
+wait_status_ok "$build_id" || die "build host $build_id never reached status-ok"
 ssm_online() {
   local id="$1" state
   for _ in $(seq 1 30); do
@@ -197,21 +281,16 @@ ssm_online() {
 ssm_online "$build_id" || die "build host $build_id never reported Online to SSM"
 
 # send_and_wait <instance-id> <timeout-seconds> <document> <parameters-json> : run an SSM
-# document, print its output, and fail unless it reports Success.
+# document, print its output, and fail unless it reports Success. The result is polled until it
+# is final or <timeout> + SSM_WAIT_MARGIN has passed (scripts/lib/aws-wait.sh ssm_run).
 send_and_wait() {
-  local id="$1" timeout="$2" doc="$3" params="$4" cmd_id status
-  cmd_id=$(aws ssm send-command --region "$AWS_REGION" --instance-ids "$id" \
-    --document-name "$doc" --timeout-seconds "$timeout" --parameters "$params" \
-    --query 'Command.CommandId' --output text)
-  aws ssm wait command-executed --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$id" 2>/dev/null || true
-  status=$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$id" \
-    --query 'Status' --output text)
-  aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$id" \
-    --query 'StandardOutputContent' --output text | sed 's/^/  [build] /'
-  if [[ "$status" != "Success" ]]; then
-    aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$id" \
-      --query 'StandardErrorContent' --output text | sed 's/^/  [build:stderr] /' >&2
-    die "SSM $doc failed on $id (status $status)"
+  local id="$1" timeout="$2" doc="$3" params="$4" rc=0
+  ssm_run "$id" "$timeout" "$doc" "$params" || rc=$?
+  [ -z "$SSM_STDOUT" ] || printf '%s\n' "$SSM_STDOUT" | sed 's/^/  [build] /'
+  if [ "$rc" -ne 0 ]; then
+    [ -z "$SSM_STDERR" ] || printf '%s\n' "$SSM_STDERR" | sed 's/^/  [build:stderr] /' >&2
+    [ "$rc" = 1 ] && die "SSM $doc failed on $id (status $SSM_STATUS)"
+    die "SSM $doc on $id: its result could not be determined ($SSM_STATUS); see the warning above"
   fi
 }
 json_str() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
@@ -253,9 +332,17 @@ run_ssm "$build_id" 1800 "$STAGE_ENV/00-preflight.sh" | tee "$EVIDENCE/build-hos
 build_containerd=$(sed -n 's/^  \[build\] CONTAINERD_VERDICT=//p' "$EVIDENCE/build-host-preflight-1.txt" | head -n 1)
 record BUILD_HOST_CONTAINERD "${build_containerd:-<not read>}"
 run_ssm "$build_id" 7200 "$STAGE_ENV/10-kernel.sh" | tee "$EVIDENCE/build-host-kernel.txt"
-log "rebooting build host onto the new kernel"
+# The reboot is confirmed by the host itself, not by SSM's Online ping (which can still be the one
+# from before the reboot): a fresh command must answer with a new boot id and the new kernel.
+KREL="${KERNEL_VERSION}${KERNEL_LOCALVERSION}"
+read_boot_info "$build_id" 120 || die "could not read the build host's boot id before the reboot ($SSM_STATUS)"
+record BUILD_HOST_BOOT_ID_BEFORE "$BOOT_ID"
+log "rebooting build host onto the new kernel $KREL (boot id before: $BOOT_ID)"
 aws ec2 reboot-instances --region "$AWS_REGION" --instance-ids "$build_id"
-sleep 30; ssm_online "$build_id" || die "build host did not return to SSM after reboot"
+wait_rebooted "$build_id" "$BOOT_ID" "$KREL" || die "build host $build_id did not come back on kernel $KREL within ${REBOOT_WAIT_SECONDS} s (see the warning above)"
+record BUILD_HOST_BOOT_ID_AFTER "$BOOT_ID"
+record BUILD_HOST_KERNEL_AFTER_REBOOT "$BOOT_KERNEL"
+log "build host rebooted: boot id $BOOT_ID, kernel $BOOT_KERNEL"
 run_ssm "$build_id" 1800 "$STAGE_ENV/00-preflight.sh" | tee "$EVIDENCE/build-host-preflight-2.txt"   # enclave checks are meaningful now
 run_ssm "$build_id" 1800 "$STAGE_ENV/20-erofs-utils.sh"
 run_ssm "$build_id" 1800 "$STAGE_ENV/30-runtime-install.sh"
@@ -275,8 +362,8 @@ AMI_ID=$(aws ec2 create-image --region "$AWS_REGION" --instance-id "$build_id" \
     "ResourceType=snapshot,Tags=[{Key=Name,Value=$AMI_NAME},$(run_tags_cli)]" \
   --query 'ImageId' --output text)
 record AMI_ID "$AMI_ID"
-log "AMI $AMI_ID registering; waiting until available"
-aws ec2 wait image-available --region "$AWS_REGION" --image-ids "$AMI_ID"
+log "AMI $AMI_ID registering; waiting until available (up to AMI_WAIT_SECONDS=${AMI_WAIT_SECONDS})"
+wait_image_available "$AMI_ID" || die "AMI $AMI_ID did not become available (see the warning above); the build host $build_id is still running: ./clean.sh --dry-run lists both"
 log "AMI available: $AMI_ID"
 log "terminating the build host $build_id (the AMI carries the image now)"
 aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids "$build_id" >/dev/null
@@ -286,30 +373,15 @@ aws ec2 wait instance-terminated --region "$AWS_REGION" --instance-ids "$build_i
 log "Step 9/10: fresh-instance verification on a SECOND instance, then tag BtfValidated=true on success (scripts/verify-fresh-instance.sh)"
 AMI_ID="$AMI_ID" INSTANCE_PROFILE="$INSTANCE_PROFILE" SECURITY_GROUP_ID="$SECURITY_GROUP_ID" \
   SUBNET_ID="$BUILD_SUBNET_ID" bash "$SAMPLE_DIR/scripts/verify-fresh-instance.sh"
+# The verified AMI, for --join and for clean.sh --keep-ami.
+printf 'AMI_ID=%s\n' "$AMI_ID" >> "$RUN_STATE_DIR/run-state.env"
+
+if [ "$MODE" = ami ]; then
+  log "--ami-only: done. AMI $AMI_ID is verified and tagged BtfValidated=true; no node group was created."
+  log "private run evidence: $EVIDENCE_ENV and $SUMMARY"
+  log "join it later with: RUN_ID=$RUN_ID ./setup.sh --join   (keep the AMI on clean up: ./clean.sh --run-id $RUN_ID --delete-aws-resources --keep-ami)"
+  exit 0
+fi
 
 # --- Step 10: join the dedicated tainted node group, then apply the validation workloads ---
-log "Step 10/10: join the dedicated tainted managed node group (scripts/join-nodegroup.sh)"
-AMI_ID="$AMI_ID" NODE_ROLE_ARN="$NODE_ROLE_ARN" bash "$SAMPLE_DIR/scripts/join-nodegroup.sh"
-
-# No sandbox pod before the node is Ready and advertises the extended resource the RuntimeClass
-# overhead requests (eks.amazonaws.com/nitro-sandbox > 0).
-bash "$SAMPLE_DIR/scripts/wait-node-ready.sh"
-log "applying the validation workloads from deploy/ (rendering @NODEGROUP@ = $NODEGROUP_NAME, namespace $NAMESPACE)"
-APPLY_TMP="$RUN_STATE_DIR/rendered"
-mkdir -p "$APPLY_TMP"
-for f in pod-ordinary.yaml pod-isolated-sandbox.yaml network-policy.yaml; do
-  sed -e "s/@NODEGROUP@/$NODEGROUP_NAME/g" -e "s/^  namespace: ubuntu-ami-sample$/  namespace: $NAMESPACE/" \
-    "$SAMPLE_DIR/deploy/$f" > "$APPLY_TMP/$f"
-done
-# The sample's namespace: created (with both labels) only when absent, reused only when it carries
-# app.kubernetes.io/part-of=$RESOURCE_PREFIX and app.kubernetes.io/instance=$RUN_ID; a failed
-# lookup stops the run (scripts/ensure-namespace.sh).
-bash "$SAMPLE_DIR/scripts/ensure-namespace.sh"
-kc apply -n "$NAMESPACE" -f "$APPLY_TMP/network-policy.yaml"
-kc apply -n "$NAMESPACE" -f "$APPLY_TMP/pod-ordinary.yaml"
-kc apply -n "$NAMESPACE" -f "$APPLY_TMP/pod-isolated-sandbox.yaml"
-
-log "setup.sh complete. AMI=$AMI_ID, node group=$NODEGROUP_NAME. Run ./test.sh to read live evidence."
-log "private run evidence: $EVIDENCE_ENV and $SUMMARY"
-printf 'AMI_ID=%s\n' "$AMI_ID" >> "$RUN_STATE_DIR/run-state.env"
-log "run $RUN_ID recorded in $RUN_STATE_FILE; ./test.sh and ./clean.sh act on it"
+join_and_apply

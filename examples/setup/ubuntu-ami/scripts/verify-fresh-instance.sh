@@ -25,6 +25,10 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/common.sh"
 . "$HERE/lib/btf-tag.sh"
+. "$HERE/lib/aws-wait.sh"
+# Each remote check's executionTimeout; its result is polled until final or this plus
+# SSM_WAIT_MARGIN (scripts/lib/aws-wait.sh), never through the 100 s command-executed waiter.
+: "${VERIFY_REMOTE_TIMEOUT:=1800}"
 
 : "${AMI_ID:?set AMI_ID to the sanitized AMI to verify}"
 : "${SECURITY_GROUP_ID:?set SECURITY_GROUP_ID to the build security group (no inbound rules)}"
@@ -61,7 +65,7 @@ terminate_verify_instance() {
 }
 trap 'terminate_verify_instance || true' EXIT
 
-aws ec2 wait instance-status-ok --region "$AWS_REGION" --instance-ids "$instance_id"
+wait_status_ok "$instance_id" || die "verification instance $instance_id never reached status-ok"
 state=""
 for _ in $(seq 1 "${SSM_ONLINE_TRIES:-30}"); do
   state=$(aws ssm describe-instance-information --region "$AWS_REGION" \
@@ -72,18 +76,13 @@ for _ in $(seq 1 "${SSM_ONLINE_TRIES:-30}"); do
 done
 [[ "$state" == "Online" ]] || die "instance $instance_id never reported Online to SSM"
 
-run_remote() { # run_remote <description> <command>: prints the invocation's Status line, then its output
-  local desc="$1" cmd="$2" cmd_id
+run_remote() { # run_remote <description> <command>: prints the invocation's final Status line, then its output
+  local desc="$1" cmd="$2"
   log "running: $desc" >&2
-  cmd_id=$(aws ssm send-command --region "$AWS_REGION" \
-    --instance-ids "$instance_id" \
-    --document-name AWS-RunShellScript \
-    --parameters "commands=[\"$cmd\"]" \
-    --output json | json_get 'd["Command"]["CommandId"]') || { echo "SendCommandFailed"; return 0; }
-  aws ssm wait command-executed --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$instance_id" || true
-  aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$instance_id" --output json \
-    | json_get '[d["Status"], d.get("StandardOutputContent", ""), d.get("StandardErrorContent", "")]' \
-    || echo "GetCommandInvocationFailed"
+  # ssm_run polls until the command is final; a status that never becomes final, or reads that
+  # keep failing, end as "could not determine", which is not "Success".
+  ssm_run "$instance_id" "$VERIFY_REMOTE_TIMEOUT" AWS-RunShellScript "$(ssm_shell_params "$cmd" "$VERIFY_REMOTE_TIMEOUT")" || true
+  printf '%s\n%s\n%s\n' "${SSM_STATUS:-could not determine}" "$SSM_STDOUT" "$SSM_STDERR"
 }
 
 # VERIFY_STATUS is the explicit, testable signal scripts/lib/btf-tag.sh keys the tagging

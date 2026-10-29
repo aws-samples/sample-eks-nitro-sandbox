@@ -130,24 +130,50 @@ case "$cmd" in
     [[ "$bucket" == "${STAGE_BUCKET_PREFIX}-"* ]] || die "bucket $bucket is not this run's staging bucket (${STAGE_BUCKET_PREFIX}-*)"
     residue=()
     err=$(mktemp); trap 'rm -f "$err"' EXIT
+    # bucket_ours / role_ours: read the bucket's two tags (role_ours: the build role's two tags and
+    # its staging policy's document) again; print nothing and return 0 while they are still this
+    # run's, else print why not and return 1.
+    bucket_ours() {
+      local t
+      t=$(aws s3api get-bucket-tagging --bucket "$bucket" --region "$AWS_REGION" --expected-bucket-owner "$account" --output json 2>"$err") \
+        || { echo "could not read the tags of bucket $bucket: $(head -n 1 "$err")"; return 1; }
+      printf '%s' "$t" | json_pick 'd.get("TagSet", [])' | tags_match \
+        || { echo "bucket $bucket does not carry ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}"; return 1; }
+    }
+    role_ours() {
+      local t
+      t=$(aws iam list-role-tags --role-name "$BUILD_ROLE_NAME" --output json 2>"$err") \
+        || { echo "could not read the tags of role $BUILD_ROLE_NAME: $(head -n 1 "$err")"; return 1; }
+      printf '%s' "$t" | json_pick 'd.get("Tags", [])' | tags_match \
+        || { echo "role $BUILD_ROLE_NAME does not carry ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}"; return 1; }
+      t=$(aws iam get-role-policy --role-name "$BUILD_ROLE_NAME" --policy-name "$STAGE_POLICY_NAME" --output json 2>"$err") \
+        || { echo "could not read inline policy $STAGE_POLICY_NAME of $BUILD_ROLE_NAME: $(head -n 1 "$err")"; return 1; }
+      printf '%s' "$t" | role_policy_is "$(render "$DEPLOY_DIR/iam-build-host-policy.json" "$bucket")" \
+        || { echo "inline policy $STAGE_POLICY_NAME of $BUILD_ROLE_NAME is not this run's read for s3://$bucket/$RUN_ID/"; return 1; }
+    }
+    fail_residue() { # record what is left, say so, exit 1
+      printf '%s\n' "${residue[@]}" > "$RUN_STATE_DIR/stage-residue.txt"
+      printf 'FAIL: staging revocation incomplete (recorded in %s):\n' "$RUN_STATE_DIR/stage-residue.txt" >&2
+      printf '  %s\n' "${residue[@]}" >&2
+      exit 1
+    }
     # Ownership first, and nothing is deleted unless all of it holds: the bucket and the build
     # role carry this run's ManagedBy and RunId, and the role's staging policy is exactly this
     # run's read for this bucket (its bucket and its <RUN_ID>/ prefix). Missing, mismatched or
     # unreadable stops here, with nothing changed.
     account=$(caller_account 2>"$err") || die "revoke: could not read the caller's account; nothing was changed: $(head -n 1 "$err")"
-    btags=$(aws s3api get-bucket-tagging --bucket "$bucket" --region "$AWS_REGION" --expected-bucket-owner "$account" --output json 2>"$err") \
-      || die "revoke: could not read the tags of bucket $bucket; nothing was changed: $(head -n 1 "$err")"
-    printf '%s' "$btags" | json_pick 'd.get("TagSet", [])' | tags_match \
-      || die "revoke: bucket $bucket does not carry ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; nothing was changed"
-    rtags=$(aws iam list-role-tags --role-name "$BUILD_ROLE_NAME" --output json 2>"$err") \
-      || die "revoke: could not read the tags of role $BUILD_ROLE_NAME; nothing was changed: $(head -n 1 "$err")"
-    printf '%s' "$rtags" | json_pick 'd.get("Tags", [])' | tags_match \
-      || die "revoke: role $BUILD_ROLE_NAME does not carry ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; nothing was changed"
-    pdoc=$(aws iam get-role-policy --role-name "$BUILD_ROLE_NAME" --policy-name "$STAGE_POLICY_NAME" --output json 2>"$err") \
-      || die "revoke: could not read inline policy $STAGE_POLICY_NAME of $BUILD_ROLE_NAME; nothing was changed: $(head -n 1 "$err")"
-    printf '%s' "$pdoc" | role_policy_is "$(render "$DEPLOY_DIR/iam-build-host-policy.json" "$bucket")" \
-      || die "revoke: inline policy $STAGE_POLICY_NAME of $BUILD_ROLE_NAME is not this run's read for s3://$bucket/$RUN_ID/; nothing was changed"
-    for name in "$@"; do
+    why=$(bucket_ours) || die "revoke: $why; nothing was changed"
+    why=$(role_ours) || die "revoke: $why; nothing was changed"
+    objs=("$@")
+    for i in "${!objs[@]}"; do
+      # The bucket's two tags again right before each delete: a bucket re-tagged or unreadable
+      # stops the revoke here, with this object, the ones after it and the policy left in place.
+      if ! why=$(bucket_ours); then
+        for name in "${objs[@]:i}"; do residue+=("object s3://$bucket/$RUN_ID/$name: not deleted: $why"); done
+        residue+=("inline policy $STAGE_POLICY_NAME on $BUILD_ROLE_NAME: not deleted: the revoke stopped first")
+        fail_residue
+      fi
+      name="${objs[$i]}"
       aws s3api delete-object --bucket "$bucket" --key "$RUN_ID/$name" --region "$AWS_REGION" \
         --expected-bucket-owner "$account" --output json >/dev/null 2>"$err" \
         || residue+=("object s3://$bucket/$RUN_ID/$name: delete failed: $(head -n 1 "$err")")
@@ -161,6 +187,11 @@ case "$cmd" in
     else
       residue+=("objects under s3://$bucket/$RUN_ID/: could not confirm they are gone: $(head -n 1 "$err")")
     fi
+    # The role's two tags and the policy document again, right before the policy delete.
+    if ! why=$(role_ours); then
+      residue+=("inline policy $STAGE_POLICY_NAME on $BUILD_ROLE_NAME: not deleted: $why")
+      fail_residue
+    fi
     aws iam delete-role-policy --role-name "$BUILD_ROLE_NAME" --policy-name "$STAGE_POLICY_NAME" --output json >/dev/null 2>"$err" \
       || residue+=("inline policy $STAGE_POLICY_NAME on $BUILD_ROLE_NAME: delete failed: $(head -n 1 "$err")")
     if names=$(aws iam list-role-policies --role-name "$BUILD_ROLE_NAME" --output json 2>"$err"); then
@@ -169,12 +200,7 @@ case "$cmd" in
     else
       residue+=("inline policy $STAGE_POLICY_NAME on $BUILD_ROLE_NAME: could not confirm it is gone: $(head -n 1 "$err")")
     fi
-    if [ "${#residue[@]}" -gt 0 ]; then
-      printf '%s\n' "${residue[@]}" > "$RUN_STATE_DIR/stage-residue.txt"
-      printf 'FAIL: staging revocation incomplete (recorded in %s):\n' "$RUN_STATE_DIR/stage-residue.txt" >&2
-      printf '  %s\n' "${residue[@]}" >&2
-      exit 1
-    fi
+    [ "${#residue[@]}" -eq 0 ] || fail_residue
     rm -f "$RUN_STATE_DIR/stage-residue.txt"
     log "confirmed: the staged objects are gone and $BUILD_ROLE_NAME no longer has $STAGE_POLICY_NAME; the empty bucket $bucket stays for clean.sh"
     ;;

@@ -11,10 +11,15 @@ themselves) and ignores --query. Every call is appended to a log the test reads.
 Environment:
   FAKE_AWS_STATE  path to the JSON state file (read, updated by mutating calls)
   FAKE_AWS_LOG    path of the call log, one JSON object per line
-  FAKE_AWS_FAIL   optional rules "service op|substring|ErrorCode;..." : a call whose
+  FAKE_AWS_FAIL   optional rules "service op|substring|ErrorCode[|N];..." : a call whose
                   "service op" matches and whose joined argv contains substring (empty
                   matches all) fails with that error code, so a test fails only the call
-                  under test. ErrorCode 404 gives the S3 head-bucket "Not Found" shape.
+                  under test; with N, only the first N matching calls fail (a transient
+                  error). ErrorCode 404 gives the S3 head-bucket "Not Found" shape, and
+                  WaiterMaxAttempts what an AWS CLI waiter prints, with exit 255, when it
+                  runs out of attempts.
+
+It applies --query (JMESPath, as the CLI does on the client side) and --output text.
 
 Any call this fake does not implement exits 97, so an untested call cannot pass silently.
 Never put this on the PATH of a real shell: it does nothing against AWS.
@@ -149,6 +154,19 @@ def ec2_describe(state, kind, id_key, ids_opt, opts, notfound):
     return res
 
 
+def read_tags(obj):
+    """An IAM role's or S3 bucket's tags as one read returns them. Another owner can re-tag it
+    between reads: "TagsAfterFirstRead" (tags) takes effect from the second read,
+    "TagsAfterReads" ({"after": n, "tags": [...]}) from read n + 1."""
+    obj["TagReads"] = obj.get("TagReads", 0) + 1
+    if "TagsAfterFirstRead" in obj and obj["TagReads"] > 1:
+        return obj["TagsAfterFirstRead"]
+    later = obj.get("TagsAfterReads")
+    if later and obj["TagReads"] > later["after"]:
+        return later["tags"]
+    return obj.get("Tags", [])
+
+
 def acct(state):
     return state.get("account", "")
 
@@ -187,6 +205,10 @@ def handle(state, service, op, sub, opts):
             inst = ec2_describe(state, "instances", "InstanceId", "instance-ids", opts, "InvalidInstanceID.NotFound")
             return {"Reservations": [{"Instances": inst}] if inst else []}
         if op == "describe-images":
+            for x in e["images"]:   # an image create-image made moves on by one read
+                if "PendingReads" in x and x["ImageId"] in opts.get("image-ids", []):
+                    x["Reads"] = x.get("Reads", 0) + 1
+                    x["State"] = "pending" if x["Reads"] <= x["PendingReads"] else x.get("Final", "available")
             return {"Images": ec2_describe(state, "images", "ImageId", "image-ids", opts, "InvalidAMIID.NotFound")}
         if op == "describe-snapshots":
             return {"Snapshots": ec2_describe(state, "snapshots", "SnapshotId", "snapshot-ids", opts, "InvalidSnapshot.NotFound")}
@@ -251,8 +273,56 @@ def handle(state, service, op, sub, opts):
             for ts in spec.get("TagSpecifications", []):
                 if ts.get("ResourceType") == "instance":
                     tags = tagmap(ts.get("Tags", []))
-            e["instances"].append({"InstanceId": iid, "State": {"Name": "pending"}, "Tags": taglist(tags)})
+            e["instances"].append({"InstanceId": iid, "State": {"Name": "pending"}, "Tags": taglist(tags),
+                                   "ImageId": spec.get("ImageId"), "BootId": f"00000000-0000-4000-8000-b{n:011d}",
+                                   "Kernel": state.get("boot", {}).get("first_kernel", "stock-kernel")})
             return {"Instances": [{"InstanceId": iid}]}
+        # A reboot gives the instance a new boot id and the kernel state["boot"]["after_reboot"]
+        # (the default: the one 10-kernel.sh installs); state["boot"]["no_reboot"] keeps both.
+        # Boot ids end b<n> (first boot) and c<n> (n-th reboot), 11 digits after the letter.
+        if op == "reboot-instances":
+            b = state.get("boot", {})
+            for i in opts.get("instance-ids", []):
+                hit = [x for x in e["instances"] if x["InstanceId"] == i]
+                if not hit:
+                    raise ApiError("InvalidInstanceID.NotFound", op, i)
+                if not b.get("no_reboot"):
+                    hit[0]["Reboots"] = hit[0].get("Reboots", 0) + 1
+                    hit[0]["BootId"] = f"00000000-0000-4000-9000-c{hit[0]['Reboots']:011d}"
+                    hit[0]["Kernel"] = b.get("after_reboot", "6.18.56-nitro-ga")
+            return None
+        if op == "describe-subnets":
+            subs = [s for s in state.get("ec2", {}).get("subnets", []) if s["SubnetId"] in opts.get("subnet-ids", [])]
+            if len(subs) != len(opts.get("subnet-ids", [])):
+                raise ApiError("InvalidSubnetID.NotFound", op, str(opts.get("subnet-ids")))
+            return {"Subnets": subs}
+        if op == "create-security-group":
+            n = len(e["security_groups"]) + 1
+            gid = f"sg-fakerun{n:03d}"
+            tags = {}
+            for ts in opts.get("tag-specifications", []):
+                tags.update(shorthand_tags(ts))
+            e["security_groups"].append({"GroupId": gid, "GroupName": one(opts, "group-name"), "VpcId": one(opts, "vpc-id"),
+                                         "IpPermissions": [], "Tags": taglist(tags)})
+            return {"GroupId": gid}
+        # create-image: the image is "pending" for state["image"]["pending_reads"] describe-images
+        # reads by id, then state["image"]["final"] (default "available"). The id is hex, as a
+        # real one is (ami-0fa002 for the second image), so setup.sh's ^ami-[0-9a-f]+$ checks hold.
+        if op == "create-image":
+            n = len(e["images"]) + 1
+            img = {"ImageId": f"ami-0fa{n:03d}", "Name": one(opts, "name"), "State": "pending", "Reads": 0,
+                   "PendingReads": state.get("image", {}).get("pending_reads", 0),
+                   "Final": state.get("image", {}).get("final", "available"), "Tags": []}
+            snap = {"SnapshotId": f"snap-fakerun{n:03d}", "VolumeSize": 120, "Tags": []}
+            for ts in opts.get("tag-specifications", []):
+                if ts.startswith("ResourceType=image,"):
+                    img["Tags"] = taglist(shorthand_tags(ts))
+                elif ts.startswith("ResourceType=snapshot,"):
+                    snap["Tags"] = taglist(shorthand_tags(ts))
+            img["BlockDeviceMappings"] = [{"DeviceName": "/dev/sda1", "Ebs": {"SnapshotId": snap["SnapshotId"]}}]
+            e["images"].append(img)
+            e["snapshots"].append(snap)
+            return {"ImageId": img["ImageId"]}
         if op == "create-tags":
             new = {}
             for t in opts.get("tags", []):
@@ -288,9 +358,6 @@ def handle(state, service, op, sub, opts):
             ad = k.get("addons", {}).get(f"{cl}/{one(opts, 'addon-name')}")
             if not ad:
                 raise ApiError("ResourceNotFoundException", "DescribeAddon", f"No addon: {one(opts, 'addon-name')} found in cluster: {cl}")
-            # the one --query 00c-check-cluster.sh passes (the fake ignores every other --query)
-            if one(opts, "query") == "addon.[status,addonVersion,configurationValues]":
-                return [ad.get("status"), ad.get("addonVersion"), ad.get("configurationValues")]
             return {"addon": ad}
         nk = f"{cl}/{ng}"
         if op == "list-nodegroups":
@@ -343,12 +410,12 @@ def handle(state, service, op, sub, opts):
             return {"Role": {"RoleName": rn, "Arn": arn(rn)}}
         if op == "list-role-tags":
             r = role()
-            # "TagsAfterFirstRead": the tags change after the first read (another owner re-tagged
-            # the role between a listing and a later step).
-            r["TagReads"] = r.get("TagReads", 0) + 1
-            if "TagsAfterFirstRead" in r and r["TagReads"] > 1:
-                return {"Tags": r["TagsAfterFirstRead"]}
-            return {"Tags": r.get("Tags", [])}
+            t = read_tags(r)
+            # "GoneAfterReads": n, another owner deleted the role after tag read n: from read n + 1
+            # its tags answer NoSuchEntity (only the tag reads; nothing else sees it go).
+            if r.get("GoneAfterReads") is not None and r["TagReads"] > r["GoneAfterReads"]:
+                raise ApiError("NoSuchEntity", op, f"The role with name {rn} cannot be found.")
+            return {"Tags": t}
         if op == "attach-role-policy":
             r = role()
             p = one(opts, "policy-arn")
@@ -455,15 +522,35 @@ def handle(state, service, op, sub, opts):
             if res is None:
                 raise ApiError("FakeUnsupported", key, "no ssm result for this command", 97)
             cid = f"cmd-{len(cmds) + 1:03d}"
-            cmds[cid] = dict(res, instance=targets[0])
+            c = dict(res, instance=targets[0])
+            if c.get("stdout") == "@bootinfo":   # the instance's own boot id and kernel release
+                inst = [x for x in state["ec2"]["instances"] if x["InstanceId"] == targets[0]][0]
+                c["stdout"] = f"{inst.get('BootId', '00000000-0000-4000-8000-b00000000001')}\n{inst.get('Kernel', 'stock-kernel')}\n"
+            cmds[cid] = c
             return {"Command": {"CommandId": cid}}
+        # A result may carry "progress": n, the number of reads that see it InProgress before its
+        # final Status, and "reads": the reads so far.
         if op in ("get-command-invocation",) or (op == "wait" and sub == "command-executed"):
             c = cmds.get(one(opts, "command-id"))
             if c is None or c["instance"] != one(opts, "instance-id"):
                 raise ApiError("InvocationDoesNotExist", op, "no such command on that instance")
             if op == "wait":
+                # The CLI waiter: 20 attempts 5 s apart, then exit 255 (botocore waiters-2.json).
+                c["reads"] = c.get("reads", 0) + 20
+                if c["reads"] <= c.get("progress", 0):
+                    raise ApiError("WaiterMaxAttempts", "wait", "Waiter CommandExecuted failed: Max attempts exceeded", 255)
+                if c["Status"] != "Success":
+                    raise ApiError("WaiterFailure", "wait", f"Waiter CommandExecuted failed: terminal status {c['Status']}", 255)
                 return None
+            c["reads"] = c.get("reads", 0) + 1
+            if c["reads"] <= c.get("progress", 0):
+                return {"Status": "InProgress", "StandardOutputContent": "", "StandardErrorContent": ""}
             return {"Status": c["Status"], "StandardOutputContent": c.get("stdout", ""), "StandardErrorContent": c.get("stderr", "")}
+        if op == "get-parameter":
+            p = m.get("parameters", {}).get(one(opts, "name"))
+            if p is None:
+                raise ApiError("ParameterNotFound", op, one(opts, "name"))
+            return {"Parameter": {"Name": one(opts, "name"), "Value": p}}
     # ---------------- Resource Groups Tagging API
     if key == "resourcegroupstaggingapi get-resources":
         types = opts.get("resource-type-filters", [])
@@ -503,9 +590,10 @@ def handle(state, service, op, sub, opts):
         if op == "head-bucket":
             return {"BucketRegion": "us-west-2"}
         if op == "get-bucket-tagging":
-            if not bk.get("Tags"):
+            t = read_tags(bk)
+            if not t:
                 raise ApiError("NoSuchTagSet", "GetBucketTagging", "The TagSet does not exist")
-            return {"TagSet": bk.get("Tags", [])}
+            return {"TagSet": t}
         if op == "put-bucket-tagging":
             bk["Tags"] = taglist(shorthand_tags(one(opts, "tagging", "")))
             return None
@@ -552,11 +640,21 @@ def main():
         with open(LOG_PATH, "a") as f:
             f.write(json.dumps(entry) + "\n")
     joined = " ".join(ARGV)
-    for rule in filter(None, os.environ.get("FAKE_AWS_FAIL", "").split(";")):
-        call, substr, code = (rule.split("|") + ["", ""])[:3]
+    for n, rule in enumerate(filter(None, os.environ.get("FAKE_AWS_FAIL", "").split(";"))):
+        call, substr, code, times = (rule.split("|") + ["", "", ""])[:4]
         if call.strip() == entry["call"] and substr in joined:
+            if times:   # fail only the first <times> matching calls (a transient error)
+                cpath = STATE_PATH + ".failcounts"
+                counts = json.load(open(cpath)) if os.path.exists(cpath) else {}
+                counts[str(n)] = counts.get(str(n), 0) + 1
+                json.dump(counts, open(cpath, "w"))
+                if counts[str(n)] > int(times):
+                    continue
             if code == "404":
                 print("\nAn error occurred (404) when calling the HeadBucket operation: Not Found", file=sys.stderr)
+            elif code == "WaiterMaxAttempts":   # what an AWS CLI waiter prints when it runs out of attempts
+                print(f"\nWaiter {sub or op} failed: Max attempts exceeded", file=sys.stderr)
+                return 255
             else:
                 print(f"\nAn error occurred ({code or 'AccessDenied'}) when calling the {op} operation: injected by the test", file=sys.stderr)
             return 254
@@ -574,8 +672,31 @@ def main():
         return e.rc
     save(state)
     if out is not None:
-        print(json.dumps(out))
+        q = one(opts, "query")
+        if q:   # the CLI applies --query (JMESPath) on the client side; so does the fake
+            import jmespath
+            out = jmespath.search(q, out)
+        if one(opts, "output") == "text":
+            print(as_text(out))
+        else:
+            print(json.dumps(out))
     return 0
+
+
+def as_text(v):
+    """The AWS CLI's text output for the shapes this sample's --query calls produce: a scalar on
+    one line ("None" for null), a list of scalars tab-joined, a list of lists one row each."""
+    if v is None:
+        return "None"
+    if isinstance(v, bool):
+        return "True" if v else "False"
+    if isinstance(v, list):
+        if all(isinstance(x, list) for x in v) and v:
+            return "\n".join(as_text(x) for x in v)
+        return "\t".join(as_text(x) for x in v)
+    if isinstance(v, dict):
+        return "\t".join(as_text(x) for x in v.values())
+    return str(v)
 
 
 if __name__ == "__main__":

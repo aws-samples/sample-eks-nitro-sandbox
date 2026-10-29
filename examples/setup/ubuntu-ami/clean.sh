@@ -229,7 +229,11 @@ owned_then() {
   st=$(recheck "$kind" "$id")
   case "$st" in
     match) "$@" >/dev/null 2>"$ERR" || warn_inc "could not delete $what: $(head -n 2 "$ERR")" ;;
-    gone) echo "$what is already gone." ;;
+    gone)
+      # In the IAM chain (OWNED_GONE_FAILS=1) a role or profile that was listed a moment ago and
+      # is gone now was changed by someone else: the clean up says so and is incomplete (RR2-001).
+      if [ "${OWNED_GONE_FAILS:-0}" = 1 ]; then warn_inc "$what disappeared after it was listed, before this clean up changed it; stopped"
+      else echo "$what is already gone."; fi ;;
     mismatch) warn_inc "$what no longer carries ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; refusing to delete it" ;;
     *) warn_inc "could not re-read the tags of $what before deleting it; left in place" ;;
   esac
@@ -463,22 +467,38 @@ case "$profile_build" in
     if [ "$pdesc" != "$UNKNOWN" ]; then
       pblocked=0
       for prole in $(printf '%s' "$pdesc" | json_get '[r["RoleName"] for r in d["InstanceProfile"].get("Roles", [])]'); do
-        owned_then profile "$INSTANCE_PROFILE" "instance profile $INSTANCE_PROFILE (removing role $prole)" \
+        OWNED_GONE_FAILS=1 owned_then profile "$INSTANCE_PROFILE" "instance profile $INSTANCE_PROFILE (removing role $prole)" \
           aws iam remove-role-from-instance-profile --instance-profile-name "$INSTANCE_PROFILE" --role-name "$prole" --output json \
-          || pblocked=1
+          || { pblocked=1; break; }
       done
       if [ "$pblocked" = 0 ]; then
-        owned_then profile "$INSTANCE_PROFILE" "instance profile $INSTANCE_PROFILE" \
+        OWNED_GONE_FAILS=1 owned_then profile "$INSTANCE_PROFILE" "instance profile $INSTANCE_PROFILE" \
           aws iam delete-instance-profile --instance-profile-name "$INSTANCE_PROFILE" --output json || true
       else
         warn_inc "instance profile $INSTANCE_PROFILE left in place: see the warnings above"
       fi
     fi ;;
 esac
+# role_owned_before <role> <changes made> <the next change>: both tags of the role read again
+# right before one change to it. 0 when it still carries both. Otherwise its clean up stops here,
+# with every policy still on it left there, and is incomplete: re-tagged, gone since it was
+# listed (someone else changed it), or unreadable.
+role_owned_before() {
+  local role="$1" n="$2" next="$3"
+  case "$(recheck role "$role")" in
+    match) return 0 ;;
+    gone) warn_inc "role $role disappeared after it was listed, before $next, after $n policy change(s) by this clean up; stopped" ;;
+    mismatch)
+      if [ "$n" = 0 ]; then warn_inc "role $role no longer carries ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; left in place, no policy detached"
+      else warn_inc "role $role no longer carries ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID} before $next; left in place after $n policy change(s), nothing more changed"; fi ;;
+    *) warn_inc "could not re-read the tags of role $role before $next; left in place" ;;
+  esac
+  return 1
+}
 # delete_role <name> <state>: detach and delete its policies, then the role. Every lookup it
 # depends on is checked: a failed one leaves the role in place and the clean up incomplete.
 delete_role() {
-  local role="$1" st="$2" blocked=0 profs att inl p
+  local role="$1" st="$2" blocked=0 n=0 profs att inl p
   case "$st" in
     absent) echo "role $role does not exist."; return ;;
     "$UNKNOWN") warn_inc "skipping role $role: its state could not be determined"; return ;;
@@ -492,24 +512,21 @@ delete_role() {
   [ "$att" != "$UNKNOWN" ] || { warn_inc "role $role left in place: see the warning above"; return; }
   aws_json inl "the inline policies of $role" iam list-role-policies --role-name "$role"
   [ "$inl" != "$UNKNOWN" ] || { warn_inc "role $role left in place: see the warning above"; return; }
-  # Both tags again, right before the first change to this role: a role re-tagged since the
-  # listing keeps every policy it has.
-  case "$(recheck role "$role")" in
-    match) ;;
-    gone) echo "role $role is already gone."; return ;;
-    mismatch) warn_inc "role $role no longer carries ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; left in place, no policy detached"; return ;;
-    *) warn_inc "could not re-read the tags of role $role before changing it; left in place"; return ;;
-  esac
+  # Both tags again right before EVERY change to this role (each detach, each inline-policy
+  # delete, and the delete itself through owned_then): a role re-tagged at any point keeps every
+  # policy it still has.
   for p in $(printf '%s' "$att" | json_get '[x["PolicyArn"] for x in d["AttachedPolicies"]]'); do
-    aws iam detach-role-policy --role-name "$role" --policy-arn "$p" --output json >/dev/null 2>"$ERR" \
-      || { warn_inc "could not detach $p from $role: $(head -n 2 "$ERR")"; blocked=1; }
+    role_owned_before "$role" "$n" "detaching $p" || return
+    if aws iam detach-role-policy --role-name "$role" --policy-arn "$p" --output json >/dev/null 2>"$ERR"; then n=$((n + 1))
+    else warn_inc "could not detach $p from $role: $(head -n 2 "$ERR")"; blocked=1; fi
   done
   for p in $(printf '%s' "$inl" | json_get 'd["PolicyNames"]'); do
-    aws iam delete-role-policy --role-name "$role" --policy-name "$p" --output json >/dev/null 2>"$ERR" \
-      || { warn_inc "could not delete inline policy $p from $role: $(head -n 2 "$ERR")"; blocked=1; }
+    role_owned_before "$role" "$n" "deleting inline policy $p" || return
+    if aws iam delete-role-policy --role-name "$role" --policy-name "$p" --output json >/dev/null 2>"$ERR"; then n=$((n + 1))
+    else warn_inc "could not delete inline policy $p from $role: $(head -n 2 "$ERR")"; blocked=1; fi
   done
   [ "$blocked" = 0 ] || { warn_inc "role $role left in place: see the warnings above"; return; }
-  owned_then role "$role" "IAM role $role" aws iam delete-role --role-name "$role" --output json || true
+  OWNED_GONE_FAILS=1 owned_then role "$role" "IAM role $role" aws iam delete-role --role-name "$role" --output json || true
 }
 delete_role "$BUILD_ROLE_NAME" "$role_build"
 delete_role "$NODE_ROLE_NAME" "$role_node"
