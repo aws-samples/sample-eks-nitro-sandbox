@@ -555,33 +555,46 @@ spec:
 Everything this run creates by name carries the sample's tags from the start (see
 [What stays running, and cleaning up](#what-stays-running-and-cleaning-up)). AWS also creates
 some resources for the cluster, its VPC and its node groups that have no way to be tagged at
-creation:
+creation. `setup.sh`'s last step (`cilium_ubuntu.py tag-sweep`) tags exactly these, each found
+through one exact relation from a resource that carries `Demo=setup-cilium-ubuntu`:
 
-- the Amazon EC2 Auto Scaling group behind each managed node group (EKS does not copy the node
-  group's tags to it);
-- the copy EKS makes of each node launch template, and the instance profile it makes for each
-  node role;
-- the VPC's main route table, default security group and default network ACL;
-- the cluster security group EKS creates (EKS gives it only its own `kubernetes.io/cluster/...`,
-  `aws:eks:cluster-name` and `Name` tags);
-- the network interfaces the EKS control plane and the NAT gateway put in the VPC.
+- the Amazon EC2 Auto Scaling group each of the two node groups names (EKS does not copy the
+  node group's tags to it);
+- the copy EKS makes of each node launch template: the one that Auto Scaling group launches
+  from;
+- the instance profile each node instance uses, and no other profile that holds its role;
+- the cluster security group, by the id `describe-cluster` returns (EKS gives it only its own
+  `kubernetes.io/cluster/...`, `aws:eks:cluster-name` and `Name` tags);
+- the VPC's main route table, its default security group and its default network ACL;
+- the control plane's network interfaces (described `Amazon EKS <cluster name>`, in the cluster
+  security group) and the network interface the NAT gateway reports as its own.
 
 They are this cluster's: each exists because of this run and goes when `clean.sh` deletes the
 node groups and the cluster. Issue #11 asks for ownership tags that cover the node groups and
-the interfaces, and `test.sh` stage 8 checks every one, so `setup.sh`'s last step
-(`cilium_ubuntu.py tag-sweep`) gives each of them that lacks `auto-delete=no` the same tags as
-the rest: `auto-delete=no`, `Demo=setup-cilium-ubuntu`, and `Owner` when `OWNER_TAG` is set. It
-writes nothing else and changes no other tag.
+the interfaces, and `test.sh` stage 8 checks every one, so the sweep gives each of them that
+lacks `auto-delete=no` the same tags as the rest: `auto-delete=no`, `Demo=setup-cilium-ubuntu`,
+and `Owner` when `OWNER_TAG` is set. It writes to nothing else: no subnet, instance, volume,
+role, stack, other network interface or other instance profile, even one in the VPC without
+the tag. The caller needs `ec2:CreateTags`, `autoscaling:CreateOrUpdateTags` and
+`iam:TagInstanceProfile`.
 
-The sweep reaches resources only from this cluster: its node groups, its own eksctl stacks
-(matched by the `alpha.eksctl.io/cluster-name` tag eksctl puts on each, not only by name), and
-its own VPC, which every VPC read is filtered by. Before its first write it requires the cluster
-and that VPC to carry `Demo=setup-cilium-ubuntu`, so it never tags inside a VPC this sample did
-not create. Then `setup.sh` runs the same tag audit as `test.sh` stage 8 and stops unless every
-resource the cluster owns carries `auto-delete=no`. The caller needs `ec2:CreateTags`,
-`autoscaling:CreateOrUpdateTags`, `iam:TagRole`, `iam:TagInstanceProfile` and
-`eks:TagResource`. Running `setup.sh` again repeats the sweep, which tags only what is still
-untagged.
+Before its first write, the sweep stops and tags nothing when:
+
+- the cluster or its VPC does not carry `Demo=setup-cilium-ubuntu` (exit 1);
+- the read came up short (exit 2). It must find every kind the audit counts and every member of
+  the list above at least as often as a fresh run leaves it. The cluster's eksctl stacks count
+  only when they carry eksctl's `alpha.eksctl.io/cluster-name` tag with this cluster's exact
+  name and the sample's `Demo` tag. An empty list from AWS is a short read, never "nothing to
+  tag";
+- a member of the list above carries another `Demo` value (exit 1), which the sweep never
+  overwrites.
+
+Then `setup.sh` runs the same tag audit as `test.sh` stage 8 and stops unless every resource the
+cluster owns carries `auto-delete=no`. The audit covers more than the sweep writes: every object
+in the cluster's VPC, the sweep's or not, because the VPC is this run's and goes with it. An
+object there that lacks the tag and that the sweep may not write is reported with the reason,
+for example `(Demo=another-demo; not in the set tag-sweep writes, ...)`, and `setup.sh` stops.
+Running `setup.sh` again repeats the sweep, which tags only what is still untagged.
 
 What you see: one `tagged <kind> <id>` line for each resource the sweep tagged, its count, and
 the audit's summary.
@@ -668,9 +681,9 @@ eksctl's CloudFormation stacks tag the VPC, subnets, gateways, security groups a
 the two launch templates tag the instances, volumes and network interfaces; Cilium tags the
 ENIs it creates (`cilium-values.yaml`'s `eni.eniTags`). The resources AWS creates for the
 cluster with no tag at creation (the node groups' Auto Scaling groups, EKS's launch template
-copies and instance profiles, the VPC's main route table, default security group and default
-network ACL, the cluster security group, and the control plane's and NAT gateway's interfaces)
-get the same tags in [stage 7](#7-tag-what-aws-created-for-the-cluster).
+copies, the instance profiles the nodes use, the VPC's main route table, default security group
+and default network ACL, the cluster security group, and the control plane's and NAT gateway's
+interfaces) get the same tags in [stage 7](#7-tag-what-aws-created-for-the-cluster).
 
 While it is up, this sample keeps billing: the EKS control plane, one `m7i.large` and one
 `m8i.xlarge` instance with their gp3 volumes, one NAT gateway and its Elastic IP. Use the
@@ -681,9 +694,11 @@ Run `./clean.sh` when you finish. `./clean.sh --dry-run` lists only the run-owne
 would delete and changes nothing; `./clean.sh` deletes the two node groups, the ENIs Cilium
 created that their instances left behind, the cluster with everything in its eksctl stacks
 (VPC, subnets, gateways, security groups, IAM roles), and the two node launch templates, then
-reads back that the cluster, the launch templates and the eksctl stacks are gone. It refuses a
-cluster not tagged `Demo=setup-cilium-ubuntu`, deletes ENIs and launch templates only when
-they carry that tag, and exits non-zero if anything it was asked to delete is still there: a
+reads back that the cluster, the launch templates and the eksctl stacks are gone (the stacks
+eksctl tagged with this cluster's exact name, so another cluster's stacks, such as one named
+`<cluster name>-2`, never count). It refuses a cluster not tagged `Demo=setup-cilium-ubuntu`,
+deletes ENIs and launch templates only when they carry that tag, and exits non-zero if
+anything it was asked to delete is still there: a
 lookup that fails is recorded as a failure, never read as "gone". Deleting the cluster removes
 the sample's namespace, its pods and the `isolated-sandbox` RuntimeClass with it.
 

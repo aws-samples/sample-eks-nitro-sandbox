@@ -109,8 +109,14 @@ done
 [[ "$(cluster_state)" == NONE ]] || clean_failed "cluster $CLUSTER_NAME still exists" ""
 left="$(demo_launch_templates)"
 [[ -z "$left" ]] || clean_failed "launch templates remain: $left" ""
-stacks="$(aws cloudformation list-stacks --region "$AWS_REGION" \
-  --query "StackSummaries[?starts_with(StackName, 'eksctl-$CLUSTER_NAME-') && StackStatus!='DELETE_COMPLETE'].StackName" \
-  --output text)"
-[[ -z "$stacks" ]] || clean_failed "eksctl stacks remain: $stacks" ""
+# This cluster's eksctl stacks only: cluster-stacks matches the alpha.eksctl.io/cluster-name tag
+# eksctl puts on each, not the name, which also matches a cluster named "$CLUSTER_NAME-2". A read
+# that fails means "could not determine", recorded as a failure.
+stacks_rc=0
+stacks="$(python3 "$PY" cluster-stacks)" || stacks_rc=$?
+if ((stacks_rc != 0)); then
+  clean_failed "could not determine whether eksctl stacks of $CLUSTER_NAME remain" ""
+elif [[ -n "$stacks" ]]; then
+  clean_failed "eksctl stacks remain: $(tr '\n' ' ' <<<"$stacks")" ""
+fi
 clean_summary "the Cilium-on-Ubuntu sample ($CLUSTER_NAME)"

@@ -138,15 +138,17 @@ python3 "$PY" check-node-labels system <<<"$system_node_json" \
   || die "the ordinary system node carries an isolated-sandbox RuntimeClass label"
 
 step "8/8 tag what AWS created for this cluster without a tag"
-# AWS creates some of this cluster's resources with no way to tag them at creation: the Auto
-# Scaling group behind each managed node group, EKS's copy of each launch template and its
-# instance profile for each node role, the VPC's main route table, default security group and
-# default network ACL, the cluster security group EKS creates, and the network interfaces of the
-# EKS control plane and the NAT gateway. tag-sweep gives each of them that lacks auto-delete=no
-# the sample's tags and prints one line per resource. It reaches them only from this cluster
-# (its node groups, its own eksctl stacks, its own VPC), and refuses, before any write, a cluster
-# or a VPC that does not carry Demo=setup-cilium-ubuntu. This runs last, once every node group
-# exists, and here rather than in test.sh, which stays read-only.
+# AWS creates some of this cluster's resources with no way to tag them at creation. tag-sweep
+# writes the sample's tags to exactly these, each found by one exact relation: the Auto Scaling
+# group of each of the two node groups, the EKS copy of the launch template each one launches
+# from, the instance profile its node uses, the cluster security group describe-cluster names,
+# the VPC's main route table, default security group and default network ACL, the interfaces
+# described "Amazon EKS <cluster>" in the cluster security group, and the NAT gateway's
+# interface. It writes nothing else and prints one line per resource tagged. Before its first
+# write it stops, tagging nothing, on a cluster or VPC without Demo=setup-cilium-ubuntu (exit 1),
+# on a read that comes up short, such as an empty list (exit 2), and on a member of that set
+# carrying another Demo value (exit 1). This runs last, once every node group exists, and here
+# rather than in test.sh, which stays read-only.
 python3 "$PY" tag-sweep
 # Then the same audit test.sh's stage 8 runs: every resource the cluster owns must now carry
 # auto-delete=no (exit 1 names any that does not; exit 2 means the inventory came up short).

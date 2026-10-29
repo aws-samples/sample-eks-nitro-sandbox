@@ -1440,24 +1440,78 @@ def cmd_check_operator_role(_):
         print(f"node role {node_role} ({group}): {', '.join(sorted(names))}")
 
 
-def inventory():
-    """[(kind, id, tags)] for every listable AWS resource this sample's cluster owns. Built
-    from the cluster outwards: the cluster names its VPC, node groups and add-ons; the node
-    groups name their ASGs, launch templates and roles; the VPC holds the subnets, route
-    tables, gateways, security groups, network ACLs, ENIs and instances."""
+def marked(tags):
+    """True when a resource carries the sample's mark, Demo=setup-cilium-ubuntu."""
+    return tags.get(DEMO_TAG[0]) == DEMO_TAG[1]
+
+
+def eksctl_stacks(cluster):
+    """This cluster's eksctl CloudFormation stacks that are not deleted: named eksctl-<cluster>-*
+    AND carrying eksctl's alpha.eksctl.io/cluster-name tag with the cluster's exact name. The name
+    alone also matches every cluster whose name starts with "<cluster>-"."""
+    prefix = f"eksctl-{cluster}-"
+    return [s for s in aws("cloudformation", "describe-stacks").get("Stacks", [])
+            if s["StackName"].startswith(prefix) and s["StackStatus"] != "DELETE_COMPLETE"
+            and tag_map(s.get("Tags")).get(EKSCTL_CLUSTER_TAG) == cluster]
+
+
+# The exact set tag-sweep (setup.sh step 8) may write: what AWS creates for this cluster with no
+# way to tag it at creation, each found through one exact relation from a resource that carries
+# the sample's mark, and how many of each a fresh setup.sh leaves. Fewer means the read came up
+# short; nothing outside this set is ever written.
+SWEEP_SET = {
+    # the ASG each of the sample's (marked) node groups names in resources.autoScalingGroups
+    "node group Auto Scaling group": 2,
+    # the launch template such an ASG launches from, when it is EKS's copy and not setup's own
+    "EKS launch template copy": 2,
+    # the instance profile each instance of such an ASG uses (IamInstanceProfile)
+    "node instance profile": 2,
+    # the security group describe-cluster names as clusterSecurityGroupId
+    "cluster security group": 1,
+    # in the cluster's (marked) VPC: its main route table, default security group, default ACL
+    "VPC main route table": 1,
+    "VPC default security group": 1,
+    "VPC default network ACL": 1,
+    # interfaces in that VPC described "Amazon EKS <cluster>" and in the cluster security group
+    "EKS control-plane network interface": 2,
+    # the interface the cluster VPC's (marked) NAT gateway reports in NatGatewayAddresses
+    "NAT gateway network interface": 1,
+}
+SWEEP_KINDS = {"asg", "launch-template", "instance-profile", "security-group", "route-table",
+               "network-acl", "network-interface"}
+
+
+def ownership():
+    """Read this cluster's resources once, writing nothing. Returns (items, sweep, vpc):
+
+    items  [(kind, id, tags)] for every listable AWS resource this sample's cluster owns: what
+           audit-tags checks and clean.sh --dry-run lists. Built from the cluster outwards: the
+           cluster (which must carry the sample's mark) names its VPC, node groups, add-ons and
+           Pod Identity associations; the node groups name their ASGs, launch templates and roles;
+           the cluster's own eksctl stacks (eksctl_stacks, and carrying the sample's mark) name
+           their roles; the node groups' instances name the instance profiles they use; the VPC
+           holds the subnets, route tables, gateways, security groups, network ACLs, interfaces,
+           instances and volumes.
+    sweep  [(what, kind, id, tags)]: the exact set tag-sweep may write (SWEEP_SET); each is also
+           in items.
+    vpc    (id, tags) of the cluster's VPC."""
     cluster = setting("CLUSTER_NAME")
     info = cluster_info()
     require_demo_cluster_info(info)
     items = [("eks-cluster", info["arn"], tag_map(info.get("tags")))]
-    roles, lts = {info["roleArn"].rsplit("/", 1)[1]}, set()
-    asg_names = []
+    sweep = []
+    roles, lts, setup_lts = {info["roleArn"].rsplit("/", 1)[1]}, set(), set()
+    asg_marked = {}  # ASG name -> whether the node group that names it carries the sample's mark
     for group_name in aws("eks", "list-nodegroups", "--cluster-name", cluster).get("nodegroups", []):
         ng = aws("eks", "describe-nodegroup", "--cluster-name", cluster, "--nodegroup-name", group_name)["nodegroup"]
-        items.append(("eks-nodegroup", ng["nodegroupArn"], tag_map(ng.get("tags"))))
+        ng_tags = tag_map(ng.get("tags"))
+        items.append(("eks-nodegroup", ng["nodegroupArn"], ng_tags))
         roles.add(ng["nodeRole"].rsplit("/", 1)[1])
         if ng.get("launchTemplate", {}).get("id"):
             lts.add(ng["launchTemplate"]["id"])
-        asg_names += [a["name"] for a in ng.get("resources", {}).get("autoScalingGroups", [])]
+            setup_lts.add(ng["launchTemplate"]["id"])
+        for a in ng.get("resources", {}).get("autoScalingGroups", []):
+            asg_marked[a["name"]] = marked(ng_tags)
     for addon in aws("eks", "list-addons", "--cluster-name", cluster).get("addons", []):
         a = aws("eks", "describe-addon", "--cluster-name", cluster, "--addon-name", addon)["addon"]
         items.append(("eks-addon", a["addonArn"], tag_map(a.get("tags"))))
@@ -1466,73 +1520,116 @@ def inventory():
                 "--association-id", assoc["associationId"])["association"]
         items.append(("eks-pod-identity", p["associationArn"], tag_map(p.get("tags"))))
         roles.add(p["roleArn"].rsplit("/", 1)[1])
-    if asg_names:
+    node_instances, lt_copies = set(), set()
+    if asg_marked:
         for g in aws("autoscaling", "describe-auto-scaling-groups", "--auto-scaling-group-names",
-                     *asg_names).get("AutoScalingGroups", []):
-            items.append(("asg", g["AutoScalingGroupName"], tag_map(g.get("Tags"))))
+                     *asg_marked).get("AutoScalingGroups", []):
+            g_tags = tag_map(g.get("Tags"))
+            items.append(("asg", g["AutoScalingGroupName"], g_tags))
             spec = g.get("LaunchTemplate") or g.get("MixedInstancesPolicy", {}).get(
                 "LaunchTemplate", {}).get("LaunchTemplateSpecification", {})
             if spec.get("LaunchTemplateId"):
                 lts.add(spec["LaunchTemplateId"])
-    # This cluster's eksctl stacks: the name eksctl gives them AND the cluster-name tag it puts on
-    # each, because the name prefix alone also matches a cluster named "<cluster>-2".
-    prefix = f"eksctl-{cluster}-"
-    for stack in aws("cloudformation", "describe-stacks").get("Stacks", []):
-        if (stack["StackName"].startswith(prefix) and stack["StackStatus"] != "DELETE_COMPLETE"
-                and tag_map(stack.get("Tags")).get(EKSCTL_CLUSTER_TAG) == cluster):
-            items.append(("cfn-stack", stack["StackName"], tag_map(stack.get("Tags"))))
-            for r in aws("cloudformation", "describe-stack-resources", "--stack-name",
-                         stack["StackName"]).get("StackResources", []):
-                if r["ResourceType"] == "AWS::IAM::Role" and r.get("PhysicalResourceId"):
-                    roles.add(r["PhysicalResourceId"])
-                if r["ResourceType"] == "AWS::EC2::LaunchTemplate" and r.get("PhysicalResourceId"):
-                    lts.add(r["PhysicalResourceId"])
+            if asg_marked.get(g["AutoScalingGroupName"]):
+                sweep.append(("node group Auto Scaling group", "asg", g["AutoScalingGroupName"], g_tags))
+                if spec.get("LaunchTemplateId") and spec["LaunchTemplateId"] not in setup_lts:
+                    lt_copies.add(spec["LaunchTemplateId"])
+                node_instances |= {i["InstanceId"] for i in g.get("Instances", []) if i.get("InstanceId")}
+    # Only a stack that also carries the sample's mark is traversed: another tool can create a
+    # stack for the same cluster, and its roles are not this sample's.
+    for stack in eksctl_stacks(cluster):
+        stack_tags = tag_map(stack.get("Tags"))
+        if not marked(stack_tags):
+            continue
+        items.append(("cfn-stack", stack["StackName"], stack_tags))
+        for r in aws("cloudformation", "describe-stack-resources", "--stack-name",
+                     stack["StackName"]).get("StackResources", []):
+            if r["ResourceType"] == "AWS::IAM::Role" and r.get("PhysicalResourceId"):
+                roles.add(r["PhysicalResourceId"])
+            if r["ResourceType"] == "AWS::EC2::LaunchTemplate" and r.get("PhysicalResourceId"):
+                lts.add(r["PhysicalResourceId"])
     for role in sorted(roles):
         items.append(("iam-role", role, tag_map(aws("iam", "get-role", "--role-name", role)["Role"].get("Tags", []))))
-        for profile in aws("iam", "list-instance-profiles-for-role", "--role-name", role).get("InstanceProfiles", []):
-            name = profile["InstanceProfileName"]
-            got = aws("iam", "get-instance-profile", "--instance-profile-name", name)["InstanceProfile"]
-            items.append(("instance-profile", name, tag_map(got.get("Tags"))))
-    items += vpc_inventory(info["resourcesVpcConfig"]["vpcId"])
+    vpc_id = info["resourcesVpcConfig"]["vpcId"]
+    vpc_items, raw = vpc_inventory(vpc_id)
+    items += vpc_items
+    vpc_tags = next((tag_map(v.get("Tags")) for v in raw["vpcs"] if v["VpcId"] == vpc_id), {})
+    # The instance profiles the node instances use: exactly these, not every profile that holds a
+    # node role (IAM lets any number of profiles hold one role).
+    for name in sorted({i["IamInstanceProfile"]["Arn"].rsplit("/", 1)[1] for i in raw["instances"]
+                        if i["InstanceId"] in node_instances and (i.get("IamInstanceProfile") or {}).get("Arn")}):
+        got = aws("iam", "get-instance-profile", "--instance-profile-name", name)["InstanceProfile"]
+        items.append(("instance-profile", name, tag_map(got.get("Tags"))))
+        sweep.append(("node instance profile", "instance-profile", name, tag_map(got.get("Tags"))))
+    cluster_sg = info["resourcesVpcConfig"].get("clusterSecurityGroupId")
+    for g in raw["security_groups"]:
+        if cluster_sg and g["GroupId"] == cluster_sg:
+            sweep.append(("cluster security group", "security-group", g["GroupId"], tag_map(g.get("Tags"))))
+        if g.get("GroupName") == "default":
+            sweep.append(("VPC default security group", "security-group", g["GroupId"], tag_map(g.get("Tags"))))
+    sweep += [("VPC main route table", "route-table", r["RouteTableId"], tag_map(r.get("Tags")))
+              for r in raw["route_tables"] if any(a.get("Main") is True for a in r.get("Associations", []))]
+    sweep += [("VPC default network ACL", "network-acl", a["NetworkAclId"], tag_map(a.get("Tags")))
+              for a in raw["network_acls"] if a.get("IsDefault") is True]
+    nat_enis = {a["NetworkInterfaceId"] for n in raw["nat_gateways"] if marked(tag_map(n.get("Tags")))
+                for a in n.get("NatGatewayAddresses", []) if a.get("NetworkInterfaceId")}
+    for e in raw["network_interfaces"]:
+        groups = {g.get("GroupId") for g in e.get("Groups", [])}
+        if cluster_sg and e.get("Description") == f"Amazon EKS {cluster}" and cluster_sg in groups:
+            sweep.append(("EKS control-plane network interface", "network-interface", e["NetworkInterfaceId"],
+                          tag_map(e.get("TagSet"))))
+        if e["NetworkInterfaceId"] in nat_enis:
+            sweep.append(("NAT gateway network interface", "network-interface", e["NetworkInterfaceId"],
+                          tag_map(e.get("TagSet"))))
     if lts:
         for lt in aws("ec2", "describe-launch-templates", "--launch-template-ids", *sorted(lts)).get(
                 "LaunchTemplates", []):
             items.append(("launch-template", lt["LaunchTemplateId"], tag_map(lt.get("Tags"))))
-    return items
+            if lt["LaunchTemplateId"] in lt_copies:
+                sweep.append(("EKS launch template copy", "launch-template", lt["LaunchTemplateId"],
+                              tag_map(lt.get("Tags"))))
+    unique = {}
+    for what, kind, ident, tags in sweep:
+        unique.setdefault((kind, ident), (what, kind, ident, tags))
+    return items, list(unique.values()), (vpc_id, vpc_tags)
 
 
 def vpc_inventory(vpc):
+    """(items, raw): [(kind, id, tags)] for everything in the VPC, every read filtered by its id,
+    and the objects AWS returned, which ownership() reads for the exact relations."""
     f = f"Name=vpc-id,Values={vpc}"
-    items = [("vpc", v["VpcId"], tag_map(v.get("Tags"))) for v in aws("ec2", "describe-vpcs", "--vpc-ids", vpc)["Vpcs"]]
+    raw = {"vpcs": aws("ec2", "describe-vpcs", "--vpc-ids", vpc)["Vpcs"]}
+    items = [("vpc", v["VpcId"], tag_map(v.get("Tags"))) for v in raw["vpcs"]]
     items += [("subnet", s["SubnetId"], tag_map(s.get("Tags")))
               for s in aws("ec2", "describe-subnets", "--filters", f)["Subnets"]]
-    items += [("route-table", r["RouteTableId"], tag_map(r.get("Tags")))
-              for r in aws("ec2", "describe-route-tables", "--filters", f)["RouteTables"]]
+    raw["route_tables"] = aws("ec2", "describe-route-tables", "--filters", f)["RouteTables"]
+    items += [("route-table", r["RouteTableId"], tag_map(r.get("Tags"))) for r in raw["route_tables"]]
     items += [("internet-gateway", g["InternetGatewayId"], tag_map(g.get("Tags")))
               for g in aws("ec2", "describe-internet-gateways", "--filters",
                            f"Name=attachment.vpc-id,Values={vpc}")["InternetGateways"]]
-    nats = [n for n in aws("ec2", "describe-nat-gateways", "--filter", f)["NatGateways"]
-            if n["State"] not in ("deleted", "deleting")]
-    items += [("nat-gateway", n["NatGatewayId"], tag_map(n.get("Tags"))) for n in nats]
-    allocations = [a["AllocationId"] for n in nats for a in n.get("NatGatewayAddresses", []) if a.get("AllocationId")]
+    raw["nat_gateways"] = [n for n in aws("ec2", "describe-nat-gateways", "--filter", f)["NatGateways"]
+                           if n["State"] not in ("deleted", "deleting")]
+    items += [("nat-gateway", n["NatGatewayId"], tag_map(n.get("Tags"))) for n in raw["nat_gateways"]]
+    allocations = [a["AllocationId"] for n in raw["nat_gateways"] for a in n.get("NatGatewayAddresses", [])
+                   if a.get("AllocationId")]
     if allocations:
         items += [("elastic-ip", a["AllocationId"], tag_map(a.get("Tags")))
                   for a in aws("ec2", "describe-addresses", "--allocation-ids", *allocations)["Addresses"]]
-    items += [("security-group", g["GroupId"], tag_map(g.get("Tags")))
-              for g in aws("ec2", "describe-security-groups", "--filters", f)["SecurityGroups"]]
-    items += [("network-acl", a["NetworkAclId"], tag_map(a.get("Tags")))
-              for a in aws("ec2", "describe-network-acls", "--filters", f)["NetworkAcls"]]
-    items += [("network-interface", e["NetworkInterfaceId"], tag_map(e.get("TagSet")))
-              for e in aws("ec2", "describe-network-interfaces", "--filters", f)["NetworkInterfaces"]]
-    instances = [i for r in aws("ec2", "describe-instances", "--filters", f,
-                                "Name=instance-state-name,Values=pending,running,stopping,stopped")["Reservations"]
-                 for i in r["Instances"]]
-    items += [("instance", i["InstanceId"], tag_map(i.get("Tags"))) for i in instances]
-    if instances:
-        ids = ",".join(i["InstanceId"] for i in instances)
+    raw["security_groups"] = aws("ec2", "describe-security-groups", "--filters", f)["SecurityGroups"]
+    items += [("security-group", g["GroupId"], tag_map(g.get("Tags"))) for g in raw["security_groups"]]
+    raw["network_acls"] = aws("ec2", "describe-network-acls", "--filters", f)["NetworkAcls"]
+    items += [("network-acl", a["NetworkAclId"], tag_map(a.get("Tags"))) for a in raw["network_acls"]]
+    raw["network_interfaces"] = aws("ec2", "describe-network-interfaces", "--filters", f)["NetworkInterfaces"]
+    items += [("network-interface", e["NetworkInterfaceId"], tag_map(e.get("TagSet"))) for e in raw["network_interfaces"]]
+    raw["instances"] = [i for r in aws("ec2", "describe-instances", "--filters", f,
+                                       "Name=instance-state-name,Values=pending,running,stopping,stopped")["Reservations"]
+                        for i in r["Instances"]]
+    items += [("instance", i["InstanceId"], tag_map(i.get("Tags"))) for i in raw["instances"]]
+    if raw["instances"]:
+        ids = ",".join(i["InstanceId"] for i in raw["instances"])
         items += [("volume", v["VolumeId"], tag_map(v.get("Tags")))
                   for v in aws("ec2", "describe-volumes", "--filters", f"Name=attachment.instance-id,Values={ids}")["Volumes"]]
-    return items
+    return items, raw
 
 
 # The inventory must reach at least the topology setup.sh builds, or it did not really look:
@@ -1546,23 +1643,45 @@ MINIMUM_KINDS = {
 }
 
 
-def audit(items):
-    """(missing, gaps): resources without auto-delete=no, and kinds the inventory under-reached."""
+def audit(items, sweep):
+    """(missing, gaps): resources without auto-delete=no, and the kinds (MINIMUM_KINDS) and members
+    of tag-sweep's set (SWEEP_SET) the read under-reached. audit-tags and tag-sweep share it, so
+    the sweep refuses exactly the short reads the audit reports."""
     missing = [(k, i) for k, i, tags in items if tags.get(KEEP[0]) != KEEP[1]]
-    counts = {}
-    for kind, _, _ in items:
-        counts[kind] = counts.get(kind, 0) + 1
-    gaps = [f"{kind} (found {counts.get(kind, 0)}, expected at least {n})"
-            for kind, n in MINIMUM_KINDS.items() if counts.get(kind, 0) < n]
+    counts = Counter(kind for kind, _, _ in items)
+    gaps = [f"{kind} (found {counts[kind]}, expected at least {n})"
+            for kind, n in MINIMUM_KINDS.items() if counts[kind] < n]
+    found = Counter(what for what, _, _, _ in sweep)
+    gaps += [f"the set tag-sweep writes: {what} (found {found[what]}, expected at least {n})"
+             for what, n in SWEEP_SET.items() if found[what] < n]
     return missing, gaps
 
 
+def not_swept(kind, ident, tags, in_set):
+    """Why tag-sweep will not give this resource the auto-delete=no it lacks; '' when it will."""
+    demo = tags.get(DEMO_TAG[0])
+    if (kind, ident) in in_set:
+        if demo in (None, DEMO_TAG[1]):
+            return ""
+        return f" (carries {DEMO_TAG[0]}={demo}: tag-sweep refuses to write another demo's resource)"
+    mark = f"{DEMO_TAG[0]}={demo}" if demo is not None else f"no {DEMO_TAG[0]} tag"
+    return f" ({mark}; not in the set tag-sweep writes, so only whoever created it can tag it)"
+
+
 def cmd_audit_tags(_):
-    items = inventory()
-    missing, gaps = audit(items)
+    """Every resource the cluster owns (ownership()) must carry auto-delete=no: what create-time
+    tags give it, or tag-sweep for its exact set. That includes every object in the cluster's
+    VPC, the sweep's or not: the VPC is this run's and goes with it, so an untagged object there
+    is reported (with why the sweep does not tag it) rather than left out. Exit 2 on a coverage
+    gap, 1 on any resource without the tag, 0 otherwise."""
+    items, sweep, _ = ownership()
+    missing, gaps = audit(items, sweep)
+    in_set = {(kind, ident) for _, kind, ident, _ in sweep}
     for kind, ident, tags in items:
-        state = "ok     " if tags.get(KEEP[0]) == KEEP[1] else "MISSING"
-        print(f"{state} {kind:18} {ident}")
+        if tags.get(KEEP[0]) == KEEP[1]:
+            print(f"ok      {kind:18} {ident}")
+        else:
+            print(f"MISSING {kind:18} {ident}{not_swept(kind, ident, tags, in_set)}")
     for gap in gaps:
         print(f"GAP     {gap}")
     print(f"{len(items)} resources, {len(missing)} without {KEEP[0]}={KEEP[1]}, {len(gaps)} coverage gaps")
@@ -1572,43 +1691,44 @@ def cmd_audit_tags(_):
 
 
 def cmd_tag_sweep(_):
-    """setup.sh's last step. Give the sample's tags to what AWS creates for this cluster with no
-    way to tag it at creation: the Auto Scaling group behind each managed node group, the copy
-    EKS makes of each launch template and the instance profile it makes for each node role, the
-    VPC's main route table, default security group and default network ACL, the cluster security
-    group EKS creates, and the interfaces the EKS control plane and the NAT gateway put in the
-    VPC. Anything else in the inventory without the tag is tagged too, and printed.
-
-    It tags only what inventory() reaches from this cluster: the cluster must carry the sample's
-    mark (inventory() refuses it otherwise), its eksctl stacks are matched by their cluster-name
-    tag, and everything VPC-scoped is read with the cluster's own VPC id as the filter. It also
-    requires that VPC to carry the mark, so it never tags inside a VPC this sample did not
-    create. Both checks run before the first write."""
+    """setup.sh step 8. Give the sample's tags to the members of its exact set (SWEEP_SET, built
+    by ownership()) that lack auto-delete=no, and write nothing else. Every check runs before the
+    first write, and each refusal says that nothing was tagged:
+      - the cluster must carry the sample's mark (ownership(), exit 1);
+      - the read must be complete: every kind in MINIMUM_KINDS and every member of SWEEP_SET found
+        at least as often as a fresh setup.sh leaves it, the check audit-tags makes (exit 2); an
+        empty list from AWS is a short read here, never "nothing to tag";
+      - the cluster's VPC must carry the sample's mark (exit 1);
+      - no member of the set may carry a Demo value other than the sample's (exit 1)."""
     tags = demo_tags()
-    items = inventory()
-    vpcs = [(ident, current) for kind, ident, current in items if kind == "vpc"]
-    require(len(vpcs) == 1, f"tag-sweep found {len(vpcs)} VPCs for the cluster, expected exactly 1; nothing was tagged")
-    vpc_id, vpc_tags = vpcs[0]
-    require(vpc_tags.get(DEMO_TAG[0]) == DEMO_TAG[1],
+    cluster = setting("CLUSTER_NAME")
+    items, sweep, (vpc_id, vpc_tags) = ownership()
+    _, gaps = audit(items, sweep)
+    if gaps:
+        for gap in gaps:
+            print(f"GAP     {gap}")
+        print(f"tag-sweep: the read of cluster {cluster} came up short ({len(gaps)} gap(s) above), so it cannot "
+              "tell what the cluster owns; nothing was tagged")
+        sys.exit(2)
+    require(marked(vpc_tags),
             f"VPC {vpc_id} does not carry {DEMO_TAG[0]}={DEMO_TAG[1]}, so it is not this sample's; "
             "tag-sweep tags only inside the VPC setup.sh created, and nothing was tagged")
-    untagged = [(kind, ident) for kind, ident, current in items if current.get(KEEP[0]) != KEEP[1]]
+    foreign = [(what, kind, ident, t[DEMO_TAG[0]]) for what, kind, ident, t in sweep
+               if t.get(DEMO_TAG[0]) not in (None, DEMO_TAG[1])]
+    for what, kind, ident, demo in foreign:
+        print(f"FOREIGN {kind:18} {ident} ({what}) carries {DEMO_TAG[0]}={demo}")
+    require(not foreign, f"tag-sweep refuses: {len(foreign)} resource(s) in its set carry another {DEMO_TAG[0]} "
+                         "value (above), so they are not this sample's; nothing was tagged")
+    untagged = [(kind, ident) for _, kind, ident, t in sweep if t.get(KEEP[0]) != KEEP[1]]
+    require(all(kind in SWEEP_KINDS for kind, _ in untagged), "tag-sweep's set holds a kind it does not write")
     ec2_ids, asgs = [], []
     for kind, ident in untagged:
         if kind == "asg":
             asgs.append(ident)
-        elif kind in ("eks-cluster", "eks-nodegroup", "eks-addon", "eks-pod-identity"):
-            aws("eks", "tag-resource", "--resource-arn", ident, "--tags", ",".join(f"{k}={v}" for k, v in tags))
-            print(f"tagged {kind} {ident}")
-        elif kind == "iam-role":
-            aws("iam", "tag-role", "--role-name", ident, "--tags", *[f"Key={k},Value={v}" for k, v in tags])
-            print(f"tagged {kind} {ident}")
         elif kind == "instance-profile":
             aws("iam", "tag-instance-profile", "--instance-profile-name", ident,
                 "--tags", *[f"Key={k},Value={v}" for k, v in tags])
             print(f"tagged {kind} {ident}")
-        elif kind == "cfn-stack":
-            print(f"NOT TAGGED {kind} {ident}: stack tags are set by eksctl at create time")
         else:
             ec2_ids.append((kind, ident))
     for asg in asgs:
@@ -1622,15 +1742,24 @@ def cmd_tag_sweep(_):
             "--tags", *[f"Key={k},Value={v}" for k, v in tags])
         for kind, ident in batch:
             print(f"tagged {kind} {ident}")
-    tagged = sum(1 for kind, _ in untagged if kind != "cfn-stack")
-    print(f"tag-sweep: tagged {tagged} of {len(items)} resources in cluster {setting('CLUSTER_NAME')} "
-          f"and VPC {vpc_id}; {len(items) - len(untagged)} already carried {KEEP[0]}={KEEP[1]}")
+    print(f"tag-sweep: tagged {len(untagged)} of the {len(sweep)} resources in its set for cluster {cluster} "
+          f"and VPC {vpc_id}; {len(sweep) - len(untagged)} already carried {KEEP[0]}={KEEP[1]}, and nothing "
+          "outside the set was written")
 
 
 def cmd_owned(_):
     """List what this sample owns, for clean.sh --dry-run."""
-    for kind, ident, _ in inventory():
+    for kind, ident, _ in ownership()[0]:
         print(f"{kind:18} {ident}")
+
+
+def cmd_cluster_stacks(_):
+    """For clean.sh's check after the delete: the name of each of this cluster's eksctl stacks
+    that still exists (eksctl_stacks: its exact cluster-name tag, so a sibling cluster's stacks
+    are never counted), one per line, nothing when none is left. A read that fails exits 1, so
+    "could not determine" is never read as "gone"."""
+    for stack in eksctl_stacks(setting("CLUSTER_NAME")):
+        print(stack["StackName"])
 
 
 def eni_report(enis):
@@ -1761,6 +1890,7 @@ def main():
     sub.add_parser("audit-tags").set_defaults(func=cmd_audit_tags)
     sub.add_parser("tag-sweep").set_defaults(func=cmd_tag_sweep)
     sub.add_parser("owned").set_defaults(func=cmd_owned)
+    sub.add_parser("cluster-stacks").set_defaults(func=cmd_cluster_stacks)
     p = sub.add_parser("eni-tags")
     p.add_argument("vpc")
     p.set_defaults(func=cmd_eni_tags)
@@ -1769,6 +1899,7 @@ def main():
     try:
         args.func(args)
     except DemoError as e:
+        sys.stdout.flush()  # the lines that explain the error come first, also when redirected
         print(f"error: {e}", file=sys.stderr)
         sys.exit(1)
 

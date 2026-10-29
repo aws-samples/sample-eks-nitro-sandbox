@@ -1,5 +1,6 @@
-# Stage 4: the two managed node groups, created only once Cilium is installed and reporting
-# healthy (setup.sh's preflight-daemonset and BTF gates run before this file is applied).
+# Stage 4: the two managed node groups, created only once Cilium is installed and its DaemonSet
+# is checked to schedule on the sandbox node (setup.sh's preflight-daemonset runs before this
+# file is applied; the BTF gate runs after both nodes and their Cilium agents are Ready).
 #
 # setup.sh fills in the ${...} placeholders and writes the result to the repository's
 # gitignored tmp/issue11/run/nodegroups.yaml, then runs:
