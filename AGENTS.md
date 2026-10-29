@@ -159,9 +159,12 @@ reviewer you use:
    reviewed tree — every path's type, mode, size, modification time, symlink target and
    every file's content hash, including the tree's own root directory, compared before the
    run, when the backend returns, and after — and any difference the fingerprint can see
-   fails the round. State the gap plainly rather than let the word "any" paper over it: a
-   change whose every directory mtime is put back to match leaves nothing else for this
-   fingerprint to see, and is not caught. Why this way round: a reviewer that reviewed
+   fails the round. State the gaps plainly rather than let the word "any" paper over them:
+   ownership, ACLs, extended attributes and hard-link count are not tracked at all — a hard
+   link made from outside the tree to a file inside it changes none of what this checks,
+   demonstrated in a second-review round rather than asserted — and a change whose every
+   tracked attribute, including mtime, is put back to match leaves nothing else to catch
+   it. Why this way round: a reviewer that reviewed
    something other than the commit is useless whether or not a sandbox flag was in the way,
    and a reviewer that cannot execute is useless in a quieter way that is easy to miss.
    Set by the maintainers on 2026-10-25 and implemented in issue #100; before that the
@@ -325,15 +328,16 @@ bounds what the fingerprint can and cannot see.
     running a command would be defending a property this script no longer has. Put only the
     authentication setting in it anyway.
 - **Both: what the fingerprint does not see.** It records every path's type, mode, size,
-  modification time, symlink target and every regular file's content hash. Not owner, not
-  extended attributes, not ACLs. It is not guaranteed to catch a file created and deleted
-  inside the run — though creating and removing one changes the mtime of the directory that
-  held it, and every directory below the tree's root is fingerprinted, so it usually does
-  show up, unless it was the root directory itself (which `-mindepth 1` skips) or the mtime
-  was put back. Read that last point carefully on the Codex path: Codex is given the tree as
-  its working directory, so a scratch file it creates and removes lands in exactly the root
-  directory that is skipped. And flatly: **it says nothing at all about writes outside the
-  tree**, which both backends are now able to make.
+  modification time, symlink target and every regular file's content hash, including the
+  tree's own root directory (`-mindepth 0`; an earlier version used `-mindepth 1` and missed
+  a mode change or a create-and-delete made directly in the root, both found and fixed in a
+  second-review round). **Not owner, not extended attributes, not ACLs, not hard-link
+  count.** A hard link made from outside the tree to a file inside it changes none of this —
+  also found in a second-review round, by actually making one, not by reasoning about it.
+  It is not guaranteed to catch a file created and deleted inside the run if every directory
+  that would show the change (via its own mtime) has that mtime put back before the run
+  ends. And flatly: **it says nothing at all about writes outside the tree**, which both
+  backends are now able to make.
 
 #### Limits that apply wherever you run it
 

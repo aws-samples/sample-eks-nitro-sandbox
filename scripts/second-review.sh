@@ -6,9 +6,11 @@
 #   2. the thing under review did not change, and that is shown -- the tree is fingerprinted
 #      before the run, when the backend returns, and after, and any difference the
 #      fingerprint can see (type, mode, size, mtime, symlink target, content, for every
-#      path including the tree's own root) fails the run. The one gap: a change whose every
-#      mtime is put back to match leaves no trace in a fingerprint that never looked at
-#      anything else;
+#      path including the tree's own root) fails the run. What it does NOT see: ownership,
+#      ACLs, extended attributes, hard-link count, or anything else find's -printf does not
+#      report (a hard link made to a file inside the tree, from outside it, changes nothing
+#      this fingerprint can see); and a change whose every tracked attribute, including
+#      mtime, is put back to match leaves nothing else to catch it either;
 #   3. the model that actually answered is recorded, read from the backend's own report
 #      rather than from the name that was asked for.
 #
@@ -219,12 +221,15 @@ esac
 # from writing to the tree, so this is what shows whether it did.
 #
 # What it is not guaranteed to see, stated plainly because nothing else backs the claim up:
-# a file created and deleted inside the run where the directory that held it has its mtime
-# put back before the run ends, and any write anywhere outside the tree, which is not looked
-# at at all. The root directory's own metadata IS included (-mindepth 0, below): an earlier
-# version excluded it, and a stub both changing the root's mode and creating-and-deleting a
-# file directly in it went uncaught, because the one directory whose mtime would have shown
-# it was the one the fingerprint skipped.
+# ownership, ACLs, extended attributes, hard-link count, and anything else find's -printf
+# below does not report (a hard link made from outside the tree to a file inside it changes
+# none of what is tracked here -- verified in a second-review round); a file created and
+# deleted inside the run where the directory that held it has every tracked attribute,
+# including its mtime, put back before the run ends; and any write anywhere outside the
+# tree, which is not looked at at all. The root directory's own metadata IS included
+# (-mindepth 0, below): an earlier version excluded it, and a stub both changing the root's
+# mode and creating-and-deleting a file directly in it went uncaught, because the one
+# directory whose mtime would have shown it was the one the fingerprint skipped.
 #
 # Records are NUL-delimited: a path may legally hold a newline or " -> ", and with
 # line-delimited records two different trees could line up to the same fingerprint.
@@ -582,8 +587,9 @@ fi
   printf '                  and content hash this script tracks, matching the fingerprint\n'
   printf '                  taken before the run and the one taken when the backend\n'
   printf '                  returned. The reviewer was NOT prevented from writing to it;\n'
-  printf '                  this is the evidence that it did not, and it does not cover a\n'
-  printf '                  change whose directory mtimes were put back, or any write made\n'
+  printf '                  this is the evidence that it did not, and it does not cover\n'
+  printf '                  ownership, ACLs, extended attributes or hard links, a change\n'
+  printf '                  whose tracked attributes were all put back, or any write made\n'
   printf '                  outside %s.\n' "$TREE_ABS"
   printf '  tree            %s\n' "$TREE_ABS"
   printf '  brief           %s\n' "$BRIEF_ABS"
