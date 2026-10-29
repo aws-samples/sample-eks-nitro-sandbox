@@ -310,7 +310,7 @@ Forwarding from [::1]:8080 -> 8080
 Handling connection for 8080
 ```
 
-Then open <http://127.0.0.1:8080> and pick the `nitro-sandbox` namespace. Temporal's own
+Then open `http://127.0.0.1:8080` and pick the `nitro-sandbox` namespace. Temporal's own
 [self-hosted guidance](https://docs.temporal.io/self-hosted-guide/deployment) is to keep
 the server off the public internet, like a database, which is what ClusterIP and the
 port-forward do here. This is the Workflows list it shows:
