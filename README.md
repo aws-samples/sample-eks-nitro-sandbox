@@ -53,6 +53,10 @@ The same procurement analyst three ways, with a second policy layer confining th
 - [Docker builds](examples/ci-cd/docker-builds/README.md): a privileged Docker daemon builds and runs container images inside a sandbox, by hand and as an unattended Job, with an EBS layer cache across Job runs and an optional push to Amazon ECR through a role scoped to one repository.
 - [GitHub Actions runners](examples/ci-cd/github-actions/README.md): the GitHub Actions Runner Controller on EKS, where every ephemeral runner pod for a queued job is its own sandbox, running a privileged `docker build` and arbitrary test code that never reach the shared node, and is deleted when the job ends.
 
+## Integrations
+
+- [Temporal workflows](examples/integrations/temporal/README.md): a self-hosted Temporal server where one durable workflow creates a sandbox, runs a step in it, suspends it, resumes it onto a new guest with its workspace intact and deletes it, retrying a failed activity and carrying on through its Worker pod being deleted mid-run.
+
 ## Confidential
 
 Samples that use `runtimeClassName: confidential-sandbox`, where the node is untrusted and AWS KMS releases a key only to a sandbox whose attestation matches. The [section page](examples/confidential/README.md) covers what they share.
