@@ -396,7 +396,13 @@ except Exception:
     print("NO_RECORD"); raise SystemExit(0)
 if not isinstance(d, dict):
     print("NO_RECORD"); raise SystemExit(0)
-if not d.get("is_error"):
+# is_error must be an actual boolean. Second-review finding (issue #100 round 4): a missing
+# key or a falsy-but-wrong-type value (absent, 0) used to read the same as is_error:false
+# and pass straight through as OK, which is not what a record that does not even have the
+# field in the expected shape should mean.
+if not isinstance(d.get("is_error"), bool):
+    print("NO_RECORD"); raise SystemExit(0)
+if not d["is_error"]:
     print("OK"); raise SystemExit(0)
 # Only ASCII leaves this script, so no value in the record can break the print.
 blob = "%s %s %s" % (d.get("api_error") or "", d.get("result") or "",
@@ -496,7 +502,12 @@ except Exception as e:
 if not isinstance(d, dict):
     print("BAD\tthe record is a %s, not an object" % type(d).__name__)
     raise SystemExit(0)
-if d.get("is_error"):
+if not isinstance(d.get("is_error"), bool):
+    # Second-review finding (issue #100 round 4): a missing or wrong-type is_error (absent,
+    # 0) used to read as falsy and pass this check, the same gap as the earlier extractor.
+    print("BAD\tis_error is missing or is not a boolean")
+    raise SystemExit(0)
+if d["is_error"]:
     # Independent of the error check earlier: a failed run must never be recorded as a
     # review, even if that check were bypassed or failed to run.
     print("BAD\tthe record is flagged is_error, so the backend did not produce a review")
