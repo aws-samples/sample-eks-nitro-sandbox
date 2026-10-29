@@ -12,11 +12,13 @@ on an ordinary pod.
 > groups, the BTF gate, the isolated-sandbox RuntimeClass, and the sandbox pod / Service
 > boundary / policy evidence (`test.sh`, `clean.sh`, `deploy/workloads.yaml`,
 > `deploy/policy.yaml`). The pins follow the GA node-build bundle `nitro-sandbox-ga-20261028`.
-> The output blocks come from two fresh runs, each on a new cluster. The first fresh run gave
-> every block except four, including the missing-BTF and `socketLB.hostNamespaceOnly` negative
-> controls. The independent walk of this page, a second fresh run at commit `d68f263`, gave the
-> other four: the stage 4 and stage 6 `kubectl` reads, which the first run did not capture, and
-> the two `clean.sh` blocks.
+> The output blocks come from two fresh runs, each on a new cluster: the first fresh run, and
+> the independent walk of this page at commit `d68f263`, which gave the stage 4 and stage 6
+> `kubectl` reads and the two `clean.sh` blocks. Four blocks read
+> `TODO: output from the fresh run`, because their commands changed after both runs: the raw
+> BTF read and the missing-BTF control in stage 5, the raw FQDN cache read, and the socketLB
+> negative control, now reader steps with their own commands. The next fresh run fills every
+> block from that one run.
 
 !!! danger "Before this sample is merged to `main` or marked available: a gate, not a suggestion"
 
@@ -190,11 +192,15 @@ cluster in `us-west-2`, with the default names in `config.env.example`.
   else. The summary block at the end of stage 7 is from `setup.sh` run again at `9c2872e`
   against the same cluster.
 - **The first fresh run, the other blocks:** read from that cluster after the second run,
-  except the four below.
+  except the four below and the four that wait.
 - **The independent walk:** a second fresh run, by a reviewer who followed this page from a
   clean checkout at commit `d68f263`, on a new cluster of its own. Four blocks are from it: the
   stage 4 node and agent reads, the stage 6 RuntimeClass read, and the two `clean.sh` blocks.
   Each of them says so.
+- **Waiting for the next fresh run:** the raw BTF read and the missing-BTF control (stage 5),
+  the raw FQDN cache read and the socketLB negative control (both after `./test.sh`) read
+  `TODO: output from the fresh run`. Their page commands changed after both runs, so neither
+  run's output is what they print.
 - **Masking:** values from each run's account and environment are replaced with placeholders
   such as `<ACCOUNT_ID>` and `<SANDBOX_NODE>`. Each block says what it masks or cuts.
 
@@ -400,9 +406,9 @@ line or ConfigMap text is refused):
 kubectl -n kube-system exec ds/cilium -c cilium-agent -- cilium-dbg status --verbose
 ```
 
-This command, run on the first fresh run's cluster after the negative control below had been undone.
-At that point the cluster was on Helm revision 4, with the same values `setup.sh` installed.
-`ds/cilium` picked the system node's agent.
+This command, run on the first fresh run's cluster after its socketLB negative control had been
+undone. At that point the cluster was on Helm revision 4, with the same values `setup.sh`
+installed. `ds/cilium` picked the system node's agent.
 
 - **Abridged:** 6 of the output's 325 lines, the kube-proxy replacement lines. The interface
   list on the first line is cut to `[...]`.
@@ -417,60 +423,10 @@ KubeProxyReplacement Details:
 ```
 
 The negative control, the sandbox pod's Service and DNS reachability with
-`hostNamespaceOnly: false`, is a separate control run: `test.sh` stays read-only and never flips
-the live Helm value. On the first fresh run's cluster, the control changed only that value.
-
-1. **Off.** It ran the same `helm upgrade` that `setup.sh` runs (the same release, chart,
-   version and values file) with `--set socketLB.hostNamespaceOnly=false` added. That made Helm
-   revision 3.
-2. **Read and probe.** Once the agents had rolled, it read each agent and probed from each pod.
-3. **Back on.** It set the value back with the same command without the override. That made
-   revision 4, whose values are identical to `setup.sh`'s revision 2.
-
-**What it showed:**
-
-- both agents read `Full`, and `cilium_ubuntu.py kpr-status` refused it;
-- the sandbox pod lost the ClusterIP and the `kube-dns` Service, yet still reached the server's
-  pod IP and CoreDNS's pod IP;
-- the ordinary pods and the node kept the ClusterIP.
-
-**About the block:**
-
-- **Abridged:** each agent's part is only the Socket LB lines of `cilium-dbg status --verbose`,
-  and the interface lists are cut to `[...]`.
-- **The capture script's lines:** those that start `==` or `--`, and the `kpr-status rc=`
-  lines.
-- **The probe lines:** `wget` or `nslookup` from each pod, one line each with its exit code.
-- **Masked:** the node names, the agent pod names, and every pod, Service and DNS address.
-
-```text
-== 2026-10-29T08:55:19Z <CILIUM_AGENT_SANDBOX> (sandbox node <SANDBOX_NODE>): Socket LB lines of cilium-dbg status --verbose
-KubeProxyReplacement:   True   [...]
-  Status:               True
-  Socket LB:            Enabled
-  Socket LB Tracing:    Enabled
-  Socket LB Coverage:   Full
--- kpr-status:
-Socket LB Coverage: Full
-kpr-status rc=1
-== 2026-10-29T08:55:22Z <CILIUM_AGENT_SYSTEM> (system node <SYSTEM_NODE>): Socket LB lines of cilium-dbg status --verbose
-KubeProxyReplacement:   True   [...]
-  Status:               True
-  Socket LB:            Enabled
-  Socket LB Tracing:    Enabled
-  Socket LB Coverage:   Full
--- kpr-status:
-Socket LB Coverage: Full
-kpr-status rc=1
-== 2026-10-29T08:55:26Z server pod <SERVER_POD_IP>, Service server ClusterIP <SERVER_CLUSTER_IP>, kube-dns <KUBE_DNS_IP>, CoreDNS pod <COREDNS_POD_IP>
-nitro      -> server pod IP <SERVER_POD_IP>:8080 rc=0 out=server
-nitro      -> ClusterIP <SERVER_CLUSTER_IP>:80 rc=1 out=wget: download timed out command terminated with exit code 1
-nitro      nslookup server.cilium-ubuntu-demo.svc.cluster.local via kube-dns Service <KUBE_DNS_IP> rc=1 out=;; connection timed out; no servers could be reached  command terminated with exit code 1
-nitro      nslookup server.cilium-ubuntu-demo.svc.cluster.local via CoreDNS pod <COREDNS_POD_IP> rc=0 out=Server:		<COREDNS_POD_IP> Address:	<COREDNS_POD_IP>:53   Name:	server.cilium-ubuntu-demo.svc.cluster.local Address: <SERVER_CLUSTER_IP>
-neighbor   -> ClusterIP <SERVER_CLUSTER_IP>:80 rc=0 out=server
-control    -> ClusterIP <SERVER_CLUSTER_IP>:80 rc=0 out=server
-node-probe -> ClusterIP <SERVER_CLUSTER_IP>:80 rc=0 out=server
-```
+`hostNamespaceOnly: false`, needs the pods `test.sh` creates, so it is a reader step after the
+first `./test.sh`: see [The socketLB negative control](#the-socketlb-negative-control). It briefly
+changes this one Helm value on the sample's own cluster and puts it back; `test.sh` stays
+read-only and never flips it.
 
 ### 4. Add the two Ubuntu node groups
 
@@ -580,28 +536,25 @@ So `check-btf` runs the bundle's own test in the Cilium agent pod on each node. 
 container shares its node's kernel, so this reads the node's running kernel, not a kernel
 config file and not the `cilium-config` ConfigMap. Anything but exactly `PRESENT` is refused.
 
+To read it yourself, run the same test in each node's agent, named by its node rather than
+through `ds/cilium`, which picks one agent. The command also lists the file and prints each
+read's exit code:
+
 ```bash
-kubectl -n kube-system exec ds/cilium -c cilium-agent -- sh -c 'test -s /sys/kernel/btf/vmlinux && echo PRESENT || echo MISSING'
+for group in sandbox system; do
+  node="$(kubectl get nodes -l eks.amazonaws.com/nodegroup=$group -o jsonpath='{.items[0].metadata.name}')"
+  agent="$(kubectl -n kube-system get pods -l k8s-app=cilium --field-selector spec.nodeName=$node -o jsonpath='{.items[0].metadata.name}')"
+  echo "== $(date -u +%FT%TZ) $agent ($group node) raw BTF read"
+  kubectl -n kube-system exec "$agent" -c cilium-agent -- sh -c 'test -s /sys/kernel/btf/vmlinux && echo PRESENT || echo MISSING; ls -l /sys/kernel/btf/vmlinux'
+  echo "rc=$?"
+done
 ```
 
-This test, run on the first fresh run's cluster in each node's Cilium agent, named directly rather
-than through `ds/cilium`, which picks one agent. An `ls -l /sys/kernel/btf/vmlinux` followed
-the test. `setup.sh`'s own gate on the same run printed `BTF present on node ...` for both nodes
-(step 6/8).
-
-- **The capture script's lines:** those that start `==` and `rc=`.
-- **Masked:** the agent pod names.
-- **Run-specific:** the file sizes.
+What you see: for each node, `PRESENT`, the file's `ls -l` line and `rc=0`. `setup.sh`'s own
+gate prints `BTF present on node ...` for both nodes (step 6/8).
 
 ```text
-== 2026-10-29T08:45:14Z <CILIUM_AGENT_SANDBOX> (sandbox node) raw BTF read
-PRESENT
--r--r--r-- 1 root root 6817864 Oct 29 07:56 /sys/kernel/btf/vmlinux
-rc=0
-== 2026-10-29T08:45:17Z <CILIUM_AGENT_SYSTEM> (system node) raw BTF read
-PRESENT
--r--r--r-- 1 root root 7160284 Oct 29 07:56 /sys/kernel/btf/vmlinux
-rc=0
+TODO: output from the fresh run
 ```
 
 `test.sh` then reads each agent's own log for those two failure strings
@@ -615,31 +568,28 @@ in either format is refused the same way.
 **The missing-BTF rejection.** Issue #11 asks for a failing control or a captured preflight
 failure that shows a missing-BTF kernel rejected before the node is accepted. No node without
 BTF was cheaply available: there is no Ubuntu EKS AMI without `CONFIG_DEBUG_INFO_BTF` to launch
-one from. So the first fresh run captured it as a **stub-driven** run of the real
-`cilium_ubuntu.py check-btf` command.
+one from. So `scripts/missing-btf-control.sh` makes it a **stub-driven** run of the real
+`cilium_ubuntu.py check-btf` command against the real sandbox node, then the same command
+without the stub. It changes nothing on the cluster.
 
-- **What the stub does:** a stub `kubectl`, first on `PATH`, replaces only the BTF read,
-  answering `MISSING`. It passes every other call to the real `kubectl`, so the agent-pod lookup
-  ran against the live cluster.
+- **What the stub does:** the script writes a stub `kubectl` under the repository's gitignored
+  `tmp/`, never in the sample folder, and puts it first on `PATH`. The stub replaces only the
+  BTF read, answering `MISSING`. It passes every other call to the real `kubectl`, so the
+  agent-pod lookup runs against the live cluster.
 - **What is real:** the node, its Cilium agent and the gate under test.
+- **What it prints:** the stub's sha256, what `kubectl` resolves to, the refusal with `rc=1`
+  and how many calls the stub answered and passed on; then the run without the stub, with
+  `rc=0`.
+- **When it passes:** only when the stub-driven run is refused with the no-BTF message and the
+  real run is accepted. If `check-btf` accepted the stub's `MISSING`, or the real run failed,
+  the script exits 1. It removes its stub folder at the end and says so.
 
-The block shows that stub-driven run first. Then the same command without the stub, one second
-later.
-
-- **The capture script's lines:** those that start `==`, `stub sha256`, `kubectl resolves to`
-  and `rc=`.
-- **Masked:** the node name, the stub's checksum and the local path of the real `kubectl`.
+```bash
+./scripts/missing-btf-control.sh
+```
 
 ```text
-== 2026-10-29T08:49:09Z STUB-DRIVEN: real scripts/cilium_ubuntu.py check-btf sandbox <SANDBOX_NODE>, with tmp/issue11/run/btf-stub/bin first on PATH
-stub sha256 <STUB_SHA256>
-kubectl resolves to: ../../../tmp/issue11/run/btf-stub/bin/kubectl
-error: node <SANDBOX_NODE> (nodegroup sandbox) has no BTF at /sys/kernel/btf/vmlinux (read: 'MISSING'); its Cilium agent cannot load the kube-proxy-replacement datapath, even though the agent may still report Ready. This node's kernel was not built with CONFIG_DEBUG_INFO_BTF=y; see ../ubuntu-ami for the BTF-enabled build this sample depends on.
-rc=1
-== 2026-10-29T08:49:10Z real check-btf sandbox <SANDBOX_NODE>, no stub (accept half, beside the reject)
-kubectl resolves to: <REAL_KUBECTL>
-BTF present on node <SANDBOX_NODE> (nodegroup sandbox)
-rc=0
+TODO: output from the fresh run
 ```
 
 ### 6. Create the isolated-sandbox RuntimeClass
@@ -1153,57 +1103,90 @@ RESULT: Cilium on Ubuntu, cluster nitro-cilium-ubuntu: 94/94 assertions passed.
 The both-ways negative controls for the L7 and FQDN denies prove the drop is each rule and
 not an unrelated timeout: an unselected control pod reaches the denied destination, and the
 denied name still resolves. The `socketLB.hostNamespaceOnly` negative control (a sandbox pod
-cannot reach a ClusterIP Service or Service-based DNS with the setting off) is the documented
-control run in [stage 3](#3-install-cilium-before-any-node); `test.sh` stays read-only and
-does not flip the live Helm value.
+cannot reach a ClusterIP Service or Service-based DNS with the setting off) is the reader step
+[below](#the-socketlb-negative-control); `test.sh` stays read-only and does not flip the live
+Helm value.
 
-**The FQDN cache, read raw (criterion 13).** On the first fresh run's cluster, after the FQDN probes from
-each client pod, each node's Cilium agent was read with
-`kubectl -n kube-system exec <agent pod> -c cilium-agent -- cilium-dbg fqdn cache list`.
+**The FQDN cache, read raw (criterion 13).** A `lookup` row in a Cilium agent's FQDN cache is
+kept only for the DNS answer's TTL, until the agent's next clean-up of the cache, so a read
+taken a few minutes after `test.sh` may hold none. On the independent walk's second fresh
+cluster, the read right after `test.sh` ended held only `connection` rows. `test.sh` stage 7
+reads each lane's agent right after that lane's own lookups, which is where its `lookup` check
+passes. So this step makes its own lookups first: from the sandbox pod it looks up the allowed
+name and the denied name, then reads the sandbox node's agent straight away, keeping the header
+and the sandbox pod's `lookup` rows.
 
-- **Which endpoints:** the first part is the sandbox node's agent, with the `nitro` and `neighbor`
-  endpoints. The second part is the system node's agent, with the `control` endpoint. The
-  unselected `server` pod has no rows in either.
-- **Abridged:** each part keeps its header and the rows for `checkip.amazonaws.com.` and
-  `example.net.`. The one `connection` row each endpoint has for the in-cluster name
-  `server.cilium-ubuntu-demo.svc.cluster.local.` is cut.
-- **Masked:** the endpoint ids and every resolved address (`<RESOLVED_IPS>`).
-- **Run-specific:** the TTLs and expiration times.
-
-```text
-Endpoint   Source       FQDN                                           TTL   ExpirationTime             IPs
-<NITRO_ENDPOINT_ID>       lookup       checkip.amazonaws.com.                         27    2026-10-29T08:48:10.961Z   <RESOLVED_IPS>
-<NITRO_ENDPOINT_ID>       lookup       example.net.                                   27    2026-10-29T08:48:18.342Z   <RESOLVED_IPS>
-<NITRO_ENDPOINT_ID>       lookup       example.net.                                   27    2026-10-29T08:48:18.342Z   <RESOLVED_IPS>
-<NITRO_ENDPOINT_ID>       connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
-<NITRO_ENDPOINT_ID>       connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
-<NITRO_ENDPOINT_ID>       connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
-<NEIGHBOR_ENDPOINT_ID>       lookup       checkip.amazonaws.com.                         17    2026-10-29T08:48:11.140Z   <RESOLVED_IPS>
-<NEIGHBOR_ENDPOINT_ID>       lookup       example.net.                                   17    2026-10-29T08:48:18.371Z   <RESOLVED_IPS>
-<NEIGHBOR_ENDPOINT_ID>       lookup       example.net.                                   17    2026-10-29T08:48:18.371Z   <RESOLVED_IPS>
-<NEIGHBOR_ENDPOINT_ID>       connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
-<NEIGHBOR_ENDPOINT_ID>       connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
-<NEIGHBOR_ENDPOINT_ID>       connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
-Endpoint   Source       FQDN                                           TTL   ExpirationTime             IPs
-<CONTROL_ENDPOINT_ID>        lookup       example.net.                                   4     2026-10-29T08:48:15.365Z   <RESOLVED_IPS>
-<CONTROL_ENDPOINT_ID>        lookup       example.net.                                   4     2026-10-29T08:48:15.365Z   <RESOLVED_IPS>
-<CONTROL_ENDPOINT_ID>        lookup       checkip.amazonaws.com.                         6     2026-10-29T08:48:10.093Z   <RESOLVED_IPS>
-<CONTROL_ENDPOINT_ID>        connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
-<CONTROL_ENDPOINT_ID>        connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
-<CONTROL_ENDPOINT_ID>        connection   checkip.amazonaws.com.                         0     0001-01-01T00:00:00.000Z   <RESOLVED_IPS>
+```bash
+ep="$(kubectl -n cilium-ubuntu-demo get ciliumendpoint nitro -o jsonpath='{.status.id}')"
+node="$(kubectl -n cilium-ubuntu-demo get pod nitro -o jsonpath='{.spec.nodeName}')"
+agent="$(kubectl -n kube-system get pods -l k8s-app=cilium --field-selector spec.nodeName=$node -o jsonpath='{.items[0].metadata.name}')"
+for name in checkip.amazonaws.com example.net; do
+  kubectl -n cilium-ubuntu-demo exec nitro -- nslookup "$name" >/dev/null 2>&1
+done
+kubectl -n kube-system exec "$agent" -c cilium-agent -- cilium-dbg fqdn cache list | grep -E "^(Endpoint |$ep +lookup )"
 ```
 
-This block is the read taken right after those probes. What it shows, and what it does not:
+What you see: the cache's header, then `lookup` rows for both names, all for the sandbox pod's
+endpoint.
 
-- **The `lookup` rows** show that the DNS proxy saw both names resolve for every client, because
-  the DNS rule sends every lookup through the proxy. That is criterion 13's cache evidence, and
-  `test.sh` checks the `lookup` row for `checkip.amazonaws.com` on each lane.
-- **The `connection` rows** do not show which names a pod reached. Here they happen to be for
-  `checkip.amazonaws.com.` only. But a later read on a second fresh cluster, by the independent
-  walk of this page, had `connection` rows for `example.net.` too (12 of them across the two
-  agents), and no `lookup` rows. `test.sh` asserts nothing about them.
+```text
+TODO: output from the fresh run
+```
+
+What it shows, and what it does not:
+
+- **The `lookup` rows** show that the DNS proxy saw both names resolve for the sandbox pod,
+  because the DNS rule sends every lookup through the proxy. That is criterion 13's cache
+  evidence, beside `test.sh` stage 7's own check of the allowed name's `lookup` row on each lane.
+- **The `connection` rows,** which this step leaves out, do not show which names a pod reached:
+  the walk's read after `test.sh` had `connection` rows for `example.net.` too (12 of them across
+  the two agents). `test.sh` asserts nothing about them.
 - **The deny** is shown, as the paragraph above says, by the timeout while the name still
   resolves, and by the unselected `server` pod still reaching it.
+
+### The socketLB negative control
+
+**This step briefly breaks Service routing for the sandbox pod, on this sample's own cluster.**
+It is the negative control for `socketLB.hostNamespaceOnly: true`
+([stage 3](#3-install-cilium-before-any-node)): with the setting off, the sandbox pod must lose
+the ClusterIP Service and DNS through the `kube-dns` Service, while it still reaches pod IPs.
+Run it after the first `./test.sh`, which creates the pods it probes from, and then run
+`./test.sh` again. `scripts/socketlb-control.sh` does four things:
+
+1. **Checks ownership, and changes nothing unless every check passes:** the caller's account;
+   the cluster's `Demo=setup-cilium-ubuntu` tag; that this sample's own kubeconfig points at that
+   cluster; the Helm release (`cilium` in `kube-system`, chart `cilium-1.20.2`, deployed) and
+   that its values are exactly `setup.sh`'s; both agents on `Hostns-only`; the demo namespace's
+   label and pods; and that the sandbox pod reaches both Services now. It exits 1 when a check
+   finds something that is not the sample's, and 2 when a check could not read.
+2. **Off:** `setup.sh` step 3's `helm upgrade`, with only `--set socketLB.hostNamespaceOnly=false`
+   added, then a wait for the agents to roll.
+3. **Read and probe:** both agents must read `Socket LB Coverage: Full`, which `kpr-status`
+   refuses. From the sandbox pod, both ordinary pods and the sandbox node's own network
+   namespace (`node-probe`), it probes the server pod IP, the ClusterIP Service, DNS through the
+   `kube-dns` Service and DNS at the CoreDNS pod IP. Only the sandbox pod's ClusterIP and
+   `kube-dns` Service probes may time out; every other probe must succeed. Any other result, or
+   an empty read, exits 3.
+4. **Back on, however the script ends** (a trap on `EXIT`, `INT` and `TERM`): the same upgrade
+   without the override, the roll, both agents back on `Hostns-only`, and the release's values
+   back to `setup.sh`'s. If the restore fails or cannot be verified, the script exits 4 and
+   prints the exact command to restore by hand; running `./setup.sh` again does the same.
+
+```bash
+./scripts/socketlb-control.sh
+```
+
+```text
+TODO: output from the fresh run
+```
+
+Then run the evidence again, to show everything is back:
+
+```bash
+./test.sh
+```
+
+It ends `94/94 assertions passed` again, as in the block above.
 
 ## What stays running, and cleaning up
 
@@ -1427,4 +1410,6 @@ CLEAN: the Cilium-on-Ubuntu sample (nitro-cilium-ubuntu): nothing left behind.
     | [`deploy/workloads.yaml`](deploy/workloads.yaml) | The sandbox pod (AppArmor `Unconfined`), the comparison pods, and the `server` ClusterIP Service |
     | [`deploy/policy.yaml`](deploy/policy.yaml) | The egress `CiliumNetworkPolicy`: L3/L4, L7 HTTP and FQDN rules |
     | [`test.sh`](test.sh) | Apply the workloads and policy, then prove networking, BTF and policy (see [Evidence](#evidence-testsh)) |
+    | [`scripts/missing-btf-control.sh`](scripts/missing-btf-control.sh) | Stage 5's failing control: the real BTF gate refusing a stub-driven missing-BTF read, then accepting the node (read-only) |
+    | [`scripts/socketlb-control.sh`](scripts/socketlb-control.sh) | The socketLB negative control after `./test.sh`: `hostNamespaceOnly` off, read and probe, then restored and verified |
     | [`clean.sh`](clean.sh) | Dry-run and full teardown of the cluster, ENIs, launch templates and IAM |

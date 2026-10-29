@@ -26,9 +26,9 @@
 #   ./test.sh
 #
 # The negative control for socketLB.hostNamespaceOnly (a sandbox pod CANNOT reach a ClusterIP
-# Service or Service-based DNS with the setting off) is proven once, out of band, by setup.sh's
-# documented negative-control run and shown on the page; test.sh stays read-only and does not
-# flip the live Helm value. The both-ways proof that the stage 6 and 7 denies are the policy
+# Service or Service-based DNS with the setting off) is a separate reader step,
+# scripts/socketlb-control.sh, run after this script and followed by this script again; test.sh
+# stays read-only and does not flip the live Helm value. The both-ways proof that the stage 6 and 7 denies are the policy
 # (not a timeout that would show with or without the rule) is likewise done once, offline,
 # against a scratch policy object, and recorded on the page; it is not part of this script.
 set -uo pipefail
