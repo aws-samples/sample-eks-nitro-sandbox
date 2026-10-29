@@ -33,6 +33,7 @@ The same procurement analyst three ways, with a second policy layer confining th
 
 - [Procurement analyst confined by nono](examples/subagent-security/nono/README.md): reader, evaluator and writer run as separate processes under per-role nono profiles inside one sandbox, with nono's proxy holding the supplier API key and allowing one hostname and a short list of HTTP operations, while the analyst still produces a cited recommendation checked against a deterministic comparison.
 - [Procurement analyst confined by bubblewrap](examples/subagent-security/bubblewrap/README.md): the same analyst with its reader, evaluator and writer started by `bwrap`, where the confinement policy is the argument list the trusted controller assembles: selected mounts, its own namespaces, no capabilities and an application-compiled seccomp filter, and no network at all for the tool processes.
+- [Procurement analyst confined by OpenShell](examples/subagent-security/openshell/README.md): an OpenShell gateway drives one sandbox, with the analyst's files, process identity, destinations and HTTP operations governed by an OpenShell policy inside the Nitro sandbox, while the supervisor that holds the real supplier key runs as an ordinary pod outside it, and one added rule lets the analyst submit its draft with no restart.
 
 ## Agent sandbox
 

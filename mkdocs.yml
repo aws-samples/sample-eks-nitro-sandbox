@@ -95,6 +95,7 @@ nav:
       - Subagent security: subagent-security/README.md
       - Procurement analyst confined by nono: subagent-security/nono/README.md
       - Procurement analyst confined by bubblewrap: subagent-security/bubblewrap/README.md
+      - Procurement analyst confined by OpenShell: subagent-security/openshell/README.md
   - Agent sandbox:
       - Pause and resume: agent-sandbox/pause-resume/README.md
       - Warm pool autoscaling with KEDA: agent-sandbox/warm-pool-autoscaling-keda/README.md
