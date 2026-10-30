@@ -138,7 +138,9 @@ exception, in its own `openshell-kubernetes-credentials` namespace through the K
 Secrets credential driver, so the workload pod's ServiceAccount has no RBAC path to it.
 Because the gateway's own `client-tls` certificate Secret sits in the namespace the
 workload pods run in, `scripts/setup.sh` checks that neither the sandbox ServiceAccount
-nor the namespace's default one can read Secrets there, and stops if either can. The chart
+nor the namespace's default one can read Secrets, create pods, exec into pods or add
+ephemeral containers there, and stops if either can; `scripts/demo.sh` then checks that the
+workload pod really runs as that sandbox ServiceAccount. The chart
 also supports a split install — the gateway with `workspaceResources.enabled=false` and
 its `openshell-workspace` chart in each pre-provisioned sandbox namespace — for one
 gateway serving several namespaces; this sample does not use it.
@@ -236,7 +238,7 @@ Waiting for 1 pods to be ready...
 partitioned roll out complete: 1 new pods have been updated...
 
 ==> who can read Secrets in the namespace the workload pods run in (7/8)
-  confirmed: neither the sandbox ServiceAccount nor the namespace's default ServiceAccount can get, list or watch Secrets in openshell-kubernetes
+  confirmed: neither openshell-sandbox nor the namespace's default ServiceAccount can read Secrets, create pods, exec into pods or add ephemeral containers in openshell-kubernetes
   labelled the credential namespace openshell-kubernetes-credentials as this sample's
 
 ==> the demo echo API this sample's policy and provider point at (8/8)
@@ -269,15 +271,15 @@ The Helm release, and the pods in its namespace while the sandbox from Step 3 wa
 ```text
 $ helm list -n openshell-kubernetes
 NAME     	NAMESPACE           	REVISION	UPDATED                                	STATUS  	CHART           	APP VERSION
-openshell	openshell-kubernetes	1       	2026-10-30 21:07:44.221545392 +0000 UTC	deployed	helm-chart-0.1.6	0.1.6
+openshell	openshell-kubernetes	1       	2026-10-30 21:41:47.732531901 +0000 UTC	deployed	helm-chart-0.1.6	0.1.6
 
 $ kubectl get pods -n openshell-kubernetes
 NAME                                                 READY   STATUS        RESTARTS   AGE
-default--demo-1793394513                             1/1     Running       0          78s
-echo-api                                             1/1     Running       0          107s
-node-probe                                           1/1     Terminating   0          52s
-openshell-0                                          1/1     Running       0          2m2s
-os-supervisor-72a17001-1053-4277-af67-3f0f25dfc4b6   1/1     Running       0          78s
+default--demo-1793396547                             1/1     Running       0          56s
+echo-api                                             1/1     Running       0          67s
+node-probe                                           1/1     Terminating   0          24s
+openshell-0                                          1/1     Running       0          90s
+os-supervisor-4e457fb3-e357-40e1-9f91-d85a05636cdf   1/1     Running       0          56s
 ```
 
 **Step 3: Reach the gateway with `kubectl port-forward`, and create one sandbox.** In a
@@ -319,10 +321,10 @@ Server Status
 
 ```text
 ==> the two pods of this one sandbox
-pod/os-supervisor-72a17001-1053-4277-af67-3f0f25dfc4b6 condition met
-  workload pod:   default--demo-1793394513
+pod/os-supervisor-4e457fb3-e357-40e1-9f91-d85a05636cdf condition met
+  workload pod:   default--demo-1793396547
     runtimeClassName: isolated-sandbox
-  supervisor pod: os-supervisor-72a17001-1053-4277-af67-3f0f25dfc4b6
+  supervisor pod: os-supervisor-4e457fb3-e357-40e1-9f91-d85a05636cdf
     runtimeClassName: 
     (empty means no RuntimeClass: an ordinary pod)
   workspace PVC: Bound on auto-ebs-sc
@@ -340,7 +342,7 @@ product_name: m8i.enclave
 disks: dm-0 vda vdb vdc vdd vde 
   the same node's own view, from an ordinary pod on <NODE_NAME>:
 product_name: m8i.xlarge
-disks: dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 nvme2n1 zram0 
+disks: dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 nvme2n1 nvme3n1 zram0 
 Linux version 6.18.54 (builder@buildkitsandbox) (x86_64-bottlerocket-linux-gnu-gcc (Buildroot 2025.05.1) 13.4.0, GNU ld (GNU Binutils) 2.44) #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
 ```
 
@@ -359,7 +361,7 @@ driver, as a `Secret` in its own namespace — shown here by name only:
 
 ```text
   the credential Secret, by name only -- never its value:
-openshell-cred-91e124dc3047eaeeaf44d0e4f8de3a83ce64b49e   Opaque
+openshell-cred-84b14808e65d0463b238fac03f378b88776a7066   Opaque
 ```
 
 The agent's own environment holds a placeholder, never the value:
@@ -367,7 +369,7 @@ The agent's own environment holds a placeholder, never the value:
 ```text
 ==> the agent's credential: a placeholder, never the real value
   the agent's own environment:
-DEMO_API_KEY=openshell:resolve:env:v7861852800310345618_DEMO_API_KEY
+DEMO_API_KEY=openshell:resolve:env:v4729594891538873486_DEMO_API_KEY
 ```
 
 A request to the one endpoint this sandbox's policy allows — an in-cluster HTTP echo
@@ -386,7 +388,7 @@ against:
 
 ```text
   the digest of the value the backend received (substituted by the supervisor, outside the sandbox), computed INSIDE the sandbox so the real value is never printed anywhere, including by this script:
-  resolved credential digest: 5af59c0db66960b9ff94125fa963ba6e0bb1b52b747b154bc2234c635917423c
+  resolved credential digest: a498c85aa894f13e568c68246dca90c1f13bcec0c749078308c7be199b4ddad6
   matches the digest of the credential this run stored in the Secret: true
 ```
 
@@ -394,7 +396,7 @@ And the workload pod mounts no Secret for it at all:
 
 ```text
   no Secret for the real credential is mounted in the workload pod:
-os-sandbox-72a17001-1053-4277-af67-3f0f25dfc4b6-c28c8206eecf
+os-sandbox-4e457fb3-e357-40e1-9f91-d85a05636cdf-bcd054a46ec8
 ```
 
 (That one Secret is OpenShell's own per-sandbox bootstrap material, not a provider
@@ -416,7 +418,7 @@ permission a root-owned, non-readable file would have produced on its own:
 cat: /var/lib/dpkg/status: Permission denied
 cat exit=1
   control -- a file the policy does list:
-default--demo-1793394513
+default--demo-1793396547
   a destination the policy does not list:
 bash: connect: Permission denied
 bash: line 1: /dev/tcp/kubernetes.default.svc.cluster.local/443: Permission denied
@@ -435,11 +437,11 @@ one placeholder:
 ==> layer 2: the Nitro boundary -- the node is invisible, and the credential is absent
   processes visible in the guest (its own, only):
 USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
-ubuntu         1  0.9  9.0 111528 11600 ?        Ssl  21:08   0:00 /.openshell/runtime/openshell-sandbox --bootstrap /.openshell/state/bootstrap/boundary.json
-ubuntu        56  0.0  0.0   2708   100 ?        S    21:08   0:00 sleep 3600
-ubuntu        91  0.0  2.9   7904  3828 ?        R    21:09   0:00 ps aux
+ubuntu         1  0.9  8.8 111504 11400 ?        Ssl  21:42   0:00 /.openshell/runtime/openshell-sandbox --bootstrap /.openshell/state/bootstrap/boundary.json
+ubuntu        56  0.0  0.0   2708   120 ?        S    21:42   0:00 sleep 3600
+ubuntu        91  0.0  2.9   7904  3776 ?        R    21:43   0:00 ps aux
   the guest's environment, checked rather than eyeballed:
-DEMO_API_KEY=openshell:resolve:env:v7861852800310345618_DEMO_API_KEY
+DEMO_API_KEY=openshell:resolve:env:v4729594891538873486_DEMO_API_KEY
   no other credential-shaped variable
 ```
 
@@ -463,12 +465,12 @@ OpenShell's own, and only together do they say what the workload pod may actuall
 ==> layer 3: the Kubernetes NetworkPolicy drops a direct, workload-initiated connection
   every NetworkPolicy in the sandbox namespace, and which select the workload pod's labels:
 NAME                                              POD-SELECTOR                                                      AGE
-openshell-sandbox-ssh                             openshell.ai/managed-by=openshell                                 73s
-openshell-sandbox-supervisors                     openshell.ai/boundary-role=supervisor                             29s
-openshell-sandbox-workloads                       openshell.ai/boundary-role=workload                               29s
-os-control-72a17001-1053-4277-af67-3f0f25dfc4b6   openshell.ai/boundary-pair=72a17001-1053-4277-af67-3f0f25dfc4b6   29s
-  workload pod labels: {"agents.x-k8s.io/sandbox-name-hash":"7426fd1d","openshell.ai/boundary-pair":"72a17001-1053-4277-af67-3f0f25dfc4b6","openshell.ai/boundary-role":"workload","topology.kubernetes.io/region":"us-west-2","topology.kubernetes.io/zone":"us-west-2c"}
-  the two NetworkPolicies selecting the workload pod (boundary-pair=72a17001-1053-4277-af67-3f0f25dfc4b6):
+openshell-sandbox-ssh                             openshell.ai/managed-by=openshell                                 69s
+openshell-sandbox-supervisors                     openshell.ai/boundary-role=supervisor                             35s
+openshell-sandbox-workloads                       openshell.ai/boundary-role=workload                               35s
+os-control-4e457fb3-e357-40e1-9f91-d85a05636cdf   openshell.ai/boundary-pair=4e457fb3-e357-40e1-9f91-d85a05636cdf   35s
+  workload pod labels: {"agents.x-k8s.io/sandbox-name-hash":"781e22fe","openshell.ai/boundary-pair":"4e457fb3-e357-40e1-9f91-d85a05636cdf","openshell.ai/boundary-role":"workload","topology.kubernetes.io/region":"us-west-2","topology.kubernetes.io/zone":"us-west-2c"}
+  the two NetworkPolicies selecting the workload pod (boundary-pair=4e457fb3-e357-40e1-9f91-d85a05636cdf):
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -498,8 +500,8 @@ metadata:
   labels:
     openshell.ai/component: sandbox-control-egress
     openshell.ai/managed-by: openshell
-    openshell.ai/sandbox-id: 72a17001-1053-4277-af67-3f0f25dfc4b6
-  name: os-control-72a17001-1053-4277-af67-3f0f25dfc4b6
+    openshell.ai/sandbox-id: 4e457fb3-e357-40e1-9f91-d85a05636cdf
+  name: os-control-4e457fb3-e357-40e1-9f91-d85a05636cdf
   namespace: openshell-kubernetes
 spec:
   egress:
@@ -509,20 +511,20 @@ spec:
     to:
     - podSelector:
         matchLabels:
-          openshell.ai/boundary-pair: 72a17001-1053-4277-af67-3f0f25dfc4b6
+          openshell.ai/boundary-pair: 4e457fb3-e357-40e1-9f91-d85a05636cdf
           openshell.ai/boundary-role: supervisor
   ingress:
   - from:
     - podSelector:
         matchLabels:
-          openshell.ai/boundary-pair: 72a17001-1053-4277-af67-3f0f25dfc4b6
+          openshell.ai/boundary-pair: 4e457fb3-e357-40e1-9f91-d85a05636cdf
           openshell.ai/boundary-role: workload
     ports:
     - port: 5500
       protocol: TCP
   podSelector:
     matchLabels:
-      openshell.ai/boundary-pair: 72a17001-1053-4277-af67-3f0f25dfc4b6
+      openshell.ai/boundary-pair: 4e457fb3-e357-40e1-9f91-d85a05636cdf
   policyTypes:
   - Ingress
   - Egress
@@ -558,7 +560,7 @@ OpenShell entirely does not bypass the `NetworkPolicy`:
 
 ```text
   a connection from the workload pod's own network namespace, outside OpenShell's control (an ephemeral debug container sharing it), to the policy-approved backend by IP -- bypassing OpenShell entirely does not bypass the NetworkPolicy:
-Connecting to 10.100.11.86 (10.100.11.86:80)
+Connecting to 10.100.105.162 (10.100.105.162:80)
 wget: download timed out
 EXIT=1
 ```
@@ -571,7 +573,7 @@ problem:
 
 ```text
   control -- the same technique against the supervisor pod, which carries no such restriction:
-Connecting to 10.100.11.86 (10.100.11.86:80)
+Connecting to 10.100.105.162 (10.100.105.162:80)
 writing to stdout
 {
   "headers": {
@@ -579,14 +581,14 @@ writing to stdout
       "close"
     ],
     "Host": [
-      "10.100.11.86"
+      "10.100.105.162"
     ],
     "User-Agent": [
       "Wget"
     ]
   }
 }
--                    100% |********************************|   145  0:00:00 ETA
+-                    100% |********************************|   147  0:00:00 ETA
 written to stdout
 EXIT=0
 ```
@@ -620,12 +622,14 @@ EXIT=0
   administrative access to the gateway, and one release puts the gateway and its sandboxes
   in one namespace. `scripts/setup.sh` does not just assert this is safe: it checks, every
   run, that neither the sandbox `ServiceAccount` nor the namespace's own `default`
-  `ServiceAccount` can `get`, `list` or `watch` Secrets there
-  (`kubectl auth can-i <verb> secrets ... --as=system:serviceaccount:<namespace>:<sa>`
-  reads as literally `yes` or `no` for all six combinations, never just a command's exit
-  code, which `can-i` also returns non-zero for on a failure that is not "no" either), and
-  refuses to continue if any of them can, or if any answer is neither yes nor no. That
-  check covers those two ServiceAccounts only; it is not a general guarantee that nothing
+  `ServiceAccount` can `get`, `list` or `watch` Secrets there, or reach one another way:
+  `create` pods (which could mount it), `create pods/exec`, or `patch
+  pods/ephemeralcontainers` (`kubectl auth can-i ... --as=system:serviceaccount:<namespace>:<sa>`,
+  read as literally `yes` or `no`, never just a command's exit code, which `can-i` also
+  returns non-zero for on a failure that is not "no" either). It refuses to continue if any
+  of them can, or if any answer is neither yes nor no, and `scripts/demo.sh` confirms the
+  workload pod's `spec.serviceAccountName` is the account that was checked. That check
+  covers those two ServiceAccounts' RBAC only; it is not a general guarantee that nothing
   in the namespace can reach the Secret. A deployment that wants the workloads in a
   namespace without it uses the chart's split install instead (see "One release, one
   namespace" above).
@@ -638,7 +642,8 @@ EXIT=0
 
 ```text
 ==> the sandbox(es) this run created
-sandbox.agents.x-k8s.io "default--demo-1793394513" deleted from openshell-kubernetes namespace
+sandbox.agents.x-k8s.io "default--demo-1793396547" deleted from openshell-kubernetes namespace
+pod "node-probe" deleted from openshell-kubernetes namespace
 pod "echo-api" deleted from openshell-kubernetes namespace
 service "echo-api" deleted from openshell-kubernetes namespace
 

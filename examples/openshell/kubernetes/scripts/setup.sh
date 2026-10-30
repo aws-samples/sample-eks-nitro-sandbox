@@ -72,6 +72,9 @@ kc() { if [[ -n "$KUBE_CONTEXT" ]]; then kubectl --context "$KUBE_CONTEXT" "$@";
 # it) has to come back as the same string, not as a word the shell re-splits or runs.
 state_put() { printf '%s=%q\n' "$1" "$2" >> "$STATE_FILE"; }
 
+[[ "$CREDENTIAL_NAMESPACE" != "$GATEWAY_NAMESPACE" ]] ||
+  die "CREDENTIAL_NAMESPACE and GATEWAY_NAMESPACE are both '$GATEWAY_NAMESPACE'; the credential must live in a namespace of its own. Set a different CREDENTIAL_NAMESPACE in .env."
+
 : > "$STATE_FILE"
 state_put SAMPLE "$SAMPLE"
 state_put GATEWAY_NAMESPACE "$GATEWAY_NAMESPACE"
@@ -233,10 +236,15 @@ say "the OpenShell gateway (6/8)"
 # Role would already be written into it.
 if kc get ns "$CREDENTIAL_NAMESPACE" -o name >/dev/null 2>&1; then
   pre_owner="$(kc get ns "$CREDENTIAL_NAMESPACE" \
-    -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null)" ||
+    -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}{"\n"}{.metadata.annotations.meta\.helm\.sh/release-name}{"\n"}{.metadata.annotations.meta\.helm\.sh/release-namespace}' 2>/dev/null)" ||
     die "could not read the existing credential namespace $CREDENTIAL_NAMESPACE before installing the gateway; installed nothing"
-  [[ "$pre_owner" == "$SAMPLE" ]] ||
-    die "the credential namespace $CREDENTIAL_NAMESPACE already exists and is not labelled as this sample's (managed-by='$pre_owner'); refusing to install the gateway chart, which would write RBAC into it. Delete it, or set a new CREDENTIAL_NAMESPACE in .env."
+  pre_label="$(sed -n 1p <<<"$pre_owner")"
+  # The sample's mark, or -- after a run that stopped before relabelling it -- Helm's own
+  # record that this release, in the namespace step 2 confirmed is the sample's, made it.
+  [[ "$pre_label" == "$SAMPLE" ||
+     ( "$pre_label" == "Helm" && "$(sed -n 2p <<<"$pre_owner")" == "$GATEWAY_RELEASE" &&
+       "$(sed -n 3p <<<"$pre_owner")" == "$GATEWAY_NAMESPACE" ) ]] ||
+    die "the credential namespace $CREDENTIAL_NAMESPACE already exists and is neither labelled as this sample's nor owned by its Helm release (managed-by='$pre_label'); refusing to install the gateway chart, which would write RBAC into it. Delete it, or set a new CREDENTIAL_NAMESPACE in .env."
 fi
 
 sed -e "s|<RELEASE>|$GATEWAY_RELEASE|g" \
@@ -298,7 +306,11 @@ if findings:
 print("  rendered chart: all Services are ClusterIP, and no Ingress, Gateway or Route")
 PY
 
-helm upgrade --install "$GATEWAY_RELEASE" "$GATEWAY_CHART" \
+# --force-conflicts: this script later relabels the chart-created credential namespace as
+# the sample's (below), which takes over the managed-by field Helm renders on it, so a
+# re-run's server-side apply would otherwise refuse with a field-manager conflict. Helm
+# takes the field back here, and the relabel below puts the sample's mark back after.
+helm upgrade --install "$GATEWAY_RELEASE" "$GATEWAY_CHART" --force-conflicts \
   ${KUBE_CONTEXT:+--kube-context "$KUBE_CONTEXT"} \
   -n "$GATEWAY_NAMESPACE" -f "$TMP_DIR/gateway-values.yaml" --timeout 10m ||
   die "the OpenShell gateway chart did not install; 'helm status $GATEWAY_RELEASE -n $GATEWAY_NAMESPACE' says why"
@@ -316,23 +328,36 @@ say "who can read Secrets in the namespace the workload pods run in (7/8)"
 # gateway -- see "Good to know" on the page. One release puts it in the same namespace
 # the workload pods run in, so this checks that neither of those pods' own
 # ServiceAccounts can read it there, rather than asserting it.
-# "<release>-sandbox" is the chart's default name for the workload pods' ServiceAccount.
-for sa in "$GATEWAY_RELEASE-sandbox" default; do
-  for verb in get list watch; do
+# "<release>-sandbox" is the chart's name for the workload pods' ServiceAccount
+# (sandboxServiceAccount.create, with fullnameOverride set to the release). Check it exists,
+# so a renamed account cannot pass the checks below by not being there; demo.sh then checks
+# the workload pod really runs as it. Besides reading Secrets, creating a pod (which could
+# mount one), exec into a pod and adding an ephemeral container are each a way to a Secret
+# another pod mounts, so they are refused too.
+SANDBOX_SA="$GATEWAY_RELEASE-sandbox"
+kc get serviceaccount "$SANDBOX_SA" -n "$SANDBOX_NAMESPACE" -o name >/dev/null ||
+  die "the chart's sandbox ServiceAccount $SANDBOX_SA is not in $SANDBOX_NAMESPACE, so the checks below would test an account no pod uses; refusing to continue."
+state_put SANDBOX_SA "$SANDBOX_SA"
+for sa in "$SANDBOX_SA" default; do
+  # A subresource goes in --subresource: "pods/exec" would ask about a pod *named* exec,
+  # and answers "no" even when exec is granted.
+  for check in "get secrets" "list secrets" "watch secrets" "create pods" \
+               "create pods --subresource=exec" "patch pods --subresource=ephemeralcontainers"; do
     # "kubectl auth can-i" exits non-zero for both "no" and a command failure (a bad
     # --as, an API error), so the exit code alone cannot tell the two apart. Read the
     # text it prints instead: anything other than exactly "yes" or "no" is "could not
     # determine", which this treats as a failure, never as "confirmed safe".
-    answer="$(kc auth can-i "$verb" secrets -n "$SANDBOX_NAMESPACE" \
+    # shellcheck disable=SC2086  # $check is "<verb> <resource>", split on purpose
+    answer="$(kc auth can-i $check -n "$SANDBOX_NAMESPACE" \
       --as="system:serviceaccount:$SANDBOX_NAMESPACE:$sa" 2>&1)" || true
     case "$answer" in
-      yes) die "the $sa ServiceAccount in $SANDBOX_NAMESPACE can $verb Secrets there, including the gateway's own client-tls certificate; refusing to continue. Check what granted it $verb on secrets in that namespace." ;;
+      yes) die "the $sa ServiceAccount in $SANDBOX_NAMESPACE can $check there (kubectl auth can-i), a path to the gateway's own client-tls certificate; refusing to continue. Check what granted it." ;;
       no) ;;
-      *) die "could not determine whether the $sa ServiceAccount in $SANDBOX_NAMESPACE can $verb Secrets there ('kubectl auth can-i' answered '$answer', not yes or no); refusing to continue." ;;
+      *) die "could not determine whether the $sa ServiceAccount in $SANDBOX_NAMESPACE can $check there ('kubectl auth can-i' answered '$answer', not yes or no); refusing to continue." ;;
     esac
   done
 done
-echo "  confirmed: neither the sandbox ServiceAccount nor the namespace's default ServiceAccount can get, list or watch Secrets in $SANDBOX_NAMESPACE"
+echo "  confirmed: neither $SANDBOX_SA nor the namespace's default ServiceAccount can read Secrets, create pods, exec into pods or add ephemeral containers in $SANDBOX_NAMESPACE"
 
 # The gateway chart creates this namespace (server.credentialDrivers.kubernetesSecrets.
 # createNamespace=true) and marks it as that Helm release's. Marking it as this sample's

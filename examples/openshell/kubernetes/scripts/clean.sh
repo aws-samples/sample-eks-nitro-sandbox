@@ -99,16 +99,27 @@ say "the Helm release"
 # A release already uninstalled by an earlier, interrupted clean up run (the namespace
 # delete that follows it is what can fail and need a retry) is not a failure to report
 # again: "helm status" says plainly whether there is a release left to remove.
+# Only a successful uninstall, or helm's own "release: not found", counts as gone. Any other
+# failure leaves release_gone=0, and the namespaces below are then left alone: deleting the
+# namespace would remove Helm's release record with it and orphan whatever the release
+# created outside that namespace.
+release_gone=0
 case "$gateway_ns_state" in
   owned)
-    if helm status "$GATEWAY_RELEASE" -n "$GATEWAY_NAMESPACE" >/dev/null 2>&1; then
-      helm uninstall "$GATEWAY_RELEASE" -n "$GATEWAY_NAMESPACE" 2>&1 | sed 's/^/  /'
-      [[ "${PIPESTATUS[0]}" == 0 ]] || { echo "  helm uninstall $GATEWAY_RELEASE failed"; incomplete=1; }
-    else
+    status_rc=0
+    status_out="$(helm status "$GATEWAY_RELEASE" -n "$GATEWAY_NAMESPACE" ${KUBE_CONTEXT:+--kube-context "$KUBE_CONTEXT"} 2>&1)" || status_rc=$?
+    if [[ "$status_rc" == 0 ]]; then
+      helm uninstall "$GATEWAY_RELEASE" -n "$GATEWAY_NAMESPACE" ${KUBE_CONTEXT:+--kube-context "$KUBE_CONTEXT"} 2>&1 | sed 's/^/  /'
+      if [[ "${PIPESTATUS[0]}" == 0 ]]; then release_gone=1; else echo "  helm uninstall $GATEWAY_RELEASE failed"; incomplete=1; fi
+    elif [[ "$status_out" == *"release: not found"* ]]; then
       echo "  $GATEWAY_RELEASE already uninstalled"
+      release_gone=1
+    else
+      echo "  could not determine whether $GATEWAY_RELEASE is installed ('helm status' said: $status_out); left it alone"
+      incomplete=1
     fi
     ;;
-  absent) echo "  $GATEWAY_NAMESPACE is already gone; nothing to do" ;;
+  absent) echo "  $GATEWAY_NAMESPACE is already gone; nothing to do"; release_gone=1 ;;
   foreign) echo "  $GATEWAY_NAMESPACE exists and is not this sample's; left its release alone"; incomplete=1 ;;
   unknown) echo "  could not determine whether $GATEWAY_NAMESPACE exists; left its release alone"; incomplete=1 ;;
 esac
@@ -134,6 +145,11 @@ done
 
 say "the namespaces"
 for ns in "$CREDENTIAL_NAMESPACE" "$GATEWAY_NAMESPACE"; do
+  if [[ "$release_gone" != 1 ]]; then
+    echo "  the Helm release is not confirmed gone; left $ns alone"
+    incomplete=1
+    continue
+  fi
   case "$(ns_state "$ns")" in
     owned)
       echo "  deleting $ns"

@@ -121,6 +121,14 @@ workload_pod="default--$SANDBOX"
 kc wait pod/"$workload_pod" -n "$SANDBOX_NAMESPACE" --for=condition=Ready --timeout=5m ||
   die "the workload pod $workload_pod did not reach Ready; 'kubectl describe pod/$workload_pod -n $SANDBOX_NAMESPACE' says why"
 
+# setup.sh checked what $SANDBOX_SA may do; that only means something if the workload pod
+# really runs as it.
+workload_sa="$(kc get pod "$workload_pod" -n "$SANDBOX_NAMESPACE" -o jsonpath='{.spec.serviceAccountName}')" ||
+  die "could not read the workload pod's ServiceAccount"
+[[ "$workload_sa" == "${SANDBOX_SA:?no SANDBOX_SA in the run record; re-run ./scripts/setup.sh}" ]] ||
+  die "the workload pod runs as ServiceAccount '$workload_sa', not '$SANDBOX_SA', which setup.sh checked; its permissions are unchecked"
+echo "  workload pod runs as $workload_sa, the ServiceAccount setup.sh checked"
+
 say "the two pods of this one sandbox"
 
 sandbox_uid="$(kc get sandboxes.agents.x-k8s.io "$workload_pod" -n "$SANDBOX_NAMESPACE" -o jsonpath='{.metadata.uid}')"

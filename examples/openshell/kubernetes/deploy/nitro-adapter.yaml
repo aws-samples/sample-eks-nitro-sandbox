@@ -1,7 +1,6 @@
 # Adapts OpenShell's generated workload pod to a Nitro sandbox, in this sample's
-# namespaces only. OpenShell itself is unmodified: the gateway chart, the workspace
-# chart, the gateway, the supervisor and the in-pod runtime are the upstream v0.1.6
-# builds that versions.json pins.
+# namespaces only. OpenShell itself is unmodified: the gateway chart, the gateway, the
+# supervisor and the in-pod runtime are the upstream v0.1.6 builds that versions.json pins.
 #
 # One detail of that pod needs adjusting inside a sandbox guest, and this policy is the
 # whole of the adjustment: one persistent volume cannot be mounted at two paths across
