@@ -150,7 +150,8 @@ Every block is from one fresh run, on a new cluster in `us-west-2` with the defa
 - **What each block is:** the output of the command above it, copied from that file. Each block
   says what it masks, cuts or leaves out.
 - **Masking:** values from the run's account and environment are replaced with placeholders
-  such as `<ACCOUNT_ID>` and `<SANDBOX_NODE>`. A placeholder names the same value in every block.
+  such as `<ACCOUNT_ID>` and `<SANDBOX_NODE>`. A placeholder names the same value in every block,
+  except `<RESOLVED_IPS>`, which stands for each FQDN cache row's own resolved addresses.
 - **Run-specific, not masked:** timestamps, ages, durations, TTLs, Helm revisions, file sizes
   and counts. Yours will differ.
 
@@ -360,7 +361,7 @@ kubectl -n kube-system exec ds/cilium -c cilium-agent -- cilium-dbg status --ver
 This command, run after `setup.sh`, with the values `setup.sh` installed (Helm revision 1).
 `ds/cilium` picked the sandbox node's agent.
 
-- **Abridged:** 6 of the output's 254 lines, the kube-proxy replacement lines. The interface
+- **Abridged:** 6 of the command's 253 output lines, the kube-proxy replacement lines. The interface
   list on the first line is cut to `[...]`.
 
 ```text
@@ -943,8 +944,8 @@ From the fresh run's first `./test.sh`, against the cluster `setup.sh` had just 
 - **Masked:** the caller ARN, the node names, the generated pod and role names, the instance and
   VPC ids, every pod, node, Service and DNS address, and the Cilium endpoint ids.
 - **Run-specific:** the agent log line counts, the sandbox pod's uptime and the resource counts.
-- **Cut:** a start line and an end line that the capture added around `test.sh`. The end line
-  recorded exit code 0.
+- **Cut:** the start, end and exit-code lines that the capture added around `test.sh` (exit
+  code 0).
 
 ```text
 Caller: <CALLER_ARN>
