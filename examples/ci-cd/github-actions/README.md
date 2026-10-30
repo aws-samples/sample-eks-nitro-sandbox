@@ -748,8 +748,9 @@ the only step that makes it useless wherever a copy may remain.
 Every ephemeral runner pod ARC creates carries the label
 `actions-ephemeral-runner: "True"`, so one policy covers every per-job pod without naming
 any of them. Here is the whole file as it is in the folder, apart from its header comment.
-`<COREDNS_IP>` is the one value filled in at apply time, by `scripts/setup.sh`, from your
-cluster's CoreDNS Service address:
+DNS (port 53) is allowed to any IP address rather than pinned to the cluster's CoreDNS
+Service, which avoids an address lookup and keeps name resolution working wherever the
+cluster places it:
 
 ```yaml
 apiVersion: networking.k8s.aws/v1alpha1
@@ -769,9 +770,9 @@ spec:
   # long poll, so no inbound connection is ever needed.
   ingress: []
   egress:
-    # Name lookups, to the cluster's CoreDNS Service only.
+    # Name lookups: DNS on port 53 to any IP.
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }
+        - ipBlock: { cidr: 0.0.0.0/0 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -801,7 +802,7 @@ spec:
 | `podSelector` on `actions-ephemeral-runner: "True"` | Selects every ephemeral runner pod ARC creates, present and future, and nothing else |
 | `policyTypes: [Ingress, Egress]` | Both directions are governed, so anything not allowed below is refused |
 | `ingress: []` | Nothing reaches a runner pod. The job is driven by the runner's own outbound long poll, so no inbound connection is ever needed |
-| `ipBlock: <COREDNS_IP>/32` on 53 | Name lookups, to the cluster's CoreDNS Service only, not to any other resolver |
+| `ipBlock: 0.0.0.0/0` on 53 | Name lookups, allowed to any IP so resolution keeps working wherever the cluster places its resolver |
 | `github.com`, `api.github.com`, `*.actions.githubusercontent.com` | What a self-hosted runner needs to register, collect a job and report back. These are a subset of GitHub's list in the [self-hosted runners reference](https://docs.github.com/en/actions/reference/self-hosted-runners-reference), enough for this workflow |
 | `codeload.github.com` | Downloads the actions a workflow refers to. This workflow uses none, so it is here for workflows that do |
 | `ghcr.io`, `*.pkg.github.com`, `pkg-containers.githubusercontent.com` | Container and package pulls from GitHub, on the same reference list. This workflow needs none of them either: the runner image is pulled by the kubelet on the node, outside this policy. Remove them if your workflows never pull from GitHub's registries, since `ghcr.io` also accepts pushes |
