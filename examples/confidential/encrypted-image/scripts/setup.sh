@@ -537,9 +537,9 @@ state_put ASSOCIATION_ID "$assoc_id"
 #     does not select was left with no egress at all for as long as it lived, and a pod it
 #     does select reached a host the policy denies. Everything between here and step 8
 #     takes minutes, which is time the policy agent uses to settle.
-coredns_ip="$(kc get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')"
-[[ -n "$coredns_ip" ]] || die "could not read the CoreDNS Service address"
-sed -e "s|<COREDNS_IP>|$coredns_ip|g" -e "s|<AWS_REGION>|$AWS_REGION|g" \
+# DNS egress is a literal 0.0.0.0/0 in the file already, so only <AWS_REGION> needs
+# rendering.
+sed -e "s|<AWS_REGION>|$AWS_REGION|g" \
   "$SAMPLE_DIR/deploy/egress-policy.yaml" > "$TMP_DIR/egress-policy.yaml"
 kc apply -n "$NAMESPACE" -f "$TMP_DIR/egress-policy.yaml"
 # The PolicyEndpoint is how the controller says it has handed the policy to the nodes.

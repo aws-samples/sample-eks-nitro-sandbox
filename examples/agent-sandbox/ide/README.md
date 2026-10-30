@@ -255,7 +255,6 @@ spec:
               mountPath: /home/coder/project
           resources:
             requests:                 # the guest is sized from the requests
-              cpu: "1"
               memory: 2Gi
           securityContext:
             allowPrivilegeEscalation: false
@@ -669,8 +668,7 @@ The editor's pod has a network, so it ships an egress policy, and the policy is 
 makes "no public endpoint" more than a statement about Service types: it denies every
 connection to the pod from the pod network. Here is
 [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) in full, without its header
-comment. `setup.sh` fills `<COREDNS_IP>` in at apply time from
-`kubectl get svc -n kube-system kube-dns`, and `__NAMESPACE__` from `NAMESPACE`:
+comment. `setup.sh` fills `__NAMESPACE__` in at apply time from `NAMESPACE`:
 
 ```yaml
 apiVersion: networking.k8s.aws/v1alpha1
@@ -690,7 +688,7 @@ spec:
   # cluster. kubectl port-forward still works.
   egress:
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }
+        - ipBlock: { cidr: 0.0.0.0/0 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -713,7 +711,7 @@ spec:
 | `podSelector`, `app: ide` | Selects the editor's pod, which carries that label from the `Sandbox`'s pod template. |
 | `policyTypes`, `Ingress` and `Egress` | Makes the pod default-deny in both directions: nothing is allowed except the rules below. |
 | no `ingress` rules | No pod on the pod network may connect to the editor, not even one in the same namespace. It does not, and cannot, deny the pod's own node: see "Where it is enforced". |
-| `egress`, to `<COREDNS_IP>/32` on UDP and TCP 53 | Lets the editor look up names with CoreDNS. Without it nothing resolves, so the allowed names below would be unreachable too. |
+| `egress`, to `0.0.0.0/0` on UDP and TCP 53 | Lets the editor look up names, on any destination address so the rule needs no cluster-specific DNS address filled in. Without it nothing resolves, so the allowed names below would be unreachable too. |
 | `egress`, to `domainNames: open-vsx.org` and `openvsx.eclipsecontent.org` on TCP 443 | The extension registry. The gallery answers a search on the first name and redirects the download of the extension to the second, so an install needs both. |
 | `egress`, to `domainNames: github.com` on TCP 443 | `git clone`, fetch and push over HTTPS from the editor's terminal. |
 
@@ -920,7 +918,7 @@ by its exact name.
   Ready as soon as its pod starts, and for an IDE that is well before the workbench answers.
   The probe on `/healthz` is what makes `kubectl wait --for=condition=Ready` mean something
   for this workload.
-- **The pod sets requests and no limits.** It asks for 1 CPU and 2Gi, because the guest is
+- **The pod sets a memory request and no limits.** It asks for 2Gi, because the guest is
   sized from the requests and the small default guest is not enough for code-server's
   Node.js server and the workbench's extension host. Most samples on this site set none at
   all; this one says what it sets and why.

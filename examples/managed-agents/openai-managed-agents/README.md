@@ -269,7 +269,7 @@ spec:
   ingress: []        # deny all ingress; the sandbox has no network intake
   egress:
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }
+        - ipBlock: { cidr: 0.0.0.0/0 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -281,12 +281,10 @@ spec:
         - { protocol: TCP, port: 443 }
 ```
 
-Fill in your CoreDNS address, apply both policies, and wait for the sandbox policy's
-`PolicyEndpoint`:
+Apply both policies, and wait for the sandbox policy's `PolicyEndpoint`:
 
 ```bash
-COREDNS_IP=$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')
-sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f -
+kubectl apply -f deploy/egress-policy.yaml
 kubectl apply -f deploy/launcher-ingress.yaml
 until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/openai-sandbox-executor-egress-'; do sleep 2; done
 ```
@@ -529,7 +527,7 @@ its YAML does one job:
 | `podSelector`, `app: openai-sandbox-executor` | Selects the sandbox pods. The launcher is not selected. |
 | `policyTypes`, `Ingress` and `Egress` | Makes the selected pods default-deny in both directions, so only the rules below are allowed. |
 | `ingress`, empty | No pod may connect to a sandbox. The launcher delivers the session through the claim env, not the network, so a sandbox needs no inbound rule. |
-| `egress`, to `<COREDNS_IP>/32` on UDP and TCP 53 | Lets the sandbox look up names with CoreDNS. |
+| `egress`, to `0.0.0.0/0` on UDP and TCP 53 | Lets the sandbox look up names, with DNS allowed to any address. |
 | `egress`, to the two `domainNames` on TCP 443 | Lets the executor register at `api.openai.com` and exchange commands and results with `codex-cloud-environments.chatgpt.com`. |
 
 Anything that matches no rule is refused: the public internet, AWS service endpoints such as

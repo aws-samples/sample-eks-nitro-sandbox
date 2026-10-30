@@ -83,9 +83,6 @@ spec:
             - { containerPort: 8443, protocol: TCP }
           readinessProbe:
             httpGet: { scheme: HTTPS, path: /healthz, port: 8443 }
-          resources:
-            requests: { cpu: 100m, memory: 512Mi }
-            limits: { cpu: "1", memory: 1Gi }
           volumeMounts:
             # The same key the supplier API checks. The bridge is a second destination
             # behind the same brokered credential, so the analyst holds one placeholder.

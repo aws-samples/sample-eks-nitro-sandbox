@@ -69,10 +69,7 @@ spec:
             - name: workspace
               mountPath: /workspace
           resources:
-            # Requests equal limits, as every sandboxed pod on this site does:
-            # the guest is sized to the pod's limits.
-            requests: { cpu: "1", memory: 768Mi }
-            limits:   { cpu: "1", memory: 768Mi }
+            requests: { memory: 768Mi }
   # volumeClaimTemplates is immutable after the Sandbox is created (CEL-validated
   # on the CRD). Changing the size, class or access mode means deleting and
   # recreating the Sandbox, which deletes the workspace. Suspend is what

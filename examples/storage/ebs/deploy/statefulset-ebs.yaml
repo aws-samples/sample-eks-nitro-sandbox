@@ -67,9 +67,6 @@ spec:
               echo "--- device backing /data ---"
               df -hT /data
               while true; do sleep 3600; done
-          resources:
-            requests: { cpu: "1", memory: 1Gi }
-            limits:   { cpu: "1", memory: 1Gi }
           securityContext:
             # The writer only appends to /data (the mounted volume), so the root
             # filesystem can be read-only.

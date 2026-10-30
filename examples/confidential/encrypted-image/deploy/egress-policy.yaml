@@ -5,10 +5,12 @@
 # hostnames (domainNames) in an egress rule.
 # https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html
 #
-# setup.sh fills in two placeholders at apply time:
-#   <COREDNS_IP>  your cluster's CoreDNS Service address, read with
-#                 kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'
+# setup.sh fills in one placeholder at apply time:
 #   <AWS_REGION>  the Region of the KMS key the image layers are wrapped with
+#
+# DNS (port 53) is allowed to any IP address, not pinned to the CoreDNS Service address,
+# which eliminates the need to look that address up and avoids issues with a missing or
+# malformed one (#104).
 #
 # Why these three rules and no others. The node pulls the encrypted layer blobs and
 # transfers them into the sandbox, so the guest itself never talks to Amazon ECR and
@@ -30,7 +32,7 @@ spec:
     - Egress
   egress:
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }
+        - ipBlock: { cidr: 0.0.0.0/0 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
