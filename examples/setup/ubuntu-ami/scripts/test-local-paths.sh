@@ -273,9 +273,27 @@ names() { # names <home> [VAR=value...]: CLUSTER_NAME|AWS_REGION|NAMESPACE after
     HOME="$h" SAMPLE_DIR="$SAMPLE_DIR_REAL" "$@" bash -c '. "$1" >/dev/null 2>&1; printf "%s|%s|%s" "$CLUSTER_NAME" "$AWS_REGION" "$NAMESPACE"' _ "$COMMON"
 }
 [ ! -e "$SAMPLE_DIR_REAL/config.env" ] || echo "  NOTE  $SAMPLE_DIR_REAL/config.env exists and is sourced first; these cases read it, not the example"
-err=$(env -i PATH="$PATH" bash -c '. "$1"' _ "$WORK/hdir/ubuntu-ami/config.env" 2>&1 >/dev/null)
-[ -z "$err" ]; r=$?   # read before the description's command substitution resets $?
-assert_true "ACCEPT config.env as copied from the example, before any edit: it sources with no error${err:+ (got: $(printf '%s' "$err" | head -n 1 | sed 's#.*/config.env: #config.env: #'))}" "$r"
+# sources_clean <file>: source it under the entrypoints' discipline (set -euo pipefail) in an
+# empty environment; 0 only when the source exits 0 AND writes nothing to stderr. SRC_RC and
+# SRC_ERR say what it did.
+sources_clean() {
+  SRC_RC=0
+  SRC_ERR=$(env -i PATH="$PATH" bash -c 'set -euo pipefail; . "$1"' _ "$1" 2>&1 >/dev/null) || SRC_RC=$?
+  [ "$SRC_RC" = 0 ] && [ -z "$SRC_ERR" ]
+}
+src_note() { printf 'source status %s%s' "$SRC_RC" "${SRC_ERR:+, stderr: $(printf '%s' "$SRC_ERR" | head -n 1 | sed 's#.*/config.env[^:]*: #config.env: #')}"; }
+sources_clean "$WORK/hdir/ubuntu-ami/config.env"; r=$?   # read before the description's command substitution resets $?
+assert_true "ACCEPT config.env as copied from the example, before any edit: it sources with status 0 and nothing on stderr ($(src_note))" "$r"
+# The check itself, both ways: a command that fails silently (status 1, no stderr) and the
+# pre-F1 unquoted placeholder (a syntax error on stderr) are each refused.
+cp "$WORK/hdir/ubuntu-ami/config.env" "$WORK/config.env.silent"; printf 'false\n' >> "$WORK/config.env.silent"
+sources_clean "$WORK/config.env.silent"; r=$?
+[ "$r" != 0 ] && [ "$SRC_RC" != 0 ] && [ -z "$SRC_ERR" ]; r=$?
+assert_true "REJECT a config.env with a command that fails silently: status nonzero, empty stderr ($(src_note))" "$r"
+sed 's/^export KUBE_CONTEXT=.*/export KUBE_CONTEXT=<your-context>/' "$WORK/hdir/ubuntu-ami/config.env" > "$WORK/config.env.syntax"
+sources_clean "$WORK/config.env.syntax"; r=$?
+[ "$r" != 0 ] && [ -n "$SRC_ERR" ]; r=$?
+assert_true "REJECT a config.env with the unquoted KUBE_CONTEXT placeholder: a syntax error on stderr ($(src_note))" "$r"
 got=$(names "$WORK/hdir" CLUSTER_NAME=my-cluster AWS_REGION=eu-west-1)
 [ "$got" = "my-cluster|eu-west-1|ubuntu-ami-sample" ]
 assert_true "ACCEPT the shell's own CLUSTER_NAME and AWS_REGION: they survive sourcing config.env ($got)" $?

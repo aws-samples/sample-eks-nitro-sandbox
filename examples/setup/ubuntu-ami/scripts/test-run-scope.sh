@@ -28,8 +28,12 @@
 #                                    read again before the node role goes, so a delete that leaves
 #                                    the entry keeps the role; --keep-ami deletes no snapshot when
 #                                    a kept AMI's snapshots cannot be determined; the run's lock
-#                                    (refused while held, --list-runs and a lost run id need none)
-#                                    and its record (another cluster or Region refused)
+#                                    (refused while held, --list-runs needs none) and its record
+#                                    (another cluster or Region refused); from a second checkout
+#                                    with no folder for the run, --dry-run lists it read only and
+#                                    anything else needs --lost-run, with its warning; a node role
+#                                    whose access entry was not deleted is kept, even when a later
+#                                    tag read matches again
 #   3  scripts/00b-stage-bucket.sh   revoke confirms the objects and the policy are gone, or fails
 #                                    (M5), and touches nothing unless the bucket, the role and the
 #                                    policy are this run's (RR-002), re-read right before each
@@ -269,6 +273,10 @@ s["iam"]["profiles"]["ubuntu-ami-sample-otherx-build"] = {"Tags": tags("otherx",
 s["eks"]["nodegroups"]["example-cluster/ubuntu-ami-sample-otherx-ng"] = {"status": "ACTIVE", "tags": {"ManagedBy": "someone-else", "RunId": "otherx"}}
 if variant == "role-drift":  # run 1's node role is re-tagged for another run after the first tag read
     s["iam"]["roles"]["ubuntu-ami-sample-testrun1-node"]["TagsAfterFirstRead"] = tags("testrun2")
+if variant == "build-drift":  # run 1's build role is re-tagged for another run after the first tag read
+    s["iam"]["roles"]["ubuntu-ami-sample-testrun1-build"]["TagsAfterFirstRead"] = tags("testrun2")
+if variant == "role-transient":  # tag read 2 of run 1's node role (right before delete-access-entry) only
+    s["iam"]["roles"]["ubuntu-ami-sample-testrun1-node"]["TransientTagsOnRead"] = {"read": 2, "tags": tags("testrun1", mb="someone-else")}
 if variant == "late-retag":  # run 1's build role is re-tagged for another run after two tag reads
     s["iam"]["roles"]["ubuntu-ami-sample-testrun1-build"]["TagsAfterReads"] = {"after": 2, "tags": tags("testrun2")}
 if variant.startswith("gone-after-"):  # someone else deletes run 1's build role after n tag reads
@@ -411,15 +419,37 @@ st drift; two_runs "$FAKE_AWS_STATE" drift
 rc=0; cl drift --delete-aws-resources --run-id testrun1 || rc=$?
 check "REJECT deleting an instance whose tags changed between the listing and the delete (re-check)" 1 "$rc" "$WORK/drift.log" 'instance i-testrun1-build no longer carries'
 [[ " $(remaining) " == *" i-testrun1-build "* ]]; ok "  ... the instance was not terminated" $?
+OWN_NS_EARLY_RR9='{"metadata": {"labels": {"app.kubernetes.io/part-of": "ubuntu-ami-sample", "app.kubernetes.io/instance": "testrun1"}}}'
 st roledrift; two_runs "$FAKE_AWS_STATE" role-drift
 rc=0; STUB_NS_JSON='{"metadata": {"labels": {"app.kubernetes.io/part-of": "ubuntu-ami-sample", "app.kubernetes.io/instance": "testrun1"}}}' cl roledrift --delete-aws-resources --run-id testrun1 || rc=$?
-check "REJECT (RR-009) a role re-tagged between the listing and its first change: left in place, no policy detached" 1 "$rc" "$WORK/roledrift.log" 'role ubuntu-ami-sample-testrun1-node no longer carries .* no policy detached'
+# The node role's first change would follow its access entry's delete; the re-check right before
+# that delete already finds the re-tag, so the role is kept from there on (R4-DR finding 2).
+check "REJECT (RR-009) a node role re-tagged between the listing and its first change: left in place, no policy detached" 1 "$rc" "$WORK/roledrift.log" 'role ubuntu-ami-sample-testrun1-node left in place, so that a re-run can still show its access entry is this run.s'
 python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); r=s["iam"]["roles"]["ubuntu-ami-sample-testrun1-node"]; sys.exit(0 if r["Attached"] else 1)' "$FAKE_AWS_STATE" \
   && [ "$(python3 -c 'import json,sys; print(sum(1 for l in open(sys.argv[1]) if json.loads(l)["argv"][:2]==["iam","detach-role-policy"] and "ubuntu-ami-sample-testrun1-node" in json.loads(l)["argv"]))' "$FAKE_AWS_LOG")" = 0 ]
 ok "  ... its managed policy is still attached and no detach call named it" $?
 [ "$(calls roledrift '^eks delete-access-entry$')" = 0 ] && grep -q 'role ubuntu-ami-sample-testrun1-node no longer carries ManagedBy=ubuntu-ami-sample and RunId=testrun1; access entry arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node left in place' "$WORK/roledrift.log"
 ok "  ... (N4) and its access entry is left in place: the role's tags, re-read right before the delete, no longer show it is this run's" $?
 [[ " $(remaining) " != *" ubuntu-ami-sample-testrun1-build "* ]]; ok "  ... while the unchanged build role was removed" $?
+# RR-009 in delete_role itself: the build role, re-tagged after the listing, is refused at the
+# re-check before its first change (the detach of its managed policy).
+st builddrift; two_runs "$FAKE_AWS_STATE" build-drift
+rc=0; STUB_NS_JSON="$OWN_NS_EARLY_RR9" cl builddrift --delete-aws-resources --run-id testrun1 || rc=$?
+check "REJECT (RR-009) a build role re-tagged between the listing and its first change: left in place, no policy detached" 1 "$rc" "$WORK/builddrift.log" 'role ubuntu-ami-sample-testrun1-build no longer carries .* no policy detached'
+[ "$(python3 -c 'import json,sys; print(sum(1 for l in open(sys.argv[1]) if json.loads(l)["argv"][0]=="iam" and json.loads(l)["argv"][1] in ("detach-role-policy","delete-role-policy","delete-role") and "ubuntu-ami-sample-testrun1-build" in json.loads(l)["argv"]))' "$FAKE_AWS_LOG")" = 0 ]
+ok "  ... no detach, inline-policy delete or role delete named it" $?
+# R4-DR finding 2: ONE read of the node role's tags, the one right before its access entry's
+# delete, sees another owner; every later read matches again. The entry is not deleted, so the
+# role that shows it is this run's must stay too, whatever a later read says.
+st aetransient; two_runs "$FAKE_AWS_STATE" role-transient
+rc=0; STUB_NS_JSON="$OWN_NS_EARLY_RR9" cl aetransient --delete-aws-resources --run-id testrun1 || rc=$?
+check "REJECT one transient mismatch on the read before delete-access-entry: the clean up is incomplete" 1 "$rc" "$WORK/aetransient.log" \
+  'role ubuntu-ami-sample-testrun1-node left in place, so that a re-run can still show its access entry is this run.s'
+lft=$(remaining)
+[[ " $lft " == *" ubuntu-ami-sample-testrun1-node "* && " $lft " == *" ae:arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node "* ]] \
+  && [ "$(calls aetransient '^eks delete-access-entry$')" = 0 ] \
+  && [ "$(python3 -c 'import json,sys; print(sum(1 for l in open(sys.argv[1]) if json.loads(l)["argv"][0]=="iam" and json.loads(l)["argv"][1] in ("detach-role-policy","delete-role") and "ubuntu-ami-sample-testrun1-node" in json.loads(l)["argv"]))' "$FAKE_AWS_LOG")" = 0 ]
+ok "  ... the access entry and the node role both remain: no delete-access-entry, and no detach or delete-role named the node role" $?
 # RR2-001: the reviewer's late re-tag. Read 1 of the build role's tags is the listing (iam_state),
 # read 2 the re-check right before its first change (the detach of its one managed policy). The
 # other owner re-tags it after that read, while the detach is in flight, so every read from read 3
@@ -681,13 +711,32 @@ cl_refused cl-dry-locked "REJECT clean.sh --dry-run (a read of the run's resourc
 st cl-lr-locked; two_runs "$FAKE_AWS_STATE"
 rc=0; cl cl-lr-locked --list-runs || rc=$?
 check "ACCEPT --list-runs while the lock is held: the read-only listing needs no run and no lock" 0 "$rc" "$WORK/cl-lr-locked.log" 'nothing was deleted'
+# R4-DR finding 1: a second checkout (checkout B, its own ISSUE10_RUN_DIR with no folder for the
+# run) while checkout A's process still holds the run's lock. B cannot see that lock, so it may
+# only list the run read only, unless the reader passes --lost-run, which B then warns about.
+CHECKOUT_B="$WORK/checkout-b/run"; mkdir -p "$CHECKOUT_B"
+st cl-b-dry; two_runs "$FAKE_AWS_STATE"
+rc=0; ISSUE10_RUN_DIR="$CHECKOUT_B" cl cl-b-dry --dry-run --run-id testrun1 || rc=$?
+check "ACCEPT --dry-run from checkout B (no folder for the run) while A holds the lock: it lists the run read only" 0 "$rc" "$WORK/cl-b-dry.log" \
+  'run testrun1 has no folder in this checkout: no run lock could be taken; --dry-run lists its resources by their tags and changes nothing'
+grep -q 'i-testrun1-build' "$WORK/cl-b-dry.log" && [ "$(calls cl-b-dry "$MUTATING")" = 0 ]
+ok "  ... it lists the run's instance and makes no write call" $?
+ISSUE10_RUN_DIR="$CHECKOUT_B" cl_refused cl-b-delete "REJECT a full clean up from checkout B without --lost-run: no lock can be taken there" \
+  'run testrun1 has no folder in this checkout, so its run lock cannot be taken here.*re-run with --lost-run' --delete-aws-resources --run-id testrun1
+ISSUE10_RUN_DIR="$CHECKOUT_B" cl_refused cl-b-workload "REJECT a workload clean up (it deletes the namespace) from checkout B without --lost-run" \
+  'so its run lock cannot be taken here' --run-id testrun1
+st cl-b-lost; two_runs "$FAKE_AWS_STATE"
+rc=0; ISSUE10_RUN_DIR="$CHECKOUT_B" STUB_NS_JSON="$OWN_NS" cl cl-b-lost --delete-aws-resources --lost-run --run-id testrun1 || rc=$?
+check "ACCEPT --lost-run from checkout B: the reader's opt-in, the run is cleaned" 0 "$rc" "$WORK/cl-b-lost.log" 'Clean up of run testrun1 complete'
+grep -q 'WARN: --lost-run: run testrun1 has no folder in this checkout, so no active-run lock can be verified from another checkout or machine. You must make sure no setup.sh or test.sh is acting on run testrun1 anywhere' "$WORK/cl-b-lost.log"
+ok "  ... with the warning that no active-run lock can be verified from another checkout or machine" $?
 kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; HOLDER=""
 st cl-unlocked; two_runs "$FAKE_AWS_STATE"
 rc=0; STUB_NS_JSON="$OWN_NS" cl cl-unlocked --delete-aws-resources --run-id testrun1 || rc=$?
 check "ACCEPT the same clean up once the holder is gone: the lock is free and the run is cleaned" 0 "$rc" "$WORK/cl-unlocked.log" 'Clean up of run testrun1 complete'
 st cl-lost; two_runs "$FAKE_AWS_STATE"
 rc=0; cl cl-lost --dry-run --run-id testrun2 || rc=$?
-check "ACCEPT a lost run id (no folder in this checkout): no lock to take, found by its tags alone" 0 "$rc" "$WORK/cl-lost.log" 'run testrun2 has no folder in this checkout \(a lost run id\)'
+check "ACCEPT --dry-run of a lost run id (no folder in this checkout): no run lock could be taken, found by its tags alone" 0 "$rc" "$WORK/cl-lost.log" 'run testrun2 has no folder in this checkout: no run lock could be taken'
 grep -q 'i-testrun2-build' "$WORK/cl-lost.log"; ok "  ... and its resources are listed" $?
 
 echo

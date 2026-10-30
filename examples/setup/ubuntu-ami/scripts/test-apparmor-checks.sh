@@ -148,7 +148,7 @@ if a[:2] == ["get", "pod"] and len(a) > 2:
             out({"refused": REJ_MSG, "running": "", "other": "failed to create containerd container: some other error",
                  "unanchored": "kubelet: " + REJ_MSG + " (retrying)", "imagepull": "pull access denied"}[rej])
 if line == "get service kubernetes -n default -o jsonpath={.spec.clusterIP}":
-    out(E("STUB_API_IP", "172.20.0.1"))
+    out(E("STUB_API_IP", "192.0.2.20"))   # TEST-NET-1 (RFC 5737) for the kubernetes Service
 if a[:1] == ["exec"]:
     pod, cmd = a[1], " ".join(a[a.index("--") + 1:])
     rest = a[a.index("--") + 1:]
@@ -161,7 +161,7 @@ if a[:1] == ["exec"]:
         mode = E("STUB_SBX_CONNECT", "ENETUNREACH") if pod == "isolated-sandbox-pod" else E("STUB_ORD_CONNECT", "connected")
         if mode == "exec-error": exec_error()
         if mode == "empty": out("")
-        if rest[3] != E("STUB_API_IP", "172.20.0.1"):
+        if rest[3] != E("STUB_API_IP", "192.0.2.20"):
             sys.exit(f"STUB kubectl: the connect probe is aimed at {rest[3]}, not the API Service's ClusterIP")
         import subprocess
         r = subprocess.run([sys.executable, "-c", rest[2], rest[3]], capture_output=True, text=True,
@@ -359,7 +359,7 @@ for a in "$A_LOADED" "$A_SHA" "$A_RUNS" "$A_ATTR" "$A_ORD" "$A_EACCES" "$A_CONTR
          "$A_SIGNAL" "$A_BOGUS_SIGNAL" "$A_REJ" "$A_SBX" "$A_ANNOT" "$A_ADDR" "$A_ROUTE" "$A_IFDOWN" "$A_NOCONN" "$A_CONNCTL"; do
   [ "$(line good "$a")" = PASS ]; check "  ... PASS: $a" 0 $? "$WORK/good.log"
 done
-grep -qx '  kubernetes Service ClusterIP (read from the API): 172.20.0.1' "$WORK/good.log" \
+grep -qx '  kubernetes Service ClusterIP (read from the API): 192.0.2.20' "$WORK/good.log" \
   && grep -qx '  sandbox TCP connect to that ClusterIP on 443: errno=ENETUNREACH (Network is unreachable)' "$WORK/good.log" \
   && grep -qx '  ordinary pod TCP connect to that ClusterIP on 443: connected' "$WORK/good.log"
 check "  ... test.sh's own connect probe, run for real (only connect() faked), printed the errno for the sandbox and connected for the ordinary pod, at the ClusterIP read from the API" 0 $? "$WORK/good.log"
@@ -369,14 +369,15 @@ grep -qx '  sandbox interfaces (/sys/class/net, operstate): dummy0 down, lo unkn
   && grep -qx '  sandbox IPv4 routes (/proc/net/route): none (header line only)' "$WORK/good.log"
 check "  ... test.sh's own network read, run for real on a guest tree like the probe's (dummy0 down, lo), printed every interface, the addresses and no route" 0 $? "$WORK/good.log"
 sed -n '/^== 7\/7/,/^passed /p' "$WORK/good.log" > "$WORK/good.77"
-[ "$(grep -c '172\.20\.0\.1' "$WORK/good.77")" = 1 ] && ! grep -qiE '([0-9a-f]{2}:){5}[0-9a-f]{2}' "$WORK/good.77"
+[ "$(grep -c '192\.0\.2\.20' "$WORK/good.77")" = 1 ] && ! grep -qiE '([0-9a-f]{2}:){5}[0-9a-f]{2}' "$WORK/good.77"
 check "  ... and 7/7 prints the Service ClusterIP on one line only (the page shows it as a placeholder) and no MAC address" 0 $? "$WORK/good.77"
 grep -qx 'get service kubernetes -n default -o jsonpath={.spec.clusterIP}' "$WORK/good.calls" \
   && ! grep -qE '^get networkpolicy|getent|/dev/tcp' "$WORK/good.calls"
 check "  ... it read the ClusterIP from the API and made no network policy, DNS or /dev/tcp call" 0 $? "$WORK/good.calls"
-# More guests that have no network and must be accepted: no IPv6 at all (no if_inet6), an empty
-# if_inet6 (what a container started with --network none shows), and only lo (no dummy0).
-for c in v6absent:STUB_SBX_V6=absent v6empty:STUB_SBX_V6= loonly:STUB_SBX_IFS=lo:unknown; do
+# More guests that have no network and must be accepted: an empty readable if_inet6 (what a
+# container started with --network none shows), and only lo (no dummy0). A missing if_inet6 is
+# not one of them: it is in the reject table below (v6absent).
+for c in v6empty:STUB_SBX_V6= loonly:STUB_SBX_IFS=lo:unknown; do
   rc=0; t "${c%%:*}" "${c#*:}" || rc=$?
   check "ACCEPT ${c%%:*} (${c#*:}): every check passes" 0 "$rc" "$WORK/${c%%:*}.log" '^passed [0-9]+, failed 0$'
 done
@@ -441,6 +442,7 @@ addr6garbled|STUB_SBX_V6=not an if_inet6 line|$A_ADDR
 fibmissing|STUB_SBX_NOFILE=fib_trie|$A_ADDR
 fibunreadable|STUB_SBX_UNREADABLE=fib_trie|$A_ADDR
 v6unreadable|STUB_SBX_UNREADABLE=if_inet6|$A_ADDR
+v6absent|STUB_SBX_V6=absent|$A_ADDR
 route|STUB_SBX_ROUTE=eth0 00000000 0100000A 0003 0 0 0 00000000 0 0 0|$A_ROUTE
 routemissing|STUB_SBX_NOFILE=route|$A_ROUTE
 routeunreadable|STUB_SBX_UNREADABLE=route|$A_ROUTE

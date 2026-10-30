@@ -348,9 +348,12 @@ both tags; a mismatch or a failed lookup stops the run. The namespace carries
 `app.kubernetes.io/part-of=<RESOURCE_PREFIX>` and `app.kubernetes.io/instance=<RUN_ID>`. The
 run's record (`tmp/issue10/run/out/runs/<run-id>/run-state.env`) also names the
 `CLUSTER_NAME` and `AWS_REGION` it started with: a resume, `--join`, `./test.sh` or
-`./clean.sh` of that run with another cluster or Region stops before any call. One process at a
-time acts on a run: `./setup.sh`, `./test.sh` and `./clean.sh` each take the run's lock first,
-and refuse the run while another holds it. `./clean.sh --list-runs` needs no run and no lock.
+`./clean.sh` of that run with another cluster or Region stops before any call. Within one
+checkout, one process at a time acts on a run: `./setup.sh`, `./test.sh` and `./clean.sh` each
+take the run's lock (a file in the run's folder) first, and refuse the run while another holds
+it. The lock cannot be seen from another checkout or another machine, so it does not stop two
+checkouts acting on the same run; see *A lost run id* under [Clean up](#clean-up).
+`./clean.sh --list-runs` needs no run and no lock.
 
 **Build the AMI now, join it later.** `./setup.sh --ami-only` checks the inputs, runs steps 2
 to 7 below through the `BtfValidated=true` tag, records the AMI ID in the run's
@@ -946,12 +949,15 @@ removes, in order, the Kubernetes workload, the managed node group, the build an
 verification EC2 instances, then any of the run's EBS volumes left unattached (an attached one
 is left in place and reported), the AMIs and their snapshots, the launch template, the build
 security group, the S3 staging bucket (emptied first, every call naming your account as the
-expected bucket owner), the access entry EKS created for the node role, and the instance
-profile and IAM roles (both tags read again right before the first change to each role). EKS
-does not delete that access entry with the node group or the role (Amazon EKS User Guide,
-*Create access entries*), and it has no tags, so `./clean.sh` finds it by the node role's
-ARN and deletes it only after the node group is gone and while the role still carries both
-tags; an entry whose role is already gone is left, with the command that removes it. It then
+expected bucket owner), the build host's instance profile and the build role, then the access
+entry EKS created for the node role, and last the node role (both tags of each role read again
+right before every change to it). EKS does not delete that access entry with the node group or
+the role (Amazon EKS User Guide, *Create access entries*), and it has no tags, so `./clean.sh`
+finds it by the node role's ARN and deletes it only after the node group is gone and while the
+node role still carries both tags. The node role goes only after a fresh listing shows the
+entry gone; when the entry could not be deleted or shown gone, the node role stays, so a re-run
+can still show the entry is this run's. An entry whose role is already gone is left, with the
+command that removes it. It then
 reads each category
 again to confirm nothing of the run remains, and exits non-zero if anything is still there,
 if anything was skipped as not the run's, or if any lookup failed: a failed lookup is
@@ -967,8 +973,13 @@ the cluster, as setup does.
 `ManagedBy=<RESOURCE_PREFIX>` in the Region (instances, volumes, AMIs, snapshots, security
 groups, launch templates, buckets, IAM roles, instance profiles, and the cluster's node groups;
 each shown only when its own tags were read and carry that mark), grouped by `RunId`, and
-deletes nothing. A tag it could not read makes the list incomplete and the command exits 1. Then
-clean each run you find with `./clean.sh --run-id <id> --delete-aws-resources`.
+deletes nothing. A tag it could not read makes the list incomplete and the command exits 1. A run
+you find this way usually has no folder in your checkout, so `./clean.sh` cannot take its lock:
+`./clean.sh --run-id <id> --dry-run` still lists what it would remove, and anything that removes
+something stops before any call unless you add `--lost-run`. Before you add it, make sure no
+`./setup.sh` or `./test.sh` is acting on that run in any checkout or on any machine; with
+`--lost-run`, `./clean.sh --run-id <id> --delete-aws-resources --lost-run` warns that it cannot
+check this and proceeds on the run's tags.
 
 **What stays.** The clean up never removes a shared install. The `isolated-sandbox`
 RuntimeClass stays (Getting started created it). The `vpc-cni` add-on you installed as a
@@ -984,7 +995,8 @@ leave it out: without it, EKS deletes the add-on's software, which can include t
 `amazon-vpc-cni` ConfigMap the add-on adopted and gave its Helm labels. Where that ConfigMap
 was there before the add-on, as on an EKS Auto Mode cluster with network policy turned on, it
 holds `enable-network-policy-controller`, the setting that turns network policy enforcement on,
-so deleting it can turn enforcement off for every workload.
+so deleting it can turn enforcement off for the workloads whose network policy enforcement
+depends on that VPC CNI setting.
 Removing the software also takes pod networking away from every node that gets it from
 `aws-node`, managed node group nodes included; nodes kept off `aws-node` for another CNI are
 not affected.

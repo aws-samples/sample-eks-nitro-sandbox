@@ -14,12 +14,16 @@
 #   ./clean.sh --run-id <id> ...               # a run other than the last one setup.sh started
 #   ./clean.sh --list-runs                     # every marked resource, grouped by RunId; read
 #                                              #   only, needs no run id (for a lost run id)
+#   ./clean.sh --run-id <id> --lost-run ...    # a run this checkout has no folder for (found
+#                                              #   with --list-runs): no run lock can be taken
 #
 # The run is the one recorded in the run state ($OUT_DIR/run-state.env, the repository's
 # gitignored tmp/issue10/run/out/run-state.env by default), or the one --run-id names. With
 # neither, nothing is deleted: only --list-runs works, and it changes nothing. A run this
-# checkout has a folder for is locked first (the same lock setup.sh and test.sh take), and its
-# record must name this CLUSTER_NAME and AWS_REGION; --list-runs takes no lock.
+# checkout has a folder for is locked first (the same lock setup.sh and test.sh take, in this
+# checkout only), and its record must name this CLUSTER_NAME and AWS_REGION; --list-runs takes no
+# lock. A run with no folder here has no lock to take: --dry-run still lists it, and any clean up
+# that changes something needs --lost-run, the reader's word that nothing else acts on the run.
 #
 # kubectl runs only with --context "$KUBE_CONTEXT", checked against CLUSTER_NAME's API endpoint
 # before the namespace is touched. IAM roles and the instance profile are found by their per-run
@@ -34,16 +38,17 @@ SAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/common.sh
 . "$SAMPLE_DIR/scripts/lib/common.sh"
 
-DRY_RUN=0; DELETE_AWS=0; KEEP_AMI=0; LIST_RUNS=0; RUN_ID_ARG=""
+DRY_RUN=0; DELETE_AWS=0; KEEP_AMI=0; LIST_RUNS=0; LOST_RUN=0; RUN_ID_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
     --delete-aws-resources) DELETE_AWS=1 ;;
     --keep-ami) KEEP_AMI=1 ;;
     --list-runs) LIST_RUNS=1 ;;
+    --lost-run) LOST_RUN=1 ;;
     --run-id) [ $# -ge 2 ] || die "--run-id needs a value"; RUN_ID="$2"; RUN_ID_ARG="$2"; shift ;;
     --run-id=*) RUN_ID="${1#--run-id=}"; RUN_ID_ARG="$RUN_ID" ;;
-    *) die "unknown argument: $1 (supported: --dry-run, --delete-aws-resources, --keep-ami, --run-id <id>, --list-runs)" ;;
+    *) die "unknown argument: $1 (supported: --dry-run, --delete-aws-resources, --keep-ami, --run-id <id>, --lost-run, --list-runs)" ;;
   esac
   shift
 done
@@ -58,7 +63,7 @@ ERR=$(mktemp); trap 'rm -f "$ERR"' EXIT
 # ManagedBy=<RESOURCE_PREFIX>, grouped by its RunId, so a reader who lost the run id can find what
 # a run left behind and then clean it with --run-id. Nothing is deleted in this mode.
 if [[ "$LIST_RUNS" == 1 ]]; then
-  [[ "$DRY_RUN$DELETE_AWS$KEEP_AMI" == 000 && -z "${RUN_ID_ARG:-}" ]] || die "--list-runs takes no other option"
+  [[ "$DRY_RUN$DELETE_AWS$KEEP_AMI$LOST_RUN" == 0000 && -z "${RUN_ID_ARG:-}" ]] || die "--list-runs takes no other option"
   rows=""
   lr() { # lr <kind> <python expr giving [(id, tags)]> <aws args...>
     local kind="$1" expr="$2" js; shift 2
@@ -117,16 +122,21 @@ for rid, tags in eval(sys.argv[1], {"d": d}):
 fi
 require_run_id
 # The run's lock, before any of its resources is read or changed: a run setup.sh or test.sh is
-# acting on is refused, and neither can start on it while this runs. A run this checkout has a
-# record of must match it (names, cluster and Region). A run with no folder here (a lost run id
-# found with --list-runs, or a run another checkout started) has no lock to take, and is found by
-# its tags alone, as before.
+# acting on in this checkout is refused, and neither can start on it here while this runs. A run
+# this checkout has a record of must match it (names, cluster and Region). A run with no folder
+# here (a lost run id found with --list-runs, or a run another checkout or machine started) has
+# no lock this script can take: a --dry-run lists it read only, and anything else stops here,
+# before any call, unless the reader passes --lost-run.
 if [ -d "$RUN_STATE_DIR" ]; then
   lock_run
   if [ -f "$RUN_STATE_DIR/run-state.env" ]; then check_run_record
   else log "run $RUN_ID has a folder but no record in this checkout; acting on its tags alone"; fi
+elif [[ "$DRY_RUN" == 1 ]]; then
+  log "run $RUN_ID has no folder in this checkout: no run lock could be taken; --dry-run lists its resources by their tags and changes nothing"
+elif [[ "$LOST_RUN" == 0 ]]; then
+  die "run $RUN_ID has no folder in this checkout, so its run lock cannot be taken here, and setup.sh or test.sh may be acting on it from another checkout or machine. Nothing was changed. Make sure nothing else acts on run $RUN_ID anywhere, then re-run with --lost-run (./clean.sh --dry-run --run-id $RUN_ID shows what it would remove)."
 else
-  log "run $RUN_ID has no folder in this checkout (a lost run id): no run lock to take; acting on its tags alone"
+  warn "--lost-run: run $RUN_ID has no folder in this checkout, so no active-run lock can be verified from another checkout or machine. You must make sure no setup.sh or test.sh is acting on run $RUN_ID anywhere; this clean up proceeds on the run's tags alone."
 fi
 FILTERS=("Name=tag:${TAGS_OWNER_KEY},Values=${TAGS_OWNER_VALUE}" "Name=tag:${TAGS_RUN_KEY},Values=${RUN_ID}")
 UNKNOWN="<could not determine>"
@@ -577,10 +587,10 @@ delete_role "$BUILD_ROLE_NAME" "$role_build"
 # run's. An entry whose role is already gone cannot be shown to be this run's, so it is left, with
 # the command that removes it, and the clean up is incomplete.
 echo "== deleting the EKS access entry for this run's node role =="
-# delete_access_entry: 1 when an entry may still be there while the role that proves it is this
-# run's is still there too (the role is then kept, so a re-run can still delete the entry); 2 when
-# the role turned out not to be this run's any more (delete_role re-reads it and refuses); 0
-# otherwise.
+# delete_access_entry: non-zero when an entry may still be there, including when the role's tags,
+# read right before the delete, said gone, another owner or could not be read: the node role is
+# then kept for the rest of this clean up (a later read that matches again is not trusted), so a
+# re-run can still show the entry is this run's and delete it.
 delete_access_entry() {
   local arn ng_now
   case "$ae_node" in
@@ -602,9 +612,9 @@ delete_access_entry() {
     case "$(recheck role "$NODE_ROLE_NAME")" in
       match) aws eks delete-access-entry --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --principal-arn "$arn" --output json >/dev/null 2>"$ERR" \
                || { warn_inc "could not delete access entry $arn: $(head -n 2 "$ERR")"; return 1; } ;;
-      # Not this run's role any more: the entry stays, and delete_role re-reads and refuses too.
-      gone) warn_inc "role $NODE_ROLE_NAME disappeared after it was listed; access entry $arn left in place"; return 2 ;;
-      mismatch) warn_inc "role $NODE_ROLE_NAME no longer carries ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; access entry $arn left in place"; return 2 ;;
+      # Not shown to be this run's role: the entry stays, and so does the role.
+      gone) warn_inc "role $NODE_ROLE_NAME disappeared after it was listed; access entry $arn left in place"; return 1 ;;
+      mismatch) warn_inc "role $NODE_ROLE_NAME no longer carries ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; access entry $arn left in place"; return 1 ;;
       *) warn_inc "could not re-read the tags of role $NODE_ROLE_NAME; access entry $arn left in place"; return 1 ;;
     esac
   done
@@ -622,8 +632,7 @@ access_entry_gone() {
     *) warn_inc "the access entry for role $NODE_ROLE_NAME is still listed after its delete ($ae_now)"; return 1 ;;
   esac
 }
-ae_rc=0; delete_access_entry || ae_rc=$?
-if [ "$ae_rc" = 2 ] || { [ "$ae_rc" = 0 ] && access_entry_gone; }; then
+if delete_access_entry && access_entry_gone; then
   delete_role "$NODE_ROLE_NAME" "$role_node"
 else
   warn_inc "role $NODE_ROLE_NAME left in place, so that a re-run can still show its access entry is this run's and delete it"

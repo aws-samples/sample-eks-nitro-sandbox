@@ -171,8 +171,12 @@ def ec2_describe(state, kind, id_key, ids_opt, opts, notfound):
 def read_tags(obj):
     """An IAM role's or S3 bucket's tags as one read returns them. Another owner can re-tag it
     between reads: "TagsAfterFirstRead" (tags) takes effect from the second read,
-    "TagsAfterReads" ({"after": n, "tags": [...]}) from read n + 1."""
+    "TagsAfterReads" ({"after": n, "tags": [...]}) from read n + 1, and "TransientTagsOnRead"
+    ({"read": n, "tags": [...]}) on read n only (every other read answers its own tags)."""
     obj["TagReads"] = obj.get("TagReads", 0) + 1
+    once = obj.get("TransientTagsOnRead")
+    if once and obj["TagReads"] == once["read"]:
+        return once["tags"]
     if "TagsAfterFirstRead" in obj and obj["TagReads"] > 1:
         return obj["TagsAfterFirstRead"]
     later = obj.get("TagsAfterReads")

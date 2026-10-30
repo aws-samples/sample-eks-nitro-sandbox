@@ -295,7 +295,8 @@ echo "== 7/7 the validation sandbox has no network =============================
 # itself reports, and by a connect that cannot leave it:
 #   the annotation, read back from the API (the live pod, not the file);
 #   only loopback has an address: the local IPv4 addresses in /proc/net/fib_trie are 127.0.0.1
-#   only, and /proc/net/if_inet6 lists ::1 on lo only, or nothing, or is absent (no IPv6);
+#   only, and /proc/net/if_inet6 lists ::1 on lo only, or nothing (a readable empty file: no
+#   IPv6); a missing or unreadable if_inet6 fails;
 #   the sandbox has no route: /proc/net/route has its header line and no entry;
 #   every interface in /sys/class/net other than lo is down. They are printed: the guest also
 #   has dummy0, from its image, which is down and has no address;
@@ -348,10 +349,10 @@ v6 = got("/proc/net/if_inet6")
 rows = [x.split() for x in v6 or []]
 v6_ok = v6 is not None and all(len(r) == 6 and re.fullmatch(r"[0-9a-f]{32}", r[0]) for r in rows)
 a6 = [(str(ipaddress.IPv6Address(int(r[0], 16))), r[5]) for r in rows] if v6_ok else []
-if "/proc/net/if_inet6" in missing and v6 is None: print("addr6=absent (no IPv6)"); print("addr6_ok=yes")
-else:
-    print("addr6=" + (", ".join(a + " on " + i for a, i in a6) or "<none>" if v6_ok else "<unreadable>"))
-    print("addr6_ok=" + yn(v6_ok and all(x == ("::1", "lo") for x in a6)))
+# A missing or unreadable if_inet6 proves nothing, so it fails; an empty readable one is no IPv6.
+gone6 = "<missing>" if "/proc/net/if_inet6" in missing else "<unreadable>"
+print("addr6=" + (", ".join(a + " on " + i for a, i in a6) or "<none>" if v6_ok else gone6))
+print("addr6_ok=" + yn(v6_ok and all(x == ("::1", "lo") for x in a6)))
 rt = got("/proc/net/route")
 def ip(h):  # /proc/net/route writes an IPv4 address as 8 hex digits, little-endian
     return socket.inet_ntoa(struct.pack("<I", int(h, 16))) if re.fullmatch(r"[0-9A-Fa-f]{8}", h) else h
