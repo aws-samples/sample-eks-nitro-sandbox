@@ -255,7 +255,6 @@ spec:
               mountPath: /home/coder/project
           resources:
             requests:                 # the guest is sized from the requests
-              cpu: "1"
               memory: 2Gi
           securityContext:
             allowPrivilegeEscalation: false
@@ -919,7 +918,7 @@ by its exact name.
   Ready as soon as its pod starts, and for an IDE that is well before the workbench answers.
   The probe on `/healthz` is what makes `kubectl wait --for=condition=Ready` mean something
   for this workload.
-- **The pod sets requests and no limits.** It asks for 1 CPU and 2Gi, because the guest is
+- **The pod sets a memory request and no limits.** It asks for 2Gi, because the guest is
   sized from the requests and the small default guest is not enough for code-server's
   Node.js server and the workbench's extension host. Most samples on this site set none at
   all; this one says what it sets and why.

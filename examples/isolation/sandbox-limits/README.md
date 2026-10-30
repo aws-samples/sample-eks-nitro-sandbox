@@ -235,9 +235,6 @@ spec:                                       spec:
   containers:                                 containers:
     - name: probe                               - name: probe
       image: .../python:3.12-slim                 image: .../python:3.12-slim
-      resources:                                  resources:
-        requests: { cpu: "1", memory: 768Mi }       requests: { cpu: "1", memory: 768Mi }
-        limits:   { cpu: "1", memory: 768Mi }       limits:   { cpu: "1", memory: 768Mi }
 ```
 
 The first sandboxed pod on a new cluster waits for Auto Mode to launch a sandbox-capable node;
