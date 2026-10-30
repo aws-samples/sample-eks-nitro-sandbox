@@ -44,7 +44,7 @@ spec:
   egress:
     # Allow: CoreDNS, so the probe's DNS queries reach the cluster resolver.
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }
+        - ipBlock: { cidr: 0.0.0.0/0 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
