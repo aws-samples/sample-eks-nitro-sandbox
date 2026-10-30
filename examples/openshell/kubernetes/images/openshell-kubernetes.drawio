@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <mxfile host="drawio" type="device">
   <diagram id="openshell-kubernetes" name="Diagram">
-    <mxGraphModel dx="0" dy="0" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="2460" pageHeight="1400" math="0" shadow="0" background="#ffffff">
+    <mxGraphModel dx="0" dy="0" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="2460" pageHeight="1720" math="0" shadow="0" background="#ffffff">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -13,21 +13,18 @@
 
         <!-- AWS Cloud -->
         <mxCell id="cloud" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;AWS Cloud&lt;/div&gt;" style="shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_aws_cloud_alt;grStroke=1;grIconSize=48;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=6;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
-          <mxGeometry x="280" y="40" width="2060" height="1296" as="geometry" />
+          <mxGeometry x="280" y="40" width="2060" height="1616" as="geometry" />
         </mxCell>
 
         <!-- Amazon EKS cluster -->
         <mxCell id="cluster" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;Amazon EKS cluster&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#ED7100;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=6;fontSize=14;fontStyle=1;fontColor=#ED7100;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
-          <mxGeometry x="320" y="120" width="1980" height="1176" as="geometry" />
+          <mxGeometry x="320" y="120" width="1980" height="1496" as="geometry" />
         </mxCell>
         <mxCell id="tab-cluster" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalAlign=top;align=center;html=1;fontSize=12;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.eks;" vertex="1" parent="1">
           <mxGeometry x="320" y="120" width="48" height="48" as="geometry" />
         </mxCell>
 
         <!-- gateway namespace -->
-        <mxCell id="gateway-ns" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;gateway namespace&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;OpenShell's gateway Helm chart&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
-          <mxGeometry x="360" y="200" width="480" height="440" as="geometry" />
-        </mxCell>
 
         <!-- OpenShell gateway pod -->
         <mxCell id="gateway-pod-box" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;OpenShell gateway pod&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;ClusterIP&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
@@ -39,15 +36,15 @@
 
         <!-- credential namespace -->
         <mxCell id="credential-ns" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;credential namespace&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;OpenShell's Kubernetes Secrets credential driver&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
-          <mxGeometry x="360" y="680" width="480" height="280" as="geometry" />
+          <mxGeometry x="360" y="1296" width="480" height="280" as="geometry" />
         </mxCell>
         <mxCell id="secret-icon" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Secret&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;the real credential&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.credentials;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
-          <mxGeometry x="560" y="780" width="80" height="80" as="geometry" />
+          <mxGeometry x="560" y="1396" width="80" height="80" as="geometry" />
         </mxCell>
 
         <!-- sandbox namespace -->
-        <mxCell id="sandbox-ns" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;sandbox namespace&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;OpenShell's workspace Helm chart&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
-          <mxGeometry x="920" y="200" width="1340" height="1056" as="geometry" />
+        <mxCell id="sandbox-ns" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;namespace: the gateway and its sandboxes&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;one release of OpenShell's gateway Helm chart&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="360" y="200" width="1900" height="1056" as="geometry" />
         </mxCell>
 
         <!-- Sandbox custom resource -->
@@ -148,21 +145,13 @@
 
         <mxCell id="e-supervisor-secret" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.7;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="supervisor-icon" target="secret-icon">
           <mxGeometry relative="1" as="geometry">
-            <Array as="points">
-              <mxPoint x="2200" y="632" />
-              <mxPoint x="2200" y="456" />
-              <mxPoint x="880" y="456" />
-              <mxPoint x="880" y="840" />
-            </Array>
+            <Array as="points"><mxPoint x="2200" y="632" /><mxPoint x="2200" y="456" /><mxPoint x="880" y="456" /><mxPoint x="880" y="1456" /></Array>
           </mxGeometry>
         </mxCell>
 
         <mxCell id="e-gateway-secret" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=1;entryY=0.25;entryDx=0;entryDy=0;" edge="1" parent="1" source="gateway-icon" target="secret-icon">
           <mxGeometry relative="1" as="geometry">
-            <Array as="points">
-              <mxPoint x="820" y="460" />
-              <mxPoint x="820" y="800" />
-            </Array>
+            <Array as="points"><mxPoint x="820" y="460" /><mxPoint x="820" y="1416" /></Array>
           </mxGeometry>
         </mxCell>
 

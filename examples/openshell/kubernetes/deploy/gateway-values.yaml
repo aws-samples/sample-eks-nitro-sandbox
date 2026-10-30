@@ -1,9 +1,11 @@
-# Helm values for the OpenShell gateway, installed with workspaceResources.enabled=false
-# so the namespace-scoped sandbox prerequisites come from the workspace chart instead
-# (deploy/workspace-values.yaml), in the sandbox namespace.
+# Helm values for the OpenShell gateway chart, installed as one release. The chart's own
+# defaults create the namespace-scoped sandbox prerequisites (the sandbox ServiceAccount,
+# its Role and RoleBinding, and the sandbox SSH NetworkPolicy) in the release namespace,
+# and the gateway creates every sandbox there too. Everything not set here is the
+# chart's default.
 #
-# scripts/setup.sh substitutes <RELEASE>, <NAMESPACE> and <SANDBOX_NAMESPACE|CREDENTIAL_NAMESPACE>,
-# so nothing here names a cluster, an account or a Region.
+# scripts/setup.sh substitutes <RELEASE>, <NAMESPACE>, <CREDENTIAL_NAMESPACE> and
+# <WORKSPACE_STORAGE_CLASS>, so nothing here names a cluster, an account or a Region.
 fullnameOverride: <RELEASE>
 
 # ClusterIP, reached only with kubectl port-forward. No Ingress, LoadBalancer or
@@ -16,17 +18,11 @@ grpcRoute:
 openshiftRoute:
   enabled: false
 
-# The namespace-scoped sandbox prerequisites (ServiceAccount, Role, RoleBinding,
-# NetworkPolicy) come from the workspace chart in the sandbox namespace, not from this
-# release.
-workspaceResources:
-  enabled: false
-
 server:
   telemetryEnabled: false
 
-  # Every sandbox pods created by this gateway are workload pods go in a Nitro sandbox.
-  # The paired supervisor pod is an ordinary pod and does not get this.
+  # Every workload pod this gateway creates goes in a Nitro sandbox. The paired
+  # supervisor pod is an ordinary pod and does not get this.
   defaultRuntimeClassName: isolated-sandbox
 
   # The default workload image's user. The driver puts these in the workload pod's
@@ -40,11 +36,6 @@ server:
   # it on is the kind of change that would look harmless.
   enableUserNamespaces: false
 
-  # All sandboxes in one pre-provisioned namespace, set with the workspace chart
-  # installed there (the "split gateway and workspace releases" pattern in OpenShell's
-  # setup guide).
-  sandboxNamespace: <SANDBOX_NAMESPACE>
-
   auth:
     # Development user mode: this gateway does not authorize individual users, so
     # transport mTLS and access to the client TLS Secret are the whole of its access
@@ -54,27 +45,12 @@ server:
     # page says so rather than leaving this looking like a pattern to copy.
     allowUnauthenticatedUsers: true
 
+  # The chart's defaults hard-code "openshell-*"; these follow the release name instead,
+  # so a GATEWAY_RELEASE set in .env still finds the Secrets the chart's PKI job creates.
   tls:
     certSecretName: <RELEASE>-server-tls
     clientCaSecretName: <RELEASE>-server-client-ca
     clientTlsSecretName: <RELEASE>-client-tls
-
-  # No credentialStorage.existingSecret here: every provider credential this gateway
-  # ever stores goes through the Kubernetes Secrets driver below, so the default
-  # encrypted-database path, and the key-encryption-key Secret it would need, is never
-  # exercised -- the chart's own template for that Secret renders nothing while a
-  # credential driver is enabled. Left at the chart's own default rather than pointed at
-  # a name nothing creates, so if a future edit of this file ever turns the Kubernetes
-  # Secrets driver off, the chart generates that Secret itself instead of the gateway
-  # failing to find one.
-  drivers:
-    kubernetes:
-      workspaceMode: shared
-      resourceAdmission:
-        # On, which is the default. It is what makes the RuntimeClass label an operator
-        # decision rather than a caller's: isolated-sandbox has to carry
-        # openshell.ai/sandbox-attachable=true before a sandbox may use it.
-        enabled: true
 
   # Workspace PVCs bind through the cluster's own default EBS StorageClass
   # (auto-ebs-sc, provisioner ebs.csi.eks.amazonaws.com, gp3, encrypted), which already
@@ -83,8 +59,8 @@ server:
   workspaceStorageClass: <WORKSPACE_STORAGE_CLASS>
 
   # Every provider credential this gateway stores lives as a Kubernetes Secret in its
-  # own namespace, never in the gateway's database. The sandbox namespace is never that
-  # namespace, so the workload pod's own ServiceAccount has no RBAC path to it.
+  # own namespace, never in the gateway's database and never in the namespace the
+  # workload pods run in, so the workload pod's ServiceAccount has no RBAC path to it.
   credentialDrivers:
     kubernetesSecrets:
       enabled: true

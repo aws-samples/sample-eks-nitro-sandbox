@@ -4,7 +4,7 @@
 fleets of autonomous AI agents: you declare in a policy what each agent may touch — which
 files, which processes and which network destinations — and OpenShell enforces it on the
 kernel, adding real credentials only to requests bound for approved endpoints so the agent
-never sees them. This sample installs OpenShell on Amazon EKS from its own Helm charts,
+never sees them. This sample installs OpenShell on Amazon EKS as one release of its own Helm chart,
 with every OpenShell sandbox's **workload pod** — the one place untrusted agent code runs
 — in a Nitro sandbox (`runtimeClassName: isolated-sandbox`). The **supervisor** pod beside
 it, which holds the policy engine, the gateway session and the real credentials, stays an
@@ -15,7 +15,7 @@ upstream connections.
 security > openshell](../../subagent-security/openshell/README.md) is a different sample:
 one procurement analyst confined by OpenShell inside its own Nitro sandbox, with a
 hand-built gateway just big enough to drive that one sandbox. This page is about OpenShell
-itself — its gateway and workspace Helm charts, its Kubernetes compute driver, and the
+itself — its gateway Helm chart, its Kubernetes compute driver, and the
 two-pod-per-sandbox shape it creates — mapped onto Nitro sandboxes.
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
@@ -39,8 +39,7 @@ cd sample-eks-nitro-sandbox/examples/openshell/kubernetes
 For this sample you also need [`helm`](https://helm.sh/docs/intro/install/),
 [`kubectl`](https://kubernetes.io/docs/reference/kubectl/), `jq`, `curl`, `openssl`,
 `python3` and a cluster whose Kubernetes version serves `MutatingAdmissionPolicy` (stable
-and enabled by default from Kubernetes 1.36). A run costs the gateway pod, the workspace
-prerequisites, and, while a sandbox exists, its workload pod, its supervisor pod and its
+and enabled by default from Kubernetes 1.36). A run costs the gateway pod and, while a sandbox exists, its workload pod, its supervisor pod and its
 EBS workspace volume. No Ingress, no LoadBalancer and no NAT gateway of its own, so there
 is no cost beyond the cluster besides that small standing footprint.
 
@@ -55,18 +54,17 @@ sandbox or out of it, comparing digests instead -- see "The agent's credential" 
 
 ## Overview
 
-*Figure 1: The OpenShell platform install on Amazon EKS, namespace by namespace. Notice the workload pod's only way out is the boundary channel from the supervisor, and that no line connects it to the credential namespace; a direct attempt to the echo API is refused by the NetworkPolicy.*
+*Figure 1: The OpenShell platform install on Amazon EKS: one release, with the gateway and its sandboxes in one namespace and the credential in its own. Notice the workload pod's only way out is the boundary channel from the supervisor, and that no line connects it to the credential namespace; a direct attempt to the echo API is refused by the NetworkPolicy.*
 
-![An AWS Cloud frame holds one Amazon EKS cluster. An operator CLI outside the cluster reaches it with kubectl port-forward over mTLS. Inside the cluster, a gateway namespace, created by OpenShell's gateway Helm chart, holds an ordinary ClusterIP pod running the OpenShell gateway. The gateway's Kubernetes driver creates a Sandbox custom resource. A sandbox namespace, created by OpenShell's workspace Helm chart, holds that Sandbox resource, a red Nitro sandbox frame labeled runtimeClassName isolated-sandbox, an OpenShell supervisor pod, and an echo API pod. The agent-sandbox controller turns the Sandbox resource into the workload pod inside the Nitro sandbox frame, where the untrusted agent process runs with its own kernel, boot and virtio disks. A workspace volume, backed by Amazon EBS through a StorageClass, is attached to the workload pod. The OpenShell supervisor pod sits outside the red frame as an ordinary pod with no RuntimeClass; it holds the policy engine and substitutes real credentials. One arrow connects the supervisor to the workload pod, labeled boundary channel port 5500: two NetworkPolicies together allow the workload pod exactly one egress destination, the supervisor on that port, and allow the supervisor ingress to the workload on that same port, and nothing else in either direction; this is the one path out of the sandbox. The supervisor also calls the echo API pod on the agent's behalf, substituting the real credential, and separately reaches a Secret in a credential namespace that holds the real credential; the gateway also reaches that Secret, through its own Kubernetes Secrets credential driver. No line connects the workload pod to the credential namespace. A red dashed arrow runs directly from the workload pod to the echo API pod, labeled a direct connection is refused: NetworkPolicy drops it, showing that a bypass attempt around the supervisor fails.](images/openshell-kubernetes.png)
+![An AWS Cloud frame holds one Amazon EKS cluster. An operator CLI outside the cluster reaches it with kubectl port-forward over mTLS. Inside the cluster, one namespace, created by one release of OpenShell's gateway Helm chart, holds an ordinary ClusterIP pod running the OpenShell gateway, the Sandbox custom resource the gateway's Kubernetes driver creates, a red Nitro sandbox frame labeled runtimeClassName isolated-sandbox, an OpenShell supervisor pod, and an echo API pod. The agent-sandbox controller turns the Sandbox resource into the workload pod inside the Nitro sandbox frame, where the untrusted agent process runs with its own kernel, boot and virtio disks. A workspace volume, backed by Amazon EBS through a StorageClass, is attached to the workload pod. The OpenShell supervisor pod sits outside the red frame as an ordinary pod with no RuntimeClass; it holds the policy engine and substitutes real credentials. One arrow connects the supervisor to the workload pod, labeled boundary channel port 5500: two NetworkPolicies together allow the workload pod exactly one egress destination, the supervisor on that port, and allow the supervisor ingress to the workload on that same port, and nothing else in either direction; this is the one path out of the sandbox. The supervisor also calls the echo API pod on the agent's behalf, substituting the real credential, and separately reaches a Secret in a separate credential namespace, below the first, that holds the real credential; the gateway also reaches that Secret, through its own Kubernetes Secrets credential driver. No line connects the workload pod to the credential namespace. A red dashed arrow runs directly from the workload pod to the echo API pod, labeled a direct connection is refused: NetworkPolicy drops it, showing that a bypass attempt around the supervisor fails.](images/openshell-kubernetes.png)
 
-- **OpenShell installed from its own Helm charts.** The gateway chart
-  (`oci://ghcr.io/nvidia/openshell/helm-chart`) installs the control plane; the workspace
-  chart (`oci://ghcr.io/nvidia/openshell/openshell-workspace`) installs the namespace-scoped
-  sandbox prerequisites — the sandbox `ServiceAccount`, its `Role` and `RoleBinding`, and a
-  `NetworkPolicy` — in a separate, pre-provisioned sandbox namespace. The page shows both
-  Helm releases, the gateway pod Ready, and `server.defaultRuntimeClassName:
-  isolated-sandbox` in the gateway's values, the one line that puts every OpenShell
-  sandbox's workload pod in a Nitro sandbox.
+- **OpenShell installed as one release of its own Helm chart.** The gateway chart
+  (`oci://ghcr.io/nvidia/openshell/helm-chart`) installs the control plane and, with its
+  defaults, the namespace-scoped sandbox prerequisites — the sandbox `ServiceAccount`, its
+  `Role` and `RoleBinding`, and a `NetworkPolicy` — in the same namespace, where the gateway
+  then creates every sandbox. The page shows the release, the gateway pod Ready, and
+  `server.defaultRuntimeClassName: isolated-sandbox` in the gateway's values, the one line
+  that puts every OpenShell sandbox's workload pod in a Nitro sandbox.
 - **Each sandbox is a Nitro workload pod plus an ordinary supervisor pod.** Creating one
   OpenShell sandbox produces a `Sandbox` resource, a workload pod and a supervisor pod. The
   page shows the workload pod's `runtimeClassName: isolated-sandbox` and its own kernel
@@ -104,15 +102,14 @@ sandbox or out of it, comparing digests instead -- see "The agent's credential" 
 
 Pinned to releases, not commits, and confirmed against the published artifacts when this
 sample was built (see [`versions.json`](versions.json) for the exact values):
-`scripts/setup.sh` verifies both charts against their pinned SHA-256 before installing
-either, and pins the gateway, supervisor and sandbox-runtime images by digest in the
+`scripts/setup.sh` verifies the chart against its pinned SHA-256 before installing it,
+and pins the gateway, supervisor and sandbox-runtime images by digest in the
 rendered values, so what actually runs is not left to each image's tag.
 
 | Component | Pin |
 |---|---|
 | agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.6, as in Getting started > Warm pool |
 | OpenShell gateway chart (`oci://ghcr.io/nvidia/openshell/helm-chart`) | 0.1.6 |
-| OpenShell workspace chart (`oci://ghcr.io/nvidia/openshell/openshell-workspace`) | 0.1.6 |
 | OpenShell gateway, supervisor and sandbox-runtime images | the chart's `appVersion`, 0.1.6 |
 | OpenShell CLI ([releases](https://github.com/NVIDIA/OpenShell/releases)) | v0.1.6 |
 | Default workload image | `nvcr.io/nvidia/base/ubuntu:24.04`, the chart's own built-in default — this sample builds no image of its own |
@@ -122,8 +119,8 @@ rendered values, so what actually runs is not left to each image's tag.
 | OpenShell needs | On this cluster |
 |---|---|
 | Kubernetes 1.29 or later, with RBAC | Met by every EKS version the Getting started cluster can run. |
-| A CNI that enforces ingress and egress `NetworkPolicy` in sandbox namespaces | Off until the network policy controller is enabled, once per cluster — see Getting started > Coding agent. `scripts/setup.sh` checks `enable-network-policy-controller` on the `amazon-vpc-cni` `ConfigMap` and refuses to go on if it is not `"true"`. |
-| The agent-sandbox controller and CRDs, installed before the chart | Installed by Getting started > Warm pool. Neither OpenShell chart installs or upgrades it. |
+| A CNI that enforces ingress and egress `NetworkPolicy` where sandboxes run | Off until the network policy controller is enabled, once per cluster — see Getting started > Coding agent. `scripts/setup.sh` checks `enable-network-policy-controller` on the `amazon-vpc-cni` `ConfigMap` and refuses to go on if it is not `"true"`. |
+| The agent-sandbox controller and CRDs, installed before the chart | Installed by Getting started > Warm pool. The OpenShell chart does not install or upgrade it. |
 | A StorageClass for each sandbox's workspace PVC (`server.workspaceStorageClass`) | This cluster's own default EBS StorageClass, `auto-ebs-sc` (`ebs.csi.eks.amazonaws.com`, `gp3`, encrypted), already fits what the chart needs — block-backed storage, not a network filesystem — so this sample reuses it rather than creating a class that would duplicate it. Named explicitly in the gateway's values so a cluster with no default StorageClass still works. |
 | Block-backed storage for the gateway's SQLite database | The same EBS, via the gateway's own PVC. |
 | One gateway replica, or an external PostgreSQL for more | One replica (a `StatefulSet`). This sample needs no database service. |
@@ -133,45 +130,18 @@ Two optional OpenShell features stay off: `server.enableUserNamespaces` (a Nitro
 does not support `hostUsers: false`, so this is the chart default left as it is, not
 turned on), and the Gateway API ingress path, which would expose the gateway.
 
-## Two gaps this sample's own run found, and what fills them
+## One release, one namespace
 
-Proving this sample found two places where OpenShell v0.1.6's own setup guide and its
-charts disagree, specifically in the combination the guide's own "Split gateway and
-workspace releases" section describes for one pre-provisioned sandbox namespace
-(`server.drivers.kubernetes.workspaceMode: shared`, gateway installed with
-`workspaceResources.enabled=false`, the workspace chart installed in the sandbox
-namespace). Neither is a change to OpenShell: the chart, the gateway, the supervisor and
-the in-pod runtime are the upstream v0.1.6 builds `versions.json` pins.
-
-1. **A namespace-scoped RBAC gap.** With that combination, every sandbox create failed
-   with `networkpolicies.networking.k8s.io "openshell-sandbox-workloads" is forbidden`. The
-   gateway chart's own `Role` — which grants the full set the Kubernetes driver needs in
-   shared mode: `sandboxes`, `events`, create/delete/patch/watch on `pods`, create/get on
-   `services`, create/get on `networkpolicies`, and create/delete on `secrets` — renders
-   only when `workspaceResources.enabled` stays `true`. The cluster-wide `ClusterRole`
-   grants that same set, but only when `workspaceMode` is **not** `shared`. The
-   `openshell-workspace` chart's own `Role` is narrower: `sandboxes`, `events`, `secrets`
-   create/delete, and `pods` **get only** — no `services`, no `networkpolicies`, and no
-   create/delete/patch/watch on `pods`. So this exact combination has no source for the
-   permissions the driver needs to create the workload pod, the boundary `Service` and the
-   per-sandbox `NetworkPolicy`. [`deploy/gateway-sandbox-rbac.yaml`](deploy/gateway-sandbox-rbac.yaml)
-   is a `Role` and `RoleBinding`, scoped to this sample's sandbox namespace and to the
-   gateway's own `ServiceAccount`, that supplies exactly the missing verbs — nothing the
-   gateway chart's own `Role` would not have granted here.
-2. **The supervisor pod's `client-tls` Secret is not in the sandbox namespace.** The
-   supervisor pod mounts a Secret named `<gateway release>-client-tls`, with no namespace
-   qualifier, so it is read from the pod's **own** namespace. In the single-release
-   pattern that namespace is the gateway's release namespace, where the chart's PKI job
-   always creates that Secret. In the split pattern the supervisor pod is scheduled in the
-   **sandbox** namespace instead, and nothing in either chart copies the Secret there, so
-   every supervisor pod failed to start with `MountVolume.SetUp failed ... secret
-   "openshell-client-tls" not found`. `scripts/setup.sh` copies (never moves or
-   regenerates) that Secret into the sandbox namespace each time it runs, so an
-   operator-rotated certificate reaches it too.
-
-Both fixes are small, namespace-scoped, and touch nothing OpenShell ships. The first of
-OpenShell's own four "prove first" points for this sample — whether the workload pod
-starts unchanged, or what adjustment it needs — turned up a third, separate fix, below.
+The gateway and its sandboxes run in one namespace, `openshell-kubernetes`: that is the
+chart's default, `server.sandboxNamespace` left empty. The provider credential is the
+exception, in its own `openshell-kubernetes-credentials` namespace through the Kubernetes
+Secrets credential driver, so the workload pod's ServiceAccount has no RBAC path to it.
+Because the gateway's own `client-tls` certificate Secret sits in the namespace the
+workload pods run in, `scripts/setup.sh` checks that neither the sandbox ServiceAccount
+nor the namespace's default one can read Secrets there, and stops if either can. The chart
+also supports a split install — the gateway with `workspaceResources.enabled=false` and
+its `openshell-workspace` chart in each pre-provisioned sandbox namespace — for one
+gateway serving several namespaces; this sample does not use it.
 
 ## Adapting the workload pod to a Nitro sandbox
 
@@ -202,14 +172,12 @@ changing the thing the sample measures.
 
 | File | What it is |
 |---|---|
-| [`versions.json`](versions.json) | Every pin: the two charts' versions and SHA-256, the three image digests, the CLI's version and SHA-256 |
+| [`versions.json`](versions.json) | Every pin: the chart's version and SHA-256, the three image digests, the CLI's version and SHA-256 |
 | [`deploy/gateway-values.yaml`](deploy/gateway-values.yaml) | The gateway chart's Helm values |
-| [`deploy/workspace-values.yaml`](deploy/workspace-values.yaml) | The workspace chart's Helm values |
 | [`deploy/nitro-adapter.yaml`](deploy/nitro-adapter.yaml) | The `MutatingAdmissionPolicy` that fits OpenShell's generated workload pod to a Nitro sandbox guest |
-| [`deploy/gateway-sandbox-rbac.yaml`](deploy/gateway-sandbox-rbac.yaml) | The namespace-scoped `Role`/`RoleBinding` that fills the RBAC gap above |
 | [`policy/sandbox-policy.json`](policy/sandbox-policy.json) | The OpenShell sandbox policy: filesystem, process and the one network rule |
 | [`policy/demo-profile.json`](policy/demo-profile.json) | The endpointless provider profile the demo credential binds through |
-| [`scripts/setup.sh`](scripts/setup.sh) | Installs both Helm charts, the admission adapter, the RBAC fix, the RuntimeClass label and the demo echo API |
+| [`scripts/setup.sh`](scripts/setup.sh) | Installs the Helm chart, the admission adapter, the RuntimeClass label and the demo echo API |
 | [`scripts/demo.sh`](scripts/demo.sh) | Creates one fresh sandbox and shows every claim this page makes, with real output |
 | [`scripts/clean.sh`](scripts/clean.sh) | Removes everything this sample created |
 
@@ -223,8 +191,8 @@ started > Coding agent:
 kubectl get configmap -n kube-system amazon-vpc-cni -o jsonpath='{.data.enable-network-policy-controller}'
 ```
 
-**Step 2: Install the gateway chart, the workspace chart, the admission adapter and the
-RBAC fix, and start the demo echo API.**
+**Step 2: Install the gateway chart and the admission adapter, and start the demo echo
+API.**
 
 ```bash
 cp .env.example .env    # optional; defaults match this page
@@ -232,68 +200,55 @@ cp .env.example .env    # optional; defaults match this page
 ```
 
 This block is from a real run, abridged: `helm`'s own multi-line `NAME:`/`LAST DEPLOYED:`/
-`NAMESPACE:`/`REVISION:`/`DESCRIPTION:`/`TEST SUITE:` summary after each install is
+`NAMESPACE:`/`REVISION:`/`DESCRIPTION:`/`TEST SUITE:` summary after the install is
 trimmed to its `STATUS:` line, and the run record path at the end is omitted; every line
 shown is printed verbatim by the run, in order.
 
 ```text
-==> checking tools and the cluster (1/10)
+
+==> checking tools and the cluster (1/8)
   agent-sandbox: reusing the install already on this cluster
   network policy enforcement: on
 
-==> the gateway and sandbox namespaces (2/10)
+==> the namespace the gateway and its sandboxes run in (2/8)
 namespace/openshell-kubernetes created
 namespace/openshell-kubernetes labeled
   created the namespace openshell-kubernetes
-namespace/openshell-kubernetes-sandbox created
-namespace/openshell-kubernetes-sandbox labeled
-  created the namespace openshell-kubernetes-sandbox
 
-==> the isolated-sandbox RuntimeClass's OpenShell approval label (3/10)
+==> the isolated-sandbox RuntimeClass's OpenShell approval label (3/8)
   runtime class: isolated-sandbox already carries openshell.ai/sandbox-attachable=true
 
-==> the admission adapter that fits OpenShell's workload pod to a Nitro sandbox (4/10)
+==> the admission adapter that fits OpenShell's workload pod to a Nitro sandbox (4/8)
 mutatingadmissionpolicy.admissionregistration.k8s.io/openshell-kubernetes-nitro-adapter created
 mutatingadmissionpolicybinding.admissionregistration.k8s.io/openshell-kubernetes-nitro-adapter created
   applied openshell-kubernetes-nitro-adapter, scoped to namespaces labelled managed-by=openshell-kubernetes
 
-==> the namespace-scoped RBAC this sample's own run found missing (5/10)
-role.rbac.authorization.k8s.io/openshell-sandbox-rbac-gap created
-rolebinding.rbac.authorization.k8s.io/openshell-sandbox-rbac-gap created
-  applied openshell-sandbox-rbac-gap in openshell-kubernetes-sandbox, scoped to the gateway's own ServiceAccount
+==> the pinned OpenShell CLI and gateway chart (v0.1.6) (5/8)
+  downloaded and verified the CLI: openshell 0.1.6
+  verified the gateway chart against its pinned checksum
 
-==> the pinned OpenShell CLI, gateway chart and workspace chart (v0.1.6) (6/10)
-  reusing the verified CLI at tmp/openshell-kubernetes/local/openshell-v0.1.6
-  verified the gateway chart and the workspace chart against their pinned checksums
-
-==> the OpenShell gateway (7/10)
+==> the OpenShell gateway (6/8)
   pinned the gateway, supervisor and sandbox-runtime images by digest
   rendered chart: all Services are ClusterIP, and no Ingress, Gateway or Route
 Release "openshell" does not exist. Installing it now.
 STATUS: deployed
-
-==> the sandbox namespace's own prerequisites (8/10)
-Release "openshell-workspace" does not exist. Installing it now.
-STATUS: deployed
 Waiting for 1 pods to be ready...
 partitioned roll out complete: 1 new pods have been updated...
-secret/openshell-client-tls created
-  copied the gateway's client-tls Secret into openshell-kubernetes-sandbox for the supervisor pod
-  confirmed: neither the sandbox ServiceAccount nor the namespace's default ServiceAccount can get, list or watch Secrets in openshell-kubernetes-sandbox
+
+==> who can read Secrets in the namespace the workload pods run in (7/8)
+  confirmed: neither the sandbox ServiceAccount nor the namespace's default ServiceAccount can get, list or watch Secrets in openshell-kubernetes
   labelled the credential namespace openshell-kubernetes-credentials as this sample's
 
-==> the demo echo API this sample's policy and provider point at (9/10)
+==> the demo echo API this sample's policy and provider point at (8/8)
 pod/echo-api created
 pod/echo-api condition met
 service/echo-api created
-  echo-api Ready, reachable in-cluster at echo-api.openshell-kubernetes-sandbox.svc.cluster.local:80
+  echo-api Ready, reachable in-cluster at echo-api.openshell-kubernetes.svc.cluster.local:80
 
-==> ready (10/10)
-  gateway namespace:    openshell-kubernetes
-  sandbox namespace:    openshell-kubernetes-sandbox
+==> ready
+  namespace:            openshell-kubernetes (the gateway and its sandboxes)
   credential namespace: openshell-kubernetes-credentials
-  gateway release:      openshell (OpenShell v0.1.6)
-  workspace release:    openshell-workspace
+  release:              openshell (OpenShell v0.1.6)
 ```
 
 The gateway's values set the one line that matters most on this page:
@@ -308,20 +263,21 @@ server:
       namespace: openshell-kubernetes-credentials
 ```
 
-Both Helm releases, and the gateway pod Ready:
+The Helm release, and the pods in its namespace while the sandbox from Step 3 was running
+(captured right after `demo.sh`, so the sandbox's two pods are there beside the gateway):
 
 ```text
 $ helm list -n openshell-kubernetes
-NAME     	NAMESPACE           	REVISION	UPDATED                               	STATUS  	CHART           	APP VERSION
-openshell	openshell-kubernetes	1       	2026-10-30 20:56:14.12127837 +0000 UTC	deployed	helm-chart-0.1.6	0.1.6
-
-$ helm list -n openshell-kubernetes-sandbox
-NAME               	NAMESPACE                   	REVISION	UPDATED                               	STATUS  	CHART                    	APP VERSION
-openshell-workspace	openshell-kubernetes-sandbox	1       	2026-10-30 20:56:20.53262075 +0000 UTC	deployed	openshell-workspace-0.1.6	0.1.6
+NAME     	NAMESPACE           	REVISION	UPDATED                                	STATUS  	CHART           	APP VERSION
+openshell	openshell-kubernetes	1       	2026-10-30 21:07:44.221545392 +0000 UTC	deployed	helm-chart-0.1.6	0.1.6
 
 $ kubectl get pods -n openshell-kubernetes
-NAME          READY   STATUS    RESTARTS   AGE
-openshell-0   1/1     Running   0          3m3s
+NAME                                                 READY   STATUS        RESTARTS   AGE
+default--demo-1793394513                             1/1     Running       0          78s
+echo-api                                             1/1     Running       0          107s
+node-probe                                           1/1     Terminating   0          52s
+openshell-0                                          1/1     Running       0          2m2s
+os-supervisor-72a17001-1053-4277-af67-3f0f25dfc4b6   1/1     Running       0          78s
 ```
 
 **Step 3: Reach the gateway with `kubectl port-forward`, and create one sandbox.** In a
@@ -337,9 +293,10 @@ Then:
 ./scripts/demo.sh
 ```
 
-The sections below are that one run's own output. That run set `GATEWAY_PORT=28443` in
-`.env` and port-forwarded `28443:8080`, because port 8080 was already in use on the
-machine it ran on, so its endpoint lines show 28443 where the commands above use 8080.
+The sections below are that one run's own output. That run set `GATEWAY_PORT=28443` in its
+environment and port-forwarded `28443:8080`, because the machine it ran on is shared and
+8080 is a port other sessions use, so its endpoint lines show 28443 where the commands
+above use 8080.
 
 ## The CLI, registered over the port-forward with the generated mTLS bundle
 
@@ -362,9 +319,10 @@ Server Status
 
 ```text
 ==> the two pods of this one sandbox
-  workload pod:   default--demo-1793393813
+pod/os-supervisor-72a17001-1053-4277-af67-3f0f25dfc4b6 condition met
+  workload pod:   default--demo-1793394513
     runtimeClassName: isolated-sandbox
-  supervisor pod: os-supervisor-e7a3e369-f922-458c-a848-8b88543564a4
+  supervisor pod: os-supervisor-72a17001-1053-4277-af67-3f0f25dfc4b6
     runtimeClassName: 
     (empty means no RuntimeClass: an ordinary pod)
   workspace PVC: Bound on auto-ebs-sc
@@ -401,7 +359,7 @@ driver, as a `Secret` in its own namespace — shown here by name only:
 
 ```text
   the credential Secret, by name only -- never its value:
-openshell-cred-838a883b29a466e8d868fbbce5e1b6fefe5b2919   Opaque
+openshell-cred-91e124dc3047eaeeaf44d0e4f8de3a83ce64b49e   Opaque
 ```
 
 The agent's own environment holds a placeholder, never the value:
@@ -409,7 +367,7 @@ The agent's own environment holds a placeholder, never the value:
 ```text
 ==> the agent's credential: a placeholder, never the real value
   the agent's own environment:
-DEMO_API_KEY=openshell:resolve:env:v11358934011224906040_DEMO_API_KEY
+DEMO_API_KEY=openshell:resolve:env:v7861852800310345618_DEMO_API_KEY
 ```
 
 A request to the one endpoint this sandbox's policy allows — an in-cluster HTTP echo
@@ -428,7 +386,7 @@ against:
 
 ```text
   the digest of the value the backend received (substituted by the supervisor, outside the sandbox), computed INSIDE the sandbox so the real value is never printed anywhere, including by this script:
-  resolved credential digest: c91a4b46161302ff0888abcb908e5dab4c46f70799b502badadcaca63d332eaf
+  resolved credential digest: 5af59c0db66960b9ff94125fa963ba6e0bb1b52b747b154bc2234c635917423c
   matches the digest of the credential this run stored in the Secret: true
 ```
 
@@ -436,7 +394,7 @@ And the workload pod mounts no Secret for it at all:
 
 ```text
   no Secret for the real credential is mounted in the workload pod:
-os-sandbox-e7a3e369-f922-458c-a848-8b88543564a4-f58a0ac778fc
+os-sandbox-72a17001-1053-4277-af67-3f0f25dfc4b6-c28c8206eecf
 ```
 
 (That one Secret is OpenShell's own per-sandbox bootstrap material, not a provider
@@ -458,7 +416,7 @@ permission a root-owned, non-readable file would have produced on its own:
 cat: /var/lib/dpkg/status: Permission denied
 cat exit=1
   control -- a file the policy does list:
-default--demo-1793393813
+default--demo-1793394513
   a destination the policy does not list:
 bash: connect: Permission denied
 bash: line 1: /dev/tcp/kubernetes.default.svc.cluster.local/443: Permission denied
@@ -477,11 +435,11 @@ one placeholder:
 ==> layer 2: the Nitro boundary -- the node is invisible, and the credential is absent
   processes visible in the guest (its own, only):
 USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
-ubuntu         1  0.8  8.8 111496 11388 ?        Ssl  20:57   0:00 /.openshell/runtime/openshell-sandbox --bootstrap /.openshell/state/bootstrap/boundary.json
-ubuntu        55  0.0  0.0   2708   104 ?        S    20:57   0:00 sleep 3600
-ubuntu        90  0.0  2.9   7904  3788 ?        R    20:57   0:00 ps aux
+ubuntu         1  0.9  9.0 111528 11600 ?        Ssl  21:08   0:00 /.openshell/runtime/openshell-sandbox --bootstrap /.openshell/state/bootstrap/boundary.json
+ubuntu        56  0.0  0.0   2708   100 ?        S    21:08   0:00 sleep 3600
+ubuntu        91  0.0  2.9   7904  3828 ?        R    21:09   0:00 ps aux
   the guest's environment, checked rather than eyeballed:
-DEMO_API_KEY=openshell:resolve:env:v11358934011224906040_DEMO_API_KEY
+DEMO_API_KEY=openshell:resolve:env:v7861852800310345618_DEMO_API_KEY
   no other credential-shaped variable
 ```
 
@@ -497,7 +455,7 @@ the placeholder's own name would always satisfy.
 `Sandbox` resources directly rather than through a `SandboxTemplate`, agent-sandbox's own
 controller applies no managed `NetworkPolicy` of its own to these pods (`networkPolicyManagement`
 is a `SandboxTemplate`-only field in the [v1.0.6 API reference](https://github.com/kubernetes-sigs/agent-sandbox/blob/v1.0.6/docs/api.md)).
-The page lists every `NetworkPolicy` in the sandbox namespace and checks which select the
+The page lists every `NetworkPolicy` in the namespace and checks which select the
 workload pod's own labels, rather than assuming there is exactly one: there are two, both
 OpenShell's own, and only together do they say what the workload pod may actually reach.
 
@@ -505,12 +463,12 @@ OpenShell's own, and only together do they say what the workload pod may actuall
 ==> layer 3: the Kubernetes NetworkPolicy drops a direct, workload-initiated connection
   every NetworkPolicy in the sandbox namespace, and which select the workload pod's labels:
 NAME                                              POD-SELECTOR                                                      AGE
-openshell-sandbox-supervisors                     openshell.ai/boundary-role=supervisor                             36s
-openshell-sandbox-workloads                       openshell.ai/boundary-role=workload                               36s
-openshell-workspace-sandbox-ssh                   openshell.ai/managed-by=openshell                                 69s
-os-control-e7a3e369-f922-458c-a848-8b88543564a4   openshell.ai/boundary-pair=e7a3e369-f922-458c-a848-8b88543564a4   36s
-  workload pod labels: {"agents.x-k8s.io/sandbox-name-hash":"c6a08869","openshell.ai/boundary-pair":"e7a3e369-f922-458c-a848-8b88543564a4","openshell.ai/boundary-role":"workload","topology.kubernetes.io/region":"us-west-2","topology.kubernetes.io/zone":"us-west-2c"}
-  the two NetworkPolicies selecting the workload pod (boundary-pair=e7a3e369-f922-458c-a848-8b88543564a4):
+openshell-sandbox-ssh                             openshell.ai/managed-by=openshell                                 73s
+openshell-sandbox-supervisors                     openshell.ai/boundary-role=supervisor                             29s
+openshell-sandbox-workloads                       openshell.ai/boundary-role=workload                               29s
+os-control-72a17001-1053-4277-af67-3f0f25dfc4b6   openshell.ai/boundary-pair=72a17001-1053-4277-af67-3f0f25dfc4b6   29s
+  workload pod labels: {"agents.x-k8s.io/sandbox-name-hash":"7426fd1d","openshell.ai/boundary-pair":"72a17001-1053-4277-af67-3f0f25dfc4b6","openshell.ai/boundary-role":"workload","topology.kubernetes.io/region":"us-west-2","topology.kubernetes.io/zone":"us-west-2c"}
+  the two NetworkPolicies selecting the workload pod (boundary-pair=72a17001-1053-4277-af67-3f0f25dfc4b6):
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -518,7 +476,7 @@ metadata:
     openshell.ai/component: sandbox-workload-fence
     openshell.ai/managed-by: openshell
   name: openshell-sandbox-workloads
-  namespace: openshell-kubernetes-sandbox
+  namespace: openshell-kubernetes
 spec:
   ingress:
   - from:
@@ -540,9 +498,9 @@ metadata:
   labels:
     openshell.ai/component: sandbox-control-egress
     openshell.ai/managed-by: openshell
-    openshell.ai/sandbox-id: e7a3e369-f922-458c-a848-8b88543564a4
-  name: os-control-e7a3e369-f922-458c-a848-8b88543564a4
-  namespace: openshell-kubernetes-sandbox
+    openshell.ai/sandbox-id: 72a17001-1053-4277-af67-3f0f25dfc4b6
+  name: os-control-72a17001-1053-4277-af67-3f0f25dfc4b6
+  namespace: openshell-kubernetes
 spec:
   egress:
   - ports:
@@ -551,20 +509,20 @@ spec:
     to:
     - podSelector:
         matchLabels:
-          openshell.ai/boundary-pair: e7a3e369-f922-458c-a848-8b88543564a4
+          openshell.ai/boundary-pair: 72a17001-1053-4277-af67-3f0f25dfc4b6
           openshell.ai/boundary-role: supervisor
   ingress:
   - from:
     - podSelector:
         matchLabels:
-          openshell.ai/boundary-pair: e7a3e369-f922-458c-a848-8b88543564a4
+          openshell.ai/boundary-pair: 72a17001-1053-4277-af67-3f0f25dfc4b6
           openshell.ai/boundary-role: workload
     ports:
     - port: 5500
       protocol: TCP
   podSelector:
     matchLabels:
-      openshell.ai/boundary-pair: e7a3e369-f922-458c-a848-8b88543564a4
+      openshell.ai/boundary-pair: 72a17001-1053-4277-af67-3f0f25dfc4b6
   policyTypes:
   - Ingress
   - Egress
@@ -600,7 +558,7 @@ OpenShell entirely does not bypass the `NetworkPolicy`:
 
 ```text
   a connection from the workload pod's own network namespace, outside OpenShell's control (an ephemeral debug container sharing it), to the policy-approved backend by IP -- bypassing OpenShell entirely does not bypass the NetworkPolicy:
-Connecting to 10.100.52.219 (10.100.52.219:80)
+Connecting to 10.100.11.86 (10.100.11.86:80)
 wget: download timed out
 EXIT=1
 ```
@@ -613,7 +571,7 @@ problem:
 
 ```text
   control -- the same technique against the supervisor pod, which carries no such restriction:
-Connecting to 10.100.52.219 (10.100.52.219:80)
+Connecting to 10.100.11.86 (10.100.11.86:80)
 writing to stdout
 {
   "headers": {
@@ -621,13 +579,15 @@ writing to stdout
       "close"
     ],
     "Host": [
-      "10.100.52.219"
+      "10.100.11.86"
     ],
     "User-Agent": [
       "Wget"
     ]
   }
 }
+-                    100% |********************************|   145  0:00:00 ETA
+written to stdout
 EXIT=0
 ```
 
@@ -649,27 +609,26 @@ EXIT=0
   so `scripts/setup.sh` adds it only when it is missing and `scripts/clean.sh` leaves it in
   place, printing the command that removes it.
 - **OpenShell's own driver manages the per-sandbox `NetworkPolicy` and `Service`; this
-  sample adds none of its own.** The `NetworkPolicy` shown above, and the boundary
+  sample adds none of its own.** The `NetworkPolicy` objects shown above, and the boundary
   `Service` the supervisor and the workload use to reach each other, come entirely from
-  OpenShell's Kubernetes driver. What this sample itself adds is: the admission adapter
-  (a `MutatingAdmissionPolicy`, which is cluster-scoped, limited by its own
-  `namespaceSelector` to namespaces labelled `managed-by=openshell-kubernetes`), the
-  namespace-scoped RBAC fix above, a copy of the gateway's `client-tls` Secret in the
-  sandbox namespace (see the next point), and the demo echo API's pod and Service.
-- **Copying the gateway's `client-tls` Secret into the sandbox namespace widens where
-  that certificate physically sits.** With `allowUnauthenticatedUsers: true` (the point
-  above), that certificate is full administrative access to the gateway, and the copy
-  puts it in the same namespace the untrusted workload pods live in, rather than only in
-  the gateway's own namespace. `scripts/setup.sh` does not just assert this is safe: it
-  checks, every run, that neither the sandbox `ServiceAccount` nor the sandbox
-  namespace's own `default` `ServiceAccount` can `get`, `list` or `watch` Secrets there
-  (`kubectl auth can-i <verb> secrets ... --as=system:serviceaccount:<sandbox namespace>:<sa>`
+  OpenShell's chart and Kubernetes driver. What this sample itself adds is the admission
+  adapter (a `MutatingAdmissionPolicy`, which is cluster-scoped, limited by its own
+  `namespaceSelector` to namespaces labelled `managed-by=openshell-kubernetes`) and the
+  demo echo API's pod and Service.
+- **The gateway's `client-tls` Secret sits in the namespace the workload pods run in.**
+  With `allowUnauthenticatedUsers: true` (the point above), that certificate is full
+  administrative access to the gateway, and one release puts the gateway and its sandboxes
+  in one namespace. `scripts/setup.sh` does not just assert this is safe: it checks, every
+  run, that neither the sandbox `ServiceAccount` nor the namespace's own `default`
+  `ServiceAccount` can `get`, `list` or `watch` Secrets there
+  (`kubectl auth can-i <verb> secrets ... --as=system:serviceaccount:<namespace>:<sa>`
   reads as literally `yes` or `no` for all six combinations, never just a command's exit
-  code, which `can-i` also returns non-zero for on a failure that is not "no" either),
-  and refuses to continue if any of them can, or if any answer is neither yes nor no.
-  That check is scoped to this sample's own two ServiceAccounts in that one namespace; it
-  is not a general guarantee that nothing in the namespace can reach the Secret, so treat
-  the copy as a real, if currently unexploited, widening of where that certificate sits.
+  code, which `can-i` also returns non-zero for on a failure that is not "no" either), and
+  refuses to continue if any of them can, or if any answer is neither yes nor no. That
+  check covers those two ServiceAccounts only; it is not a general guarantee that nothing
+  in the namespace can reach the Secret. A deployment that wants the workloads in a
+  namespace without it uses the chart's split install instead (see "One release, one
+  namespace" above).
 
 ## Clean up
 
@@ -679,28 +638,23 @@ EXIT=0
 
 ```text
 ==> the sandbox(es) this run created
-sandbox.agents.x-k8s.io "default--demo-1793393813" deleted from openshell-kubernetes-sandbox namespace
-pod "echo-api" deleted from openshell-kubernetes-sandbox namespace
-service "echo-api" deleted from openshell-kubernetes-sandbox namespace
+sandbox.agents.x-k8s.io "default--demo-1793394513" deleted from openshell-kubernetes namespace
+pod "echo-api" deleted from openshell-kubernetes namespace
+service "echo-api" deleted from openshell-kubernetes namespace
 
-==> the Helm releases
+==> the Helm release
   These resources were kept due to the resource policy:
   [Namespace] openshell-kubernetes-credentials
   
   release "openshell" uninstalled
-  release "openshell-workspace" uninstalled
 
-==> the admission adapter and the namespace-scoped RBAC
+==> the admission adapter
 mutatingadmissionpolicybinding.admissionregistration.k8s.io "openshell-kubernetes-nitro-adapter" deleted
 mutatingadmissionpolicy.admissionregistration.k8s.io "openshell-kubernetes-nitro-adapter" deleted
-role.rbac.authorization.k8s.io "openshell-sandbox-rbac-gap" deleted from openshell-kubernetes-sandbox namespace
-rolebinding.rbac.authorization.k8s.io "openshell-sandbox-rbac-gap" deleted from openshell-kubernetes-sandbox namespace
 
 ==> the namespaces
   deleting openshell-kubernetes-credentials
 namespace "openshell-kubernetes-credentials" deleted
-  deleting openshell-kubernetes-sandbox
-namespace "openshell-kubernetes-sandbox" deleted
   deleting openshell-kubernetes
 namespace "openshell-kubernetes" deleted
 
@@ -721,9 +675,9 @@ Each namespace delete is followed by this script actually waiting for it to fini
 terminating (up to 5 minutes) before moving on, rather than reporting "deleting" and
 exiting while the delete is still in progress.
 
-This removes both Helm releases and their namespaces, including the credential namespace,
-the generated provider-credential `Secret`s and the workspace PVC; the admission adapter
-and the namespace-scoped RBAC fix; and the demo echo API. It leaves the shared
+This removes the Helm release and its namespaces, including the credential namespace,
+the generated provider-credential `Secret`s and the workspace PVC; the admission adapter;
+and the demo echo API. It leaves the shared
 `isolated-sandbox` RuntimeClass's approval label in place, and this sample's own local
 scratch files under `tmp/`, printing what it left and why.
 

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # clean.sh -- remove everything this sample created: the demo sandbox, the echo API,
-# both Helm releases and their namespaces (including the credential namespace and its
-# generated Secrets), the admission adapter, and the namespace-scoped RBAC this sample
-# added. It leaves the shared isolated-sandbox RuntimeClass and its approval label in
+# the Helm release and its namespaces (including the credential namespace and its
+# generated Secrets), and the admission adapter. It leaves the shared isolated-sandbox RuntimeClass and its approval label in
 # place, and prints the command that removes the label.
 #
 # Usage:
@@ -24,12 +23,11 @@ if [[ -f "$SAMPLE_DIR/.env" ]]; then set -a; . "$SAMPLE_DIR/.env"; set +a; fi
 if [[ -f "$STATE_FILE" ]]; then set -a; . "$STATE_FILE"; set +a; fi
 
 GATEWAY_NAMESPACE="${GATEWAY_NAMESPACE:-openshell-kubernetes}"
-SANDBOX_NAMESPACE="${SANDBOX_NAMESPACE:-openshell-kubernetes-sandbox}"
+# One release creates its sandboxes in its own namespace.
+SANDBOX_NAMESPACE="$GATEWAY_NAMESPACE"
 CREDENTIAL_NAMESPACE="${CREDENTIAL_NAMESPACE:-openshell-kubernetes-credentials}"
 GATEWAY_RELEASE="${GATEWAY_RELEASE:-openshell}"
-WORKSPACE_RELEASE="${WORKSPACE_RELEASE:-${GATEWAY_RELEASE}-workspace}"
 ADAPTER="${SAMPLE}-nitro-adapter"
-RBAC_GAP="openshell-sandbox-rbac-gap"
 incomplete=0
 
 kc() { if [[ -n "${KUBE_CONTEXT:-}" ]]; then kubectl --context "$KUBE_CONTEXT" "$@"; else kubectl "$@"; fi; }
@@ -72,7 +70,7 @@ wait_for_ns_gone() { # <namespace>
 }
 
 sandbox_ns_state="$(ns_state "$SANDBOX_NAMESPACE")"
-gateway_ns_state="$(ns_state "$GATEWAY_NAMESPACE")"
+gateway_ns_state="$sandbox_ns_state"
 
 say "the sandbox(es) this run created"
 case "$sandbox_ns_state" in
@@ -97,7 +95,7 @@ case "$sandbox_ns_state" in
   unknown) echo "  could not determine whether $SANDBOX_NAMESPACE exists; left it alone"; incomplete=1 ;;
 esac
 
-say "the Helm releases"
+say "the Helm release"
 # A release already uninstalled by an earlier, interrupted clean up run (the namespace
 # delete that follows it is what can fail and need a retry) is not a failure to report
 # again: "helm status" says plainly whether there is a release left to remove.
@@ -114,16 +112,8 @@ case "$gateway_ns_state" in
   foreign) echo "  $GATEWAY_NAMESPACE exists and is not this sample's; left its release alone"; incomplete=1 ;;
   unknown) echo "  could not determine whether $GATEWAY_NAMESPACE exists; left its release alone"; incomplete=1 ;;
 esac
-if [[ "$sandbox_ns_state" == owned ]]; then
-  if helm status "$WORKSPACE_RELEASE" -n "$SANDBOX_NAMESPACE" >/dev/null 2>&1; then
-    helm uninstall "$WORKSPACE_RELEASE" -n "$SANDBOX_NAMESPACE" 2>&1 | sed 's/^/  /'
-    [[ "${PIPESTATUS[0]}" == 0 ]] || { echo "  helm uninstall $WORKSPACE_RELEASE failed"; incomplete=1; }
-  else
-    echo "  $WORKSPACE_RELEASE already uninstalled"
-  fi
-fi
 
-say "the admission adapter and the namespace-scoped RBAC"
+say "the admission adapter"
 for kind in mutatingadmissionpolicybinding mutatingadmissionpolicy; do
   # Existence first, then the label: an object that exists with no managed-by label at
   # all would otherwise print the same empty string an absent object prints, and be
@@ -141,15 +131,9 @@ for kind in mutatingadmissionpolicybinding mutatingadmissionpolicy; do
     incomplete=1
   fi
 done
-if [[ "$sandbox_ns_state" == owned ]]; then
-  kc delete role "$RBAC_GAP" -n "$SANDBOX_NAMESPACE" --ignore-not-found ||
-    { echo "  could not delete role/$RBAC_GAP"; incomplete=1; }
-  kc delete rolebinding "$RBAC_GAP" -n "$SANDBOX_NAMESPACE" --ignore-not-found ||
-    { echo "  could not delete rolebinding/$RBAC_GAP"; incomplete=1; }
-fi
 
 say "the namespaces"
-for ns in "$CREDENTIAL_NAMESPACE" "$SANDBOX_NAMESPACE" "$GATEWAY_NAMESPACE"; do
+for ns in "$CREDENTIAL_NAMESPACE" "$GATEWAY_NAMESPACE"; do
   case "$(ns_state "$ns")" in
     owned)
       echo "  deleting $ns"

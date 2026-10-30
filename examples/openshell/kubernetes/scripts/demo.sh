@@ -9,8 +9,8 @@
 #   ./scripts/demo.sh
 #
 # Each run deletes the previous run's sandbox (if this run created it) and creates a
-# fresh one, so a run never resumes another run's workspace. It leaves the gateway, the
-# workspace prerequisites and the demo echo API running; ./scripts/clean.sh removes
+# fresh one, so a run never resumes another run's workspace. It leaves the gateway and the
+# demo echo API running; ./scripts/clean.sh removes
 # everything.
 set -euo pipefail
 
