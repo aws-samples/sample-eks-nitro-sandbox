@@ -5,9 +5,12 @@
 # (domainNames) in an egress rule. It is enforced on the node, on the pod's host-side
 # interface, so a command inside the sandbox cannot change it, even as root.
 #
+# DNS (port 53) is allowed to any IP address. While CoreDNS typically runs on a fixed
+# cluster address, allowing any destination eliminates the need for address lookup and
+# substitution, and avoids issues with missing or malformed cluster DNS addresses (#104).
+#
 # scripts/setup.sh renders:
 #   <NAMESPACE>        the namespace you set
-#   <COREDNS_IP>       kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'
 #   <ECR_PUSH_RULES>   the rules the optional push needs (the Pod Identity credential
 #                      address and the Amazon ECR endpoints), and nothing when the push is
 #                      not enabled: by default the build pods have no route to a credential.
@@ -27,7 +30,7 @@ spec:
     - Egress
   ingress: []        # deny all ingress; exec, logs and cp do not use the pod network
   egress:
-    # DNS, to the cluster's CoreDNS Service address only.
+    # DNS on port 53 to any IP, so the pods can resolve names.
     - to:
         - ipBlock: { cidr: 0.0.0.0/0 }
       ports:

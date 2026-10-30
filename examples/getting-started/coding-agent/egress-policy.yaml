@@ -5,17 +5,11 @@
 # and all egress are denied except DNS to CoreDNS, the Pod Identity credential
 # address, and HTTPS to the three names below.
 #
-# <COREDNS_IP> is your cluster's DNS address, the kubelet's clusterDNS, filled in by the
-# README's step 5 command (or by hand, from one node; needs permission to get nodes/proxy):
-#   kubectl get --raw "/api/v1/nodes/$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')/proxy/configz"
-#   and take kubeletconfig.clusterDNS[0]
-# On EKS Auto Mode CoreDNS runs on each instance rather than in cluster pods, so the
-# kube-dns Service in kube-system carries this address but has no endpoints behind it.
-# The address is the same from either source and fixed for the life of the cluster, so
-# DNS egress is allowed with an ipBlock on it. The guide below derives it from the
-# cluster's service CIDR instead of reading the kubelet: describe-cluster, then the .10
-# address of serviceIpv4Cidr.
-# https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html
+# DNS (port 53) is allowed to any address, not pinned to one CoreDNS Service IP. On EKS
+# Auto Mode CoreDNS runs locally on each instance rather than behind a single ClusterIP,
+# so a rule pinned to one looked-up address would not reliably reach the resolver a pod
+# actually uses; allowing the port to any destination keeps name resolution working
+# without that lookup. The rule still opens only port 53.
 # If you run in a Region other than us-west-2, change the Bedrock hostname to match.
 #
 # The Pod Identity rule is what lets the agent get its Bedrock credentials. A Nitro

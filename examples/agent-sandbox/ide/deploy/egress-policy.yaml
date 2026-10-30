@@ -8,16 +8,17 @@
 #     an ingress rule can neither deny that nor is needed to permit it. The
 #     consequence is that anything sending from the node's own address, such as
 #     a hostNetwork pod on that node, can still reach the editor's port;
-#   - egress to CoreDNS for name lookups, and HTTPS to the extension registry and
-#     the git host a developer actually uses from the workbench.
+#   - egress to DNS on port 53 for name lookups, and HTTPS to the extension
+#     registry and the git host a developer actually uses from the workbench.
 # Every other address is refused, so code the developer runs in the editor cannot
 # reach other pods, AWS APIs or the rest of the internet. (Kubernetes always
 # allows a pod to reach its own node, which is not a path to the internet.)
 #
-# <COREDNS_IP> is your cluster's CoreDNS Service address, which scripts/setup.sh
-# fills in at apply time from:
-#   kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'
-# __NAMESPACE__ is filled in the same way, from NAMESPACE.
+# DNS (port 53) is allowed to any IP address. While CoreDNS typically runs on a
+# fixed cluster address, allowing any destination eliminates the need for address
+# lookup and substitution. This simplifies the setup and avoids issues with
+# missing or malformed cluster DNS addresses (#104).
+# __NAMESPACE__ is filled in at apply time by scripts/setup.sh, from NAMESPACE.
 apiVersion: networking.k8s.aws/v1alpha1
 kind: ApplicationNetworkPolicy
 metadata:

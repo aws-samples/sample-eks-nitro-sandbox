@@ -516,9 +516,9 @@ builds, give each one its own claim.
 
 [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) is the whole policy for every build
 pod in the sample, with the file's longer comments trimmed here. `setup.sh` renders
-`<NAMESPACE>` and `<COREDNS_IP>`, which it reads from `kubectl get svc -n kube-system
-kube-dns`, and leaves `<ECR_PUSH_RULES>` empty unless the optional push has been set up for
-this namespace:
+`<NAMESPACE>`, and leaves `<ECR_PUSH_RULES>` empty unless the optional push has been set up for
+this namespace. DNS (port 53) is allowed to any IP address, which avoids the need to look up
+and substitute the cluster's CoreDNS address:
 
 ```yaml
 apiVersion: networking.k8s.aws/v1alpha1
@@ -537,9 +537,9 @@ spec:
     - Egress
   ingress: []        # deny all ingress; exec, logs and cp do not use the pod network
   egress:
-    # DNS, to the cluster's CoreDNS Service address only.
+    # DNS on port 53 to any IP, so the pods can resolve names.
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }
+        - ipBlock: { cidr: 0.0.0.0/0 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }

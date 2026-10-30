@@ -297,11 +297,8 @@ echo "  no last-applied-configuration annotation on it."
 # ---------------------------------------------------------------------------
 say "6/7 the runner pods' egress policy"
 # ---------------------------------------------------------------------------
-coredns="$("${KCTL[@]}" get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
-[[ -n "$coredns" ]] || die "could not read the CoreDNS Service address from kube-system/kube-dns."
-sed "s|<COREDNS_IP>|$coredns|g" "$SAMPLE_DIR/deploy/egress-policy.yaml" \
-  | "${KCTL[@]}" apply -n "$ARC_RUNNERS_NAMESPACE" -f -
-echo "  applied, with CoreDNS at $coredns."
+"${KCTL[@]}" apply -n "$ARC_RUNNERS_NAMESPACE" -f "$SAMPLE_DIR/deploy/egress-policy.yaml"
+echo "  applied."
 
 # The PolicyEndpoint is how the controller says it has handed the policy to the
 # nodes. Wait for THIS policy's endpoint, matched by its owner, not for any

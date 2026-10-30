@@ -26,7 +26,7 @@ pod spec:
   describes a watcher that starts one pod per issue labeled `agent`; here you start the
   pod yourself.)
 - **Everything else is off.** An `ApplicationNetworkPolicy` denies all ingress, and
-  allows egress only to CoreDNS for name lookups, to the Pod Identity credential address,
+  allows egress only to DNS on any address for name lookups, to the Pod Identity credential address,
   and to HTTPS on the Bedrock and GitHub hostnames. Other AWS APIs, other internet hosts and other pods are refused. (The
   policy allows the addresses those names resolve to, so another name served from the
   same addresses would also be reachable.) The VM is sized from the pod's requests (inside
@@ -126,7 +126,7 @@ unset GITHUB_TOKEN
 **Step 5: Apply the network policy.** [`egress-policy.yaml`](egress-policy.yaml)
 selects pods labeled `app: coding-agent`. Listing both `Ingress` and `Egress` under
 `policyTypes` denies the pod all traffic in both directions except what the rules allow:
-no ingress at all, and egress only to CoreDNS, to the Pod Identity credential address,
+no ingress at all, and egress only to DNS on any address, to the Pod Identity credential address,
 and to HTTPS on three hostnames. Here it is without its header comment:
 
 ```yaml
@@ -143,7 +143,7 @@ spec:
     - Egress
   egress:
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }
+        - ipBlock: { cidr: 0.0.0.0/0 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -166,50 +166,17 @@ and the policy applies to them: without the rule they time out, from a sandboxed
 from an ordinary one.
 
 A standard Kubernetes `NetworkPolicy` can only allow addresses; the Auto Mode
-`ApplicationNetworkPolicy` accepts the same fields plus `domainNames`. DNS is allowed
-with an `ipBlock` on the cluster's DNS address: the kubelet's `clusterDNS`, which pods
-use as their nameserver.
-
-On EKS Auto Mode, CoreDNS "runs locally on each EKS Auto Mode instance", as the Amazon
-EKS User Guide puts it in *Use Network Policies with EKS Auto Mode*
-(<https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html>), so the `kube-dns`
-Service in `kube-system` carries that address but has no endpoints behind it. The address
-is the same from either source and fixed for the life of the cluster.
-
-The command below reads the kubelet's own value from the first Ready node that answers,
-which needs permission to get `nodes/proxy`. The guide takes a different route to the same
-address and needs no cluster permission at all: read the cluster's service CIDR with
-`aws eks describe-cluster --name $CLUSTER_NAME --query
-'cluster.kubernetesNetworkConfig.serviceIpv4Cidr'` and use its `.10` address (on an IPv6
-cluster, `serviceIpv6Cidr` and its `::a` address). If you cannot get `nodes/proxy`, or the
-cluster is IPv6, take the address that way and fill in `<COREDNS_IP>` by hand. Otherwise
-apply it with:
+`ApplicationNetworkPolicy` accepts the same fields plus `domainNames`. DNS (port 53) is
+allowed to any address rather than pinned to one CoreDNS Service IP: on EKS Auto Mode
+CoreDNS runs locally on each instance rather than behind a single ClusterIP, so a rule
+pinned to one looked-up address would not reliably reach the resolver a pod actually
+uses. The rule still opens only port 53; everything else stays denied.
 
 ```bash
-COREDNS_IP=
-for DNS_NODE in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
-    | awk '$2 == "True" {print $1}'); do
-  COREDNS_IP=$(kubectl get --raw "/api/v1/nodes/$DNS_NODE/proxy/configz" --request-timeout=10s 2>/dev/null \
-    | sed -n 's/.*"clusterDNS":\["\([^"]*\)".*/\1/p' \
-    | grep -Ex '(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])){3}')
-  [ -n "$COREDNS_IP" ] && break
-done
-if [ -z "$COREDNS_IP" ]; then
-  echo "no IPv4 cluster DNS address read from any Ready node: nothing was applied." \
-       "This needs permission to get nodes/proxy; on an IPv6 cluster, or without that" \
-       "permission, take the address from the service CIDR as described above." >&2
-else
-  echo "cluster DNS address: $COREDNS_IP"
-  sed "s|<COREDNS_IP>|$COREDNS_IP|" egress-policy.yaml | kubectl apply -f -
-  until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/coding-agent-egress-'; do sleep 2; done
-  kubectl get applicationnetworkpolicies,policyendpoints
-fi
+kubectl apply -f egress-policy.yaml
+until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/coding-agent-egress-'; do sleep 2; done
+kubectl get applicationnetworkpolicies,policyendpoints
 ```
-
-If no Ready node answers with an IPv4 address, `COREDNS_IP` stays empty and the whole
-`else` branch is skipped: the command says so and applies nothing, rather than applying a
-policy whose DNS rule reads `cidr: /32` and then waiting for a `PolicyEndpoint` that is
-never created.
 
 Wait for the `PolicyEndpoint` named after `coding-agent-egress` before you start the
 agent: it shows the controller has picked the policy up and handed it to the nodes. If

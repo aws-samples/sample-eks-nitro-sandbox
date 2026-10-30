@@ -3,14 +3,16 @@
 # An EKS Auto Mode ApplicationNetworkPolicy is a NetworkPolicy that also accepts
 # hostnames (domainNames) in an egress rule. For the sandbox pods it allows:
 #   - ingress from the poller, on the dispatch port only;
-#   - egress to CoreDNS for name lookups and to HTTPS on api.anthropic.com,
+#   - egress to DNS on port 53 for name lookups and to HTTPS on api.anthropic.com,
 #     where the worker fetches tool calls and posts their results.
 # Every other address is refused, so a command the model runs cannot reach other
 # pods, AWS APIs or the internet. (Kubernetes always allows a pod to reach its own
 # node, which is not a path to the internet.)
 #
-# <COREDNS_IP> is your cluster's CoreDNS Service address:
-#   kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'
+# DNS (port 53) is allowed to any IP address. While CoreDNS typically runs on a fixed
+# cluster address, allowing any destination eliminates the need for address lookup and
+# substitution. This simplifies the setup and avoids issues with missing or malformed
+# cluster DNS addresses (#104).
 apiVersion: networking.k8s.aws/v1alpha1
 kind: ApplicationNetworkPolicy
 metadata:

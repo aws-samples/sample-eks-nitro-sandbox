@@ -110,8 +110,6 @@ fi
 sa_doc | kc apply -f -
 
 echo "Step 3/5: the egress policy"
-coredns="$(kc get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')"
-[[ -n "$coredns" ]] || die "could not read the CoreDNS Service address (kube-system/kube-dns)"
 # The push rules are added only once scripts/ecr-setup.sh has created the role and the
 # association, which it records in the state file. Without them the build pods have no route
 # to the Pod Identity credential address or to Amazon ECR.
@@ -129,7 +127,6 @@ elif [[ "${ECR_PUSH_READY:-false}" == "true" ]]; then
 fi
 render deploy/egress-policy.yaml \
   | awk -v rules="$push_rules" '{ if ($0 == "<ECR_PUSH_RULES>") { if (rules != "") print rules } else print }' \
-  | sed -e "s|<COREDNS_IP>|$coredns|g" \
   | kc apply -f -
 echo "  waiting for the egress PolicyEndpoint..."
 for _ in $(seq 1 60); do
