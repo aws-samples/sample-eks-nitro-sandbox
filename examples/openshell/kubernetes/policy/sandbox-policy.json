@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "filesystem_policy": {
+    "include_workdir": false,
+    "read_only": ["/usr", "/lib", "/etc", "/proc", "/sys", "/dev/urandom"],
+    "read_write": ["/sandbox", "/tmp", "/dev/null"]
+  },
+  "landlock": {"compatibility": "hard_requirement"},
+  "process": {"run_as_user": "1000", "run_as_group": "1000"},
+  "network_policies": {
+    "demo": {
+      "endpoints": [
+        {
+          "host": "echo-api.<SANDBOX_NAMESPACE>.svc.cluster.local",
+          "port": 80,
+          "protocol": "rest",
+          "enforcement": "enforce",
+          "credential_binding": {"provider": "demo"},
+          "rules": [
+            {"allow": {"method": "GET", "path": "/headers"}}
+          ]
+        }
+      ],
+      "binaries": [
+        {"path": "/usr/bin/bash"}
+      ]
+    }
+  }
+}

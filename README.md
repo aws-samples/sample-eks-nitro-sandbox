@@ -36,6 +36,12 @@ The same procurement analyst three ways, with a second policy layer confining th
 - [Procurement analyst confined by bubblewrap](examples/subagent-security/bubblewrap/README.md): the same analyst with its reader, evaluator and writer started by `bwrap`, where the confinement policy is the argument list the trusted controller assembles: selected mounts, its own namespaces, no capabilities and an application-compiled seccomp filter, and no network at all for the tool processes.
 - [Procurement analyst confined by OpenShell](examples/subagent-security/openshell/README.md): an OpenShell gateway drives one sandbox, with the analyst's files, process identity, destinations and HTTP operations governed by an OpenShell policy inside the Nitro sandbox, while the supervisor that holds the real supplier key runs as an ordinary pod outside it, and one added rule lets the analyst submit its draft with no restart.
 
+## OpenShell
+
+[NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell), and the NemoClaw reference stack built on it, with Nitro sandboxes.
+
+- [OpenShell on Amazon EKS](examples/openshell/kubernetes/README.md): OpenShell installed on EKS from its own gateway and workspace Helm charts, with every OpenShell sandbox's workload pod in a Nitro sandbox and its supervisor, which holds the real credentials, an ordinary pod beside it; three layers (OpenShell's own policy, the Nitro boundary and a Kubernetes NetworkPolicy) each refuse something.
+
 ## Agent sandbox
 
 - [Pause and resume](examples/agent-sandbox/pause-resume/README.md): suspend a sandbox to release its compute and keep its EBS workspace, then resume onto a new guest with the data intact.
