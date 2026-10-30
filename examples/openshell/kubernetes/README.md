@@ -623,8 +623,8 @@ EXIT=0
   in one namespace. `scripts/setup.sh` does not just assert this is safe: it checks, every
   run, that neither the sandbox `ServiceAccount` nor the namespace's own `default`
   `ServiceAccount` can `get`, `list` or `watch` Secrets there, or reach one another way:
-  `create` pods (which could mount it), `create pods/exec`, or `patch
-  pods/ephemeralcontainers` (`kubectl auth can-i ... --as=system:serviceaccount:<namespace>:<sa>`,
+  `create` pods (which could mount it), `create pods/exec`, or `patch` or `update`
+  `pods/ephemeralcontainers` (`kubectl auth can-i ... --as=system:serviceaccount:<namespace>:<sa>`,
   read as literally `yes` or `no`, never just a command's exit code, which `can-i` also
   returns non-zero for on a failure that is not "no" either). It refuses to continue if any
   of them can, or if any answer is neither yes nor no, and `scripts/demo.sh` confirms the

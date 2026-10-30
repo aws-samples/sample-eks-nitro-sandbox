@@ -111,7 +111,9 @@ case "$gateway_ns_state" in
     if [[ "$status_rc" == 0 ]]; then
       helm uninstall "$GATEWAY_RELEASE" -n "$GATEWAY_NAMESPACE" ${KUBE_CONTEXT:+--kube-context "$KUBE_CONTEXT"} 2>&1 | sed 's/^/  /'
       if [[ "${PIPESTATUS[0]}" == 0 ]]; then release_gone=1; else echo "  helm uninstall $GATEWAY_RELEASE failed"; incomplete=1; fi
-    elif [[ "$status_out" == *"release: not found"* ]]; then
+    elif grep -qx 'Error: release: not found' <<<"$status_out"; then
+      # Helm's own message, matched as a whole line: a different error that merely
+      # contains the phrase is "could not determine", not "gone".
       echo "  $GATEWAY_RELEASE already uninstalled"
       release_gone=1
     else

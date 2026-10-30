@@ -342,7 +342,8 @@ for sa in "$SANDBOX_SA" default; do
   # A subresource goes in --subresource: "pods/exec" would ask about a pod *named* exec,
   # and answers "no" even when exec is granted.
   for check in "get secrets" "list secrets" "watch secrets" "create pods" \
-               "create pods --subresource=exec" "patch pods --subresource=ephemeralcontainers"; do
+               "create pods --subresource=exec" "patch pods --subresource=ephemeralcontainers" \
+               "update pods --subresource=ephemeralcontainers"; do
     # "kubectl auth can-i" exits non-zero for both "no" and a command failure (a bad
     # --as, an API error), so the exit code alone cannot tell the two apart. Read the
     # text it prints instead: anything other than exactly "yes" or "no" is "could not
