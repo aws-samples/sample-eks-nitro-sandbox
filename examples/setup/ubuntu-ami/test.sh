@@ -9,7 +9,9 @@
 #
 # Every kubectl call passes --context "$KUBE_CONTEXT" (required; never the current context), and
 # the context is checked against CLUSTER_NAME's API endpoint first. It tests the run recorded in
-# the run state (setup.sh writes it), or RUN_ID=<id>; the node group name is derived from it.
+# the run state (setup.sh writes it), or RUN_ID=<id>; the node group name is derived from it. The
+# run's record must match (names, CLUSTER_NAME, AWS_REGION) and its lock must be free; test.sh
+# holds the lock until it exits, so setup.sh and clean.sh cannot act on the run meanwhile.
 # Overridable: NAMESPACE, POD_READY_TIMEOUT. It first waits,
 # bounded, for both validation pods to be Ready (scripts/wait-pods-ready.sh), so a test.sh run
 # straight after setup.sh does not read pods that are still starting. Expected values come from
@@ -27,6 +29,11 @@ SAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/common.sh
 . "$SAMPLE_DIR/scripts/lib/common.sh"
 require_run_id
+# The run must be one this checkout set up, with the same names, cluster and Region, and no other
+# process may be acting on it (setup.sh, clean.sh or another test.sh): its record is checked and
+# its lock taken before any read, and held until this script exits.
+check_run_record
+lock_run
 
 ORDINARY_POD=ordinary-pod
 SANDBOX_POD=isolated-sandbox-pod
@@ -399,11 +406,11 @@ probe() { # probe <pod>: the PROBE line, or <exec failed: rc=N> / <no PROBE line
   else printf '%s\n' "$out" | grep '^PROBE ' | sed 's/^PROBE //'; fi
 }
 sbx_conn=$(probe "$SANDBOX_POD")
-echo "  sandbox TCP connect to ${api_ip:-?}:443: $sbx_conn"
+echo "  sandbox TCP connect to that ClusterIP on 443: $sbx_conn"
 assert "the sandbox's TCP connect to the API Service fails with Network is unreachable (ENETUNREACH)" \
   $([[ "$sbx_conn" == "errno=ENETUNREACH (Network is unreachable)" ]]; echo $?)
 ord_conn=$(probe "$ORDINARY_POD")
-echo "  ordinary pod TCP connect to ${api_ip:-?}:443: $ord_conn"
+echo "  ordinary pod TCP connect to that ClusterIP on 443: $ord_conn"
 assert "the same connect from the ordinary pod succeeds (control for the previous check)" $([[ "$ord_conn" == connected ]]; echo $?)
 
 echo

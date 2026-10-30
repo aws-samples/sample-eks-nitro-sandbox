@@ -47,7 +47,7 @@ done
 unset __common_cfg
 
 : "${AWS_REGION:=us-west-2}"
-: "${CLUSTER_NAME:=nitro-sandboxes-demo}"
+: "${CLUSTER_NAME:=sandbox-demo}"   # the home page's default; the shell's own value wins
 : "${RESOURCE_PREFIX:=ubuntu-ami-sample}"
 : "${TAGS_OWNER_KEY:=ManagedBy}"
 : "${TAGS_OWNER_VALUE:=$RESOURCE_PREFIX}"
@@ -199,14 +199,21 @@ reserve_run_dir() {
   mkdir -p "$OUT_DIR/runs"
   mkdir "$RUN_STATE_DIR" 2>/dev/null || die "run folder $RUN_STATE_DIR already exists: another run has id $RUN_ID. Start again for a new id, or pass RUN_ID=$RUN_ID only to resume that run."
 }
-# check_run_record: for an explicit RUN_ID (a resume, or --join), the run's own record
-# $RUN_STATE_DIR/run-state.env must exist, and its RUN_ID, RESOURCE_PREFIX, NODEGROUP_NAME and
-# NAMESPACE lines must all equal this run's values (a missing line is a mismatch). Otherwise it
-# stops, naming the field and both values, before anything is changed.
+# check_run_record: for an explicit RUN_ID (a resume, --join, test.sh, or clean.sh of a run this
+# checkout has a record of), the run's own record $RUN_STATE_DIR/run-state.env must exist, and its
+# RUN_ID, RESOURCE_PREFIX, NODEGROUP_NAME, NAMESPACE, CLUSTER_NAME and AWS_REGION lines must all
+# equal this run's values (a missing line is a mismatch, so a record written before the cluster
+# and Region were recorded is refused too). Otherwise it stops, naming the field and both values,
+# before any call is made.
+RUN_RECORD_KEYS="RUN_ID RESOURCE_PREFIX NODEGROUP_NAME NAMESPACE CLUSTER_NAME AWS_REGION"
+write_run_record() { # write_run_record: the record setup.sh writes when it reserves the run
+  local k
+  for k in $RUN_RECORD_KEYS; do printf '%s=%s\n' "$k" "${!k}"; done > "$RUN_STATE_DIR/run-state.env"
+}
 check_run_record() {
   local f="$RUN_STATE_DIR/run-state.env" k got
   [ -f "$f" ] || die "run $RUN_ID has no record at $f: RUN_ID=<id> only resumes a run this checkout started (leave RUN_ID unset for a new run). Nothing was changed."
-  for k in RUN_ID RESOURCE_PREFIX NODEGROUP_NAME NAMESPACE; do
+  for k in $RUN_RECORD_KEYS; do
     if ! grep -q "^$k=" "$f"; then
       die "run $RUN_ID's record $f has no $k line, but this run has $k=${!k}; refusing to act on it. Nothing was changed."
     fi

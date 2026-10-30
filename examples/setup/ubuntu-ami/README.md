@@ -128,8 +128,34 @@ it.
   `VPC_CNI_ADDON_VERSION` in `config.env`; each run records the version it found.
 
   If some of the cluster's nodes run another CNI, keep `aws-node` off them with the add-on's
-  `affinity` configuration value: keep the chart's default node affinity terms and add one
-  more, such as `{"key": "<OTHER_CNI_NODE_LABEL>", "operator": "NotIn", "values": ["true"]}`.
+  `affinity` configuration value. Keep the chart's default requirements and append a `NotIn`
+  requirement for those nodes' label to the same term's `matchExpressions`: the requirements in
+  one term must all hold, while separate `nodeSelectorTerms` are alternatives, so a term of its
+  own would not keep `aws-node` off those nodes. This is the value the validation cluster's
+  add-on used, with its node label key shown as `<OTHER_CNI_NODE_LABEL>` (that install also
+  set `enableNetworkPolicy`, which this sample does not need). Save it to a file and add
+  `--configuration-values file://<file>` to the `create-addon` command:
+
+  ```json
+  {
+    "affinity": {
+      "nodeAffinity": {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+          "nodeSelectorTerms": [
+            {
+              "matchExpressions": [
+                {"key": "kubernetes.io/os", "operator": "In", "values": ["linux"]},
+                {"key": "kubernetes.io/arch", "operator": "In", "values": ["amd64", "arm64"]},
+                {"key": "eks.amazonaws.com/compute-type", "operator": "NotIn", "values": ["fargate", "hybrid", "auto"]},
+                {"key": "<OTHER_CNI_NODE_LABEL>", "operator": "NotIn", "values": ["true"]}
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+  ```
 
 - **A kubectl context for the same cluster, named in `KUBE_CONTEXT`.** Every `kubectl` call
   the scripts make passes `--context "$KUBE_CONTEXT"`; there is no fallback to the current
@@ -172,9 +198,14 @@ it.
   else stops the run. Neither is an admin role.
 - **IMDSv2 only, hop limit 1, on every instance the sample launches.** The build host, the
   verification instance and the node group's nodes (through the launch template) all require
-  IMDSv2 tokens with a response hop limit of 1, so a container cannot reach the instance's
-  credentials through the metadata service. A pod that needs AWS access uses
-  EKS Pod Identity, never the node's role. Each launch spec is rendered, checked
+  IMDSv2 tokens with a response hop limit of 1. That stops an ordinary pod, one that does not
+  use the host's network, from getting a token, so it cannot read the node role's credentials
+  through the metadata service. It is not a boundary for a pod that runs with
+  `hostNetwork: true`, or for a privileged pod, which can enter the host's network: such a pod
+  reaches the metadata service as the node does. The VPC CNI's own `aws-node` pods run on the
+  host network and use the node role, which is why that role carries `AmazonEKS_CNI_Policy`.
+  Any other pod that needs AWS access should use EKS Pod Identity, not the node's role. Each
+  launch spec is rendered, checked
   ([`scripts/lib/launch_spec.py`](scripts/lib/launch_spec.py)) and sent to EC2 as that same
   file.
 - **SSM-based build-host access, no inbound rule.** The build security group opens no
@@ -265,7 +296,8 @@ re-packed archive whose `SHA256SUMS` was edited to match is still refused.
 ## Build
 
 ```bash
-cd examples/setup/ubuntu-ami
+git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
+cd sample-eks-nitro-sandbox/examples/setup/ubuntu-ami
 cp config.env.example config.env
 # Set KUBE_CONTEXT (the kubectl context of CLUSTER_NAME), BUILD_SUBNET_ID, NODE_SUBNET_IDS and
 # VPC_CNI_ADDON_VERSION. Your usual CLUSTER_NAME, AWS_REGION and AWS_PROFILE remain in effect.
@@ -281,6 +313,10 @@ $EDITOR config.env
 ./test.sh              # read live node and guest evidence again
 ./clean.sh --dry-run   # preview what a full clean up would remove
 ```
+
+The sample uses its own namespace, `ubuntu-ami-sample` (`NAMESPACE` in `config.env`), not the
+home page's `nitro-sandboxes-demo`: `./clean.sh` deletes the namespace the run created, so it
+must be one no other sample uses.
 
 ```mermaid
 flowchart TB
@@ -309,12 +345,18 @@ S3 name limits, and every AWS resource it creates carries both `ManagedBy=<RESOU
 and `RunId=<RUN_ID>`, including the verification instance and, through the launch template,
 every node instance and volume. A resource with the run's name is reused only when it carries
 both tags; a mismatch or a failed lookup stops the run. The namespace carries
-`app.kubernetes.io/part-of=<RESOURCE_PREFIX>` and `app.kubernetes.io/instance=<RUN_ID>`.
+`app.kubernetes.io/part-of=<RESOURCE_PREFIX>` and `app.kubernetes.io/instance=<RUN_ID>`. The
+run's record (`tmp/issue10/run/out/runs/<run-id>/run-state.env`) also names the
+`CLUSTER_NAME` and `AWS_REGION` it started with: a resume, `--join`, `./test.sh` or
+`./clean.sh` of that run with another cluster or Region stops before any call. One process at a
+time acts on a run: `./setup.sh`, `./test.sh` and `./clean.sh` each take the run's lock first,
+and refuse the run while another holds it. `./clean.sh --list-runs` needs no run and no lock.
 
 **Build the AMI now, join it later.** `./setup.sh --ami-only` checks the inputs, runs steps 2
 to 7 below through the `BtfValidated=true` tag, records the AMI ID in the run's
 `tmp/issue10/run/out/runs/<run-id>/run-state.env`, and stops. It never reads or changes the
-cluster, so it needs no `KUBE_CONTEXT`, no `vpc-cni` add-on and no `NODE_SUBNET_IDS`. The
+cluster, so it needs no `KUBE_CONTEXT`, no `vpc-cni` add-on and no `NODE_SUBNET_IDS`; set
+`CLUSTER_NAME` to the cluster you will join, because the run's record keeps it. The
 `cilium-ubuntu` sample (issue #11) needs only this AMI. `RUN_ID=<id> ./setup.sh --join` does
 step 8 for that run: before it changes anything, it checks that the run's AMI carries
 `ManagedBy`, the run's `RunId` and `BtfValidated=true`, that `KUBE_CONTEXT` is
@@ -689,8 +731,10 @@ AMI id, the verification instance's id and the repository's absolute path are sh
 **AppArmor.** AppArmor stays enabled on the host, and the node loads one scoped profile,
 [`manifests/ubuntu-ami-sample-profile`](manifests/ubuntu-ami-sample-profile), installed onto
 the AMI by [`scripts/35-apparmor.sh`](scripts/35-apparmor.sh). The profile refuses writes to
-`/etc/shadow` and a few other host paths with `audit deny` rules, so each refusal is logged.
-It lets runc and the host signal the container, as containerd's own default container profile
+`/etc/shadow` and a few other paths inside the confined container with `audit deny` rules, so
+each refusal is logged; the pod mounts no host filesystem, so these are the container's own
+files, not the node's. It lets runc, crun and the host signal the container, as containerd's
+own default container profile
 does (containerd `contrib/apparmor/template.go`): without those `signal` rules, a pod under
 the profile could never be stopped. `./test.sh` shows four things on the sample's node, each
 next to its control.
@@ -825,6 +869,11 @@ guest carries it.
 TODO: output from the fresh run
 ```
 
+*`./test.sh` section 7/7, whole, once the fresh run fills it. The cluster's `kubernetes`
+Service ClusterIP, which test.sh prints once on its own line, is to be shown as
+`<API_SERVICE_IP>`, and no other value replaced. test.sh prints each interface's name and
+state, not its MAC address.*
+
 The sample ships no network policy, and creates no Ingress, LoadBalancer or NodePort. For
 how a network policy restricts where a sandboxed pod can connect, see the
 [network policy](../../isolation/network-policy/README.md) sample.
@@ -832,20 +881,31 @@ how a network policy restricts where a sandboxed pod can connect, see the
 ### Clusterless checks
 
 These run with no AWS account and no cluster, against the real scripts with stub commands
-first on `PATH` where a live input cannot be made:
+first on `PATH` where a live input cannot be made. The fake AWS CLI applies `--query` with the
+`jmespath` package, pinned in
+[`scripts/testlib/requirements-test.txt`](scripts/testlib/requirements-test.txt); without it,
+every fake call stops with exit 98 and an "install jmespath" message, so the suites fail rather
+than pass. Install it into a virtual environment under the repository's `tmp/`, and put that
+environment first on `PATH` while the suites run (from this sample's folder):
+
+```bash
+python3 -m venv ../../../tmp/ubuntu-ami-tests
+../../../tmp/ubuntu-ami-tests/bin/pip install -r scripts/testlib/requirements-test.txt
+export PATH="$(cd ../../../tmp/ubuntu-ami-tests/bin && pwd):$PATH"
+```
 
 ```bash
 bash packages/test-bundle.sh          # bundle built and consumed against sources.lock; tampered, unlisted and unsafe members refused
 bash packages/test-inputs.sh          # runtime archive and host-kernel patch (cached or downloaded), both ways
 bash scripts/test-host-gates.sh       # containerd gate, .config assertion, root filesystem at boot, IMDS token never on argv
 bash scripts/test-cluster-gates.sh    # kube context, vpc-cni ACTIVE (network policy on or off), RuntimeClass, user data, node capacity, namespace, pod wait
-bash scripts/test-launch-specs.sh     # IMDSv2 hop limit 1, enclaves and run tags on the node template, verification instance and build host
-bash scripts/test-run-scope.sh        # per-run IAM, run-scoped clean up, IAM by name, the node role's access entry, every failed lookup, --list-runs, staging revocation
+bash scripts/test-launch-specs.sh     # IMDSv2 hop limit 1, enclaves and run tags on the node template, verification instance and build host; strict bootstrap.sh user data
+bash scripts/test-run-scope.sh        # per-run IAM, run-scoped clean up, the run's lock and record, IAM by name, the node role's access entry, --keep-ami, every failed lookup, --list-runs, staging revocation
 bash scripts/test-image-checks.sh     # containerd wiring, AppArmor stage, package holds, bake residue, verify-image.py (Python 3.11+)
-bash scripts/test-apparmor-checks.sh  # test.sh's AppArmor checks, the Unconfined sandbox, the no-network checks and their control; the profile's signal and audit-deny rules
+bash scripts/test-apparmor-checks.sh  # test.sh's AppArmor checks (its node probe run on a fake journal), the Unconfined sandbox, the no-network checks and their control, the run's lock and record; the profile's structure, signal and audit-deny rules
 bash scripts/test-btf-tag.sh          # BtfValidated=true only after both fresh-instance checks pass, only on this run's AMI
-bash scripts/test-setup-flow.sh       # bounded SSM, AMI, status and reboot waits; --ami-only and --join, both ways
-bash scripts/test-local-paths.sh      # local state only under the repository's tmp/
+bash scripts/test-setup-flow.sh       # bounded SSM, AMI, status and reboot waits; --ami-only and --join, the run's record (cluster and Region) and lock, both ways
+bash scripts/test-local-paths.sh      # local state only under the repository's tmp/; the cluster, Region and namespace defaults
 ```
 
 ## Cost note
@@ -925,7 +985,9 @@ leave it out: without it, EKS deletes the add-on's software, which can include t
 was there before the add-on, as on an EKS Auto Mode cluster with network policy turned on, it
 holds `enable-network-policy-controller`, the setting that turns network policy enforcement on,
 so deleting it can turn enforcement off for every workload.
-Removing the software also takes pod networking away from every managed node group node.
+Removing the software also takes pod networking away from every node that gets it from
+`aws-node`, managed node group nodes included; nodes kept off `aws-node` for another CNI are
+not affected.
 
 ## Troubleshooting
 

@@ -172,8 +172,10 @@ fi
 [ "$MODE" = ami ] || require_kube_context
 
 # A new run reserves its folder and takes its lock; a resume was checked and locked above.
+# The record names the cluster and Region too, so a resume, --join, test.sh or clean.sh with
+# another CLUSTER_NAME or AWS_REGION is refused before any call (check_run_record).
 if [ "$RESUME" = 0 ]; then reserve_run_dir; lock_run; fi
-printf 'RUN_ID=%s\nRESOURCE_PREFIX=%s\nNODEGROUP_NAME=%s\nNAMESPACE=%s\n' "$RUN_ID" "$RESOURCE_PREFIX" "$NODEGROUP_NAME" "$NAMESPACE" > "$RUN_STATE_DIR/run-state.env"
+write_run_record
 open_evidence new
 record RUN_ID "$RUN_ID"
 

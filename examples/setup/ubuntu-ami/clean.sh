@@ -17,7 +17,9 @@
 #
 # The run is the one recorded in the run state ($OUT_DIR/run-state.env, the repository's
 # gitignored tmp/issue10/run/out/run-state.env by default), or the one --run-id names. With
-# neither, nothing is deleted: only --list-runs works, and it changes nothing.
+# neither, nothing is deleted: only --list-runs works, and it changes nothing. A run this
+# checkout has a folder for is locked first (the same lock setup.sh and test.sh take), and its
+# record must name this CLUSTER_NAME and AWS_REGION; --list-runs takes no lock.
 #
 # kubectl runs only with --context "$KUBE_CONTEXT", checked against CLUSTER_NAME's API endpoint
 # before the namespace is touched. IAM roles and the instance profile are found by their per-run
@@ -114,6 +116,18 @@ for rid, tags in eval(sys.argv[1], {"d": d}):
   exit 0
 fi
 require_run_id
+# The run's lock, before any of its resources is read or changed: a run setup.sh or test.sh is
+# acting on is refused, and neither can start on it while this runs. A run this checkout has a
+# record of must match it (names, cluster and Region). A run with no folder here (a lost run id
+# found with --list-runs, or a run another checkout started) has no lock to take, and is found by
+# its tags alone, as before.
+if [ -d "$RUN_STATE_DIR" ]; then
+  lock_run
+  if [ -f "$RUN_STATE_DIR/run-state.env" ]; then check_run_record
+  else log "run $RUN_ID has a folder but no record in this checkout; acting on its tags alone"; fi
+else
+  log "run $RUN_ID has no folder in this checkout (a lost run id): no run lock to take; acting on its tags alone"
+fi
 FILTERS=("Name=tag:${TAGS_OWNER_KEY},Values=${TAGS_OWNER_VALUE}" "Name=tag:${TAGS_RUN_KEY},Values=${RUN_ID}")
 UNKNOWN="<could not determine>"
 
@@ -257,14 +271,21 @@ owned_then() {
 echo "== run $RUN_ID: resources tagged ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID} in $AWS_REGION =="
 list_all
 
-# --keep-ami: the run's AMIs and the snapshots behind them stay, and are reported as kept.
-kept_images=""; kept_snaps=""
-if [[ "$KEEP_AMI" == 1 && "$images" != "$UNKNOWN" && -n "$images" ]]; then
+# --keep-ami: the run's AMIs and the snapshots behind them stay, and are reported as kept. When
+# the AMIs, or the snapshots behind any one of them, cannot be read, no snapshot is deleted at
+# all (kept_unknown=1) and the clean up is incomplete: a snapshot that might back a kept AMI is
+# never put up for deletion.
+kept_images=""; kept_snaps=""; kept_unknown=0
+if [[ "$KEEP_AMI" == 1 && "$images" == "$UNKNOWN" ]]; then
+  kept_unknown=1
+elif [[ "$KEEP_AMI" == 1 && -n "$images" ]]; then
   kept_images="$images"
   for img in $(printf '%s\n' "$images" | awk '{print $1}'); do
     aws_json idesc "the snapshots behind AMI $img" ec2 describe-images --image-ids "$img"
-    if [ "$idesc" = "$UNKNOWN" ]; then continue; fi
-    kept_snaps+="$(printf '%s' "$idesc" | json_get '[b["Ebs"]["SnapshotId"] for x in d["Images"] for b in x.get("BlockDeviceMappings", []) if "Ebs" in b and b["Ebs"].get("SnapshotId")]')"$'\n'
+    if [ "$idesc" = "$UNKNOWN" ]; then kept_unknown=1; continue; fi
+    isnaps="$(printf '%s' "$idesc" | json_get '[b["Ebs"]["SnapshotId"] for x in d["Images"] for b in x.get("BlockDeviceMappings", []) if "Ebs" in b and b["Ebs"].get("SnapshotId")]')"
+    if [ -z "$isnaps" ]; then warn_inc "could not determine the snapshots behind kept AMI $img (it lists none)"; kept_unknown=1; continue; fi
+    kept_snaps+="$isnaps"$'\n'
   done
 fi
 is_kept_snap() { printf '%s\n' "$kept_snaps" | grep -qxF -- "$1"; }
@@ -406,7 +427,9 @@ elif [ -z "$images" ]; then echo "no AMIs."; fi
 # finished registering. A snapshot behind a kept AMI stays.
 list snapshots "this run's EBS snapshots" "[(x[\"SnapshotId\"], x.get(\"VolumeSize\", \"-\")) for x in d[\"Snapshots\"]]" \
   ec2 describe-snapshots --owner-ids self --filters "${FILTERS[@]}"
-if [ "$snapshots" != "$UNKNOWN" ] && [ -n "$snapshots" ]; then
+if [[ "$kept_unknown" == 1 ]]; then
+  warn_inc "--keep-ami: the snapshots behind the kept AMIs could not be determined, so no snapshot was deleted"
+elif [ "$snapshots" != "$UNKNOWN" ] && [ -n "$snapshots" ]; then
   while read -r snap _size; do
     [ -n "$snap" ] || continue
     if is_kept_snap "$snap"; then echo "snapshot $snap backs a kept AMI; left in place."; continue; fi
@@ -554,8 +577,10 @@ delete_role "$BUILD_ROLE_NAME" "$role_build"
 # run's. An entry whose role is already gone cannot be shown to be this run's, so it is left, with
 # the command that removes it, and the clean up is incomplete.
 echo "== deleting the EKS access entry for this run's node role =="
-# delete_access_entry: non-zero when an entry may still be there while the role that proves it is
-# this run's is still there too; the role is then kept, so a re-run can still delete the entry.
+# delete_access_entry: 1 when an entry may still be there while the role that proves it is this
+# run's is still there too (the role is then kept, so a re-run can still delete the entry); 2 when
+# the role turned out not to be this run's any more (delete_role re-reads it and refuses); 0
+# otherwise.
 delete_access_entry() {
   local arn ng_now
   case "$ae_node" in
@@ -578,13 +603,27 @@ delete_access_entry() {
       match) aws eks delete-access-entry --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --principal-arn "$arn" --output json >/dev/null 2>"$ERR" \
                || { warn_inc "could not delete access entry $arn: $(head -n 2 "$ERR")"; return 1; } ;;
       # Not this run's role any more: the entry stays, and delete_role re-reads and refuses too.
-      gone) warn_inc "role $NODE_ROLE_NAME disappeared after it was listed; access entry $arn left in place"; return 0 ;;
-      mismatch) warn_inc "role $NODE_ROLE_NAME no longer carries ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; access entry $arn left in place"; return 0 ;;
+      gone) warn_inc "role $NODE_ROLE_NAME disappeared after it was listed; access entry $arn left in place"; return 2 ;;
+      mismatch) warn_inc "role $NODE_ROLE_NAME no longer carries ${TAGS_OWNER_KEY}=${TAGS_OWNER_VALUE} and ${TAGS_RUN_KEY}=${RUN_ID}; access entry $arn left in place"; return 2 ;;
       *) warn_inc "could not re-read the tags of role $NODE_ROLE_NAME; access entry $arn left in place"; return 1 ;;
     esac
   done
 }
-if delete_access_entry; then
+# access_entry_gone: before the node role is deleted, the cluster's access entries are read
+# again; the role goes only when no entry for it is listed (a delete that succeeded but left the
+# entry, or a first listing that missed it, keeps the role). 0 when the role may go.
+access_entry_gone() {
+  local ae_now
+  [ "$role_node" = owned ] || return 0   # delete_role reports an absent, foreign or unknown role
+  access_entry_state ae_now
+  case "$ae_now" in
+    "") return 0 ;;
+    "$UNKNOWN") return 1 ;;   # access_entry_state already said it could not determine
+    *) warn_inc "the access entry for role $NODE_ROLE_NAME is still listed after its delete ($ae_now)"; return 1 ;;
+  esac
+}
+ae_rc=0; delete_access_entry || ae_rc=$?
+if [ "$ae_rc" = 2 ] || { [ "$ae_rc" = 0 ] && access_entry_gone; }; then
   delete_role "$NODE_ROLE_NAME" "$role_node"
 else
   warn_inc "role $NODE_ROLE_NAME left in place, so that a re-run can still show its access entry is this run's and delete it"
@@ -605,7 +644,7 @@ if [[ "$KEEP_AMI" == 1 ]]; then
 else
   [ -z "$images" ] || [ "$images" = "$UNKNOWN" ] || warn_inc "this run's AMIs still present after cleanup: $(printf '%s' "$images" | tr '\n' ' ')"
 fi
-if [ -n "$snapshots" ] && [ "$snapshots" != "$UNKNOWN" ]; then
+if [ -n "$snapshots" ] && [ "$snapshots" != "$UNKNOWN" ] && [[ "$kept_unknown" == 0 ]]; then
   while read -r snap _s; do
     [ -n "$snap" ] || continue
     is_kept_snap "$snap" || warn_inc "this run's snapshot $snap still present after cleanup"

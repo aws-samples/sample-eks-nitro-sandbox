@@ -3,9 +3,10 @@
 
 Every instance the sample launches (the build host, the fresh verification instance, and the
 managed node group's nodes through the launch template) must:
-  * require IMDSv2 (HttpTokens=required) with a hop limit of 1, so a container on the host cannot
-    reach the instance's credentials through the metadata service (a pod that needs AWS uses EKS
-    Pod Identity);
+  * require IMDSv2 (HttpTokens=required) with a hop limit of 1, so an ordinary pod (one not on
+    the host's network) cannot get a metadata token and read the instance's credentials. A
+    hostNetwork or privileged pod is not stopped by it (aws-node, the VPC CNI, runs on the host
+    network with the node role); any other pod that needs AWS uses EKS Pod Identity;
   * run with Nitro Enclaves enabled;
   * carry ManagedBy=<RESOURCE_PREFIX> and RunId=<RUN_ID> on the instance AND its volumes.
 

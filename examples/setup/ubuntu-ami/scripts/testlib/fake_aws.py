@@ -5,8 +5,8 @@ It answers the EC2, EKS, IAM, S3, SSM Run Command, STS and Resource Groups Taggi
 that 00a-iam.sh, 00b-stage-bucket.sh, clean.sh, join-nodegroup.sh, verify-fresh-instance.sh
 and btf-tag.sh make, from a JSON state file, the way the real APIs would: server-side filters and tag
 filters, NotFound errors for missing resources, conflicts for deletes that the real API
-refuses. It always prints JSON (the scripts under test read --output json and parse it
-themselves) and ignores --query. Every call is appended to a log the test reads.
+refuses. It prints JSON unless a call asks for --output text. Every call is appended to a log
+the test reads.
 
 Environment:
   FAKE_AWS_STATE  path to the JSON state file (read, updated by mutating calls)
@@ -19,7 +19,10 @@ Environment:
                   WaiterMaxAttempts what an AWS CLI waiter prints, with exit 255, when it
                   runs out of attempts.
 
-It applies --query (JMESPath, as the CLI does on the client side) and --output text.
+It applies --query (JMESPath, as the CLI does on the client side) and --output text. JMESPath
+comes from the jmespath package, pinned in requirements-test.txt next to this file. Without it,
+every call stops with exit 98 and an "install jmespath" message before it reads or changes the
+state, so a suite goes red rather than passing on calls the fake could not answer.
 
 Any call this fake does not implement exits 97, so an untested call cannot pass silently.
 Never put this on the PATH of a real shell: it does nothing against AWS.
@@ -28,6 +31,17 @@ import json
 import os
 import re
 import sys
+
+try:
+    import jmespath
+except ImportError:
+    _req = os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements-test.txt")
+    sys.stderr.write(
+        "fake_aws.py: the offline tests need the jmespath package (pinned in %s), and the python3 "
+        "on PATH does not have it. Install jmespath into a virtual environment under the "
+        "repository's tmp/ and put it first on PATH, as the README's Clusterless checks say:\n"
+        "  python3 -m venv tmp/ubuntu-ami-tests && tmp/ubuntu-ami-tests/bin/pip install -r %s\n" % (_req, _req))
+    sys.exit(98)
 
 ARGV = sys.argv[1:]
 STATE_PATH = os.environ.get("FAKE_AWS_STATE", "")
@@ -367,6 +381,8 @@ def handle(state, service, op, sub, opts):
             ak = f"{cl}/{one(opts, 'principal-arn')}"
             if ak not in aes:
                 raise ApiError("ResourceNotFoundException", "DeleteAccessEntry", "The specified access entry resource is not found.")
+            if aes[ak].get("StaysAfterDelete"):   # a delete that answers success and leaves the entry
+                return {}
             del aes[ak]
             return {}
         nk = f"{cl}/{ng}"
@@ -684,7 +700,6 @@ def main():
     if out is not None:
         q = one(opts, "query")
         if q:   # the CLI applies --query (JMESPath) on the client side; so does the fake
-            import jmespath
             out = jmespath.search(q, out)
         if one(opts, "output") == "text":
             print(as_text(out))

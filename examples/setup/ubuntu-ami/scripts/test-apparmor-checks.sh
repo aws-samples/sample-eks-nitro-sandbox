@@ -22,8 +22,14 @@
 #       connect() faked) fails from the sandbox with ENETUNREACH (Network is unreachable), never
 #       passing on a connect, a timeout, ECONNREFUSED, EHOSTUNREACH, an exec error or empty
 #       output; and the same connect from the ordinary pod succeeds (the control).
-#   static: the profile carries the signal rules containerd's default profile has and audit-deny
-#   rules only.
+#   8a/8b's node evidence comes from test.sh's own node probe: the stub keeps the script
+#   `kubectl debug` is given and runs its AppArmor lines for real against a fake profile list,
+#   profile file and kernel journal (a fake journalctl that honours -k and --since), so a wrong
+#   filter, profile name, time bound or signal operation in the probe turns the suite red.
+#   2b: test.sh acts only on a run whose record matches (names, cluster, Region), and refuses
+#   while another process holds the run's lock.
+#   static: the profile is one closed block holding the signal rules containerd's default profile
+#   has (unconfined, runc, crun, itself) and audit-deny rules only.
 #
 #   scripts/test-apparmor-checks.sh
 set -uo pipefail
@@ -32,7 +38,8 @@ SAMPLE="$(cd "$HERE/.." && pwd)"
 REPO_ROOT_REAL="$(cd "$SAMPLE/../../.." && pwd)"
 mkdir -p "$REPO_ROOT_REAL/tmp"
 WORK="$(mktemp -d "$REPO_ROOT_REAL/tmp/test-apparmor-checks.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+HOLDER=""   # section 2b's background lock holder, killed by its pid
+trap '[ -z "$HOLDER" ] || kill "$HOLDER" 2>/dev/null; rm -rf "$WORK"' EXIT
 export ISSUE10_RUN_DIR="$WORK/run" AWS_REGION=us-west-2 CLUSTER_NAME=example-cluster RESOURCE_PREFIX=ubuntu-ami-sample \
        NAMESPACE=ubuntu-ami-sample RUN_ID=testrun1 KUBE_CONTEXT=example-context STUB_CTX=example-context \
        POD_READY_TIMEOUT=2 POD_POLL_SECONDS=1 SCOPED_POD_TRIES=2 SCOPED_POD_POLL_SECONDS=0 \
@@ -52,6 +59,7 @@ check() { # check <description> <expected-rc> <actual-rc> <log> [<regex the log 
 STUB="$WORK/bin"; mkdir -p "$STUB"
 cat > "$STUB/aws" <<'SH'
 #!/bin/bash
+printf 'aws %s\n' "$*" >> "$STUB_LOG"
 case "$1 $2" in
   "eks describe-cluster") printf '%s\n' '{"cluster": {"endpoint": "https://EXAMPLE0123.gr7.us-west-2.eks.amazonaws.com"}}' ;;
   *) echo "STUB aws: unexpected call: $*" >&2; exit 97 ;;
@@ -211,20 +219,56 @@ if a[:1] == ["exec"]:
     if "/sys/block" in cmd: out("nvme0n1 " if pod == "ordinary-pod" else "vda vdb vdc ")
     if cmd == "cat /proc/uptime": out("50000.00 1.00\n" if pod == "ordinary-pod" else "100.00 1.00\n")
 if a[:1] == ["debug"]:
+    # test.sh's node probe: kubectl debug node/<node> ... -- chroot /host sh -c <PROBE>. The probe
+    # script is kept, and its AppArmor lines are run for real when its log is read (below).
+    if a[1] != f"node/{NODE}" or a[a.index("--") + 1:a.index("--") + 5] != ["chroot", "/host", "sh", "-c"]:
+        sys.exit(f"STUB kubectl: the node probe is not 'debug node/{NODE} ... -- chroot /host sh -c <script>': {a}")
+    with open(os.path.join(E("STUB_STATE"), "probe.sh"), "w") as f:
+        f.write(a[a.index("--") + 5])
     sys.stderr.write(f"Creating debugging pod {DBG} with container debugger on node {NODE}.\n"); sys.exit(0)
 if a[:1] == ["wait"]:
     out(f"pod/{DBG} condition met\n")
 if a[:1] == ["logs"]:
+    # The host-requirement readings are canned. The AppArmor ones come from running test.sh's own
+    # probe lines (every line that names apparmor) in sh, against a fake node: its profile list,
+    # the profile file, and a kernel journal read through a fake journalctl, which honours -k and
+    # --since @<epoch>. The journal holds the lines the probe must count and lines it must not:
+    # the same denials before T0, another profile's, another path's, AUDIT and ALLOWED lines.
+    import shutil, subprocess
+    st = E("STUB_STATE"); node = os.path.join(st, "node"); os.makedirs(os.path.join(node, "apparmor.d"), exist_ok=True)
+    open(os.path.join(node, "enabled"), "w").write("Y\n")
+    loaded = E("STUB_AA_LOADED", "loaded") == "loaded"
+    open(os.path.join(node, "profiles"), "w").write(
+        (f"{SAMPLE_PROFILE} ({E('STUB_AA_MODE', 'enforce')})\n" if loaded else "") + "cri-containerd.apparmor.d (enforce)\nrunc (unconfined)\n")
+    pfile = os.path.join(node, "apparmor.d", SAMPLE_PROFILE)
+    if "STUB_AA_SHA" not in os.environ: shutil.copy(E("STUB_PROFILE_FILE"), pfile)
+    elif E("STUB_AA_SHA"): open(pfile, "w").write("not this sample's profile\n")
+    t0 = 1700000000   # what `date -u +%s` answered in the ordinary pod (T0)
+    def deny(t, prof, what, verdict="DENIED"):
+        rest = ('operation="open" class="file" name="%s" comm="sh" requested_mask="wc" denied_mask="wc"' % what
+                if what.startswith("/") else 'operation="signal" class="signal" comm="runc" requested_mask="receive" denied_mask="receive" signal=term peer="runc"')
+        return '%d\tkernel: audit: type=1400 audit(%d.000:1): apparmor="%s" %s profile="%s" pid=4242' % (t, t, verdict, rest, prof)
+    n = lambda k, d: int(E(k, d) or 0)
+    j = [deny(t0 - 10000, SAMPLE_PROFILE, "/etc/shadow"), deny(t0 - 9999, SAMPLE_PROFILE, "signal")]   # before T0
+    j += [deny(t0 + 5, SAMPLE_PROFILE, "/etc/shadow")] * n("STUB_SHADOW_DENIALS", "1")
+    j += [deny(t0 + 5, "profile-that-does-not-exist", "/etc/shadow")] * n("STUB_BOGUS_DENIALS", "0")
+    j += [deny(t0 + 6, SAMPLE_PROFILE, "signal")] * n("STUB_SIGNAL_DENIALS", "0")
+    j += [deny(t0 + 6, "profile-that-does-not-exist", "signal")] * n("STUB_BOGUS_SIGNAL_DENIALS", "0")
+    j += [deny(t0 + 7, "cri-containerd.apparmor.d", "/etc/shadow"), deny(t0 + 7, SAMPLE_PROFILE, "/etc/gshadow"),
+          deny(t0 + 7, SAMPLE_PROFILE, "/etc/shadow", "AUDIT"), deny(t0 + 7, SAMPLE_PROFILE, "signal", "ALLOWED"),
+          deny(t0 + 7, "cri-containerd.apparmor.d", "signal")]
+    open(os.path.join(node, "journal"), "w").write("\n".join(j) + "\n")
+    probe = open(os.path.join(st, "probe.sh")).read()
+    aa = "\n".join(l for l in probe.split("\n") if "apparmor" in l)
+    aa = aa.replace("/sys/module/apparmor/parameters/enabled", os.path.join(node, "enabled")) \
+           .replace("/sys/kernel/security/apparmor/profiles", os.path.join(node, "profiles")).replace("/etc/apparmor.d/", os.path.join(node, "apparmor.d") + "/")
+    r = subprocess.run(["sh", "-c", aa], capture_output=True, text=True,
+                       env=dict(os.environ, PATH=E("STUB_NODEBIN") + ":" + E("PATH"), STUB_JOURNAL=os.path.join(node, "journal")))
     out("\n".join([
         "KERNEL=6.18.56-nitro-ga", "btf=present", "btf_bogus=absent", "ne=present", "ne_bogus=absent",
         "vsock=present", "vsock_bogus=absent", "tun=present", "tun_bogus=absent", "cma=14456832", "cma_bogus=",
         "erofs=present", "erofs_bogus=absent", "handler=present", "handler_bogus=absent", "containerd_gate=ok",
-        "containerd_version=containerd github.com/containerd/containerd/v2 2.2.1", "apparmor_enabled=Y",
-        f"apparmor_profile={E('STUB_AA_LOADED', 'loaded')}", "apparmor_profile_bogus=absent",
-        f"apparmor_profile_mode={E('STUB_AA_MODE', 'enforce')}",
-        f"apparmor_profile_sha256={E('STUB_AA_SHA', E('STUB_PROFILE_SHA'))}",
-        f"apparmor_shadow_denials={E('STUB_SHADOW_DENIALS', '1')}", f"apparmor_bogus_denials={E('STUB_BOGUS_DENIALS', '0')}",
-        f"apparmor_signal_denials={E('STUB_SIGNAL_DENIALS', '0')}", f"apparmor_bogus_signal_denials={E('STUB_BOGUS_SIGNAL_DENIALS', '0')}"]) + "\n")
+        "containerd_version=containerd github.com/containerd/containerd/v2 2.2.1"]) + "\n" + r.stdout)
 if line == "get runtimeclass isolated-sandbox -o jsonpath={.metadata.name}":
     out("isolated-sandbox")
 sys.exit(f"STUB kubectl: unexpected call: {line}")
@@ -246,6 +290,30 @@ if _mode:
     socket.socket.connect = _connect
 PY
 export STUB_FAKESOCK="$STUB/fakesock" PYTHONDONTWRITEBYTECODE=1
+# The node's journalctl, for the AppArmor probe lines the stub runs: the kernel journal
+# ($STUB_JOURNAL, "<epoch><TAB><line>") only with -k, from --since @<epoch> on; any other option,
+# or a --since it cannot read, fails the way journalctl does.
+mkdir -p "$STUB/nodebin"
+cat > "$STUB/nodebin/journalctl" <<'PY'
+#!/usr/bin/env python3
+import os, re, sys
+a, kernel, since = sys.argv[1:], False, None
+while a:
+    x = a.pop(0)
+    if x in ("-k", "--dmesg"): kernel = True
+    elif x == "--no-pager": pass
+    elif x == "--since" and a:
+        m = re.fullmatch(r"@([0-9]+)", a.pop(0))
+        if not m: sys.exit("Failed to parse timestamp")
+        since = int(m.group(1))
+    else: sys.exit(f"journalctl: unrecognized option '{x}'")
+for l in open(os.environ["STUB_JOURNAL"]).read().splitlines():
+    t, text = l.split("\t", 1)
+    if kernel and (since is None or int(t) >= since):
+        print("Nov 14 22:13:25 node-a " + text)
+PY
+chmod +x "$STUB/nodebin/journalctl"
+export STUB_NODEBIN="$STUB/nodebin" STUB_PROFILE_FILE="$SAMPLE/manifests/ubuntu-ami-sample-profile"
 chmod +x "$STUB/aws" "$STUB/kubectl"
 export PATH="$STUB:$PATH"
 
@@ -256,6 +324,10 @@ t() {
   : > "$STUB_LOG"; : > "$STUB_APPLIED"; rm -rf "$STUB_STATE"; mkdir -p "$STUB_STATE"
   env "$@" bash "$SAMPLE/test.sh" > "$WORK/$c.log" 2>&1 < /dev/null
 }
+# The run's record, as setup.sh writes it: test.sh acts only on a run this checkout set up.
+RUN_DIR="$ISSUE10_RUN_DIR/out/runs/testrun1"; mkdir -p "$RUN_DIR"
+GOOD_RECORD=$'RUN_ID=testrun1\nRESOURCE_PREFIX=ubuntu-ami-sample\nNODEGROUP_NAME=ubuntu-ami-sample-testrun1-ng\nNAMESPACE=ubuntu-ami-sample\nCLUSTER_NAME=example-cluster\nAWS_REGION=us-west-2'
+printf '%s\n' "$GOOD_RECORD" > "$RUN_DIR/run-state.env"
 # line <case> <assertion text, a fixed string>: PASS or FAIL, as test.sh printed it for that assertion
 line() { grep -F -- "$2" "$WORK/$1.log" | grep -E '^  (PASS|FAIL)  ' | head -n 1 | awk '{print $1}'; }
 
@@ -287,14 +359,18 @@ for a in "$A_LOADED" "$A_SHA" "$A_RUNS" "$A_ATTR" "$A_ORD" "$A_EACCES" "$A_CONTR
          "$A_SIGNAL" "$A_BOGUS_SIGNAL" "$A_REJ" "$A_SBX" "$A_ANNOT" "$A_ADDR" "$A_ROUTE" "$A_IFDOWN" "$A_NOCONN" "$A_CONNCTL"; do
   [ "$(line good "$a")" = PASS ]; check "  ... PASS: $a" 0 $? "$WORK/good.log"
 done
-grep -qx '  sandbox TCP connect to 172.20.0.1:443: errno=ENETUNREACH (Network is unreachable)' "$WORK/good.log" \
-  && grep -qx '  ordinary pod TCP connect to 172.20.0.1:443: connected' "$WORK/good.log"
+grep -qx '  kubernetes Service ClusterIP (read from the API): 172.20.0.1' "$WORK/good.log" \
+  && grep -qx '  sandbox TCP connect to that ClusterIP on 443: errno=ENETUNREACH (Network is unreachable)' "$WORK/good.log" \
+  && grep -qx '  ordinary pod TCP connect to that ClusterIP on 443: connected' "$WORK/good.log"
 check "  ... test.sh's own connect probe, run for real (only connect() faked), printed the errno for the sandbox and connected for the ordinary pod, at the ClusterIP read from the API" 0 $? "$WORK/good.log"
 grep -qx '  sandbox interfaces (/sys/class/net, operstate): dummy0 down, lo unknown' "$WORK/good.log" \
   && grep -qx '  sandbox IPv4 local addresses (/proc/net/fib_trie): 127.0.0.1' "$WORK/good.log" \
   && grep -qx '  sandbox IPv6 addresses (/proc/net/if_inet6): ::1 on lo' "$WORK/good.log" \
   && grep -qx '  sandbox IPv4 routes (/proc/net/route): none (header line only)' "$WORK/good.log"
 check "  ... test.sh's own network read, run for real on a guest tree like the probe's (dummy0 down, lo), printed every interface, the addresses and no route" 0 $? "$WORK/good.log"
+sed -n '/^== 7\/7/,/^passed /p' "$WORK/good.log" > "$WORK/good.77"
+[ "$(grep -c '172\.20\.0\.1' "$WORK/good.77")" = 1 ] && ! grep -qiE '([0-9a-f]{2}:){5}[0-9a-f]{2}' "$WORK/good.77"
+check "  ... and 7/7 prints the Service ClusterIP on one line only (the page shows it as a placeholder) and no MAC address" 0 $? "$WORK/good.77"
 grep -qx 'get service kubernetes -n default -o jsonpath={.spec.clusterIP}' "$WORK/good.calls" \
   && ! grep -qE '^get networkpolicy|getent|/dev/tcp' "$WORK/good.calls"
 check "  ... it read the ClusterIP from the API and made no network policy, DNS or /dev/tcp call" 0 $? "$WORK/good.calls"
@@ -387,7 +463,7 @@ CASES
 # No ClusterIP from the API: neither connect can be aimed, so both fail, and nothing else does.
 rc=0; t noip STUB_API_IP= || rc=$?
 [ "$rc" = 1 ] && [ "$(line noip "$A_NOCONN")" = FAIL ] && [ "$(line noip "$A_CONNCTL")" = FAIL ] && [ "$(grep -c '^  FAIL  ' "$WORK/noip.log")" = 2 ] \
-  && grep -qx '  sandbox TCP connect to ?:443: <no ClusterIP>' "$WORK/noip.log"
+  && grep -qx '  sandbox TCP connect to that ClusterIP on 443: <no ClusterIP>' "$WORK/noip.log"
 check "REJECT noip: with no ClusterIP read from the API, both connect checks fail, and they are the only failing checks" 0 $? "$WORK/noip.log"
 # A network read that did not run to its end proves nothing: the exec fails, the end marker is
 # missing, or a line the read never prints appears. Then the address, route and interface checks
@@ -400,10 +476,43 @@ for c in netexecerr:error netnoend:noend netextra:extra; do
   check "REJECT ${c%%:*} (STUB_SBX_NET_EXEC=${c#*:}): the address, route and interface checks fail, and they are the only failing checks" 0 $? "$WORK/${c%%:*}.log"
 done
 
+echo "== 2b/3 the run's record and lock: test.sh reads only its own run, and not while another process acts on it =="
+# Each refusal comes before any kubectl or aws call (the stubs log every call they get).
+refused() { # refused <case> <description> <log regex> [VAR=value...]
+  local c="$1" why="$2" rx="$3"; shift 3
+  rc=0; t "$c" "$@" || rc=$?
+  check "$why" 1 "$rc" "$WORK/$c.log" "$rx"
+  [ ! -s "$WORK/$c.calls" ]; check "  ... before any kubectl or aws call" 0 $? "$WORK/$c.calls"
+}
+refused othercluster "REJECT test.sh with CLUSTER_NAME other than the run's record (the late R3 finding)" \
+  'has CLUSTER_NAME=example-cluster, but this run has CLUSTER_NAME=other-cluster' CLUSTER_NAME=other-cluster
+refused otherregion "REJECT test.sh with AWS_REGION other than the run's record" \
+  'has AWS_REGION=us-west-2, but this run has AWS_REGION=us-east-1' AWS_REGION=us-east-1
+printf '%s\n' "$GOOD_RECORD" | grep -v '^CLUSTER_NAME=' > "$RUN_DIR/run-state.env"
+refused oldrecord "REJECT a record with no CLUSTER_NAME line (one written before the cluster was recorded)" \
+  'has no CLUSTER_NAME line, but this run has CLUSTER_NAME=example-cluster'
+rm -f "$RUN_DIR/run-state.env"
+refused norecord "REJECT a run this checkout has no record of" 'run testrun1 has no record at .*/runs/testrun1/run-state.env'
+printf '%s\n' "$GOOD_RECORD" > "$RUN_DIR/run-state.env"
+# A second holder: a background process takes the run's lock with the real lock_run, as setup.sh
+# or clean.sh would, and sleeps; the test kills it by its own pid.
+rm -f "$WORK/holder.ready"
+RUN_ID=testrun1 bash -c '. "$1/lib/common.sh" && derive_run_names && lock_run && echo held > "$2" && exec sleep 300' \
+  _ "$HERE" "$WORK/holder.ready" > "$WORK/holder.log" 2>&1 < /dev/null &
+HOLDER=$!
+for _ in $(seq 1 100); do [ -s "$WORK/holder.ready" ] && break; sleep 0.1; done
+[ -s "$WORK/holder.ready" ] && kill -0 "$HOLDER" 2>/dev/null
+check "a background process (pid $HOLDER) holds run testrun1's lock, taken with the real lock_run" 0 $? "$WORK/holder.log"
+refused locked "REJECT test.sh while another process holds the run's lock (R3-FR high)" \
+  'run testrun1 is in use: another process holds its lock .*/runs/testrun1/run.lock'
+kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; HOLDER=""
+rc=0; t unlocked || rc=$?
+check "ACCEPT the same test.sh once the holder is gone: the lock is free and every check passes" 0 "$rc" "$WORK/unlocked.log" '^passed [0-9]+, failed 0$'
+
 echo "== 3/3 static: the profile's own rules, scripts/check-apparmor-profile.py ======================"
 P="$SAMPLE/manifests/ubuntu-ami-sample-profile"
 rc=0; python3 "$HERE/check-apparmor-profile.py" "$P" > "$WORK/prof-good.log" 2>&1 || rc=$?
-check "ACCEPT the sample's profile: signal rules for unconfined, runc and itself; every deny is audit deny" 0 "$rc" "$WORK/prof-good.log" '^APPARMOR PROFILE OK'
+check "ACCEPT the sample's profile: one closed profile block with signal rules for unconfined, runc, crun and itself; every deny is audit deny" 0 "$rc" "$WORK/prof-good.log" '^APPARMOR PROFILE OK'
 # pm <id> <description> <python expression over t, the profile text> <expected FAIL regex>: a broken
 # copy, refused. <id> names the case's files; the description may hold any character.
 pm() {
@@ -420,6 +529,16 @@ pm plainshadow "a plain deny on /etc/shadow" 't.replace("audit deny /etc/shadow*
 pm plainboot   "a plain deny on /boot"       't.replace("audit deny /boot/** w,", "deny /boot/** w,")' '^FAIL: `deny /boot/\*\* w,` is a plain deny'
 pm noshadow    "no /etc/shadow rule"  't.replace("  audit deny /etc/shadow* w,\n", "")' '^FAIL: missing `audit deny /etc/shadow\* w,`'
 pm othername   "another profile name" 't.replace("profile ubuntu-ami-sample-profile flags", "profile some-other-profile flags")' '^FAIL: no single `profile ubuntu-ami-sample-profile'
+# The reviewers' structural cases (R3-FR and its late result), each accepted before F1: every
+# rule moved out of the profile into the top level after an empty profile; the profile's closing
+# brace removed; the rules in a decoy second profile; and the crun signal rule removed.
+HDR='profile ubuntu-ami-sample-profile flags=(attach_disconnected,mediate_deleted) {\n'
+pm outside     "every rule outside the profile, after an empty closed profile" \
+  "t.replace('$HDR', '$HDR  file,\n}\n', 1).rstrip().rstrip('}') + '\n'" '^FAIL: missing `signal \(receive\) peer=runc,` in profile ubuntu-ami-sample-profile'
+pm unclosed    "the profile's closing brace removed" 't.rstrip().rstrip("}") + "\n"' '^FAIL: the `profile ubuntu-ami-sample-profile` block is never closed \(unbalanced braces\)$'
+pm decoy       "the rules in a decoy second profile, the named one holding only file," \
+  "t.replace('$HDR', '$HDR  file,\n}\nprofile decoy {\n', 1)" '^FAIL: missing `audit deny /etc/shadow\* w,` in profile ubuntu-ami-sample-profile$'
+pm nocrun      "no peer=crun" 't.replace("  signal (receive) peer=crun,\n", "")' '^FAIL: missing `signal \(receive\) peer=crun,` in profile ubuntu-ami-sample-profile'
 
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"

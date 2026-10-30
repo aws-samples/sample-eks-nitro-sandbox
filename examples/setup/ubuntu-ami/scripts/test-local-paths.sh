@@ -30,6 +30,9 @@
 #      process gets its own 0700 folder in it, and a child reuses its parent's; a symlink or a
 #      non-0700 base is refused with nothing written, and an inherited TMPDIR that is a symlink,
 #      outside the base, the base itself or not 0700 is not used.
+#   7  the cluster and Region a run uses: the shell's CLUSTER_NAME and AWS_REGION survive
+#      sourcing a config.env copied from config.env.example, unset ones get the home page's
+#      defaults (sandbox-demo, us-west-2), and NAMESPACE is the sample's own whatever the shell has.
 # The test itself creates nothing outside the repository's tmp/.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"            # .../examples/setup/ubuntu-ami/scripts
@@ -74,7 +77,7 @@ probe() {
   P_OUT="$(printf '%s' "$out" | sed '/^VALUE=/d')"
 }
 
-echo "== 1/6 ACCEPT defaults: all four dirs resolve under tmp/issue10/run ======================"
+echo "== 1/7 ACCEPT defaults: all four dirs resolve under tmp/issue10/run ======================"
 eval "$(
   env -u LOG_DIR -u OUT_DIR -u RUNTIME_ARTIFACTS_DIR -u ISSUE10_RUN_DIR -u REPO_ROOT SAMPLE_DIR="$SAMPLE_DIR_REAL" \
     bash -c '. "$1" >/dev/null 2>&1; for v in ISSUE10_RUN_DIR LOG_DIR OUT_DIR RUNTIME_ARTIFACTS_DIR; do printf "D_%s=%q\n" "$v" "${!v}"; done' _ "$COMMON"
@@ -87,7 +90,7 @@ done
 [[ "$D_ISSUE10_RUN_DIR" == "$RUN_BASE" ]]; assert_true "ISSUE10_RUN_DIR defaults to exactly repo-root tmp/issue10/run" $?
 
 echo
-echo "== 2/6 ACCEPT overrides under the repository's tmp/ ======================================="
+echo "== 2/7 ACCEPT overrides under the repository's tmp/ ======================================="
 mkdir -p "$WORK/real-target"
 ln -s "$WORK/real-target" "$WORK/link-in-tmp"
 REL_TMP="../../../tmp/$(basename "$WORK")/rel-accept"         # relative to the sample folder
@@ -106,7 +109,7 @@ ISSUE10_RUN_DIR|@WORK@/run-accept/./sub/..|@WORK@/run-accept|ACCEPT an ISSUE10_R
 CASES
 
 echo
-echo "== 3/6 REJECT overrides that do not resolve under the repository's tmp/ ==================="
+echo "== 3/7 REJECT overrides that do not resolve under the repository's tmp/ ==================="
 ln -s "$SAMPLE_DIR_REAL" "$WORK/link-to-sample"
 PROBE_NAME="paths-reject-probe.$$"
 while IFS='|' read -r var val created why; do
@@ -138,7 +141,7 @@ RUNTIME_ARTIFACTS_DIR|@REPO@/tmpx-@P@|@REPO@/tmpx-@P@|REJECT a sibling whose nam
 CASES
 
 echo
-echo "== 4/6 the unpacked copy on a build host (not a checkout) ==============================="
+echo "== 4/7 the unpacked copy on a build host (not a checkout) ==============================="
 HOSTCOPY="$WORK/host/usr/local/share/ubuntu-ami-sample"
 mkdir -p "$HOSTCOPY"
 cp -a "$SAMPLE_DIR_REAL/scripts" "$HOSTCOPY/"
@@ -156,7 +159,7 @@ probe "$HOSTCOPY" LOG_DIR "logs"
 [[ "$P_RC" -ne 0 && ! -e "$HOSTCOPY/logs" ]]; assert_true "REJECT a relative override, which resolves inside the unpacked copy, and do not create it" $?
 
 echo
-echo "== 5/6 the run's evidence folder and temporary files (RR-007) ==========================="
+echo "== 5/7 the run's evidence folder and temporary files (RR-007) ==========================="
 # ev <EVIDENCE_DIR or empty>: source common.sh with ISSUE10_RUN_DIR under WORK, derive the run's
 # names, and print EVIDENCE_DIR and where a plain mktemp lands. TMPDIR is set to OUTSIDE (which
 # does not exist): in a checkout common.sh must replace it.
@@ -179,7 +182,7 @@ assert_true "REJECT (RR-007) an EVIDENCE_DIR inside the sample folder" $?
 [[ ! -e "$SAMPLE_DIR_REAL/evidence-probe.$$" ]]; assert_true "  ... and it was not created" $?
 
 echo
-echo "== 6/6 the private temporary folder: a real 0700 base, one folder per process (RR2-002) ==="
+echo "== 6/7 the private temporary folder: a real 0700 base, one folder per process (RR2-002) ==="
 # tp <case> <ISSUE10_RUN_DIR> [<inherited TMPDIR>]: source the real common.sh in a clean shell
 # (TMPDIR only when given), make one plain mktemp, and source common.sh again in a child. Sets
 # TP_RC, TP_DIR (the TMPDIR common.sh set), TP_FILE (the mktemp) and TP_CHILD (the child's TMPDIR).
@@ -256,6 +259,35 @@ CASES
 [[ "$(ls -A "$FIRST" | wc -l)" == "$first_count" ]] && empty_dir "$WORK/tp-elsewhere-0700" && empty_dir "$B1/p.open"
 assert_true "  ... and nothing was written in any of the inherited folders (or through the symlink)" $?
 [[ ! -e "$OUTSIDE" ]]; assert_true "nothing was created at the outside-the-repository probe path, by this test or by the code under test" $?
+
+echo "== 7/7 the cluster, Region and namespace a run uses: config.env.example and common.sh ====="
+# The README's Build block says the reader's own CLUSTER_NAME and AWS_REGION stay in effect after
+# `cp config.env.example config.env`, and that the sample uses its own namespace. The real
+# common.sh sources a config.env copied from the example; it finds it where a build host's copy
+# would be ($HOME/ubuntu-ami/config.env), so nothing is written into the sample folder.
+mkdir -p "$WORK/hdir/ubuntu-ami" "$WORK/hdir-none"
+cp "$SAMPLE_DIR_REAL/config.env.example" "$WORK/hdir/ubuntu-ami/config.env"
+names() { # names <home> [VAR=value...]: CLUSTER_NAME|AWS_REGION|NAMESPACE after common.sh
+  local h="$1"; shift
+  env -u CLUSTER_NAME -u AWS_REGION -u NAMESPACE -u LOG_DIR -u OUT_DIR -u RUNTIME_ARTIFACTS_DIR -u ISSUE10_RUN_DIR -u REPO_ROOT \
+    HOME="$h" SAMPLE_DIR="$SAMPLE_DIR_REAL" "$@" bash -c '. "$1" >/dev/null 2>&1; printf "%s|%s|%s" "$CLUSTER_NAME" "$AWS_REGION" "$NAMESPACE"' _ "$COMMON"
+}
+[ ! -e "$SAMPLE_DIR_REAL/config.env" ] || echo "  NOTE  $SAMPLE_DIR_REAL/config.env exists and is sourced first; these cases read it, not the example"
+err=$(env -i PATH="$PATH" bash -c '. "$1"' _ "$WORK/hdir/ubuntu-ami/config.env" 2>&1 >/dev/null)
+[ -z "$err" ]
+assert_true "ACCEPT config.env as copied from the example, before any edit: it sources with no error${err:+ (got: $(printf '%s' "$err" | head -n 1))}" $?
+got=$(names "$WORK/hdir" CLUSTER_NAME=my-cluster AWS_REGION=eu-west-1)
+[ "$got" = "my-cluster|eu-west-1|ubuntu-ami-sample" ]
+assert_true "ACCEPT the shell's own CLUSTER_NAME and AWS_REGION: they survive sourcing config.env ($got)" $?
+got=$(names "$WORK/hdir")
+[ "$got" = "sandbox-demo|us-west-2|ubuntu-ami-sample" ]
+assert_true "ACCEPT the home page's defaults when the shell has neither: sandbox-demo and us-west-2 ($got)" $?
+got=$(names "$WORK/hdir-none")
+[ "$got" = "sandbox-demo|us-west-2|ubuntu-ami-sample" ]
+assert_true "ACCEPT the same defaults from common.sh alone, with no config.env ($got)" $?
+got=$(names "$WORK/hdir" NAMESPACE=nitro-sandboxes-demo)
+[ "$got" = "sandbox-demo|us-west-2|ubuntu-ami-sample" ]
+assert_true "REJECT the home page's shared NAMESPACE: config.env sets the sample's own ubuntu-ami-sample ($got)" $?
 
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"

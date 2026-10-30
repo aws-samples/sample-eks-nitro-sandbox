@@ -395,9 +395,19 @@ s["ec2"]["images"].append({"ImageId": e["REAL_AMI"], "Name": "real-run", "State"
     cp "$REAL_RUN_STATE" "$RD/run-state.env"
     sed "s/$RUNID/$REAL_ID/g" "$ISSUE10_RUN_DIR/out/runs/$RUNID/iam.env" > "$RD/iam.env"   # synthetic: the fake's account
     SU_ENV=(KUBE_CONTEXT=example-context "RUN_ID=$REAL_ID")
+    if grep -q '^CLUSTER_NAME=' "$RD/run-state.env"; then
+      ok "  (the REAL record already names its cluster)" 0
+    else
+      # A record from before the cluster and Region were recorded is refused, before any call;
+      # with the two lines added (for the fixture's cluster), the rest of the real record passes.
+      rc=0; su j-real-old --join || rc=$?
+      check "REJECT the REAL record as it was written before F1: it has no CLUSTER_NAME line" 1 "$rc" "$WORK/j-real-old.log" \
+        'has no CLUSTER_NAME line, but this run has CLUSTER_NAME=example-cluster'
+      printf 'CLUSTER_NAME=example-cluster\nAWS_REGION=us-west-2\n' >> "$RD/run-state.env"
+    fi
     rc=0; su j-real --join || rc=$?
     grep -q -- "--join: run $REAL_ID, AMI " "$WORK/j-real.log" && grep -q 'Step 10/10: join' "$WORK/j-real.log"
-    ok "ACCEPT the REAL recorded run ($REAL_RUN_STATE): --join passes its record and lock checks and reaches step 10 (rc=$rc)" $? "$WORK/j-real.log"
+    ok "ACCEPT the REAL recorded run ($REAL_RUN_STATE, with the fixture's cluster and Region): --join passes its record and lock checks and reaches step 10 (rc=$rc)" $? "$WORK/j-real.log"
   else
     ok "ACCEPT the REAL recorded run: REAL_RUN_STATE ($REAL_RUN_STATE) has a RUN_ID and an AMI_ID line" 1
   fi
@@ -420,6 +430,20 @@ join_state j-nons; sed -i '/^NAMESPACE=/d' "$REC"
 rec_reject j-nons "REJECT --join when the record has no NAMESPACE line (a missing line is a mismatch)" 'has no NAMESPACE line, but this run has NAMESPACE=ubuntu-ami-sample'
 join_state j-otherid; sed -i 's/^RUN_ID=.*/RUN_ID=otherrun1/' "$REC"
 rec_reject j-otherid "REJECT --join when the record in the run's folder names another RUN_ID" "has RUN_ID=otherrun1, but this run has RUN_ID=$RUNID"
+# The late R3 finding: the record names the run's cluster and Region. other-cluster here has the
+# same API endpoint as the test's kube context and its own vpc-cni, so without the record check
+# --join would pass every other check and create the node group in other-cluster.
+join_state j-othercluster 's["eks"]["clusters"]["other-cluster"] = dict(s["eks"]["clusters"]["example-cluster"])
+s["eks"]["addons"]["other-cluster/vpc-cni"] = dict(s["eks"]["addons"]["example-cluster/vpc-cni"])'
+SU_ENV=(KUBE_CONTEXT=example-context "RUN_ID=$RUNID" CLUSTER_NAME=other-cluster)
+rec_reject j-othercluster "REJECT --join with CLUSTER_NAME other-cluster, whose endpoint the kube context matches, for a run recorded on example-cluster" \
+  'has CLUSTER_NAME=example-cluster, but this run has CLUSTER_NAME=other-cluster'
+[ "$(calls j-othercluster '^eks create-nodegroup$')" = 0 ]; ok "  ... and no eks create-nodegroup in other-cluster" $?
+join_state j-otherregion; SU_ENV=(KUBE_CONTEXT=example-context "RUN_ID=$RUNID" AWS_REGION=us-east-1)
+rec_reject j-otherregion "REJECT --join with AWS_REGION other than the run's record" 'has AWS_REGION=us-west-2, but this run has AWS_REGION=us-east-1'
+SU_ENV=(KUBE_CONTEXT=example-context "RUN_ID=$RUNID")
+grep -qx 'CLUSTER_NAME=example-cluster' "$REC" && grep -qx 'AWS_REGION=us-west-2' "$REC"
+ok "  ... the record setup.sh wrote names the run's cluster and Region" $? "$REC"
 # A second holder: a background process takes the run's lock with the real lock_run and then
 # sleeps; the test kills it by its own pid.
 join_state j-locked; rm -f "$WORK/holder.ready"

@@ -24,11 +24,15 @@
 # cluster's API endpoint, CA and DNS address (Canonical's AMI takes these as arguments).
 #
 # Two checks run before anything is created, and fail closed:
-#   * the user data (check_user_data): comments and blank lines are stripped first; the active
-#     script must be `set` lines followed by exactly ONE /etc/eks/bootstrap.sh command for this
-#     cluster and nothing after it, with every option first and the cluster name as its last
-#     argument (Canonical's usage: bootstrap.sh [options] <cluster-name>), and the labels and
-#     taint are read from THAT command's --kubelet-extra-args, never from anywhere else in the file;
+#   * the user data (check_user_data): comments and blank lines are stripped first; no line may
+#     use a shell control operator or redirection (; & | && || ( ) < >) or a command substitution;
+#     the active script must be `set -euo pipefail` at most, then exactly ONE
+#     /etc/eks/bootstrap.sh command for this cluster and nothing after it. That command takes
+#     --apiserver-endpoint, --b64-cluster-ca, --dns-cluster-ip and --kubelet-extra-args, each
+#     exactly once and each followed by a value that is not an option, and nothing else, then the
+#     cluster name as its last argument (Canonical's usage: bootstrap.sh [options]
+#     <cluster-name>). The labels and taint are read from THAT command's --kubelet-extra-args,
+#     never from anywhere else in the file;
 #   * the launch template data (scripts/lib/launch_spec.py): IMDSv2 required with hop limit 1,
 #     enclaves on, ManagedBy and RunId on the instance and volume TagSpecifications.
 set -euo pipefail
@@ -45,7 +49,7 @@ KUBELET_TAINT="${TAINT_KEY}=${TAINT_VALUE}:NoSchedule"
 # check_user_data <file>: see the header. Prints one FAIL line per problem; non-zero on any.
 check_user_data() {
   python3 - "$1" "$CLUSTER_NAME" "$KUBELET_LABELS" "$KUBELET_TAINT" <<'PY'
-import shlex, sys
+import re, shlex, sys
 path, cluster, labels, taint = sys.argv[1:5]
 text = open(path).read()
 bad = []
@@ -63,39 +67,74 @@ for raw in lines[1:]:
     cur = ""
 if cur:
     logical.append(cur)
+def words(line):
+    # The shell's own word split: quotes and comments as the shell reads them, and each control
+    # operator or redirection (; & | && || ( ) < >) outside quotes as a word of its own.
+    lex = shlex.shlex(line, posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    return list(lex)
 active = []
 for l in logical:
     try:
-        argv = shlex.split(l, comments=True)
+        argv = words(l)
     except ValueError as e:
         bad.append(f"user data line does not parse: {l.strip()!r} ({e})")
         continue
-    if argv:
-        active.append(argv)
+    if not argv:
+        continue
+    ops = [w for w in argv if re.fullmatch(r"[();<>|&]+", w)]
+    if ops:
+        bad.append(f"user data line uses the shell control operator {ops[0]!r}, which runs or redirects another command: {l.strip()!r}")
+    if any("`" in w or "$(" in w for w in argv):
+        bad.append(f"user data line has a command substitution (` or $( ): {l.strip()!r}")
+    active.append(argv)
 boots = [i for i, a in enumerate(active) if a[0] == "/etc/eks/bootstrap.sh"]
 if len(boots) != 1:
     bad.append(f"user data has {len(boots)} active /etc/eks/bootstrap.sh commands; exactly one is required")
 else:
     i = boots[0]
-    before = [a for a in active[:i] if a[0] != "set"]
+    # Only `set -euo pipefail` may come before bootstrap.sh.
+    before = [a for a in active[:i] if a != ["set", "-euo", "pipefail"]]
     if before:
-        bad.append(f"user data runs other commands before bootstrap.sh: {' '.join(before[0])!r}")
+        bad.append(f"user data runs other commands before bootstrap.sh: {' '.join(before[0])!r} (only 'set -euo pipefail' may come first)")
     if active[i + 1:]:
         bad.append(f"user data runs commands after bootstrap.sh: {' '.join(active[i + 1])!r}")
     argv = active[i]
-    # usage: /etc/eks/bootstrap.sh [options] <cluster-name>: the name is the last word, and not
-    # the value of the option before it.
+    # usage: /etc/eks/bootstrap.sh [options] <cluster-name>. Between the command and the name: the
+    # four options this sample passes, each exactly once, each followed by a value that is not
+    # itself an option, and nothing else.
     value_flags = ("--apiserver-endpoint", "--b64-cluster-ca", "--dns-cluster-ip", "--kubelet-extra-args")
-    if len(argv) < 2 or argv[-1] != cluster or argv[-2] in value_flags:
+    is_option = lambda w: re.fullmatch(r"--?[A-Za-z][A-Za-z0-9-]*", w) is not None
+    given = {}
+    if len(argv) < 2 or argv[-1] != cluster:
         bad.append(f"bootstrap.sh is not given the cluster name {cluster!r} as its last argument, after every option")
-    for flag in ("--apiserver-endpoint", "--b64-cluster-ca", "--dns-cluster-ip"):
-        if flag not in argv or argv.index(flag) + 1 >= len(argv):
-            bad.append(f"bootstrap.sh lacks {flag} <value>")
+    else:
+        mid, j = argv[1:-1], 0
+        while j < len(mid):
+            flag = mid[j]
+            if flag not in value_flags:
+                bad.append(f"bootstrap.sh is given {flag!r} where one of its options ({', '.join(value_flags)}) is expected")
+                break
+            if j + 1 >= len(mid):   # the cluster name taken as this option's value
+                bad.append(f"bootstrap.sh is not given the cluster name {cluster!r} as its last argument, after every option")
+                break
+            if is_option(mid[j + 1]):
+                bad.append(f"bootstrap.sh {flag} is followed by the option {mid[j + 1]!r}, not a value")
+                break
+            given.setdefault(flag, []).append(mid[j + 1])
+            j += 2
+        else:
+            for flag in value_flags:
+                n = len(given.get(flag, []))
+                if n == 0:
+                    bad.append(f"bootstrap.sh lacks {flag} <value>")
+                elif n > 1:
+                    bad.append(f"bootstrap.sh is given {flag} {n} times; exactly once is required")
+    # The labels and the taint are read from the word after --kubelet-extra-args in this command
+    # (a missing --kubelet-extra-args is reported above).
     extra = []
     if "--kubelet-extra-args" in argv and argv.index("--kubelet-extra-args") + 1 < len(argv):
         extra = shlex.split(argv[argv.index("--kubelet-extra-args") + 1])
-    else:
-        bad.append("bootstrap.sh lacks --kubelet-extra-args <args>")
     have_labels = ",".join(x.split("=", 1)[1] for x in extra if x.startswith("--node-labels=")).split(",")
     have_taints = ",".join(x.split("=", 1)[1] for x in extra if x.startswith("--register-with-taints=")).split(",")
     for want in labels.split(","):

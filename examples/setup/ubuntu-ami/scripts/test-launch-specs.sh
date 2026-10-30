@@ -12,7 +12,9 @@
 #                                       with both tags; the template and node group carry both
 #                                       tags; a failed call stops everything after it; the
 #                                       user data gives bootstrap.sh every option first and
-#                                       the cluster name last
+#                                       the cluster name last; the user data check refuses a
+#                                       second command on a line, an option with no value, and
+#                                       commands after the cluster name
 #   3  scripts/verify-fresh-instance.sh the verification instance EC2 receives meets the same
 #                                       rules, and a failure after launch terminates it
 #   4  setup.sh                         the build host is launched from the spec it checked
@@ -219,6 +221,37 @@ done <<'CASES'
 name-first|REJECT --check-user-data on bootstrap.sh with the cluster name first (the a2fcb40 order)
 option-after|REJECT --check-user-data on bootstrap.sh with an option (--dns-cluster-ip) after the cluster name
 name-as-value|REJECT --check-user-data on bootstrap.sh whose last word is the cluster name taken as --dns-cluster-ip's value
+CASES
+# The reviewers' malformed scripts (R3-FR and its late result), each the rendered user data with
+# one change, each accepted with USER DATA OK before F1: a second command after `set` on the same
+# line; --apiserver-endpoint with no value, so the next option is read as its value; and more
+# commands after the cluster name on the bootstrap line itself.
+malform() { python3 - "$WORK/jn-render.ud.sh" "$WORK/jn-$1.ud.sh" "$1" <<'PY'
+import re, sys
+src, out, case = sys.argv[1:4]
+t = open(src).read()
+if case == "set-extra-command":
+    n = t.replace("\nset -euo pipefail\n", "\nset -e; echo UNEXPECTED-COMMAND\n", 1)
+elif case == "set-e-only":
+    n = t.replace("\nset -euo pipefail\n", "\nset -e\n", 1)
+elif case == "endpoint-no-value":
+    n = re.sub(r"(?m)^  --apiserver-endpoint '[^']*' \\$", r"  --apiserver-endpoint \\", t, count=1)
+elif case == "compound-bootstrap":
+    n = re.sub(r"(?m)^  'example-cluster'$", "  'example-cluster' ; touch /tmp/ubuntu-ami-should-not-run ; true 'example-cluster'", t, count=1)
+assert n != t, case
+open(out, "w").write(n)
+PY
+}
+while IFS='|' read -r name rx why; do
+  [ -n "$name" ] || continue
+  malform "$name"
+  rc=0; bash "$HERE/join-nodegroup.sh" --check-user-data "$WORK/jn-$name.ud.sh" > "$WORK/jn-$name.cu.log" 2>&1 || rc=$?
+  check "$why" 1 "$rc" "$WORK/jn-$name.cu.log" "$rx"
+done <<'CASES'
+set-extra-command|^FAIL: user data line uses the shell control operator ';'.*set -e; echo UNEXPECTED-COMMAND|REJECT 'set -e; echo UNEXPECTED-COMMAND' before bootstrap.sh (two commands on one line)
+endpoint-no-value|^FAIL: bootstrap.sh --apiserver-endpoint is followed by the option '--b64-cluster-ca', not a value$|REJECT --apiserver-endpoint with no value, so --b64-cluster-ca would be read as the endpoint
+compound-bootstrap|^FAIL: user data line uses the shell control operator ';'.*touch /tmp/ubuntu-ami-should-not-run|REJECT a bootstrap line that runs more commands after the cluster name (' ; touch ... ; true <cluster>')
+set-e-only|^FAIL: user data runs other commands before bootstrap.sh: 'set -e' \(only 'set -euo pipefail' may come first\)$|REJECT 'set -e' alone: only 'set -euo pipefail' may come before bootstrap.sh
 CASES
 # a failed call stops what follows it
 CASE=jn-lt-denied; st "$CASE"; export FAKE_AWS_FAIL='ec2 create-launch-template||UnauthorizedOperation'

@@ -217,7 +217,9 @@ for c in ok off none; do
 done
 rc=0; cc absent absent one || rc=$?
 check "REJECT a cluster with no vpc-cni add-on, printing the create-addon command" 1 "$rc" "$WORK/cc-absent.log" 'aws eks create-addon .*--addon-name vpc-cni'
-grep -q -- '--resolve-conflicts NONE' "$WORK/cc-absent.log"; check "the suggested create-addon command never overwrites an existing amazon-vpc-cni ConfigMap (--resolve-conflicts NONE)" 0 $? "$WORK/cc-absent.log"
+grep -q -- '--resolve-conflicts NONE' "$WORK/cc-absent.log"; check "the suggested create-addon command uses --resolve-conflicts NONE (it fails rather than overwrite a value already set)" 0 $? "$WORK/cc-absent.log"
+grep -q 'an amazon-vpc-cni ConfigMap that nothing owns is adopted, and gains the chart.s' "$WORK/cc-absent.log" && ! grep -q 'without overwriting an existing amazon-vpc-cni ConfigMap' "$WORK/cc-absent.log"
+check "  ... and says what NONE does to an existing ConfigMap as the README does (adopted, gains defaults and Helm labels), never that it is left alone" 0 $? "$WORK/cc-absent.log"
 ! grep -qE 'enableNetworkPolicy|configuration-values|WARNING' "$WORK/cc-absent.log"
 check "  ... and it neither turns network policy on nor carries the cluster-wide enforcement warning" 0 $? "$WORK/cc-absent.log"
 rc=0; cc degraded degraded one || rc=$?

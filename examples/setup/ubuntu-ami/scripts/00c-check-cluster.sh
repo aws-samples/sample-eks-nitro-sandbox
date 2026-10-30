@@ -36,7 +36,9 @@ else
   if [[ "$msg" == *ResourceNotFoundException* ]]; then
     die "PREREQUISITE NOT MET: cluster $CLUSTER_NAME has no managed vpc-cni add-on, so a managed node group node gets no pod network and never goes Ready.
 This sample does not change cluster-wide settings. Install the add-on yourself, at the version you
-pin, without overwriting an existing amazon-vpc-cni ConfigMap, then re-run:
+pin, then re-run. With --resolve-conflicts NONE the create fails rather than overwrite a value that
+is already set; an amazon-vpc-cni ConfigMap that nothing owns is adopted, and gains the chart's
+default keys and the add-on's Helm labels (README, Prerequisites):
   $create_cmd
 (find the version for your cluster with: aws eks describe-addon-versions --region $AWS_REGION --addon-name vpc-cni --kubernetes-version ${KUBERNETES_VERSION:-1.36})"
   fi

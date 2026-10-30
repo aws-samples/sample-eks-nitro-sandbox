@@ -24,7 +24,12 @@
 #                                    in a namespace this run owns; the access entry EKS created for
 #                                    the node role found by its exact ARN and deleted only after
 #                                    the node group and while the role carries both tags, one whose
-#                                    role is gone left with its delete command (N4)
+#                                    role is gone left with its delete command (N4); the entries
+#                                    read again before the node role goes, so a delete that leaves
+#                                    the entry keeps the role; --keep-ami deletes no snapshot when
+#                                    a kept AMI's snapshots cannot be determined; the run's lock
+#                                    (refused while held, --list-runs and a lost run id need none)
+#                                    and its record (another cluster or Region refused)
 #   3  scripts/00b-stage-bucket.sh   revoke confirms the objects and the policy are gone, or fails
 #                                    (M5), and touches nothing unless the bucket, the role and the
 #                                    policy are this run's (RR-002), re-read right before each
@@ -47,7 +52,8 @@ SAMPLE="$(cd "$HERE/.." && pwd)"
 REPO_ROOT_REAL="$(cd "$SAMPLE/../../.." && pwd)"
 mkdir -p "$REPO_ROOT_REAL/tmp"
 WORK="$(mktemp -d "$REPO_ROOT_REAL/tmp/test-run-scope.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+HOLDER=""   # section 2d's background lock holder, killed by its pid
+trap '[ -z "$HOLDER" ] || kill "$HOLDER" 2>/dev/null; rm -rf "$WORK"' EXIT
 export ISSUE10_RUN_DIR="$WORK/run" AWS_REGION=us-west-2 CLUSTER_NAME=example-cluster RESOURCE_PREFIX=ubuntu-ami-sample NAMESPACE=ubuntu-ami-sample
 unset RUN_ID KUBECTL NODEGROUP_NAME
 ACCT=111122223333
@@ -281,6 +287,10 @@ if variant in ("no-iam", "orphan-entry"):  # run 1's roles and profile never cre
         del s["eks"]["access_entries"][f"example-cluster/arn:aws:iam::{acct}:role/ubuntu-ami-sample-testrun1-node"]
 if variant == "ae-prefix":    # another principal whose role name only starts with run 1's node role name
     s["eks"]["access_entries"][f"example-cluster/arn:aws:iam::{acct}:role/ubuntu-ami-sample-testrun1-node-copy"] = {"type": "EC2_LINUX"}
+if variant == "ami-no-bdm":   # run 1's AMI as describe-images answers it, with no block device mapping
+    e["images"][0]["BlockDeviceMappings"] = []
+if variant == "ae-stays":     # delete-access-entry answers success but the entry stays listed
+    s["eks"]["access_entries"][f"example-cluster/arn:aws:iam::{acct}:role/ubuntu-ami-sample-testrun1-node"]["StaysAfterDelete"] = True
 if variant == "foreign-role":  # a same-named node role someone else owns
     s["iam"]["roles"]["ubuntu-ami-sample-testrun1-node"]["Tags"] = tags("testrun1", mb="someone-else")
 if variant == "bare-profile":  # setup stopped after create-instance-profile, before add-role
@@ -449,6 +459,23 @@ left=$(remaining)
 [[ " $left " == *" ami-testrun1 "* && " $left " == *" snap-testrun1-ami "* ]]; ok "  ... the AMI and its backing snapshot remain" $?
 [[ " $left " != *" snap-testrun1-orphan "* && " $left " != *" i-testrun1-build "* && " $left " != *" ubuntu-ami-sample-testrun1-build "* ]]
 ok "  ... and the run's other resources (orphan snapshot, instance, roles) are gone" $?
+# --keep-ami fails closed (the late R3 finding): when the snapshots behind a kept AMI cannot be
+# determined, no snapshot is deleted at all, the orphan included, and the clean up is incomplete.
+OWN_NS_EARLY='{"metadata": {"labels": {"app.kubernetes.io/part-of": "ubuntu-ami-sample", "app.kubernetes.io/instance": "testrun1"}}}'
+while IFS='@' read -r name variant rule why; do
+  [ -n "$name" ] || continue
+  st "$name"; two_runs "$FAKE_AWS_STATE" "$variant"; export FAKE_AWS_FAIL="$rule"
+  rc=0; STUB_NS_JSON="$OWN_NS_EARLY" cl "$name" --delete-aws-resources --keep-ami --run-id testrun1 || rc=$?
+  check "$why" 1 "$rc" "$WORK/$name.log" '--keep-ami: the snapshots behind the kept AMIs could not be determined, so no snapshot was deleted'
+  left=$(remaining)
+  [ "$(calls "$name" '^ec2 delete-snapshot$')" = 0 ] && [[ " $left " == *" snap-testrun1-ami "* && " $left " == *" snap-testrun1-orphan "* && " $left " == *" ami-testrun1 "* ]]
+  ok "  ... no delete-snapshot call at all: the AMI, its snapshot and the orphan snapshot remain" $?
+  unset FAKE_AWS_FAIL
+done <<CASES
+ka-descfail@@ec2 describe-images|--image-ids ami-testrun1|UnauthorizedOperation@REJECT --keep-ami when the kept AMI's own description cannot be read
+ka-nobdm@ami-no-bdm@@REJECT --keep-ami when the kept AMI lists no backing snapshot (its mapping cannot be determined)
+ka-listfail@@ec2 describe-images|--owners self|UnauthorizedOperation@REJECT --keep-ami when the run's AMIs cannot be listed (none can be shown kept)
+CASES
 
 st lookupfail; two_runs "$FAKE_AWS_STATE"; export FAKE_AWS_FAIL='ec2 describe-instances||UnauthorizedOperation'
 rc=0; cl lookupfail --dry-run --run-id testrun1 || rc=$?
@@ -518,6 +545,19 @@ aedelfail@eks delete-access-entry||AccessDeniedException@could not delete access
 aengstuck@eks delete-nodegroup||ResourceInUseException@access entry for role ubuntu-ami-sample-testrun1-node left in place: node group ubuntu-ami-sample-testrun1-ng is not gone \(owned ACTIVE\)@REJECT (N4) a node group that is not gone: its nodes still use the entry
 CASES
 unset FAKE_AWS_FAIL
+# The late R3 finding: a delete-access-entry that answers success while the entry stays. The
+# entries are read again before the node role goes, so the role, which shows the entry is this
+# run's, is kept for a re-run.
+st aestays; two_runs "$FAKE_AWS_STATE" ae-stays
+rc=0; STUB_NS_JSON="$OWN_NS" cl aestays --delete-aws-resources --run-id testrun1 || rc=$?
+check "REJECT a delete-access-entry that succeeds but leaves the entry: the node role is kept" 1 "$rc" "$WORK/aestays.log" \
+  'the access entry for role ubuntu-ami-sample-testrun1-node is still listed after its delete \(arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node\)'
+lft=$(remaining)
+[[ " $lft " == *" ubuntu-ami-sample-testrun1-node "* && " $lft " == *" ae:arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node "* ]] \
+  && [ "$(calls aestays '^eks delete-access-entry$')" = 1 ] \
+  && ! python3 -c 'import json,sys; sys.exit(0 if any(json.loads(l)["argv"][:2] == ["iam", "delete-role"] and "ubuntu-ami-sample-testrun1-node" in json.loads(l)["argv"] for l in open(sys.argv[1])) else 1)' "$FAKE_AWS_LOG"
+ok "  ... one delete-access-entry, then no delete-role for the node role: the entry and the role are both left" $?
+grep -q 'role ubuntu-ami-sample-testrun1-node left in place, so that a re-run can still show its access entry is this run.s' "$WORK/aestays.log"; ok "  ... and the warning says why the role is kept" $?
 
 echo
 echo "== 2b/5 IAM by per-run name, every lookup checked, the kube context: clean.sh (H5, H7, H6) =="
@@ -603,6 +643,52 @@ check "REJECT (RR-005) --list-runs when one candidate's tags cannot be read: inc
 ! grep -q 'IAM instance profile ubuntu-ami-sample-testrun1-build' "$WORK/lrtag.log"; ok "  ... the unread profile is not shown as run testrun1's" $?
 unset FAKE_AWS_FAIL
 unset FAKE_AWS_FAIL
+
+echo
+echo "== 2d/5 the run's lock and record: clean.sh (R3-FR high, and the late cluster/Region finding) =="
+# A run with a folder in this checkout is locked before any of its resources is read; one whose
+# record names another cluster or Region is refused. Each refusal comes before any AWS call.
+RD="$ISSUE10_RUN_DIR/out/runs/testrun1"; mkdir -p "$RD"
+REC_GOOD=$'RUN_ID=testrun1\nRESOURCE_PREFIX=ubuntu-ami-sample\nNODEGROUP_NAME=ubuntu-ami-sample-testrun1-ng\nNAMESPACE=ubuntu-ami-sample\nCLUSTER_NAME=example-cluster\nAWS_REGION=us-west-2'
+cl_refused() { # cl_refused <case> <description> <log regex> <clean.sh args...>
+  local c="$1" why="$2" rx="$3"; shift 3
+  st "$c"; two_runs "$FAKE_AWS_STATE"
+  rc=0; cl "$c" "$@" || rc=$?
+  check "$why" 1 "$rc" "$WORK/$c.log" "$rx"
+  [ "$(calls "$c" .)" = 0 ]; ok "  ... before any AWS call" $?
+}
+printf '%s\n' "$REC_GOOD" > "$RD/run-state.env"
+CLUSTER_NAME=other-cluster cl_refused cl-othercluster "REJECT clean.sh with CLUSTER_NAME other than the run's record" \
+  'has CLUSTER_NAME=example-cluster, but this run has CLUSTER_NAME=other-cluster' --delete-aws-resources --run-id testrun1
+AWS_REGION=us-east-1 cl_refused cl-otherregion "REJECT clean.sh with AWS_REGION other than the run's record" \
+  'has AWS_REGION=us-west-2, but this run has AWS_REGION=us-east-1' --delete-aws-resources --run-id testrun1
+st cl-recordok; two_runs "$FAKE_AWS_STATE"
+rc=0; cl cl-recordok --dry-run --run-id testrun1 || rc=$?
+check "ACCEPT clean.sh --dry-run on a run whose record matches" 0 "$rc" "$WORK/cl-recordok.log" 'nothing was deleted'
+rm -f "$RD/run-state.env"
+# A second holder takes the run's lock with the real lock_run, as setup.sh or test.sh would.
+rm -f "$WORK/holder.ready"
+RUN_ID=testrun1 bash -c '. "$1/lib/common.sh" && derive_run_names && lock_run && echo held > "$2" && exec sleep 300' \
+  _ "$HERE" "$WORK/holder.ready" > "$WORK/holder.log" 2>&1 < /dev/null &
+HOLDER=$!
+for _ in $(seq 1 100); do [ -s "$WORK/holder.ready" ] && break; sleep 0.1; done
+[ -s "$WORK/holder.ready" ] && kill -0 "$HOLDER" 2>/dev/null
+ok "a background process (pid $HOLDER) holds run testrun1's lock, taken with the real lock_run" $?
+cl_refused cl-locked "REJECT clean.sh --delete-aws-resources while another process holds the run's lock" \
+  'run testrun1 is in use: another process holds its lock .*/runs/testrun1/run.lock' --delete-aws-resources --run-id testrun1
+cl_refused cl-dry-locked "REJECT clean.sh --dry-run (a read of the run's resources) while the lock is held" \
+  'run testrun1 is in use' --dry-run --run-id testrun1
+st cl-lr-locked; two_runs "$FAKE_AWS_STATE"
+rc=0; cl cl-lr-locked --list-runs || rc=$?
+check "ACCEPT --list-runs while the lock is held: the read-only listing needs no run and no lock" 0 "$rc" "$WORK/cl-lr-locked.log" 'nothing was deleted'
+kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; HOLDER=""
+st cl-unlocked; two_runs "$FAKE_AWS_STATE"
+rc=0; STUB_NS_JSON="$OWN_NS" cl cl-unlocked --delete-aws-resources --run-id testrun1 || rc=$?
+check "ACCEPT the same clean up once the holder is gone: the lock is free and the run is cleaned" 0 "$rc" "$WORK/cl-unlocked.log" 'Clean up of run testrun1 complete'
+st cl-lost; two_runs "$FAKE_AWS_STATE"
+rc=0; cl cl-lost --dry-run --run-id testrun2 || rc=$?
+check "ACCEPT a lost run id (no folder in this checkout): no lock to take, found by its tags alone" 0 "$rc" "$WORK/cl-lost.log" 'run testrun2 has no folder in this checkout \(a lost run id\)'
+grep -q 'i-testrun2-build' "$WORK/cl-lost.log"; ok "  ... and its resources are listed" $?
 
 echo
 echo "== 3/5 staging: scripts/00b-stage-bucket.sh revoke and create (M5, RR-002, RR-004) ======="
