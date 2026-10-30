@@ -38,7 +38,7 @@ SAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/common.sh
 . "$SAMPLE_DIR/scripts/lib/common.sh"
 
-DRY_RUN=0; DELETE_AWS=0; KEEP_AMI=0; LIST_RUNS=0; LOST_RUN=0; RUN_ID_ARG=""
+DRY_RUN=0; DELETE_AWS=0; KEEP_AMI=0; LIST_RUNS=0; LOST_RUN=0; RUN_ID_SET=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
@@ -46,8 +46,9 @@ while [ $# -gt 0 ]; do
     --keep-ami) KEEP_AMI=1 ;;
     --list-runs) LIST_RUNS=1 ;;
     --lost-run) LOST_RUN=1 ;;
-    --run-id) [ $# -ge 2 ] || die "--run-id needs a value"; RUN_ID="$2"; RUN_ID_ARG="$2"; shift ;;
-    --run-id=*) RUN_ID="${1#--run-id=}"; RUN_ID_ARG="$RUN_ID" ;;
+    # Whether --run-id appeared is kept apart from its value; an empty value is refused here.
+    --run-id) [ $# -ge 2 ] && [ -n "$2" ] || die "--run-id needs a value"; RUN_ID="$2"; RUN_ID_SET=1; shift ;;
+    --run-id=*) RUN_ID="${1#--run-id=}"; RUN_ID_SET=1; [ -n "$RUN_ID" ] || die "--run-id needs a value" ;;
     *) die "unknown argument: $1 (supported: --dry-run, --delete-aws-resources, --keep-ami, --run-id <id>, --lost-run, --list-runs)" ;;
   esac
   shift
@@ -63,7 +64,7 @@ ERR=$(mktemp); trap 'rm -f "$ERR"' EXIT
 # ManagedBy=<RESOURCE_PREFIX>, grouped by its RunId, so a reader who lost the run id can find what
 # a run left behind and then clean it with --run-id. Nothing is deleted in this mode.
 if [[ "$LIST_RUNS" == 1 ]]; then
-  [[ "$DRY_RUN$DELETE_AWS$KEEP_AMI$LOST_RUN" == 0000 && -z "${RUN_ID_ARG:-}" ]] || die "--list-runs takes no other option"
+  [[ "$DRY_RUN$DELETE_AWS$KEEP_AMI$LOST_RUN$RUN_ID_SET" == 00000 ]] || die "--list-runs takes no other option"
   rows=""
   lr() { # lr <kind> <python expr giving [(id, tags)]> <aws args...>
     local kind="$1" expr="$2" js; shift 2
@@ -548,8 +549,8 @@ role_owned_before() {
   esac
   return 1
 }
-# delete_role <name> <state>: detach and delete its policies, then the role. Every lookup it
-# depends on is checked: a failed one leaves the role in place and the clean up incomplete.
+# delete_role <name> <state> [<check>]: detach and delete its policies, then the role. Every lookup
+# it depends on is checked: a failed one leaves the role in place and the clean up incomplete.
 delete_role() {
   local role="$1" st="$2" blocked=0 n=0 profs att inl p
   case "$st" in
@@ -579,6 +580,8 @@ delete_role() {
     else warn_inc "could not delete inline policy $p from $role: $(head -n 2 "$ERR")"; blocked=1; fi
   done
   [ "$blocked" = 0 ] || { warn_inc "role $role left in place: see the warnings above"; return; }
+  # <check>, when given, runs right before the delete; non-zero keeps the role.
+  [ -z "${3:-}" ] || "$3" || { warn_inc "role $role left in place, so that a re-run can still show its access entry is this run's and delete it"; return; }
   OWNED_GONE_FAILS=1 owned_then role "$role" "IAM role $role" aws iam delete-role --role-name "$role" --output json || true
 }
 delete_role "$BUILD_ROLE_NAME" "$role_build"
@@ -619,21 +622,35 @@ delete_access_entry() {
     esac
   done
 }
-# access_entry_gone: before the node role is deleted, the cluster's access entries are read
-# again; the role goes only when no entry for it is listed (a delete that succeeded but left the
-# entry, or a first listing that missed it, keeps the role). 0 when the role may go.
-access_entry_gone() {
+# The node role is deleted only after two observations in a row, at least 5 s apart, that the
+# cluster has no access entry for exactly the role's ARN: a listing does not name it AND
+# describe-access-entry answers ResourceNotFoundException. The first comes right after the delete
+# (access_entry_gone), the second right before delete-role, inside delete_role after the policies
+# are detached (access_entry_gone_again). Any presence, other error or failed read keeps the role,
+# so one stale empty read cannot orphan the entry. They print nothing unless the role is kept.
+access_entry_absent() {
   local ae_now
-  [ "$role_node" = owned ] || return 0   # delete_role reports an absent, foreign or unknown role
   access_entry_state ae_now
   case "$ae_now" in
-    "") return 0 ;;
+    "") ;;
     "$UNKNOWN") return 1 ;;   # access_entry_state already said it could not determine
     *) warn_inc "the access entry for role $NODE_ROLE_NAME is still listed after its delete ($ae_now)"; return 1 ;;
   esac
+  if aws eks describe-access-entry --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --principal-arn "$node_arn" --output json >/dev/null 2>"$ERR"; then
+    warn_inc "the access entry for role $NODE_ROLE_NAME is still there after its delete ($node_arn)"; return 1
+  fi
+  aws_err_is "$ERR" ResourceNotFoundException || { warn_inc "could not determine whether the access entry $node_arn is gone: $(head -n 2 "$ERR")"; return 1; }
 }
+access_entry_gone() {
+  [ "$role_node" = owned ] || return 0   # delete_role reports an absent, foreign or unknown role
+  node_arn=$(aws iam get-role --role-name "$NODE_ROLE_NAME" --query Role.Arn --output text --region "$AWS_REGION" 2>"$ERR") \
+    && [[ "$node_arn" == arn:aws*:iam::*:role/"$NODE_ROLE_NAME" ]] \
+    || { warn_inc "could not read the ARN of role $NODE_ROLE_NAME: $(head -n 2 "$ERR")"; return 1; }
+  access_entry_absent
+}
+access_entry_gone_again() { sleep 5; access_entry_absent; }
 if delete_access_entry && access_entry_gone; then
-  delete_role "$NODE_ROLE_NAME" "$role_node"
+  delete_role "$NODE_ROLE_NAME" "$role_node" access_entry_gone_again
 else
   warn_inc "role $NODE_ROLE_NAME left in place, so that a re-run can still show its access entry is this run's and delete it"
 fi

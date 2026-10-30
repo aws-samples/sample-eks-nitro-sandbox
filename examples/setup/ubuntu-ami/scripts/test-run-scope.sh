@@ -24,9 +24,12 @@
 #                                    in a namespace this run owns; the access entry EKS created for
 #                                    the node role found by its exact ARN and deleted only after
 #                                    the node group and while the role carries both tags, one whose
-#                                    role is gone left with its delete command (N4); the entries
-#                                    read again before the node role goes, so a delete that leaves
-#                                    the entry keeps the role; --keep-ami deletes no snapshot when
+#                                    role is gone left with its delete command (N4); the node role
+#                                    goes only after two absence observations 5 s apart (a listing
+#                                    without the entry and describe-access-entry not found), the
+#                                    second right before delete-role, so a delete that leaves the
+#                                    entry, a stale read or a failed read keeps the role; an empty
+#                                    --run-id refused; --keep-ami deletes no snapshot when
 #                                    a kept AMI's snapshots cannot be determined; the run's lock
 #                                    (refused while held, --list-runs needs none) and its record
 #                                    (another cluster or Region refused); from a second checkout
@@ -297,8 +300,12 @@ if variant == "ae-prefix":    # another principal whose role name only starts wi
     s["eks"]["access_entries"][f"example-cluster/arn:aws:iam::{acct}:role/ubuntu-ami-sample-testrun1-node-copy"] = {"type": "EC2_LINUX"}
 if variant == "ami-no-bdm":   # run 1's AMI as describe-images answers it, with no block device mapping
     e["images"][0]["BlockDeviceMappings"] = []
-if variant == "ae-stays":     # delete-access-entry answers success but the entry stays listed
+if variant in ("ae-stays", "ae-stale-empty", "ae-stale-first"):  # delete-access-entry answers success but the entry stays
     s["eks"]["access_entries"][f"example-cluster/arn:aws:iam::{acct}:role/ubuntu-ami-sample-testrun1-node"]["StaysAfterDelete"] = True
+if variant in ("ae-stale-empty", "ae-stale-first"):  # list read 2 (the first after the delete) is stale and empty
+    s["eks"]["AccessEntryListOnRead"] = {"2": "empty"}
+if variant == "ae-stale-first":  # ... and so is describe read 1: the first observation is stale on both reads
+    s["eks"]["AccessEntryDescribeOnRead"] = {"1": "notfound"}
 if variant == "foreign-role":  # a same-named node role someone else owns
     s["iam"]["roles"]["ubuntu-ami-sample-testrun1-node"]["Tags"] = tags("testrun1", mb="someone-else")
 if variant == "bare-profile":  # setup stopped after create-instance-profile, before add-role
@@ -394,6 +401,20 @@ assert w and w[0] < i, (w, i)
 assert calls[i - 1][:2] == ["iam", "list-role-tags"] and val(calls[i - 1], "--role-name") == "ubuntu-ami-sample-testrun1-node", calls[i - 1]
 r = [j for j, a in enumerate(calls) if a[:2] == ["iam", "delete-role"] and val(a, "--role-name") == "ubuntu-ami-sample-testrun1-node"]
 assert r and i < r[0], (i, r)
+PY
+python3 - "$FAKE_AWS_LOG" <<'PY'; ok "  ... (R4 F2 review) the node role went after two absence observations at least 5 s apart, each a listing then describe-access-entry for its exact ARN, the second right before delete-role" $?
+import json, sys
+log = [json.loads(l) for l in open(sys.argv[1])]
+calls = [x["argv"] for x in log]
+val = lambda a, o: a[a.index(o) + 1] if o in a else None
+arn = "arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node"
+de = [i for i, a in enumerate(calls) if a[:2] == ["eks", "delete-access-entry"]][0]
+d = [i for i, a in enumerate(calls) if a[:2] == ["eks", "describe-access-entry"]]
+assert len(d) == 2 and all(val(calls[i], "--principal-arn") == arn for i in d), [calls[i] for i in d]
+assert all(calls[i - 1][:2] == ["eks", "list-access-entries"] for i in d), [calls[i - 1] for i in d]
+assert de < d[0] - 1 and log[d[1]]["t"] - log[d[0]]["t"] >= 5, (de, d, log[d[1]]["t"] - log[d[0]]["t"])
+r = [j for j, a in enumerate(calls) if a[:2] == ["iam", "delete-role"] and val(a, "--role-name") == "ubuntu-ami-sample-testrun1-node"]
+assert r == [d[1] + 2] and calls[d[1] + 1][:2] == ["iam", "list-role-tags"], (r, d, calls[d[1] + 1])
 PY
 rm -f "$ISSUE10_RUN_DIR/out/run-state.env"
 
@@ -588,6 +609,36 @@ lft=$(remaining)
   && ! python3 -c 'import json,sys; sys.exit(0 if any(json.loads(l)["argv"][:2] == ["iam", "delete-role"] and "ubuntu-ami-sample-testrun1-node" in json.loads(l)["argv"] for l in open(sys.argv[1])) else 1)' "$FAKE_AWS_LOG"
 ok "  ... one delete-access-entry, then no delete-role for the node role: the entry and the role are both left" $?
 grep -q 'role ubuntu-ami-sample-testrun1-node left in place, so that a re-run can still show its access entry is this run.s' "$WORK/aestays.log"; ok "  ... and the warning says why the role is kept" $?
+# The R4 F2 review's medium finding: one stale empty listing after a delete that answered success
+# is not proof the entry is gone. The node role goes only after two absence observations in a
+# row, at least 5 s apart, each a listing without the entry AND describe-access-entry answering
+# ResourceNotFoundException for the role's exact ARN; any presence or failed read keeps the role.
+# aestale is the reviewer's case: the delete answers success, list read 2 is stale and empty, and
+# the entry is listed again afterwards. aestale2 makes the whole first observation stale, so only
+# the second, right before delete-role, sees the entry.
+while IFS='@' read -r name variant rule rx why; do
+  [ -n "$name" ] || continue
+  st "$name"; two_runs "$FAKE_AWS_STATE" "$variant"; [ -z "$rule" ] || export FAKE_AWS_FAIL="$rule"
+  rc=0; STUB_NS_JSON="$OWN_NS" cl "$name" --delete-aws-resources --run-id testrun1 || rc=$?
+  check "$why" 1 "$rc" "$WORK/$name.log" "$rx"
+  lft=$(remaining)
+  [[ " $lft " == *" ubuntu-ami-sample-testrun1-node "* ]] && { [ -z "$variant" ] || [[ " $lft " == *" ae:arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node "* ]]; } \
+    && ! python3 -c 'import json,sys; sys.exit(0 if any(json.loads(l)["argv"][:2] == ["iam", "delete-role"] and "ubuntu-ami-sample-testrun1-node" in json.loads(l)["argv"] for l in open(sys.argv[1])) else 1)' "$FAKE_AWS_LOG"
+  ok "  ... no delete-role named the node role: it is left${variant:+, and so is its access entry}" $?
+  grep -q 'role ubuntu-ami-sample-testrun1-node left in place, so that a re-run can still show its access entry is this run.s' "$WORK/$name.log"; ok "  ... and the warning says why the role is kept" $?
+  unset FAKE_AWS_FAIL
+done <<'CASES'
+aestale@ae-stale-empty@@the access entry for role ubuntu-ami-sample-testrun1-node is still there after its delete \(arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node\)@REJECT (R4 F2 review) delete-access-entry reports success, one later listing is stale and empty, the entry shows up again: the node role is kept
+aestale2@ae-stale-first@@the access entry for role ubuntu-ami-sample-testrun1-node is still listed after its delete \(arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node\)@REJECT a first observation stale on both reads (empty listing, not found): the second, right before delete-role, sees the entry and keeps the node role
+aedescfail@@eks describe-access-entry||AccessDeniedException@could not determine whether the access entry arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node is gone@REJECT a describe-access-entry that fails with another error than ResourceNotFoundException: the node role is kept
+CASES
+python3 - "$WORK/aestale2.calls.jsonl" <<'PY'; ok "  ... (aestale2) the listing that saw it came after the node role's policy detach, right before where its delete-role would be" $?
+import json, sys
+calls = [json.loads(l)["argv"] for l in open(sys.argv[1])]
+det = [i for i, a in enumerate(calls) if a[:2] == ["iam", "detach-role-policy"] and "ubuntu-ami-sample-testrun1-node" in a]
+ls = [i for i, a in enumerate(calls) if a[:2] == ["eks", "list-access-entries"]]
+assert det and len(ls) == 4 and det[-1] < ls[2], (det, ls)
+PY
 
 echo
 echo "== 2b/5 IAM by per-run name, every lookup checked, the kube context: clean.sh (H5, H7, H6) =="
@@ -667,6 +718,23 @@ rc=0; cl lrfail --list-runs || rc=$?
 check "REJECT (could not determine) --list-runs whose role listing fails: the list is incomplete" 1 "$rc" "$WORK/lrfail.log" 'could not determine the marked IAM roles'
 rc=0; cl lrmix --list-runs --delete-aws-resources || rc=$?
 check "REJECT --list-runs with a delete option (it never deletes)" 1 "$rc" "$WORK/lrmix.log" 'takes no other option'
+# The R4 F2 review: an empty run id is refused while the options are read, written either way
+# and with or without --list-runs, before any AWS call. Before, the empty value read as no run id
+# at all, and --list-runs then listed every run.
+empty_id() { # empty_id <case> <description> <clean.sh args...>
+  local c="$1" d="$2"; shift 2
+  st "$c"; two_runs "$FAKE_AWS_STATE"
+  rc=0; cl "$c" "$@" || rc=$?
+  check "$d" 1 "$rc" "$WORK/$c.log" '^FATAL: --run-id needs a value$'
+  ok "  ... and no AWS call was made" "$( [ "$(calls "$c" .)" = 0 ]; echo $?)"
+}
+empty_id idempty-eq 'REJECT (R4 F2 review) --run-id= with an empty value, while the options are read' --run-id=
+empty_id idempty-sp 'REJECT --run-id "" with an empty value' --run-id ""
+empty_id idempty-lr-eq 'REJECT --list-runs --run-id= (an empty run id is still a run id option)' --list-runs --run-id=
+empty_id idempty-lr-sp 'REJECT --list-runs --run-id ""' --list-runs --run-id ""
+st ideq; two_runs "$FAKE_AWS_STATE"
+rc=0; cl ideq --dry-run --run-id=testrun1 || rc=$?
+check "ACCEPT --run-id=<id> with a value: --dry-run lists run testrun1" 0 "$rc" "$WORK/ideq.log" '^== run testrun1: resources tagged ManagedBy=ubuntu-ami-sample and RunId=testrun1'
 st lrtag; two_runs "$FAKE_AWS_STATE"; export FAKE_AWS_FAIL='iam list-instance-profile-tags|ubuntu-ami-sample-testrun1-build|AccessDenied'
 rc=0; cl lrtag --list-runs || rc=$?
 check "REJECT (RR-005) --list-runs when one candidate's tags cannot be read: incomplete, and that candidate not listed" 1 "$rc" "$WORK/lrtag.log" 'could not determine the marked IAM instance profile'

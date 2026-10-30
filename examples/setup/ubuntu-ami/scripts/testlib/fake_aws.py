@@ -31,6 +31,7 @@ import json
 import os
 import re
 import sys
+import time
 
 try:
     import jmespath
@@ -377,10 +378,22 @@ def handle(state, service, op, sub, opts):
             if not ad:
                 raise ApiError("ResourceNotFoundException", "DescribeAddon", f"No addon: {one(opts, 'addon-name')} found in cluster: {cl}")
             return {"addon": ad}
-        # access entries, keyed "<cluster>/<principal ARN>" (an ARN holds '/', the cluster name never)
+        # access entries, keyed "<cluster>/<principal ARN>" (an ARN holds '/', the cluster name never).
+        # A stale read: "AccessEntryListOnRead" {"<n>": "empty"} makes list read n answer no entries,
+        # "AccessEntryDescribeOnRead" {"<n>": "notfound"} makes describe read n answer not found.
         aes = k.setdefault("access_entries", {})
         if op == "list-access-entries":
+            k["AccessEntryListReads"] = k.get("AccessEntryListReads", 0) + 1
+            if k.get("AccessEntryListOnRead", {}).get(str(k["AccessEntryListReads"])) == "empty":
+                return {"accessEntries": []}
             return {"accessEntries": sorted(x.split("/", 1)[1] for x in aes if x.split("/", 1)[0] == cl)}
+        if op == "describe-access-entry":
+            ak = f"{cl}/{one(opts, 'principal-arn')}"
+            k["AccessEntryDescribeReads"] = k.get("AccessEntryDescribeReads", 0) + 1
+            if ak not in aes or k.get("AccessEntryDescribeOnRead", {}).get(str(k["AccessEntryDescribeReads"])) == "notfound":
+                save(state)   # the read count is kept although the call fails
+                raise ApiError("ResourceNotFoundException", "DescribeAccessEntry", "The specified access entry resource is not found.")
+            return {"accessEntry": {"clusterName": cl, "principalArn": one(opts, "principal-arn"), "type": aes[ak].get("type")}}
         if op == "delete-access-entry":
             ak = f"{cl}/{one(opts, 'principal-arn')}"
             if ak not in aes:
@@ -661,7 +674,7 @@ def main():
     except ApiError as e:
         print(f"fake aws: {e.msg}", file=sys.stderr)
         return e.rc
-    entry = {"argv": ARGV, "call": f"{service} {op}" + (f" {sub}" if sub else "")}
+    entry = {"argv": ARGV, "call": f"{service} {op}" + (f" {sub}" if sub else ""), "t": time.time()}
     for opt, field in (("cli-input-json", "cli_input_json"), ("launch-template-data", "launch_template_data")):
         v = one(opts, opt)
         if v:
