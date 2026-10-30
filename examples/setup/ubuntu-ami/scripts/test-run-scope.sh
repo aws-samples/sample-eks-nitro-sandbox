@@ -306,6 +306,10 @@ if variant in ("ae-stale-empty", "ae-stale-first"):  # list read 2 (the first af
     s["eks"]["AccessEntryListOnRead"] = {"2": "empty"}
 if variant == "ae-stale-first":  # ... and so is describe read 1: the first observation is stale on both reads
     s["eks"]["AccessEntryDescribeOnRead"] = {"1": "notfound"}
+if variant == "ae-stale-both":  # the entry stays, and every read after the delete is stale (both observations)
+    s["eks"]["access_entries"][f"example-cluster/arn:aws:iam::{acct}:role/ubuntu-ami-sample-testrun1-node"]["StaysAfterDelete"] = True
+    s["eks"]["AccessEntryListOnRead"] = {"2": "empty", "3": "empty"}
+    s["eks"]["AccessEntryDescribeOnRead"] = {"1": "notfound", "2": "notfound"}
 if variant == "foreign-role":  # a same-named node role someone else owns
     s["iam"]["roles"]["ubuntu-ami-sample-testrun1-node"]["Tags"] = tags("testrun1", mb="someone-else")
 if variant == "bare-profile":  # setup stopped after create-instance-profile, before add-role
@@ -639,6 +643,20 @@ det = [i for i, a in enumerate(calls) if a[:2] == ["iam", "detach-role-policy"] 
 ls = [i for i, a in enumerate(calls) if a[:2] == ["eks", "list-access-entries"]]
 assert det and len(ls) == 4 and det[-1] < ls[2], (det, ls)
 PY
+# The F3 review's finding: the 5 s delay between the two observations is part of the proof. With
+# sleep failing (exit 42) and every read after the delete stale-absent, a delay that is ignored
+# lets two back-to-back reads delete the role while the entry stays. A failed delay counts as
+# could not determine: the role is kept and the clean up is incomplete.
+mkdir -p "$WORK/failsleep-bin"; printf '#!/bin/bash\nexit 42\n' > "$WORK/failsleep-bin/sleep"; chmod +x "$WORK/failsleep-bin/sleep"
+st aesleepfail; two_runs "$FAKE_AWS_STATE" ae-stale-both
+rc=0; PATH="$WORK/failsleep-bin:$PATH" STUB_NS_JSON="$OWN_NS" cl aesleepfail --delete-aws-resources --run-id testrun1 || rc=$?
+check "REJECT (F3 review) a failed delay between the two observations, every read stale-absent: the node role is kept" 1 "$rc" "$WORK/aesleepfail.log" \
+  'role ubuntu-ami-sample-testrun1-node left in place, so that a re-run can still show its access entry is this run.s'
+lft=$(remaining)
+[[ " $lft " == *" ubuntu-ami-sample-testrun1-node "* && " $lft " == *" ae:arn:aws:iam::111122223333:role/ubuntu-ami-sample-testrun1-node "* ]] \
+  && ! python3 -c 'import json,sys; sys.exit(0 if any(json.loads(l)["argv"][:2] == ["iam", "delete-role"] and "ubuntu-ami-sample-testrun1-node" in json.loads(l)["argv"] for l in open(sys.argv[1])) else 1)' "$FAKE_AWS_LOG"
+ok "  ... no delete-role named the node role: it is left, and so is its access entry" $?
+[ "$(calls aesleepfail '^eks describe-access-entry$')" = 1 ]; ok "  ... and no second observation was made without the delay (one describe-access-entry)" $?
 
 echo
 echo "== 2b/5 IAM by per-run name, every lookup checked, the kube context: clean.sh (H5, H7, H6) =="

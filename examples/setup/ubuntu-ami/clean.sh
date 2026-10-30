@@ -648,7 +648,7 @@ access_entry_gone() {
     || { warn_inc "could not read the ARN of role $NODE_ROLE_NAME: $(head -n 2 "$ERR")"; return 1; }
   access_entry_absent
 }
-access_entry_gone_again() { sleep 5; access_entry_absent; }
+access_entry_gone_again() { sleep 5 || return 1; access_entry_absent; }   # no delay, no second observation
 if delete_access_entry && access_entry_gone; then
   delete_role "$NODE_ROLE_NAME" "$role_node" access_entry_gone_again
 else
