@@ -43,7 +43,7 @@ Everything you control is a standard pod field:
 *Figure 1: The isolation boundary. A sandboxed pod runs in its own Nitro sandbox, a
 lightweight VM with its own kernel; the node's kubelet still sees an ordinary pod.*
 
-![Inside the EKS node, which is an EC2 instance, a frame labelled Nitro sandbox, hardware-isolated CPU and memory, holds a box labelled Lightweight VM, its own kernel, this pod only, and that box holds the pod's containers with their unchanged image and spec; the node's kubelet and containerd reach it through a runtimeClassName of isolated-sandbox for exec, logs, port-forward, volumes and VPC networking, while regular pods with no runtimeClassName keep sharing the node kernel directly.](images/figure-1-isolation-boundary.png)
+![Inside the EKS node, which is an EC2 instance, a frame labelled Nitro sandbox, hardware-isolated CPU and memory, its own kernel, this pod only, holds the pod's containers with their unchanged image and spec; the node's kubelet and containerd reach it through a runtimeClassName of isolated-sandbox for exec, logs, port-forward, volumes and VPC networking, while regular pods with no runtimeClassName keep sharing the node kernel directly.](images/figure-1-isolation-boundary.png)
 
 ## Prerequisites
 

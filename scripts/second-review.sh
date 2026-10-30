@@ -1,10 +1,31 @@
 #!/usr/bin/env bash
-# Run the adversarial second review AGENTS.md requires, keeping its three invariants:
-# the reviewer runs on a different model from the one that wrote the change, it is
-# confined from writing to the tree it reviews and is shown to have left it unchanged, and
-# the model that actually answered is recorded. Note the second one as two things: this
-# script configures the confinement and checks the tree afterwards; it does not guarantee
-# that nothing could have been written.
+# Run the adversarial second review AGENTS.md requires, and capture what a reader of the
+# pull request cannot otherwise check:
+#
+#   1. the reviewer runs on a different model from the one that wrote the change;
+#   2. the thing under review did not change, and that is shown -- the tree is fingerprinted
+#      before the run, when the backend returns, and after, and any difference the
+#      fingerprint can see (type, mode, size, mtime, symlink target, content, for every
+#      path including the tree's own root) fails the run. What it does NOT see: ownership,
+#      ACLs, extended attributes, hard-link count, or anything else find's -printf does not
+#      report (a hard link made to a file inside the tree, from outside it, changes nothing
+#      this fingerprint can see); and a change whose every tracked attribute, including
+#      mtime, is put back to match leaves nothing else to catch it either;
+#   3. the model that actually answered is recorded, read from the backend's own report
+#      rather than from the name that was asked for.
+#
+# What this script does NOT do, deliberately (issue #100): it does not confine the reviewer.
+# A reviewer that cannot run anything cannot find the class of defect that only shows up
+# when you execute the thing -- which is where the two most serious findings against this
+# very script came from -- so the reviewer is given write and execute in a workspace of its
+# own, and invariant 2 is carried by the fingerprint afterwards instead of by a sandbox flag
+# beforehand. Read that precisely: the reviewer *can* write to the tree it reviews. If it
+# does, this script fails the run and no review is recorded, but the write will have
+# happened. Nothing here bounds what it writes outside the tree at all.
+#
+# Everything else the review needs -- where to put its output, what not to read, what to
+# leave alone -- is asked for in the brief rather than enforced here. The brief template is
+# .agents/skills/second-review/assets/review-brief.md.
 #
 # Usage: scripts/second-review.sh --backend codex|claude --model <id>
 #                                 --implementer-model <id>
@@ -15,157 +36,112 @@
 #   --model              the model the reviewer should use, as that backend names it
 #                        ("openai.gpt-5.6-sol", "opus", "claude-opus-5-5").
 #   --implementer-model  the model that wrote the change under review, resolved, not an
-#                        alias or a router name. A second review is only worth having if
-#                        a different model does it, so this script refuses to run, and
-#                        refuses its own result, when the two are the same.
+#                        alias or a router name. The script refuses to run, and refuses its
+#                        own result, when this and --model are the same model. Where the
+#                        implementer was itself behind a prompt router, this comparison
+#                        establishes nothing on its own: see AGENTS.md, "Running it".
 #   --brief              the brief, given to the reviewer on standard input. Default
 #                        tmp/review/brief.md.
-#   --tree               the snapshot of the commit under review, never your working
-#                        tree. Default tmp/review/tree.
-#   --out                where the review, the backend's trace and the record of the run
-#                        go. Must be under this repository's gitignored tmp/, because the
-#                        trace can hold credential details. Default tmp/review.
+#   --tree               the snapshot of the commit under review, never your working tree.
+#                        Default tmp/review/tree.
+#   --out                where the review, the backend's trace and the run's record go. Use
+#                        a fresh directory per run: this script overwrites the names it
+#                        writes and does not otherwise clear or guard the directory. Keep it
+#                        under the repository's gitignored tmp/ -- the trace can hold
+#                        credential details -- which is now a rule for you to follow rather
+#                        than one this script checks. Default tmp/review.
 #   --timeout            seconds to let the reviewer run. Default 5400 (90 minutes).
 #
-# Which command each backend runs comes from the environment, so this script works on a
-# laptop where the collaborator authenticated their own backend, and on a machine where a
-# wrapper pins which account the review bills:
-#
+# Environment:
 #   SECOND_REVIEW_CODEX_CMD        the codex command. Default "codex".
 #   SECOND_REVIEW_CLAUDE_CMD       the claude command. Default "claude".
 #   SECOND_REVIEW_CODEX_PROVIDER   optional, passed as codex's model_provider.
 #   SECOND_REVIEW_CODEX_EFFORT     optional, passed as codex's model_reasoning_effort.
 #   SECOND_REVIEW_CONTEXT_DIR      optional, a directory added as readable for the claude
 #                                  backend, which otherwise sees only the tree and its own
-#                                  working directory. Put the commit's diff there, and
-#                                  nothing the reviewer may not read: the script refuses a
-#                                  directory that is, or contains, --out, because that
-#                                  holds the backend's trace.
-#   SECOND_REVIEW_CLAUDE_SETTINGS  optional, a settings file passed to claude as
-#                                  --settings. Needed when your claude authenticates
-#                                  through a setting (awsCredentialExport, apiKeyHelper):
-#                                  the --restricted flag this script uses makes claude
-#                                  ignore the user settings file, and --settings is how
-#                                  that one setting comes back. Put only the
-#                                  authentication setting in it.
-#   SECOND_REVIEW_KEEP_AWS_ENV     keep the AWS credentials in the environment when
-#                                  running the codex backend. The variables the AWS SDKs
-#                                  read are removed by default, so that a machine holding
-#                                  credentials for some other account does not end up
-#                                  billed for the review. It is a denylist, so a backend
-#                                  that reads some other variable is not covered; check
-#                                  which account a new backend bills before trusting it.
-#                                  Set this to 1 only if your codex authenticates to
-#                                  Bedrock with exactly those credentials.
+#                                  workspace. Put the commit's diff there. Point it at a
+#                                  directory holding only what the reviewer may read: that
+#                                  is now your judgement, not a check here.
+#   SECOND_REVIEW_CLAUDE_SETTINGS  optional, a settings file passed to claude as --settings,
+#                                  needed when your claude authenticates through a setting
+#                                  (awsCredentialExport, apiKeyHelper), because --restricted
+#                                  makes claude ignore the user settings file. Its contents
+#                                  are no longer checked: the reviewer holds Bash anyway, so
+#                                  an allowlist that stopped a hooks entry executing would be
+#                                  defending a property this script no longer holds.
+#   SECOND_REVIEW_KEEP_AWS_ENV     keep AWS credential variables in the environment for the
+#                                  codex backend. They are removed by default so that a
+#                                  machine holding credentials for some other account is not
+#                                  billed for the review. Set to 1 only if your codex
+#                                  authenticates to Bedrock with exactly those credentials.
 #
 # The backend's trace (review.err) can hold credential details: read it with tail or a
 # targeted search, and never paste it into a pull request, an issue or Slack.
 #
-# Exit status: 0 the review ran and its record is complete; 1 this script refused the
-# run or refused its result; 2 it could not check (a tool it needs is missing).
+# Exit status: 0 the review ran and its record is complete; 1 this script refused the run
+# or refused its result; 2 it could not check (a tool it needs is missing).
 set -euo pipefail
 
-# Print the comment block above, and stop at the first line that is not a comment, so
-# this cannot start spilling the script itself when a line is added below.
 usage() { awk 'NR>1 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0"; }
 
-# Each refusal carries a stable tag, so a proof can name the message it reached.
-refuse() { printf 'second-review: %s: %s\n' "$1" "$2" >&2; exit 1; }
+# Each refusal carries a stable tag, named in AGENTS.md, so a report can name exactly which
+# check stopped the run.
+#
+# Once AT_RETURN_TAKEN is set (after the at-return fingerprint exists, well into the
+# script), every refusal checks the tree and context fingerprints FIRST and swaps in a
+# tree/context tag if either changed, before printing anything. A change takes priority
+# over whatever else is being refused: a backend that wrote to the tree or the context
+# directory and then fell short some other way -- a non-zero exit, a malformed record, a
+# reported model that matches the implementer -- must be reported as the write, not as
+# that other reason with the write never mentioned. Second-review finding (issue #100
+# round 8): an earlier version only did this swap ahead of the run-failure and claude
+# is_error refusals specifically, so a write followed by, say, an unparseable record was
+# refused as E_BAD_RECORD / E_NO_PREAMBLE / E_REPORTED_SAME_MODEL with the write never
+# reported. Centralising the swap here, rather than special-casing each site that might
+# need it, closes that for every refusal from this point on rather than just the ones
+# someone remembered to guard. Harmless before AT_RETURN_TAKEN is set: every refusal
+# before then (bad arguments, a missing brief, a missing tree) has nothing to compare yet.
+AT_RETURN_TAKEN=0
+refuse() {
+  local tag="$1" msg="$2"
+  case "$tag" in
+    E_TREE_CHANGED|E_TREE_RESTORED|E_CONTEXT_CHANGED|E_CONTEXT_RESTORED) ;;
+    *)
+      if [ "$AT_RETURN_TAKEN" = 1 ]; then
+        if ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256" 2>/dev/null; then
+          tag=E_TREE_CHANGED
+          msg="the tree at $TREE_ABS had already changed by the time the backend returned, which takes priority over the reason this run was otherwise being refused for ($msg). Compare $OUT_ABS/tree-before.sha256 with tree-at-return.sha256."
+        elif [ -n "${CTX_ABS:-}" ] && ! cmp -s "$OUT_ABS/ctx-before.sha256" "$OUT_ABS/ctx-at-return.sha256" 2>/dev/null; then
+          tag=E_CONTEXT_CHANGED
+          msg="\$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' had already changed by the time the backend returned, which takes priority over the reason this run was otherwise being refused for ($msg). Compare $OUT_ABS/ctx-before.sha256 with ctx-at-return.sha256."
+        fi
+      fi
+      ;;
+  esac
+  printf 'second-review: %s: %s\n' "$tag" "$msg" >&2
+  exit 1
+}
 cannot_check() { printf 'second-review: E_NO_TOOL: %s\n' "$1" >&2; exit 2; }
 note() { printf 'second-review: %s\n' "$1"; }
 
-# No path this script is given may hold a line break, and that is checked for every one of
-# them -- as given and as resolved -- before anything is read, created or cleared. The reason
-# is a single seam, and it runs through every path here: "$( )" strips TRAILING newlines, so
-# realpath, dirname, basename and "command -v" each hand back a SIBLING path, and the run
-# then acts on a file or directory the caller did not name. Measured five times, each a
-# different path, four of them with the run reporting success: a --tree whose name ends in
-# one was fingerprinted, reviewed and certified while the sibling was the tree actually read
-# (exit 0); an --out whose name ends in one cleared and wrote the sibling directory,
-# destroying the earlier review in it, and left the directory named empty (exit 0); a --brief
-# whose name ends in one passed -f, -s and -r on the name given and then handed the reviewer
-# the sibling file's text (exit 0); a path to THIS SCRIPT ending in one moved REPO_ROOT to
-# the sibling root, whose tmp/ the run then approved and reviewed under (exit 0); and a link
-# target ending in one sent the command-chain walk to a different path, leaving every later
-# hop unchecked -- that one does not report success, it reaches the backend call and fails
-# E_RUN_FAILED (126), with the earlier review in --out already cleared (see the walk below).
-# On the codex backend there is a second effect: codex prints "workdir: <tree>" inside the
-# preamble this script parses back out of its trace, on a line ahead of the "model:",
-# "sandbox:" and "approval:" lines, so a path with a line break in it lands inside that
-# block and could pass itself off as codex's own report of how it ran. That path comes from
-# the caller and not from the brief -- a caller who wanted to lie could lie in
-# --implementer-model just as cheaply -- so that half closes a seam rather than an attack,
-# and the nonce check still bounds what the BRIEF can reach.
-# The path is not repeated in the message, for the reason check_model_charset gives: it
-# would break the message across lines. $2 names the input, $3 is the tag to refuse with:
-# each path refuses under the tag its own option already uses, except --out and this script's
-# own path, which had no tag of their own and now have E_OUT and E_SELF.
-# The message says only the part that is true of every site. The codex-preamble half above
-# is NOT: only the tree path is a path codex is told about and prints back, and the two
-# claude variables never reach codex at all, so stating it in the shared message would claim
-# something untrue of fourteen of the sixteen sites.
-no_line_break() {
-  case "$1" in
-    *$'\n'*) refuse "$3" \
-      "$2 contains a line break. Resolving such a path quietly drops a trailing one, so this run would read, clear or write a sibling path rather than the one named -- and report success. Use a path with no line break in it." ;;
-  esac
-}
+command -v realpath >/dev/null 2>&1 || cannot_check "realpath is needed to resolve the tree and output paths."
 
-# The same rule on what a path RESOLVES to, which cannot be done on the plain
-# "$(realpath ...)" every site below uses: that substitution has already stripped the very
-# newline being looked for, so the value handed back is the sibling and a test on it passes.
-# Measured: --out naming an ordinary symbolic link whose target's last component ends in a
-# newline resolved to the sibling directory, which the cleanup then cleared of its earlier
-# review, with both the as-given and the as-resolved test passing -- exit 0. So read
-# realpath's answer with a sentinel after it, take the sentinel and the one newline realpath
-# itself prints back off, and test what is left. Checked on a target ending in one newline
-# and in two: the plain form loses them, this form keeps them.
-# Refusing here is what makes the plain realpath each of these sites runs NEXT safe, because
-# once this has passed that path has no trailing newline left for one to lose. Not every
-# plain realpath in the script, which an earlier version of this comment claimed: the
-# "realpath -m" inside not_an_output_name resolves a DIRNAME, and when the path it is given
-# is a command or one of the walk's hops that dirname can still end in a newline and lose it.
-# That one fails CLOSED -- the stripped directory is the one that can equal $OUT_ABS, so the
-# comparison refuses rather than passes -- but the message it refuses with then names the
-# wrong file, and fixing that belongs with the redesign in issue #100 rather than here.
-# -m so that an --out which does not exist yet still resolves.
-# A realpath that cannot answer refuses, rather than returning and leaving the site's own
-# later check to report it. The first version of this function did the latter -- "|| return
-# 0" -- which is the fail-open shape this whole guard exists to remove, written into the
-# guard removing it for the third time. It was not even safe by accident: most callers do
-# refuse an unresolvable path afterwards, but $TREE's assignment is unguarded and ends the
-# run untagged, and $0 falls back to the UNRESOLVED spelling below, which is the case that
-# moves REPO_ROOT. And between a "return 0" here and the later resolution the path can
-# change, so the byte-exact check would have been skipped on a path that then resolved fine.
-no_line_break_resolved() {
-  local out
-  out=$(realpath -m -- "$1" 2>/dev/null && printf X) || refuse "$3" \
-    "$2 cannot be resolved, so it cannot be shown to be free of the line break that would make this run act on a sibling path. A guard that cannot answer must refuse."
-  out=${out%X}
-  no_line_break "${out%$'\n'}" "$2" "$3"
-}
-
-# Resolve the script itself first: invoked through a symbolic link from somewhere else,
-# "dirname $0" is the link's directory, and the containment check below would then approve
-# that directory's tmp/ instead of this repository's. Byte-exact and refused for a line
-# break for the same reason as every other path, and before REPO_ROOT is derived rather than
-# after: REPO_ROOT is what the whole tmp/ containment boundary is measured against, so a
-# stripped trailing newline here would move that boundary to a sibling repository root.
-# realpath's availability is checked HERE rather than with the other tools below, because
-# the next line is the script's first use of it: without this, a host with no realpath got
-# "E_SELF: ... cannot be resolved" and exit 1, where the honest answer is "could not check"
-# and exit 2. Measured as a failing case.
-command -v realpath >/dev/null 2>&1 || cannot_check "realpath is needed to check that no path this script is given holds a line break, and that the output path stays under the repository's tmp/."
-no_line_break "$0" "the path this script was invoked by" E_SELF
-no_line_break_resolved "$0" "the resolved path of this script" E_SELF
-SELF=$(realpath "$0" 2>/dev/null || printf '%s' "$0")
-REPO_ROOT=$(cd "$(dirname "$SELF")/.." && pwd)
+# codex_cwd and claude_cwd (set once the backend branch runs) are mktemp -d workspaces,
+# never removed otherwise: a reviewer that left its own scratch files there should keep
+# them for inspection, but an empty one is just litter. rmdir only removes an empty
+# directory, so this is silent and safe either way. Second-review finding (issue #100
+# round 8): a round of testing alone left 330 of these behind.
+# "|| true" at the end is load-bearing, not decoration: a script that ends without an
+# explicit "exit N" reports whatever its EXIT trap's own last command returned, and rmdir
+# fails -- correctly -- whenever the reviewer actually used its workspace. A real review's
+# successful exit status was being overwritten by that failure before this was added.
+trap '{ [ -n "${codex_cwd:-}" ] && rmdir "$codex_cwd"; [ -n "${claude_cwd:-}" ] && rmdir "$claude_cwd"; } 2>/dev/null || true' EXIT
 
 BACKEND='' MODEL='' IMPLEMENTER='' BRIEF='tmp/review/brief.md' TREE='tmp/review/tree'
 OUT='tmp/review' TIMEOUT=5400
 
-# Take the value of an option, refusing when it was given without one: "--model" at the
-# end of the line must not leave the model empty and fall through to a later check.
+# Take the value of an option, refusing when it was given without one: "--model" at the end
+# of the line must not leave the model empty and fall through to a later check.
 need_value() {
   [ "$2" -ge 2 ] || refuse E_ARG "$1 needs a value."
   [ -n "$3" ] || refuse E_ARG "$1 needs a value."
@@ -188,47 +164,75 @@ case "$TIMEOUT" in
   ''|*[!0-9]*) refuse E_ARG "--timeout '$TIMEOUT' is not a whole number of seconds." ;;
 esac
 
-# --- what the run must say about itself -------------------------------------------------
+# --- invariant 1: a different model ------------------------------------------------------
 
 case "$BACKEND" in
   codex|claude) ;;
   '') refuse E_BACKEND "--backend is required, and must be codex or claude." ;;
-  *)  refuse E_BACKEND "--backend '$BACKEND' is not a backend this script runs; use codex or claude. To use another agent, a sub agent in your own session is a third sanctioned way -- see AGENTS.md, 'The adversarial second reviewer' -- and must meet the same three invariants, including an explicit model override so it does not inherit the implementing model." ;;
+  *)  refuse E_BACKEND "--backend '$BACKEND' is not a backend this script runs; use codex or claude. A sub agent in your own session is a third sanctioned way -- see AGENTS.md, 'The adversarial second reviewer' -- and must meet the same three invariants itself." ;;
 esac
 
 [ -n "$MODEL" ] || refuse E_MODEL "--model is required: name the model the reviewer must use."
 [ -n "$IMPLEMENTER" ] || refuse E_IMPL_MODEL \
   "--implementer-model is required: a second review means a different model reviewed the change, and this script cannot assert that without the model that wrote it."
 
-# Compare the names the way the backends vary them, so a vendor prefix, a Bedrock
-# cross-Region prefix, a version suffix or a context-window suffix cannot hide that two
-# names are one model: "us.anthropic.claude-sonnet-5-5:0", "anthropic.claude-sonnet-5-5"
-# and "claude-sonnet-5-5" all normalise the same. At most one version suffix and one
-# context-window suffix come off, in whichever order they appear -- the first matching
-# expression wins and `t` ends the script -- so ":0[1m]" and "[1m]:0" reduce alike without
-# collapsing genuinely different names: "model:1:2" and "model[a][b]" keep a suffix and
-# stay distinct from "model".
+# Normalise away a vendor prefix, a Bedrock cross-Region prefix, a version suffix and a
+# context-window suffix, so "us.anthropic.claude-sonnet-5-5:0" and "claude-sonnet-5-5"
+# compare equal without collapsing genuinely different names.
+# Does NOT strip internal whitespace: check_model_charset (always called on the input
+# before this) allows a model name to hold a space -- a backend may be pointed at a custom
+# model identifier that contains one -- and already refuses a leading or trailing one.
+# Second-review finding (issue #100 round 3): this used to "tr -d '[:space:]'", so a
+# reported name "a b" normalised to "ab" and was compared equal to an implementer "ab",
+# refusing a review by a genuinely different-looking model as E_REPORTED_SAME_MODEL.
 normalise_model() {
   local m
-  m=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
-  m=$(printf '%s' "$m" | sed -E 's/^(us|eu|apac|global|us-gov)\.//')
-  m=$(printf '%s' "$m" | sed -E 's/^(anthropic|openai|amazon|meta|mistral|cohere|ai21|deepseek|qwen|writer|stability|twelvelabs|luma)\.//')
+  m=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  # A Bedrock cross-Region prefix, stripped by what follows it rather than by an enumerated
+  # list of Region codes: "^[a-z]+(-[a-z]+)?\." matches any such prefix, but only when it is
+  # directly followed by a known vendor name, so it is never stripped off something that
+  # merely looks like one. Second-review finding (issue #100 round 8): the enumerated list
+  # ("us|eu|apac|global|us-gov") was missing "jp", "au" and "ca", all real Bedrock Region
+  # prefixes, so a name using one of those kept its Region AND its vendor prefix, comparing
+  # as a different model from the same name written without either -- the unsafe direction.
+  # An enumerated list of Region codes can always be missing the next one; matching by what
+  # it precedes cannot -- but the vendor list right after it is itself still an enumeration,
+  # and round 10 found it was missing moonshot, google, nvidia, minimax and zai (also real
+  # Bedrock vendor prefixes); added below. Read "cannot" as about the Region half only.
+  m=$(printf '%s' "$m" | sed -E 's/^[a-z]+(-[a-z]+)?\.(anthropic|openai|amazon|meta|mistral|cohere|ai21|deepseek|qwen|writer|stability|twelvelabs|luma|moonshot|google|nvidia|minimax|zai)\./\2./')
+  m=$(printf '%s' "$m" | sed -E 's/^(anthropic|openai|amazon|meta|mistral|cohere|ai21|deepseek|qwen|writer|stability|twelvelabs|luma|moonshot|google|nvidia|minimax|zai)\.//')
   m=$(printf '%s' "$m" | sed -E 's/\[[^][]*\]:[0-9]+$//; t
                                   s/:[0-9]+\[[^][]*\]$//; t
                                   s/\[[^][]*\]$//; t
                                   s/:[0-9]+$//')
+  # Bedrock's own model-ID spelling, e.g. "anthropic.claude-sonnet-4-5-20250929-v1:0", adds
+  # two more things the API name ("claude-sonnet-4-5-20250929" or "claude-sonnet-4-5") never
+  # has: a "-vN" revision and a release date. Second-review finding (issue #100 round 6):
+  # left unstripped, the same underlying model named the Bedrock way on one side and the API
+  # way on the other normalised to two different strings and passed both the same-model and
+  # the reported-same-model refusal -- the unsafe direction, since the whole point of this
+  # comparison is to catch exactly that pairing. Strip both, in this order (the "-vN" is
+  # closer to the end once the Region/vendor/version-suffix stripping above has already run).
+  # Stripping the date also makes two genuinely different dated snapshots compare equal,
+  # which fails closed (a false "same model" refusal) rather than open, so it is the
+  # direction to err in here.
+  m=$(printf '%s' "$m" | sed -E 's/-v[0-9]+$//')
+  m=$(printf '%s' "$m" | sed -E 's/-[0-9]{8}$//')
   printf '%s' "$m"
 }
+# Known remaining ways the same model can still normalise to two different strings
+# (found by a second-review round, not fixed, because none of them was reproduced against
+# a real backend): a trailing Bedrock context-window tag ("...-v1:0:200k"), a full
+# inference-profile ARN, a "-latest" alias, OpenAI's dashed-date spelling
+# ("gpt-5-2025-08-07") rather than Anthropic's undashed one, and a numbered (not dated)
+# revision such as "openai.gpt-oss-120b-1:0", which the ":[0-9]+$" strip above takes for a
+# context-window suffix and leaves the "-1" in place. This fails open, not closed -- the
+# same model could pass as different -- so treat --implementer-model and --model as
+# needing a form this function already handles, rather than assuming any spelling works.
 
-# Every model name is written into review-record.txt for a person to read, and codex's
-# reported name and the two names given on the command line were never validated -- only
-# claude's modelUsage keys were. A tab, a newline or an ESC in any of them can forge or
-# alter a field of that record, so they all go through one check: printable ASCII, and no
-# leading or trailing space. "+" is rejected only where claude joins several names with it.
-# The whole value is tested as one string, with a shell pattern rather than grep: grep
-# works a line at a time, so a name of "good<newline>forged" passed it on the strength of
-# its first line, and then reached the record with a line break in it. LC_ALL=C keeps
-# [:print:] to the ASCII range the record can carry.
+# Every model name ends up in review-record.txt for a person to read, so it must be a single
+# printable-ASCII line with no leading or trailing space: a tab, a newline or an ESC in one
+# could forge or alter a field of that record.
 check_model_charset() {
   local LC_ALL=C
   case "$1" in
@@ -236,13 +240,12 @@ check_model_charset() {
     " "*|*" " ) refuse E_MODEL_NAME \
       "$2 '$1' begins or ends with a space, so it would be recorded as a different name than the one that answered." ;;
     *[![:print:]]*) refuse E_MODEL_NAME \
-      "$2 holds a character that is not printable ASCII -- a tab, a line break or a control character -- which cannot be carried or recorded safely. The name is in the run's arguments; it is not repeated here because it would break this message across lines." ;;
+      "$2 holds a character that is not printable ASCII, which cannot be carried or recorded safely." ;;
   esac
 }
 
 # A name that is nothing but a prefix ("amazon.") normalises to the empty string, and two
 # empty strings would compare equal while an empty and a real one would compare different.
-# Neither is a model, so refuse the name instead of comparing it.
 check_model_name() {
   [ -n "$2" ] || refuse E_MODEL_NAME \
     "$3 '$1' is not a model name: everything in it is a vendor prefix, a Region prefix or a version suffix, so there is nothing left to compare."
@@ -260,467 +263,118 @@ check_model_name "$IMPLEMENTER" "$impl_model" "--implementer-model"
 # --- the tools and the paths --------------------------------------------------------------
 
 case "$BACKEND" in
-  codex)  BACKEND_CMD="${SECOND_REVIEW_CODEX_CMD:-codex}"
-          BACKEND_ENV=SECOND_REVIEW_CODEX_CMD ;;
-  claude) BACKEND_CMD="${SECOND_REVIEW_CLAUDE_CMD:-claude}"
-          BACKEND_ENV=SECOND_REVIEW_CLAUDE_CMD ;;
+  codex)  BACKEND_CMD="${SECOND_REVIEW_CODEX_CMD:-codex}"  BACKEND_ENV=SECOND_REVIEW_CODEX_CMD ;;
+  claude) BACKEND_CMD="${SECOND_REVIEW_CLAUDE_CMD:-claude}" BACKEND_ENV=SECOND_REVIEW_CLAUDE_CMD ;;
 esac
-# Before "command -v", whose own substitution would strip a trailing newline and hand back
-# the sibling command to run instead.
-no_line_break "$BACKEND_CMD" "the \$$BACKEND_ENV command path" E_CMD_MISSING
 resolved_cmd=$(command -v -- "$BACKEND_CMD" 2>/dev/null) || resolved_cmd=''
 [ -n "$resolved_cmd" ] && [ -x "$resolved_cmd" ] || refuse E_CMD_MISSING \
   "cannot run the $BACKEND backend: '$BACKEND_CMD' is not an executable command. Install it, or name the command to use in \$$BACKEND_ENV."
-# Again on what "command -v" came back with: a bare name is looked up on $PATH, so a $PATH
-# entry holding a line break puts one in a path the caller never typed.
-no_line_break "$resolved_cmd" "the $BACKEND command's path" E_CMD_MISSING
-# And on what it RESOLVES to, which is a third site and the one the class-closed claim was
-# missing: the chain walk below follows only each path's LAST component, so a symbolic link
-# in a DIRECTORY component of the command path is collapsed by realpath alone. A directory
-# component that resolves to a name holding a line break therefore reached both
-# not_an_output_name's "realpath -m" and the cmd_target substitution further down with the
-# newline silently gone, so each compared a sibling directory.
-# This makes the cmd_target comparison exact, because that is the same path this resolves.
-# It does NOT make not_an_output_name's exact when the command's own LAST component is a
-# link: this follows the link, that resolves only the dirname, so it still meets the
-# exception the helper's comment above records. Fails closed there, as that comment says.
-no_line_break_resolved "$resolved_cmd" "the resolved $BACKEND command path" E_CMD_MISSING
 
 command -v python3 >/dev/null 2>&1 || cannot_check "python3 is needed to read the backend's record of which model answered."
-command -v sha256sum >/dev/null 2>&1 || cannot_check "sha256sum is needed to show the reviewer did not change the tree."
-command -v readlink >/dev/null 2>&1 || cannot_check "readlink is needed to check every link the backend command points through."
-
-# Each caller-supplied path, before it is used for anything at all: --out first, because it
-# is the one whose sibling gets CLEARED.
-no_line_break "$OUT" "the --out path" E_OUT
-no_line_break "$BRIEF" "the --brief path" E_BRIEF
-no_line_break "$TREE" "the --tree path" E_TREE
+command -v sha256sum >/dev/null 2>&1 || cannot_check "sha256sum is needed to show the tree did not change."
+command -v cmp >/dev/null 2>&1 || cannot_check "cmp is needed to compare the tree's fingerprints."
 
 [ -f "$BRIEF" ] || refuse E_BRIEF "no brief at '$BRIEF'. Write one from the second-review skill's assets/review-brief.md."
 [ -s "$BRIEF" ] || refuse E_BRIEF "the brief at '$BRIEF' is empty; a reviewer given nothing to check finds nothing."
 # Readable, not merely present and non-empty: -f and -s both pass for a mode-000 file, and
-# the failure then surfaced far later and misattributed. On the codex path "cat" failed and
-# set -e ended the run with no tag at all; on the claude path the input redirection failed,
-# which was reported as "the claude backend exited 1" when claude had never run.
-[ -r "$BRIEF" ] || refuse E_BRIEF "the brief at '$BRIEF' cannot be read (check its permissions); the reviewer is given it on standard input, so the run would fail after the output directory had already been cleared."
+# the reviewer is given the brief on standard input, so an unreadable one would otherwise
+# fail far later and be misreported as the backend's fault.
+[ -r "$BRIEF" ] || refuse E_BRIEF "the brief at '$BRIEF' cannot be read (check its permissions); the reviewer is given it on standard input."
 [ -d "$TREE" ] || refuse E_TREE "no tree to review at '$TREE'. Extract the commit there first ('git archive <commit> | tar -x -C $TREE')."
 
-# The brief, the review and the trace all belong in the gitignored tmp/, and the trace can
-# hold credential details, so both paths are checked before anything is created and a
-# refused run leaves nothing behind in a tracked folder. -m resolves a path that does not
-# exist yet; both sides are canonical, so a "..", a symbolic link, or a sibling whose name
-# merely starts with "tmp" cannot pass.
-# tmp/ itself must be a real directory in the repository. Were it a symbolic link to, say,
-# examples/, resolving it would make a tracked folder the approved destination and the
-# check would wave the trace straight into it.
-[ ! -L "$REPO_ROOT/tmp" ] || refuse E_TMP_IS_LINK \
-  "'$REPO_ROOT/tmp' is a symbolic link, so where the brief, the review and the trace would land is not this repository's gitignored tmp/. Make it a real directory."
-TMP_ABS=$(realpath -m "$REPO_ROOT/tmp") || refuse E_NOT_IN_TMP \
-  "could not resolve '$REPO_ROOT/tmp', so there is nothing to check the brief and output paths against."
-# Every name this script writes into --out, in one place. The cleanup below clears exactly
-# these, and no input the script reads may sit at one of them. Keeping the list in two
-# places meant the check and the cleanup had to be kept in step by hand, which is the kind
-# of enumeration this script otherwise avoids.
-OUT_NAMES="review.out review.err review.json review-record.txt record.tsv
-preamble.txt pre-user.txt codex-stdin.txt
-tree-before.sha256 tree-at-return.sha256 tree-after.sha256"
-
-# An input at one of those names would pass its own [ -f ] check and then be removed by the
-# cleanup before it could be read, so refuse it rather than delete the thing we were asked
-# to read. Checked for every input path rather than only the brief: a settings file at one
-# of the names was cleared the same way, and because its own check now runs before the
-# cleanup, the run went on to hand claude a file that was no longer there.
-# $3 names the input in the message, $4 is the tag to refuse with, so each input refuses
-# under the tag its own option already uses.
-not_an_output_name() {
-  local n d
-  # The directory is resolved here, not left to the caller. The brief and the settings file
-  # arrive already canonical, but the backend command does not: "command -v" hands back the
-  # command as typed, so a relative "tmp/review/review.out" or a "./" in the middle gave a
-  # dirname that never equalled $2, and the guard passed while the cleanup still unlinked
-  # the file. Only the directory is resolved: the cleanup removes the NAME, so a symbolic
-  # link at one of these names is cleared whatever it points at, and resolving the whole
-  # path would compare the target instead.
-  d=$(realpath -m -- "$(dirname -- "$1")" 2>/dev/null) || refuse "$4" \
-    "$3 '$1' has a directory this script cannot resolve, so it cannot be shown to sit outside --out. A guard that cannot answer must refuse, as the tmp/ containment check does."
-  for n in $OUT_NAMES; do
-    [ "$(basename -- "$1")" = "$n" ] || continue
-    [ "$d" != "$2" ] || refuse "$4" \
-      "$3 '$1' has the name of a file this script writes into --out, and would be removed before being read. Rename it."
-  done
-}
-
-in_repo_tmp() {
-  local p
-  # A symlink loop or a path realpath cannot resolve must refuse, not run unchecked.
-  p=$(realpath -m "$1" 2>/dev/null) || refuse E_NOT_IN_TMP \
-    "could not resolve $2 '$1' to a real path, so it cannot be shown to be under this repository's gitignored tmp/."
-  case "$p/" in "${TMP_ABS%/}/"*) printf '%s' "$p"; return 0 ;; esac
-  refuse E_NOT_IN_TMP \
-    "$2 '$p' is not under this repository's gitignored tmp/ ('$TMP_ABS'). The brief, the review and the backend's trace live there: the trace can hold credential details, and anything in a tracked folder is one 'git add' from being published."
-}
-# What they resolve to, checked BEFORE they are resolved here: in_repo_tmp returns its answer
-# through a command substitution, so by the time OUT_ABS holds a value any trailing newline
-# is already gone and a test on it would be a test on the sibling.
-no_line_break_resolved "$OUT" "the resolved --out path" E_OUT
-no_line_break_resolved "$BRIEF" "the resolved --brief path" E_BRIEF
-OUT_ABS=$(in_repo_tmp "$OUT" --out)
-BRIEF_ABS=$(in_repo_tmp "$BRIEF" --brief)
-not_an_output_name "$BRIEF_ABS" "$OUT_ABS" "the brief" E_BRIEF
-# The backend command is an input path too. A backend binary living inside --out under one
-# of these eleven names is far-fetched, but the command path is taken from the environment,
-# so it is the caller's to get wrong: the cleanup would unlink it after it had passed its
-# own executable check. Not at --version, whose failure is swallowed by
-# "|| backend_version=''": the run fails at the backend invocation, as E_RUN_FAILED. The exit
-# code depends on the name AND on the backend, because the two do not re-create the same
-# names before the call: a command path this script has just re-created as a fresh,
-# non-executable file gives 126, and one that is simply not there gives 127. Before the codex
-# call the re-created names are review.out, review.err, codex-stdin.txt and
-# tree-before.sha256; before the claude call they are review.err, review.json and
-# tree-before.sha256 -- review.out is written later, by the record extractor -- so a claude
-# command at review.out gives 127 where a codex one gives 126. Measured: a codex command
-# pointing at review.out exits 126.
-not_an_output_name "$resolved_cmd" "$OUT_ABS" "the $BACKEND command" E_CMD_MISSING
-# ...and every link it points THROUGH, not only the name it was given. For the brief and the
-# settings file the name is the whole story, because the cleanup removes the name and leaves
-# the target alone. The command is different: it is EXECUTED through the path as typed, so
-# every link in the chain has to survive the cleanup. A chain
-# "PATH/codex -> $OUT/review.out -> /real/codex" passes a check on the first name and a check
-# on the final target alike, since both of those are innocent; the cleanup then unlinks the
-# middle one, and the run dies at the backend call with any earlier review in that --out
-# already gone (measured: E_RUN_FAILED, exit 126). So walk the chain and check each hop. A
-# relative target is resolved against the link's own directory, as the kernel does. The walk
-# ends by itself, because a loop would already have failed the -x above; the hop bound is a
-# backstop against a link created while this runs, not a case a caller can produce.
-cmd_hop="$resolved_cmd" cmd_hops=0
-while [ -L "$cmd_hop" ]; do
-  cmd_hops=$((cmd_hops + 1))
-  [ "$cmd_hops" -le 64 ] || refuse E_CMD_MISSING \
-    "the $BACKEND command '$resolved_cmd' points through more than 64 symbolic links, so where it leads cannot be established. A guard that cannot answer must refuse."
-  # "&& printf X", then both the X and the one newline readlink itself prints taken back
-  # off, because "$( )" strips EVERY trailing newline and a link target may legally end in
-  # one. Read the plain way, such a target came back as a different path and the walk
-  # followed that instead: it stopped at a path with an innocent name while the kernel went
-  # on through the real chain, so every later hop went unchecked. "&&" rather than ";" keeps
-  # readlink's own failure as the substitution's exit status.
-  cmd_link=$(readlink -- "$cmd_hop" && printf X) || refuse E_CMD_MISSING \
-    "could not read the symbolic link '$cmd_hop' that the $BACKEND command '$resolved_cmd' points through, so where it leads cannot be established. A guard that cannot answer must refuse."
-  cmd_link=${cmd_link%X}
-  cmd_link=${cmd_link%$'\n'}
-  # A target that holds a line break is refused rather than carried, for the reason
-  # no_line_break gives: dirname and basename strip one too, so not_an_output_name would be
-  # answering about a sibling of the path the kernel actually uses. Measured against the
-  # previous commit, where the stripping happened silently: a chain whose first target ended
-  # in a newline was ACCEPTED with its hop at an output name in --out never looked at, and
-  # the cleanup then destroyed the earlier result sitting there -- by two routes, one making
-  # the walk's stopping point the command's own inode, so the "-ef" arrival check below was
-  # true, and one making it the command's own resolved path, so comparing resolved paths
-  # would have been true as well. No arrival check can see either; only keeping the target's
-  # bytes and refusing the line break can. With this refusal and the ones on $resolved_cmd
-  # above, every path the walk builds is free of newlines, so the dirname below is exact.
-  no_line_break "$cmd_link" "a symbolic-link target the $BACKEND command points through" E_CMD_MISSING
-  case "$cmd_link" in
-    /*) cmd_hop="$cmd_link" ;;
-    *)  cmd_hop="$(dirname -- "$cmd_hop")/$cmd_link" ;;
-  esac
-  not_an_output_name "$cmd_hop" "$OUT_ABS" "the $BACKEND command points through," E_CMD_MISSING
-done
-# The walk above ends on "[ -L ] is false", which means BOTH "this is the end of the chain"
-# and "this path could not be looked at" -- and the second silently leaves every hop after it
-# unchecked, which is the fail-open shape this guard exists to remove. One way to get there
-# is left once targets are carried exactly: a relative target is concatenated rather than
-# normalised, so a chain of long relative targets grows the path STRING past PATH_MAX while
-# the kernel still resolves the chain one target at a time (measured: five hops of 960
-# characters end the walk at 4816 characters, with -x on the command still passing). So
-# require that the walk arrived at the command's own file.
-# What this establishes, exactly, because the first version of this comment claimed more than
-# it does: -ef compares device and inode with links followed, so it is true whenever the walk
-# completed -- including when the command is not a link at all, where cmd_hop is still the
-# command -- and false whenever the path the walk stopped at cannot be stat'd, which is the
-# PATH_MAX case. It is NOT "false exactly when the walk ended somewhere else": a stopping
-# point that is the same file under another name, a hard link or a bind mount, passes it.
-# That is why the newline is refused up in the walk instead of being caught here -- a
-# measured bypass did exactly that -- and reaching this line at a stat-able wrong path now
-# needs the walk to lose information some other way than the two that were found.
-[ "$cmd_hop" -ef "$resolved_cmd" ] || refuse E_CMD_MISSING \
-  "could not follow every link the $BACKEND command '$resolved_cmd' points through -- the walk ended at a path that is not the command's own file -- so the chain cannot be shown to stay clear of --out. A guard that cannot answer must refuse."
-# ...and where it ends up with every DIRECTORY component resolved as well. Being exact about
-# what this adds, because it is easy to overclaim: once the walk above has completed, almost
-# nothing. The walk's last hop is the command's own file, and not_an_output_name resolves the
-# directory of every name it is given, so a path that ends at an output name in --out -- by a
-# directory link, by "..", or after leaving and re-entering --out -- is already refused up
-# there. It is kept as redundancy, deliberately and not as dead code: this is the line that
-# was failing open, and the walk is new.
-# It refuses when it cannot resolve rather than skipping the check: it used to fall back to an
-# empty value and pass. That refusal is unreachable without a stub -- "-x" above has already
-# resolved this path through the kernel, so the only ways here are a realpath that cannot
-# answer (which is how the proof case reaches it) or the path changing under the run -- but
-# the rule is the one not_an_output_name states, a guard that cannot answer must refuse, and a
-# later edit must not be able to reintroduce the fallback by accident.
-cmd_target=$(realpath -- "$resolved_cmd" 2>/dev/null) || refuse E_CMD_MISSING \
-  "could not resolve where the $BACKEND command '$resolved_cmd' points, so it cannot be shown to sit outside --out. A guard that cannot answer must refuse, as the tmp/ containment check does."
-[ "$cmd_target" = "$resolved_cmd" ] || \
-  not_an_output_name "$cmd_target" "$OUT_ABS" "the $BACKEND command resolves to," E_CMD_MISSING
-
-# The tree, for the second time in the same vein, and again before the line that resolves it.
-# Refused on both backends -- only codex has a preamble to forge a line of, but neither
-# backend can be given the wrong tree.
-no_line_break_resolved "$TREE" "the resolved --tree path" E_TREE
+BRIEF_ABS=$(realpath "$BRIEF")
 TREE_ABS=$(realpath "$TREE")
+# Resolved with -m, which does not require --out to exist yet, and checked for containment
+# in the tree BEFORE anything creates it. Second-review finding (issue #100 round 5): doing
+# "mkdir -p" first and checking after meant a --out given as a not-yet-existing path inside
+# the tree was created -- mutating the tree under review -- and only then refused, leaving
+# the directory behind: a refusal with a side effect, in the one script whose whole point is
+# that nothing side-effects the tree.
+OUT_ABS=$(realpath -m "$OUT")
 
-# This script's own output inside the tree would show up as the tree changing, and read
-# as a reviewer that wrote to it. Keep them apart rather than explain the false alarm.
+# --out must sit outside the tree. This is not confinement -- nothing here stops the
+# reviewer writing -- it is what keeps the evidence readable: this script's own output
+# landing inside the tree would show up as the tree changing and be indistinguishable from
+# the reviewer having changed it. With the fingerprint now carrying invariant 2 on its own,
+# that matters more than it did when a sandbox flag was also in the way.
 tree_prefix="${TREE_ABS%/}/"
 case "$OUT_ABS/" in
   "$tree_prefix"*) refuse E_OUT_IN_TREE \
-    "--out '$OUT_ABS' is inside the tree under review '$TREE_ABS'; this script's own files would read as the reviewer changing the tree. Put --out beside the tree, under the repository's tmp/." ;;
+    "--out '$OUT_ABS' is inside the tree under review '$TREE_ABS'; this script's own files would read as the tree changing. Put --out beside the tree, not in it." ;;
 esac
-
-# A reviewer must not be able to change what it reviews. The backend is told to run
-# read-only, and this is the check that it did: every path's type, mode, size, modification
-# time and symlink target, and every regular file's content hash, before and after. A
-# single added, removed, edited, re-pointed or re-permissioned path fails the run. What it
-# is not guaranteed to see: a file created and deleted within the run, and any write outside
-# the tree. "Not guaranteed" rather than "cannot", for the first of those: creating and
-# removing a file changes the mtime of the directory that held it, and every directory's
-# mtime below the root is fingerprinted, so such a change usually does show up -- unless it
-# was in the tree's own root directory, which -mindepth 1 skips, or the mtime was put back.
-# "Usually" is more optimistic on the codex path than it sounds: codex is given the tree as
-# its working directory with -C, so a scratch file it creates and removes lands in exactly
-# the root directory that is skipped. The second limit is flat: nothing outside the tree is
-# looked at.
-# Records are NUL-delimited, and so is the hash list, because a path may legally hold a
-# newline or the text " -> ": with line-delimited records two different trees could line
-# up to the same fingerprint. cmp compares the bytes, so the delimiter never has to be
-# read back.
-# The first pipeline carries "|| exit 1" of its own rather than relying on set -e: this
-# function is also called from an "if" condition, where set -e is switched off for the whole
-# call, and the subshell's status would then come only from the second pipeline. A tree whose
-# metadata listing failed but which holds no regular file for the second pipeline to hash
-# would otherwise produce a short baseline, and what happened next depended on whether the
-# failure persisted -- two different bad outcomes, not one sequence. Persistent: the at-return
-# fingerprint runs as a plain command, so set -e ended the run, after the backend had been
-# paid for and with no tag. Transient: that fingerprint succeeded, so the short baseline was
-# compared against a full one and the reviewer was blamed for "changing" the tree. What this
-# buys is refusing early instead, with the right cause.
-tree_fingerprint() {
-  ( cd "$1" || exit 1
-    { find . -mindepth 1 -printf '%y %m %s %T@ %p -> %l\0' | LC_ALL=C sort -z; } || exit 1
-    find . -mindepth 1 -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum -z )
-}
-
-# Validate the claude backend's two optional paths here, before anything is created or
-# removed. They were checked inside the backend branch, which runs after the cleanup below,
-# so a mistyped one deleted a completed review and only then refused -- ten to twenty-five
-# minutes of billed work lost to a typo.
-#
-# Emptied first, and deliberately: these two are read much later as "${var:-}" to decide
-# whether to pass --settings and --add-dir. Bash makes every environment variable a shell
-# variable, so without this an exported lowercase "claude_settings_abs" would reach
-# --settings with the allowlist never having run -- a settings file can carry hooks, which
-# execute -- and an exported "context_abs" would reach --add-dir without the containment
-# check that keeps the trace away from the reviewer. Before these checks were moved, the
-# arguments were appended inside the checked branch and neither could happen.
-claude_settings_abs='' context_abs=''
-if [ "$BACKEND" = claude ]; then
-  if [ -n "${SECOND_REVIEW_CLAUDE_SETTINGS:-}" ]; then
-    no_line_break "$SECOND_REVIEW_CLAUDE_SETTINGS" \
-      "the \$SECOND_REVIEW_CLAUDE_SETTINGS path" E_CLAUDE_SETTINGS
-    [ -f "$SECOND_REVIEW_CLAUDE_SETTINGS" ] || refuse E_CLAUDE_SETTINGS \
-      "\$SECOND_REVIEW_CLAUDE_SETTINGS names '$SECOND_REVIEW_CLAUDE_SETTINGS', which is not a file."
-    # The file it is checked for and the file claude is handed must be the same one: a name
-    # that RESOLVES to one ending in a newline would otherwise pass -f and then resolve to
-    # its SIBLING, which is the file the content allowlist reads and the one claude gets.
-    no_line_break_resolved "$SECOND_REVIEW_CLAUDE_SETTINGS" \
-      "the resolved \$SECOND_REVIEW_CLAUDE_SETTINGS path" E_CLAUDE_SETTINGS
-    claude_settings_abs=$(realpath "$SECOND_REVIEW_CLAUDE_SETTINGS") || refuse E_CLAUDE_SETTINGS \
-      "could not resolve \$SECOND_REVIEW_CLAUDE_SETTINGS '$SECOND_REVIEW_CLAUDE_SETTINGS'."
-    settings_verdict=$(python3 -I -c '
-import json, sys
-ALLOWED = {"awsCredentialExport", "apiKeyHelper"}
-try:
-    with open(sys.argv[1]) as f:
-        d = json.load(f)
-except Exception as e:
-    print("could not read it as JSON: %s" % str(e)[:200]); raise SystemExit(0)
-if not isinstance(d, dict):
-    print("it is a %s, not an object" % type(d).__name__); raise SystemExit(0)
-extra = sorted(set(d) - ALLOWED)
-if extra:
-    print("it sets %s; only %s may be set here. A settings file can carry hooks, MCP "
-          "servers, plugins, a status line, permissions and a model override, and several "
-          "of those run a command or widen what the reviewer can reach, so this is an "
-          "allowlist of the two authentication keys rather than a list of things to block"
-          % (json.dumps(extra)[:200], " or ".join(sorted(ALLOWED)))); raise SystemExit(0)
-# Exactly one, so a valid helper cannot sit beside a malformed second one.
-if len(d) != 1:
-    print("it sets %d of %s; set exactly one"
-          % (len(d), " or ".join(sorted(ALLOWED)))); raise SystemExit(0)
-k = next(iter(d))
-if not isinstance(d[k], str) or not d[k].strip():
-    print("its %s is %s, not a non-empty string, so it would restore no credential path "
-          "and the run would fall back to ambient credentials"
-          % (k, json.dumps(d[k])[:120])); raise SystemExit(0)
-print("OK")
-' "$claude_settings_abs" 2>/dev/null) || settings_verdict="could not be read"
-    [ "$settings_verdict" = OK ] || refuse E_CLAUDE_SETTINGS \
-      "the settings file '$claude_settings_abs' cannot be used: $settings_verdict."
-    not_an_output_name "$claude_settings_abs" "$OUT_ABS" \
-      "the settings file \$SECOND_REVIEW_CLAUDE_SETTINGS names," E_CLAUDE_SETTINGS
-  fi
-  if [ -n "${SECOND_REVIEW_CONTEXT_DIR:-}" ]; then
-    no_line_break "$SECOND_REVIEW_CONTEXT_DIR" \
-      "the \$SECOND_REVIEW_CONTEXT_DIR path" E_CONTEXT_DIR
-    [ -d "$SECOND_REVIEW_CONTEXT_DIR" ] || refuse E_CONTEXT_DIR \
-      "\$SECOND_REVIEW_CONTEXT_DIR names '$SECOND_REVIEW_CONTEXT_DIR', which is not a directory."
-    # Searchable is the hard requirement: without it nothing inside can be opened at all,
-    # and the only symptom would be a reviewer that silently never reads the diff the brief
-    # named. Being LISTABLE (-r) is not required, and demanding it refused a legitimate
-    # setup: a mode-0711 directory cannot be listed, but a file named in the brief by its
-    # absolute path still reads from it -- checked. Since the reviewer also holds Glob and
-    # Grep, which do need to list, say so rather than refuse.
-    [ -x "$SECOND_REVIEW_CONTEXT_DIR" ] || refuse E_CONTEXT_DIR \
-      "\$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR' cannot be searched (check its permissions); nothing inside it could be opened, so the reviewer would silently never read the diff the brief names."
-    # The "say so" half of the rule above. Without this the sentence described a message the
-    # script never printed, and a 0711 context directory still left Glob and Grep finding
-    # nothing in it with no sign of why.
-    [ -r "$SECOND_REVIEW_CONTEXT_DIR" ] || note \
-      "\$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR' can be searched but cannot be listed, so a file the brief names by its full path still reads, while the reviewer's Glob finds nothing there and its Grep searches only a file it is given by full path."
-    # As for the settings file: the directory checked and the directory handed to --add-dir
-    # have to be the same one, and a trailing newline is where they came apart.
-    no_line_break_resolved "$SECOND_REVIEW_CONTEXT_DIR" \
-      "the resolved \$SECOND_REVIEW_CONTEXT_DIR path" E_CONTEXT_DIR
-    context_abs=$(realpath "$SECOND_REVIEW_CONTEXT_DIR") || refuse E_CONTEXT_DIR \
-      "could not resolve \$SECOND_REVIEW_CONTEXT_DIR '$SECOND_REVIEW_CONTEXT_DIR'."
-    # Compare against a prefix that always ends in exactly one slash. The obvious
-    # "$dir"/* is wrong when the directory is "/", because realpath returns that with
-    # its own trailing slash and the pattern becomes //*, which matches no ordinary
-    # absolute path -- SECOND_REVIEW_CONTEXT_DIR=/ would then have been passed to
-    # --add-dir, handing the reviewer the whole filesystem, trace included. Writing it
-    # as "${dir%/}"/* is also wrong: that leaves a quoted empty string, which bash does
-    # not match either. Checked all three forms against "/" and ordinary paths. This
-    # also covers the directory being exactly --out, so no equality test is needed; one
-    # was there, could never run, and made a harness case pass with the wrong message.
-    context_prefix="${context_abs%/}/"
-    case "$OUT_ABS/" in
-      "$context_prefix"*) refuse E_CONTEXT_DIR \
-        "\$SECOND_REVIEW_CONTEXT_DIR '$context_abs' is, or contains, the output directory, so it would give the reviewer the backend's trace. Use a directory holding only what the reviewer may read." ;;
-    esac
-  fi
-fi
-
-# Read the tree once, discarding the result, before anything is cleared. The baseline
-# fingerprint below is a *write*, so it has to come after the cleanup -- but it can fail
-# because the TREE cannot be read, which is an input mistake (a mistyped --tree, a file
-# with no read permission) and not a write failure at all. Finding that out after the
-# cleanup meant a typo destroyed a previous run's review and was then reported as a problem
-# with --out. Reading it here costs one extra traversal and keeps every refusal that is
-# about the caller's arguments ahead of the cleanup.
-tree_fingerprint "$TREE_ABS" > /dev/null 2>&1 || refuse E_TREE \
-  "the tree at '$TREE_ABS' cannot be fully read, so it cannot be fingerprinted: check it exists and that every file and directory in it is readable. Nothing has been removed."
-
 mkdir -p "$OUT_ABS"
 
-# Remove anything already sitting at a name this script writes, immediately before the
-# first write. Every refusal this script can make from the caller's arguments alone now
-# comes earlier. What is left after this point either writes (the baseline fingerprint,
-# codex-stdin.txt, the mktemp for the reviewer's working directory) or reads the backend's
-# own output. Two honest exceptions, both after the cleanup. An argument only the BACKEND can
-# judge -- a bad --model, provider or effort, or credentials its settings file does not
-# carry -- still surfaces as E_RUN_FAILED, and that cannot be checked here. And an --out that
-# cannot be written is refused in several different places, depending on what is in it and
-# when it became unwritable, and all of them were measured with a stub that chmods --out
-# while answering --version:
-#
-#   * unwritable from the start, with an earlier output still there: every rm fails and the
-#     second pass below refuses E_OUT_TAINTED, having removed nothing;
-#   * unwritable from the start and empty: every rm succeeds, and the first write refuses
-#     E_OUT_TAINTED instead;
-#   * becoming unwritable after the baseline fingerprint, codex path: the next write is
-#     codex-stdin.txt, which is not guarded, so set -e ends the run with bash's own UNTAGGED
-#     message. The same for a full disk, and the same later at tree-at-return.sha256;
-#   * becoming unwritable after the baseline fingerprint, claude path: the next thing is the
-#     mktemp for the reviewer's working directory, which IS guarded -- E_NO_CWD;
-#   * a redirection failing at the backend call lands in run_status -- but that is reported
-#     as E_RUN_FAILED, and reads as the backend's fault rather than --out's, only if --out is
-#     writable again by then: the next thing after the call is the tree-at-return
-#     fingerprint, whose own redirection fails for the same reason and ends the run untagged
-#     under set -e before the run_status check is reached;
-#   * an --out that mkdir -p above cannot create at all is untagged too.
-#
-# None of these records a review, and none of them removes anything from the tree. Tagging
-# the later writes is left to the redesign in issue #100 rather than added here.
-# Two reasons for that placement, both learned the hard way: with --out inside the tree
-# this loop deleted files from the snapshot and only then refused E_OUT_IN_TREE -- a guard
-# in a tool whose whole promise is not touching the tree, destroying files in it -- and a
-# re-run into a used --out with some other argument mistyped would throw away the previous
-# run's review.out and review-record.txt, which is ten to twenty-five minutes of billed
-# work, before refusing for the unrelated mistake.
-#
-# Removing rather than refusing, because refusing only caught symbolic links: a hard link
-# passes [ -L ] and shares its target's file, so ">", tee and python's open all write
-# straight into whatever it names. Checked both. Removing a name never touches its target,
-# and it covers symbolic links, hard links, FIFOs, sockets and device nodes at once. It can
-# only account for what exists before the run: something writing into --out *during* it
-# could overwrite tree-before.sha256 itself, which no check here could defend against.
-# The names come from $OUT_NAMES, set above and also used to refuse an input sitting at one
-# of them, so the cleanup and that check cannot drift apart.
-#
-# Two passes, because this is an action and not a refusal: a single pass that removed as it
-# went had already destroyed the earlier results by the time it met a name it could not
-# remove. Being exact about what the first pass buys, because it is easy to overclaim:
-#
-#   * It refuses a **directory** at any of the names without removing anything. That is the
-#     one blocker a caller can actually produce here, and the case that prompted this.
-#   * An **unwritable --out** is also atomic, by accident rather than design: every existing
-#     name then fails to be removed, so the second pass refuses on the first of them.
-#   * It does **not** cover every way `rm -f` can fail. An immutable or append-only file, a
-#     bind mount (EBUSY), a file owned by someone else in a sticky directory, or a directory
-#     created between the two passes will still refuse in the second pass, by which point
-#     earlier names are already gone. Each needs something the ordinary caller does not have:
-#     privilege (a bind mount; "chattr +i", checked -- refused without it, on Linux), a
-#     SECOND USER's file in a sticky directory, or another process racing this one -- and
-#     such a process could overwrite tree-before.sha256 anyway, which no check here defends
-#     against. An --out path long enough that only the longest names hit ENAMETOOLONG also
-#     qualifies, absurdly.
-#     One exception to "needs privilege", for honesty: on macOS a file's OWNER can set
-#     "chflags uchg", no privilege required. It is moot here only because this script needs
-#     GNU find -printf, realpath -m and sort -z, so it does not run on stock macOS anyway.
-#
-# So: the first pass makes the reachable case atomic and the second pass is the backstop,
-# whose message says only what it knows.
-for _n in $OUT_NAMES; do
-  if [ -d "$OUT_ABS/$_n" ] && [ ! -L "$OUT_ABS/$_n" ]; then
-    refuse E_OUT_TAINTED \
-      "'$OUT_ABS/$_n' is a directory, so this script cannot write its output there. Nothing has been removed. Use a fresh --out."
-  fi
-done
-for _n in $OUT_NAMES; do
-  if ! rm -f -- "$OUT_ABS/$_n" 2>/dev/null || [ -e "$OUT_ABS/$_n" ] || [ -L "$OUT_ABS/$_n" ]; then
-    refuse E_OUT_TAINTED \
-      "'$OUT_ABS/$_n' is in the way and this script cannot clear it -- something is re-creating it, or it cannot be removed. Earlier names in the list may already have been cleared, so treat a previous run's output there as lost. Use a fresh --out."
-  fi
-done
-
-# An --out that cannot be written at all reaches here: removing a name that is not there
-# succeeds, so the loop above passes and the first redirection is what fails. Tag that
-# failure rather than letting set -e end the run with bash's own untagged message.
-#
-# The first real write is the probe. A separate one at a fixed name was tried and was a
-# hole: ">" follows a symbolic link, so a stale or planted link at that name pointed the
-# probe wherever it liked -- checked, and it truncated a file in the tree -- and because
-# the probe ran before this fingerprint, the damage was already in the "before" baseline
-# and the run reported the tree unchanged. The names above have just been removed, so
-# writing to one of them cannot follow a link, and no extra name has to be cleared.
-if ! tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-before.sha256"; then
-  refuse E_OUT_TAINTED \
-    "could not write '$OUT_ABS/tree-before.sha256'. The tree was read successfully a moment ago, so this is about the destination: an --out that cannot be written, a full disk, or a read-only filesystem. Nothing in the tree has been touched."
+# Resolved here, before any fingerprint is taken, and only for claude: Codex reads an
+# absolute path anywhere regardless of SECOND_REVIEW_CONTEXT_DIR, which does nothing for
+# it. Second-review finding (issue #100 round 6): --add-dir grants claude's file tools
+# WRITE as well as read, so once the earlier finding gave claude a real write grant, the
+# context directory became a third thing invariant 2 had to cover and did not -- the
+# reviewer's own main input (typically the commit's diff) could change with nothing
+# noticing. Fingerprinted alongside the tree at all three checkpoints below.
+CTX_ABS=''
+if [ "$BACKEND" = claude ] && [ -n "${SECOND_REVIEW_CONTEXT_DIR:-}" ]; then
+  [ -d "$SECOND_REVIEW_CONTEXT_DIR" ] || refuse E_CONTEXT_DIR \
+    "\$SECOND_REVIEW_CONTEXT_DIR names '$SECOND_REVIEW_CONTEXT_DIR', which is not a directory."
+  CTX_ABS=$(realpath "$SECOND_REVIEW_CONTEXT_DIR")
+  # Second-review finding (issue #100 round 7): with no check here, --out equal to or
+  # nested inside the context directory meant this script's own output (review.out,
+  # review.err, review-record.txt, the fingerprints themselves) landed inside what gets
+  # fingerprinted as the context directory, so the run always reported E_CONTEXT_CHANGED
+  # and wrongly blamed the reviewer. Checked before any fingerprint is taken, mirroring the
+  # --out-inside-the-tree check below -- but that check comes after this one, because OUT_ABS
+  # is already resolved by the time this runs and testing it here is just as cheap.
+  ctx_prefix="${CTX_ABS%/}/"
+  case "$OUT_ABS/" in
+    "$ctx_prefix"*) refuse E_CONTEXT_DIR \
+      "--out '$OUT_ABS' is inside \$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS'; this script's own files would read as the context directory changing. Put --out outside it." ;;
+  esac
 fi
 
-# A short, per-run ASCII line, prepended to what the codex backend reads and used to
-# authenticate the preamble boundary below. It only has to be something the brief cannot
-# already contain -- the brief is written before the run -- so bash's own RANDOM is
-# enough and adds no dependency on another tool.
+# --- invariant 2: the tree did not change, and here is the evidence ---------------------
+
+# Every path's type, mode, size, modification time and symlink target, and every regular
+# file's content hash. This is now the whole of invariant 2: the reviewer is not prevented
+# from writing to the tree, so this is what shows whether it did.
+#
+# What it is not guaranteed to see, stated plainly because nothing else backs the claim up:
+# ownership, ACLs, extended attributes, hard-link count, and anything else find's -printf
+# below does not report (a hard link made from outside the tree to a file inside it changes
+# none of what is tracked here -- verified in a second-review round); a file created and
+# deleted inside the run where the directory that held it has every tracked attribute,
+# including its mtime, put back before the run ends; and any write anywhere outside the
+# tree, which is not looked at at all. The root directory's own metadata IS included
+# (-mindepth 0, below): an earlier version excluded it, and a stub both changing the root's
+# mode and creating-and-deleting a file directly in it went uncaught, because the one
+# directory whose mtime would have shown it was the one the fingerprint skipped.
+#
+# Records are NUL-delimited: a path may legally hold a newline or " -> ", and with
+# line-delimited records two different trees could line up to the same fingerprint.
+# The first pipeline carries its own "|| exit 1" rather than relying on set -e, because this
+# function is also called from an "if" condition, where set -e is off for the whole call.
+tree_fingerprint() {
+  ( cd "$1" || exit 1
+    { find . -mindepth 0 -printf '%y %m %s %T@ %p -> %l\0' | LC_ALL=C sort -z; } || exit 1
+    find . -mindepth 0 -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum -z )
+}
+
+# Read the tree once before the run proper, so that a tree which cannot be read is reported
+# as the input mistake it is (a mistyped --tree, a file with no read permission) rather than
+# surfacing later as a failure to write the baseline.
+tree_fingerprint "$TREE_ABS" > /dev/null 2>&1 || refuse E_TREE \
+  "the tree at '$TREE_ABS' cannot be fully read, so it cannot be fingerprinted: check it exists and that every file and directory in it is readable."
+
+tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-before.sha256"
+if [ -n "$CTX_ABS" ]; then
+  tree_fingerprint "$CTX_ABS" > "$OUT_ABS/ctx-before.sha256" || refuse E_CONTEXT_DIR \
+    "\$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' cannot be fully read, so it cannot be fingerprinted."
+fi
+
+# A short, per-run line the brief cannot already contain, used to authenticate the preamble
+# boundary in codex's trace below. Kept deliberately (maintainer ruling on issue #100): the
+# preamble is still where the model name is read on the codex path, and without the boundary
+# check a brief holding a line "model: <implementer>" supplies the value this script records
+# -- which is exactly how it was found, because a brief reviewing this script quotes
+# preambles naturally. bash's own RANDOM is enough, since the brief is written before the run.
 NONCE_LINE="second-review-nonce-$$-${RANDOM}${RANDOM}${RANDOM} (harness marker, ignore this line)"
 
 timeout_cmd=()
@@ -734,19 +388,31 @@ note "model       $MODEL requested; the implementer was $IMPLEMENTER"
 note "tree        $TREE_ABS"
 note "brief       $BRIEF_ABS"
 note "writing     $OUT_ABS/review.out, review.err, review-record.txt"
+note "the reviewer may write and run commands; the tree is fingerprinted before and after."
 note "this usually takes 10 to 25 minutes, less for a tightly scoped brief; review.out is written at the end."
 
 run_status=0
+permissions=''
 case "$BACKEND" in
   codex)
-    # --sandbox read-only alone does NOT stop codex writing: it leaves the approval policy
-    # at on-request, so apply_patch asks to escalate, and a host whose config sets
-    # approvals_reviewer answers that ask by itself. Observed on 2026-10-25: a reviewer run
-    # with --sandbox read-only created a file in the tree and appended to a page, and
-    # reported both as successful. approval_policy=never leaves nothing to answer the ask,
-    # and the same two writes come back "read-only file system".
-    codex_args=(exec --skip-git-repo-check --sandbox read-only -c approval_policy="never"
-                -C "$TREE_ABS" -m "$MODEL")
+    # workspace-write, not read-only: the reviewer is meant to be able to run the thing it
+    # is reviewing. approval_policy=never stays, but it is here for non-interactivity --
+    # "codex exec" has no one to answer an escalation prompt, so without it a run can stall
+    # or silently refuse -- and NOT as a confinement guard. Nothing below reads the preamble
+    # back to check either of them; the tree fingerprint is the evidence now.
+    #
+    # -C points at a workspace of its own (mktemp -d), NOT the tree, mirroring claude below.
+    # Found by actually running it: under --sandbox workspace-write, codex's own sandboxing
+    # creates and removes something directly in its CWD on every shell command it runs --
+    # even a plain "ls", even when the model writes nothing at all -- which changed the
+    # CWD's own mtime every time. Pointed at the tree, that tripped the tree-root check
+    # issue #100's first review round added on every substantive run, with zero write from
+    # the model. Codex still reads an absolute path anywhere regardless of its CWD, so it
+    # reaches the tree exactly as before; the brief names its absolute path.
+    codex_cwd=$(mktemp -d) || refuse E_NO_CWD \
+      "could not make a workspace for the reviewer, so there is nowhere to run it that is outside the tree."
+    codex_args=(exec --skip-git-repo-check --sandbox workspace-write
+                -c approval_policy="never" -C "$codex_cwd" -m "$MODEL")
     # An "[ x ] && y" here would end the script under set -e whenever x is false.
     if [ -n "${SECOND_REVIEW_CODEX_PROVIDER:-}" ]; then
       codex_args+=(-c "model_provider=\"$SECOND_REVIEW_CODEX_PROVIDER\"")
@@ -755,24 +421,19 @@ case "$BACKEND" in
       codex_args+=(-c "model_reasoning_effort=\"$SECOND_REVIEW_CODEX_EFFORT\"")
     fi
     codex_args+=(-)
-    # What codex actually reads: this run's nonce, then the brief. The nonce is what the
-    # preamble boundary is authenticated against below, so it must not be anything the
-    # author could have written into the brief.
     {
       printf '%s\n' "$NONCE_LINE"
       cat "$BRIEF_ABS"
     } > "$OUT_ABS/codex-stdin.txt"
-    # Take the AWS credentials out of the environment unless asked not to, so a machine
-    # that holds credentials for another account cannot have the review billed to it: the
-    # backend is left with whatever its own configuration pins. Fails closed -- a codex
-    # that needed those credentials now cannot authenticate, and says so through
-    # E_RUN_FAILED rather than quietly billing someone else.
+    # Take the AWS credentials out of the environment unless asked not to, so a machine that
+    # holds credentials for another account cannot have the review billed to it: the backend
+    # is left with whatever its own configuration pins. This is a denylist of the variables
+    # the AWS SDKs are known to read, so it reduces that risk rather than removing it, and a
+    # backend whose credentials come from a helper named in its own config file is not
+    # covered by it at all. Fails closed: a codex that needed those variables now cannot
+    # authenticate, and says so through E_RUN_FAILED.
     aws_env=(env)
     if [ "${SECOND_REVIEW_KEEP_AWS_ENV:-0}" != 1 ]; then
-      # AWS_CONFIG_FILE is pointed at /dev/null rather than unset: unsetting it makes the
-      # SDK fall back to the default ~/.aws/config, whose profiles can carry credentials
-      # or a credential process, which is the very thing being kept out. Same for the
-      # shared credentials file.
       aws_env=(env -u AWS_PROFILE -u AWS_DEFAULT_PROFILE
                -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN
                -u AWS_BEARER_TOKEN_BEDROCK -u AWS_CREDENTIAL_EXPIRATION
@@ -787,83 +448,70 @@ case "$BACKEND" in
                AWS_CREDENTIAL_FILE=/dev/null AWS_CREDENTIALS_FILE=/dev/null
                AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_EC2_METADATA_DISABLED=true)
     fi
+    permissions="codex ran with --sandbox workspace-write and approval_policy=never in a workspace of its own ($codex_cwd), with the tree reachable by absolute path (writes and commands permitted; approval_policy is for non-interactivity, not confinement)"
     ${timeout_cmd[@]+"${timeout_cmd[@]}"} "${aws_env[@]}" "$resolved_cmd" "${codex_args[@]}" \
       < "$OUT_ABS/codex-stdin.txt" > "$OUT_ABS/review.out" 2> "$OUT_ABS/review.err" || run_status=$?
     ;;
   claude)
-    # --restricted takes away the tools that run commands or code and ignores the user,
-    # project and local settings files, so none of them can hand a write tool back;
-    # --strict-mcp-config with no --mcp-config leaves the reviewer no MCP server, which
-    # is where the write-capable tools on a configured workstation live;
-    # --disallowedTools is the deny list for the rest; and --permission-prompts none
-    # means nothing can answer a permission request, so a tool that needs one is refused.
-    # --tools is the list of tools the reviewer HOLDS. --allowedTools, which this used
-    # before, only says which tools may run without asking -- it does not take any away.
-    # With it alone the reviewer still held ToolSearch, Skill, ListAgents, ReportFindings
-    # and ScheduleWakeup, and could load SendMessage, EnterWorktree, ExitWorktree, CronList
-    # and CronDelete. Three of those act outside the tree, where the fingerprint cannot
-    # see them: SendMessage reaches other sessions on the machine, EnterWorktree acts on
-    # the enclosing repository, CronDelete removes scheduled tasks. Asked to list its
-    # tools, a reviewer under the old flags named all of them and said it could message
-    # another session; under --tools it names exactly three and says it cannot.
-    # --disallowedTools stays as a second layer: --restricted withholds the code-running
-    # tools unless --tools names them, so the layer matters if a later edit ever adds one
-    # to --tools.
+    # --tools names the tools the reviewer HOLDS, and it now includes Edit, Write and Bash:
+    # a reviewer that cannot run the thing cannot find the defects that only appear when you
+    # do. --restricted stays, but for a different reason than before: it makes claude ignore
+    # the user, project and local settings files, which keeps the run reproducible on a
+    # configured workstation rather than confining it. --strict-mcp-config with no
+    # --mcp-config leaves it no MCP server, which is about not reaching other systems, not
+    # about the tree.
+    #
+    # --allowedTools, matching --tools exactly, is load-bearing and was MISSING until a
+    # second-review round caught it by trying to write (issue #100 round 6). Holding a tool
+    # is not the same as being allowed to use it: every individual Bash/Edit/Write action
+    # still asks for approval, and --permission-prompts none does not mean "approve
+    # automatically" -- with nobody able to answer, it means every such action is denied.
+    # Confirmed directly: a `touch` in the reviewer's own workspace was refused with
+    # --tools alone, and ran once --allowedTools was added. Without this, the claude path
+    # never actually held directive 1's write-and-execute grant at all; every claude run
+    # before this fix, including an earlier read-only smoke test that never needed to write
+    # and so never surfaced it, was silently back to read-only.
     claude_args=(-p --output-format json --model "$MODEL"
                  --restricted
                  --strict-mcp-config
-                 --tools "Read,Grep,Glob"
-                 --disallowedTools "Edit,Write,NotebookEdit,Bash,BashOutput,KillShell,Task,Agent,WebFetch,WebSearch"
+                 --tools "Read,Grep,Glob,Edit,Write,Bash"
+                 --allowedTools "Read,Grep,Glob,Edit,Write,Bash"
                  --permission-prompts none)
-    # Ignoring the user settings file also throws away how this claude authenticates, when
-    # it authenticates through a setting such as awsCredentialExport or apiKeyHelper: the
-    # run then falls back to whatever ambient credentials happen to exist, which fails when
-    # there are none and bills the wrong account when there are. --settings is still read
-    # under --restricted, so naming a file that carries that one setting restores the
-    # credential path.
-    #
-    # The file's contents are checked, and only the authentication keys are allowed,
-    # because --settings restores *executable* configuration and not just values. A
-    # permission grant in it is harmless -- a file granting Bash, Write and Edit still left
-    # the reviewer unable to write, since --restricted removes the tools rather than denying
-    # them -- but a `hooks` entry runs shell commands outside the tool list entirely. One
-    # with a SessionStart command hook was tried under the full read-only flag set and it
-    # executed and created a file, so a settings file this script accepted unchecked would
-    # hand the reviewer arbitrary execution.
-    if [ -n "${claude_settings_abs:-}" ]; then claude_args+=(--settings "$claude_settings_abs"); fi
-    # Run from a directory made fresh for this run rather than from the tree, with the tree
-    # added as a readable directory. Why: an allowed credential helper is still a command
-    # claude executes, and with the tree as the working directory it would execute inside
-    # the very thing under review. --out is already required to sit outside the tree.
-    #
-    # mktemp -d, not a fixed name: --out can be reused, and "mkdir -p" on a path that is
-    # already a symbolic link succeeds without replacing it, so a stale or planted
-    # claude-cwd link pointing at the tree would have put the helper straight back inside
-    # it. Checked that mkdir -p behaves that way and that cd follows the link. (It would
-    # not have widened what the file tools reach: --add-dir already grants the tree.)
-    # A distinct tag, not E_NO_TOOL: that one is printed by cannot_check and means "a tool
-    # this script needs is missing", which exits 2 for "could not check". This is a refusal
-    # of the run, which exits 1, and a caller that treats 2 differently should not see one.
-    claude_cwd=$(mktemp -d "$OUT_ABS/claude-cwd.XXXXXX") || refuse E_NO_CWD \
-      "could not make a working directory for the reviewer under $OUT_ABS, so there is nowhere to run it that is outside the tree."
+    # Passed through unchecked, deliberately: the allowlist that used to vet this file
+    # existed to stop a hooks entry executing a command, and the reviewer now holds Bash, so
+    # it would be guarding a property this script no longer has. Put only the authentication
+    # setting in it anyway -- it is read on a machine you own.
+    if [ -n "${SECOND_REVIEW_CLAUDE_SETTINGS:-}" ]; then
+      [ -f "$SECOND_REVIEW_CLAUDE_SETTINGS" ] || refuse E_CLAUDE_SETTINGS \
+        "\$SECOND_REVIEW_CLAUDE_SETTINGS names '$SECOND_REVIEW_CLAUDE_SETTINGS', which is not a file."
+      claude_args+=(--settings "$(realpath "$SECOND_REVIEW_CLAUDE_SETTINGS")")
+    fi
+    # A workspace of its own, outside both the tree and --out. Outside the tree so that
+    # writing in order to verify does not by itself fail the run; outside --out because that
+    # holds the backend's trace, and the reviewer now holds Bash and could read it.
+    claude_cwd=$(mktemp -d) || refuse E_NO_CWD \
+      "could not make a workspace for the reviewer, so there is nowhere to run it that is outside the tree and the output directory."
     claude_args+=(--add-dir "$TREE_ABS")
-    # The brief often points at the commit's diff, which sits outside the tree. Codex is
-    # given the tree as its working root and can read an absolute path; claude under
-    # --restricted confines its file tools to the working directory and the added ones, so
-    # it refused that read until this existed. Name a directory holding only material the
-    # reviewer may read -- never --out, which holds the trace.
-    if [ -n "${context_abs:-}" ]; then claude_args+=(--add-dir "$context_abs"); fi
+    # The brief usually points at the commit's diff, which sits outside the tree, and
+    # claude's file tools reach only its workspace and the directories it is given.
+    # CTX_ABS was already validated and resolved above, before any fingerprint, so this is
+    # only the flag that grants it.
+    if [ -n "$CTX_ABS" ]; then claude_args+=(--add-dir "$CTX_ABS"); fi
+    # "added through --add-dir": not "added as readable". Second-review finding (issue #100
+    # round 6): --add-dir grants claude's file tools read AND WRITE, so the old wording
+    # understated what the reviewer could do to its own main input.
+    permissions="claude ran with --restricted --strict-mcp-config --tools and --allowedTools both Read,Grep,Glob,Edit,Write,Bash, in a workspace of its own ($claude_cwd), with $TREE_ABS${CTX_ABS:+ and $CTX_ABS} added through --add-dir (writes and commands permitted)"
     ( cd "$claude_cwd" && ${timeout_cmd[@]+"${timeout_cmd[@]}"} "$resolved_cmd" "${claude_args[@]}" ) \
       < "$BRIEF_ABS" > "$OUT_ABS/review.json" 2> "$OUT_ABS/review.err" || run_status=$?
     # Any error the backend reports means no review happened, whatever its wording, so the
-    # record is rejected on `is_error` alone and the error code only chooses the message.
-    # This extractor fails CLOSED: it prints one of three fixed ASCII words, and anything
-    # else -- including python failing outright -- refuses the run. It used to clear the
-    # variable on failure, which meant "no error": a record whose api_error held an
-    # unpaired surrogate crashed the print with UnicodeEncodeError, and the run was then
-    # recorded as a successful review. The record validator below also rejects is_error on
-    # its own, so neither check is the only thing standing between a failed run and a
-    # review that looks real.
+    # record is rejected on is_error alone and the error code only chooses the message. This
+    # extractor fails CLOSED: it prints one of three fixed ASCII words, and anything else --
+    # including python failing outright -- refuses the run. Computed here, but NOT acted on
+    # until after the at-return fingerprint below: a reviewer that changes the tree and then
+    # reports an error must still be caught as a tree change, not let through as a plain
+    # E_RUN_FAILED with the write never looked at. Verified: a stub that changed a tracked
+    # file and returned is_error:true used to refuse before any fingerprint after the
+    # baseline existed at all.
     if [ -s "$OUT_ABS/review.json" ]; then
       claude_status=$(python3 -I -c '
 import json, sys
@@ -874,7 +522,13 @@ except Exception:
     print("NO_RECORD"); raise SystemExit(0)
 if not isinstance(d, dict):
     print("NO_RECORD"); raise SystemExit(0)
-if not d.get("is_error"):
+# is_error must be an actual boolean. Second-review finding (issue #100 round 4): a missing
+# key or a falsy-but-wrong-type value (absent, 0) used to read the same as is_error:false
+# and pass straight through as OK, which is not what a record that does not even have the
+# field in the expected shape should mean.
+if not isinstance(d.get("is_error"), bool):
+    print("NO_RECORD"); raise SystemExit(0)
+if not d["is_error"]:
     print("OK"); raise SystemExit(0)
 # Only ASCII leaves this script, so no value in the record can break the print.
 blob = "%s %s %s" % (d.get("api_error") or "", d.get("result") or "",
@@ -883,88 +537,88 @@ blob = blob.encode("ascii", "replace").decode("ascii").lower()
 print("ERROR_AUTH" if ("credential" in blob or "authenticat" in blob or "403" in blob)
       else "ERROR_OTHER")
 ' "$OUT_ABS/review.json" 2>/dev/null) || claude_status=EXTRACTOR_FAILED
-      case "$claude_status" in
-        OK) ;;
-        ERROR_AUTH) refuse E_RUN_FAILED \
-          "the claude backend could not authenticate, so no review was produced. The most likely cause on a machine where claude authenticates through a settings file: --restricted makes it ignore the user settings file, so set \$SECOND_REVIEW_CLAUDE_SETTINGS to a file carrying only that authentication setting. Read $OUT_ABS/review.err yourself with tail, and do not paste it into a pull request, an issue or Slack." ;;
-        ERROR_OTHER) refuse E_RUN_FAILED \
-          "the claude backend reported an error, so no review was produced. Read $OUT_ABS/review.json and $OUT_ABS/review.err yourself with tail, and do not paste them into a pull request, an issue or Slack." ;;
-        *) refuse E_BAD_RECORD \
-          "could not tell whether the claude backend reported an error (the check returned '$claude_status'), so this run cannot be recorded as a review. Check $OUT_ABS/review.json." ;;
-      esac
     fi
     ;;
 esac
 
-# Fingerprint the tree as soon as the backend returns, so that the two codex confinement
-# refusals below can say whether the tree changed: they are read from codex's preamble
-# after it ran, and a reader most wants to know that at exactly that moment. This early
-# snapshot feeds those messages, and is also compared at the end: a mismatch here with a
-# match later means something put the tree back *after the backend returned*, which a single
-# late fingerprint would have missed. A change made and undone entirely inside the backend's
-# own run is not guaranteed to be seen by either, as the fingerprint's own note says.
-tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-at-return.sha256"
-if cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then
-  tree_verdict="the tree was unchanged when the backend returned"
-else
-  tree_verdict="THE TREE HAD CHANGED when the backend returned"
+# Fingerprint as soon as the backend returns, and again at the end. A mismatch here with a
+# match at the end means something put the tree back *after* the backend returned, which a
+# single late fingerprint would have missed. This must happen before any refusal below,
+# including the claude is_error check and the run_status check: a backend that wrote to the
+# tree and then failed must still be caught as a tree change. It must also be refused,
+# rather than left to "set -e", if it cannot complete: the backend may have removed the
+# tree or made it unreadable, and a bare pipeline failure here would otherwise end the
+# script with no tag at all.
+tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-at-return.sha256" || refuse E_TREE_CHANGED \
+  "the tree at $TREE_ABS could not be fingerprinted after the backend returned: it may have been removed, or made unreadable, while the reviewer ran."
+if [ -n "$CTX_ABS" ]; then
+  # Second-review finding (issue #100 round 10): this refusal already carries a context
+  # tag, so the generic swap in refuse() leaves it alone -- but that means a tree write
+  # could be masked by an unrelated context-fingerprint failure, reported only as
+  # E_CONTEXT_CHANGED with the tree write never mentioned. Checked by hand here, the one
+  # place the generic swap cannot reach, because the tag it would produce is the same kind
+  # it is meant to defer to.
+  if ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then
+    refuse E_TREE_CHANGED \
+      "the tree at $TREE_ABS had already changed by the time the backend returned, which takes priority over \$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' also failing to fingerprint at the same point. Compare $OUT_ABS/tree-before.sha256 with tree-at-return.sha256."
+  fi
+  tree_fingerprint "$CTX_ABS" > "$OUT_ABS/ctx-at-return.sha256" || refuse E_CONTEXT_CHANGED \
+    "\$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' could not be fingerprinted after the backend returned: it may have been removed, or made unreadable, while the reviewer ran."
 fi
 
-# --- what the run must have produced ----------------------------------------------------
+# --- did a review actually happen -------------------------------------------------------
+
+# From here on, every refuse() call checks the tree and context fingerprints first and
+# swaps in a tree/context tag if either changed (see refuse() itself, near the top of the
+# script) -- a change takes priority over whatever else a run is being refused for, so a
+# write followed by some unrelated failure is reported as the write. AT_RETURN_TAKEN is the
+# switch: it must only turn on once tree-at-return.sha256 (and ctx-at-return.sha256, when
+# there is a context directory) actually exist to compare against.
+AT_RETURN_TAKEN=1
 
 # A backend that is missing, unauthenticated or out of credit exits non-zero or says
-# nothing. Either way the review did not happen, so say so instead of reporting a pass.
-# The trace itself is not quoted here: it can hold credential details, and a message goes
-# wherever the caller's log goes.
+# nothing. Either way the review did not happen, so say so rather than reporting a pass.
 if [ "$run_status" -ne 0 ]; then
   refuse E_RUN_FAILED "the $BACKEND backend exited $run_status and no review was produced. Read the last lines of $OUT_ABS/review.err yourself with tail, and do not paste them into a pull request, an issue or Slack."
 fi
 
+if [ "$BACKEND" = claude ]; then
+  case "${claude_status:-OK}" in
+    OK) ;;
+    ERROR_AUTH) refuse E_RUN_FAILED \
+      "the claude backend could not authenticate, so no review was produced. The likely cause where claude authenticates through a settings file: --restricted makes it ignore the user settings file, so set \$SECOND_REVIEW_CLAUDE_SETTINGS to a file carrying that authentication setting. Read $OUT_ABS/review.err yourself with tail, and do not paste it into a pull request, an issue or Slack." ;;
+    ERROR_OTHER) refuse E_RUN_FAILED \
+      "the claude backend reported an error, so no review was produced. Read $OUT_ABS/review.json and $OUT_ABS/review.err yourself with tail, and do not paste them into a pull request, an issue or Slack." ;;
+    *) refuse E_BAD_RECORD \
+      "could not tell whether the claude backend reported an error (the check returned '$claude_status'), so this run cannot be recorded as a review. Check $OUT_ABS/review.json." ;;
+  esac
+fi
+
+# --- invariant 3: which model actually answered ------------------------------------------
+
 reported_models=''
-confinement=''
 case "$BACKEND" in
   codex)
-    # Read only codex's own preamble, the block between the first two rules. codex prints
-    # it before it echoes the brief, so the first block is always its own. Both rules must
-    # be there: with only one, the block would run to the end of the trace and a brief that
-    # quotes a preamble -- as a brief reviewing this very script does -- could supply these
-    # values itself. Anchored, so only a whole line of exactly eight hyphens counts.
-    # Only the part before codex's own "user" marker counts, which is the line it prints
-    # straight after its preamble, before echoing the brief. Counting rules over the whole
-    # trace was not enough: one real rule plus a rule in the echoed brief also counts two,
-    # and the first block would then run into the brief, which could supply these values
-    # itself. The marker must be there: without it, "before the marker" is the whole trace
-    # and the same brief-supplied block would be believed again.
-    # The marker has to be codex's own, not a line of the echoed brief that reads "user".
-    # codex echoes what it was given immediately after its marker, so the line after the
-    # first marker must be the nonce this run prepended to that input. Authenticating
-    # against the brief's own first line was not enough: a brief whose first line is
-    # "model: ..." satisfies the comparison while also supplying the parsed fields, so a
-    # truncated trace could still be read as a preamble. The nonce is generated per run
-    # and is not in anything the author wrote, so the input cannot contain it in advance.
+    # Read the model name out of codex's own preamble: the block between the first two rules
+    # before its "user" marker. The line right after that marker must be this run's nonce,
+    # which is what makes the block codex's own rather than something the brief supplied.
+    # The sandbox and approval lines are no longer read -- the reviewer is meant to be able
+    # to write, and the tree check is what establishes that it did not.
     echoed_first=$(awk '/^user$/ { if (getline > 0) print; exit }' "$OUT_ABS/review.err")
     grep -qx 'user' "$OUT_ABS/review.err" || refuse E_NO_PREAMBLE \
-      "codex's trace has no 'user' marker, so where its own preamble ends and the echoed input begins cannot be told apart, and the mode it ran in cannot be read from it. Check $OUT_ABS/review.err with tail."
+      "codex's trace has no 'user' marker, so where its own preamble ends and the echoed input begins cannot be told apart, and the model that answered cannot be read from it. Check $OUT_ABS/review.err with tail."
     [ "$echoed_first" = "$NONCE_LINE" ] || refuse E_NO_PREAMBLE \
       "the line after the 'user' marker in codex's trace is not this run's nonce, so that marker is not codex's own and everything before it may be the echoed input rather than codex's preamble. Check $OUT_ABS/review.err with tail."
     awk '/^user$/ { exit } { print }' "$OUT_ABS/review.err" > "$OUT_ABS/pre-user.txt"
     rules=$(grep -c '^--------$' "$OUT_ABS/pre-user.txt" || true)
     [ "${rules:-0}" -ge 2 ] || refuse E_NO_PREAMBLE \
-      "codex's trace has ${rules:-0} preamble rule(s) before its 'user' marker, not the two that delimit its own preamble, so the mode it ran in cannot be read from it. Check $OUT_ABS/review.err with tail."
+      "codex's trace has ${rules:-0} preamble rule(s) before its 'user' marker, not the two that delimit its own preamble, so the model that answered cannot be read from it. Check $OUT_ABS/review.err with tail."
     awk '/^--------$/ { n++; next } n == 1' "$OUT_ABS/pre-user.txt" > "$OUT_ABS/preamble.txt"
     reported_models=$(sed -n 's/^model: //p' "$OUT_ABS/preamble.txt" | head -1)
-    sandbox_mode=$(sed -n 's/^sandbox: //p' "$OUT_ABS/preamble.txt" | head -1)
-    approval_mode=$(sed -n 's/^approval: //p' "$OUT_ABS/preamble.txt" | head -1)
-    [ "$sandbox_mode" = read-only ] || refuse E_NOT_READ_ONLY \
-      "codex reported its sandbox as '${sandbox_mode:-(not reported)}', not read-only; a reviewer that can edit the tree is not a reviewer. This is read from codex's own preamble after it ran, so the run happened: $tree_verdict."
-    # Read-only is only read-only while nothing can approve an escalation out of it.
-    [ "$approval_mode" = never ] || refuse E_APPROVAL_ESCALATION \
-      "codex reported its approval policy as '${approval_mode:-(not reported)}', not never; it can ask to write and a host that answers the ask by itself will let it. This is read from codex's own preamble after it ran, so the run happened: $tree_verdict."
-    confinement="codex reported sandbox=read-only, approvals=never"
     ;;
   claude)
-    # One pass over the record, refusing a shape this cannot read rather than guessing:
-    # a string-valued modelUsage would otherwise be split into its characters, and a
+    # One pass over the record, refusing a shape this cannot read rather than guessing: a
+    # string-valued modelUsage would otherwise be split into its characters, and a
     # non-object record would end the script with no tagged reason.
     python3 -I -c '
 import json, sys
@@ -979,12 +633,14 @@ except Exception as e:
 if not isinstance(d, dict):
     print("BAD\tthe record is a %s, not an object" % type(d).__name__)
     raise SystemExit(0)
-if d.get("is_error"):
+if not isinstance(d.get("is_error"), bool):
+    # Second-review finding (issue #100 round 4): a missing or wrong-type is_error (absent,
+    # 0) used to read as falsy and pass this check, the same gap as the earlier extractor.
+    print("BAD\tis_error is missing or is not a boolean")
+    raise SystemExit(0)
+if d["is_error"]:
     # Independent of the error check earlier: a failed run must never be recorded as a
-    # review, even if that check were bypassed or failed to run. While that check works
-    # this branch is unreachable, so no test covers it -- it is deliberate redundancy
-    # after that check once failed open, not dead code. Do not remove it for being
-    # untested; that would put the whole weight back on one check.
+    # review, even if that check were bypassed or failed to run.
     print("BAD\tthe record is flagged is_error, so the backend did not produce a review")
     raise SystemExit(0)
 usage = d.get("modelUsage")
@@ -996,23 +652,14 @@ if not all(isinstance(k, str) and k.strip() for k in usage):
     print("BAD\tmodelUsage has a name that is not a non-empty string")
     raise SystemExit(0)
 # The names come back to the shell as one tab-separated line joined by "+", and then into
-# review-record.txt for a person to read. Allow only visible ASCII without "+": naming the
-# characters to reject kept missing some -- first the ESC and DEL controls, then the Zl/Zp
-# separators and the Cf zero-width and bidirectional overrides, which can make two
-# different names look identical or make the record read as something it is not.
-# Space is allowed inside a name, because a backend may be pointed at a custom model
-# identifier that contains one, and a space is safe in both a tab-separated line and the
-# record; a name padded with whitespace is refused, because it would display as another.
+# review-record.txt for a person to read, so: printable ASCII, no plus sign (the separator
+# claude itself uses), and no padding whitespace, which would display as another name.
 allowed = set(chr(c) for c in range(0x20, 0x7F)) - {"+"}
 bad = [k for k in usage if not set(k) <= allowed or k != k.strip()]
 if bad:
-    print("BAD\ta model name holds something other than printable ASCII without '+', "
-          "or is padded with whitespace, which this script cannot carry or display "
-          "safely: %s" % json.dumps(bad))
-    raise SystemExit(0)
-denials = d.get("permission_denials")
-if not isinstance(denials, list):
-    print("BAD\tpermission_denials is %s, not a list" % json.dumps(denials))
+    print("BAD\ta model name holds something other than printable ASCII without a literal "
+          "plus sign, or is padded with whitespace, which this script cannot carry or "
+          "display safely: %s" % json.dumps(bad))
     raise SystemExit(0)
 result = d.get("result")
 if not isinstance(result, str):
@@ -1023,9 +670,16 @@ if not result.strip():
     print("BAD\tresult is %d character(s) of whitespace, which is not a review"
           % len(result))
     raise SystemExit(0)
+# permission_denials is a count, reported rather than refused on: --allowedTools above
+# should mean this is always zero, and a non-zero count after that fix is a sign something
+# the reviewer tried still needed an approval nobody could give -- worth seeing, not by
+# itself proof the review is bad (it could be a tool outside --tools entirely, which is
+# supposed to be refused).
+denials = d.get("permission_denials")
+denial_count = len(denials) if isinstance(denials, list) else -1
 with open(out, "w") as f:
     f.write(result)
-print("OK\t%s\t%d" % ("+".join(sorted(usage)), len(denials)))
+print("OK\t%s\t%d" % ("+".join(sorted(usage)), denial_count))
 ' "$OUT_ABS/review.json" "$OUT_ABS/review.out" > "$OUT_ABS/record.tsv" || \
       refuse E_BAD_RECORD "could not read the claude backend's JSON record at $OUT_ABS/review.json at all."
     IFS=$'\t' read -r verdict field_a field_b < "$OUT_ABS/record.tsv" || verdict=BAD
@@ -1033,26 +687,25 @@ print("OK\t%s\t%d" % ("+".join(sorted(usage)), len(denials)))
       refuse E_BAD_RECORD "the claude backend's JSON record at $OUT_ABS/review.json is not the shape this script can read, so it cannot say which model answered: ${field_a:-no reason given}."
     fi
     reported_models="$field_a"
-    # What claude was asked to be, not something it reports back: the proof that it was
-    # read-only is the tree fingerprint below, not this line.
-    confinement="claude was run with --restricted --strict-mcp-config --tools Read,Grep,Glob (asked to hold only these), and refused $field_b permission request(s)"
+    permissions="$permissions, $field_b permission request(s) denied"
+    # A non-zero count here is exactly the symptom of the round-6 defect (--tools holding a
+    # tool that --allowedTools does not also pre-approve): worth a note so it is not only
+    # buried in the record, in case the two ever drift apart again.
+    [ "${field_b:-0}" = 0 ] || note "claude reported $field_b denied permission request(s); if that surprises you, confirm --allowedTools still matches --tools."
     ;;
 esac
 
 [ -s "$OUT_ABS/review.out" ] || refuse E_EMPTY \
   "the $BACKEND backend exited 0 but wrote no review to $OUT_ABS/review.out. Check $OUT_ABS/review.err with tail."
 
-# Never let the requested model stand in for the model that answered: a backend can route
-# an alias ("opus", a prompt router) to something else, including the implementer's model.
+# Never let the requested model stand in for the model that answered: a backend can route an
+# alias ("opus", a prompt router) to something else, including the implementer's model.
 [ -n "$reported_models" ] || refuse E_NO_MODEL_REPORTED \
   "the $BACKEND backend did not report which model answered, so this run cannot be recorded as a review by a different model."
 
-# The requested model may be an alias, so apply the principle to what actually answered.
 # Split on "+" through an array: an unquoted expansion would let a name holding a bracket,
-# such as "claude-opus-5-5[1m]", be read as a glob and silently become a filename.
-# Only the claude backend joins several names with "+"; codex reports exactly one, and
-# splitting it would drop a trailing "+" (bash discards the empty last field), so a model
-# literally named "x+" would compare unequal to an implementer of the same name.
+# such as "claude-opus-5-5[1m]", be read as a glob and silently become a filename. Only the
+# claude backend joins several names with "+"; codex reports exactly one.
 if [ "$BACKEND" = claude ]; then
   IFS='+' read -r -a answered_models <<< "$reported_models"
 else
@@ -1066,33 +719,53 @@ for m in "${answered_models[@]}"; do
     "'$MODEL' was answered by '$m', which is the model that wrote the change ('$IMPLEMENTER'). Ask for a different model."
 done
 
-# Both fingerprints must match the one taken before the run, and each of the three ways
-# they can differ gets its own message:
-#
-#   before == after, before != at-return   a change that was put back afterwards
-#   before != after, before == at-return    a change made after the backend returned
-#   before != after, before != at-return    a change made while the reviewer ran
-#
-# The "put back afterwards" case is tested first, because it is the one a single late
-# fingerprint would have passed: on its own, "after" matches, and the run would have been
-# recorded as clean. A change made and undone entirely inside the backend's own run is
-# not guaranteed to be seen by either, as tree_fingerprint's own note says.
-tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-after.sha256"
+# --- invariant 2, concluded --------------------------------------------------------------
+
+# Both fingerprints must match the one taken before the run. The "put back afterwards" case
+# is tested first, because it is the one a single late fingerprint would have passed: on its
+# own, "after" matches, and the run would have been recorded as clean. Refused, not left to
+# "set -e", if the tree cannot be fingerprinted at all now -- the same reasoning as the
+# at-return fingerprint above.
+# Be honest about how much of a window this really gives a process the backend left
+# running: everything between the at-return fingerprint and this one is the invariant-3
+# model-name parsing, typically well under a second in total, not a deliberate wait.
+# Second-review finding (issue #100 round 10): a process that writes and restores a change
+# outside that window -- say, after a two-second sleep -- is not guaranteed to be caught,
+# even though the review it produced was genuinely checked against an unchanged tree.
+tree_fingerprint "$TREE_ABS" > "$OUT_ABS/tree-after.sha256" || refuse E_TREE_CHANGED \
+  "the tree at $TREE_ABS could not be fingerprinted after the run: it may have been removed, or made unreadable."
 if cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-after.sha256" \
    && ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then
   refuse E_TREE_RESTORED \
-    "the tree at $TREE_ABS differed from its fingerprint when the backend returned, and matches again now: a change that was put back afterwards is still a change, and the reviewer was not read-only. Compare $OUT_ABS/tree-before.sha256 with tree-at-return.sha256."
+    "the tree at $TREE_ABS differed from its fingerprint when the backend returned, and matches again now: a change that was put back afterwards is still a change. Compare $OUT_ABS/tree-before.sha256 with tree-at-return.sha256."
 fi
 if ! cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-after.sha256"; then
   if cmp -s "$OUT_ABS/tree-before.sha256" "$OUT_ABS/tree-at-return.sha256"; then
-    # Matched when the backend returned and differs now, so the change came after the
-    # backend's own run -- from a process it left behind, or from something else on the
-    # machine. Either way it is a change to the tree under review, so it refuses.
     refuse E_TREE_CHANGED \
       "the tree at $TREE_ABS matched its fingerprint when the backend returned and differs now, so something changed it after the run -- a process the backend left behind, or another one. Compare $OUT_ABS/tree-at-return.sha256 with tree-after.sha256."
   fi
   refuse E_TREE_CHANGED \
-    "the tree at $TREE_ABS changed while the reviewer ran, so the reviewer was not read-only. Compare $OUT_ABS/tree-before.sha256 with tree-after.sha256."
+    "the tree at $TREE_ABS changed while the reviewer ran. The reviewer is permitted to write, so this is not a confinement failure -- but it reviewed something other than the commit, so the run cannot stand. Compare $OUT_ABS/tree-before.sha256 with tree-after.sha256."
+fi
+
+# The same three-way comparison, for the context directory, when claude was given one:
+# --add-dir grants write as well as read, so this is a third thing invariant 2 has to cover.
+if [ -n "$CTX_ABS" ]; then
+  tree_fingerprint "$CTX_ABS" > "$OUT_ABS/ctx-after.sha256" || refuse E_CONTEXT_CHANGED \
+    "\$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' could not be fingerprinted after the run: it may have been removed, or made unreadable."
+  if cmp -s "$OUT_ABS/ctx-before.sha256" "$OUT_ABS/ctx-after.sha256" \
+     && ! cmp -s "$OUT_ABS/ctx-before.sha256" "$OUT_ABS/ctx-at-return.sha256"; then
+    refuse E_CONTEXT_RESTORED \
+      "\$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' differed from its fingerprint when the backend returned, and matches again now: a change that was put back afterwards is still a change. Compare $OUT_ABS/ctx-before.sha256 with ctx-at-return.sha256."
+  fi
+  if ! cmp -s "$OUT_ABS/ctx-before.sha256" "$OUT_ABS/ctx-after.sha256"; then
+    if cmp -s "$OUT_ABS/ctx-before.sha256" "$OUT_ABS/ctx-at-return.sha256"; then
+      refuse E_CONTEXT_CHANGED \
+        "\$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' matched its fingerprint when the backend returned and differs now. Compare $OUT_ABS/ctx-at-return.sha256 with ctx-after.sha256."
+    fi
+    refuse E_CONTEXT_CHANGED \
+      "\$SECOND_REVIEW_CONTEXT_DIR '$CTX_ABS' changed while the reviewer ran. --add-dir grants write as well as read, so this is not a confinement failure -- but the reviewer's own main input changed under it, so the run cannot stand. Compare $OUT_ABS/ctx-before.sha256 with ctx-after.sha256."
+  fi
 fi
 
 # --- the record that goes in the pull request -------------------------------------------
@@ -1106,10 +779,18 @@ fi
   printf '  model requested %s\n' "$MODEL"
   printf '  model answered  %s\n' "$reported_models"
   printf '  implementer     %s\n' "$IMPLEMENTER"
-  printf '  confinement     %s\n' "$confinement"
-  printf '  review tree     unchanged: every path and content hash matches the fingerprint\n'
-  printf '                  taken before the run. This says nothing about writes the\n'
-  printf '                  reviewer may have made outside %s.\n' "$TREE_ABS"
+  printf '  permissions     %s\n' "$permissions"
+  printf '  review tree     unchanged in every type, mode, size, mtime, symlink target\n'
+  printf '                  and content hash this script tracks, matching the fingerprint\n'
+  printf '                  taken before the run and the one taken when the backend\n'
+  printf '                  returned. The reviewer was NOT prevented from writing to it;\n'
+  printf '                  this is the evidence that it did not, and it does not cover\n'
+  printf '                  ownership, ACLs, extended attributes or hard links, a change\n'
+  printf '                  whose tracked attributes were all put back, or any write made\n'
+  printf '                  outside %s.\n' "$TREE_ABS"
+  if [ -n "$CTX_ABS" ]; then
+    printf '  context         %s, checked the same way (also unchanged)\n' "$CTX_ABS"
+  fi
   printf '  tree            %s\n' "$TREE_ABS"
   printf '  brief           %s\n' "$BRIEF_ABS"
   printf '  review          %s\n' "$OUT_ABS/review.out"

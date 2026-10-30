@@ -498,9 +498,7 @@ the deadline passes reports which of the two happened:
 
 `describe_state` puts the `Sandbox`'s conditions and the pod's container state into the
 failure, so a sandbox that never starts fails the activity with what the cluster said
-instead of the orchestrator waiting on it forever. The sandbox runtime's `StartError` is
-the case this is for: the kubelet restarts the container and not the sandbox, so its
-restarts do not clear it (see "Good to know").
+instead of the orchestrator waiting on it forever.
 
 **A step whose result could not be read is not a step that passed.** The exit code comes
 off the exec stream's error channel, and every way that channel can fail to answer raises:
@@ -1250,23 +1248,6 @@ account, no external endpoint and no key. Moving it to Cloud is left as an exerc
   twice. That is harmless here and is why the deliberate failure is raised before the exec
   rather than after it. A production harness would make the step idempotent, or record a
   token in the sandbox that the step checks.
-- **A sandbox can fail to start in a way the kubelet's restarts do not clear.** A pod on
-  the sandbox runtime class can go into `CrashLoopBackOff` with a `StartError` from the
-  sandbox runtime, and restarting is the wrong lever, because the kubelet restarts the
-  container and not the sandbox, so every retry re-enters the same guest. That was traced
-  on a warm pool's replacement pod, where the warm pool controller swept the stuck sandbox
-  itself after about five and a half minutes; it is recorded with the full output in
-  [issue #111](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/111). This
-  sample creates a standalone `Sandbox` rather than claiming from a pool, so there is no
-  pool controller to sweep it, and none of the runs behind this page hit it. What the
-  sample does about it is not to hide it: the provision and resume activities wait a
-  bounded ten minutes and then fail with the `Sandbox`'s conditions and the pod's container
-  state, so the attempt appears in the history as a failure with a reason, Temporal retries
-  it, and `maximum_attempts=4` ends the run rather than leaving it looking busy. The
-  `finally` then deletes the `Sandbox`, which is also the fix for a stuck one, and it does
-  so for this case specifically because the delete flag is set before the provision
-  attempt rather than after it (step 5), so a `Sandbox` that was created and then never
-  became Ready is deleted rather than left.
 - **The workflow handles a Worker that dies and one that is cancelled. It does not handle
   being terminated.** Step 12 shows the first. A cancelled run still reaches the delete,
   because the `finally` is shielded, and so does a run whose activity fails permanently.
