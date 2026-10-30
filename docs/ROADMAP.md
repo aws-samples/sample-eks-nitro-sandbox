@@ -74,12 +74,9 @@ roadmap beyond its original AMI-build exclusion.
 
 - ubuntu-ami: build an Ubuntu 24.04 EKS node AMI for Pod Isolation from public, checksum-verified
   inputs, and join it to the existing sample cluster. Spec: [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10).
-- [cilium-ubuntu](../examples/setup/cilium-ubuntu/README.md) (authored, pending a live cluster
-  run): a dedicated disposable cluster with Cilium as the only CNI, in ENI mode with kube-proxy
-  replacement, and the two Ubuntu node groups (system and sandbox) from `ubuntu-ami` above
-  joining it. The README, scripts and manifests are complete; the fresh-cluster networking,
-  BTF-gate and policy evidence this sample's issue requires have not been captured yet, so it is
-  not marked "available now" until that run lands. Spec: [#11](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/11).
+- [cilium-ubuntu](../examples/setup/cilium-ubuntu/README.md) (available now): a dedicated
+  disposable cluster with Cilium as the only CNI, in ENI mode with kube-proxy replacement, and
+  the two Ubuntu node groups (system and sandbox) from `ubuntu-ami` above joining it. Spec: [#11](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/11).
 
 ### Getting started (`getting-started`, available now)
 
