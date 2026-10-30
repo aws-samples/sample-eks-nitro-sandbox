@@ -59,11 +59,12 @@ server:
     clientCaSecretName: <RELEASE>-server-client-ca
     clientTlsSecretName: <RELEASE>-client-tls
 
-  # A pre-created key-encryption key, so the gateway encrypts stored provider credentials
-  # under a key this run made and setup.sh can render the chart without Helm's `lookup`.
-  credentialStorage:
-    existingSecret: <RELEASE>-kek
-
+  # No credentialStorage.existingSecret here: every provider credential this gateway
+  # ever stores goes through the Kubernetes Secrets driver below, so the default
+  # encrypted-database path, and the key-encryption-key Secret it would need, is never
+  # exercised. Left at the chart's own default, the chart generates and retains that
+  # Secret on first install regardless, so nothing breaks if a future edit of this file
+  # ever turns the Kubernetes Secrets driver off.
   drivers:
     kubernetes:
       workspaceMode: shared

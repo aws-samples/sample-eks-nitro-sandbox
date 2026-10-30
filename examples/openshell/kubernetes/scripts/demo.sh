@@ -31,12 +31,12 @@ say() { printf '\n==> %s\n' "$*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 kc() { if [[ -n "${KUBE_CONTEXT:-}" ]]; then kubectl --context "$KUBE_CONTEXT" "$@"; else kubectl "$@"; fi; }
 
-# kubectl reads ~/.kube/config by default, so KUBECONFIG has to be pinned before HOME
-# changes below to scope the OpenShell CLI's own config directory -- otherwise kubectl
-# would look for a kubeconfig under the CLI's scratch HOME and find none.
-export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
-export HOME="$CLI_HOME"
-mkdir -p "$HOME"
+# Scoped to the CLI's own invocations only, never exported. Exporting HOME for the whole
+# script would also move where kubectl's own EKS exec-credential plugin looks for AWS
+# profile files, which would break every kc call for a reader whose AWS credentials come
+# from a named profile rather than already-exported environment variables.
+mkdir -p "$CLI_HOME"
+os() { HOME="$CLI_HOME" "$CLI" "$@"; }
 
 curl -sk --max-time 3 "https://127.0.0.1:$GATEWAY_PORT/" >/dev/null 2>&1 || true
 # A plain reachability probe above is best-effort; the real check is the CLI's own
@@ -44,53 +44,72 @@ curl -sk --max-time 3 "https://127.0.0.1:$GATEWAY_PORT/" >/dev/null 2>&1 || true
 
 say "the mTLS client bundle and the CLI"
 
-MTLS_DIR="$HOME/.config/openshell/gateways/k8s/mtls"
+MTLS_DIR="$CLI_HOME/.config/openshell/gateways/k8s/mtls"
 mkdir -p "$MTLS_DIR"
 kc -n "$GATEWAY_NAMESPACE" get secret "$GATEWAY_RELEASE-client-tls" -o jsonpath='{.data.ca\.crt}'  | base64 -d > "$MTLS_DIR/ca.crt"
 kc -n "$GATEWAY_NAMESPACE" get secret "$GATEWAY_RELEASE-client-tls" -o jsonpath='{.data.tls\.crt}' | base64 -d > "$MTLS_DIR/tls.crt"
 kc -n "$GATEWAY_NAMESPACE" get secret "$GATEWAY_RELEASE-client-tls" -o jsonpath='{.data.tls\.key}' | base64 -d > "$MTLS_DIR/tls.key"
 
-"$CLI" gateway remove k8s >/dev/null 2>&1 || true
-"$CLI" gateway add "https://127.0.0.1:$GATEWAY_PORT" --local --name k8s
-"$CLI" status || die "the CLI could not reach the gateway at https://127.0.0.1:$GATEWAY_PORT -- is 'kubectl port-forward' running?"
+os gateway remove k8s >/dev/null 2>&1 || true
+os gateway add "https://127.0.0.1:$GATEWAY_PORT" --local --name k8s
+os status || die "the CLI could not reach the gateway at https://127.0.0.1:$GATEWAY_PORT -- is 'kubectl port-forward' running?"
 
 say "the demo provider: a credential stored as a Kubernetes Secret, never seen by the agent"
 
-if ! "$CLI" profile list 2>/dev/null | grep -q '^demo-echo '; then
-  "$CLI" profile import -f "$SAMPLE_DIR/policy/demo-profile.json"
+# Captured into a variable before grepping it, not grepped straight off the pipe: under
+# "set -o pipefail", "os ... | grep -q ..." can report exit 141 once grep is satisfied and
+# closes its end of the pipe early, which would read here as "not found" and attempt to
+# create something that already exists.
+profile_listing="$(os profile list 2>/dev/null)" || profile_listing=""
+if ! grep -q '^demo-echo ' <<<"$profile_listing"; then
+  os profile import -f "$SAMPLE_DIR/policy/demo-profile.json"
 fi
-if ! "$CLI" provider list 2>/dev/null | grep -q '^demo '; then
-  # Generated fresh each run, never written to a file and never put on a command line:
-  # --credential DEMO_API_KEY (no "=value") has the CLI read it from this process's own
-  # DEMO_API_KEY environment variable instead.
-  DEMO_API_KEY="$(openssl rand -hex 32)" "$CLI" provider create --name demo --type demo-echo \
-    --credential DEMO_API_KEY
+provider_listing="$(os provider list 2>/dev/null)" || provider_listing=""
+if ! grep -q '^demo ' <<<"$provider_listing"; then
+  # Generated fresh, used once to create the provider and once to record its digest, and
+  # never written to a file or put on a command line: --credential DEMO_API_KEY (no
+  # "=value") has the CLI read it from this process's own DEMO_API_KEY environment
+  # variable instead. The digest (never the value) is kept in the run record so a later
+  # run of this script -- which skips re-creating a provider that already exists, and so
+  # never sees the value again either -- can still confirm the backend received the real
+  # credential, by comparing digests rather than printing it.
+  demo_key="$(openssl rand -hex 32)"
+  echo "DEMO_API_KEY_SHA256=$(printf '%s' "$demo_key" | sha256sum | cut -d' ' -f1)" >> "$STATE_FILE"
+  DEMO_API_KEY="$demo_key" os provider create --name demo --type demo-echo --credential DEMO_API_KEY
+  unset demo_key
 fi
+DEMO_API_KEY_SHA256="${DEMO_API_KEY_SHA256:-$(grep -o '^DEMO_API_KEY_SHA256=.*' "$STATE_FILE" | tail -n1 | cut -d= -f2)}"
 echo "  the credential Secret, by name only -- never its value:"
-kc get secret -n "$CREDENTIAL_NAMESPACE" -l '!openshell.ai/managed-by' -o name 2>/dev/null || true
 kc get secret -n "$CREDENTIAL_NAMESPACE" -o custom-columns=NAME:.metadata.name,TYPE:.type --no-headers
 
 say "a fresh sandbox"
 
-PREVIOUS_SANDBOX="$(grep -o '^LAST_SANDBOX=.*' "$STATE_FILE" 2>/dev/null | cut -d= -f2 || true)"
-if [[ -n "$PREVIOUS_SANDBOX" ]]; then
-  "$CLI" sandbox delete --name "$PREVIOUS_SANDBOX" >/dev/null 2>&1 || true
+# STATE_FILE was sourced at the top of this script, so a LAST_SANDBOX appended by an
+# earlier run is already the shell variable ${LAST_SANDBOX:-}, holding whichever
+# assignment came last in the file -- there is no need to re-parse the file by hand, and
+# doing so by grepping every "LAST_SANDBOX=" line and taking the last field used to break
+# from the third run on, once the file held more than one such line.
+if [[ -n "${LAST_SANDBOX:-}" ]]; then
+  os sandbox delete --name "$LAST_SANDBOX" >/dev/null 2>&1 || true
 fi
 
 SANDBOX="demo-$(date +%s)"
 sed "s|<SANDBOX_NAMESPACE>|$SANDBOX_NAMESPACE|g" "$SAMPLE_DIR/policy/sandbox-policy.json" \
   > "$TMP_DIR/sandbox-policy.rendered.json"
 
-"$CLI" sandbox create --name "$SANDBOX" --policy "$TMP_DIR/sandbox-policy.rendered.json" \
+os sandbox create --name "$SANDBOX" --policy "$TMP_DIR/sandbox-policy.rendered.json" \
   --provider demo --no-auto-providers --detach -- sleep 3600
 echo "LAST_SANDBOX=$SANDBOX" >> "$STATE_FILE"
 
+workload_pod="default--$SANDBOX"
+kc wait pod/"$workload_pod" -n "$SANDBOX_NAMESPACE" --for=condition=Ready --timeout=5m ||
+  die "the workload pod $workload_pod did not reach Ready; 'kubectl describe pod/$workload_pod -n $SANDBOX_NAMESPACE' says why"
+
 say "the two pods of this one sandbox"
 
-workload_pod="default--$SANDBOX"
 sandbox_uid="$(kc get sandboxes.agents.x-k8s.io "$workload_pod" -n "$SANDBOX_NAMESPACE" -o jsonpath='{.metadata.uid}')"
 supervisor_pod="$(kc get pods -n "$SANDBOX_NAMESPACE" -l openshell.ai/boundary-role=supervisor -o json |
-  python3 -c "
+  python3 -I -c "
 import json, sys
 uid = '$sandbox_uid'
 for pod in json.load(sys.stdin)['items']:
@@ -99,6 +118,8 @@ for pod in json.load(sys.stdin)['items']:
             print(pod['metadata']['name'])
 " )"
 [[ -n "$supervisor_pod" ]] || die "could not find the supervisor pod owned by sandbox $workload_pod"
+kc wait pod/"$supervisor_pod" -n "$SANDBOX_NAMESPACE" --for=condition=Ready --timeout=5m ||
+  die "the supervisor pod $supervisor_pod did not reach Ready; 'kubectl describe pod/$supervisor_pod -n $SANDBOX_NAMESPACE' says why"
 
 echo "  workload pod:   $workload_pod"
 kc get pod "$workload_pod" -n "$SANDBOX_NAMESPACE" -o jsonpath='    runtimeClassName: {.spec.runtimeClassName}{"\n"}'
@@ -112,9 +133,9 @@ kc get pvc "workspace-$workload_pod" -n "$SANDBOX_NAMESPACE" \
 say "the workload pod's own kernel, boot and virtio disks"
 
 echo "  guest /proc/version:"
-"$CLI" sandbox exec -n "$SANDBOX" --no-login-shell -- cat /proc/version
+os sandbox exec -n "$SANDBOX" --no-login-shell -- cat /proc/version
 echo "  guest /sys/class/dmi/id/product_name and disks:"
-"$CLI" sandbox exec -n "$SANDBOX" --no-login-shell -- sh -c \
+os sandbox exec -n "$SANDBOX" --no-login-shell -- sh -c \
   'echo "product_name: $(cat /sys/class/dmi/id/product_name)"; echo "disks: $(ls /sys/block | tr "\n" " ")"'
 
 node="$(kc get pod "$workload_pod" -n "$SANDBOX_NAMESPACE" -o jsonpath='{.spec.nodeName}')"
@@ -132,69 +153,118 @@ kc exec node-probe -n "$SANDBOX_NAMESPACE" -- sh -c \
 say "the agent's credential: a placeholder, never the real value"
 
 echo "  the agent's own environment:"
-"$CLI" sandbox exec -n "$SANDBOX" --no-login-shell -- bash -c 'echo "DEMO_API_KEY=$DEMO_API_KEY"'
-echo "  the request as the backend received it (the real value, substituted by the supervisor, outside the sandbox):"
-# "timeout" is belt-and-suspenders here, not an expected failure: go-httpbin sends
-# "Connection: close" but this sample's run has seen the local exec stream outlive the
-# server's own FIN past that point, so the command's exit status (0 on a clean close,
-# 124 if "timeout" had to step in after the full response was already printed) is not
-# itself part of what this step checks -- the printed response body is.
-timeout 10 "$CLI" sandbox exec -n "$SANDBOX" --no-login-shell -- bash -c '
+os sandbox exec -n "$SANDBOX" --no-login-shell -- bash -c 'echo "DEMO_API_KEY=$DEMO_API_KEY"'
+
+echo "  the digest of the value the backend received (substituted by the supervisor, outside the sandbox), computed INSIDE the sandbox so the real value is never printed anywhere, including by this script:"
+# grep -m1 is load-bearing, not cosmetic: go-httpbin sends "Connection: close" but leaves
+# the socket open past that point, so a grep with no match limit (or anything relying on
+# the stream's own EOF, such as "tail -n1") blocks forever waiting for more input that
+# never comes. -m1 makes grep exit the moment it has the one line this needs, which ends
+# the pipeline on its own; "timeout" stays only as a last-resort backstop.
+response_digest="$(HOME="$CLI_HOME" timeout 10 "$CLI" sandbox exec -n "$SANDBOX" --no-login-shell -- bash -c '
 exec 3<>/dev/tcp/echo-api.'"$SANDBOX_NAMESPACE"'.svc.cluster.local/80
 printf "GET /headers HTTP/1.1\r\nHost: echo-api.'"$SANDBOX_NAMESPACE"'.svc.cluster.local\r\nX-Demo-Api-Key: $DEMO_API_KEY\r\nConnection: close\r\n\r\n" >&3
-cat <&3
-' | tail -n +6 || true
+value=$(grep -m1 -A1 "X-Demo-Api-Key" <&3 | sed -n 2p | sed -E "s/^[[:space:]]*\"([^\"]*)\".*/\1/")
+printf "%s" "$value" | sha256sum | cut -d" " -f1
+' 2>/dev/null)" || response_digest=""
+echo "  resolved credential digest: ${response_digest:-<no response>}"
+echo "  matches the digest of the credential this run stored in the Secret: $([[ "$response_digest" == "$DEMO_API_KEY_SHA256" ]] && echo true || echo false)"
 
 say "layer 1: OpenShell's policy refuses a file outside it and a destination outside it"
 
-echo "  a file the policy does not list:"
-"$CLI" sandbox exec -n "$SANDBOX" --no-login-shell -- cat /root/.bashrc 2>&1 || true
+echo "  a file the policy does not list (world-readable, so this is the policy and not a Unix permission):"
+os sandbox exec -n "$SANDBOX" --no-login-shell -- sh -c \
+  'stat -c "%a %n" /var/lib/dpkg/status; cat /var/lib/dpkg/status >/dev/null; echo "cat exit=$?"' 2>&1 || true
 echo "  control -- a file the policy does list:"
-"$CLI" sandbox exec -n "$SANDBOX" --no-login-shell -- cat /etc/hostname
+os sandbox exec -n "$SANDBOX" --no-login-shell -- cat /etc/hostname
 echo "  a destination the policy does not list:"
-timeout 10 "$CLI" sandbox exec -n "$SANDBOX" --no-login-shell -- bash -c \
+HOME="$CLI_HOME" timeout 10 "$CLI" sandbox exec -n "$SANDBOX" --no-login-shell -- bash -c \
   'exec 3<>/dev/tcp/kubernetes.default.svc.cluster.local/443' 2>&1 || true
 
 say "layer 2: the Nitro boundary -- the node is invisible, and the credential is absent"
 
 echo "  processes visible in the guest (its own, only):"
-"$CLI" sandbox exec -n "$SANDBOX" --no-login-shell -- ps aux
-echo "  no credential anywhere in the guest's environment:"
-"$CLI" sandbox exec -n "$SANDBOX" --no-login-shell -- env | grep -iE 'demo|secret|cred' || echo "  (DEMO_API_KEY is the placeholder above; no other credential-shaped variable)"
+os sandbox exec -n "$SANDBOX" --no-login-shell -- ps aux
+echo "  the guest's environment, checked rather than eyeballed:"
+guest_env="$(os sandbox exec -n "$SANDBOX" --no-login-shell -- env)"
+echo "$guest_env" | grep -E '^DEMO_API_KEY='
+if echo "$guest_env" | grep -vE '^DEMO_API_KEY=' | grep -qiE '(secret|token|password|credential|_key=)'; then
+  echo "  found an unexpected credential-shaped variable besides the placeholder:"
+  echo "$guest_env" | grep -vE '^DEMO_API_KEY=' | grep -iE '(secret|token|password|credential|_key=)'
+else
+  echo "  no other credential-shaped variable"
+fi
 echo "  no Secret for the real credential is mounted in the workload pod:"
 kc get pod "$workload_pod" -n "$SANDBOX_NAMESPACE" -o jsonpath='{range .spec.volumes[*]}{.secret.secretName}{"\n"}{end}' | grep -v '^$' || echo "  (none)"
 
 say "layer 3: the Kubernetes NetworkPolicy drops a direct, workload-initiated connection"
 
-echo "  the NetworkPolicy selecting the workload pod:"
-kc get networkpolicy openshell-sandbox-workloads -n "$SANDBOX_NAMESPACE" -o yaml | \
-  grep -v -E '^\s*(creationTimestamp|finalizers|-\snetworking|generation|resourceVersion|uid):'
+echo "  every NetworkPolicy in the sandbox namespace, and which select the workload pod's labels:"
+kc get networkpolicy -n "$SANDBOX_NAMESPACE" -o wide
+workload_labels="$(kc get pod "$workload_pod" -n "$SANDBOX_NAMESPACE" -o jsonpath='{.metadata.labels}')"
+echo "  workload pod labels: $workload_labels"
+
+# Two of the policies above select the workload pod's labels, not one: the generic
+# "openshell-sandbox-workloads" (by boundary-role=workload, shared by every sandbox) and
+# a per-sandbox "os-control-<boundary-pair>" (by boundary-pair, unique to this one).
+# Together, not either alone, is what actually governs the workload pod's egress: the
+# first carries no egress rule at all under its Egress policyType, which denies all of
+# it; the second adds back exactly one egress rule, to the supervisor on port 5500. Both
+# are shown, because showing only the first -- as an earlier draft of this script did --
+# makes the workload pod look like it can never egress anywhere, when the truth is it can
+# reach one destination, the supervisor, on one port.
+boundary_pair="$(kc get pod "$workload_pod" -n "$SANDBOX_NAMESPACE" \
+  -o jsonpath='{.metadata.labels.openshell\.ai/boundary-pair}')"
+echo "  the two NetworkPolicies selecting the workload pod (boundary-pair=$boundary_pair):"
+# Strips run-to-run noise (timestamps, resource versions, the cluster's own finalizer,
+# owner references) by parsing the YAML and removing those metadata keys, rather than by
+# a line-matching pattern: a pattern anchored on one field's own "key:" syntax does not
+# also match a different field whose value happens to share a word with it (an earlier
+# version of this filter excluded lines ending in a literal ":", which silently kept
+# "kind: Sandbox" and "name: default--..." because neither line ends that way).
+strip_metadata_noise() {
+  python3 -c '
+import sys
+import yaml
+
+obj = yaml.safe_load(sys.stdin)
+meta = obj.get("metadata", {})
+for key in ("creationTimestamp", "finalizers", "generation", "resourceVersion", "uid", "ownerReferences"):
+    meta.pop(key, None)
+yaml.safe_dump(obj, sys.stdout, default_flow_style=False)
+'
+}
+kc get networkpolicy openshell-sandbox-workloads -n "$SANDBOX_NAMESPACE" -o yaml | strip_metadata_noise
+kc get networkpolicy "os-control-$boundary_pair" -n "$SANDBOX_NAMESPACE" -o yaml | strip_metadata_noise
 
 echo "  a connection from the workload pod's own network namespace, outside OpenShell's control (an ephemeral debug container sharing it), to the policy-approved backend by IP -- bypassing OpenShell entirely does not bypass the NetworkPolicy:"
 ECHO_IP="$(kc get service echo-api -n "$SANDBOX_NAMESPACE" -o jsonpath='{.spec.clusterIP}')"
 # kubectl debug's own wait only covers container creation, not the command finishing, so
-# this polls the ephemeral container's own terminated state before reading its logs.
-wait_for_ephemeral_exit() { # <pod> <container> -- prints nothing, just waits
-  local pod="$1" container="$2" i
+# this polls the ephemeral container's own terminated state before reading its logs, and
+# reports plainly rather than reading silently on if it never terminates.
+wait_for_ephemeral_exit() { # <pod> <container>
+  local pod="$1" container="$2" i state
   for i in $(seq 1 30); do
     state="$(kc get pod "$pod" -n "$SANDBOX_NAMESPACE" \
       -o jsonpath="{.status.ephemeralContainerStatuses[?(@.name==\"$container\")].state.terminated.reason}" 2>/dev/null)"
     [[ -n "$state" ]] && return 0
     sleep 2
   done
+  echo "  WARNING: ephemeral container $container in $pod did not terminate within 60s; its logs below may be partial"
+  return 1
 }
 
 kc debug "$workload_pod" -n "$SANDBOX_NAMESPACE" --image=public.ecr.aws/docker/library/busybox:1.36 \
   --target=agent -- sh -c "wget -T 5 -O- http://$ECHO_IP/headers; echo EXIT=\$?" 2>&1 | grep -v '^Defaulting\|^--profile\|^Targeting' || true
 debugger="$(kc get pod "$workload_pod" -n "$SANDBOX_NAMESPACE" -o jsonpath='{.spec.ephemeralContainers[-1:].name}')"
-wait_for_ephemeral_exit "$workload_pod" "$debugger"
+wait_for_ephemeral_exit "$workload_pod" "$debugger" || true
 kc logs "$workload_pod" -n "$SANDBOX_NAMESPACE" -c "$debugger"
 
 echo "  control -- the same technique against the supervisor pod, which carries no such restriction:"
 kc debug "$supervisor_pod" -n "$SANDBOX_NAMESPACE" --image=public.ecr.aws/docker/library/busybox:1.36 \
   -- sh -c "wget -T 5 -O- http://$ECHO_IP/headers; echo EXIT=\$?" 2>&1 | grep -v '^Defaulting\|^--profile\|^Targeting' || true
 debugger2="$(kc get pod "$supervisor_pod" -n "$SANDBOX_NAMESPACE" -o jsonpath='{.spec.ephemeralContainers[-1:].name}')"
-wait_for_ephemeral_exit "$supervisor_pod" "$debugger2"
+wait_for_ephemeral_exit "$supervisor_pod" "$debugger2" || true
 kc logs "$supervisor_pod" -n "$SANDBOX_NAMESPACE" -c "$debugger2"
 
 kc delete pod node-probe -n "$SANDBOX_NAMESPACE" --wait=false >/dev/null 2>&1 || true

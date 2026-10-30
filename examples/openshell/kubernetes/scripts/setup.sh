@@ -13,19 +13,22 @@
 #   2. creates the gateway and sandbox namespaces when absent, and labels them;
 #   3. labels the isolated-sandbox RuntimeClass for OpenShell's resource admission, when
 #      the label is not already there;
-#   4. applies the namespace-scoped admission adapter that fits OpenShell's generated
-#      workload pod to a Nitro sandbox guest (deploy/nitro-adapter.yaml);
+#   4. applies the admission adapter that fits OpenShell's generated workload pod to a
+#      Nitro sandbox guest (deploy/nitro-adapter.yaml) -- a cluster-scoped object, limited
+#      by its own namespaceSelector to namespaces labelled managed-by=<sample>;
 #   5. applies the namespace-scoped RBAC this sample's own run found missing from the
 #      split-release, shared-workspace-mode combination the setup guide describes
 #      (deploy/gateway-sandbox-rbac.yaml -- see that file for the exact gap);
 #   6. downloads and verifies the pinned OpenShell CLI, the gateway chart and the
 #      workspace chart against versions.json;
-#   7. installs the gateway chart, with workspaceResources.enabled=false so the
-#      namespace-scoped sandbox prerequisites come from the workspace chart instead;
+#   7. pins the gateway, supervisor and sandbox-runtime images by digest in the rendered
+#      values, then installs the gateway chart with workspaceResources.enabled=false so
+#      the namespace-scoped sandbox prerequisites come from the workspace chart instead;
 #   8. installs the workspace chart in the sandbox namespace;
 #   9. copies the gateway's client-tls Secret into the sandbox namespace, which this
 #      sample's own run found the supervisor pod needs and the split pattern does not
-#      create there on its own;
+#      create there on its own, then checks that neither the sandbox nor the default
+#      ServiceAccount in that namespace can read Secrets there;
 #  10. starts the demo echo API this sample's policy and provider point at.
 #
 # It never changes a cluster-wide setting (network policy enforcement is checked, not
@@ -62,6 +65,7 @@ CREDENTIAL_NAMESPACE="${CREDENTIAL_NAMESPACE:-openshell-kubernetes-credentials}"
 GATEWAY_RELEASE="${GATEWAY_RELEASE:-openshell}"
 WORKSPACE_RELEASE="${GATEWAY_RELEASE}-workspace"
 WORKSPACE_STORAGE_CLASS="${WORKSPACE_STORAGE_CLASS:-auto-ebs-sc}"
+GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 RUNTIME_CLASS="isolated-sandbox"
 APPROVAL_LABEL="openshell.ai/sandbox-attachable"
 ADAPTER="${SAMPLE}-nitro-adapter"
@@ -71,7 +75,10 @@ ECHO_IMAGE="docker.io/mccutchen/go-httpbin:v2.15.0"
 say() { printf '\n==> %s\n' "$*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 kc() { if [[ -n "$KUBE_CONTEXT" ]]; then kubectl --context "$KUBE_CONTEXT" "$@"; else kubectl "$@"; fi; }
-state_put() { printf '%s=%s\n' "$1" "$2" >> "$STATE_FILE"; }
+# %q, not %s: the state file is sourced back by demo.sh and clean.sh, so a value holding
+# a space or a shell metacharacter (such as a path under a home directory with a space in
+# it) has to come back as the same string, not as a word the shell re-splits or runs.
+state_put() { printf '%s=%q\n' "$1" "$2" >> "$STATE_FILE"; }
 
 : > "$STATE_FILE"
 state_put SAMPLE "$SAMPLE"
@@ -81,6 +88,7 @@ state_put CREDENTIAL_NAMESPACE "$CREDENTIAL_NAMESPACE"
 state_put GATEWAY_RELEASE "$GATEWAY_RELEASE"
 state_put WORKSPACE_RELEASE "$WORKSPACE_RELEASE"
 state_put KUBE_CONTEXT "$KUBE_CONTEXT"
+state_put GATEWAY_PORT "$GATEWAY_PORT"
 
 jqr() { jq -r "$1" "$SAMPLE_DIR/versions.json"; }
 GATEWAY_CHART_REF="$(jqr '.gateway_chart.ref')"
@@ -105,6 +113,8 @@ say "checking tools and the cluster (1/10)"
 for tool in kubectl helm jq curl openssl python3; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
 done
+python3 -c 'import yaml' 2>/dev/null ||
+  die "python3's yaml module (PyYAML) is required. Install it, e.g. 'python3 -m pip install --user pyyaml', then re-run this script."
 
 kc cluster-info >/dev/null 2>&1 || die "no reachable cluster for context '${KUBE_CONTEXT:-current}'"
 
@@ -165,12 +175,19 @@ fi
 
 say "the admission adapter that fits OpenShell's workload pod to a Nitro sandbox (4/10)"
 
+# Two steps, not one: an object that exists but carries no managed-by label at all would
+# print an empty label value, exactly what an absent object also prints. Checking
+# existence first, then the label only when something is actually there, is what tells
+# the two apart.
 for kind in mutatingadmissionpolicy mutatingadmissionpolicybinding; do
-  owner="$(kc get "$kind" "$ADAPTER" --ignore-not-found \
-    -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null)" ||
+  existing="$(kc get "$kind" "$ADAPTER" --ignore-not-found -o name 2>/dev/null)" ||
     die "could not determine whether the $kind $ADAPTER exists; created nothing"
-  if [[ -n "$owner" && "$owner" != "$SAMPLE" ]]; then
-    die "the $kind $ADAPTER already exists and is not this sample's (managed-by='$owner'); created nothing."
+  if [[ -n "$existing" ]]; then
+    owner="$(kc get "$kind" "$ADAPTER" \
+      -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null)" ||
+      die "could not read the managed-by label on the existing $kind $ADAPTER; created nothing"
+    [[ "$owner" == "$SAMPLE" ]] ||
+      die "the $kind $ADAPTER already exists and is not this sample's (managed-by='$owner'); created nothing."
   fi
 done
 
@@ -257,6 +274,27 @@ sed -e "s|<RELEASE>|$GATEWAY_RELEASE|g" \
     -e "s|<WORKSPACE_STORAGE_CLASS>|$WORKSPACE_STORAGE_CLASS|g" \
     "$SAMPLE_DIR/deploy/gateway-values.yaml" > "$TMP_DIR/gateway-values.yaml"
 
+# The pinned digests go in here rather than in the committed values file, so the
+# committed file carries no registry paths and versions.json stays the one place every
+# pin lives. This is what actually makes "pinned by digest" in versions.json true of what
+# gets installed, rather than merely true of what versions.json records.
+GATEWAY_IMAGE="$(jqr '.images.gateway')"
+SUPERVISOR_IMAGE="$(jqr '.images.supervisor')"
+SANDBOX_RUNTIME_IMAGE="$(jqr '.images.sandbox_runtime')"
+python3 - "$TMP_DIR/gateway-values.yaml" \
+    "${GATEWAY_IMAGE#*@}" "${SANDBOX_RUNTIME_IMAGE#*@}" "${SUPERVISOR_IMAGE#*@}" <<'PY'
+import sys
+import yaml
+
+path, gateway_digest, sandbox_runtime_digest, supervisor_digest = sys.argv[1:5]
+values = yaml.safe_load(open(path))
+values.setdefault("gateway", {}).setdefault("image", {})["digest"] = gateway_digest
+values.setdefault("sandboxRuntime", {}).setdefault("image", {})["digest"] = sandbox_runtime_digest
+values.setdefault("supervisor", {}).setdefault("image", {})["digest"] = supervisor_digest
+yaml.safe_dump(values, open(path, "w"))
+PY
+echo "  pinned the gateway, supervisor and sandbox-runtime images by digest"
+
 helm template "$GATEWAY_RELEASE" "$GATEWAY_CHART" -n "$GATEWAY_NAMESPACE" \
   -f "$TMP_DIR/gateway-values.yaml" --set agentSandbox.preflight.enabled=false \
   > "$TMP_DIR/gateway-rendered.yaml" ||
@@ -315,7 +353,7 @@ kc rollout status statefulset/"$GATEWAY_RELEASE" -n "$GATEWAY_NAMESPACE" --timeo
 # (never moves or regenerates it) each time setup.sh runs, so an operator-rotated
 # certificate reaches the sandbox namespace too.
 kc get secret "$GATEWAY_RELEASE-client-tls" -n "$GATEWAY_NAMESPACE" -o json |
-  python3 -c "
+  python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
 print(json.dumps({
@@ -326,10 +364,40 @@ print(json.dumps({
 }))" | kc apply -f -
 echo "  copied the gateway's client-tls Secret into $SANDBOX_NAMESPACE for the supervisor pod"
 
-credential_ns_owner="$(kc get ns "$CREDENTIAL_NAMESPACE" \
-  -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null || true)"
-if [[ -n "$credential_ns_owner" ]]; then
+# That Secret is the gateway's own mTLS client certificate, and with
+# server.auth.allowUnauthenticatedUsers: true it is full administrative access to the
+# gateway -- see "Good to know" on the page. The copy widens where that certificate
+# physically sits, from the gateway's own namespace to the sandbox namespace the
+# workload pods live in, so this checks that neither of those pods' own ServiceAccounts
+# can read it there, rather than asserting it.
+for sa in openshell-sandbox default; do
+  if kc auth can-i get secrets -n "$SANDBOX_NAMESPACE" \
+      --as="system:serviceaccount:$SANDBOX_NAMESPACE:$sa" >/dev/null 2>&1; then
+    die "the $sa ServiceAccount in $SANDBOX_NAMESPACE can read Secrets there, including the gateway's own client-tls certificate this script just copied in; refusing to continue. Check what granted it get on secrets in that namespace."
+  fi
+done
+echo "  confirmed: neither the sandbox ServiceAccount nor the namespace's default ServiceAccount can read Secrets in $SANDBOX_NAMESPACE"
+
+# The gateway chart creates this namespace (server.credentialDrivers.kubernetesSecrets.
+# createNamespace=true) and marks it as that Helm release's. Marking it as this sample's
+# too is safe exactly because it is that release's: check the release annotations Helm
+# itself put there, not a managed-by label, which a stale or unrelated label could already
+# hold and which a bare "is there any label at all" check could mistake for "mine".
+credential_ns_json="$(kc get ns "$CREDENTIAL_NAMESPACE" -o json)" ||
+  die "could not read the credential namespace $CREDENTIAL_NAMESPACE, which the gateway chart should have created; labelled nothing"
+credential_release="$(echo "$credential_ns_json" | python3 -I -c '
+import json, sys
+meta = json.load(sys.stdin)["metadata"].get("annotations", {})
+print(meta.get("meta.helm.sh/release-name", ""))
+print(meta.get("meta.helm.sh/release-namespace", ""))
+')"
+credential_release_name="$(echo "$credential_release" | sed -n 1p)"
+credential_release_ns="$(echo "$credential_release" | sed -n 2p)"
+if [[ "$credential_release_name" == "$GATEWAY_RELEASE" && "$credential_release_ns" == "$GATEWAY_NAMESPACE" ]]; then
   kc label namespace "$CREDENTIAL_NAMESPACE" "app.kubernetes.io/managed-by=$SAMPLE" --overwrite >/dev/null
+  echo "  labelled the credential namespace $CREDENTIAL_NAMESPACE as this sample's"
+else
+  die "the credential namespace $CREDENTIAL_NAMESPACE exists but was not created by the release this run installed ($GATEWAY_RELEASE in $GATEWAY_NAMESPACE; found release='$credential_release_name' namespace='$credential_release_ns'); labelled nothing. If this is a leftover from an earlier run, delete it and re-run."
 fi
 
 # ---------------------------------------------------------------------------
