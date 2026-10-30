@@ -13,16 +13,14 @@
 
     Until that decision, this sample stays a draft and is not marked `(available now)`.
 
-!!! warning "Status: live-validated on the GA bundle, except the new test.sh section 7/7"
+!!! warning "Status: live-validated on the GA bundle"
 
-    Run `20261029t165642z8cdf` built the AMI from the Nitro sandbox GA node-build bundle dated
-    2026-10-28, verified it on a second, fresh instance, joined the dedicated node group,
-    passed every `./test.sh` check it had then (53 passed, 0 failed), and was then cleaned up
-    with its AMI kept. After that run, the validation sandbox was changed to boot with no
-    network, which replaced `./test.sh` section 7/7. Every output block under
-    [Evidence](#evidence) comes from that run except the new section 7/7, which waits for a
-    fresh run. Every clusterless check is proven both ways (see
-    [Clusterless checks](#clusterless-checks)).
+    Run `20261030t025526z407c`, an independent walk of this page from a fresh clone, built
+    the AMI from the Nitro sandbox GA node-build bundle dated 2026-10-28, verified it on a
+    second, fresh instance, joined the dedicated node group, passed every `./test.sh` check
+    (52 passed, 0 failed), and was then cleaned up completely, its AMI and snapshot included.
+    Every output block under [Evidence](#evidence) comes from that run. Every clusterless
+    check is proven both ways (see [Clusterless checks](#clusterless-checks)).
 
 Build a custom Ubuntu 24.04 node AMI for Amazon EKS Pod Isolation, add one dedicated,
 tainted managed node group to an **existing cluster**, and run an isolated pod on that
@@ -55,8 +53,9 @@ flowchart TB
   D --> E["Isolated pod in a Nitro guest"]
 ```
 
-Allow a few hours for a fresh build: most of it is the kernel compile on the build host.
-This is a planning estimate, not a timing measurement from a live run.
+Allow about two hours for a fresh full `./setup.sh`. In the validation run it took 1 h 49 min:
+about 25 minutes for the kernel stage on the `m8i.4xlarge` build host, and about an hour
+waiting for the 120 GiB AMI to become available.
 
 *Figure 1: The ubuntu-ami architecture, from pinned public inputs to the isolated sandbox
 pod. Pinned public inputs feed the build host; the user-supplied runtime archive installs
@@ -167,8 +166,9 @@ it.
   git.kernel.org, github.com, Amazon S3, and the EKS, EC2 and SSM APIs. This sample creates
   no network infrastructure.
 - [`aws`](https://github.com/aws/aws-cli) CLI v2, [`kubectl`](https://github.com/kubernetes/kubectl),
-  the [AWS Session Manager plugin](https://github.com/aws/session-manager-plugin), Python 3,
-  `curl` and `tar`.
+  Python 3, `curl` and `tar`. Optional: the
+  [AWS Session Manager plugin](https://github.com/aws/session-manager-plugin), for an
+  interactive shell on the build host while you debug; `./setup.sh` warns when it is missing.
 - Operator IAM permissions to create and remove EC2 instances, images, snapshots, a
   security group, a launch template, IAM roles, inline role policies and instance profiles,
   an S3 bucket (create, tag, Block Public Access, default encryption, bucket policy, put and
@@ -436,33 +436,111 @@ and the link step needs `gawk`) and `libdw-dev` (Canonical's config sets
 is `6.18.56-nitro-ga`, adds the `nitro_enclaves.mempool` and `nitro_enclaves.ne_cpus` boot
 arguments, and pins the new kernel as the GRUB default (the stock kernel sorts newer).
 
-SSM Run Command returns only the first 24,000 characters of a command's output, and the kernel
-stage prints far more than that, so its `.config` assertion lines do not reach the run's
-evidence. The kernel configuration on this page is therefore read from
-`/boot/config-6.18.56-nitro-ga` on a node launched from the AMI:
+The assertion is the one `scripts/10-kernel.sh --assert-config <file>` runs on a file: the
+build applies it to `.config` right after `make olddefconfig`, prints one `ok:` line per
+symbol, and stops before anything is compiled if a required symbol is missing or has the wrong
+value. SSM Run Command returns only the first 24,000 characters of a command's output, and
+the kernel stage prints far more than that, so those `ok:` lines do not reach the run's
+evidence. Run `20261030t025526z407c` passed that gate: its build went on to compile the kernel
+and rebooted the build host onto `6.18.56-nitro-ga`. Once the runtime was installed,
+`verify-image.py` checked on the build host, running that kernel, what those symbols provide:
 
 ```text
-SHA256=5b19a3e6b6532ec3f88edafa4f25cff4c27e121d7a7ec59c33c6efa0c50a8f4a
-LINES=12010
-CONFIG_LOCALVERSION="-nitro-ga"
-CONFIG_CMA=y
-CONFIG_VSOCKETS=y
-CONFIG_TUN=y
-CONFIG_VIRT_DRIVERS=y
-CONFIG_NITRO_ENCLAVES=y
-CONFIG_VHOST_MENU=y
-CONFIG_VHOST_VSOCK=m
-CONFIG_EXT4_FS=y
-CONFIG_EROFS_FS=m
-CONFIG_SECURITY_APPARMOR=y
-CONFIG_DEBUG_INFO_DWARF4=y
-CONFIG_DEBUG_INFO_BTF=y
-CONFIG_DEBUG_INFO_BTF_MODULES=y
+  [build]   "checks": {
+  [build]     "host_kernel": {
+  [build]       "ok": true,
+  [build]       "detail": "6.18.56-nitro-ga"
+  [build]     },
+  [build]     "nitro_enclaves_device": {
+  [build]       "ok": true,
+  [build]       "detail": "/dev/nitro_enclaves"
+  [build]     },
+  [build]     "btf": {
+  [build]       "ok": true,
+  [build]       "detail": "/sys/kernel/btf/vmlinux 6817803 bytes"
+  [build]     },
+  [build]     "cma": {
+  [build]       "ok": true,
+  [build]       "detail": "CmaTotal 61526016 kB"
+  [build]     },
+  [build]     "vsock": {
+  [build]       "ok": true,
+  [build]       "detail": "/dev/vhost-vsock"
+  [build]     },
+  [build]     "tun": {
+  [build]       "ok": true,
+  [build]       "detail": "/dev/net/tun"
+  [build]     },
+  [build]     "erofs": {
+  [build]       "ok": true,
+  [build]       "detail": "erofs in /proc/filesystems"
+  [build]     },
+  [build]     "apparmor": {
+  [build]       "ok": true,
+  [build]       "detail": "enabled; ubuntu-ami-sample-profile loaded in enforce mode"
+  [build]     },
+  [build]     "containerd_version": {
+  [build]       "ok": true,
+  [build]       "detail": "containerd 2.2.1 (2.2.1): supported by the GA shim (2.1.x to 2.3.x)"
+  [build]     },
+  [build]     "runtime_wiring": {
+  [build]       "ok": true,
+  [build]       "detail": "template, dump, bootstrap endpoint, shim config, drop-in and cri-proxy unit parsed and correct"
+  [build]     },
+  [build]     "guest_image": {
+  [build]       "ok": true,
+  [build]       "detail": "/var/lib/nitro-sandbox-images: latest.eif, latest-disk.img, rootfs.ext4 -> latest-disk.img"
+  [build]     },
+  [build]     "mkfs_erofs": {
+  [build]       "ok": true,
+  [build]       "detail": "mkfs.erofs (erofs-utils) 1.8.10; zstd ok as a systemd service"
+  [build]     },
+  [build]     "runtime_payloads": {
+  [build]       "ok": true,
+  [build]       "detail": "7 installed files match SHA256SUMS and sources.lock, with their modes"
+  [build]     },
+  [build]     "package_holds": {
+  [build]       "ok": true,
+  [build]       "detail": "held and blacklisted for unattended upgrades: containerd linux-aws linux-headers-aws linux-image-aws"
+  [build]     }
+  [build]   }
+  [build] image_configuration: PASS (14 checks)
 ```
 
-*Abridged.* Read on the node of run `20261029t165642z8cdf` through one `kubectl debug node`
-helper pod: the node printed the file's SHA-256 and line count, then the file, and the block
-shows those two lines and the 14 required lines of its 12,010, in file order. No value was
+*Abridged:* `./setup.sh` step 7, the end of the build host's `verify-image.py` result from run
+`20261030t025526z407c`: its `checks` map and its summary line, whole. The JSON's first three
+lines and its closing brace are left out. Each line keeps the `[build]` prefix `./setup.sh`
+puts on the build host's output; no value was replaced. Step 9 repeats the same 14 checks on a
+second, fresh instance before `BtfValidated=true` is tagged (that block is under
+[Evidence](#evidence)).
+
+On the node that joined from the AMI, `./test.sh` section 2/7 reads the same host requirements
+again, each device and feature probe next to the same probe of something that does not exist
+(the `_bogus` lines):
+
+```text
+  node> KERNEL=6.18.56-nitro-ga
+  node> btf=present
+  node> btf_bogus=absent
+  node> ne=present
+  node> ne_bogus=absent
+  node> vsock=present
+  node> vsock_bogus=absent
+  node> tun=present
+  node> tun_bogus=absent
+  node> cma=14456832
+  node> cma_bogus=
+  node> erofs=present
+  node> erofs_bogus=absent
+  node> handler=present
+  node> handler_bogus=absent
+  node> containerd_gate=ok
+  node> containerd_version=containerd github.com/containerd/containerd/v2 2.2.1
+```
+
+*Abridged:* the node's readings from `./test.sh` section 2/7 of run `20261030t025526z407c`,
+the 17 lines after the section's header line; the AppArmor readings that follow are shown
+under [Evidence](#evidence), and the section's `PASS` lines are left out. No value was
 replaced.
 
 **5. Build erofs-utils with zstd.** The containerd shim builds each container's EROFS
@@ -554,14 +632,11 @@ resource the RuntimeClass's overhead requests), and stops with a clear message i
 
 ## Evidence
 
-> **Every block on this page is from one fresh run**, `20261029t165642z8cdf`: `./setup.sh
-> --ami-only` (with the fresh-instance verification), then `RUN_ID=20261029t165642z8cdf
-> ./setup.sh --join` and `./test.sh` (53 passed, 0 failed, with the section 7/7 it had then).
-> The one exception is the new `./test.sh` section 7/7 under
-> [The validation sandbox has no network](#the-validation-sandbox-has-no-network), which
-> waits for a fresh run. Lines are copied whole and in order. Values from the test account
-> are shown as placeholders, and the note under each block says which ones, and whether
-> lines were left out.
+> **Every block on this page is from one fresh run**, `20261030t025526z407c`: an independent
+> walk of this page from a fresh clone, which ran a full `./setup.sh` (with the fresh-instance
+> verification) and then `./test.sh` (52 passed, 0 failed). Lines are copied whole and in
+> order. Values from the test account are shown as placeholders, and the note under each block
+> says which ones, and whether lines were left out.
 
 **Node vs guest kernel, and host vs guest block devices.** The same shape Getting started
 uses: the ordinary pod shares the node's kernel, `6.18.56-nitro-ga`, and sees the
@@ -588,9 +663,9 @@ pod reads the host's much longer uptime:
 
 ```text
 == 6/7 guest boundary: boot uptime matches the sandbox pod's age, not the host's =========
-  host uptime (ordinary pod): 582 s
-  sandbox guest uptime:       452 s
-  sandbox pod age:            460 s (started 2026-10-29T19:01:15Z)
+  host uptime (ordinary pod): 696 s
+  sandbox guest uptime:       567 s
+  sandbox pod age:            573 s (started 2026-10-30T04:44:15Z)
   PASS  the sandbox guest booted with its pod (uptime <= pod age + 120 s)
   PASS  the sandbox guest booted after the host (guest uptime < host uptime)
 ```
@@ -632,11 +707,11 @@ sample. Written by `scripts/verify-fresh-instance.sh` via `scripts/lib/btf-tag.s
 (`ManagedBy=<RESOURCE_PREFIX>` and `RunId=<RUN_ID>` checked first).
 
 ```text
-[2026-10-29T18:28:52Z] Step 9/10: fresh-instance verification on a SECOND instance, then tag BtfValidated=true on success (scripts/verify-fresh-instance.sh)
-[2026-10-29T18:28:52Z] launching fresh verification instance ubuntu-ami-sample-20261029t165642z8cdf-verify from <AMI_ID>
-LAUNCH SPEC OK: <repository>/tmp/issue10/run/out/runs/20261029t165642z8cdf/verify-instance-launch.json
-[2026-10-29T18:28:55Z] instance: <INSTANCE_ID>
-[2026-10-29T18:32:44Z] running: verify-image.py
+[2026-10-30T04:29:26Z] Step 9/10: fresh-instance verification on a SECOND instance, then tag BtfValidated=true on success (scripts/verify-fresh-instance.sh)
+[2026-10-30T04:29:26Z] launching fresh verification instance ubuntu-ami-sample-20261030t025526z407c-verify from <AMI_ID>
+LAUNCH SPEC OK: <repository>/tmp/issue10/run/out/runs/20261030t025526z407c/verify-instance-launch.json
+[2026-10-30T04:29:29Z] instance: <INSTANCE_ID>
+[2026-10-30T04:32:33Z] running: verify-image.py
 Success
 {
   "image_configuration": "PASS",
@@ -652,7 +727,7 @@ Success
     },
     "btf": {
       "ok": true,
-      "detail": "/sys/kernel/btf/vmlinux 6817696 bytes"
+      "detail": "/sys/kernel/btf/vmlinux 6817803 bytes"
     },
     "cma": {
       "ok": true,
@@ -702,12 +777,12 @@ Success
 }
 image_configuration: PASS (14 checks)
 
-[2026-10-29T18:41:54Z] running: 40-smoke.sh
+[2026-10-30T04:40:05Z] running: 40-smoke.sh
 Success
-crw-rw---- 1 root root  10, 260 Oct 29 18:29 /dev/nitro_enclaves
--rwxr-xr-x 1 root root  4763448 Oct 29 17:29 /usr/bin/firecracker
--rw-r--r-- 1 root root 13004876 Oct 29 17:29 /var/lib/nitro-sandbox-images/latest.eif
-lrwxrwxrwx 1 root root       15 Oct 29 17:29 /var/lib/nitro-sandbox-images/rootfs.ext4 -> latest-disk.img
+crw-rw---- 1 root root  10, 260 Oct 30 04:30 /dev/nitro_enclaves
+-rwxr-xr-x 1 root root  4763448 Oct 30 03:27 /usr/bin/firecracker
+-rw-r--r-- 1 root root 13004876 Oct 30 03:27 /var/lib/nitro-sandbox-images/latest.eif
+lrwxrwxrwx 1 root root       15 Oct 30 03:27 /var/lib/nitro-sandbox-images/rootfs.ext4 -> latest-disk.img
 PUT /machine-config -> 204
 PUT /boot-source -> 204
 PUT /drives/rootfs -> 204
@@ -718,18 +793,19 @@ PUT /enclave -> 204
 PUT /actions -> 204
 vsock handshake reply: 'OK 1073741824'
 --- process alive: yes; agent reachable: 1 after 3s
-smoke 2026-10-29T18:42:01Z: PASS; debug_mode=false
+smoke 2026-10-30T04:40:11Z: PASS; debug_mode=false
 
-[2026-10-29T18:42:13Z] terminating verification instance <INSTANCE_ID>
-[2026-10-29T18:42:46Z] fresh-instance verification PASS
-[2026-10-29T18:42:49Z] tagged <AMI_ID> BtfValidated=true (fresh-instance verification passed; ManagedBy=ubuntu-ami-sample preserved)
-[2026-10-29T18:42:49Z] --ami-only: done. AMI <AMI_ID> is verified and tagged BtfValidated=true; no node group was created.
+[2026-10-30T04:40:23Z] terminating verification instance <INSTANCE_ID>
+[2026-10-30T04:40:56Z] fresh-instance verification PASS
+[2026-10-30T04:40:58Z] tagged <AMI_ID> BtfValidated=true (fresh-instance verification passed; ManagedBy=ubuntu-ami-sample preserved)
 ```
 
-*`./setup.sh --ami-only` step 9, from the step line to the `--ami-only: done` line, whole. The
-AMI id, the verification instance's id and the repository's absolute path are shown as
-`<AMI_ID>`, `<INSTANCE_ID>` and `<repository>`; the trailing space at the end of the eight
-`PUT` lines was removed. The tag is written 3 s after the `PASS` line, never before it.*
+*`./setup.sh` step 9, from the step line to the `BtfValidated=true` tag line, whole. This run
+was a full `./setup.sh`, which goes on to step 10 and joins the node group; a
+`./setup.sh --ami-only` run stops after this tag instead. The AMI id, the verification
+instance's id and the repository's absolute path are shown as `<AMI_ID>`, `<INSTANCE_ID>`
+and `<repository>`; the trailing space at the end of the eight `PUT` lines was removed. The
+tag is written 2 s after the `PASS` line, never before it.*
 
 **AppArmor.** AppArmor stays enabled on the host, and the node loads one scoped profile,
 [`manifests/ubuntu-ami-sample-profile`](manifests/ubuntu-ami-sample-profile), installed onto
@@ -785,11 +861,11 @@ the node never loaded has no `DENIED` lines, as the control for both counts.
   scoped pod: write to /etc/ubuntu-ami-sample-write-control: WRITTEN
   PASS  ACCEPT: the scoped pod's write to /etc/shadow is refused with EACCES (Permission denied)
   PASS  REJECT: the same pod's write to a path the profile does not deny succeeds (so the refusal is the profile's)
-  node DENIED lines since T0=1793300898 for that write: ubuntu-ami-sample-profile 3, profile-that-does-not-exist 0
+  node DENIED lines since T0=1793335994 for that write: ubuntu-ami-sample-profile 3, profile-that-does-not-exist 0
   PASS  ACCEPT: the node's kernel logged the profile's DENIED line for that write since T0
   PASS  REJECT: the same count for a profile the node never loaded is 0
-  scoped pod deleted by its exact name: gone=yes after 2 s (grace 15 s); signal DENIED lines since T0: ubuntu-ami-sample-profile 0, profile-that-does-not-exist 0
-  PASS  ACCEPT: deleted by its exact name, the scoped pod is gone within its grace period (2 s <= 15 s)
+  scoped pod deleted by its exact name: gone=yes after 1 s (grace 15 s); signal DENIED lines since T0: ubuntu-ami-sample-profile 0, profile-that-does-not-exist 0
+  PASS  ACCEPT: deleted by its exact name, the scoped pod is gone within its grace period (1 s <= 15 s)
   PASS  ACCEPT: the node logged no DENIED signal under ubuntu-ami-sample-profile since T0 (the profile lets runc stop the pod)
   PASS  REJECT: the same signal count for a profile the node never loaded is 0
 ```
@@ -805,7 +881,7 @@ profile could not be stopped, and kubelet kept logging
 (the end of the message). And a plain `deny` rule refuses without logging, so the refused
 `/etc/shadow` write left no `DENIED` line. The profile now has the `signal` rules of
 containerd's default container profile, and every deny rule is `audit deny`. The block above
-shows both on this run: the pod was gone 2 s into its 15 s grace period with 0 signal denials,
+shows both on this run: the pod was gone 1 s into its 15 s grace period with 0 signal denials,
 and the refused write left the profile's `DENIED` lines.
 
 **3. A pod naming a profile the node never loaded is refused.** The reject control,
@@ -869,13 +945,26 @@ reports a `podIP` for the sandbox pod: the host side allocates it, and no interf
 guest carries it.
 
 ```text
-TODO: output from the fresh run
+== 7/7 the validation sandbox has no network ============================================
+  sandbox pod annotation sandbox.amazonaws.com/network-isolated: true
+  PASS  the sandbox pod carries sandbox.amazonaws.com/network-isolated="true" (read back from the API)
+  sandbox interfaces (/sys/class/net, operstate): dummy0 down, lo unknown
+  sandbox IPv4 local addresses (/proc/net/fib_trie): 127.0.0.1
+  sandbox IPv6 addresses (/proc/net/if_inet6): ::1 on lo
+  sandbox IPv4 routes (/proc/net/route): none (header line only)
+  PASS  only loopback has an address in the sandbox (IPv4: 127.0.0.1; IPv6: ::1 on lo)
+  PASS  the sandbox has no route (/proc/net/route: none (header line only))
+  PASS  every sandbox interface other than lo is down (dummy0 down, lo unknown)
+  kubernetes Service ClusterIP (read from the API): <API_SERVICE_IP>
+  sandbox TCP connect to that ClusterIP on 443: errno=ENETUNREACH (Network is unreachable)
+  PASS  the sandbox's TCP connect to the API Service fails with Network is unreachable (ENETUNREACH)
+  ordinary pod TCP connect to that ClusterIP on 443: connected
+  PASS  the same connect from the ordinary pod succeeds (control for the previous check)
 ```
 
-*`./test.sh` section 7/7, whole, once the fresh run fills it. The cluster's `kubernetes`
-Service ClusterIP, which test.sh prints once on its own line, is to be shown as
-`<API_SERVICE_IP>`, and no other value replaced. test.sh prints each interface's name and
-state, not its MAC address.*
+*`./test.sh` section 7/7, whole. The cluster's `kubernetes` Service ClusterIP, which test.sh
+prints once on its own line, is shown as `<API_SERVICE_IP>`; no other value was replaced.
+test.sh prints each interface's name and state, not its MAC address.*
 
 The sample ships no network policy, and creates no Ingress, LoadBalancer or NodePort. For
 how a network policy restricts where a sandboxed pod can connect, see the
@@ -913,9 +1002,12 @@ bash scripts/test-local-paths.sh      # local state only under the repository's 
 
 ## Cost note
 
-A planning estimate, not a measured run: one clean run in `us-west-2` at on-demand prices
-is about $6 (the `m8i.4xlarge` build host for about five hours is most of it; the verification
-instance, the node, EBS, the AMI snapshot, S3 staging and NAT data are the rest). Resources
+Measured on the validation run, `20261030t025526z407c`, in `us-west-2` at on-demand prices:
+the `m8i.4xlarge` build host ran about 1.5 h, the `m8i.xlarge` verification instance about
+0.2 h and the `m8i.xlarge` node about 0.4 h, which comes to about $1.50 for the run with its
+EBS volumes, the AMI snapshot, S3 staging and NAT data transfer. That excludes the existing
+cluster and its NAT gateway's hourly charge, which you pay anyway. A slow first build costs
+more: with the build host running 3 h, the run still comes to under $3. Resources
 that keep billing if a build fails partway: the build EC2 instance and its 120 GiB root
 volume, any EBS snapshots already taken, the verification instance (if the build reached
 that stage), the empty staging bucket, and, once a node group exists, its EC2 instances.
