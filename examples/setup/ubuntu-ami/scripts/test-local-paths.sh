@@ -274,8 +274,8 @@ names() { # names <home> [VAR=value...]: CLUSTER_NAME|AWS_REGION|NAMESPACE after
 }
 [ ! -e "$SAMPLE_DIR_REAL/config.env" ] || echo "  NOTE  $SAMPLE_DIR_REAL/config.env exists and is sourced first; these cases read it, not the example"
 err=$(env -i PATH="$PATH" bash -c '. "$1"' _ "$WORK/hdir/ubuntu-ami/config.env" 2>&1 >/dev/null)
-[ -z "$err" ]
-assert_true "ACCEPT config.env as copied from the example, before any edit: it sources with no error${err:+ (got: $(printf '%s' "$err" | head -n 1))}" $?
+[ -z "$err" ]; r=$?   # read before the description's command substitution resets $?
+assert_true "ACCEPT config.env as copied from the example, before any edit: it sources with no error${err:+ (got: $(printf '%s' "$err" | head -n 1 | sed 's#.*/config.env: #config.env: #'))}" "$r"
 got=$(names "$WORK/hdir" CLUSTER_NAME=my-cluster AWS_REGION=eu-west-1)
 [ "$got" = "my-cluster|eu-west-1|ubuntu-ami-sample" ]
 assert_true "ACCEPT the shell's own CLUSTER_NAME and AWS_REGION: they survive sourcing config.env ($got)" $?
