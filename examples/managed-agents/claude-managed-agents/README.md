@@ -222,9 +222,6 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
-          resources:
-            requests: { cpu: "1", memory: 2Gi }
-            limits:   { cpu: "1", memory: 2Gi }
 ```
 
 The pod runs as a non-root user with its own empty `/workspace`, and has no ServiceAccount
