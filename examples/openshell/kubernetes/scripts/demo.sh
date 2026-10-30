@@ -57,6 +57,26 @@ os gateway remove k8s >/dev/null 2>&1 || true
 os gateway add "https://127.0.0.1:$GATEWAY_PORT" --local --name k8s
 os status || die "the CLI could not reach the gateway at https://127.0.0.1:$GATEWAY_PORT -- is 'kubectl port-forward' running?"
 
+# Remove this demo's earlier sandboxes first: a sandbox keeps the "demo" provider
+# attached, and the gateway refuses to delete an attached provider. The gateway is this
+# sample's own, and this script names every sandbox it creates demo-<epoch>, so that
+# prefix is the whole ownership check. It is read from the gateway, not from the state
+# file, because a setup.sh re-run starts a fresh state file while the gateway keeps its
+# sandboxes.
+sandbox_names="$(os sandbox list --names)" || die "could not list this gateway's sandboxes"
+earlier="$(grep -E '^demo-[0-9]+$' <<<"$sandbox_names" || true)"
+if [[ -n "$earlier" ]]; then
+  # shellcheck disable=SC2086 # one name per word, each matched by the pattern above
+  os sandbox delete $earlier >/dev/null || die "could not delete the earlier demo sandbox(es): $earlier"
+  for _ in $(seq 1 60); do
+    sandbox_names="$(os sandbox list --names)" || die "could not list this gateway's sandboxes"
+    grep -qE '^demo-[0-9]+$' <<<"$sandbox_names" || break
+    sleep 2
+  done
+  ! grep -qE '^demo-[0-9]+$' <<<"$sandbox_names" ||
+    die "the earlier demo sandbox(es) are still listed after 120 s: $earlier"
+fi
+
 say "the demo provider: a credential stored as a Kubernetes Secret, never seen by the agent"
 
 # Captured into a variable before grepping it, not grepped straight off the pipe: under
@@ -74,7 +94,7 @@ if grep -q '^demo ' <<<"$provider_listing" && [[ -z "${DEMO_API_KEY_SHA256:-}" ]
   # (setup.sh starts a fresh record every time it runs) while the provider itself
   # persisted in the gateway's own storage. Comparing against no digest, or a stale one
   # left over from an unrelated value, would not prove anything, so this starts over.
-  os provider delete demo >/dev/null 2>&1 || true
+  os provider delete demo >/dev/null || die "could not delete the existing provider 'demo'"
   provider_listing=""
 fi
 if ! grep -q '^demo ' <<<"$provider_listing"; then
@@ -100,22 +120,12 @@ kc get secret -n "$CREDENTIAL_NAMESPACE" -o custom-columns=NAME:.metadata.name,T
 
 say "a fresh sandbox"
 
-# STATE_FILE was sourced at the top of this script, so a LAST_SANDBOX appended by an
-# earlier run is already the shell variable ${LAST_SANDBOX:-}, holding whichever
-# assignment came last in the file -- there is no need to re-parse the file by hand, and
-# doing so by grepping every "LAST_SANDBOX=" line and taking the last field used to break
-# from the third run on, once the file held more than one such line.
-if [[ -n "${LAST_SANDBOX:-}" ]]; then
-  os sandbox delete --name "$LAST_SANDBOX" >/dev/null 2>&1 || true
-fi
-
 SANDBOX="demo-$(date +%s)"
 sed "s|<SANDBOX_NAMESPACE>|$SANDBOX_NAMESPACE|g" "$SAMPLE_DIR/policy/sandbox-policy.json" \
   > "$TMP_DIR/sandbox-policy.rendered.json"
 
 os sandbox create --name "$SANDBOX" --policy "$TMP_DIR/sandbox-policy.rendered.json" \
   --provider demo --no-auto-providers --detach -- sleep 3600
-echo "LAST_SANDBOX=$SANDBOX" >> "$STATE_FILE"
 
 workload_pod="default--$SANDBOX"
 kc wait pod/"$workload_pod" -n "$SANDBOX_NAMESPACE" --for=condition=Ready --timeout=5m ||
