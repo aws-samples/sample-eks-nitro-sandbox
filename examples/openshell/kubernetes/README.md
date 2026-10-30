@@ -285,7 +285,7 @@ Waiting for 1 pods to be ready...
 partitioned roll out complete: 1 new pods have been updated...
 secret/openshell-client-tls created
   copied the gateway's client-tls Secret into openshell-kubernetes-sandbox for the supervisor pod
-  confirmed: neither the sandbox ServiceAccount nor the namespace's default ServiceAccount can read Secrets in openshell-kubernetes-sandbox
+  confirmed: neither the sandbox ServiceAccount nor the namespace's default ServiceAccount can get, list or watch Secrets in openshell-kubernetes-sandbox
   labelled the credential namespace openshell-kubernetes-credentials as this sample's
 
 ==> the demo echo API this sample's policy and provider point at (9/10)
@@ -366,9 +366,9 @@ Server Status
 
 ```text
 ==> the two pods of this one sandbox
-  workload pod:   default--demo-1793371832
+  workload pod:   default--demo-1793373763
     runtimeClassName: isolated-sandbox
-  supervisor pod: os-supervisor-07cf08fa-c0b0-49ca-bb13-24019b2a7c97
+  supervisor pod: os-supervisor-08dab363-f500-4a4a-9e0c-8a2aa126094e
     runtimeClassName:
     (empty means no RuntimeClass: an ordinary pod)
   workspace PVC: Bound on auto-ebs-sc
@@ -405,7 +405,7 @@ driver, as a `Secret` in its own namespace — shown here by name only:
 
 ```text
   the credential Secret, by name only -- never its value:
-openshell-cred-6faa848f6b7c59e1e420e4a78d4dba171547148c   Opaque
+openshell-cred-44e9cec6427ba71ca7a3a1bd17b9214d05a0b8d2   Opaque
 ```
 
 The agent's own environment holds a placeholder, never the value:
@@ -413,21 +413,26 @@ The agent's own environment holds a placeholder, never the value:
 ```text
 ==> the agent's credential: a placeholder, never the real value
   the agent's own environment:
-DEMO_API_KEY=openshell:resolve:env:v5429850052833351819_DEMO_API_KEY
+DEMO_API_KEY=openshell:resolve:env:v16163222340319365196_DEMO_API_KEY
 ```
 
 A request to the one endpoint this sandbox's policy allows — an in-cluster HTTP echo
 service that this sample starts so there is something to send the credential to and get it
 back for inspection — shows the **real** value reached the backend, substituted by the
-supervisor, outside the sandbox. The comparison below never prints that value, inside the
-sandbox or out of it: the SHA-256 digest of the response's own credential header is
-computed by a command run *inside* the sandbox, and only the digest, never the header
-itself, leaves it; this run's own record of the digest it stored in the Secret, from when
-the provider was created, is what it is compared against:
+supervisor, outside the sandbox. Echoing the header back is this demo backend's own
+doing, not something every approved endpoint does or needs to: a real deployment's own
+backend need never reflect a credential back at all, and most do not. Because this one
+does, the bytes do pass back through the sandbox on their way to being checked — what
+this page holds to is that they are never *printed* anywhere, inside the sandbox or out
+of it, and never leave the sandbox in that form either: the SHA-256 digest of the
+response's own credential header is computed by a command run *inside* the sandbox, and
+only the digest, never the header itself, leaves it; this run's own record of the digest
+it stored in the Secret, from when the provider was created, is what it is compared
+against:
 
 ```text
   the digest of the value the backend received (substituted by the supervisor, outside the sandbox), computed INSIDE the sandbox so the real value is never printed anywhere, including by this script:
-  resolved credential digest: 3e2b67a1987cd74df59599fcd082b2b97ac01e6fa54e6c8637de49a0cf8bbbb3
+  resolved credential digest: 54e0e570af0cb192908cf6e25d7084df84c7dccc48fe8ee93b0539358488accb
   matches the digest of the credential this run stored in the Secret: true
 ```
 
@@ -435,7 +440,7 @@ And the workload pod mounts no Secret for it at all:
 
 ```text
   no Secret for the real credential is mounted in the workload pod:
-os-sandbox-07cf08fa-c0b0-49ca-bb13-24019b2a7c97-139edfabd812
+os-sandbox-08dab363-f500-4a4a-9e0c-8a2aa126094e-67033f850bef
 ```
 
 (That one Secret is OpenShell's own per-sandbox bootstrap material, not a provider
@@ -457,7 +462,7 @@ permission a root-owned, non-readable file would have produced on its own:
 cat: /var/lib/dpkg/status: Permission denied
 cat exit=1
   control -- a file the policy does list:
-default--demo-1793371832
+default--demo-1793373763
   a destination the policy does not list:
 bash: connect: Permission denied
 bash: line 1: /dev/tcp/kubernetes.default.svc.cluster.local/443: Permission denied
@@ -482,7 +487,7 @@ ubuntu        71  0.0  0.3   4336   408 ?        S    13:29   0:00 bash -c  exec
 ubuntu        76  0.0  0.1   2852   244 ?        S    13:29   0:00 cat
 ubuntu        88  0.0  2.9   7904  3808 ?        R    13:29   0:00 ps aux
   the guest's environment, checked rather than eyeballed:
-DEMO_API_KEY=openshell:resolve:env:v5429850052833351819_DEMO_API_KEY
+DEMO_API_KEY=openshell:resolve:env:v16163222340319365196_DEMO_API_KEY
   no other credential-shaped variable
 ```
 
@@ -506,12 +511,12 @@ OpenShell's own, and only together do they say what the workload pod may actuall
 ==> layer 3: the Kubernetes NetworkPolicy drops a direct, workload-initiated connection
   every NetworkPolicy in the sandbox namespace, and which select the workload pod's labels:
 NAME                                              POD-SELECTOR                                                      AGE
-openshell-sandbox-supervisors                     openshell.ai/boundary-role=supervisor                             34s
-openshell-sandbox-workloads                       openshell.ai/boundary-role=workload                               34s
-openshell-workspace-sandbox-ssh                   openshell.ai/managed-by=openshell                                 75s
-os-control-07cf08fa-c0b0-49ca-bb13-24019b2a7c97   openshell.ai/boundary-pair=07cf08fa-c0b0-49ca-bb13-24019b2a7c97   33s
-  workload pod labels: {"agents.x-k8s.io/sandbox-name-hash":"5e58a654","openshell.ai/boundary-pair":"07cf08fa-c0b0-49ca-bb13-24019b2a7c97","openshell.ai/boundary-role":"workload","topology.kubernetes.io/region":"us-west-2","topology.kubernetes.io/zone":"us-west-2b"}
-  the two NetworkPolicies selecting the workload pod (boundary-pair=07cf08fa-c0b0-49ca-bb13-24019b2a7c97):
+openshell-sandbox-supervisors                     openshell.ai/boundary-role=supervisor                             29s
+openshell-sandbox-workloads                       openshell.ai/boundary-role=workload                               29s
+openshell-workspace-sandbox-ssh                   openshell.ai/managed-by=openshell                                 68s
+os-control-08dab363-f500-4a4a-9e0c-8a2aa126094e   openshell.ai/boundary-pair=08dab363-f500-4a4a-9e0c-8a2aa126094e   29s
+  workload pod labels: {"agents.x-k8s.io/sandbox-name-hash":"f890780d","openshell.ai/boundary-pair":"08dab363-f500-4a4a-9e0c-8a2aa126094e","openshell.ai/boundary-role":"workload","topology.kubernetes.io/region":"us-west-2","topology.kubernetes.io/zone":"us-west-2c"}
+  the two NetworkPolicies selecting the workload pod (boundary-pair=08dab363-f500-4a4a-9e0c-8a2aa126094e):
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -541,8 +546,8 @@ metadata:
   labels:
     openshell.ai/component: sandbox-control-egress
     openshell.ai/managed-by: openshell
-    openshell.ai/sandbox-id: 07cf08fa-c0b0-49ca-bb13-24019b2a7c97
-  name: os-control-07cf08fa-c0b0-49ca-bb13-24019b2a7c97
+    openshell.ai/sandbox-id: 08dab363-f500-4a4a-9e0c-8a2aa126094e
+  name: os-control-08dab363-f500-4a4a-9e0c-8a2aa126094e
   namespace: openshell-kubernetes-sandbox
 spec:
   egress:
@@ -552,20 +557,20 @@ spec:
     to:
     - podSelector:
         matchLabels:
-          openshell.ai/boundary-pair: 07cf08fa-c0b0-49ca-bb13-24019b2a7c97
+          openshell.ai/boundary-pair: 08dab363-f500-4a4a-9e0c-8a2aa126094e
           openshell.ai/boundary-role: supervisor
   ingress:
   - from:
     - podSelector:
         matchLabels:
-          openshell.ai/boundary-pair: 07cf08fa-c0b0-49ca-bb13-24019b2a7c97
+          openshell.ai/boundary-pair: 08dab363-f500-4a4a-9e0c-8a2aa126094e
           openshell.ai/boundary-role: workload
     ports:
     - port: 5500
       protocol: TCP
   podSelector:
     matchLabels:
-      openshell.ai/boundary-pair: 07cf08fa-c0b0-49ca-bb13-24019b2a7c97
+      openshell.ai/boundary-pair: 08dab363-f500-4a4a-9e0c-8a2aa126094e
   policyTypes:
   - Ingress
   - Egress
@@ -575,11 +580,15 @@ Kubernetes `NetworkPolicy` objects selecting the same pod are additive, so what 
 governs the workload pod is the union of both. `openshell-sandbox-workloads` names
 `Egress` as a `policyType` but carries no `egress` rule at all, which alone would deny
 every egress connection; `os-control-<boundary-pair>`, generated fresh for this one
-sandbox, adds back exactly one: to the supervisor, on port 5500. Combined, the workload
-pod may egress to the supervisor's boundary port and nowhere else, and the supervisor may
-reach back into the workload's own boundary port the same way. That one port, in either
-direction, is the whole of the boundary channel; nothing else is open in either
-direction.
+sandbox, adds back exactly one: to its own paired supervisor, on port 5500. Combined, the
+workload pod may egress to its own supervisor's boundary port and nowhere else -- that
+one port, in that one direction, is the whole of the boundary channel out of the
+sandbox. `openshell-sandbox-workloads`'s own ingress rule is the wider of the two: it
+admits port 5500 from *any* pod labelled `boundary-role: supervisor` in the namespace,
+not only this sandbox's own, so it is shared cluster-wide infrastructure rather than
+something generated per sandbox; `os-control-<boundary-pair>` narrows that back down to
+the paired supervisor specifically for this one sandbox's own ingress rule. Either way,
+nothing besides that one port, to or from a supervisor, is open for the workload pod.
 
 To show the echo API's own refusal is attributable to these `NetworkPolicy` objects
 alone, and not to OpenShell's own in-pod interception, this page makes the connection
@@ -597,7 +606,7 @@ OpenShell entirely does not bypass the `NetworkPolicy`:
 
 ```text
   a connection from the workload pod's own network namespace, outside OpenShell's control (an ephemeral debug container sharing it), to the policy-approved backend by IP -- bypassing OpenShell entirely does not bypass the NetworkPolicy:
-Connecting to 10.100.180.249 (10.100.180.249:80)
+Connecting to 10.100.168.40 (10.100.168.40:80)
 wget: download timed out
 EXIT=1
 ```
@@ -610,7 +619,7 @@ problem:
 
 ```text
   control -- the same technique against the supervisor pod, which carries no such restriction:
-Connecting to 10.100.180.249 (10.100.180.249:80)
+Connecting to 10.100.168.40 (10.100.168.40:80)
 writing to stdout
 {
   "headers": {
@@ -618,7 +627,7 @@ writing to stdout
       "close"
     ],
     "Host": [
-      "10.100.180.249"
+      "10.100.168.40"
     ],
     "User-Agent": [
       "Wget"
@@ -659,12 +668,14 @@ EXIT=0
   puts it in the same namespace the untrusted workload pods live in, rather than only in
   the gateway's own namespace. `scripts/setup.sh` does not just assert this is safe: it
   checks, every run, that neither the sandbox `ServiceAccount` nor the sandbox
-  namespace's own `default` `ServiceAccount` can `get` Secrets there
-  (`kubectl auth can-i get secrets ... --as=system:serviceaccount:<sandbox namespace>:<sa>`
-  returns `no` for both), and refuses to continue if either ever can. That check is
-  scoped to this sample's own two ServiceAccounts in that one namespace; it is not a
-  general guarantee that nothing in the namespace can reach the Secret, so treat the
-  copy as a real, if currently unexploited, widening of where that certificate sits.
+  namespace's own `default` `ServiceAccount` can `get`, `list` or `watch` Secrets there
+  (`kubectl auth can-i <verb> secrets ... --as=system:serviceaccount:<sandbox namespace>:<sa>`
+  reads as literally `yes` or `no` for all six combinations, never just a command's exit
+  code, which `can-i` also returns non-zero for on a failure that is not "no" either),
+  and refuses to continue if any of them can, or if any answer is neither yes nor no.
+  That check is scoped to this sample's own two ServiceAccounts in that one namespace; it
+  is not a general guarantee that nothing in the namespace can reach the Secret, so treat
+  the copy as a real, if currently unexploited, widening of where that certificate sits.
 
 ## Clean up
 
@@ -674,7 +685,8 @@ EXIT=0
 
 ```text
 ==> the sandbox(es) this run created
-sandbox.agents.x-k8s.io "default--demo-1793371832" deleted from openshell-kubernetes-sandbox namespace
+sandbox.agents.x-k8s.io "default--demo-1793373763" deleted from openshell-kubernetes-sandbox namespace
+pod "node-probe" deleted from openshell-kubernetes-sandbox namespace
 pod "echo-api" deleted from openshell-kubernetes-sandbox namespace
 service "echo-api" deleted from openshell-kubernetes-sandbox namespace
 

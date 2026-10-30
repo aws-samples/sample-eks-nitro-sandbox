@@ -53,9 +53,18 @@ ns_state() { # <namespace>
 # Waits for a namespace to actually disappear, so "deleting" is never the last word a
 # failed or stuck delete gets. Prints nothing; sets $incomplete on a timeout.
 wait_for_ns_gone() { # <namespace>
-  local i
+  local i state
   for i in $(seq 1 60); do
-    kc get ns "$1" >/dev/null 2>&1 || return 0
+    state="$(ns_state "$1")"
+    case "$state" in
+      absent) return 0 ;;
+      unknown)
+        echo "  could not determine whether $1 is gone yet (the lookup itself failed); 'kubectl get ns $1' says why"
+        incomplete=1
+        return 1
+        ;;
+      # owned or foreign: it still exists and answered normally, so keep waiting.
+    esac
     sleep 5
   done
   echo "  $1 did not finish terminating within 5 minutes; 'kubectl get ns $1 -o yaml' says what is still holding it"
@@ -89,16 +98,29 @@ case "$sandbox_ns_state" in
 esac
 
 say "the Helm releases"
+# A release already uninstalled by an earlier, interrupted clean up run (the namespace
+# delete that follows it is what can fail and need a retry) is not a failure to report
+# again: "helm status" says plainly whether there is a release left to remove.
 case "$gateway_ns_state" in
-  owned) helm uninstall "$GATEWAY_RELEASE" -n "$GATEWAY_NAMESPACE" 2>&1 | sed 's/^/  /'
-         [[ "${PIPESTATUS[0]}" == 0 ]] || { echo "  helm uninstall $GATEWAY_RELEASE failed"; incomplete=1; } ;;
+  owned)
+    if helm status "$GATEWAY_RELEASE" -n "$GATEWAY_NAMESPACE" >/dev/null 2>&1; then
+      helm uninstall "$GATEWAY_RELEASE" -n "$GATEWAY_NAMESPACE" 2>&1 | sed 's/^/  /'
+      [[ "${PIPESTATUS[0]}" == 0 ]] || { echo "  helm uninstall $GATEWAY_RELEASE failed"; incomplete=1; }
+    else
+      echo "  $GATEWAY_RELEASE already uninstalled"
+    fi
+    ;;
   absent) echo "  $GATEWAY_NAMESPACE is already gone; nothing to do" ;;
   foreign) echo "  $GATEWAY_NAMESPACE exists and is not this sample's; left its release alone"; incomplete=1 ;;
   unknown) echo "  could not determine whether $GATEWAY_NAMESPACE exists; left its release alone"; incomplete=1 ;;
 esac
 if [[ "$sandbox_ns_state" == owned ]]; then
-  helm uninstall "$WORKSPACE_RELEASE" -n "$SANDBOX_NAMESPACE" 2>&1 | sed 's/^/  /'
-  [[ "${PIPESTATUS[0]}" == 0 ]] || { echo "  helm uninstall $WORKSPACE_RELEASE failed"; incomplete=1; }
+  if helm status "$WORKSPACE_RELEASE" -n "$SANDBOX_NAMESPACE" >/dev/null 2>&1; then
+    helm uninstall "$WORKSPACE_RELEASE" -n "$SANDBOX_NAMESPACE" 2>&1 | sed 's/^/  /'
+    [[ "${PIPESTATUS[0]}" == 0 ]] || { echo "  helm uninstall $WORKSPACE_RELEASE failed"; incomplete=1; }
+  else
+    echo "  $WORKSPACE_RELEASE already uninstalled"
+  fi
 fi
 
 say "the admission adapter and the namespace-scoped RBAC"

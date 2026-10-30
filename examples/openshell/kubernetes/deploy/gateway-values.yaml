@@ -62,9 +62,11 @@ server:
   # No credentialStorage.existingSecret here: every provider credential this gateway
   # ever stores goes through the Kubernetes Secrets driver below, so the default
   # encrypted-database path, and the key-encryption-key Secret it would need, is never
-  # exercised. Left at the chart's own default, the chart generates and retains that
-  # Secret on first install regardless, so nothing breaks if a future edit of this file
-  # ever turns the Kubernetes Secrets driver off.
+  # exercised -- the chart's own template for that Secret renders nothing while a
+  # credential driver is enabled. Left at the chart's own default rather than pointed at
+  # a name nothing creates, so if a future edit of this file ever turns the Kubernetes
+  # Secrets driver off, the chart generates that Secret itself instead of the gateway
+  # failing to find one.
   drivers:
     kubernetes:
       workspaceMode: shared

@@ -202,12 +202,21 @@ echo "  applied $ADAPTER, scoped to namespaces labelled managed-by=$SAMPLE"
 
 say "the namespace-scoped RBAC this sample's own run found missing (5/10)"
 
+# Existence first, then the label, for the same reason as the admission adapter check
+# above: these two live inside a namespace already confirmed as this sample's own, so
+# AGENTS.md's "the namespace check is enough" would cover them even without this -- it
+# is kept anyway, for the same two-step shape as every other ownership check in this
+# script, rather than the single jsonpath lookup that cannot tell "absent" apart from
+# "exists with no label".
 for kind in role rolebinding; do
-  owner="$(kc get "$kind" "$RBAC_GAP" -n "$SANDBOX_NAMESPACE" --ignore-not-found \
-    -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null)" ||
+  existing="$(kc get "$kind" "$RBAC_GAP" -n "$SANDBOX_NAMESPACE" --ignore-not-found -o name 2>/dev/null)" ||
     die "could not determine whether the $kind $RBAC_GAP exists; created nothing"
-  if [[ -n "$owner" && "$owner" != "$SAMPLE" ]]; then
-    die "the $kind $RBAC_GAP already exists in $SANDBOX_NAMESPACE and is not this sample's (managed-by='$owner'); created nothing."
+  if [[ -n "$existing" ]]; then
+    owner="$(kc get "$kind" "$RBAC_GAP" -n "$SANDBOX_NAMESPACE" \
+      -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null)" ||
+      die "could not read the managed-by label on the existing $kind $RBAC_GAP; created nothing"
+    [[ "$owner" == "$SAMPLE" ]] ||
+      die "the $kind $RBAC_GAP already exists in $SANDBOX_NAMESPACE and is not this sample's (managed-by='$owner'); created nothing."
   fi
 done
 
@@ -267,6 +276,22 @@ state_put WORKSPACE_CHART "$WORKSPACE_CHART"
 
 say "the OpenShell gateway (7/10)"
 
+# The gateway chart's own credential-secrets-namespace.yaml creates the credential
+# namespace as part of this install (server.credentialDrivers.kubernetesSecrets.
+# createNamespace=true), and writes a Role into it granting the gateway's own
+# ServiceAccount get/create on every Secret there, whether or not the namespace already
+# existed with a different owner -- the chart's own template skips only re-creating the
+# Namespace object itself, not the RBAC. So this has to be checked before the install
+# runs, not after: by the time a check after the install found a foreign namespace, that
+# Role would already be written into it.
+if kc get ns "$CREDENTIAL_NAMESPACE" -o name >/dev/null 2>&1; then
+  pre_owner="$(kc get ns "$CREDENTIAL_NAMESPACE" \
+    -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null)" ||
+    die "could not read the existing credential namespace $CREDENTIAL_NAMESPACE before installing the gateway; installed nothing"
+  [[ "$pre_owner" == "$SAMPLE" ]] ||
+    die "the credential namespace $CREDENTIAL_NAMESPACE already exists and is not labelled as this sample's (managed-by='$pre_owner'); refusing to install the gateway chart, which would write RBAC into it. Delete it, or set a new CREDENTIAL_NAMESPACE in .env."
+fi
+
 sed -e "s|<RELEASE>|$GATEWAY_RELEASE|g" \
     -e "s|<NAMESPACE>|$GATEWAY_NAMESPACE|g" \
     -e "s|<SANDBOX_NAMESPACE>|$SANDBOX_NAMESPACE|g" \
@@ -283,10 +308,17 @@ SUPERVISOR_IMAGE="$(jqr '.images.supervisor')"
 SANDBOX_RUNTIME_IMAGE="$(jqr '.images.sandbox_runtime')"
 python3 - "$TMP_DIR/gateway-values.yaml" \
     "${GATEWAY_IMAGE#*@}" "${SANDBOX_RUNTIME_IMAGE#*@}" "${SUPERVISOR_IMAGE#*@}" <<'PY'
+import re
 import sys
 import yaml
 
 path, gateway_digest, sandbox_runtime_digest, supervisor_digest = sys.argv[1:5]
+digest_re = re.compile(r"^sha256:[0-9a-f]{64}$")
+for name, digest in (("gateway", gateway_digest), ("sandboxRuntime", sandbox_runtime_digest),
+                      ("supervisor", supervisor_digest)):
+    if not digest_re.match(digest):
+        sys.exit(f"versions.json's {name} image is not a bare sha256:<64 hex> digest "
+                  f"after the '@' (.images.{name} must be '<ref>@sha256:<64 hex>'): {digest!r}")
 values = yaml.safe_load(open(path))
 values.setdefault("gateway", {}).setdefault("image", {})["digest"] = gateway_digest
 values.setdefault("sandboxRuntime", {}).setdefault("image", {})["digest"] = sandbox_runtime_digest
@@ -371,12 +403,21 @@ echo "  copied the gateway's client-tls Secret into $SANDBOX_NAMESPACE for the s
 # workload pods live in, so this checks that neither of those pods' own ServiceAccounts
 # can read it there, rather than asserting it.
 for sa in openshell-sandbox default; do
-  if kc auth can-i get secrets -n "$SANDBOX_NAMESPACE" \
-      --as="system:serviceaccount:$SANDBOX_NAMESPACE:$sa" >/dev/null 2>&1; then
-    die "the $sa ServiceAccount in $SANDBOX_NAMESPACE can read Secrets there, including the gateway's own client-tls certificate this script just copied in; refusing to continue. Check what granted it get on secrets in that namespace."
-  fi
+  for verb in get list watch; do
+    # "kubectl auth can-i" exits non-zero for both "no" and a command failure (a bad
+    # --as, an API error), so the exit code alone cannot tell the two apart. Read the
+    # text it prints instead: anything other than exactly "yes" or "no" is "could not
+    # determine", which this treats as a failure, never as "confirmed safe".
+    answer="$(kc auth can-i "$verb" secrets -n "$SANDBOX_NAMESPACE" \
+      --as="system:serviceaccount:$SANDBOX_NAMESPACE:$sa" 2>&1)" || true
+    case "$answer" in
+      yes) die "the $sa ServiceAccount in $SANDBOX_NAMESPACE can $verb Secrets there, including the gateway's own client-tls certificate this script just copied in; refusing to continue. Check what granted it $verb on secrets in that namespace." ;;
+      no) ;;
+      *) die "could not determine whether the $sa ServiceAccount in $SANDBOX_NAMESPACE can $verb Secrets there ('kubectl auth can-i' answered '$answer', not yes or no); refusing to continue." ;;
+    esac
+  done
 done
-echo "  confirmed: neither the sandbox ServiceAccount nor the namespace's default ServiceAccount can read Secrets in $SANDBOX_NAMESPACE"
+echo "  confirmed: neither the sandbox ServiceAccount nor the namespace's default ServiceAccount can get, list or watch Secrets in $SANDBOX_NAMESPACE"
 
 # The gateway chart creates this namespace (server.credentialDrivers.kubernetesSecrets.
 # createNamespace=true) and marks it as that Helm release's. Marking it as this sample's
@@ -409,12 +450,33 @@ say "the demo echo API this sample's policy and provider point at (9/10)"
 if kc get pod echo-api -n "$SANDBOX_NAMESPACE" >/dev/null 2>&1; then
   echo "  reusing the echo-api pod already in $SANDBOX_NAMESPACE"
 else
+  # Two labels, not one: "app=echo-api" is what the Service below selects on, and
+  # "managed-by" is only for this sample's own ownership tracking. demo.sh's node-probe
+  # pod carries that same managed-by label for the same tracking reason, and "kubectl
+  # expose pod" (not used here, for exactly this reason) would have copied every one of
+  # the pod's own labels into the Service's selector -- which would have matched
+  # node-probe too, and did: an EndpointSlice with both pods behind this one Service,
+  # found live on this sample's own cluster run, intermittently routing the credential
+  # and refusal demos to a busybox pod with nothing listening on port 8080.
   kc run echo-api --image="$ECHO_IMAGE" --port=8080 -n "$SANDBOX_NAMESPACE" \
-    --labels="app.kubernetes.io/managed-by=$SAMPLE" --restart=Always
+    --labels="app=echo-api,app.kubernetes.io/managed-by=$SAMPLE" --restart=Always
   kc wait pod/echo-api -n "$SANDBOX_NAMESPACE" --for=condition=Ready --timeout=120s
 fi
-kc get service echo-api -n "$SANDBOX_NAMESPACE" >/dev/null 2>&1 ||
-  kc expose pod echo-api -n "$SANDBOX_NAMESPACE" --port=80 --target-port=8080 --name=echo-api
+kc get service echo-api -n "$SANDBOX_NAMESPACE" >/dev/null 2>&1 || kc apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-api
+  namespace: $SANDBOX_NAMESPACE
+  labels:
+    app.kubernetes.io/managed-by: $SAMPLE
+spec:
+  selector:
+    app: echo-api
+  ports:
+    - port: 80
+      targetPort: 8080
+EOF
 echo "  echo-api Ready, reachable in-cluster at echo-api.$SANDBOX_NAMESPACE.svc.cluster.local:80"
 
 # ---------------------------------------------------------------------------

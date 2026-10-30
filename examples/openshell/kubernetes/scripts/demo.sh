@@ -34,9 +34,12 @@ kc() { if [[ -n "${KUBE_CONTEXT:-}" ]]; then kubectl --context "$KUBE_CONTEXT" "
 # Scoped to the CLI's own invocations only, never exported. Exporting HOME for the whole
 # script would also move where kubectl's own EKS exec-credential plugin looks for AWS
 # profile files, which would break every kc call for a reader whose AWS credentials come
-# from a named profile rather than already-exported environment variables.
+# from a named profile rather than already-exported environment variables. XDG_CONFIG_HOME
+# is set the same way and for the same reason: if a reader already has it exported, the
+# CLI would otherwise read and write their real configuration (its mTLS bundle, its
+# registered gateways) instead of this run's own scratch copy under $CLI_HOME.
 mkdir -p "$CLI_HOME"
-os() { HOME="$CLI_HOME" "$CLI" "$@"; }
+os() { HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_HOME/.config" "$CLI" "$@"; }
 
 curl -sk --max-time 3 "https://127.0.0.1:$GATEWAY_PORT/" >/dev/null 2>&1 || true
 # A plain reachability probe above is best-effort; the real check is the CLI's own
@@ -65,20 +68,33 @@ if ! grep -q '^demo-echo ' <<<"$profile_listing"; then
   os profile import -f "$SAMPLE_DIR/policy/demo-profile.json"
 fi
 provider_listing="$(os provider list 2>/dev/null)" || provider_listing=""
+if grep -q '^demo ' <<<"$provider_listing" && [[ -z "${DEMO_API_KEY_SHA256:-}" ]]; then
+  # The provider exists, but this run has no recorded digest for it -- most likely
+  # because an earlier ./scripts/setup.sh re-run truncated this sample's state file
+  # (setup.sh starts a fresh record every time it runs) while the provider itself
+  # persisted in the gateway's own storage. Comparing against no digest, or a stale one
+  # left over from an unrelated value, would not prove anything, so this starts over.
+  os provider delete demo >/dev/null 2>&1 || true
+  provider_listing=""
+fi
 if ! grep -q '^demo ' <<<"$provider_listing"; then
-  # Generated fresh, used once to create the provider and once to record its digest, and
-  # never written to a file or put on a command line: --credential DEMO_API_KEY (no
-  # "=value") has the CLI read it from this process's own DEMO_API_KEY environment
-  # variable instead. The digest (never the value) is kept in the run record so a later
-  # run of this script -- which skips re-creating a provider that already exists, and so
-  # never sees the value again either -- can still confirm the backend received the real
+  # Generated fresh, never written to a file or put on a command line: --credential
+  # DEMO_API_KEY (no "=value") has the CLI read it from this process's own DEMO_API_KEY
+  # environment variable instead. The digest (never the value) is recorded only after
+  # the provider is actually created, so a failed create cannot leave a digest on record
+  # for a provider that does not exist; a later run of this script, which skips
+  # re-creating a provider that already exists and so never sees the value again
+  # either, reads the recorded digest back to confirm the backend received the real
   # credential, by comparing digests rather than printing it.
   demo_key="$(openssl rand -hex 32)"
-  echo "DEMO_API_KEY_SHA256=$(printf '%s' "$demo_key" | sha256sum | cut -d' ' -f1)" >> "$STATE_FILE"
+  demo_key_sha256="$(printf '%s' "$demo_key" | sha256sum | cut -d' ' -f1)"
   DEMO_API_KEY="$demo_key" os provider create --name demo --type demo-echo --credential DEMO_API_KEY
-  unset demo_key
+  echo "DEMO_API_KEY_SHA256=$demo_key_sha256" >> "$STATE_FILE"
+  DEMO_API_KEY_SHA256="$demo_key_sha256"
+  unset demo_key demo_key_sha256
 fi
-DEMO_API_KEY_SHA256="${DEMO_API_KEY_SHA256:-$(grep -o '^DEMO_API_KEY_SHA256=.*' "$STATE_FILE" | tail -n1 | cut -d= -f2)}"
+[[ -n "${DEMO_API_KEY_SHA256:-}" ]] ||
+  die "no DEMO_API_KEY_SHA256 is recorded for the existing provider 'demo'; this should not happen after the check above"
 echo "  the credential Secret, by name only -- never its value:"
 kc get secret -n "$CREDENTIAL_NAMESPACE" -o custom-columns=NAME:.metadata.name,TYPE:.type --no-headers
 
@@ -161,14 +177,23 @@ echo "  the digest of the value the backend received (substituted by the supervi
 # the stream's own EOF, such as "tail -n1") blocks forever waiting for more input that
 # never comes. -m1 makes grep exit the moment it has the one line this needs, which ends
 # the pipeline on its own; "timeout" stays only as a last-resort backstop.
-response_digest="$(HOME="$CLI_HOME" timeout 10 "$CLI" sandbox exec -n "$SANDBOX" --no-login-shell -- bash -c '
+response_digest="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_HOME/.config" timeout 10 "$CLI" sandbox exec -n "$SANDBOX" --no-login-shell -- bash -c '
 exec 3<>/dev/tcp/echo-api.'"$SANDBOX_NAMESPACE"'.svc.cluster.local/80
 printf "GET /headers HTTP/1.1\r\nHost: echo-api.'"$SANDBOX_NAMESPACE"'.svc.cluster.local\r\nX-Demo-Api-Key: $DEMO_API_KEY\r\nConnection: close\r\n\r\n" >&3
 value=$(grep -m1 -A1 "X-Demo-Api-Key" <&3 | sed -n 2p | sed -E "s/^[[:space:]]*\"([^\"]*)\".*/\1/")
 printf "%s" "$value" | sha256sum | cut -d" " -f1
 ' 2>/dev/null)" || response_digest=""
 echo "  resolved credential digest: ${response_digest:-<no response>}"
-echo "  matches the digest of the credential this run stored in the Secret: $([[ "$response_digest" == "$DEMO_API_KEY_SHA256" ]] && echo true || echo false)"
+# e3b0c4...  is the SHA-256 of an empty string: the digest of "nothing came back", never
+# treated as a coincidental match, and a mismatch stops the run rather than printing
+# "false" and continuing as if the claim had merely failed to be shown.
+empty_sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+if [[ -z "$response_digest" || "$response_digest" == "$empty_sha256" ]]; then
+  die "the echo API returned no X-Demo-Api-Key header to extract a digest from; 'kubectl logs' on the echo-api pod and the supervisor say why"
+fi
+[[ "$response_digest" == "$DEMO_API_KEY_SHA256" ]] ||
+  die "the digest the backend received ($response_digest) does not match the digest this run stored in the Secret ($DEMO_API_KEY_SHA256); the credential substitution this page claims did not happen"
+echo "  matches the digest of the credential this run stored in the Secret: true"
 
 say "layer 1: OpenShell's policy refuses a file outside it and a destination outside it"
 
@@ -178,7 +203,7 @@ os sandbox exec -n "$SANDBOX" --no-login-shell -- sh -c \
 echo "  control -- a file the policy does list:"
 os sandbox exec -n "$SANDBOX" --no-login-shell -- cat /etc/hostname
 echo "  a destination the policy does not list:"
-HOME="$CLI_HOME" timeout 10 "$CLI" sandbox exec -n "$SANDBOX" --no-login-shell -- bash -c \
+HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_HOME/.config" timeout 10 "$CLI" sandbox exec -n "$SANDBOX" --no-login-shell -- bash -c \
   'exec 3<>/dev/tcp/kubernetes.default.svc.cluster.local/443' 2>&1 || true
 
 say "layer 2: the Nitro boundary -- the node is invisible, and the credential is absent"
@@ -188,9 +213,19 @@ os sandbox exec -n "$SANDBOX" --no-login-shell -- ps aux
 echo "  the guest's environment, checked rather than eyeballed:"
 guest_env="$(os sandbox exec -n "$SANDBOX" --no-login-shell -- env)"
 echo "$guest_env" | grep -E '^DEMO_API_KEY='
-if echo "$guest_env" | grep -vE '^DEMO_API_KEY=' | grep -qiE '(secret|token|password|credential|_key=)'; then
+# Asserted, not just printed: a DEMO_API_KEY that is not in the placeholder form would
+# mean the substitution this page claims did not happen, and a check that merely printed
+# the line would not catch that.
+echo "$guest_env" | grep -qE '^DEMO_API_KEY=openshell:resolve:env:[A-Za-z0-9_]+$' ||
+  die "DEMO_API_KEY in the guest's environment is not in OpenShell's placeholder form; the credential substitution this page claims did not happen"
+# Broader than just the placeholder's own name: any AWS-style _ID/_KEY pair, PAT, auth or
+# pass fields, and a second occurrence of OpenShell's own placeholder prefix under a
+# different variable name, so a real secret under an unexpected name is still caught.
+if echo "$guest_env" | grep -vE '^DEMO_API_KEY=' | \
+    grep -qiE '(secret|token|password|passwd|credential|_key=|_key_id=|pat=|auth|openshell:resolve:)'; then
   echo "  found an unexpected credential-shaped variable besides the placeholder:"
-  echo "$guest_env" | grep -vE '^DEMO_API_KEY=' | grep -iE '(secret|token|password|credential|_key=)'
+  echo "$guest_env" | grep -vE '^DEMO_API_KEY=' | \
+    grep -iE '(secret|token|password|passwd|credential|_key=|_key_id=|pat=|auth|openshell:resolve:)'
 else
   echo "  no other credential-shaped variable"
 fi
