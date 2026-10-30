@@ -1,0 +1,68 @@
+# Fills a gap this sample found at OpenShell v0.1.6 between the setup guide's own
+# instructions and the openshell-workspace chart's RBAC.
+#
+# docs/kubernetes/setup.mdx's "Split gateway and workspace releases" section says, for
+# one pre-provisioned sandbox namespace, to keep server.drivers.kubernetes.workspaceMode
+# "shared" and install the gateway with workspaceResources.enabled=false, so that the
+# openshell-workspace chart owns the namespace-scoped sandbox prerequisites instead.
+#
+# Trying exactly that combination on this cluster, the gateway failed every sandbox
+# create with:
+#
+#   networkpolicies.networking.k8s.io "openshell-sandbox-workloads" is forbidden: User
+#   "system:serviceaccount:<GATEWAY_NAMESPACE>:<GATEWAY_RELEASE>" cannot get resource
+#   "networkpolicies" in API group "networking.k8s.io" in the namespace
+#   "<SANDBOX_NAMESPACE>"
+#
+# The gateway chart's own Role (deploy/helm/openshell/templates/role.yaml), which grants
+# the full set this driver needs in shared mode -- sandboxes, events, create/delete/
+# patch/watch on pods, create/get on services, create/get on networkpolicies, and
+# create/delete on secrets -- renders only when workspaceResources.enabled stays true.
+# The cluster-wide ClusterRole (templates/clusterrole.yaml) grants that same pods/
+# services/networkpolicies set, but only when workspaceMode is NOT "shared". The
+# openshell-workspace chart's own Role (templates/role.yaml) is narrower: sandboxes,
+# events, secrets create/delete, and pods get only -- no services, no networkpolicies,
+# and no create/delete/patch/watch on pods. So shared mode plus the split release has no
+# source for the permissions the driver needs to create the workload pod, the boundary
+# Service and the per-sandbox NetworkPolicy. Reported upstream; until fixed there, this
+# Role and RoleBinding supply exactly the missing verbs, scoped to this sample's sandbox
+# namespace and to the gateway's own ServiceAccount. They touch no OpenShell chart,
+# image or binary, and grant nothing beyond what the gateway chart's own Role would have
+# granted here.
+#
+# <GATEWAY_SA_NAME> and <GATEWAY_NAMESPACE> are the gateway's ServiceAccount and its
+# namespace; <MANAGED_BY> and <SANDBOX_NAMESPACE> are substituted at apply time by
+# scripts/setup.sh.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openshell-sandbox-rbac-gap
+  namespace: <SANDBOX_NAMESPACE>
+  labels:
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete", "patch", "watch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["create", "get"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openshell-sandbox-rbac-gap
+  namespace: <SANDBOX_NAMESPACE>
+  labels:
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: openshell-sandbox-rbac-gap
+subjects:
+  - kind: ServiceAccount
+    name: <GATEWAY_SA_NAME>
+    namespace: <GATEWAY_NAMESPACE>

@@ -1,0 +1,124 @@
+# Adapts OpenShell's generated workload pod to a Nitro sandbox, in this sample's
+# namespaces only. OpenShell itself is unmodified: the gateway chart, the workspace
+# chart, the gateway, the supervisor and the in-pod runtime are the upstream v0.1.6
+# builds that versions.json pins.
+#
+# This is the same adjustment already proved in this repository at v0.1.6 by
+# Subagent security > openshell (examples/subagent-security/openshell/deploy/
+# nitro-adapter.yaml), carried over unchanged because it answers OpenShell's own pod
+# shape, not anything specific to that sample's image.
+#
+# OpenShell starts its in-pod runtime from a static binary that an init container copies
+# onto a memory-backed pod volume. Two details of that pod need adjusting inside a
+# sandbox guest, and this policy is the whole of the adjustment:
+#
+#   1. A binary on a pod volume cannot be a container's entrypoint there: the kubelet
+#      reports "exec ... permission denied". The same binary runs when the image's shell
+#      starts it, because the pod volume carries a different SELinux type from the
+#      image's root filesystem. So the adapter starts the runtime through
+#      /bin/sh -c 'exec "$0" "$@"'. The workload image must therefore provide /bin/sh;
+#      this sample's default workload image (nvcr.io/nvidia/base/ubuntu:24.04) does.
+#   2. One persistent volume cannot be mounted at two paths in one pod. OpenShell mounts
+#      the workspace at /mnt/openshell-workspace in its seeding init container and at
+#      /sandbox in the agent container. The adapter gives the seeding container an
+#      emptyDir at that first path instead, so the workspace volume is mounted once, at
+#      /sandbox. A consequence worth knowing: files an image keeps under /sandbox are
+#      not copied into the workspace, so a workload image that needs starting content
+#      there has to seed it another way.
+#
+# A third point from the "prove first" list needed no adjustment: init containers with
+# no CPU or memory requests were admitted in the sandboxed pod unchanged, so nothing
+# patches them.
+#
+# What it deliberately does not touch: the runtime's command arguments, its user, its
+# capabilities, its seccomp profile and its policy. The page reads all of those from the
+# running process, so an adapter that changed them would be changing the thing the sample
+# measures.
+#
+# <ADAPTER_NAME> and <MANAGED_BY> are replaced at apply time by scripts/setup.sh.
+#
+# A MutatingAdmissionPolicy is a cluster-scoped object, so the binding below is what
+# keeps it from reaching anyone else's pods: it applies only in namespaces carrying this
+# sample's managed-by label, and only to pods OpenShell labels as a workload boundary.
+# Every other pod on the cluster, including other OpenShell gateways' pods, is outside
+# both conditions.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: <ADAPTER_NAME>
+  labels:
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+spec:
+  failurePolicy: Fail
+  reinvocationPolicy: Never
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+    namespaceSelector:
+      matchLabels:
+        app.kubernetes.io/managed-by: <MANAGED_BY>
+  matchConditions:
+    - name: openshell-workload
+      expression: >-
+        object.metadata.?labels[?'openshell.ai/boundary-role'].orValue('') == 'workload'
+  variables:
+    - name: inits
+      expression: object.spec.?initContainers.orValue([])
+    - name: runtime
+      expression: "'/.openshell/runtime/openshell-sandbox'"
+    - name: shell
+      expression: >-
+        ['/bin/sh', '-c', 'exec "$0" "$@"']
+    # Only a container whose command is already OpenShell's runtime binary is wrapped, so
+    # the patch is a no-op on any other container the driver adds.
+    - name: wrapInit
+      expression: >-
+        [0, 1, 2, 3].filter(i, size(variables.inits) > i
+          && size(variables.inits[i].?command.orValue([])) > 0
+          && variables.inits[i].command[0] == variables.runtime)
+    - name: wrapMain
+      expression: >-
+        [0, 1, 2].filter(i, size(object.spec.containers) > i
+          && size(object.spec.containers[i].?command.orValue([])) > 0
+          && object.spec.containers[i].command[0] == variables.runtime)
+    - name: seed
+      expression: >-
+        [0, 1, 2, 3].filter(i, size(variables.inits) > i
+          && variables.inits[i].name == 'workspace-init')
+    - name: seedMounts
+      expression: >-
+        size(variables.seed) == 1
+          ? [0, 1, 2, 3, 4, 5].filter(m,
+              size(variables.inits[variables.seed[0]].?volumeMounts.orValue([])) > m
+              && variables.inits[variables.seed[0]].volumeMounts[m].mountPath == '/mnt/openshell-workspace')
+          : []
+  mutations:
+    - patchType: JSONPatch
+      jsonPatch:
+        expression: >-
+          variables.wrapInit.map(i, JSONPatch{op: 'replace',
+              path: '/spec/initContainers/' + string(i) + '/command',
+              value: variables.shell + variables.inits[i].command})
+          + variables.wrapMain.map(i, JSONPatch{op: 'replace',
+              path: '/spec/containers/' + string(i) + '/command',
+              value: variables.shell + object.spec.containers[i].command})
+          + variables.seedMounts.map(m, JSONPatch{op: 'replace',
+              path: '/spec/initContainers/' + string(variables.seed[0]) + '/volumeMounts/' + string(m) + '/name',
+              value: 'openshell-seed-scratch'})
+          + (size(variables.seedMounts) > 0
+              ? [JSONPatch{op: 'add', path: '/spec/volumes/-',
+                  value: Object.spec.volumes{name: 'openshell-seed-scratch',
+                                             emptyDir: Object.spec.volumes.emptyDir{}}}]
+              : [])
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicyBinding
+metadata:
+  name: <ADAPTER_NAME>
+  labels:
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+spec:
+  policyName: <ADAPTER_NAME>

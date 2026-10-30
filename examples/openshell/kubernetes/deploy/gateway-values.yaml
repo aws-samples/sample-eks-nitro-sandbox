@@ -1,0 +1,93 @@
+# Helm values for the OpenShell gateway, installed with workspaceResources.enabled=false
+# so the namespace-scoped sandbox prerequisites come from the workspace chart instead
+# (deploy/workspace-values.yaml), in the sandbox namespace.
+#
+# scripts/setup.sh substitutes <RELEASE>, <NAMESPACE> and <SANDBOX_NAMESPACE|CREDENTIAL_NAMESPACE>,
+# so nothing here names a cluster, an account or a Region.
+fullnameOverride: <RELEASE>
+
+# ClusterIP, reached only with kubectl port-forward. No Ingress, LoadBalancer or
+# NodePort anywhere in this sample, and setup.sh re-checks the rendered chart for one
+# before it installs.
+service:
+  type: ClusterIP
+grpcRoute:
+  enabled: false
+openshiftRoute:
+  enabled: false
+
+# The namespace-scoped sandbox prerequisites (ServiceAccount, Role, RoleBinding,
+# NetworkPolicy) come from the workspace chart in the sandbox namespace, not from this
+# release.
+workspaceResources:
+  enabled: false
+
+server:
+  telemetryEnabled: false
+
+  # Every sandbox pods created by this gateway are workload pods go in a Nitro sandbox.
+  # The paired supervisor pod is an ordinary pod and does not get this.
+  defaultRuntimeClassName: isolated-sandbox
+
+  # The default workload image's user. The driver puts these in the workload pod's
+  # securityContext, and the sandbox policy's process.run_as_user names the same identity.
+  sandboxUid: "1000"
+  sandboxGid: "1000"
+
+  # Kubernetes user namespaces stay off. A Nitro sandbox does not support hostUsers:
+  # false (Amazon EKS User Guide, Isolated and confidential pods limitations), and the
+  # kubelet would refuse the pod. This is the chart default; written out because turning
+  # it on is the kind of change that would look harmless.
+  enableUserNamespaces: false
+
+  # All sandboxes in one pre-provisioned namespace, set with the workspace chart
+  # installed there (the "split gateway and workspace releases" pattern in OpenShell's
+  # setup guide).
+  sandboxNamespace: <SANDBOX_NAMESPACE>
+
+  auth:
+    # Development user mode: this gateway does not authorize individual users, so
+    # transport mTLS and access to the client TLS Secret are the whole of its access
+    # control. Anyone who can read that Secret can administer this gateway. It is here
+    # because the sample's subject is the platform install, not identity. A real
+    # deployment uses the upstream OIDC or trusted-access-proxy configuration, and the
+    # page says so rather than leaving this looking like a pattern to copy.
+    allowUnauthenticatedUsers: true
+
+  tls:
+    certSecretName: <RELEASE>-server-tls
+    clientCaSecretName: <RELEASE>-server-client-ca
+    clientTlsSecretName: <RELEASE>-client-tls
+
+  # A pre-created key-encryption key, so the gateway encrypts stored provider credentials
+  # under a key this run made and setup.sh can render the chart without Helm's `lookup`.
+  credentialStorage:
+    existingSecret: <RELEASE>-kek
+
+  drivers:
+    kubernetes:
+      workspaceMode: shared
+      resourceAdmission:
+        # On, which is the default. It is what makes the RuntimeClass label an operator
+        # decision rather than a caller's: isolated-sandbox has to carry
+        # openshell.ai/sandbox-attachable=true before a sandbox may use it.
+        enabled: true
+
+  # Workspace PVCs bind through the cluster's own default EBS StorageClass
+  # (auto-ebs-sc, provisioner ebs.csi.eks.amazonaws.com, gp3, encrypted), which already
+  # fits what the chart needs: block-backed storage, not NFS. Named explicitly so a
+  # cluster with no default StorageClass still works, and so the page can show the bind.
+  workspaceStorageClass: <WORKSPACE_STORAGE_CLASS>
+
+  # Every provider credential this gateway stores lives as a Kubernetes Secret in its
+  # own namespace, never in the gateway's database. The sandbox namespace is never that
+  # namespace, so the workload pod's own ServiceAccount has no RBAC path to it.
+  credentialDrivers:
+    kubernetesSecrets:
+      enabled: true
+      namespace: <CREDENTIAL_NAMESPACE>
+      createNamespace: true
+
+pkiInitJob:
+  serverDnsNames:
+    - <RELEASE>.<NAMESPACE>.svc.cluster.local
