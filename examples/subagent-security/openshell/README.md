@@ -956,10 +956,13 @@ kubectl delete pod ordinary-comparison -n $NAMESPACE
   was already there.
 - **This sample creates four cluster-scoped objects**, which is unusual for a sample here and
   worth knowing before you run it on a cluster you share: the `MutatingAdmissionPolicy` and
-  its binding, both named for this sample and scoped by their match conditions to this
-  sample's namespace and its managed-by label, and a `ClusterRole` and `ClusterRoleBinding`
-  the chart creates so the gateway can read RuntimeClass metadata and review sandbox tokens.
-  `clean.sh` removes all four, the first
+  its binding, both named for this sample. The policy's match conditions confine it to this
+  sample's namespace, and its namespace selector to namespaces labelled with this sample's
+  managed-by label. The label is reusable: a namespace deleted and recreated under the same
+  name with the label restored still matches, so the check establishes "currently this
+  sample's namespace", not "the namespace this setup created". A `ClusterRole` and
+  `ClusterRoleBinding` the chart creates so the gateway can read RuntimeClass metadata and
+  review sandbox tokens. `clean.sh` removes all four, the first
   two by exact name after checking their label, the other two by the Helm annotations that
   name this release and namespace.
 - **The model bridge is application code, not an OpenShell feature.** OpenShell's own managed

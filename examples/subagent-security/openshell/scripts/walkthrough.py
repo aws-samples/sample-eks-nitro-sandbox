@@ -1446,7 +1446,13 @@ class Walkthrough:
             raise Problem(
                 f"the run record names the namespace {self.namespace}, and it could not be "
                 f"read ({tail(completed.stderr)}). Re-run ./scripts/setup.sh.")
-        labels = json.loads(completed.stdout).get("metadata", {}).get("labels", {}) or {}
+        try:
+            namespace = json.loads(completed.stdout)
+        except json.JSONDecodeError as error:
+            raise Problem(
+                f"kubectl returned unreadable JSON for namespace {self.namespace} ({error}). "
+                "Nothing was created in it.")
+        labels = namespace.get("metadata", {}).get("labels", {}) or {}
         owner = labels.get("app.kubernetes.io/managed-by", "")
         if owner != SAMPLE:
             raise Problem(
