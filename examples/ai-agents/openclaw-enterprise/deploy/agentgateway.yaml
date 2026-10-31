@@ -1,0 +1,72 @@
+# agentgateway v1.7.0: an OpenAI-compatible endpoint on :4000 that accepts one
+# gateway-issued API key and calls Amazon Bedrock with the pod's own Pod Identity role.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentgateway-config
+  namespace: openclaw-enterprise-agw
+data:
+  config.yaml: |
+    config:
+      readinessAddr: 0.0.0.0:15021
+      adminAddr: "off"
+    llm:
+      port: 4000
+      policies:
+        apiKey:
+          mode: strict
+          keys:
+            - key: ${AGW_CLIENT_KEY}
+              allowedModels: ["claude-haiku"]
+      models:
+        - name: claude-haiku
+          provider: bedrock
+          params:
+            model: us.anthropic.claude-haiku-4-5-20251001-v1:0
+            awsRegion: us-west-2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentgateway
+  namespace: openclaw-enterprise-agw
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: agentgateway } }
+  template:
+    metadata:
+      labels: { app: agentgateway }
+    spec:
+      serviceAccountName: agentgateway
+      containers:
+        - name: agentgateway
+          image: cr.agentgateway.dev/agentgateway@sha256:60216aafb03d37f94e952ff3d51d2f630a65b10ecaebdc0a864882f92610c45b
+          args: ["-f", "/config/config.yaml"]
+          env:
+            - name: AWS_REGION
+              value: us-west-2
+            - name: AGW_CLIENT_KEY
+              valueFrom: { secretKeyRef: { name: agw-client-key, key: key } }
+          ports: [{ containerPort: 4000, name: llm }]
+          readinessProbe:
+            httpGet: { path: /healthz/ready, port: 15021 }
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            runAsNonRoot: true
+            runAsUser: 10101
+          volumeMounts: [{ name: config, mountPath: /config }]
+      volumes:
+        - name: config
+          configMap: { name: agentgateway-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentgateway
+  namespace: openclaw-enterprise-agw
+spec:
+  type: ClusterIP
+  selector: { app: agentgateway }
+  ports: [{ name: llm, port: 4000, targetPort: 4000 }]
