@@ -14,7 +14,7 @@ Each run is fresh: a new run id, a new sandbox, and the template recreated. It n
 resumes an earlier run's sandbox, because a resumed run can skip the very step whose
 output the page shows.
 
-What it leaves behind, under <repo>/tmp/openshell/runs/<run id>/:
+What it leaves behind, under <repo>/tmp/subagent-security-openshell/runs/<run id>/:
 
     checks.json                   every check and whether it passed
     calls.json                    every probe this run made and what came back
@@ -48,7 +48,7 @@ import time
 import uuid
 from pathlib import Path
 
-SAMPLE = "openshell"
+SAMPLE = "subagent-security-openshell"
 
 SCRIPT = Path(__file__).resolve()
 SAMPLE_DIR = SCRIPT.parents[1]

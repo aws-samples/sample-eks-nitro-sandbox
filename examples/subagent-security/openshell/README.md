@@ -281,14 +281,14 @@ secret/supplier-tls created
 configmap/supplier-ca created
   created a 30-day sample certificate authority and the supplier-tls Secret
 ==> 4/7 the synthetic supplier API
-  created the ECR repository pod-isolation/subagent-analyst-openshell-supplier-api
-  built and pushed pod-isolation/subagent-analyst-openshell-supplier-api:6477c8d7c039259448ff
+  created the ECR repository pod-isolation/subagent-analyst-subagent-security-openshell-supplier-api
+  built and pushed pod-isolation/subagent-analyst-subagent-security-openshell-supplier-api:6477c8d7c039259448ff
 service/supplier-api created
 service/supplier-api-alias created
 deployment.apps/supplier-api created
 deployment "supplier-api" successfully rolled out
 ==> 5/7 the S3 bucket and the proposals
-  created the bucket subagent-analyst-openshell-<ACCOUNT_ID>
+  created the bucket subagent-analyst-subagent-security-openshell-<ACCOUNT_ID>
   seeded the case, 3 proposals and one other case's object
 ==> the pinned OpenShell CLI and chart (v0.1.6)
   downloaded and verified the CLI: openshell 0.1.6
@@ -296,13 +296,13 @@ deployment "supplier-api" successfully rolled out
 ==> the admission adapter that adapts OpenShell's pod to a Nitro sandbox
 mutatingadmissionpolicy.admissionregistration.k8s.io/openshell-analyst-nitro-adapter created
 mutatingadmissionpolicybinding.admissionregistration.k8s.io/openshell-analyst-nitro-adapter created
-  applied openshell-analyst-nitro-adapter, scoped to namespaces labelled managed-by=openshell
+  applied openshell-analyst-nitro-adapter, scoped to namespaces labelled managed-by=subagent-security-openshell
 ==> the model bridge's IAM role and its EKS Pod Identity association
-  created the IAM role subagent-analyst-openshell-bridge
+  created the IAM role subagent-analyst-subagent-security-openshell-bridge
   created the Pod Identity association a-uzpclkhanmtgjtqu4
 ==> the analyst image, the CA-extended supervisor image and the model bridge
-  created the ECR repository pod-isolation/subagent-analyst-openshell
-  built and pushed pod-isolation/subagent-analyst-openshell:7f17f33c9449acd0c923
+  created the ECR repository pod-isolation/subagent-analyst-subagent-security-openshell
+  built and pushed pod-isolation/subagent-analyst-subagent-security-openshell:11a91fcb7e9b47ba5a14
 secret/bridge-tls created
 configmap/bridge-ca created
   created a 30-day certificate authority and the bridge-tls Secret
@@ -322,8 +322,8 @@ REVISION: 1
 ==> ready
   namespace:   subagent-security-openshell
   gateway:     openshell-analyst (OpenShell v0.1.6)
-  bucket:      subagent-analyst-openshell-<ACCOUNT_ID>
-  bridge role: subagent-analyst-openshell-bridge
+  bucket:      subagent-analyst-subagent-security-openshell-<ACCOUNT_ID>
+  bridge role: subagent-analyst-subagent-security-openshell-bridge
   model:       global.anthropic.claude-sonnet-4-5-20250929-v1:0
 ```
 
@@ -348,19 +348,22 @@ at the first claim that does not hold, so nothing below is a claim the run skipp
 ```
 
 ```text
-==> run 31bd77f75e9f4d9ca472483145fcad36 in tmp/openshell/runs/31bd77f75e9f4d9ca472483145fcad36
+
+==> run 30d406e43240432e87f85c807607c6f0 in tmp/subagent-security-openshell/runs/30d406e43240432e87f85c807607c6f0
+  policies rendered for subagent-security-openshell into tmp/subagent-security-openshell/runs/30d406e43240432e87f85c807607c6f0
 
 ==> connecting to the OpenShell gateway
-  gateway: 127.0.0.1:33385 -> service/openshell-analyst:8080
+  gateway client certificate: tmp/subagent-security-openshell/cli-run.7m5lfoyg/openshell/gateways/analyst/mtls
+  gateway: 127.0.0.1:39315 -> service/openshell-analyst:8080
   imported the provider profile procurement-supplier
   created the provider supplier from the key in this run's Secret
 
 ==> the sandbox
-  created the template procurement-analyst
-  creating the sandbox analyst-31bd77f75e; this takes a few minutes when a sandbox node has to be provisioned
-  created the sandbox analyst-31bd77f75e
-  workload pod:   default--analyst-31bd77f75e on <NODE_NAME>
-  supervisor pod: os-supervisor-ecd32f0d-f4f0-4ebf-95a0-0fa4dabbfe7d on <NODE_NAME>
+  created the template procurement-analyst on <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/pod-isolation/subagent-analyst-subagent-security-openshell:11a91fcb7e9b47ba5a14
+  creating the sandbox analyst-30d406e432; this takes a few minutes when a sandbox node has to be provisioned
+  created the sandbox analyst-30d406e432
+  workload pod:   default--analyst-30d406e432 on <NODE_NAME>
+  supervisor pod: os-supervisor-9bada911-f8fe-46a2-a57c-af82aa331c86 on <NODE_NAME>
 
 ==> what the sandbox is, and what the analyst holds
 PASS the analyst's workload pod runs with runtimeClassName isolated-sandbox
@@ -406,22 +409,27 @@ PASS the model's analysis cites every original proposal
 PASS the completion came from the configured model global.anthropic.claude-sonnet-4-5-20250929-v1:0
 PASS the completion reports a non-zero token usage, so a real model turn happened
 PASS the Bedrock call used the bridge's EKS Pod Identity credentials, which is the only AWS identity in this sample
+  before the update: {"workload": {"uid": "355fe69f-73fa-4c8e-b012-e49c498bef64", "restarts": {"agent": 0}}, "supervisor": {"uid": "67473761-8b51-4a3c-97b4-a9bd80f1ea05", "restarts": {"supervisor": 0}}}
 PASS before the update, the analyst's own draft submission is refused by rule
   applied the one-rule policy update to the running sandbox
 PASS after the update, the identical draft submission is accepted with 201
 PASS after the update, the purchase order is still refused: the update added one rule and nothing else
 PASS both pods are the same objects they were before the update, by uid
-PASS no container in either pod has restarted
+PASS no container in either pod has restarted ({"workload": {"uid": "355fe69f-73fa-4c8e-b012-e49c498bef64", "restarts": {"agent": 0}}, "supervisor": {"uid": "67473761-8b51-4a3c-97b4-a9bd80f1ea05", "restarts": {"supervisor": 0}}})
 
 ==> the servers' own records
 PASS the supplier API and the bridge have request logs to correlate against
-PASS the allowed request 31bd77f75e9f4d9ca472483145fcad36-allowed arrived upstream exactly once, authenticated
-PASS the allowed request 31bd77f75e9f4d9ca472483145fcad36-draft arrived upstream exactly once, authenticated
+PASS the allowed request 30d406e43240432e87f85c807607c6f0-allowed arrived upstream exactly once, authenticated
+PASS the allowed request 30d406e43240432e87f85c807607c6f0-draft arrived upstream exactly once, authenticated
 PASS none of this run's 7 refused requests reached the supplier API or the bridge (none)
+  uploaded s3://subagent-analyst-subagent-security-openshell-<ACCOUNT_ID>/reports/rfp-001/30d406e43240432e87f85c807607c6f0/recommendation.md
 
 ==> done
   checks:         43, all passed
-  run id:         31bd77f75e9f4d9ca472483145fcad36
+  run id:         30d406e43240432e87f85c807607c6f0
+  run directory:  tmp/subagent-security-openshell/runs/30d406e43240432e87f85c807607c6f0
+  S3 report:      s3://subagent-analyst-subagent-security-openshell-<ACCOUNT_ID>/reports/rfp-001/30d406e43240432e87f85c807607c6f0/recommendation.md
+  the sandbox analyst-30d406e432 is still running; ./scripts/clean.sh removes it with the rest
 ```
 
 Abridged: the two before-and-after pod records printed around the policy update are shown
@@ -872,7 +880,7 @@ another instance would compare nothing.
 
 ```bash
 NODE=$(kubectl get pod default--analyst-31bd77f75e -n $NAMESPACE -o jsonpath='{.spec.nodeName}')
-sed -e "s|<NAMESPACE>|$NAMESPACE|g" -e "s|<MANAGED_BY>|openshell|g" -e "s|<NODE_NAME>|$NODE|g" \
+sed -e "s|<NAMESPACE>|$NAMESPACE|g" -e "s|<MANAGED_BY>|subagent-security-openshell|g" -e "s|<NODE_NAME>|$NODE|g" \
   deploy/ordinary-pod.yaml | kubectl apply -f -
 kubectl wait --for=condition=Ready pod/ordinary-comparison -n $NAMESPACE --timeout=2m
 kubectl exec ordinary-comparison -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f1 /proc/uptime; ls /sys/block | tr "\n" " "; echo; cat /sys/class/dmi/id/product_name'
@@ -936,10 +944,11 @@ kubectl delete pod ordinary-comparison -n $NAMESPACE
   [`deploy/nitro-adapter.yaml`](deploy/nitro-adapter.yaml) is the whole of the adjustment: one
   persistent volume cannot be mounted at two paths, so the seeding step gets an `emptyDir` and
   the workspace is mounted once. A consequence worth knowing is that files an image keeps under
-  `/sandbox` are not copied into the workspace. The runtime is started as OpenShell starts it,
-  with no shell in between; the adapter changes nothing about its arguments, user, capabilities,
-  seccomp profile or policy, which is what lets step 8 read those from the running process. Its
-  comments also record a third adjustment that was tried and removed, because the API server
+  `/sandbox` are not copied into the workspace. The adapter puts no shell in front of the
+  runtime and changes nothing about its arguments, user, capabilities, seccomp profile or
+  policy. Step 8 confirms the outcome of those settings from the running process (the analyst's
+  UID and GID, `NoNewPrivs`, effective capabilities, and the refused transition to root); it
+  does not read the runtime's command line or seccomp profile directly. Its comments also record a third adjustment that was tried and removed, because the API server
   cannot marshal a typed `resources` block into a JSON patch.
 - **The `openshell.ai/sandbox-attachable` label on the RuntimeClass is shared.** Every
   OpenShell gateway on a cluster reads the same label, so `setup.sh` adds it only when it is
@@ -987,35 +996,64 @@ is what finishes the job:
 ```
 
 ```text
+
 ==> 1/10 the run record, the context and the account
   context:   <CLUSTER_NAME>
   namespace: subagent-security-openshell
   region:    us-west-2
   account:   <ACCOUNT_ID>
+
 ==> 2/10 whose namespace subagent-security-openshell is
-  namespace subagent-security-openshell carries app.kubernetes.io/managed-by=openshell.
+  namespace subagent-security-openshell carries app.kubernetes.io/managed-by=subagent-security-openshell.
+
 ==> 3/10 the sandboxes, the OpenShell gateway and the namespace
-  deleted the Sandbox default--analyst-31bd77f75e.
+  deleted the Sandbox default--analyst-30d406e432.
   uninstalled the Helm release openshell-analyst.
   deleted namespace subagent-security-openshell and everything in it.
+
 ==> 4/10 the admission adapter
   deleted the mutatingadmissionpolicybinding openshell-analyst-nitro-adapter.
   deleted the mutatingadmissionpolicy openshell-analyst-nitro-adapter.
+
 ==> 5/10 the ClusterRole and ClusterRoleBinding the chart created
   no clusterrolebinding is annotated for the release openshell-analyst in subagent-security-openshell.
   no clusterrole is annotated for the release openshell-analyst in subagent-security-openshell.
+
 ==> 6/10 the EKS Pod Identity association
-  deleted the association a-uzpclkhanmtgjtqu4.
+  deleted the association a-ktenxsy4zjg5wah43.
+
 ==> 7-9/10 the IAM role, the bucket and the images
-  deleted the IAM role subagent-analyst-openshell-bridge.
-  deleted the bucket subagent-analyst-openshell-<ACCOUNT_ID>, with this sample's reports in it.
-  deleted the ECR repository pod-isolation/subagent-analyst-openshell.
-  deleted the ECR repository pod-isolation/subagent-analyst-openshell-supplier-api.
+  deleted the IAM role subagent-analyst-subagent-security-openshell-bridge.
+  deleted the bucket subagent-analyst-subagent-security-openshell-<ACCOUNT_ID>, with this sample's reports in it.
+  deleted the ECR repository pod-isolation/subagent-analyst-subagent-security-openshell.
+  deleted the ECR repository pod-isolation/subagent-analyst-subagent-security-openshell-supplier-api.
+
 ==> 10/10 the local CLI configuration and state
   removed this sample's CLI configuration and state directories.
-  kept tmp/openshell/runs, which holds each run's checks, calls and output.
+  kept tmp/subagent-security-openshell/runs, which holds each run's checks, calls and output.
+
 ==> what stays, and how to undo it
-  [the two shared things, summarised below]
+  Two things this sample needs are shared with anything else on this cluster, so this
+  script never removes them. Remove either one only if you know nothing else uses it.
+
+  1. The openshell.ai/sandbox-attachable=true label on the isolated-sandbox RuntimeClass.
+     Every OpenShell gateway on this cluster reads the same label, and without it none of
+     them may attach that RuntimeClass to a sandbox. Removing it would break another
+     gateway's sandboxes, not just this sample's.
+     It was already on the RuntimeClass before this run, so it is not this sample's to
+     remove.
+
+  2. The agent-sandbox controller, which OpenShell's Kubernetes driver creates Sandbox
+     objects for. setup.sh reused the install already on this cluster and changed nothing
+     about it. If nothing else uses it:
+       kubectl --context <CLUSTER_NAME> delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
+
+  The isolated-sandbox RuntimeClass itself and the cluster are not this sample's either. The
+  Getting started > Hello sandbox sample's clean up covers removing the cluster.
+
+  Local files left under tmp/subagent-security-openshell: the run record, the downloaded OpenShell CLI and chart,
+  the supplier key and the sample certificate authorities this run generated, and the run
+  evidence. Nothing there is published; the repository ignores tmp/.
 
 Clean up complete.
 ```

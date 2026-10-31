@@ -17,7 +17,7 @@ set -euo pipefail
 
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$SAMPLE_DIR/../../.." && pwd)"
-STATE_FILE="$REPO_ROOT/tmp/openshell/state.env"
+STATE_FILE="$REPO_ROOT/tmp/subagent-security-openshell/state.env"
 
 for arg in "$@"; do
   case "$arg" in
