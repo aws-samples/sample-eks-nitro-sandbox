@@ -932,16 +932,15 @@ kubectl delete pod ordinary-comparison -n $NAMESPACE
   `resources.requests`, and a pod with no requests gets a small default of about 130 MiB. The
   analyst is a Python process, so the template asks for 1 CPU and 1Gi. A sandbox that runs out
   of memory is killed with no log output, which is not an obvious symptom.
-- **Two details of OpenShell's pod need adjusting inside a sandbox guest**, and
-  [`deploy/nitro-adapter.yaml`](deploy/nitro-adapter.yaml) is the whole of the adjustment: a
-  binary on a pod volume cannot be a container's entrypoint, so the runtime is started
-  through the image's `/bin/sh`; and one persistent volume cannot be mounted at two paths, so
-  the seeding step gets an `emptyDir` and the workspace is mounted once. A consequence worth
-  knowing is that files an image keeps under `/sandbox` are not copied into the workspace. The
-  adapter changes nothing about the runtime's arguments, user, capabilities, seccomp profile
-  or policy, which is what lets step 8 read those from the running process. Its comments also
-  record a third adjustment that was tried and removed, because the API server cannot marshal
-  a typed `resources` block into a JSON patch.
+- **One detail of OpenShell's pod needs adjusting inside a sandbox guest**, and
+  [`deploy/nitro-adapter.yaml`](deploy/nitro-adapter.yaml) is the whole of the adjustment: one
+  persistent volume cannot be mounted at two paths, so the seeding step gets an `emptyDir` and
+  the workspace is mounted once. A consequence worth knowing is that files an image keeps under
+  `/sandbox` are not copied into the workspace. The runtime is started as OpenShell starts it,
+  with no shell in between; the adapter changes nothing about its arguments, user, capabilities,
+  seccomp profile or policy, which is what lets step 8 read those from the running process. Its
+  comments also record a third adjustment that was tried and removed, because the API server
+  cannot marshal a typed `resources` block into a JSON patch.
 - **The `openshell.ai/sandbox-attachable` label on the RuntimeClass is shared.** Every
   OpenShell gateway on a cluster reads the same label, so `setup.sh` adds it only when it is
   absent and `clean.sh` never removes it, printing the command instead. On the run above it
