@@ -29,4 +29,7 @@ done
 [[ -f "$STATE_FILE" ]] ||
   { echo "ERROR: no run record at $STATE_FILE; run ./scripts/setup.sh first" >&2; exit 1; }
 
+# The walkthrough makes its AWS calls with the environment it inherits, so take the
+# operator's .env (AWS_PROFILE and Region) the same way setup.sh and clean.sh do.
+if [[ -f "$SAMPLE_DIR/.env" ]]; then set -a; . "$SAMPLE_DIR/.env"; set +a; fi
 exec python3 "$SAMPLE_DIR/scripts/walkthrough.py"

@@ -1431,8 +1431,32 @@ class Walkthrough:
     # The run
     # -----------------------------------------------------------------------
 
+    def check_namespace_is_ours(self):
+        """Act only in a namespace setup.sh labelled as this sample's.
+
+        The run record names the namespace, and a record copied from another run or
+        edited by hand can name one that is not this sample's. setup.sh labels the
+        namespace it creates; a namespace without that label is refused before any step
+        creates an object in it.
+        """
+        argv = ["kubectl"] + (["--context", self.context] if self.context else [])
+        argv += ["get", "namespace", self.namespace, "-o", "json"]
+        completed = self._run(argv, CLI_TIMEOUT)
+        if completed.returncode != 0:
+            raise Problem(
+                f"the run record names the namespace {self.namespace}, and it could not be "
+                f"read ({tail(completed.stderr)}). Re-run ./scripts/setup.sh.")
+        labels = json.loads(completed.stdout).get("metadata", {}).get("labels", {}) or {}
+        owner = labels.get("app.kubernetes.io/managed-by", "")
+        if owner != SAMPLE:
+            raise Problem(
+                f"namespace {self.namespace} is not this sample's: its managed-by label is "
+                f"{owner!r}, not {SAMPLE!r}. The run record may be stale or copied from "
+                "elsewhere. Nothing was created in it; re-run ./scripts/setup.sh.")
+
     def run(self):
         print(f"\n==> run {self.run_id} in {self.run_dir}")
+        self.check_namespace_is_ours()
         self.render_policies()
         self.read_supplier_key()
         try:

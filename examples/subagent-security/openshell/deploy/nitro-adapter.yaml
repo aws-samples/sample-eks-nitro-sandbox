@@ -26,11 +26,12 @@
 #
 # <ADAPTER_NAME> and <MANAGED_BY> are replaced at apply time by scripts/setup.sh.
 #
-# A MutatingAdmissionPolicy is cluster-scoped, so the binding below scopes it: it applies
-# only in namespaces carrying this sample's own managed-by label, which setup.sh sets to
-# this sample's name and nothing else, and only to pods OpenShell labels as workload
-# boundaries. Another OpenShell installation in another namespace is outside the first
-# condition; a second installation in this same namespace would not be, so do not share it.
+# A MutatingAdmissionPolicy is cluster-scoped, so the binding below scopes it three ways: it
+# applies only to pods in this sample's own namespace (the match condition this-namespace),
+# only in namespaces carrying this sample's own managed-by label, which setup.sh sets to this
+# sample's name and nothing else, and only to pods OpenShell labels as workload boundaries.
+# A second installation in another namespace is outside the first condition, even if someone
+# copied the label onto that namespace.
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingAdmissionPolicy
 metadata:
@@ -53,6 +54,8 @@ spec:
     - name: openshell-workload
       expression: >-
         object.metadata.?labels[?'openshell.ai/boundary-role'].orValue('') == 'workload'
+    - name: this-namespace
+      expression: "request.namespace == '<NAMESPACE>'"
   variables:
     - name: inits
       expression: object.spec.?initContainers.orValue([])
