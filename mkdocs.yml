@@ -111,5 +111,5 @@ nav:
   - Confidential:
       - Confidential sandboxes: confidential/README.md
       - Encrypted image: confidential/encrypted-image/README.md
-      - Secrets Manager secret: confidential/secrets-manager-secret/README.md
+      - Secrets Manager secret: confidential/secrets-manager-secret/README.md  # pragma: allowlist secret
       - S3 encrypted file: confidential/s3-encrypted-file/README.md
