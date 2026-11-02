@@ -420,6 +420,8 @@ when {
 because the generator also writes the digest into a comment and a grep would pass on a
 policy that did not enforce it.
 
+See [using a signed image instead of a pinned image reference](../signer-policy/README.md).
+
 The generator prints the measurement the guest will extend this policy into, and a
 ready-to-paste KMS condition with it. `PCR17` measures the policy, and `PCR8` measures the
 certificate that signed the sandbox environment image. The condition always uses
@@ -780,7 +782,7 @@ spec:
     - Egress
   egress:
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }
+        - ipBlock: { cidr: 0.0.0.0/0 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -795,14 +797,14 @@ spec:
         - { protocol: TCP, port: 443 }
 ```
 
-`setup.sh` reads `<COREDNS_IP>` from `kubectl get svc -n kube-system kube-dns`, and
-`<AWS_REGION>` from `.env`.
+`setup.sh` reads `<AWS_REGION>` from `.env`; the DNS rule's `0.0.0.0/0` is a literal in
+the file, so nothing is substituted for it.
 
 | Part | What it does |
 |---|---|
 | `podSelector` | Selects only the sandboxed pod, by its `app: encrypted-image` label. Neither control pod carries that label: the plain pod is the comparison for the readings, and the credentials pod is meant to reach KMS the ordinary way, so that what stops it is the key policy and not the network. |
 | `policyTypes: [Ingress, Egress]` | Denies all ingress and all egress except the rules below. Nothing in the sample needs to reach the pod. |
-| DNS rule | Lets the pod resolve names, against the cluster's CoreDNS Service address only. |
+| DNS rule | Lets the pod resolve names, allowed to any IP address on port 53 rather than pinned to the cluster's CoreDNS Service address. |
 | Pod Identity rule | `169.254.170.23:80` is the credential endpoint. It is served inside the guest, but the sandbox passes the requests on to the Pod Identity Agent on the node, and this policy applies to them: without the rule they time out. |
 | KMS rule | The one external destination. The `domainNames` form resolves the name and allows the addresses behind it. |
 

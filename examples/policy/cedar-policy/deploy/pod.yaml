@@ -61,10 +61,3 @@ spec:
         capabilities:
           drop:
             - ALL
-      resources:
-        requests:
-          cpu: "1"
-          memory: 1Gi
-        limits:
-          cpu: "1"
-          memory: 1Gi

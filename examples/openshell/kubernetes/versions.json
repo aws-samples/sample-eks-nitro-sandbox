@@ -1,0 +1,45 @@
+{
+  "_comment": [
+    "What this sample pins, and why each pin is here.",
+    "",
+    "OpenShell publishes a Helm chart and images for every commit on main, and separately",
+    "for each release tag. This sample pins the v0.1.6 release: a release tag stays",
+    "published, where a per-commit 0.0.0-dev.<sha> tag is a build artifact that can be",
+    "collected later and would leave a reader unable to run the page.",
+    "",
+    "One chart is pinned: the gateway chart, installed as a single release. Its version",
+    "is patched to the release semver by CI, and its appVersion drives the default",
+    "gateway, supervisor and sandbox-runtime image tags, so a released chart pulls",
+    "matching images.",
+    "",
+    "A release also publishes the operator CLI as a static binary, so this sample",
+    "downloads and verifies it rather than compiling it. cli_sha256 is the value from the",
+    "release's own openshell-checksums-sha256.txt.",
+    "",
+    "The chart is pinned by version and by the SHA-256 of the archive Helm pulls.",
+    "scripts/setup.sh refuses the chart and the CLI on a checksum mismatch.",
+    "",
+    "The workload pod runs OpenShell's own default sandbox image",
+    "(nvcr.io/nvidia/base/ubuntu:24.04, the chart's built-in default), so this sample",
+    "builds and pushes no image of its own."
+  ],
+  "upstream_repository": "https://github.com/NVIDIA/OpenShell.git",
+  "upstream_ref": "v0.1.6",
+  "upstream_revision": "ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47",
+  "upstream_date": "2026-10-27",
+  "gateway_chart": {
+    "ref": "oci://ghcr.io/nvidia/openshell/helm-chart",
+    "version": "0.1.6",
+    "sha256": "0533ecf84f777954aaf6113a0813fbc9781ed2a5e6574fb807cebe9a818a1bd4"
+  },
+  "images": {
+    "gateway": "ghcr.io/nvidia/openshell/gateway@sha256:f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea",
+    "supervisor": "ghcr.io/nvidia/openshell/supervisor@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b",
+    "sandbox_runtime": "ghcr.io/nvidia/openshell/sandbox@sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63"
+  },
+  "default_workload_image": "nvcr.io/nvidia/base/ubuntu:24.04",
+  "cli_asset": "openshell-x86_64-unknown-linux-musl.tar.gz",
+  "cli_sha256": "2951c67366f3e3584ed9cec8d49b9f0b0eefc8cacea8b0582ac164590492f136",
+  "agent_sandbox_controller": "v1.0.6",
+  "demo_echo_service_image": "docker.io/mccutchen/go-httpbin:v2.15.0"
+}

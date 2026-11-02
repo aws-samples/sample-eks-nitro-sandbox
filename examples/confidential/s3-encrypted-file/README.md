@@ -254,6 +254,8 @@ is what the key policy is set to expect. The script checks the pinned image dige
 it just published and that the policy pins the bucket, the manifest key, the key ARN and the
 expected length and digest, then installs the gate and reads it back.
 
+See [using a signed image instead of a pinned image reference](../signer-policy/README.md).
+
 ```text
 == 7/9 generate the Cedar policy and set the gate to its measurement ==
 --- Predicted PCR17 ---
@@ -342,6 +344,20 @@ back as `CiphertextForRecipient` and from the key it pinned. A response carrying
 `Plaintext` field, or a different key id, is refused rather than used. It then decrypts the
 file with AES-256-GCM, checks it against the pinned length and SHA-256, and prints the
 marker.
+
+The pod sets CPU and memory requests, where most samples here set none: generating the
+ephemeral RSA key for the attested recipient is CPU-bound work the small default VM has
+neither the memory nor the time for.
+
+```yaml
+      resources:
+        requests:
+          cpu: "1"
+          memory: 512Mi
+```
+
+Requests only, and no limits: a sandbox is sized from its requests, so a limit above the
+request would not give the VM any more room.
 
 The pod decrypts and exits, so it prints its own machine readings first: the generated policy
 denies `exec`, by design, so the sandbox proof has to be in the pod's own logs.

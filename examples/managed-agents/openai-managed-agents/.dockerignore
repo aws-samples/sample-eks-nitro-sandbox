@@ -1,0 +1,5 @@
+# Only pyproject.toml and src/ go into the image.
+*
+!pyproject.toml
+!src/
+**/__pycache__

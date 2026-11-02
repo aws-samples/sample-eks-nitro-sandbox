@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "filesystem_policy": {
+    "include_workdir": false,
+    "read_only": [
+      "/usr",
+      "/lib",
+      "/etc",
+      "/proc",
+      "/dev/urandom",
+      "/opt/analyst",
+      "/opt/openshell"
+    ],
+    "read_write": [
+      "/sandbox",
+      "/tmp",
+      "/dev/null"
+    ]
+  },
+  "landlock": {
+    "compatibility": "hard_requirement"
+  },
+  "process": {
+    "run_as_user": "1000",
+    "run_as_group": "1000"
+  },
+  "network_policies": {
+    "supplier": {
+      "endpoints": [
+        {
+          "host": "supplier-api.<NAMESPACE>.svc.cluster.local",
+          "port": 8443,
+          "protocol": "rest",
+          "enforcement": "enforce",
+          "credential_binding": {
+            "provider": "supplier"
+          },
+          "rules": [
+            {
+              "allow": {
+                "method": "GET",
+                "path": "/cases/rfp-001/suppliers"
+              }
+            }
+          ]
+        },
+        {
+          "host": "analyst-bridge.<NAMESPACE>.svc.cluster.local",
+          "port": 8443,
+          "protocol": "rest",
+          "enforcement": "enforce",
+          "credential_binding": {
+            "provider": "supplier"
+          },
+          "rules": [
+            {
+              "allow": {
+                "method": "POST",
+                "path": "/v1/chat/completions"
+              }
+            }
+          ]
+        }
+      ],
+      "binaries": [
+        {
+          "path": "/usr/local/bin/python3.13"
+        }
+      ]
+    }
+  }
+}

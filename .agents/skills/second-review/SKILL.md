@@ -1,6 +1,6 @@
 ---
 name: second-review
-description: Get the adversarial second review AGENTS.md requires for any change to a check, a credential path or a security claim in this repository - write a scoped brief, run Claude Code or Codex on a different model from the one that wrote the change and with no write access to the tree, label each finding real or false positive, fix the real ones, and record the reviewing model in the pull request. Use before a pull request that touches a guard, an IAM policy, a network policy, a clean-up script or a claim on a page leaves draft, or when asked for a review of your own commit.
+description: Get the adversarial second review AGENTS.md requires for any change to a check, a credential path or a security claim in this repository - write a scoped brief, run Claude Code or Codex on a different model from the one that wrote the change, show by fingerprint that the reviewed snapshot is unchanged, label each finding real or false positive, fix the real ones, and record the reviewing model in the pull request. Use before a pull request that touches a guard, an IAM policy, a network policy, a clean-up script or a claim on a page leaves draft, or when asked for a review of your own commit.
 ---
 
 # Get a second review
@@ -14,15 +14,28 @@ time, the author had already read the code.
 
 **Three ways to do it, all sanctioned, your pick, no approval needed:** the Codex CLI or
 the Claude Code CLI, both through `scripts/second-review.sh`, or a fresh sub agent in your
-own session. The invariants below are the requirement; the script works to hold them for you
-on the two CLI paths, with limits worth reading under [Run it](#run-it) — the different-model
-one rests on the model *names* you give it, and it establishes the read-only one by different
-means for each backend (see
-[What "read-only" rests on, per backend](../../../AGENTS.md#what-read-only-rests-on-per-backend)) —
-and you hold them yourself with a sub agent — where the model difference is
+own session. The invariants below are the requirement; the script *captures* them for you on
+the two CLI paths, with limits worth reading under [Run it](#run-it) — the different-model
+one rests on the model *names* you give it, and the unchanged-tree one rests on a fingerprint
+taken before and after, not on confining the reviewer (see
+[What invariant 2 rests on, per backend](../../../AGENTS.md#what-invariant-2-rests-on-per-backend)) —
+and you capture them yourself with a sub agent — where the model difference is
 the one that needs deliberate effort, because **a sub agent inherits your model unless you
 override it**. See
 [A sub agent in your own session](../../../AGENTS.md#a-sub-agent-in-your-own-session).
+
+**The reviewer is meant to be able to write and run things.** It gets a workspace of its
+own and a shell, because the findings that matter most come from running the change rather
+than reading it. What keeps the review honest is not a sandbox flag but the fingerprint of
+the reviewed snapshot: any difference the fingerprint can see — in a path's type, mode,
+size, mtime, symlink target or content, including the tree's own root directory — fails the
+round. State the gaps rather than imply there are none: ownership, ACLs, extended attributes
+and hard-link count are not tracked at all (a hard link made from outside the tree to a file
+inside it changes nothing this checks), and a change whose every tracked attribute,
+including mtime, is put back to match is not caught either, because nothing else is looked
+at. Both were found by a second reviewer actually doing them, not by reasoning about them.
+The brief is where you ask the reviewer to leave it alone, and
+[`assets/review-brief.md`](assets/review-brief.md) already does.
 
 The review is **adversarial**: the reviewer assumes your code is wrong and tries to break
 the claims it makes. That is a description of its job, not of how you word the brief — see
@@ -53,10 +66,12 @@ you do with the answer.
    git show <commit> > "$round/context/change.diff"
    ```
 
-   The diff goes in `context/`, not beside the output: the Claude backend confines its file
-   tools to the tree and the directories it is given, so pass that folder as
-   `SECOND_REVIEW_CONTEXT_DIR` and it becomes readable. Never point that at `--out`, which
-   holds the backend's trace.
+   The diff goes in `context/`, not beside the output: the Claude backend's **file tools**
+   reach only its own workspace, the tree and the directories it is given, so pass that
+   folder as `SECOND_REVIEW_CONTEXT_DIR` and it becomes readable. Never point that at
+   `--out`, which holds the backend's trace — the script no longer refuses one that does.
+   (The reviewer also holds `Bash`, so this bounds where its *file tools* read, not where it
+   can read at all.)
 
 2. **Write the brief**: copy `assets/review-brief.md` to `"$round/brief.md"` and fill it
    in, following [Write the brief](#write-the-brief). Where it names the diff, give an
@@ -94,9 +109,9 @@ you do with the answer.
   is the next three bullets, and `assets/review-brief.md` is worded that way already. Both backends
   have taken it as written, with one difference to respect: a path in the brief must be one
   the reviewer can actually read. Codex is given the tree as its working root and will read
-  an absolute path anywhere; Claude confines its file tools to the tree and the directories
-  it is given, so anything you point it at — the diff above all — belongs in the folder you
-  pass as `SECOND_REVIEW_CONTEXT_DIR`.
+  an absolute path anywhere; Claude's file tools reach only its own workspace, the tree and
+  the directories it is given, so anything you point it at — the diff above all — belongs in
+  the folder you pass as `SECOND_REVIEW_CONTEXT_DIR`.
 - **State the requirements from the spec, not from memory.** Quote the issue's criteria
   where they matter. Why: one brief said "must not bake the signature" when the spec's
   optional variant exists to do exactly that, and the reviewer flagged it as a defect twice.
@@ -301,45 +316,39 @@ and the host-specific options on the maintainers' workstation.
   router that resolves to the model you were avoiding defeats the whole exercise. The script
   compares the two **names**, so where the implementer's name is a router's it cannot hold
   this invariant at all — see [Record it](#record-it) for what such a record does show.
-- **Either backend, your choice.** They differ in one way worth knowing: `--backend claude`
-  runs with `--tools Read,Grep,Glob` and `--strict-mcp-config`, so it is asked to hold only
-  those three — a reviewer under those flags reports exactly them and no loadable extras,
-  which is its own self-report rather than something the script verifies — while Codex 0.164 cannot be made to drop that machine's MCP
-  servers, so a Codex reviewer can also reach those. That is a fact about the backends, not
-  a ranking. The flag matters: `--allowedTools` would only say which tools may run without
-  asking, leaving the reviewer holding others — including some that act outside the tree,
-  where the fingerprint cannot see them.
-- **The reviewer must not be able to write — and say which way you established that.**
-  Three separate things, so keep them apart when you record the review:
-  - the backend is *configured* to refuse writes;
-  - for Codex only, it also *reports* its mode, and the script reads that report **after
-    the run** and refuses the result unless it says `sandbox: read-only` and
-    `approval: never`. That is a check on what happened, not a gate before it, so on a
-    refusal the reviewer has already run and the message says whether the tree changed.
-    Claude reports nothing back, so on that path the record states what it was asked to be,
-    not something it confirmed;
-  - for both, the script *checks afterwards* that no persistent change it can see was left
-    in `--tree` — every path's type, mode, size, modification time, symlink target and
-    content. It is not guaranteed to see a file created and deleted inside the run (the
-    directory's mtime usually gives it away, but not if it was the tree's own root or the
-    mtime was put back), and it says nothing about any write outside the tree.
+- **Either backend, your choice.** Both reviewers hold a shell and can write: `--backend
+  claude` runs with `--tools Read,Grep,Glob,Edit,Write,Bash` in a workspace of its own from
+  `mktemp -d`, and `--backend codex` runs `--sandbox workspace-write` with the tree as its
+  working directory. They differ in one way worth knowing: claude also gets
+  `--strict-mcp-config` and so no MCP server, while Codex 0.164 cannot be made to drop that
+  machine's MCP servers, so a Codex reviewer can also reach those. That is a fact about the
+  backends, not a ranking.
+- **The reviewer must not *change* the snapshot — and the fingerprint is how you know.**
+  Not "must not be able to write": it can, and it should, because a reviewer that cannot run
+  the change finds a narrower class of defect. What the script does is fingerprint `--tree`
+  before the run, when the backend returns, and after — every path's type, mode, size,
+  modification time, symlink target and content — and fail the round on any difference,
+  including a change put back afterwards. Two limits to state when you record it: it is not
+  guaranteed to see a file created and deleted inside the run (the holding directory's mtime
+  usually gives it away, but not if it was the tree's own root or the mtime was put back),
+  and **it says nothing about writes outside the tree**, which both backends can now make.
 
-  Point it at the round's snapshot, never your working tree. A read-only flag
-  on its own is not enough: Codex's `--sandbox read-only` still asked to write and a host
-  that answers the ask let it through, which is why the script pins the approval policy too.
-- **Keep the brief, the output and any trace in the round's folder under `tmp/`.** The script refuses an
-  `--out` outside the repository's gitignored `tmp/`. A trace (`review.err`) can hold
+  Point it at the round's snapshot, never your working tree — that advice matters more now,
+  not less, since nothing stops the reviewer writing where you point it.
+- **Keep the brief, the output and any trace in the round's folder under `tmp/`.** The script
+  no longer checks this, so it is yours to get right. A trace (`review.err`) can hold
   credential details: read it with `tail` or a targeted search, and never paste it into a
-  pull request, an issue or Slack. It also refuses any path you give it that holds a line
-  break, for the reason [Running it](../../../AGENTS.md#running-it) gives: the shell strips a
-  trailing newline, so the run would act on the sibling path and report success.
+  pull request, an issue or Slack. Give every path with no line break in it, too, for the
+  reason [Running it](../../../AGENTS.md#running-it) gives: the shell drops a trailing
+  newline, so the run would act on the sibling path and report success.
 - **A sub agent of your own tool works too**, as long as it starts with no context from
   your session and runs on a different model. **Name the model explicitly**: a sub agent
   inherits the parent's model by default, which would have the implementing model review
   its own work while looking like a real review, and a default such as "Auto" may not be
   available so the start then fails. In Claude Code the Agent tool's `model` parameter is
-  the override. Give it reading tools only, since there is no sandbox flag on that path.
-  Show in the pull request how it met the three invariants, as
+  the override. Fingerprint the snapshot yourself before and after, since that is what
+  carries invariant 2 on this path as well. Show in the pull request how it met the three
+  invariants, as
   [Bringing a different reviewer again](../../../AGENTS.md#bringing-a-different-reviewer-again) says.
 - **If the reviewer cannot start, report the exact error and stop.** The script names the
   check that refused, tagged (`E_SAME_MODEL`, `E_CMD_MISSING`, `E_RUN_FAILED`,
@@ -350,12 +359,11 @@ and the host-specific options on the maintainers' workstation.
 - **A claude backend that will not authenticate usually needs
   `SECOND_REVIEW_CLAUDE_SETTINGS`.** The `--restricted` flag the script uses makes claude
   ignore the user settings file, which is where an `awsCredentialExport` or `apiKeyHelper`
-  credential path lives; name a file carrying **only** that setting. The script says so when
-  it recognises the failure, and it refuses a settings file that sets anything else: a
-  `hooks` entry in one runs shell commands outside the reviewer's tool list, which was
-  verified to execute and write under the full read-only flag set. Note what that check
-  does *not* claim — both permitted keys are themselves commands claude runs, so it removes
-  every other way a settings file could run something rather than eliminating execution.
+  credential path lives; name a file carrying that setting. Its contents are **no longer
+  checked**: the old allowlist existed to stop a `hooks` entry running shell commands
+  outside the reviewer's tool list, and the reviewer now holds `Bash`, so that check would
+  defend a property the script no longer has. Put only the authentication setting in it
+  anyway.
 - **Know which account your review bills, on any machine.** For the Codex backend the
   script removes the AWS credential variables from the environment before running it, so an
   ambient account is less likely to pay for the review — but that is a *denylist*, so a
@@ -419,10 +427,12 @@ and the host-specific options on the maintainers' workstation.
   to be in an odd state, arrange that after the reset and assert it is still so.
 - **Assert the arguments the tool was actually given, not only what it returned.** A stub
   that ignores its argv makes every case indifferent to the flags under test. In this
-  tooling the flag that confines the Claude reviewer to three read-only tools — the most
-  security-relevant line in the change — had **nothing** guarding it: reverting it to the
-  weaker flag would have left all 120 cases green, and no one would have noticed because
-  the suite still passed. A fix with no case asserting it is one careless edit from
+  tooling the flag that then confined the Claude reviewer to three read-only tools — at the
+  time the most security-relevant line in the change — had **nothing** guarding it:
+  reverting it to the weaker flag would have left all 120 cases green, and no one would have
+  noticed because the suite still passed. (That flag is gone now, since issue #100 made the
+  reviewer deliberately able to write; the lesson about asserting argv is the part that
+  carries over.) A fix with no case asserting it is one careless edit from
   silently disappearing. Have the stub record its arguments and assert the ones that
   matter.
 - **A harness can be structurally unable to express the claim you think it is testing.**
@@ -459,6 +469,13 @@ the model that wrote the change, so a reader can see the two differ, which commi
 found, what was fixed and in which commit, and which findings were false positives and
 why. Name any commit that changes a check and was not reviewed. Describe each proof as it ran: which stub cases reached which message, and
 which paths no case reached. A box ticked with no account of the review does not count.
+
+**Record what the reviewer was permitted to do, and that the snapshot came back unchanged.**
+Those are two separate facts and the record needs both: the permissions say what the
+fingerprint is and is not covering, and the fingerprint is the whole of invariant 2.
+`review-record.txt` prints both — a `permissions` line and a `review tree` line. Do not
+write "read-only" in a record: neither backend is, and a reader who takes that at face value
+will think the reviewer could not have written outside the tree, which nothing establishes.
 
 **If the implementer's name you gave the script is a prompt router's, say so beside the
 record, and say what it therefore shows.** The script compares the two names, so it cannot

@@ -170,7 +170,7 @@ spec:
         - { protocol: TCP, port: 8080 }
   egress:
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }
+        - ipBlock: { cidr: 0.0.0.0/0 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -181,12 +181,11 @@ spec:
         - { protocol: TCP, port: 443 }
 ```
 
-Fill in your CoreDNS address, apply it, and wait for its `PolicyEndpoint`, which shows the
-controller has handed the policy to the nodes:
+Apply it, and wait for its `PolicyEndpoint`, which shows the controller has handed the policy
+to the nodes:
 
 ```bash
-COREDNS_IP=$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')
-sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f -
+kubectl apply -f deploy/egress-policy.yaml
 until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/claude-sandbox-worker-egress-'; do sleep 2; done
 ```
 
@@ -222,9 +221,6 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
-          resources:
-            requests: { cpu: "1", memory: 2Gi }
-            limits:   { cpu: "1", memory: 2Gi }
 ```
 
 The pod runs as a non-root user with its own empty `/workspace`, and has no ServiceAccount
@@ -397,7 +393,7 @@ its YAML does one job:
 | `podSelector`, `app: claude-sandbox-worker` | Selects the sandbox pods. The poller and the autoscaler are not selected. |
 | `policyTypes`, `Ingress` and `Egress` | Makes the selected pods default-deny in both directions, so only the rules below are allowed. |
 | `ingress`, from `app: claude-poller` on TCP 8080 | Lets the poller reach the dispatch port. No other pod can. |
-| `egress`, to `<COREDNS_IP>/32` on UDP and TCP 53 | Lets the sandbox look up names with CoreDNS. |
+| `egress`, to `0.0.0.0/0` on UDP and TCP 53 | Lets the sandbox look up names, with no address lookup or substitution needed (#104). |
 | `egress`, to `domainNames: api.anthropic.com` on TCP 443 | Lets the sandbox fetch tool calls from the Claude API and post their results. |
 
 Anything that matches no rule is refused: the public internet, AWS service endpoints such
@@ -655,7 +651,7 @@ spec:
         - { protocol: TCP, port: 8080 }
   egress:
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }
+        - ipBlock: { cidr: 0.0.0.0/0 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -671,8 +667,7 @@ spec:
 ```
 
 ```bash
-COREDNS_IP=$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')
-sed -e "s|<COREDNS_IP>|$COREDNS_IP|" -e "s|<AWS_REGION>|$AWS_REGION|" \
+sed "s|<AWS_REGION>|$AWS_REGION|" \
   deploy/claude-platform-aws/egress-policy.yaml | kubectl apply -f -
 until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/claude-sandbox-worker-egress-'; do sleep 2; done
 ```

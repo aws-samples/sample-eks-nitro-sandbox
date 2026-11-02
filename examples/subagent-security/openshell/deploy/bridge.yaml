@@ -1,0 +1,107 @@
+# The model bridge: an ordinary pod, outside the sandbox, and the only component in this
+# sample that holds AWS credentials.
+#
+# The analyst, confined by OpenShell inside the Nitro sandbox, has no AWS role at all. It
+# reaches this bridge through OpenShell's supervisor with a placeholder credential, and
+# the bridge calls Amazon Bedrock with its own EKS Pod Identity credentials. So the model
+# path crosses the boundary once, in the direction that keeps AWS authority outside it.
+#
+# It runs under the shared `analyst` ServiceAccount, which is the one the Pod Identity
+# association names. In the other two Subagent security samples that ServiceAccount
+# belongs to the trusted controller inside the sandbox; here the trusted component is this
+# pod, so it is the one that holds it. Nothing in the sandbox uses it.
+#
+# It serves TLS from its own sample certificate authority, which setup.sh creates in this
+# sample's folder. It cannot share the supplier API's certificate: that one is issued by
+# the shared setup with the two supplier Service names in its subjectAltName, and a
+# certificate presented for a name it does not carry is a TLS failure, not a policy
+# refusal. So the supervisor's trust bundle holds both sample authorities, and the page
+# says which is which. It answers on 8443, so the policy's two endpoints differ only by
+# host.
+#
+# <NAMESPACE>, <MANAGED_BY>, <ANALYST_IMAGE>, <AWS_REGION> and <BEDROCK_MODEL_ID> are
+# replaced at apply time by scripts/setup.sh.
+apiVersion: v1
+kind: Service
+metadata:
+  name: analyst-bridge
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+spec:
+  type: ClusterIP
+  selector:
+    app: analyst-bridge
+  ports:
+    - { name: https, port: 8443, targetPort: 8443, protocol: TCP }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analyst-bridge
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: analyst-bridge
+  template:
+    metadata:
+      labels:
+        app: analyst-bridge
+        app.kubernetes.io/managed-by: <MANAGED_BY>
+    spec:
+      # The ServiceAccount the Pod Identity association names. The ServiceAccount itself
+      # sets automountServiceAccountToken: false, so this pod gets AWS credentials from
+      # the Pod Identity endpoint and no Kubernetes token on disk.
+      serviceAccountName: analyst
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        # A Secret volume is owned by root, so fsGroup is what lets the container read
+        # its own key and certificate at mode 0440.
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bridge
+          image: <ANALYST_IMAGE>
+          command: ["python3", "/opt/openshell/bridge.py"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - { name: AWS_REGION, value: "<AWS_REGION>" }
+            - { name: AWS_DEFAULT_REGION, value: "<AWS_REGION>" }
+            - { name: BEDROCK_MODEL_ID, value: "<BEDROCK_MODEL_ID>" }
+          ports:
+            - { containerPort: 8443, protocol: TCP }
+          readinessProbe:
+            httpGet: { scheme: HTTPS, path: /healthz, port: 8443 }
+          volumeMounts:
+            # The same key the supplier API checks. The bridge is a second destination
+            # behind the same brokered credential, so the analyst holds one placeholder.
+            - { name: supplier-key, mountPath: /opt/supplier-key, readOnly: true }
+            - { name: bridge-tls, mountPath: /opt/bridge-tls, readOnly: true }
+            # The shared sample certificate authority that signed the supplier API's
+            # certificate. The bridge itself never calls the supplier API: this mount is
+            # for the trusted controls the run executes in this pod, which reach the
+            # supplier API and its unapproved alias with the real key to show that the
+            # analyst's refusals were OpenShell's and not the server's or a broken route.
+            # It cannot come from the image, because the authority is generated per run.
+            - { name: supplier-ca, mountPath: /opt/supplier-ca, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: supplier-key
+          secret: { secretName: supplier-key, defaultMode: 0440 }
+        - name: bridge-tls
+          secret: { secretName: bridge-tls, defaultMode: 0440 }
+        - name: supplier-ca
+          configMap: { name: supplier-ca }
+        - name: tmp
+          emptyDir: {}

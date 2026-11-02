@@ -273,12 +273,9 @@ STATE_READY=true
 write_state
 
 echo "Step 4/4: add the push rules to the egress policy"
-coredns="$(kc get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')"
-[[ -n "$coredns" ]] || die "could not read the CoreDNS Service address (kube-system/kube-dns)"
 push_rules="$(sed -e "s|<AWS_REGION>|$AWS_REGION|g" -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" deploy/egress-push-rules.yaml)"
 sed -e "s|<NAMESPACE>|$NAMESPACE|g" deploy/egress-policy.yaml \
   | awk -v rules="$push_rules" '{ if ($0 == "<ECR_PUSH_RULES>") print rules; else print }' \
-  | sed -e "s|<COREDNS_IP>|$coredns|g" \
   | kc apply -f -
 
 echo

@@ -1,0 +1,14 @@
+# A namespace owned solely by this sample. scripts/setup.sh creates it only when it is
+# absent, and reuses it only when it already carries the managed-by label below.
+# scripts/clean.sh checks that label before it deletes anything inside the namespace, so
+# neither script can touch a namespace another demo created under a name that happens to
+# match.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: signer-policy-sample
+  labels:
+    app.kubernetes.io/part-of: eks-nitro-sandbox-samples
+    # The ownership mark. It names the SAMPLE, not the namespace, so a run that
+    # overrides NAMESPACE is still recognised as this sample's own.
+    app.kubernetes.io/managed-by: signer-policy-sample

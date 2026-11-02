@@ -1,0 +1,19 @@
+{
+  "id": "demo-echo",
+  "display_name": "Demo echo API",
+  "description": "An in-cluster HTTP echo service this sample uses to show a provider credential resolved on an approved request and never seen by the agent.",
+  "category": "data",
+  "inference_capable": false,
+  "credentials": [
+    {
+      "name": "api_key",
+      "description": "The demo credential the supervisor substitutes on an approved request.",
+      "env_vars": ["DEMO_API_KEY"],
+      "required": true,
+      "auth_style": "header",
+      "header_name": "X-Demo-Api-Key"
+    }
+  ],
+  "endpoints": [],
+  "binaries": []
+}

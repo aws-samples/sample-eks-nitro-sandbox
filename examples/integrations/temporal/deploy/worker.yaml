@@ -1,0 +1,79 @@
+# The Temporal Worker: an ordinary pod, on purpose.
+#
+# It has no runtimeClassName, because it is the trusted orchestrator. The thing
+# that needs hardware-level isolation is the pod it creates, which this
+# Deployment never runs itself.
+#
+# The placeholders are filled in at apply time by scripts/setup.sh. Never apply
+# this file with a placeholder in place.
+#   __NAMESPACE__         the sample's namespace, from .env
+#   __WORKER_IMAGE__      the image setup.sh built and pushed
+#   __TEMPORAL_ADDRESS__  the Temporal frontend, host:port, ClusterIP only
+#   __TEMPORAL_NAMESPACE__ the Temporal namespace the runs land in
+#   __TASK_QUEUE__        the task queue this Worker polls
+#   __SANDBOX_NAME__      the Sandbox the workflow drives
+#   __STORAGE_CLASS__     the EBS StorageClass setup.sh chose for the workspace
+#   __SUSPENDED_SECONDS__ how long a run waits with the sandbox suspended
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: temporal-sandbox-worker
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: temporal-sandbox-worker
+    app.kubernetes.io/managed-by: temporal
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: temporal-sandbox-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: temporal-sandbox-worker
+        app.kubernetes.io/managed-by: temporal
+    spec:
+      serviceAccountName: temporal-sandbox-worker
+      # A Worker that is deleted mid-run should go away promptly: the workflow's
+      # state is in the server's history, so there is nothing on this pod worth
+      # waiting for.
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: worker
+          image: __WORKER_IMAGE__
+          imagePullPolicy: IfNotPresent
+          env:
+            # The Temporal frontend, over ClusterIP inside the cluster. No
+            # Ingress, LoadBalancer or NodePort anywhere in this sample.
+            - name: TEMPORAL_ADDRESS
+              value: __TEMPORAL_ADDRESS__
+            - name: TEMPORAL_NAMESPACE
+              value: __TEMPORAL_NAMESPACE__
+            - name: TEMPORAL_TASK_QUEUE
+              value: __TASK_QUEUE__
+            - name: SANDBOX_NAME
+              value: __SANDBOX_NAME__
+            - name: SANDBOX_STORAGE_CLASS
+              value: __STORAGE_CLASS__
+            - name: SUSPENDED_SECONDS
+              value: "__SUSPENDED_SECONDS__"
+            - name: FAIL_FIRST_STEP_ATTEMPT
+              value: "true"
+            # The namespace the provider acts in, taken from the pod itself
+            # rather than written in, so the Worker cannot be pointed at a
+            # namespace its Role does not cover.
+            - name: SANDBOX_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Which Worker ran which activity, so the workflow result shows a
+            # run carrying on across a Worker restart.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

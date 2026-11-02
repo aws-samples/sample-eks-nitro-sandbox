@@ -49,7 +49,7 @@ sandbox, a lightweight VM with its own kernel; `client-standard` is an ordinary 
 on the node outside the guest, allows each client to CoreDNS and to `web-allowed`, and refuses
 `web-blocked` on both paths alike.*
 
-![An EKS Auto Mode node holds two client pods that one Kubernetes NetworkPolicy selects by the label app netpol-client: client-standard, an ordinary pod that shares the node kernel, and client-sandboxed, a Nitro sandbox pod, drawn inside a frame labelled Nitro sandbox and a box labelled lightweight VM, with runtimeClassName isolated-sandbox as the only differing field. Both clients make the same egress requests to two ordinary server pods reached by pod IP on ClusterIP port 8080, web-allowed and web-blocked, and to CoreDNS. The egress NetworkPolicy is drawn as an enforcement filter that the node's network policy agent applies on each pod's host-side interface, outside the guest; its allowed paths in green are each client to web-allowed on TCP 8080 and to CoreDNS on UDP and TCP 53, and its refused path in red dashed is each client to web-blocked, refused identically on the ordinary and the sandboxed path.](images/figure-1-network-policy.png)
+![An EKS Auto Mode node holds two client pods that one Kubernetes NetworkPolicy selects by the label app netpol-client: client-standard, an ordinary pod that shares the node kernel, and client-sandboxed, a Nitro sandbox pod, drawn inside a frame labelled Nitro sandbox, with runtimeClassName isolated-sandbox as the only differing field. Both clients make the same egress requests to two ordinary server pods reached by pod IP on ClusterIP port 8080, web-allowed and web-blocked, and to CoreDNS. The egress NetworkPolicy is drawn as an enforcement filter that the node's network policy agent applies on each pod's host-side interface, outside the guest; its allowed paths in green are each client to web-allowed on TCP 8080 and to CoreDNS on UDP and TCP 53, and its refused path in red dashed is each client to web-blocked, refused identically on the ordinary and the sandboxed path.](images/figure-1-network-policy.png)
 
 The files:
 
@@ -176,39 +176,14 @@ client-sandboxed -> web-blocked (192.168.121.114): reached
 **Step 4: Apply the policy and wait for its `PolicyEndpoint`.**
 [`egress-policy.yaml`](deploy/egress-policy.yaml) is a standard `networking.k8s.io/v1`
 `NetworkPolicy` — the kind platform teams already use, with no sandbox-specific fields. It
-selects both clients (`app: netpol-client`), allows egress to `web-allowed` on 8080 and to
-CoreDNS on 53, and lists `Egress` in `policyTypes`, which makes everything else the default-deny
-for the selected pods. DNS is allowed with an `ipBlock` on the cluster's DNS address: the
-kubelet's `clusterDNS`, which is the nameserver pods are given. On EKS Auto Mode CoreDNS runs
-locally on each instance, at an address derived from the cluster's service CIDR that stays fixed
-for the life of the cluster — which is what makes it safe to write into a policy at all (Amazon
-EKS User Guide, *Use Network Policies with EKS Auto Mode*, under *Determining the CoreDNS IP
-address*: <https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html>).
+selects both clients (`app: netpol-client`), allows egress to `web-allowed` on 8080 and to DNS
+on port 53 to any IP address, and lists `Egress` in `policyTypes`, which makes everything else
+the default-deny for the selected pods.
 
-That one address can be read three ways, each asking for a different permission:
-
-| Read | Permission it needs |
-|---|---|
-| `kubeletconfig.clusterDNS[0]`, from a node's kubelet configuration — what the command below does | cluster-scoped `list` on `nodes`, and `get` on `nodes/proxy` |
-| The `kube-dns` Service's ClusterIP: `kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'` — what the other samples in this repository do | `get` on `services` in `kube-system` |
-| The guide's own method: `aws eks describe-cluster --name <CLUSTER_NAME> --query 'cluster.kubernetesNetworkConfig.serviceIpv4Cidr'`, then the `.10` address of that CIDR | `eks:DescribeCluster` in IAM, and no Kubernetes permission at all |
-
-The first row is the widest of the three: `nodes/proxy` is a cluster-scoped subresource that
-proxies requests through the API server to the kubelet's own API, so it is a much larger grant
-than reading one Service in one namespace. Weigh that before you add it for this.
-
-This page reads the kubelet because `clusterDNS` is the value kubelets hand to pods, rather
-than a value that merely ought to match it. The command below reads it and fills in
-`<COREDNS_IP>` for you, as the script does. It reads the first Ready node that answers, not
-the client's own node, which is sound here only because the address is fixed for the cluster
-as the guide states.
-
-The `kube-dns` Service does still exist on Auto Mode and carries that same ClusterIP. On a
-cluster whose nodes are all Auto Mode it has no endpoints, because the `coredns` Deployment is
-scaled to zero and CoreDNS runs on each instance instead; a cluster that also runs the CoreDNS
-add-on on other nodes would have endpoints as well. Either way the ClusterIP is the same
-address, so if you do not have `nodes/proxy`, read it from there instead — the note after this
-step has the commands.
+DNS is allowed to any address (`ipBlock: { cidr: 0.0.0.0/0 }`) rather than pinned to the
+cluster's own DNS address, which needs no lookup and no permission beyond applying the policy
+itself (#104). The rule stays narrow: it opens only port 53, and everything else the selected
+pods try stays denied.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -228,8 +203,8 @@ spec:
               app: web-allowed
       ports:
         - { protocol: TCP, port: 8080 }
-    - to:                         # allow: CoreDNS, so name lookups keep working
-        - ipBlock: { cidr: <COREDNS_IP>/32 }
+    - to:                         # allow: DNS on port 53 to any IP, so lookups keep working
+        - ipBlock: { cidr: 0.0.0.0/0 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -242,39 +217,18 @@ lands. The wait loop below is bounded so it cannot hang: if no `PolicyEndpoint` 
 about two minutes, it stops and tells you the controller has not programmed the policy (check the
 `amazon-vpc-cni` enforcement setting from step 1 and the network-policy-agent pods).
 
-Nothing is applied unless the lookup found an address. If no Ready node answers — which is what
-a reader without the `nodes` permission gets — the block says so and leaves the policy unapplied,
-rather than filling `<COREDNS_IP>` in from whatever `COREDNS_IP` happened to hold in your shell
-already (other pages in this repository have you set it from the `kube-dns` Service, so that is a
-realistic state). Nor does it hide the API server's refusal: that is the message that tells you
-which permission you are missing.
-
 ```bash
-COREDNS_IP=""
-for DNS_NODE in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
-    | awk '$2 == "True" {print $1}'); do
-  COREDNS_IP=$(kubectl get --raw "/api/v1/nodes/$DNS_NODE/proxy/configz" --request-timeout=10s \
-    | sed -n 's/.*"clusterDNS":\["\([^"]*\)".*/\1/p' | grep -Ex '[0-9]{1,3}(\.[0-9]{1,3}){3}')
-  [ -n "$COREDNS_IP" ] && break
+kubectl apply -f deploy/egress-policy.yaml
+for i in $(seq 1 60); do
+  kubectl get policyendpoints -o name 2>/dev/null \
+    | grep -q '^policyendpoint.networking.k8s.aws/netpol-client-egress-' && break
+  [ "$i" = 60 ] && { echo "no PolicyEndpoint after ~2m -- is enforcement on? (step 1)"; break; }
+  sleep 2
 done
-if [ -z "$COREDNS_IP" ]; then
-  echo "could not read the cluster DNS address -- applied no policy."
-  echo "It needs list on nodes and get on nodes/proxy; without them, read the kube-dns Service."
-else
-  echo "cluster DNS address: $COREDNS_IP"
-  sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f -
-  for i in $(seq 1 60); do
-    kubectl get policyendpoints -o name 2>/dev/null \
-      | grep -q '^policyendpoint.networking.k8s.aws/netpol-client-egress-' && break
-    [ "$i" = 60 ] && { echo "no PolicyEndpoint after ~2m -- is enforcement on? (step 1)"; break; }
-    sleep 2
-  done
-  kubectl get networkpolicies,policyendpoints
-fi
+kubectl get networkpolicies,policyendpoints
 ```
 
 ```text
-cluster DNS address: 10.100.0.10
 networkpolicy.networking.k8s.io/netpol-client-egress created
 NAME                                                   POD-SELECTOR        AGE
 networkpolicy.networking.k8s.io/netpol-client-egress   app=netpol-client   2s
@@ -282,26 +236,6 @@ networkpolicy.networking.k8s.io/netpol-client-egress   app=netpol-client   2s
 NAME                                                           AGE
 policyendpoint.networking.k8s.aws/netpol-client-egress-rh6gc   2s
 ```
-
-!!! note "Without permission to get `nodes/proxy`"
-    The block above, and both scripts, stop and apply nothing if they cannot read a node's
-    kubelet configuration. Read the same address from the `kube-dns` Service, which needs only
-    `get` on `services` in `kube-system`, and apply this step's policy with it yourself:
-
-    ```bash
-    COREDNS_IP=$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}')
-    if [ -z "$COREDNS_IP" ]; then
-      echo "could not read the kube-dns Service address -- applied no policy."
-    else
-      echo "cluster DNS address: $COREDNS_IP"
-      sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f -
-    fi
-    ```
-
-    Then wait for the `PolicyEndpoint` as above, and run steps 3 and 5 by hand, because
-    `run-comparison.sh` takes the kubelet route only. The optional variant has no by-hand
-    path on this page: `run-dns-comparison.sh` also fills in `<AWS_REGION>`, so taking that
-    route means rendering `deploy/app-egress-policy.yaml` with both values yourself.
 
 **Step 5: After the policy, each client keeps `web-allowed` and loses `web-blocked`.** Run the
 same four requests again. A refused egress shows up as a connection that never completes: the
@@ -413,11 +347,11 @@ can allow an endpoint by name. This variant reuses that pattern from
 side-by-side result for name-based egress: a second identical client pair
 (`app: netpol-client-dns`) whose policy allows one AWS endpoint by name and refuses another.
 
-[`app-egress-policy.yaml`](deploy/app-egress-policy.yaml) allows CoreDNS and
+[`app-egress-policy.yaml`](deploy/app-egress-policy.yaml) allows DNS on port 53 to any IP and
 `sts.<AWS_REGION>.amazonaws.com`, and nothing else, so `kms.<AWS_REGION>.amazonaws.com` is
 refused. Run it with [`scripts/run-dns-comparison.sh`](scripts/run-dns-comparison.sh) (set
-`AWS_REGION` first; it fills in your cluster's DNS address, the kubelet's `clusterDNS` read from
-a Ready node as in step 4, so no account value is written into a tracked file):
+`AWS_REGION` first; it is the only value the script fills in, so no account value is written
+into a tracked file):
 
 ```bash
 export AWS_REGION=us-west-2

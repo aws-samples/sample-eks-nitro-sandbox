@@ -1,0 +1,25 @@
+# Deny-by-default ingress for the launcher pod.
+#
+# The launcher's intake is for the operator only, reached over a
+# `kubectl port-forward` to its ClusterIP Service. A port-forward is a stream
+# the API server opens to the kubelet on the node, injected into the pod
+# locally; it is not pod-to-pod traffic, so it is not matched by this policy and
+# keeps working. Every other in-cluster pod IS pod-to-pod traffic, and this
+# policy admits none of it: the ingress list is empty, so with policyType
+# Ingress the launcher accepts no connection from any pod.
+#
+# This is the reachability layer. It is NOT authentication: the launcher also
+# requires a bearer token on every request (the launcher-auth Secret), because a
+# NetworkPolicy cannot tell one authorized caller from another. The two together
+# are deny-by-default reachability plus per-request authentication.
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ApplicationNetworkPolicy
+metadata:
+  name: openai-launcher-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: openai-launcher
+  policyTypes:
+    - Ingress
+  ingress: []        # no in-cluster pod may reach the launcher

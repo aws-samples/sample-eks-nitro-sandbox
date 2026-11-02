@@ -137,9 +137,8 @@ security claim. **There are three sanctioned ways to do it, and they are interch
    are asking it to review.
 
 You pick, and no approval is needed. What matters is not which one you use but the three
-invariants below. The script works to hold them for you on paths 1 and 2 — by different
-means for each, and with limits worth reading, set out under [Running it](#running-it) — and
-you hold them yourself on path 3.
+invariants below. The script *captures* them for you on paths 1 and 2 — with limits worth
+reading, set out under [Running it](#running-it) — and you capture them yourself on path 3.
 
 **Adversarial** describes what the reviewer does, not how the brief is worded: it assumes
 the implementer's code is wrong and tries to break the claims it makes. It does not mean
@@ -153,22 +152,51 @@ reviewer you use:
 
 1. **It runs on a different model from the one that wrote the change.** Why: a model
    reviewing its own work repeats its own reasoning.
-2. **It must not be able to write to the tree it reviews, and is shown to have left it
-   unchanged.** Those are two separate things — how the backend was confined, and what the
-   tree looked like afterwards — and the two backends do not establish them identically.
-   Why: a reviewer that edits the code is no longer telling you what the code says.
+2. **It must not change the thing under review, and that is shown.** Note what this does
+   *not* say: not that the reviewer was unable to write. **A reviewer is expected to write
+   and to run things, in a workspace of its own, because that is where the findings are.**
+   Two of the most serious defects ever found in this repository's own review tooling were
+   only visible by running it, and a reviewer holding no shell cannot make that kind of
+   finding at all. So the invariant is carried *afterwards*, by a fingerprint of the
+   reviewed tree — every path's type, mode, size, modification time, symlink target and
+   every file's content hash, including the tree's own root directory, compared before the
+   run, when the backend returns, and after — and any difference the fingerprint can see
+   fails the round. State the gaps plainly rather than let the word "any" paper over them:
+   ownership, ACLs, extended attributes and hard-link count are not tracked at all — a hard
+   link made from outside the tree to a file inside it changes none of what this checks,
+   demonstrated in a second-review round rather than asserted — and a change whose every
+   tracked attribute, including mtime, is put back to match leaves nothing else to catch
+   it. Why this way round: a reviewer that reviewed
+   something other than the commit is useless whether or not a sandbox flag was in the way,
+   and a reviewer that cannot execute is useless in a quieter way that is easy to miss.
+   Set by the maintainers on 2026-10-25 and implemented in issue #100; before that the
+   invariant read "must not be able to write", enforced by confinement flags.
 3. **The model that actually answered is recorded in the pull request.** Why: an alias such
    as `opus`, or a Bedrock prompt router, can resolve to the very model you were avoiding,
    so the name you asked for is not evidence.
 
+**The constraints the reviewer works under live in the brief, not in the script.** The
+script used to refuse a settings file with a `hooks` entry, clear the names it writes,
+check that paths sat under `tmp/`, and parse the backend's own report of its sandbox mode
+back out of the trace. All of that is gone: it was a large surface built to enforce what a
+sentence in the brief can ask for, four consecutive review rounds found defects *inside*
+it, and most of it defended properties that no longer hold once the reviewer is meant to be
+able to run things. The brief template carries those asks now —
+`.agents/skills/second-review/assets/review-brief.md`, which tells the reviewer to leave
+the snapshot alone, to write only in its own working directory, and to stay off the network
+and out of the output directory. **Read that as asking, not as preventing**: a reviewer that
+ignores the brief is caught, if it touched the tree, by the fingerprint, and is not caught
+at all if it wrote somewhere else.
+
 #### Running it
 
-`scripts/second-review.sh` runs either backend. It checks the different-model and
-recorded-model invariants the same way for both — by comparing the model *names*, which is
-why the first bullet below matters — and establishes the read-only one by different means for
-each; see [What "read-only" rests on, per backend](#what-read-only-rests-on-per-backend)
-below. Run it from the repository root, with the brief, the snapshot of the commit and the
-output under `tmp/`:
+`scripts/second-review.sh` runs either backend. It captures all three invariants the same
+way for both: it compares the model *names* (which is why the first bullet below matters),
+reads the model that answered out of the backend's own report, and fingerprints the reviewed
+tree before, at return and after. It no longer confines either backend; see
+[What invariant 2 rests on, per backend](#what-invariant-2-rests-on-per-backend) below for
+what each one is actually permitted to do. Run it from the repository root, with the brief,
+the snapshot of the commit and the output under `tmp/`:
 
 ```bash
 # $round is the folder the second-review skill's quick start prepares: one per round, with
@@ -207,39 +235,35 @@ SECOND_REVIEW_CONTEXT_DIR="$round/context" \
   extract of the commit that the `second-review` skill makes, in a folder made fresh for
   this round.
 - **`SECOND_REVIEW_CONTEXT_DIR` is how the Claude backend reads anything outside the tree**,
-  such as the commit's diff. Its file tools reach the tree, the directories it is given, and
-  its own fresh working directory, and nothing else. The folder is added as readable, and
-  the script refuses one that is or contains `--out`, because that holds the trace. Codex needs none of this: it is
-  given the tree as its working root and will read an absolute path anywhere.
-- **One `--out` per run.** The script clears the names it writes there, so pointing two
-  runs at one output directory loses the first one's review. Two concurrent runs sharing it
-  also read each other's files; the codex path usually refuses when that happens, because its
-  preamble nonce will not match, but the claude path has no such marker. Usually, not always:
-  the nonce only catches it if the second run clears the output names before the first has
-  read its own trace, so a first run already past that check — and the record it goes on to
-  write — is not protected. The round folder the skill prepares gives each run its own.
-- **`--brief` and `--out` must be under this repository's gitignored `tmp/`**, and the
-  script refuses anything else. Why: it writes the backend's trace into `--out`, and a
-  trace can hold credential details, so it must never land in a tracked folder.
-- **No path you give it may contain a line break** — `--tree`, `--out`, `--brief`, the
-  backend command, `SECOND_REVIEW_CONTEXT_DIR`, `SECOND_REVIEW_CLAUDE_SETTINGS`, or the path
-  you invoke the script by — and the script refuses one that does, before it reads, creates
-  or clears anything. **Including a path that merely *resolves* to one** through a symbolic
-  link, or through a parent directory whose real name holds one. Why: a trailing newline is stripped by the shell
-  wherever a path goes through `realpath`, `dirname`, `basename` or `command -v`, so the run
-  acted on the *sibling* path. Measured on five of them, four of which reported success:
-  such a `--tree` was reviewed and certified while the sibling was the directory actually
-  read; such an `--out` cleared and wrote the sibling, destroying the earlier review in it,
-  and left the directory named empty; such a `--brief` passed its own readability checks and
-  the reviewer was then handed the sibling file's text; and such a path to the script itself
-  moved `REPO_ROOT`, which is what the whole `tmp/` containment boundary is measured against.
-  The fifth does not report success: such a link target sent the backend-command check to a
-  different path, so a hop of the chain inside `--out` went unchecked, the cleanup unlinked
-  it, and the run then failed at the backend call with the earlier review already gone.
+  such as the commit's diff. Its file tools reach its own workspace, the tree and the
+  directories it is given, and nothing else. **Point it at a directory holding only what the
+  reviewer may read** — never `--out`, which holds the trace. The script checks only that it
+  *is* a directory: the containment check that used to refuse one holding `--out` is gone, so
+  this is your judgement now. Codex needs none of this: it is given the tree as its working
+  root and will read an absolute path anywhere.
+- **One `--out` per run, in the round folder the skill prepares.** The script overwrites the
+  names it writes and does nothing else to that directory — no clearing, no refusals about
+  what is already in it. So two runs sharing one `--out` overwrite each other's review, and
+  two concurrent runs sharing it interleave: the codex path often refuses, because its
+  preamble nonce will not match, but the claude path has no such marker and will not notice.
+- **Keep `--brief` and `--out` under this repository's gitignored `tmp/`.** The script no
+  longer checks this. Why it still matters: it writes the backend's trace into `--out`, a
+  trace can hold credential details, and anything in a tracked folder is one `git add` from
+  being published.
+- **Give sane paths, because the script trusts you to.** It resolves what you give it with
+  `realpath` and uses that; it does not check a path for a line break, and does not walk the
+  symbolic links a backend command points through. A path with a trailing newline resolves to
+  a *sibling* path in the same parent directory — `realpath`, `dirname` and `basename` each
+  drop one silently — and the run then reviews, writes to or reads that sibling instead,
+  while the record prints the sibling's name. That machinery was cut in issue #100 along with the
+  rest of the enforcement; the person invoking this script is not the adversary it defends
+  against.
 - **Never paste a trace** (`review.err`) into a pull request, an issue or Slack. Read it
   with `tail` or a targeted search.
 - **`review-record.txt` is what goes in the pull request**: the backend, the model that
-  answered, the implementer's model, and what the reviewer was confined to.
+  answered, the implementer's model, **what the reviewer was permitted to do**, and that the
+  reviewed tree is unchanged. Note the third field is no longer "what it was confined to":
+  it records permissions granted, not restrictions imposed.
 - **Do not edit `scripts/second-review.sh` while a review is running.** Bash reads a script
   as it executes, so changing the file in place can move the offsets under the running shell
   and make it die part-way with a syntax error — after the backend has spent its time, and
@@ -255,104 +279,88 @@ SECOND_REVIEW_CONTEXT_DIR="$round/context" \
   `pgrep -f '[s]econd-review.sh'`. Why the brackets: without them the pattern also matches
   the shell running `pgrep`, so a review that has exited still looks alive.
 - **Report the exact error and stop, whenever the script refuses.** It names the check that
-  refused, tagged: before the run (`E_SAME_MODEL`, `E_CMD_MISSING`, `E_NOT_IN_TMP`) or
-  after it (`E_RUN_FAILED`, `E_BAD_RECORD`, `E_NOT_READ_ONLY`, `E_TREE_CHANGED`,
-  `E_REPORTED_SAME_MODEL`). Either way no review is recorded, and that is a fact the
-  maintainers need rather than something to configure around. Not the same as no review
-  having happened: after `E_NOT_READ_ONLY`, `E_TREE_CHANGED`, `E_BAD_RECORD` or
-  `E_REPORTED_SAME_MODEL` the reviewer has run and `review.out` may well be sitting there.
-  After `E_RUN_FAILED` it may not have — that tag also covers a command that was not there
-  and a backend that could not authenticate. What the refusal says is that the run cannot
-  stand as a second review.
+  refused, tagged: before the run (`E_ARG`, `E_BACKEND`, `E_SAME_MODEL`, `E_MODEL_NAME`,
+  `E_CMD_MISSING`, `E_BRIEF`, `E_TREE`, `E_OUT_IN_TREE`) or after it (`E_RUN_FAILED`,
+  `E_BAD_RECORD`, `E_NO_PREAMBLE`, `E_EMPTY`, `E_NO_MODEL_REPORTED`,
+  `E_REPORTED_SAME_MODEL`, `E_TREE_CHANGED`, `E_TREE_RESTORED`). Either way no review is
+  recorded, and that is a fact the maintainers need rather than something to configure
+  around. Not the same as no review having happened: after `E_TREE_CHANGED`,
+  `E_TREE_RESTORED`, `E_BAD_RECORD`, `E_NO_PREAMBLE`, `E_EMPTY` or `E_REPORTED_SAME_MODEL`
+  the reviewer has run and `review.out` may well be sitting there. After `E_RUN_FAILED` it
+  may not have — that tag also covers a command that was not there and a backend that could
+  not authenticate. What the refusal says is that the run cannot stand as a second review.
+  `E_NOT_READ_ONLY` and `E_APPROVAL_ESCALATION` are gone: the backend's own report of its
+  sandbox mode is no longer read or checked, because it is no longer meant to be confined.
 
-##### What "read-only" rests on, per backend
+##### What invariant 2 rests on, per backend
 
-Read-only is not one flag, and the two backends do not establish it the same way. Say which
-one you used when you record a review, rather than writing "read-only" as if it meant the
-same thing.
+**On both backends it rests on the same thing: the tree fingerprint, taken before the run,
+when the backend returned, and after.** Neither backend is confined any more, so there is no
+"read-only mode" to name, and a record that says one is wrong. What differs between them is
+only what each is *permitted* to do and where it runs, which is worth stating because it
+bounds what the fingerprint can and cannot see.
 
-- **Codex: configured, then read back afterwards.** `--sandbox read-only` on its own does
-  **not** stop Codex writing — it leaves the approval policy at `on-request`, and a host
-  whose configuration answers that ask by itself lets the write through. A run on
-  2026-10-25 with exactly that flag created a file in the review tree and appended to a
-  page, and reported both as successful. The script passes `-c approval_policy="never"` as
-  well, and **reads Codex's own preamble after the run, refusing the result unless Codex
-  reported `sandbox: read-only` and `approval: never`**. Note *after*: that is a check on
-  what happened, not a gate before it. If it refuses, the reviewer has already run, so the
-  message also says whether the tree changed.
-- **Claude: configured, and checked only by the tree.** The script runs it with
-  `--restricted`, `--strict-mcp-config`, `--tools Read,Grep,Glob` and no answerer for
-  permission prompts. **`--tools` is the load-bearing flag: it sets which tools the reviewer
-  *holds*.** An earlier version used `--allowedTools`, which only says which tools may run
-  without asking and takes nothing away — under it the reviewer still held `ToolSearch`,
-  `Skill`, `ListAgents`, `ReportFindings` and `ScheduleWakeup`, and could load
-  `SendMessage`, `EnterWorktree`, `ExitWorktree`, `CronList` and `CronDelete`. Three of
-  those act **outside the tree, where the fingerprint cannot see them**: `SendMessage`
-  reaches other sessions on the machine, `EnterWorktree` acts on the enclosing repository,
-  `CronDelete` removes scheduled tasks. Asked to list its tools, a reviewer under the old
-  flags named all of them and said it *could* message another session; under `--tools` it
-  names exactly three and says it cannot.
-  A settings file granting `Bash`, `Write` and `Edit` was also tried and still could not
-  write, because a permission grant cannot resurrect a tool that is not present.
-  But **Claude does not report its confinement back**, so there is nothing to parse and
-  verify: the record states what Claude was *asked* to be. The evidence that it did not
-  write is the tree check below, not a backend report.
-  - `--restricted` also makes claude ignore the **user settings file**, which is where a
-    `awsCredentialExport` or `apiKeyHelper` credential path lives. Set
-    `SECOND_REVIEW_CLAUDE_SETTINGS` to a file carrying only that setting; `--settings` is
-    still read under `--restricted`. Without it the backend cannot authenticate, or
-    authenticates as whatever ambient credentials exist. The script names this cause when it
-    recognises the failure — when claude's own record is flagged as an error and its text
-    mentions credentials, authentication or a 403. A non-zero exit with no record gives the
-    generic `E_RUN_FAILED` instead, so read the trace when that is what you get.
-  - **The script checks that file and allows exactly one of `awsCredentialExport` and
-    `apiKeyHelper`, non-empty, and nothing else.** Why: `--settings` restores *executable*
-    configuration, not just values. A permission grant in it is inert, as above — but a
-    `hooks` entry runs shell commands outside the reviewer's tool list entirely. A
-    `SessionStart` command hook was tried under the full read-only flag set and **it
-    executed and created a file**. A settings file can also carry MCP servers, plugins, a
-    status line, extra readable directories and a model override, so the check is an
-    allowlist of the two authentication keys rather than a list of things to block; each of
-    those keys is refused by the same rule, with a case for each.
-  - **This does not mean "no executable configuration", and the docs should not say it
-    does.** Both permitted keys *are* commands claude runs — that is what naming a
-    credential helper means. What the check removes is every *other* way a settings file
-    could run something. The helper is a command you chose, trusted for that purpose.
-  - **The reviewer runs from a directory made fresh for the run, not from the tree**, with
-    the tree added as a readable directory. Why: a permitted helper would otherwise execute
-    with the thing under review as its working directory. The directory is made with
-    `mktemp -d` rather than at a fixed name, because `--out` can be reused and `mkdir -p` on
-    a path that is already a symbolic link succeeds without replacing it — so a stale or
-    planted link there pointing at the tree would have put the helper straight back inside
-    it. Checked both: `mkdir -p` does behave that way, and the old fixed-name version puts
-    the reviewer physically in the tree while the new one does not.
-  - A consequence worth knowing rather than glossing: an *incidental* relative write by such
-    a command now lands beside the output instead of in the tree, so the tree fingerprint is
-    *less* likely to notice it. A command that deliberately writes to `../tree` is not
-    stopped by this at all. **The isolation reduces the exposure and the detection
-    together.**
-  - **This costs you nothing else, because `--restricted` ignores settings *files*, not the
-    environment.** Everything that is not a credential helper — the provider switch, a
-    Region, a profile — goes in your shell as it normally would, and reaches the reviewer;
-    the run proving this backend worked relied on an ambient `CLAUDE_CODE_USE_BEDROCK`. The
-    settings file is for the one thing the environment cannot carry.
-  - Being exact about what the allowlist does and does not buy: `apiKeyHelper` also names a
-    command that claude executes, so permitting it permits execution — of the credential
-    helper you chose, which is the point of naming it. What the check removes is every
-    *other* way a settings file could run something, `hooks` above all, none of which the
-    reviewer needs.
-- **Both: the tree is fingerprinted before and after** — every path's type, mode, size,
-  modification time, symlink target and content — and the run fails if any of those changed.
-  Owner, extended attributes and ACLs are not among them. That check has limits: it is not
-  guaranteed to see a file created and deleted within the run, and it says nothing at all
-  about writes outside the tree. "Not guaranteed" rather than "cannot", for the first:
-  creating and removing a file changes the mtime of the directory that held it, and every
-  directory's mtime below the tree's root is fingerprinted, so such a change usually does
-  show up — unless it was in the root directory itself, which the fingerprint skips, or the
-  mtime was put back. Read "usually" carefully on the Codex path: Codex is given the tree as
-  its working directory, so a scratch file it creates and removes lands in exactly the root
-  directory that is skipped. It is still the check that caught the write above, and on the
-  Claude path it is the whole of the after-the-fact evidence.
+- **Codex** runs `codex exec --sandbox workspace-write -c approval_policy="never"` with its
+  `-C` pointed at a workspace of its own (`mktemp -d`), **not the tree**. It may still write
+  and run commands anywhere it is permitted to, including inside the tree — `workspace-write`
+  was observed to permit a write to an arbitrary absolute path outside its own CWD, not only
+  inside it — and the fingerprint is what catches it if it does. The workspace is there for a
+  narrower reason: a second-review round found that under `workspace-write`, codex's own
+  sandboxing creates and removes something directly in its CWD on every shell command it
+  runs, independent of anything the model does, and pointing `-C` at the tree meant every
+  substantive review tripped the tree-root check through no fault of the model's. Codex
+  still reads any absolute path regardless of its CWD, so it reaches the tree exactly as
+  before; only where that incidental footprint lands has moved off the thing being measured.
+  `approval_policy="never"` is still passed, but for a different reason than before: `codex
+  exec` has nobody to answer an escalation prompt, so without it a run can stall or silently
+  refuse. It is non-interactivity, not confinement, and the script no longer reads it back
+  out of the preamble to check. The preamble is still parsed, for one thing only: the
+  `model:` line, authenticated by this run's nonce.
+- **Claude** runs with `--restricted --strict-mcp-config --permission-prompts none`,
+  `--tools Read,Grep,Glob,Edit,Write,Bash`, **and `--allowedTools` set to the same list**,
+  in **a fresh workspace of its own from `mktemp -d`**, with the tree added through
+  `--add-dir`. So it holds a shell and can write. `--allowedTools` is load-bearing and was
+  missing in an earlier version of this redesign: `--tools` says which tools the reviewer
+  *holds*, but each individual action under them still asks for approval, and with no one
+  able to answer, `--permission-prompts none` denies rather than grants it. A second-review
+  round found this by trying to write and being refused; `--allowedTools`, matching `--tools`
+  exactly, pre-approves the set. Without it, directive 1 was not actually delivered on the
+  claude path at all — every claude run before that round, including one read-only smoke
+  test that never needed to write and so never surfaced it, was silently confined to reads.
+  Two deliberate choices about where that workspace is: it is **outside the tree**, so that
+  writing in order to verify does not by itself fail the round, and it is **outside `--out`**,
+  because that holds the backend's trace and a reviewer with `Bash` could otherwise read it.
+  `--restricted` is still passed, but its reason has changed too: it makes claude ignore the
+  user, project and local settings files, which keeps a run reproducible on a configured
+  workstation. It is no longer there to withhold tools.
+  - `--restricted` also discards how this claude authenticates, when that is a
+    `awsCredentialExport` or `apiKeyHelper` in the user settings file. Set
+    `SECOND_REVIEW_CLAUDE_SETTINGS` to a file carrying that setting; `--settings` is still
+    read under `--restricted`. Without it the backend cannot authenticate, or authenticates
+    as whatever ambient credentials exist.
+  - **That file's contents are no longer checked.** The old allowlist permitted only those
+    two keys, because `--settings` restores *executable* configuration and a `hooks` entry
+    runs shell commands outside the tool list — a `SessionStart` hook was tried under the
+    old read-only flag set and it executed and created a file. That check is gone, and
+    deliberately: the reviewer now holds `Bash`, so an allowlist stopping a hook from
+    running a command would be defending a property this script no longer has. Put only the
+    authentication setting in it anyway.
+- **Both: what the fingerprint does not see.** It records every path's type, mode, size,
+  modification time, symlink target and every regular file's content hash, including the
+  tree's own root directory (`-mindepth 0`; an earlier version used `-mindepth 1` and missed
+  a mode change or a create-and-delete made directly in the root, both found and fixed in a
+  second-review round). **Not owner, not extended attributes, not ACLs, not hard-link
+  count.** A hard link made from outside the tree to a file inside it changes none of this —
+  also found in a second-review round, by actually making one, not by reasoning about it.
+  It is not guaranteed to catch a file created and deleted inside the run if every directory
+  that would show the change (via its own mtime) has that mtime put back before the run
+  ends. And flatly: **it says nothing at all about writes outside the tree**, which both
+  backends are now able to make. `SECOND_REVIEW_CONTEXT_DIR`, when claude is given one, is
+  fingerprinted the same way, at the same three points, for the same reason: `--add-dir`
+  grants claude's file tools write as well as read, so without this the reviewer's own main
+  input (typically the commit's diff) was a fourth place invariant 2 did not reach — found
+  in a second-review round, once the `--allowedTools` fix above gave that write grant its
+  first real test.
 
 #### Limits that apply wherever you run it
 
@@ -377,16 +385,18 @@ These are not host-specific, and the section below is not where to look for them
   `SECOND_REVIEW_KEEP_AWS_ENV=1` only if your Codex authenticates to Bedrock with exactly
   those credentials. Why: this workstation holds live credentials for an unrelated account,
   and the removal is what keeps them out of the reviewer.
-- **The two backends differ in what else the reviewer can reach.** `--backend claude` runs
-  with `--tools Read,Grep,Glob` and `--strict-mcp-config`, so it is asked to hold only those
-  three and no MCP server. A reviewer under those flags reports exactly them, with nothing
-  loadable; that is the reviewer's own self-report, not something the script verifies, which
-  is why the tree check is what the record rests on. Codex 0.164 cannot clear `mcp_servers` from the
-  command line, so a Codex review can also reach whatever MCP servers that machine's
-  `~/.codex/config.toml` defines — any machine's, not only a configured workstation — and
-  some of those write to other systems. Both backends are equally sanctioned; this is a
-  difference to know about, not a reason to pick one. In both cases the review tree is
-  checked afterwards, and writes outside it are not.
+- **Both reviewers can now reach the machine they run on.** Each holds a shell — Codex
+  through `--sandbox workspace-write`, Claude through `--tools ...,Bash` — so "what else the
+  reviewer can reach" is no longer bounded by its tool list. The brief asks it to stay in its
+  own working directory and off the network; nothing enforces that. `--backend claude` also
+  gets `--strict-mcp-config` with no `--mcp-config`, so it is given no MCP server, while
+  Codex 0.164 cannot clear `mcp_servers` from the command line, so a Codex review can
+  additionally reach whatever MCP servers that machine's `~/.codex/config.toml` defines —
+  any machine's, not only a configured workstation — and some of those write to other
+  systems. Both backends are equally sanctioned; this is a difference to know about, not a
+  reason to pick one. **In both cases only the review tree is checked afterwards, and writes
+  outside it are neither prevented nor detected.** Run a review on a machine where that is
+  acceptable.
 
 #### A sub agent in your own session
 
@@ -399,14 +409,26 @@ vendor's tool means a different model by construction — are yours to arrange h
   has the implementing model reviewing its own work, which looks exactly like a real review
   and satisfies none of its purpose. **Pass an explicit model override that differs from the
   implementing model** — in Claude Code that is the Agent tool's `model` parameter — and
-  record the model that actually ran, not the one you asked for.
-- **Give it a read-only tool set.** There is no sandbox flag here: the reviewer is read-only
-  because it holds no edit, write or shell tool, so hand it reading tools only.
+  record the model that actually ran, not the one you asked for. That is invariant 1.
+- **How this path satisfies invariant 2: by the fingerprint, same as the other two.**
+  Fingerprint the snapshot before you dispatch and after it returns, and compare — the
+  script writes `tree-before.sha256` and `tree-after.sha256` and you can do the same with
+  `find`, `sort -z` and `sha256sum`. **Giving the agent a read-only tool set is no longer
+  what carries it**, and is no longer the recommendation: a reviewer that can run the code
+  finds defects a reader cannot, so give it tools enough to do that and let the fingerprint
+  be the evidence. If you *do* hand it reading tools only, say so in the record as a fact
+  about that run rather than as how the invariant was met.
+- **Tell it the same three things the brief template tells the CLI reviewers**: leave the
+  snapshot unchanged, write only in a scratch directory of its own, and stay off the network
+  and out of your output directory. It is asked, not prevented, exactly as on the other two
+  paths.
 - **No context from your session is load-bearing.** A fork that inherits the implementer's
   reasoning will repeat it and is not an independent review. Start it fresh, with the brief
   and the snapshot as its only input.
-- **Show the tree unchanged afterwards**, the same way the script does: fingerprint it
-  before and after and compare.
+- **Ask it to report what it wrote**, and record that beside the fingerprint. A sub agent's
+  own account of its writes is not evidence on its own — it is the fingerprint that settles
+  the tree — but a reviewer saying "I created a scratch copy under /tmp" tells you where to
+  look for what the fingerprint cannot see.
 
 This is the path the coding-agent sample's review took while the Codex command was broken,
 and it worked.
@@ -419,14 +441,18 @@ three invariants:
 
 - which model answered, and that it differs from the model that wrote the change — from the
   tool's own report of the model, not the name you asked for;
-- that it could not write to the tree: name the read-only mode you used, and show the tree
-  unchanged after the run (`scripts/second-review.sh` writes `tree-before.sha256` and
-  `tree-after.sha256`, and you can compare the same way);
+- that the tree under review is unchanged: fingerprint it before and after and compare
+  (`scripts/second-review.sh` writes `tree-before.sha256` and `tree-after.sha256`, and you
+  can compare the same way). **Do not substitute a read-only flag for this.** A flag is a
+  claim about what the reviewer could do; the fingerprint is a fact about what the tree did.
+  Two of the three reviewers tried here would have passed a flags-only check while still
+  being able to write, which is the reason this is the evidence and that is not;
+- what the reviewer was permitted to do, stated as permissions rather than restrictions, so
+  a reader knows what the fingerprint is and is not covering;
 - that the brief, the output and the trace stayed under `tmp/`.
 
-Verify this with a run that tries to write, and show it refused, rather than asserting it
-from the flags. Why: two of the three reviewers tried here would have passed a
-flags-only check while still being able to write.
+Prove the fingerprint catches a write, by making one into the snapshot yourself and showing
+the comparison fails, rather than trusting that it would.
 
 #### Host-specific options, where you are on that machine
 

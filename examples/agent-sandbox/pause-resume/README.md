@@ -148,9 +148,6 @@ spec:
           volumeMounts:
             - name: workspace
               mountPath: /workspace
-          resources:
-            requests: { cpu: "1", memory: 768Mi }
-            limits:   { cpu: "1", memory: 768Mi }
   volumeClaimTemplates:
     - metadata:
         name: workspace

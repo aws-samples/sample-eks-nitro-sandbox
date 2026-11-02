@@ -201,37 +201,16 @@ The comparison script checks this setting rather than changing this shared setti
 
 **Step 2: Deploy the namespace, the egress policy and the two probe pods.** The probe pods are
 identical but for one line: `probe-sandboxed` sets `runtimeClassName: isolated-sandbox`,
-`probe-standard` does not. The egress policy selects both and allows only DNS to CoreDNS. Fill in
-`<COREDNS_IP>` with your cluster's DNS address, read from the kubelet configuration of the first
-Ready node that answers with a canonical IPv4 address as its first `clusterDNS` entry (the script
-does this for you). That read needs permission to **list
-`nodes`** and to **get `nodes/proxy`**; without both, the lookup below prints the API server's
-denial and applies no policy and no pod.
-[How the network policy works](#how-the-network-policy-works) gives the other ways to reach the
-same address, which need less permission.
-
-Paste the block whole: everything after the lookup is chained to a check that it found an
-address, so a missing permission cannot leave the probe pods running with no policy, or with a
-policy pinned to a stale `COREDNS_IP` left over in your environment.
+`probe-standard` does not. The egress policy selects both and allows DNS on port 53 to any
+address: it is a literal `0.0.0.0/0` in the file, so there is no cluster-specific address to
+look up or substitute.
 
 `kubectl create` refuses a `sandbox-limits` namespace that already exists, so a namespace this
 sample did not make is never relabeled as its own:
 
 ```bash
-kubectl create -f deploy/namespace.yaml
-COREDNS_IP=""
-for DNS_NODE in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
-    | awk '$2 == "True" {print $1}'); do
-  DNS_READ=$(kubectl get --raw "/api/v1/nodes/$DNS_NODE/proxy/configz" --request-timeout=10s \
-    | sed -n 's/.*"clusterDNS":\["\([^"]*\)".*/\1/p')
-  if [[ "$DNS_READ" =~ ^((25[012345]|2[01234][0123456789]|1[0123456789][0123456789]|[123456789][0123456789]|[0123456789])\.){3}(25[012345]|2[01234][0123456789]|1[0123456789][0123456789]|[123456789][0123456789]|[0123456789])$ ]]; then
-    COREDNS_IP="$DNS_READ"
-    break
-  fi
-done
-: "${COREDNS_IP:?no Ready node returned an IPv4 clusterDNS; check permission to list nodes and get nodes/proxy, and that the first clusterDNS entry is IPv4}" &&
-echo "cluster DNS address: $COREDNS_IP" &&
-sed "s|<COREDNS_IP>|$COREDNS_IP|" deploy/egress-policy.yaml | kubectl apply -f - &&
+kubectl create -f deploy/namespace.yaml &&
+kubectl apply -f deploy/egress-policy.yaml &&
 kubectl apply -f deploy/probe-standard.yaml &&
 kubectl apply -f deploy/probe-sandboxed.yaml &&
 for p in probe-standard probe-sandboxed; do
@@ -256,9 +235,6 @@ spec:                                       spec:
   containers:                                 containers:
     - name: probe                               - name: probe
       image: .../python:3.12-slim                 image: .../python:3.12-slim
-      resources:                                  resources:
-        requests: { cpu: "1", memory: 768Mi }       requests: { cpu: "1", memory: 768Mi }
-        limits:   { cpu: "1", memory: 768Mi }       limits:   { cpu: "1", memory: 768Mi }
 ```
 
 The first sandboxed pod on a new cluster waits for Auto Mode to launch a sandbox-capable node;
@@ -332,32 +308,17 @@ qps. The measured plateau is near the documented 100 qps per family (EKS User Gu
 ```
 
 The block is abridged: it starts at `=== Results ===`. Before that the script creates the
-namespace, prints the cluster DNS address it read, applies the policy and the two pods, and
-prints each probe's answered rate.
+namespace, applies the policy and the two pods, and prints each probe's answered rate.
 
 ## How the network policy works
 
 The probe pods have a network, so the sample restricts their egress with a standard
 `networking.k8s.io/v1` `NetworkPolicy` and shows the whole policy here. It allows just two things,
 the DNS the DNS probe needs and the TCP egress to the sink the connection probe needs, and denies
-everything else. `<COREDNS_IP>` is filled in at apply time with
-the cluster's DNS address: the kubelet's `clusterDNS`, which pods use as their nameserver, read
-from a node as in step 2 (this needs permission to list `nodes` and to get `nodes/proxy`).
-
-On EKS Auto Mode CoreDNS runs on each node rather than as pods in `kube-system`, so the `kube-dns`
-Service is still there and still carries this address, but with no endpoints behind it. On an IPv4
-cluster, three ways of reading the address all give the same number: the kubelet's `clusterDNS`,
-the `kube-dns` ClusterIP, and the `.10` address of the cluster's Service CIDR, which is the one
-the Amazon EKS User Guide derives in *Use Network Policies with EKS Auto Mode*, under
-*Determining the CoreDNS IP address* (an IPv6 cluster uses a different address, and this sample
-accepts only IPv4). This sample reads the kubelet's `clusterDNS` because that is the nameserver
-the probe pods themselves use — the same `nameserver=` the probe output above prints — so the
-address the policy allows is the one the probes measured against, and reading it needs no AWS
-API call and no cluster name. The guide's method and the
-`kubectl get svc -n kube-system kube-dns` lookup the other samples here use are equally valid and
-need less permission. Either way the policy allows DNS with an `ipBlock` on the address, as the
-guide's own example does
-(<https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html>):
+everything else. DNS (port 53) is allowed to any IP address: a literal `0.0.0.0/0` in the file,
+with no cluster-specific address to look up or substitute. While CoreDNS typically runs on a
+fixed cluster address, allowing any destination eliminates the need for address lookup and
+substitution and avoids issues with missing or malformed cluster DNS addresses.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -374,7 +335,7 @@ spec:
     - Egress
   egress:
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }
+        - ipBlock: { cidr: 0.0.0.0/0 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -391,14 +352,14 @@ spec:
 | `podSelector: app: dns-probe` | Selects every probe pod, the sandboxed and the ordinary one alike |
 | `policyTypes: [Ingress, Egress]` | Makes both directions default-deny for the selected pods, so anything not allowed below is refused |
 | no `ingress:` rule | Denies all ingress to the probe pods |
-| `egress` to the CoreDNS `ipBlock` on UDP and TCP 53 | DNS to the cluster resolver, which the DNS probe needs. The address is the kubelet's `clusterDNS`, which on EKS Auto Mode is the same address as the `kube-dns` ClusterIP, served by CoreDNS on the node. An `ipBlock`, as [Getting started > Coding agent](../../getting-started/coding-agent/README.md) uses |
+| `egress` to `0.0.0.0/0` on UDP and TCP 53 | DNS to any address, which the DNS probe needs. An `ipBlock`, as [Getting started > Coding agent](../../getting-started/coding-agent/README.md) uses |
 | `egress` to the `conntrack-sink` pod on TCP 9000 | The connection sink, which the connection-limit probe opens held-open outbound flows to. Nothing else is reachable, so the probe cannot leave the cluster |
 
 The policy is enforced on the node, outside the guest: the node's network policy agent attaches
 the enforcement to the pod's host-side interface, so a command run inside the sandbox, even as
-root, is subject to it. A `domainNames` rule, where a sample uses one, allows the addresses a
-name resolves to, so other names on the same addresses are reachable too; this policy allows
-DNS by the kubelet's `clusterDNS` address and needs no name rule. A pod can always reach its own node.
+root, is subject to it. Its limit: DNS is open on port 53 to any address, so a resolver is
+always reachable; everything beyond DNS and the conntrack sink is denied. A pod can always
+reach its own node.
 
 Apply the policy and wait for its `PolicyEndpoint` before relying on enforcement: it shows the
 controller has handed the policy to the nodes. The `PolicyEndpoint` name ends in a random suffix,
@@ -416,19 +377,20 @@ NAME                                                       AGE
 policyendpoint.networking.k8s.aws/dns-probe-egress-t75lm   22m
 ```
 
-Show it working, one allowed and one refused. DNS to CoreDNS on 53 is allowed; the same host on
-port 80, which no rule allows, is refused and the connection runs to a timeout. Replace
-`<COREDNS_IP>` in the second command with the address from step 2 (`echo $COREDNS_IP`):
+Show it working, one allowed and one refused. DNS on port 53 is allowed; the same resolver
+address on port 80, which no rule allows, is refused and the connection runs to a timeout --
+the policy scopes a port, not an address:
 
 ```bash
-# allowed: a DNS query to CoreDNS on 53 is answered
+# allowed: a DNS query on port 53 is answered
 kubectl -n sandbox-limits exec -i probe-sandboxed -- env OFFERED_QPS=50 WINDOW=1 python3 - \
   < scripts/probe-dns-rate.py | tail -1
-# refused: a TCP connection to the same host on port 80 (no rule allows it) times out
+# refused: a TCP connection to the same resolver on port 80 (no rule allows it) times out
+NAMESERVER=$(kubectl -n sandbox-limits exec probe-sandboxed -- sed -n 's/^nameserver //p' /etc/resolv.conf | head -1)
 kubectl -n sandbox-limits exec probe-sandboxed -- python3 -c \
-  'import socket; s=socket.socket(); s.settimeout(6)
-try: s.connect(("<COREDNS_IP>",80)); print("reached")
-except Exception as e: print("refused:", type(e).__name__)'
+  "import socket; s=socket.socket(); s.settimeout(6)
+try: s.connect(('$NAMESERVER',80)); print('reached')
+except Exception as e: print('refused:', type(e).__name__)"
 ```
 
 ```text

@@ -1,0 +1,12 @@
+# Your keys. Only .env.example is committed.
+.env
+.env.*
+!.env.example
+
+# Local build and test artifacts.
+.venv/
+build/
+dist/
+__pycache__/
+*.egg-info/
+.pytest_cache/

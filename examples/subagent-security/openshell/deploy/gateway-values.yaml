@@ -1,0 +1,78 @@
+# Helm values for the one OpenShell gateway this sample runs.
+#
+# This is the minimum gateway needed to drive a single sandbox, and nothing more. It is
+# not the platform install: Nitro sandboxes > OpenShell on Amazon EKS is the sample for
+# that, and it covers the chart's options, workspace modes and platform lifecycle. Here
+# the gateway exists so that there is something to apply a policy to.
+#
+# scripts/setup.sh adds the pinned image digests from versions.json and substitutes
+# <NAMESPACE> and <RELEASE>, so nothing here names a cluster, an account or a Region.
+fullnameOverride: <RELEASE>
+
+# ClusterIP, reached only with kubectl port-forward bound to localhost. No Ingress,
+# LoadBalancer or NodePort anywhere in this sample, and setup.sh re-checks the rendered
+# chart for one before it installs.
+service:
+  type: ClusterIP
+grpcRoute:
+  enabled: false
+openshiftRoute:
+  enabled: false
+
+server:
+  telemetryEnabled: false
+
+  # Every sandbox this gateway creates gets its workload pod in a Nitro sandbox. The
+  # supervisor pod the driver pairs with it is an ordinary pod and does not get this.
+  defaultRuntimeClassName: isolated-sandbox
+
+  # The analyst image's user. The driver puts these in the workload pod's
+  # securityContext, and the policy's process.run_as_user names the same identity.
+  sandboxUid: "1000"
+  sandboxGid: "1000"
+
+  # Kubernetes user namespaces stay off. A Nitro sandbox does not support
+  # hostUsers: false (Amazon EKS User Guide, Isolated and confidential pods
+  # limitations), and the kubelet would refuse the pod. This is the chart default; it is
+  # written out because turning it on is the kind of change that would look harmless.
+  enableUserNamespaces: false
+
+  auth:
+    # Development user mode: this gateway does not authorize individual users, so
+    # transport mTLS and access to the client TLS Secret are the whole of its access
+    # control. Anyone who can read that Secret can administer this gateway. It is here
+    # because the sample's subject is the policy around one analyst, not identity. A real
+    # deployment uses the upstream OIDC or trusted-access-proxy configuration, and the
+    # page says so rather than leaving this looking like a pattern to copy.
+    allowUnauthenticatedUsers: true
+
+  tls:
+    certSecretName: <RELEASE>-server-tls
+    clientCaSecretName: <RELEASE>-server-client-ca
+    clientTlsSecretName: <RELEASE>-client-tls
+
+  # A pre-created key-encryption key, so the gateway encrypts stored provider credentials
+  # under a key this run made and setup.sh can render the chart without Helm's `lookup`.
+  credentialStorage:
+    existingSecret: <RELEASE>-kek
+
+  drivers:
+    kubernetes:
+      # All sandboxes in this one namespace. "managed" would have the gateway create a
+      # namespace per workspace, which is platform behaviour this sample does not need
+      # and which would put objects outside the namespace the clean up owns.
+      workspaceMode: shared
+      # Lets this sample's sandbox template carry a Kubernetes node selector, which is
+      # how the analyst image stays on x86_64 nodes. Resource admission below stays on,
+      # so a template still cannot attach a RuntimeClass, volume or claim an operator has
+      # not approved.
+      allowDriverConfig: true
+      resourceAdmission:
+        # On, which is the default. It is what makes the RuntimeClass label an operator
+        # decision rather than a caller's: isolated-sandbox has to carry
+        # openshell.ai/sandbox-attachable=true before a sandbox may use it.
+        enabled: true
+
+pkiInitJob:
+  serverDnsNames:
+    - <RELEASE>.<NAMESPACE>.svc.cluster.local

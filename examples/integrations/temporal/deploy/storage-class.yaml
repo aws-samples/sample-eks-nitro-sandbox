@@ -1,0 +1,25 @@
+# The sample's own EBS StorageClass, created by setup.sh with `kubectl create`
+# only when the cluster has no default class that fits. It is not a default
+# class, it is named for the sample, and it carries the sample's mark so the
+# clean up can tell it is the sample's.
+#
+# A StorageClass is chosen, never changed: nothing in this sample patches a
+# class or applies a manifest over one. Applying over a class that was created
+# with `kubectl apply` can strip its default annotation, which changes how every
+# other claim on the cluster is provisioned.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: temporal-sandboxes-gp3
+  labels:
+    app.kubernetes.io/managed-by: temporal
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: eks.amazonaws.com/compute-type
+        values:
+          - auto
+provisioner: ebs.csi.eks.amazonaws.com
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  type: gp3
+  encrypted: "true"

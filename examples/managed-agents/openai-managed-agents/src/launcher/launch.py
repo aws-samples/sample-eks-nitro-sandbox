@@ -1,0 +1,169 @@
+"""``launcher launch`` -- the ordinary pod that claims a sandbox per session.
+
+The default hand-off in issue #9 is application-managed provisioning: the
+operator's ``scripts/submit.py`` creates the session with the application key,
+then hands the launcher the session's environment id and remote URL. The
+launcher reaches no public endpoint and the sample creates no Ingress; the
+operator connects to this intake port with ``kubectl port-forward`` to a
+ClusterIP Service.
+
+Two layers protect the intake, because a NetworkPolicy is reachability and not
+authentication:
+
+  * a deny-by-default ingress ``ApplicationNetworkPolicy`` (see
+    ``deploy/launcher-ingress.yaml``) so no in-cluster pod may reach the
+    launcher Service; and
+  * a pre-shared bearer token on every request. The launcher loads it from a
+    mounted Secret and refuses to start without it; the intake rejects any
+    request whose ``Authorization: Bearer`` token does not match, in constant
+    time. ``submit.py`` sends it from the operator's ``.env``. This is a shared
+    secret the operator already holds to deploy the launcher, so an ordinary
+    in-cluster caller that reached the Service still cannot drive it.
+
+Why this and not a poller like the Claude sample: the OpenAI self-hosted
+executor dials OUT to the environment's remote URL and there is no work queue to
+poll. The session must be created first, then compute started for it. The pinned
+SDK (3.31.0) exposes session create/retrieve/stream and event streaming, but no
+"list sessions awaiting an environment connection" call, so this sample uses the
+issue's default, operator-driven provisioning. The README records this choice.
+
+For each submitted session the launcher claims a sandbox and gives it the
+session (and the environment key the launcher holds) through the claim's env
+(see ``sandbox.py``). The launcher runs no tool calls itself, so it is an
+ordinary pod.
+"""
+
+from __future__ import annotations
+
+import hmac
+import json
+import logging
+import re
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from . import config, guard, sandbox
+
+log = logging.getLogger(__name__)
+
+ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,128}$")
+URL_RE = re.compile(r"^https://[A-Za-z0-9._\-]+(:\d+)?(/[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%\-]*)?$")
+MAX_BODY = 64 * 1024
+_BEARER_RE = re.compile(r"^Bearer (?P<token>[A-Za-z0-9._\-]{1,4096})$")
+
+
+class _Handler(BaseHTTPRequestHandler):
+    """Claim or release a sandbox for a session. Every request must authenticate."""
+
+    def _authenticated(self) -> bool:
+        """Constant-time check of the request's bearer token against the launcher's."""
+        header = self.headers.get("Authorization", "")
+        match = _BEARER_RE.match(header)
+        if not match:
+            return False
+        presented = match.group("token")
+        # hmac.compare_digest is constant time, so a wrong token leaks no timing.
+        return hmac.compare_digest(presented, self.server.auth_token)  # type: ignore[attr-defined]
+
+    def do_POST(self):  # noqa: N802 - stdlib naming
+        if not self._authenticated():
+            self._json(401, {"error": "unauthorized"})
+            return
+        if self.path.rstrip("/") == "/sessions":
+            self._dispatch()
+        elif self.path.rstrip("/") == "/sessions/claim-delete":
+            self._delete_claim()
+        else:
+            self._json(404, {"error": "not found"})
+
+    def _body(self) -> dict:
+        length = int(self.headers.get("Content-Length", "0"))
+        if not 0 < length <= MAX_BODY:
+            raise ValueError("bad length")
+        return json.loads(self.rfile.read(length))
+
+    def _dispatch(self) -> None:
+        try:
+            body = self._body()
+            session_id = body["session_id"]
+            environment_id = body["environment_id"]
+            remote_url = body["remote_url"]
+            if not (ID_RE.match(session_id) and ID_RE.match(environment_id) and URL_RE.match(remote_url)):
+                raise ValueError("invalid field")
+        except Exception:
+            self._json(400, {"error": "bad request"})
+            return
+        try:
+            result = self.server.dispatcher.dispatch(  # type: ignore[attr-defined]
+                session_id=session_id, environment_id=environment_id, remote_url=remote_url
+            )
+        except Exception as exc:  # noqa: BLE001 - report the failure to the operator
+            log.exception("dispatch failed for session %s", session_id)
+            self._json(502, {"error": "dispatch failed", "detail": type(exc).__name__})
+            return
+        self._json(202, {"session_id": session_id, **result})
+
+    def _delete_claim(self) -> None:
+        """Session-aware claim cleanup. The operator has already rechecked the
+        session's state through the Agents API (it holds the application key the
+        launcher must not); the launcher only deletes the claim, which it alone
+        has the RBAC to do. The session is deleted separately, operator-side."""
+        try:
+            body = self._body()
+            session_id = body["session_id"]
+            if not ID_RE.match(session_id):
+                raise ValueError("invalid field")
+        except Exception:
+            self._json(400, {"error": "bad request"})
+            return
+        try:
+            deleted = self.server.dispatcher.delete_claim_for_session(session_id)  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001
+            log.exception("claim delete failed for session %s", session_id)
+            self._json(502, {"error": "claim delete failed", "detail": type(exc).__name__})
+            return
+        self._json(200, {"session_id": session_id, "claims_deleted": deleted})
+
+    def do_GET(self):  # noqa: N802 - a liveness/readiness probe target; no auth, no data
+        self._json(200, {"status": "ok"})
+
+    def _json(self, code: int, payload: dict) -> None:
+        data = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *_):
+        """No per-request access log."""
+
+
+def main() -> None:
+    config.setup_logging()
+    guard.assert_safe(guard.ROLE_LAUNCH)
+    executor_key = config.require(config.ENV_EXECUTOR_API_KEY)
+    # Fail closed: the launcher will not start without its intake auth token, so
+    # the intake is never served unauthenticated.
+    auth_token = config.require(config.ENV_LAUNCHER_AUTH_TOKEN)
+    dispatcher = sandbox.Dispatcher(executor_key)
+    port = config.optional_int(config.ENV_LAUNCHER_PORT, config.DEFAULT_LAUNCHER_PORT)
+    # Binds 0.0.0.0 so the ClusterIP Service can reach the launcher pod. The
+    # launcher publishes no host port; its Service is ClusterIP, a deny-by-default
+    # ingress NetworkPolicy admits no in-cluster pod, and every request must carry
+    # the bearer token. The dispatch body carries no credential (the environment
+    # key stays in the launcher and goes to the sandbox through the claim env).
+    httpd = ThreadingHTTPServer(("0.0.0.0", port), _Handler)
+    httpd.dispatcher = dispatcher  # type: ignore[attr-defined]
+    httpd.auth_token = auth_token  # type: ignore[attr-defined]
+    log.info("launcher intake on :%d; claiming from warm pool %s/%s",
+             port, dispatcher.namespace, dispatcher.warmpool)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        log.info("launcher shutting down")
+    finally:
+        httpd.server_close()
+
+
+if __name__ == "__main__":
+    main()
