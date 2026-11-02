@@ -61,14 +61,6 @@ global_settings:
       reason: 'Pods carry app: s3-files-shared, selected by the ApplicationNetworkPolicy in deploy/egress-policy.yaml'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
-      path: 'examples/policy/image-signing/deploy/workloads.yaml'
-      reason: 'verify-signed and verify-unsigned are selected by deploy/egress-policy.yaml; verify-signed-denied is network-isolated'
-      expiration: '2027-12-31'
-    - rule_id: CKV2_K8S_6
-      path: 'examples/policy/image-signing/optional-offline/deploy/verify-offline.yaml'
-      reason: 'Network-isolated: no network to restrict (AGENTS.md, Security rules)'
-      expiration: '2027-12-31'
-    - rule_id: CKV2_K8S_6
       path: 'examples/policy/cedar-policy/deploy/pod.yaml'
       reason: 'Network-isolated: no network to restrict (AGENTS.md, Security rules)'
       expiration: '2027-12-31'
@@ -77,10 +69,6 @@ global_settings:
       reason: 'Replicas are network-isolated: no network to restrict (AGENTS.md, Security rules)'
       expiration: '2027-12-31'
     # Image is a placeholder; a script substitutes the signed digest before apply.
-    - rule_id: CKV_K8S_14
-      path: 'examples/policy/image-signing/**/deploy/*.yaml'
-      reason: 'Image is a placeholder; setup.sh and build-offline.sh substitute registry/repo@sha256:<digest> before apply'
-      expiration: '2027-12-31'
     # Not applicable on Kubernetes.
     - rule_id: CKV_DOCKER_2
       path: '**/Dockerfile'
@@ -111,22 +99,6 @@ global_settings:
     - rule_id: CKV_K8S_9
       path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
       reason: 'Same regular pod with one extra line; no probes on purpose (hello-sandbox/README.md:69)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_10
-      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
-      reason: 'Same regular pod plus one line; no requests on purpose (hello-sandbox/README.md:145)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
-      reason: 'Same regular pod plus one line; no requests on purpose (hello-sandbox/README.md:145)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_12
-      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
-      reason: 'Same regular pod plus one line; no requests on purpose (hello-sandbox/README.md:145)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_13
-      path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
-      reason: 'Same regular pod plus one line; no requests on purpose (hello-sandbox/README.md:145)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_20
       path: 'examples/getting-started/hello-sandbox/hello-*.yaml'
@@ -243,14 +215,6 @@ global_settings:
       reason: 'Idle pod driven by kubectl exec to show the Cedar policy decision; a probe gates nothing'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_8
-      path: 'examples/policy/image-signing/**/deploy/*.yaml'
-      reason: 'Idle verify pods (Dockerfile:99 exec sleep 3600) driven by kubectl exec; a probe gates nothing'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_9
-      path: 'examples/policy/image-signing/**/deploy/*.yaml'
-      reason: 'Idle verify pods (Dockerfile:99 exec sleep 3600) driven by kubectl exec; a probe gates nothing'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_8
       path: 'examples/storage/ebs/deploy/*.yaml'
       reason: 'Idle writer pod (writes to the volume then sleeps) driven by kubectl exec; a probe gates nothing'
       expiration: '2027-12-31'
@@ -295,10 +259,6 @@ global_settings:
       path: 'examples/managed-agents/claude-managed-agents/deploy/*.yaml'
       reason: 'The SDK reads the key from the environment via secretKeyRef; it is never on a command line'
       expiration: '2027-12-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/managed-agents/claude-managed-agents/deploy/*.yaml'
-      reason: 'CPU request without a CPU limit on purpose, so the loop is not CPU-throttled'
-      expiration: '2027-12-31'
     - rule_id: CKV_K8S_40
       path: 'examples/managed-agents/claude-managed-agents/deploy/*.yaml'
       reason: 'UID 1000 is the image non-root agent user (Dockerfile:23-24)'
@@ -338,22 +298,6 @@ global_settings:
     # ---- Samples merged to main before the ASH gate (#85-#110) ----
     # Ordinary contrast and control pods: plain on purpose, like ebs/pod-ordinary.yaml.
     - rule_id: CKV2_K8S_6
-      path: 'examples/agent-sandbox/argo-rollouts/deploy/ordinary-pod.yaml'
-      reason: 'Ordinary contrast pod (no runtimeClassName) for the kernel, boot and disk comparison; plain on purpose (ordinary-pod.yaml:1-5)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_10
-      path: 'examples/agent-sandbox/argo-rollouts/deploy/ordinary-pod.yaml'
-      reason: 'Ordinary contrast pod (no runtimeClassName) for the kernel, boot and disk comparison; plain on purpose (ordinary-pod.yaml:1-5)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/agent-sandbox/argo-rollouts/deploy/ordinary-pod.yaml'
-      reason: 'Ordinary contrast pod (no runtimeClassName) for the kernel, boot and disk comparison; plain on purpose (ordinary-pod.yaml:1-5)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_12
-      path: 'examples/agent-sandbox/argo-rollouts/deploy/ordinary-pod.yaml'
-      reason: 'Ordinary contrast pod (no runtimeClassName) for the kernel, boot and disk comparison; plain on purpose (ordinary-pod.yaml:1-5)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_13
       path: 'examples/agent-sandbox/argo-rollouts/deploy/ordinary-pod.yaml'
       reason: 'Ordinary contrast pod (no runtimeClassName) for the kernel, boot and disk comparison; plain on purpose (ordinary-pod.yaml:1-5)'
       expiration: '2027-12-31'
@@ -405,22 +349,6 @@ global_settings:
       path: 'examples/agent-sandbox/ide/deploy/pod-ordinary.yaml'
       reason: 'Ordinary contrast pod for the Step 6 side-by-side; plain on purpose, deleted after the readings (pod-ordinary.yaml:1-12)'
       expiration: '2027-12-31'
-    - rule_id: CKV_K8S_10
-      path: 'examples/agent-sandbox/ide/deploy/pod-ordinary.yaml'
-      reason: 'Ordinary contrast pod for the Step 6 side-by-side; plain on purpose, deleted after the readings (pod-ordinary.yaml:1-12)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/agent-sandbox/ide/deploy/pod-ordinary.yaml'
-      reason: 'Ordinary contrast pod for the Step 6 side-by-side; plain on purpose, deleted after the readings (pod-ordinary.yaml:1-12)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_12
-      path: 'examples/agent-sandbox/ide/deploy/pod-ordinary.yaml'
-      reason: 'Ordinary contrast pod for the Step 6 side-by-side; plain on purpose, deleted after the readings (pod-ordinary.yaml:1-12)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_13
-      path: 'examples/agent-sandbox/ide/deploy/pod-ordinary.yaml'
-      reason: 'Ordinary contrast pod for the Step 6 side-by-side; plain on purpose, deleted after the readings (pod-ordinary.yaml:1-12)'
-      expiration: '2027-12-31'
     - rule_id: CKV_K8S_23
       path: 'examples/agent-sandbox/ide/deploy/pod-ordinary.yaml'
       reason: 'Ordinary contrast pod for the Step 6 side-by-side; plain on purpose, deleted after the readings (pod-ordinary.yaml:1-12)'
@@ -449,22 +377,6 @@ global_settings:
       path: 'examples/ci-cd/docker-builds/deploy/pod-ordinary.yaml'
       reason: 'Ordinary contrast pod (no runtime class, no privileges) for the node comparison; plain on purpose (pod-ordinary.yaml:1-2)'
       expiration: '2027-12-31'
-    - rule_id: CKV_K8S_10
-      path: 'examples/ci-cd/docker-builds/deploy/pod-ordinary.yaml'
-      reason: 'Ordinary contrast pod (no runtime class, no privileges) for the node comparison; plain on purpose (pod-ordinary.yaml:1-2)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/ci-cd/docker-builds/deploy/pod-ordinary.yaml'
-      reason: 'Ordinary contrast pod (no runtime class, no privileges) for the node comparison; plain on purpose (pod-ordinary.yaml:1-2)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_12
-      path: 'examples/ci-cd/docker-builds/deploy/pod-ordinary.yaml'
-      reason: 'Ordinary contrast pod (no runtime class, no privileges) for the node comparison; plain on purpose (pod-ordinary.yaml:1-2)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_13
-      path: 'examples/ci-cd/docker-builds/deploy/pod-ordinary.yaml'
-      reason: 'Ordinary contrast pod (no runtime class, no privileges) for the node comparison; plain on purpose (pod-ordinary.yaml:1-2)'
-      expiration: '2027-12-31'
     - rule_id: CKV_K8S_22
       path: 'examples/ci-cd/docker-builds/deploy/pod-ordinary.yaml'
       reason: 'Ordinary contrast pod (no runtime class, no privileges) for the node comparison; plain on purpose (pod-ordinary.yaml:1-2)'
@@ -486,22 +398,6 @@ global_settings:
       reason: 'Ordinary contrast pod (no runtime class, no privileges) for the node comparison; plain on purpose (pod-ordinary.yaml:1-2)'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
-      path: 'examples/ci-cd/github-actions/deploy/ordinary-pod.yaml'
-      reason: 'Ordinary contrast pod for the Step 6 comparison; no job runs on it; plain on purpose (ordinary-pod.yaml:1-3)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_10
-      path: 'examples/ci-cd/github-actions/deploy/ordinary-pod.yaml'
-      reason: 'Ordinary contrast pod for the Step 6 comparison; no job runs on it; plain on purpose (ordinary-pod.yaml:1-3)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/ci-cd/github-actions/deploy/ordinary-pod.yaml'
-      reason: 'Ordinary contrast pod for the Step 6 comparison; no job runs on it; plain on purpose (ordinary-pod.yaml:1-3)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_12
-      path: 'examples/ci-cd/github-actions/deploy/ordinary-pod.yaml'
-      reason: 'Ordinary contrast pod for the Step 6 comparison; no job runs on it; plain on purpose (ordinary-pod.yaml:1-3)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_13
       path: 'examples/ci-cd/github-actions/deploy/ordinary-pod.yaml'
       reason: 'Ordinary contrast pod for the Step 6 comparison; no job runs on it; plain on purpose (ordinary-pod.yaml:1-3)'
       expiration: '2027-12-31'
@@ -561,22 +457,6 @@ global_settings:
       path: 'examples/subagent-security/nono/deploy/ordinary-pod.yaml'
       reason: 'Ordinary contrast pod on the analyst node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
       expiration: '2027-12-31'
-    - rule_id: CKV_K8S_10
-      path: 'examples/subagent-security/nono/deploy/ordinary-pod.yaml'
-      reason: 'Ordinary contrast pod on the analyst node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/subagent-security/nono/deploy/ordinary-pod.yaml'
-      reason: 'Ordinary contrast pod on the analyst node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_12
-      path: 'examples/subagent-security/nono/deploy/ordinary-pod.yaml'
-      reason: 'Ordinary contrast pod on the analyst node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_13
-      path: 'examples/subagent-security/nono/deploy/ordinary-pod.yaml'
-      reason: 'Ordinary contrast pod on the analyst node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
-      expiration: '2027-12-31'
     - rule_id: CKV_K8S_22
       path: 'examples/subagent-security/nono/deploy/ordinary-pod.yaml'
       reason: 'Ordinary contrast pod on the analyst node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
@@ -609,14 +489,6 @@ global_settings:
       path: 'examples/confidential/encrypted-image/deploy/plain-pod.yaml'
       reason: 'Ordinary control pod: same image as the sandboxed pod with no runtimeClassName; plain on purpose (plain-pod.yaml:14)'
       expiration: '2027-12-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/confidential/encrypted-image/deploy/plain-pod.yaml'
-      reason: 'Ordinary control pod: same image as the sandboxed pod with no runtimeClassName; plain on purpose (plain-pod.yaml:14)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_13
-      path: 'examples/confidential/encrypted-image/deploy/plain-pod.yaml'
-      reason: 'Ordinary control pod: same image as the sandboxed pod with no runtimeClassName; plain on purpose (plain-pod.yaml:14)'
-      expiration: '2027-12-31'
     - rule_id: CKV_K8S_14
       path: 'examples/confidential/encrypted-image/deploy/plain-pod.yaml'
       reason: 'Ordinary control pod: same image as the sandboxed pod with no runtimeClassName; plain on purpose (plain-pod.yaml:14)'
@@ -637,14 +509,6 @@ global_settings:
       path: 'examples/confidential/s3-encrypted-file/deploy/plain-pod.yaml'
       reason: 'Ordinary control pod: same image and code as the sandboxed pod, readings only; plain on purpose (plain-pod.yaml:11)'
       expiration: '2027-12-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/confidential/s3-encrypted-file/deploy/plain-pod.yaml'
-      reason: 'Ordinary control pod: same image and code as the sandboxed pod, readings only; plain on purpose (plain-pod.yaml:11)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_13
-      path: 'examples/confidential/s3-encrypted-file/deploy/plain-pod.yaml'
-      reason: 'Ordinary control pod: same image and code as the sandboxed pod, readings only; plain on purpose (plain-pod.yaml:11)'
-      expiration: '2027-12-31'
     - rule_id: CKV_K8S_14
       path: 'examples/confidential/s3-encrypted-file/deploy/plain-pod.yaml'
       reason: 'Ordinary control pod: same image and code as the sandboxed pod, readings only; plain on purpose (plain-pod.yaml:11)'
@@ -662,14 +526,6 @@ global_settings:
       reason: 'Ordinary control pod: same image and code as the sandboxed pod, readings only; plain on purpose (plain-pod.yaml:11)'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
-      path: 'examples/confidential/secrets-manager-secret/deploy/plain-pod.yaml'
-      reason: 'Ordinary control pod: same image and readings as the sandboxed pod; plain on purpose (plain-pod.yaml:12)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/confidential/secrets-manager-secret/deploy/plain-pod.yaml'
-      reason: 'Ordinary control pod: same image and readings as the sandboxed pod; plain on purpose (plain-pod.yaml:12)'
-      expiration: '2027-12-31'
-    - rule_id: CKV_K8S_13
       path: 'examples/confidential/secrets-manager-secret/deploy/plain-pod.yaml'
       reason: 'Ordinary control pod: same image and readings as the sandboxed pod; plain on purpose (plain-pod.yaml:12)'
       expiration: '2027-12-31'
@@ -800,35 +656,11 @@ global_settings:
       line_end: 27
       reason: 'githubConfigSecret names a Secret through a placeholder; the credential is not in the file'
       expiration: '2027-12-31'
-    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
-      path: 'examples/confidential/encrypted-image/README.md'
-      line_start: 435
-      line_end: 435
-      reason: 'PCR17 measurement in a key policy condition: a public hash of the guest, not a secret'
-      expiration: '2027-12-31'
-    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
-      path: 'examples/confidential/s3-encrypted-file/README.md'
-      line_start: 264
-      line_end: 264
-      reason: 'PCR17 measurement in a key policy condition: a public hash of the guest, not a secret'
-      expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
       path: 'examples/confidential/s3-encrypted-file/README.md'
       line_start: 211
       line_end: 211
       reason: 'KMS-encrypted data key from the run output: ciphertext only the attested sandbox can decrypt'
-      expiration: '2027-12-31'
-    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
-      path: 'examples/confidential/secrets-manager-secret/README.md'
-      line_start: 421
-      line_end: 421
-      reason: 'PCR17 measurement in a key policy condition: a public hash of the guest, not a secret'
-      expiration: '2027-12-31'
-    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
-      path: 'examples/confidential/secrets-manager-secret/README.md'
-      line_start: 400
-      line_end: 400
-      reason: 'Expected SHA-256 of the demo secret, so the pod can check it without printing it'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/subagent-security/analyst/deploy/supplier-api.yaml'
@@ -853,401 +685,923 @@ global_settings:
       path: 'examples/getting-started/coding-agent/fix-issue.yaml'
       reason: 'UID 1000 is the image non-root node user, which owns /workspace (Dockerfile:45,47)'
       expiration: '2027-12-31'
+    # ---- Round 2: main at 5341549 (#117-#134) ----
+    # Repository rule (nitro-sandbox-pods and sample-page skills, #77; applied by #79/#131): a pod sets no
+    # CPU or memory requests or limits unless it needs them, and requests need not equal limits.
+    - rule_id: CKV_K8S_10
+      path: '**'
+      reason: 'Repository rule (#77, #79): no CPU or memory requests or limits unless the sample needs them'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_11
+      path: '**'
+      reason: 'Repository rule (#77, #79): no CPU or memory requests or limits unless the sample needs them'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_12
+      path: '**'
+      reason: 'Repository rule (#77, #79): no CPU or memory requests or limits unless the sample needs them'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_13
+      path: '**'
+      reason: 'Repository rule (#77, #79): no CPU or memory requests or limits unless the sample needs them'
+      expiration: '2027-12-31'
+    # Hashes, measurements and digests, scoped to the file: these pages and pin files are edited
+    # often, and a line pin breaks on every edit. SECRET-SECRET-KEYWORD and base64 stay line-pinned.
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/confidential/encrypted-image/README.md'
+      reason: 'PCR17 measurement in the key policy: a public hash of the guest image, not a secret'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/confidential/s3-encrypted-file/README.md'
+      reason: 'PCR17 measurement in the key policy: a public hash of the guest image, not a secret'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/confidential/secrets-manager-secret/README.md'
+      reason: 'PCR17 measurement in the key policy and the expected SHA-256 of the demo secret: hashes, not secrets'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/subagent-security/bubblewrap/README.md'
+      reason: 'Source commit SHA of the policy generator build, from the run output: a public git hash'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/openshell/kubernetes/versions.json'
+      reason: 'Pinned upstream commit SHAs and image digests: public hashes, not secrets'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/subagent-security/openshell/versions.json'
+      reason: 'Pinned upstream commit SHAs and image digests: public hashes, not secrets'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/openshell/kubernetes/scripts/demo.sh'
+      line_start: 208
+      line_end: 208
+      reason: 'SHA-256 of the empty string, the digest of an empty file: a well-known constant'
+      expiration: '2027-12-31'
+    # Ordinary contrast pods: plain on purpose.
+    - rule_id: CKV2_K8S_6
+      path: 'examples/ci-cd/gitlab-ci/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: same image and readings with no runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/ci-cd/gitlab-ci/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: same image and readings with no runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/ci-cd/gitlab-ci/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: same image and readings with no runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/ci-cd/gitlab-ci/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: same image and readings with no runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/ci-cd/gitlab-ci/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: same image and readings with no runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/ci-cd/gitlab-ci/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: same image and readings with no runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/ci-cd/gitlab-ci/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: same image and readings with no runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/ci-cd/gitlab-ci/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: same image and readings with no runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/ci-cd/gitlab-ci/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: same image and readings with no runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_38
+      path: 'examples/ci-cd/gitlab-ci/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: same image and readings with no runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/ci-cd/gitlab-ci/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: same image and readings with no runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/ci-cd/gitlab-ci/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: same image and readings with no runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/ci-cd/gitlab-ci/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: same image and readings with no runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/integrations/temporal/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: the sandbox container without runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/integrations/temporal/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: the sandbox container without runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/integrations/temporal/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: the sandbox container without runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/integrations/temporal/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: the sandbox container without runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/integrations/temporal/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: the sandbox container without runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/integrations/temporal/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: the sandbox container without runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/integrations/temporal/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: the sandbox container without runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/integrations/temporal/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: the sandbox container without runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/integrations/temporal/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: the sandbox container without runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_38
+      path: 'examples/integrations/temporal/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: the sandbox container without runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/integrations/temporal/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: the sandbox container without runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/integrations/temporal/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: the sandbox container without runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/integrations/temporal/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod: the sandbox container without runtimeClassName; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/subagent-security/bubblewrap/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod on the analyst node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/subagent-security/bubblewrap/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod on the analyst node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/subagent-security/bubblewrap/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod on the analyst node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/subagent-security/bubblewrap/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod on the analyst node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/subagent-security/bubblewrap/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod on the analyst node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/subagent-security/bubblewrap/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod on the analyst node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/subagent-security/bubblewrap/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod on the analyst node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/subagent-security/bubblewrap/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod on the analyst node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/subagent-security/openshell/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod on the workload node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/subagent-security/openshell/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod on the workload node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/subagent-security/openshell/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod on the workload node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/subagent-security/openshell/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod on the workload node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/subagent-security/openshell/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod on the workload node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/subagent-security/openshell/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod on the workload node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/subagent-security/openshell/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod on the workload node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/subagent-security/openshell/deploy/ordinary-pod.yaml'
+      reason: 'Ordinary contrast pod on the workload node, for the sandbox comparison; plain on purpose (ordinary-pod.yaml:1-3)'
+      expiration: '2027-12-31'
+    # Image is a placeholder the scripts substitute before apply.
+    - rule_id: CKV_K8S_14
+      path: 'examples/confidential/signer-policy/deploy/pod.yaml'
+      reason: 'Image is the placeholder <IMAGE_URI>; the scripts substitute the built image and tag before apply'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_14
+      path: 'examples/integrations/temporal/deploy/worker.yaml'
+      reason: 'Image is the placeholder __WORKER_IMAGE__; the scripts substitute the built image and tag before apply'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_14
+      path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
+      reason: 'Image is the placeholder <ANALYST_IMAGE>; the scripts substitute the built image and tag before apply'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_14
+      path: 'examples/subagent-security/openshell/deploy/bridge.yaml'
+      reason: 'Image is the placeholder <ANALYST_IMAGE>; the scripts substitute the built image and tag before apply'
+      expiration: '2027-12-31'
+    # Namespace is set at apply time.
+    - rule_id: CKV_K8S_21
+      path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
+      reason: 'Applied with kubectl -n (README.md:211, scripts/common.sh:270)'
+      expiration: '2027-12-31'
+    # bubblewrap needs a privileged root init container and a privileged working container (analyst-pod.yaml:20-30).
+    - rule_id: CKV_K8S_16
+      path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
+      reason: 'bwrap needs privileged containers to mount a private procfs; privileged overrides seccomp (analyst-pod.yaml:20-30)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
+      reason: 'bwrap needs privileged containers to mount a private procfs; privileged overrides seccomp (analyst-pod.yaml:20-30)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
+      reason: 'bwrap needs privileged containers to mount a private procfs; privileged overrides seccomp (analyst-pod.yaml:20-30)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
+      reason: 'bwrap needs privileged containers to mount a private procfs; privileged overrides seccomp (analyst-pod.yaml:20-30)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
+      reason: 'bwrap needs privileged containers to mount a private procfs; privileged overrides seccomp (analyst-pod.yaml:20-30)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
+      reason: 'bwrap needs privileged containers to mount a private procfs; privileged overrides seccomp (analyst-pod.yaml:20-30)'
+      expiration: '2027-12-31'
+    # Base images come from build arguments that setup.sh reads from versions.json (a digest and a fixed tag).
+    - rule_id: CKV_DOCKER_7
+      path: 'examples/subagent-security/openshell/supervisor/Dockerfile'
+      reason: 'FROM ${SUPERVISOR_IMAGE}/${BASE_IMAGE}: setup.sh passes a digest and a fixed tag from versions.json:33,38'
+      expiration: '2027-12-31'
+    # Intentional all-interface bind, documented at the call site.
+    - rule_id: python.lang.security.audit.network.bind.avoid-bind-to-all-interfaces
+      path: 'examples/managed-agents/openai-managed-agents/src/launcher/serve.py'
+      reason: 'Kubelet probes the pod IP; no host port or Service publishes it and deny-all ingress governs it (serve.py:76-78)'
+      expiration: '2027-12-31'
+    # Pinned lines: names of Secrets, keys and env vars, and fake keys in tests; no secret values.
+    - rule_id: CKV_SECRET_6
+      path: 'examples/integrations/temporal/deploy/temporal/values.yaml'
+      line_start: 43
+      line_end: 43
+      reason: 'Helm existingSecret/secretKey name a Kubernetes Secret and its key; no password in the file'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/integrations/temporal/deploy/temporal/values.yaml'
+      line_start: 43
+      line_end: 43
+      reason: 'Helm existingSecret/secretKey name a Kubernetes Secret and its key; no password in the file'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/integrations/temporal/deploy/temporal/values.yaml'
+      line_start: 44
+      line_end: 44
+      reason: 'Helm existingSecret/secretKey name a Kubernetes Secret and its key; no password in the file'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/managed-agents/openai-managed-agents/src/launcher/config.py'
+      line_start: 31
+      line_end: 31
+      reason: 'Name of the environment variable that holds the key, not the key'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/managed-agents/openai-managed-agents/src/launcher/config.py'
+      line_start: 36
+      line_end: 36
+      reason: 'Name of the environment variable that holds the key, not the key'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/managed-agents/openai-managed-agents/src/launcher/config.py'
+      line_start: 39
+      line_end: 39
+      reason: 'Name of the environment variable that holds the key, not the key'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/managed-agents/openai-managed-agents/tests/test_dispatch.py'
+      line_start: 25
+      line_end: 25
+      reason: 'Fake sk- key a test uses to prove the key is never logged'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/managed-agents/openai-managed-agents/tests/test_guard.py'
+      line_start: 141
+      line_end: 141
+      reason: 'Fake sk- key a test uses to prove the key never appears in output'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/managed-agents/openai-managed-agents/tests/test_guard.py'
+      line_start: 149
+      line_end: 149
+      reason: 'Fake sk- key a test uses to prove the key never appears in output'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/managed-agents/openai-managed-agents/tests/test_launcher.py'
+      line_start: 24
+      line_end: 24
+      reason: 'Fake sk- key a test uses to prove the key never leaks to a client'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
+      line_start: 118
+      line_end: 118
+      reason: 'secretName: references a Kubernetes Secret (volume above); the key is not in the file'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/subagent-security/openshell/deploy/bridge.yaml'
+      line_start: 101
+      line_end: 101
+      reason: 'secretName: references a Kubernetes Secret; the key is not in the file'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/subagent-security/openshell/deploy/bridge.yaml'
+      line_start: 103
+      line_end: 103
+      reason: 'secretName: references a Kubernetes Secret; the key is not in the file'
+      expiration: '2027-12-31'
     # ---- Baseline: hardening not done yet. Each expires 2027-01-31, so CI fails again ----
     # ---- unless the sample follow-up PR fixes the finding and deletes its entry. ----
     # Baseline: agent-sandbox/argo-rollouts
     - rule_id: CKV_DOCKER_3
       path: 'examples/agent-sandbox/argo-rollouts/plugin/Dockerfile'
-      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; hardening tracked in #138'
       expiration: '2027-01-31'
     - rule_id: GHSA-2v4p-qf9q-27wj-google.golang.org/grpc
       path: 'examples/agent-sandbox/argo-rollouts/plugin/go.mod'
-      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in #138'
       expiration: '2027-01-31'
     - rule_id: GHSA-9h8m-3fm2-qjrq-go.opentelemetry.io/otel/sdk
       path: 'examples/agent-sandbox/argo-rollouts/plugin/go.mod'
-      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in #138'
       expiration: '2027-01-31'
     - rule_id: GHSA-hfvc-g4fc-pqhx-go.opentelemetry.io/otel/sdk
       path: 'examples/agent-sandbox/argo-rollouts/plugin/go.mod'
-      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in #138'
       expiration: '2027-01-31'
     - rule_id: GHSA-hrxh-6v49-42gf-google.golang.org/grpc
       path: 'examples/agent-sandbox/argo-rollouts/plugin/go.mod'
-      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in #138'
       expiration: '2027-01-31'
     - rule_id: GHSA-mh2q-q3fh-2475-go.opentelemetry.io/otel
       path: 'examples/agent-sandbox/argo-rollouts/plugin/go.mod'
-      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in #138'
       expiration: '2027-01-31'
     - rule_id: GHSA-vp52-pcj8-j9qc-google.golang.org/grpc
       path: 'examples/agent-sandbox/argo-rollouts/plugin/go.mod'
-      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in #138'
       expiration: '2027-01-31'
     - rule_id: GO-2026-5970-golang.org/x/text
       path: 'examples/agent-sandbox/argo-rollouts/plugin/go.mod'
-      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in #138'
       expiration: '2027-01-31'
     - rule_id: GO-2026-6603-golang.org/x/net
       path: 'examples/agent-sandbox/argo-rollouts/plugin/go.mod'
-      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in #138'
       expiration: '2027-01-31'
     - rule_id: GO-2026-6610-golang.org/x/net
       path: 'examples/agent-sandbox/argo-rollouts/plugin/go.mod'
-      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in #138'
       expiration: '2027-01-31'
     - rule_id: GO-2026-6611-golang.org/x/net
       path: 'examples/agent-sandbox/argo-rollouts/plugin/go.mod'
-      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in #138'
       expiration: '2027-01-31'
     - rule_id: GO-2026-6612-golang.org/x/net
       path: 'examples/agent-sandbox/argo-rollouts/plugin/go.mod'
-      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in #138'
       expiration: '2027-01-31'
     - rule_id: GO-2026-6617-golang.org/x/net
       path: 'examples/agent-sandbox/argo-rollouts/plugin/go.mod'
-      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in #138'
       expiration: '2027-01-31'
     - rule_id: GO-2026-6629-golang.org/x/text
       path: 'examples/agent-sandbox/argo-rollouts/plugin/go.mod'
-      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in #138'
       expiration: '2027-01-31'
     # Baseline: agent-sandbox/brain-and-hands
     - rule_id: CKV2_K8S_6
       path: 'examples/agent-sandbox/brain-and-hands/deploy/brain.yaml'
-      reason: 'Baseline: agent-sandbox/brain-and-hands merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_10
-      path: 'examples/agent-sandbox/brain-and-hands/deploy/brain.yaml'
-      reason: 'Baseline: agent-sandbox/brain-and-hands merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/agent-sandbox/brain-and-hands/deploy/brain.yaml'
-      reason: 'Baseline: agent-sandbox/brain-and-hands merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_12
-      path: 'examples/agent-sandbox/brain-and-hands/deploy/brain.yaml'
-      reason: 'Baseline: agent-sandbox/brain-and-hands merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_13
-      path: 'examples/agent-sandbox/brain-and-hands/deploy/brain.yaml'
-      reason: 'Baseline: agent-sandbox/brain-and-hands merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/brain-and-hands merged before the ASH gate; hardening tracked in #139'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_22
       path: 'examples/agent-sandbox/brain-and-hands/deploy/brain.yaml'
-      reason: 'Baseline: agent-sandbox/brain-and-hands merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/brain-and-hands merged before the ASH gate; hardening tracked in #139'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_38
       path: 'examples/agent-sandbox/brain-and-hands/deploy/brain.yaml'
-      reason: 'Baseline: agent-sandbox/brain-and-hands merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/brain-and-hands merged before the ASH gate; hardening tracked in #139'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/agent-sandbox/brain-and-hands/deploy/brain.yaml'
-      reason: 'Baseline: agent-sandbox/brain-and-hands merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/brain-and-hands merged before the ASH gate; hardening tracked in #139'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_9
       path: 'examples/agent-sandbox/brain-and-hands/deploy/brain.yaml'
-      reason: 'Baseline: agent-sandbox/brain-and-hands merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/brain-and-hands merged before the ASH gate; hardening tracked in #139'
       expiration: '2027-01-31'
     # Baseline: agent-sandbox/warm-pool-autoscaling-keda
     - rule_id: CKV2_K8S_6
       path: 'examples/agent-sandbox/warm-pool-autoscaling-keda/deploy/exporter.yaml'
-      reason: 'Baseline: agent-sandbox/warm-pool-autoscaling-keda merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/agent-sandbox/warm-pool-autoscaling-keda/deploy/exporter.yaml'
-      reason: 'Baseline: agent-sandbox/warm-pool-autoscaling-keda merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_13
-      path: 'examples/agent-sandbox/warm-pool-autoscaling-keda/deploy/exporter.yaml'
-      reason: 'Baseline: agent-sandbox/warm-pool-autoscaling-keda merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/warm-pool-autoscaling-keda merged before the ASH gate; hardening tracked in #146'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_29
       path: 'examples/agent-sandbox/warm-pool-autoscaling-keda/deploy/exporter.yaml'
-      reason: 'Baseline: agent-sandbox/warm-pool-autoscaling-keda merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/warm-pool-autoscaling-keda merged before the ASH gate; hardening tracked in #146'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_38
       path: 'examples/agent-sandbox/warm-pool-autoscaling-keda/deploy/exporter.yaml'
-      reason: 'Baseline: agent-sandbox/warm-pool-autoscaling-keda merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/warm-pool-autoscaling-keda merged before the ASH gate; hardening tracked in #146'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/agent-sandbox/warm-pool-autoscaling-keda/deploy/exporter.yaml'
-      reason: 'Baseline: agent-sandbox/warm-pool-autoscaling-keda merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: agent-sandbox/warm-pool-autoscaling-keda merged before the ASH gate; hardening tracked in #146'
       expiration: '2027-01-31'
     # Baseline: ai-agents/coding-agents-for-developers
     - rule_id: CKV2_K8S_6
       path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_10
-      path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_12
-      path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_13
-      path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_29
       path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_31
       path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_38
       path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_40
       path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_9
       path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
       expiration: '2027-01-31'
     - rule_id: CKV_DOCKER_3
       path: 'examples/ai-agents/coding-agents-for-developers/images/base/Dockerfile'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
       expiration: '2027-01-31'
     - rule_id: CKV_DOCKER_8
       path: 'examples/ai-agents/coding-agents-for-developers/images/claude-code/Dockerfile'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
       expiration: '2027-01-31'
     - rule_id: CKV_DOCKER_8
       path: 'examples/ai-agents/coding-agents-for-developers/images/codex/Dockerfile'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
       expiration: '2027-01-31'
     - rule_id: CKV_DOCKER_8
       path: 'examples/ai-agents/coding-agents-for-developers/images/kiro-cli/Dockerfile'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
       expiration: '2027-01-31'
     - rule_id: CKV_DOCKER_8
       path: 'examples/ai-agents/coding-agents-for-developers/images/oh-my-pi/Dockerfile'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
       expiration: '2027-01-31'
     - rule_id: CKV_DOCKER_8
       path: 'examples/ai-agents/coding-agents-for-developers/images/opencode/Dockerfile'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
       expiration: '2027-01-31'
     - rule_id: CKV_DOCKER_8
       path: 'examples/ai-agents/coding-agents-for-developers/images/pi/Dockerfile'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
       expiration: '2027-01-31'
     # Baseline: ci-cd/docker-builds
     - rule_id: CKV2_K8S_6
       path: 'examples/ci-cd/docker-builds/deploy/buildkit-job.yaml'
-      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in #141'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_22
       path: 'examples/ci-cd/docker-builds/deploy/buildkit-job.yaml'
-      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in #141'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_29
       path: 'examples/ci-cd/docker-builds/deploy/buildkit-job.yaml'
-      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in #141'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_31
       path: 'examples/ci-cd/docker-builds/deploy/buildkit-job.yaml'
-      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in #141'
       expiration: '2027-01-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/ci-cd/docker-builds/deploy/hello-docker.yaml'
-      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in #141'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_22
       path: 'examples/ci-cd/docker-builds/deploy/hello-docker.yaml'
-      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in #141'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_29
       path: 'examples/ci-cd/docker-builds/deploy/hello-docker.yaml'
-      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in #141'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_31
       path: 'examples/ci-cd/docker-builds/deploy/hello-docker.yaml'
-      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in #141'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/ci-cd/docker-builds/deploy/hello-docker.yaml'
-      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in #141'
       expiration: '2027-01-31'
     # Baseline: confidential/encrypted-image
     - rule_id: CKV2_K8S_6
       path: 'examples/confidential/encrypted-image/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/confidential/encrypted-image/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_13
-      path: 'examples/confidential/encrypted-image/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in #142'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/confidential/encrypted-image/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in #142'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_9
       path: 'examples/confidential/encrypted-image/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in #142'
       expiration: '2027-01-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/confidential/encrypted-image/deploy/pod.yaml'
-      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/confidential/encrypted-image/deploy/pod.yaml'
-      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_13
-      path: 'examples/confidential/encrypted-image/deploy/pod.yaml'
-      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in #142'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/confidential/encrypted-image/deploy/pod.yaml'
-      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in #142'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_9
       path: 'examples/confidential/encrypted-image/deploy/pod.yaml'
-      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in #142'
       expiration: '2027-01-31'
     # Baseline: confidential/s3-encrypted-file
     - rule_id: CKV2_K8S_6
       path: 'examples/confidential/s3-encrypted-file/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/confidential/s3-encrypted-file/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_13
-      path: 'examples/confidential/s3-encrypted-file/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in #144'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/confidential/s3-encrypted-file/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in #144'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_9
       path: 'examples/confidential/s3-encrypted-file/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in #144'
       expiration: '2027-01-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/confidential/s3-encrypted-file/deploy/pod.yaml'
-      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/confidential/s3-encrypted-file/deploy/pod.yaml'
-      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_13
-      path: 'examples/confidential/s3-encrypted-file/deploy/pod.yaml'
-      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in #144'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/confidential/s3-encrypted-file/deploy/pod.yaml'
-      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in #144'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_9
       path: 'examples/confidential/s3-encrypted-file/deploy/pod.yaml'
-      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in #144'
       expiration: '2027-01-31'
     # Baseline: confidential/secrets-manager-secret
     - rule_id: CKV2_K8S_6
       path: 'examples/confidential/secrets-manager-secret/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/confidential/secrets-manager-secret/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_13
-      path: 'examples/confidential/secrets-manager-secret/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in #145'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/confidential/secrets-manager-secret/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in #145'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_9
       path: 'examples/confidential/secrets-manager-secret/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in #145'
       expiration: '2027-01-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/confidential/secrets-manager-secret/deploy/pod.yaml'
-      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/confidential/secrets-manager-secret/deploy/pod.yaml'
-      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_13
-      path: 'examples/confidential/secrets-manager-secret/deploy/pod.yaml'
-      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in #145'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/confidential/secrets-manager-secret/deploy/pod.yaml'
-      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in #145'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_9
       path: 'examples/confidential/secrets-manager-secret/deploy/pod.yaml'
-      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in #145'
       expiration: '2027-01-31'
     # Baseline: subagent-security/analyst
     - rule_id: CKV2_K8S_6
       path: 'examples/subagent-security/analyst/deploy/supplier-api.yaml'
-      reason: 'Baseline: subagent-security/analyst merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_10
-      path: 'examples/subagent-security/analyst/deploy/supplier-api.yaml'
-      reason: 'Baseline: subagent-security/analyst merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_11
-      path: 'examples/subagent-security/analyst/deploy/supplier-api.yaml'
-      reason: 'Baseline: subagent-security/analyst merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_12
-      path: 'examples/subagent-security/analyst/deploy/supplier-api.yaml'
-      reason: 'Baseline: subagent-security/analyst merged before the ASH gate; hardening tracked in a follow-up issue'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_13
-      path: 'examples/subagent-security/analyst/deploy/supplier-api.yaml'
-      reason: 'Baseline: subagent-security/analyst merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: subagent-security/analyst merged before the ASH gate; hardening tracked in #137'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_31
       path: 'examples/subagent-security/analyst/deploy/supplier-api.yaml'
-      reason: 'Baseline: subagent-security/analyst merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: subagent-security/analyst merged before the ASH gate; hardening tracked in #137'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/subagent-security/analyst/deploy/supplier-api.yaml'
-      reason: 'Baseline: subagent-security/analyst merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: subagent-security/analyst merged before the ASH gate; hardening tracked in #137'
       expiration: '2027-01-31'
     # Baseline: subagent-security/nono
     - rule_id: CKV2_K8S_6
       path: 'examples/subagent-security/nono/deploy/analyst-pod.yaml'
-      reason: 'Baseline: subagent-security/nono merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: subagent-security/nono merged before the ASH gate; hardening tracked in #143'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_40
       path: 'examples/subagent-security/nono/deploy/analyst-pod.yaml'
-      reason: 'Baseline: subagent-security/nono merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: subagent-security/nono merged before the ASH gate; hardening tracked in #143'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/subagent-security/nono/deploy/analyst-pod.yaml'
-      reason: 'Baseline: subagent-security/nono merged before the ASH gate; hardening tracked in a follow-up issue'
+      reason: 'Baseline: subagent-security/nono merged before the ASH gate; hardening tracked in #143'
+      expiration: '2027-01-31'
+    # Baseline: ci-cd/gitlab-ci
+    - rule_id: CKV2_K8S_6
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_35
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_38
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_38
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_DOCKER_3
+      path: 'examples/ci-cd/gitlab-ci/pipeline/ci/Dockerfile'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      expiration: '2027-01-31'
+    # Baseline: confidential/signer-policy
+    - rule_id: CKV_DOCKER_3
+      path: 'examples/confidential/signer-policy/Dockerfile'
+      reason: 'Baseline: confidential/signer-policy merged before the ASH gate; hardening tracked in the confidential/signer-policy ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/confidential/signer-policy/deploy/pod.yaml'
+      reason: 'Baseline: confidential/signer-policy merged before the ASH gate; hardening tracked in the confidential/signer-policy ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/confidential/signer-policy/deploy/pod.yaml'
+      reason: 'Baseline: confidential/signer-policy merged before the ASH gate; hardening tracked in the confidential/signer-policy ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/confidential/signer-policy/deploy/pod.yaml'
+      reason: 'Baseline: confidential/signer-policy merged before the ASH gate; hardening tracked in the confidential/signer-policy ASH baseline issue'
+      expiration: '2027-01-31'
+    # Baseline: integrations/temporal
+    - rule_id: CKV2_K8S_6
+      path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_35
+      path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_38
+      path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/integrations/temporal/deploy/worker.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/integrations/temporal/deploy/worker.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/integrations/temporal/deploy/worker.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/integrations/temporal/deploy/worker.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_38
+      path: 'examples/integrations/temporal/deploy/worker.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/integrations/temporal/deploy/worker.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/integrations/temporal/deploy/worker.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/integrations/temporal/deploy/worker.yaml'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      expiration: '2027-01-31'
+    # Baseline: managed-agents/openai-managed-agents
+    - rule_id: CKV2_K8S_6
+      path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
+      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in the managed-agents/openai-managed-agents ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_14
+      path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
+      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in the managed-agents/openai-managed-agents ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_21
+      path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
+      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in the managed-agents/openai-managed-agents ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_35
+      path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
+      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in the managed-agents/openai-managed-agents ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_38
+      path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
+      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in the managed-agents/openai-managed-agents ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
+      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in the managed-agents/openai-managed-agents ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
+      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in the managed-agents/openai-managed-agents ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_21
+      path: 'examples/managed-agents/openai-managed-agents/deploy/rbac.yaml'
+      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in the managed-agents/openai-managed-agents ASH baseline issue'
+      expiration: '2027-01-31'
+    # Baseline: subagent-security/bubblewrap
+    - rule_id: CKV2_K8S_6
+      path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
+      reason: 'Baseline: subagent-security/bubblewrap merged before the ASH gate; hardening tracked in the subagent-security/bubblewrap ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
+      reason: 'Baseline: subagent-security/bubblewrap merged before the ASH gate; hardening tracked in the subagent-security/bubblewrap ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
+      reason: 'Baseline: subagent-security/bubblewrap merged before the ASH gate; hardening tracked in the subagent-security/bubblewrap ASH baseline issue'
+      expiration: '2027-01-31'
+    # Baseline: subagent-security/openshell
+    - rule_id: CKV2_K8S_6
+      path: 'examples/subagent-security/openshell/deploy/bridge.yaml'
+      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in the subagent-security/openshell ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_38
+      path: 'examples/subagent-security/openshell/deploy/bridge.yaml'
+      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in the subagent-security/openshell ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/subagent-security/openshell/deploy/bridge.yaml'
+      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in the subagent-security/openshell ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/subagent-security/openshell/deploy/bridge.yaml'
+      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in the subagent-security/openshell ASH baseline issue'
+      expiration: '2027-01-31'
+    - rule_id: CKV_DOCKER_3
+      path: 'examples/subagent-security/openshell/supervisor/Dockerfile'
+      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in the subagent-security/openshell ASH baseline issue'
       expiration: '2027-01-31'
 scanners:
   cdk-nag:
