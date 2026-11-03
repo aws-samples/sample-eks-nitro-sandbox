@@ -2,23 +2,12 @@
 # namespace only. OpenShell itself is unmodified: the chart, the gateway, the supervisor
 # and the in-pod runtime are the upstream builds that versions.json pins.
 #
-# OpenShell starts its in-pod runtime from a static binary that an init container copies
-# onto a memory-backed pod volume. Two details of that pod need adjusting inside a
-# sandbox guest, and this policy is the whole of the adjustment:
-#
-#   1. A binary on a pod volume cannot be a container's entrypoint there: the kubelet
-#      reports "exec ... permission denied". The same binary runs when the image's shell
-#      starts it, because the pod volume carries a different SELinux type from the
-#      image's root filesystem. So the adapter starts the runtime through
-#      /bin/sh -c 'exec "$0" "$@"'. The analyst image must therefore provide /bin/sh,
-#      and this sample's Dockerfile checks that it does.
-#   2. One persistent volume cannot be mounted at two paths in one pod. OpenShell mounts
-#      the workspace at /mnt/openshell-workspace in its seeding init container and at
-#      /sandbox in the agent container. The adapter gives the seeding container an
-#      emptyDir at that first path instead, so the workspace volume is mounted once, at
-#      /sandbox. A consequence worth knowing: files an image keeps under /sandbox are
-#      not copied into the workspace, so the analyst image keeps its content elsewhere.
-#
+# OpenShell mounts the workspace PVC at /mnt/openshell-workspace in its seeding init
+# container and at /sandbox in the agent container. A sandbox guest accepts one persistent
+# volume mounted at one path only, so this policy is the whole of the adjustment: the
+# seeding container gets an emptyDir at its path instead, and the workspace volume is
+# mounted once, at /sandbox. Files an image keeps under /sandbox are therefore not copied
+# into the workspace, so the analyst image keeps its content elsewhere.
 # A third adjustment was tried and removed. OpenShell's init containers set no resources,
 # and copying the agent container's `resources` onto them looks like an improvement, but
 # the API server refuses the patch: a JSONPatch value has to be JSON, and the object's
@@ -37,11 +26,12 @@
 #
 # <ADAPTER_NAME> and <MANAGED_BY> are replaced at apply time by scripts/setup.sh.
 #
-# A MutatingAdmissionPolicy is a cluster-scoped object, so the binding below is what
-# keeps it from reaching anyone else's pods: it applies only in namespaces carrying this
-# sample's managed-by label, and only to pods OpenShell labels as a workload boundary.
-# Every other pod on the cluster, including other OpenShell gateways' pods, is outside
-# both conditions.
+# A MutatingAdmissionPolicy is cluster-scoped, so the binding below scopes it three ways: it
+# applies only to pods in this sample's own namespace (the match condition this-namespace),
+# only in namespaces carrying this sample's own managed-by label, which setup.sh sets to this
+# sample's name and nothing else, and only to pods OpenShell labels as workload boundaries.
+# A second installation in another namespace is outside the first condition, even if someone
+# copied the label onto that namespace.
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingAdmissionPolicy
 metadata:
@@ -64,26 +54,11 @@ spec:
     - name: openshell-workload
       expression: >-
         object.metadata.?labels[?'openshell.ai/boundary-role'].orValue('') == 'workload'
+    - name: this-namespace
+      expression: "request.namespace == '<NAMESPACE>'"
   variables:
     - name: inits
       expression: object.spec.?initContainers.orValue([])
-    - name: runtime
-      expression: "'/.openshell/runtime/openshell-sandbox'"
-    - name: shell
-      expression: >-
-        ['/bin/sh', '-c', 'exec "$0" "$@"']
-    # Only a container whose command is already OpenShell's runtime binary is wrapped, so
-    # the patch is a no-op on any other container the driver adds.
-    - name: wrapInit
-      expression: >-
-        [0, 1, 2, 3].filter(i, size(variables.inits) > i
-          && size(variables.inits[i].?command.orValue([])) > 0
-          && variables.inits[i].command[0] == variables.runtime)
-    - name: wrapMain
-      expression: >-
-        [0, 1, 2].filter(i, size(object.spec.containers) > i
-          && size(object.spec.containers[i].?command.orValue([])) > 0
-          && object.spec.containers[i].command[0] == variables.runtime)
     - name: seed
       expression: >-
         [0, 1, 2, 3].filter(i, size(variables.inits) > i
@@ -99,13 +74,7 @@ spec:
     - patchType: JSONPatch
       jsonPatch:
         expression: >-
-          variables.wrapInit.map(i, JSONPatch{op: 'replace',
-              path: '/spec/initContainers/' + string(i) + '/command',
-              value: variables.shell + variables.inits[i].command})
-          + variables.wrapMain.map(i, JSONPatch{op: 'replace',
-              path: '/spec/containers/' + string(i) + '/command',
-              value: variables.shell + object.spec.containers[i].command})
-          + variables.seedMounts.map(m, JSONPatch{op: 'replace',
+          variables.seedMounts.map(m, JSONPatch{op: 'replace',
               path: '/spec/initContainers/' + string(variables.seed[0]) + '/volumeMounts/' + string(m) + '/name',
               value: 'openshell-seed-scratch'})
           + (size(variables.seedMounts) > 0

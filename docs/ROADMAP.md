@@ -23,7 +23,8 @@ examples/
 ├── ai-agents/
 │   ├── coding-agents-for-developers/
 │   ├── agent-frameworks/
-│   └── agent-harnesses/
+│   ├── hermes/
+│   └── openclaw-enterprise/
 ├── managed-agents/
 │   ├── claude-managed-agents/
 │   ├── openai-managed-agents/
@@ -110,7 +111,8 @@ Agent frameworks on Amazon Bedrock:
 
 Agent harnesses:
 
-- agent-harnesses: OpenClaw and Hermes, each always on in its own sandbox with root inside it, memory on EBS kept across suspend and resume, and only Amazon Bedrock reachable. Spec: [#14](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/14).
+- hermes: the Hermes Agent harness, always on in its own sandbox with root inside it, memory on EBS kept across suspend and resume, and Amazon Bedrock with no API key in the sandbox. Spec: [#14](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/14).
+- openclaw-enterprise: OpenClaw Enterprise on EKS, each Agent in a Nitro sandbox, with the model call going through agentgateway to Amazon Bedrock. Spec: [#133](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/133).
 
 ### Managed agents (`managed-agents`)
 
@@ -136,7 +138,7 @@ The [Subagent security section page](../examples/subagent-security/README.md) ho
 
 [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell), and the NemoClaw reference stack built on it, with Nitro sandboxes.
 
-- kubernetes: OpenShell installed on EKS with its Helm charts. Each OpenShell sandbox's workload pod runs in a Nitro sandbox, and its supervisor, which holds the credentials, stays an ordinary pod. Spec: [#37](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/37).
+- [kubernetes](../examples/openshell/kubernetes/README.md) (available now): OpenShell installed on EKS with its Helm charts. Each OpenShell sandbox's workload pod runs in a Nitro sandbox, and its supervisor, which holds the credentials, stays an ordinary pod. Spec: [#37](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/37).
 - nemoclaw: NVIDIA NemoClaw, with OpenClaw, inside one Nitro sandbox pod. NemoClaw supports only a single Docker host today, so the whole stack runs in the sandbox: OpenShell's controls inside, the Nitro sandbox around it. Spec: [#43](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/43).
 
 ### Agent sandbox (`agent-sandbox`)

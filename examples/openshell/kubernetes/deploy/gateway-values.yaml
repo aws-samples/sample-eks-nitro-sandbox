@@ -1,0 +1,72 @@
+# Helm values for the OpenShell gateway chart, installed as one release. The chart's own
+# defaults create the namespace-scoped sandbox prerequisites (the sandbox ServiceAccount,
+# its Role and RoleBinding, and the sandbox SSH NetworkPolicy) in the release namespace,
+# and the gateway creates every sandbox there too. Everything not set here is the
+# chart's default.
+#
+# scripts/setup.sh substitutes <RELEASE>, <NAMESPACE>, <CREDENTIAL_NAMESPACE> and
+# <WORKSPACE_STORAGE_CLASS>, so nothing here names a cluster, an account or a Region.
+fullnameOverride: <RELEASE>
+
+# ClusterIP, reached only with kubectl port-forward. No Ingress, LoadBalancer or
+# NodePort anywhere in this sample, and setup.sh re-checks the rendered chart for one
+# before it installs.
+service:
+  type: ClusterIP
+grpcRoute:
+  enabled: false
+openshiftRoute:
+  enabled: false
+
+server:
+  telemetryEnabled: false
+
+  # Every workload pod this gateway creates goes in a Nitro sandbox. The paired
+  # supervisor pod is an ordinary pod and does not get this.
+  defaultRuntimeClassName: isolated-sandbox
+
+  # The default workload image's user. The driver puts these in the workload pod's
+  # securityContext, and the sandbox policy's process.run_as_user names the same identity.
+  sandboxUid: "1000"
+  sandboxGid: "1000"
+
+  # Kubernetes user namespaces stay off. A Nitro sandbox does not support hostUsers:
+  # false (Amazon EKS User Guide, Isolated and confidential pods limitations), and the
+  # kubelet would refuse the pod. This is the chart default; written out because turning
+  # it on is the kind of change that would look harmless.
+  enableUserNamespaces: false
+
+  auth:
+    # Development user mode: this gateway does not authorize individual users, so
+    # transport mTLS and access to the client TLS Secret are the whole of its access
+    # control. Anyone who can read that Secret can administer this gateway. It is here
+    # because the sample's subject is the platform install, not identity. A real
+    # deployment uses the upstream OIDC or trusted-access-proxy configuration, and the
+    # page says so rather than leaving this looking like a pattern to copy.
+    allowUnauthenticatedUsers: true
+
+  # The chart's defaults hard-code "openshell-*"; these follow the release name instead,
+  # so a GATEWAY_RELEASE set in .env still finds the Secrets the chart's PKI job creates.
+  tls:
+    certSecretName: <RELEASE>-server-tls
+    clientCaSecretName: <RELEASE>-server-client-ca
+    clientTlsSecretName: <RELEASE>-client-tls
+
+  # Workspace PVCs bind through the cluster's own default EBS StorageClass
+  # (auto-ebs-sc, provisioner ebs.csi.eks.amazonaws.com, gp3, encrypted), which already
+  # fits what the chart needs: block-backed storage, not NFS. Named explicitly so a
+  # cluster with no default StorageClass still works, and so the page can show the bind.
+  workspaceStorageClass: <WORKSPACE_STORAGE_CLASS>
+
+  # Every provider credential this gateway stores lives as a Kubernetes Secret in its
+  # own namespace, never in the gateway's database and never in the namespace the
+  # workload pods run in, so the workload pod's ServiceAccount has no RBAC path to it.
+  credentialDrivers:
+    kubernetesSecrets:
+      enabled: true
+      namespace: <CREDENTIAL_NAMESPACE>
+      createNamespace: true
+
+pkiInitJob:
+  serverDnsNames:
+    - <RELEASE>.<NAMESPACE>.svc.cluster.local
