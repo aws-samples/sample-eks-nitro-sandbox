@@ -37,7 +37,7 @@ DISPATCH_COUNT_LABEL = "anthropic.com/dispatch-count"
 def label_safe(value: str) -> str:
     """Reduce an id to a valid label value (<= 63 chars of [a-z0-9-])."""
     safe = re.sub(r"[^a-z0-9-]", "-", value.lower()).strip("-")[:63].rstrip("-")
-    return safe or hashlib.sha1(value.encode(), usedforsecurity=False).hexdigest()[:12]
+    return safe or hashlib.sha256(value.encode()).hexdigest()[:12]
 
 
 def post_with_retry(url: str, body: bytes, *, attempts: int = 5, timeout: int = 5) -> None:
