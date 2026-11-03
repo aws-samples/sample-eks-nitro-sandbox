@@ -791,11 +791,12 @@ Remove it when you have read it:
   [network policy](../../isolation/network-policy/README.md), which shows the mechanism and
   both sides of it.
 - **The gate is the two conditions the generator emits.** They are also the minimum the
-  Amazon EKS User Guide, *Security model and parent instance trust assumptions*, asks for.
-  `PCR17` binds key release to this exact policy document, and so to the image digest, the
-  command, the environment, the identity and the mounts it pins. `PCR8:ServiceName` binds
-  release to a sandbox environment image signed by the Amazon EKS signing certificate, which
-  identifies the signer rather than one particular build of that image. A key policy can
+  Amazon EKS User Guide, *Security model and parent instance trust assumptions*, asks for on
+  a KMS key that protects confidential workload data. `PCR17` binds key release to this
+  exact policy document, and so to the image digest, the command, the environment, the
+  identity and the mounts it pins. `PCR8:ServiceName` is the condition on the system image
+  signing certificate, used rather than a raw `PCR8` value so that it stays valid when AWS
+  rotates that certificate. A key policy can
   carry more registers; if you add one, give it a deny statement of its own: registers
   listed together in one deny are ANDed, so such a deny only fires when every one of them
   mismatches. The
