@@ -1041,6 +1041,169 @@ global_settings:
       line_end: 103
       reason: 'secretName: references a Kubernetes Secret; the key is not in the file'
       expiration: '2027-12-31'
+    # ---- Round 3: main at a746109 (#82 ubuntu-ami, #83 cilium-ubuntu) ----
+    # Ordinary contrast pod and the AppArmor reject control: plain on purpose.
+    - rule_id: CKV2_K8S_6
+      path: 'examples/setup/ubuntu-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the kernel, device and uptime comparison and the no-network control; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/setup/ubuntu-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the kernel, device and uptime comparison and the no-network control; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/setup/ubuntu-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the kernel, device and uptime comparison and the no-network control; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/setup/ubuntu-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the kernel, device and uptime comparison and the no-network control; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/setup/ubuntu-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the kernel, device and uptime comparison and the no-network control; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/setup/ubuntu-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the kernel, device and uptime comparison and the no-network control; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/setup/ubuntu-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the kernel, device and uptime comparison and the no-network control; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/setup/ubuntu-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the kernel, device and uptime comparison and the no-network control; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/setup/ubuntu-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the kernel, device and uptime comparison and the no-network control; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/setup/ubuntu-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the kernel, device and uptime comparison and the no-network control; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/setup/ubuntu-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the kernel, device and uptime comparison and the no-network control; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/setup/ubuntu-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the kernel, device and uptime comparison and the no-network control; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-reject.yaml'
+      reason: 'Reject control: names an AppArmor profile the node never loaded, so it is refused and never runs (pod-apparmor-reject.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-reject.yaml'
+      reason: 'Reject control: names an AppArmor profile the node never loaded, so it is refused and never runs (pod-apparmor-reject.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-reject.yaml'
+      reason: 'Reject control: names an AppArmor profile the node never loaded, so it is refused and never runs (pod-apparmor-reject.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-reject.yaml'
+      reason: 'Reject control: names an AppArmor profile the node never loaded, so it is refused and never runs (pod-apparmor-reject.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-reject.yaml'
+      reason: 'Reject control: names an AppArmor profile the node never loaded, so it is refused and never runs (pod-apparmor-reject.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-reject.yaml'
+      reason: 'Reject control: names an AppArmor profile the node never loaded, so it is refused and never runs (pod-apparmor-reject.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-reject.yaml'
+      reason: 'Reject control: names an AppArmor profile the node never loaded, so it is refused and never runs (pod-apparmor-reject.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-reject.yaml'
+      reason: 'Reject control: names an AppArmor profile the node never loaded, so it is refused and never runs (pod-apparmor-reject.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_38
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-reject.yaml'
+      reason: 'Reject control: names an AppArmor profile the node never loaded, so it is refused and never runs (pod-apparmor-reject.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-reject.yaml'
+      reason: 'Reject control: names an AppArmor profile the node never loaded, so it is refused and never runs (pod-apparmor-reject.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-reject.yaml'
+      reason: 'Reject control: names an AppArmor profile the node never loaded, so it is refused and never runs (pod-apparmor-reject.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-reject.yaml'
+      reason: 'Reject control: names an AppArmor profile the node never loaded, so it is refused and never runs (pod-apparmor-reject.yaml:1-5)'
+      expiration: '2027-12-31'
+    # The AppArmor accept control writes to /etc as root to show the profile allows it (pod-apparmor-scoped.yaml:1-10).
+    - rule_id: CKV_K8S_22
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'The test writes to /etc as root to show the scoped profile allows it and denies /etc/shadow (pod-apparmor-scoped.yaml:4-6)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'The test writes to /etc as root to show the scoped profile allows it and denies /etc/shadow (pod-apparmor-scoped.yaml:4-6)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'The test writes to /etc as root to show the scoped profile allows it and denies /etc/shadow (pod-apparmor-scoped.yaml:4-6)'
+      expiration: '2027-12-31'
+    # Network-isolated sandbox: no network to restrict (AGENTS.md, Security rules).
+    - rule_id: CKV2_K8S_6
+      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Booted with sandbox.amazonaws.com/network-isolated: only loopback, no route (pod-isolated-sandbox.yaml:1-5,22)'
+      expiration: '2027-12-31'
+    # Cilium: the clients are selected by the CiliumNetworkPolicy in policy.yaml, which checkov does not read; the
+    # rest are its destinations and the host-network probe the sample needs to show the socket load balancer.
+    - rule_id: CKV2_K8S_6
+      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
+      reason: 'Clients (role: client) are selected by the CiliumNetworkPolicy in policy.yaml:39-46; server, other and api are its destinations'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_19
+      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
+      reason: 'node-probe uses hostNetwork on purpose: the node namespace is where Cilium serves Services (workloads.yaml:10-11)'
+      expiration: '2027-12-31'
+    # Pinned lines: test fixtures (a fake commit SHA, env-record strings with placeholder values).
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/setup/ubuntu-ami/packages/test-inputs.sh'
+      line_start: 149
+      line_end: 149
+      reason: 'Fake commit SHA in a test fixture, not a secret'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
+      path: 'examples/setup/ubuntu-ami/scripts/test-apparmor-checks.sh'
+      line_start: 329
+      line_end: 329
+      reason: 'Test fixture: a run-state record of placeholder names and Region, not a secret'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
+      path: 'examples/setup/ubuntu-ami/scripts/test-run-scope.sh'
+      line_start: 768
+      line_end: 768
+      reason: 'Test fixture: a run-state record of placeholder names and Region, not a secret'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/setup/ubuntu-ami/scripts/test-run-scope.sh'
+      line_start: 1072
+      line_end: 1072
+      reason: 'Fake commit SHA in a test fixture, not a secret'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
+      path: 'examples/setup/ubuntu-ami/scripts/test-setup-flow.sh'
+      line_start: 406
+      line_end: 406
+      reason: 'Test fixture: a run-state record of placeholder names and Region, not a secret'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/setup/ubuntu-ami/scripts/testlib/fixture_inputs.py'
+      line_start: 30
+      line_end: 30
+      reason: 'Fake commit SHA in a test fixture, not a secret'
+      expiration: '2027-12-31'
     # ---- Baseline: hardening not done yet. Each expires 2027-01-31, so CI fails again ----
     # ---- unless the sample follow-up PR fixes the finding and deletes its entry. ----
     # Baseline: agent-sandbox/argo-rollouts
@@ -1336,272 +1499,390 @@ global_settings:
     # Baseline: ci-cd/gitlab-ci
     - rule_id: CKV2_K8S_6
       path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_20
       path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_22
       path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_23
       path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_28
       path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_29
       path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_30
       path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_31
       path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_35
       path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_37
       path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_38
       path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_40
       path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_20
       path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_22
       path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_23
       path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_28
       path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_29
       path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_30
       path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_31
       path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_37
       path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_38
       path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_40
       path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_9
       path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     - rule_id: CKV_DOCKER_3
       path: 'examples/ci-cd/gitlab-ci/pipeline/ci/Dockerfile'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in the ci-cd/gitlab-ci ASH baseline issue'
+      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     # Baseline: confidential/signer-policy
     - rule_id: CKV_DOCKER_3
       path: 'examples/confidential/signer-policy/Dockerfile'
-      reason: 'Baseline: confidential/signer-policy merged before the ASH gate; hardening tracked in the confidential/signer-policy ASH baseline issue'
+      reason: 'Baseline: confidential/signer-policy merged before the ASH gate; hardening tracked in #148'
       expiration: '2027-01-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/confidential/signer-policy/deploy/pod.yaml'
-      reason: 'Baseline: confidential/signer-policy merged before the ASH gate; hardening tracked in the confidential/signer-policy ASH baseline issue'
+      reason: 'Baseline: confidential/signer-policy merged before the ASH gate; hardening tracked in #148'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/confidential/signer-policy/deploy/pod.yaml'
-      reason: 'Baseline: confidential/signer-policy merged before the ASH gate; hardening tracked in the confidential/signer-policy ASH baseline issue'
+      reason: 'Baseline: confidential/signer-policy merged before the ASH gate; hardening tracked in #148'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_9
       path: 'examples/confidential/signer-policy/deploy/pod.yaml'
-      reason: 'Baseline: confidential/signer-policy merged before the ASH gate; hardening tracked in the confidential/signer-policy ASH baseline issue'
+      reason: 'Baseline: confidential/signer-policy merged before the ASH gate; hardening tracked in #148'
       expiration: '2027-01-31'
     # Baseline: integrations/temporal
     - rule_id: CKV2_K8S_6
       path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_20
       path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_22
       path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_28
       path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_30
       path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_31
       path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_35
       path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_37
       path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_38
       path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_40
       path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/integrations/temporal/deploy/worker.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_22
       path: 'examples/integrations/temporal/deploy/worker.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_29
       path: 'examples/integrations/temporal/deploy/worker.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_31
       path: 'examples/integrations/temporal/deploy/worker.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_38
       path: 'examples/integrations/temporal/deploy/worker.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_40
       path: 'examples/integrations/temporal/deploy/worker.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/integrations/temporal/deploy/worker.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_9
       path: 'examples/integrations/temporal/deploy/worker.yaml'
-      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in the integrations/temporal ASH baseline issue'
+      reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
       expiration: '2027-01-31'
     # Baseline: managed-agents/openai-managed-agents
     - rule_id: CKV2_K8S_6
       path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
-      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in the managed-agents/openai-managed-agents ASH baseline issue'
+      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in #150'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_14
       path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
-      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in the managed-agents/openai-managed-agents ASH baseline issue'
+      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in #150'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_21
       path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
-      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in the managed-agents/openai-managed-agents ASH baseline issue'
+      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in #150'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_35
       path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
-      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in the managed-agents/openai-managed-agents ASH baseline issue'
+      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in #150'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_38
       path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
-      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in the managed-agents/openai-managed-agents ASH baseline issue'
+      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in #150'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_40
       path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
-      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in the managed-agents/openai-managed-agents ASH baseline issue'
+      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in #150'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
-      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in the managed-agents/openai-managed-agents ASH baseline issue'
+      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in #150'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_21
       path: 'examples/managed-agents/openai-managed-agents/deploy/rbac.yaml'
-      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in the managed-agents/openai-managed-agents ASH baseline issue'
+      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in #150'
       expiration: '2027-01-31'
     # Baseline: subagent-security/bubblewrap
     - rule_id: CKV2_K8S_6
       path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
-      reason: 'Baseline: subagent-security/bubblewrap merged before the ASH gate; hardening tracked in the subagent-security/bubblewrap ASH baseline issue'
+      reason: 'Baseline: subagent-security/bubblewrap merged before the ASH gate; hardening tracked in #151'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_22
       path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
-      reason: 'Baseline: subagent-security/bubblewrap merged before the ASH gate; hardening tracked in the subagent-security/bubblewrap ASH baseline issue'
+      reason: 'Baseline: subagent-security/bubblewrap merged before the ASH gate; hardening tracked in #151'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
-      reason: 'Baseline: subagent-security/bubblewrap merged before the ASH gate; hardening tracked in the subagent-security/bubblewrap ASH baseline issue'
+      reason: 'Baseline: subagent-security/bubblewrap merged before the ASH gate; hardening tracked in #151'
       expiration: '2027-01-31'
     # Baseline: subagent-security/openshell
     - rule_id: CKV2_K8S_6
       path: 'examples/subagent-security/openshell/deploy/bridge.yaml'
-      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in the subagent-security/openshell ASH baseline issue'
+      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in #152'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_38
       path: 'examples/subagent-security/openshell/deploy/bridge.yaml'
-      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in the subagent-security/openshell ASH baseline issue'
+      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in #152'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_40
       path: 'examples/subagent-security/openshell/deploy/bridge.yaml'
-      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in the subagent-security/openshell ASH baseline issue'
+      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in #152'
       expiration: '2027-01-31'
     - rule_id: CKV_K8S_8
       path: 'examples/subagent-security/openshell/deploy/bridge.yaml'
-      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in the subagent-security/openshell ASH baseline issue'
+      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in #152'
       expiration: '2027-01-31'
     - rule_id: CKV_DOCKER_3
       path: 'examples/subagent-security/openshell/supervisor/Dockerfile'
-      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in the subagent-security/openshell ASH baseline issue'
+      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in #152'
+      expiration: '2027-01-31'
+    # Baseline: setup/cilium-ubuntu
+    - rule_id: CKV_K8S_20
+      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
+      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
+      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
+      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
+      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
+      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
+      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
+      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
+      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
+      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
+      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
+      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
+      expiration: '2027-01-31'
+    # Baseline: setup/ubuntu-ami
+    - rule_id: CKV2_K8S_6
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
       expiration: '2027-01-31'
 scanners:
   cdk-nag:
