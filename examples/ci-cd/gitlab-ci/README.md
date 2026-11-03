@@ -167,6 +167,12 @@ data. It changes nothing cluster-wide and creates no AWS resource: the only thin
 reaches your account is the EBS volume the CSI driver provisions for that claim, which
 belongs to the claim.
 
+GitLab's own container does set CPU and memory (1 CPU / 6Gi requested, 12Gi memory limit),
+unlike most pods on this site: it runs Puma, Sidekiq, Postgres, Redis, Gitaly and nginx
+together in one container, so with no request it would land on whatever node has room and be
+the first thing the kubelet evicts under pressure. These are this sample's own values, not a
+GitLab minimum; the GitLab documentation sizes a production install.
+
 The namespace is created only when it is absent, and is labelled `ManagedBy=gitlab-ci`. A
 namespace of that name that exists without the label is refused, because on a shared cluster
 it is someone else's. Every later script checks that one label before it writes anything, and
@@ -744,6 +750,11 @@ gitlab-runner-5b694d4d85-k6x7n   <none>          gitlab-runner
 Its RBAC is a namespaced `Role`, not a `ClusterRole`: it creates job pods only in this
 sample's own namespace, which is the `namespace` its `config.toml` names. Nothing in this
 sample is cluster-scoped.
+
+It also carries its own small CPU and memory requests and limits (100m/256Mi requested, 512Mi
+memory limit): the manager only polls GitLab and talks to the API server, while the work
+happens in the job pods it starts, so it is sized for that light, constant job rather than for
+the pipelines it runs.
 
 ### Where the token is, and where it is not
 

@@ -1,0 +1,7 @@
+# Python packages the clusterless tests need beyond the standard library. scripts/testlib/fake_aws.py
+# applies an AWS CLI --query with jmespath, the library the AWS CLI itself uses, and stops with exit
+# 98 when it is missing. Install into a virtual environment under the repository's tmp/ (README,
+# Clusterless checks):
+#   python3 -m venv tmp/ubuntu-ami-tests
+#   tmp/ubuntu-ami-tests/bin/pip install -r examples/setup/ubuntu-ami/scripts/testlib/requirements-test.txt
+jmespath==1.0.1

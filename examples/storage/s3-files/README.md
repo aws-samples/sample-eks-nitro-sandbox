@@ -309,7 +309,6 @@ spec:
       image: public.ecr.aws/docker/library/busybox:1.37
       imagePullPolicy: IfNotPresent
       command: ["sh", "-c", "while true; do sleep 3600; done"]
-      resources: { requests: { cpu: "1", memory: 1Gi }, limits: { cpu: "1", memory: 1Gi } }
       securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] }, readOnlyRootFilesystem: true }
       volumeMounts:
         - { name: shared, mountPath: /shared }   # no readOnly: kernel mount is read-write

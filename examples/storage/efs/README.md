@@ -64,7 +64,7 @@ The files:
 | File | What it is |
 |---|---|
 | [`deploy/efs.yaml`](deploy/efs.yaml) | The sample's non-default `nitro-sandbox-efs` StorageClass, a static access-point PV (mount options `tls,iam`), its `ReadWriteMany` PVC, a workload ServiceAccount with no identity, and the writer and reader `isolated-sandbox` pods. |
-| [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The egress `ApplicationNetworkPolicy`: DNS to CoreDNS and NFS (TCP 2049) to the mount targets, deny all ingress. |
+| [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The egress `ApplicationNetworkPolicy`: DNS on port 53 to any address and NFS (TCP 2049) to the mount targets, deny all ingress. |
 | [`iam/file-system-policy.json`](iam/file-system-policy.json) | The EFS file system policy template: TLS required, this access point only, `ClientMount`/`ClientWrite` only, the CSI node principal only. |
 | [`scripts/setup.sh`](scripts/setup.sh) | Checks the EFS CSI driver (shared, reused, never changed); creates the NFS security group, file system, mount targets and access point; applies the file system policy; then deploys the namespace, the egress policy, the StorageClass, the PV, the PVC and the two pods. |
 | [`scripts/clean.sh`](scripts/clean.sh) | Deletes the Kubernetes objects; `--delete-aws-resources` also releases the access point, mount targets, file system and security group. |
@@ -142,8 +142,7 @@ Step 2/5: create the sample's security group, file system, mount targets and acc
   creating the EFS access point (uid/gid 1000, root /storage-efs)...
 Step 3/5: apply the EFS file system policy (TLS required, this access point only, CSI node principal only)
   file system policy applied.
-Step 4/5: record the CoreDNS and mount-target addresses for the network policy
-  CoreDNS: <COREDNS_IP>
+Step 4/5: record the mount-target addresses for the network policy
   mount targets: <MOUNT_TARGET_IP> <MOUNT_TARGET_IP> <MOUNT_TARGET_IP>
 Step 5/5: deploy the egress policy and the two sandbox pods
   namespace 'nitro-efs-sample' already exists and is this sample's; reusing it.
@@ -162,9 +161,9 @@ pod/efs-reader condition met
 EFS storage is ready and both pods are Running. Resource IDs and addresses: .../examples/storage/efs/.env
 ```
 
-Setup writes the resource IDs and the CoreDNS and mount-target addresses to a gitignored
-`.env`, which it uses to render the manifests. The EFS CSI driver, its service accounts, their
-IAM roles and their Pod Identity associations are a shared install and are not touched.
+Setup writes the resource IDs and the mount-target addresses to a gitignored `.env`, which it
+uses to render the manifests. The EFS CSI driver, its service accounts, their IAM roles and
+their Pod Identity associations are a shared install and are not touched.
 
 **Step 2: The claim is bound and both pods are Running.** The claim binds `ReadWriteMany`, so
 both pods mount the same volume.
@@ -326,11 +325,11 @@ sample restricts their egress with an `ApplicationNetworkPolicy`, an EKS Auto Mo
 NetworkPolicy, and does not set `sandbox.amazonaws.com/network-isolated` on them, because that
 would remove the device used to reach the mount target.
 
-[`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) allows DNS to CoreDNS and NFS to the
-mount targets, and denies everything else, including all ingress. It is shown here as it is
-in the repository, with its placeholders: `setup.sh` (Step 5, the deploy) fills in
-`<COREDNS_IP>` from the CoreDNS Service address and expands `<MOUNT_TARGET_BLOCK>` into one
-`ipBlock` line per mount-target IP, both from the addresses it recorded in `.env`.
+[`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) allows DNS on port 53 to any address
+and NFS to the mount targets, and denies everything else, including all ingress. It is shown
+here as it is in the repository, with its one placeholder: `setup.sh` (Step 5, the deploy)
+expands `<MOUNT_TARGET_BLOCK>` into one `ipBlock` line per mount-target IP, from the addresses
+it recorded in `.env`. The DNS rule is a literal `0.0.0.0/0` and needs no substitution.
 
 ```yaml
 spec:
@@ -342,7 +341,7 @@ spec:
     - Egress
   egress:
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }
+        - ipBlock: { cidr: 0.0.0.0/0 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -356,15 +355,15 @@ spec:
 | --- | --- |
 | `podSelector: app=efs-shared` | Selects the writer and reader pods. |
 | `policyTypes: [Ingress, Egress]` | Governs both directions; with no ingress rule, all ingress is denied. |
-| First egress rule, `<COREDNS_IP>` | DNS to the CoreDNS Service address on UDP and TCP 53. `setup.sh` reads the address with `kubectl get svc -n kube-system kube-dns`. |
+| First egress rule, `0.0.0.0/0` port 53 | DNS to any address on UDP and TCP 53. On EKS Auto Mode CoreDNS runs as a per-node systemd service rather than a pod behind a ClusterIP, so the resolver a pod reaches is node-local; allowing port 53 to any address keeps name resolution working wherever Auto Mode places it. DNS is name resolution only, so opening it broadly is safe; the rule still opens only the two DNS ports. |
 | Second egress rule, `<MOUNT_TARGET_BLOCK>` | NFS (TCP 2049) to each EFS mount-target IP, one per Availability Zone. `setup.sh` expands one `- ipBlock: { cidr: <ip>/32 }` line per address from `aws efs describe-mount-targets`. |
 
 Network policy is turned on once per cluster through the `amazon-vpc-cni` ConfigMap, as the
 [coding agent](../../getting-started/coding-agent/README.md) page describes; `setup.sh` waits
 for the policy's `PolicyEndpoint` to appear before it starts the pods. The policy is enforced
 on the node, outside the guest, so a command inside the sandbox cannot change it. Its limit:
-an `ipBlock` rule allows addresses, so anything else on the same addresses is reachable, and a
-pod can always reach its own node.
+DNS is open on port 53 to any address, so a resolver is always reachable, and a pod can
+always reach its own node. Everything beyond DNS and the mount targets is denied.
 
 With only DNS and NFS allowed, an outbound internet connection from inside the sandbox is
 refused:

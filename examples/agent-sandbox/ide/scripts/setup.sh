@@ -45,12 +45,6 @@ require_network_policy_enforcement
 # The password hash must already exist on this machine.
 require_hash_file
 
-# The CoreDNS address the egress policy allows, read from the cluster.
-coredns_ip="$(kc_cluster -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}' 2>/dev/null)" \
-  || die "could not read the CoreDNS Service address ($(kubectl_cmd) get svc -n kube-system kube-dns)"
-[[ -n "$coredns_ip" ]] || die "the CoreDNS Service has no cluster IP; cannot render the egress policy"
-echo "CoreDNS at $coredns_ip (the egress policy allows DNS to it)"
-
 # Choose the StorageClass the workspace claim will name, before anything is
 # created. The sample's own class is the one thing this may create here, and the
 # clean up removes it.
@@ -126,7 +120,7 @@ case $sec_rc in
 esac
 
 step "3/5 egress policy $POLICY (all ingress denied)"
-sed -e "s/__NAMESPACE__/$NAMESPACE/g" -e "s|<COREDNS_IP>|$coredns_ip|g" \
+sed -e "s/__NAMESPACE__/$NAMESPACE/g" \
   "$SAMPLE_DIR/deploy/egress-policy.yaml" | kc apply -f -
 # The PolicyEndpoint shows the controller picked the policy up and handed it to
 # the nodes. Wait for it before creating the editor, so the policy is on the

@@ -9,9 +9,10 @@
 # credential, so there is no rule for the Pod Identity endpoint
 # (169.254.170.23). A policy for a pod that does have a role needs one.
 #
-# <COREDNS_IP> is your cluster's CoreDNS Service address, which scripts/setup.sh
-# fills in at apply time from:
-#   kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}'
+# DNS (port 53) is allowed to any IP address. While CoreDNS typically runs on a fixed
+# cluster address, allowing any destination eliminates the need for address lookup and
+# substitution. This simplifies the setup and avoids issues with missing or malformed
+# cluster DNS addresses (#104).
 apiVersion: networking.k8s.aws/v1alpha1
 kind: ApplicationNetworkPolicy
 metadata:
@@ -29,9 +30,9 @@ spec:
   # long poll, so no inbound connection is ever needed.
   ingress: []
   egress:
-    # Name lookups, to the cluster's CoreDNS Service only.
+    # Name lookups: DNS on port 53 to any IP.
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }
+        - ipBlock: { cidr: 0.0.0.0/0 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }

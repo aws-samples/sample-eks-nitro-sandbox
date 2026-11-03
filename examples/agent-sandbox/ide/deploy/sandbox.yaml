@@ -122,7 +122,6 @@ spec:
             # server plus the workbench's extension host need the memory below.
             # Most samples on this site set no requests at all.
             requests:
-              cpu: "1"
               memory: 2Gi
           securityContext:
             # The sandbox already runs this pod in its own VM; these keep the

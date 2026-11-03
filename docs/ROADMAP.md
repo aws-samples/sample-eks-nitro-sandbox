@@ -9,13 +9,13 @@ These samples show Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandb
 
 ```text
 examples/
-├── setup/
-│   ├── ubuntu-ami/
-│   └── cilium-ubuntu/
 ├── getting-started/
 │   ├── hello-sandbox/
 │   ├── coding-agent/
 │   └── warm-pool/
+├── setup/
+│   ├── ubuntu-ami/
+│   └── cilium-ubuntu/
 ├── isolation/
 │   ├── network-policy/
 │   └── sandbox-limits/
@@ -24,7 +24,8 @@ examples/
 ├── ai-agents/
 │   ├── coding-agents-for-developers/
 │   ├── agent-frameworks/
-│   └── agent-harnesses/
+│   ├── hermes/
+│   └── openclaw-enterprise/
 ├── managed-agents/
 │   ├── claude-managed-agents/
 │   ├── openai-managed-agents/
@@ -66,23 +67,30 @@ examples/
 
 Samples marked ★ are the next six to be added.
 
-### Setup (`setup`)
-
-Node and cluster preparation that the rest of the samples treat as a prerequisite. Added by
-[#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10), which expanded the
-roadmap beyond its original AMI-build exclusion.
-
-- ubuntu-ami: build an Ubuntu 24.04 EKS node AMI for Pod Isolation from public, checksum-verified
-  inputs, and join it to the existing sample cluster. Spec: [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10).
-- [cilium-ubuntu](../examples/setup/cilium-ubuntu/README.md) (available now): a dedicated
-  disposable cluster with Cilium as the only CNI, in ENI mode with kube-proxy replacement, and
-  the two Ubuntu node groups (system and sandbox) from `ubuntu-ami` above joining it. Spec: [#11](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/11).
-
 ### Getting started (`getting-started`, available now)
 
 - [hello-sandbox](../examples/getting-started/hello-sandbox/README.md): a plain pod that opts into a sandbox with one line, and a variant with no network.
 - [coding-agent](../examples/getting-started/coding-agent/README.md): Claude Code in a sandbox that reads a GitHub issue, fixes it and opens a pull request.
 - [warm-pool](../examples/getting-started/warm-pool/README.md): a pool of pre-booted sandboxes, ready for a claim to pick one up.
+
+### Setup (`setup`)
+
+Cluster node-OS setup for a reader who manages their own node AMI instead of relying on EKS
+Auto Mode's managed one. Cluster and node-group lifecycle were previously treated as out of
+scope here; this section is an intentional, narrow addition: it covers building a node AMI
+for an existing cluster, not creating or managing the cluster itself.
+
+- [ubuntu-ami](../examples/setup/ubuntu-ami/README.md): build a custom Ubuntu 24.04 node
+  AMI for EKS Pod Isolation and add one dedicated, tainted managed node group to an
+  existing cluster. Every public input (base AMI, kernel 6.18.56 plus AWS's public
+  host-kernel commit 1e66c960, erofs-utils 1.8.10, distro packages) is pinned and
+  checksum-verified. The Nitro sandbox runtime is an operator-supplied preview archive,
+  checksum-pinned, with no public download. Validated end to end on a live cluster; whether
+  that archive meets the spec's public-input criterion is waiting on the maintainers. Spec:
+  [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10).
+- [cilium-ubuntu](../examples/setup/cilium-ubuntu/README.md) (available now): a dedicated
+  disposable cluster with Cilium as the only CNI, in ENI mode with kube-proxy replacement, and
+  the two Ubuntu node groups (system and sandbox) from `ubuntu-ami` above joining it. Spec: [#11](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/11).
 
 ### Isolation (`isolation`)
 
@@ -107,7 +115,8 @@ Agent frameworks on Amazon Bedrock:
 
 Agent harnesses:
 
-- agent-harnesses: OpenClaw and Hermes, each always on in its own sandbox with root inside it, memory on EBS kept across suspend and resume, and only Amazon Bedrock reachable. Spec: [#14](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/14).
+- hermes: the Hermes Agent harness, always on in its own sandbox with root inside it, memory on EBS kept across suspend and resume, and Amazon Bedrock with no API key in the sandbox. Spec: [#14](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/14).
+- openclaw-enterprise: OpenClaw Enterprise on EKS, each Agent in a Nitro sandbox, with the model call going through agentgateway to Amazon Bedrock. Spec: [#133](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/133).
 
 ### Managed agents (`managed-agents`)
 
@@ -133,7 +142,7 @@ The [Subagent security section page](../examples/subagent-security/README.md) ho
 
 [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell), and the NemoClaw reference stack built on it, with Nitro sandboxes.
 
-- kubernetes: OpenShell installed on EKS with its Helm charts. Each OpenShell sandbox's workload pod runs in a Nitro sandbox, and its supervisor, which holds the credentials, stays an ordinary pod. Spec: [#37](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/37).
+- [kubernetes](../examples/openshell/kubernetes/README.md) (available now): OpenShell installed on EKS with its Helm charts. Each OpenShell sandbox's workload pod runs in a Nitro sandbox, and its supervisor, which holds the credentials, stays an ordinary pod. Spec: [#37](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/37).
 - nemoclaw: NVIDIA NemoClaw, with OpenClaw, inside one Nitro sandbox pod. NemoClaw supports only a single Docker host today, so the whole stack runs in the sandbox: OpenShell's controls inside, the Nitro sandbox around it. Spec: [#43](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/43).
 
 ### Agent sandbox (`agent-sandbox`)

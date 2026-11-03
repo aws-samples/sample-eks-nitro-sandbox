@@ -26,5 +26,5 @@ spec:
           drop: ["ALL"]
         readOnlyRootFilesystem: true
       resources:
-        requests: { cpu: "250m", memory: 128Mi }
-        limits:   { cpu: "500m", memory: 256Mi }
+        requests: { memory: 128Mi }
+        

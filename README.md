@@ -12,8 +12,9 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 
 ## Setup
 
-Node and cluster preparation the other samples treat as a prerequisite. See [the Setup section of the roadmap](docs/ROADMAP.md#setup-setup) for the Ubuntu AMI sample ([#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10)) that precedes this one.
+Node and cluster preparation the other samples treat as a prerequisite.
 
+- [Ubuntu AMI](examples/setup/ubuntu-ami/README.md): build a custom Ubuntu 24.04 node AMI for EKS Pod Isolation and add one dedicated, tainted managed node group to an existing cluster, for readers who manage their own node OS instead of EKS Auto Mode.
 - [Cilium on Ubuntu nodes](examples/setup/cilium-ubuntu/README.md): a dedicated disposable EKS cluster whose only CNI is Cilium, with two Ubuntu 24.04 node groups, and an `isolated-sandbox` pod that gets normal pod networking and the same enforced policy as an ordinary pod.
 
 ## Isolation
@@ -41,6 +42,12 @@ The same procurement analyst three ways, with a second policy layer confining th
 - [Procurement analyst confined by nono](examples/subagent-security/nono/README.md): reader, evaluator and writer run as separate processes under per-role nono profiles inside one sandbox, with nono's proxy holding the supplier API key and allowing one hostname and a short list of HTTP operations, while the analyst still produces a cited recommendation checked against a deterministic comparison.
 - [Procurement analyst confined by bubblewrap](examples/subagent-security/bubblewrap/README.md): the same analyst with its reader, evaluator and writer started by `bwrap`, where the confinement policy is the argument list the trusted controller assembles: selected mounts, its own namespaces, no capabilities and an application-compiled seccomp filter, and no network at all for the tool processes.
 - [Procurement analyst confined by OpenShell](examples/subagent-security/openshell/README.md): an OpenShell gateway drives one sandbox, with the analyst's files, process identity, destinations and HTTP operations governed by an OpenShell policy inside the Nitro sandbox, while the supervisor that holds the real supplier key runs as an ordinary pod outside it, and one added rule lets the analyst submit its draft with no restart.
+
+## OpenShell
+
+[NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell), and the NemoClaw reference stack built on it, with Nitro sandboxes.
+
+- [OpenShell on Amazon EKS](examples/openshell/kubernetes/README.md): OpenShell installed on EKS from its own gateway and workspace Helm charts, with every OpenShell sandbox's workload pod in a Nitro sandbox and its supervisor, which holds the real credentials, an ordinary pod beside it; three layers (OpenShell's own policy, the Nitro boundary and a Kubernetes NetworkPolicy) each refuse something.
 
 ## Agent sandbox
 

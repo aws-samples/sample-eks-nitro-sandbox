@@ -81,9 +81,6 @@ spec:
             - { name: workspace, mountPath: /workspace }   # tool calls and skills
             - { name: memory, mountPath: /mnt/memory }     # memory stores, when attached
             - { name: tmp, mountPath: /tmp }
-          resources:
-            requests: { cpu: "1", memory: 2Gi }
-            limits:   { cpu: "1", memory: 2Gi }
       volumes:
         - { name: workspace, emptyDir: {} }
         - { name: memory, emptyDir: {} }

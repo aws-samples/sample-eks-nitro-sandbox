@@ -126,54 +126,9 @@ kubectl delete -f "$DEPLOY/probe-standard.yaml"                   --ignore-not-f
 kubectl delete -f "$DEPLOY/sink.yaml"                             --ignore-not-found --wait=true
 
 say "Deploy the egress NetworkPolicy, the sink and the two probe pods"
-# The cluster's DNS address is the kubelet's clusterDNS, the nameserver pods use. EKS Auto
-# Mode serves DNS on the node, so the kube-dns Service still carries this address but has no
-# endpoints behind it; this reads it from a node's kubelet configuration instead, which is the
-# resolver the probe pods themselves use (the kube-dns ClusterIP and the .10 address of the
-# cluster's Service CIDR are the same address, and need less permission -- see the page).
-# Reading it this way needs permission to list nodes and get nodes/proxy. Nodes are replaced
-# often and a node on its way out does not answer, so try the Ready nodes in turn, each with
-# a short timeout, and keep the first Ready node whose FIRST clusterDNS entry is a dotted-quad
-# IPv4 address. Only the first entry is read, so a dual-stack node listing an IPv6 address first
-# is skipped rather than searched for its IPv4 entry. Sets COREDNS_IP,
-# DNS_NODE (the node that answered) and DNS_TRIED (the nodes asked, in order).
-read_cluster_dns() {
-  local node ip nodes
-  COREDNS_IP="" DNS_NODE="" DNS_TRIED=""
-  nodes="$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
-    | awk '$2 == "True" {print $1}')" || nodes=""
-  for node in $nodes; do
-    DNS_TRIED="${DNS_TRIED:+$DNS_TRIED }$node"
-    ip="$(kubectl get --raw "/api/v1/nodes/$node/proxy/configz" --request-timeout=10s \
-      | sed -n 's/.*"clusterDNS":\["\([^"]*\)".*/\1/p')" || ip=""
-    # Canonical dotted quad only: every octet alternative is either one digit or starts 1-9,
-    # so 999.999.999.999 and a leading-zero form such as 01.2.3.4 are refused by construction
-    # rather than by extra clauses bolted on for each. The digits are written out instead of
-    # as [0-9] because bash matches a bracket RANGE against the collating order of the current
-    # locale: under en_US.utf8, [0-9] also accepted non-ASCII digit-like characters, so
-    # "1.2.3.<Arabic-Indic 4>", "1.2.3.<superscript 2>" and "1.2.3.<one half>" passed
-    # here. Unlike a range, each ordinary character in these
-    # explicit lists represents itself, so this check and the identical one on the page agree.
-    # (Only ranges are the issue here; POSIX bracket expressions have other locale-sensitive
-    # parts -- character classes, equivalence classes, collating elements -- which this uses none
-    # of.)
-    if [[ "$ip" =~ ^((25[012345]|2[01234][0123456789]|1[0123456789][0123456789]|[123456789][0123456789]|[0123456789])\.){3}(25[012345]|2[01234][0123456789]|1[0123456789][0123456789]|[123456789][0123456789]|[0123456789])$ ]]; then
-      COREDNS_IP="$ip" DNS_NODE="$node"
-      return 0
-    fi
-    line "  node $node: no IPv4 clusterDNS (read '${ip}'), skipping"
-  done
-  return 1
-}
-if ! read_cluster_dns; then
-  line "ERROR: could not read the cluster DNS address: none of the Ready nodes answered with an IPv4 clusterDNS."
-  line "Ready nodes tried: ${DNS_TRIED:-<no Ready node found>}"
-  line "It comes from kubeletconfig.clusterDNS in:"
-  line "  kubectl get --raw /api/v1/nodes/<node>/proxy/configz"
-  line "Reading it needs permission to list nodes (to find the Ready ones) and to get nodes/proxy. Applied no policy or pod."
-  exit 1
-fi
-sed "s|<COREDNS_IP>|$COREDNS_IP|" "$DEPLOY/egress-policy.yaml" | kubectl apply -f -
+# DNS egress is allowed to any address (the policy opens only port 53), so there is no
+# per-cluster address to look up or substitute; the file is applied as it is on the page.
+kubectl apply -f "$DEPLOY/egress-policy.yaml"
 kubectl apply -f "$DEPLOY/sink.yaml"
 kubectl apply -f "$DEPLOY/probe-standard.yaml"
 kubectl apply -f "$DEPLOY/probe-sandboxed.yaml"
