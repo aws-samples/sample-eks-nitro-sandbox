@@ -13,6 +13,8 @@ examples/
 │   ├── hello-sandbox/
 │   ├── coding-agent/
 │   └── warm-pool/
+├── setup/
+│   └── ubuntu-ami/
 ├── isolation/
 │   ├── network-policy/
 │   └── sandbox-limits/
@@ -69,6 +71,22 @@ Samples marked ★ are the next six to be added.
 - [hello-sandbox](../examples/getting-started/hello-sandbox/README.md): a plain pod that opts into a sandbox with one line, and a variant with no network.
 - [coding-agent](../examples/getting-started/coding-agent/README.md): Claude Code in a sandbox that reads a GitHub issue, fixes it and opens a pull request.
 - [warm-pool](../examples/getting-started/warm-pool/README.md): a pool of pre-booted sandboxes, ready for a claim to pick one up.
+
+### Setup (`setup`)
+
+Cluster node-OS setup for a reader who manages their own node AMI instead of relying on EKS
+Auto Mode's managed one. Cluster and node-group lifecycle were previously treated as out of
+scope here; this section is an intentional, narrow addition: it covers building a node AMI
+for an existing cluster, not creating or managing the cluster itself.
+
+- [ubuntu-ami](../examples/setup/ubuntu-ami/README.md): build a custom Ubuntu 24.04 node
+  AMI for EKS Pod Isolation and add one dedicated, tainted managed node group to an
+  existing cluster. Every public input (base AMI, kernel 6.18.56 plus AWS's public
+  host-kernel commit 1e66c960, erofs-utils 1.8.10, distro packages) is pinned and
+  checksum-verified. The Nitro sandbox runtime is an operator-supplied preview archive,
+  checksum-pinned, with no public download. Validated end to end on a live cluster; whether
+  that archive meets the spec's public-input criterion is waiting on the maintainers. Spec:
+  [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10).
 
 ### Isolation (`isolation`)
 

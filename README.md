@@ -10,6 +10,10 @@ Runnable samples for Nitro Sandboxes on Amazon EKS: hardware-enforced workload i
 
 Start from the [site home page](examples/README.md) for what a Nitro sandbox is and the prerequisites the samples share.
 
+## Setup
+
+- [Ubuntu AMI](examples/setup/ubuntu-ami/README.md): build a custom Ubuntu 24.04 node AMI for EKS Pod Isolation and add one dedicated, tainted managed node group to an existing cluster, for readers who manage their own node OS instead of EKS Auto Mode.
+
 ## Isolation
 
 - [Network policy](examples/isolation/network-policy/README.md): a standard egress NetworkPolicy enforced on a sandboxed pod, side by side with an ordinary pod that is the control.

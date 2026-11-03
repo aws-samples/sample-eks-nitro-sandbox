@@ -1,0 +1,37 @@
+# An ordinary (non-sandboxed) pod on the same dedicated Ubuntu node, for the kernel, device and
+# uptime comparison in test.sh, and the control for the sandbox's no-network check: the same
+# connect to the cluster's API Service that fails from the sandbox succeeds from this pod. No
+# Service exposes it. setup.sh renders @NODEGROUP@ from NODEGROUP_NAME and the namespace from
+# NAMESPACE.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ordinary-pod
+  namespace: ubuntu-ami-sample
+  labels:
+    app: ordinary-pod
+spec:
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: "@NODEGROUP@"
+  tolerations:
+    - key: sandbox.preview/ubuntu-ami
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  restartPolicy: Never
+  containers:
+    - name: main
+      image: public.ecr.aws/amazonlinux/amazonlinux:2023
+      command: ["sh", "-ec"]
+      args:
+        - |
+          echo "Node kernel: $(uname -r)"
+          echo "Node devices:"
+          ls -1 /sys/block
+          sleep infinity
+      resources:
+        requests:
+          cpu: "250m"
+          memory: 256Mi

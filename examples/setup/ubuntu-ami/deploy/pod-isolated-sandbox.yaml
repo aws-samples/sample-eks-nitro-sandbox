@@ -1,0 +1,53 @@
+# The validation sandbox pod. It is booted with no network at all, by the
+# sandbox.amazonaws.com/network-isolated annotation. It needs none: it runs `sleep infinity`, and
+# every check test.sh makes reaches it through kubectl exec. test.sh section 7/7 shows the
+# result: only loopback has an address, the sandbox has no route, and a connect to the cluster's
+# API Service fails with "Network is unreachable".
+# appArmorProfile is Unconfined, as the Nitro sandbox GA build notes require on an Ubuntu host:
+# a sandbox pod's AppArmor profile is not applied on the host. The shim passes it into the
+# guest microVM, where runc applies it, and the guest runs SELinux and has no AppArmor, so any
+# Localhost or RuntimeDefault profile fails there with "apparmor failed to apply profile". The
+# microVM is this pod's boundary. AppArmor stays enabled on the host, and the sample's scoped
+# Localhost profile is shown working on an ordinary pod on the same node
+# (pod-apparmor-scoped.yaml); pod-apparmor-reject.yaml is the refused control.
+# setup.sh renders @NODEGROUP@ from NODEGROUP_NAME and the namespace from NAMESPACE.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: isolated-sandbox-pod
+  namespace: ubuntu-ami-sample
+  labels:
+    app: isolated-sandbox-pod
+  annotations:
+    sandbox.amazonaws.com/network-isolated: "true"   # <-- boot the VM with no network besides loopback
+spec:
+  runtimeClassName: isolated-sandbox
+  securityContext:
+    appArmorProfile:
+      type: Unconfined
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: "@NODEGROUP@"
+  tolerations:
+    - key: sandbox.preview/ubuntu-ami
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: main
+      image: public.ecr.aws/amazonlinux/amazonlinux:2023
+      command: ["sh", "-ec"]
+      args:
+        - |
+          echo "Guest kernel: $(uname -r)"
+          echo "Guest boot uptime (s): $(cat /proc/uptime | awk '{print $1}')"
+          echo "Guest devices:"
+          ls -1 /sys/block
+          sleep infinity
+      resources:
+        requests:
+          cpu: "1"
+          memory: 768Mi

@@ -82,6 +82,8 @@ nav:
       - Hello sandbox: getting-started/hello-sandbox/README.md
       - Coding agent: getting-started/coding-agent/README.md
       - Warm pool: getting-started/warm-pool/README.md
+  - Setup:
+      - Ubuntu AMI: setup/ubuntu-ami/README.md
   - Isolation:
       - Network policy: isolation/network-policy/README.md
       - Sandbox limits: isolation/sandbox-limits/README.md

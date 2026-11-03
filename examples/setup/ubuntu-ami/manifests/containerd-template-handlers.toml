@@ -1,0 +1,23 @@
+# Reference copy of what scripts/31-wire-containerd.sh appends to Canonical's containerd
+# TEMPLATE, /usr/local/share/eks/containerd-config.toml. The heredoc in that script is the
+# canonical text; this file documents it for the README.
+#
+# Why the template and not /etc/containerd/config.toml: Canonical's bootstrap.sh renders the
+# template into /etc/containerd/config.toml at cluster join and restarts containerd, so
+# anything written to config.toml on the build host is gone by the time the node joins.
+#
+# Constraints the template imposes, both checked by scripts/31-wire-containerd.sh and
+# scripts/verify-image.py:
+#   * stays `version = 2`;
+#   * `discard_unpacked_layers = false` is inserted into the EXISTING
+#     [plugins."io.containerd.grpc.v1.cri".containerd] table (a second table of the same
+#     name is a TOML error); only the two runtime tables below are appended.
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.isolated-sandbox]
+runtime_type = "io.containerd.nitro-sandbox.v2"
+sandboxer = "shim"
+privileged_without_host_devices = true
+
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.confidential-sandbox]
+runtime_type = "io.containerd.nitro-sandbox.v2"
+sandboxer = "shim"
+privileged_without_host_devices = true

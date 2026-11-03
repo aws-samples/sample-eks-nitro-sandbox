@@ -1,0 +1,44 @@
+# ACCEPT control for test.sh's AppArmor step: an ordinary (runc, not sandboxed) pod on the
+# sample's node that selects the sample's scoped Localhost profile, ubuntu-ami-sample-profile
+# (manifests/ubuntu-ami-sample-profile, loaded on the AMI by scripts/35-apparmor.sh). test.sh
+# checks that it runs, that its process is confined by that profile in enforce mode
+# (/proc/self/attr/current), that the profile refuses a write to /etc/shadow with a logged
+# DENIED line while a write elsewhere in /etc succeeds, and that the pod stops within its grace
+# period when it is deleted (the profile must let runc signal it). The sandbox pod cannot take a
+# host AppArmor profile (see pod-isolated-sandbox.yaml), so the scoped profile is shown here, on
+# the same node. test.sh renders @NODEGROUP@ and the namespace, and deletes this pod by its exact
+# name after reading it; clean.sh deletes it by name too.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: apparmor-scoped-pod
+  namespace: ubuntu-ami-sample
+  labels:
+    app: apparmor-scoped-pod
+spec:
+  securityContext:
+    appArmorProfile:
+      type: Localhost
+      localhostProfile: ubuntu-ami-sample-profile
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: "@NODEGROUP@"
+  tolerations:
+    - key: sandbox.preview/ubuntu-ami
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  restartPolicy: Never
+  # Non-zero, so the API object stays until kubelet has stopped the container: a pod the profile
+  # keeps from stopping then stays Terminating, which test.sh catches.
+  terminationGracePeriodSeconds: 15
+  containers:
+    - name: main
+      image: public.ecr.aws/amazonlinux/amazonlinux:2023
+      # Exits on SIGTERM, so a stop that AppArmor allows completes at once.
+      command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]
+      resources:
+        requests:
+          cpu: "100m"
+          memory: 64Mi

@@ -1,0 +1,33 @@
+# REJECT control for test.sh's AppArmor step: an ordinary pod on the sample's node that names
+# an AppArmor profile the node never loaded. It must be refused for the AppArmor reason on that
+# node, proving the accept path in pod-apparmor-scoped.yaml is a real, scoped selection and not
+# a no-op. test.sh renders @NODEGROUP@ and the namespace, and deletes this pod by name after
+# reading its status; it is never left running.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: apparmor-reject-control
+  namespace: ubuntu-ami-sample
+  labels:
+    app: apparmor-reject-control
+spec:
+  securityContext:
+    appArmorProfile:
+      type: Localhost
+      localhostProfile: profile-that-does-not-exist
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: "@NODEGROUP@"
+  tolerations:
+    - key: sandbox.preview/ubuntu-ami
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  restartPolicy: Never
+  containers:
+    - name: main
+      image: public.ecr.aws/amazonlinux/amazonlinux:2023
+      command: ["sleep", "3600"]
+      resources:
+        requests:
+          cpu: "100m"
+          memory: 64Mi
