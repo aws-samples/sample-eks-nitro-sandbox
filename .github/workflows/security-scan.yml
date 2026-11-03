@@ -1,0 +1,76 @@
+name: ASH Security Scan
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  actions: read  # upload-sarif reads the workflow run; required in a private repository
+  contents: read
+  security-events: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ash:
+    name: ASH scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install ASH v3.7.1
+        # The commit is tag v3.7.1; keep it equal to the rev in .pre-commit-config.yaml.
+        run: pip install 'automated-security-helper @ git+https://github.com/awslabs/automated-security-helper.git@af1206aff596f1288ad066828058b3011de2a998'
+
+      - name: Install grype and syft
+        env:
+          GRYPE_VERSION: 0.121.0
+          SYFT_VERSION: 1.55.0
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          cd "$RUNNER_TEMP"
+          # fetch <tool> <version>: download the release tarball, check it against the
+          # release's checksums file, and put the binary in $bin.
+          fetch() {
+            local tgz="${1}_${2}_linux_amd64.tar.gz"
+            local url="https://github.com/anchore/${1}/releases/download/v${2}"
+            curl -fsSL -o "$tgz" "$url/$tgz"
+            curl -fsSL -o "${1}_checksums.txt" "$url/${1}_${2}_checksums.txt"
+            grep " ${tgz}\$" "${1}_checksums.txt" | sha256sum --check --strict -
+            tar -xzf "$tgz" -C "$bin" "$1"
+          }
+          fetch grype "$GRYPE_VERSION"
+          fetch syft "$SYFT_VERSION"
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Run ASH
+        run: ash --mode local --config .ash/.ash.yaml
+
+      - name: Upload SARIF to code scanning
+        if: always() && hashFiles('.ash/ash_output/reports/ash.ghas.sarif') != ''
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: .ash/ash_output/reports/ash.ghas.sarif
+          category: ash-security-scan
+
+      - name: Upload ASH reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ash-results
+          path: .ash/ash_output/

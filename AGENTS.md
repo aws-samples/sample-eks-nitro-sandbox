@@ -33,6 +33,8 @@ but has no entry in the left menu, so add the `nav` line yourself.
 `docs/ROADMAP.md` or the root `README.md`, a section heading left twice, and a conflict
 marker left in any tracked file.
 
+Run ASH before a pull request too, as `CONTRIBUTING.md` (*Security scanning*) says.
+
 ## A sample starts as a spec in a GitHub issue
 
 - **No sample implementation starts before a GitHub issue holds its spec.** Write it with
