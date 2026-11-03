@@ -68,7 +68,6 @@ global_settings:
       path: 'examples/storage/ebs/deploy/statefulset-ebs.yaml'
       reason: 'Replicas are network-isolated: no network to restrict (AGENTS.md, Security rules)'
       expiration: '2027-12-31'
-    # Image is a placeholder; a script substitutes the signed digest before apply.
     # Not applicable on Kubernetes.
     - rule_id: CKV_DOCKER_2
       path: '**/Dockerfile'
