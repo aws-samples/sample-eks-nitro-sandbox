@@ -39,7 +39,7 @@ SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SECTION_DIR="$(cd "$SAMPLE_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$SECTION_DIR/../.." && pwd)"
 
-SAMPLE="openshell"
+SAMPLE="subagent-security-openshell"
 # The run record and every scratch file go under the repository's tmp/, which git
 # ignores, and never in the sample folder: they hold this account's ARNs, this run's key
 # material and the operator's OpenShell client certificate.
