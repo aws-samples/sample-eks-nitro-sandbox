@@ -1,0 +1,72 @@
+# Stage 3: Cilium as the cluster's only CNI, installed before any node exists.
+#
+#   helm upgrade --install cilium cilium/cilium --version 1.20.2 -n kube-system \
+#     -f cilium-values.yaml \
+#     --set cluster.name=<cluster> --set k8sServiceHost=<API server host>
+#
+# setup.sh supplies the two --set values from the new cluster, and renders this file
+# unchanged otherwise: every value below is checked in, not generated.
+#
+# Every setting that is not the chart's default carries a comment explaining why. Anything
+# this file does not mention is left at the chart's 1.20.2 default.
+
+# ENI mode: the operator attaches ENIs to each node and hands their secondary IPs to pods, so
+# every pod IP, Ubuntu system or Ubuntu Pod Isolation sandbox alike, is a real VPC address and
+# traffic is routed natively (no overlay, no encapsulation to decode inside the guest).
+eni:
+  enabled: true
+  # Tags for the ENIs the operator creates, so clean.sh can find and delete the ones left
+  # behind: Cilium does not consult eksctl's cluster tags for its own ENIs.
+  eniTags:
+    auto-delete: "no"
+    Demo: setup-cilium-ubuntu
+ipam:
+  mode: eni
+# Native routing, not the chart's default VXLAN tunnel: ENI mode gives every pod a routable
+# VPC address already, so no overlay is needed, and native routing is what Cilium's AWS ENI
+# IPAM guidance assumes.
+routingMode: native
+
+# Cilium replaces kube-proxy: no kube-proxy add-on is ever installed on this cluster (see
+# eksctl/cluster.yaml), and Cilium's eBPF programs implement every Service instead. Its
+# datapath, including the socket load balancer below, needs a node kernel built with BTF
+# (CONFIG_DEBUG_INFO_BTF=y); setup.sh's BTF gate (stage 6) checks that on both Ubuntu node
+# kernels before any Cilium agent is treated as ready.
+kubeProxyReplacement: true
+# With no kube-proxy, nothing programs the kubernetes Service before Cilium does, so the
+# agents must reach the API server directly. setup.sh sets k8sServiceHost to the cluster's own
+# endpoint on every install.
+k8sServicePort: 443
+
+# A Nitro Pod Isolation sandbox needs this when Cilium replaces kube-proxy. Cilium translates
+# a Service address in one of two places: in the socket layer, when a process calls connect(),
+# through eBPF hooks in the NODE's kernel; or per packet, at the pod's network interface. A
+# sandbox pod's processes call connect() in their OWN guest kernel, which the Ubuntu host's
+# socket hooks never see, so the sandbox pod must be served by the per-packet load balancer at
+# its network interface, exactly like every other pod. hostNamespaceOnly: true restricts the
+# socket load balancer to the node's own network namespace (host-network pods, kubelet, the
+# Cilium agent itself) and leaves every pod, sandboxed and ordinary alike, on the per-packet
+# path. Without this setting (the chart's default, false) a sandbox pod still reaches pod IPs
+# directly, but a ClusterIP Service and DNS through the kube-dns Service both time out: the
+# guest's packets leave its interface still addressed to the untranslated Service IP (the GA
+# node-build bundle's measurement with Cilium 1.20.2, on Amazon Linux 2023 nodes). Read the mode
+# from `cilium-dbg status --verbose` (Socket LB Coverage: Hostns-only), never from the
+# cilium-config ConfigMap, which says bpf-lb-sock "false" under both settings. setup.sh's
+# check-cilium-values refuses this file without it; test.sh proves the live mode on each agent,
+# and the page documents the negative control run with the setting off.
+socketLB:
+  hostNamespaceOnly: true
+
+# One operator, pinned to the ordinary Ubuntu system node group: it is the only component that
+# calls the EC2 API (ENI create/attach/assign), and its AWS permissions come from the
+# dedicated EKS Pod Identity role in eksctl/pod-identity.yaml, never from a node role. Running
+# it on the tainted sandbox node group would tie its availability to a node group this sample
+# treats as disposable comparison hardware, so it stays on system.
+operator:
+  replicas: 1
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: system
+  rollOutPods: true
+
+# Restart the agents when this file changes, so a re-run of setup.sh applies an edited value.
+rollOutCiliumPods: true

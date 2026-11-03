@@ -14,7 +14,8 @@ examples/
 │   ├── coding-agent/
 │   └── warm-pool/
 ├── setup/
-│   └── ubuntu-ami/
+│   ├── ubuntu-ami/
+│   └── cilium-ubuntu/
 ├── isolation/
 │   ├── network-policy/
 │   └── sandbox-limits/
@@ -87,6 +88,9 @@ for an existing cluster, not creating or managing the cluster itself.
   checksum-pinned, with no public download. Validated end to end on a live cluster; whether
   that archive meets the spec's public-input criterion is waiting on the maintainers. Spec:
   [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10).
+- [cilium-ubuntu](../examples/setup/cilium-ubuntu/README.md) (available now): a dedicated
+  disposable cluster with Cilium as the only CNI, in ENI mode with kube-proxy replacement, and
+  the two Ubuntu node groups (system and sandbox) from `ubuntu-ami` above joining it. Spec: [#11](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/11).
 
 ### Isolation (`isolation`)
 

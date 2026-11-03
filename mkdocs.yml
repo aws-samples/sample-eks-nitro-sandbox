@@ -84,6 +84,7 @@ nav:
       - Warm pool: getting-started/warm-pool/README.md
   - Setup:
       - Ubuntu AMI: setup/ubuntu-ami/README.md
+      - Cilium on Ubuntu nodes: setup/cilium-ubuntu/README.md
   - Isolation:
       - Network policy: isolation/network-policy/README.md
       - Sandbox limits: isolation/sandbox-limits/README.md

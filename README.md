@@ -12,7 +12,10 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 
 ## Setup
 
+Node and cluster preparation the other samples treat as a prerequisite.
+
 - [Ubuntu AMI](examples/setup/ubuntu-ami/README.md): build a custom Ubuntu 24.04 node AMI for EKS Pod Isolation and add one dedicated, tainted managed node group to an existing cluster, for readers who manage their own node OS instead of EKS Auto Mode.
+- [Cilium on Ubuntu nodes](examples/setup/cilium-ubuntu/README.md): a dedicated disposable EKS cluster whose only CNI is Cilium, with two Ubuntu 24.04 node groups, and an `isolated-sandbox` pod that gets normal pod networking and the same enforced policy as an ordinary pod.
 
 ## Isolation
 
