@@ -790,18 +790,15 @@ Remove it when you have read it:
   sandbox's egress is the subject of its own sample,
   [network policy](../../isolation/network-policy/README.md), which shows the mechanism and
   both sides of it.
-- **The gate pins the policy measurement, not the guest image.** The two conditions this
-  sample installs are the ones the generator emits, and `PCR17` binds key release to this
-  exact policy document, and so to the image digest, the command, the environment, the
-  identity and the mounts it pins. Neither of them binds release to a particular guest system
-  image: another guest image presenting the same `PCR17` is not excluded, and
-  `PCR8:ServiceName` matches the signing certificate's service name rather than measuring the
-  image. For production you would add `PCR0`, the system image measurement, which the Amazon
-  EKS User Guide, *Security model and parent instance trust assumptions*, asks for alongside
-  `PCR17` at minimum. `PCR0` has to come from a real attestation document, and nothing in this
-  sample reads one, so it is left out rather than written by hand. If you do add it, give it a
-  deny statement of its own: registers listed together in one deny are ANDed, so such a deny
-  only fires when every one of them mismatches. The
+- **The gate is the two conditions the generator emits.** They are also the minimum the
+  Amazon EKS User Guide, *Security model and parent instance trust assumptions*, asks for.
+  `PCR17` binds key release to this exact policy document, and so to the image digest, the
+  command, the environment, the identity and the mounts it pins. `PCR8:ServiceName` binds
+  release to a sandbox environment image signed by the Amazon EKS signing certificate, which
+  identifies the signer rather than one particular build of that image. A key policy can
+  carry more registers; if you add one, give it a deny statement of its own: registers
+  listed together in one deny are ANDed, so such a deny only fires when every one of them
+  mismatches. The
   [Confidential section page](../README.md#the-policy-and-its-measurement) sets this out in
   full.
 - **The workload is outside the confidentiality boundary.** Confidential mode keeps the node
