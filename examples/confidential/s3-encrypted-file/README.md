@@ -507,16 +507,13 @@ looking at it:
 
 ## Good to know
 
-- **The gate pins the policy measurement, not the guest image.** The two conditions this
-  sample installs are the ones the generator emits, and `PCR17` binds key release to this
+- **The gate is the two conditions the generator emits.** They are also the minimum the
+  Amazon EKS User Guide, *Security model and parent instance trust assumptions*, asks for on
+  a KMS key that protects confidential workload data. `PCR17` binds key release to this
   exact policy document, and so to the image digest, the environment, the identity and the
-  mounts it pins. Neither of them binds release to a particular guest system image: another
-  guest image presenting the same `PCR17` is not excluded, and `PCR8:ServiceName` matches the
-  signing certificate's service name rather than measuring the image. For production you
-  would add `PCR0`, the system image measurement, which the Amazon EKS User Guide, *Security
-  model and parent instance trust assumptions*, asks for alongside `PCR17` at minimum. `PCR0`
-  has to come from a real attestation document, and nothing in this sample reads one, so it is
-  left out rather than written by hand. The
+  mounts it pins. `PCR8:ServiceName` is the condition on the system image signing
+  certificate, used rather than a raw `PCR8` value so that it stays valid when AWS rotates
+  that certificate. The
   [Confidential section page](../README.md#the-policy-and-its-measurement) sets this out in
   full.
 - **One file, read into memory in one piece.** The application reads the whole object and

@@ -17,6 +17,23 @@ attestation documents, and from decrypting encrypted image layers; the container
 layer and its `emptyDir` volumes sit on an encrypted overlay inside the sandbox (Amazon EKS
 User Guide, *Security model and parent instance trust assumptions*).
 
+The figure shows how the pieces on this page fit together. The node sits outside the
+boundary, and it can use the pod's Pod Identity credentials. Inside the sandbox, the agent
+measures the pod's Cedar policy into `PCR17`, and a guest caller asks the Nitro Secure
+Module for an attestation document carrying a public key of its own. The guest caller is
+the workload in the two application samples, and the guest image runtime in
+[encrypted-image](encrypted-image/README.md). AWS KMS, outside the cluster, allows
+`kms:Decrypt` to the pod's role only when the attestation also matches the key policy, and
+it returns the key wrapped to the guest's public key, so only the guest can unwrap it. The
+node can send the same request with the same credentials, but it has no matching
+attestation to present, and is refused.
+
+*Figure 1: How a confidential pod gets a key. The credentials alone are not enough: KMS
+also requires a matching attestation, and returns the key wrapped so that only the guest
+can open it.*
+
+![A focused view of a confidential pod. On the left, outside the AWS Cloud frame, a Cedar policy from the generator reaches the sandbox as a pod annotation. Inside the AWS Cloud frame, an EKS node frame, labelled parent instance, not trusted, holds a Nitro sandbox pod frame labelled confidential-sandbox, own kernel, encrypted overlay. In the sandbox, the annotation arrives at the agent, which measures the policy; an arrow labelled measured into PCR17 goes from the agent to the Nitro Secure Module, which signs the attestation; a two-way arrow labelled attest(public key) joins the Nitro Secure Module and the guest caller, which is the workload or the image runtime. From the guest caller, an arrow labelled kms:Decrypt plus attestation goes to AWS KMS, the attestation gate, outside the node, and an arrow labelled key wrapped to the guest comes back. Below the sandbox, still on the node, are the kubelet, which runs outside the guest, and the Pod Identity credentials, which the node can use; a red dashed arrow from the credentials to AWS KMS is labelled refused: no attestation. A note under AWS KMS reads: key policy, allow the pod's role kms:Decrypt only when PCR17 and PCR8:ServiceName match, explicitly deny otherwise.](images/figure-1-confidential-pod.png)
+
 Two consequences shape every sample here.
 
 - **Credentials are not a secret.** The parent instance can obtain the same EKS Pod
@@ -53,16 +70,15 @@ the guest as the `sandbox.amazonaws.com/policy` annotation, a base64-encoded, gz
 envelope (Amazon EKS User Guide, *Cedar policies*).
 
 The generator also prints the measurement the sandbox will extend that policy into, which
-is what the key policy is set to expect. Two registers matter:
+is what the key policy is set to expect. The Amazon EKS User Guide names two registers:
 
 | Register | What it measures |
 |---|---|
 | `PCR17` | The policy. The agent hashes the uncompressed envelope JSON with SHA-384 and extends the result into `PCR17`, so the generator can predict it before any pod runs. Change any pinned value in the pod spec and the policy changes, and so does this. |
-| `PCR0` | The guest system image. |
 | `PCR8` | The certificate that signed the sandbox environment image. Always condition on `kms:RecipientAttestation:PCR8:ServiceName`, never a raw `PCR8` value: AWS rotates the signing certificate, which changes the raw value, while the service-name condition stays valid across rotations. |
 
-Source for all three, and for the generator's predicted value: Amazon EKS User Guide,
-*Cedar policies*, and *Security model and parent instance trust assumptions*.
+Source for both, and for the generator's predicted value: Amazon EKS User Guide, *Cedar
+policies*, and *Security model and parent instance trust assumptions*.
 
 The [cedar-policy](../policy/cedar-policy/README.md) sample under Policy is the place to
 start if you have not generated a policy before. It shows the generation, what the policy
@@ -128,25 +144,17 @@ separate denies, one per register, rather than one with both. If you add a regis
 deny for it; the setup script's gate check reads the live policy back and refuses to go on
 if it finds the merged form.
 
-**The limitation that comes with that, stated plainly.** `PCR17` binds key release to one
-exact policy document, and so to the image digest, environment, identity and mounts that
-policy pins. It does **not** bind release to a particular guest system image: another guest
-image presenting the same `PCR17` is not excluded. `PCR8:ServiceName` does not close that
-gap either, because it matches the certificate's service name rather than measuring the
-image. So two conditions are not equivalent to binding the system image, and these samples
-do not bind it.
+**What each condition binds.** These two are the minimum the Amazon EKS User Guide,
+*Security model and parent instance trust assumptions*, asks for on a KMS key that protects
+confidential workload data, and the guide describes them as what enforces the integrity of
+the Cedar policy and the system image.
 
-For production, add the system image measurement, `PCR0`, alongside `PCR17` and the `PCR8`
-service name. The Amazon EKS User Guide, *Security model and parent instance trust
-assumptions*, asks for `PCR0` and `PCR17` at minimum. Take `PCR0` from a real attestation
-document produced by the guest image you intend to approve; it is not a value to write by
-hand, and these samples have no step that reads one, which is the other reason they leave
-it out.
-
-One consequence to plan for, which is a consideration rather than anything the guide
-states: because `PCR0` measures the system image, a key gated on it stops releasing
-whenever that image changes, so updating the sandbox environment becomes a key-policy
-change too.
+- `PCR17` is the policy hash. It binds key release to one exact policy document, and so to
+  the image digest, environment, identity and mounts that policy pins. A changed policy
+  gives a different `PCR17`, and KMS refuses to decrypt.
+- `PCR8:ServiceName` is the condition on the system image signing certificate. Use it
+  rather than a raw `PCR8` value, so that the condition stays valid when AWS rotates that
+  certificate.
 
 ## The attested decrypt
 
