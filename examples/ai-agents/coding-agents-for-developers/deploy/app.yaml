@@ -10,10 +10,11 @@ metadata:
     app: agent-app
     app.kubernetes.io/part-of: coding-agents-for-developers
 spec:
-  # One app process at a time. The app keeps running sessions, and the queue that makes each
-  # session's actions run one after another, in memory, so two app pods side by side (a
-  # rolling update) could both act on the same session. Recreate stops the old pod before
-  # the new one starts; the new one then picks up the running sessions.
+  # The app keeps running sessions, and the queue that makes each session's actions run one
+  # after another, in memory, so it is meant to run as one pod. Recreate makes a rollout
+  # stop the old pod before the new one starts. It does not cover a pod deleted or evicted
+  # by hand, or a node that stops answering: the ReplicaSet can start a replacement while the
+  # old pod is still shutting down (see the README, and issue #162 for a Lease).
   replicas: 1
   strategy:
     type: Recreate

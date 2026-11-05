@@ -129,6 +129,37 @@ export async function podInfo(podName) {
   return { node: pod.spec?.nodeName, podIP: pod.status?.podIP, app: labels.app, cli: labels["agent-cli"] };
 }
 
+// A durable record that a Delete could not confirm a session's clean stop, kept as a
+// ConfigMap so it outlives the app process: until the pod it names is confirmed gone, every
+// Delete of that session waits for it before removing the folder.
+const pendingName = (session) => `pending-stop-${session}`;
+export async function recordPendingStop(session, podName) {
+  try {
+    await core.createNamespacedConfigMap({ namespace: NAMESPACE, body: {
+      metadata: { name: pendingName(session), labels: { "app.kubernetes.io/part-of": "coding-agents-for-developers" } },
+      data: { pod: podName },
+    } });
+  } catch (e) {
+    if (e?.code !== 409) throw e; // already recorded for an earlier attempt: keep it
+  }
+}
+export async function pendingStopPod(session) {
+  try {
+    const cm = await core.readNamespacedConfigMap({ name: pendingName(session), namespace: NAMESPACE });
+    return cm?.data?.pod || null;
+  } catch (e) {
+    if (e?.code === 404) return null;
+    throw e;
+  }
+}
+export async function clearPendingStop(session) {
+  try {
+    await core.deleteNamespacedConfigMap({ name: pendingName(session), namespace: NAMESPACE });
+  } catch (e) {
+    if (e?.code !== 404) throw e;
+  }
+}
+
 // Wait until a pod no longer exists (the API answers 404). Resolves true when it is gone,
 // false when it is still there after timeoutMs. Any other error is thrown: "could not tell"
 // is not "gone".

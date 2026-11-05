@@ -46,14 +46,17 @@ if [[ -n "$ns_present" ]]; then
   "${KCTL[@]}" -n "$NAMESPACE" delete sandboxtemplate -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
     || note_fail "templates in $NAMESPACE: delete failed"
   # The app, and its pods, before the network policies, so it is never left running without
-  # its own. If the app could not be removed, the policies stay.
+  # its own. If the app could not be removed, the clean up stops.
   if "${KCTL[@]}" -n "$NAMESPACE" delete deploy,svc -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
        --cascade=foreground --wait=true --timeout=5m; then
     "${KCTL[@]}" -n "$NAMESPACE" delete applicationnetworkpolicy,networkpolicy -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
       || note_fail "network policies in $NAMESPACE: delete failed"
   else
-    note_fail "the app (deploy, svc) in $NAMESPACE: delete failed or timed out; its network policies were left in place"
-    APP_LEFT=1
+    # Stop here: the app may still be running, and everything below (its Pod Identity
+    # role, the storage, the namespace) is what it uses.
+    note_fail "the app (deploy, svc) in $NAMESPACE: delete failed or timed out"
+    echo "Clean up stopped: the app may still be running, so its network policies and everything it uses were left in place. Run clean.sh again once it is gone." >&2
+    exit 1
   fi
 fi
 
@@ -404,9 +407,6 @@ done
 say "Namespace"
 if [[ -z "$ns_present" ]]; then
   echo "namespace $NAMESPACE was already gone"
-elif [[ -n "${APP_LEFT:-}" ]]; then
-  # Deleting the namespace would remove the app and its network policies together.
-  note_fail "namespace $NAMESPACE left in place, because the app in it could not be removed first"
 elif "${KCTL[@]}" delete namespace "$NAMESPACE" --ignore-not-found --wait=true --timeout=120s >/dev/null 2>&1; then
   # Confirm it is really gone. A successful get means it is still present (Terminating); a
   # get that FAILS is only confirmation when the error is an explicit NotFound -- any other

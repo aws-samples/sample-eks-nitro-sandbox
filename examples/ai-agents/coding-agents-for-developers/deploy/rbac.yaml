@@ -65,6 +65,11 @@ rules:
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["create", "get"]
+  # A Delete whose clean stop failed records the pod in a ConfigMap (pending-stop-<session>)
+  # until the pod is confirmed gone, so the record outlives an app restart.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
