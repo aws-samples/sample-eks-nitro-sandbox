@@ -302,10 +302,11 @@ app has many sessions.
 session with the old app first, set a new `IMAGE_TAG` in `.env`, and run `setup.sh`. Then
 replace the warm pods that were already running, which still run the old image; each pool
 boots new ones from the updated template. With every session closed, the only session pods
-left are warm ones:
+left are warm ones. `<NAMESPACE>` is `NAMESPACE` from `.env`
+(`coding-agents-for-developers` unless you changed it):
 
 ```bash
-kubectl --context <CLUSTER_NAME> -n coding-agents-for-developers delete pod -l app=agent-session
+kubectl --context <CLUSTER_NAME> -n <NAMESPACE> delete pod -l app=agent-session
 ```
 
 A session left running on an old pod cannot be picked up by the new app, which has no way

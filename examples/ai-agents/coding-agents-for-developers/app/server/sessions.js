@@ -109,9 +109,18 @@ export async function adoptRunningSessions() {
     try {
       const { node, podIP } = await k8s.podInfo(podName);
       const azId = await k8s.nodeAzId(node);
-      const { token: bridgeToken, cert: bridgeCert } = await k8s.readBridge(podName);
+      let { token: bridgeToken, cert: bridgeCert } = await k8s.readBridge(podName);
       // Pick-up can still be running after the app starts serving (index.js gives it a
-      // deadline). A Restore started meanwhile owns the session: do not overwrite it.
+      // deadline). A Restore started meanwhile owns the session: wait for it. If it
+      // succeeded, its entry stands. If it failed, the pod may still be running under the
+      // same claim, so pick it up after all, reading the bridge again in case the Restore
+      // got as far as restarting it.
+      if (starting.has(session)) {
+        await starting.get(session).catch(() => {});
+        if (live.has(session)) return;
+        if ((await k8s.claimedPodName(claimName)) !== podName) return;
+        ({ token: bridgeToken, cert: bridgeCert } = await k8s.readBridge(podName));
+      }
       if (live.has(session) || starting.has(session)) return;
       const now = Date.now();
       live.set(session, {
