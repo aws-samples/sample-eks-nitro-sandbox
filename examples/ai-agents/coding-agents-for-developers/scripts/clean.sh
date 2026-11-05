@@ -55,7 +55,7 @@ if [[ -n "$ns_present" ]]; then
     # Stop here: the app may still be running, and everything below (its Pod Identity
     # role, the storage, the namespace) is what it uses.
     note_fail "the app (deploy, svc) in $NAMESPACE: delete failed or timed out"
-    echo "Clean up stopped: the app may still be running, so its network policies and everything it uses were left in place. Run clean.sh again once it is gone." >&2
+    echo "Clean up stopped: the app may still be running, so its network policies and the rest of what it uses were left in place (the warm pools, claims and templates above may already be gone). Run clean.sh again once it is gone." >&2
     exit 1
   fi
 fi

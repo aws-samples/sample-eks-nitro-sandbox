@@ -90,6 +90,17 @@ async function startOnce(developer, cli, session, { resume = false } = {}) {
   // A Restore waits its turn behind a Delete of the same session; look the session up again
   // now, so it does not create the folder that Delete just removed.
   if (resume && !(await store.sessionCli(developer, session))) throw new Error(`no session ${session} for ${developer}`);
+  // A Delete that could not confirm the session's last pod stopped left a record. Start a
+  // new pod only once that one is confirmed gone; otherwise two pods could have the folder.
+  if (resume) {
+    const pending = await k8s.pendingStopPod(session);
+    if (pending) {
+      if (!(await k8s.waitPodGone(pending, 10000))) {
+        throw new Error(`the session's previous pod ${pending} is not confirmed stopped yet; try again in a minute, or Delete the session`);
+      }
+      await k8s.clearPendingStop(session);
+    }
+  }
 
   console.log(`start ${session}: ensureAccessPoint`);
   const ap = await store.ensureAccessPoint(developer, session, cli);

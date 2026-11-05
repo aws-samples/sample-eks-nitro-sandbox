@@ -3,7 +3,8 @@
 # - agent-app     the web app. Its Pod Identity role (the App role) manages per-session
 #                 access points and assumes the Mount role. In the cluster it may only do
 #                 what app/server/k8s.js calls: create, get, list and delete SandboxClaims, get
-#                 pods, exec into them, and get nodes.
+#                 pods, exec into them, get, create and delete ConfigMaps (a Delete's
+#                 pending-stop record), and get nodes.
 # - agent-session the session pods of claude-code, opencode, pi and oh-my-pi. Its Pod Identity role (the
 #                 Bedrock role) may only invoke models. It has no S3 Files access: the mount
 #                 credential arrives per session through exec, not from this role.

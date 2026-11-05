@@ -291,9 +291,10 @@ in front of the app takes the API server off that leg too.
 **When the app restarts** (a new image, a node replaced), every open browser terminal shows
 `[detached]`, because the browser's connection was to the old app pod. The CLIs keep
 running in tmux in their own pods. The new app reads each running pod's token and
-certificate back over exec, once, and starts serving when it has (or after 60 seconds, with
-the pick-up finishing in the background; until it does, New agent, Restore, Close and
-Delete wait for it, for up to 90 seconds, then ask you to try again). Reload the page, then
+certificate back over exec, once, and starts serving when it has, or when the pick-up fails
+(logged), or after 60 seconds, with the pick-up finishing in the background; until it
+does, New agent, Restore, Close and Delete wait for it, for up to 90 seconds, then ask you
+to try again. Reload the page, then
 **Open** each session again. The app keeps each session's state, and the queue that runs
 one session's actions one at a time, in memory, so it must run as one pod. The Deployment
 has one replica, rolls out with the `Recreate` strategy (the old pod stops before the new

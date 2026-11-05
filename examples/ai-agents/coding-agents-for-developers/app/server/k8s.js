@@ -140,17 +140,26 @@ export async function recordPendingStop(session, podName) {
       data: { pod: podName },
     } });
   } catch (e) {
-    if (e?.code !== 409) throw e; // already recorded for an earlier attempt: keep it
+    if (e?.code !== 409) throw e;
+    // Already recorded by an earlier attempt: fine only if it names this same pod.
+    const recorded = await pendingStopPod(session);
+    if (recorded !== podName) {
+      throw new Error(`an unconfirmed stop of pod ${recorded} is already recorded for this session`);
+    }
   }
 }
+// The pod a pending-stop record names, or null when there is no record. A record without a
+// pod name is an error, not "no record".
 export async function pendingStopPod(session) {
+  let cm;
   try {
-    const cm = await core.readNamespacedConfigMap({ name: pendingName(session), namespace: NAMESPACE });
-    return cm?.data?.pod || null;
+    cm = await core.readNamespacedConfigMap({ name: pendingName(session), namespace: NAMESPACE });
   } catch (e) {
     if (e?.code === 404) return null;
     throw e;
   }
+  if (!cm?.data?.pod) throw new Error(`the pending-stop record for this session names no pod`);
+  return cm.data.pod;
 }
 export async function clearPendingStop(session) {
   try {
