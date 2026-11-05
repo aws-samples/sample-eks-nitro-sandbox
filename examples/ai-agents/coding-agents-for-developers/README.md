@@ -176,21 +176,19 @@ the six CLIs answering the same prompt, each on its own model: the five Bedrock 
 inference profile in the app's agent list (Claude Sonnet here), and Codex on a GPT model
 served through the Bedrock "Mantle" OpenAI-compatible endpoint. These screenshots are from
 earlier runs of this sample. On the fresh run, each of the five Bedrock CLIs completed turns
-in the Restore check below, Codex also ran a shell command for you (see
-[Good to know](#good-to-know)), and Kiro CLI stopped at its sign-in menu, since its
-sign-in is the developer's own rather than Bedrock:
+in the Restore check below, and Kiro CLI stopped at its sign-in menu, since its sign-in is
+the developer's own rather than Bedrock:
 
 ```text
-? Select login method ›
+ Select login method
 ❯ Use with Builder ID
   Use with Google
   Use with GitHub
   Use with Your Organization
 ```
 
-A second fresh run of the same code (after the clean up, `setup.sh` again) then had a
-developer sign in from that menu with their own Kiro identity and ask one question. The
-terminal, abridged to the turn:
+On an earlier run of this sample, a developer signed in from that menu with their own Kiro
+identity and asked one question. The terminal, abridged to the turn:
 
 ```text
   In one sentence what is EKS Auto Mode
@@ -332,12 +330,12 @@ belongs to the pod, not the node.
 ```text
 POST /api/new
 /api/new developer=carlos cli=opencode
-start mvltsxn1-calm-tapir: ensureAccessPoint
-start mvltsxn1-calm-tapir: claimPod (ap=fsap-0f915406942f92491)
-start mvltsxn1-calm-tapir: pod=agent-opencode-5gls5 node=i-008d8e6f8738ef2d0
-start mvltsxn1-calm-tapir: startSession azId=usw2-az3
-session started in agent-opencode-5gls5
-/api/new done session=mvltsxn1-calm-tapir
+start mw30yu6s-nimble-shrew: ensureAccessPoint
+start mw30yu6s-nimble-shrew: claimPod (ap=fsap-078b25ed6cdcbaa8b)
+start mw30yu6s-nimble-shrew: pod=agent-opencode-wcwlq node=i-0384a7bb8114c048e
+start mw30yu6s-nimble-shrew: startSession azId=use1-az2
+session started in agent-opencode-wcwlq
+/api/new done session=mw30yu6s-nimble-shrew
 ```
 
 ## The session lifecycle
@@ -359,22 +357,24 @@ mounts the same folder in a new pod, and only Delete removes the folder.*
 | Restore | The app claims a new warm pod (a new pod UID), mounts the same folder and starts the CLI with its own continue-the-last-conversation option: `claude --continue`, `codex resume --last`, `kiro-cli chat --v3 --resume`, `opencode --continue`, `pi --continue` and `omp --continue`. The history is in the CLI's home inside the folder, so it comes back with it; a session restored before its first prompt starts the CLI fresh. |
 | Delete | The app deletes the access point first, so nothing can mount the folder again, then every object version and delete marker under the session's prefix in the (versioned) bucket. S3 Files exports writes to the bucket asynchronously, so a write made just before Delete can arrive after the drain: the app lists the prefix again every 20 seconds and deletes whatever came back, until two lists in a row are empty. If objects keep coming back, or a delete fails, it puts the access point back, so the session stays in the list and Delete can be retried, and returns the error. |
 
-On the fresh run, a pi session wrote 30 files into its folder and was deleted straight
-away. The exports kept arriving after the first drain, and the app log shows each round
-that found something:
+**Delete can leave files that were written just before it.** On the fresh run, 30 files
+were written into a pi session's `project/` folder and the session was deleted straight
+away. The app log:
 
 ```text
-session mvlthlq3-quiet-crane: stopped in agent-pi-qmjnq
-delete mvlthlq3-quiet-crane: removed 16 version(s) in round 1
-delete mvlthlq3-quiet-crane: removed 1 version(s) in round 2
-delete mvlthlq3-quiet-crane: removed 10 version(s) in round 4
-delete mvlthlq3-quiet-crane: removed 20 version(s) in round 5
+session mw30z8yp-tidy-panda: stopped in agent-mw30z8yp-tidy-panda
+delete mw30z8yp-tidy-panda: removed 19 version(s) in round 1
 ```
 
-Rounds 6 and 7 found nothing, so Delete returned (`{"ok":true}`, after 122 seconds).
-Afterwards `get-access-point` for the session's access point answered
-`ResourceNotFoundException`, and `list-object-versions` for its prefix found no versions
-and no delete markers.
+Rounds 2 and 3 found nothing, so Delete returned (`{"ok":true}`, after 41 seconds), and
+right after it `get-access-point` answered `ResourceNotFoundException` and
+`list-object-versions` for the prefix found no versions and no delete markers. About three
+minutes after the files were written, though, the prefix held 30 versions, one for each
+`project/note-*.txt`: the export to the bucket arrived after the drain had stopped
+looking. On an earlier run the late exports arrived within two minutes and the drain caught
+them in rounds 2 to 5. Until Delete waits on the file system itself rather than on a quiet
+bucket, check the prefix a few minutes after a Delete, or let the clean up empty the
+bucket.
 
 Before it releases a pod, the app runs `session-stop.sh` in it through the exec API: it
 ends every process of the session's user, then unmounts `/workspace`. The CLIs keep SQLite
@@ -394,8 +394,8 @@ session is gone counts as idle since it started. If the `SandboxClaim` cannot be
 Close and Delete return the error, the app keeps the session in its list so the next
 minute's check retries the release, and Delete leaves the folder in place.
 
-New agent is fast because the pod is already warm. On the fresh run, the time from the
-click (`POST /api/new`) to a terminal with the CLI running was:
+New agent is fast because the pod is already warm. On an earlier run of this sample, the
+time from the click (`POST /api/new`) to a terminal with the CLI running was:
 
 | New agent | Time |
 |---|---|
@@ -404,9 +404,12 @@ click (`POST /api/new`) to a terminal with the CLI running was:
 | A second claude-code session while its pool of one was still refilling | failed after 120 s |
 | Restore, from a warm pod, for each of the five Bedrock CLIs | 1.3 to 4.4 s |
 
+On the fresh run, Restore from a warm pod took 1.9 to 2.6 s for claude-code, opencode,
+codex and oh-my-pi, and 56.7 s for pi, whose pool had not yet booted a replacement.
+
 The first session is slower because it is the first mount of a new file system. The third
 row is a cold start: with the warm pod already claimed, the claim makes a pod of its own,
-and on the fresh run the cluster had no free memory for it (`0/4 nodes are available: 2
+and on that run the cluster had no free memory for it (`0/4 nodes are available: 2
 Insufficient memory`), so it waited for EKS Auto Mode to add a node, longer than the app's
 120-second limit. The app then released the claim and returned the error; the session's
 folder stayed, so it was listed as idle, and its Restore took 1.4 s once the pool had a
@@ -422,42 +425,51 @@ up on a **new pod** (a new pod UID) and the CLI continues its conversation. For 
 fresh run (abridged to the lines that matter; the prompts were typed into the terminal):
 
 ```text
-before: pod=agent-pi-tzm6p uid=b22ffe6e-8ff5-4351-94fa-a3fbf429451f
+before: pod=agent-pi-h662k uid=58a30ecf-f9e8-4383-8695-1bf851c9a622
  Remember the code word FINCH-9. Reply with only: noted.
  noted.
-POST /api/close   -> {"ok":true}                                                                    HTTP 200 in 0.663697s
-POST /api/restore -> {"error":"claim agent-mvltt29k-nimble-heron did not resolve to a ready pod in time"}   HTTP 500 in 120.351248s
-POST /api/restore -> {"session":"mvltt29k-nimble-heron","display":"nimble-heron","cli":"pi"}           HTTP 200 in 3.675040s
-after: pod=agent-pi-kh9gs uid=46ed4ff2-4ffe-4f48-832c-a28508923430
+POST /api/close   -> 200 0.868620 {"ok":true}
+POST /api/restore -> 200 56.705730 {"session":"mw30z8yp-tidy-panda","display":"tidy-panda","cli":"pi"}
+after: pod=agent-mw30z8yp-tidy-panda uid=91fcce39-e69b-4457-9e31-d545684f4c27
  What code word did I ask you to remember? Reply with only the word.
  FINCH-9
 ```
 
-The first Restore found the pi pool and the cluster both full and failed at the app's
-120-second limit (see the timings above); the second, once a node had been added and the
-pool had a warm pod, came back on a new pod with the conversation intact. The same check
-passed for claude-code (also on its second Restore, for the same reason), codex, opencode
-and oh-my-pi on the same run, each on a new pod UID.
+The middle numbers are the HTTP status and the seconds the call took. The pi pool had no
+warm pod yet, so the claim made a pod of its own (named for the claim) and the Restore
+waited 57 seconds for it to boot; the conversation came back intact on the new pod. The
+same check passed for claude-code (`OTTER-4`), opencode (`HERON-6`), codex (`LYNX-8`) and
+oh-my-pi (`PANDA-3`) on the same run, each on a new pod UID.
 
 Close works on any running session, including one the app did not start itself. On start,
 the app lists the sample's `SandboxClaim`s and picks up each session that still has a pod
 and an access point, so a session keeps its idle check and credential refresh across an
-app restart. On the fresh run, the app pod was restarted with three sessions running, and
-its log showed:
+app restart. On the fresh run, the app was restarted
+(`kubectl rollout restart deploy/agent-app`) with six sessions running, one per CLI, and
+the new pod's log showed:
 
 ```text
-session mvltgu4k-clever-tapir: picked up after an app restart (pod agent-codex-jssg7)
-session mvlthr1m-clever-lynx: picked up after an app restart (pod agent-mvlthr1m-clever-lynx)
-session mvltkhlp-merry-heron: picked up after an app restart (pod agent-kiro-cli-b5wfm)
-picked up 3 running session(s) after start
-session mvltgu4k-clever-tapir: mount credential refreshed
-session mvlthr1m-clever-lynx: mount credential refreshed
-session mvltkhlp-merry-heron: mount credential refreshed
+session mw30zccw-tidy-marten: picked up after an app restart (pod agent-codex-nsz65)
+session mw30zgbs-clever-heron: picked up after an app restart (pod agent-kiro-cli-k6qc7)
+session mw30zehs-jolly-tapir: picked up after an app restart (pod agent-oh-my-pi-84bh2)
+session mw30yu6s-nimble-shrew: picked up after an app restart (pod agent-opencode-pqsjw)
+session mw30z8yp-tidy-panda: picked up after an app restart (pod agent-mw30z8yp-tidy-panda)
+session mw30zahh-keen-shrew: picked up after an app restart (pod agent-claude-code-6wffr)
+picked up 6 running session(s) after start
+coding-agents-for-developers app on :8080, CLIs: claude-code, codex, kiro-cli, opencode, pi, oh-my-pi
+session mw30zehs-jolly-tapir: mount credential refreshed
+session mw30zccw-tidy-marten: mount credential refreshed
+session mw30yu6s-nimble-shrew: mount credential refreshed
+session mw30z8yp-tidy-panda: mount credential refreshed
+session mw30zahh-keen-shrew: mount credential refreshed
+session mw30zgbs-clever-heron: mount credential refreshed
 ```
 
-Nobody had re-opened those sessions. Closing `clever-lynx` afterwards stopped its CLI
-(`session mvlthr1m-clever-lynx: stopped in agent-mvlthr1m-clever-lynx`), deleted its
-claim, and left it in the list as idle, with its folder.
+The app picked the sessions up before it started serving, and refreshed each mount
+credential through `session-bridge`. Nobody had re-opened those sessions. Closing
+`tidy-marten` afterwards stopped its CLI
+(`session mw30zccw-tidy-marten: stopped in agent-codex-nsz65`), deleted its claim, and left
+it in the list as idle, with its folder.
 
 Minimizing a window or closing the browser only detaches the terminal; the CLI keeps
 running in tmux in its pod. On an earlier run of this sample, claude-code was asked to print a timestamp
@@ -485,20 +497,18 @@ for the clean up, but the list does not depend on them. The access points, one p
 ```text
 $ aws s3files list-access-points --file-system-id <S3_FILES_FS_ID> --region <AWS_REGION> \
     --query 'accessPoints[].{id:accessPointId,path:rootDirectory.path}' --output table
--------------------------------------------------------------------------
-|                           ListAccessPoints                            |
-+-------------------------+---------------------------------------------+
-|           id            |                    path                     |
-+-------------------------+---------------------------------------------+
-|  fsap-0f915406...       |  /carlos/opencode/mvltsxn1-calm-tapir       |
-|  fsap-06785465...       |  /priya/oh-my-pi/mvltt0an-gentle-vole       |
-|  fsap-0e1553a1...       |  /carlos/claude-code/mvltsw76-eager-marten  |
-|  fsap-0cd3c381...       |  /sam/kiro-cli/mvltkhlp-merry-heron         |
-|  fsap-0cb55b1b...       |  /priya/pi/mvltt29k-nimble-heron            |
-|  fsap-0611c55d...       |  /carlos/codex/mvltgu4k-clever-tapir        |
-|  fsap-069ccc47...       |  /carlos/pi/mvlthr1m-clever-lynx            |
-|  fsap-0be84e10...       |  /sam/claude-code/mvltt8t6-lively-fox       |
-+-------------------------+---------------------------------------------+
+-----------------------------------------------------------------------
+|                          ListAccessPoints                           |
++-------------------------+-------------------------------------------+
+|           id            |                   path                    |
++-------------------------+-------------------------------------------+
+|  fsap-078caa30...       |  /sam/kiro-cli/mw30zgbs-clever-heron      |
+|  fsap-0599a512...       |  /carlos/codex/mw30zccw-tidy-marten       |
+|  fsap-0e2d9151...       |  /priya/oh-my-pi/mw30zehs-jolly-tapir     |
+|  fsap-03163c35...       |  /priya/pi/mw30z8yp-tidy-panda            |
+|  fsap-021565f0...       |  /carlos/claude-code/mw30zahh-keen-shrew  |
+|  fsap-078b25ed...       |  /carlos/opencode/mw30yu6s-nimble-shrew   |
++-------------------------+-------------------------------------------+
 ```
 
 The access-point ids are shortened here; the command prints them in full.
@@ -518,8 +528,8 @@ kubectl -n coding-agents-for-developers exec $POD -- sh -c 'env | cut -d= -f1 | 
 
 ```text
 isolated-sandbox
-6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-202.28
+6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
+1246.41
 dm-0 vda vdb vdc
 AWS_CONTAINER_CREDENTIALS_FULL_URI
 AWS_DEFAULT_REGION
@@ -531,24 +541,25 @@ AWS_STS_REGIONAL_ENDPOINTS
 ```
 
 The first four lines are from the fresh run. The variable names are from an earlier run of
-this sample: on the fresh run they were read from the pod spec and the image instead, and
-the set was the same (`AWS_STS_REGIONAL_ENDPOINTS`, `AWS_DEFAULT_REGION`, `AWS_REGION`,
-`AWS_CONTAINER_CREDENTIALS_FULL_URI` and `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE` from the
-pod spec; `CLAUDE_CODE_USE_BEDROCK` and `ANTHROPIC_MODEL` among the image's).
+this sample: on the fresh run they were read from the pod spec instead
+(`kubectl get pod $POD -o jsonpath='{range .spec.containers[0].env[*]}{.name}{"\n"}{end}'`),
+which listed `AWS_STS_REGIONAL_ENDPOINTS`, `AWS_DEFAULT_REGION`, `AWS_REGION`,
+`AWS_CONTAINER_CREDENTIALS_FULL_URI` and `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`;
+`CLAUDE_CODE_USE_BEDROCK` and `ANTHROPIC_MODEL` come from the image.
 
 The same commands in the app's pod, an ordinary pod with no runtime class, on a node of the
 same cluster:
 
 ```text
-6.18.51 #2 SMP PREEMPT_DYNAMIC Wed Oct  7 22:33:11 UTC 2026
-117374.72
-dm-0 nvme0n1 nvme1n1 nvme2n1 zram0
+6.18.56 #2 SMP PREEMPT_DYNAMIC Fri Oct 30 22:32:37 UTC 2026
+1876.15
+dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0
 ```
 
-The sandbox runs its own kernel build (`#1`, built Oct 1; the node's is `#2`, built Oct 7),
-its uptime of 202 seconds matches the pod's age (it started 204 seconds before the command)
-because the sandbox booted with the pod (the node has been up for 32 hours), and it sees virtio disks (`vda`, `vdb`, `vdc`, with a
-`dm-0` device-mapper node on top) where the ordinary pod sees the instance's `nvme`
+The sandbox runs its own kernel (6.18.54 build `#1`, built Oct 22; the node's is 6.18.56
+build `#2`, built Oct 30). Its uptime of 1,246 seconds matches the pod's age (21 minutes)
+because the sandbox booted with the pod, and it sees virtio disks (`vda`, `vdb`, `vdc`,
+with a `dm-0` device-mapper node on top) where the ordinary pod sees the instance's `nvme`
 devices. No model API
 key is in the pod: the only AWS variables are the Pod Identity credential endpoint
 (`AWS_CONTAINER_CREDENTIALS_FULL_URI`, `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`) and the
@@ -626,13 +637,13 @@ kubectl -n coding-agents-for-developers exec $POD -- sh -c \
 0
 Could not start amazon-efs-mount-watchdog, unrecognized init system "sleep"
 Mount attempt 1/3 failed due to b'mount.nfs4: access denied by server while mounting 127.0.0.1:/\n', wait 1 sec before next attempt.
-Mount attempt 2/3 failed due to b'mount.nfs4: access denied by server while mounting 127.0.0.1:/\n', wait 2 sec before next attempt.
+Mount attempt 2/3 failed due to b'mount.nfs4: access denied by server while mounting 127.0.0.1:/\n', wait 1 sec before next attempt.
 b'mount.nfs4: access denied by server while mounting 127.0.0.1:/'
 exit 32
 
 Could not start amazon-efs-mount-watchdog, unrecognized init system "sleep"
 Mount attempt 1/3 failed due to b'mount.nfs4: access denied by server while mounting 127.0.0.1:/\n', wait 1 sec before next attempt.
-Mount attempt 2/3 failed due to b'mount.nfs4: access denied by server while mounting 127.0.0.1:/\n', wait 1 sec before next attempt.
+Mount attempt 2/3 failed due to b'mount.nfs4: access denied by server while mounting 127.0.0.1:/\n', wait 2 sec before next attempt.
 b'mount.nfs4: access denied by server while mounting 127.0.0.1:/'
 exit 32
 ```
@@ -647,27 +658,27 @@ mount helper noting that the container has no init system for its background wat
 does not affect the mount.)
 
 From outside the cluster, the bucket shows each session under its own prefix (abridged to
-two sessions and their folder structure; the CLI's home fills in below each session, 1,324
-objects across the eight sessions of the fresh run):
+two sessions and their folder structure; the CLI's home fills in below each session, 1,296
+objects across the six sessions of the fresh run):
 
 ```bash
 aws s3 ls s3://<S3_BUCKET_NAME>/coding-agents/ --recursive
 ```
 
 ```text
-2026-10-24 03:06:06          0 coding-agents/carlos/
-2026-10-24 03:15:13          0 coding-agents/carlos/claude-code/
-2026-10-24 03:15:15          0 coding-agents/carlos/claude-code/mvltsw76-eager-marten/
-2026-10-24 03:24:01          0 coding-agents/carlos/claude-code/mvltsw76-eager-marten/home/
-2026-10-24 03:23:35        224 coding-agents/carlos/claude-code/mvltsw76-eager-marten/home/.tmux.conf
-2026-10-24 03:15:20          0 coding-agents/carlos/claude-code/mvltsw76-eager-marten/project/
+2026-11-05 04:08:09          0 coding-agents/carlos/
+2026-11-05 04:08:14          0 coding-agents/carlos/claude-code/
+2026-11-05 04:08:16          0 coding-agents/carlos/claude-code/mw30zahh-keen-shrew/
+2026-11-05 04:29:38          0 coding-agents/carlos/claude-code/mw30zahh-keen-shrew/home/
+2026-11-05 04:20:24        224 coding-agents/carlos/claude-code/mw30zahh-keen-shrew/home/.tmux.conf
+2026-11-05 04:08:18          0 coding-agents/carlos/claude-code/mw30zahh-keen-shrew/project/
 ...
-2026-10-24 03:08:41          0 coding-agents/sam/
-2026-10-24 03:18:05          0 coding-agents/sam/claude-code/
-2026-10-24 03:18:06          0 coding-agents/sam/claude-code/mvltt8t6-lively-fox/
-2026-10-24 03:18:06          0 coding-agents/sam/claude-code/mvltt8t6-lively-fox/home/
-2026-10-24 03:19:04        224 coding-agents/sam/claude-code/mvltt8t6-lively-fox/home/.tmux.conf
-2026-10-24 03:18:06          0 coding-agents/sam/claude-code/mvltt8t6-lively-fox/project/
+2026-11-05 04:08:23          0 coding-agents/sam/
+2026-11-05 04:08:23          0 coding-agents/sam/kiro-cli/
+2026-11-05 04:08:23          0 coding-agents/sam/kiro-cli/mw30zgbs-clever-heron/
+2026-11-05 04:08:23          0 coding-agents/sam/kiro-cli/mw30zgbs-clever-heron/home/
+2026-11-05 04:09:26        224 coding-agents/sam/kiro-cli/mw30zgbs-clever-heron/home/.tmux.conf
+2026-11-05 04:08:33          0 coding-agents/sam/kiro-cli/mw30zgbs-clever-heron/project/
 ...
 ```
 
@@ -789,10 +800,10 @@ done
 ```text
 https://bedrock-runtime.<AWS_REGION>.amazonaws.com/ -> exit 0   # allowed host, 443: connected
 https://github.com/ -> exit 0                                   # allowed host, 443: connected
-curl: (28) Connection timed out after 8001 milliseconds
-https://example.com/ -> exit 28                                 # host not in the policy: blocked
 curl: (28) Connection timed out after 8002 milliseconds
+https://example.com/ -> exit 28                                 # host not in the policy: blocked
 https://github.com:22/ -> exit 28                               # allowed host, port 22 not allowed: blocked
+curl: (28) Connection timed out after 8003 milliseconds
 ```
 
 The `#` comments are added here; the rest is the fresh run's output, where each `curl:`
@@ -810,8 +821,8 @@ error line goes to standard error and so can print before or after its exit line
   about 129 MiB (`MemTotal: 132568 kB`): Claude Code could not start, and exec into a Codex
   pod failed. So the `SandboxTemplate` requests 1536 MiB of memory, with no CPU request and
   no limits. The app's Deployment sets no `resources` at all. This is each CLI's pod 15
-  seconds after the same long-answer prompt was sent to five of them on the fresh run
-  (`kubectl top pod`):
+  seconds after the same long-answer prompt was sent to five of them on an earlier run of
+  this sample (`kubectl top pod`):
 
   ```text
   NAME                         CPU(cores)   MEMORY(bytes)
@@ -844,8 +855,10 @@ error line goes to standard error and so can print before or after its exit line
   it after 30 minutes, so an agent left running keeps writing to its folder past an hour. A
   refresh that fails is logged by the app with the session's name
   (`kubectl logs deploy/agent-app`) and retried every minute; if it kept failing until the
-  hour ran out, the session's writes to its folder would start to fail. On the fresh run, a
-  kiro-cli session started at 03:08 UTC; the app was restarted at 03:13 and refreshed the
+  hour ran out, the session's writes to its folder would start to fail. On an earlier run of
+  this sample, when the app still wrote the refreshed credential over the exec API rather
+  than through `session-bridge` (the fresh run's refreshes through the bridge are in the
+  app-restart log above), a kiro-cli session started at 03:08 UTC; the app was restarted at 03:13 and refreshed the
   session's credential when it picked the session up. From 03:24 a job in its terminal
   appended a line to a file in its folder every minute. The app log showed the refresh
   every 30 minutes after that, and the folder had every minute's line through 04:15, past
@@ -887,7 +900,7 @@ error line goes to standard error and so can print before or after its exit line
   Despite its name, that only drops Codex's second, inner boundary; it does not reach past
   the pod's own: the sandbox's own kernel, the egress policy, and a mount credential for
   this one session's folder. The sample leaves Codex's approval policy at its default, and
-  Codex's `/status` on the fresh run read `Permissions: Custom (danger-full-access, Ask for
+  Codex's `/status` on an earlier run of this sample read `Permissions: Custom (danger-full-access, Ask for
   approval)`. Asked in its terminal to run a command, Codex ran it as the session's
   unprivileged user and showed no sandbox warning:
 
