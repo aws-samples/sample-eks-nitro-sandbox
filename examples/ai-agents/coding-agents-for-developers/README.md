@@ -178,9 +178,9 @@ the six CLIs answering the same prompt, each on its own model: four on the Bedro
 inference profile in the app's agent list (Claude Sonnet here), Codex on a GPT model
 served through the Bedrock "Mantle" OpenAI-compatible endpoint, and Kiro CLI through the
 developer's own Kiro sign-in. These screenshots are from
-earlier runs of this sample. On the fresh run, each of the five Bedrock CLIs completed turns
-in the Restore check below, and Kiro CLI stopped at its sign-in menu, since its sign-in is
-the developer's own rather than Bedrock:
+earlier runs of this sample. On the fresh run, each of the five Bedrock CLIs answered a
+prompt typed into its terminal in the browser, and Kiro CLI stopped at its sign-in menu,
+since its sign-in is the developer's own rather than Bedrock:
 
 ```text
  Select login method
@@ -313,15 +313,15 @@ pod was stopped by hand:
 
 ```text
 bridge-supervise: session-bridge exited (143), starting it again
-2026/11/05 17:32:33 session-bridge listening on :7681
+2026/11/05 23:14:06 session-bridge listening on :7681
 ```
 
 and the app log, over the next two checks:
 
 ```text
-session mw3tpdzt-zesty-finch (pod agent-codex-4s84k): idle check failed (1 in a row), will retry next minute: self-signed certificate
-session mw3tpdzt-zesty-finch (pod agent-codex-4s84k): idle check failed (2 in a row), will retry next minute: self-signed certificate
-session mw3tpdzt-zesty-finch: session-bridge restarted in agent-codex-4s84k; pinned its new certificate
+session mw45t1lw-quiet-fox (pod agent-codex-b7x5g): idle check failed (1 in a row), will retry next minute: self-signed certificate
+session mw45t1lw-quiet-fox (pod agent-codex-b7x5g): idle check failed (2 in a row), will retry next minute: self-signed certificate
+session mw45t1lw-quiet-fox: session-bridge restarted in agent-codex-b7x5g; pinned its new certificate
 ```
 
 The checks after that passed. **When the pod itself is gone**, or the bridge cannot be
@@ -364,13 +364,13 @@ belongs to the pod, not the node.
 
 ```text
 POST /api/new
-/api/new developer=carlos cli=opencode
-start mw30yu6s-nimble-shrew: ensureAccessPoint
-start mw30yu6s-nimble-shrew: claimPod (ap=fsap-078b25ed6cdcbaa8b)
-start mw30yu6s-nimble-shrew: pod=agent-opencode-wcwlq node=i-0384a7bb8114c048e
-start mw30yu6s-nimble-shrew: startSession azId=use1-az2
-session started in agent-opencode-wcwlq
-/api/new done session=mw30yu6s-nimble-shrew
+/api/new developer=priya cli=oh-my-pi
+start mw45t3b4-nimble-otter: ensureAccessPoint
+start mw45t3b4-nimble-otter: claimPod (ap=fsap-0f8af1b465b164a35)
+start mw45t3b4-nimble-otter: pod=agent-oh-my-pi-tlm2v node=i-0c4718cd84fe0f8a1
+start mw45t3b4-nimble-otter: startSession azId=use1-az2
+session started in agent-oh-my-pi-tlm2v
+/api/new done session=mw45t3b4-nimble-otter
 ```
 
 ## The session lifecycle
@@ -397,13 +397,13 @@ files were written into a running pi session's `project/` folder and the session
 deleted straight away. The app log:
 
 ```text
-session mw3ulcl4-quiet-gecko: stopped in agent-pi-75r9k, folder emptied
-delete mw3ulcl4-quiet-gecko: removed 10 version(s) in round 1
+session mw45sxsp-clever-koala: stopped in agent-pi-x4dkd, folder emptied
+delete mw45sxsp-clever-koala: removed 19 version(s) in round 1
 ```
 
 Round 1 removed what had been exported before (the CLI's home and settings); the 30 new
 files were removed through the mount before S3 Files exported them, so they never reached
-the bucket. Delete returned (`{"ok":true}`) after 92 seconds, and the prefix had no versions
+the bucket. Delete returned (`{"ok":true}`) after 91 seconds, and the prefix had no versions
 and no delete markers at every check for the four minutes after the write. Before this
 change, the same check ended with the 30 files in the bucket under the deleted session's
 prefix about three minutes later: Delete had stopped looking after two empty lists 20
@@ -440,8 +440,10 @@ time from the click (`POST /api/new`) to a terminal with the CLI running was:
 | A second claude-code session while its pool of one was still refilling | failed after 120 s |
 | Restore, from a warm pod, for each of the five Bedrock CLIs | 1.3 to 4.4 s |
 
-On the fresh run, Restore from a warm pod took 1.9 to 2.6 s for claude-code, opencode,
-codex and oh-my-pi, and 56.7 s for pi, whose pool had not yet booted a replacement.
+On the fresh run, Restore of pi from a warm pod took 2.5 s. In the browser pass of the same
+run, a pi Restore made a minute after a new pi session had taken the warm pod took 65 s to
+open its terminal: the pool had not yet booted a replacement, so the claim waited for a pod
+of its own.
 
 The first session is slower because it is the first mount of a new file system. The third
 row is a cold start: with the warm pod already claimed, the claim makes a pod of its own,
@@ -467,21 +469,21 @@ up on a **new pod** (a new pod UID) and the CLI continues its conversation. For 
 fresh run (abridged to the lines that matter; the prompts were typed into the terminal):
 
 ```text
-before: pod=agent-pi-h662k uid=58a30ecf-f9e8-4383-8695-1bf851c9a622
- Remember the code word FINCH-9. Reply with only: noted.
- noted.
-POST /api/close   -> 200 0.868620 {"ok":true}
-POST /api/restore -> 200 56.705730 {"session":"mw30z8yp-tidy-panda","display":"tidy-panda","cli":"pi"}
-after: pod=agent-mw30z8yp-tidy-panda uid=91fcce39-e69b-4457-9e31-d545684f4c27
+before: pod=agent-pi-vhlw8 uid=97335e79-26eb-4909-a60c-665bcf569c56
+ Remember the code word FINCH-9. Reply with only: noted
+ noted
+POST /api/close   -> 200 0.310894 {"ok":true}
+POST /api/restore -> 200 2.502836 {"session":"mw45sxsp-clever-koala","display":"clever-koala","cli":"pi"}
+after: pod=agent-pi-x4dkd uid=34260ff7-b08d-43ef-a966-7b007ce6e9e9
  What code word did I ask you to remember? Reply with only the word.
  FINCH-9
 ```
 
-The middle numbers are the HTTP status and the seconds the call took. The pi pool had no
-warm pod yet, so the claim made a pod of its own (named for the claim) and the Restore
-waited 57 seconds for it to boot; the conversation came back intact on the new pod. The
-same check passed for claude-code (`OTTER-4`), opencode (`HERON-6`), codex (`LYNX-8`) and
-oh-my-pi (`PANDA-3`) on the same run, each on a new pod UID.
+The middle numbers are the HTTP status and the seconds the call took: the Restore claimed
+a warm pod and returned in 2.5 seconds, and the conversation came back intact on the new
+pod. On an earlier run of this sample, the same check passed for claude-code (`OTTER-4`),
+opencode (`HERON-6`), codex (`LYNX-8`) and oh-my-pi (`PANDA-3`), each on a new pod UID. On
+the fresh run, the browser pass restored opencode, which remembered `HERON-6`.
 
 Close works on any running session, including one the app did not start itself. On start,
 the app lists the sample's `SandboxClaim`s and picks up each session that still has a pod
@@ -491,26 +493,27 @@ app restart. On the fresh run, the app was restarted
 the new pod's log showed:
 
 ```text
-session mw30zccw-tidy-marten: picked up after an app restart (pod agent-codex-nsz65)
-session mw30zgbs-clever-heron: picked up after an app restart (pod agent-kiro-cli-k6qc7)
-session mw30zehs-jolly-tapir: picked up after an app restart (pod agent-oh-my-pi-84bh2)
-session mw30yu6s-nimble-shrew: picked up after an app restart (pod agent-opencode-pqsjw)
-session mw30z8yp-tidy-panda: picked up after an app restart (pod agent-mw30z8yp-tidy-panda)
-session mw30zahh-keen-shrew: picked up after an app restart (pod agent-claude-code-6wffr)
+session mw45szt8-tidy-tapir: picked up after an app restart (pod agent-claude-code-r7b6n)
+session mw45t1lw-quiet-fox: picked up after an app restart (pod agent-codex-b7x5g)
+session mw45svq7-merry-heron: picked up after an app restart (pod agent-opencode-7lxmp)
+session mw45sxsp-clever-koala: picked up after an app restart (pod agent-pi-x4dkd)
+session mw45t3b4-nimble-otter: picked up after an app restart (pod agent-oh-my-pi-tlm2v)
+session mw45t5ns-keen-ibex: picked up after an app restart (pod agent-kiro-cli-pjrfg)
 picked up 6 running session(s) after start
 coding-agents-for-developers app on :8080, CLIs: claude-code, codex, kiro-cli, opencode, pi, oh-my-pi
-session mw30zehs-jolly-tapir: mount credential refreshed
-session mw30zccw-tidy-marten: mount credential refreshed
-session mw30yu6s-nimble-shrew: mount credential refreshed
-session mw30z8yp-tidy-panda: mount credential refreshed
-session mw30zahh-keen-shrew: mount credential refreshed
-session mw30zgbs-clever-heron: mount credential refreshed
+GET /
+session mw45t5ns-keen-ibex: mount credential refreshed
+session mw45svq7-merry-heron: mount credential refreshed
+session mw45szt8-tidy-tapir: mount credential refreshed
+session mw45sxsp-clever-koala: mount credential refreshed
+session mw45t3b4-nimble-otter: mount credential refreshed
+session mw45t1lw-quiet-fox: mount credential refreshed
 ```
 
 The app picked the sessions up before it started serving, and refreshed each mount
 credential through `session-bridge`. Nobody had re-opened those sessions. Closing
-`tidy-marten` afterwards stopped its CLI
-(`session mw30zccw-tidy-marten: stopped in agent-codex-nsz65`), deleted its claim, and left
+`quiet-fox` afterwards stopped its CLI
+(`session mw45t1lw-quiet-fox: stopped in agent-codex-b7x5g`), deleted its claim, and left
 it in the list as idle, with its folder.
 
 Minimizing a window or closing the browser only detaches the terminal; the CLI keeps
@@ -544,16 +547,18 @@ $ aws s3files list-access-points --file-system-id <S3_FILES_FS_ID> --region <AWS
 +-------------------------+-------------------------------------------+
 |           id            |                   path                    |
 +-------------------------+-------------------------------------------+
-|  fsap-078caa30...       |  /sam/kiro-cli/mw30zgbs-clever-heron      |
-|  fsap-0599a512...       |  /carlos/codex/mw30zccw-tidy-marten       |
-|  fsap-0e2d9151...       |  /priya/oh-my-pi/mw30zehs-jolly-tapir     |
-|  fsap-03163c35...       |  /priya/pi/mw30z8yp-tidy-panda            |
-|  fsap-021565f0...       |  /carlos/claude-code/mw30zahh-keen-shrew  |
-|  fsap-078b25ed...       |  /carlos/opencode/mw30yu6s-nimble-shrew   |
+|  fsap-0544cd6e...       |  /carlos/opencode/mw45svq7-merry-heron    |
+|  fsap-0027476b...       |  /sam/kiro-cli/mw45t5ns-keen-ibex         |
+|  fsap-06221bed...       |  /carlos/claude-code/mw45szt8-tidy-tapir  |
+|  fsap-0bae79b7...       |  /priya/pi/mw45sxsp-clever-koala          |
+|  fsap-0f8af1b4...       |  /priya/oh-my-pi/mw45t3b4-nimble-otter    |
+|  fsap-0e87fe27...       |  /carlos/codex/mw45t1lw-quiet-fox         |
 +-------------------------+-------------------------------------------+
 ```
 
-The access-point ids are shortened here; the command prints them in full.
+The access-point ids are shortened here; the command prints them in full. The list is
+abridged to the six sessions of the fresh run: it also held five closed sessions from an
+earlier run on the same file system.
 
 ## It runs in a sandbox
 
@@ -571,7 +576,7 @@ kubectl -n coding-agents-for-developers exec $POD -- sh -c 'env | cut -d= -f1 | 
 ```text
 isolated-sandbox
 6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-1246.41
+214.62
 dm-0 vda vdb vdc
 AWS_CONTAINER_CREDENTIALS_FULL_URI
 AWS_DEFAULT_REGION
@@ -594,7 +599,7 @@ same cluster:
 
 ```text
 6.18.56 #2 SMP PREEMPT_DYNAMIC Fri Oct 30 22:32:37 UTC 2026
-1876.15
+2170.44
 dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0
 ```
 
@@ -691,7 +696,7 @@ exit 32
 
 Could not start amazon-efs-mount-watchdog, unrecognized init system "sleep"
 Mount attempt 1/3 failed due to b'mount.nfs4: access denied by server while mounting 127.0.0.1:/\n', wait 1 sec before next attempt.
-Mount attempt 2/3 failed due to b'mount.nfs4: access denied by server while mounting 127.0.0.1:/\n', wait 2 sec before next attempt.
+Mount attempt 2/3 failed due to timeout after 15 sec, wait 0 sec before next attempt.
 b'mount.nfs4: access denied by server while mounting 127.0.0.1:/'
 exit 32
 ```
@@ -706,27 +711,30 @@ mount helper noting that the container has no init system for its background wat
 does not affect the mount.)
 
 From outside the cluster, the bucket shows each session under its own prefix (abridged to
-two sessions and their folder structure; the CLI's home fills in below each session, 1,296
-objects across the six sessions of the fresh run):
+two sessions and their folder structure; the CLI's home fills in below each session, 16,100
+objects across the eleven sessions in the bucket at that point of the fresh run, five of
+them closed sessions from an earlier run):
 
 ```bash
 aws s3 ls s3://<S3_BUCKET_NAME>/coding-agents/ --recursive
 ```
 
 ```text
-2026-11-05 04:08:09          0 coding-agents/carlos/
-2026-11-05 04:08:14          0 coding-agents/carlos/claude-code/
-2026-11-05 04:08:16          0 coding-agents/carlos/claude-code/mw30zahh-keen-shrew/
-2026-11-05 04:29:38          0 coding-agents/carlos/claude-code/mw30zahh-keen-shrew/home/
-2026-11-05 04:20:24        224 coding-agents/carlos/claude-code/mw30zahh-keen-shrew/home/.tmux.conf
-2026-11-05 04:08:18          0 coding-agents/carlos/claude-code/mw30zahh-keen-shrew/project/
+2026-11-05 22:51:02          0 coding-agents/carlos/
+2026-11-05 22:51:07          0 coding-agents/carlos/claude-code/
 ...
-2026-11-05 04:08:23          0 coding-agents/sam/
-2026-11-05 04:08:23          0 coding-agents/sam/kiro-cli/
-2026-11-05 04:08:23          0 coding-agents/sam/kiro-cli/mw30zgbs-clever-heron/
-2026-11-05 04:08:23          0 coding-agents/sam/kiro-cli/mw30zgbs-clever-heron/home/
-2026-11-05 04:09:26        224 coding-agents/sam/kiro-cli/mw30zgbs-clever-heron/home/.tmux.conf
-2026-11-05 04:08:33          0 coding-agents/sam/kiro-cli/mw30zgbs-clever-heron/project/
+2026-11-05 23:11:05          0 coding-agents/carlos/claude-code/mw45szt8-tidy-tapir/
+2026-11-05 23:11:06          0 coding-agents/carlos/claude-code/mw45szt8-tidy-tapir/home/
+2026-11-05 23:12:08        224 coding-agents/carlos/claude-code/mw45szt8-tidy-tapir/home/.tmux.conf
+2026-11-05 23:11:07          0 coding-agents/carlos/claude-code/mw45szt8-tidy-tapir/project/
+...
+2026-11-05 22:51:13          0 coding-agents/sam/
+2026-11-05 22:51:14          0 coding-agents/sam/kiro-cli/
+...
+2026-11-05 23:11:13          0 coding-agents/sam/kiro-cli/mw45t5ns-keen-ibex/
+2026-11-05 23:11:13          0 coding-agents/sam/kiro-cli/mw45t5ns-keen-ibex/home/
+2026-11-05 23:12:16        224 coding-agents/sam/kiro-cli/mw45t5ns-keen-ibex/home/.tmux.conf
+2026-11-05 23:11:16          0 coding-agents/sam/kiro-cli/mw45t5ns-keen-ibex/project/
 ...
 ```
 
@@ -840,7 +848,7 @@ is how a blocked destination shows):
 POD=$(kubectl -n coding-agents-for-developers get pods -l agent-cli=claude-code \
   --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
 for url in https://bedrock-runtime.<AWS_REGION>.amazonaws.com/ https://github.com/ \
-           https://example.com/ https://github.com:22/; do
+           https://api.github.com/ https://example.com/ https://github.com:22/; do
   kubectl -n coding-agents-for-developers exec $POD -- \
     sh -c "curl -sS -o /dev/null --connect-timeout 8 $url; echo \"$url -> exit \$?\""
 done
@@ -849,10 +857,11 @@ done
 ```text
 https://bedrock-runtime.<AWS_REGION>.amazonaws.com/ -> exit 0   # allowed host, 443: connected
 https://github.com/ -> exit 0                                   # allowed host, 443: connected
+https://api.github.com/ -> exit 0                               # allowed host, 443: connected
 curl: (28) Connection timed out after 8002 milliseconds
 https://example.com/ -> exit 28                                 # host not in the policy: blocked
+curl: (28) Connection timed out after 8002 milliseconds
 https://github.com:22/ -> exit 28                               # allowed host, port 22 not allowed: blocked
-curl: (28) Connection timed out after 8003 milliseconds
 ```
 
 The `#` comments are added here; the rest is the fresh run's output, where each `curl:`
