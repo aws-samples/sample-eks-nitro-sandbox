@@ -228,7 +228,13 @@ export async function deleteSession(developer, session) {
       } else if (quietSince === undefined) {
         quietSince = now;
       } else if (now - quietSince >= deleteTiming.quietMs) {
-        await s3files.send(new DeleteAccessPointCommand({ accessPointId: ap.apId }));
+        try {
+          await s3files.send(new DeleteAccessPointCommand({ accessPointId: ap.apId }));
+        } catch (e) {
+          // The delete may have gone through even though the call failed (a timeout): it
+          // did if the access point is no longer listed.
+          if ((await listAllAccessPoints()).some((a) => a.apId === ap.apId)) throw e;
+        }
         return;
       }
       if (round < deleteTiming.maxRounds) await sleep(deleteTiming.settleMs);

@@ -89,6 +89,15 @@ npol="$("${KCTL[@]}" get configmap -n kube-system amazon-vpc-cni \
 # app's per-session credential mount: on this cluster the mount uses the credential the
 # pod supplies (see the README). We do not touch the shared CSI role here.
 
+# On a re-run over an existing install, put the app's network policy in place first, before
+# anything else changes, so an app from an earlier version is not reachable from the pod
+# network while setup runs. Only in the sample's own namespace; a fresh install applies it
+# right after creating the namespace, before the app.
+if [[ "$("${KCTL[@]}" get namespace "$NAMESPACE" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}' 2>/dev/null || true)" == "$SAMPLE" ]]; then
+  say "App network policy (existing install)"
+  "${KCTL[@]}" apply -n "$NAMESPACE" -f "$ROOT/deploy/app-policy.yaml"
+fi
+
 # --- 2. AWS resources the sample owns ---
 # Reuse only what this sample created. For a resource that already exists, confirm it
 # carries ManagedBy=$SAMPLE before adopting it, and stop otherwise, so a re-run never
@@ -262,6 +271,8 @@ else
   "${KCTL[@]}" create namespace "$NAMESPACE"
 fi
 "${KCTL[@]}" label namespace "$NAMESPACE" app.kubernetes.io/part-of=$SAMPLE --overwrite >/dev/null
+# The app's network policy before anything that runs the app.
+"${KCTL[@]}" apply -n "$NAMESPACE" -f "$ROOT/deploy/app-policy.yaml"
 sed "s|<NAMESPACE>|$NAMESPACE|g" "$ROOT/deploy/rbac.yaml" | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
 
 assoc() { # service-account  role-arn
@@ -330,8 +341,6 @@ for cli in "${clis[@]}"; do
 done
 
 say "Apply the app"
-# Its network policy first, so the app is never reachable from the pod network.
-"${KCTL[@]}" apply -n "$NAMESPACE" -f "$ROOT/deploy/app-policy.yaml"
 sed -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" -e "s|<AWS_REGION>|$AWS_REGION|g" -e "s|<NAMESPACE>|$NAMESPACE|g" \
     -e "s|<S3_FILES_FS_ID>|$S3_FILES_FS_ID|g" -e "s|<S3_BUCKET_NAME>|$S3_BUCKET_NAME|g" \
     -e "s|<S3_PREFIX>|$S3_PREFIX|g" -e "s|<MOUNT_ROLE_ARN>|$MOUNT_ROLE_ARN|g" \

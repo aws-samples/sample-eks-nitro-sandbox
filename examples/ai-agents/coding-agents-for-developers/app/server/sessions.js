@@ -126,20 +126,35 @@ async function startOnce(developer, cli, session, { resume = false } = {}) {
     // for it. It stops the pod only if the claim still points at it.
     console.error(`start ${session}: failed, releasing claim ${claimName}: ${e?.message || e}`);
     serialized(session, async () => {
-      if ((await k8s.claimedPodName(claimName).catch(() => null)) === podName) {
-        try {
-          await k8s.stopSession(podName);
-        } catch (se) {
-          console.error(`start ${session}: clean stop in ${podName} failed, releasing anyway: ${se?.message || se}`);
-          // As for any failed stop: record the pod, or keep its claim if that fails.
-          try { await k8s.recordPendingStop(session, podName); } catch (re) {
-            console.error(`start ${session}: could not record the failed stop, keeping claim ${claimName}: ${re?.message || re}`);
-            return;
-          }
+      // If the claim cannot be read, or no longer points at this pod, leave it: a later
+      // Close or Delete finds the claim and stops whatever pod it has.
+      let current;
+      try {
+        current = await k8s.claimedPodName(claimName);
+      } catch (le) {
+        console.error(`start ${session}: could not read claim ${claimName}, keeping it: ${le?.message || le}`);
+        return;
+      }
+      if (current !== podName) {
+        console.error(`start ${session}: claim ${claimName} no longer points at ${podName}, leaving it`);
+        return;
+      }
+      try {
+        await k8s.stopSession(podName);
+      } catch (se) {
+        console.error(`start ${session}: clean stop in ${podName} failed, releasing anyway: ${se?.message || se}`);
+        // As for any failed stop: record the pod, or keep its claim if that fails.
+        try { await k8s.recordPendingStop(session, podName); } catch (re) {
+          console.error(`start ${session}: could not record the failed stop, keeping claim ${claimName}: ${re?.message || re}`);
+          return;
         }
       }
-      await k8s.releaseClaim(claimName).catch((re) =>
-        console.error(`start ${session}: could not delete claim ${claimName}: ${re?.message || re}`));
+      try {
+        await k8s.releaseClaim(claimName);
+      } catch (re) {
+        console.error(`start ${session}: could not delete claim ${claimName}: ${re?.message || re}`);
+        return;
+      }
       console.log(`start ${session}: cleaned up after the failed start`);
     });
     throw e;
@@ -355,10 +370,11 @@ async function checkSession(entry, now) {
     entry.bridgeFailures = (entry.bridgeFailures || 0) + 1;
     console.error(`session ${entry.session} (pod ${entry.podName}): idle check failed ` +
       `(${entry.bridgeFailures} in a row), will retry next minute: ${e?.message || e}`);
-    // The pod restarts a bridge that exited, with a new certificate. After the second
-    // failure, read the bridge back over exec, once, and pin its new certificate if it
-    // changed; the next check then reaches it.
-    if (entry.bridgeFailures === 2) {
+    // The pod restarts a bridge that exited, with a new certificate. From the second failure
+    // on, read the bridge back over exec and pin its new certificate if it changed; the next
+    // check then reaches it. Every failure until the release tries again, so one failed read
+    // does not release a session whose bridge came back.
+    if (entry.bridgeFailures >= 2 && entry.bridgeFailures < BRIDGE_FAIL_LIMIT) {
       try {
         const { token, cert } = await k8s.readBridge(entry.podName);
         if (live.get(entry.session) === entry && token === entry.bridgeToken && cert !== entry.bridgeCert) {
