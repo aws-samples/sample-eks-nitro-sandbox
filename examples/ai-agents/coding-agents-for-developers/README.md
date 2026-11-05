@@ -292,7 +292,10 @@ in front of the app takes the API server off that leg too.
 `[detached]`, because the browser's connection was to the old app pod. The CLIs keep
 running in tmux in their own pods. The new app reads each running pod's token and
 certificate back over exec, once, before it starts serving, so reload the page, then
-**Open** each session again.
+**Open** each session again. The Deployment replaces its pod with the `Recreate` strategy,
+so the old app pod has stopped before the new one starts: the app keeps each session's
+state, and the queue that runs one session's actions one at a time, in memory, so two app
+pods side by side could both act on one session.
 
 **When session-bridge exits**, a small supervisor in the pod
 ([`bridge-supervise.sh`](images/base/bridge-supervise.sh)) starts it again a second later.
@@ -371,7 +374,7 @@ disposable, the folder is not.
 *Figure 4: Pause and resume a session. Close or idle removes the claim and the pod, Restore
 mounts the same folder in a new pod, and only Delete removes the folder.*
 
-![Four stages of a session, left to right, above a shared storage row. The storage row, "Session folder, outlives every pod; only Delete removes it", holds the session's S3 Files access point, which syncs with the versioned S3 bucket, one prefix per session. Stage a, Running: a SandboxClaim points to a Nitro sandbox pod with pod UID A, isolated-sandbox, running the CLI in tmux with the folder at /workspace, and an edge labelled "mount at /workspace" runs down to the access point. A note says minimizing or closing the browser changes nothing in the cluster. An arrow labelled "Close, or idle 30 min: delete the SandboxClaim" leads to stage b, Paused: no SandboxClaim and no pod, while the access point and its data in S3 stay. An arrow labelled "Restore: claim a new warm pod" leads to stage c, Restored: a new SandboxClaim points to a new pod with pod UID B, which mounts the same access point, and the CLI resumes the last chat with its own continue option, reading its history from its home inside the folder. An arrow labelled Delete runs from Paused to stage d, Deleted: the access point, then every object version and delete marker under the session prefix, is deleted, and nothing remains.](figures/session-lifecycle.png)
+![Four stages of a session, left to right, above a shared storage row. The storage row, "Session folder, outlives every pod; only Delete removes it", holds the session's S3 Files access point, which syncs with the versioned S3 bucket, one prefix per session. Stage a, Running: a SandboxClaim points to a Nitro sandbox pod with pod UID A, isolated-sandbox, running the CLI in tmux with the folder at /workspace, and an edge labelled "mount at /workspace" runs down to the access point. A note says minimizing or closing the browser changes nothing in the cluster. An arrow labelled "Close, or idle 30 min: delete the SandboxClaim" leads to stage b, Paused: no SandboxClaim and no pod, while the access point and its data in S3 stay. An arrow labelled "Restore: claim a new warm pod" leads to stage c, Restored: a new SandboxClaim points to a new pod with pod UID B, which mounts the same access point, and the CLI resumes the last chat with its own continue option, reading its history from its home inside the folder. An arrow labelled Delete runs from Paused to stage d, Deleted: the folder's files, every object version and delete marker under the session prefix, then the access point, are deleted, and nothing remains.](figures/session-lifecycle.png)
 
 | Action | What happens |
 |---|---|
@@ -610,7 +613,7 @@ It depends on the layer.
 - **Through this web app: yes, by design of the demo.** The sign-in is a picker, not
   authentication, so anyone who can reach your `kubectl port-forward` can pick any developer
   and open, close or delete any session. The app checks only that each name is well formed.
-  Other pods in the cluster cannot reach the app at all: its own policy,
+  Pods on the cluster's pod network cannot reach the app: its own policy,
   [`app-policy.yaml`](deploy/app-policy.yaml), admits no ingress from the pod network, and
   `kubectl port-forward` is not pod network traffic, so it still works. On a run of this
   sample, a pod in the same namespace fetched `/api/clis` from the app's pod IP before the

@@ -10,7 +10,13 @@ metadata:
     app: agent-app
     app.kubernetes.io/part-of: coding-agents-for-developers
 spec:
+  # One app process at a time. The app keeps running sessions, and the queue that makes each
+  # session's actions run one after another, in memory, so two app pods side by side (a
+  # rolling update) could both act on the same session. Recreate stops the old pod before
+  # the new one starts; the new one then picks up the running sessions.
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: agent-app

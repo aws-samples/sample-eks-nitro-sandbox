@@ -221,10 +221,13 @@ async function releaseNow(session, { wipe = false } = {}) {
   // Stop the CLI and unmount the folder first, so its locks are released now rather than
   // when the NFS lease runs out. The pod is released either way: a failed stop is logged,
   // and the next Restore then waits out the lease (Codex) or may find a stale database.
+  // For Delete (wipe), a failed stop is also returned, so Delete stops there.
+  let stopError = null;
   try {
     await k8s.stopSession(entry.podName, { wipe });
     console.log(`session ${session}: stopped in ${entry.podName}${wipe ? ", folder emptied" : ""}`);
   } catch (e) {
+    stopError = e;
     console.error(`session ${session}: clean stop in ${entry.podName} failed, releasing anyway: ${e?.message || e}`);
   }
   // If the claim cannot be deleted, the pod is still there: keep tracking the session, so
@@ -237,6 +240,7 @@ async function releaseNow(session, { wipe = false } = {}) {
     if (!entry.adopted && !live.has(session)) live.set(session, entry);
     throw new Error(`could not delete claim ${entry.claimName}: ${e?.message || e}`);
   }
+  return stopError;
 }
 
 export async function listClosed(developer) {
@@ -251,10 +255,14 @@ export async function remove(developer, session) {
   return serialized(session, async () => {
     // Empty the folder through the mount while the pod still has it: a file written in the
     // last minute has not been exported yet, and removed now it never is.
-    await releaseNow(session, { wipe: true });
+    const stopError = await releaseNow(session, { wipe: true });
     // Also delete the claim by its name when the app holds no record of it (a start that
     // failed under an older app, or an app restart): Delete leaves no pod behind.
     await k8s.releaseClaim(k8s.claimNameFor(session));
+    // If the folder could not be emptied, stop here: the pod is released, the folder and its
+    // access point stay, and the session stays listed so Delete can be run again (with the
+    // pod gone, the next Delete drains whatever S3 Files exports from the folder).
+    if (stopError) throw new Error(`could not empty the session's folder, so it was not deleted; try Delete again: ${stopError?.message || stopError}`);
     await store.deleteSession(developer, session);
   });
 }

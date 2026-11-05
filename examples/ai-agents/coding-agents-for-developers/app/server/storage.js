@@ -216,13 +216,18 @@ export async function deleteSession(developer, session) {
   // the drain has finished the session stays listed: a Delete that fails, or that an app
   // restart cuts short, leaves the row in place and Delete can be run again.
   try {
-    let quietSince = Date.now();
+    // Quiet is counted from the first list that came back, so a slow first list cannot
+    // stand in for the whole wait.
+    let quietSince;
     for (let round = 1; round <= deleteTiming.maxRounds; round++) {
       const deleted = await deleteFolder(developer, ap.cli, session);
+      const now = Date.now();
       if (deleted > 0) {
-        quietSince = Date.now();
+        quietSince = now;
         console.log(`delete ${session}: removed ${deleted} version(s) in round ${round}`);
-      } else if (Date.now() - quietSince >= deleteTiming.quietMs) {
+      } else if (quietSince === undefined) {
+        quietSince = now;
+      } else if (now - quietSince >= deleteTiming.quietMs) {
         await s3files.send(new DeleteAccessPointCommand({ accessPointId: ap.apId }));
         return;
       }
