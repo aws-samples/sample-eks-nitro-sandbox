@@ -20,9 +20,13 @@ const live = new Map();
 export const __liveForTest = live;
 
 // New agent: generate a name, claim a pod, mount a fresh folder, start the CLI.
+// A new session never reuses a running entry, even in the unlikely case that its random
+// name matches one: it waits for the pick-up, then takes a name nothing is using.
 export async function newAgent(developer, cli) {
-  const session = randomName();
-  return start(developer, cli, session);
+  await afterPickUp();
+  let session = randomName();
+  while (live.has(session) || starting.has(session)) session = randomName();
+  return start(developer, cli, session, { reuse: false });
 }
 
 // Restore: same, on the existing folder; the CLI resumes its own conversation. Look up
@@ -39,16 +43,30 @@ export async function restore(developer, session) {
 // against the same claim and pod.
 const starting = new Map();
 
-// The app-start pick-up of running sessions (adoptRunningSessions). Every start waits for
-// it, so the two never run side by side: a Restore that arrives while the pick-up is still
-// reading pods starts after it, and gets the session it picked up, if it found one.
-let pickUp = Promise.resolve();
+// The app-start pick-up of running sessions (adoptRunningSessions), run once. New agent,
+// Restore, Close and Delete all wait for it, so none of them runs side by side with it: a
+// Restore that arrives while the pick-up is still reading pods starts after it, and gets
+// the session it picked up, if it found one. The wait is bounded: if the pick-up is still
+// running after PICKUP_WAIT_MS, the request fails with a retry message instead of hanging.
+let pickUp = null;
+const PICKUP_WAIT_MS = parseInt(process.env.PICKUP_WAIT_MS, 10) || 90 * 1000;
 
-function start(developer, cli, session, opts = {}) {
-  if (live.has(session)) return Promise.resolve(live.get(session));
+async function afterPickUp() {
+  if (!pickUp) return;
+  let timer;
+  const done = await Promise.race([
+    pickUp.then(() => true, () => true),
+    new Promise((r) => { timer = setTimeout(() => r(false), PICKUP_WAIT_MS); }),
+  ]);
+  clearTimeout(timer);
+  if (!done) throw new Error("the app is still picking up running sessions after a restart; try again in a minute");
+}
+
+function start(developer, cli, session, { reuse = true, ...opts } = {}) {
+  if (reuse && live.has(session)) return Promise.resolve(live.get(session));
   if (starting.has(session)) return starting.get(session);
-  const p = pickUp.catch(() => {})
-    .then(() => live.get(session) ?? startOnce(developer, cli, session, opts))
+  const p = afterPickUp()
+    .then(() => (reuse && live.get(session)) || startOnce(developer, cli, session, opts))
     .finally(() => starting.delete(session));
   starting.set(session, p);
   return p;
@@ -99,8 +117,10 @@ async function startOnce(developer, cli, session, { resume = false } = {}) {
 // each pod's session-bridge token and certificate back over exec (once per pod, at app
 // start). The pod's current credential is of unknown age, so mark it due: the first loop
 // pass refreshes it.
+// Once per app process: a second call returns the same pick-up. The gate is set before the
+// pick-up's first await, so anything that runs after this call waits for it.
 export function adoptRunningSessions() {
-  pickUp = pickUpRunningSessions();
+  if (!pickUp) pickUp = Promise.resolve().then(pickUpRunningSessions);
   return pickUp;
 }
 
@@ -122,8 +142,10 @@ async function pickUpRunningSessions() {
       const { node, podIP } = await k8s.podInfo(podName);
       const azId = await k8s.nodeAzId(node);
       const { token: bridgeToken, cert: bridgeCert } = await k8s.readBridge(podName);
-      // No start runs while the pick-up does (start() waits for it), so nothing else can
-      // have set this session meanwhile; check anyway, so an entry is never overwritten.
+      // No start, Close or Delete runs while the pick-up does (they wait for it), but the
+      // claim can still change outside the app (someone deletes it by hand): pick up the
+      // pod only if the claim still points at it. Never overwrite an entry.
+      if ((await k8s.claimedPodName(claimName)) !== podName) return;
       if (live.has(session)) return;
       const now = Date.now();
       live.set(session, {
@@ -145,7 +167,15 @@ export function getLive(session) {
 
 // Close or idle: release the claim (the pod goes, the folder stays). The session then
 // shows in the developer's list and can be restored.
+// Close (and Delete, through remove) wait for the app-start pick-up, so a pick-up still
+// reading pods cannot put back a session they are ending. The background loop releases
+// through releaseNow directly: it checks the entry and releases with no await between.
 export async function release(session) {
+  await afterPickUp();
+  return releaseNow(session);
+}
+
+async function releaseNow(session) {
   let entry = live.get(session);
   if (!entry) {
     // The app keeps running sessions in memory only, so after an app restart a session can
@@ -184,7 +214,7 @@ export async function listClosed(developer) {
 }
 
 export async function remove(developer, session) {
-  await release(session);
+  await release(session); // waits for the pick-up
   // Also delete the claim by its name when the app holds no record of it (a start that
   // failed under an older app, or an app restart): Delete leaves no pod behind.
   await k8s.releaseClaim(k8s.claimNameFor(session));
@@ -215,7 +245,7 @@ const BRIDGE_FAIL_LIMIT = parseInt(process.env.BRIDGE_FAIL_LIMIT, 10) || 5;
 // releasing by name then would release the new session.
 async function releaseIfCurrent(entry) {
   if (live.get(entry.session) !== entry || starting.has(entry.session)) return false;
-  await release(entry.session);
+  await releaseNow(entry.session);
   return true;
 }
 
