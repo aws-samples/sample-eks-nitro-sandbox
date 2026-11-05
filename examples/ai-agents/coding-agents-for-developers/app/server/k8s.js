@@ -1,9 +1,10 @@
 // Kubernetes operations: claim a warm pod, resolve its node AZ, start and stop the session
-// through exec, and release the claim. Exec is used only at the edges of a session: once to
+// through exec, and release the claim. Exec is used only at the edges of a session: to
 // start it (delivering the mount credential and the session-bridge token on stdin, then
-// reading back the bridge's certificate to pin) and once to stop it. The terminal, the
-// activity read and the credential refresh in between go to session-bridge over the pod
-// network (bridge.js), so the Kubernetes API is not on a session's data path.
+// reading back the bridge's certificate to pin), to stop it, and once per running pod after
+// an app restart (readBridge). The terminal, the activity read and the credential refresh
+// in between go to session-bridge over the pod network (bridge.js), so the Kubernetes API
+// is not on the path between the app and a running session's pod.
 
 import * as k8s from "@kubernetes/client-node";
 import { Writable, Readable } from "node:stream";

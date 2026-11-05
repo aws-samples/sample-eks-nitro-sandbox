@@ -46,20 +46,27 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
 )
 
 const (
-	sessionDir = "/dev/shm/session"
-	credFile   = sessionDir + "/credentials"
-	tokenFile  = sessionDir + "/bridge-token"
-	certFile   = sessionDir + "/bridge.crt"
-	serverName = "session-bridge" // the name the app checks the certificate against
-	maxFrame   = 1 << 20
-	maxCred    = 16 << 10
-	wsGUID     = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	sessionDir   = "/dev/shm/session"
+	credFile     = sessionDir + "/credentials"
+	tokenFile    = sessionDir + "/bridge-token"
+	certFile     = sessionDir + "/bridge.crt"
+	serverName   = "session-bridge" // the name the app checks the certificate against
+	maxFrame     = 1 << 20
+	maxCred      = 16 << 10
+	writeTimeout = 10 * time.Second
+	wsGUID       = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+)
+
+var (
+	errProtocol      = errors.New("websocket protocol error")
+	errFrameTooLarge = errors.New("websocket frame too large")
 )
 
 // Commands for the dev user run with a clean environment: the bridge's own environment is
@@ -181,10 +188,14 @@ var epochRE = regexp.MustCompile(`^[0-9]{9,11}$`)
 func (b *bridge) activity(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, asDev[0], append(asDev[1:], "/bin/sh", "-c", activityScript)...)
+	// The container has no CAP_KILL, so this root process cannot signal the query once
+	// setpriv has made it uid 1000, and the context's kill would do nothing. The dev user's
+	// tmux server could hold the query open indefinitely. So the query runs under
+	// `timeout`, which is itself uid 1000 and can end its own child. The context and
+	// WaitDelay are an outer guard that returns this request even if that fails.
+	cmd := exec.CommandContext(ctx, asDev[0], append(asDev[1:],
+		"timeout", "--kill-after=1", "8", "/bin/sh", "-c", activityScript)...)
 	cmd.Env, cmd.Dir = cleanEnv, "/"
-	// The container has no CAP_KILL, so root cannot kill a uid 1000 process on timeout.
-	// WaitDelay makes Wait return anyway instead of blocking on it.
 	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	v := strings.TrimSpace(string(out))
@@ -208,6 +219,29 @@ func (b *bridge) activity(w http.ResponseWriter, r *http.Request) {
 
 // --- credential ---
 
+// wellFormedCredential reports whether body is the credentials file the app writes: a
+// [session] profile with a non-empty access key id, secret and session token. A body
+// carrying only some of them would replace a working credential with a broken one.
+func wellFormedCredential(body []byte) bool {
+	lines := strings.Split(string(body), "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "[session]" {
+		return false
+	}
+	need := map[string]bool{"aws_access_key_id": false, "aws_secret_access_key": false, "aws_session_token": false}
+	for _, line := range lines[1:] {
+		k, v, ok := strings.Cut(line, "=")
+		if _, wanted := need[k]; ok && wanted && strings.TrimSpace(v) != "" {
+			need[k] = true
+		}
+	}
+	for _, seen := range need {
+		if !seen {
+			return false
+		}
+	}
+	return true
+}
+
 func (b *bridge) credential(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxCred))
 	if err != nil {
@@ -216,14 +250,7 @@ func (b *bridge) credential(w http.ResponseWriter, r *http.Request) {
 	}
 	// Fail closed: the live file is replaced only by a well-formed credential, so a bad
 	// request leaves the running mount's credential as it was.
-	wellFormed := false
-	for _, line := range strings.Split(string(body), "\n") {
-		if strings.HasPrefix(line, "aws_access_key_id") {
-			wellFormed = true
-			break
-		}
-	}
-	if !wellFormed {
+	if !wellFormedCredential(body) {
 		http.Error(w, "credential: malformed", http.StatusBadRequest)
 		return
 	}
@@ -238,8 +265,10 @@ func (b *bridge) credential(w http.ResponseWriter, r *http.Request) {
 // --- terminal ---
 
 func (b *bridge) terminal(w http.ResponseWriter, r *http.Request) {
-	if !headerHas(r.Header, "Connection", "upgrade") || !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") ||
-		r.Header.Get("Sec-WebSocket-Version") != "13" || r.Header.Get("Sec-WebSocket-Key") == "" {
+	key := r.Header.Get("Sec-WebSocket-Key")
+	if raw, err := base64.StdEncoding.DecodeString(key); err != nil || len(raw) != 16 ||
+		!headerHas(r.Header, "Connection", "upgrade") || !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") ||
+		r.Header.Get("Sec-WebSocket-Version") != "13" {
 		http.Error(w, "expected a WebSocket upgrade", http.StatusBadRequest)
 		return
 	}
@@ -251,43 +280,54 @@ func (b *bridge) terminal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("terminal: %v", err), http.StatusInternalServerError)
 		return
 	}
+	// Closing the master hangs up the PTY, which ends the tmux client: root cannot signal
+	// the dev user's process here (no CAP_KILL), and does not need to. Every path after the
+	// PTY starts goes through this, so the child is always reaped.
+	reap := func() {
+		master.Close()
+		_ = cmd.Wait()
+	}
 	hj, ok := w.(http.Hijacker)
 	if !ok {
-		master.Close()
+		reap()
 		http.Error(w, "terminal: cannot upgrade", http.StatusInternalServerError)
 		return
 	}
 	conn, rw, err := hj.Hijack()
 	if err != nil {
-		master.Close()
+		reap()
 		return
 	}
-	sum := sha1.Sum([]byte(r.Header.Get("Sec-WebSocket-Key") + wsGUID))
+	sum := sha1.Sum([]byte(key + wsGUID))
+	_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 	fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n",
 		base64.StdEncoding.EncodeToString(sum[:]))
 	if err := rw.Flush(); err != nil {
 		conn.Close()
-		master.Close()
+		reap()
 		return
 	}
 	log.Printf("terminal attached for %s (%dx%d)", r.RemoteAddr, cols, rows)
 
+	// Every write has a deadline, so a peer that stops reading cannot hold the write lock,
+	// and with it the clean up below, for longer than writeTimeout.
 	var wmu sync.Mutex
 	send := func(op byte, p []byte) error {
 		wmu.Lock()
 		defer wmu.Unlock()
+		_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 		return writeFrame(rw.Writer, op, p)
 	}
+	var closeCode atomic.Uint32 // 1000 normal; set to 1002 or 1009 before returning on a bad frame
+	closeCode.Store(1000)
 	var once sync.Once
 	done := func() {
 		once.Do(func() {
-			_ = send(0x8, []byte{0x03, 0xe8}) // close, 1000 normal
+			code := closeCode.Load()
+			_ = send(0x8, []byte{byte(code >> 8), byte(code)})
 			conn.Close()
-			// Closing the master hangs up the PTY, which ends the tmux client: root cannot
-			// signal the dev user's process here (no CAP_KILL), and does not need to.
-			master.Close()
-			_ = cmd.Wait()
-			log.Printf("terminal detached for %s", r.RemoteAddr)
+			reap()
+			log.Printf("terminal detached for %s (close %d)", r.RemoteAddr, code)
 		})
 	}
 
@@ -306,13 +346,20 @@ func (b *bridge) terminal(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// WebSocket -> PTY.
+	// WebSocket -> PTY. Fragmentation follows RFC 6455: a data frame starts a message, only
+	// continuation frames may follow it until FIN, and control frames may come between them.
 	defer done()
 	var msgOp byte
 	var msg []byte
+	inMsg := false
 	for {
 		fin, op, payload, err := readFrame(rw.Reader)
 		if err != nil {
+			if errors.Is(err, errFrameTooLarge) {
+				closeCode.Store(1009)
+			} else if errors.Is(err, errProtocol) {
+				closeCode.Store(1002)
+			}
 			return
 		}
 		switch op {
@@ -326,16 +373,27 @@ func (b *bridge) terminal(w http.ResponseWriter, r *http.Request) {
 		case 0xA: // pong
 			continue
 		case 0x1, 0x2:
-			msgOp, msg = op, payload
+			if inMsg { // a new message before the last one finished
+				closeCode.Store(1002)
+				return
+			}
+			msgOp, msg, inMsg = op, payload, !fin
 		case 0x0:
+			if !inMsg { // a continuation with no message to continue
+				closeCode.Store(1002)
+				return
+			}
 			if len(msg)+len(payload) > maxFrame {
+				closeCode.Store(1009)
 				return
 			}
 			msg = append(msg, payload...)
+			inMsg = !fin
 		default:
+			closeCode.Store(1002)
 			return
 		}
-		if !fin {
+		if inMsg {
 			continue
 		}
 		if msgOp == 0x2 {
@@ -381,7 +439,11 @@ func readFrame(r *bufio.Reader) (fin bool, op byte, payload []byte, err error) {
 	}
 	fin, op = h[0]&0x80 != 0, h[0]&0x0F
 	if h[0]&0x70 != 0 || h[1]&0x80 == 0 {
-		return false, 0, nil, errors.New("reserved bits set or frame not masked")
+		return false, 0, nil, fmt.Errorf("%w: reserved bits set or frame not masked", errProtocol)
+	}
+	// Control frames (close, ping, pong) are never fragmented and carry at most 125 bytes.
+	if op&0x8 != 0 && (!fin || h[1]&0x7F > 125) {
+		return false, 0, nil, fmt.Errorf("%w: fragmented or oversized control frame", errProtocol)
 	}
 	n := uint64(h[1] & 0x7F)
 	switch n {
@@ -399,7 +461,7 @@ func readFrame(r *bufio.Reader) (fin bool, op byte, payload []byte, err error) {
 		n = binary.BigEndian.Uint64(ext[:])
 	}
 	if n > maxFrame {
-		return false, 0, nil, errors.New("frame too large")
+		return false, 0, nil, errFrameTooLarge
 	}
 	var mask [4]byte
 	if _, err = io.ReadFull(r, mask[:]); err != nil {

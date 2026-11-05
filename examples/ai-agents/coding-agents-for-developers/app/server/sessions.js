@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import * as store from "./storage.js";
 import * as k8s from "./k8s.js";
 import * as bridge from "./bridge.js";
-import { randomName, displayName } from "./names.js";
+import { randomName, displayName, isSessionName } from "./names.js";
 
 const IDLE_MS = (parseInt(process.env.IDLE_MINUTES, 10) || 30) * 60 * 1000;
 const FS_ID = process.env.S3_FILES_FS_ID;
@@ -34,8 +34,20 @@ export async function restore(developer, session) {
   return start(developer, cli, session, { resume: true });
 }
 
-async function start(developer, cli, session, { resume = false } = {}) {
-  if (live.has(session)) return live.get(session);
+// Starts in flight, keyed by session. A second Restore of the same session (a double click,
+// a second tab) waits for the first instead of starting again with a second bridge token
+// against the same claim and pod.
+const starting = new Map();
+
+function start(developer, cli, session, opts = {}) {
+  if (live.has(session)) return Promise.resolve(live.get(session));
+  if (starting.has(session)) return starting.get(session);
+  const p = startOnce(developer, cli, session, opts).finally(() => starting.delete(session));
+  starting.set(session, p);
+  return p;
+}
+
+async function startOnce(developer, cli, session, { resume = false } = {}) {
 
   console.log(`start ${session}: ensureAccessPoint`);
   const ap = await store.ensureAccessPoint(developer, session, cli);
@@ -81,7 +93,10 @@ export async function adoptRunningSessions() {
   const bySession = new Map((await store.listAllSessions()).map((s) => [s.session, s]));
   let adopted = 0;
   for (const { claimName, podName } of claims) {
-    const session = claimName.replace(/^agent-/, "");
+    // Only a claim named the way claimPod names one, for a well-formed session name.
+    if (!claimName.startsWith("agent-")) continue;
+    const session = claimName.slice("agent-".length);
+    if (!isSessionName(session) || k8s.claimNameFor(session) !== claimName) continue;
     const s = bySession.get(session);
     if (!s || live.has(session)) continue; // no access point: not a session folder we know
     try {

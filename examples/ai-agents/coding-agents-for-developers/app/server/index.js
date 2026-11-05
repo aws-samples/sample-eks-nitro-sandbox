@@ -136,7 +136,9 @@ const server = createServer(async (req, res) => {
 });
 
 // WebSocket terminal: /ws?session=<name>. Relays the browser to the pod's tmux, both ways.
-const wss = new WebSocketServer({ server, path: "/ws" });
+// maxPayload matches the bridge's own frame limit (1 MiB), well above a large paste.
+const wss = new WebSocketServer({ server, path: "/ws", maxPayload: 1 << 20 });
+const PENDING_MAX = 64 * 1024;
 wss.on("connection", async (ws, req) => {
   const url = new URL(req.url, "http://localhost");
   const session = url.searchParams.get("session");
@@ -160,7 +162,15 @@ wss.on("connection", async (ws, req) => {
     }
     term.write(data);
   };
-  ws.on("message", (data, isBinary) => (term ? handle(data, isBinary) : pending.push([data, isBinary])));
+  // Bounded: a browser that keeps sending while the bridge is still connecting is closed
+  // with 1009 (message too big) once the queue passes PENDING_MAX bytes.
+  let pendingBytes = 0;
+  ws.on("message", (data, isBinary) => {
+    if (term) return handle(data, isBinary);
+    pendingBytes += data.length;
+    if (pendingBytes > PENDING_MAX) return ws.close(1009, "too much input before the terminal opened");
+    pending.push([data, isBinary]);
+  });
   ws.on("close", () => { browserClosed = true; term?.close(); });
   try {
     // To the pod's own session-bridge over the pod network, not the Kubernetes exec API.

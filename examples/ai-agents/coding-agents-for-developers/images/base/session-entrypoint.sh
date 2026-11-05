@@ -10,8 +10,10 @@
 #      credential refresh the app reaches over the pod network), then starts tmux + the
 #      CLI as the dev user.
 #
-# That exec, and the one that stops the session, are the only two the app makes into a
-# session pod; everything in between goes through session-bridge.
+# Besides this exec, the app execs into a session pod only to read back session-bridge's
+# certificate right after it, to stop the session, and once after an app restart to read
+# the bridge's token and certificate again. The terminal, the activity read and the
+# credential refresh in between go through session-bridge.
 #
 # Only the mount step runs as root with SYS_ADMIN. The CLI runs as uid 1000 with no
 # added capabilities. The mount needs root inside the guest, which is what the sandbox
@@ -55,7 +57,12 @@ if [ -z "${CRED_B64:-}" ]; then
 fi
 printf '%s' "$CRED_B64" | base64 -d > "$CRED_FILE"
 chmod 600 "$CRED_FILE"
-if ! grep -q '^aws_access_key_id' "$CRED_FILE"; then
+# The same test session-bridge applies to a refresh: a [session] profile with a non-empty
+# access key id, secret and session token.
+if [ "$(head -n 1 "$CRED_FILE")" != "[session]" ] \
+   || ! grep -q '^aws_access_key_id=.' "$CRED_FILE" \
+   || ! grep -q '^aws_secret_access_key=.' "$CRED_FILE" \
+   || ! grep -q '^aws_session_token=.' "$CRED_FILE"; then
   echo "session-entrypoint: credential malformed" >&2
   exit 1
 fi
@@ -210,7 +217,7 @@ if [ "${SESSION_RESUME:-}" = "1" ] && [ -n "${CLI_RESUME_CMD:-}" ]; then
 fi
 
 # Start tmux DETACHED so this exec returns while the CLI keeps running in the pod. The
-# app attaches a browser terminal to the tmux session over a second exec; closing the
+# app attaches a browser terminal to the tmux session through session-bridge; closing the
 # browser only detaches, so the CLI runs on.
 setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
   env -u AWS_SHARED_CREDENTIALS_FILE -u AWS_PROFILE \

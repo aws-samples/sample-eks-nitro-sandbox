@@ -59,7 +59,7 @@ pod network. The
 pod reaches Amazon Bedrock through a Pod Identity role that may only invoke models; its
 egress policy refuses everything else.*
 
-![A developer, outside AWS, reaches the web app over the Kubernetes exec API through kubectl port-forward. Inside the AWS Cloud, an Amazon EKS cluster holds the web app, an ordinary trusted first-party pod that claims a pod and drives the terminal. The app claims a red Nitro sandbox pod (isolated-sandbox, one per session) from a dashed SandboxWarmPool per CLI, and mounts the session folder into it with a per-session credential. The sandbox pod runs tmux and the CLI with its workspace at /workspace. To the right, outside the cluster, it mounts its own S3 Files access point only (one per session), which syncs with an S3 bucket (one prefix per session), and it invokes models on Amazon Bedrock through a Pod Identity role that may only invoke models. Below, a red dashed arrow to the internet, AWS APIs and other pods is refused by the egress policy.](figures/architecture.png)
+![A developer, outside AWS, reaches the web app's terminal through kubectl port-forward. Inside the AWS Cloud, an Amazon EKS cluster holds the web app, an ordinary trusted first-party pod that claims a pod and drives the terminal. The app claims a red Nitro sandbox pod (isolated-sandbox, one per session) from a dashed SandboxWarmPool per CLI, and mounts the session folder into it with a per-session credential. A second arrow, labelled terminal (TLS), runs from the app to the sandbox pod, which runs tmux and the CLI, session-bridge on port 7681, and its workspace at /workspace. To the right, outside the cluster, it mounts its own S3 Files access point only (one per session), which syncs with an S3 bucket (one prefix per session), and it invokes models on Amazon Bedrock through a Pod Identity role that may only invoke models. Below, a red dashed arrow to the internet, AWS APIs and other pods is refused by the egress policy.](figures/architecture.png)
 
 ## Versions
 
@@ -262,9 +262,13 @@ things a session needs while it runs:
 | `GET /v1/activity` | The last time the terminal had input or output, which the app reads every minute to find idle sessions. |
 | `PUT /v1/credential` | Replaces the session's mount credential. It accepts only a well-formed credential, so a bad request leaves the running one in place. |
 
-The Kubernetes exec API is used twice per session: once to start it, and once to stop it.
-So the API server carries none of a session's ongoing traffic, however many developers
-have terminals open, and a busy API server does not slow a terminal down.
+The app uses the Kubernetes exec API only at the edges of a session: two calls to start it
+(run the entrypoint, then read back the bridge's certificate) and one to stop it, plus one
+per running pod after an app restart (below). So the traffic between the app and a running
+session's pod, however many developers have terminals open, does not go through the API
+server. The browser's own connection to the app still does in this sample, because it
+comes in through `kubectl port-forward`; a deployment that puts an authenticated endpoint
+in front of the app takes the API server off that leg too.
 
 - **Only the app can connect.** The pod's policy admits ingress from the app's pods on 7681
   and nothing else, so another session's pod, or any other pod, is refused at the network.
@@ -284,8 +288,8 @@ once, so the sessions it picks up keep their terminals.
 On a run of this sample, codex in the sandbox echoed a keystroke in 18.9 ms (median) from
 inside its own pod, 23.9 ms from the app through `session-bridge`, and 25.9 ms from the app
 over the exec API. The terminal is not faster for leaving the exec API: what changes is that
-the API server is off its path. What a developer feels is one round trip from the browser to
-the cluster's Region, because the browser reaches the app through `kubectl port-forward`.
+the API server is off the path between the app and the pod. What a developer feels is one
+round trip from the browser to the cluster's Region, through `kubectl port-forward`.
 
 *Figure 3: How a session's folder reaches its pod. The pod boots with no folder. The web app
 hands it a short-lived credential that can mount only that session's S3 Files access point,

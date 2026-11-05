@@ -85,6 +85,8 @@ function relativeTime(session) {
 // row gave no sign of it. Kept outside the table, because the table is rebuilt whenever the
 // list reloads, which would otherwise reset a row that is still being deleted.
 const deleting = new Set();
+// Sessions whose Restore is still running, for the same reason.
+const restoring = new Set();
 
 async function loadSessions() {
   const { sessions } = await api("/api/sessions?developer=" + encodeURIComponent(developer));
@@ -102,45 +104,52 @@ async function loadSessions() {
     actions.className = "row-actions";
     const restore = document.createElement("button");
     restore.className = "btn-sm";
-    restore.textContent = s.running ? "Open" : "Restore";
+    const del = document.createElement("button");
+    del.className = "btn-sm btn-ghost";
+    // Draw both buttons from the operation state, which lives outside the table, so a row
+    // rebuilt by a list reload mid-operation still shows it and still ignores clicks.
+    const render = () => {
+      const r = restoring.has(s.session), d = deleting.has(s.session);
+      restore.textContent = r ? "Restoring..." : s.running ? "Open" : "Restore";
+      del.textContent = d ? "Deleting..." : "Delete";
+      restore.disabled = del.disabled = r || d;
+      for (const [b, busy] of [[restore, r], [del, d]]) {
+        if (busy) b.setAttribute("aria-busy", "true");
+        else b.removeAttribute("aria-busy");
+      }
+    };
+    render();
     // Restore claims a pod and mounts the folder, which takes a few seconds. Say so while it
     // runs, then reload the list so the row shows the session as running.
     restore.onclick = async () => {
+      if (restoring.has(s.session) || deleting.has(s.session)) return;
       if (s.running) return openTerminal(s.session, s.cli, name);
-      if (restore.disabled) return;
-      restore.textContent = "Restoring...";
-      restore.disabled = del.disabled = true;
-      restore.setAttribute("aria-busy", "true");
+      restoring.add(s.session);
+      render();
       try {
         await api("/api/restore", { developer, session: s.session });
         openTerminal(s.session, s.cli, name);
       } catch (err) {
         alert(`Could not restore ${name}: ${err.message}`);
       } finally {
-        loadSessions();
+        restoring.delete(s.session);
+        render(); // the buttons come back even if the reload below fails
+        loadSessions().catch(() => {});
       }
     };
-    const del = document.createElement("button");
-    del.className = "btn-sm btn-ghost";
-    const showDeleting = () => {
-      del.textContent = "Deleting...";
-      del.disabled = restore.disabled = true;
-      del.setAttribute("aria-busy", "true");
-    };
-    if (deleting.has(s.session)) showDeleting();
-    else del.textContent = "Delete";
     del.onclick = async () => {
-      if (deleting.has(s.session)) return;
+      if (restoring.has(s.session) || deleting.has(s.session)) return;
       if (!confirm(`Delete session ${s.session}? This removes its folder.`)) return;
       deleting.add(s.session);
-      showDeleting();
+      render();
       try {
         await api("/api/delete", { developer, session: s.session });
       } catch (err) {
         alert(`Could not delete ${name}: ${err.message}`);
       } finally {
         deleting.delete(s.session);
-        loadSessions();
+        render();
+        loadSessions().catch(() => {});
       }
     };
     actions.append(restore, del);

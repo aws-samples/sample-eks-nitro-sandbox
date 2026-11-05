@@ -1,7 +1,8 @@
 // The app's side of session-bridge, the small server each session pod runs (see
 // images/base/session-bridge). The terminal, the activity read and the mount-credential
-// refresh go straight to the pod over TLS on the pod network, so the Kubernetes API carries
-// none of a session's ongoing traffic: only its start and its stop go through exec.
+// refresh go straight to the pod over TLS on the pod network, so the traffic between the
+// app and a running session's pod does not go through the Kubernetes API. Exec is used only
+// to start and stop a session, and once per running pod after an app restart (k8s.js).
 //
 // Each request presents the session's bridge token, and the connection trusts exactly one
 // certificate: the one the bridge made for itself at start, which the app read from a
