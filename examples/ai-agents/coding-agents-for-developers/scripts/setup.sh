@@ -357,7 +357,7 @@ for cli in "${clis[@]}"; do
   "${KCTL[@]}" -n "$NAMESPACE" wait sandboxwarmpool/agent-$cli \
     --for=jsonpath='{.status.readyReplicas}'=$POOL_REPLICAS --timeout=600s || true
 done
-"${KCTL[@]}" -n "$NAMESPACE" rollout status deploy/agent-app
+"${KCTL[@]}" -n "$NAMESPACE" rollout status deploy/agent-app --timeout=10m
 cat <<EOF
 
 Done. Open the app on your machine:

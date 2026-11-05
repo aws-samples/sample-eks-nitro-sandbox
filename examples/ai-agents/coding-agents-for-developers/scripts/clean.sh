@@ -45,11 +45,16 @@ if [[ -n "$ns_present" ]]; then
     || note_fail "claims in $NAMESPACE: delete failed"
   "${KCTL[@]}" -n "$NAMESPACE" delete sandboxtemplate -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
     || note_fail "templates in $NAMESPACE: delete failed"
-  # The app before the network policies, so it is never left running without its own.
-  "${KCTL[@]}" -n "$NAMESPACE" delete deploy,svc -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found --cascade=foreground --wait=true \
-    || note_fail "the app (deploy, svc) in $NAMESPACE: delete failed"
-  "${KCTL[@]}" -n "$NAMESPACE" delete applicationnetworkpolicy,networkpolicy -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
-    || note_fail "network policies in $NAMESPACE: delete failed"
+  # The app, and its pods, before the network policies, so it is never left running without
+  # its own. If the app could not be removed, the policies stay.
+  if "${KCTL[@]}" -n "$NAMESPACE" delete deploy,svc -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
+       --cascade=foreground --wait=true --timeout=5m; then
+    "${KCTL[@]}" -n "$NAMESPACE" delete applicationnetworkpolicy,networkpolicy -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
+      || note_fail "network policies in $NAMESPACE: delete failed"
+  else
+    note_fail "the app (deploy, svc) in $NAMESPACE: delete failed or timed out; its network policies were left in place"
+    APP_LEFT=1
+  fi
 fi
 
 # Pod Identity associations (only this sample's namespace/service accounts).
@@ -399,6 +404,9 @@ done
 say "Namespace"
 if [[ -z "$ns_present" ]]; then
   echo "namespace $NAMESPACE was already gone"
+elif [[ -n "${APP_LEFT:-}" ]]; then
+  # Deleting the namespace would remove the app and its network policies together.
+  note_fail "namespace $NAMESPACE left in place, because the app in it could not be removed first"
 elif "${KCTL[@]}" delete namespace "$NAMESPACE" --ignore-not-found --wait=true --timeout=120s >/dev/null 2>&1; then
   # Confirm it is really gone. A successful get means it is still present (Terminating); a
   # get that FAILS is only confirmation when the error is an explicit NotFound -- any other

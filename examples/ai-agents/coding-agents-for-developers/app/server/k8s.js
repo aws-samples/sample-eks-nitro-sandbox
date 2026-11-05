@@ -129,6 +129,23 @@ export async function podInfo(podName) {
   return { node: pod.spec?.nodeName, podIP: pod.status?.podIP, app: labels.app, cli: labels["agent-cli"] };
 }
 
+// Wait until a pod no longer exists (the API answers 404). Resolves true when it is gone,
+// false when it is still there after timeoutMs. Any other error is thrown: "could not tell"
+// is not "gone".
+export async function waitPodGone(podName, timeoutMs = 120000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      await core.readNamespacedPod({ name: podName, namespace: NAMESPACE });
+    } catch (e) {
+      if (e?.code === 404) return true;
+      throw e;
+    }
+    if (Date.now() >= deadline) return false;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
 // The pod a claim resolved to, or null when there is no such claim (or it has no pod yet).
 export async function claimedPodName(claimName) {
   try {

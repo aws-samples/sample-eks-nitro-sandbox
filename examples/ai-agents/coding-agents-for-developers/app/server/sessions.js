@@ -240,8 +240,13 @@ async function releaseNow(session, { wipe = false } = {}) {
     if (!entry.adopted && !live.has(session)) live.set(session, entry);
     throw new Error(`could not delete claim ${entry.claimName}: ${e?.message || e}`);
   }
-  return stopError;
+  return { podName: entry.podName, stopError };
 }
+
+// Pods whose clean stop failed during a Delete, by session, until each is confirmed gone. A
+// retried Delete may find no claim at all, which would otherwise read as "nothing running"
+// while that pod can still be shutting down with the folder mounted.
+const unconfirmedPods = new Map();
 
 export async function listClosed(developer) {
   const all = await store.listSessions(developer);
@@ -255,14 +260,23 @@ export async function remove(developer, session) {
   return serialized(session, async () => {
     // Empty the folder through the mount while the pod still has it: a file written in the
     // last minute has not been exported yet, and removed now it never is.
-    const stopError = await releaseNow(session, { wipe: true });
+    const stopped = await releaseNow(session, { wipe: true });
     // Also delete the claim by its name when the app holds no record of it (a start that
     // failed under an older app, or an app restart): Delete leaves no pod behind.
     await k8s.releaseClaim(k8s.claimNameFor(session));
-    // If the folder could not be emptied, stop here: the pod is released, the folder and its
-    // access point stay, and the session stays listed so Delete can be run again (with the
-    // pod gone, the next Delete drains whatever S3 Files exports from the folder).
-    if (stopError) throw new Error(`could not empty the session's folder, so it was not deleted; try Delete again: ${stopError?.message || stopError}`);
+    // If the clean stop and wipe could not be confirmed, the folder may still hold files and
+    // the pod may still have it mounted. Go on only once that exact pod is gone: then nothing
+    // can write the folder, and the drain below removes what S3 Files exports from it. If it
+    // is not gone in time, keep the folder and remember the pod for the next Delete.
+    const pending = stopped?.stopError ? stopped.podName : unconfirmedPods.get(session);
+    if (pending) {
+      if (!(await k8s.waitPodGone(pending))) {
+        unconfirmedPods.set(session, pending);
+        throw new Error(`the session's pod ${pending} could not be confirmed stopped, so the folder was kept; ` +
+          `try Delete again in a minute${stopped?.stopError ? ` (${stopped.stopError?.message || stopped.stopError})` : ""}`);
+      }
+      unconfirmedPods.delete(session);
+    }
     await store.deleteSession(developer, session);
   });
 }

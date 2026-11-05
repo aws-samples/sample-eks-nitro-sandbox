@@ -231,7 +231,7 @@ export async function deleteSession(developer, session) {
         await s3files.send(new DeleteAccessPointCommand({ accessPointId: ap.apId }));
         return;
       }
-      await sleep(deleteTiming.settleMs);
+      if (round < deleteTiming.maxRounds) await sleep(deleteTiming.settleMs);
     }
     throw new Error(`objects kept reappearing under the session's prefix after ${deleteTiming.maxRounds} rounds`);
   } catch (e) {

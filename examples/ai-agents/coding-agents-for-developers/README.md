@@ -292,10 +292,13 @@ in front of the app takes the API server off that leg too.
 `[detached]`, because the browser's connection was to the old app pod. The CLIs keep
 running in tmux in their own pods. The new app reads each running pod's token and
 certificate back over exec, once, before it starts serving, so reload the page, then
-**Open** each session again. The Deployment replaces its pod with the `Recreate` strategy,
-so the old app pod has stopped before the new one starts: the app keeps each session's
-state, and the queue that runs one session's actions one at a time, in memory, so two app
-pods side by side could both act on one session.
+**Open** each session again. The app keeps each session's state, and the queue that runs
+one session's actions one at a time, in memory, so it must run as one pod. The Deployment
+has one replica, rolls out with the `Recreate` strategy (the old pod stops before the new
+one starts on `setup.sh` or `kubectl rollout restart`), and the pod carries
+`karpenter.sh/do-not-disrupt`, so EKS Auto Mode does not evict it to consolidate a node.
+What none of these covers is a node that stops answering: Kubernetes can start a
+replacement while the old pod may still be running on that node.
 
 **When session-bridge exits**, a small supervisor in the pod
 ([`bridge-supervise.sh`](images/base/bridge-supervise.sh)) starts it again a second later.
