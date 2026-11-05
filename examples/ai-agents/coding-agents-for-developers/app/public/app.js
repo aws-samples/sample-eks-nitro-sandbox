@@ -101,6 +101,11 @@ const removeRow = (session) => { rowFor.get(session)?.tr.remove(); rowFor.delete
 let listSeq = 0;
 const runningNow = new Map(); // session -> { value, seq }
 const deletedNow = new Map(); // session -> seq
+// A Delete that failed may have stopped the session (Delete releases it first) and may have
+// removed part of the folder, so neither "running" nor "idle" is known. Such a row shows
+// "unknown" and offers only Delete again, until a list request that started after the
+// failure succeeds and says what is there.
+const deleteFailed = new Map(); // session -> seq
 const setRunning = (session, value) => runningNow.set(session, { value, seq: listSeq });
 
 async function loadSessions() {
@@ -109,6 +114,7 @@ async function loadSessions() {
   if (seq !== listSeq) return; // a newer request is on its way; let it draw the list
   for (const [k, v] of runningNow) if (v.seq < seq) runningNow.delete(k);
   for (const [k, v] of deletedNow) if (v < seq) deletedNow.delete(k);
+  for (const [k, v] of deleteFailed) if (v < seq) deleteFailed.delete(k);
   const rows = $("#session-rows");
   rows.innerHTML = "";
   rowFor.clear();
@@ -131,12 +137,13 @@ async function loadSessions() {
     // rebuilt by a list reload mid-operation still shows it and still ignores clicks.
     const isRunning = () => (runningNow.has(s.session) ? runningNow.get(s.session).value : s.running);
     const render = () => {
-      const r = restoring.has(s.session), d = deleting.has(s.session);
-      const st = tr.querySelector(".status"), state = isRunning() ? "running" : "idle";
+      const r = restoring.has(s.session), d = deleting.has(s.session), u = deleteFailed.has(s.session);
+      const st = tr.querySelector(".status"), state = u ? "unknown" : isRunning() ? "running" : "idle";
       if (st) { st.textContent = state; st.className = `status ${state}`; }
-      restore.textContent = r ? "Restoring..." : isRunning() ? "Open" : "Restore";
+      restore.textContent = r ? "Restoring..." : isRunning() && !u ? "Open" : "Restore";
       del.textContent = d ? "Deleting..." : "Delete";
-      restore.disabled = del.disabled = r || d;
+      restore.disabled = r || d || u;
+      del.disabled = r || d;
       for (const [b, busy] of [[restore, r], [del, d]]) {
         if (busy) b.setAttribute("aria-busy", "true");
         else b.removeAttribute("aria-busy");
@@ -147,7 +154,7 @@ async function loadSessions() {
     // Restore claims a pod and mounts the folder, which takes a few seconds. Say so while it
     // runs, then reload the list so the row shows the session as running.
     restore.onclick = async () => {
-      if (restoring.has(s.session) || deleting.has(s.session)) return;
+      if (restoring.has(s.session) || deleting.has(s.session) || deleteFailed.has(s.session)) return;
       if (isRunning()) return openTerminal(s.session, s.cli, name);
       restoring.add(s.session);
       redraw(s.session);
@@ -174,6 +181,8 @@ async function loadSessions() {
         deletedNow.set(s.session, listSeq);
         removeRow(s.session); // gone now, even if the reload below fails
       } catch (err) {
+        runningNow.delete(s.session);
+        deleteFailed.set(s.session, listSeq);
         alert(`Could not delete ${name}: ${err.message}`);
       } finally {
         deleting.delete(s.session);

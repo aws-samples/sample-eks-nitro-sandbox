@@ -125,7 +125,8 @@ export async function listSessionClaims() {
 // The node a pod runs on, and its IP, where session-bridge listens.
 export async function podInfo(podName) {
   const pod = await core.readNamespacedPod({ name: podName, namespace: NAMESPACE });
-  return { node: pod.spec?.nodeName, podIP: pod.status?.podIP };
+  const labels = pod.metadata?.labels || {};
+  return { node: pod.spec?.nodeName, podIP: pod.status?.podIP, app: labels.app, cli: labels["agent-cli"] };
 }
 
 // The pod a claim resolved to, or null when there is no such claim (or it has no pod yet).

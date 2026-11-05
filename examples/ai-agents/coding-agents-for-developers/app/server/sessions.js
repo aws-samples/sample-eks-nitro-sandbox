@@ -43,6 +43,20 @@ export async function restore(developer, session) {
 // against the same claim and pod.
 const starting = new Map();
 
+// One queue per session: a start, a Close, a Delete and a release by the background loop
+// of the same session run one after another, never side by side. Without it a Restore
+// could begin while a Close was still stopping the old pod, two releases could both run
+// session-stop.sh in one pod, and a Close could delete the claim under a Restore's new pod.
+// Different sessions do not wait for each other.
+const queues = new Map();
+function serialized(session, fn) {
+  const run = (queues.get(session) || Promise.resolve()).then(fn);
+  const tail = run.then(() => {}, () => {});
+  queues.set(session, tail);
+  tail.then(() => { if (queues.get(session) === tail) queues.delete(session); });
+  return run;
+}
+
 // The app-start pick-up of running sessions (adoptRunningSessions), run once. New agent,
 // Restore, Close and Delete all wait for it, so none of them runs side by side with it: a
 // Restore that arrives while the pick-up is still reading pods starts after it, and gets
@@ -66,13 +80,16 @@ function start(developer, cli, session, { reuse = true, ...opts } = {}) {
   if (reuse && live.has(session)) return Promise.resolve(live.get(session));
   if (starting.has(session)) return starting.get(session);
   const p = afterPickUp()
-    .then(() => (reuse && live.get(session)) || startOnce(developer, cli, session, opts))
+    .then(() => serialized(session, () => (reuse && live.get(session)) || startOnce(developer, cli, session, opts)))
     .finally(() => starting.delete(session));
   starting.set(session, p);
   return p;
 }
 
 async function startOnce(developer, cli, session, { resume = false } = {}) {
+  // A Restore waits its turn behind a Delete of the same session; look the session up again
+  // now, so it does not create the folder that Delete just removed.
+  if (resume && !(await store.sessionCli(developer, session))) throw new Error(`no session ${session} for ${developer}`);
 
   console.log(`start ${session}: ensureAccessPoint`);
   const ap = await store.ensureAccessPoint(developer, session, cli);
@@ -139,7 +156,13 @@ async function pickUpRunningSessions() {
     const s = bySession.get(session);
     if (!s || live.has(session)) return; // no access point: not a session folder we know
     try {
-      const { node, podIP } = await k8s.podInfo(podName);
+      const { node, podIP, app, cli } = await k8s.podInfo(podName);
+      // Only a session pod made from this CLI's template: its labels are the ones the network
+      // policy selects on, and the CLI is the one the session's folder was made for.
+      if (app !== "agent-session" || cli !== s.cli) {
+        console.error(`session ${session}: not picking up pod ${podName}: labels app=${app} agent-cli=${cli}, expected agent-session and ${s.cli}`);
+        return;
+      }
       const azId = await k8s.nodeAzId(node);
       const { token: bridgeToken, cert: bridgeCert } = await k8s.readBridge(podName);
       // No start, Close or Delete runs while the pick-up does (they wait for it), but the
@@ -172,7 +195,7 @@ export function getLive(session) {
 // through releaseNow directly: it checks the entry and releases with no await between.
 export async function release(session) {
   await afterPickUp();
-  return releaseNow(session);
+  return serialized(session, () => releaseNow(session));
 }
 
 async function releaseNow(session) {
@@ -213,12 +236,17 @@ export async function listClosed(developer) {
   return all.map((s) => ({ ...s, display: displayName(s.session), running: live.has(s.session) }));
 }
 
+// Delete: release, then remove the folder, as one step in the session's queue, so no
+// Restore can start the session between the two.
 export async function remove(developer, session) {
-  await release(session); // waits for the pick-up
-  // Also delete the claim by its name when the app holds no record of it (a start that
-  // failed under an older app, or an app restart): Delete leaves no pod behind.
-  await k8s.releaseClaim(k8s.claimNameFor(session));
-  await store.deleteSession(developer, session);
+  await afterPickUp();
+  return serialized(session, async () => {
+    await releaseNow(session);
+    // Also delete the claim by its name when the app holds no record of it (a start that
+    // failed under an older app, or an app restart): Delete leaves no pod behind.
+    await k8s.releaseClaim(k8s.claimNameFor(session));
+    await store.deleteSession(developer, session);
+  });
 }
 
 // Background loop, every minute: release idle pods, and refresh each session's mount
@@ -242,11 +270,14 @@ const BRIDGE_FAIL_LIMIT = parseInt(process.env.BRIDGE_FAIL_LIMIT, 10) || 5;
 
 // Release a session from the background loop only if this entry is still the one the app
 // tracks for it. A check that started before a Close and a new Restore holds the old entry;
-// releasing by name then would release the new session.
-async function releaseIfCurrent(entry) {
-  if (live.get(entry.session) !== entry || starting.has(entry.session)) return false;
-  await releaseNow(entry.session);
-  return true;
+// releasing by name then would release the new session. It waits its turn in the session's
+// queue and checks the entry there, so a Close or Restore queued ahead of it has finished.
+function releaseIfCurrent(entry) {
+  return serialized(entry.session, async () => {
+    if (live.get(entry.session) !== entry || starting.has(entry.session)) return false;
+    await releaseNow(entry.session);
+    return true;
+  });
 }
 
 async function checkSession(entry, now) {
