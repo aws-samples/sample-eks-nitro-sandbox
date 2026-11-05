@@ -11,7 +11,7 @@
 #      CLI as the dev user.
 #
 # Besides this exec, the app execs into a session pod only to read back session-bridge's
-# certificate right after it, to stop the session, and once after an app restart to read
+# token and certificate right after it, to stop the session, and once after an app restart to read
 # the bridge's token and certificate again. The terminal, the activity read and the
 # credential refresh in between go through session-bridge.
 #
@@ -55,17 +55,25 @@ if [ -z "${CRED_B64:-}" ]; then
   echo "session-entrypoint: no credential on stdin" >&2
   exit 1
 fi
-printf '%s' "$CRED_B64" | base64 -d > "$CRED_FILE"
-chmod 600 "$CRED_FILE"
-# The same test session-bridge applies to a refresh: a [session] profile with a non-empty
-# access key id, secret and session token.
-if [ "$(head -n 1 "$CRED_FILE")" != "[session]" ] \
-   || ! grep -q '^aws_access_key_id=.' "$CRED_FILE" \
-   || ! grep -q '^aws_secret_access_key=.' "$CRED_FILE" \
-   || ! grep -q '^aws_session_token=.' "$CRED_FILE"; then
+# The same test session-bridge applies to a refresh (wellFormedCredential in its main.go):
+# a [session] profile with a non-empty access key id, secret and session token, where a
+# value of only spaces counts as empty.
+valid_credential() {
+  awk 'NR == 1 { h = ($0 ~ /^[[:space:]]*\[session\][[:space:]]*$/); next }
+       { i = index($0, "="); if (i == 0) next
+         k = substr($0, 1, i - 1); v = substr($0, i + 1); gsub(/[[:space:]]/, "", v)
+         if (v != "" && (k == "aws_access_key_id" || k == "aws_secret_access_key" || k == "aws_session_token")) seen[k] = 1 }
+       END { exit !(h && seen["aws_access_key_id"] && seen["aws_secret_access_key"] && seen["aws_session_token"]) }' "$1"
+}
+# Decode into a temporary file and check it there, so a bad body never replaces a good
+# credential (this script can run again on a pod that already holds one).
+( umask 077; printf '%s' "$CRED_B64" | base64 -d > "$CRED_FILE.new" ) || true
+if ! valid_credential "$CRED_FILE.new"; then
+  rm -f "$CRED_FILE.new"
   echo "session-entrypoint: credential malformed" >&2
   exit 1
 fi
+mv -f "$CRED_FILE.new" "$CRED_FILE"
 # The second line is the token the app will present to session-bridge. Root-only, like
 # the credential: code in the sandbox runs as uid 1000 and cannot read it.
 IFS= read -r BRIDGE_TOKEN || true

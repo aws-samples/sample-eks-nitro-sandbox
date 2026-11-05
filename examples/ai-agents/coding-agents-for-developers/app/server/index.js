@@ -139,6 +139,7 @@ const server = createServer(async (req, res) => {
 // maxPayload matches the bridge's own frame limit (1 MiB), well above a large paste.
 const wss = new WebSocketServer({ server, path: "/ws", maxPayload: 1 << 20 });
 const PENDING_MAX = 64 * 1024;
+const PENDING_MIN = 64; // at most PENDING_MAX / PENDING_MIN (1024) queued messages
 wss.on("connection", async (ws, req) => {
   const url = new URL(req.url, "http://localhost");
   const session = url.searchParams.get("session");
@@ -162,13 +163,19 @@ wss.on("connection", async (ws, req) => {
     }
     term.write(data);
   };
-  // Bounded: a browser that keeps sending while the bridge is still connecting is closed
-  // with 1009 (message too big) once the queue passes PENDING_MAX bytes.
+  // Bounded by bytes and by count (each message is charged at least PENDING_MIN, so empty
+  // messages fill it too). Past the bound the browser is closed with 1009, the queue is
+  // dropped and nothing more is taken, and the terminal is not opened.
   let pendingBytes = 0;
   ws.on("message", (data, isBinary) => {
+    if (browserClosed) return;
     if (term) return handle(data, isBinary);
-    pendingBytes += data.length;
-    if (pendingBytes > PENDING_MAX) return ws.close(1009, "too much input before the terminal opened");
+    pendingBytes += Math.max(data.length, PENDING_MIN);
+    if (pendingBytes > PENDING_MAX) {
+      browserClosed = true;
+      pending.length = 0;
+      return ws.close(1009, "too much input before the terminal opened");
+    }
     pending.push([data, isBinary]);
   });
   ws.on("close", () => { browserClosed = true; term?.close(); });
@@ -183,7 +190,8 @@ wss.on("connection", async (ws, req) => {
     ws.close(1011, "terminal unavailable");
     return;
   }
-  if (browserClosed) return term.close();
+  // The browser may have gone, or begun closing, while the bridge was connecting.
+  if (browserClosed || ws.readyState !== ws.OPEN) return term.close();
   for (const [data, isBinary] of pending.splice(0)) handle(data, isBinary);
 });
 

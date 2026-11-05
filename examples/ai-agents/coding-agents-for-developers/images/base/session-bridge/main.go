@@ -49,6 +49,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 	"unsafe"
 )
 
@@ -363,7 +364,8 @@ func (b *bridge) terminal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		switch op {
-		case 0x8: // close
+		case 0x8: // close: empty, or a valid status code and a UTF-8 reason
+			closeCode.Store(closeReplyCode(payload))
 			return
 		case 0x9: // ping
 			if send(0xA, payload) != nil {
@@ -412,6 +414,27 @@ func (b *bridge) terminal(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// closeReplyCode is the code to answer a peer's close frame with (RFC 6455, 5.5.1 and
+// 7.4): 1000 for a well-formed close, 1002 for a one-byte payload or a status code a peer
+// may not send, and 1007 for a reason that is not UTF-8.
+func closeReplyCode(p []byte) uint32 {
+	switch {
+	case len(p) == 0:
+		return 1000
+	case len(p) == 1:
+		return 1002
+	}
+	code := binary.BigEndian.Uint16(p[:2])
+	valid := (code >= 1000 && code <= 1003) || (code >= 1007 && code <= 1011) || (code >= 3000 && code <= 4999)
+	if !valid {
+		return 1002
+	}
+	if !utf8.Valid(p[2:]) {
+		return 1007
+	}
+	return 1000
+}
+
 func dim(s string, def int) int {
 	n, err := strconv.Atoi(s)
 	if err != nil || n < 1 || n > 1000 {
@@ -445,6 +468,7 @@ func readFrame(r *bufio.Reader) (fin bool, op byte, payload []byte, err error) {
 	if op&0x8 != 0 && (!fin || h[1]&0x7F > 125) {
 		return false, 0, nil, fmt.Errorf("%w: fragmented or oversized control frame", errProtocol)
 	}
+	// A length must use its shortest form, and a 64-bit length has its top bit clear.
 	n := uint64(h[1] & 0x7F)
 	switch n {
 	case 126:
@@ -453,12 +477,18 @@ func readFrame(r *bufio.Reader) (fin bool, op byte, payload []byte, err error) {
 			return
 		}
 		n = uint64(binary.BigEndian.Uint16(ext[:]))
+		if n < 126 {
+			return false, 0, nil, fmt.Errorf("%w: 16-bit length for a short payload", errProtocol)
+		}
 	case 127:
 		var ext [8]byte
 		if _, err = io.ReadFull(r, ext[:]); err != nil {
 			return
 		}
 		n = binary.BigEndian.Uint64(ext[:])
+		if n>>63 != 0 || n <= 0xFFFF {
+			return false, 0, nil, fmt.Errorf("%w: 64-bit length not in shortest form", errProtocol)
+		}
 	}
 	if n > maxFrame {
 		return false, 0, nil, errFrameTooLarge

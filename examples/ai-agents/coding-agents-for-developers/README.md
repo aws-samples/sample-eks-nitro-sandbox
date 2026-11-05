@@ -245,7 +245,8 @@ New agent and Restore both go through the same steps:
    its answer to "do you trust this folder?" per folder, but not for the home directory,
    so started in its home it asked again on every Restore.
    Before tmux and the CLI start, the entrypoint starts `session-bridge`, which the next
-   section describes, and the app reads back the certificate it made.
+   section describes, and the app reads back the certificate it made (with the token, which
+   it already has).
 5. While the session runs, the app refreshes the credential before it expires, through
    `session-bridge`.
 
@@ -263,7 +264,7 @@ things a session needs while it runs:
 | `PUT /v1/credential` | Replaces the session's mount credential. It accepts only a well-formed credential, so a bad request leaves the running one in place. |
 
 The app uses the Kubernetes exec API only at the edges of a session: two calls to start it
-(run the entrypoint, then read back the bridge's certificate) and one to stop it, plus one
+(run the entrypoint, then read back the bridge's token and certificate) and one to stop it, plus one
 per running pod after an app restart (below). So the traffic between the app and a running
 session's pod, however many developers have terminals open, does not go through the API
 server. The browser's own connection to the app still does in this sample, because it

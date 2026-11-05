@@ -87,11 +87,21 @@ function relativeTime(session) {
 const deleting = new Set();
 // Sessions whose Restore is still running, for the same reason.
 const restoring = new Set();
+// The button renderer of each session's row currently in the table. A reload replaces the
+// rows, so an operation that finishes later redraws through this, never through the row it
+// started from, which may no longer be on the page.
+const rowRender = new Map();
+const redraw = (session) => rowRender.get(session)?.();
+// Sessions a Restore here has just started, until the next list load reports them, so a row
+// rebuilt while the Restore ran still offers Open once it is done.
+const restored = new Set();
 
 async function loadSessions() {
   const { sessions } = await api("/api/sessions?developer=" + encodeURIComponent(developer));
   const rows = $("#session-rows");
   rows.innerHTML = "";
+  rowRender.clear();
+  restored.clear(); // this list is current: it says which sessions run
   for (const s of sessions) {
     const tr = document.createElement("tr");
     const name = s.display || s.session;
@@ -108,9 +118,10 @@ async function loadSessions() {
     del.className = "btn-sm btn-ghost";
     // Draw both buttons from the operation state, which lives outside the table, so a row
     // rebuilt by a list reload mid-operation still shows it and still ignores clicks.
+    const isRunning = () => s.running || restored.has(s.session);
     const render = () => {
       const r = restoring.has(s.session), d = deleting.has(s.session);
-      restore.textContent = r ? "Restoring..." : s.running ? "Open" : "Restore";
+      restore.textContent = r ? "Restoring..." : isRunning() ? "Open" : "Restore";
       del.textContent = d ? "Deleting..." : "Delete";
       restore.disabled = del.disabled = r || d;
       for (const [b, busy] of [[restore, r], [del, d]]) {
@@ -119,21 +130,23 @@ async function loadSessions() {
       }
     };
     render();
+    rowRender.set(s.session, render);
     // Restore claims a pod and mounts the folder, which takes a few seconds. Say so while it
     // runs, then reload the list so the row shows the session as running.
     restore.onclick = async () => {
       if (restoring.has(s.session) || deleting.has(s.session)) return;
-      if (s.running) return openTerminal(s.session, s.cli, name);
+      if (isRunning()) return openTerminal(s.session, s.cli, name);
       restoring.add(s.session);
-      render();
+      redraw(s.session);
       try {
         await api("/api/restore", { developer, session: s.session });
+        restored.add(s.session);
         openTerminal(s.session, s.cli, name);
       } catch (err) {
         alert(`Could not restore ${name}: ${err.message}`);
       } finally {
         restoring.delete(s.session);
-        render(); // the buttons come back even if the reload below fails
+        redraw(s.session); // the current row's buttons come back even if the reload fails
         loadSessions().catch(() => {});
       }
     };
@@ -141,14 +154,14 @@ async function loadSessions() {
       if (restoring.has(s.session) || deleting.has(s.session)) return;
       if (!confirm(`Delete session ${s.session}? This removes its folder.`)) return;
       deleting.add(s.session);
-      render();
+      redraw(s.session);
       try {
         await api("/api/delete", { developer, session: s.session });
       } catch (err) {
         alert(`Could not delete ${name}: ${err.message}`);
       } finally {
         deleting.delete(s.session);
-        render();
+        redraw(s.session);
         loadSessions().catch(() => {});
       }
     };
