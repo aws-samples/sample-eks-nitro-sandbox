@@ -420,7 +420,9 @@ stop is bounded, so it ends within about 90 seconds: TERM, then KILL after 10 se
 `sync` of at most 30 seconds, then the unmount, retried for up to 30 seconds while the mount
 finishes closing files (on Delete, emptying the folder first adds at most 60 seconds). It
 usually takes a second or two. If the stop fails, the app logs
-it and releases the pod anyway.
+it, records the pod in a ConfigMap in the namespace, and releases it anyway; until that pod
+is confirmed gone, the session's next Restore does not start a new pod (it asks you to try
+again) and Delete does not remove the folder.
 
 What the app cannot read or do, it reports rather than assumes. If it cannot read a
 session's activity time, it logs the failure and keeps the session; only a pod whose tmux

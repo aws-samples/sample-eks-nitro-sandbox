@@ -90,8 +90,8 @@ async function startOnce(developer, cli, session, { resume = false } = {}) {
   // A Restore waits its turn behind a Delete of the same session; look the session up again
   // now, so it does not create the folder that Delete just removed.
   if (resume && !(await store.sessionCli(developer, session))) throw new Error(`no session ${session} for ${developer}`);
-  // A Delete that could not confirm the session's last pod stopped left a record. Start a
-  // new pod only once that one is confirmed gone; otherwise two pods could have the folder.
+  // A failed clean stop of the session's last pod left a record. Start a new pod only once
+  // that one is confirmed gone; otherwise two pods could have the folder.
   if (resume) {
     const pending = await k8s.pendingStopPod(session);
     if (pending) {
@@ -127,8 +127,16 @@ async function startOnce(developer, cli, session, { resume = false } = {}) {
     console.error(`start ${session}: failed, releasing claim ${claimName}: ${e?.message || e}`);
     serialized(session, async () => {
       if ((await k8s.claimedPodName(claimName).catch(() => null)) === podName) {
-        await k8s.stopSession(podName).catch((se) =>
-          console.error(`start ${session}: clean stop in ${podName} failed, releasing anyway: ${se?.message || se}`));
+        try {
+          await k8s.stopSession(podName);
+        } catch (se) {
+          console.error(`start ${session}: clean stop in ${podName} failed, releasing anyway: ${se?.message || se}`);
+          // As for any failed stop: record the pod, or keep its claim if that fails.
+          try { await k8s.recordPendingStop(session, podName); } catch (re) {
+            console.error(`start ${session}: could not record the failed stop, keeping claim ${claimName}: ${re?.message || re}`);
+            return;
+          }
+        }
       }
       await k8s.releaseClaim(claimName).catch((re) =>
         console.error(`start ${session}: could not delete claim ${claimName}: ${re?.message || re}`));
@@ -241,10 +249,11 @@ async function releaseNow(session, { wipe = false } = {}) {
     stopError = e;
     console.error(`session ${session}: clean stop in ${entry.podName} failed, releasing anyway: ${e?.message || e}`);
   }
-  // A Delete whose clean stop failed records the pod before its claim goes, so the folder is
-  // not removed until that pod is confirmed gone, by this Delete or any later one, whatever
+  // A failed clean stop (Close, idle, Delete) leaves a pod that may still have the folder
+  // mounted until it is gone. Record it before its claim goes: the next Restore does not
+  // start a pod, and no Delete removes the folder, until that pod is confirmed gone, whatever
   // happens to the app in between. If the record cannot be written, keep the claim.
-  if (wipe && stopError) {
+  if (stopError) {
     try {
       await k8s.recordPendingStop(session, entry.podName);
     } catch (re) {
