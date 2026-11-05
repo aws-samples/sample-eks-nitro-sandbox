@@ -271,8 +271,10 @@ server. The browser's own connection to the app still does in this sample, becau
 comes in through `kubectl port-forward`; a deployment that puts an authenticated endpoint
 in front of the app takes the API server off that leg too.
 
-- **Only the app can connect.** The pod's policy admits ingress from the app's pods on 7681
-  and nothing else, so another session's pod, or any other pod, is refused at the network.
+- **The network admits the app's pods, on one port.** The pod's policy admits ingress only
+  from pods labelled `app: agent-app`, on 7681, so another session's pod is refused at the
+  network. The rule trusts the label, so anyone who can create a pod in this namespace with
+  that label passes it; the token and the pinned certificate below are what stand behind it.
 - **Only this session's token is accepted.** The app makes a fresh token for each session
   start and hands it over on the start exec's standard input. The pod keeps it in a
   root-only file; the CLI runs as uid 1000 and cannot read it.
@@ -283,8 +285,22 @@ in front of the app takes the API server off that leg too.
 - **It starts before the CLI.** The bridge holds its port before any code in the sandbox
   runs, and a warm pod that no session has claimed listens on nothing.
 
-After an app restart, the app reads each running pod's token and certificate back over exec,
-once, so the sessions it picks up keep their terminals.
+**When the app restarts** (a new image, a node replaced), every open browser terminal shows
+`[detached]`, because the browser's connection was to the old app pod. The CLIs keep
+running in tmux in their own pods. The new app reads each running pod's token and
+certificate back over exec, once, before it starts serving, so reload the page, then
+**Open** each session again.
+
+**When a pod's session-bridge stops answering** (it exited, or the pod is gone), the app
+cannot reach the terminal or refresh the mount credential. After five failed checks in a
+row, about five minutes, it releases the session as it does an idle one: the folder stays,
+and **Restore** brings the session back on a new pod.
+
+**Upgrading from a version of this sample without `session-bridge`.** Close every running
+session with the old app first, set a new `IMAGE_TAG` in `.env`, and run `setup.sh`. A
+session left running on an old pod cannot be picked up by the new app, which has no way to
+reach it, and shows as idle. Its first **Restore** fails, after stopping the old pod's
+session cleanly and releasing the pod; the next **Restore** starts it on a new pod.
 
 On a run of this sample, codex in the sandbox echoed a keystroke in 18.9 ms (median) from
 inside its own pod, 23.9 ms from the app through `session-bridge`, and 25.9 ms from the app

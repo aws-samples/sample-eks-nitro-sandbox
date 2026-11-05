@@ -93,18 +93,27 @@ const restoring = new Set();
 const rowFor = new Map(); // session -> { tr, render }
 const redraw = (session) => rowFor.get(session)?.render();
 const removeRow = (session) => { rowFor.get(session)?.tr.remove(); rowFor.delete(session); };
-// What this page has just done to a session's running state (true after Restore, false
-// after Close), until the next list load reports it, so a row is right even when the
-// reload after the operation fails.
-const runningNow = new Map();
+// What this page has just done to a session: its running state after Restore (true) or
+// Close (false), or that Delete removed it. Each is tagged with the list request number
+// current when the operation finished, and holds until a list request that started after
+// it succeeds. So neither a reload that fails nor an older list response arriving late can
+// undo it.
+let listSeq = 0;
+const runningNow = new Map(); // session -> { value, seq }
+const deletedNow = new Map(); // session -> seq
+const setRunning = (session, value) => runningNow.set(session, { value, seq: listSeq });
 
 async function loadSessions() {
+  const seq = ++listSeq;
   const { sessions } = await api("/api/sessions?developer=" + encodeURIComponent(developer));
+  if (seq !== listSeq) return; // a newer request is on its way; let it draw the list
+  for (const [k, v] of runningNow) if (v.seq < seq) runningNow.delete(k);
+  for (const [k, v] of deletedNow) if (v < seq) deletedNow.delete(k);
   const rows = $("#session-rows");
   rows.innerHTML = "";
   rowFor.clear();
-  runningNow.clear(); // this list is current: it says which sessions run
   for (const s of sessions) {
+    if (deletedNow.has(s.session)) continue;
     const tr = document.createElement("tr");
     const name = s.display || s.session;
     const status = s.running ? "running" : "idle";
@@ -120,7 +129,7 @@ async function loadSessions() {
     del.className = "btn-sm btn-ghost";
     // Draw both buttons from the operation state, which lives outside the table, so a row
     // rebuilt by a list reload mid-operation still shows it and still ignores clicks.
-    const isRunning = () => (runningNow.has(s.session) ? runningNow.get(s.session) : s.running);
+    const isRunning = () => (runningNow.has(s.session) ? runningNow.get(s.session).value : s.running);
     const render = () => {
       const r = restoring.has(s.session), d = deleting.has(s.session);
       const st = tr.querySelector(".status"), state = isRunning() ? "running" : "idle";
@@ -144,7 +153,7 @@ async function loadSessions() {
       redraw(s.session);
       try {
         await api("/api/restore", { developer, session: s.session });
-        runningNow.set(s.session, true);
+        setRunning(s.session, true);
         openTerminal(s.session, s.cli, name);
       } catch (err) {
         alert(`Could not restore ${name}: ${err.message}`);
@@ -162,6 +171,7 @@ async function loadSessions() {
       try {
         await api("/api/delete", { developer, session: s.session });
         runningNow.delete(s.session);
+        deletedNow.set(s.session, listSeq);
         removeRow(s.session); // gone now, even if the reload below fails
       } catch (err) {
         alert(`Could not delete ${name}: ${err.message}`);
@@ -263,7 +273,7 @@ function openTerminal(session, cli, display) {
     e.stopPropagation();
     ws.close(); win.remove(); windows.delete(session);
     await api("/api/close", { session });
-    runningNow.set(session, false);
+    setRunning(session, false);
     redraw(session); // shows Restore now, even if the reload below fails
     loadSessions().catch(() => {});
   };

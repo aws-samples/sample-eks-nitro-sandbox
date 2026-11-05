@@ -197,11 +197,15 @@ wss.on("connection", async (ws, req) => {
 });
 
 // Pick up sessions that kept running while the app was down, so the loop refreshes their
-// credentials and releases them when idle. A failure is logged; the app still starts.
+// credentials and releases them when idle, and only then start listening: until then a
+// running session would show as idle, and a Restore could race the pick-up. A failure is
+// logged; the app still starts.
 sessions.adoptRunningSessions()
   .then((n) => console.log(`picked up ${n} running session(s) after start`))
-  .catch((e) => console.error(`could not pick up running sessions after start: ${e?.message || e}`));
-sessions.startBackgroundLoop();
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`coding-agents-for-developers app on :${PORT}, CLIs: ${CLIS.join(", ")}`);
-});
+  .catch((e) => console.error(`could not pick up running sessions after start: ${e?.message || e}`))
+  .finally(() => {
+    sessions.startBackgroundLoop();
+    server.listen(PORT, "0.0.0.0", () => {
+      console.log(`coding-agents-for-developers app on :${PORT}, CLIs: ${CLIS.join(", ")}`);
+    });
+  });

@@ -65,7 +65,12 @@ async function startOnce(developer, cli, session, { resume = false } = {}) {
   } catch (e) {
     // The session never became live, so nothing else would release its pod. The folder
     // (access point) stays: the session shows in the list and Restore or Delete applies.
+    // The entrypoint may have got as far as mounting the folder and starting the CLI (an
+    // image without session-bridge does, then fails here), so stop it cleanly first, as
+    // Close does, before the pod goes: its locks on the folder are released now.
     console.error(`start ${session}: failed, releasing claim ${claimName}: ${e?.message || e}`);
+    await k8s.stopSession(podName).catch((se) =>
+      console.error(`start ${session}: clean stop in ${podName} failed, releasing anyway: ${se?.message || se}`));
     await k8s.releaseClaim(claimName).catch((re) =>
       console.error(`start ${session}: could not delete claim ${claimName}: ${re?.message || re}`));
     throw e;
@@ -92,13 +97,15 @@ export async function adoptRunningSessions() {
   if (claims.length === 0) return 0;
   const bySession = new Map((await store.listAllSessions()).map((s) => [s.session, s]));
   let adopted = 0;
-  for (const { claimName, podName } of claims) {
+  // Independently and a few at a time, so one pod that cannot be read (an image from before
+  // session-bridge, a pod going away) does not hold up the others for its exec timeout.
+  await eachLimited(claims, TICK_CONCURRENCY, async ({ claimName, podName }) => {
     // Only a claim named the way claimPod names one, for a well-formed session name.
-    if (!claimName.startsWith("agent-")) continue;
+    if (!claimName.startsWith("agent-")) return;
     const session = claimName.slice("agent-".length);
-    if (!isSessionName(session) || k8s.claimNameFor(session) !== claimName) continue;
+    if (!isSessionName(session) || k8s.claimNameFor(session) !== claimName) return;
     const s = bySession.get(session);
-    if (!s || live.has(session)) continue; // no access point: not a session folder we know
+    if (!s || live.has(session)) return; // no access point: not a session folder we know
     try {
       const { node, podIP } = await k8s.podInfo(podName);
       const azId = await k8s.nodeAzId(node);
@@ -113,7 +120,7 @@ export async function adoptRunningSessions() {
     } catch (e) {
       console.error(`session ${session}: could not pick up pod ${podName} after a restart: ${e?.message || e}`);
     }
-  }
+  });
   return adopted;
 }
 
@@ -176,43 +183,79 @@ export async function remove(developer, session) {
 // refresh leaves lastRefresh unchanged, so it is retried on the next tick; the credential
 // being replaced is valid for an hour and is refreshed after 30 minutes, so there are
 // about 30 retries before the session's mount credential would lapse.
-export async function backgroundTick(now = Date.now()) {
-  for (const entry of [...live.values()]) {
-    try {
-      const last = (await bridge.lastActivity(entry)) * 1000;
-      const idleFor = now - (last || entry.startedAt);
-      if (idleFor > IDLE_MS) {
-        try {
-          await release(entry.session);
-          console.log(`session ${entry.session}: released after ${Math.round(idleFor / 60000)} idle minutes`);
-          continue;
-        } catch (e) {
-          console.error(`session ${entry.session} (pod ${entry.podName}): idle release failed, will retry next minute: ${e?.message || e}`);
-        }
-      }
-    } catch (e) {
-      console.error(`session ${entry.session} (pod ${entry.podName}): idle check failed, will retry next minute: ${e?.message || e}`);
-    }
-    // A session the idle check released is gone from the map; refresh only the ones still
-    // tracked, whatever the idle check did.
-    if (live.get(entry.session) !== entry) continue;
-    if (now - (entry.lastRefresh || entry.startedAt) > REFRESH_MS) {
+//
+// Sessions are checked independently, TICK_CONCURRENCY at a time, so one slow or dead
+// bridge (each call is bounded at 10 s) does not hold up the others; and the next tick is
+// scheduled only after this one has finished, so ticks never overlap.
+//
+// A bridge that does not answer the activity read for BRIDGE_FAIL_LIMIT ticks in a row
+// (it exited, or the claim's pod is gone) leaves a session the app can no longer reach:
+// no terminal, no refresh, and it would never go idle. Release it, as idle does; the folder
+// stays, and Restore brings the session back on a new pod.
+const TICK_CONCURRENCY = 8;
+const BRIDGE_FAIL_LIMIT = parseInt(process.env.BRIDGE_FAIL_LIMIT, 10) || 5;
+
+async function checkSession(entry, now) {
+  try {
+    const last = (await bridge.lastActivity(entry)) * 1000;
+    entry.bridgeFailures = 0;
+    const idleFor = now - (last || entry.startedAt);
+    if (idleFor > IDLE_MS) {
       try {
-        const cred = await store.mountCredential(entry.apId, entry.developer, entry.cli, entry.session);
-        await bridge.refreshCredential(entry, cred);
-        entry.lastRefresh = now;
-        console.log(`session ${entry.session}: mount credential refreshed`);
+        await release(entry.session);
+        console.log(`session ${entry.session}: released after ${Math.round(idleFor / 60000)} idle minutes`);
+        return;
       } catch (e) {
-        const age = Math.round((now - (entry.lastRefresh || entry.startedAt)) / 60000);
-        console.error(
-          `session ${entry.session} (pod ${entry.podName}): credential refresh failed, will retry next minute; ` +
-          `credential age ${age} min: ${e?.message || e}`
-        );
+        console.error(`session ${entry.session} (pod ${entry.podName}): idle release failed, will retry next minute: ${e?.message || e}`);
       }
+    }
+  } catch (e) {
+    entry.bridgeFailures = (entry.bridgeFailures || 0) + 1;
+    console.error(`session ${entry.session} (pod ${entry.podName}): idle check failed ` +
+      `(${entry.bridgeFailures} in a row), will retry next minute: ${e?.message || e}`);
+    if (entry.bridgeFailures >= BRIDGE_FAIL_LIMIT) {
+      try {
+        await release(entry.session);
+        console.log(`session ${entry.session}: released, its session-bridge did not answer ${entry.bridgeFailures} times in a row`);
+        return;
+      } catch (re) {
+        console.error(`session ${entry.session}: release after bridge failures failed, will retry next minute: ${re?.message || re}`);
+      }
+    }
+  }
+  // A session the idle check released is gone from the map; refresh only the ones still
+  // tracked, whatever the idle check did.
+  if (live.get(entry.session) !== entry) return;
+  if (now - (entry.lastRefresh || entry.startedAt) > REFRESH_MS) {
+    try {
+      const cred = await store.mountCredential(entry.apId, entry.developer, entry.cli, entry.session);
+      await bridge.refreshCredential(entry, cred);
+      entry.lastRefresh = now;
+      console.log(`session ${entry.session}: mount credential refreshed`);
+    } catch (e) {
+      const age = Math.round((now - (entry.lastRefresh || entry.startedAt)) / 60000);
+      console.error(
+        `session ${entry.session} (pod ${entry.podName}): credential refresh failed, will retry next minute; ` +
+        `credential age ${age} min: ${e?.message || e}`
+      );
     }
   }
 }
 
+// Run fn over items, at most `limit` at a time; every item runs, whatever the others do.
+async function eachLimited(items, limit, fn) {
+  const queue = [...items];
+  const worker = async () => { while (queue.length) await fn(queue.shift()).catch(() => {}); };
+  await Promise.all(Array.from({ length: Math.min(limit, queue.length) }, worker));
+}
+
+export async function backgroundTick(now = Date.now()) {
+  await eachLimited(live.values(), TICK_CONCURRENCY, (entry) => checkSession(entry, now));
+}
+
 export function startBackgroundLoop() {
-  setInterval(() => { backgroundTick().catch((e) => console.error(`background loop: ${e?.message || e}`)); }, 60 * 1000).unref();
+  const tick = () => backgroundTick()
+    .catch((e) => console.error(`background loop: ${e?.message || e}`))
+    .finally(() => setTimeout(tick, 60 * 1000).unref());
+  setTimeout(tick, 60 * 1000).unref();
 }
