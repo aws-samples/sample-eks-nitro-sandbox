@@ -110,11 +110,19 @@ async function startOnce(developer, cli, session, { resume = false } = {}) {
     // The entrypoint may have got as far as mounting the folder and starting the CLI (an
     // image without session-bridge does, then fails here), so stop it cleanly first, as
     // Close does, before the pod goes: its locks on the folder are released now.
+    // The clean stop can take a minute or more, so the error goes back to the developer now
+    // and the clean up runs next in the session's queue: a Restore clicked meanwhile waits
+    // for it. It stops the pod only if the claim still points at it.
     console.error(`start ${session}: failed, releasing claim ${claimName}: ${e?.message || e}`);
-    await k8s.stopSession(podName).catch((se) =>
-      console.error(`start ${session}: clean stop in ${podName} failed, releasing anyway: ${se?.message || se}`));
-    await k8s.releaseClaim(claimName).catch((re) =>
-      console.error(`start ${session}: could not delete claim ${claimName}: ${re?.message || re}`));
+    serialized(session, async () => {
+      if ((await k8s.claimedPodName(claimName).catch(() => null)) === podName) {
+        await k8s.stopSession(podName).catch((se) =>
+          console.error(`start ${session}: clean stop in ${podName} failed, releasing anyway: ${se?.message || se}`));
+      }
+      await k8s.releaseClaim(claimName).catch((re) =>
+        console.error(`start ${session}: could not delete claim ${claimName}: ${re?.message || re}`));
+      console.log(`start ${session}: cleaned up after the failed start`);
+    });
     throw e;
   }
 
@@ -198,7 +206,7 @@ export async function release(session) {
   return serialized(session, () => releaseNow(session));
 }
 
-async function releaseNow(session) {
+async function releaseNow(session, { wipe = false } = {}) {
   let entry = live.get(session);
   if (!entry) {
     // The app keeps running sessions in memory only, so after an app restart a session can
@@ -214,8 +222,8 @@ async function releaseNow(session) {
   // when the NFS lease runs out. The pod is released either way: a failed stop is logged,
   // and the next Restore then waits out the lease (Codex) or may find a stale database.
   try {
-    await k8s.stopSession(entry.podName);
-    console.log(`session ${session}: stopped in ${entry.podName}`);
+    await k8s.stopSession(entry.podName, { wipe });
+    console.log(`session ${session}: stopped in ${entry.podName}${wipe ? ", folder emptied" : ""}`);
   } catch (e) {
     console.error(`session ${session}: clean stop in ${entry.podName} failed, releasing anyway: ${e?.message || e}`);
   }
@@ -241,7 +249,9 @@ export async function listClosed(developer) {
 export async function remove(developer, session) {
   await afterPickUp();
   return serialized(session, async () => {
-    await releaseNow(session);
+    // Empty the folder through the mount while the pod still has it: a file written in the
+    // last minute has not been exported yet, and removed now it never is.
+    await releaseNow(session, { wipe: true });
     // Also delete the claim by its name when the app holds no record of it (a start that
     // failed under an older app, or an app restart): Delete leaves no pod behind.
     await k8s.releaseClaim(k8s.claimNameFor(session));
@@ -298,6 +308,20 @@ async function checkSession(entry, now) {
     entry.bridgeFailures = (entry.bridgeFailures || 0) + 1;
     console.error(`session ${entry.session} (pod ${entry.podName}): idle check failed ` +
       `(${entry.bridgeFailures} in a row), will retry next minute: ${e?.message || e}`);
+    // The pod restarts a bridge that exited, with a new certificate. After the second
+    // failure, read the bridge back over exec, once, and pin its new certificate if it
+    // changed; the next check then reaches it.
+    if (entry.bridgeFailures === 2) {
+      try {
+        const { token, cert } = await k8s.readBridge(entry.podName);
+        if (live.get(entry.session) === entry && token === entry.bridgeToken && cert !== entry.bridgeCert) {
+          entry.bridgeCert = cert;
+          console.log(`session ${entry.session}: session-bridge restarted in ${entry.podName}; pinned its new certificate`);
+        }
+      } catch (re) {
+        console.error(`session ${entry.session}: could not read session-bridge back from ${entry.podName}: ${re?.message || re}`);
+      }
+    }
     if (entry.bridgeFailures >= BRIDGE_FAIL_LIMIT) {
       try {
         if (!(await releaseIfCurrent(entry))) return;

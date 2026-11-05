@@ -194,33 +194,42 @@ export async function listSessions(developer) {
     .sort((x, y) => y.session.localeCompare(x.session));
 }
 
-// How Delete waits for S3 Files exports to settle. Exported so a test can shorten it.
-export const deleteTiming = { settleMs: 20000, maxRounds: 8 };
+// How Delete waits for S3 Files exports to settle. S3 Files exports a change after 60
+// seconds with no writes to the file (Amazon S3 User Guide, *Understanding how
+// synchronization works*); on a live run the first export of a fresh write arrived at
+// 66 s and the last of 20 at 78 s. So the prefix must stay empty for quietMs (90 s) after
+// the last change could have been made, not for two quick lists. Exported so a test can
+// shorten it.
+export const deleteTiming = { settleMs: 15000, quietMs: 90000, maxRounds: 20 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export async function deleteSession(developer, session) {
   const ap = await findAccessPoint(developer, session);
   if (!ap) return;
-  // The access point first: once it is gone nothing can mount the folder and write to it.
-  // Writes made before that can still be on their way from the file system to the bucket
-  // (S3 Files exports asynchronously), so a version deleted now can come back. So drain the
-  // prefix, wait, and list it again, until two lists in a row a wait apart find nothing.
-  await s3files.send(new DeleteAccessPointCommand({ accessPointId: ap.apId }));
+  // By now the session's pod has been released (sessions.remove), so nothing has the folder
+  // mounted, and only the app hands out the credential that mounts it. Writes made before
+  // that can still be on their way from the file system to the bucket (S3 Files exports
+  // asynchronously), so a version deleted now can come back. So drain the prefix, wait,
+  // and list it again, until it has stayed empty for quietMs.
+  //
+  // The access point goes last. The session list is built from access points, so until
+  // the drain has finished the session stays listed: a Delete that fails, or that an app
+  // restart cuts short, leaves the row in place and Delete can be run again.
   try {
-    let quiet = 0;
+    let quietSince = Date.now();
     for (let round = 1; round <= deleteTiming.maxRounds; round++) {
       const deleted = await deleteFolder(developer, ap.cli, session);
-      quiet = deleted === 0 ? quiet + 1 : 0;
-      if (quiet >= 2) return;
-      if (deleted > 0) console.log(`delete ${session}: removed ${deleted} version(s) in round ${round}`);
+      if (deleted > 0) {
+        quietSince = Date.now();
+        console.log(`delete ${session}: removed ${deleted} version(s) in round ${round}`);
+      } else if (Date.now() - quietSince >= deleteTiming.quietMs) {
+        await s3files.send(new DeleteAccessPointCommand({ accessPointId: ap.apId }));
+        return;
+      }
       await sleep(deleteTiming.settleMs);
     }
     throw new Error(`objects kept reappearing under the session's prefix after ${deleteTiming.maxRounds} rounds`);
   } catch (e) {
-    // Keep the session listable, so the developer sees it and Delete can be retried: the
-    // session list is built from access points, so put this one back.
-    await ensureAccessPoint(developer, session, ap.cli).catch((re) =>
-      console.error(`delete ${session}: could not recreate its access point after a failed delete: ${re?.message || re}`));
     throw new Error(`deleting session ${session}: ${e?.message || e}`);
   }
 }

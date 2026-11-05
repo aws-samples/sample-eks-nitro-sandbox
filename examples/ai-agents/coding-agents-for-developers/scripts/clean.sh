@@ -45,7 +45,7 @@ if [[ -n "$ns_present" ]]; then
     || note_fail "claims in $NAMESPACE: delete failed"
   "${KCTL[@]}" -n "$NAMESPACE" delete sandboxtemplate -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
     || note_fail "templates in $NAMESPACE: delete failed"
-  "${KCTL[@]}" -n "$NAMESPACE" delete applicationnetworkpolicy -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
+  "${KCTL[@]}" -n "$NAMESPACE" delete applicationnetworkpolicy,networkpolicy -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
     || note_fail "network policies in $NAMESPACE: delete failed"
   "${KCTL[@]}" -n "$NAMESPACE" delete deploy,svc -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
     || note_fail "the app (deploy, svc) in $NAMESPACE: delete failed"

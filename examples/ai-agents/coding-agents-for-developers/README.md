@@ -59,7 +59,7 @@ pod network. The
 pod reaches Amazon Bedrock through a Pod Identity role that may only invoke models; its
 egress policy refuses everything else.*
 
-![A developer, outside AWS, reaches the web app's terminal through kubectl port-forward. Inside the AWS Cloud, an Amazon EKS cluster holds the web app, an ordinary trusted first-party pod that claims a pod and drives the terminal. The app claims a red Nitro sandbox pod (isolated-sandbox, one per session) from a dashed SandboxWarmPool per CLI, and mounts the session folder into it with a per-session credential. A second arrow, labelled terminal (TLS), runs from the app to the sandbox pod, which runs tmux and the CLI, session-bridge on port 7681, and its workspace at /workspace. To the right, outside the cluster, it mounts its own S3 Files access point only (one per session), which syncs with an S3 bucket (one prefix per session), and it invokes models on Amazon Bedrock through a Pod Identity role that may only invoke models. Below, a red dashed arrow to the internet, AWS APIs and other pods is refused by the egress policy.](figures/architecture.png)
+![A developer, outside AWS, reaches the web app's terminal through kubectl port-forward. Inside the AWS Cloud, an Amazon EKS cluster holds the web app, an ordinary trusted first-party pod that claims a pod and drives the terminal. The app claims a red Nitro sandbox pod (isolated-sandbox, one per session) from a dashed SandboxWarmPool per CLI, and mounts the session folder into it with a per-session credential. A second arrow, labelled terminal (TLS), runs from the app to the sandbox pod, which runs tmux and the CLI, session-bridge on port 7681, and its workspace at /workspace. To the right, outside the cluster, it mounts its own S3 Files access point only (one per session), which syncs with an S3 bucket (one prefix per session), and it invokes models on Amazon Bedrock through a Pod Identity role, labelled invoke models, with Codex also allowed web search. Below, a red dashed arrow to other hosts and other pods is refused by the egress policy.](figures/architecture.png)
 
 ## Versions
 
@@ -78,17 +78,19 @@ the images record what they installed.
 | oh-my-pi ([`@oh-my-pi/pi-coding-agent`](https://github.com/can1357/oh-my-pi)) | 18.12.5 |
 | xterm.js ([`@xterm/xterm`](https://www.npmjs.com/package/@xterm/xterm)) | 6.0.0 |
 | Go, to build `session-bridge` ([`golang`](https://gallery.ecr.aws/docker/library/golang) image) | 1.27 |
+| GitHub CLI ([`cli/cli`](https://github.com/cli/cli)), in the session image | 2.103.3 |
 
 ## Files
 
 | File | What it is |
 |---|---|
 | [`app/`](app/) | The web app: the server ([`server/`](app/server/)) and the xterm.js UI ([`public/`](app/public/)), and its [`Dockerfile`](app/Dockerfile) |
-| [`images/base/`](images/base/) | The shared base image: the S3 Files mount helper, tmux, git, [`session-entrypoint.sh`](images/base/session-entrypoint.sh), and [`session-bridge/`](images/base/session-bridge/main.go), the small server that gives the app the session's terminal |
+| [`images/base/`](images/base/) | The shared base image: the S3 Files mount helper, tmux, git, the GitHub CLI, [`session-entrypoint.sh`](images/base/session-entrypoint.sh), [`session-stop.sh`](images/base/session-stop.sh), and [`session-bridge/`](images/base/session-bridge/main.go), the small server that gives the app the session's terminal, with [`bridge-supervise.sh`](images/base/bridge-supervise.sh), which restarts it if it exits |
 | [`images/<cli>/`](images/) | One Dockerfile per CLI, each `FROM` the base |
 | [`deploy/sandbox-template.yaml`](deploy/sandbox-template.yaml) | The per-CLI `SandboxTemplate` and `SandboxWarmPool` |
 | [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The per-CLI egress policy |
 | [`deploy/rbac.yaml`](deploy/rbac.yaml), [`deploy/app.yaml`](deploy/app.yaml) | The service accounts and RBAC, and the app Deployment and Service |
+| [`deploy/app-policy.yaml`](deploy/app-policy.yaml) | The app's network policy: no ingress from the pod network |
 | [`iam/`](iam/) | The Bedrock, Codex, App and Mount role policies and trusts, and the per-session mount session policy |
 | [`scripts/setup.sh`](scripts/setup.sh), [`scripts/clean.sh`](scripts/clean.sh) | Create everything and apply it; remove it |
 | `.env.example` | The local values the sample needs; copy to `.env`, which git ignores |
@@ -172,9 +174,10 @@ Then browse to http://127.0.0.1:8080
 ## What a session looks like
 
 Each terminal is a floating window wired to the CLI running in its sandbox pod. These are
-the six CLIs answering the same prompt, each on its own model: the five Bedrock CLIs on the
-inference profile in the app's agent list (Claude Sonnet here), and Codex on a GPT model
-served through the Bedrock "Mantle" OpenAI-compatible endpoint. These screenshots are from
+the six CLIs answering the same prompt, each on its own model: four on the Bedrock
+inference profile in the app's agent list (Claude Sonnet here), Codex on a GPT model
+served through the Bedrock "Mantle" OpenAI-compatible endpoint, and Kiro CLI through the
+developer's own Kiro sign-in. These screenshots are from
 earlier runs of this sample. On the fresh run, each of the five Bedrock CLIs completed turns
 in the Restore check below, and Kiro CLI stopped at its sign-in menu, since its sign-in is
 the developer's own rather than Bedrock:
@@ -279,7 +282,9 @@ in front of the app takes the API server off that leg too.
 - **The connection is pinned.** At start the bridge makes its own TLS key and a self-signed
   certificate, and writes only the certificate to a root-only file. The app reads it once,
   over exec, and trusts that one certificate and nothing else, so code in the sandbox cannot
-  stand in for the bridge: it has neither the key nor a way to replace the certificate.
+  stand in for the bridge: it has neither the key nor a way to replace the certificate. The
+  key is never written to a file: it lives only in the bridge's memory, and every session
+  start makes a new one.
 - **It starts before the CLI.** The bridge holds its port before any code in the sandbox
   runs, and a warm pod that no session has claimed listens on nothing.
 
@@ -289,9 +294,29 @@ running in tmux in their own pods. The new app reads each running pod's token an
 certificate back over exec, once, before it starts serving, so reload the page, then
 **Open** each session again.
 
-**When a pod's session-bridge stops answering** (it exited, or the pod is gone), the app
-cannot reach the terminal or refresh the mount credential. After five failed checks in a
-row it releases the session as it does an idle one: the folder stays, and **Restore**
+**When session-bridge exits**, a small supervisor in the pod
+([`bridge-supervise.sh`](images/base/bridge-supervise.sh)) starts it again a second later.
+The new bridge has the same token and a new key and certificate, so the app's next check
+fails on the certificate; after the second failed check the app reads the bridge back over
+exec, once, and pins the new certificate. On a run of this sample, the bridge in a codex
+pod was stopped by hand:
+
+```text
+bridge-supervise: session-bridge exited (143), starting it again
+2026/11/05 17:32:33 session-bridge listening on :7681
+```
+
+and the app log, over the next two checks:
+
+```text
+session mw3tpdzt-zesty-finch (pod agent-codex-4s84k): idle check failed (1 in a row), will retry next minute: self-signed certificate
+session mw3tpdzt-zesty-finch (pod agent-codex-4s84k): idle check failed (2 in a row), will retry next minute: self-signed certificate
+session mw3tpdzt-zesty-finch: session-bridge restarted in agent-codex-4s84k; pinned its new certificate
+```
+
+The checks after that passed. **When the pod itself is gone**, or the bridge cannot be
+reached at all, the app cannot reach the terminal or refresh the mount credential. After
+five failed checks in a row it releases the session as it does an idle one: the folder stays, and **Restore**
 brings the session back on a new pod. The checks run a minute apart and each waits up to
 10 seconds for an answer, so this usually takes six to eight minutes, and longer when the
 app has many sessions.
@@ -355,26 +380,24 @@ mounts the same folder in a new pod, and only Delete removes the folder.*
 | No terminal activity for the idle period (default 30 minutes) | The app reads, every minute, the last time each session's terminal had key input or printed output (tmux's `session_activity` and `window_activity`). An agent still working on its own keeps printing, so it is not idle; a CLI waiting at its prompt prints nothing. Once the period passes, it stops the session cleanly (below) and deletes the `SandboxClaim`: the pod goes, the folder stays. |
 | Close the window | Same as idle: the session is stopped and the claim released, the folder stays, and the session moves to the session list. |
 | Restore | The app claims a new warm pod (a new pod UID), mounts the same folder and starts the CLI with its own continue-the-last-conversation option: `claude --continue`, `codex resume --last`, `kiro-cli chat --v3 --resume`, `opencode --continue`, `pi --continue` and `omp --continue`. The history is in the CLI's home inside the folder, so it comes back with it; a session restored before its first prompt starts the CLI fresh. |
-| Delete | The app deletes the access point first, so nothing can mount the folder again, then every object version and delete marker under the session's prefix in the (versioned) bucket. S3 Files exports writes to the bucket asynchronously, so a write made just before Delete can arrive after the drain: the app lists the prefix again every 20 seconds and deletes whatever came back, until two lists in a row are empty. If objects keep coming back, or a delete fails, it puts the access point back, so the session stays in the list and Delete can be retried, and returns the error. |
+| Delete | If the session is running, the app first empties its folder through the mount, in the pod, as it stops the session. Then it deletes every object version and delete marker under the session's prefix in the (versioned) bucket. S3 Files exports a change to the bucket only after 60 seconds with no writes to the file, so a file written just before Delete can arrive after the first pass: the app lists the prefix again every 15 seconds and deletes whatever came back, until the prefix has stayed empty for 90 seconds. Only then does it delete the access point. The session list is built from access points, so a Delete that fails, or that an app restart cuts short, leaves the session in the list, and Delete can be run again; a failed Delete returns the error, and the row reads **unknown** and offers only Delete until the list reloads. |
 
-**Delete can leave files that were written just before it.** On the fresh run, 30 files
-were written into a pi session's `project/` folder and the session was deleted straight
-away. The app log:
+**A file written just before Delete does not come back.** On a run of this sample, 30
+files were written into a running pi session's `project/` folder and the session was
+deleted straight away. The app log:
 
 ```text
-session mw30z8yp-tidy-panda: stopped in agent-mw30z8yp-tidy-panda
-delete mw30z8yp-tidy-panda: removed 19 version(s) in round 1
+session mw3ulcl4-quiet-gecko: stopped in agent-pi-75r9k, folder emptied
+delete mw3ulcl4-quiet-gecko: removed 10 version(s) in round 1
 ```
 
-Rounds 2 and 3 found nothing, so Delete returned (`{"ok":true}`, after 41 seconds), and
-right after it `get-access-point` answered `ResourceNotFoundException` and
-`list-object-versions` for the prefix found no versions and no delete markers. About three
-minutes after the files were written, though, the prefix held 30 versions, one for each
-`project/note-*.txt`: the export to the bucket arrived after the drain had stopped
-looking. On an earlier run the late exports arrived within two minutes and the drain caught
-them in rounds 2 to 5. Until Delete waits on the file system itself rather than on a quiet
-bucket, check the prefix a few minutes after a Delete, or let the clean up empty the
-bucket.
+Round 1 removed what had been exported before (the CLI's home and settings); the 30 new
+files were removed through the mount before S3 Files exported them, so they never reached
+the bucket. Delete returned (`{"ok":true}`) after 92 seconds, and the prefix had no versions
+and no delete markers at every check for the four minutes after the write. Before this
+change, the same check ended with the 30 files in the bucket under the deleted session's
+prefix about three minutes later: Delete had stopped looking after two empty lists 20
+seconds apart, before S3 Files' 60-second wait had passed.
 
 Before it releases a pod, the app runs `session-stop.sh` in it through the exec API: it
 ends every process of the session's user, then unmounts `/workspace`. The CLIs keep SQLite
@@ -385,7 +408,8 @@ the Codex conversation "open in another app" and opencode reported "database dis
 is malformed". Ending the processes first releases the locks at once. Every step of the
 stop is bounded, so it ends within about 90 seconds: TERM, then KILL after 10 seconds, a
 `sync` of at most 30 seconds, then the unmount, retried for up to 30 seconds while the mount
-finishes closing files. It usually takes a second or two. If the stop fails, the app logs
+finishes closing files (on Delete, emptying the folder first adds at most 60 seconds). It
+usually takes a second or two. If the stop fails, the app logs
 it and releases the pod anyway.
 
 What the app cannot read or do, it reports rather than assumes. If it cannot read a
@@ -417,8 +441,14 @@ warm pod again. Two Restores on the same run hit the same wait, and passed when 
 So size `POOL_REPLICAS` to the rate at which sessions start, and expect a start that finds
 both the pool and the cluster full to fail rather than wait for a node. While a start is
 in flight, its tile reads **Starting...** and ignores further clicks, so a second click
-does not claim a second pod; if the start fails, the tile shows the error and the next
-click tries again.
+does not claim a second pod; if the start fails, the tile shows the error at once, the app
+stops and releases the pod it had claimed, and the next click tries again once that is
+done.
+
+Each session's actions run one at a time: a Restore clicked while a Close of the same
+session is still stopping its pod starts once the Close has finished, and a Restore clicked
+during a Delete is refused once the Delete has removed the folder. Different sessions do
+not wait for each other.
 
 Close then Restore is the same path against the existing folder, so a restored session comes
 up on a **new pod** (a new pod UID) and the CLI continues its conversation. For pi on the
@@ -580,6 +610,12 @@ It depends on the layer.
 - **Through this web app: yes, by design of the demo.** The sign-in is a picker, not
   authentication, so anyone who can reach your `kubectl port-forward` can pick any developer
   and open, close or delete any session. The app checks only that each name is well formed.
+  Other pods in the cluster cannot reach the app at all: its own policy,
+  [`app-policy.yaml`](deploy/app-policy.yaml), admits no ingress from the pod network, and
+  `kubectl port-forward` is not pod network traffic, so it still works. On a run of this
+  sample, a pod in the same namespace fetched `/api/clis` from the app's pod IP before the
+  policy was applied, and timed out after (`wget: download timed out`), while the
+  port-forward kept answering and a restarted app pod went Ready.
 - **For a real deployment**, put real authentication in front of the app, and check on every
   call that the session belongs to the signed-in developer. That includes the terminal
   WebSocket (`/ws`) and Close, which today take only a session name.
@@ -730,6 +766,7 @@ spec:
             - bedrock-mantle.<AWS_REGION>.api.aws
             - docs.aws.amazon.com
             - github.com
+            - api.github.com
             - codeload.github.com
             - objects.githubusercontent.com
             - registry.npmjs.org
@@ -749,7 +786,7 @@ spec:
 | `ingress` from `app: agent-app` on 7681 | Admits the app's pods, to `session-bridge` only (see [How the terminal reaches the pod](#how-the-terminal-reaches-the-pod)). Everything else in is denied, including other session pods. The label is what the rule trusts, so whoever can create pods in this namespace can pass it; the bridge's token and pinned certificate still stand behind it. The session's start and stop use the Kubernetes exec API, which is not pod network traffic. |
 | `egress` to `0.0.0.0/0` on 53 | Allows egress to any address on UDP and TCP 53. This is a project choice to keep the sample simple: it does not depend on how a given cluster serves DNS (on EKS Auto Mode the resolver is node-local rather than a pod behind a ClusterIP). What it allows is wider than DNS resolution: any process in the sandbox can reach any host on UDP or TCP 53, so it can send data out over DNS or to anything listening on port 53. What it costs is that port-53 egress is not confined to the cluster's own resolver. It still opens only port 53; every other port and protocol stays denied. |
 | `egress` to `169.254.170.23` on 80 | The Pod Identity agent on the node, for the pod's role (the Bedrock role, or the Codex role for Codex). kiro-cli's pods have no role, so the agent gives them no credential. |
-| `egress` to the `domainNames` on 443 | The Bedrock runtime endpoint the Bedrock CLIs call their model on, the Bedrock "Mantle" endpoint Codex uses for its GPT model, `docs.aws.amazon.com` so the agents can fetch AWS documentation, and the short list of developer hosts (GitHub, npm, PyPI) the agents fetch from. The S3 Files mount reads over NFS (2049), not an S3 443 endpoint, so none is needed here. |
+| `egress` to the `domainNames` on 443 | The Bedrock runtime endpoint the Bedrock CLIs call their model on, the Bedrock "Mantle" endpoint Codex uses for its GPT model, `docs.aws.amazon.com` so the agents can fetch AWS documentation, and the short list of developer hosts (GitHub, including `api.github.com` for the GitHub CLI, npm, PyPI) the agents fetch from. The S3 Files mount reads over NFS (2049), not an S3 443 endpoint, so none is needed here. |
 | `egress` to `<MOUNT_TARGET_CIDRS>` on 2049 | The S3 Files mount targets, NFS over TLS. They are ENIs in the cluster VPC reached by resolved IP, so `setup.sh` resolves this file system's mount-target IPs and fills in one `/32` per target -- egress on 2049 is allowed to the sample's own mount targets only, not to anything on 2049 in the VPC. |
 
 kiro-cli is the one CLI that does not use Amazon Bedrock: it reaches the developer's own
@@ -910,9 +947,19 @@ error line goes to standard error and so can print before or after its exit line
       6.18.51
       fix9
   ```
-- **Session pods are not consolidated away.** The `SandboxTemplate` sets
-  `karpenter.sh/do-not-disrupt: "true"` on every pod it makes, so EKS Auto Mode does not
-  evict one to consolidate an underutilized node. That covers the warm pods waiting in the
+- **Quitting the agent leaves a shell, with the command to go back.** When the CLI exits
+  (`/exit` in Claude Code, `/quit` in Codex), the terminal prints the command that resumes
+  the conversation and leaves the developer in a shell in the session's project folder, as
+  the session's user. The session image carries the GitHub CLI (`gh`), and the egress
+  policy allows `api.github.com`, so a developer can run `gh auth login` there, then the
+  printed command to go back. `gh` keeps its sign-in in the CLI's home inside the session
+  folder, so it comes back on Restore and goes with Delete.
+- **Session pods and the app are not consolidated away.** The `SandboxTemplate` sets
+  `karpenter.sh/do-not-disrupt: "true"` on every pod it makes, and the app's Deployment
+  sets it on the app pod, so EKS Auto Mode does not evict one to consolidate an
+  underutilized node. Before the app had it, consolidation evicted it on a run of this
+  sample (`Evicted pod: Underutilized`), which dropped every open terminal and stopped a
+  Delete in flight. That covers the warm pods waiting in the
   pools as well as the claimed ones, so a node holding only warm pods is not packed down
   either. A claimed pod still goes when its claim is released (close, idle timeout). The
   cost is that a node holding a session or a warm pod is not consolidated until that pod

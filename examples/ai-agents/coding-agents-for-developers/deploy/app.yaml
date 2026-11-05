@@ -19,6 +19,11 @@ spec:
       labels:
         app: agent-app
         app.kubernetes.io/part-of: coding-agents-for-developers
+      # Like the session pods: EKS Auto Mode must not evict the app to consolidate a node.
+      # An eviction drops every open terminal and stops any Delete in flight; on a run of
+      # this sample, consolidation evicted the app ("Underutilized") in the middle of one.
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"
     spec:
       serviceAccountName: agent-app
       containers:

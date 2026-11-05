@@ -10,8 +10,15 @@
 # and opencode read a stale SQLite WAL index and reported "database disk image is
 # malformed". Ending the processes while the pod is still up releases their locks at once,
 # and unmounting flushes what they wrote.
+#
+# With --wipe (Delete only), it also removes everything in the folder through the mount
+# before unmounting. S3 Files exports a change to the bucket only after 60 seconds with no
+# writes to the file, so a file written just before Delete and removed here never reaches
+# the bucket, and one already exported becomes a delete marker that Delete's drain removes.
 set -u
 MOUNT=/workspace
+WIPE=0
+[ "${1:-}" = "--wipe" ] && WIPE=1
 
 # 1. End every process of the dev user: tmux, the CLI and any daemon the CLI started.
 #    Signal as uid 1000 itself: the container drops CAP_KILL, so root cannot signal
@@ -41,6 +48,13 @@ fi
 #    the mount, and the same umount succeeded a minute later.
 #    Both are bounded: on a hard NFS mount either can block while the server is
 #    unreachable, and the app's exec would otherwise wait out its own two-minute timeout.
+if [ "$WIPE" -eq 1 ] && mountpoint -q "$MOUNT"; then
+  # As the session's user, who owns everything the CLI wrote; bounded like the rest.
+  if ! as_dev timeout 60 find "$MOUNT" -mindepth 1 -delete; then
+    echo "session-stop: could not remove everything in $MOUNT" >&2
+    exit 1
+  fi
+fi
 timeout 30 sync || echo "session-stop: sync did not finish in 30 seconds" >&2
 if mountpoint -q "$MOUNT"; then
   # A deadline, not a count of attempts: each attempt is bounded at 10 seconds, so the whole
@@ -58,4 +72,5 @@ if mountpoint -q "$MOUNT"; then
     sleep 1
   done
 fi
+[ "$WIPE" -eq 1 ] && echo "session-stop: $MOUNT emptied"
 echo "session-stop: session processes ended and $MOUNT unmounted"

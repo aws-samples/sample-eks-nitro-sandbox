@@ -204,8 +204,9 @@ export async function readBridge(podName) {
 // CLIs' SQLite databases and lock files sit on the NFS mount, and a lock left by a pod that
 // was deleted mid-session is held by the server until its lease runs out; see
 // session-stop.sh in the base image.
-export async function stopSession(podName) {
-  await execOnce(podName, ["/usr/local/bin/session-stop.sh"]);
+// With wipe (Delete), it also empties the folder through the mount first.
+export async function stopSession(podName, { wipe = false } = {}) {
+  await execOnce(podName, ["/usr/local/bin/session-stop.sh", ...(wipe ? ["--wipe"] : [])]);
 }
 
 // --- exec helpers ---

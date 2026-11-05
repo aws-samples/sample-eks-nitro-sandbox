@@ -184,9 +184,13 @@ fi
 # Start it before the CLI, so the port is the bridge's before any code in the sandbox runs.
 # It writes its certificate once it holds the port; the app reads that file next and pins
 # it. A bridge left from an earlier start on this pod is replaced, with the new token.
+# A supervisor restarts the bridge if it ever exits (bridge-supervise.sh).
+if [ -s "$CRED_DIR/bridge-supervisor.pid" ]; then
+  kill "$(cat "$CRED_DIR/bridge-supervisor.pid")" 2>/dev/null || true
+fi
 pkill -x session-bridge 2>/dev/null || true
 rm -f "$CRED_DIR/bridge.crt"
-( cd / && exec setsid env -i PATH="$PATH" /usr/local/bin/session-bridge ) \
+( cd / && exec setsid env -i PATH="$PATH" /usr/local/bin/bridge-supervise.sh ) \
   </dev/null >>/var/log/session-bridge.log 2>&1 &
 for _ in $(seq 1 50); do
   [ -s "$CRED_DIR/bridge.crt" ] && break
@@ -218,11 +222,18 @@ fi
 # lives in the CLI's home under /workspace, which came back with the folder. If there is
 # nothing to continue (a session restored before its first prompt), the resume command
 # exits non-zero and the plain CLI starts instead.
-RUN_CMD="exec $CLI_CMD"
+#
+# When the CLI exits (`/exit` in Claude Code, Ctrl-D in most), the terminal does not end:
+# it prints the command that returns to the conversation and leaves the developer in a
+# shell in the session's project folder, so they can run something the CLI cannot, such as
+# `gh auth login`, then go back.
+RUN_CMD="$CLI_CMD"
 if [ "${SESSION_RESUME:-}" = "1" ] && [ -n "${CLI_RESUME_CMD:-}" ]; then
-  RUN_CMD="$CLI_RESUME_CMD || exec $CLI_CMD"
+  RUN_CMD="$CLI_RESUME_CMD || $CLI_CMD"
   echo "session-entrypoint: restoring, starting with: $CLI_RESUME_CMD" >&2
 fi
+BACK_CMD="${CLI_RESUME_CMD:-$CLI_CMD}"
+RUN_CMD="$RUN_CMD; printf '\\n%s\\n  %s\\n\\n' 'The agent exited. This is a shell in the session folder. To go back to the conversation, run:' '$BACK_CMD'; exec bash -l"
 
 # Start tmux DETACHED so this exec returns while the CLI keeps running in the pod. The
 # app attaches a browser terminal to the tmux session through session-bridge; closing the

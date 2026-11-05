@@ -335,6 +335,7 @@ sed -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" -e "s|<AWS_REGION>|$AWS_REGION|g" -e "s|<N
     -e "s|<S3_PREFIX>|$S3_PREFIX|g" -e "s|<MOUNT_ROLE_ARN>|$MOUNT_ROLE_ARN|g" \
     -e "s|<AGENT_CLIS>|$AGENT_CLIS|g" -e "s|<IMAGE_TAG>|$IMAGE_TAG|g" \
     "$ROOT/deploy/app.yaml" | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
+"${KCTL[@]}" apply -n "$NAMESPACE" -f "$ROOT/deploy/app-policy.yaml"
 
 # Record the resource ids back into .env for clean.sh and re-runs. Replace each key's line
 # rather than appending, so a re-run leaves one current value instead of a growing list.
