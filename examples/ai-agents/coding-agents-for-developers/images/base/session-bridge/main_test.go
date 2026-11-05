@@ -70,6 +70,10 @@ func TestCloseReplyCode(t *testing.T) {
 		{"reserved code 1005", []byte{0x03, 0xed}, 1002},
 		{"code 999", []byte{0x03, 0xe7}, 1002},
 		{"code 5000", []byte{0x13, 0x88}, 1002},
+		{"try again later, 1013", []byte{0x03, 0xf5}, 1000},
+		{"bad gateway, 1014", []byte{0x03, 0xf6}, 1000},
+		{"reserved 1004", []byte{0x03, 0xec}, 1002},
+		{"TLS handshake 1015, never sent", []byte{0x03, 0xf7}, 1002},
 		{"reason not UTF-8", []byte{0x03, 0xe8, 0xff, 0xfe}, 1007},
 	}
 	for _, c := range cases {

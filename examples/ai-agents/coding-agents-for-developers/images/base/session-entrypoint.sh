@@ -67,8 +67,8 @@ valid_credential() {
 }
 # Decode into a temporary file and check it there, so a bad body never replaces a good
 # credential (this script can run again on a pod that already holds one).
-( umask 077; printf '%s' "$CRED_B64" | base64 -d > "$CRED_FILE.new" ) || true
-if ! valid_credential "$CRED_FILE.new"; then
+if ! ( umask 077; printf '%s' "$CRED_B64" | base64 -d > "$CRED_FILE.new" ) \
+   || ! valid_credential "$CRED_FILE.new"; then
   rm -f "$CRED_FILE.new"
   echo "session-entrypoint: credential malformed" >&2
   exit 1

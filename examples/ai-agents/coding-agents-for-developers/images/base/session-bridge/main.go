@@ -425,7 +425,9 @@ func closeReplyCode(p []byte) uint32 {
 		return 1002
 	}
 	code := binary.BigEndian.Uint16(p[:2])
-	valid := (code >= 1000 && code <= 1003) || (code >= 1007 && code <= 1011) || (code >= 3000 && code <= 4999)
+	// 1000-1003 and 1007-1011 from RFC 6455, 1012-1014 registered with IANA since; 1004 is
+	// reserved, and 1005, 1006 and 1015 must never be sent.
+	valid := (code >= 1000 && code <= 1003) || (code >= 1007 && code <= 1014) || (code >= 3000 && code <= 4999)
 	if !valid {
 		return 1002
 	}

@@ -165,7 +165,8 @@ wss.on("connection", async (ws, req) => {
   };
   // Bounded by bytes and by count (each message is charged at least PENDING_MIN, so empty
   // messages fill it too). Past the bound the browser is closed with 1009, the queue is
-  // dropped and nothing more is taken, and the terminal is not opened.
+  // dropped and nothing more is taken. If the attach then completes, the terminal is
+  // closed at once and receives no queued input.
   let pendingBytes = 0;
   ws.on("message", (data, isBinary) => {
     if (browserClosed) return;

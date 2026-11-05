@@ -87,21 +87,23 @@ function relativeTime(session) {
 const deleting = new Set();
 // Sessions whose Restore is still running, for the same reason.
 const restoring = new Set();
-// The button renderer of each session's row currently in the table. A reload replaces the
-// rows, so an operation that finishes later redraws through this, never through the row it
-// started from, which may no longer be on the page.
-const rowRender = new Map();
-const redraw = (session) => rowRender.get(session)?.();
-// Sessions a Restore here has just started, until the next list load reports them, so a row
-// rebuilt while the Restore ran still offers Open once it is done.
-const restored = new Set();
+// Each session's row currently in the table, with its button renderer. A reload replaces
+// the rows, so an operation that finishes later acts on the row on the page through this,
+// never on the row it started from, which may no longer be there.
+const rowFor = new Map(); // session -> { tr, render }
+const redraw = (session) => rowFor.get(session)?.render();
+const removeRow = (session) => { rowFor.get(session)?.tr.remove(); rowFor.delete(session); };
+// What this page has just done to a session's running state (true after Restore, false
+// after Close), until the next list load reports it, so a row is right even when the
+// reload after the operation fails.
+const runningNow = new Map();
 
 async function loadSessions() {
   const { sessions } = await api("/api/sessions?developer=" + encodeURIComponent(developer));
   const rows = $("#session-rows");
   rows.innerHTML = "";
-  rowRender.clear();
-  restored.clear(); // this list is current: it says which sessions run
+  rowFor.clear();
+  runningNow.clear(); // this list is current: it says which sessions run
   for (const s of sessions) {
     const tr = document.createElement("tr");
     const name = s.display || s.session;
@@ -118,9 +120,11 @@ async function loadSessions() {
     del.className = "btn-sm btn-ghost";
     // Draw both buttons from the operation state, which lives outside the table, so a row
     // rebuilt by a list reload mid-operation still shows it and still ignores clicks.
-    const isRunning = () => s.running || restored.has(s.session);
+    const isRunning = () => (runningNow.has(s.session) ? runningNow.get(s.session) : s.running);
     const render = () => {
       const r = restoring.has(s.session), d = deleting.has(s.session);
+      const st = tr.querySelector(".status"), state = isRunning() ? "running" : "idle";
+      if (st) { st.textContent = state; st.className = `status ${state}`; }
       restore.textContent = r ? "Restoring..." : isRunning() ? "Open" : "Restore";
       del.textContent = d ? "Deleting..." : "Delete";
       restore.disabled = del.disabled = r || d;
@@ -130,7 +134,7 @@ async function loadSessions() {
       }
     };
     render();
-    rowRender.set(s.session, render);
+    rowFor.set(s.session, { tr, render });
     // Restore claims a pod and mounts the folder, which takes a few seconds. Say so while it
     // runs, then reload the list so the row shows the session as running.
     restore.onclick = async () => {
@@ -140,7 +144,7 @@ async function loadSessions() {
       redraw(s.session);
       try {
         await api("/api/restore", { developer, session: s.session });
-        restored.add(s.session);
+        runningNow.set(s.session, true);
         openTerminal(s.session, s.cli, name);
       } catch (err) {
         alert(`Could not restore ${name}: ${err.message}`);
@@ -157,6 +161,8 @@ async function loadSessions() {
       redraw(s.session);
       try {
         await api("/api/delete", { developer, session: s.session });
+        runningNow.delete(s.session);
+        removeRow(s.session); // gone now, even if the reload below fails
       } catch (err) {
         alert(`Could not delete ${name}: ${err.message}`);
       } finally {
@@ -256,7 +262,10 @@ function openTerminal(session, cli, display) {
   closeBtn.onclick = async (e) => {
     e.stopPropagation();
     ws.close(); win.remove(); windows.delete(session);
-    await api("/api/close", { session }); loadSessions();
+    await api("/api/close", { session });
+    runningNow.set(session, false);
+    redraw(session); // shows Restore now, even if the reload below fails
+    loadSessions().catch(() => {});
   };
   const minBtn = win.querySelector('[data-act="min"]');
   // stopPropagation so the window-level mousedown (z-raise) and titlebar drag do not also
