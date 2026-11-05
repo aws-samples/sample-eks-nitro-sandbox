@@ -110,6 +110,9 @@ export async function adoptRunningSessions() {
       const { node, podIP } = await k8s.podInfo(podName);
       const azId = await k8s.nodeAzId(node);
       const { token: bridgeToken, cert: bridgeCert } = await k8s.readBridge(podName);
+      // Pick-up can still be running after the app starts serving (index.js gives it a
+      // deadline). A Restore started meanwhile owns the session: do not overwrite it.
+      if (live.has(session) || starting.has(session)) return;
       const now = Date.now();
       live.set(session, {
         developer: s.developer, cli: s.cli, session, apId: s.apId, claimName, podName, podIP, azId,
@@ -195,6 +198,15 @@ export async function remove(developer, session) {
 const TICK_CONCURRENCY = 8;
 const BRIDGE_FAIL_LIMIT = parseInt(process.env.BRIDGE_FAIL_LIMIT, 10) || 5;
 
+// Release a session from the background loop only if this entry is still the one the app
+// tracks for it. A check that started before a Close and a new Restore holds the old entry;
+// releasing by name then would release the new session.
+async function releaseIfCurrent(entry) {
+  if (live.get(entry.session) !== entry || starting.has(entry.session)) return false;
+  await release(entry.session);
+  return true;
+}
+
 async function checkSession(entry, now) {
   try {
     const last = (await bridge.lastActivity(entry)) * 1000;
@@ -202,7 +214,7 @@ async function checkSession(entry, now) {
     const idleFor = now - (last || entry.startedAt);
     if (idleFor > IDLE_MS) {
       try {
-        await release(entry.session);
+        if (!(await releaseIfCurrent(entry))) return;
         console.log(`session ${entry.session}: released after ${Math.round(idleFor / 60000)} idle minutes`);
         return;
       } catch (e) {
@@ -215,7 +227,7 @@ async function checkSession(entry, now) {
       `(${entry.bridgeFailures} in a row), will retry next minute: ${e?.message || e}`);
     if (entry.bridgeFailures >= BRIDGE_FAIL_LIMIT) {
       try {
-        await release(entry.session);
+        if (!(await releaseIfCurrent(entry))) return;
         console.log(`session ${entry.session}: released, its session-bridge did not answer ${entry.bridgeFailures} times in a row`);
         return;
       } catch (re) {

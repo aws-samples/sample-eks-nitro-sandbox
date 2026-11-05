@@ -198,14 +198,25 @@ wss.on("connection", async (ws, req) => {
 
 // Pick up sessions that kept running while the app was down, so the loop refreshes their
 // credentials and releases them when idle, and only then start listening: until then a
-// running session would show as idle, and a Restore could race the pick-up. A failure is
-// logged; the app still starts.
-sessions.adoptRunningSessions()
-  .then((n) => console.log(`picked up ${n} running session(s) after start`))
-  .catch((e) => console.error(`could not pick up running sessions after start: ${e?.message || e}`))
-  .finally(() => {
-    sessions.startBackgroundLoop();
-    server.listen(PORT, "0.0.0.0", () => {
-      console.log(`coding-agents-for-developers app on :${PORT}, CLIs: ${CLIS.join(", ")}`);
-    });
+// running session would show as idle. The wait has a deadline, so a pick-up that hangs
+// cannot keep the app from serving; one that finishes later still lands, and does not
+// overwrite a session a Restore has started meanwhile (sessions.js). A failure is logged;
+// the app still starts. The Deployment's readiness probe holds traffic until the listener
+// is up.
+const ADOPT_DEADLINE_MS = 60 * 1000;
+let deadlineTimer;
+Promise.race([
+  sessions.adoptRunningSessions()
+    .then((n) => console.log(`picked up ${n} running session(s) after start`))
+    .catch((e) => console.error(`could not pick up running sessions after start: ${e?.message || e}`)),
+  new Promise((r) => { deadlineTimer = setTimeout(() => {
+    console.error(`picking up running sessions is taking over ${ADOPT_DEADLINE_MS / 1000} s; serving now, it continues`);
+    r();
+  }, ADOPT_DEADLINE_MS); }),
+]).finally(() => {
+  clearTimeout(deadlineTimer);
+  sessions.startBackgroundLoop();
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`coding-agents-for-developers app on :${PORT}, CLIs: ${CLIS.join(", ")}`);
   });
+});

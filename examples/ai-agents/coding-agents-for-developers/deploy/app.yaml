@@ -27,6 +27,11 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
+          # The app listens only after it has picked up running sessions (up to a minute
+          # after a restart), so the Service and `rollout status` wait for the port.
+          readinessProbe:
+            tcpSocket: { port: 8080 }
+            periodSeconds: 2
           env:
             - name: AWS_REGION
               value: "<AWS_REGION>"

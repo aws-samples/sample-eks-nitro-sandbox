@@ -293,14 +293,25 @@ certificate back over exec, once, before it starts serving, so reload the page, 
 
 **When a pod's session-bridge stops answering** (it exited, or the pod is gone), the app
 cannot reach the terminal or refresh the mount credential. After five failed checks in a
-row, about five minutes, it releases the session as it does an idle one: the folder stays,
-and **Restore** brings the session back on a new pod.
+row it releases the session as it does an idle one: the folder stays, and **Restore**
+brings the session back on a new pod. The checks run a minute apart and each waits up to
+10 seconds for an answer, so this usually takes six to eight minutes, and longer when the
+app has many sessions.
 
 **Upgrading from a version of this sample without `session-bridge`.** Close every running
-session with the old app first, set a new `IMAGE_TAG` in `.env`, and run `setup.sh`. A
-session left running on an old pod cannot be picked up by the new app, which has no way to
-reach it, and shows as idle. Its first **Restore** fails, after stopping the old pod's
-session cleanly and releasing the pod; the next **Restore** starts it on a new pod.
+session with the old app first, set a new `IMAGE_TAG` in `.env`, and run `setup.sh`. Then
+replace the warm pods that were already running, which still run the old image; each pool
+boots new ones from the updated template. With every session closed, the only session pods
+left are warm ones:
+
+```bash
+kubectl --context <CLUSTER_NAME> -n coding-agents-for-developers delete pod -l app=agent-session
+```
+
+A session left running on an old pod cannot be picked up by the new app, which has no way
+to reach it, and shows as idle. Its first **Restore** fails, after attempting a clean stop
+of the old pod's session and releasing the pod; the next **Restore** starts it on a new
+pod.
 
 On a run of this sample, codex in the sandbox echoed a keystroke in 18.9 ms (median) from
 inside its own pod, 23.9 ms from the app through `session-bridge`, and 25.9 ms from the app
