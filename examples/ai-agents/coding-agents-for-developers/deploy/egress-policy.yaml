@@ -1,7 +1,7 @@
 # Egress policy for the session sandbox pods, one per CLI. setup.sh renders it for each
 # CLI, filling <CLI>, <MOUNT_TARGET_CIDRS> (the S3 Files mount-target IPs, one ipBlock
-# each) and <AWS_REGION>. All ingress is denied: the app reaches the pod only through the
-# Kubernetes exec API, which is not pod network traffic.
+# each) and <AWS_REGION>. One ingress is allowed: the app's pods, to session-bridge on TCP
+# 7681. Everything else in is denied, including from other session pods.
 #
 # S3 Files cannot be used on a network-isolated pod (the mount needs a network), so these
 # pods have a network and this policy is what limits where code in the sandbox can connect.
@@ -18,7 +18,16 @@ spec:
   policyTypes:
     - Ingress
     - Egress
-  ingress: []                              # deny all ingress; exec is not pod traffic
+  # Only the web app reaches the pod, and only session-bridge: the terminal, the activity
+  # read and the credential refresh, over TLS with a per-session token. The session's start
+  # and stop still go through the Kubernetes exec API, which is not pod traffic.
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agent-app
+      ports:
+        - { protocol: TCP, port: 7681 }
   egress:
     # DNS on port 53 to any address. This is a project choice to keep the sample simple:
     # it does not depend on how a given cluster serves DNS (on EKS Auto Mode the resolver

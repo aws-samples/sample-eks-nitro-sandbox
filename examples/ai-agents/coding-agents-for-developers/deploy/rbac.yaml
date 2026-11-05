@@ -56,7 +56,9 @@ rules:
   - apiGroups: ["extensions.agents.x-k8s.io"]
     resources: ["sandboxclaims"]
     verbs: ["get", "list", "create", "delete"]
-  # Read the claimed pod (its node and Ready condition), and drive the terminal.
+  # Read the claimed pod (its node, IP and Ready condition). Exec is for starting and
+  # stopping a session and reading back session-bridge's token and certificate; the
+  # terminal itself goes to session-bridge over the pod network.
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get"]

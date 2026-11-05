@@ -80,11 +80,40 @@ function relativeTime(session) {
   return `${days}d ago`;
 }
 
+// Sessions whose Delete is still running. Delete takes 40 seconds or more (the server
+// drains the folder's object versions until two checks 20 seconds apart find none) and the
+// row gave no sign of it. Kept outside the table, because the table is rebuilt whenever the
+// list reloads, which would otherwise reset a row that is still being deleted.
+const deleting = new Set();
+// Sessions whose Restore is still running, for the same reason.
+const restoring = new Set();
+// Each session's row currently in the table, with its button renderer. A reload replaces
+// the rows, so an operation that finishes later acts on the row on the page through this,
+// never on the row it started from, which may no longer be there.
+const rowFor = new Map(); // session -> { tr, render }
+const redraw = (session) => rowFor.get(session)?.render();
+const removeRow = (session) => { rowFor.get(session)?.tr.remove(); rowFor.delete(session); };
+// What this page has just done to a session: its running state after Restore (true) or
+// Close (false), or that Delete removed it. Each is tagged with the list request number
+// current when the operation finished, and holds until a list request that started after
+// it succeeds. So neither a reload that fails nor an older list response arriving late can
+// undo it.
+let listSeq = 0;
+const runningNow = new Map(); // session -> { value, seq }
+const deletedNow = new Map(); // session -> seq
+const setRunning = (session, value) => runningNow.set(session, { value, seq: listSeq });
+
 async function loadSessions() {
+  const seq = ++listSeq;
   const { sessions } = await api("/api/sessions?developer=" + encodeURIComponent(developer));
+  if (seq !== listSeq) return; // a newer request is on its way; let it draw the list
+  for (const [k, v] of runningNow) if (v.seq < seq) runningNow.delete(k);
+  for (const [k, v] of deletedNow) if (v < seq) deletedNow.delete(k);
   const rows = $("#session-rows");
   rows.innerHTML = "";
+  rowFor.clear();
   for (const s of sessions) {
+    if (deletedNow.has(s.session)) continue;
     const tr = document.createElement("tr");
     const name = s.display || s.session;
     const status = s.running ? "running" : "idle";
@@ -96,18 +125,61 @@ async function loadSessions() {
     actions.className = "row-actions";
     const restore = document.createElement("button");
     restore.className = "btn-sm";
-    restore.textContent = s.running ? "Open" : "Restore";
-    restore.onclick = async () => {
-      if (!s.running) await api("/api/restore", { developer, session: s.session });
-      openTerminal(s.session, s.cli, name);
-    };
     const del = document.createElement("button");
     del.className = "btn-sm btn-ghost";
-    del.textContent = "Delete";
+    // Draw both buttons from the operation state, which lives outside the table, so a row
+    // rebuilt by a list reload mid-operation still shows it and still ignores clicks.
+    const isRunning = () => (runningNow.has(s.session) ? runningNow.get(s.session).value : s.running);
+    const render = () => {
+      const r = restoring.has(s.session), d = deleting.has(s.session);
+      const st = tr.querySelector(".status"), state = isRunning() ? "running" : "idle";
+      if (st) { st.textContent = state; st.className = `status ${state}`; }
+      restore.textContent = r ? "Restoring..." : isRunning() ? "Open" : "Restore";
+      del.textContent = d ? "Deleting..." : "Delete";
+      restore.disabled = del.disabled = r || d;
+      for (const [b, busy] of [[restore, r], [del, d]]) {
+        if (busy) b.setAttribute("aria-busy", "true");
+        else b.removeAttribute("aria-busy");
+      }
+    };
+    render();
+    rowFor.set(s.session, { tr, render });
+    // Restore claims a pod and mounts the folder, which takes a few seconds. Say so while it
+    // runs, then reload the list so the row shows the session as running.
+    restore.onclick = async () => {
+      if (restoring.has(s.session) || deleting.has(s.session)) return;
+      if (isRunning()) return openTerminal(s.session, s.cli, name);
+      restoring.add(s.session);
+      redraw(s.session);
+      try {
+        await api("/api/restore", { developer, session: s.session });
+        setRunning(s.session, true);
+        openTerminal(s.session, s.cli, name);
+      } catch (err) {
+        alert(`Could not restore ${name}: ${err.message}`);
+      } finally {
+        restoring.delete(s.session);
+        redraw(s.session); // the current row's buttons come back even if the reload fails
+        loadSessions().catch(() => {});
+      }
+    };
     del.onclick = async () => {
+      if (restoring.has(s.session) || deleting.has(s.session)) return;
       if (!confirm(`Delete session ${s.session}? This removes its folder.`)) return;
-      await api("/api/delete", { developer, session: s.session });
-      loadSessions();
+      deleting.add(s.session);
+      redraw(s.session);
+      try {
+        await api("/api/delete", { developer, session: s.session });
+        runningNow.delete(s.session);
+        deletedNow.set(s.session, listSeq);
+        removeRow(s.session); // gone now, even if the reload below fails
+      } catch (err) {
+        alert(`Could not delete ${name}: ${err.message}`);
+      } finally {
+        deleting.delete(s.session);
+        redraw(s.session);
+        loadSessions().catch(() => {});
+      }
     };
     actions.append(restore, del);
     tr.appendChild(actions);
@@ -200,7 +272,10 @@ function openTerminal(session, cli, display) {
   closeBtn.onclick = async (e) => {
     e.stopPropagation();
     ws.close(); win.remove(); windows.delete(session);
-    await api("/api/close", { session }); loadSessions();
+    await api("/api/close", { session });
+    setRunning(session, false);
+    redraw(session); // shows Restore now, even if the reload below fails
+    loadSessions().catch(() => {});
   };
   const minBtn = win.querySelector('[data-act="min"]');
   // stopPropagation so the window-level mousedown (z-raise) and titlebar drag do not also
