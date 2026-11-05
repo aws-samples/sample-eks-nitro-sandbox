@@ -99,8 +99,13 @@ if aws s3api head-bucket --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" >/dev
     --query "TagSet[?Key=='ManagedBy'].Value | [0]" --output text 2>/dev/null || true)"
   [[ "$owner" == "$SAMPLE" ]] || die "bucket $S3_BUCKET_NAME exists but is not tagged ManagedBy=$SAMPLE (found: ${owner:-none}); refusing to adopt it"
 else
-  aws s3api create-bucket --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" \
-    --create-bucket-configuration LocationConstraint="$AWS_REGION" >/dev/null
+  # us-east-1 is S3's default Region and refuses a LocationConstraint naming itself.
+  if [ "$AWS_REGION" = "us-east-1" ]; then
+    aws s3api create-bucket --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" >/dev/null
+  else
+    aws s3api create-bucket --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" \
+      --create-bucket-configuration LocationConstraint="$AWS_REGION" >/dev/null
+  fi
 fi
 aws s3api put-bucket-tagging --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" \
   --tagging "TagSet=[{Key=ManagedBy,Value=$SAMPLE},{Key=auto-delete,Value=no}]"

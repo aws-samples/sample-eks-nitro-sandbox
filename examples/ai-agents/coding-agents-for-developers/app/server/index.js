@@ -1,4 +1,6 @@
-// The web app server: a small JSON API, a WebSocket terminal bridge, and the static UI.
+// The web app server: a small JSON API, a WebSocket terminal bridge to the browser, and the
+// static UI. The browser's terminal WebSocket is relayed to the pod's own session-bridge
+// over the pod network (see bridge.js), so the Kubernetes API is not on a session's data path.
 // Bound to 0.0.0.0:8080 behind a ClusterIP Service, reached only with kubectl
 // port-forward. The sign-in is a demo picker, not authentication: the page says so.
 
@@ -9,7 +11,7 @@ import { dirname, join, normalize } from "node:path";
 import { WebSocketServer } from "ws";
 
 import * as sessions from "./sessions.js";
-import * as k8s from "./k8s.js";
+import * as bridge from "./bridge.js";
 import { displayName, isSessionName } from "./names.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -133,7 +135,7 @@ const server = createServer(async (req, res) => {
   }
 });
 
-// WebSocket terminal: /ws?session=<name>. Pipes tmux attach both ways.
+// WebSocket terminal: /ws?session=<name>. Relays the browser to the pod's tmux, both ways.
 const wss = new WebSocketServer({ server, path: "/ws" });
 wss.on("connection", async (ws, req) => {
   const url = new URL(req.url, "http://localhost");
@@ -143,16 +145,12 @@ wss.on("connection", async (ws, req) => {
     ws.close(1008, "session not running");
     return;
   }
+  // The browser sends its size the moment its socket opens, before the bridge has accepted
+  // the terminal. Queue what arrives until then, so that first resize is not lost.
   let term;
-  try {
-    term = await k8s.attachTerminal(entry.podName, {
-      onData: (chunk) => ws.readyState === ws.OPEN && ws.send(chunk),
-    });
-  } catch (e) {
-    ws.close(1011, String(e?.message || e));
-    return;
-  }
-  ws.on("message", (data, isBinary) => {
+  const pending = [];
+  let browserClosed = false;
+  const handle = (data, isBinary) => {
     // Control frames carry {resize:[cols,rows]}; everything else is keystrokes.
     if (!isBinary) {
       try {
@@ -161,8 +159,22 @@ wss.on("connection", async (ws, req) => {
       } catch {}
     }
     term.write(data);
-  });
-  ws.on("close", () => term.close());
+  };
+  ws.on("message", (data, isBinary) => (term ? handle(data, isBinary) : pending.push([data, isBinary])));
+  ws.on("close", () => { browserClosed = true; term?.close(); });
+  try {
+    // To the pod's own session-bridge over the pod network, not the Kubernetes exec API.
+    term = await bridge.attachTerminal(entry, {
+      onData: (chunk) => ws.readyState === ws.OPEN && ws.send(chunk),
+      onClose: () => { try { ws.close(); } catch {} },
+    });
+  } catch (e) {
+    console.error(`terminal ${session}: ${e?.message || e}`);
+    ws.close(1011, "terminal unavailable");
+    return;
+  }
+  if (browserClosed) return term.close();
+  for (const [data, isBinary] of pending.splice(0)) handle(data, isBinary);
 });
 
 // Pick up sessions that kept running while the app was down, so the loop refreshes their

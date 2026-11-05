@@ -1,7 +1,9 @@
-// Kubernetes operations: claim a warm pod, resolve its node AZ, deliver the mount
-// credential and start the session through exec, attach a terminal to tmux, and release
-// the claim. Everything the app does to a pod goes through the Kubernetes exec API, so
-// the sandbox pods accept no network ingress at all.
+// Kubernetes operations: claim a warm pod, resolve its node AZ, start and stop the session
+// through exec, and release the claim. Exec is used only at the edges of a session: once to
+// start it (delivering the mount credential and the session-bridge token on stdin, then
+// reading back the bridge's certificate to pin) and once to stop it. The terminal, the
+// activity read and the credential refresh in between go to session-bridge over the pod
+// network (bridge.js), so the Kubernetes API is not on a session's data path.
 
 import * as k8s from "@kubernetes/client-node";
 import { Writable, Readable } from "node:stream";
@@ -56,8 +58,8 @@ export async function claimPod(cli, session) {
   // If the claim never resolves, delete it so it does not hold a pod nobody tracks. The
   // original error is the one the caller sees; a failed delete is logged with the claim.
   try {
-    const { podName, node } = await waitForClaimPod(claimName);
-    return { claimName, podName, node };
+    const { podName, node, podIP } = await waitForClaimPod(claimName);
+    return { claimName, podName, node, podIP };
   } catch (e) {
     await releaseClaim(claimName).catch((re) =>
       console.error(`claim ${claimName}: could not delete it after a failed start: ${re?.message || re}`));
@@ -97,7 +99,8 @@ async function waitForClaimPod(claimName, timeoutMs = 120000) {
       const ready = pod.status?.conditions?.some(
         (c) => c.type === "Ready" && c.status === "True"
       );
-      if (node && ready) return { podName, node };
+      const podIP = pod.status?.podIP;
+      if (node && ready && podIP) return { podName, node, podIP };
     }
     await sleep(250);
   }
@@ -117,10 +120,10 @@ export async function listSessionClaims() {
     .filter((c) => c.claimName && c.podName);
 }
 
-// The node a pod runs on.
-export async function podNode(podName) {
+// The node a pod runs on, and its IP, where session-bridge listens.
+export async function podInfo(podName) {
   const pod = await core.readNamespacedPod({ name: podName, namespace: NAMESPACE });
-  return pod.spec?.nodeName;
+  return { node: pod.spec?.nodeName, podIP: pod.status?.podIP };
 }
 
 // The pod a claim resolved to, or null when there is no such claim (or it has no pod yet).
@@ -166,38 +169,32 @@ const b64line = (credential) => Buffer.from(credential, "utf8").toString("base64
 // point and starts the CLI in tmux. Runs once; the long-lived process is the pod's own.
 // On Restore, SESSION_RESUME=1 tells the entrypoint to start the CLI with its own
 // continue-the-last-conversation option.
-export async function startSession(podName, { credential, fsId, apId, azId, resume = false }) {
+// The second stdin line is the session-bridge token (hex, never on a command line). The
+// entrypoint starts the bridge before it returns, so the bridge's certificate is read back
+// right after, and returned for the caller to pin.
+export async function startSession(podName, { credential, bridgeToken, fsId, apId, azId, resume = false }) {
   const script =
     `export S3_FILES_FS_ID=${fsId} S3_FILES_AP_ID=${apId} ` +
     `AWS_REGION=${REGION} POD_AZ_ID=${azId}` +
     (resume ? " SESSION_RESUME=1" : "") + "; " +
-    // The entrypoint reads the base64 credential line on stdin; re-exec it with env set.
+    // The entrypoint reads the credential and token lines on stdin; re-exec it with env set.
     `exec /usr/local/bin/session-entrypoint.sh`;
-  await execOnce(podName, ["/bin/sh", "-c", script], b64line(credential));
+  await execOnce(podName, ["/bin/sh", "-c", script], b64line(credential) + bridgeToken + "\n");
   console.log(`session started in ${podName}`);
+  return (await readBridge(podName)).cert;
 }
 
-// Refresh the mount credential before it expires: write the new body into the pod's
-// tmpfs credential file. Same one-line base64 delivery, decoded in the pod.
-//
-// Fail CLOSED: decode into a temporary file first, require a non-empty line, a successful
-// base64 decode AND a well-formed credential body, then chmod and atomically rename over
-// the live file. The live credential is never truncated until a valid replacement exists,
-// so empty stdin or a corrupt line leaves the running mount's credential intact and the
-// exec exits non-zero (which execOnce surfaces as a rejected promise) rather than
-// replacing a good credential with an empty file.
-export async function refreshCredential(podName, credential) {
-  const script = [
-    "set -eu",
-    "IFS= read -r b64",
-    '[ -n "${b64:-}" ] || { echo "refresh: empty credential on stdin" >&2; exit 1; }',
-    "tmp=/dev/shm/session/credentials.new",
-    'printf %s "$b64" | base64 -d > "$tmp" || { echo "refresh: base64 decode failed" >&2; rm -f "$tmp"; exit 1; }',
-    'grep -q "^aws_access_key_id" "$tmp" || { echo "refresh: credential malformed" >&2; rm -f "$tmp"; exit 1; }',
-    'chmod 600 "$tmp"',
-    'mv -f "$tmp" /dev/shm/session/credentials',
-  ].join("; ");
-  await execOnce(podName, ["/bin/sh", "-c", script], b64line(credential));
+// The bridge's certificate, and its token, from their root-only files in the pod. Used
+// right after start (for the certificate), and when the app picks up sessions that kept
+// running across its own restart (for both), since it keeps them only in memory.
+export async function readBridge(podName) {
+  const out = await execCapture(podName, ["/bin/sh", "-c",
+    "cat /dev/shm/session/bridge-token; echo; cat /dev/shm/session/bridge.crt"]);
+  const [token, ...rest] = out.split("\n");
+  const cert = rest.join("\n").trim();
+  if (!/^[0-9a-f]{64}$/.test(token) || !/^-----BEGIN CERTIFICATE-----[\s\S]+-----END CERTIFICATE-----$/.test(cert))
+    throw new Error(`session-bridge is not set up in ${podName}`);
+  return { token, cert: cert + "\n" };
 }
 
 // End the session's processes and unmount its folder, before the claim is released. The
@@ -206,61 +203,6 @@ export async function refreshCredential(podName, credential) {
 // session-stop.sh in the base image.
 export async function stopSession(podName) {
   await execOnce(podName, ["/usr/local/bin/session-stop.sh"]);
-}
-
-// The last time anything happened in the session's terminal, as an epoch, to find idle
-// sessions: the newest of tmux's session_activity, which moves only on key input, and each
-// window's window_activity, which moves when the pane prints output. Reading the first
-// alone released an agent that was still working on its own: with a pane printing every
-// 15 s and no keys, session_activity aged past ten minutes while window_activity stayed
-// under five seconds. A CLI waiting at its prompt prints nothing, so it still goes idle.
-export async function lastActivity(podName) {
-  const out = await execCapture(podName, [
-    "/usr/bin/setpriv", "--reuid=1000", "--regid=1000", "--init-groups", "--inh-caps=-all",
-    "env", "HOME=/workspace/home",
-    "/bin/sh", "-c",
-    // "none" when the pod has no tmux session: the CLI is gone, so nothing will ever be
-    // active again and the session counts as idle since it started.
-    "if tmux has-session -t agent 2>/dev/null; then " +
-      "{ tmux display-message -p -t agent '#{session_activity}'; " +
-      "tmux list-windows -t agent -F '#{window_activity}'; } | sort -n | tail -1; " +
-      "else echo none; fi",
-  ]);
-  // Accept only "none" or one epoch. Anything else (an exec that failed or printed nothing)
-  // throws: an unreadable activity time must never read as "idle" and release a live session.
-  const v = out.trim();
-  if (v === "none") return 0;
-  if (/^[0-9]{9,11}$/.test(v)) return parseInt(v, 10);
-  throw new Error(`could not read terminal activity in ${podName} (got ${JSON.stringify(v.slice(0, 40))})`);
-}
-
-// Attach a browser terminal to the pod's tmux session. Returns the exec's streams so the
-// caller can pipe them to a WebSocket.
-export async function attachTerminal(podName, { onData, cols, rows }) {
-  const stdout = new Writable({ write(chunk, _enc, cb) { onData(chunk); cb(); } });
-  const stdin = new Readable({ read() {} });
-  // Attach as the dev user (uid 1000), the identity that started the tmux server in the
-  // entrypoint. `kubectl exec` runs as the container's default user (root), whose tmux
-  // looks at a different socket and reports "no sessions", so drop to 1000 with the same
-  // HOME the session uses before attaching.
-  // Set a UTF-8 locale on the attach, and attach with `-u`. tmux decides whether the
-  // attaching client can take UTF-8 from its locale (LC_ALL/LANG/LC_CTYPE) at attach time;
-  // with none set it treats the client as non-UTF-8 and downgrades every multibyte glyph
-  // -- the box-drawing (▎ ─ │), status (● ✻ ⚠) and smart-quote characters the agent TUIs
-  // draw -- to `_` in the bytes it sends to the browser. That is what put the `_` streaks
-  // in the terminal. `-u` forces UTF-8 regardless, and the locale makes it stick.
-  const ws = await exec.exec(
-    NAMESPACE, podName, "agent",
-    ["/usr/bin/setpriv", "--reuid=1000", "--regid=1000", "--init-groups", "--inh-caps=-all",
-      "env", "HOME=/workspace/home", "TERM=xterm-256color", "LANG=C.UTF-8", "LC_ALL=C.UTF-8",
-      "/bin/sh", "-c", "exec tmux -u attach -t agent"],
-    stdout, stdout, stdin, true,
-  );
-  return {
-    write: (data) => stdin.push(data),
-    resize: (c, r) => ws?.send?.(JSON.stringify({ Width: c, Height: r })),
-    close: () => { try { ws?.close?.(); } catch {} },
-  };
 }
 
 // --- exec helpers ---

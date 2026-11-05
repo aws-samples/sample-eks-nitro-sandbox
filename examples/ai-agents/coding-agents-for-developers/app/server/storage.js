@@ -4,8 +4,9 @@
 // The security property proven live: the Mount role grants ClientMount/ClientWrite on the
 // file system, and this module narrows each session's credential with an STS session
 // policy conditioned on s3files:AccessPointArn, so a session's credential can mount only
-// its own access point. The credential is handed to the pod through exec stdin (see k8s.js
-// and the base image's session-entrypoint.sh); it never appears on a command line.
+// its own access point. The first credential is handed to the pod through exec stdin at
+// session start (see k8s.js and the base image's session-entrypoint.sh), and each refresh
+// through the pod's session-bridge over TLS (bridge.js); it never appears on a command line.
 
 import {
   S3FilesClient,

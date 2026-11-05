@@ -54,7 +54,8 @@ plan.
 
 *Figure 1: A developer picks a CLI in the web app; the app claims a warm Nitro sandbox pod
 from that CLI's pool, mounts the session's S3 Files folder into the guest with a credential
-scoped to that one access point, and drives a terminal over the Kubernetes exec API. The
+scoped to that one access point, and relays a terminal to a small server in the pod over the
+pod network. The
 pod reaches Amazon Bedrock through a Pod Identity role that may only invoke models; its
 egress policy refuses everything else.*
 
@@ -71,18 +72,19 @@ the images record what they installed.
 | S3 Files mount helper ([amazon-efs-utils](https://github.com/aws/efs-utils)) | 3.3.4 |
 | Claude Code ([`@anthropic-ai/claude-code`](https://www.npmjs.com/package/@anthropic-ai/claude-code)) | 2.1.306 |
 | Codex CLI ([`@openai/codex`](https://www.npmjs.com/package/@openai/codex)) | 0.163.0 |
-| Kiro CLI ([kiro.dev](https://kiro.dev/docs/cli/)) | 2.33.1 |
+| Kiro CLI ([kiro.dev](https://kiro.dev/docs/cli/)) | 3.0.0 |
 | OpenCode ([`@opencode/cli`](https://www.npmjs.com/package/@opencode/cli)) | 2.1.2 |
 | pi ([`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)) | 1.3.0 |
 | oh-my-pi ([`@oh-my-pi/pi-coding-agent`](https://github.com/can1357/oh-my-pi)) | 18.12.5 |
 | xterm.js ([`@xterm/xterm`](https://www.npmjs.com/package/@xterm/xterm)) | 6.0.0 |
+| Go, to build `session-bridge` ([`golang`](https://gallery.ecr.aws/docker/library/golang) image) | 1.27 |
 
 ## Files
 
 | File | What it is |
 |---|---|
 | [`app/`](app/) | The web app: the server ([`server/`](app/server/)) and the xterm.js UI ([`public/`](app/public/)), and its [`Dockerfile`](app/Dockerfile) |
-| [`images/base/`](images/base/) | The shared base image: the S3 Files mount helper, tmux, git, and [`session-entrypoint.sh`](images/base/session-entrypoint.sh) |
+| [`images/base/`](images/base/) | The shared base image: the S3 Files mount helper, tmux, git, [`session-entrypoint.sh`](images/base/session-entrypoint.sh), and [`session-bridge/`](images/base/session-bridge/main.go), the small server that gives the app the session's terminal |
 | [`images/<cli>/`](images/) | One Dockerfile per CLI, each `FROM` the base |
 | [`deploy/sandbox-template.yaml`](deploy/sandbox-template.yaml) | The per-CLI `SandboxTemplate` and `SandboxWarmPool` |
 | [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The per-CLI egress policy |
@@ -233,8 +235,8 @@ New agent and Restore both go through the same steps:
    then write, so the CLI's home could not be created.
 3. The app assumes the Mount role with a session policy that names only that access point,
    and writes the resulting short-lived credential into the pod through the exec API's
-   standard input, to a memory-backed file. It is never on a command line or in the pod
-   spec.
+   standard input, to a memory-backed file, together with a fresh token for the pod's
+   `session-bridge`. Neither is ever on a command line or in the pod spec.
 4. Inside the guest, `session-entrypoint.sh` mounts the access point at `/workspace` with the
    S3 Files mount helper and that credential. Only this step runs as root, with the
    `SYS_ADMIN` capability the mount needs. Then tmux and the CLI start as an unprivileged
@@ -242,7 +244,48 @@ New agent and Restore both go through the same steps:
    the code. The CLI starts in `/workspace/project`, a folder of its own: Claude Code keeps
    its answer to "do you trust this folder?" per folder, but not for the home directory,
    so started in its home it asked again on every Restore.
-5. While the session runs, the app refreshes the credential before it expires.
+   Before tmux and the CLI start, the entrypoint starts `session-bridge`, which the next
+   section describes, and the app reads back the certificate it made.
+5. While the session runs, the app refreshes the credential before it expires, through
+   `session-bridge`.
+
+### How the terminal reaches the pod
+
+Each session pod runs `session-bridge`, a small server built from
+[`images/base/session-bridge/`](images/base/session-bridge/main.go) with the Go standard
+library only. The app reaches it directly on the pod network, on TCP 7681, for the three
+things a session needs while it runs:
+
+| Request | What it does |
+|---|---|
+| `GET /v1/terminal` | A WebSocket to a PTY running `tmux attach` as the session's user. The app relays the browser's terminal to it, keystrokes and resizes both ways. |
+| `GET /v1/activity` | The last time the terminal had input or output, which the app reads every minute to find idle sessions. |
+| `PUT /v1/credential` | Replaces the session's mount credential. It accepts only a well-formed credential, so a bad request leaves the running one in place. |
+
+The Kubernetes exec API is used twice per session: once to start it, and once to stop it.
+So the API server carries none of a session's ongoing traffic, however many developers
+have terminals open, and a busy API server does not slow a terminal down.
+
+- **Only the app can connect.** The pod's policy admits ingress from the app's pods on 7681
+  and nothing else, so another session's pod, or any other pod, is refused at the network.
+- **Only this session's token is accepted.** The app makes a fresh token for each session
+  start and hands it over on the start exec's standard input. The pod keeps it in a
+  root-only file; the CLI runs as uid 1000 and cannot read it.
+- **The connection is pinned.** At start the bridge makes its own TLS key and a self-signed
+  certificate, and writes only the certificate to a root-only file. The app reads it once,
+  over exec, and trusts that one certificate and nothing else, so code in the sandbox cannot
+  stand in for the bridge: it has neither the key nor a way to replace the certificate.
+- **It starts before the CLI.** The bridge holds its port before any code in the sandbox
+  runs, and a warm pod that no session has claimed listens on nothing.
+
+After an app restart, the app reads each running pod's token and certificate back over exec,
+once, so the sessions it picks up keep their terminals.
+
+On a run of this sample, codex in the sandbox echoed a keystroke in 18.9 ms (median) from
+inside its own pod, 23.9 ms from the app through `session-bridge`, and 25.9 ms from the app
+over the exec API. The terminal is not faster for leaving the exec API: what changes is that
+the API server is off its path. What a developer feels is one round trip from the browser to
+the cluster's Region, because the browser reaches the app through `kubectl port-forward`.
 
 *Figure 3: How a session's folder reaches its pod. The pod boots with no folder. The web app
 hands it a short-lived credential that can mount only that session's S3 Files access point,
@@ -487,7 +530,8 @@ It depends on the layer.
   developer: a pod can mount only its own session's folder, so not another developer's, and
   not another session of the same developer either. The credential that mounts the folder is
   scoped to that one access point, the pod's own role has no S3 Files access at all, and the
-  egress policy refuses all ingress, so pods cannot reach each other. The next section
+  pods' policy admits ingress only from the app, to `session-bridge`, so session pods cannot
+  reach each other. The next section
   proves it, as root inside the sandbox.
 - **Through this web app: yes, by design of the demo.** The sign-in is a picker, not
   authentication, so anyone who can reach your `kubectl port-forward` can pick any developer
@@ -619,7 +663,13 @@ spec:
   policyTypes:
     - Ingress
     - Egress
-  ingress: []
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agent-app
+      ports:
+        - { protocol: TCP, port: 7681 }
   egress:
     - to:
         - ipBlock: { cidr: 0.0.0.0/0 }
@@ -652,7 +702,7 @@ spec:
 |---|---|
 | `podSelector`, `agent-cli: <CLI>` | Selects this CLI's session pods. |
 | `policyTypes`, `Ingress` and `Egress` | Default-deny both ways, so only the rules below are allowed. |
-| `ingress: []` | Denies all ingress. The app reaches the pod through the Kubernetes exec API, which is not pod network traffic, so it needs no ingress rule. |
+| `ingress` from `app: agent-app` on 7681 | Admits the app's pods, to `session-bridge` only (see [How the terminal reaches the pod](#how-the-terminal-reaches-the-pod)). Everything else in is denied, including other session pods. The label is what the rule trusts, so whoever can create pods in this namespace can pass it; the bridge's token and pinned certificate still stand behind it. The session's start and stop use the Kubernetes exec API, which is not pod network traffic. |
 | `egress` to `0.0.0.0/0` on 53 | Allows egress to any address on UDP and TCP 53. This is a project choice to keep the sample simple: it does not depend on how a given cluster serves DNS (on EKS Auto Mode the resolver is node-local rather than a pod behind a ClusterIP). What it allows is wider than DNS resolution: any process in the sandbox can reach any host on UDP or TCP 53, so it can send data out over DNS or to anything listening on port 53. What it costs is that port-53 egress is not confined to the cluster's own resolver. It still opens only port 53; every other port and protocol stays denied. |
 | `egress` to `169.254.170.23` on 80 | The Pod Identity agent on the node, for the pod's role (the Bedrock role, or the Codex role for Codex). kiro-cli's pods have no role, so the agent gives them no credential. |
 | `egress` to the `domainNames` on 443 | The Bedrock runtime endpoint the Bedrock CLIs call their model on, the Bedrock "Mantle" endpoint Codex uses for its GPT model, `docs.aws.amazon.com` so the agents can fetch AWS documentation, and the short list of developer hosts (GitHub, npm, PyPI) the agents fetch from. The S3 Files mount reads over NFS (2049), not an S3 443 endpoint, so none is needed here. |

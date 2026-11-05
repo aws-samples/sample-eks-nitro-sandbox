@@ -6,7 +6,12 @@
 #      `kubectl exec` standard input, to a memory-backed file (never a command line,
 #      never the pod spec);
 #   2. execs this script, which mounts the session's S3 Files access point at
-#      /workspace with that credential, then starts tmux + the CLI as the dev user.
+#      /workspace with that credential, starts session-bridge (the terminal, activity and
+#      credential refresh the app reaches over the pod network), then starts tmux + the
+#      CLI as the dev user.
+#
+# That exec, and the one that stops the session, are the only two the app makes into a
+# session pod; everything in between goes through session-bridge.
 #
 # Only the mount step runs as root with SYS_ADMIN. The CLI runs as uid 1000 with no
 # added capabilities. The mount needs root inside the guest, which is what the sandbox
@@ -21,8 +26,9 @@
 #   CLI_RESUME_CMD     the same CLI continuing its most recent conversation (set by each
 #                      image; optional)
 #   SESSION_RESUME     "1" when the app is restoring an existing session, else unset
-# The credential arrives on stdin as an AWS credentials file body, written to
-# $CRED_FILE below. The script never prints it.
+# Two lines arrive on stdin: the credential, as a base64 AWS credentials file body written
+# to $CRED_FILE below, then the session-bridge token (64 hex characters). The script never
+# prints either.
 set -euo pipefail
 
 CRED_DIR=/dev/shm/session
@@ -53,6 +59,15 @@ if ! grep -q '^aws_access_key_id' "$CRED_FILE"; then
   echo "session-entrypoint: credential malformed" >&2
   exit 1
 fi
+# The second line is the token the app will present to session-bridge. Root-only, like
+# the credential: code in the sandbox runs as uid 1000 and cannot read it.
+IFS= read -r BRIDGE_TOKEN || true
+if ! [[ "${BRIDGE_TOKEN:-}" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "session-entrypoint: no bridge token on stdin" >&2
+  exit 1
+fi
+( umask 077; printf '%s' "$BRIDGE_TOKEN" > "$CRED_DIR/bridge-token" )
+unset BRIDGE_TOKEN
 
 # 2. Mount this session's access point. The access point roots the mount at the
 #    session's own folder and pins POSIX uid/gid 1000, so the dev user owns its files.
@@ -146,6 +161,26 @@ if [ -x /usr/local/bin/cli-setup.sh ]; then
         HOME="$MOUNT/home" AWS_REGION="$AWS_REGION" MODEL_ID="${MODEL_ID:-}" \
         XDG_CONFIG_HOME="$MOUNT/home/.config" \
         /usr/local/bin/cli-setup.sh || echo "session-entrypoint: cli-setup.sh failed (non-fatal)" >&2
+fi
+
+# Start session-bridge, which serves this session's terminal, activity time and credential
+# refresh to the app over the pod network, so they do not go through the Kubernetes API.
+# It runs as root with a clean environment, from /, so it does not hold the mount busy.
+# Start it before the CLI, so the port is the bridge's before any code in the sandbox runs.
+# It writes its certificate once it holds the port; the app reads that file next and pins
+# it. A bridge left from an earlier start on this pod is replaced, with the new token.
+pkill -x session-bridge 2>/dev/null || true
+rm -f "$CRED_DIR/bridge.crt"
+( cd / && exec setsid env -i PATH="$PATH" /usr/local/bin/session-bridge ) \
+  </dev/null >>/var/log/session-bridge.log 2>&1 &
+for _ in $(seq 1 50); do
+  [ -s "$CRED_DIR/bridge.crt" ] && break
+  sleep 0.1
+done
+if [ ! -s "$CRED_DIR/bridge.crt" ]; then
+  echo "session-entrypoint: session-bridge did not start:" >&2
+  tail -n 5 /var/log/session-bridge.log >&2 || true
+  exit 1
 fi
 
 # 3. Drop to the dev user and start the CLI inside a tmux session. Closing the browser

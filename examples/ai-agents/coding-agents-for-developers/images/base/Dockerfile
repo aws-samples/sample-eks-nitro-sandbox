@@ -6,6 +6,15 @@
 #
 # Amazon Linux 2023 so the efs-utils installer is supported; the mount helper is the
 # one piece the sample cannot get from a generic base.
+
+# session-bridge: the small server that gives the app this pod's terminal, activity time and
+# credential refresh over the pod network instead of the Kubernetes exec API. Built here
+# from session-bridge/ with the Go standard library only, as one static binary.
+FROM public.ecr.aws/docker/library/golang:1.27-bookworm AS bridge
+WORKDIR /src
+COPY session-bridge/ .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/session-bridge .
+
 FROM public.ecr.aws/amazonlinux/amazonlinux:2023
 
 # tmux keeps the CLI running after the browser detaches; git is what the agents use;
@@ -59,6 +68,7 @@ ENV MODEL_ID="us.anthropic.claude-sonnet-5-5"
 
 COPY --chmod=0755 session-entrypoint.sh /usr/local/bin/session-entrypoint.sh
 COPY --chmod=0755 session-stop.sh /usr/local/bin/session-stop.sh
+COPY --from=bridge --chmod=0755 /out/session-bridge /usr/local/bin/session-bridge
 
 # A warm pod boots with NO session: it just idles here. When the app claims the pod it
 # runs session-entrypoint.sh through `kubectl exec`, passing the session parameters and

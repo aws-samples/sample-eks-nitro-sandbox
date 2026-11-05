@@ -80,6 +80,12 @@ function relativeTime(session) {
   return `${days}d ago`;
 }
 
+// Sessions whose Delete is still running. Delete takes 40 seconds or more (the server
+// drains the folder's object versions until two checks 20 seconds apart find none) and the
+// row gave no sign of it. Kept outside the table, because the table is rebuilt whenever the
+// list reloads, which would otherwise reset a row that is still being deleted.
+const deleting = new Set();
+
 async function loadSessions() {
   const { sessions } = await api("/api/sessions?developer=" + encodeURIComponent(developer));
   const rows = $("#session-rows");
@@ -97,17 +103,45 @@ async function loadSessions() {
     const restore = document.createElement("button");
     restore.className = "btn-sm";
     restore.textContent = s.running ? "Open" : "Restore";
+    // Restore claims a pod and mounts the folder, which takes a few seconds. Say so while it
+    // runs, then reload the list so the row shows the session as running.
     restore.onclick = async () => {
-      if (!s.running) await api("/api/restore", { developer, session: s.session });
-      openTerminal(s.session, s.cli, name);
+      if (s.running) return openTerminal(s.session, s.cli, name);
+      if (restore.disabled) return;
+      restore.textContent = "Restoring...";
+      restore.disabled = del.disabled = true;
+      restore.setAttribute("aria-busy", "true");
+      try {
+        await api("/api/restore", { developer, session: s.session });
+        openTerminal(s.session, s.cli, name);
+      } catch (err) {
+        alert(`Could not restore ${name}: ${err.message}`);
+      } finally {
+        loadSessions();
+      }
     };
     const del = document.createElement("button");
     del.className = "btn-sm btn-ghost";
-    del.textContent = "Delete";
+    const showDeleting = () => {
+      del.textContent = "Deleting...";
+      del.disabled = restore.disabled = true;
+      del.setAttribute("aria-busy", "true");
+    };
+    if (deleting.has(s.session)) showDeleting();
+    else del.textContent = "Delete";
     del.onclick = async () => {
+      if (deleting.has(s.session)) return;
       if (!confirm(`Delete session ${s.session}? This removes its folder.`)) return;
-      await api("/api/delete", { developer, session: s.session });
-      loadSessions();
+      deleting.add(s.session);
+      showDeleting();
+      try {
+        await api("/api/delete", { developer, session: s.session });
+      } catch (err) {
+        alert(`Could not delete ${name}: ${err.message}`);
+      } finally {
+        deleting.delete(s.session);
+        loadSessions();
+      }
     };
     actions.append(restore, del);
     tr.appendChild(actions);

@@ -2,16 +2,19 @@
 // folder and start the CLI; close/idle release the pod and keep the folder; a background
 // loop refreshes mount credentials and reaps idle sessions.
 
+import { randomBytes } from "node:crypto";
 import * as store from "./storage.js";
 import * as k8s from "./k8s.js";
+import * as bridge from "./bridge.js";
 import { randomName, displayName } from "./names.js";
 
 const IDLE_MS = (parseInt(process.env.IDLE_MINUTES, 10) || 30) * 60 * 1000;
 const FS_ID = process.env.S3_FILES_FS_ID;
 const REFRESH_MS = 30 * 60 * 1000; // refresh the 60-min credential well before expiry
 
-// Live sessions keyed by session name: { developer, cli, session, apId, podName,
-// claimName, azId, startedAt }.
+// Live sessions keyed by session name: { developer, cli, session, apId, podName, podIP,
+// claimName, azId, bridgeToken, bridgeCert, startedAt }. podIP, bridgeToken and bridgeCert
+// are how the app reaches the pod's session-bridge (bridge.js).
 const live = new Map();
 // Exported only so a test can seed an entry and check release() keeps it on failure.
 export const __liveForTest = live;
@@ -37,14 +40,16 @@ async function start(developer, cli, session, { resume = false } = {}) {
   console.log(`start ${session}: ensureAccessPoint`);
   const ap = await store.ensureAccessPoint(developer, session, cli);
   console.log(`start ${session}: claimPod (ap=${ap.apId})`);
-  const { claimName, podName, node } = await k8s.claimPod(cli, session);
+  const { claimName, podName, node, podIP } = await k8s.claimPod(cli, session);
   console.log(`start ${session}: pod=${podName} node=${node}`);
-  let azId;
+  // A fresh token per session start: the pod's session-bridge accepts only this one.
+  const bridgeToken = randomBytes(32).toString("hex");
+  let azId, bridgeCert;
   try {
     azId = await k8s.nodeAzId(node);
     const credential = await store.mountCredential(ap.apId, developer, cli, session);
     console.log(`start ${session}: startSession azId=${azId}`);
-    await k8s.startSession(podName, { credential, fsId: FS_ID, apId: ap.apId, azId, resume });
+    bridgeCert = await k8s.startSession(podName, { credential, bridgeToken, fsId: FS_ID, apId: ap.apId, azId, resume });
   } catch (e) {
     // The session never became live, so nothing else would release its pod. The folder
     // (access point) stays: the session shows in the list and Restore or Delete applies.
@@ -55,8 +60,8 @@ async function start(developer, cli, session, { resume = false } = {}) {
   }
 
   const entry = {
-    developer, cli, session, apId: ap.apId, claimName, podName, azId,
-    startedAt: Date.now(),
+    developer, cli, session, apId: ap.apId, claimName, podName, podIP, azId,
+    bridgeToken, bridgeCert, startedAt: Date.now(),
   };
   live.set(session, entry);
   return entry;
@@ -66,8 +71,10 @@ async function start(developer, cli, session, { resume = false } = {}) {
 // session left running (a browser closed, an agent working on its own) would otherwise
 // never have its mount credential refreshed (its writes fail about an hour later) or be
 // released when idle. Rebuild `live` from the sample's claims, resolving each claim's
-// session to its developer, CLI and access point from the access-point paths. The pod's
-// current credential is of unknown age, so mark it due: the first loop pass refreshes it.
+// session to its developer, CLI and access point from the access-point paths, and reading
+// each pod's session-bridge token and certificate back over exec (once per pod, at app
+// start). The pod's current credential is of unknown age, so mark it due: the first loop
+// pass refreshes it.
 export async function adoptRunningSessions() {
   const claims = await k8s.listSessionClaims();
   if (claims.length === 0) return 0;
@@ -78,11 +85,13 @@ export async function adoptRunningSessions() {
     const s = bySession.get(session);
     if (!s || live.has(session)) continue; // no access point: not a session folder we know
     try {
-      const azId = await k8s.nodeAzId(await k8s.podNode(podName));
+      const { node, podIP } = await k8s.podInfo(podName);
+      const azId = await k8s.nodeAzId(node);
+      const { token: bridgeToken, cert: bridgeCert } = await k8s.readBridge(podName);
       const now = Date.now();
       live.set(session, {
-        developer: s.developer, cli: s.cli, session, apId: s.apId, claimName, podName, azId,
-        startedAt: now, lastRefresh: now - REFRESH_MS - 1,
+        developer: s.developer, cli: s.cli, session, apId: s.apId, claimName, podName, podIP, azId,
+        bridgeToken, bridgeCert, startedAt: now, lastRefresh: now - REFRESH_MS - 1,
       });
       adopted++;
       console.log(`session ${session}: picked up after an app restart (pod ${podName})`);
@@ -155,7 +164,7 @@ export async function remove(developer, session) {
 export async function backgroundTick(now = Date.now()) {
   for (const entry of [...live.values()]) {
     try {
-      const last = (await k8s.lastActivity(entry.podName)) * 1000;
+      const last = (await bridge.lastActivity(entry)) * 1000;
       const idleFor = now - (last || entry.startedAt);
       if (idleFor > IDLE_MS) {
         try {
@@ -175,7 +184,7 @@ export async function backgroundTick(now = Date.now()) {
     if (now - (entry.lastRefresh || entry.startedAt) > REFRESH_MS) {
       try {
         const cred = await store.mountCredential(entry.apId, entry.developer, entry.cli, entry.session);
-        await k8s.refreshCredential(entry.podName, cred);
+        await bridge.refreshCredential(entry, cred);
         entry.lastRefresh = now;
         console.log(`session ${entry.session}: mount credential refreshed`);
       } catch (e) {
