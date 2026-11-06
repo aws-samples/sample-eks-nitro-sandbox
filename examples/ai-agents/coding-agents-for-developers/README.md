@@ -585,25 +585,24 @@ Closing it deleted that access point again (`session mw498856-brave-tapir: acces
 deleted` in the app log). An install of the previous version of the sample kept an access
 point for every session and had no records. To show how the app brings one over, the five
 sessions were put back in that state on a running app: each record deleted, and an access
-point created for each. A sweep recorded each session and asked for each access point
-to be deleted, since none of them had a pod. The first sweep only saw them; the one after
-recorded them:
+point created for each, while another developer's session was running. A later sweep recorded
+each of the five and asked for each access point to be deleted, since none of them had a pod:
 
 ```text
+session mw498856-brave-tapir: recorded from its access point
 session mw49cqx6-swift-ibex: recorded from its access point
 session mw49crie-witty-marten: recorded from its access point
-session mw49coga-nimble-tapir: recorded from its access point
 session mw48zing-merry-shrew: recorded from its access point
-session mw498856-brave-tapir: recorded from its access point
+session mw49coga-nimble-tapir: recorded from its access point
 session mw498856-brave-tapir: access point delete requested, the session has no pod
-session mw48zing-merry-shrew: access point delete requested, the session has no pod
-session mw49crie-witty-marten: access point delete requested, the session has no pod
 session mw49coga-nimble-tapir: access point delete requested, the session has no pod
+session mw49crie-witty-marten: access point delete requested, the session has no pod
 session mw49cqx6-swift-ibex: access point delete requested, the session has no pod
+session mw48zing-merry-shrew: access point delete requested, the session has no pod
 ```
 
-Afterwards the five records were back, the file system had no access points, and all five
-sessions were still in the developer's list. On a first start of the new version over an
+Afterwards the five records were back, the only access point left was the running session's,
+and all five sessions were still in the developer's list. On a first start of the new version over an
 old install, the pick-up sees them and the first sweep records them the same way.
 
 ## It runs in a sandbox
