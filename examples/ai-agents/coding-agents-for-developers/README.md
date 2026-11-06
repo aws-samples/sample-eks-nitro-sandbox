@@ -570,7 +570,7 @@ session-mw49crie-witty-marten   carlos      oh-my-pi
 An access point exists while a session runs (and while it is starting, or until the clean
 up after its pod has finished), rooted at `/<developer>/<cli>/<session>` and tagged
 (`ManagedBy`, `developer`, `cli`, `session`) for the clean up. With all five of
-those sessions closed the file system had none; restoring the codex one took 2.1 seconds,
+those sessions closed the file system had none; restoring the codex one took 2.2 seconds,
 and while it ran it held one:
 
 ```text
@@ -587,16 +587,16 @@ point created for each. The next sweep recorded each session and asked for each 
 to be deleted, since none of them had a pod:
 
 ```text
-session mw48zing-merry-shrew: recorded from its access point
-session mw49coga-nimble-tapir: recorded from its access point
-session mw49crie-witty-marten: recorded from its access point
 session mw49cqx6-swift-ibex: recorded from its access point
+session mw49crie-witty-marten: recorded from its access point
+session mw49coga-nimble-tapir: recorded from its access point
+session mw48zing-merry-shrew: recorded from its access point
 session mw498856-brave-tapir: recorded from its access point
-session mw49coga-nimble-tapir: access point delete requested, the session has no pod
-session mw49crie-witty-marten: access point delete requested, the session has no pod
-session mw48zing-merry-shrew: access point delete requested, the session has no pod
-session mw49cqx6-swift-ibex: access point delete requested, the session has no pod
 session mw498856-brave-tapir: access point delete requested, the session has no pod
+session mw48zing-merry-shrew: access point delete requested, the session has no pod
+session mw49crie-witty-marten: access point delete requested, the session has no pod
+session mw49coga-nimble-tapir: access point delete requested, the session has no pod
+session mw49cqx6-swift-ibex: access point delete requested, the session has no pod
 ```
 
 Afterwards the five records were back, the file system had no access points, and all five
