@@ -129,7 +129,8 @@ async function startOnce(developer, cli, session, { resume = false } = {}) {
   ]);
   if (podResult.status === "rejected") {
     // No pod: an access point created for it is left for the sweep, which deletes the access
-    // point of any session with no pod.
+    // point of any session with no pod. A new session that never started is not listed.
+    if (!resume) dropNewSession(session);
     throw podResult.reason;
   }
   const { claimName, podName, node, podIP } = podResult.value;
@@ -140,6 +141,7 @@ async function startOnce(developer, cli, session, { resume = false } = {}) {
     // outright.
     console.error(`start ${session}: no access point, releasing claim ${claimName}: ${apResult.reason?.message || apResult.reason}`);
     cleanUpFailedStart(session, claimName, podName);
+    if (!resume) dropNewSession(session);
     throw apResult.reason;
   }
   const ap = apResult.value;
@@ -172,6 +174,21 @@ async function startOnce(developer, cli, session, { resume = false } = {}) {
   };
   live.set(session, entry);
   return entry;
+}
+
+// A New agent that failed before anything was mounted (no pod, or no access point): remove its
+// record, so the developer's list has no row for a session that never ran. Queued after the
+// claim's clean up. Kept when anything may still have the folder: a live entry, or a failed
+// stop that is recorded. The claim is released by name first (a claim that did not resolve
+// can still get a pod later); an access point left behind has no record then, and the sweep
+// deletes it. A session that got as far as the mount keeps its row, and Delete applies.
+function dropNewSession(session) {
+  serialized(session, async () => {
+    if (live.has(session) || (await k8s.pendingStopPod(session))) return;
+    await k8s.releaseClaim(k8s.claimNameFor(session));
+    await k8s.deleteSessionRecord(session);
+    console.log(`start ${session}: the new session did not start; its record was removed`);
+  }).catch((e) => console.error(`start ${session}: could not remove the record of a session that did not start: ${e?.message || e}`));
 }
 
 // The clean up after a start that failed with a claim: queued next in the session's queue,

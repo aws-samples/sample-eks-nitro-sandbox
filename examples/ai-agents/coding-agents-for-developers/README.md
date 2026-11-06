@@ -391,7 +391,7 @@ only Delete removes the folder.*
 
 | Action | What happens |
 |---|---|
-| New agent | The app writes the session's record, then claims a warm pod and creates the access point at the same time, mounts the folder and starts the CLI. The pool boots a replacement. |
+| New agent | The app writes the session's record, then claims a warm pod and creates the access point at the same time, mounts the folder and starts the CLI. The pool boots a replacement. If no pod or no access point can be had, the app releases the claim and removes the record, so the list has no row for a session that never ran. |
 | Minimize, or close the browser | Nothing changes in the cluster. The pod and the CLI keep running. |
 | No terminal activity for the idle period (default 30 minutes) | The app reads, every minute, the last time each session's terminal had key input or printed output (tmux's `session_activity` and `window_activity`). An agent still working on its own keeps printing, so it is not idle; a CLI waiting at its prompt prints nothing. Once the period passes, it stops the session cleanly (below), deletes the `SandboxClaim` and then the session's access point: the pod and the access point go, the folder and its files stay. |
 | Close the window | Same as idle: the session is stopped, the claim and the access point released, the folder stays, and the session moves to the session list. |
@@ -407,7 +407,7 @@ retried (Close itself still succeeds: the session is stopped and its folder is k
 sweep also deletes an access point whose session has no record and no claim: a session gets
 its record before anything is made for it, and loses it only at the end of its Delete. A pass
 works through eight sessions at a time, so with a large backlog one pass can take well over
-a minute. Before the app deletes an access point it writes its id into the session's record,
+a minute. Before the app deletes a recorded session's access point it writes its id into the session's record,
 so a Restore never reuses one that is being deleted, even across an app restart, and the app
 makes no second access point beside one it can list: a Restore waits for the old one to be
 gone (about a second on these runs) before it makes a new one on the same folder. After an app restart, a pod is picked up again only if its folder is still mounted and only one
