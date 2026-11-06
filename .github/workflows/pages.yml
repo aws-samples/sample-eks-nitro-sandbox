@@ -1,14 +1,10 @@
 name: Publish site to GitHub Pages
 
-# Publishes the placeholder in placeholder/ until launch. On launch day, change the
-# build step to `mkdocs build --strict` at the repository root and drop the paths filter.
+# Builds the site from mkdocs.yml (docs_dir: examples/) and publishes it on every push
+# to main. Who can see it is the Pages visibility in the repository settings.
 on:
   push:
     branches: [main]
-    paths:
-      - placeholder/**
-      - requirements.txt
-      - .github/workflows/pages.yml
   workflow_dispatch:
 
 permissions:
@@ -40,8 +36,8 @@ jobs:
       - name: Install MkDocs
         run: pip install -r requirements.txt
 
-      - name: Build the placeholder site
-        run: mkdocs build --strict --config-file placeholder/mkdocs.yml
+      - name: Build the site
+        run: mkdocs build --strict
 
       - name: Configure Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
