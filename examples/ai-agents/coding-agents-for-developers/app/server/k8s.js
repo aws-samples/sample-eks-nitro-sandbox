@@ -122,6 +122,16 @@ export async function listSessionClaims() {
     .filter((c) => c.claimName && c.podName);
 }
 
+// The names of every claim this sample made, whether or not it has a pod yet. The access-
+// point sweep treats any claim as "a pod may have the folder mounted".
+export async function listClaimNames() {
+  const out = await custom.listNamespacedCustomObject({
+    group: GROUP, version: VERSION, namespace: NAMESPACE, plural: "sandboxclaims",
+    labelSelector: "app.kubernetes.io/part-of=coding-agents-for-developers",
+  });
+  return new Set((out?.items ?? []).map((c) => c.metadata?.name).filter(Boolean));
+}
+
 // The node a pod runs on, and its IP, where session-bridge listens.
 export async function podInfo(podName) {
   const pod = await core.readNamespacedPod({ name: podName, namespace: NAMESPACE });
@@ -164,6 +174,73 @@ export async function pendingStopPod(session) {
 export async function clearPendingStop(session) {
   try {
     await core.deleteNamespacedConfigMap({ name: pendingName(session), namespace: NAMESPACE });
+  } catch (e) {
+    if (e?.code !== 404) throw e;
+  }
+}
+
+// The session record: one ConfigMap per session, the source of truth for the session list.
+// A session's folder needs an access point only while a pod has it mounted, so the list
+// cannot come from access points any more. Named for the session; labelled so the list for
+// one developer is one label-selected read.
+const PART_OF = "coding-agents-for-developers";
+const recordName = (session) => `session-${session}`;
+const recordOf = (cm) => cm?.data?.developer && cm.data.cli && cm.data.session
+  ? { developer: cm.data.developer, cli: cm.data.cli, session: cm.data.session, created: cm.data.created }
+  : null;
+
+export async function createSessionRecord(developer, cli, session) {
+  await core.createNamespacedConfigMap({ namespace: NAMESPACE, body: {
+    metadata: {
+      name: recordName(session),
+      labels: {
+        "app.kubernetes.io/part-of": PART_OF,
+        "coding-agents/record": "session",
+        "coding-agents/developer": developer,
+        "coding-agents/cli": cli,
+      },
+    },
+    data: { developer, cli, session, created: new Date().toISOString() },
+  } });
+}
+
+// One session's record, or null when it has none. A record that is missing a field is an
+// error, not "no session".
+export async function readSessionRecord(session) {
+  let cm;
+  try {
+    cm = await core.readNamespacedConfigMap({ name: recordName(session), namespace: NAMESPACE });
+  } catch (e) {
+    if (e?.code === 404) return null;
+    throw e;
+  }
+  const rec = recordOf(cm);
+  if (!rec || rec.session !== session) throw new Error(`the record for session ${session} is malformed`);
+  return rec;
+}
+
+// Every session record, or one developer's: [{ developer, cli, session, created }].
+export async function listSessionRecords(developer) {
+  const selector = ["app.kubernetes.io/part-of=" + PART_OF, "coding-agents/record=session"];
+  if (developer) selector.push(`coding-agents/developer=${developer}`);
+  const out = [];
+  let _continue;
+  do {
+    const page = await core.listNamespacedConfigMap({
+      namespace: NAMESPACE, labelSelector: selector.join(","), limit: 500, _continue,
+    });
+    for (const cm of page?.items ?? []) {
+      const rec = recordOf(cm);
+      if (rec && cm.metadata?.name === recordName(rec.session)) out.push(rec);
+    }
+    _continue = page?.metadata?._continue;
+  } while (_continue);
+  return out;
+}
+
+export async function deleteSessionRecord(session) {
+  try {
+    await core.deleteNamespacedConfigMap({ name: recordName(session), namespace: NAMESPACE });
   } catch (e) {
     if (e?.code !== 404) throw e;
   }

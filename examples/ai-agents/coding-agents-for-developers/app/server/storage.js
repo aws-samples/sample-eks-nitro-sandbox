@@ -1,5 +1,10 @@
-// S3 Files per-session storage: create or find a session's access point, mint a
-// short-lived credential scoped to it, and build the session list from access-point tags.
+// S3 Files per-session storage: create a session's access point when a pod mounts its
+// folder and delete it when the pod goes, mint a short-lived credential scoped to it, and
+// delete a session's data. A session's folder outlives its access points: deleting an
+// access point leaves the directory and its files, and a new one on the same path sees
+// them again (shown on a live run). So only running sessions hold an access point, and
+// the S3 Files quota of 25,000 access points per file system caps running sessions, not
+// retained ones. The session list comes from the session records (k8s.js).
 //
 // The security property proven live: the Mount role grants ClientMount/ClientWrite on the
 // file system, and this module narrows each session's credential with an STS session
@@ -47,9 +52,9 @@ export const sessionKeyPrefix = (developer, cli, session) =>
 export const accessPointArn = (apId) =>
   `arn:aws:s3files:${REGION}:${ACCOUNT_ID}:file-system/${FS_ID}/access-point/${apId}`;
 
-// Create the session's folder in the bucket (access points do not auto-create their
-// root), then create the access point rooted at it with POSIX uid/gid 1000. Idempotent:
-// if an access point for this root already exists (restore), return it.
+// Create the access point rooted at the session's folder with POSIX uid/gid 1000, for one
+// run of the session. Idempotent: if an access point for this root already exists (one
+// left by a run whose delete did not go through yet), return it.
 export async function ensureAccessPoint(developer, session, cli) {
   const root = sessionRoot(developer, cli, session);
 
@@ -63,7 +68,8 @@ export async function ensureAccessPoint(developer, session, cli) {
   // only because the root directory does not already exist as a bucket object: an object
   // written under the prefix first would be imported owned by root (uid 0), and the
   // access point's uid 1000 could not write it. So ensureAccessPoint does NOT pre-create
-  // the folder; the access point creates its root on first mount.
+  // the folder; the access point creates its root on first mount. On a later run the root
+  // already exists, and creationPermissions is not reapplied over its owner and mode.
   const out = await s3files.send(
     new CreateAccessPointCommand({
       fileSystemId: FS_ID,
@@ -94,9 +100,10 @@ function parseRoot(path) {
   return { developer: parts[0], cli: parts[1], session: parts[2] };
 }
 
-// List every access point once, paginated, and parse each path. No per-access-point tag
-// read, so this is a handful of API calls regardless of how many sessions exist.
-async function listAllAccessPoints() {
+// List every access point once, paginated, and parse each path: [{ apId, developer, cli,
+// session }]. No per-access-point tag read, so this is a handful of API calls however many
+// sessions are running.
+export async function listAllAccessPoints() {
   const all = [];
   let token;
   do {
@@ -112,20 +119,24 @@ async function listAllAccessPoints() {
   return all;
 }
 
-// Every session on the file system: [{ apId, developer, cli, session }], from the paths.
-export async function listAllSessions() {
-  return listAllAccessPoints();
-}
-
 async function findAccessPoint(developer, session) {
   const all = await listAllAccessPoints();
   return all.find((a) => a.developer === developer && a.session === session) ?? null;
 }
 
-// The CLI of one session, from its access-point path. Used by restore.
-export async function sessionCli(developer, session) {
+// Delete a session's access point, when its pod no longer has the folder mounted. The
+// folder and its files stay. Returns true when it deleted one, false when there was none.
+// A delete that timed out after succeeding counts as done: it did if the access point is
+// no longer listed.
+export async function releaseAccessPoint(developer, session) {
   const ap = await findAccessPoint(developer, session);
-  return ap?.cli;
+  if (!ap) return false;
+  try {
+    await s3files.send(new DeleteAccessPointCommand({ accessPointId: ap.apId }));
+  } catch (e) {
+    if ((await listAllAccessPoints()).some((a) => a.apId === ap.apId)) throw e;
+  }
+  return true;
 }
 
 // Mint a credential that can mount ONLY this session's access point. This is the proven
@@ -182,18 +193,6 @@ export async function mountCredential(apId, developer, cli, session) {
   ].join("\n");
 }
 
-// The signed-in developer's sessions. Built entirely from the access-point paths
-// (/<developer>/<cli>/<session>) with no per-access-point tag read, so it stays a handful
-// of API calls whether a developer has five sessions or five thousand. The session name
-// embeds a creation timestamp prefix, so sorting by name newest-first needs no tag either.
-export async function listSessions(developer) {
-  const all = await listAllAccessPoints();
-  return all
-    .filter((a) => a.developer === developer)
-    .map((a) => ({ session: a.session, cli: a.cli, apId: a.apId }))
-    .sort((x, y) => y.session.localeCompare(x.session));
-}
-
 // How Delete waits for S3 Files exports to settle. S3 Files exports a change after 60
 // seconds with no writes to the file (Amazon S3 User Guide, *Understanding how
 // synchronization works*); on a live run the first export of a fresh write arrived at
@@ -203,24 +202,23 @@ export async function listSessions(developer) {
 export const deleteTiming = { settleMs: 15000, quietMs: 90000, maxRounds: 20 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-export async function deleteSession(developer, session) {
-  const ap = await findAccessPoint(developer, session);
-  if (!ap) return;
+export async function deleteSession(developer, cli, session) {
   // By now the session's pod has been released (sessions.remove), so nothing has the folder
   // mounted, and only the app hands out the credential that mounts it. Writes made before
   // that can still be on their way from the file system to the bucket (S3 Files exports
   // asynchronously), so a version deleted now can come back. So drain the prefix, wait,
-  // and list it again, until it has stayed empty for quietMs.
+  // and list it again, until it has stayed empty for quietMs. A closed session has no
+  // access point; its folder is drained all the same.
   //
-  // The access point goes last. The session list is built from access points, so until
-  // the drain has finished the session stays listed: a Delete that fails, or that an app
+  // The access point, if one is left, goes last, and the caller deletes the session record
+  // after that. Until then the session stays listed: a Delete that fails, or that an app
   // restart cuts short, leaves the row in place and Delete can be run again.
   try {
     // Quiet is counted from the first list that came back, so a slow first list cannot
     // stand in for the whole wait.
     let quietSince;
     for (let round = 1; round <= deleteTiming.maxRounds; round++) {
-      const deleted = await deleteFolder(developer, ap.cli, session);
+      const deleted = await deleteFolder(developer, cli, session);
       const now = Date.now();
       if (deleted > 0) {
         quietSince = now;
@@ -228,13 +226,7 @@ export async function deleteSession(developer, session) {
       } else if (quietSince === undefined) {
         quietSince = now;
       } else if (now - quietSince >= deleteTiming.quietMs) {
-        try {
-          await s3files.send(new DeleteAccessPointCommand({ accessPointId: ap.apId }));
-        } catch (e) {
-          // The delete may have gone through even though the call failed (a timeout): it
-          // did if the access point is no longer listed.
-          if ((await listAllAccessPoints()).some((a) => a.apId === ap.apId)) throw e;
-        }
+        await releaseAccessPoint(developer, session);
         return;
       }
       if (round < deleteTiming.maxRounds) await sleep(deleteTiming.settleMs);
