@@ -78,10 +78,7 @@ sample is the worked version of it.
 
 *Figure 1: The brain and the hands, in two pods. The brain reasons and holds the credentials but has no tool that runs a command; the hands run every command; the brain reaches them through sandboxd on two ports that the hands' network policy opens to the brain alone.*
 
-TODO: Figure 1 redrawn for the sandboxd wire (issue #168). The figure below still shows the
-Kubernetes API path this page used before.
-
-![Inside an AWS Cloud frame and an Amazon EKS cluster, the brain pod on the left and the Nitro sandbox pods on the right, with the Kubernetes API between them. This is the figure from before issue 168 and is being redrawn.](images/figure-1-brain-and-hands.png)
+![Inside an AWS Cloud frame and an Amazon EKS cluster, the brain pod on the left and the Nitro sandbox pods on the right. The brain, an ordinary pod with no runtimeClassName, holds Claude Code with no tool that runs a command. The hands are Nitro sandbox pods with runtimeClassName isolated-sandbox: a claimed pod runs every command and a warm pod sits pre-booted and waiting. The brain reaches the hands directly over sandboxd (9090 gRPC for commands, 8080 REST for files) with a bearer token, routed above to avoid the network policy icon between them. The network policy governs the hands: ingress from the brain only. A Kubernetes API icon below is labelled control plane only, reached from the brain for create/read/delete claims and read Sandboxes. Amazon Bedrock and a Pod Identity role sit at the bottom, with the brain reaching the model over HTTPS via InvokeModel and the role authorising that call. A SandboxWarmPool with replicas 1 sits at bottom right, with edges showing it adopts a pre-booted pod in about a second to become the claimed pod and boots a replacement to become the warm pod.](images/figure-1-brain-and-hands.png)
 
 ### What this sample does not limit
 
@@ -382,9 +379,7 @@ beforehand, and again afterwards, so the cost moves off the path a session waits
 
 *Figure 2: The life of one claim against a warm pool. A claim adopts a pod that is already booted; the pool boots a replacement behind it.*
 
-TODO: Figure 2 redrawn for the sandboxd wire (issue #168).
-
-![Three states of one claim against a warm pool: at rest, while a claim is held, and after release. This is the figure from before issue 168 and is being redrawn.](images/figure-2-claim-lifecycle.png)
+![Three states of one claim against a warm pool, inside an Amazon EKS cluster. State 1 at rest: a Nitro sandbox frame with network policy stating no egress, containing one warm pod that is pre-booted and waiting. State 2 while a claim is held: a wider Nitro sandbox frame with the same network policy, containing a claimed pod with launch-type warm and a replacement pod that is booting. State 3 after release: the same structure as State 1, back to one warm pod. Below the states, a SandboxClaim icon labelled one per session and a SandboxWarmPool icon labelled replicas 1. Four edges: 1. the MCP server creates a SandboxClaim, 2. adopts a pre-booted pod (launch-type: warm), 3. pool boots a replacement (readyReplicas 1 again), 4. claim deleted, pod torn down. A note below the figure reads that the hands' network policy has no egress rules, so all egress is denied, with no route out, no DNS and no Pod Identity; that it admits only pods labelled app=brain on 8080 and 9090; that the metadata endpoint inside the guest still answers but holds no role; and that while a claim is held the node runs two pods.](images/figure-2-claim-lifecycle.png)
 
 Ask the agent to create one and keep it, then read the claim and the pool:
 

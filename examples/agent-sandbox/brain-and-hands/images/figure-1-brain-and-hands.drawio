@@ -33,7 +33,7 @@
         </mxCell>
 
         <!-- The hands: Nitro sandbox pods -->
-        <mxCell id="hands-frame" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;Nitro sandbox pods&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;isolated-sandbox + network-isolated&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#DD344C;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#DD344C;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+        <mxCell id="hands-frame" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;Nitro sandbox pods&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;isolated-sandbox&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#DD344C;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#DD344C;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
           <mxGeometry x="1520" y="240" width="600" height="280" as="geometry" />
         </mxCell>
         <mxCell id="tab-hands" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalAlign=top;align=center;html=1;fontSize=12;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;" vertex="1" parent="1">
@@ -46,8 +46,13 @@
           <mxGeometry x="1840" y="320" width="240" height="160" as="geometry" />
         </mxCell>
 
-        <!-- The Kubernetes API: the single wire between the halves -->
-        <mxCell id="k8s-api" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Kubernetes API&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;the only wire to the hands&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.gear;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+        <!-- The network policy on the hands -->
+        <mxCell id="netpol" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;network policy&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;ingress from brain only&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#DD344C;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.filtering_rule;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1140" y="340" width="80" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- The Kubernetes API: control plane only -->
+        <mxCell id="k8s-api" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Kubernetes API&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;control plane only&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.gear;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
           <mxGeometry x="1280" y="720" width="80" height="80" as="geometry" />
         </mxCell>
 
@@ -69,13 +74,6 @@
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
 
-        <!-- The brain does not reach the hands over the network -->
-        <mxCell id="e-no-path" value="not over the network" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#DD344C;strokeWidth=2.5;dashed=1;dashPattern=8 6;fixDash=1;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="brain-frame" target="hands-frame">
-          <mxGeometry relative="1" as="geometry">
-            <mxPoint x="0" y="-15" as="offset" />
-          </mxGeometry>
-        </mxCell>
-
         <!-- The brain reaches the model -->
         <mxCell id="e-brain-bedrock" value="InvokeModel over HTTPS" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;align=left;verticalAlign=middle;" edge="1" parent="1" source="brain-frame" target="bedrock">
           <mxGeometry x="0.45" relative="1" as="geometry">
@@ -91,27 +89,36 @@
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
 
-        <!-- The brain's one path to the hands, through the Kubernetes API -->
-        <mxCell id="e-brain-api" value="claim, exec, cp, logs" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=block;startFill=1;startSize=10;exitX=0.85;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="brain-frame" target="k8s-api">
+        <!-- The brain reaches the hands directly over sandboxd -->
+        <mxCell id="e-brain-sandboxd" value="sandboxd: 9090 gRPC, 8080 REST&lt;br&gt;with bearer token" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=block;startFill=1;startSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="brain-frame" target="hands-frame">
+          <mxGeometry x="0.3" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="960" y="380" />
+              <mxPoint x="960" y="280" />
+              <mxPoint x="1380" y="280" />
+              <mxPoint x="1380" y="380" />
+            </Array>
+            <mxPoint x="0" y="-36" as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- The network policy governs the hands -->
+        <mxCell id="e-netpol-hands" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=none;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="netpol" target="hands-frame">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- The brain's control path to the Kubernetes API -->
+        <mxCell id="e-brain-api" value="create/read/delete claims&lt;br&gt;read Sandboxes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=0.85;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="brain-frame" target="k8s-api">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="700" y="760" />
             </Array>
-            <mxPoint x="0" y="-15" as="offset" />
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="e-api-claimed" value="the sandbox control channel" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=block;startFill=1;startSize=10;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.167;entryY=1;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="k8s-api" target="claimed-pod">
-          <mxGeometry relative="1" as="geometry">
-            <Array as="points">
-              <mxPoint x="1320" y="600" />
-              <mxPoint x="1600" y="600" />
-            </Array>
-            <mxPoint x="0" y="-15" as="offset" />
+            <mxPoint x="0" y="-36" as="offset" />
           </mxGeometry>
         </mxCell>
 
         <!-- The pool: a claim adopts a pre-booted pod, and the pool refills -->
-        <mxCell id="e-pool-claimed" value="adopt a pre-booted pod&lt;br&gt;in about 1 s" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.75;entryY=1;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;align=left;verticalAlign=middle;" edge="1" parent="1" source="pool" target="claimed-pod">
+        <mxCell id="e-pool-claimed" value="adopt a pre-booted pod&lt;br&gt;in about a second" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.75;entryY=1;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;align=left;verticalAlign=middle;" edge="1" parent="1" source="pool" target="claimed-pod">
           <mxGeometry x="0.45" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="1740" y="760" />
@@ -126,8 +133,8 @@
         </mxCell>
 
         <!-- Note under the figure -->
-        <mxCell id="note" value="&lt;div style=&quot;line-height:20px&quot;&gt;&lt;b&gt;The hands have no network device:&lt;/b&gt; no route, no DNS, no instance metadata and no Pod Identity.&lt;/div&gt;&lt;div style=&quot;line-height:20px&quot;&gt;They hold no ServiceAccount token and no IAM role, so a command the model runs finds no credential.&lt;/div&gt;" style="text;html=1;whiteSpace=nowrap;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacing=0;fontSize=16;fontColor=#5F6B7A;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
-          <mxGeometry x="280" y="1240" width="1000" height="48" as="geometry" />
+        <mxCell id="note" value="&lt;div style=&quot;line-height:20px&quot;&gt;&lt;b&gt;The hands admit only the brain, and send nothing out:&lt;/b&gt; the network policy admits pods labelled app=brain on TCP 8080 and 9090, and has no egress rules, so all egress is denied (no internet, no DNS, no Pod Identity endpoint).&lt;/div&gt;&lt;div style=&quot;line-height:20px&quot;&gt;The metadata endpoint inside the guest still answers, but holds no role. sandboxd requires the bearer token: a pod that is not the brain cannot drive it.&lt;/div&gt;" style="text;html=1;whiteSpace=nowrap;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacing=0;fontSize=16;fontColor=#5F6B7A;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="280" y="1240" width="1060" height="48" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>

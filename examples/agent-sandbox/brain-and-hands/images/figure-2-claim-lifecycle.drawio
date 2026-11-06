@@ -20,7 +20,7 @@
         </mxCell>
 
         <!-- State 1: at rest -->
-        <mxCell id="state-a" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;1. at rest&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;network-isolated: no route out&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#DD344C;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#DD344C;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+        <mxCell id="state-a" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;1. at rest&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;network policy: no egress&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#DD344C;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#DD344C;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
           <mxGeometry x="120" y="220" width="340" height="280" as="geometry" />
         </mxCell>
         <mxCell id="tab-a" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalAlign=top;align=center;html=1;fontSize=12;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;" vertex="1" parent="1">
@@ -31,7 +31,7 @@
         </mxCell>
 
         <!-- State 2: while a claim is held -->
-        <mxCell id="state-b" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;2. while a claim is held&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;network-isolated: no route out&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#DD344C;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#DD344C;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+        <mxCell id="state-b" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;2. while a claim is held&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;network policy: no egress&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#DD344C;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#DD344C;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
           <mxGeometry x="800" y="220" width="600" height="280" as="geometry" />
         </mxCell>
         <mxCell id="tab-b" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalAlign=top;align=center;html=1;fontSize=12;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;" vertex="1" parent="1">
@@ -40,12 +40,12 @@
         <mxCell id="pod-claimed" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;claimed pod&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;launch-type: warm&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
           <mxGeometry x="840" y="300" width="240" height="160" as="geometry" />
         </mxCell>
-        <mxCell id="pod-repl" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;replacement pod&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;booted in about 10 s&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+        <mxCell id="pod-repl" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;replacement pod&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;booting&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#232F3E;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#232F3E;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
           <mxGeometry x="1120" y="300" width="240" height="160" as="geometry" />
         </mxCell>
 
         <!-- State 3: after release -->
-        <mxCell id="state-c" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;3. after release&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;network-isolated: no route out&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#DD344C;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#DD344C;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+        <mxCell id="state-c" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;3. after release&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;network policy: no egress&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#DD344C;fillColor=none;strokeWidth=2;dashed=0;verticalAlign=top;align=left;spacing=0;spacingLeft=62;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#DD344C;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
           <mxGeometry x="1740" y="220" width="340" height="280" as="geometry" />
         </mxCell>
         <mxCell id="tab-c" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalAlign=top;align=center;html=1;fontSize=12;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;" vertex="1" parent="1">
@@ -65,8 +65,8 @@
           <mxGeometry x="1530" y="620" width="80" height="80" as="geometry" />
         </mxCell>
 
-        <!-- 1. the tool creates the claim -->
-        <mxCell id="e1-claim" value="1. the tool creates a SandboxClaim" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.1;entryY=1;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="claim" target="state-b">
+        <!-- 1. the MCP server creates the claim -->
+        <mxCell id="e1-claim" value="1. the MCP server creates a SandboxClaim" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.1;entryY=1;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="claim" target="state-b">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="290" y="560" />
@@ -77,14 +77,14 @@
         </mxCell>
 
         <!-- 2. the claim adopts the pre-booted pod -->
-        <mxCell id="e2-adopt" value="2. adopts the pre-booted pod&lt;br&gt;Ready in 0.23 s, launch-type: warm" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="state-a" target="state-b">
+        <mxCell id="e2-adopt" value="2. adopts a pre-booted pod&lt;br&gt;launch-type: warm" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="state-a" target="state-b">
           <mxGeometry relative="1" as="geometry">
             <mxPoint x="0" y="-36" as="offset" />
           </mxGeometry>
         </mxCell>
 
         <!-- 3. the pool boots a replacement -->
-        <mxCell id="e3-refill" value="3. pool boots a replacement&lt;br&gt;readyReplicas: 1 again in about 10 s" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.25;entryY=1;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="pool" target="pod-repl">
+        <mxCell id="e3-refill" value="3. pool boots a replacement&lt;br&gt;readyReplicas: 1 again" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.25;entryY=1;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="pool" target="pod-repl">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="1570" y="560" />
@@ -95,15 +95,15 @@
         </mxCell>
 
         <!-- 4. the claim is deleted and the pool settles back -->
-        <mxCell id="e4-release" value="4. claim deleted, pod torn down&lt;br&gt;back to one warm pod in about 40 s" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="state-b" target="state-c">
+        <mxCell id="e4-release" value="4. claim deleted,&lt;br&gt;pod torn down" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="state-b" target="state-c">
           <mxGeometry relative="1" as="geometry">
             <mxPoint x="0" y="-36" as="offset" />
           </mxGeometry>
         </mxCell>
 
         <!-- Note under the figure -->
-        <mxCell id="note" value="&lt;div style=&quot;line-height:20px&quot;&gt;&lt;b&gt;These pods are network-isolated:&lt;/b&gt; the annotation boots each sandbox with no network device, so no route out, no DNS and no instance metadata.&lt;/div&gt;&lt;div style=&quot;line-height:20px&quot;&gt;That is a property of the sandbox and not a network policy, which this sample does not ship.&lt;/div&gt;&lt;div style=&quot;line-height:20px&quot;&gt;While a claim is held the node runs two of them: this run measured their uptimes 110 s and 7 s, each guest having booted with its own pod.&lt;/div&gt;" style="text;html=1;whiteSpace=nowrap;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacing=0;fontSize=16;fontColor=#5F6B7A;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
-          <mxGeometry x="40" y="880" width="1060" height="72" as="geometry" />
+        <mxCell id="note" value="&lt;div style=&quot;line-height:20px&quot;&gt;&lt;b&gt;The hands have a network policy with no egress rules:&lt;/b&gt; all egress is denied (no route out, no DNS, no Pod Identity). The policy admits only pods labelled app=brain on 8080 and 9090.&lt;/div&gt;&lt;div style=&quot;line-height:20px&quot;&gt;The metadata endpoint inside the guest still answers, but holds no role. While a claim is held the node runs two pods: the claimed one and the next one waiting.&lt;/div&gt;" style="text;html=1;whiteSpace=nowrap;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacing=0;fontSize=16;fontColor=#5F6B7A;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="40" y="880" width="1060" height="48" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
