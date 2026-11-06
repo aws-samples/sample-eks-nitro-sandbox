@@ -61,4 +61,6 @@ RUN go build -trimpath -ldflags="-s -w" -o /bin/sandbox-warmpool-stepplugin . \
 # binary itself is static and self-contained.
 FROM public.ecr.aws/docker/library/busybox:1.36
 COPY --from=build /bin/sandbox-warmpool-stepplugin /bin/sandbox-warmpool-stepplugin
+# Run as non-root user. busybox provides user/group 1000 by default.
+USER 1000:1000
 ENTRYPOINT ["/bin/sandbox-warmpool-stepplugin"]
