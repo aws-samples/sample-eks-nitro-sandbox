@@ -108,17 +108,31 @@ async function startOnce(developer, cli, session, { resume = false } = {}) {
     }
   }
 
-  // A new session gets its record first: from here on it is listed, so whatever happens
-  // next, Restore or Delete applies to it.
-  if (!resume) await k8s.createSessionRecord(developer, cli, session);
-
   // The access point and the warm pod do not depend on each other until the mount, so ask
   // for both at once: a Restore takes about as long as the slower of the two, not their sum.
+  // An access point the session's record names as being deleted, or one in error, is named in
+  // the record (again) before it is deleted, like every other access-point delete.
   console.log(`start ${session}: ensureAccessPoint + claimPod`);
   const [apResult, podResult] = await Promise.allSettled([
-    store.ensureAccessPoint(developer, session, cli, { avoid: rec?.deletingAp }),
+    store.ensureAccessPoint(developer, session, cli, {
+      avoid: rec?.deletingAp,
+      beforeDelete: resume ? (apId) => k8s.markAccessPointDeleting(session, apId) : null,
+    }),
     k8s.claimPod(cli, session),
   ]);
+  // A new session gets its record once its access point exists: from here on it is listed,
+  // so whatever happens next, Restore or Delete applies to it. Not before: a create whose
+  // answer was lost can leave an access point that is listed only later, and a Delete of a
+  // record made before it could not see it, so the late one would come back as a session.
+  // An access point left with no record (this create failing) is recorded by the sweep.
+  if (!resume && apResult.status === "fulfilled") {
+    try {
+      await k8s.createSessionRecord(developer, cli, session);
+    } catch (e) {
+      if (podResult.status === "fulfilled") cleanUpFailedStart(session, podResult.value.claimName, podResult.value.podName);
+      throw e;
+    }
+  }
   if (podResult.status === "rejected") {
     // No pod: an access point created for it is left for the sweep, which deletes the access
     // point of any session with no pod.
@@ -241,11 +255,11 @@ export function adoptRunningSessions({ retry = false } = {}) {
 // Not from one being deleted: that is a Delete (perhaps the old version's) finishing, and a
 // record made from it would bring a deleted session back. A listing can still show such an
 // access point available for a moment after its delete was accepted, so one with no record is
-// recorded only once a listing that began after it was first seen still shows it, or at once
-// when the session has a claim (a running session, which the pick-up needs a record for).
-// Until then it is no one's, and the sweep leaves it alone.
+// recorded only once a listing that began after it was first seen still shows it, whether or
+// not the session has a claim (a claim listed a moment earlier can be gone already). Until
+// then it is no one's: the sweep leaves it alone, and a running session's pick-up waits a pass.
 const unrecordedSince = new Map(); // access point id -> when it was first seen with no record
-async function recordFromAccessPoints(aps, records, { listStart, claimed }) {
+async function recordFromAccessPoints(aps, records, { listStart }) {
   const listed = new Set(aps.map((a) => a.apId));
   for (const id of unrecordedSince.keys()) if (!listed.has(id)) unrecordedSince.delete(id);
   const missing = [];
@@ -253,7 +267,7 @@ async function recordFromAccessPoints(aps, records, { listStart, claimed }) {
     if (records.has(a.session) || !isSessionName(a.session)) { unrecordedSince.delete(a.apId); continue; }
     if (a.status === "deleting") { unrecordedSince.delete(a.apId); continue; }
     const seen = unrecordedSince.get(a.apId);
-    if (claimed.has(k8s.claimNameFor(a.session)) || (seen !== undefined && seen < listStart)) missing.push(a);
+    if (seen !== undefined && seen < listStart) missing.push(a);
     else if (seen === undefined) unrecordedSince.set(a.apId, Date.now());
   }
   await eachLimited(missing, SWEEP_CONCURRENCY, async (a) => {
@@ -278,7 +292,7 @@ async function pickUpRunningSessions(retry) {
   const listStart = Date.now();
   const aps = await store.listAllAccessPoints();
   const records = await recordFromAccessPoints(aps, new Map((await k8s.listSessionRecords()).map((r) => [r.session, r])),
-    { listStart, claimed: new Set(claims.map((c) => c.claimName)) });
+    { listStart });
   if (claims.length === 0) { pickUpIncomplete = false; return 0; }
   // The access point a running pod mounted: the one that is usable (available or creating,
   // not one this process asked to delete, and not the one the session's record marks as being
@@ -470,7 +484,7 @@ async function sweepAccessPoints() {
   const listed = await store.listAllAccessPoints({ includeDeleted: true });
   const aps = listed.filter((a) => a.status !== "deleted");
   const records = await recordFromAccessPoints(aps, new Map((await k8s.listSessionRecords()).map((r) => [r.session, r])),
-    { listStart, claimed: claims });
+    { listStart });
   // A record's deleting marker has done its job once a listing begun after it was written
   // no longer shows that access point at all.
   const listedIds = new Set(listed.map((a) => a.apId));

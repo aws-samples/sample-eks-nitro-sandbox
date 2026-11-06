@@ -389,7 +389,7 @@ only Delete removes the folder.*
 
 | Action | What happens |
 |---|---|
-| New agent | The app writes the session's record, then claims a warm pod and creates the access point at the same time, mounts the folder and starts the CLI. The pool boots a replacement. |
+| New agent | The app claims a warm pod and creates the access point at the same time, writes the session's record once the access point exists, mounts the folder and starts the CLI. The pool boots a replacement. |
 | Minimize, or close the browser | Nothing changes in the cluster. The pod and the CLI keep running. |
 | No terminal activity for the idle period (default 30 minutes) | The app reads, every minute, the last time each session's terminal had key input or printed output (tmux's `session_activity` and `window_activity`). An agent still working on its own keeps printing, so it is not idle; a CLI waiting at its prompt prints nothing. Once the period passes, it stops the session cleanly (below), deletes the `SandboxClaim` and then the session's access point: the pod and the access point go, the folder and its files stay. |
 | Close the window | Same as idle: the session is stopped, the claim and the access point released, the folder stays, and the session moves to the session list. |
@@ -403,9 +403,10 @@ starts a minute after its last pass ends, deletes the access point of every reco
 that has none of those. That is how an access-point delete that failed after a Close is
 retried (Close itself still succeeds: the session is stopped and its folder is kept), and
 how an install from before session records is brought over: the app gives each existing
-access point a record, once a listing a pass later still shows it (at once for a session
-that has a claim), and the sweep deletes those of the sessions with no pod. Waiting one
-pass keeps an old version's Delete that was still finishing from coming back as a session. A pass
+access point a record, once a listing a pass later still shows it (a running session is
+picked up on that pass too), and the sweep deletes those of the sessions with no pod.
+Waiting one pass keeps an old version's Delete that was still finishing from coming back as
+a session. A pass
 works through eight sessions at a time, so with a large backlog one pass can take well over
 a minute. Before the app deletes an access point it writes its id into the session's record,
 so a Restore never reuses one that is being deleted, even across an app restart, and the app

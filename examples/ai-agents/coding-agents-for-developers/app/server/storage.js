@@ -58,7 +58,9 @@ export const accessPointArn = (apId) =>
 // left by a run whose delete did not go through yet), return it.
 // `avoid` is the access point the session's record says is being deleted (k8s.js), which
 // survives an app restart.
-export async function ensureAccessPoint(developer, session, cli, { avoid = null } = {}) {
+// `beforeDelete(apId)` names an access point in the session's record before this deletes one
+// in error; without it (a new session, which has no record yet) one in error is only waited on.
+export async function ensureAccessPoint(developer, session, cli, { avoid = null, beforeDelete = null } = {}) {
   const root = sessionRoot(developer, cli, session);
 
   // No second access point is made beside one this listing shows. One left by an earlier run is reused if
@@ -80,7 +82,9 @@ export async function ensureAccessPoint(developer, session, cli, { avoid = null 
       break;
     }
     for (const d of doomed) {
-      if (d.status === "error" && !deleteRequested.has(d.apId)) await deleteAccessPoint(d.apId, d.status, { wait: false }).catch(() => {});
+      if (d.status === "error" && beforeDelete && !deleteRequested.has(d.apId)) {
+        await beforeDelete(d.apId).then(() => deleteAccessPoint(d.apId, d.status, { wait: false })).catch(() => {});
+      }
     }
     if (Date.now() >= deadline) throw new Error(`the session's previous access point ${doomed[0].apId} is still being deleted; try again in a minute`);
     await sleep(apDeleteTiming.pollMs);
