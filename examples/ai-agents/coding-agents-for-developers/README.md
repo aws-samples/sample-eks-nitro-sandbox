@@ -554,33 +554,46 @@ The app keeps no database. Each session has a record, a ConfigMap named
 `session-<session>` in the sample's namespace, labelled with its developer and CLI, so one
 developer's list is a label-selected ConfigMap list, paginated 500 records at a time. The session
 name carries a creation-time prefix, so the list sorts newest-first from the names alone.
-The records for one developer, five closed sessions:
+On a fresh install, after four New agent sessions for one developer, each closed again, and
+one for a second developer, still running, the records were:
 
 ```text
 $ kubectl -n coding-agents-for-developers get configmap -l coding-agents/record=session \
     -o custom-columns=NAME:.metadata.name,DEVELOPER:.data.developer,CLI:.data.cli
-NAME                            DEVELOPER   CLI
-session-mw48zing-merry-shrew    carlos      claude-code
-session-mw498856-brave-tapir    carlos      codex
-session-mw49coga-nimble-tapir   carlos      kiro-cli
-session-mw49cqx6-swift-ibex     carlos      pi
-session-mw49crie-witty-marten   carlos      oh-my-pi
+NAME                           DEVELOPER   CLI
+session-mw5b6ec3-jolly-panda   carlos      claude-code
+session-mw5b6sm9-quiet-ibex    carlos      codex
+session-mw5b6ut9-merry-otter   carlos      kiro-cli
+session-mw5b6xe4-calm-koala    carlos      pi
+session-mw5b70es-jolly-vole    priya       opencode
 ```
 
 An access point exists while a session runs (and while it is starting, or until the clean
 up after its pod has finished), rooted at `/<developer>/<cli>/<session>` and tagged
-(`ManagedBy`, `developer`, `cli`, `session`) for the clean up. With all five of
-those sessions closed the file system had none; restoring the codex one took 2.2 seconds,
-and while it ran it held one:
+(`ManagedBy`, `developer`, `cli`, `session`) for the clean up. The fresh file system had
+none; with the four closed sessions it held only the running one's. Restoring the codex
+session added a second while it ran:
 
 ```text
 $ aws s3files list-access-points --file-system-id <S3_FILES_FS_ID> --region <AWS_REGION> \
     --query 'accessPoints[].rootDirectory.path' --output text
-/carlos/codex/mw498856-brave-tapir
+/carlos/codex/mw5b6sm9-quiet-ibex
+/priya/opencode/mw5b70es-jolly-vole
 ```
 
-Closing it deleted that access point again (`session mw498856-brave-tapir: access point
-deleted` in the app log).
+Closing both deleted their access points again (`session mw5b6sm9-quiet-ibex: access point
+deleted` in the app log), and the file system had none. With a warm pod in the pool, two more
+Restores of the codex session took 2.1 and 2.2 seconds, and each Close 0.6 seconds:
+
+```text
+POST /api/restore codex -> 200 2.137230
+POST /api/close codex -> 200 0.641803
+POST /api/restore codex -> 200 2.229617
+POST /api/close codex -> 200 0.642430
+```
+
+The first Restore of it, seconds after a New agent had taken the only warm codex pod, booted
+a new one and took 21.7 seconds.
 
 ## It runs in a sandbox
 
