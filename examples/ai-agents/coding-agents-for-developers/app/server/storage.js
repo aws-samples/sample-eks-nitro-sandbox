@@ -305,17 +305,6 @@ export async function deleteSession(developer, cli, session) {
 import { S3Client, ListObjectVersionsCommand, DeleteObjectsCommand } from "@aws-sdk/client-s3";
 const s3 = new S3Client({ region: REGION, ...retry });
 
-// Whether anything (a version or a delete marker) is under the session's prefix. Every
-// version of this sample's Delete, the previous one included, empties the prefix before it
-// deletes the access point, so an access point whose folder has nothing in the bucket may be
-// one a Delete is finishing with; the upgrade does not record it (sessions.js).
-export async function folderHasData(developer, cli, session) {
-  const out = await s3.send(new ListObjectVersionsCommand({
-    Bucket: BUCKET, Prefix: `${sessionKeyPrefix(developer, cli, session)}/`, MaxKeys: 1,
-  }));
-  return (out.Versions?.length ?? 0) + (out.DeleteMarkers?.length ?? 0) > 0;
-}
-
 // Delete a session's data for good. The bucket is versioned, so deleting the current
 // objects only adds a delete marker in front of each one and keeps every old version: the
 // data stays in the bucket and the version count grows with every session. So list every

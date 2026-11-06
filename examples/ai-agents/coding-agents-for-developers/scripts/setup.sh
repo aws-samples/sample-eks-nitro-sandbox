@@ -205,6 +205,16 @@ if [[ "$S3_FILES_FS_ID" != "None" && -n "$S3_FILES_FS_ID" ]]; then
   fs_owner="$(aws s3files list-tags-for-resource --resource-id "$S3_FILES_FS_ID" --region "$AWS_REGION" \
     --query "tags[?key=='ManagedBy'].value | [0]" --output text 2>/dev/null || true)"
   [[ "$fs_owner" == "$SAMPLE" ]] || die "file system $S3_FILES_FS_ID is named $SAMPLE but not tagged ManagedBy=$SAMPLE (found: ${fs_owner:-none}); refusing to adopt it"
+  # Start from a clean environment: an access point whose session has no record is left by
+  # an install this setup does not run over. Stop and ask for clean.sh first.
+  ap_sessions="$(aws s3files list-access-points --file-system-id "$S3_FILES_FS_ID" --region "$AWS_REGION" \
+    --query 'accessPoints[].rootDirectory.path' --output text)" || die "could not list the access points of $S3_FILES_FS_ID"
+  recorded="$("${KCTL[@]}" get configmap -n "$NAMESPACE" -l coding-agents/record=session \
+    -o jsonpath='{range .items[*]}{.data.session}{"\n"}{end}' 2>/dev/null)" || recorded=""
+  for path in $ap_sessions; do
+    s="${path##*/}"
+    grep -qxF "$s" <<<"$recorded" || die "file system $S3_FILES_FS_ID has an access point for session $s, which has no session record. Run ./scripts/clean.sh first, then ./scripts/setup.sh again on a clean environment."
+  done
 fi
 if [[ "$S3_FILES_FS_ID" == "None" || -z "$S3_FILES_FS_ID" ]]; then
   S3_FILES_FS_ID="$(aws s3files create-file-system --region "$AWS_REGION" \

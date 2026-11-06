@@ -246,61 +246,10 @@ export function adoptRunningSessions({ retry = false } = {}) {
   return pickUp;
 }
 
-// An install from before session records kept every session as an access point only. Give
-// each such session a record, so it stays in its developer's list; the sweep then deletes
-// the access point of every one that has no pod. Runs in the pick-up and again on every
-// sweep, so a record that could not be written is written later. Returns `records` with
-// every such session added, written or not: its developer and CLI come from the path.
-//
-// Not from one being deleted: that is a Delete (perhaps the old version's) finishing, and a
-// record made from it would bring a deleted session back. A listing can show such an access
-// point available for a while after its delete was accepted, for no stated maximum, so time
-// alone cannot tell it from a session to keep. What can: a Delete, in this version and the
-// previous one, empties the session's folder in the bucket before it deletes the access point.
-// So an access point with no record is recorded only when its folder has data in the bucket,
-// and only once a listing that began after it was first seen still shows it (whether or not
-// the session has a claim). Until then it is no one's: the sweep leaves it alone, and a running
-// session's pick-up waits. A session whose folder has nothing in it has nothing to lose.
-const unrecordedSince = new Map(); // access point id -> when it was first seen with no record
-async function recordFromAccessPoints(aps, records, { listStart }) {
-  const listed = new Set(aps.map((a) => a.apId));
-  for (const id of unrecordedSince.keys()) if (!listed.has(id)) unrecordedSince.delete(id);
-  const missing = [];
-  for (const a of aps) {
-    if (records.has(a.session) || !isSessionName(a.session)) { unrecordedSince.delete(a.apId); continue; }
-    if (a.status === "deleting") { unrecordedSince.delete(a.apId); continue; }
-    const seen = unrecordedSince.get(a.apId);
-    if (seen !== undefined && seen < listStart) missing.push(a);
-    else if (seen === undefined) unrecordedSince.set(a.apId, Date.now());
-  }
-  await eachLimited(missing, SWEEP_CONCURRENCY, async (a) => {
-    // Not read, or empty: not recorded now; looked at again next pass while it is listed.
-    if (!(await store.folderHasData(a.developer, a.cli, a.session).catch((e) => {
-      console.error(`session ${a.session}: could not read its folder, will retry next minute: ${e?.message || e}`);
-      return false;
-    }))) return;
-    let ok = true;
-    try {
-      await k8s.createSessionRecord(a.developer, a.cli, a.session);
-    } catch (e) {
-      // 409: it exists. Any other error may still have created it (a timeout): read it back.
-      if (e?.code !== 409 && !(await k8s.readSessionRecord(a.session).catch(() => null))) {
-        ok = false;
-        console.error(`session ${a.session}: could not create its record, will retry next minute: ${e?.message || e}`);
-      }
-    }
-    records.set(a.session, { developer: a.developer, cli: a.cli, session: a.session, unrecorded: !ok });
-    if (ok) { unrecordedSince.delete(a.apId); console.log(`session ${a.session}: recorded from its access point`); }
-  });
-  return records;
-}
-
 async function pickUpRunningSessions(retry) {
   const claims = await k8s.listSessionClaims();
-  const listStart = Date.now();
   const aps = await store.listAllAccessPoints();
-  const records = await recordFromAccessPoints(aps, new Map((await k8s.listSessionRecords()).map((r) => [r.session, r])),
-    { listStart });
+  const records = new Map((await k8s.listSessionRecords()).map((r) => [r.session, r]));
   if (claims.length === 0) { pickUpIncomplete = false; return 0; }
   // The access point a running pod mounted: the one that is usable (available or creating,
   // not one this process asked to delete, and not the one the session's record marks as being
@@ -477,8 +426,8 @@ async function releaseAccessPointOf(session, developer, { strict = false } = {})
 
 // The sweep, once a minute: delete the access point of every recorded session that has no
 // pod. That is the retry for an access-point delete that failed after a release, for a
-// release an app restart cut short, and for an install from before session records, whose
-// closed sessions each held one. A session counts as possibly mounted, and keeps its access
+// release an app restart cut short. An access point whose session has no record is not the
+// app's to delete, and is left alone. A session counts as possibly mounted, and keeps its access
 // point, while the app tracks it, a start is in flight, any claim for it exists (with or
 // without a pod), or a failed stop of its last pod is recorded. Each delete runs in the
 // session's own queue and checks again there, so it never runs beside a start or a release.
@@ -491,8 +440,7 @@ async function sweepAccessPoints() {
   const listStart = Date.now();
   const listed = await store.listAllAccessPoints({ includeDeleted: true });
   const aps = listed.filter((a) => a.status !== "deleted");
-  const records = await recordFromAccessPoints(aps, new Map((await k8s.listSessionRecords()).map((r) => [r.session, r])),
-    { listStart });
+  const records = new Map((await k8s.listSessionRecords()).map((r) => [r.session, r]));
   // A record's deleting marker has done its job once a listing begun after it was written
   // no longer shows that access point at all.
   const listedIds = new Set(listed.map((a) => a.apId));
@@ -559,7 +507,7 @@ export async function remove(developer, session) {
       await k8s.clearPendingStop(session);
     }
     await store.deleteSession(developer, rec.cli, session);
-    // Any access point left (a closed session's whose delete failed, or an old install's) goes
+    // Any access point left (a closed session's whose delete failed) goes
     // next, named in the record first like every other access-point delete, and confirmed gone.
     await releaseAccessPointOf(session, developer, { strict: true });
     // The record goes last, so a Delete that fails before here leaves the session listed.
@@ -699,7 +647,7 @@ export async function backgroundTick(now = Date.now()) {
 }
 
 // Two loops, each a minute after its own last pass ends: the idle check and credential
-// refresh, and the sweep. Separate, so a long sweep (an upgrade with many closed sessions)
+// refresh, and the sweep. Separate, so a long sweep (many closed sessions to clean up)
 // does not hold up any running session's refresh.
 export function startBackgroundLoop() {
   const every = (name, fn) => {

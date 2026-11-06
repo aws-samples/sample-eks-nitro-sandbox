@@ -97,7 +97,9 @@ the images record what they installed.
 
 ## Quick start
 
-With `.env` filled in (from `.env.example`) and the shared installs in place:
+With `.env` filled in (from `.env.example`) and the shared installs in place, on a clean
+environment (if the sample is already installed from an earlier checkout, run
+`./scripts/clean.sh` first; `setup.sh` stops and says so if it finds one):
 
 ```bash
 cp .env.example .env     # set CLUSTER_NAME and AWS_REGION
@@ -401,14 +403,7 @@ the app tracks it, while a start is in flight, while any claim for it exists, an
 stop that failed, until the recorded pod is confirmed gone. A background sweep, which
 starts a minute after its last pass ends, deletes the access point of every recorded session
 that has none of those. That is how an access-point delete that failed after a Close is
-retried (Close itself still succeeds: the session is stopped and its folder is kept), and
-how an install from before session records is brought over: the app gives each existing
-access point a record, and the sweep deletes those of the sessions with no pod. It records
-only an access point whose folder has data in the bucket, and that a listing a pass later
-still shows (a running session is picked up on that pass too). A Delete, in this version and
-the previous one, empties the folder before it deletes the access point, so one an old
-version's Delete is still finishing with does not come back as a session, however long the
-listing keeps showing it. A pass
+retried (Close itself still succeeds: the session is stopped and its folder is kept). A pass
 works through eight sessions at a time, so with a large backlog one pass can take well over
 a minute. Before the app deletes an access point it writes its id into the session's record,
 so a Restore never reuses one that is being deleted, even across an app restart, and the app
@@ -585,28 +580,7 @@ $ aws s3files list-access-points --file-system-id <S3_FILES_FS_ID> --region <AWS
 ```
 
 Closing it deleted that access point again (`session mw498856-brave-tapir: access point
-deleted` in the app log). An install of the previous version of the sample kept an access
-point for every session and had no records. To show how the app brings one over, the five
-sessions were put back in that state on a running app: each record deleted, and an access
-point created for each, while another developer's session was running. A later sweep recorded
-each of the five and asked for each access point to be deleted, since none of them had a pod:
-
-```text
-session mw498856-brave-tapir: recorded from its access point
-session mw49cqx6-swift-ibex: recorded from its access point
-session mw49crie-witty-marten: recorded from its access point
-session mw48zing-merry-shrew: recorded from its access point
-session mw49coga-nimble-tapir: recorded from its access point
-session mw498856-brave-tapir: access point delete requested, the session has no pod
-session mw49coga-nimble-tapir: access point delete requested, the session has no pod
-session mw49crie-witty-marten: access point delete requested, the session has no pod
-session mw49cqx6-swift-ibex: access point delete requested, the session has no pod
-session mw48zing-merry-shrew: access point delete requested, the session has no pod
-```
-
-Afterwards the five records were back, the only access point left was the running session's,
-and all five sessions were still in the developer's list. On a first start of the new version over an
-old install, the pick-up sees them and the first sweep records them the same way.
+deleted` in the app log).
 
 ## It runs in a sandbox
 
