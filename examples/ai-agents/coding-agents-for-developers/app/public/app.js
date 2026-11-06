@@ -63,8 +63,7 @@ async function loadTiles() {
 
 // When the session started, as a relative string, from the base-36 millisecond timestamp
 // the session name carries as its first segment (see names.js). The list tracks no
-// server-side "last activity" -- that was dropped so the list can be built from access-point
-// paths alone at thousands of sessions -- so this is the start time, which is what the
+// server-side "last activity", so this is the start time, which is what the
 // "Started" column shows.
 function relativeTime(session) {
   const prefix = String(session).split("-")[0];

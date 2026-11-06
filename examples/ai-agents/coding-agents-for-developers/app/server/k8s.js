@@ -132,6 +132,19 @@ export async function listClaimNames() {
   return new Set((out?.items ?? []).map((c) => c.metadata?.name).filter(Boolean));
 }
 
+// Whether a claim exists, with or without a pod. "Could not tell" is an error, not "no".
+export async function claimExists(claimName) {
+  try {
+    await custom.getNamespacedCustomObject({
+      group: GROUP, version: VERSION, namespace: NAMESPACE, plural: "sandboxclaims", name: claimName,
+    });
+    return true;
+  } catch (e) {
+    if (e?.code === 404) return false;
+    throw e;
+  }
+}
+
 // The node a pod runs on, and its IP, where session-bridge listens.
 export async function podInfo(podName) {
   const pod = await core.readNamespacedPod({ name: podName, namespace: NAMESPACE });
@@ -238,11 +251,16 @@ export async function listSessionRecords(developer) {
   return out;
 }
 
+// A delete that failed counts as done if the record is gone anyway (a timeout after it
+// went through), so Delete does not report a failure for a session it did remove.
 export async function deleteSessionRecord(session) {
   try {
     await core.deleteNamespacedConfigMap({ name: recordName(session), namespace: NAMESPACE });
   } catch (e) {
-    if (e?.code !== 404) throw e;
+    if (e?.code === 404) return;
+    let still;
+    try { still = await readSessionRecord(session); } catch { throw e; }
+    if (still) throw e;
   }
 }
 

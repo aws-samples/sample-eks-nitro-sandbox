@@ -59,7 +59,7 @@ pod network. The
 pod reaches Amazon Bedrock through a Pod Identity role that may only invoke models; its
 egress policy refuses everything else.*
 
-![A developer, outside AWS, reaches the web app's terminal through kubectl port-forward. Inside the AWS Cloud, an Amazon EKS cluster holds the web app, an ordinary trusted first-party pod that claims a pod and drives the terminal. The app claims a red Nitro sandbox pod (isolated-sandbox, one per session) from a dashed SandboxWarmPool per CLI, and mounts the session folder into it with a per-session credential. A second arrow, labelled terminal (TLS), runs from the app to the sandbox pod, which runs tmux and the CLI, session-bridge on port 7681, and its workspace at /workspace. To the right, outside the cluster, it mounts its own S3 Files access point only (one per session), which syncs with an S3 bucket (one prefix per session), and it invokes models on Amazon Bedrock through a Pod Identity role, labelled invoke models, with Codex also allowed web search. Below, a red dashed arrow to other hosts and other pods is refused by the egress policy.](figures/architecture.png)
+![A developer, outside AWS, reaches the web app's terminal through kubectl port-forward. Inside the AWS Cloud, an Amazon EKS cluster holds the web app, an ordinary trusted first-party pod that claims a pod and drives the terminal. The app claims a red Nitro sandbox pod (isolated-sandbox, one per session) from a dashed SandboxWarmPool per CLI, and mounts the session folder into it with a per-session credential. A second arrow, labelled terminal (TLS), runs from the app to the sandbox pod, which runs tmux and the CLI, session-bridge on port 7681, and its workspace at /workspace. To the right, outside the cluster, it mounts its own S3 Files access point only (one per running session), which syncs with an S3 bucket (one prefix per session), and it invokes models on Amazon Bedrock through a Pod Identity role, labelled invoke models, with Codex also allowed web search. Below, a red dashed arrow to other hosts and other pods is refused by the egress policy.](figures/architecture.png)
 
 ## Versions
 
@@ -235,8 +235,9 @@ New agent and Restore both go through the same steps:
    under the prefix first is imported owned by root, which the access point's user could not
    then write, so the CLI's home could not be created. On a Restore the folder is already
    there, and the new access point opens it as it is: its owner and mode stay. The two
-   requests do not depend on each other, so the access point adds nothing to the time a
-   Restore takes; if it cannot be created, the app releases the claim and returns the error.
+   requests do not depend on each other and run side by side, so a Restore takes about as
+   long as the slower of the two, not their sum; if the access point cannot be created, the
+   app releases the claim and returns the error.
 3. The app assumes the Mount role with a session policy that names only that access point,
    and writes the resulting short-lived credential into the pod through the exec API's
    standard input, to a memory-backed file, together with a fresh token for the pod's
@@ -558,8 +559,9 @@ session-mw49cqx6-swift-ibex     carlos      pi
 session-mw49crie-witty-marten   carlos      oh-my-pi
 ```
 
-An access point exists only while a session runs, rooted at `/<developer>/<cli>/<session>`
-and tagged (`ManagedBy`, `developer`, `cli`, `session`) for the clean up. With all five of
+An access point exists while a session runs (and while it is starting, or until the clean
+up after its pod has finished), rooted at `/<developer>/<cli>/<session>` and tagged
+(`ManagedBy`, `developer`, `cli`, `session`) for the clean up. With all five of
 those sessions closed the file system had none; restoring the codex one took 1.9 seconds,
 and while it ran it held one:
 
@@ -936,10 +938,13 @@ error line goes to standard error and so can print before or after its exit line
   waiting for a claim. The largest, oh-my-pi, used 580 MiB of its 1536 MiB request; on an
   earlier run, Codex reached 803 MiB during a turn.
 - **Running sessions, not retained ones, use the access-point quota.** A session holds an
-  access point only while its pod has the folder mounted. S3 Files allows 25,000 access
-  points per file system (Amazon S3 Files service quota *Access points per file system*, not
-  adjustable), so that caps sessions running at once; closed sessions are a folder and a
-  record, and there is no fixed ceiling on how many are kept. Deleting an access point
+  access point while it runs, while it starts, and until the clean up after its pod has
+  finished. S3 Files allows 25,000 access points per file system (Amazon S3 Files service
+  quota *Access points per file system*, not adjustable), so that is an upper bound on
+  sessions running at once, not a number the cluster can necessarily run. A closed session
+  is a folder in the bucket and a ConfigMap, so how many are kept is limited by the
+  cluster's API server and any resource quota on the namespace, not by the access-point
+  quota. Deleting an access point
   leaves its directory and files: on a run of this sample, a file written before Close was
   read back, with its owner and time unchanged, through a new access point on the same
   folder after Restore.

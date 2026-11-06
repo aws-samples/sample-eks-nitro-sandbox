@@ -39,10 +39,10 @@ const accountIdFromArn = (arn) => arn.split(":")[4];
 const ACCOUNT_ID = accountIdFromArn(MOUNT_ROLE_ARN);
 
 // An access point's root path and the S3 prefix share the same shape. The path carries
-// the developer, the CLI and the session name, so the session list can be built from the
-// access-point paths alone, with no per-access-point tag read. That matters at scale: a
-// developer-facing list of thousands of sessions would otherwise be thousands of
-// ListTagsForResource calls and would hit the S3 Files control-plane rate limit.
+// the developer, the CLI and the session name, so the app can match a running session to
+// its access point, and the sweep can find every access point's session, from one
+// ListAccessPoints listing with no per-access-point tag read (which at scale would hit the
+// S3 Files control-plane rate limit).
 //   access point root:  /<developer>/<cli>/<session>
 //   bucket key prefix:   <PREFIX>/<developer>/<cli>/<session>/
 export const sessionRoot = (developer, cli, session) => `/${developer}/${cli}/${session}`;
@@ -58,8 +58,11 @@ export const accessPointArn = (apId) =>
 export async function ensureAccessPoint(developer, session, cli) {
   const root = sessionRoot(developer, cli, session);
 
+  // One left by an earlier run: reuse it if it is (or is becoming) available. One that is
+  // being deleted, or failed, cannot be mounted: wait until it is gone, then make a new one.
   const existing = await findAccessPoint(developer, session);
-  if (existing) return existing;
+  if (existing && (existing.status === "available" || existing.status === "creating")) return existing;
+  if (existing) await deleteAccessPoint(existing.apId, existing.status);
 
   // posixUser pins every client of this access point to uid/gid 1000, so files the CLI
   // writes are owned by the dev user and scoping is by access point. creationPermissions
@@ -112,7 +115,7 @@ export async function listAllAccessPoints() {
     );
     for (const ap of out.accessPoints ?? []) {
       const parsed = parseRoot(ap.rootDirectory?.path);
-      if (parsed) all.push({ apId: ap.accessPointId, ...parsed });
+      if (parsed && ap.status !== "deleted") all.push({ apId: ap.accessPointId, status: ap.status, ...parsed });
     }
     token = out.nextToken;
   } while (token);
@@ -126,17 +129,38 @@ async function findAccessPoint(developer, session) {
 
 // Delete a session's access point, when its pod no longer has the folder mounted. The
 // folder and its files stay. Returns true when it deleted one, false when there was none.
-// A delete that timed out after succeeding counts as done: it did if the access point is
-// no longer listed.
 export async function releaseAccessPoint(developer, session) {
   const ap = await findAccessPoint(developer, session);
   if (!ap) return false;
-  try {
-    await s3files.send(new DeleteAccessPointCommand({ accessPointId: ap.apId }));
-  } catch (e) {
-    if ((await listAllAccessPoints()).some((a) => a.apId === ap.apId)) throw e;
-  }
+  await deleteAccessPoint(ap.apId, ap.status);
   return true;
+}
+
+// Delete one access point by id and wait until it is no longer listed, so a Restore right
+// after never finds it half-deleted. A delete call that failed counts as done if the access
+// point goes anyway (a timeout after it succeeded); one already being deleted is only
+// waited for. Throws if it is still listed after waitMs. Exported for the sweep, which has
+// the id from its own listing.
+export const apDeleteTiming = { pollMs: 1000, waitMs: 60000 };
+export async function deleteAccessPoint(apId, status) {
+  let callError = null;
+  if (status !== "deleting") {
+    try {
+      await s3files.send(new DeleteAccessPointCommand({ accessPointId: apId }));
+    } catch (e) {
+      if (e?.name === "ResourceNotFoundException" || e?.$metadata?.httpStatusCode === 404) return;
+      callError = e;
+    }
+  }
+  const deadline = Date.now() + apDeleteTiming.waitMs;
+  for (;;) {
+    const ap = (await listAllAccessPoints()).find((a) => a.apId === apId);
+    if (!ap) return;
+    // A failed call whose delete did not start: report it. One still "deleting" is going.
+    if (callError && ap.status !== "deleting") throw callError;
+    if (Date.now() >= deadline) throw new Error(`access point ${apId} is still listed ${apDeleteTiming.waitMs / 1000} s after its delete`);
+    await sleep(apDeleteTiming.pollMs);
+  }
 }
 
 // Mint a credential that can mount ONLY this session's access point. This is the proven
