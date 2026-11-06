@@ -56,18 +56,35 @@ export const accessPointArn = (apId) =>
 // Create the access point rooted at the session's folder with POSIX uid/gid 1000, for one
 // run of the session. Idempotent: if an access point for this root already exists (one
 // left by a run whose delete did not go through yet), return it.
-export async function ensureAccessPoint(developer, session, cli) {
+// `avoid` is the access point the session's record says is being deleted (k8s.js), which
+// survives an app restart.
+export async function ensureAccessPoint(developer, session, cli, { avoid = null } = {}) {
   const root = sessionRoot(developer, cli, session);
 
-  // One left by an earlier run: reuse it if it is (or is becoming) available. One that is
-  // being deleted, or failed, cannot be mounted: wait until it is gone, then make a new one.
-  // One this process asked to delete is never reused, whatever a listing says: a listing can
-  // still show it available for a moment after the delete was accepted. A new one is made
-  // on the same folder instead.
-  const existing = await findAccessPoint(developer, session);
-  if (existing && !deleteRequested.has(existing.apId) &&
-      (existing.status === "available" || existing.status === "creating")) return existing;
-  if (existing && !deleteRequested.has(existing.apId)) await deleteAccessPoint(existing.apId, existing.status);
+  // A session never has two access points at once. One left by an earlier run is reused if
+  // it is usable. One that is doomed (named in the record as being deleted, asked to be
+  // deleted by this process, or listed as deleting, deleted or in error) is waited out: no
+  // new one is made beside it, whatever a listing says about it, because a listing can still
+  // show it available for a moment after its delete was accepted. More than one usable is
+  // refused rather than guessed between.
+  const deadline = Date.now() + apDeleteTiming.waitMs;
+  for (;;) {
+    const mine = (await listAllAccessPoints({ includeDeleted: true }))
+      .filter((a) => a.developer === developer && a.session === session);
+    const doomed = mine.filter((a) => a.apId === avoid || deleteRequested.has(a.apId) ||
+      (a.status !== "available" && a.status !== "creating"));
+    const usable = mine.filter((a) => !doomed.includes(a));
+    if (doomed.length === 0) {
+      if (usable.length > 1) throw new Error(`session ${session} lists ${usable.length} access points; try again in a minute`);
+      if (usable.length === 1) return usable[0];
+      break;
+    }
+    for (const d of doomed) {
+      if (d.status === "error" && !deleteRequested.has(d.apId)) await deleteAccessPoint(d.apId, d.status, { wait: false }).catch(() => {});
+    }
+    if (Date.now() >= deadline) throw new Error(`the session's previous access point ${doomed[0].apId} is still being deleted; try again in a minute`);
+    await sleep(apDeleteTiming.pollMs);
+  }
 
   // posixUser pins every client of this access point to uid/gid 1000, so files the CLI
   // writes are owned by the dev user and scoping is by access point. creationPermissions

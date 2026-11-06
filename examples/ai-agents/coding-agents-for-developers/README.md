@@ -405,9 +405,10 @@ retried (Close itself still succeeds: the session is stopped and its folder is k
 how an install from before session records is brought over: the app gives each existing
 access point a record, and the sweep deletes those of the sessions with no pod. A pass
 works through eight sessions at a time, so with a large backlog one pass can take well over
-a minute. A Restore never reuses an access point that the running app has asked to delete
-or that S3 Files reports as being deleted; it makes a new one on the same folder. After an
-app restart, a pod is picked up again only if its folder is still mounted and only one
+a minute. Before the app deletes an access point it writes its id into the session's record,
+so a Restore never reuses one that is being deleted, even across an app restart, and a session
+never has two at once: a Restore waits for the old one to be gone (about a second on these
+runs) before it makes a new one on the same folder. After an app restart, a pod is picked up again only if its folder is still mounted and only one
 usable access point is listed for its session; otherwise the app looks again on a later
 pass, or releases the claim of a pod whose folder was already unmounted.
 

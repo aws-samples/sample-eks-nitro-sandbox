@@ -94,7 +94,8 @@ function start(developer, cli, session, { reuse = true, ...opts } = {}) {
 async function startOnce(developer, cli, session, { resume = false } = {}) {
   // A Restore waits its turn behind a Delete of the same session; look the session up again
   // now, so it does not create the folder that Delete just removed.
-  if (resume && !(await sessionCli(developer, session))) throw new Error(`no session ${session} for ${developer}`);
+  const rec = resume ? await k8s.readSessionRecord(session) : null;
+  if (resume && !(rec && rec.developer === developer)) throw new Error(`no session ${session} for ${developer}`);
   // A failed clean stop of the session's last pod left a record. Start a new pod only once
   // that one is confirmed gone; otherwise two pods could have the folder.
   if (resume) {
@@ -115,7 +116,7 @@ async function startOnce(developer, cli, session, { resume = false } = {}) {
   // for both at once: a Restore takes about as long as the slower of the two, not their sum.
   console.log(`start ${session}: ensureAccessPoint + claimPod`);
   const [apResult, podResult] = await Promise.allSettled([
-    store.ensureAccessPoint(developer, session, cli),
+    store.ensureAccessPoint(developer, session, cli, { avoid: rec?.deletingAp }),
     k8s.claimPod(cli, session),
   ]);
   if (podResult.status === "rejected") {
@@ -262,13 +263,14 @@ async function pickUpRunningSessions(retry) {
   const records = await recordFromAccessPoints(aps, new Map((await k8s.listSessionRecords()).map((r) => [r.session, r])));
   const claims = await k8s.listSessionClaims();
   if (claims.length === 0) { pickUpIncomplete = false; return 0; }
-  // The access point a running pod mounted: the one that is usable (available or creating, and
-  // not one this process asked to delete). While an old one is still being deleted beside a
-  // new one, a session can list two; if more than one is usable, the pick-up cannot tell which
-  // the pod mounted and looks again next pass.
+  // The access point a running pod mounted: the one that is usable (available or creating,
+  // not one this process asked to delete, and not the one the session's record marks as being
+  // deleted). A session should never have two; if more than one is usable all the same, the
+  // pick-up cannot tell which the pod mounted and looks again next pass.
   const usable = new Map();
   for (const a of aps) {
-    if ((a.status !== "available" && a.status !== "creating") || store.isDeleteRequested(a.apId)) continue;
+    if ((a.status !== "available" && a.status !== "creating") || store.isDeleteRequested(a.apId) ||
+        records.get(a.session)?.deletingAp === a.apId) continue;
     usable.set(a.session, usable.has(a.session) ? null : a.apId);
   }
   const bySession = new Map([...records].filter(([s]) => usable.get(s)).map(([s, r]) => [s, { ...r, apId: usable.get(s) }]));
@@ -416,7 +418,16 @@ async function releaseNow(session, { wipe = false } = {}) {
 async function releaseAccessPointOf(session, developer) {
   try {
     const dev = developer || (await k8s.readSessionRecord(session))?.developer;
-    if (dev && (await store.releaseAccessPoint(dev, session))) console.log(`session ${session}: access point deleted`);
+    if (!dev) return;
+    const mine = (await store.listAllAccessPoints({ includeDeleted: true }))
+      .filter((a) => a.developer === dev && a.session === session);
+    for (const a of mine) {
+      // In the record first, so even an app restart in between leaves it marked.
+      await k8s.markAccessPointDeleting(session, a.apId);
+      await store.deleteAccessPoint(a.apId, a.status);
+      await k8s.clearAccessPointDeleting(session, a.apId);
+      console.log(`session ${session}: access point deleted`);
+    }
   } catch (e) {
     console.error(`session ${session}: could not delete its access point, the sweep retries: ${e?.message || e}`);
   }
@@ -434,8 +445,16 @@ async function releaseAccessPointOf(session, developer) {
 // grows with the number of idle access points, not with its square.
 const SWEEP_CONCURRENCY = 8;
 async function sweepAccessPoints() {
-  const aps = await store.listAllAccessPoints();
-  await recordFromAccessPoints(aps, new Map((await k8s.listSessionRecords()).map((r) => [r.session, r])));
+  const listStart = Date.now();
+  const listed = await store.listAllAccessPoints({ includeDeleted: true });
+  const aps = listed.filter((a) => a.status !== "deleted");
+  const records = await recordFromAccessPoints(aps, new Map((await k8s.listSessionRecords()).map((r) => [r.session, r])));
+  // A record's deleting marker has done its job once a listing begun after it was written
+  // no longer shows that access point at all.
+  const listedIds = new Set(listed.map((a) => a.apId));
+  await eachLimited([...records.values()].filter((r) => r.deletingAp && r.deletingSince < listStart && !listedIds.has(r.deletingAp)),
+    SWEEP_CONCURRENCY, (r) => serialized(r.session, () => k8s.clearAccessPointDeleting(r.session, r.deletingAp))
+      .catch((e) => console.error(`session ${r.session}: could not clear its deleting marker: ${e?.message || e}`)));
   // One already being deleted needs nothing more: skip it rather than ask again.
   const idle = aps.filter((a) => a.status !== "deleting" && !live.has(a.session) && !starting.has(a.session));
   if (idle.length === 0) return;
@@ -453,6 +472,9 @@ async function sweepAccessPoints() {
         await k8s.clearPendingStop(a.session);
       }
       if (await k8s.claimExists(k8s.claimNameFor(a.session))) return;
+      // In the record before the delete is asked for, so a Restore after an app restart does
+      // not take it for usable while a listing still shows it available.
+      await k8s.markAccessPointDeleting(a.session, a.apId);
       await store.deleteAccessPoint(a.apId, a.status, { wait: false });
       console.log(`session ${a.session}: access point delete requested, the session has no pod`);
     }).catch((e) => console.error(`session ${a.session}: access-point sweep: ${e?.message || e}`)));

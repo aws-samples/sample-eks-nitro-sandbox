@@ -200,9 +200,36 @@ export async function clearPendingStop(session) {
 // one developer is one paginated, label-selected ConfigMap list.
 const PART_OF = "coding-agents-for-developers";
 const recordName = (session) => `session-${session}`;
+// The access point being deleted for this session, written to its record before the delete
+// is asked for, so it survives an app restart: a Restore never reuses it, and waits for it
+// to be gone before making a new one.
+const DELETING_AP = "coding-agents/deleting-access-point";
+const DELETING_AT = "coding-agents/deleting-since";
 const recordOf = (cm) => cm?.data?.developer && cm.data.cli && cm.data.session
-  ? { developer: cm.data.developer, cli: cm.data.cli, session: cm.data.session, created: cm.data.created }
+  ? {
+      developer: cm.data.developer, cli: cm.data.cli, session: cm.data.session, created: cm.data.created,
+      deletingAp: cm.metadata?.annotations?.[DELETING_AP] || null,
+      deletingSince: Number(cm.metadata?.annotations?.[DELETING_AT]) || 0,
+    }
   : null;
+const MERGE_PATCH = k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch);
+
+export async function markAccessPointDeleting(session, apId) {
+  await core.patchNamespacedConfigMap({
+    name: recordName(session), namespace: NAMESPACE,
+    body: { metadata: { annotations: { [DELETING_AP]: apId, [DELETING_AT]: String(Date.now()) } } },
+  }, MERGE_PATCH);
+}
+
+// Clear the marker, only if it still names this access point.
+export async function clearAccessPointDeleting(session, apId) {
+  const rec = await readSessionRecord(session);
+  if (!rec || rec.deletingAp !== apId) return;
+  await core.patchNamespacedConfigMap({
+    name: recordName(session), namespace: NAMESPACE,
+    body: { metadata: { annotations: { [DELETING_AP]: null, [DELETING_AT]: null } } },
+  }, MERGE_PATCH);
+}
 
 export async function createSessionRecord(developer, cli, session) {
   await core.createNamespacedConfigMap({ namespace: NAMESPACE, body: {
