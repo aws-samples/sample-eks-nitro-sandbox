@@ -118,7 +118,7 @@
         </mxCell>
 
         <!-- The pool: a claim adopts a pre-booted pod, and the pool refills -->
-        <mxCell id="e-pool-claimed" value="adopt a pre-booted pod&lt;br&gt;in about a second" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.75;entryY=1;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;align=left;verticalAlign=middle;" edge="1" parent="1" source="pool" target="claimed-pod">
+        <mxCell id="e-pool-claimed" value="adopt a pre-booted pod" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.75;entryY=1;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;align=left;verticalAlign=middle;" edge="1" parent="1" source="pool" target="claimed-pod">
           <mxGeometry x="0.45" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="1740" y="760" />

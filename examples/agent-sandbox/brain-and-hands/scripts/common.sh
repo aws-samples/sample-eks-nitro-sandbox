@@ -32,7 +32,7 @@ done
 
 # Load .env as defaults. A value already set in the environment wins over the
 # file, so `NAMESPACE=other ./scripts/setup.sh` overrides it.
-_ENV_KEYS='CLUSTER_NAME|AWS_REGION|KUBE_CONTEXT|NAMESPACE|BEDROCK_MODEL_ID|ECR_REPOSITORY|POD_IDENTITY_ROLE_NAME'
+_ENV_KEYS='CLUSTER_NAME|AWS_REGION|AWS_PROFILE|KUBE_CONTEXT|NAMESPACE|BEDROCK_MODEL_ID|ECR_REPOSITORY|POD_IDENTITY_ROLE_NAME'
 # A .env that exists but cannot be read would be parsed as an empty file: the
 # grep below runs inside a process substitution, where its failure does not trip
 # `set -e`. The run would then quietly use the default names and whatever
@@ -47,6 +47,7 @@ if [[ -f "$SAMPLE_DIR/.env" ]]; then
     case "$_k" in
       CLUSTER_NAME)           CLUSTER_NAME="${CLUSTER_NAME:-$_v}" ;;
       AWS_REGION)             AWS_REGION="${AWS_REGION:-$_v}" ;;
+      AWS_PROFILE)            AWS_PROFILE="${AWS_PROFILE:-$_v}" ;;
       KUBE_CONTEXT)           KUBE_CONTEXT="${KUBE_CONTEXT:-$_v}" ;;
       NAMESPACE)              NAMESPACE="${NAMESPACE:-$_v}" ;;
       BEDROCK_MODEL_ID)       BEDROCK_MODEL_ID="${BEDROCK_MODEL_ID:-$_v}" ;;
@@ -59,6 +60,12 @@ fi
 
 CLUSTER_NAME="${CLUSTER_NAME:-}"
 AWS_REGION="${AWS_REGION:-us-west-2}"
+# The named AWS CLI profile for the account the cluster is in. Exported so every
+# aws call the scripts make uses it; left unset, the CLI's default chain applies.
+# It names a profile and holds no credential.
+if [[ -n "${AWS_PROFILE:-}" ]]; then
+  export AWS_PROFILE
+fi
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 NAMESPACE="${NAMESPACE:-brain-and-hands}"
 BEDROCK_MODEL_ID="${BEDROCK_MODEL_ID:-us.anthropic.claude-sonnet-5-5}"
