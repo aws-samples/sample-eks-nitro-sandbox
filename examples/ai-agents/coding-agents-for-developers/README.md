@@ -403,10 +403,12 @@ starts a minute after its last pass ends, deletes the access point of every reco
 that has none of those. That is how an access-point delete that failed after a Close is
 retried (Close itself still succeeds: the session is stopped and its folder is kept), and
 how an install from before session records is brought over: the app gives each existing
-access point a record, once a listing a pass later still shows it (a running session is
-picked up on that pass too), and the sweep deletes those of the sessions with no pod.
-Waiting one pass keeps an old version's Delete that was still finishing from coming back as
-a session. A pass
+access point a record, and the sweep deletes those of the sessions with no pod. It records
+only an access point whose folder has data in the bucket, and that a listing a pass later
+still shows (a running session is picked up on that pass too). A Delete, in this version and
+the previous one, empties the folder before it deletes the access point, so one an old
+version's Delete is still finishing with does not come back as a session, however long the
+listing keeps showing it. A pass
 works through eight sessions at a time, so with a large backlog one pass can take well over
 a minute. Before the app deletes an access point it writes its id into the session's record,
 so a Restore never reuses one that is being deleted, even across an app restart, and the app

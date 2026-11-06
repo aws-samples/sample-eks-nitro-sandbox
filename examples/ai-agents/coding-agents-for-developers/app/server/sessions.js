@@ -253,11 +253,14 @@ export function adoptRunningSessions({ retry = false } = {}) {
 // every such session added, written or not: its developer and CLI come from the path.
 //
 // Not from one being deleted: that is a Delete (perhaps the old version's) finishing, and a
-// record made from it would bring a deleted session back. A listing can still show such an
-// access point available for a moment after its delete was accepted, so one with no record is
-// recorded only once a listing that began after it was first seen still shows it, whether or
-// not the session has a claim (a claim listed a moment earlier can be gone already). Until
-// then it is no one's: the sweep leaves it alone, and a running session's pick-up waits a pass.
+// record made from it would bring a deleted session back. A listing can show such an access
+// point available for a while after its delete was accepted, for no stated maximum, so time
+// alone cannot tell it from a session to keep. What can: a Delete, in this version and the
+// previous one, empties the session's folder in the bucket before it deletes the access point.
+// So an access point with no record is recorded only when its folder has data in the bucket,
+// and only once a listing that began after it was first seen still shows it (whether or not
+// the session has a claim). Until then it is no one's: the sweep leaves it alone, and a running
+// session's pick-up waits. A session whose folder has nothing in it has nothing to lose.
 const unrecordedSince = new Map(); // access point id -> when it was first seen with no record
 async function recordFromAccessPoints(aps, records, { listStart }) {
   const listed = new Set(aps.map((a) => a.apId));
@@ -271,6 +274,11 @@ async function recordFromAccessPoints(aps, records, { listStart }) {
     else if (seen === undefined) unrecordedSince.set(a.apId, Date.now());
   }
   await eachLimited(missing, SWEEP_CONCURRENCY, async (a) => {
+    // Not read, or empty: not recorded now; looked at again next pass while it is listed.
+    if (!(await store.folderHasData(a.developer, a.cli, a.session).catch((e) => {
+      console.error(`session ${a.session}: could not read its folder, will retry next minute: ${e?.message || e}`);
+      return false;
+    }))) return;
     let ok = true;
     try {
       await k8s.createSessionRecord(a.developer, a.cli, a.session);
