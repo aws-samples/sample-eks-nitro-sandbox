@@ -344,6 +344,15 @@ export async function startSession(podName, { credential, bridgeToken, fsId, apI
 // The bridge's certificate, and its token, from their root-only files in the pod. Used
 // right after start (for the certificate), and when the app picks up sessions that kept
 // running across its own restart (for both), since it keeps them only in memory.
+// Whether the session's folder is still mounted in its pod. After a clean stop it is not
+// (session-stop.sh unmounts it), even though the pod and its session-bridge are still there.
+export async function workspaceMounted(podName) {
+  const out = await execCapture(podName, ["/bin/sh", "-c", "mountpoint -q /workspace && echo mounted || echo unmounted"]);
+  if (/^mounted/m.test(out)) return true;
+  if (/^unmounted/m.test(out)) return false;
+  throw new Error(`could not tell whether /workspace is mounted in ${podName}`);
+}
+
 export async function readBridge(podName) {
   const out = await execCapture(podName, ["/bin/sh", "-c",
     "cat /dev/shm/session/bridge-token; echo; cat /dev/shm/session/bridge.crt"]);

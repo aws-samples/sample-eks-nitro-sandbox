@@ -110,10 +110,14 @@ function parseRoot(path) {
 
 // List every access point, paginated, and parse each path: [{ apId, status, developer,
 // cli, session }]. No per-access-point tag read: one page call per page of access points.
-// Access points this process asked to delete, until a listing no longer shows them at all.
-const deleteRequested = new Set();
+// Access points this process asked to delete, with when it asked, until a listing that began
+// after that no longer shows them at all. In memory only: after an app restart the service's
+// own "deleting" status is what ensureAccessPoint and the pick-up go by.
+const deleteRequested = new Map();
+export const isDeleteRequested = (apId) => deleteRequested.has(apId);
 
 export async function listAllAccessPoints({ includeDeleted = false } = {}) {
+  const listStart = Date.now();
   const all = [];
   const seen = new Set();
   let token;
@@ -128,7 +132,8 @@ export async function listAllAccessPoints({ includeDeleted = false } = {}) {
     }
     token = out.nextToken;
   } while (token);
-  for (const id of deleteRequested) if (!seen.has(id)) deleteRequested.delete(id);
+  // Only a listing that began after the delete was asked for can show it gone.
+  for (const [id, at] of deleteRequested) if (at < listStart && !seen.has(id)) deleteRequested.delete(id);
   return all;
 }
 
@@ -159,17 +164,17 @@ export async function deleteAccessPoint(apId, status, { wait = true } = {}) {
   if (status !== "deleting") {
     try {
       await s3files.send(new DeleteAccessPointCommand({ accessPointId: apId }));
-      deleteRequested.add(apId);
+      deleteRequested.set(apId, Date.now());
     } catch (e) {
       if (e?.name === "ResourceNotFoundException" || e?.$metadata?.httpStatusCode === 404) return;
       callError = e;
       // A refusal the service gave (a 4xx other than throttling) did not delete anything. Any
       // other failure (a timeout, a 5xx) may have, so never reuse this access point.
       const code = e?.$metadata?.httpStatusCode;
-      if (!(code >= 400 && code < 500 && code !== 429)) deleteRequested.add(apId);
+      if (!(code >= 400 && code < 500 && code !== 429)) deleteRequested.set(apId, Date.now());
     }
   } else {
-    deleteRequested.add(apId);
+    deleteRequested.set(apId, Date.now());
   }
   if (!wait) {
     if (callError && !deleteRequested.has(apId)) throw callError;

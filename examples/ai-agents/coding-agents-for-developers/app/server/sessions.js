@@ -237,7 +237,9 @@ export function adoptRunningSessions({ retry = false } = {}) {
 // sweep, so a record that could not be written is written later. Returns `records` with
 // every such session added, written or not: its developer and CLI come from the path.
 async function recordFromAccessPoints(aps, records) {
-  const missing = aps.filter((a) => !records.has(a.session) && isSessionName(a.session));
+  // Not from one being deleted: that is a Delete (perhaps the old version's) finishing, and a
+  // record made from it would bring a deleted session back.
+  const missing = aps.filter((a) => a.status !== "deleting" && !records.has(a.session) && isSessionName(a.session));
   await eachLimited(missing, SWEEP_CONCURRENCY, async (a) => {
     let ok = true;
     try {
@@ -260,8 +262,17 @@ async function pickUpRunningSessions(retry) {
   const records = await recordFromAccessPoints(aps, new Map((await k8s.listSessionRecords()).map((r) => [r.session, r])));
   const claims = await k8s.listSessionClaims();
   if (claims.length === 0) { pickUpIncomplete = false; return 0; }
-  const apIds = new Map(aps.map((a) => [a.session, a.apId]));
-  const bySession = new Map([...records].filter(([s]) => apIds.has(s)).map(([s, r]) => [s, { ...r, apId: apIds.get(s) }]));
+  // The access point a running pod mounted: the one that is usable (available or creating, and
+  // not one this process asked to delete). While an old one is still being deleted beside a
+  // new one, a session can list two; if more than one is usable, the pick-up cannot tell which
+  // the pod mounted and looks again next pass.
+  const usable = new Map();
+  for (const a of aps) {
+    if ((a.status !== "available" && a.status !== "creating") || store.isDeleteRequested(a.apId)) continue;
+    usable.set(a.session, usable.has(a.session) ? null : a.apId);
+  }
+  const bySession = new Map([...records].filter(([s]) => usable.get(s)).map(([s, r]) => [s, { ...r, apId: usable.get(s) }]));
+  const ambiguous = new Set([...usable].filter(([, id]) => id === null).map(([s]) => s));
   let adopted = 0;
   // Set when a session's claim could not be picked up this time (a read failed, or its
   // record or access point was not listed yet): the sweep loop then runs the pick-up again,
@@ -280,6 +291,7 @@ async function pickUpRunningSessions(retry) {
     // A claim with no pod yet (the app restarted between creating it and the pod being
     // assigned): look again next minute.
     if (!podName) { if (!starting.has(session)) incomplete = true; return; }
+    if (ambiguous.has(session)) { incomplete = true; return; }
     const s = bySession.get(session);
     if (live.has(session)) return;
     // No record or no access point in this pick-up's listing: unless a start is making it
@@ -296,6 +308,14 @@ async function pickUpRunningSessions(retry) {
       // policy selects on, and the CLI is the one the session's folder was made for.
       if (app !== "agent-session" || cli !== s.cli) {
         console.error(`session ${session}: not picking up pod ${podName}: labels app=${app} agent-cli=${cli}, expected agent-session and ${s.cli}`);
+        return;
+      }
+      // A pod whose folder is not mounted was stopped (an app restart came between its clean
+      // stop and the claim's delete): the session is closed, so finish releasing it rather
+      // than taking it for a running one.
+      if (!(await k8s.workspaceMounted(podName))) {
+        console.log(`session ${session}: pod ${podName} has no folder mounted, so it was stopped; releasing its claim`);
+        await k8s.releaseClaim(claimName);
         return;
       }
       const azId = await k8s.nodeAzId(node);
@@ -344,7 +364,9 @@ async function releaseNow(session, { wipe = false } = {}) {
     // so Close (and idle, and Delete) still stop and release it instead of doing nothing.
     const claimName = k8s.claimNameFor(session);
     const podName = await k8s.claimedPodName(claimName);
-    if (!podName) return; // no claim: nothing is running
+    // No pod: either no claim (nothing is running), or a claim whose pod is not assigned yet
+    // (nothing is mounted yet). Delete the claim either way, so it cannot get a pod later.
+    if (!podName) { await k8s.releaseClaim(claimName); return; }
     entry = { session, claimName, podName, adopted: true };
   }
   live.delete(session);
