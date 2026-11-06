@@ -28,6 +28,7 @@ show_context
 # --- the shared installs -----------------------------------------------------
 require_runtime_class
 require_agent_sandbox
+require_network_policy_enforcement
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)" \
   || die "could not read the AWS account; check your credentials"
@@ -50,7 +51,7 @@ IMAGE_TAG="${IMAGE_TAG:-$( cd "$SAMPLE_DIR" && cat Dockerfile "${brain_files[@]}
   | sha256sum | cut -c1-16 )}"
 BRAIN_IMAGE="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
-step "1/6 namespace $NAMESPACE"
+step "1/7 namespace $NAMESPACE"
 # Create the namespace only when it is absent, and label it so the other scripts
 # can tell it is the sample's. Applying over an existing namespace counts as
 # reusing it, which would put our label on a namespace another demo owns.
@@ -74,7 +75,7 @@ case $ns_rc in
      echo "created namespace $NAMESPACE, labelled $NS_LABEL_KEY=$NS_LABEL_VAL" ;;
 esac
 
-step "2/6 ECR repository $ECR_REPOSITORY"
+step "2/7 ECR repository $ECR_REPOSITORY"
 # Three outcomes, not two: a read that failed is never taken for "absent", which
 # would send the run on to create a repository on top of an answer it never got.
 repo_arn=""
@@ -103,7 +104,7 @@ else
   echo "created ECR repository $ECR_REPOSITORY, tagged ManagedBy=$MANAGED_BY"
 fi
 
-step "3/6 build and push the brain image"
+step "3/7 build and push the brain image"
 echo "  $BRAIN_IMAGE"
 if aws ecr describe-images --repository-name "$ECR_REPOSITORY" --region "$AWS_REGION" \
      --image-ids "imageTag=$IMAGE_TAG" >/dev/null 2>&1; then
@@ -119,7 +120,7 @@ else
   docker --config "$docker_cfg" push "$BRAIN_IMAGE" || die "the image push failed"
 fi
 
-step "4/6 the brain's Bedrock role, through EKS Pod Identity"
+step "4/7 the brain's Bedrock role, through EKS Pod Identity"
 role_rc=0
 aws_exists NoSuchEntity -- aws iam get-role --role-name "$POD_IDENTITY_ROLE_NAME" || role_rc=$?
 [[ $role_rc -eq 2 ]] && die "could not read IAM role $POD_IDENTITY_ROLE_NAME, so whether it exists could not be determined; stopping rather than create one on a read that never answered: $AWS_LAST_ERROR"
@@ -216,7 +217,7 @@ aws iam put-role-policy --role-name "$POD_IDENTITY_ROLE_NAME" --policy-name bedr
 echo "  role: $role_arn"
 echo "  permissions: bedrock-invoke, two actions on $BEDROCK_MODEL_ID only"
 
-step "5/6 the brain's identity and RBAC"
+step "5/7 the brain's identity and RBAC"
 sed -e "s|<NAMESPACE>|$NAMESPACE|g" "$SAMPLE_DIR/deploy/rbac.yaml" | kc apply -f -
 
 # The association names a namespace and a ServiceAccount, so it delivers the
@@ -234,10 +235,42 @@ else
   echo "  reusing Pod Identity association $assoc for $NAMESPACE/$BRAIN (checked in step 4: it names this sample's role)"
 fi
 
-step "6/6 the hands, then the brain"
+step "6/7 the sandboxd token"
+# sandboxd in the hands refuses every request without this bearer token. The
+# token lives only in a Secret the brain mounts; the hands get its SHA-256
+# digest on sandboxd's command line. Reused when the Secret is already there,
+# so a re-run does not leave warm pods expecting a token nobody holds. The value
+# passes through a file and bash builtins only, never a command line.
+tok_rc=0
+resource_exists kc "secret/$TOKEN_SECRET" || tok_rc=$?
+case $tok_rc in
+  0) token="$(kc get secret "$TOKEN_SECRET" -o jsonpath='{.data.token}' 2>/dev/null | base64 -d)" \
+       || die "could not read secret/$TOKEN_SECRET"
+     echo "  reusing secret/$TOKEN_SECRET" ;;
+  1) tok_dir="$(mktemp -d)"
+     trap 'rm -rf "${docker_cfg:-}" "$tok_dir"' EXIT
+     # 32 random bytes, base64: printable ASCII with no spaces, as sandboxd and
+     # the SDK require.
+     head -c 32 /dev/urandom | base64 | tr -d '\n' >"$tok_dir/token"
+     chmod 600 "$tok_dir/token"
+     kc create secret generic "$TOKEN_SECRET" --from-file=token="$tok_dir/token" >/dev/null \
+       || die "could not create secret/$TOKEN_SECRET"
+     token="$(<"$tok_dir/token")"
+     echo "  created secret/$TOKEN_SECRET" ;;
+  2) die "could not read secret/$TOKEN_SECRET, so whether it exists could not be determined; stopping rather than mint a second token" ;;
+esac
+[[ "$token" =~ ^[A-Za-z0-9+/=]{16,}$ ]] || die "secret/$TOKEN_SECRET does not hold a usable token"
+token_sha256="$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)"
+unset token
+[[ "$token_sha256" =~ ^[0-9a-f]{64}$ ]] || die "could not compute the token's digest"
+echo "  sandboxd will require the token whose sha256 is ${token_sha256:0:12}..."
+
+step "7/7 the hands, then the brain"
 # The hands first: the template and the pool, so a warm pod is on its way
 # before the brain that claims it is up.
-sed -e "s|<NAMESPACE>|$NAMESPACE|g" "$SAMPLE_DIR/deploy/warm-pool.yaml" | kc apply -f -
+sed -e "s|<NAMESPACE>|$NAMESPACE|g" \
+    -e "s|<SANDBOXD_TOKEN_SHA256>|$token_sha256|g" \
+    "$SAMPLE_DIR/deploy/warm-pool.yaml" | kc apply -f -
 
 sed -e "s|<NAMESPACE>|$NAMESPACE|g" \
     -e "s|<BRAIN_IMAGE>|$BRAIN_IMAGE|g" \
@@ -254,5 +287,5 @@ kc get sandboxwarmpool "$POOL"
 kc get deploy "$BRAIN"
 echo
 echo "the brain is up with a warm pod waiting. Drive it:"
-echo "  kubectl -n $NAMESPACE exec deploy/$BRAIN -- claude -p 'Claim a sandbox, print its kernel, and tell me whether you can reach the internet from it.'"
+echo "  kubectl -n $NAMESPACE exec deploy/$BRAIN -- claude -p 'Create a sandbox, print its kernel, and tell me whether you can reach the internet from it.'"
 echo "Tear it down:   ./scripts/cleanup.sh"

@@ -14,7 +14,7 @@ SAMPLE=brain-and-hands
 TEMPLATE=hands
 POOL=hands-pool
 BRAIN=brain                 # the Deployment, the ServiceAccount, the Role and its binding
-SESSION_CLAIM=brain-session # the claim the brain's sandbox tool creates at run time
+TOKEN_SECRET=hands-token    # the sandboxd bearer token, mounted only by the brain
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAMPLE_DIR="$(cd "$HERE/.." && pwd)"
@@ -170,7 +170,10 @@ require_runtime_class() {
 # require_agent_sandbox : the three agent-sandbox extension CRDs this sample
 # uses. agent-sandbox is a shared install: this only reads, and the page has the
 # reader install it at the pinned version when it is absent.
-AGENT_SANDBOX_VERSION=v1.0.6
+# v1.0.10 is the first release with a released sandboxd image
+# (registry.k8s.io/agent-sandbox/sandboxd), and the MCP server in the brain is
+# installed from the same tag (Dockerfile).
+AGENT_SANDBOX_VERSION=v1.0.10
 agent_sandbox_install_command() {
   cat <<EOF
   kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$AGENT_SANDBOX_VERSION/sandbox-with-extensions.yaml
@@ -197,18 +200,37 @@ $(agent_sandbox_install_command)" ;;
     -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)" || arc=$?
   [[ $arc -ne 0 ]] && die "the agent-sandbox CRDs are installed but deploy/agent-sandbox-controller could not be read in namespace agent-sandbox-system; stopping rather than create a warm pool nothing would fill"
   [[ "$avail" == "True" ]] || die "deploy/agent-sandbox-controller in namespace agent-sandbox-system is not Available (condition: ${avail:-<none>}), so nothing would act on a SandboxWarmPool. Check it with: kubectl -n agent-sandbox-system get deploy,pods"
-  local ver
+  # The template's networkPolicy and the sandboxd in-cluster connection are what
+  # this sample relies on, so an older controller is set up differently from
+  # what it needs: stop and say so, rather than upgrade a shared install.
+  local ver tag
   ver="$(kc_cluster -n agent-sandbox-system get deploy agent-sandbox-controller \
-    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
-  echo "reusing the agent-sandbox install as it is (${ver:-image unreadable}); this sample was built against $AGENT_SANDBOX_VERSION"
+    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)" \
+    || die "could not read the agent-sandbox controller's image, so its version could not be determined; stopping rather than guess"
+  tag="${ver##*:}"
+  [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || die "the agent-sandbox controller runs '$ver', whose tag is not a release version, so whether it is at least $AGENT_SANDBOX_VERSION could not be determined; stopping rather than guess"
+  [[ "$(printf '%s\n%s\n' "$AGENT_SANDBOX_VERSION" "$tag" | sort -V | head -n1)" == "$AGENT_SANDBOX_VERSION" ]] \
+    || die "the agent-sandbox controller on this cluster is $tag, older than $AGENT_SANDBOX_VERSION, which this sample needs. It is a shared install, so this script does not upgrade it. Upgrade it yourself if nothing else on the cluster depends on $tag:
+$(agent_sandbox_install_command)"
+  echo "reusing the agent-sandbox install as it is ($ver); this sample was built against $AGENT_SANDBOX_VERSION"
 }
 
-# This sample ships no network policy. The hands boot with no network device, so
-# there is nothing to restrict, and the brain's limits are its tool
-# configuration, its Pod Identity role and its RBAC Role rather than anything on
-# the wire. So nothing here reads or depends on the cluster-wide network policy
-# enforcement setting. The network-policy sample under Isolation is where that
-# mechanism is shown.
+# require_network_policy_enforcement : the hands have a pod network, and the
+# policy on their template (deploy/warm-pool.yaml) is the only thing that keeps
+# everything but the brain out and everything in. EKS Auto Mode accepts network
+# policies without enforcing them until the Network Policy Controller is turned
+# on, which is a cluster-wide setting. So this only reads it, and the page has
+# the reader turn it on.
+require_network_policy_enforcement() {
+  local v rc=0
+  v="$(kc_cluster -n kube-system get configmap amazon-vpc-cni \
+    -o jsonpath='{.data.enable-network-policy-controller}' 2>/dev/null)" || rc=$?
+  [[ $rc -ne 0 ]] && die "could not read the amazon-vpc-cni ConfigMap in kube-system, so whether network policy enforcement is on could not be determined; stopping rather than run the hands with a policy that may not be enforced"
+  [[ "$v" == "true" ]] || die "network policy enforcement is off on this cluster (amazon-vpc-cni enable-network-policy-controller is '${v:-<unset>}'), so the policy on the hands would be accepted and not enforced. It is a cluster-wide setting, so this script does not change it. Turn it on yourself:
+  kubectl -n kube-system patch configmap amazon-vpc-cni --type merge -p '{\"data\":{\"enable-network-policy-controller\":\"true\"}}'"
+  echo "network policy enforcement is on (amazon-vpc-cni enable-network-policy-controller=true)"
+}
 
 # ---------------------------------------------------------------------------
 # Readings.
