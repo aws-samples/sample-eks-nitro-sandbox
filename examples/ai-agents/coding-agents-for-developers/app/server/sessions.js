@@ -414,7 +414,8 @@ const SWEEP_CONCURRENCY = 8;
 async function sweepAccessPoints() {
   const aps = await store.listAllAccessPoints();
   await recordFromAccessPoints(aps, new Map((await k8s.listSessionRecords()).map((r) => [r.session, r])));
-  const idle = aps.filter((a) => !live.has(a.session) && !starting.has(a.session));
+  // One already being deleted needs nothing more: skip it rather than ask again.
+  const idle = aps.filter((a) => a.status !== "deleting" && !live.has(a.session) && !starting.has(a.session));
   if (idle.length === 0) return;
   const claims = await k8s.listClaimNames();
   await eachLimited(idle.filter((a) => !claims.has(k8s.claimNameFor(a.session))), SWEEP_CONCURRENCY, (a) =>
