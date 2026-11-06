@@ -183,8 +183,8 @@ The brain's pods would be given that role, not this sample's, so the page's acco
 fi
 
 # The one permission the brain gets: invoke the one model it is configured with.
-# It is the only role the sample creates, and with no network policy in this
-# sample it is the only AWS boundary the brain has, so it is scoped to the one
+# It is the only role the sample creates, and with no network policy restricting
+# the brain it is the only AWS boundary the brain has, so it is scoped to the one
 # model rather than to "any model".
 #
 # A cross-Region inference profile such as us.anthropic.claude-sonnet-5-5 needs
@@ -266,21 +266,36 @@ unset token
 echo "  sandboxd will require the token whose sha256 is ${token_sha256:0:12}..."
 
 # A warm pool does not replace the pods it already booted when its template
-# changes. So if a template is already here, it must already run sandboxd with
-# this exact digest: a template from before sandboxd (no --auth-token-sha256 at
-# all), or one whose token Secret was deleted and minted again, would leave warm
-# pods that the brain cannot drive while the pool still reports them ready.
-tpl_rc=0
-resource_exists kc "sandboxtemplate/$TEMPLATE" || tpl_rc=$?
-case $tpl_rc in
-  0) tpl_args="$(kc get sandboxtemplate "$TEMPLATE" \
-       -o jsonpath='{.spec.podTemplate.spec.containers[*].command}' 2>/dev/null)" \
-       || die "could not read sandboxtemplate/$TEMPLATE, so whether its pods expect this token could not be determined; stopping rather than apply over it"
-     [[ "$tpl_args" == *"--auth-token-sha256=$token_sha256"* ]] \
-       || die "sandboxtemplate/$TEMPLATE already exists and does not run sandboxd with this token's digest (it is from an earlier version of this sample, or the token Secret was recreated). Its warm pods would not be replaced by applying over it. Run ./scripts/cleanup.sh and then this script again." ;;
-  1) : ;;
-  2) die "could not read sandboxtemplate/$TEMPLATE, so whether one is already here could not be determined; stopping rather than apply over it" ;;
-esac
+# changes. So a re-run over an existing install is safe only if the template AND
+# every hands pod already running sandboxd with this exact digest: a template or
+# pod from before sandboxd (no --auth-token-sha256 at all), or from before the
+# token Secret was deleted and minted again, would leave pods the brain cannot
+# drive while the pool still reports them ready. The digest must be one whole
+# argument of the hands container's command, not a substring of the command
+# line or an argument of some other container.
+want_arg="--auth-token-sha256=$token_sha256"
+stale_hint="Run ./scripts/cleanup.sh and then this script again."
+pool_rc=0; resource_exists kc "sandboxwarmpool/$POOL" || pool_rc=$?
+tpl_rc=0;  resource_exists kc "sandboxtemplate/$TEMPLATE" || tpl_rc=$?
+[[ $pool_rc -eq 2 ]] && die "could not read sandboxwarmpool/$POOL, so whether warm pods are already here could not be determined; stopping rather than apply over them"
+[[ $tpl_rc -eq 2 ]]  && die "could not read sandboxtemplate/$TEMPLATE, so whether one is already here could not be determined; stopping rather than apply over it"
+if [[ $pool_rc -eq 0 || $tpl_rc -eq 0 ]]; then
+  [[ $tpl_rc -eq 0 ]] || die "sandboxwarmpool/$POOL exists but sandboxtemplate/$TEMPLATE does not, so what its warm pods were booted from cannot be told. $stale_hint"
+  tpl_cmd="$(kc get sandboxtemplate "$TEMPLATE" -o jsonpath='{range .spec.podTemplate.spec.containers[?(@.name=="hands")].command[*]}{@}{"\n"}{end}' 2>/dev/null)" \
+    || die "could not read sandboxtemplate/$TEMPLATE, so whether its pods expect this token could not be determined; stopping rather than apply over it"
+  grep -Fxq -- "$want_arg" <<<"$tpl_cmd" \
+    || die "sandboxtemplate/$TEMPLATE already exists and its hands container does not run sandboxd with this token's digest (it is from an earlier version of this sample, or the token Secret was recreated). Its warm pods would not be replaced by applying over it. $stale_hint"
+  pods="$(kc get pods -l app=hands -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)" \
+    || die "could not list the hands pods, so whether they expect this token could not be determined; stopping rather than apply over them"
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    pod_cmd="$(kc get pod "$p" -o jsonpath='{range .spec.containers[?(@.name=="hands")].command[*]}{@}{"\n"}{end}' 2>/dev/null)" \
+      || die "could not read pod/$p, so whether it expects this token could not be determined; stopping rather than apply over it"
+    grep -Fxq -- "$want_arg" <<<"$pod_cmd" \
+      || die "pod/$p is running without sandboxd and this token's digest (it was booted from an earlier template). The pool would keep serving it. $stale_hint"
+  done <<<"$pods"
+  echo "  the existing template and hands pods already expect this token"
+fi
 
 step "7/7 the hands, then the brain"
 # The hands first: the template and the pool, so a warm pod is on its way

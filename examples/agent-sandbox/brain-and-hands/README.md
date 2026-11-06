@@ -36,7 +36,7 @@ and output never travel over it.
 
 Be precise about what that buys, because it is easy to overstate. Code the model decides to
 run never runs on the half that holds the credentials, and it cannot open a connection of
-its own. It is **not** an exfiltration boundary: every command's output comes back to the
+its own on the pod network. It is **not** an exfiltration boundary: every command's output comes back to the
 brain and goes into the next model request, and nothing in this sample restricts where the
 brain can connect. *[What this sample does not limit](#what-this-sample-does-not-limit)*
 below sets out where the boundaries actually are.
@@ -64,7 +64,7 @@ sample is the worked version of it.
   Role covers claims and Sandboxes only: no `pods/exec`, no `pods/log`, no
   `pods/portforward`. Step 6 runs a command and moves a file anyway, and step 12 shows the
   API refusing the brain every one of those subresources.
-- **The hands reach only the brain, and only the brain reaches them.** The template's
+- **The hands open no connection on the pod network, and only `app=brain` pods reach them.** The template's
   network policy has no egress rules, so a command in the hands cannot open a connection on
   the pod network; its ingress admits only pods in this namespace labelled `app=brain`, on
   TCP 8080 and 9090; and sandboxd refuses any request without the bearer token the brain
@@ -81,7 +81,7 @@ sample is the worked version of it.
 
 *Figure 1: The brain and the hands, in two pods. The brain reasons and holds the credentials but has no tool that runs a command; the hands run every command; the brain reaches them through sandboxd on two ports that the hands' network policy opens only to pods labelled app=brain.*
 
-![Inside an AWS Cloud frame and an Amazon EKS cluster whose sub line reads that one namespace holds both halves, an Operator glyph labelled kubectl exec connects into the brain pod frame, marked an ordinary pod with no runtimeClassName, which holds Claude Code labelled no tool that runs a command. On the right, a red Nitro sandbox pods frame marked isolated-sandbox holds a claimed pod box labelled runs every command and a warm pod box labelled pre-booted, waiting. A two-way arrow labelled sandboxd: 9090 gRPC, 8080 REST, with bearer token runs from the brain pod to the claimed pod through a red network policy funnel labelled ingress from app=brain only. Below, an arrow from the brain pod labelled create/read/delete claims, read Sandboxes reaches a Kubernetes API gear labelled control plane only. At the right, a SandboxWarmPool document stack labelled replicas: 1 connects up into the claimed pod over an arrow labelled adopt a pre-booted pod, and up into the warm pod over an arrow labelled pool boots a replacement. Below the cluster, an arrow from the brain pod labelled InvokeModel over HTTPS reaches Amazon Bedrock, labelled Claude model, which is joined by a plain line to a red Pod Identity role glyph labelled bedrock:InvokeModel only. A note below the figure reads that the hands open no connection and admit only the brain: the network policy has no egress rules, so a command in the hands can open no connection on the pod network, with no internet, no DNS and no Pod Identity endpoint, and its ingress admits only pods labelled app=brain on TCP 8080 and 9090; that the metadata endpoint inside the guest still answers but holds no role; and that sandboxd requires the bearer token, so a pod that is not the brain cannot drive it.](images/figure-1-brain-and-hands.png)
+![Inside an AWS Cloud frame and an Amazon EKS cluster whose sub line reads that one namespace holds both halves, an Operator glyph labelled kubectl exec connects into the brain pod frame, marked an ordinary pod with no runtimeClassName, which holds Claude Code labelled no tool that runs a command. On the right, a red Nitro sandbox pods frame marked isolated-sandbox holds a claimed pod box labelled runs every command and a warm pod box labelled pre-booted, waiting. A two-way arrow labelled sandboxd: 9090 gRPC, 8080 REST, with bearer token runs from the brain pod to the claimed pod through a red network policy funnel labelled ingress from app=brain only. Below, an arrow from the brain pod labelled claim and Sandbox lifecycle, create, get, list, watch, delete, reaches a Kubernetes API gear labelled control plane only. At the right, a SandboxWarmPool document stack labelled replicas: 1 connects up into the claimed pod over an arrow labelled adopt a pre-booted pod, and up into the warm pod over an arrow labelled pool boots a replacement. Below the cluster, an arrow from the brain pod labelled InvokeModel over HTTPS reaches Amazon Bedrock, labelled Claude model, which is joined by a plain line to a red Pod Identity role glyph labelled bedrock:InvokeModel only. A note below the figure reads that the hands open no connection on the pod network and admit only pods labelled app=brain: the network policy has no egress rules, so a command in the hands can open no connection on the pod network, with no internet, no DNS and no Pod Identity endpoint, and its ingress admits only pods labelled app=brain on TCP 8080 and 9090; that the metadata endpoint inside the guest still answers but holds no role; and that sandboxd requires the bearer token, so a pod without the token cannot drive it.](images/figure-1-brain-and-hands.png)
 
 ### What this sample does not limit
 
@@ -102,7 +102,8 @@ which is enforced on the node, does not reach it. It holds no role: step 11 show
 path returning 404. It is not the same thing as "no instance metadata", and the page does not
 claim that.
 
-**The split is not an exfiltration boundary.** The hands cannot open a connection, but
+**The split is not an exfiltration boundary.** The hands cannot open a connection on the pod
+network, but
 their output is meant to reach the model: the MCP server returns it to the brain, and the
 brain puts it in the next request. So anything the hands can read, the brain can carry, and
 nothing in this sample restricts where the brain can connect. What the split does is keep
@@ -217,18 +218,14 @@ List the models your account can invoke with
 **Step 3: Stand it up.** [`scripts/setup.sh`](scripts/setup.sh) checks the shared installs
 and the enforcement setting first, so a missing prerequisite stops the run before anything is
 created, then builds and pushes the brain image, creates the brain's role, mints the sandboxd
-token, and applies the hands and the brain:
-
-```bash
-./scripts/setup.sh 2>&1 | tee setup.log
-```
-
-The commands from step 3 on use the names in `.env`, and your current kube context. Load
-the names into your shell, and point the context at the cluster `.env` names:
+token, and applies the hands and the brain. The scripts read `.env` themselves; the commands
+after setup use the same names, so load them into your shell first, and send every `kubectl`
+below to the context `.env` names (the alias does nothing when `KUBE_CONTEXT` is empty):
 
 ```bash
 set -a; . ./.env; set +a
-kubectl config current-context
+[ -n "$KUBE_CONTEXT" ] && alias kubectl="kubectl --context $KUBE_CONTEXT"
+./scripts/setup.sh 2>&1 | tee setup.log
 ```
 
 The run below used `AWS_REGION=us-east-1`, so that Region appears in its output; the
@@ -506,7 +503,7 @@ kubectl -n $NAMESPACE get sandboxclaim
 kubectl -n $NAMESPACE get sandbox \
   -o custom-columns='NAME:.metadata.name,LAUNCH-TYPE:.metadata.labels.agents\.x-k8s\.io/launch-type'
 kubectl -n $NAMESPACE get sandboxwarmpool hands-pool
-sleep 20; kubectl -n $NAMESPACE get sandboxwarmpool hands-pool
+sleep 20; echo "# 20 seconds later"; kubectl -n $NAMESPACE get sandboxwarmpool hands-pool
 ```
 
 ```text
@@ -603,7 +600,8 @@ hands-pool-mfvxq         <NODE_A>   isolated-sandbox
 The runtime class shows what was asked for rather than what ran, which is why the readings
 above come first.
 
-**Step 9: The hands open no connection, and admit only the brain.** The policy is part of the
+**Step 9: The hands open no connection on the pod network, and admit only `app=brain` pods.**
+The policy is part of the
 template in [`deploy/warm-pool.yaml`](deploy/warm-pool.yaml), and the agent-sandbox
 controller writes it as one `NetworkPolicy` for every pod made from the template:
 

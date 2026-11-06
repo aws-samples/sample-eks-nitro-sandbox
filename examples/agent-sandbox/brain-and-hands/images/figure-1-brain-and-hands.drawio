@@ -108,7 +108,7 @@
         </mxCell>
 
         <!-- The brain's control path to the Kubernetes API -->
-        <mxCell id="e-brain-api" value="create/read/delete claims&lt;br&gt;read Sandboxes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=0.85;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="brain-frame" target="k8s-api">
+        <mxCell id="e-brain-api" value="claim and Sandbox lifecycle&lt;br&gt;create, get, list, watch, delete" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=0.85;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="brain-frame" target="k8s-api">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="700" y="760" />
@@ -133,7 +133,7 @@
         </mxCell>
 
         <!-- Note under the figure -->
-        <mxCell id="note" value="&lt;div style=&quot;line-height:20px&quot;&gt;&lt;b&gt;The hands open no connection, and admit only the brain:&lt;/b&gt; the network policy has no egress rules, so a command in the hands can open no connection on the pod network (no internet, no DNS, no Pod Identity endpoint); its ingress admits only pods labelled app=brain on TCP 8080 and 9090.&lt;/div&gt;&lt;div style=&quot;line-height:20px&quot;&gt;The metadata endpoint inside the guest still answers, but holds no role. sandboxd requires the bearer token: a pod that is not the brain cannot drive it.&lt;/div&gt;" style="text;html=1;whiteSpace=nowrap;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacing=0;fontSize=16;fontColor=#5F6B7A;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+        <mxCell id="note" value="&lt;div style=&quot;line-height:20px&quot;&gt;&lt;b&gt;The hands open no connection on the pod network, and admit only app=brain pods:&lt;/b&gt; the network policy has no egress rules, so a command in the hands reaches no internet, no DNS and no Pod Identity endpoint.&lt;/div&gt;&lt;div style=&quot;line-height:20px&quot;&gt;Its ingress admits only pods labelled app=brain, on TCP 8080 and 9090. sandboxd requires the bearer token: a pod without the token cannot drive it.&lt;/div&gt;&lt;div style=&quot;line-height:20px&quot;&gt;The metadata endpoint inside the guest still answers, but holds no role.&lt;/div&gt;" style="text;html=1;whiteSpace=nowrap;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacing=0;fontSize=16;fontColor=#5F6B7A;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
           <mxGeometry x="280" y="1240" width="1060" height="48" as="geometry" />
         </mxCell>
       </root>
