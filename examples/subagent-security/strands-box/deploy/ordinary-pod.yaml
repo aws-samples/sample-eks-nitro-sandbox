@@ -1,0 +1,25 @@
+# Run beside the analyst on the same worker for guest/worker observations.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ordinary-control
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+spec:
+  nodeName: <NODE_NAME>
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+  containers:
+    - name: control
+      image: <ANALYST_IMAGE>
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        seccompProfile: {type: RuntimeDefault}
+        capabilities: {drop: ["ALL"]}

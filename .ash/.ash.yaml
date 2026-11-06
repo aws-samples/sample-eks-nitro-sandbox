@@ -1887,6 +1887,107 @@ global_settings:
       path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
       reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
       expiration: '2027-01-31'
+    # Strands Box: exact sample exceptions. Privileged Nitro configuration is a documented
+    # demonstration tradeoff, not evidence that its capabilities are minimal. Revisit
+    # these short-lived risk exceptions before using this setup for customer workloads.
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/subagent-security/strands-box/versions.json'
+      line_start: 2
+      line_end: 2
+      reason: 'Public upstream Box commit revision, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/subagent-security/strands-box/versions.json'
+      line_start: 9
+      line_end: 9
+      reason: 'Public Box release archive SHA-256 verified by Dockerfile before extraction, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'scripts/test-strands-box-lifecycle.py'
+      line_start: 230
+      line_end: 230
+      reason: 'Synthetic Kubernetes Secret reference named fixture used to prove verify_pod rejects Secret volumes; no secret value'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_14
+      path: 'examples/subagent-security/strands-box/deploy/ordinary-pod.yaml'
+      reason: 'Template image placeholder; scripts/image.sh resolves and validates the ECR SHA-256 digest before rendering the immutable image reference'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_14
+      path: 'examples/subagent-security/strands-box/deploy/analyst-pod.yaml'
+      reason: 'Template image placeholder; scripts/image.sh resolves and validates the ECR SHA-256 digest before rendering the immutable image reference'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_14
+      path: 'examples/subagent-security/strands-box/deploy/eks-analyst-pod.yaml'
+      reason: 'Template image placeholder; scripts/image.sh resolves and validates the ECR SHA-256 digest before rendering the immutable image reference'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_14
+      path: 'examples/subagent-security/strands-box/deploy/supplier-api.yaml'
+      reason: 'Template image placeholder; scripts/image.sh resolves and validates the ECR SHA-256 digest before rendering the immutable image reference'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/subagent-security/strands-box/deploy/ordinary-pod.yaml'
+      reason: 'Idle sleep process driven by kubectl exec; run.sh checks each invoked operation and cleanup removes the pod, so restarting the sleep process adds no workflow health check'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/subagent-security/strands-box/deploy/analyst-pod.yaml'
+      reason: 'Idle sleep process driven by kubectl exec; run.sh checks each invoked operation and cleanup removes the pod, so restarting the sleep process adds no workflow health check'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/subagent-security/strands-box/deploy/eks-analyst-pod.yaml'
+      reason: 'Idle sleep process driven by kubectl exec; run.sh checks each invoked operation and cleanup removes the pod, so restarting the sleep process adds no workflow health check'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/subagent-security/strands-box/deploy/ordinary-pod.yaml'
+      reason: 'Temporary sleep-only comparison pod; run.sh waits for Running before executing the kernel observation, with no service traffic to gate'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/subagent-security/strands-box/deploy/ordinary-pod.yaml'
+      reason: 'Temporary kernel comparison pod has no service or workflow traffic; this lesson does not configure cluster network policy'
+      expiration: '2027-01-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/subagent-security/strands-box/deploy/supplier-api.yaml'
+      reason: 'Synthetic unauthenticated HTTP fixture accepts controller and Box probes; README limits it to a dedicated sample namespace and links the network-policy lesson'
+      expiration: '2027-01-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/subagent-security/strands-box/deploy/analyst-pod.yaml'
+      reason: 'Lesson tests Box role egress policy, not pod-wide filtering; trusted controller network access is outside that boundary and README links the separate network-policy lesson'
+      expiration: '2027-01-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/subagent-security/strands-box/deploy/eks-analyst-pod.yaml'
+      reason: 'Lesson tests Box role egress policy, not pod-wide filtering; trusted controller network access is outside that boundary and README links the separate network-policy lesson'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/subagent-security/strands-box/deploy/ordinary-pod.yaml'
+      reason: 'Comparison uses the same fixed image UID 1000 as the analyst; no host mounts, privileged mode, or capabilities are granted'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/subagent-security/strands-box/deploy/analyst-pod.yaml'
+      reason: 'Trusted controller uses image UID 1000; the one-shot root init sets max_user_namespaces inside the dedicated Nitro guest. No worker-node mount is exposed'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_16
+      path: 'examples/subagent-security/strands-box/deploy/analyst-pod.yaml'
+      reason: 'Documented tested sample uses privileged init and controller only inside runtimeClassName isolated-sandbox; Box contains role processes. Minimum container capabilities have not been established'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/subagent-security/strands-box/deploy/analyst-pod.yaml'
+      reason: 'Privileged Nitro guest containers permit escalation; controller and guest sysctl init are trusted. This sample does not claim an unprivileged controller or hardened container boundary'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/subagent-security/strands-box/deploy/analyst-pod.yaml'
+      reason: 'Privileged Nitro guest setup retains NET_RAW as part of its current capability set. Minimum capabilities are unqualified; Box role restrictions are a separate inner boundary'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/subagent-security/strands-box/deploy/analyst-pod.yaml'
+      reason: 'Privileged Nitro guest setup retains container capabilities; README documents this outer-container tradeoff and does not claim the capability set is minimal'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/subagent-security/strands-box/deploy/analyst-pod.yaml'
+      reason: 'Privileged Nitro guest container does not enforce an outer seccomp filter; Box applies its role sandbox inside that guest. This exception is not valid for an ordinary privileged worker pod'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/subagent-security/strands-box/deploy/eks-analyst-pod.yaml'
+      reason: 'Optional ordinary EKS uses Unconfined so Box can create nested namespaces and mounts; hostUsers false, no privilege escalation, and dropped capabilities remain explicit. Admission must permit this setting'
+      expiration: '2027-01-31'
 scanners:
   cdk-nag:
     enabled: false  # no CloudFormation or CDK here; it fails to parse the multi-document Kubernetes manifests
