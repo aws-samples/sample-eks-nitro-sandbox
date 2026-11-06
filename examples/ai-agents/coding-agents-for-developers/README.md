@@ -398,11 +398,15 @@ only Delete removes the folder.*
 
 A session keeps its access point while anything may still have its folder mounted: while
 the app tracks it, while a start is in flight, while any claim for it exists, and, after a
-stop that failed, until the recorded pod is confirmed gone. Once a minute, the app deletes
-the access point of every recorded session that has none of those. That is how an
-access-point delete that failed is retried, and how an install from before session records
-is brought over: on its first start the app gives each existing access point a record, and
-the next minute deletes those of the sessions with no pod.
+stop that failed, until the recorded pod is confirmed gone. A background sweep, which
+starts a minute after its last pass ends, deletes the access point of every recorded session
+that has none of those. That is how an access-point delete that failed after a Close is
+retried (Close itself still succeeds: the session is stopped and its folder is kept), and
+how an install from before session records is brought over: the app gives each existing
+access point a record, and the sweep deletes those of the sessions with no pod. A pass
+works through eight sessions at a time, so with a large backlog one pass can take well over
+a minute. A Restore never reuses an access point the app has asked to delete; it makes a
+new one on the same folder.
 
 **A file written just before Delete does not come back.** On a run of this sample, 30
 files were written into a running pi session's `project/` folder and the session was

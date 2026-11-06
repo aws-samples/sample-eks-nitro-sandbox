@@ -171,6 +171,9 @@ async function startOnce(developer, cli, session, { resume = false } = {}) {
 // at that pod; a failed stop is recorded first, or the claim is kept.
 function cleanUpFailedStart(session, claimName, podName) {
     serialized(session, async () => {
+      // Never leave an entry for the pod this clean up stops (a retried pick-up queued ahead
+      // of it could have adopted it).
+      if (live.get(session)?.podName === podName) live.delete(session);
       // If the claim cannot be read, or no longer points at this pod, leave it: a later
       // Close or Delete finds the claim and stops whatever pod it has.
       let current;
@@ -221,9 +224,9 @@ let pickUpFailed = false;
 // Set by a pick-up that finished but could not pick up every claim; the sweep loop then runs
 // it again (without holding up the sweep).
 let pickUpIncomplete = false;
-export function adoptRunningSessions() {
+export function adoptRunningSessions({ retry = false } = {}) {
   if (!pickUp) {
-    pickUp = Promise.resolve().then(pickUpRunningSessions).catch((e) => { pickUpFailed = true; throw e; });
+    pickUp = Promise.resolve().then(() => pickUpRunningSessions(retry)).catch((e) => { pickUpFailed = true; throw e; });
   }
   return pickUp;
 }
@@ -252,7 +255,7 @@ async function recordFromAccessPoints(aps, records) {
   return records;
 }
 
-async function pickUpRunningSessions() {
+async function pickUpRunningSessions(retry) {
   const aps = await store.listAllAccessPoints();
   const records = await recordFromAccessPoints(aps, new Map((await k8s.listSessionRecords()).map((r) => [r.session, r])));
   const claims = await k8s.listSessionClaims();
@@ -271,6 +274,12 @@ async function pickUpRunningSessions() {
     if (!claimName.startsWith("agent-")) return;
     const session = claimName.slice("agent-".length);
     if (!isSessionName(session) || k8s.claimNameFor(session) !== claimName) return;
+    // A start in flight owns the claim: the first pick-up never sees one (requests wait for
+    // it), but a retried one can. Look again next minute, after that start or its clean up.
+    if (retry && starting.has(session)) { incomplete = true; return; }
+    // A claim with no pod yet (the app restarted between creating it and the pod being
+    // assigned): look again next minute.
+    if (!podName) { if (!starting.has(session)) incomplete = true; return; }
     const s = bySession.get(session);
     if (live.has(session)) return;
     // No record or no access point in this pick-up's listing: unless a start is making it
@@ -422,7 +431,7 @@ async function sweepAccessPoints() {
       }
       if (await k8s.claimExists(k8s.claimNameFor(a.session))) return;
       await store.deleteAccessPoint(a.apId, a.status, { wait: false });
-      console.log(`session ${a.session}: access point deleted, the session has no pod`);
+      console.log(`session ${a.session}: access point delete requested, the session has no pod`);
     }).catch((e) => console.error(`session ${a.session}: access-point sweep: ${e?.message || e}`)));
 }
 
@@ -580,14 +589,14 @@ export async function sweepTick() {
     pickUpFailed = false;
     pickUp = null;
     console.error("picking up running sessions again: the last pick-up failed");
-    await adoptRunningSessions().catch((e) => console.error(`pick-up failed again, will retry next minute: ${e?.message || e}`));
+    await adoptRunningSessions({ retry: true }).catch((e) => console.error(`pick-up failed again, will retry next minute: ${e?.message || e}`));
     if (pickUpFailed) return;
   } else if (pickUpIncomplete) {
     // A pick-up that finished without every claim: run it again for the ones it missed (the
     // ones it got are live and skipped). The sweep below still runs; a claim protects an
     // unpicked running session's access point meanwhile.
     pickUp = null;
-    await adoptRunningSessions().catch((e) => console.error(`pick-up failed, will retry next minute: ${e?.message || e}`));
+    await adoptRunningSessions({ retry: true }).catch((e) => console.error(`pick-up failed, will retry next minute: ${e?.message || e}`));
   }
   await sweepAccessPoints().catch((e) => console.error(`access-point sweep: ${e?.message || e}`));
 }

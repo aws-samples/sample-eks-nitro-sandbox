@@ -111,15 +111,17 @@ async function waitForClaimPod(claimName, timeoutMs = 120000) {
 
 // Every session claim this sample made, with the pod each resolved to: [{ claimName,
 // podName }]. Used at app start to pick up sessions that kept running while the app
-// restarted. Claims without a pod yet are skipped.
+// restarted.
 export async function listSessionClaims() {
   const out = await custom.listNamespacedCustomObject({
     group: GROUP, version: VERSION, namespace: NAMESPACE, plural: "sandboxclaims",
     labelSelector: "app.kubernetes.io/part-of=coding-agents-for-developers",
   });
+  // A claim with no pod yet is returned too (podName undefined): the pick-up looks again
+  // once it has one.
   return (out?.items ?? [])
     .map((c) => ({ claimName: c.metadata?.name, podName: c.status?.sandbox?.name }))
-    .filter((c) => c.claimName && c.podName);
+    .filter((c) => c.claimName);
 }
 
 // The names of every claim this sample made, whether or not it has a pod yet. The access-

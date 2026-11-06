@@ -61,9 +61,13 @@ export async function ensureAccessPoint(developer, session, cli) {
 
   // One left by an earlier run: reuse it if it is (or is becoming) available. One that is
   // being deleted, or failed, cannot be mounted: wait until it is gone, then make a new one.
+  // One this process asked to delete is never reused, whatever a listing says: a listing can
+  // still show it available for a moment after the delete was accepted. A new one is made
+  // on the same folder instead.
   const existing = await findAccessPoint(developer, session);
-  if (existing && (existing.status === "available" || existing.status === "creating")) return existing;
-  if (existing) await deleteAccessPoint(existing.apId, existing.status);
+  if (existing && !deleteRequested.has(existing.apId) &&
+      (existing.status === "available" || existing.status === "creating")) return existing;
+  if (existing && !deleteRequested.has(existing.apId)) await deleteAccessPoint(existing.apId, existing.status);
 
   // posixUser pins every client of this access point to uid/gid 1000, so files the CLI
   // writes are owned by the dev user and scoping is by access point. creationPermissions
@@ -106,19 +110,25 @@ function parseRoot(path) {
 
 // List every access point, paginated, and parse each path: [{ apId, status, developer,
 // cli, session }]. No per-access-point tag read: one page call per page of access points.
+// Access points this process asked to delete, until a listing no longer shows them at all.
+const deleteRequested = new Set();
+
 export async function listAllAccessPoints({ includeDeleted = false } = {}) {
   const all = [];
+  const seen = new Set();
   let token;
   do {
     const out = await s3files.send(
       new ListAccessPointsCommand({ fileSystemId: FS_ID, nextToken: token })
     );
     for (const ap of out.accessPoints ?? []) {
+      seen.add(ap.accessPointId);
       const parsed = parseRoot(ap.rootDirectory?.path);
       if (parsed && (includeDeleted || ap.status !== "deleted")) all.push({ apId: ap.accessPointId, status: ap.status, ...parsed });
     }
     token = out.nextToken;
   } while (token);
+  for (const id of deleteRequested) if (!seen.has(id)) deleteRequested.delete(id);
   return all;
 }
 
@@ -141,21 +151,28 @@ export async function releaseAccessPoint(developer, session) {
 // point goes anyway (a timeout after it succeeded); one already being deleted is only
 // waited for. Throws if it is still listed after waitMs. Exported for the sweep, which has
 // the id from its own listing and passes wait: false, so its work stays one listing per
-// sweep: a Restore of that session later waits out a deleting access point in
-// ensureAccessPoint, so nothing depends on the sweep's delete having finished.
+// sweep. A Restore of that session afterwards never reuses it (deleteRequested), even while a
+// listing still shows it available, and makes a new access point on the same folder.
 export const apDeleteTiming = { pollMs: 1000, waitMs: 60000 };
 export async function deleteAccessPoint(apId, status, { wait = true } = {}) {
   let callError = null;
   if (status !== "deleting") {
     try {
       await s3files.send(new DeleteAccessPointCommand({ accessPointId: apId }));
+      deleteRequested.add(apId);
     } catch (e) {
       if (e?.name === "ResourceNotFoundException" || e?.$metadata?.httpStatusCode === 404) return;
       callError = e;
+      // A refusal the service gave (a 4xx other than throttling) did not delete anything. Any
+      // other failure (a timeout, a 5xx) may have, so never reuse this access point.
+      const code = e?.$metadata?.httpStatusCode;
+      if (!(code >= 400 && code < 500 && code !== 429)) deleteRequested.add(apId);
     }
+  } else {
+    deleteRequested.add(apId);
   }
   if (!wait) {
-    if (callError) throw callError;
+    if (callError && !deleteRequested.has(apId)) throw callError;
     return;
   }
   // Confirm by listing, counting a "deleted" entry as still there, until it is absent.
@@ -166,9 +183,10 @@ export async function deleteAccessPoint(apId, status, { wait = true } = {}) {
   for (;;) {
     const ap = (await listAllAccessPoints({ includeDeleted: true })).find((a) => a.apId === apId);
     if (!ap) return;
-    // A failed call whose delete did not start: report it. One deleting or deleted is going.
-    if (callError && ap.status !== "deleting" && ap.status !== "deleted") throw callError;
-    if (Date.now() >= deadline) throw new Error(`access point ${apId} is still listed ${apDeleteTiming.waitMs / 1000} s after its delete`);
+    // A delete the service refused did not start: report it. Any other failed call may have
+    // gone through, so keep looking (a listing can lag the delete) until the deadline.
+    if (callError && !deleteRequested.has(apId)) throw callError;
+    if (Date.now() >= deadline) throw callError || new Error(`access point ${apId} is still listed ${apDeleteTiming.waitMs / 1000} s after its delete`);
     await sleep(apDeleteTiming.pollMs);
   }
 }
