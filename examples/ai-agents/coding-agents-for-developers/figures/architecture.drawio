@@ -49,7 +49,7 @@
         </mxCell>
 
         <!-- S3 Files access point (right column, well separated) -->
-        <mxCell id="s3files" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;S3 Files access point&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;one per session&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elastic_file_system;spacing=0;fontSize=24;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+        <mxCell id="s3files" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;S3 Files access point&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;per running session&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elastic_file_system;spacing=0;fontSize=24;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
           <mxGeometry x="1960" y="220" width="80" height="80" as="geometry" />
         </mxCell>
         <!-- S3 bucket -->
