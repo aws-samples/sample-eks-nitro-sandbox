@@ -421,7 +421,7 @@ async function sweepAccessPoints() {
         await k8s.clearPendingStop(a.session);
       }
       if (await k8s.claimExists(k8s.claimNameFor(a.session))) return;
-      await store.deleteAccessPoint(a.apId, a.status);
+      await store.deleteAccessPoint(a.apId, a.status, { wait: false });
       console.log(`session ${a.session}: access point deleted, the session has no pod`);
     }).catch((e) => console.error(`session ${a.session}: access-point sweep: ${e?.message || e}`)));
 }

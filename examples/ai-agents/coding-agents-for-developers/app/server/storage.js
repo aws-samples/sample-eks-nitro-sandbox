@@ -18,7 +18,6 @@ import {
   S3FilesClient,
   CreateAccessPointCommand,
   DeleteAccessPointCommand,
-  GetAccessPointCommand,
   ListAccessPointsCommand,
 } from "@aws-sdk/client-s3files";
 import { STSClient, AssumeRoleCommand } from "@aws-sdk/client-sts";
@@ -107,7 +106,7 @@ function parseRoot(path) {
 
 // List every access point, paginated, and parse each path: [{ apId, status, developer,
 // cli, session }]. No per-access-point tag read: one page call per page of access points.
-export async function listAllAccessPoints() {
+export async function listAllAccessPoints({ includeDeleted = false } = {}) {
   const all = [];
   let token;
   do {
@@ -116,7 +115,7 @@ export async function listAllAccessPoints() {
     );
     for (const ap of out.accessPoints ?? []) {
       const parsed = parseRoot(ap.rootDirectory?.path);
-      if (parsed && ap.status !== "deleted") all.push({ apId: ap.accessPointId, status: ap.status, ...parsed });
+      if (parsed && (includeDeleted || ap.status !== "deleted")) all.push({ apId: ap.accessPointId, status: ap.status, ...parsed });
     }
     token = out.nextToken;
   } while (token);
@@ -141,9 +140,11 @@ export async function releaseAccessPoint(developer, session) {
 // after never finds it half-deleted. A delete call that failed counts as done if the access
 // point goes anyway (a timeout after it succeeded); one already being deleted is only
 // waited for. Throws if it is still listed after waitMs. Exported for the sweep, which has
-// the id from its own listing.
+// the id from its own listing and passes wait: false, so its work stays one listing per
+// sweep: a Restore of that session later waits out a deleting access point in
+// ensureAccessPoint, so nothing depends on the sweep's delete having finished.
 export const apDeleteTiming = { pollMs: 1000, waitMs: 60000 };
-export async function deleteAccessPoint(apId, status) {
+export async function deleteAccessPoint(apId, status, { wait = true } = {}) {
   let callError = null;
   if (status !== "deleting") {
     try {
@@ -153,19 +154,20 @@ export async function deleteAccessPoint(apId, status) {
       callError = e;
     }
   }
-  // Confirm by id: one GetAccessPoint per poll, whatever the number of access points, until
-  // the service answers not-found ("deleted" is still not gone).
+  if (!wait) {
+    if (callError) throw callError;
+    return;
+  }
+  // Confirm by listing, counting a "deleted" entry as still there, until it is absent.
+  // (GetAccessPoint cannot confirm it: for an access point that no longer exists, the App
+  // role's request is refused as unauthorized, since its policy names access points under
+  // this file system, rather than answered not-found.)
   const deadline = Date.now() + apDeleteTiming.waitMs;
   for (;;) {
-    let status;
-    try {
-      status = (await s3files.send(new GetAccessPointCommand({ accessPointId: apId })))?.status;
-    } catch (e) {
-      if (e?.name === "ResourceNotFoundException" || e?.$metadata?.httpStatusCode === 404) return;
-      throw e;
-    }
+    const ap = (await listAllAccessPoints({ includeDeleted: true })).find((a) => a.apId === apId);
+    if (!ap) return;
     // A failed call whose delete did not start: report it. One deleting or deleted is going.
-    if (callError && status !== "deleting" && status !== "deleted") throw callError;
+    if (callError && ap.status !== "deleting" && ap.status !== "deleted") throw callError;
     if (Date.now() >= deadline) throw new Error(`access point ${apId} is still listed ${apDeleteTiming.waitMs / 1000} s after its delete`);
     await sleep(apDeleteTiming.pollMs);
   }
