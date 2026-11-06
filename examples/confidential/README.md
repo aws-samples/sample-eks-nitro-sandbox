@@ -1,12 +1,12 @@
 # Confidential sandboxes: attestation, not credentials
 
-The samples in this section use `runtimeClassName: confidential-sandbox`, which treats the
+The blueprints in this section use `runtimeClassName: confidential-sandbox`, which treats the
 node as untrusted. Each one gives a workload something only the sandbox should be able to
 read, and makes AWS KMS, outside the cluster, decide whether to release the key.
 
 This page is the part they share: the trust boundary, the shape of the KMS key policy, the
-attested decrypt, how a sample proves it ran in a sandbox, and what the measurement does
-and does not bind. Each sample's page links here instead of restating it, and reuses the
+attested decrypt, how a blueprint proves it ran in a sandbox, and what the measurement does
+and does not bind. Each blueprint's page links here instead of restating it, and reuses the
 templates in [`_shared/`](#the-shared-files).
 
 ## The trust boundary
@@ -21,7 +21,7 @@ The figure shows how the pieces on this page fit together. The node sits outside
 boundary, and it can use the pod's Pod Identity credentials. Inside the sandbox, the agent
 measures the pod's Cedar policy into `PCR17`, and a guest caller asks the Nitro Secure
 Module for an attestation document carrying a public key of its own. The guest caller is
-the workload in the two application samples, and the guest image runtime in
+the workload in the two application blueprints, and the guest image runtime in
 [encrypted-image](encrypted-image/README.md). AWS KMS, outside the cluster, allows
 `kms:Decrypt` to the pod's role only when the attestation also matches the key policy, and
 it returns the key wrapped to the guest's public key, so only the guest can unwrap it. The
@@ -34,14 +34,14 @@ can open it.*
 
 ![A focused view of a confidential pod. On the left, outside the AWS Cloud frame, a Cedar policy from the generator reaches the sandbox as a pod annotation. Inside the AWS Cloud frame, an EKS node frame, labelled parent instance, not trusted, holds a Nitro sandbox pod frame labelled confidential-sandbox, own kernel, encrypted overlay. In the sandbox, the annotation arrives at the agent, which measures the policy; an arrow labelled measured into PCR17 goes from the agent to the Nitro Secure Module, which signs the attestation; a two-way arrow labelled attest(public key) joins the Nitro Secure Module and the guest caller, which is the workload or the image runtime. From the guest caller, an arrow labelled kms:Decrypt plus attestation goes to AWS KMS, the attestation gate, outside the node, and an arrow labelled key wrapped to the guest comes back. Below the sandbox, still on the node, are the kubelet, which runs outside the guest, and the Pod Identity credentials, which the node can use; a red dashed arrow from the credentials to AWS KMS is labelled refused: no attestation. A note under AWS KMS reads: key policy, allow the pod's role kms:Decrypt only when PCR17 and PCR8:ServiceName match, explicitly deny otherwise.](images/figure-1-confidential-pod.png)
 
-Two consequences shape every sample here.
+Two consequences shape every blueprint here.
 
 - **Credentials are not a secret.** The parent instance can obtain the same EKS Pod
   Identity credentials the workload uses, either by reading them as they are delivered or
   by minting them from the kubelet's own Kubernetes credentials and the node role. IAM
   conditions such as `aws:SourceVpc`, principal tags and session tags do not tell the
   sandbox apart from the parent instance (Amazon EKS User Guide, *Security model and parent
-  instance trust assumptions*). So a sample never relies on the pod's credentials staying
+  instance trust assumptions*). So a blueprint never relies on the pod's credentials staying
   secret: it assumes anything the role permits is reachable from outside the sandbox, and
   gives the role nothing but a conditional grant.
 - **Measurement without a verifier decides nothing.** The sandbox measures the pod's Cedar
@@ -80,13 +80,13 @@ is what the key policy is set to expect. The Amazon EKS User Guide names two reg
 Source for both, and for the generator's predicted value: Amazon EKS User Guide, *Cedar
 policies*, and *Security model and parent instance trust assumptions*.
 
-The [cedar-policy](../policy/cedar-policy/README.md) sample under Policy is the place to
+The [cedar-policy](../policy/cedar-policy/README.md) blueprint under Policy is the place to
 start if you have not generated a policy before. It shows the generation, what the policy
 pins, and the guest enforcing it, and stops short of attestation.
 
 ## The KMS key policy
 
-Every sample here puts the same shape on its key, in
+Every blueprint here puts the same shape on its key, in
 [`_shared/kms-key-policy.json`](_shared/kms-key-policy.json): allow on a matching
 attestation, explicitly deny otherwise.
 
@@ -110,7 +110,7 @@ The administration statement replaces the
 broad "Enable IAM policies" statement, which would otherwise let any sufficiently
 privileged identity in the account decrypt.
 
-**The role carries no identity policy.** Each sample gives the pod a dedicated role with
+**The role carries no identity policy.** Each blueprint gives the pod a dedicated role with
 nothing attached or inline, and scopes its trust policy to one cluster, namespace and
 service account with the `aws:RequestTag` conditions EKS Pod Identity sets
 ([`_shared/pod-identity/role-trust-policy.json`](_shared/pod-identity/role-trust-policy.json)).
@@ -118,7 +118,7 @@ Everything the role may do is in the key policy, where the attestation condition
 there is no second path to `kms:Decrypt` that skips the gate. The setup scripts check for
 identity policies on the role and stop if they find one.
 
-**What these samples pin.** Exactly two conditions, which are the ones the policy
+**What these blueprints pin.** Exactly two conditions, which are the ones the policy
 generator prints for you to paste (Amazon EKS User Guide, *Cedar policies*):
 
 ```json
@@ -132,7 +132,7 @@ generator prints for you to paste (Amazon EKS User Guide, *Cedar policies*):
 
 Several `kms:RecipientAttestation:*` keys in one `StringEqualsIgnoreCase` block are
 combined with AND, so a key policy can pin more registers than this, and every one listed
-then has to match before `Decrypt` succeeds. These samples pin no more than the two above,
+then has to match before `Decrypt` succeeds. These blueprints pin no more than the two above,
 so that what they install is exactly what the generator emitted, with nothing added by
 hand.
 
@@ -173,10 +173,10 @@ response    = KMS.Decrypt(CiphertextBlob = wrapped_key, Recipient = attestation)
 plaintext   = unwrap(response.CiphertextForRecipient, ephemeral_private_key)
 ```
 
-Which component does this differs by sample. In
+Which component does this differs by blueprint. In
 [encrypted-image](encrypted-image/README.md) the caller is the guest's own image runtime,
 before the container starts, and the workload image contains no KMS code at all. In the
-two application samples the workload makes the call itself.
+two application blueprints the workload makes the call itself.
 
 **An attestation document names the instance.** It includes a module identifier of the form
 `i-<instance-id>-enc<enclave-id>`, so anyone who receives one can tell which EC2 instance
@@ -184,10 +184,10 @@ the sandbox is running on. Do not treat placement as confidential if you share a
 documents with third parties (Amazon EKS User Guide, *Security model and parent instance
 trust assumptions*).
 
-## How these samples prove a pod ran in a sandbox
+## How these blueprints prove a pod ran in a sandbox
 
 The generated confidential policy denies `exec`, so the usual way of reading a pod from the
-outside is not available, by design. Every sample here has its container print its own
+outside is not available, by design. Every blueprint here has its container print its own
 readings at start-up and reads them with `kubectl logs`, which the policy permits, and runs
 an ordinary pod on the same node for comparison:
 
@@ -207,15 +207,15 @@ introduces these readings.
 
 | File | What it is |
 |---|---|
-| [`_shared/confidential-profile.yaml`](_shared/confidential-profile.yaml) | The generator profile the samples pass to `--profile`: the confidential posture, reduced to the fields the current preview guest's policy schema defines |
+| [`_shared/confidential-profile.yaml`](_shared/confidential-profile.yaml) | The generator profile the blueprints pass to `--profile`: the confidential posture, reduced to the fields the current preview guest's policy schema defines |
 | [`_shared/kms-key-policy.json`](_shared/kms-key-policy.json) | The key policy template described above, with placeholders a setup script fills in |
 | [`_shared/pod-identity/role-trust-policy.json`](_shared/pod-identity/role-trust-policy.json) | The Pod Identity role trust policy, scoped to one cluster, namespace and service account |
-| [`_shared/attested_recipient.py`](_shared/attested_recipient.py) | The attested decrypt above, as Python: the ephemeral key, the attestation document from the Nitro Secure Module, and the unwrap of `CiphertextForRecipient`. Used by the samples whose workload calls KMS itself |
+| [`_shared/attested_recipient.py`](_shared/attested_recipient.py) | The attested decrypt above, as Python: the ephemeral key, the attestation document from the Nitro Secure Module, and the unwrap of `CiphertextForRecipient`. Used by the blueprints whose workload calls KMS itself |
 
 Each template keeps its explanation in a `_comment` key, which a setup script drops before
 passing the document to AWS.
 
-## The samples
+## The blueprints
 
 - [encrypted-image](encrypted-image/README.md): an image whose every layer is ciphertext in
   Amazon ECR, decrypted inside the sandbox by the guest image runtime after KMS checks the
@@ -228,18 +228,18 @@ passing the document to AWS.
   it is uploaded to Amazon S3, with its data key wrapped by KMS. The application in the
   sandbox makes the attested decrypt call itself, then decrypts the file in guest memory.
 
-One more page in this section is a reference rather than a sample:
+One more page in this section is a reference rather than a blueprint:
 
 - [signer-policy](signer-policy/README.md): how a generated Cedar policy pins the container
   to an exact image reference, and how naming an AWS Signer signing profile instead relaxes
-  that one pin. The three samples above link to it where they show their own image pin.
+  that one pin. The three blueprints above link to it where they show their own image pin.
 
-All three planned samples for this section are now here. See the
+All three planned blueprints for this section are now here. See the
 [roadmap](https://github.com/aws-samples/sample-eks-nitro-sandbox/blob/main/docs/ROADMAP.md).
 
 ## Before you run one
 
-Each sample's page lists what it needs, and they all share the
+Each blueprint's page lists what it needs, and they all share the
 [prerequisites](../README.md#prerequisites) on the home page: a cluster with the
 `confidential-sandbox` runtime class, and the policy generator on your `PATH`. The Amazon
 EKS User Guide, *Cedar policies*, names the generator.

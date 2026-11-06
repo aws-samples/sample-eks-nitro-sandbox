@@ -1,6 +1,6 @@
 # Generate a Cedar policy and watch the guest enforce it
 
-This sample generates a [Cedar](https://github.com/cedar-policy/cedar) policy from a
+This blueprint generates a [Cedar](https://github.com/cedar-policy/cedar) policy from a
 workload's own pod spec, attaches it to the pod, and shows the confidential sandbox guest
 enforce it. The expected container starts, and an operator who is allowed by Kubernetes to
 exec into the pod is still refused by the policy inside the guest. The pod runs in a Nitro
@@ -20,23 +20,23 @@ VM's internal control channel, not the network.
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
-sample first so you have a cluster with the runtime classes. This sample swaps
+blueprint first so you have a cluster with the runtime classes. This blueprint swaps
 `isolated-sandbox` for `confidential-sandbox`, and like hello sandbox's network-isolated
 variant it reads its proof from the pod's logs, because the generated policy refuses exec. The
 commands below use files from this repository, so clone it if you have not already, and run
-them from this sample's folder:
+them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/policy/cedar-policy
 ```
 
-This sample needs the Cedar policy generator the Amazon EKS User Guide names,
+This blueprint needs the Cedar policy generator the Amazon EKS User Guide names,
 `eks-nitro-sandbox-genpolicy`, on your `PATH`. See the Amazon EKS User Guide,
 *Isolated and confidential pods*, *Cedar policies*, for the generator and how to obtain it.
 The generator reports no version string of its own; the only pinned artifact is the
 workload's base image, resolved to a digest at policy-generation time and shown in the
-generated policy. A run creates no AWS resources: one small pod runs while the sample is up.
+generated policy. A run creates no AWS resources: one small pod runs while the blueprint is up.
 
 ## Overview
 
@@ -73,17 +73,17 @@ guest still denies the Exec action because the policy has no exec permit.*
 
 ![An operator on the left generates a Cedar policy from a pod spec with the policy generator's confidential profile, then attaches it to a Nitro sandbox pod inside an Amazon EKS cluster in the AWS Cloud. The pod runs under runtimeClassName confidential-sandbox. The guest Cedar policy admits the expected main container, which starts and logs a ready marker. The operator's kubectl exec reaches Kubernetes RBAC, which allows pods/exec, but the guest policy denies the Exec action, shown as a red dashed refused path, because the policy permits the container and log reads but has no exec permit.](images/figure-1-cedar-policy.png)
 
-This sample demonstrates policy enforcement inside the guest only. It makes no attestation and
+This blueprint demonstrates policy enforcement inside the guest only. It makes no attestation and
 no key-release decision; those belong to the planned Confidential section's attested-decryption
-samples. The generator does predict the policy's PCR17 measurement, which an external verifier
-such as AWS KMS would check before releasing a secret, but this sample does not use it.
+blueprints. The generator does predict the policy's PCR17 measurement, which an external verifier
+such as AWS KMS would check before releasing a secret, but this blueprint does not use it.
 
 ## Files
 
 | File | What it is |
 |---|---|
 | [`deploy/pod.yaml`](deploy/pod.yaml) | The workload: a confidential-sandbox pod with pinned identity, filesystem and capabilities |
-| [`deploy/namespace.yaml`](deploy/namespace.yaml) | The `cedar-policy-sample` namespace, labelled as the sample's own |
+| [`deploy/namespace.yaml`](deploy/namespace.yaml) | The `cedar-policy-sample` namespace, labelled as the blueprint's own |
 | [`policy/confidential-profile.yaml`](policy/confidential-profile.yaml) | The generator profile: the confidential posture, reduced for the preview guest schema |
 | [`policy/policy.generated.yaml`](policy/policy.generated.yaml) | The generated Cedar policy, committed so the page can show it without a run |
 | [`scripts/setup.sh`](scripts/setup.sh) | Generate the policy, attach it, apply the pod, wait for Ready |
@@ -95,11 +95,11 @@ such as AWS KMS would check before releasing a secret, but this sample does not 
 well as from other pods. Unlike `isolated-sandbox`, which applies a permissive built-in default
 when a pod carries no policy, confidential mode enforces a strict default-deny posture: a pod
 needs a Cedar policy that pins down what it may run (Amazon EKS User Guide, *Cedar policies*).
-That policy is the subject of this sample.
+That policy is the subject of this blueprint.
 
 **A reduced confidential profile.** The generator ships a built-in `confidential` profile, and
 the Amazon EKS User Guide also documents custom profiles: a YAML file passed to `--profile`
-where omitted fields take their defaults. This sample ships a custom profile,
+where omitted fields take their defaults. This blueprint ships a custom profile,
 [`policy/confidential-profile.yaml`](policy/confidential-profile.yaml). It pins the container
 admission fields (the image digest, process arguments, environment, working directory,
 hostname, mounts, identity, capabilities, security settings, masked and read-only paths,
@@ -109,7 +109,7 @@ current preview guest schema does not define yet: the OCI-hardening attributes a
 and encrypted ephemeral-layer enforcement is not required. On this preview guest the built-in
 `confidential` profile's policy is rejected at sandbox set-up, before any container starts; the
 reduced profile is accepted. When the preview guest schema defines those fields, generate with
-`--profile confidential` to pin them too; the exec and admission behaviour this sample shows is
+`--profile confidential` to pin them too; the exec and admission behaviour this blueprint shows is
 unchanged. The workload boots network-isolated, so the guest has no network, no Pod Identity
 and no NTP, and the fields the profile omits change nothing it relies on.
 
@@ -156,7 +156,7 @@ generator with the profile above, decodes the policy envelope into a readable fo
 repository's `tmp/`, renders the pod with the encoded policy in its
 `sandbox.amazonaws.com/policy` annotation, and applies the pod. It creates the
 `cedar-policy-sample` namespace only if it does not already exist, and reuses it only when it
-carries this sample's managed-by label, so it never adopts a namespace another demo owns. The
+carries this blueprint's managed-by label, so it never adopts a namespace another demo owns. The
 pod boots network-isolated, so there is no network policy to apply and no cluster-wide
 enforcement to turn on.
 
@@ -180,11 +180,11 @@ cedar-policy-demo is Ready and enforcing its generated Cedar policy.
 ```
 
 Abridged. The generator prints a predicted PCR17, the measurement an external verifier would
-check; this sample does not use it. This capture was taken from a fresh run into a namespace
+check; this blueprint does not use it. This capture was taken from a fresh run into a namespace
 that did not exist, so it shows the `namespace/... created` line; a re-run into an existing
-sample namespace shows `reusing namespace ...` instead. The policy travels to the guest as the
+blueprint namespace shows `reusing namespace ...` instead. The policy travels to the guest as the
 gzipped, base64-encoded JSON envelope in the annotation, which is not readable by eye, so setup
-also leaves a decoded copy under `tmp/` and the sample commits a readable copy, shown below.
+also leaves a decoded copy under `tmp/` and the blueprint commits a readable copy, shown below.
 
 **Step 3: What the generated policy pins.** The generated admission policy permits creating the
 `main` container only when the container matches the settings from the pod spec. Here is the
@@ -323,7 +323,7 @@ Agent::Action::"Exec" on container "main" reasons=[] errors=[]
 
 Kubernetes allowed the request; the guest denied the operation. The message names the exact
 Cedar action, `Agent::Action::"Exec"`, so a generic exec failure (RBAC, a dead pod, a network
-blip) cannot pass as policy enforcement. This is the whole point of the sample: the check runs
+blip) cannot pass as policy enforcement. This is the whole point of the blueprint: the check runs
 inside the guest, below the operator.
 
 **Step 7: A changed spec, without a regenerated policy, is refused.** Change one pinned setting
@@ -377,24 +377,24 @@ there is no route table entry, for any address family, and no name resolution. T
 of the network, not a policy over it: there is no `NetworkPolicy`, no `PolicyEndpoint`, and no
 cluster-wide network policy enforcement to turn on.
 
-A sample whose sandbox does need a network restricts its egress with a network policy instead;
-the [coding agent](../../getting-started/coding-agent/README.md) sample shows that shape.
+A blueprint whose sandbox does need a network restricts its egress with a network policy instead;
+the [coding agent](../../getting-started/coding-agent/README.md) blueprint shows that shape.
 
 ## Good to know
 
-- **This sample shows policy enforcement inside the guest only.** It makes no attestation and
+- **This blueprint shows policy enforcement inside the guest only.** It makes no attestation and
   no key-release decision. The generator predicts the policy's PCR17 measurement, which an
-  external verifier such as AWS KMS would check before releasing a secret, but this sample does
-  not use it. The planned Confidential section's attested-decryption samples show that step.
+  external verifier such as AWS KMS would check before releasing a secret, but this blueprint does
+  not use it. The planned Confidential section's attested-decryption blueprints show that step.
 - **The policy and the workload travel together.** The policy annotation is immutable on a
   running pod, so `setup.sh` recreates the pod to apply a regenerated policy. A pod left from an
   earlier run keeps enforcing the earlier policy.
-- **A reduced profile on the preview guest.** The sample's profile pins the container
+- **A reduced profile on the preview guest.** The blueprint's profile pins the container
   admission fields and denies exec and stdin, but omits the fields the current preview guest
   schema does not define yet: the OCI-hardening attributes are not pinned, and encrypted
   ephemeral-layer enforcement is not required. Generate with the built-in `--profile
   confidential` to pin those too once the guest schema supports them; the exec and admission
-  behaviour the sample shows holds either way.
+  behaviour the blueprint shows holds either way.
 - **`dummy0` is not a way out.** The network-isolated guest shows a `dummy0` interface beside
   `lo`, there so loopback-only software finds a non-loopback device. The empty `addrs` line
   shows it has no non-loopback IPv4 address and `routes: 0` that nothing has a route, so it is
@@ -404,15 +404,15 @@ the [coding agent](../../getting-started/coding-agent/README.md) sample shows th
 
 ## Clean up
 
-Set the variables again in a new shell if needed, then remove the sample:
+Set the variables again in a new shell if needed, then remove the blueprint:
 
 ```bash
 ./scripts/clean.sh                   # delete the pod and the namespace
 ./scripts/clean.sh --keep-namespace  # delete the pod, keep the namespace
 ```
 
-`clean.sh` deletes the namespace only after confirming it carries this sample's managed-by
+`clean.sh` deletes the namespace only after confirming it carries this blueprint's managed-by
 label, verifies each deletion, and exits non-zero if anything it was asked to remove is still
-there. The sample creates no AWS resources, so there is nothing to delete in the account, and
+there. The blueprint creates no AWS resources, so there is nothing to delete in the account, and
 no cluster-wide setting to undo. To remove the cluster, follow the
 [hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up).

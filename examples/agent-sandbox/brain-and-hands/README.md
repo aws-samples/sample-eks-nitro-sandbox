@@ -2,11 +2,11 @@
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
-sample first so you have a cluster with the runtime classes. This sample builds on
+blueprint first so you have a cluster with the runtime classes. This blueprint builds on
 [warm pool](../../getting-started/warm-pool/README.md), whose `SandboxTemplate`,
 `SandboxWarmPool` and `SandboxClaim` it uses and whose agent-sandbox install (step 1) it
 needs. The commands below use files from this repository, so clone it if you have not
-already, and run them from this sample's folder:
+already, and run them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
@@ -25,7 +25,7 @@ memory requests, so each guest gets a small default size.
 ## Overview
 
 An agent that both runs arbitrary code and talks to a model does both of those things in
-one process, on one pod, with one set of credentials. This sample takes the agent apart
+one process, on one pod, with one set of credentials. This blueprint takes the agent apart
 along that line. The **brain** reasons and holds the credentials, and has no tool that runs
 a command. The **hands** run every command, in a pre-booted Nitro sandbox pod claimed from
 a warm pool, with no network device at all. The Kubernetes API is the only way the brain
@@ -34,8 +34,8 @@ reaches them.
 Be precise about what that buys, because it is easy to overstate. Code the model decides to
 run never runs on the half that has the network, and it cannot open a connection of its
 own. It is **not** an exfiltration boundary: every command's output comes back to the brain
-and goes into the next model request, and nothing in this sample restricts where the brain
-can connect. *[What this sample does not limit](#what-this-sample-does-not-limit)* below
+and goes into the next model request, and nothing in this blueprint restricts where the brain
+can connect. *[What this blueprint does not limit](#what-this-blueprint-does-not-limit)* below
 sets out where the boundaries actually are.
 
 The brain is [Claude Code](https://code.claude.com/docs/en/overview), chosen because its
@@ -44,7 +44,7 @@ code-execution tool can be swapped for one that runs commands in a claimed sandb
 follows the design Anthropic describes in
 [Scaling Managed Agents: decoupling the brain from the hands](https://www.anthropic.com/engineering/managed-agents),
 which the [warm pool](../../getting-started/warm-pool/README.md) page names at the end; this
-sample is the worked version of it.
+blueprint is the worked version of it.
 
 - **The thing that reasons and the thing that runs code are different pods.** The brain is
   an ordinary pod with no `runtimeClassName`. The hands are sandbox pods with
@@ -66,9 +66,9 @@ sample is the worked version of it.
 - **A claim is served in about a second.** A `SandboxWarmPool` keeps a pod booted; a
   `SandboxClaim` adopts it. Step 7 shows the measured time and the pool booting a
   replacement while the claim is held.
-- **The hands hold no credential, and the brain's role is the only one the sample makes.**
+- **The hands hold no credential, and the brain's role is the only one the blueprint makes.**
   The hands have no Pod Identity association, no IAM role and no ServiceAccount token, which
-  step 11 checks by name without printing a value. The only policy the sample puts on the
+  step 11 checks by name without printing a value. The only policy the blueprint puts on the
   brain's role allows `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` on
   the one model it is configured with, shown in full in step 11.
 - **The brain can claim and exec in one namespace and nothing else.** Step 12 asks the
@@ -79,18 +79,18 @@ sample is the worked version of it.
 
 ![Inside an AWS Cloud frame and an Amazon EKS cluster whose sub line reads that one namespace holds both halves, the two halves sit side by side. On the left, an Operator glyph labelled kubectl exec connects into the brain pod frame, marked an ordinary pod with no runtimeClassName, which holds Claude Code labelled no tool that runs a command. A red dashed arrow labelled not over the network runs from the brain pod straight across to the Nitro sandbox pods frame on the right, marked isolated-sandbox plus network-isolated, which holds a claimed pod box labelled runs every command and a warm pod box labelled pre-booted, waiting. Below the middle, a Kubernetes API gear labelled the only wire to the hands connects by a two-way arrow left to the brain pod, labelled claim, exec, cp, logs, and by a two-way arrow up into the claimed pod, labelled the sandbox control channel. To its right a SandboxWarmPool document stack labelled replicas: 1 connects up into the claimed pod over an arrow labelled adopt a pre-booted pod in about 1 s, and up into the warm pod over an arrow labelled pool boots a replacement. Below the cluster, an arrow from the brain pod labelled InvokeModel over HTTPS reaches Amazon Bedrock, labelled Claude model, which is joined by a plain line to a red Pod Identity role glyph labelled bedrock:InvokeModel only. A note below the figure reads that the hands have no network device, so no route, no DNS, no instance metadata and no Pod Identity, and that they hold no ServiceAccount token and no IAM role, so a command the model runs finds no credential.](images/figure-1-brain-and-hands.png)
 
-### What this sample does not limit
+### What this blueprint does not limit
 
 It is worth being precise about where the boundaries are, because two of them are not
 where a reader might assume.
 
-This sample ships **no network policy**. The hands need none: they have no network device
+This blueprint ships **no network policy**. The hands need none: they have no network device
 to restrict, which is a property of the sandbox boot and not of a policy. The brain,
 though, is an ordinary pod with an ordinary pod's network, and nothing here restricts where
 it can connect. What bounds the brain is its tool configuration (no tool that runs a
 command, and no `WebFetch` or `WebSearch`), its IAM role (two Bedrock actions on one model)
 and its RBAC Role (claims, `exec` and `logs` in one namespace). If you want the egress
-mechanism itself, the [network policy](../../isolation/network-policy/README.md) sample
+mechanism itself, the [network policy](../../isolation/network-policy/README.md) blueprint
 under Isolation is where it is shown.
 
 **The split is not an exfiltration boundary.** The hands cannot open a connection, but
@@ -98,7 +98,7 @@ their output is meant to reach the model: the sandbox tool returns it to the bra
 brain puts it in the next request. So anything the hands can read, the brain can carry, and
 the brain's network is unrestricted here. What the split does is keep attacker-controlled
 code off the half that holds the credentials and has the network. If you need the stronger
-property, restrict the brain's egress as well, with the sample linked above.
+property, restrict the brain's egress as well, with the blueprint linked above.
 
 The brain's RBAC Role is **namespace-bounded, not pod-bounded**. Kubernetes RBAC selects
 resources by name, never by label, and the pods a warm pool hands out have generated names,
@@ -139,9 +139,9 @@ and `public.ecr.aws/docker/library/python:3.12-slim` for the hands).
 | [`iam/bedrock-invoke-policy.json`](iam/bedrock-invoke-policy.json) | The brain's only AWS permission: invoke a model. |
 | [`iam/pod-identity-trust.json`](iam/pod-identity-trust.json) | The trust policy that lets EKS Pod Identity assume the role. |
 | [`scripts/setup.sh`](scripts/setup.sh) | Check the shared installs, build and push the brain image, create the role and the cluster objects. |
-| [`scripts/cleanup.sh`](scripts/cleanup.sh) | Delete everything the sample created, and leave the agent-sandbox install alone. |
+| [`scripts/cleanup.sh`](scripts/cleanup.sh) | Delete everything the blueprint created, and leave the agent-sandbox install alone. |
 | [`scripts/common.sh`](scripts/common.sh) | The names, the pinned context, the readings and the guards the scripts share. |
-| [`.env.example`](.env.example) | The local values the sample needs, with no values filled in. |
+| [`.env.example`](.env.example) | The local values the blueprint needs, with no values filled in. |
 
 The scripts read `.env` (copy it from `.env.example`). `NAMESPACE` defaults to
 `brain-and-hands` and reaches every object they apply. Set `KUBE_CONTEXT` to the context of
@@ -156,7 +156,7 @@ node names as `<NODE_A>` and `<NODE_B>` for the same reason.
 **Step 1: Install agent-sandbox, once per cluster.** This is a shared install: it adds its
 own CRDs and a controller in its own namespace, and another workload on the cluster may
 already depend on the version that is there. Install it yourself at the pinned version, as
-the [warm pool](../../getting-started/warm-pool/README.md) sample does:
+the [warm pool](../../getting-started/warm-pool/README.md) blueprint does:
 
 ```bash
 kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
@@ -427,7 +427,7 @@ beforehand, and again afterwards, so the cost moves off the path a session waits
 
 *Figure 2: The life of one claim against a warm pool. A claim adopts a pod that is already booted, so it is served in 0.23 s; the pool boots a replacement behind it, and the pool is back to one warm pod about 40 s after the release.*
 
-![Inside an AWS Cloud frame and an Amazon EKS cluster whose sub line reads one namespace, three red Nitro sandbox frames stand left to right as the three states of one claim, each carrying the sub line network-isolated: no route out. The first, titled 1. at rest, holds a single warm pod box labelled pre-booted, waiting. An arrow right from it, labelled 2. adopts the pre-booted pod, Ready in 0.23 s, launch-type: warm, reaches the second frame, titled 2. while a claim is held, which holds two pod boxes side by side: a claimed pod labelled launch-type: warm, and a replacement pod labelled booted in about 10 s. An arrow right from that frame, labelled 4. claim deleted, pod torn down, back to one warm pod in about 40 s, reaches the third frame, titled 3. after release, which holds a single warm pod box labelled pre-booted, waiting, the same state the figure started in. Below the row sit two document glyphs. On the left, SandboxClaim, labelled one per session, connects up and right into the second frame over an arrow labelled 1. the tool creates a SandboxClaim. On the right, SandboxWarmPool, labelled replicas: 1, connects up and left into the replacement pod over an arrow labelled 3. pool boots a replacement, readyReplicas: 1 again in about 10 s. A note below the figure reads that these pods are network-isolated, so the annotation boots each sandbox with no network device and there is no route out, no DNS and no instance metadata; that this is a property of the sandbox and not a network policy, which this sample does not ship; and that while a claim is held the node runs two of them, this run having measured their uptimes 110 s and 7 s, each guest having booted with its own pod.](images/figure-2-claim-lifecycle.png)
+![Inside an AWS Cloud frame and an Amazon EKS cluster whose sub line reads one namespace, three red Nitro sandbox frames stand left to right as the three states of one claim, each carrying the sub line network-isolated: no route out. The first, titled 1. at rest, holds a single warm pod box labelled pre-booted, waiting. An arrow right from it, labelled 2. adopts the pre-booted pod, Ready in 0.23 s, launch-type: warm, reaches the second frame, titled 2. while a claim is held, which holds two pod boxes side by side: a claimed pod labelled launch-type: warm, and a replacement pod labelled booted in about 10 s. An arrow right from that frame, labelled 4. claim deleted, pod torn down, back to one warm pod in about 40 s, reaches the third frame, titled 3. after release, which holds a single warm pod box labelled pre-booted, waiting, the same state the figure started in. Below the row sit two document glyphs. On the left, SandboxClaim, labelled one per session, connects up and right into the second frame over an arrow labelled 1. the tool creates a SandboxClaim. On the right, SandboxWarmPool, labelled replicas: 1, connects up and left into the replacement pod over an arrow labelled 3. pool boots a replacement, readyReplicas: 1 again in about 10 s. A note below the figure reads that these pods are network-isolated, so the annotation boots each sandbox with no network device and there is no route out, no DNS and no instance metadata; that this is a property of the sandbox and not a network policy, which this blueprint does not ship; and that while a claim is held the node runs two of them, this run having measured their uptimes 110 s and 7 s, each guest having booted with its own pod.](images/figure-2-claim-lifecycle.png)
 
 Ask the agent to claim one and time it:
 
@@ -535,7 +535,7 @@ The runtime class shows what was asked for rather than what ran, which is why th
 above come first.
 
 **Step 9: The hands have no network device.** This is one annotation in
-[`deploy/warm-pool.yaml`](deploy/warm-pool.yaml), and it is the only thing in the sample that
+[`deploy/warm-pool.yaml`](deploy/warm-pool.yaml), and it is the only thing in the blueprint that
 limits where code in the hands can connect:
 
 ```yaml
@@ -627,7 +627,7 @@ ConnectionRefusedError: [Errno 111] Connection refused  (after 0.0s)
 
 Both are refused, immediately and identically. So **do not read this as "there is no network
 path to the hands"**: something on the node answers at the pod's address, and a refusal is an
-answer. What the sample does enforce is narrower and is what the readings above show: inside
+answer. What the blueprint does enforce is narrower and is what the readings above show: inside
 the guest there is no interface and no route, so no process in the hands can send anything out
 or receive anything in, and the Kubernetes API is the only way the brain reaches them. Neither
 pod runs a server here, so this pair of readings says nothing about either one's ports; it is
@@ -719,7 +719,7 @@ aws eks list-pod-identity-associations --cluster-name $CLUSTER_NAME --namespace 
 +----------------------+------------------+
 ```
 
-With no network policy in this sample, that role is the whole of what the sample grants in
+With no network policy in this blueprint, that role is the whole of what the blueprint grants in
 AWS, so it is worth reading in full. `setup.sh` renders it from
 [`iam/bedrock-invoke-policy.json`](iam/bedrock-invoke-policy.json) with your Region, account
 and `BEDROCK_MODEL_ID`, so it names the one model the brain is configured with rather than
@@ -773,14 +773,14 @@ at apply time, with `aws bedrock get-inference-profile`, rather than derived fro
 because a derived prefix with a trailing wildcard would also allow any other model whose ID
 started the same way.
 
-Read the scope precisely. Those two statements are the whole of what **this sample attaches
+Read the scope precisely. Those two statements are the whole of what **this blueprint attaches
 to this role**, and `setup.sh` refuses to reuse a tagged role that has picked up anything
 else, so the run you get matches the policy above. That is not the same as saying nothing
 else can ever reach the role: a trust policy edited afterwards, or a second Pod Identity
-association elsewhere naming the same role, are outside what the sample creates or checks.
+association elsewhere naming the same role, are outside what the blueprint creates or checks.
 
-Because the role is the only AWS boundary this sample shows, `setup.sh` also refuses to
-reuse a role that carries the sample's tag but has picked up other policies, which would
+Because the role is the only AWS boundary this blueprint shows, `setup.sh` also refuses to
+reuse a role that carries the blueprint's tag but has picked up other policies, which would
 make the paragraph above untrue for your run:
 
 ```text
@@ -788,7 +788,7 @@ error: IAM role brain-and-hands-brain is tagged as this sample's but has managed
 ```
 
 That block is from a separate run, against a role in that state: the check needs a role that
-carries the sample's tag and an extra policy, and the walkthrough run, which creates the
+carries the blueprint's tag and an extra policy, and the walkthrough run, which creates the
 role itself, cannot produce one.
 
 **Step 12: What the brain may do on the Kubernetes API.** Ask the API rather than reading
@@ -866,11 +866,11 @@ Back to one warm pod waiting, about 40 seconds after the release.
 - **The brain is not sandboxed, and that is the design.** It is the half that holds the
   credentials and talks to the model, so it is the half with a network. Putting the whole
   agent in a sandbox is the [coding agent](../../getting-started/coding-agent/README.md)
-  sample; this one is the contrast.
-- **Nothing in this sample limits where the brain can connect.** Its limits are its tool
+  blueprint; this one is the contrast.
+- **Nothing in this blueprint limits where the brain can connect.** Its limits are its tool
   configuration, its IAM role and its RBAC Role, each read back above. If you need egress
   restricted as well, take the mechanism from the
-  [network policy](../../isolation/network-policy/README.md) sample.
+  [network policy](../../isolation/network-policy/README.md) blueprint.
 - **The RBAC `exec` rule covers every pod in the namespace,** because RBAC selects by name
   and warm-pool pods have generated names. Keep only the brain and the hands in this
   namespace. The sandbox tool's refusal to take a pod name is an application-level control on
@@ -880,7 +880,7 @@ Back to one warm pod waiting, about 40 seconds after the release.
   stops at the trust prompt, which leaves `settings.json` unread and the sandbox tool never
   loaded: the agent would then have its default tools, including a shell.
 - **The hands set no CPU or memory requests,** so each guest gets a small default size,
-  enough for the commands this sample runs. A real workload sets the requests it needs: the
+  enough for the commands this blueprint runs. A real workload sets the requests it needs: the
   sandbox is sized from them, not from the limits.
 - **`karpenter.sh/do-not-disrupt: "true"` on the template pins the node** under an idle warm
   pod, since nothing would reschedule a pre-booted pod if consolidation removed the node
@@ -939,9 +939,9 @@ clean up complete: the brain, the claim, the pool, the template, the RBAC,
 the Pod Identity association, the IAM role, the ECR repository and the namespace are gone.
 ```
 
-The script deletes a repository or a role only when it carries the sample's
+The script deletes a repository or a role only when it carries the blueprint's
 `ManagedBy=brain-and-hands` tag, and nothing inside the namespace unless the namespace
-carries the sample's label. A read that fails counts as "could not determine", which is a
+carries the blueprint's label. A read that fails counts as "could not determine", which is a
 failure and never "gone", and the script exits non-zero when it skipped something or could
 not confirm a delete.
 
@@ -954,6 +954,6 @@ kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/down
 ```
 
 A local copy of the brain image may still be on your machine: `docker image ls` and
-`docker image rm` the `brain-and-hands` tag. If this is the last sample you ran, follow the
+`docker image rm` the `brain-and-hands` tag. If this is the last blueprint you ran, follow the
 [hello sandbox](../../getting-started/hello-sandbox/README.md#clean-up) clean up to remove the
 namespace and the cluster.

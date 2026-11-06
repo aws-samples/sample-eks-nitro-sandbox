@@ -4,7 +4,7 @@
 fleets of autonomous AI agents: you declare in a policy what each agent may touch — which
 files, which processes and which network destinations — and OpenShell enforces it on the
 kernel, adding real credentials only to requests bound for approved endpoints so the agent
-never sees them. This sample installs OpenShell on Amazon EKS as one release of its own Helm chart,
+never sees them. This blueprint installs OpenShell on Amazon EKS as one release of its own Helm chart,
 with every OpenShell sandbox's **workload pod** — the one place untrusted agent code runs
 — in a Nitro sandbox (`runtimeClassName: isolated-sandbox`). The **supervisor** pod beside
 it, which holds the policy engine, the gateway session and the real credentials, stays an
@@ -12,14 +12,14 @@ ordinary pod: it is the trusted control side that evaluates policy and opens the
 upstream connections.
 
 **This is the OpenShell platform install**, not an agent confined by OpenShell. [Subagent
-security > openshell](../../subagent-security/openshell/README.md) is a different sample:
+security > openshell](../../subagent-security/openshell/README.md) is a different blueprint:
 one procurement analyst confined by OpenShell inside its own Nitro sandbox, with a
 hand-built gateway just big enough to drive that one sandbox. This page is about OpenShell
 itself — its gateway Helm chart, its Kubernetes compute driver, and the
 two-pod-per-sandbox shape it creates — mapped onto Nitro sandboxes.
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
-on the home page, and run these samples first, which this one builds on and does not
+on the home page, and run these blueprints first, which this one builds on and does not
 re-explain:
 
 - [Getting started > Warm pool](../../getting-started/warm-pool/README.md): installs the
@@ -29,14 +29,14 @@ re-explain:
   network policy enforcement once per cluster, which OpenShell's own setup guide requires.
 
 The commands below use files from this repository, so clone it if you have not already,
-and run them from this sample's folder:
+and run them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/openshell/kubernetes
 ```
 
-For this sample you also need [`helm`](https://helm.sh/docs/intro/install/),
+For this blueprint you also need [`helm`](https://helm.sh/docs/intro/install/),
 [`kubectl`](https://kubernetes.io/docs/reference/kubectl/), `jq`, `curl`, `openssl`,
 `python3` and a cluster whose Kubernetes version serves `MutatingAdmissionPolicy` (stable
 and enabled by default from Kubernetes 1.36). A run costs the gateway pod and, while a sandbox exists, its workload pod, its supervisor pod and its
@@ -101,7 +101,7 @@ sandbox or out of it, comparing digests instead -- see "The agent's credential" 
 ## Versions
 
 Pinned to releases, not commits, and confirmed against the published artifacts when this
-sample was built (see [`versions.json`](versions.json) for the exact values):
+blueprint was built (see [`versions.json`](versions.json) for the exact values):
 `scripts/setup.sh` verifies the chart against its pinned SHA-256 before installing it,
 and pins the gateway, supervisor and sandbox-runtime images by digest in the
 rendered values, so what actually runs is not left to each image's tag.
@@ -112,7 +112,7 @@ rendered values, so what actually runs is not left to each image's tag.
 | OpenShell gateway chart (`oci://ghcr.io/nvidia/openshell/helm-chart`) | 0.1.6 |
 | OpenShell gateway, supervisor and sandbox-runtime images | the chart's `appVersion`, 0.1.6 |
 | OpenShell CLI ([releases](https://github.com/NVIDIA/OpenShell/releases)) | v0.1.6 |
-| Default workload image | `nvcr.io/nvidia/base/ubuntu:24.04`, the chart's own built-in default — this sample builds no image of its own |
+| Default workload image | `nvcr.io/nvidia/base/ubuntu:24.04`, the chart's own built-in default — this blueprint builds no image of its own |
 
 ## What OpenShell needs from the cluster, and how this EKS cluster meets it
 
@@ -121,9 +121,9 @@ rendered values, so what actually runs is not left to each image's tag.
 | Kubernetes 1.29 or later, with RBAC | Met by every EKS version the Getting started cluster can run. |
 | A CNI that enforces ingress and egress `NetworkPolicy` where sandboxes run | Off until the network policy controller is enabled, once per cluster — see Getting started > Coding agent. `scripts/setup.sh` checks `enable-network-policy-controller` on the `amazon-vpc-cni` `ConfigMap` and refuses to go on if it is not `"true"`. |
 | The agent-sandbox controller and CRDs, installed before the chart | Installed by Getting started > Warm pool. The OpenShell chart does not install or upgrade it. |
-| A StorageClass for each sandbox's workspace PVC (`server.workspaceStorageClass`) | This cluster's own default EBS StorageClass, `auto-ebs-sc` (`ebs.csi.eks.amazonaws.com`, `gp3`, encrypted), already fits what the chart needs — block-backed storage, not a network filesystem — so this sample reuses it rather than creating a class that would duplicate it. Named explicitly in the gateway's values so a cluster with no default StorageClass still works. |
+| A StorageClass for each sandbox's workspace PVC (`server.workspaceStorageClass`) | This cluster's own default EBS StorageClass, `auto-ebs-sc` (`ebs.csi.eks.amazonaws.com`, `gp3`, encrypted), already fits what the chart needs — block-backed storage, not a network filesystem — so this blueprint reuses it rather than creating a class that would duplicate it. Named explicitly in the gateway's values so a cluster with no default StorageClass still works. |
 | Block-backed storage for the gateway's SQLite database | The same EBS, via the gateway's own PVC. |
-| One gateway replica, or an external PostgreSQL for more | One replica (a `StatefulSet`). This sample needs no database service. |
+| One gateway replica, or an external PostgreSQL for more | One replica (a `StatefulSet`). This blueprint needs no database service. |
 | A kernel that allows Landlock and an unprivileged, nested seccomp user-notification filter | In a Nitro sandbox, OpenShell's own probe for both runs against the guest's kernel, not the node's, and this page shows it passing: the workload pod reaches `Ready` and runs commands under the sandbox's own policy. |
 
 Two optional OpenShell features stay off: `server.enableUserNamespaces` (a Nitro sandbox
@@ -143,7 +143,7 @@ ephemeral containers there, and stops if either can; `scripts/demo.sh` then chec
 workload pod really runs as that sandbox ServiceAccount. The chart
 also supports a split install — the gateway with `workspaceResources.enabled=false` and
 its `openshell-workspace` chart in each pre-provisioned sandbox namespace — for one
-gateway serving several namespaces; this sample does not use it.
+gateway serving several namespaces; this blueprint does not use it.
 
 ## Adapting the workload pod to a Nitro sandbox
 
@@ -163,12 +163,12 @@ in the sandboxed pod unchanged.
 
 That one adjustment is the whole of
 [`deploy/nitro-adapter.yaml`](deploy/nitro-adapter.yaml), a `MutatingAdmissionPolicy`
-scoped to namespaces carrying this sample's own `managed-by` label and to pods OpenShell
+scoped to namespaces carrying this blueprint's own `managed-by` label and to pods OpenShell
 itself labels `openshell.ai/boundary-role: workload` — so it reaches no pod outside this
-sample, including another OpenShell gateway's. It changes nothing about the runtime's
+blueprint, including another OpenShell gateway's. It changes nothing about the runtime's
 command arguments, its user, its capabilities, its seccomp profile or its policy: the page
 reads all of those from the running process, so an adapter that changed them would be
-changing the thing the sample measures.
+changing the thing the blueprint measures.
 
 ## Files
 
@@ -181,7 +181,7 @@ changing the thing the sample measures.
 | [`policy/demo-profile.json`](policy/demo-profile.json) | The endpointless provider profile the demo credential binds through |
 | [`scripts/setup.sh`](scripts/setup.sh) | Installs the Helm chart, the admission adapter, the RuntimeClass label and the demo echo API |
 | [`scripts/demo.sh`](scripts/demo.sh) | Creates one fresh sandbox and shows every claim this page makes, with real output |
-| [`scripts/clean.sh`](scripts/clean.sh) | Removes everything this sample created |
+| [`scripts/clean.sh`](scripts/clean.sh) | Removes everything this blueprint created |
 
 ## Quick start
 
@@ -325,7 +325,7 @@ pod/os-supervisor-4e457fb3-e357-40e1-9f91-d85a05636cdf condition met
   workload pod:   default--demo-1793396547
     runtimeClassName: isolated-sandbox
   supervisor pod: os-supervisor-4e457fb3-e357-40e1-9f91-d85a05636cdf
-    runtimeClassName: 
+    runtimeClassName:
     (empty means no RuntimeClass: an ordinary pod)
   workspace PVC: Bound on auto-ebs-sc
 ```
@@ -339,10 +339,10 @@ from an ordinary pod:
 Linux version 6.18.54 (builder@buildkitsandbox) (x86_64-bottlerocket-linux-gnu-gcc (Buildroot 2025.05.1) 13.4.0, GNU ld (GNU Binutils) 2.44) #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
   guest /sys/class/dmi/id/product_name and disks:
 product_name: m8i.enclave
-disks: dm-0 vda vdb vdc vdd vde 
+disks: dm-0 vda vdb vdc vdd vde
   the same node's own view, from an ordinary pod on <NODE_NAME>:
 product_name: m8i.xlarge
-disks: dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 nvme2n1 nvme3n1 zram0 
+disks: dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 nvme2n1 nvme3n1 zram0
 Linux version 6.18.54 (builder@buildkitsandbox) (x86_64-bottlerocket-linux-gnu-gcc (Buildroot 2025.05.1) 13.4.0, GNU ld (GNU Binutils) 2.44) #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
 ```
 
@@ -373,7 +373,7 @@ DEMO_API_KEY=openshell:resolve:env:v4729594891538873486_DEMO_API_KEY
 ```
 
 A request to the one endpoint this sandbox's policy allows — an in-cluster HTTP echo
-service that this sample starts so there is something to send the credential to and get it
+service that this blueprint starts so there is something to send the credential to and get it
 back for inspection — shows the **real** value reached the backend, substituted by the
 supervisor, outside the sandbox. Echoing the header back is this demo backend's own
 doing, not something every approved endpoint does or needs to: a real deployment's own
@@ -595,25 +595,25 @@ EXIT=0
 
 ## Good to know
 
-- **The demo credential and its backend are this sample's own, not OpenShell's.** The
-  echo API this sample starts (`docker.io/mccutchen/go-httpbin`) exists only so there is an
+- **The demo credential and its backend are this blueprint's own, not OpenShell's.** The
+  echo API this blueprint starts (`docker.io/mccutchen/go-httpbin`) exists only so there is an
   in-cluster destination to send the one credential to and show it substituted. A real
   deployment names a real provider profile and a real backend instead.
 - **The gateway's development auth mode is for this page, not for a shared environment.**
   `server.auth.allowUnauthenticatedUsers: true` means transport mTLS and access to the
-  client TLS `Secret` are the whole of this gateway's access control. This sample's subject
+  client TLS `Secret` are the whole of this gateway's access control. This blueprint's subject
   is the platform install, not identity; a real deployment configures OpenShell's own OIDC
   or trusted-access-proxy authentication, as its [access control guide](https://github.com/NVIDIA/OpenShell/blob/v0.1.6/docs/kubernetes/access-control.mdx) describes.
 - **The `isolated-sandbox` RuntimeClass's approval label is shared.** OpenShell's resource
   admission refuses an unlabeled RuntimeClass, so the label
   (`openshell.ai/sandbox-attachable=true`) has to be there before any sandbox can use it.
-  Other OpenShell gateways and other samples on a shared cluster rely on the same label,
+  Other OpenShell gateways and other blueprints on a shared cluster rely on the same label,
   so `scripts/setup.sh` adds it only when it is missing and `scripts/clean.sh` leaves it in
   place, printing the command that removes it.
 - **OpenShell's own driver manages the per-sandbox `NetworkPolicy` and `Service`; this
-  sample adds none of its own.** The `NetworkPolicy` objects shown above, and the boundary
+  blueprint adds none of its own.** The `NetworkPolicy` objects shown above, and the boundary
   `Service` the supervisor and the workload use to reach each other, come entirely from
-  OpenShell's chart and Kubernetes driver. What this sample itself adds is the admission
+  OpenShell's chart and Kubernetes driver. What this blueprint itself adds is the admission
   adapter (a `MutatingAdmissionPolicy`, which is cluster-scoped, limited by its own
   `namespaceSelector` to namespaces labelled `managed-by=openshell-kubernetes`) and the
   demo echo API's pod and Service.
@@ -650,7 +650,7 @@ service "echo-api" deleted from openshell-kubernetes namespace
 ==> the Helm release
   These resources were kept due to the resource policy:
   [Namespace] openshell-kubernetes-credentials
-  
+
   release "openshell" uninstalled
 
 ==> the admission adapter
@@ -683,7 +683,7 @@ exiting while the delete is still in progress.
 This removes the Helm release and its namespaces, including the credential namespace,
 the generated provider-credential `Secret`s and the workspace PVC; the admission adapter;
 and the demo echo API. It leaves the shared
-`isolated-sandbox` RuntimeClass's approval label in place, and this sample's own local
+`isolated-sandbox` RuntimeClass's approval label in place, and this blueprint's own local
 scratch files under `tmp/`, printing what it left and why.
 
 ## References

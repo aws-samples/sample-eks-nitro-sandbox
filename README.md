@@ -1,6 +1,6 @@
-# Amazon EKS Nitro sandbox samples
+# AWS Nitro Sandbox on Amazon EKS Blueprints
 
-Runnable samples for Nitro Sandboxes on Amazon EKS: hardware-enforced workload isolation where each pod runs its containers inside its own Nitro sandbox, a hardware-isolated environment with its own kernel. The samples are rendered as a documentation site, and a path on the site is the path in this repository.
+Runnable blueprints for AWS Nitro Sandbox on Amazon EKS: hardware-enforced workload isolation where each pod runs its containers inside its own Nitro sandbox, a hardware-isolated environment with its own kernel. The blueprints are rendered as a documentation site, and a path on the site is the path in this repository.
 
 ## Getting started
 
@@ -8,11 +8,11 @@ Runnable samples for Nitro Sandboxes on Amazon EKS: hardware-enforced workload i
 - [Coding agent](examples/getting-started/coding-agent/README.md): Claude Code in a sandbox that reads a GitHub issue, fixes it and opens a pull request.
 - [Warm pool](examples/getting-started/warm-pool/README.md): a pool of pre-booted sandboxes and a claim that adopts one in under 1 second.
 
-Start from the [site home page](examples/README.md) for what a Nitro sandbox is and the prerequisites the samples share.
+Start from the [site home page](examples/README.md) for what a Nitro sandbox is and the prerequisites the blueprints share.
 
 ## Setup
 
-Node and cluster preparation the other samples treat as a prerequisite.
+Node and cluster preparation the other blueprints treat as a prerequisite.
 
 - [Ubuntu AMI](examples/setup/ubuntu-ami/README.md): build a custom Ubuntu 24.04 node AMI for EKS Pod Isolation and add one dedicated, tainted managed node group to an existing cluster, for readers who manage their own node OS instead of EKS Auto Mode.
 - [Cilium on Ubuntu nodes](examples/setup/cilium-ubuntu/README.md): a dedicated disposable EKS cluster whose only CNI is Cilium, with two Ubuntu 24.04 node groups, and an `isolated-sandbox` pod that gets normal pod networking and the same enforced policy as an ordinary pod.
@@ -37,7 +37,7 @@ Node and cluster preparation the other samples treat as a prerequisite.
 
 ## Subagent security
 
-The same procurement analyst three ways, with a second policy layer confining the tool processes it runs inside its sandbox. The [section page](examples/subagent-security/README.md) covers the analyst, the case and what the three samples share.
+The same procurement analyst three ways, with a second policy layer confining the tool processes it runs inside its sandbox. The [section page](examples/subagent-security/README.md) covers the analyst, the case and what the three blueprints share.
 
 - [Procurement analyst confined by nono](examples/subagent-security/nono/README.md): reader, evaluator and writer run as separate processes under per-role nono profiles inside one sandbox, with nono's proxy holding the supplier API key and allowing one hostname and a short list of HTTP operations, while the analyst still produces a cited recommendation checked against a deterministic comparison.
 - [Procurement analyst confined by bubblewrap](examples/subagent-security/bubblewrap/README.md): the same analyst with its reader, evaluator and writer started by `bwrap`, where the confinement policy is the argument list the trusted controller assembles: selected mounts, its own namespaces, no capabilities and an application-compiled seccomp filter, and no network at all for the tool processes.
@@ -75,7 +75,7 @@ The same procurement analyst three ways, with a second policy layer confining th
 
 ## Confidential
 
-Samples that use `runtimeClassName: confidential-sandbox`, where the node is untrusted and AWS KMS releases a key only to a sandbox whose attestation matches. The [section page](examples/confidential/README.md) covers what they share.
+Blueprints that use `runtimeClassName: confidential-sandbox`, where the node is untrusted and AWS KMS releases a key only to a sandbox whose attestation matches. The [section page](examples/confidential/README.md) covers what they share.
 
 - [Encrypted image](examples/confidential/encrypted-image/README.md): a container image whose every layer is ciphertext in Amazon ECR, decrypted inside the sandbox by the guest image runtime once KMS has checked the attested policy measurement, while the same credentials used from outside the sandbox are refused.
 - [Secrets Manager secret](examples/confidential/secrets-manager-secret/README.md): a secret stored as a KMS ciphertext envelope in AWS Secrets Manager, read and decrypted by the application inside the sandbox under an attestation KMS accepts, while an ordinary pod holding the same role can read the ciphertext and is refused the value.
@@ -89,7 +89,7 @@ pip install -r requirements.txt
 mkdocs serve
 ```
 
-See [ROADMAP.md](docs/ROADMAP.md) for the samples planned next. To add one, start with [CONTRIBUTING](CONTRIBUTING.md#adding-a-sample) and [AGENTS.md](AGENTS.md).
+See [ROADMAP.md](docs/ROADMAP.md) for the blueprints planned next. To add one, start with [CONTRIBUTING](CONTRIBUTING.md#adding-a-sample) and [AGENTS.md](AGENTS.md).
 
 ## Security
 
