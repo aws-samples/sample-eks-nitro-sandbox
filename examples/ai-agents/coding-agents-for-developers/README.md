@@ -566,7 +566,7 @@ session-mw49crie-witty-marten   carlos      oh-my-pi
 An access point exists while a session runs (and while it is starting, or until the clean
 up after its pod has finished), rooted at `/<developer>/<cli>/<session>` and tagged
 (`ManagedBy`, `developer`, `cli`, `session`) for the clean up. With all five of
-those sessions closed the file system had none; restoring the codex one took 1.9 seconds,
+those sessions closed the file system had none; restoring the codex one took 2.5 seconds,
 and while it ran it held one:
 
 ```text
@@ -576,25 +576,28 @@ $ aws s3files list-access-points --file-system-id <S3_FILES_FS_ID> --region <AWS
 ```
 
 Closing it deleted that access point again (`session mw498856-brave-tapir: access point
-deleted` in the app log). These five sessions were made by the previous version of the
-sample, which kept an access point for every session. On its first start, the new app
-recorded each one and, a minute later, deleted the access points of all five, none of which
-had a pod:
+deleted` in the app log). An install of the previous version of the sample kept an access
+point for every session and had no records. To show how the app brings one over, the five
+sessions were put back in that state on a running app: each record deleted, and an access
+point created for each. The next sweep recorded each session and asked for each access point
+to be deleted, since none of them had a pod:
 
 ```text
-session mw49crie-witty-marten: recorded from its access point
 session mw49coga-nimble-tapir: recorded from its access point
+session mw49crie-witty-marten: recorded from its access point
 session mw498856-brave-tapir: recorded from its access point
 session mw49cqx6-swift-ibex: recorded from its access point
 session mw48zing-merry-shrew: recorded from its access point
-picked up 0 running session(s) after start
-coding-agents-for-developers app on :8080, CLIs: claude-code, codex, kiro-cli, opencode, pi, oh-my-pi
-session mw49crie-witty-marten: access point deleted, the session has no pod
-session mw49coga-nimble-tapir: access point deleted, the session has no pod
-session mw498856-brave-tapir: access point deleted, the session has no pod
-session mw49cqx6-swift-ibex: access point deleted, the session has no pod
-session mw48zing-merry-shrew: access point deleted, the session has no pod
+session mw49coga-nimble-tapir: access point delete requested, the session has no pod
+session mw49crie-witty-marten: access point delete requested, the session has no pod
+session mw49cqx6-swift-ibex: access point delete requested, the session has no pod
+session mw48zing-merry-shrew: access point delete requested, the session has no pod
+session mw498856-brave-tapir: access point delete requested, the session has no pod
 ```
+
+Afterwards the five records were back, the file system had no access points, and all five
+sessions were still in the developer's list. On a first start of the new version over an
+old install, the pick-up records them the same way before the first sweep.
 
 ## It runs in a sandbox
 
