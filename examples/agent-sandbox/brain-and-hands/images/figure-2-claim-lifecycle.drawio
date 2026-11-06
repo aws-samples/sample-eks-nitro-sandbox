@@ -102,7 +102,7 @@
         </mxCell>
 
         <!-- Note under the figure -->
-        <mxCell id="note" value="&lt;div style=&quot;line-height:20px&quot;&gt;&lt;b&gt;The hands have a network policy with no egress rules:&lt;/b&gt; all egress is denied (no route out, no DNS, no Pod Identity). The policy admits only pods labelled app=brain on 8080 and 9090.&lt;/div&gt;&lt;div style=&quot;line-height:20px&quot;&gt;The metadata endpoint inside the guest still answers, but holds no role. While a claim is held the node runs two pods: the claimed one and the next one waiting.&lt;/div&gt;" style="text;html=1;whiteSpace=nowrap;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacing=0;fontSize=16;fontColor=#5F6B7A;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+        <mxCell id="note" value="&lt;div style=&quot;line-height:20px&quot;&gt;&lt;b&gt;The hands have a network policy with no egress rules:&lt;/b&gt; a command in the hands can open no connection on the pod network (no DNS, no Pod Identity). Its ingress admits only pods labelled app=brain on 8080 and 9090.&lt;/div&gt;&lt;div style=&quot;line-height:20px&quot;&gt;The metadata endpoint inside the guest still answers, but holds no role. While a claim is held the node runs two pods: the claimed one and the next one waiting.&lt;/div&gt;" style="text;html=1;whiteSpace=nowrap;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacing=0;fontSize=16;fontColor=#5F6B7A;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
           <mxGeometry x="40" y="880" width="1060" height="48" as="geometry" />
         </mxCell>
       </root>

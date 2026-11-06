@@ -319,7 +319,10 @@ aws_verify_absent() {
     AWS_CLEAN_FAIL=$((AWS_CLEAN_FAIL + 1))
     return 1
   fi
-  if grep -q "$pattern" <<<"$out"; then
+  # Matched inside the CLI's own error framing, as aws_exists does, so a code
+  # that only appears inside a resource name in some other error (an
+  # AccessDenied on a role whose name contains it) is never read as "gone".
+  if grep -Fq "An error occurred ($pattern)" <<<"$out"; then
     echo "  $what is gone"
     return 0
   fi

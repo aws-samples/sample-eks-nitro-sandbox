@@ -265,6 +265,23 @@ unset token
 [[ "$token_sha256" =~ ^[0-9a-f]{64}$ ]] || die "could not compute the token's digest"
 echo "  sandboxd will require the token whose sha256 is ${token_sha256:0:12}..."
 
+# A warm pool does not replace the pods it already booted when its template
+# changes. So if a template is already here, it must already run sandboxd with
+# this exact digest: a template from before sandboxd (no --auth-token-sha256 at
+# all), or one whose token Secret was deleted and minted again, would leave warm
+# pods that the brain cannot drive while the pool still reports them ready.
+tpl_rc=0
+resource_exists kc "sandboxtemplate/$TEMPLATE" || tpl_rc=$?
+case $tpl_rc in
+  0) tpl_args="$(kc get sandboxtemplate "$TEMPLATE" \
+       -o jsonpath='{.spec.podTemplate.spec.containers[*].command}' 2>/dev/null)" \
+       || die "could not read sandboxtemplate/$TEMPLATE, so whether its pods expect this token could not be determined; stopping rather than apply over it"
+     [[ "$tpl_args" == *"--auth-token-sha256=$token_sha256"* ]] \
+       || die "sandboxtemplate/$TEMPLATE already exists and does not run sandboxd with this token's digest (it is from an earlier version of this sample, or the token Secret was recreated). Its warm pods would not be replaced by applying over it. Run ./scripts/cleanup.sh and then this script again." ;;
+  1) : ;;
+  2) die "could not read sandboxtemplate/$TEMPLATE, so whether one is already here could not be determined; stopping rather than apply over it" ;;
+esac
+
 step "7/7 the hands, then the brain"
 # The hands first: the template and the pool, so a warm pod is on its way
 # before the brain that claims it is up.

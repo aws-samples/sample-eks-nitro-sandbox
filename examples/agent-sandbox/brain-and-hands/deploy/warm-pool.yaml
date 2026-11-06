@@ -8,8 +8,8 @@
 #
 # Three things in this file are the isolation:
 #   runtimeClassName  puts the pod's containers in a Nitro sandbox
-#   networkPolicy     admits only the brain, only on 8080 and 9090, and lets
-#                     nothing out
+#   networkPolicy     admits only pods labelled app=brain, on 8080 and 9090,
+#                     and opens no egress
 #   --auth-token-sha256  makes sandboxd refuse any request without the token
 #                     the brain holds
 #
@@ -35,9 +35,12 @@ spec:
   #   ingress  only the rule below: pods labelled app=brain in this namespace,
   #            on TCP 8080 and 9090. Nothing else in the cluster can reach
   #            sandboxd.
-  #   egress   no rules, so all egress is denied: no DNS, no instance metadata,
-  #            no Pod Identity endpoint, no other pod and no internet. Replies
-  #            to the brain's own connections are not egress and still flow.
+  #   egress   no rules, so all egress is denied: a command in the hands can open
+  #            no connection on the pod network -- no DNS, no Pod Identity
+  #            endpoint, no other pod and no internet. Replies to the brain's
+  #            own connections are not egress and still flow. (The sandbox's
+  #            in-guest instance-metadata endpoint is not on the pod network,
+  #            so the policy does not reach it; it serves no role.)
   #
   # A network policy only holds if enforcement is on. EKS Auto Mode ships with
   # it off; ./scripts/setup.sh checks it and stops with the command when it is.
