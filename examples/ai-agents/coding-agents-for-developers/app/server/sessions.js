@@ -237,10 +237,25 @@ export function adoptRunningSessions({ retry = false } = {}) {
 // the access point of every one that has no pod. Runs in the pick-up and again on every
 // sweep, so a record that could not be written is written later. Returns `records` with
 // every such session added, written or not: its developer and CLI come from the path.
-async function recordFromAccessPoints(aps, records) {
-  // Not from one being deleted: that is a Delete (perhaps the old version's) finishing, and a
-  // record made from it would bring a deleted session back.
-  const missing = aps.filter((a) => a.status !== "deleting" && !records.has(a.session) && isSessionName(a.session));
+//
+// Not from one being deleted: that is a Delete (perhaps the old version's) finishing, and a
+// record made from it would bring a deleted session back. A listing can still show such an
+// access point available for a moment after its delete was accepted, so one with no record is
+// recorded only once a listing that began after it was first seen still shows it, or at once
+// when the session has a claim (a running session, which the pick-up needs a record for).
+// Until then it is no one's, and the sweep leaves it alone.
+const unrecordedSince = new Map(); // access point id -> when it was first seen with no record
+async function recordFromAccessPoints(aps, records, { listStart, claimed }) {
+  const listed = new Set(aps.map((a) => a.apId));
+  for (const id of unrecordedSince.keys()) if (!listed.has(id)) unrecordedSince.delete(id);
+  const missing = [];
+  for (const a of aps) {
+    if (records.has(a.session) || !isSessionName(a.session)) { unrecordedSince.delete(a.apId); continue; }
+    if (a.status === "deleting") { unrecordedSince.delete(a.apId); continue; }
+    const seen = unrecordedSince.get(a.apId);
+    if (claimed.has(k8s.claimNameFor(a.session)) || (seen !== undefined && seen < listStart)) missing.push(a);
+    else if (seen === undefined) unrecordedSince.set(a.apId, Date.now());
+  }
   await eachLimited(missing, SWEEP_CONCURRENCY, async (a) => {
     let ok = true;
     try {
@@ -253,15 +268,17 @@ async function recordFromAccessPoints(aps, records) {
       }
     }
     records.set(a.session, { developer: a.developer, cli: a.cli, session: a.session, unrecorded: !ok });
-    if (ok) console.log(`session ${a.session}: recorded from its access point`);
+    if (ok) { unrecordedSince.delete(a.apId); console.log(`session ${a.session}: recorded from its access point`); }
   });
   return records;
 }
 
 async function pickUpRunningSessions(retry) {
-  const aps = await store.listAllAccessPoints();
-  const records = await recordFromAccessPoints(aps, new Map((await k8s.listSessionRecords()).map((r) => [r.session, r])));
   const claims = await k8s.listSessionClaims();
+  const listStart = Date.now();
+  const aps = await store.listAllAccessPoints();
+  const records = await recordFromAccessPoints(aps, new Map((await k8s.listSessionRecords()).map((r) => [r.session, r])),
+    { listStart, claimed: new Set(claims.map((c) => c.claimName)) });
   if (claims.length === 0) { pickUpIncomplete = false; return 0; }
   // The access point a running pod mounted: the one that is usable (available or creating,
   // not one this process asked to delete, and not the one the session's record marks as being
@@ -415,7 +432,9 @@ async function releaseNow(session, { wipe = false } = {}) {
   return { podName: entry.podName, stopError };
 }
 
-async function releaseAccessPointOf(session, developer) {
+// Delete the session's access points, each named in its record first. A failure is logged and
+// left to the sweep, except for Delete (strict), which must not remove the record after it.
+async function releaseAccessPointOf(session, developer, { strict = false } = {}) {
   try {
     const dev = developer || (await k8s.readSessionRecord(session))?.developer;
     if (!dev) return;
@@ -429,6 +448,7 @@ async function releaseAccessPointOf(session, developer) {
       console.log(`session ${session}: access point deleted`);
     }
   } catch (e) {
+    if (strict) throw e;
     console.error(`session ${session}: could not delete its access point, the sweep retries: ${e?.message || e}`);
   }
 }
@@ -445,10 +465,12 @@ async function releaseAccessPointOf(session, developer) {
 // grows with the number of idle access points, not with its square.
 const SWEEP_CONCURRENCY = 8;
 async function sweepAccessPoints() {
+  const claims = await k8s.listClaimNames();
   const listStart = Date.now();
   const listed = await store.listAllAccessPoints({ includeDeleted: true });
   const aps = listed.filter((a) => a.status !== "deleted");
-  const records = await recordFromAccessPoints(aps, new Map((await k8s.listSessionRecords()).map((r) => [r.session, r])));
+  const records = await recordFromAccessPoints(aps, new Map((await k8s.listSessionRecords()).map((r) => [r.session, r])),
+    { listStart, claimed: claims });
   // A record's deleting marker has done its job once a listing begun after it was written
   // no longer shows that access point at all.
   const listedIds = new Set(listed.map((a) => a.apId));
@@ -458,7 +480,7 @@ async function sweepAccessPoints() {
   // One already being deleted needs nothing more: skip it rather than ask again.
   const idle = aps.filter((a) => a.status !== "deleting" && !live.has(a.session) && !starting.has(a.session));
   if (idle.length === 0) return;
-  const claims = await k8s.listClaimNames();
+  // The claims were listed before the access points; each delete below checks its claim again.
   await eachLimited(idle.filter((a) => !claims.has(k8s.claimNameFor(a.session))), SWEEP_CONCURRENCY, (a) =>
     serialized(a.session, async () => {
       if (live.has(a.session) || starting.has(a.session)) return;
@@ -515,6 +537,9 @@ export async function remove(developer, session) {
       await k8s.clearPendingStop(session);
     }
     await store.deleteSession(developer, rec.cli, session);
+    // Any access point left (a closed session's whose delete failed, or an old install's) goes
+    // next, named in the record first like every other access-point delete, and confirmed gone.
+    await releaseAccessPointOf(session, developer, { strict: true });
     // The record goes last, so a Delete that fails before here leaves the session listed.
     await k8s.deleteSessionRecord(session);
   });

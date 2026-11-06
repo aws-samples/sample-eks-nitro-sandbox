@@ -61,7 +61,7 @@ export const accessPointArn = (apId) =>
 export async function ensureAccessPoint(developer, session, cli, { avoid = null } = {}) {
   const root = sessionRoot(developer, cli, session);
 
-  // A session never has two access points at once. One left by an earlier run is reused if
+  // No second access point is made beside one this listing shows. One left by an earlier run is reused if
   // it is usable. One that is doomed (named in the record as being deleted, asked to be
   // deleted by this process, or listed as deleting, deleted or in error) is waited out: no
   // new one is made beside it, whatever a listing says about it, because a listing can still
@@ -152,20 +152,6 @@ export async function listAllAccessPoints({ includeDeleted = false } = {}) {
   // Only a listing that began after the delete was asked for can show it gone.
   for (const [id, at] of deleteRequested) if (at < listStart && !seen.has(id)) deleteRequested.delete(id);
   return all;
-}
-
-async function findAccessPoint(developer, session) {
-  const all = await listAllAccessPoints();
-  return all.find((a) => a.developer === developer && a.session === session) ?? null;
-}
-
-// Delete a session's access point, when its pod no longer has the folder mounted. The
-// folder and its files stay. Returns true when it deleted one, false when there was none.
-export async function releaseAccessPoint(developer, session) {
-  const ap = await findAccessPoint(developer, session);
-  if (!ap) return false;
-  await deleteAccessPoint(ap.apId, ap.status);
-  return true;
 }
 
 // Delete one access point by id and wait until it is no longer listed, so a Restore right
@@ -284,9 +270,10 @@ export async function deleteSession(developer, cli, session) {
   // and list it again, until it has stayed empty for quietMs. A closed session has no
   // access point; its folder is drained all the same.
   //
-  // The access point, if one is left, goes last, and the caller deletes the session record
-  // after that. Until then the session stays listed: a Delete that fails, or that an app
-  // restart cuts short, leaves the row in place and Delete can be run again.
+  // This drains the folder only. The caller (sessions.remove) then deletes any access point
+  // left, named in the session record first, and deletes the record after that. Until then
+  // the session stays listed: a Delete that fails, or that an app restart cuts short, leaves
+  // the row in place and Delete can be run again.
   try {
     // Quiet is counted from the first list that came back, so a slow first list cannot
     // stand in for the whole wait.
@@ -300,7 +287,6 @@ export async function deleteSession(developer, cli, session) {
       } else if (quietSince === undefined) {
         quietSince = now;
       } else if (now - quietSince >= deleteTiming.quietMs) {
-        await releaseAccessPoint(developer, session);
         return;
       }
       if (round < deleteTiming.maxRounds) await sleep(deleteTiming.settleMs);

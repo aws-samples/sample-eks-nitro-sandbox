@@ -394,7 +394,7 @@ only Delete removes the folder.*
 | No terminal activity for the idle period (default 30 minutes) | The app reads, every minute, the last time each session's terminal had key input or printed output (tmux's `session_activity` and `window_activity`). An agent still working on its own keeps printing, so it is not idle; a CLI waiting at its prompt prints nothing. Once the period passes, it stops the session cleanly (below), deletes the `SandboxClaim` and then the session's access point: the pod and the access point go, the folder and its files stay. |
 | Close the window | Same as idle: the session is stopped, the claim and the access point released, the folder stays, and the session moves to the session list. |
 | Restore | The app claims a new warm pod (a new pod UID) and creates a new access point on the same folder, at the same time, mounts it and starts the CLI with its own continue-the-last-conversation option: `claude --continue`, `codex resume --last`, `kiro-cli chat --v3 --resume`, `opencode --continue`, `pi --continue` and `omp --continue`. The history is in the CLI's home inside the folder, so it comes back with it; a session restored before its first prompt starts the CLI fresh. |
-| Delete | If the session is running, the app first empties its folder through the mount, in the pod, as it stops the session. Then it deletes every object version and delete marker under the session's prefix in the (versioned) bucket. S3 Files exports a change to the bucket only after 60 seconds with no writes to the file, so a file written just before Delete can arrive after the first pass: the app lists the prefix again every 15 seconds and deletes whatever came back, until the prefix has stayed empty for 90 seconds. Only then does it delete the session's record (and an access point, if one is left). A closed session has no access point and its folder is drained the same way. The session list is built from the records, so a Delete that fails, or that an app restart cuts short before that last step, leaves the session in the list, and Delete can be run again; a failed Delete returns the error, and the row reads **unknown** and offers only Delete until the list reloads. |
+| Delete | If the session is running, the app first empties its folder through the mount, in the pod, as it stops the session. Then it deletes every object version and delete marker under the session's prefix in the (versioned) bucket. S3 Files exports a change to the bucket only after 60 seconds with no writes to the file, so a file written just before Delete can arrive after the first pass: the app lists the prefix again every 15 seconds and deletes whatever came back, until the prefix has stayed empty for 90 seconds. Only then does it delete an access point, if one is left, and last the session's record. A closed session has no access point and its folder is drained the same way. The session list is built from the records, so a Delete that fails, or that an app restart cuts short before that last step, leaves the session in the list, and Delete can be run again; a failed Delete returns the error, and the row reads **unknown** and offers only Delete until the list reloads. |
 
 A session keeps its access point while anything may still have its folder mounted: while
 the app tracks it, while a start is in flight, while any claim for it exists, and, after a
@@ -403,12 +403,14 @@ starts a minute after its last pass ends, deletes the access point of every reco
 that has none of those. That is how an access-point delete that failed after a Close is
 retried (Close itself still succeeds: the session is stopped and its folder is kept), and
 how an install from before session records is brought over: the app gives each existing
-access point a record, and the sweep deletes those of the sessions with no pod. A pass
+access point a record, once a listing a pass later still shows it (at once for a session
+that has a claim), and the sweep deletes those of the sessions with no pod. Waiting one
+pass keeps an old version's Delete that was still finishing from coming back as a session. A pass
 works through eight sessions at a time, so with a large backlog one pass can take well over
 a minute. Before the app deletes an access point it writes its id into the session's record,
-so a Restore never reuses one that is being deleted, even across an app restart, and a session
-never has two at once: a Restore waits for the old one to be gone (about a second on these
-runs) before it makes a new one on the same folder. After an app restart, a pod is picked up again only if its folder is still mounted and only one
+so a Restore never reuses one that is being deleted, even across an app restart, and the app
+makes no second access point beside one it can list: a Restore waits for the old one to be
+gone (about a second on these runs) before it makes a new one on the same folder. After an app restart, a pod is picked up again only if its folder is still mounted and only one
 usable access point is listed for its session; otherwise the app looks again on a later
 pass, or releases the claim of a pod whose folder was already unmounted.
 
@@ -583,8 +585,9 @@ Closing it deleted that access point again (`session mw498856-brave-tapir: acces
 deleted` in the app log). An install of the previous version of the sample kept an access
 point for every session and had no records. To show how the app brings one over, the five
 sessions were put back in that state on a running app: each record deleted, and an access
-point created for each. The next sweep recorded each session and asked for each access point
-to be deleted, since none of them had a pod:
+point created for each. A sweep recorded each session and asked for each access point
+to be deleted, since none of them had a pod. The first sweep only saw them; the one after
+recorded them:
 
 ```text
 session mw49cqx6-swift-ibex: recorded from its access point
@@ -601,7 +604,7 @@ session mw49cqx6-swift-ibex: access point delete requested, the session has no p
 
 Afterwards the five records were back, the file system had no access points, and all five
 sessions were still in the developer's list. On a first start of the new version over an
-old install, the pick-up records them the same way before the first sweep.
+old install, the pick-up sees them and the first sweep records them the same way.
 
 ## It runs in a sandbox
 
