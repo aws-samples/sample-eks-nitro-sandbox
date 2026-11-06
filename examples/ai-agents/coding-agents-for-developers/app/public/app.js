@@ -79,10 +79,10 @@ function relativeTime(session) {
   return `${days}d ago`;
 }
 
-// Sessions whose Delete is still running. Delete takes two minutes or more (the server
-// drains the folder's object versions until the prefix stays empty for 90 seconds) and the
-// row gave no sign of it. Kept outside the table, because the table is rebuilt whenever the
-// list reloads, which would otherwise reset a row that is still being deleted.
+// Sessions whose Delete request is on its way. The server marks the session and answers at
+// once; it finishes the Delete in the background (draining the folder until S3 Files has
+// nothing left to export, which takes a minute or two). Kept outside the table, because the
+// table is rebuilt whenever the list reloads.
 const deleting = new Set();
 // Sessions whose Restore is still running, for the same reason.
 const restoring = new Set();
@@ -104,11 +104,6 @@ const removeRow = (session) => { rowFor.get(session)?.tr.remove(); rowFor.delete
 let listSeq = 0;
 const runningNow = new Map(); // session -> { value, seq }
 const deletedNow = new Map(); // session -> seq
-// A Delete that failed may have stopped the session (Delete releases it first) and may have
-// removed part of the folder, so neither "running" nor "idle" is known. Such a row shows
-// "unknown" and offers only Delete again, until a list request that started after the
-// failure succeeds and says what is there.
-const deleteFailed = new Map(); // session -> seq
 const setRunning = (session, value) => runningNow.set(session, { value, seq: listSeq });
 
 async function loadSessions() {
@@ -117,7 +112,6 @@ async function loadSessions() {
   if (seq !== listSeq) return; // a newer request is on its way; let it draw the list
   for (const [k, v] of runningNow) if (v.seq < seq) runningNow.delete(k);
   for (const [k, v] of deletedNow) if (v < seq) deletedNow.delete(k);
-  for (const [k, v] of deleteFailed) if (v < seq) deleteFailed.delete(k);
   const rows = $("#session-rows");
   rows.innerHTML = "";
   rowFor.clear();
@@ -140,13 +134,13 @@ async function loadSessions() {
     // rebuilt by a list reload mid-operation still shows it and still ignores clicks.
     const isRunning = () => (runningNow.has(s.session) ? runningNow.get(s.session).value : s.running);
     const render = () => {
-      const r = restoring.has(s.session), d = deleting.has(s.session), u = deleteFailed.has(s.session);
+      const r = restoring.has(s.session), d = deleting.has(s.session);
       const c = closing.has(s.session);
-      const st = tr.querySelector(".status"), state = u ? "unknown" : isRunning() ? "running" : "idle";
+      const st = tr.querySelector(".status"), state = isRunning() ? "running" : "idle";
       if (st) { st.textContent = state; st.className = `status ${state}`; }
-      restore.textContent = c ? "Closing..." : r ? "Restoring..." : isRunning() && !u ? "Open" : "Restore";
+      restore.textContent = c ? "Closing..." : r ? "Restoring..." : isRunning() ? "Open" : "Restore";
       del.textContent = d ? "Deleting..." : "Delete";
-      restore.disabled = r || d || u || c;
+      restore.disabled = r || d || c;
       del.disabled = r || d || c;
       for (const [b, busy] of [[restore, r || c], [del, d]]) {
         if (busy) b.setAttribute("aria-busy", "true");
@@ -158,7 +152,7 @@ async function loadSessions() {
     // Restore claims a pod and mounts the folder, which takes a few seconds. Say so while it
     // runs, then reload the list so the row shows the session as running.
     restore.onclick = async () => {
-      if (restoring.has(s.session) || deleting.has(s.session) || deleteFailed.has(s.session) || closing.has(s.session)) return;
+      if (restoring.has(s.session) || deleting.has(s.session) || closing.has(s.session)) return;
       if (isRunning()) return openTerminal(s.session, s.cli, name);
       restoring.add(s.session);
       redraw(s.session);
@@ -185,8 +179,6 @@ async function loadSessions() {
         deletedNow.set(s.session, listSeq);
         removeRow(s.session); // gone now, even if the reload below fails
       } catch (err) {
-        runningNow.delete(s.session);
-        deleteFailed.set(s.session, listSeq);
         alert(`Could not delete ${name}: ${err.message}`);
       } finally {
         deleting.delete(s.session);

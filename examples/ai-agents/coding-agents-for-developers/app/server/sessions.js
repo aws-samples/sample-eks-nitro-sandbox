@@ -33,7 +33,7 @@ export async function newAgent(developer, cli) {
 // developer has no such session.
 async function sessionCli(developer, session) {
   const rec = await k8s.readSessionRecord(session);
-  return rec && rec.developer === developer ? rec.cli : undefined;
+  return rec && rec.developer === developer && !rec.deleteRequested ? rec.cli : undefined;
 }
 
 // Restore: same, on the existing folder; the CLI resumes its own conversation.
@@ -95,7 +95,7 @@ async function startOnce(developer, cli, session, { resume = false } = {}) {
   // A Restore waits its turn behind a Delete of the same session; look the session up again
   // now, so it does not create the folder that Delete just removed.
   const rec = resume ? await k8s.readSessionRecord(session) : null;
-  if (resume && !(rec && rec.developer === developer)) throw new Error(`no session ${session} for ${developer}`);
+  if (resume && !(rec && rec.developer === developer && !rec.deleteRequested)) throw new Error(`no session ${session} for ${developer}`);
   // A failed clean stop of the session's last pod left a record. Start a new pod only once
   // that one is confirmed gone; otherwise two pods could have the folder.
   if (resume) {
@@ -454,6 +454,9 @@ async function sweepAccessPoints() {
   const listed = await store.listAllAccessPoints({ includeDeleted: true });
   const aps = listed.filter((a) => a.status !== "deleted");
   const records = new Map((await k8s.listSessionRecords()).map((r) => [r.session, r]));
+  // A Delete that was requested and is not running (it failed, or an app restart cut it short):
+  // run it again. Not awaited: a Delete waits out S3 Files' export for a minute or more.
+  for (const r of records.values()) if (r.deleteRequested && !deleting.has(r.session)) finishDelete(r.session);
   // A record's deleting marker has done its job once a listing begun after it was written
   // no longer shows that access point at all.
   const listedIds = new Set(listed.map((a) => a.apId));
@@ -495,20 +498,51 @@ async function sweepAccessPoints() {
 
 // The developer's sessions, from their records. A session name starts with its creation
 // time in base 36, so sorting by name lists the newest first.
+// A session whose Delete was requested is not listed: it is on its way out.
 export async function listClosed(developer) {
   const all = await k8s.listSessionRecords(developer);
   return all
+    .filter((s) => !s.deleteRequested)
     .sort((x, y) => y.session.localeCompare(x.session))
     .map((s) => ({ session: s.session, cli: s.cli, display: displayName(s.session), running: live.has(s.session) }));
 }
 
-// Delete: release, then remove the folder, as one step in the session's queue, so no
-// Restore can start the session between the two.
+// Delete: mark the session's record and return, so the row goes from the list at once; the
+// Delete itself (stop, empty the folder, wait for S3 Files to finish exporting, delete the
+// access point, then the record) runs in the background in the session's queue, so no
+// Restore can start the session in between, and a Restore of it is refused from the mark on.
+// The mark is in the record, so a Delete that fails, or that an app restart cuts short, is
+// run again by the sweep a minute later, until the record is gone.
 export async function remove(developer, session) {
   await afterPickUp();
-  return serialized(session, async () => {
+  const marked = await serialized(session, async () => {
     const rec = await k8s.readSessionRecord(session);
-    if (!rec || rec.developer !== developer) return; // no such session: nothing to delete
+    if (!rec || rec.developer !== developer) return false; // no such session: nothing to delete
+    if (!rec.deleteRequested) await k8s.markDeleteRequested(session);
+    return true;
+  });
+  if (marked) finishDelete(session);
+}
+
+// Background Deletes running in this process, by session.
+const deleting = new Map();
+function finishDelete(session) {
+  if (deleting.has(session)) return deleting.get(session);
+  const p = serialized(session, () => deleteNow(session))
+    .then(() => console.log(`session ${session}: deleted`))
+    .catch((e) => console.error(`session ${session}: delete failed, will retry next minute: ${e?.message || e}`))
+    .finally(() => deleting.delete(session));
+  deleting.set(session, p);
+  return p;
+}
+// Exported for tests: resolves once every background Delete running now has ended.
+export const deletesSettled = () => Promise.all([...deleting.values()]);
+
+async function deleteNow(session) {
+  {
+    const rec = await k8s.readSessionRecord(session);
+    if (!rec) return; // deleted already
+    const developer = rec.developer;
     // Empty the folder through the mount while the pod still has it: a file written in the
     // last minute has not been exported yet, and removed now it never is.
     const stopped = await releaseNow(session, { wipe: true });
@@ -531,9 +565,9 @@ export async function remove(developer, session) {
     // Any access point left (a closed session's whose delete failed) goes
     // next, named in the record first like every other access-point delete, and confirmed gone.
     await releaseAccessPointOf(session, developer, { strict: true });
-    // The record goes last, so a Delete that fails before here leaves the session listed.
+    // The record goes last, so a Delete that fails before here is run again from it.
     await k8s.deleteSessionRecord(session);
-  });
+  }
 }
 
 // Background loop, every minute: release idle pods, and refresh each session's mount

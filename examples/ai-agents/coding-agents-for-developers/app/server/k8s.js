@@ -205,14 +205,25 @@ const recordName = (session) => `session-${session}`;
 // to be gone before making a new one.
 const DELETING_AP = "coding-agents/deleting-access-point";
 const DELETING_AT = "coding-agents/deleting-since";
+// Set when the developer pressed Delete: the session is gone from their list at once, and the
+// app finishes the Delete in the background, again after an app restart if it has to.
+const DELETE_REQUESTED = "coding-agents/delete-requested";
 const recordOf = (cm) => cm?.data?.developer && cm.data.cli && cm.data.session
   ? {
       developer: cm.data.developer, cli: cm.data.cli, session: cm.data.session, created: cm.data.created,
       deletingAp: cm.metadata?.annotations?.[DELETING_AP] || null,
       deletingSince: Number(cm.metadata?.annotations?.[DELETING_AT]) || 0,
+      deleteRequested: Boolean(cm.metadata?.annotations?.[DELETE_REQUESTED]),
     }
   : null;
 const MERGE_PATCH = k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch);
+
+export async function markDeleteRequested(session) {
+  await core.patchNamespacedConfigMap({
+    name: recordName(session), namespace: NAMESPACE,
+    body: { metadata: { annotations: { [DELETE_REQUESTED]: new Date().toISOString() } } },
+  }, MERGE_PATCH);
+}
 
 export async function markAccessPointDeleting(session, apId) {
   await core.patchNamespacedConfigMap({
