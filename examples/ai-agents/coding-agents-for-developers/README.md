@@ -98,7 +98,7 @@ the images record what they installed.
 ## Quick start
 
 With `.env` filled in (from `.env.example`) and the shared installs in place, on a clean
-environment (if the sample is already installed from an earlier checkout, run
+environment (if the blueprint is already installed from an earlier checkout, run
 `./scripts/clean.sh` first; `setup.sh` stops and says so if it finds one):
 
 ```bash
@@ -553,7 +553,7 @@ and the opencode window open over the session list:
 ![The web app with an opencode window for session proud-vole open, showing its restored conversation about the code word OTTER-3. At the bottom of the page, a dock holds one chip, "claude-code · gentle-otter", the minimized window of a second session.](figures/screenshots/two-sessions-one-minimized.png)
 
 The app keeps no database. Each session has a record, a ConfigMap named
-`session-<session>` in the sample's namespace, labelled with its developer and CLI, so one
+`session-<session>` in the blueprint's namespace, labelled with its developer and CLI, so one
 developer's list is a label-selected ConfigMap list, paginated 500 records at a time. The session
 name carries a creation-time prefix, so the list sorts newest-first from the names alone.
 On a fresh install, after four New agent sessions for one developer, each closed again, and
@@ -950,7 +950,7 @@ error line goes to standard error and so can print before or after its exit line
   is a folder in the bucket and a ConfigMap, so how many are kept is limited by the
   cluster's API server and any resource quota on the namespace, not by the access-point
   quota. Deleting an access point
-  leaves its directory and files: on a run of this sample, a file written before Close was
+  leaves its directory and files: on a run of this blueprint, a file written before Close was
   read back, with its owner and time unchanged, through a new access point on the same
   folder after Restore.
 - **The credential is refreshed.** An assumed-role credential lasts an hour; the app rewrites
