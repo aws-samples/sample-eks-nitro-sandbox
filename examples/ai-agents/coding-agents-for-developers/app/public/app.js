@@ -80,13 +80,17 @@ function relativeTime(session) {
   return `${days}d ago`;
 }
 
-// Sessions whose Delete is still running. Delete takes 40 seconds or more (the server
-// drains the folder's object versions until two checks 20 seconds apart find none) and the
+// Sessions whose Delete is still running. Delete takes two minutes or more (the server
+// drains the folder's object versions until the prefix stays empty for 90 seconds) and the
 // row gave no sign of it. Kept outside the table, because the table is rebuilt whenever the
 // list reloads, which would otherwise reset a row that is still being deleted.
 const deleting = new Set();
 // Sessions whose Restore is still running, for the same reason.
 const restoring = new Set();
+// Sessions whose window was closed and whose Close is still running on the server. Until it
+// finishes, the row's button would still say Open, and opening a terminal on a session
+// being stopped shows only [detached]; so the row says Closing... and takes no clicks.
+const closing = new Set();
 // Each session's row currently in the table, with its button renderer. A reload replaces
 // the rows, so an operation that finishes later acts on the row on the page through this,
 // never on the row it started from, which may no longer be there.
@@ -101,6 +105,11 @@ const removeRow = (session) => { rowFor.get(session)?.tr.remove(); rowFor.delete
 let listSeq = 0;
 const runningNow = new Map(); // session -> { value, seq }
 const deletedNow = new Map(); // session -> seq
+// A Delete that failed may have stopped the session (Delete releases it first) and may have
+// removed part of the folder, so neither "running" nor "idle" is known. Such a row shows
+// "unknown" and offers only Delete again, until a list request that started after the
+// failure succeeds and says what is there.
+const deleteFailed = new Map(); // session -> seq
 const setRunning = (session, value) => runningNow.set(session, { value, seq: listSeq });
 
 async function loadSessions() {
@@ -109,6 +118,7 @@ async function loadSessions() {
   if (seq !== listSeq) return; // a newer request is on its way; let it draw the list
   for (const [k, v] of runningNow) if (v.seq < seq) runningNow.delete(k);
   for (const [k, v] of deletedNow) if (v < seq) deletedNow.delete(k);
+  for (const [k, v] of deleteFailed) if (v < seq) deleteFailed.delete(k);
   const rows = $("#session-rows");
   rows.innerHTML = "";
   rowFor.clear();
@@ -131,13 +141,15 @@ async function loadSessions() {
     // rebuilt by a list reload mid-operation still shows it and still ignores clicks.
     const isRunning = () => (runningNow.has(s.session) ? runningNow.get(s.session).value : s.running);
     const render = () => {
-      const r = restoring.has(s.session), d = deleting.has(s.session);
-      const st = tr.querySelector(".status"), state = isRunning() ? "running" : "idle";
+      const r = restoring.has(s.session), d = deleting.has(s.session), u = deleteFailed.has(s.session);
+      const c = closing.has(s.session);
+      const st = tr.querySelector(".status"), state = u ? "unknown" : isRunning() ? "running" : "idle";
       if (st) { st.textContent = state; st.className = `status ${state}`; }
-      restore.textContent = r ? "Restoring..." : isRunning() ? "Open" : "Restore";
+      restore.textContent = c ? "Closing..." : r ? "Restoring..." : isRunning() && !u ? "Open" : "Restore";
       del.textContent = d ? "Deleting..." : "Delete";
-      restore.disabled = del.disabled = r || d;
-      for (const [b, busy] of [[restore, r], [del, d]]) {
+      restore.disabled = r || d || u || c;
+      del.disabled = r || d || c;
+      for (const [b, busy] of [[restore, r || c], [del, d]]) {
         if (busy) b.setAttribute("aria-busy", "true");
         else b.removeAttribute("aria-busy");
       }
@@ -147,7 +159,7 @@ async function loadSessions() {
     // Restore claims a pod and mounts the folder, which takes a few seconds. Say so while it
     // runs, then reload the list so the row shows the session as running.
     restore.onclick = async () => {
-      if (restoring.has(s.session) || deleting.has(s.session)) return;
+      if (restoring.has(s.session) || deleting.has(s.session) || deleteFailed.has(s.session) || closing.has(s.session)) return;
       if (isRunning()) return openTerminal(s.session, s.cli, name);
       restoring.add(s.session);
       redraw(s.session);
@@ -164,7 +176,7 @@ async function loadSessions() {
       }
     };
     del.onclick = async () => {
-      if (restoring.has(s.session) || deleting.has(s.session)) return;
+      if (restoring.has(s.session) || deleting.has(s.session) || closing.has(s.session)) return;
       if (!confirm(`Delete session ${s.session}? This removes its folder.`)) return;
       deleting.add(s.session);
       redraw(s.session);
@@ -174,6 +186,8 @@ async function loadSessions() {
         deletedNow.set(s.session, listSeq);
         removeRow(s.session); // gone now, even if the reload below fails
       } catch (err) {
+        runningNow.delete(s.session);
+        deleteFailed.set(s.session, listSeq);
         alert(`Could not delete ${name}: ${err.message}`);
       } finally {
         deleting.delete(s.session);
@@ -272,10 +286,18 @@ function openTerminal(session, cli, display) {
   closeBtn.onclick = async (e) => {
     e.stopPropagation();
     ws.close(); win.remove(); windows.delete(session);
-    await api("/api/close", { session });
-    setRunning(session, false);
-    redraw(session); // shows Restore now, even if the reload below fails
-    loadSessions().catch(() => {});
+    closing.add(session);
+    redraw(session); // Closing..., at once
+    try {
+      await api("/api/close", { session });
+      setRunning(session, false);
+    } catch (err) {
+      alert(`Could not close ${label}: ${err.message}`);
+    } finally {
+      closing.delete(session);
+      redraw(session); // shows Restore now, even if the reload below fails
+      loadSessions().catch(() => {});
+    }
   };
   const minBtn = win.querySelector('[data-act="min"]');
   // stopPropagation so the window-level mousedown (z-raise) and titlebar drag do not also

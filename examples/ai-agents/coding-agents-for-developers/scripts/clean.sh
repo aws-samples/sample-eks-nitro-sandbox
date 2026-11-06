@@ -45,10 +45,19 @@ if [[ -n "$ns_present" ]]; then
     || note_fail "claims in $NAMESPACE: delete failed"
   "${KCTL[@]}" -n "$NAMESPACE" delete sandboxtemplate -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
     || note_fail "templates in $NAMESPACE: delete failed"
-  "${KCTL[@]}" -n "$NAMESPACE" delete applicationnetworkpolicy -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
-    || note_fail "network policies in $NAMESPACE: delete failed"
-  "${KCTL[@]}" -n "$NAMESPACE" delete deploy,svc -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
-    || note_fail "the app (deploy, svc) in $NAMESPACE: delete failed"
+  # The app, and its pods, before the network policies, so it is never left running without
+  # its own. If the app could not be removed, the clean up stops.
+  if "${KCTL[@]}" -n "$NAMESPACE" delete deploy,svc -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
+       --cascade=foreground --wait=true --timeout=5m; then
+    "${KCTL[@]}" -n "$NAMESPACE" delete applicationnetworkpolicy,networkpolicy -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
+      || note_fail "network policies in $NAMESPACE: delete failed"
+  else
+    # Stop here: the app may still be running, and everything below (its Pod Identity
+    # role, the storage, the namespace) is what it uses.
+    note_fail "the app (deploy, svc) in $NAMESPACE: delete failed or timed out"
+    echo "Clean up stopped: the app may still be running, so its network policies and the rest of what it uses were left in place (the warm pools, claims and templates above may already be gone). Run clean.sh again once it is gone." >&2
+    exit 1
+  fi
 fi
 
 # Pod Identity associations (only this sample's namespace/service accounts).

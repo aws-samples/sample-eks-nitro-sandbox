@@ -43,6 +43,20 @@ export async function restore(developer, session) {
 // against the same claim and pod.
 const starting = new Map();
 
+// One queue per session: a start, a Close, a Delete and a release by the background loop
+// of the same session run one after another, never side by side. Without it a Restore
+// could begin while a Close was still stopping the old pod, two releases could both run
+// session-stop.sh in one pod, and a Close could delete the claim under a Restore's new pod.
+// Different sessions do not wait for each other.
+const queues = new Map();
+function serialized(session, fn) {
+  const run = (queues.get(session) || Promise.resolve()).then(fn);
+  const tail = run.then(() => {}, () => {});
+  queues.set(session, tail);
+  tail.then(() => { if (queues.get(session) === tail) queues.delete(session); });
+  return run;
+}
+
 // The app-start pick-up of running sessions (adoptRunningSessions), run once. New agent,
 // Restore, Close and Delete all wait for it, so none of them runs side by side with it: a
 // Restore that arrives while the pick-up is still reading pods starts after it, and gets
@@ -66,13 +80,27 @@ function start(developer, cli, session, { reuse = true, ...opts } = {}) {
   if (reuse && live.has(session)) return Promise.resolve(live.get(session));
   if (starting.has(session)) return starting.get(session);
   const p = afterPickUp()
-    .then(() => (reuse && live.get(session)) || startOnce(developer, cli, session, opts))
+    .then(() => serialized(session, () => (reuse && live.get(session)) || startOnce(developer, cli, session, opts)))
     .finally(() => starting.delete(session));
   starting.set(session, p);
   return p;
 }
 
 async function startOnce(developer, cli, session, { resume = false } = {}) {
+  // A Restore waits its turn behind a Delete of the same session; look the session up again
+  // now, so it does not create the folder that Delete just removed.
+  if (resume && !(await store.sessionCli(developer, session))) throw new Error(`no session ${session} for ${developer}`);
+  // A failed clean stop of the session's last pod left a record. Start a new pod only once
+  // that one is confirmed gone; otherwise two pods could have the folder.
+  if (resume) {
+    const pending = await k8s.pendingStopPod(session);
+    if (pending) {
+      if (!(await k8s.waitPodGone(pending, 10000))) {
+        throw new Error(`the session's previous pod ${pending} is not confirmed stopped yet; try again in a minute, or Delete the session`);
+      }
+      await k8s.clearPendingStop(session);
+    }
+  }
 
   console.log(`start ${session}: ensureAccessPoint`);
   const ap = await store.ensureAccessPoint(developer, session, cli);
@@ -93,11 +121,42 @@ async function startOnce(developer, cli, session, { resume = false } = {}) {
     // The entrypoint may have got as far as mounting the folder and starting the CLI (an
     // image without session-bridge does, then fails here), so stop it cleanly first, as
     // Close does, before the pod goes: its locks on the folder are released now.
+    // The clean stop can take a minute or more, so the error goes back to the developer now
+    // and the clean up runs next in the session's queue: a Restore clicked meanwhile waits
+    // for it. It stops the pod only if the claim still points at it.
     console.error(`start ${session}: failed, releasing claim ${claimName}: ${e?.message || e}`);
-    await k8s.stopSession(podName).catch((se) =>
-      console.error(`start ${session}: clean stop in ${podName} failed, releasing anyway: ${se?.message || se}`));
-    await k8s.releaseClaim(claimName).catch((re) =>
-      console.error(`start ${session}: could not delete claim ${claimName}: ${re?.message || re}`));
+    serialized(session, async () => {
+      // If the claim cannot be read, or no longer points at this pod, leave it: a later
+      // Close or Delete finds the claim and stops whatever pod it has.
+      let current;
+      try {
+        current = await k8s.claimedPodName(claimName);
+      } catch (le) {
+        console.error(`start ${session}: could not read claim ${claimName}, keeping it: ${le?.message || le}`);
+        return;
+      }
+      if (current !== podName) {
+        console.error(`start ${session}: claim ${claimName} no longer points at ${podName}, leaving it`);
+        return;
+      }
+      try {
+        await k8s.stopSession(podName);
+      } catch (se) {
+        console.error(`start ${session}: clean stop in ${podName} failed, releasing anyway: ${se?.message || se}`);
+        // As for any failed stop: record the pod, or keep its claim if that fails.
+        try { await k8s.recordPendingStop(session, podName); } catch (re) {
+          console.error(`start ${session}: could not record the failed stop, keeping claim ${claimName}: ${re?.message || re}`);
+          return;
+        }
+      }
+      try {
+        await k8s.releaseClaim(claimName);
+      } catch (re) {
+        console.error(`start ${session}: could not delete claim ${claimName}: ${re?.message || re}`);
+        return;
+      }
+      console.log(`start ${session}: cleaned up after the failed start`);
+    });
     throw e;
   }
 
@@ -139,7 +198,13 @@ async function pickUpRunningSessions() {
     const s = bySession.get(session);
     if (!s || live.has(session)) return; // no access point: not a session folder we know
     try {
-      const { node, podIP } = await k8s.podInfo(podName);
+      const { node, podIP, app, cli } = await k8s.podInfo(podName);
+      // Only a session pod made from this CLI's template: its labels are the ones the network
+      // policy selects on, and the CLI is the one the session's folder was made for.
+      if (app !== "agent-session" || cli !== s.cli) {
+        console.error(`session ${session}: not picking up pod ${podName}: labels app=${app} agent-cli=${cli}, expected agent-session and ${s.cli}`);
+        return;
+      }
       const azId = await k8s.nodeAzId(node);
       const { token: bridgeToken, cert: bridgeCert } = await k8s.readBridge(podName);
       // No start, Close or Delete runs while the pick-up does (they wait for it), but the
@@ -172,10 +237,10 @@ export function getLive(session) {
 // through releaseNow directly: it checks the entry and releases with no await between.
 export async function release(session) {
   await afterPickUp();
-  return releaseNow(session);
+  return serialized(session, () => releaseNow(session));
 }
 
-async function releaseNow(session) {
+async function releaseNow(session, { wipe = false } = {}) {
   let entry = live.get(session);
   if (!entry) {
     // The app keeps running sessions in memory only, so after an app restart a session can
@@ -190,11 +255,26 @@ async function releaseNow(session) {
   // Stop the CLI and unmount the folder first, so its locks are released now rather than
   // when the NFS lease runs out. The pod is released either way: a failed stop is logged,
   // and the next Restore then waits out the lease (Codex) or may find a stale database.
+  // For Delete (wipe), a failed stop is also returned, so Delete stops there.
+  let stopError = null;
   try {
-    await k8s.stopSession(entry.podName);
-    console.log(`session ${session}: stopped in ${entry.podName}`);
+    await k8s.stopSession(entry.podName, { wipe });
+    console.log(`session ${session}: stopped in ${entry.podName}${wipe ? ", folder emptied" : ""}`);
   } catch (e) {
+    stopError = e;
     console.error(`session ${session}: clean stop in ${entry.podName} failed, releasing anyway: ${e?.message || e}`);
+  }
+  // A failed clean stop (Close, idle, Delete) leaves a pod that may still have the folder
+  // mounted until it is gone. Record it before its claim goes: the next Restore does not
+  // start a pod, and no Delete removes the folder, until that pod is confirmed gone, whatever
+  // happens to the app in between. If the record cannot be written, keep the claim.
+  if (stopError) {
+    try {
+      await k8s.recordPendingStop(session, entry.podName);
+    } catch (re) {
+      if (!entry.adopted && !live.has(session)) live.set(session, entry);
+      throw new Error(`the session's clean stop failed and could not be recorded, so nothing was released: ${re?.message || re}`);
+    }
   }
   // If the claim cannot be deleted, the pod is still there: keep tracking the session, so
   // the background loop retries the release and the caller sees the error.
@@ -206,6 +286,7 @@ async function releaseNow(session) {
     if (!entry.adopted && !live.has(session)) live.set(session, entry);
     throw new Error(`could not delete claim ${entry.claimName}: ${e?.message || e}`);
   }
+  return { podName: entry.podName, stopError };
 }
 
 export async function listClosed(developer) {
@@ -213,12 +294,31 @@ export async function listClosed(developer) {
   return all.map((s) => ({ ...s, display: displayName(s.session), running: live.has(s.session) }));
 }
 
+// Delete: release, then remove the folder, as one step in the session's queue, so no
+// Restore can start the session between the two.
 export async function remove(developer, session) {
-  await release(session); // waits for the pick-up
-  // Also delete the claim by its name when the app holds no record of it (a start that
-  // failed under an older app, or an app restart): Delete leaves no pod behind.
-  await k8s.releaseClaim(k8s.claimNameFor(session));
-  await store.deleteSession(developer, session);
+  await afterPickUp();
+  return serialized(session, async () => {
+    // Empty the folder through the mount while the pod still has it: a file written in the
+    // last minute has not been exported yet, and removed now it never is.
+    const stopped = await releaseNow(session, { wipe: true });
+    // Also delete the claim by its name when the app holds no record of it (a start that
+    // failed under an older app, or an app restart): Delete leaves no pod behind.
+    await k8s.releaseClaim(k8s.claimNameFor(session));
+    // If a clean stop and wipe could not be confirmed, now or on an earlier Delete, the
+    // folder may still hold files and that pod may still have it mounted. Go on only once
+    // the recorded pod is gone: then nothing can write the folder, and the drain below
+    // removes what S3 Files exports from it. Otherwise keep the folder and the record.
+    const pending = await k8s.pendingStopPod(session);
+    if (pending) {
+      if (!(await k8s.waitPodGone(pending))) {
+        throw new Error(`the session's pod ${pending} could not be confirmed stopped, so the folder was kept; ` +
+          `try Delete again in a minute${stopped?.stopError ? ` (${stopped.stopError?.message || stopped.stopError})` : ""}`);
+      }
+      await k8s.clearPendingStop(session);
+    }
+    await store.deleteSession(developer, session);
+  });
 }
 
 // Background loop, every minute: release idle pods, and refresh each session's mount
@@ -242,11 +342,14 @@ const BRIDGE_FAIL_LIMIT = parseInt(process.env.BRIDGE_FAIL_LIMIT, 10) || 5;
 
 // Release a session from the background loop only if this entry is still the one the app
 // tracks for it. A check that started before a Close and a new Restore holds the old entry;
-// releasing by name then would release the new session.
-async function releaseIfCurrent(entry) {
-  if (live.get(entry.session) !== entry || starting.has(entry.session)) return false;
-  await releaseNow(entry.session);
-  return true;
+// releasing by name then would release the new session. It waits its turn in the session's
+// queue and checks the entry there, so a Close or Restore queued ahead of it has finished.
+function releaseIfCurrent(entry) {
+  return serialized(entry.session, async () => {
+    if (live.get(entry.session) !== entry || starting.has(entry.session)) return false;
+    await releaseNow(entry.session);
+    return true;
+  });
 }
 
 async function checkSession(entry, now) {
@@ -267,6 +370,21 @@ async function checkSession(entry, now) {
     entry.bridgeFailures = (entry.bridgeFailures || 0) + 1;
     console.error(`session ${entry.session} (pod ${entry.podName}): idle check failed ` +
       `(${entry.bridgeFailures} in a row), will retry next minute: ${e?.message || e}`);
+    // The pod restarts a bridge that exited, with a new certificate. From the second failure
+    // on, read the bridge back over exec and pin its new certificate if it changed; the next
+    // check then reaches it. Every failure until the release tries again, so one failed read
+    // does not release a session whose bridge came back.
+    if (entry.bridgeFailures >= 2 && entry.bridgeFailures < BRIDGE_FAIL_LIMIT) {
+      try {
+        const { token, cert } = await k8s.readBridge(entry.podName);
+        if (live.get(entry.session) === entry && token === entry.bridgeToken && cert !== entry.bridgeCert) {
+          entry.bridgeCert = cert;
+          console.log(`session ${entry.session}: session-bridge restarted in ${entry.podName}; pinned its new certificate`);
+        }
+      } catch (re) {
+        console.error(`session ${entry.session}: could not read session-bridge back from ${entry.podName}: ${re?.message || re}`);
+      }
+    }
     if (entry.bridgeFailures >= BRIDGE_FAIL_LIMIT) {
       try {
         if (!(await releaseIfCurrent(entry))) return;

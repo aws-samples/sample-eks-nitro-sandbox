@@ -125,7 +125,65 @@ export async function listSessionClaims() {
 // The node a pod runs on, and its IP, where session-bridge listens.
 export async function podInfo(podName) {
   const pod = await core.readNamespacedPod({ name: podName, namespace: NAMESPACE });
-  return { node: pod.spec?.nodeName, podIP: pod.status?.podIP };
+  const labels = pod.metadata?.labels || {};
+  return { node: pod.spec?.nodeName, podIP: pod.status?.podIP, app: labels.app, cli: labels["agent-cli"] };
+}
+
+// A durable record that a Delete could not confirm a session's clean stop, kept as a
+// ConfigMap so it outlives the app process: until the pod it names is confirmed gone, every
+// Delete of that session waits for it before removing the folder.
+const pendingName = (session) => `pending-stop-${session}`;
+export async function recordPendingStop(session, podName) {
+  try {
+    await core.createNamespacedConfigMap({ namespace: NAMESPACE, body: {
+      metadata: { name: pendingName(session), labels: { "app.kubernetes.io/part-of": "coding-agents-for-developers" } },
+      data: { pod: podName },
+    } });
+  } catch (e) {
+    if (e?.code !== 409) throw e;
+    // Already recorded by an earlier attempt: fine only if it names this same pod.
+    const recorded = await pendingStopPod(session);
+    if (recorded !== podName) {
+      throw new Error(`an unconfirmed stop of pod ${recorded} is already recorded for this session`);
+    }
+  }
+}
+// The pod a pending-stop record names, or null when there is no record. A record without a
+// pod name is an error, not "no record".
+export async function pendingStopPod(session) {
+  let cm;
+  try {
+    cm = await core.readNamespacedConfigMap({ name: pendingName(session), namespace: NAMESPACE });
+  } catch (e) {
+    if (e?.code === 404) return null;
+    throw e;
+  }
+  if (!cm?.data?.pod) throw new Error(`the pending-stop record for this session names no pod`);
+  return cm.data.pod;
+}
+export async function clearPendingStop(session) {
+  try {
+    await core.deleteNamespacedConfigMap({ name: pendingName(session), namespace: NAMESPACE });
+  } catch (e) {
+    if (e?.code !== 404) throw e;
+  }
+}
+
+// Wait until a pod no longer exists (the API answers 404). Resolves true when it is gone,
+// false when it is still there after timeoutMs. Any other error is thrown: "could not tell"
+// is not "gone".
+export async function waitPodGone(podName, timeoutMs = 120000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      await core.readNamespacedPod({ name: podName, namespace: NAMESPACE });
+    } catch (e) {
+      if (e?.code === 404) return true;
+      throw e;
+    }
+    if (Date.now() >= deadline) return false;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
 }
 
 // The pod a claim resolved to, or null when there is no such claim (or it has no pod yet).
@@ -203,8 +261,9 @@ export async function readBridge(podName) {
 // CLIs' SQLite databases and lock files sit on the NFS mount, and a lock left by a pod that
 // was deleted mid-session is held by the server until its lease runs out; see
 // session-stop.sh in the base image.
-export async function stopSession(podName) {
-  await execOnce(podName, ["/usr/local/bin/session-stop.sh"]);
+// With wipe (Delete), it also empties the folder through the mount first.
+export async function stopSession(podName, { wipe = false } = {}) {
+  await execOnce(podName, ["/usr/local/bin/session-stop.sh", ...(wipe ? ["--wipe"] : [])]);
 }
 
 // --- exec helpers ---

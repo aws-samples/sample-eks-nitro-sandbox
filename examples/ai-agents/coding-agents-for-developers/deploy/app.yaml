@@ -10,7 +10,14 @@ metadata:
     app: agent-app
     app.kubernetes.io/part-of: coding-agents-for-developers
 spec:
+  # The app keeps running sessions, and the queue that makes each session's actions run one
+  # after another, in memory, so it is meant to run as one pod. Recreate makes a rollout
+  # stop the old pod before the new one starts. It does not cover a pod deleted or evicted
+  # by hand, or a node that stops answering: the ReplicaSet can start a replacement while the
+  # old pod is still shutting down (see the README, and issue #162 for a Lease).
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: agent-app
@@ -19,6 +26,11 @@ spec:
       labels:
         app: agent-app
         app.kubernetes.io/part-of: coding-agents-for-developers
+      # Like the session pods: EKS Auto Mode must not evict the app to consolidate a node.
+      # An eviction drops every open terminal and stops any Delete in flight; on a run of
+      # this sample, consolidation evicted the app ("Underutilized") in the middle of one.
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"
     spec:
       serviceAccountName: agent-app
       containers:
@@ -27,8 +39,10 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
-          # The app listens only after it has picked up running sessions (up to a minute
-          # after a restart), so the Service and `rollout status` wait for the port.
+          # The app listens once it has picked up running sessions, or at once if the pick-up
+          # fails (logged), or after 60 seconds if it is still going (it then finishes in the
+          # background, and requests for a session wait for it), so the Service and
+          # `rollout status` wait for the port.
           readinessProbe:
             tcpSocket: { port: 8080 }
             periodSeconds: 2

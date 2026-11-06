@@ -1262,6 +1262,10 @@ global_settings:
       path: 'examples/agent-sandbox/argo-rollouts/plugin/go.mod'
       reason: 'Baseline: agent-sandbox/argo-rollouts merged before the ASH gate; vulnerable dependency, fix by upgrading tracked in #138'
       expiration: '2027-01-31'
+    - rule_id: GO-2026-6860-golang.org/x/net
+      path: 'examples/agent-sandbox/argo-rollouts/plugin/go.mod'
+      reason: 'Advisory published after the argo-rollouts baseline (x/net/html parser DoS, indirect dependency); vulnerable dependency, fix by upgrading tracked in #138'
+      expiration: '2027-01-31'
     # Baseline: agent-sandbox/brain-and-hands
     - rule_id: CKV2_K8S_6
       path: 'examples/agent-sandbox/brain-and-hands/deploy/brain.yaml'

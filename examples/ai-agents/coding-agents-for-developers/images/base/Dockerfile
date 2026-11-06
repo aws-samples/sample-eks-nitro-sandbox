@@ -26,7 +26,7 @@ RUN set -eu; \
         tmux git openssh-clients \
         stunnel nfs-utils \
         python3 python3-pip python3-botocore \
-        shadow-utils procps-ng iproute; \
+        shadow-utils procps-ng iproute findutils; \
     dnf clean all
 
 # amazon-efs-utils provides /sbin/mount.s3files. The installer pulls the latest release,
@@ -66,8 +66,21 @@ RUN set -eu; \
 # it; each CLI image's setup turns it into that CLI's own provider/model configuration.
 ENV MODEL_ID="us.anthropic.claude-sonnet-5-5"
 
+# The GitHub CLI, so a developer can sign in to GitHub from the session's shell (exit the
+# agent, run `gh auth login`, go back). Pinned and checked against the release's checksum.
+ARG GH_VERSION=2.103.3
+ARG GH_SHA256=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
+RUN set -eu; \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" -o /tmp/gh.tgz; \
+    echo "${GH_SHA256}  /tmp/gh.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/gh.tgz -C /tmp; \
+    install -m 0755 "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh; \
+    rm -rf /tmp/gh.tgz "/tmp/gh_${GH_VERSION}_linux_amd64"; \
+    gh --version
+
 COPY --chmod=0755 session-entrypoint.sh /usr/local/bin/session-entrypoint.sh
 COPY --chmod=0755 session-stop.sh /usr/local/bin/session-stop.sh
+COPY --chmod=0755 bridge-supervise.sh /usr/local/bin/bridge-supervise.sh
 COPY --from=bridge --chmod=0755 /out/session-bridge /usr/local/bin/session-bridge
 
 # A warm pod boots with NO session: it just idles here. When the app claims the pod it

@@ -59,6 +59,7 @@ spec:
             - bedrock-mantle.<AWS_REGION>.api.aws
             - docs.aws.amazon.com
             - github.com
+            - api.github.com
             - codeload.github.com
             - objects.githubusercontent.com
             - registry.npmjs.org

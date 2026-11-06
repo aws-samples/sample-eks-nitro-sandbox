@@ -1,0 +1,21 @@
+# Ingress to the web app: none from the pod network. The app's API and terminal WebSocket
+# take a session name and act on it, and the demo sign-in is a picker, so a pod that could
+# reach port 8080 could open, close or delete any developer's session. The reader reaches
+# the app through `kubectl port-forward`, which the kubelet connects inside the app pod's
+# own network namespace, so it is not pod-network traffic and this policy does not affect
+# it. The kubelet's readiness probe from the node is allowed by the VPC CNI. The app's own
+# connections out (the Kubernetes API, AWS, the session pods' session-bridge) are not
+# limited here: the policy covers Ingress only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-app-ingress
+  labels:
+    app.kubernetes.io/part-of: coding-agents-for-developers
+spec:
+  podSelector:
+    matchLabels:
+      app: agent-app
+  policyTypes:
+    - Ingress
+  ingress: []
