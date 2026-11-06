@@ -128,7 +128,7 @@ which is why Delete removes every version under the session's prefix.
 |---|---|---|
 | Bedrock | The pods of claude-code, opencode, pi and oh-my-pi (service account `agent-session`), through Pod Identity | `bedrock:InvokeModel*` scoped to this account's inference profiles and the Anthropic foundation models; nothing else, no S3 Files access |
 | Codex | Codex's pods only (service account `agent-session-codex`), through Pod Identity | `bedrock-mantle:CreateInference` for its model on the Bedrock "Mantle" endpoint, and the `bedrock-websearch` actions for its server-side web search; nothing else, no S3 Files access |
-| App | The web app, through Pod Identity | Create (with tags), list and delete this file system's access points; list and delete object versions under the sample's prefix when a session is deleted; assume the Mount role |
+| App | The web app, through Pod Identity | Create (with tags), list, read and delete this file system's access points; list and delete object versions under the sample's prefix when a session is deleted; assume the Mount role |
 | Mount | Assumed only by the app, narrowed per session | `s3files:ClientMount` and `s3files:ClientWrite` on the file system, and read objects in the bucket; each session policy narrows it to one access point |
 
 kiro-cli's pods have no role: they run as service account `agent-session-kiro`, which has
@@ -544,7 +544,7 @@ and the opencode window open over the session list:
 
 The app keeps no database. Each session has a record, a ConfigMap named
 `session-<session>` in the sample's namespace, labelled with its developer and CLI, so one
-developer's list is one label-selected read whatever the number of sessions. The session
+developer's list is a label-selected ConfigMap list, paginated 500 records at a time. The session
 name carries a creation-time prefix, so the list sorts newest-first from the names alone.
 The records for one developer, five closed sessions:
 

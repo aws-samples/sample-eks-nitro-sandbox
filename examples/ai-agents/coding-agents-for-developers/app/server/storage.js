@@ -2,9 +2,10 @@
 // folder and delete it when the pod goes, mint a short-lived credential scoped to it, and
 // delete a session's data. A session's folder outlives its access points: deleting an
 // access point leaves the directory and its files, and a new one on the same path sees
-// them again (shown on a live run). So only running sessions hold an access point, and
-// the S3 Files quota of 25,000 access points per file system caps running sessions, not
-// retained ones. The session list comes from the session records (k8s.js).
+// them again (shown on a live run). So a session holds an access point only while it runs,
+// starts, or waits for the clean up after its pod, and the S3 Files quota of 25,000 access
+// points per file system bounds those, not retained sessions. The session list comes from
+// the session records (k8s.js).
 //
 // The security property proven live: the Mount role grants ClientMount/ClientWrite on the
 // file system, and this module narrows each session's credential with an STS session
@@ -17,6 +18,7 @@ import {
   S3FilesClient,
   CreateAccessPointCommand,
   DeleteAccessPointCommand,
+  GetAccessPointCommand,
   ListAccessPointsCommand,
 } from "@aws-sdk/client-s3files";
 import { STSClient, AssumeRoleCommand } from "@aws-sdk/client-sts";
@@ -103,9 +105,8 @@ function parseRoot(path) {
   return { developer: parts[0], cli: parts[1], session: parts[2] };
 }
 
-// List every access point once, paginated, and parse each path: [{ apId, developer, cli,
-// session }]. No per-access-point tag read, so this is a handful of API calls however many
-// sessions are running.
+// List every access point, paginated, and parse each path: [{ apId, status, developer,
+// cli, session }]. No per-access-point tag read: one page call per page of access points.
 export async function listAllAccessPoints() {
   const all = [];
   let token;
@@ -152,12 +153,19 @@ export async function deleteAccessPoint(apId, status) {
       callError = e;
     }
   }
+  // Confirm by id: one GetAccessPoint per poll, whatever the number of access points, until
+  // the service answers not-found ("deleted" is still not gone).
   const deadline = Date.now() + apDeleteTiming.waitMs;
   for (;;) {
-    const ap = (await listAllAccessPoints()).find((a) => a.apId === apId);
-    if (!ap) return;
-    // A failed call whose delete did not start: report it. One still "deleting" is going.
-    if (callError && ap.status !== "deleting") throw callError;
+    let status;
+    try {
+      status = (await s3files.send(new GetAccessPointCommand({ accessPointId: apId })))?.status;
+    } catch (e) {
+      if (e?.name === "ResourceNotFoundException" || e?.$metadata?.httpStatusCode === 404) return;
+      throw e;
+    }
+    // A failed call whose delete did not start: report it. One deleting or deleted is going.
+    if (callError && status !== "deleting" && status !== "deleted") throw callError;
     if (Date.now() >= deadline) throw new Error(`access point ${apId} is still listed ${apDeleteTiming.waitMs / 1000} s after its delete`);
     await sleep(apDeleteTiming.pollMs);
   }

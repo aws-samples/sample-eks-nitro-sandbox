@@ -195,7 +195,7 @@ export async function clearPendingStop(session) {
 // The session record: one ConfigMap per session, the source of truth for the session list.
 // A session's folder needs an access point only while a pod has it mounted, so the list
 // cannot come from access points any more. Named for the session; labelled so the list for
-// one developer is one label-selected read.
+// one developer is one paginated, label-selected ConfigMap list.
 const PART_OF = "coding-agents-for-developers";
 const recordName = (session) => `session-${session}`;
 const recordOf = (cm) => cm?.data?.developer && cm.data.cli && cm.data.session
