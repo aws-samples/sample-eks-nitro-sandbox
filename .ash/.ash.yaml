@@ -1988,6 +1988,18 @@ global_settings:
       path: 'examples/subagent-security/strands-box/deploy/eks-analyst-pod.yaml'
       reason: 'Optional ordinary EKS uses Unconfined so Box can create nested namespaces and mounts; hostUsers false, no privilege escalation, and dropped capabilities remain explicit. Admission must permit this setting'
       expiration: '2027-01-31'
+    - rule_id: B108
+      path: 'examples/subagent-security/strands-box/src/controller.py'
+      line_start: 42
+      line_end: 42
+      reason: 'tempfile.mkdtemp atomically creates a random mode-0700 directory; the fixed /var/tmp parent keeps Box Unix socket paths short. This is not a predictable temporary file'
+      expiration: '2027-12-31'
+    - rule_id: B104
+      path: 'examples/subagent-security/strands-box/supplier/http_supplier.py'
+      line_start: 16
+      line_end: 17
+      reason: 'The synthetic HTTP fixture must accept requests through its ClusterIP service. It has no real supplier data, API key, or purchasing integration. This sample provides no pod-wide network restriction'
+      expiration: '2027-01-31'
 scanners:
   cdk-nag:
     enabled: false  # no CloudFormation or CDK here; it fails to parse the multi-document Kubernetes manifests
