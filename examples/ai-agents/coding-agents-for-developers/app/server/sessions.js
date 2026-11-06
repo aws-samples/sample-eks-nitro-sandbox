@@ -108,6 +108,13 @@ async function startOnce(developer, cli, session, { resume = false } = {}) {
     }
   }
 
+  // A new session gets its record first, before anything is made for it: from here on it is
+  // listed, so whatever happens next, Restore or Delete applies to it, and every access point
+  // and claim the app makes belongs to a recorded session. An access point whose session has
+  // no record is therefore never one a pod may mount, and the sweep deletes it (a create whose
+  // answer was lost and that became listable only after the session's Delete).
+  if (!resume) await k8s.createSessionRecord(developer, cli, session);
+
   // The access point and the warm pod do not depend on each other until the mount, so ask
   // for both at once: a Restore takes about as long as the slower of the two, not their sum.
   // An access point the session's record names as being deleted, or one in error, is named in
@@ -116,23 +123,10 @@ async function startOnce(developer, cli, session, { resume = false } = {}) {
   const [apResult, podResult] = await Promise.allSettled([
     store.ensureAccessPoint(developer, session, cli, {
       avoid: rec?.deletingAp,
-      beforeDelete: resume ? (apId) => k8s.markAccessPointDeleting(session, apId) : null,
+      beforeDelete: (apId) => k8s.markAccessPointDeleting(session, apId),
     }),
     k8s.claimPod(cli, session),
   ]);
-  // A new session gets its record once its access point exists: from here on it is listed,
-  // so whatever happens next, Restore or Delete applies to it. Not before: a create whose
-  // answer was lost can leave an access point that is listed only later, and a Delete of a
-  // record made before it could not see it, so the late one would come back as a session.
-  // An access point left with no record (this create failing) is recorded by the sweep.
-  if (!resume && apResult.status === "fulfilled") {
-    try {
-      await k8s.createSessionRecord(developer, cli, session);
-    } catch (e) {
-      if (podResult.status === "fulfilled") cleanUpFailedStart(session, podResult.value.claimName, podResult.value.podName);
-      throw e;
-    }
-  }
   if (podResult.status === "rejected") {
     // No pod: an access point created for it is left for the sweep, which deletes the access
     // point of any session with no pod.
@@ -426,8 +420,10 @@ async function releaseAccessPointOf(session, developer, { strict = false } = {})
 
 // The sweep, once a minute: delete the access point of every recorded session that has no
 // pod. That is the retry for an access-point delete that failed after a release, for a
-// release an app restart cut short. An access point whose session has no record is not the
-// app's to delete, and is left alone. A session counts as possibly mounted, and keeps its access
+// release an app restart cut short. It also deletes an access point whose session has no
+// record: a session gets its record before anything is made for it and loses it only after
+// its Delete, so no pod can have such an access point mounted (one whose create answer was
+// lost and that became listable only after its session's Delete). A session counts as possibly mounted, and keeps its access
 // point, while the app tracks it, a start is in flight, any claim for it exists (with or
 // without a pod), or a failed stop of its last pod is recorded. Each delete runs in the
 // session's own queue and checks again there, so it never runs beside a start or a release.
@@ -448,13 +444,21 @@ async function sweepAccessPoints() {
     SWEEP_CONCURRENCY, (r) => serialized(r.session, () => k8s.clearAccessPointDeleting(r.session, r.deletingAp))
       .catch((e) => console.error(`session ${r.session}: could not clear its deleting marker: ${e?.message || e}`)));
   // One already being deleted needs nothing more: skip it rather than ask again.
-  const idle = aps.filter((a) => a.status !== "deleting" && !live.has(a.session) && !starting.has(a.session));
+  const idle = aps.filter((a) => a.status !== "deleting" && isSessionName(a.session) && !live.has(a.session) && !starting.has(a.session));
   if (idle.length === 0) return;
   // The claims were listed before the access points; each delete below checks its claim again.
   await eachLimited(idle.filter((a) => !claims.has(k8s.claimNameFor(a.session))), SWEEP_CONCURRENCY, (a) =>
     serialized(a.session, async () => {
       if (live.has(a.session) || starting.has(a.session)) return;
-      if (!(await k8s.readSessionRecord(a.session))) return; // not a session the app knows
+      // Read again here, in the session's queue: a New agent writes its record before it makes
+      // anything, so one with no record now has nothing being made for it.
+      const rec = await k8s.readSessionRecord(a.session);
+      if (!rec) {
+        if (await k8s.claimExists(k8s.claimNameFor(a.session))) return;
+        await store.deleteAccessPoint(a.apId, a.status, { wait: false });
+        console.log(`session ${a.session}: access point delete requested, the session has no record`);
+        return;
+      }
       // After a failed stop, the recorded pod may still have the folder mounted. Once it is
       // confirmed gone the record has done its job: clear it here, so a closed session does
       // not hold its access point until its next Restore or Delete.

@@ -391,7 +391,7 @@ only Delete removes the folder.*
 
 | Action | What happens |
 |---|---|
-| New agent | The app claims a warm pod and creates the access point at the same time, writes the session's record once the access point exists, mounts the folder and starts the CLI. The pool boots a replacement. |
+| New agent | The app writes the session's record, then claims a warm pod and creates the access point at the same time, mounts the folder and starts the CLI. The pool boots a replacement. |
 | Minimize, or close the browser | Nothing changes in the cluster. The pod and the CLI keep running. |
 | No terminal activity for the idle period (default 30 minutes) | The app reads, every minute, the last time each session's terminal had key input or printed output (tmux's `session_activity` and `window_activity`). An agent still working on its own keeps printing, so it is not idle; a CLI waiting at its prompt prints nothing. Once the period passes, it stops the session cleanly (below), deletes the `SandboxClaim` and then the session's access point: the pod and the access point go, the folder and its files stay. |
 | Close the window | Same as idle: the session is stopped, the claim and the access point released, the folder stays, and the session moves to the session list. |
@@ -403,7 +403,9 @@ the app tracks it, while a start is in flight, while any claim for it exists, an
 stop that failed, until the recorded pod is confirmed gone. A background sweep, which
 starts a minute after its last pass ends, deletes the access point of every recorded session
 that has none of those. That is how an access-point delete that failed after a Close is
-retried (Close itself still succeeds: the session is stopped and its folder is kept). A pass
+retried (Close itself still succeeds: the session is stopped and its folder is kept). The
+sweep also deletes an access point whose session has no record and no claim: a session gets
+its record before anything is made for it, and loses it only at the end of its Delete. A pass
 works through eight sessions at a time, so with a large backlog one pass can take well over
 a minute. Before the app deletes an access point it writes its id into the session's record,
 so a Restore never reuses one that is being deleted, even across an app restart, and the app
