@@ -11,18 +11,21 @@
 #      enforcement and the MutatingAdmissionPolicy API;
 #   2. creates the namespace when absent, and labels it -- the gateway and its sandboxes
 #      both run there, the chart's default;
-#   3. labels the isolated-sandbox RuntimeClass for OpenShell's resource admission, when
+#   3. chooses the StorageClass the gateway's and the workspaces' claims name: the
+#      cluster's default class when exactly one fits, otherwise the sample's own class
+#      (deploy/storage-class.yaml), created only when absent;
+#   4. labels the isolated-sandbox RuntimeClass for OpenShell's resource admission, when
 #      the label is not already there;
-#   4. applies the admission adapter that fits OpenShell's generated workload pod to a
+#   5. applies the admission adapter that fits OpenShell's generated workload pod to a
 #      Nitro sandbox guest (deploy/nitro-adapter.yaml) -- a cluster-scoped object, limited
 #      by its own namespaceSelector to namespaces labelled managed-by=<sample>;
-#   5. downloads and verifies the pinned OpenShell CLI and gateway chart against
+#   6. downloads and verifies the pinned OpenShell CLI and gateway chart against
 #      versions.json;
-#   6. pins the gateway, supervisor and sandbox-runtime images by digest in the rendered
+#   7. pins the gateway, supervisor and sandbox-runtime images by digest in the rendered
 #      values, then installs the gateway chart and waits for the gateway;
-#   7. checks that neither the sandbox ServiceAccount nor the namespace's default one can
+#   8. checks that neither the sandbox ServiceAccount nor the namespace's default one can
 #      read Secrets there, since the gateway's own client certificate lives there too;
-#   8. starts the demo echo API this sample's policy and provider point at.
+#   9. starts the demo echo API this sample's policy and provider point at.
 #
 # It never changes a cluster-wide setting (network policy enforcement is checked, not
 # turned on here -- see the page), never upgrades or reconfigures a shared install such
@@ -241,7 +244,7 @@ state_put LOCAL_DIR "$LOCAL_DIR"
 # 1. Preflight
 # ---------------------------------------------------------------------------
 
-say "checking tools and the cluster (1/8)"
+say "checking tools and the cluster (1/9)"
 
 for tool in kubectl helm jq curl openssl python3; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
@@ -271,7 +274,7 @@ echo "  network policy enforcement: on"
 # 2. The namespace
 # ---------------------------------------------------------------------------
 
-say "the namespace the gateway and its sandboxes run in (2/8)"
+say "the namespace the gateway and its sandboxes run in (2/9)"
 
 for ns in "$GATEWAY_NAMESPACE"; do
   if kc get ns "$ns" >/dev/null 2>&1; then
