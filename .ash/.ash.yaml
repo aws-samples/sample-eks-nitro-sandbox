@@ -641,7 +641,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/ci-cd/docker-builds/deploy/buildkit-job.yaml'
-      reason: 'Pods carry app.kubernetes.io/part-of: docker-builds, selected by the ApplicationNetworkPolicy in deploy/egress-policy.yaml'
+      reason: 'Pods carry app.kubernetes.io/part-of: docker-builds (buildkit-job.yaml:20), selected by the ApplicationNetworkPolicy in deploy/egress-policy.yaml (egress-policy.yaml:26-28)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_29
       path: 'examples/ci-cd/docker-builds/deploy/hello-docker.yaml'
@@ -653,7 +653,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/ci-cd/docker-builds/deploy/hello-docker.yaml'
-      reason: 'Pods carry app.kubernetes.io/part-of: docker-builds, selected by the ApplicationNetworkPolicy in deploy/egress-policy.yaml'
+      reason: 'Pods carry app.kubernetes.io/part-of: docker-builds (hello-docker.yaml:16), selected by the ApplicationNetworkPolicy in deploy/egress-policy.yaml (egress-policy.yaml:26-28)'
       expiration: '2027-12-31'
     # Base image comes from a build argument that build-images.sh sets with a fixed tag (build-images.sh:29).
     - rule_id: CKV_DOCKER_7

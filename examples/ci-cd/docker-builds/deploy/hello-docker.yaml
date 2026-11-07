@@ -58,8 +58,9 @@ spec:
         periodSeconds: 5
         failureThreshold: 30
       # Restart a daemon that stops answering. The startup probe holds the liveness probe
-      # off until the daemon first answers, with the same 150-second allowance as readiness,
-      # so a slow cold start is not killed for being slow.
+      # off until the daemon first answers, for up to 150 seconds (30 x 5 s), close to the
+      # 155 the readiness probe allows (5 s delay plus 30 x 5 s), so a slow cold start is
+      # not killed for being slow.
       startupProbe:
         exec:
           command: ["docker", "info"]

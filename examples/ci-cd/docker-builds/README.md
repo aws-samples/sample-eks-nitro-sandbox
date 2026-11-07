@@ -157,8 +157,8 @@ image's own entrypoint would otherwise add `--host=tcp://0.0.0.0:2375` (or 2376 
 put a root-equivalent daemon on the pod network; naming the socket keeps the daemon reachable
 only from inside the pod, and keeps the entrypoint's own setup. The probes are all
 `docker info`: the pod is Ready only when the daemon answers, and a daemon that stops
-answering is restarted, with a startup probe giving a cold start the same 150 seconds the
-readiness probe does before the liveness probe counts.
+answering is restarted, with a startup probe giving a cold start up to 150 seconds, close
+to the 155 the readiness probe allows, before the liveness probe counts.
 
 And the root file system is read-only. A privileged container keeps every capability and runs
 with no seccomp filter, so there is nothing to drop there, but it can still be kept from
