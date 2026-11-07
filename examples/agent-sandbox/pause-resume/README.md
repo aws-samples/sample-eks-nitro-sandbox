@@ -2,10 +2,10 @@
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
-sample first so you have a cluster with the runtime classes. This sample uses the
+blueprint first so you have a cluster with the runtime classes. This blueprint uses the
 agent-sandbox `Sandbox` API, installed in [warm pool](../../getting-started/warm-pool/README.md)
 step 1. The commands below use files from this repository, so clone it if you have not
-already, and run them from this sample's folder:
+already, and run them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
@@ -29,7 +29,7 @@ outside the guest, before and after the resume.
 - **Suspend releases the pod and its compute, and keeps the EBS volume.** The pod goes
   away (`kubectl get pod` reports `NotFound`) while the workspace `PersistentVolumeClaim`
   stays `Bound`. The volume stays provisioned and billed so the workspace can come back:
-  that is the trade this sample is about.
+  that is the trade this blueprint is about.
 - **Resume brings the data back on a new pod.** A new pod, with a new UID, mounts the same
   volume. The earlier line is still in the file, with a new line from this boot.
 - **The resumed pod is a fresh sandbox, not the old one woken up.** The three sandbox
@@ -54,20 +54,20 @@ Nothing else is pinned beyond the image in the manifest
 
 | File | What it is |
 |---|---|
-| [`deploy/storage-class.yaml`](deploy/storage-class.yaml) | The sample's own EBS `StorageClass`, created by setup only when the cluster has no default class that fits. |
+| [`deploy/storage-class.yaml`](deploy/storage-class.yaml) | The blueprint's own EBS `StorageClass`, created by setup only when the cluster has no default class that fits. |
 | [`deploy/sandbox.yaml`](deploy/sandbox.yaml) | The `Sandbox` with its EBS `volumeClaimTemplates`. Its container appends one line to `/workspace/boots.log` per boot. |
 | [`scripts/setup.sh`](scripts/setup.sh) | Check the prerequisites, create the namespace and the `Sandbox`, and wait for the guest to boot with `/workspace` mounted. |
 | [`scripts/suspend.sh`](scripts/suspend.sh) | Suspend the sandbox and show the pod gone and the volume kept. |
 | [`scripts/resume.sh`](scripts/resume.sh) | Resume the sandbox and show the workspace back on a new pod. |
-| [`scripts/cleanup.sh`](scripts/cleanup.sh) | Delete the `Sandbox`, its PVC, the EBS volume and the namespace, and the sample's own `StorageClass` if setup made one. Never touches the cluster default. |
-| [`.env.example`](.env.example) | The local values the sample needs, with no secrets. |
+| [`scripts/cleanup.sh`](scripts/cleanup.sh) | Delete the `Sandbox`, its PVC, the EBS volume and the namespace, and the blueprint's own `StorageClass` if setup made one. Never touches the cluster default. |
+| [`.env.example`](.env.example) | The local values the blueprint needs, with no secrets. |
 
 The scripts read `.env` (copy it from `.env.example`). `NAMESPACE` defaults to
 `pause-resume`; leave `STORAGE_CLASS` unset to let setup choose the class (Step 2), or set
 it to force a specific one. Set `KUBE_CONTEXT` to the context of the cluster you ran Getting
 started on, so a run never depends on the machine's current context.
 
-**Step 1: Install agent-sandbox**, if you have not already from the warm pool sample. This
+**Step 1: Install agent-sandbox**, if you have not already from the warm pool blueprint. This
 folder was built against v1.0.6:
 
 ```bash
@@ -82,8 +82,8 @@ and EKS Auto Mode does not create one (Amazon EKS User Guide, *Create a storage 
 - **Your cluster's default class, when it fits.** "Fits" means `provisioner:
   ebs.csi.eks.amazonaws.com`, `type: gp3` (or unset, which is gp3) and `encrypted: "true"`.
   When exactly one default class fits, setup uses it and creates nothing.
-- **Otherwise, the sample's own class.** [`deploy/storage-class.yaml`](deploy/storage-class.yaml)
-  is a non-default class named `pause-resume-gp3`, marked as the sample's. Setup creates it
+- **Otherwise, the blueprint's own class.** [`deploy/storage-class.yaml`](deploy/storage-class.yaml)
+  is a non-default class named `pause-resume-gp3`, marked as the blueprint's. Setup creates it
   with `kubectl create` only when it is absent, and the clean up removes it:
 
   ```yaml
@@ -361,8 +361,8 @@ seconds, so the guest booted with the pod; and the block devices are virtio `vd*
 
 ## Clean up
 
-Set the variables again if you are in a new shell, then remove everything the sample
-created: the `Sandbox`, its PVC, the EBS volume behind it, the namespace, and the sample's
+Set the variables again if you are in a new shell, then remove everything the blueprint
+created: the `Sandbox`, its PVC, the EBS volume behind it, the namespace, and the blueprint's
 own `StorageClass` if setup made one.
 
 ```bash
@@ -388,21 +388,21 @@ namespace "pause-resume" deleted
 clean up complete: the Sandbox, its PVC, the EBS volume and the namespace are gone; the sample's own StorageClass is removed if it made one, and the cluster default is untouched.
 ```
 
-This run used the cluster default, so there was no sample `StorageClass` to remove (step
-4/4). On a run that used the sample's own class, step 4/4 reads
+This run used the cluster default, so there was no blueprint `StorageClass` to remove (step
+4/4). On a run that used the blueprint's own class, step 4/4 reads
 `storageclass/pause-resume-gp3 deleted`.
 
-The clean up checks the namespace carries the sample's label before it deletes anything
+The clean up checks the namespace carries the blueprint's label before it deletes anything
 inside it, confirms each delete with a lookup that reads a failed read as a failure rather
 than "gone", and exits non-zero if it skipped something or could not confirm the EBS volume
-is gone, so an incomplete clean up is never reported as done. It removes the sample's own
-`StorageClass` only when that class carries the sample's mark, and never touches the cluster
+is gone, so an incomplete clean up is never reported as done. It removes the blueprint's own
+`StorageClass` only when that class carries the blueprint's mark, and never touches the cluster
 default.
 
-It leaves the **agent-sandbox controller** in place, shared with the warm pool sample and
-other agent-sandbox samples. To remove it, follow the
+It leaves the **agent-sandbox controller** in place, shared with the warm pool blueprint and
+other agent-sandbox blueprints. To remove it, follow the
 [warm pool clean up](../../getting-started/warm-pool/README.md#clean-up).
 
-If this is the only sample you ran, follow the
+If this is the only blueprint you ran, follow the
 [hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up) to remove
 the cluster.

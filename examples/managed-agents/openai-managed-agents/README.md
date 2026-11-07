@@ -2,8 +2,8 @@
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
-sample first so you have a cluster with the runtime classes. The commands below use files
-from this repository, so clone it if you have not already, and run them from this sample's
+blueprint first so you have a cluster with the runtime classes. The commands below use files
+from this repository, so clone it if you have not already, and run them from this blueprint's
 folder:
 
 ```bash
@@ -11,7 +11,7 @@ git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/managed-agents/openai-managed-agents
 ```
 
-For this sample you also need [Docker](https://docs.docker.com/get-docker/), Python 3 with
+For this blueprint you also need [Docker](https://docs.docker.com/get-docker/), Python 3 with
 `venv`, and an OpenAI project with access to the
 [Agents API](https://developers.openai.com/api/docs/guides/agents-api/overview) (beta) and
 its [self-hosted sandbox](https://developers.openai.com/api/docs/guides/agents-api/environments/self-hosted).
@@ -23,11 +23,11 @@ agent's loop for you: the model, the harness and the session stay on OpenAI's si
 the other half, the agent's shell commands and file edits, runs on infrastructure you
 control. OpenAI's own provider guides run the same executor,
 [`codex exec-server`](https://developers.openai.com/api/docs/guides/agents-api/environments/providers/aws),
-on AWS Lambda MicroVMs and other hosts; this sample runs it in a Nitro sandbox on EKS. It
-pairs with the [Claude Managed Agents](../claude-managed-agents/README.md) sample so you can
+on AWS Lambda MicroVMs and other hosts; this blueprint runs it in a Nitro sandbox on EKS. It
+pairs with the [Claude Managed Agents](../claude-managed-agents/README.md) blueprint so you can
 compare the two platforms side by side.
 
-The executor runs code the model chose to run, so this sample gives each session its own
+The executor runs code the model chose to run, so this blueprint gives each session its own
 Nitro sandbox:
 
 - **The harness runs at OpenAI; the tools run in your cluster.** Sessions are created with
@@ -92,18 +92,18 @@ The files:
 | [`deploy/rbac.yaml`](deploy/rbac.yaml) | The identities, and what the launcher may do: manage `SandboxClaims` and read `Sandboxes` |
 | [`scripts/setup_agent.py`](scripts/setup_agent.py), [`submit.py`](scripts/submit.py), [`cleanup.py`](scripts/cleanup.py) | Run on your machine with the application key: create the agent, start a session, clean up sessions and claims |
 | [`scripts/check-egress.py`](scripts/check-egress.py) | The egress check (the two allowed hosts and two refused), piped into a sandbox from your machine |
-| `.env.example` | The values the sample needs; copy it to `.env`, which git ignores |
+| `.env.example` | The values the blueprint needs; copy it to `.env`, which git ignores |
 
 ## How the hand-off works
 
 The default in [issue #9](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/9)
-is application-managed provisioning, and this sample uses it:
+is application-managed provisioning, and this blueprint uses it:
 
 1. The operator's [`submit.py`](scripts/submit.py) creates the session with
    `environment.type: self_hosted`. OpenAI returns the session's environment id and its
    remote URL.
 2. `submit.py` POSTs those to the launcher in the cluster, over a `kubectl port-forward` to a
-   ClusterIP Service, with a bearer token the launcher checks. The sample creates no Ingress,
+   ClusterIP Service, with a bearer token the launcher checks. The blueprint creates no Ingress,
    LoadBalancer or NodePort.
 3. The launcher claims a sandbox from the `SandboxWarmPool` with a `SandboxClaim`, and sets
    the session id, environment id, remote URL and the environment key the launcher holds in
@@ -125,24 +125,24 @@ that into `SandboxClaim.spec.env`, and setting it forces a cold start from the w
 template, so the controller injects the key into a pod created specifically for this session.
 The key never crosses the pod network, and a warm pod never holds it. The warm pool still
 removes the VM-boot and image-pull latency; only the final container start is cold. This
-mechanism is native to the agent-sandbox stack; the sample invents no transport or auth of
+mechanism is native to the agent-sandbox stack; the blueprint invents no transport or auth of
 its own for the key.
 
-**Why this and not a poller like the Claude sample.** The Claude sample polls an environment
+**Why this and not a poller like the Claude blueprint.** The Claude blueprint polls an environment
 work queue. The OpenAI self-hosted executor instead dials out to a session's remote URL, and
 the session must be created before compute starts for it
 ([application-managed provisioning](https://developers.openai.com/api/docs/guides/agents-api/environments/lifecycle#start-an-environment)).
 A key limited to `api.agents.read` that could find sessions awaiting an
-`environment_connection` would allow a polling launcher, closer to the Claude sample. The
+`environment_connection` would allow a polling launcher, closer to the Claude blueprint. The
 pinned SDK (3.31.0) exposes `client.beta.agents.sessions.create`, `retrieve`, `stream` and
 event streaming, but no "list sessions awaiting an environment connection" call, so this
-sample uses the issue's default, operator-driven provisioning. Webhook-managed provisioning
-is out of scope: it needs a public HTTPS endpoint, and samples here create no Ingress,
+blueprint uses the issue's default, operator-driven provisioning. Webhook-managed provisioning
+is out of scope: it needs a public HTTPS endpoint, and blueprints here create no Ingress,
 LoadBalancer or NodePort.
 
 **Step 1: Install agent-sandbox and turn on network policy.** Install the controller with its
 extensions (`SandboxTemplate`, `SandboxWarmPool`, `SandboxClaim`). If you ran the warm pool
-sample, this upgrades it in place:
+blueprint, this upgrades it in place:
 
 ```bash
 kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
@@ -150,7 +150,7 @@ kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller
 ```
 
 EKS Auto Mode accepts network policies without enforcing them until the Network Policy
-Controller is enabled, once per cluster. If you have not run the coding agent sample:
+Controller is enabled, once per cluster. If you have not run the coding agent blueprint:
 
 ```bash
 kubectl apply -f ../../getting-started/coding-agent/enable-network-policy.yaml
@@ -183,14 +183,14 @@ session by `submit.py`, not here, because a self-hosted environment is the live 
 one running executor.
 
 **Pick a model id.** Set `AGENT_MODEL` in `.env` to a model id your project can use. The run
-on this page used `gpt-6-luna`; that is the id this sample was exercised with, not a
+on this page used `gpt-6-luna`; that is the id this blueprint was exercised with, not a
 guaranteed-current default, so confirm a model id for your own project against the official
 [model list](https://platform.openai.com/docs/models) before you rely on it. It must be a
 public OpenAI Agents API model id, not an internal or runtime identifier. If `AGENT_MODEL` is
 unset, `setup_agent.py` falls back to a clearly-labeled placeholder and tells you to set a real
 one. Model ids change; re-check before each release.
 
-**The two keys, and where each is created.** This sample uses two OpenAI credentials of
+**The two keys, and where each is created.** This blueprint uses two OpenAI credentials of
 *different classes*, created on different dashboard surfaces:
 
 - **The application key** (`OPENAI_API_KEY`) creates the agent, creates and reads sessions, and
@@ -215,7 +215,7 @@ the environment key; the network policy and a dedicated project are what bound t
 narrower credential. Give each trust boundary its own OpenAI project, as
 [OpenAI advises](https://developers.openai.com/api/docs/guides/agents-api/environments/security#isolate-workloads).
 If a session-scoped credential becomes available, hold that in the sandbox instead, as the
-Claude sample does with its per-session token.
+Claude blueprint does with its per-session token.
 
 **Step 3: Build and push the image.**
 
@@ -566,7 +566,7 @@ publishes only IPv4, so its single attempt times out. The IPv4 block is identica
 the environment key arrive in the pod's env from the `SandboxClaim`, set by the launcher over
 its authenticated Kubernetes API connection. The launcher's own intake, which the operator
 reaches by port-forward, is guarded two ways: a deny-by-default ingress policy admits no
-in-cluster pod, and the launcher checks a bearer token on every request. The sample publishes
+in-cluster pod, and the launcher checks a bearer token on every request. The blueprint publishes
 no Ingress and no host port anywhere.
 
 ## Clean up
@@ -576,7 +576,7 @@ neither does the other's work.
 
 **Clean up sessions and their claims.** On your machine, with the launcher port-forward still
 running (`cleanup.py` asks the launcher to delete the claim), clean up the sessions this
-sample created. For each session `cleanup.py` rechecks the session's state, deletes its
+blueprint created. For each session `cleanup.py` rechecks the session's state, deletes its
 `SandboxClaim` (which stops the pod), then deletes the API session:
 
 ```bash
@@ -611,9 +611,9 @@ docker image rm $REGISTRY/openai-sandbox-executor:latest
 rm -rf .venv
 ```
 
-Keep `.env` if you will run the sample again. Otherwise delete it, and in the OpenAI console
+Keep `.env` if you will run the blueprint again. Otherwise delete it, and in the OpenAI console
 revoke the environment key and archive the agent (`client.beta.agents.delete`). agent-sandbox
-stays installed for other samples; to remove it, delete the release you installed in step 1:
+stays installed for other blueprints; to remove it, delete the release you installed in step 1:
 
 ```bash
 kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
@@ -621,13 +621,13 @@ kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/down
 
 ## Keep a session's workspace while it is idle
 
-This sample's sandbox uses an `emptyDir` for `/workspace`, so a session's files live for the
+This blueprint's sandbox uses an `emptyDir` for `/workspace`, so a session's files live for the
 life of its claimed pod. OpenAI's lifecycle guide notes that
 [replacement compute does not restore files](https://developers.openai.com/api/docs/guides/agents-api/environments/lifecycle#reconnect-after-a-disconnect),
 and its Lambda MicroVM guide suspends and resumes between turns to keep memory and disk. To
 keep a workspace across a suspend and resume, give the `SandboxTemplate` a `volumeClaimTemplate`
 for `/workspace` and set the sandbox's `operatingMode` so the controller suspends the pod
-between turns and resumes it on the next one. That is an extension of this sample, not its
+between turns and resumes it on the next one. That is an extension of this blueprint, not its
 default path; the default keeps the simpler per-pod `emptyDir`.
 
 ## Good to know

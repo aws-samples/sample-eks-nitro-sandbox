@@ -16,7 +16,7 @@ and this page is the Confidential section's reference for the mechanism itself.
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page and the [Confidential section page](../README.md), which covers the trust
-boundary these samples share. Two samples lead into this one:
+boundary these blueprints share. Two blueprints lead into this one:
 
 - [cedar-policy](../../policy/cedar-policy/README.md) generates a Cedar policy for a
   `confidential-sandbox` pod and shows the guest enforce it.
@@ -42,7 +42,7 @@ so pass the name your copy has if it differs. The scripts run against your curre
 every call and never change your current context.
 
 A run stores two small images and two signatures in Amazon ECR, billed as ECR storage, and
-runs one sandboxed pod while the sample is up. There is no additional charge for AWS Signer
+runs one sandboxed pod while the blueprint is up. There is no additional charge for AWS Signer
 used with Amazon ECR.
 
 ## The choice confidential mode gives you
@@ -55,7 +55,7 @@ all container admission fields, image digests among them (*Cedar policies*). It 
 narrower constraint on the image than anything else on this page, and it is what you get
 without choosing anything.
 
-This sample generates from the Confidential section's shared profile rather than that
+This blueprint generates from the Confidential section's shared profile rather than that
 built-in one, for a reason that has nothing to do with the image: step 3 says which, and
 names the two fields it leaves unpinned. The image pin is the same in both.
 
@@ -123,7 +123,7 @@ generator rather than assumed.
 - **`--skip-image-ref-container` writes its own warning into the policy**, which
   `--no-pin-image` does not: the generated Cedar carries the comment
   `// WARNING: image_ref not checked; any image signed by the trusted signers will be
-  allowed`. The two have the same effect on a single-container pod, and this sample uses
+  allowed`. The two have the same effect on a single-container pod, and this blueprint uses
   `--skip-image-ref-container` so that the policy a reader reads says what was traded away.
 - **The help for `--skip-image-ref-container` names a flag that does not exist.** Where it
   says image trust is established "via" a signer flag, it gives a flag name the generator
@@ -151,15 +151,15 @@ string, so the version above is what it resolved to at run time, read with
 |---|---|
 | [`Dockerfile`](Dockerfile) | The provider's application image, built once per release with a `RELEASE` build argument |
 | [`deploy/pod.yaml`](deploy/pod.yaml) | The pod: `confidential-sandbox`, and as little else as the mechanism allows |
-| [`deploy/namespace.yaml`](deploy/namespace.yaml), [`deploy/service-account.yaml`](deploy/service-account.yaml) | The namespace, labelled as this sample's, and the pod's ServiceAccount |
+| [`deploy/namespace.yaml`](deploy/namespace.yaml), [`deploy/service-account.yaml`](deploy/service-account.yaml) | The namespace, labelled as this blueprint's, and the pod's ServiceAccount |
 | [`iam/signer-verify-policy.json`](iam/signer-verify-policy.json) | The pod's whole AWS permission: read this signing profile, check revocation status |
 | [`iam/pod-identity-trust.json`](iam/pod-identity-trust.json) | The Pod Identity trust policy, scoped to this cluster, namespace and ServiceAccount |
 | [`scripts/setup.sh`](scripts/setup.sh) | The operator's setup and the provider's first release: signing profile, repository, build, sign, role, both policies, start the pod |
 | [`scripts/new-version.sh`](scripts/new-version.sh) | The provider's next release, and the pod restarted on it with the policy untouched |
 | [`scripts/pinned-arm.sh`](scripts/pinned-arm.sh) | The digest-pinned policy refusing that same release |
-| [`scripts/clean.sh`](scripts/clean.sh) | Delete what the sample created, and verify it is gone |
+| [`scripts/clean.sh`](scripts/clean.sh) | Delete what the blueprint created, and verify it is gone |
 | [`scripts/lib.sh`](scripts/lib.sh) | The helpers the four scripts share |
-| [`../_shared/confidential-profile.yaml`](../_shared/confidential-profile.yaml) | The generator profile the Confidential samples share |
+| [`../_shared/confidential-profile.yaml`](../_shared/confidential-profile.yaml) | The generator profile the Confidential blueprints share |
 
 **Step 1: The pod.** It is as plain as the mechanism allows, because the subject is what the
 policy admits, not what the workload does. Here is the container, from
@@ -189,7 +189,7 @@ explicitly because the generated policy pins it, and the digest-pinned arm later
 pod that differs from this one in the image and nothing else. Both `AWS_REGION` and
 `AWS_DEFAULT_REGION` are declared because a policy generated with `--with-pod-identity`
 expects both in the pinned environment, and the webhook injects the second only when the
-first is already there. The pod does set CPU and memory requests, which most samples here
+first is already there. The pod does set CPU and memory requests, which most blueprints here
 avoid: the guest unpacks every image layer inside the sandbox before the container starts,
 and the smallest default sandbox has nowhere to put them.
 
@@ -210,7 +210,7 @@ role: the Amazon EKS User Guide requires `signer:GetSigningProfile` and
 `signer:GetRevocationStatus` on it, and states that if either call fails or returns a
 permission error, verification fails closed and the agent denies container creation
 (*Cedar policies*). The guide lists the actions and does not say how to scope them. Scoping
-them as narrowly as this is **this sample's own choice**, in
+them as narrowly as this is **this blueprint's own choice**, in
 [`iam/signer-verify-policy.json`](iam/signer-verify-policy.json):
 
 ```json
@@ -291,7 +291,7 @@ gzipped, base64 string, so it is not readable by eye.
 
 Both are generated from
 [`../_shared/confidential-profile.yaml`](../_shared/confidential-profile.yaml), the profile
-the Confidential samples share, and that profile is what makes this page's mechanism
+the Confidential blueprints share, and that profile is what makes this page's mechanism
 possible: it pins each of the container admission fields it lists, the image among them,
 which is why there is an image pin here to relax in the first place; it allows log reading,
 which is how the steps below read the container's own output, given that it denies exec; and
@@ -321,7 +321,7 @@ it makes the generator stop with `user requested specific architecture amd64 for
 non-index image`.
 
 The two policies differ in exactly one way, and the diff between them is the point of the
-sample. The substitution appears twice because the image is named in two permits,
+blueprint. The substitution appears twice because the image is named in two permits,
 `PrepareImage` and `CreateContainer`: the digest-pinned policy requires the exact
 `image_ref` in both, and the signer-based one requires a verified signer in both instead.
 
@@ -507,7 +507,7 @@ checking the image":
   *configuration*. A release whose image set a different `WORKDIR`, or a different
   environment variable, would be refused by this policy even though it is signed, because
   `pin_working_dir` and `pin_env` fix those from the release the policy was generated for.
-  That is worth agreeing with a provider up front, and it is why this sample's two releases
+  That is worth agreeing with a provider up front, and it is why this blueprint's two releases
   differ in their content and in nothing else. The image's own `USER` is not an example of
   this, and deliberately so: this pod sets `runAsUser` and `runAsGroup` numerically in its
   spec, which overrides whatever the image declares, so a release that changed its `USER`
@@ -528,9 +528,9 @@ much you trust the provider's release process, and only you can make it.
   exec and log reading, and the IMDS surrogate (Amazon EKS User Guide, *Cedar policies*).
   The Amazon Time Sync Service and the EKS Pod Identity Agent are not policy-controlled:
   the sandbox always reaches them directly (same page), which is how the credentials the
-  verification uses arrive without the policy granting them. This sample ships no network
+  verification uses arrive without the policy granting them. This blueprint ships no network
   policy. To restrict where this pod can connect, see the
-  [network policy](../../isolation/network-policy/README.md) sample.
+  [network policy](../../isolation/network-policy/README.md) blueprint.
 - **What this run establishes, and what it does not.** It shows that the signer-based policy
   admitted a release it had never seen, and that the digest-pinned policy refused that same
   release. It does **not** include an unsigned or wrong-signer image, so it does not by
@@ -553,16 +553,16 @@ much you trust the provider's release process, and only you can make it.
   digest-pinned arm is what the signer policy is measured against.
 - **The policy is measured into PCR17, and the measurement does not change here.** Because
   the policy is never regenerated, its measurement stays the same across both releases. If
-  you gate a KMS key on it, as the [encrypted image](../encrypted-image/README.md) sample
+  you gate a KMS key on it, as the [encrypted image](../encrypted-image/README.md) blueprint
   does, that gate keeps working through a release the policy has never seen, which is the
   same benefit in another place.
 - **An encrypted image can carry a signature too.** Keeping the provider's image unreadable
   to the operator is the other half of the arrangement this page describes, and the
-  [encrypted image](../encrypted-image/README.md) sample shows that mechanism, with the
-  layer key released only to an attested sandbox. A policy can require both. This sample
+  [encrypted image](../encrypted-image/README.md) blueprint shows that mechanism, with the
+  layer key released only to an attested sandbox. A policy can require both. This blueprint
   stays on the signature so that it is the only thing moving.
 - **The repository has `IMMUTABLE` tags**, so a release tag cannot be overwritten. To run
-  the sample again without deleting the repository, set two release names it does not
+  the blueprint again without deleting the repository, set two release names it does not
   already hold.
 
 ## Clean up
@@ -617,14 +617,14 @@ $ ./scripts/clean.sh --delete-aws-resources
 Clean up complete.
 ```
 
-`clean.sh` deletes only what carries this sample's mark: it checks the namespace label
+`clean.sh` deletes only what carries this blueprint's mark: it checks the namespace label
 before it removes anything inside the namespace, and each AWS resource for its `ManagedBy`
 tag. A lookup it cannot complete counts as "could not determine", which is a failure and
 never "gone", so it reports what it could not do and exits non-zero.
 
 AWS Signer has no hard delete, so `--delete-aws-resources` cancels the signing profile and
 confirms the status reads `Canceled`. A canceled profile lingers until its signatures expire
-(about 141 months by default) and AWS Signer refuses to reuse the name, so to set the sample
+(about 141 months by default) and AWS Signer refuses to reuse the name, so to set the blueprint
 up again afterwards, set a new `SIGNING_PROFILE` in `.env` first; `setup.sh` stops with that
 instruction if the old name is still there. To remove the namespace and the cluster, follow
 the [hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up).

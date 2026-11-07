@@ -2,17 +2,17 @@
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
-sample first so you have an EKS Auto Mode cluster with the runtime classes. This sample also
-builds on the [coding agent](../../getting-started/coding-agent/README.md) sample for turning
+blueprint first so you have an EKS Auto Mode cluster with the runtime classes. This blueprint also
+builds on the [coding agent](../../getting-started/coding-agent/README.md) blueprint for turning
 on network policy enforcement once per cluster. The commands below use files from this
-repository, so clone it if you have not already, and run them from this sample's folder:
+repository, so clone it if you have not already, and run them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/storage/s3-files
 ```
 
-This sample needs the AWS CLI, which the home page already lists, new enough for the
+This blueprint needs the AWS CLI, which the home page already lists, new enough for the
 `aws s3files` commands (a current 2.x release), for the steps that create the storage and
 read it back. It also needs the **Amazon EFS CSI driver** installed on the cluster as a
 shared prerequisite, at **3.5.1 or newer** for S3 Files;
@@ -53,8 +53,8 @@ runtime class.
 - **The access points pin the identity, and the workload holds no AWS identity.** Every mount
   runs as one POSIX UID/GID, and the pods' ServiceAccount has no AWS association and mounts no
   Kubernetes API token. What authorizes each mount is the CSI driver's node identity, allowed
-  on this one file system per access point by the sample's own file system policy. The managed
-  EC2 node instance-profile role is neither read nor named by the sample.
+  on this one file system per access point by the blueprint's own file system policy. The managed
+  EC2 node instance-profile role is neither read nor named by the blueprint.
 
 *Figure 1: Two sandboxed pods share one S3 Files dataset with different access. A writer and a
 reader, each an `isolated-sandbox` pod, mount the same file system through two access points
@@ -70,7 +70,7 @@ This folder was built against these releases:
 
 | Component | Version |
 |---|---|
-| Amazon EFS CSI driver add-on ([kubernetes-sigs/aws-efs-csi-driver](https://github.com/kubernetes-sigs/aws-efs-csi-driver)) | `v3.5.1-eksbuild.1` on the run below; the sample needs **3.5.1 or newer** for S3 Files |
+| Amazon EFS CSI driver add-on ([kubernetes-sigs/aws-efs-csi-driver](https://github.com/kubernetes-sigs/aws-efs-csi-driver)) | `v3.5.1-eksbuild.1` on the run below; the blueprint needs **3.5.1 or newer** for S3 Files |
 | AWS CLI with the `aws s3files` commands ([aws/aws-cli](https://github.com/aws/aws-cli)) | `2.36.47` on the run below; any current 2.x release |
 | `busybox` image ([public.ecr.aws/docker/library/busybox](https://gallery.ecr.aws/docker/library/busybox)) | `1.37` |
 
@@ -78,16 +78,16 @@ The files:
 
 | File | What it is |
 |---|---|
-| [`deploy/s3-files.yaml`](deploy/s3-files.yaml) | The sample's non-default `nitro-sandbox-s3-files` StorageClass, two static access-point PVs (`tls,iam`, `s3files:` volume handles) and their PVCs, a workload ServiceAccount with no identity, and the writer (read-write) and reader (read-only) `isolated-sandbox` pods. |
+| [`deploy/s3-files.yaml`](deploy/s3-files.yaml) | The blueprint's non-default `nitro-sandbox-s3-files` StorageClass, two static access-point PVs (`tls,iam`, `s3files:` volume handles) and their PVCs, a workload ServiceAccount with no identity, and the writer (read-write) and reader (read-only) `isolated-sandbox` pods. |
 | [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The egress `ApplicationNetworkPolicy`: DNS on port 53 to any address and NFS (TCP 2049) to the mount targets, deny all ingress. |
 | [`iam/file-system-policy.json`](iam/file-system-policy.json) | The S3 Files file system policy template: the CSI node principal gets read-write via the writer access point and read-only via the reader access point, by the `s3files:AccessPointArn` condition; never `ClientRootAccess`. |
 | [`iam/bucket-policy.json`](iam/bucket-policy.json) | The backing bucket's policy template: TLS required. |
 | [`iam/sync-role-trust.json`](iam/sync-role-trust.json) / [`iam/sync-role-permissions.json`](iam/sync-role-permissions.json) | The synchronization role's trust (the S3 Files service, this file system) and permissions (this bucket only). |
 | [`scripts/setup.sh`](scripts/setup.sh) | Checks the EFS CSI driver (shared, reused, never changed); creates the bucket, synchronization role, file system, NFS security group, mount targets and the writer and reader access points; applies the file system and bucket policies; then deploys the namespace, the egress policy, the StorageClass, the PVs, the PVCs and the two pods. |
-| [`scripts/clean.sh`](scripts/clean.sh) | Deletes the Kubernetes objects; `--delete-aws-resources` also releases the two access points, mount targets, file system, synchronization role, security group and (only when the sample created it) the bucket. |
+| [`scripts/clean.sh`](scripts/clean.sh) | Deletes the Kubernetes objects; `--delete-aws-resources` also releases the two access points, mount targets, file system, synchronization role, security group and (only when the blueprint created it) the bucket. |
 
 The walkthrough uses the shared Region default from the home page, a cluster of your own, and
-a namespace of its own so the sample's objects are easy to find and remove on a shared
+a namespace of its own so the blueprint's objects are easy to find and remove on a shared
 cluster. Set them in your shell:
 
 ```bash
@@ -101,7 +101,7 @@ export NAMESPACE=nitro-s3-files-sample
 **Step 1: Run setup.** [`scripts/setup.sh`](scripts/setup.sh) does everything the walkthrough
 below needs. It first confirms the Amazon EFS CSI driver is installed at 3.5.1 or newer and
 reads, without changing it, which IAM role the driver's node service account uses. It creates
-the sample's own resources, each tagged `ManagedBy=storage-s3-files` and `auto-delete=no`: a
+the blueprint's own resources, each tagged `ManagedBy=storage-s3-files` and `auto-delete=no`: a
 versioned, encrypted S3 bucket with Block Public Access and a TLS-only bucket policy; a
 synchronization role scoped to that bucket; an S3 Files file system on the bucket; an NFS
 security group that admits TCP 2049 from the cluster security group only; one mount target per
@@ -147,8 +147,8 @@ spec:
 ./scripts/setup.sh
 ```
 
-The run below started on a cluster with none of the sample's AWS resources present. The
-`nitro-s3-files-sample` namespace already existed, empty, from an earlier run (the sample never
+The run below started on a cluster with none of the blueprint's AWS resources present. The
+`nitro-s3-files-sample` namespace already existed, empty, from an earlier run (the blueprint never
 deletes the namespace, only what is inside it), so setup reused it rather than creating it.
 This block is exactly what that run printed, and it predates the correction of the minimum:
 the check then enforced 3.0.0, so its first line reads `(>= 3.0.0)` where the current check
@@ -284,7 +284,7 @@ from-writer
 ```
 
 That is the kernel mount refusing the write, which is defense in depth, not the IAM policy. To
-show the **file system policy** refusing it on its own, start a throwaway pod of the sample's own
+show the **file system policy** refusing it on its own, start a throwaway pod of the blueprint's own
 that mounts the same reader access point **without** `readOnly`, so the kernel mount is
 read-write and the only thing that can refuse a write is the policy's
 `DenyWriteThroughReaderAccessPoint` statement, keyed on the reader access point ARN. (S3 Files
@@ -377,7 +377,7 @@ the access point's identity applies to writes made through the mount.)
 **Step 9: IAM authorizes each mount per access point.** The pods mount with `tls,iam`, so the
 mount helper signs the connection with the CSI driver's node identity, and the file system policy
 decides by principal and by access point. For a principal in the same account, an `Allow` in this
-resource policy is enough to authorize the mount, so the sample adds nothing to the shared CSI
+resource policy is enough to authorize the mount, so the blueprint adds nothing to the shared CSI
 node role, and on the run below that role carried no S3 Files identity policy at all. Read the
 policy back from S3 Files:
 
@@ -474,7 +474,7 @@ cluster security group, the cluster's own nodes and pods, can reach the mount ta
 
 ## How the network policy works
 
-These pods have a network: they reach the mount targets to mount the file system. So the sample
+These pods have a network: they reach the mount targets to mount the file system. So the blueprint
 restricts their egress with an `ApplicationNetworkPolicy`, an EKS Auto Mode NetworkPolicy, and
 does not set `sandbox.amazonaws.com/network-isolated` on them, because that would remove the
 device used to reach the mount target.
@@ -509,11 +509,11 @@ spec:
 | --- | --- |
 | `podSelector: app=s3-files-shared` | Selects the writer and reader pods. |
 | `policyTypes: [Ingress, Egress]` | Governs both directions; with no ingress rule, all ingress is denied. |
-| First egress rule, `0.0.0.0/0` port 53 | Allows egress to any address on UDP and TCP 53. This is a project choice to keep the sample simple: it does not depend on how a given cluster serves DNS (on EKS Auto Mode the resolver is node-local rather than a pod behind a ClusterIP). What it allows is wider than DNS resolution: any process in the sandbox can reach any host on UDP or TCP 53, so it can send data out over DNS or to anything listening on port 53. What it costs is that port-53 egress is not confined to the cluster's own resolver. It still opens only port 53; every other port and protocol stays denied. |
+| First egress rule, `0.0.0.0/0` port 53 | Allows egress to any address on UDP and TCP 53. This is a project choice to keep the blueprint simple: it does not depend on how a given cluster serves DNS (on EKS Auto Mode the resolver is node-local rather than a pod behind a ClusterIP). What it allows is wider than DNS resolution: any process in the sandbox can reach any host on UDP or TCP 53, so it can send data out over DNS or to anything listening on port 53. What it costs is that port-53 egress is not confined to the cluster's own resolver. It still opens only port 53; every other port and protocol stays denied. |
 | Second egress rule, `<MOUNT_TARGET_BLOCK>` | NFS (TCP 2049) to each S3 Files mount-target IP, one per Availability Zone. `setup.sh` expands one `- ipBlock: { cidr: <ip>/32 }` line per address from `aws s3files list-mount-targets`. |
 
 The direct read-from-S3 optimization that S3 Files can enable runs in the driver on the node,
-outside the guest, so the pod's own egress needs no S3 rule. This sample does not enable that
+outside the guest, so the pod's own egress needs no S3 rule. This blueprint does not enable that
 optimization, so nothing is granted on the shared node role; the mount and all reads still work
 over NFS.
 
@@ -550,23 +550,23 @@ the mount targets.
   explicitly denied it). The two access points are rooted at the same directory, so they are one
   dataset with two levels of access.
 - **Three identities, each scoped.** S3 Files separates the mount identity, the synchronization
-  identity and the workload, and the sample gives each only what it needs.
+  identity and the workload, and the blueprint gives each only what it needs.
 
   | Identity | Used for | Scoped to |
   |---|---|---|
-  | CSI node role (`efs-csi-node-sa`) | Mounting the access points | Used as it is: the sample never changes it. The sample's own file system policy grants this principal read-write via the writer access point and read-only via the reader access point. |
+  | CSI node role (`efs-csi-node-sa`) | Mounting the access points | Used as it is: the blueprint never changes it. The blueprint's own file system policy grants this principal read-write via the writer access point and read-only via the reader access point. |
   | Synchronization role | Assumed by S3 Files to keep the file system and the bucket in sync | This bucket only; its trust is narrowed to the exact file system once that exists. |
   | Workload ServiceAccount | The two pods | No AWS association at all; giving an application pod a role does not satisfy the mount helper. |
 
-- **The EFS CSI driver is a shared install.** The sample reads which role the driver's node
+- **The EFS CSI driver is a shared install.** The blueprint reads which role the driver's node
   service account uses and never changes the driver, its service accounts, their IAM roles or
   their Pod Identity associations. The least privilege for this file system lives in the file
-  system policy, which belongs to the sample's own file system, not on the shared node role.
+  system policy, which belongs to the blueprint's own file system, not on the shared node role.
   Public documentation describes the node role with the broad `AmazonS3FilesClientFullAccess`
-  managed policy; this sample grants the mount actions from the resource side instead, scoped to
+  managed policy; this blueprint grants the mount actions from the resource side instead, scoped to
   this one file system and split per access point.
 - **The managed EC2 node role is left alone.** An Auto Mode EC2 node instance-profile role is a
-  shared, managed role that should keep what it ships with. The sample never reads, grants to, or
+  shared, managed role that should keep what it ships with. The blueprint never reads, grants to, or
   denies it: the file system is default-deny and authorized only through the per-access-point
   file system policy, so the node role is not part of the design.
 - **The pods have no AWS identity of their own, but their mount uses a shared one.** The pods'
@@ -579,27 +579,27 @@ the mount targets.
 - **What else the shared node role can mount is the cluster owner's choice.** If you own the
   cluster, check the role's own IAM policies: a broad client policy such as
   `AmazonS3FilesClientFullAccess` is not limited to one file system. To narrow it, scope the
-  role's mount permissions to named file systems or to a resource tag. The sample does not
+  role's mount permissions to named file systems or to a resource tag. The blueprint does not
   change the role, because other workloads' mounts depend on it.
 - **The backing bucket is versioned and encrypted.** S3 Files requires S3 Versioning and
-  server-side encryption to synchronize; the sample also turns on Block Public Access and a
-  TLS-only bucket policy. The clean up deletes only a bucket this sample created and tagged.
+  server-side encryption to synchronize; the blueprint also turns on Block Public Access and a
+  TLS-only bucket policy. The clean up deletes only a bucket this blueprint created and tagged.
 - **Shared on purpose, with asymmetric access.** Unlike an EBS volume, which one pod holds at a
   time, this dataset is mounted by both pods at once, the writer read-write and the reader
   read-only. For a single pod that needs durable block storage, use the [EBS](../ebs/README.md)
-  sample; for shared POSIX files with no S3 object view, use the [EFS](../efs/README.md) sample.
-  This sample is the choice when the same data must be both a shared POSIX file system and plain
+  blueprint; for shared POSIX files with no S3 object view, use the [EFS](../efs/README.md) blueprint.
+  This blueprint is the choice when the same data must be both a shared POSIX file system and plain
   S3 objects.
 - **Do not set `network-isolated` on these pods.** They need a network to reach the mount target,
   so they take an egress network policy instead of the network-isolated annotation.
-- **The pods pin their node while the sample is up.** They are bare pods, and nothing recreates
+- **The pods pin their node while the blueprint is up.** They are bare pods, and nothing recreates
   a bare pod that EKS Auto Mode removes when it consolidates an underused node, so both carry
   `karpenter.sh/do-not-disrupt: "true"`. That also keeps their node from being consolidated
   until the clean up deletes them. A real workload runs under a controller instead.
 
 ## Install the EFS CSI driver for S3 Files
 
-This sample needs the Amazon EFS CSI driver on the cluster, at **3.5.1 or newer** for S3 Files,
+This blueprint needs the Amazon EFS CSI driver on the cluster, at **3.5.1 or newer** for S3 Files,
 with EKS Pod Identity roles for its controller and node service accounts. On the maintainers'
 cluster it was already installed; on a cluster without it, install it once following the
 [S3 Files CSI guide](https://docs.aws.amazon.com/eks/latest/userguide/s3files-csi.html), and
@@ -625,8 +625,8 @@ export CLUSTER_NAME=<your-cluster> AWS_REGION=us-west-2 NAMESPACE=nitro-s3-files
 ```
 
 [`scripts/clean.sh`](scripts/clean.sh) deletes the two pods, the two PVCs and the workload
-ServiceAccount, the two static PVs, the egress policy, and the sample's own StorageClass. It
-checks the namespace carries the sample's label before deleting anything inside it, and exits
+ServiceAccount, the two static PVs, the egress policy, and the blueprint's own StorageClass. It
+checks the namespace carries the blueprint's label before deleting anything inside it, and exits
 non-zero if it skipped or could not confirm a delete.
 
 ```bash
@@ -636,7 +636,7 @@ NAMESPACE="$NAMESPACE" ./scripts/clean.sh
 To release the S3 Files file system, the bucket and everything else `setup.sh` created, add
 `--delete-aws-resources`. It uses `.env` as its deletion record and deletes the two access
 points, every mount target, the file system, the synchronization role, the NFS security group,
-and (**only when the sample created it**, re-proven by the live bucket tag) every object version
+and (**only when the blueprint created it**, re-proven by the live bucket tag) every object version
 in the bucket **and the bucket itself**, then deletes `.env`:
 
 ```bash
@@ -664,10 +664,10 @@ left in place.
 
 Neither mode touches the shared EFS CSI driver, its service accounts, their IAM roles or their
 Pod Identity associations. The bucket is deleted only when its live `ManagedBy=storage-s3-files`
-tag proves the sample created it; a bucket without that tag is left untouched. If a mount-target
+tag proves the blueprint created it; a bucket without that tag is left untouched. If a mount-target
 delete reports the interface is still in use, wait for the mount-target network interfaces to
 disappear and run it again; `clean.sh` is safe to re-run.
 
-If this is the last sample you ran, follow the
+If this is the last blueprint you ran, follow the
 [hello sandbox](../../getting-started/hello-sandbox/README.md#clean-up) clean up to remove the
 namespace and the cluster.

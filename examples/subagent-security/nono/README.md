@@ -9,7 +9,7 @@ not place an order. None of them ever holds the real supplier API key.
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page and the [Subagent security section page](../README.md), which describes the
-analyst, the case and the files this sample shares with the other two. Run these samples
+analyst, the case and the files this blueprint shares with the other two. Run these blueprints
 first, which this one builds on and which it does not re-explain:
 
 - [Getting started > Hello sandbox](../../getting-started/hello-sandbox/README.md): the
@@ -21,14 +21,14 @@ first, which this one builds on and which it does not re-explain:
   variable name and never by value.
 
 The commands below use files from this repository, so clone it if you have not already, and
-run them from this sample's folder:
+run them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/subagent-security/nono
 ```
 
-For this sample you also need [`aws`](https://aws.amazon.com/cli/),
+For this blueprint you also need [`aws`](https://aws.amazon.com/cli/),
 [`kubectl`](https://kubernetes.io/docs/reference/kubectl/),
 [`docker`](https://docs.docker.com/get-started/get-docker/),
 [`jq`](https://jqlang.org/), `openssl` and `python3` on your machine, and an Amazon Bedrock
@@ -36,11 +36,11 @@ inference profile your account can invoke. The scripts build and push two small 
 Amazon ECR. A run costs one Bedrock turn, a few small Amazon S3 objects, and one sandboxed
 pod plus one small ordinary pod kept running until you clean up.
 
-Every output block on this page is from one real run of this sample, run id
+Every output block on this page is from one real run of this blueprint, run id
 `13cc944b3984459e865976b73d319659`. Values from the account and cluster it ran on are
 replaced by the same placeholders the commands use, because this repository is public:
 `<ACCOUNT_ID>`, `<CLUSTER_NAME>` and `<NODE_NAME>`. The Region is left as
-`us-west-2`, the default this repository's samples share. Run ids, pod names, kernel
+`us-west-2`, the default this repository's blueprints share. Run ids, pod names, kernel
 builds, uptimes, device lists, token counts and the model's own prose are exactly as the
 run printed them. Where a block shows a file from this folder rather than a run's output,
 it says so.
@@ -98,7 +98,7 @@ rather than reaching the sandbox.
 ## Files
 
 Everything under [`../analyst/`](../analyst/) is shared with the other Subagent security
-samples and listed on the [section page](../README.md#the-shared-files). This sample adds:
+blueprints and listed on the [section page](../README.md#the-shared-files). This blueprint adds:
 
 | File | What it is |
 |---|---|
@@ -111,16 +111,16 @@ samples and listed on the [section page](../README.md#the-shared-files). This sa
 | [`policies/writer.json`](policies/writer.json) | The writer's generated profile: one more allowed operation |
 | [`deploy/analyst-pod.yaml`](deploy/analyst-pod.yaml) | The sandboxed pod |
 | [`deploy/ordinary-pod.yaml`](deploy/ordinary-pod.yaml) | An ordinary pod on the same node, for the comparison in step 10 |
-| [`scripts/setup.sh`](scripts/setup.sh) | Builds the images and creates everything the sample needs |
+| [`scripts/setup.sh`](scripts/setup.sh) | Builds the images and creates everything the blueprint needs |
 | [`scripts/run.sh`](scripts/run.sh) | Runs one procurement case and copies its result out |
 | [`scripts/profiles.sh`](scripts/profiles.sh) | Regenerates `policies/` from `src/policies.py` |
 | [`scripts/correlate.py`](scripts/correlate.py) | Checks the run's record against the supplier API's own request log |
-| [`scripts/clean.sh`](scripts/clean.sh) | Removes what this sample created, and says what stays |
-| [`.env.example`](.env.example) | The local values the sample needs; copy to `.env`, which git ignores |
+| [`scripts/clean.sh`](scripts/clean.sh) | Removes what this blueprint created, and says what stays |
+| [`.env.example`](.env.example) | The local values the blueprint needs; copy to `.env`, which git ignores |
 
-## What this sample does and does not bound
+## What this blueprint does and does not bound
 
-This matters before the steps, because the sample is about confinement and it would be easy
+This matters before the steps, because the blueprint is about confinement and it would be easy
 to read more into it than it shows.
 
 **What nono bounds, and the run demonstrates:** the three tool processes the controller
@@ -128,12 +128,12 @@ starts. For each of them, which files it can open and write, whether it can crea
 at all, which host it can reach through nono's proxy, which HTTP method and path pairs that
 proxy will forward, and which credential it holds.
 
-**What nothing in this sample bounds:** the analyst pod's own egress. This sample ships no
+**What nothing in this blueprint bounds:** the analyst pod's own egress. This blueprint ships no
 network policy, so the pod — and the trusted controller inside it, which is not under any
 nono profile — reaches whatever the cluster and the VPC allow. The refusals on this page are
 nono refusing a *tool process*; none of them is the pod being unable to reach something.
 To restrict a sandbox's egress on the node, see
-[Isolation > Network policy](../../isolation/network-policy/README.md), which is the sample
+[Isolation > Network policy](../../isolation/network-policy/README.md), which is the blueprint
 for that mechanism.
 
 The two are worth keeping apart. A tool process refused a host by nono is refused inside the
@@ -181,11 +181,11 @@ BEDROCK_MODEL_ID=global.anthropic.claude-sonnet-4-5-20250929-v1:0
 # ROLE_NAME=
 ```
 
-**Step 2: Build the images and create everything the sample needs.** One script, seven
+**Step 2: Build the images and create everything the blueprint needs.** One script, seven
 stages. It checks the cluster before it creates anything, builds and pushes the supplier API
 image and the analyst image, seeds the proposals into a new S3 bucket, creates the IAM role
 and its Pod Identity association, and only then starts the sandboxed pod. It creates nothing
-outside this sample's own namespace and changes no cluster-wide setting.
+outside this blueprint's own namespace and changes no cluster-wide setting.
 
 ```bash
 ./scripts/setup.sh
@@ -400,7 +400,7 @@ cat ../../../tmp/nono/runs/<RUN_ID>/recommendation.md
 
 
 Everything from the second heading down is the model's own prose, and it cites all three
-proposal keys. The two lines above it are rendered by the sample from the checked
+proposal keys. The two lines above it are rendered by the blueprint from the checked
 `recommended_supplier` field.
 
 The heading is rendered from the model's checked `recommended_supplier` field, not from its
@@ -517,7 +517,7 @@ tool process the controller starts, not to the pod, and the proxy decides one op
 a time: on the one approved host, the writer's draft submission is allowed and a purchase
 order is refused.*
 
-![A focused view of one tool role under nono. An Amazon EKS cluster frame holds a red Nitro sandbox frame labelled runtimeClassName colon isolated-sandbox, and inside that an Analyst pod box whose sub line reads that nono confines the processes it starts, not the pod. In the pod, a red nono profile icon sits above a writer tool process icon and is joined to it by a plain line labelled confines this process, so the control attaches to that one process rather than to the pod or to the sandbox. Along the bottom row of the pod, a Trusted controller icon described as owning AWS and having no profile has an arrow labelled 1. starts the writer to the writer tool process, described as one role, one action; the writer has an arrow labelled 2. request with a placeholder to a red nono proxy icon described as holding the supplier key. Two arrows leave the proxy for a Supplier API icon in a separate Supplier API pod box outside the sandbox, marked an ordinary pod reached by ClusterIP: a green one labelled 3. allowed colon GET suppliers, POST draft, and a red dashed one labelled refused at the proxy colon POST slash purchase-orders. Both name the same host, so the difference between them is the operation and not the destination. No frame encloses the pod's network and no arrow shows a route out of the pod being refused, because nothing in this sample restricts the pod's egress.](images/subagent-security-nono-tool-boundary.png)
+![A focused view of one tool role under nono. An Amazon EKS cluster frame holds a red Nitro sandbox frame labelled runtimeClassName colon isolated-sandbox, and inside that an Analyst pod box whose sub line reads that nono confines the processes it starts, not the pod. In the pod, a red nono profile icon sits above a writer tool process icon and is joined to it by a plain line labelled confines this process, so the control attaches to that one process rather than to the pod or to the sandbox. Along the bottom row of the pod, a Trusted controller icon described as owning AWS and having no profile has an arrow labelled 1. starts the writer to the writer tool process, described as one role, one action; the writer has an arrow labelled 2. request with a placeholder to a red nono proxy icon described as holding the supplier key. Two arrows leave the proxy for a Supplier API icon in a separate Supplier API pod box outside the sandbox, marked an ordinary pod reached by ClusterIP: a green one labelled 3. allowed colon GET suppliers, POST draft, and a red dashed one labelled refused at the proxy colon POST slash purchase-orders. Both name the same host, so the difference between them is the operation and not the destination. No frame encloses the pod's network and no arrow shows a route out of the pod being refused, because nothing in this blueprint restricts the pod's egress.](images/subagent-security-nono-tool-boundary.png)
 
 Here is that part of [`policies/writer.json`](policies/writer.json):
 
@@ -766,7 +766,7 @@ pattern to copy.
   IP. What the run shows is that one refusal, for a role at uid 1000 making an IPv4 TCP
   connection to the resolved Service address. It is not a demonstration that the proxy
   cannot be routed around by any process or any other means.
-- **It does not bound the pod.** The analyst pod has no network policy in this sample, so the
+- **It does not bound the pod.** The analyst pod has no network policy in this blueprint, so the
   pod's egress is whatever the cluster and VPC allow. The trusted controller runs under no
   nono profile and reaches Amazon Bedrock, Amazon S3 and the supplier API directly. A reader
   who wants the pod's egress restricted on the node wants
@@ -801,21 +801,21 @@ pattern to copy.
   `automountServiceAccountToken: false`. nono's controls are Landlock and seccomp, which
   need no privilege, and Landlock requires `no_new_privs` for an unprivileged process
   anyway, so `allowPrivilegeEscalation: false` is a precondition of this confinement rather
-  than a cost of it. A sample about isolation should not have to give any of this up to
+  than a cost of it. A blueprint about isolation should not have to give any of this up to
   demonstrate itself, and this one does not: the run whose output is on this page passed
   every file and network refusal with all of the above set.
 - **The gates are task-specific correctness checks, not a defence against prompt injection.**
   They check that the model's explicit choice matches a comparison computed without it and
   that it cited the originals. They say nothing about whether the prose is otherwise sound.
 - **The sandbox is sized by its requests.** This pod sets CPU and memory requests, which
-  most samples here do not, because it has to hold a Python interpreter, the Strands Agents
+  most blueprints here do not, because it has to hold a Python interpreter, the Strands Agents
   and AWS SDK packages, nono's proxy and three short-lived tool processes at once. Its limits
   are higher than its requests on purpose: the requests size the sandbox, and the two need
   not match (Amazon EKS User Guide, *Isolated and confidential pods limitations*).
 - **Everything about the supplier is synthetic.** The proposals are invented, the supplier
   API holds no real records, and a purchase order against it orders nothing. The proposals
   hold no customer data.
-- **The sample certificate authority is generated at setup and lasts 30 days.** It is created
+- **The blueprint certificate authority is generated at setup and lasts 30 days.** It is created
   on your machine, kept in a Kubernetes Secret and a ConfigMap, and never committed. Run the
   clean up and `setup.sh` again to replace expired material.
 
@@ -861,7 +861,7 @@ Clean up complete.
 
 It deletes in reverse order of creation, starting with the sandboxed pod, which is what
 holds sandbox capacity other workloads on the cluster share. It touches a namespace only
-when that namespace carries this sample's `app.kubernetes.io/managed-by` label, and an AWS
+when that namespace carries this blueprint's `app.kubernetes.io/managed-by` label, and an AWS
 resource only when it carries `ManagedBy=nono`. A lookup that fails counts as "could not
 determine" rather than "already gone", so anything it could not delete or confirm is named
 at the end and makes it exit non-zero.
@@ -869,8 +869,8 @@ at the end and makes it exit non-zero.
 Without `--delete-aws` it removes the cluster objects and the Pod Identity association and
 keeps the S3 bucket, the IAM role and the images, so a second run skips the build.
 
-This sample changes no cluster-wide setting and installs nothing shared, so the clean up has
+This blueprint changes no cluster-wide setting and installs nothing shared, so the clean up has
 nothing of that kind to undo. The `isolated-sandbox` RuntimeClass and the cluster are not
-this sample's; the
+this blueprint's; the
 [hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up) covers
 removing the cluster itself.
