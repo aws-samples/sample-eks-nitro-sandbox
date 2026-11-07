@@ -13,7 +13,7 @@ same pod, with no restart.
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page and the [Subagent security section page](../README.md), which describes the
-analyst, the case and the files this sample shares with the other two. Run these samples
+analyst, the case and the files this blueprint shares with the other two. Run these blueprints
 first, which this one builds on and which it does not re-explain:
 
 - [Getting started > Hello sandbox](../../getting-started/hello-sandbox/README.md): the
@@ -28,7 +28,7 @@ first, which this one builds on and which it does not re-explain:
   variable name and never by value.
 
 **This is not the OpenShell platform install.** The planned **OpenShell on Amazon EKS**
-sample
+blueprint
 ([#37](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/37)) is the one for
 that: the Helm chart's options, workspace modes and the platform lifecycle. This page
 installs the smallest gateway that can drive a single sandbox, and spends its length on the
@@ -37,14 +37,14 @@ readiness or burst settings, gateway high availability, OIDC, or any compute dri
 than Kubernetes.
 
 The commands below use files from this repository, so clone it if you have not already, and
-run them from this sample's folder:
+run them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/subagent-security/openshell
 ```
 
-For this sample you also need [`aws`](https://aws.amazon.com/cli/),
+For this blueprint you also need [`aws`](https://aws.amazon.com/cli/),
 [`kubectl`](https://kubernetes.io/docs/reference/kubectl/),
 [`helm`](https://helm.sh/docs/intro/install/),
 [`docker`](https://docs.docker.com/get-started/get-docker/), [`jq`](https://jqlang.org/),
@@ -57,11 +57,11 @@ CLI. A run costs one Bedrock turn, a few small Amazon S3 objects, and one gatewa
 sandboxed workload pod, one supervisor pod, one supplier API pod and one bridge pod kept
 running until you clean up, plus the workload pod's own EBS workspace volume.
 
-Every output block on this page is from one real run of this sample, run id
+Every output block on this page is from one real run of this blueprint, run id
 `31bd77f75e9f4d9ca472483145fcad36`. Values from the account and cluster it ran on are
 replaced by the same placeholders the commands use, because this repository is public:
 `<ACCOUNT_ID>`, `<CLUSTER_NAME>` and `<NODE_NAME>`. The Region is left as `us-west-2`, the
-default this repository's samples share. Run ids, pod names, kernel builds, uptimes, device
+default this repository's blueprints share. Run ids, pod names, kernel builds, uptimes, device
 lists, token counts and the model's own prose are exactly as the run printed them. Where a
 block shows a file from this folder rather than a run's output, it says so.
 
@@ -71,7 +71,7 @@ block shows a file from this folder rather than a run's output, it says so.
 line that puts the analyst's workload pod in a Nitro sandbox: its containers and their own
 kernel run in a lightweight VM with hardware-level isolation from the node. OpenShell is the
 boundary *inside* that pod, between its own runtime and the analyst process it starts. The
-difference from the other two samples in this section is where the credential lives: here it
+difference from the other two blueprints in this section is where the credential lives: here it
 is outside the sandbox altogether.
 
 - **One sandbox, two pods.** The operator gives the gateway a policy, a template and a
@@ -105,23 +105,23 @@ is outside the sandbox altogether.
 sandbox holds the workload pod, where OpenShell's runtime starts the analyst under its
 policy and gives it a placeholder; the real supplier key and the gateway token are
 delivered to the supervisor pod outside that boundary, and the only AWS credential in the
-sample belongs to the model bridge.*
+blueprint belongs to the model bridge.*
 
 ![An AWS Cloud frame holds an Amazon EKS cluster frame, with an Operator CLI user icon outside the cluster on the left, marked outside the cluster. An arrow labelled kubectl port-forward, mTLS runs from the Operator CLI into an OpenShell gateway pod box, marked ClusterIP, which holds a gear icon labelled OpenShell gateway, policy, template, provider. From the gateway an arrow labelled Kubernetes driver creates one Sandbox reaches a document icon labelled Sandbox resource, and two arrows lead down from that resource: one into a Workload pod box and one into an OpenShell supervisor pod box. The Workload pod box sits inside a red Nitro sandbox frame labelled runtimeClassName colon isolated-sandbox, and its sub line reads no AWS credential inside this boundary. In that pod box, a red OpenShell runtime icon described as applying the policy has an arrow labelled starts the analyst to an orange Procurement analyst icon described as UID 1000 with an openshell colon placeholder. The OpenShell supervisor pod box is outside the red frame but still in the cluster, marked an ordinary pod outside the sandbox, and holds a credentials icon labelled OpenShell supervisor, which holds the real supplier key and the gateway token. One arrow labelled boundary channel runs from the Procurement analyst to that supervisor, and it is the only connection out of the sandbox frame that the analyst makes. Two arrows leave the supervisor, each labelled allowed operation, real key substituted: one to a Supplier API icon marked synthetic in a Supplier API pod box, an ordinary pod reached by ClusterIP, and one to a Model bridge icon described as calling the model in a Model bridge pod box, also an ordinary pod reached by ClusterIP. From the Model bridge one arrow labelled EKS Pod Identity, model-scoped IAM runs down and out of the cluster frame to an Amazon Bedrock icon, for the model turn; no arrow to Amazon Bedrock starts inside the red frame. A red dashed arrow runs from the Procurement analyst to a red icon labelled Unapproved supplier alias, same backend, not in the policy, and its label reads refused by OpenShell's policy colon EACCES at connect: the red dashes mark a connection OpenShell's own policy refuses inside the pod, not a limit on the pod's network, and no frame or arrow in the figure restricts the pod's egress.](images/subagent-security-openshell.png)
 
 ## Design: why the model call is outside the sandbox
 
 [nono](../nono/README.md) has its trusted controller call Amazon Bedrock from inside the Nitro
-sandbox, over EKS Pod Identity, and the planned bubblewrap sample does the same. This one does
+sandbox, over EKS Pod Identity, and the planned bubblewrap blueprint does the same. This one does
 not, and that is not a gap against them — it is a different confinement shape, and upstream's
 own design agrees with it.
 
-**What [nono](../nono/README.md) and the planned bubblewrap sample confine, and what OpenShell
+**What [nono](../nono/README.md) and the planned bubblewrap blueprint confine, and what OpenShell
 confines, are not the same process.** In nono, the tool's own confinement mechanism wraps the
 *tool* subprocesses — the reader, the evaluator, the writer — and the trusted controller that
 starts them runs in the pod unconfined by that mechanism. That controller keeps the pod's own
 environment, filesystem and network, so it calls `boto3` against Bedrock the same way any pod
-with Pod Identity would. The planned bubblewrap sample (see the
+with Pod Identity would. The planned bubblewrap blueprint (see the
 [section page](../README.md)) confines the same three tool subprocesses with bwrap instead,
 for the same reason. Here, OpenShell confines the **analyst process itself**: there is no
 separate unconfined controller inside this pod. Every file the analyst opens, every
@@ -129,7 +129,7 @@ destination it reaches and every credential it is given passes through OpenShell
 first, with no process in this pod exempt from it the way nono's and bubblewrap's controllers
 are.
 
-**OpenShell's own Bedrock provider profile is bridge-fronted by design, not by this sample's
+**OpenShell's own Bedrock provider profile is bridge-fronted by design, not by this blueprint's
 choice.** The [`providers/aws-bedrock.yaml`](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/providers/aws-bedrock.yaml)
 profile shipped with the pinned release says so directly:
 
@@ -151,18 +151,18 @@ metadata address `169.254.169.254`" ([*Restrict Destination
 Addresses*](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/docs/how-it-works/policies/network-rules.mdx),
 at the pinned revision). The EKS Pod Identity agent that would hand the analyst its AWS
 credentials sits at a link-local address for the same SSRF-prevention reason, so this is
-blocked unconditionally rather than being a rule this sample could ask an operator to widen.
+blocked unconditionally rather than being a rule this blueprint could ask an operator to widen.
 Reaching Bedrock from inside the sandbox would need the SigV4-signing follow-up the profile
 above names, which this release does not ship.
 
-**So the bridge is the documented upstream pattern, not a workaround this sample improvised.**
+**So the bridge is the documented upstream pattern, not a workaround this blueprint improvised.**
 The model bridge keeps exactly this shape: it is a separate pod, outside the sandbox, that
 holds the real AWS credential through its own EKS Pod Identity role and handles the Bedrock
 call on the analyst's behalf — the pattern the profile above describes, with `analyst-bridge`
 as that translating bridge. The result is the property this page states throughout: the AWS
 credential needed for the model turn stays outside the sandbox at every point, while the
 analyst still gets a real model call for its recommendation. This is an intentional design
-choice, not an omission to close in a later revision of this sample.
+choice, not an omission to close in a later revision of this blueprint.
 
 ## Versions
 
@@ -188,34 +188,34 @@ CLI without compiling one, and gets artifacts that are still published later.
 ## Files
 
 Everything under [`../analyst/`](../analyst/) is shared with the other Subagent security
-samples and listed on the [section page](../README.md#the-shared-files). This sample uses
+blueprints and listed on the [section page](../README.md#the-shared-files). This blueprint uses
 the shared `business.py` and `worker.py` unchanged, and adds:
 
 | File | What it is |
 |---|---|
 | [`versions.json`](versions.json) | Every pin: the release, the chart checksum, the image digests and the CLI checksum |
 | [`Dockerfile`](Dockerfile) | The analyst and the bridge in one image, on the shared analyst code |
-| [`supervisor/Dockerfile`](supervisor/Dockerfile) | The upstream supervisor image with this run's sample certificate authorities added |
+| [`supervisor/Dockerfile`](supervisor/Dockerfile) | The upstream supervisor image with this run's blueprint certificate authorities added |
 | [`src/policies.py`](src/policies.py) | The policy generator: the initial policy, the one-rule update and the provider profile |
 | [`policy/initial.json`](policy/initial.json) | The policy the sandbox is created with, as this page shows it |
 | [`policy/draft-enabled.json`](policy/draft-enabled.json) | The same policy with one more rule, applied while the pod runs |
 | [`policy/supplier-profile.json`](policy/supplier-profile.json) | The provider profile: how to authenticate, and nothing about where |
-| [`src/analyst_probes.py`](src/analyst_probes.py) | The analyst as OpenShell runs it: the shared worker plus this sample's probes |
+| [`src/analyst_probes.py`](src/analyst_probes.py) | The analyst as OpenShell runs it: the shared worker plus this blueprint's probes |
 | [`src/bridge.py`](src/bridge.py) | The model bridge: an OpenAI-compatible completion endpoint over Bedrock Converse |
 | [`deploy/gateway-values.yaml`](deploy/gateway-values.yaml) | The gateway's Helm values |
 | [`deploy/nitro-adapter.yaml`](deploy/nitro-adapter.yaml) | The namespace-scoped admission policy that adapts OpenShell's pod to a sandbox |
 | [`deploy/bridge.yaml`](deploy/bridge.yaml) | The model bridge Deployment and its ClusterIP Service |
 | [`deploy/ordinary-pod.yaml`](deploy/ordinary-pod.yaml) | An ordinary pod on the same node, for the comparison in the last step |
-| [`scripts/setup.sh`](scripts/setup.sh) | Builds the images and creates everything the sample needs |
+| [`scripts/setup.sh`](scripts/setup.sh) | Builds the images and creates everything the blueprint needs |
 | [`scripts/run.sh`](scripts/run.sh) | Creates one fresh sandbox, runs the case and checks every claim |
 | [`scripts/walkthrough.py`](scripts/walkthrough.py) | The checks themselves, which `run.sh` runs |
-| [`scripts/clean.sh`](scripts/clean.sh) | Removes what this sample created, and says what stays |
+| [`scripts/clean.sh`](scripts/clean.sh) | Removes what this blueprint created, and says what stays |
 | [`scripts/policies.sh`](scripts/policies.sh) | Regenerates `policy/` from `src/policies.py` |
-| [`.env.example`](.env.example) | The local values the sample needs; copy to `.env`, which git ignores |
+| [`.env.example`](.env.example) | The local values the blueprint needs; copy to `.env`, which git ignores |
 
-## What this sample does and does not bound
+## What this blueprint does and does not bound
 
-This matters before the steps, because the sample is about confinement and it would be easy
+This matters before the steps, because the blueprint is about confinement and it would be easy
 to read more into it than it shows.
 
 **What OpenShell bounds here, and the run demonstrates:** the one analyst process its
@@ -224,12 +224,12 @@ runs as, which destination and port it may connect to, which executable may use 
 destination, and which HTTP method and path pairs the supervisor will forward, with the real
 credential substituted outside the guest.
 
-**What nothing in this sample bounds:** the pods' own egress. This sample ships no network
+**What nothing in this blueprint bounds:** the pods' own egress. This blueprint ships no network
 policy. OpenShell's Kubernetes driver creates `NetworkPolicy` objects for the pods it
-generates, as part of how it works, but that is upstream behaviour this sample neither
+generates, as part of how it works, but that is upstream behaviour this blueprint neither
 configures nor relies on, and this page claims no limit from it. To restrict a sandbox's
 egress on the node, see
-[Isolation > Network policy](../../isolation/network-policy/README.md), which is the sample
+[Isolation > Network policy](../../isolation/network-policy/README.md), which is the blueprint
 for that mechanism.
 
 Keeping those apart is what makes the refusals here mean something. When the analyst is
@@ -249,14 +249,14 @@ cp .env.example .env
 $EDITOR .env
 ```
 
-**Step 2: Build the images and create everything the sample needs.** One script. It reuses
+**Step 2: Build the images and create everything the blueprint needs.** One script. It reuses
 the agent-sandbox controller already on the cluster rather than installing or upgrading it,
 and stops with the command if it is absent. It also leaves the `isolated-sandbox`
 RuntimeClass alone when it already carries OpenShell's approval label, which it did here,
 because every OpenShell gateway on a cluster shares that label.
 
-The first five stages are the ones every Subagent security sample shares, which is why they
-count out of seven: this sample does not use the sixth, the analyst's own IAM role, because
+The first five stages are the ones every Subagent security blueprint shares, which is why they
+count out of seven: this blueprint does not use the sixth, the analyst's own IAM role, because
 here only the model bridge has an AWS identity.
 
 ```bash
@@ -331,9 +331,9 @@ Abridged: the Docker build output and the rollout's intermediate "waiting" lines
 
 Two things in that output are worth stopping on. **The chart is checked before it is
 installed**, both against its pinned checksum and by rendering it and looking for anything
-reachable from outside the cluster: this sample's own manifests are easy to read, and the
+reachable from outside the cluster: this blueprint's own manifests are easy to read, and the
 chart is the one part whose objects it did not write. **The supervisor image is built here**,
-from the pinned upstream image with this run's two sample certificate authorities appended
+from the pinned upstream image with this run's two blueprint certificate authorities appended
 to its trust bundle. The supervisor verifies TLS against the certificates in its own image,
 and both authorities are generated per run, so without that step every relayed request
 would fail with a certificate error. A certificate error is not a policy refusal, and a page
@@ -583,7 +583,7 @@ later, and the sandbox guest's own kernel provides it.
 Five of those seven read-only paths OpenShell would add anyway: once a policy has any
 network rule it puts `/usr`, `/lib`, `/etc`, `/app`, `/var/log`, `/proc` and `/dev/urandom`
 in its own baseline. They are written out so the file says what the analyst can actually
-open. The two this sample adds are its code and its inputs.
+open. The two this blueprint adds are its code and its inputs.
 
 The probes open paths without reading or writing a byte, so a probe against credential
 material never pulls its bytes into output this page publishes:
@@ -642,7 +642,7 @@ OpenShell's `process` block is only an identity, and that is its whole schema:
 ```
 
 There is no capability field and no `no_new_privs` field there. Those come from the pod spec
-OpenShell's Kubernetes driver generates, which this sample does not write and does not
+OpenShell's Kubernetes driver generates, which this blueprint does not write and does not
 change:
 
 ```bash
@@ -760,7 +760,7 @@ are operations the analyst was refused, and the server accepts every one of them
 anything.
 
 The network control runs in the bridge pod rather than in the analyst's container, unlike
-step 7's control. The reason is simply that the bridge pod is one this sample knows can reach
+step 7's control. The reason is simply that the bridge pod is one this blueprint knows can reach
 the supplier API, because it is an ordinary pod that the run has already seen answer on that
 network; the run does not measure what the workload pod could reach on its own, and this page
 makes no claim about that either way. Taken together, the immediate `EACCES`, the
@@ -928,7 +928,7 @@ kubectl delete pod ordinary-comparison -n $NAMESPACE
   `allowUnauthenticatedUsers: true`, OpenShell's local development user mode, so the gateway
   does not authorize individual users: transport mTLS and access to the client TLS Secret are
   the whole of it, and anyone who can read that Secret can administer this gateway. That is
-  here because the sample's subject is the policy around one analyst. A real deployment uses
+  here because the blueprint's subject is the policy around one analyst. A real deployment uses
   the upstream OIDC or trusted-access-proxy configuration. `run.sh` keeps the client
   certificate under the repository's gitignored `tmp/`, and `clean.sh` removes it even when
   something else was left behind.
@@ -954,13 +954,13 @@ kubectl delete pod ordinary-comparison -n $NAMESPACE
   OpenShell gateway on a cluster reads the same label, so `setup.sh` adds it only when it is
   absent and `clean.sh` never removes it, printing the command instead. On the run above it
   was already there.
-- **This sample creates four cluster-scoped objects**, which is unusual for a sample here and
+- **This blueprint creates four cluster-scoped objects**, which is unusual for a blueprint here and
   worth knowing before you run it on a cluster you share: the `MutatingAdmissionPolicy` and
-  its binding, both named for this sample. The policy's match conditions confine it to this
-  sample's namespace, and its namespace selector to namespaces labelled with this sample's
+  its binding, both named for this blueprint. The policy's match conditions confine it to this
+  blueprint's namespace, and its namespace selector to namespaces labelled with this blueprint's
   managed-by label. The label is reusable: a namespace deleted and recreated under the same
   name with the label restored still matches, so the check establishes "currently this
-  sample's namespace", not "the namespace this setup created". A `ClusterRole` and
+  blueprint's namespace", not "the namespace this setup created". A `ClusterRole` and
   `ClusterRoleBinding` the chart creates so the gateway can read RuntimeClass metadata and
   review sandbox tokens. `clean.sh` removes all four, the first
   two by exact name after checking their label, the other two by the Helm annotations that
@@ -971,11 +971,11 @@ kubectl delete pod ordinary-comparison -n $NAMESPACE
   placeholder credential. [`src/bridge.py`](src/bridge.py) is a small OpenAI-shaped endpoint
   over Bedrock Converse that serves one configured model and refuses any other. It is not a
   general proxy.
-- **The sample's `tmp/` directory holds this run's key material.** The supplier key, both
-  sample certificate authorities and the gateway client certificate are written under the
+- **The blueprint's `tmp/` directory holds this run's key material.** The supplier key, both
+  blueprint certificate authorities and the gateway client certificate are written under the
   repository's gitignored `tmp/`, never into this folder. The certificates are valid for 30
   days; after that, run `clean.sh` and `setup.sh` again.
-- **What this sample does not show.** Confidential mode, attestation of an OpenShell policy,
+- **What this blueprint does not show.** Confidential mode, attestation of an OpenShell policy,
   and keeping workspace files confidential from the parent instance: an isolated-mode
   workspace is not confidential from the parent. The `binaries` rule is configured and the run
   does not exercise it with a second executable, so the page does not claim that half was
@@ -1074,14 +1074,14 @@ time the script checks for them, because `helm uninstall` takes them; it checks 
 a failed uninstall would leave them and the next install of the same release name would adopt
 them.
 
-**What stays, and why.** Two things this sample needs are shared with anything else on the
+**What stays, and why.** Two things this blueprint needs are shared with anything else on the
 cluster, so `clean.sh` never removes them and prints the command for each:
 
 - The `openshell.ai/sandbox-attachable=true` label on the `isolated-sandbox` RuntimeClass.
   Every OpenShell gateway on the cluster reads it, so removing it would break another
   gateway's sandboxes. The script says whether this run was the one that added it, and
   prints the command below when it was. On the run above the label was already there, so
-  it is not this sample's to remove. If you added it and no other OpenShell gateway needs
+  it is not this blueprint's to remove. If you added it and no other OpenShell gateway needs
   it:
 
   ```bash
@@ -1095,6 +1095,6 @@ cluster, so `clean.sh` never removes them and prints the command for each:
   kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
   ```
 
-The `isolated-sandbox` RuntimeClass itself and the cluster are not this sample's either. The
+The `isolated-sandbox` RuntimeClass itself and the cluster are not this blueprint's either. The
 [hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up) covers
 removing the cluster.

@@ -2,11 +2,11 @@
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
-sample first so you have a cluster with the runtime classes. This sample builds on
+blueprint first so you have a cluster with the runtime classes. This blueprint builds on
 [warm pool](../../getting-started/warm-pool/README.md), whose `SandboxTemplate`,
 `SandboxWarmPool` and `SandboxClaim` it uses and whose agent-sandbox install (step 1) it
 needs. The commands below use files from this repository, so clone it if you have not
-already, and run them from this sample's folder:
+already, and run them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
@@ -15,13 +15,13 @@ cd sample-eks-nitro-sandbox/examples/agent-sandbox/warm-pool-autoscaling-keda
 
 It also needs [KEDA](https://keda.sh/) on the cluster, which Step 1 installs, and `helm`
 on your machine to install it (3.x; the run below used the KEDA chart's own
-`helm install`). Beyond the cluster there is no cost: the sample holds one warm pod at rest
+`helm install`). Beyond the cluster there is no cost: the blueprint holds one warm pod at rest
 and at most three under load, and there is no model or API call anywhere in it. These pods
 set no CPU or memory requests, so each guest gets a small default size.
 
-The warm pool sample keeps a fixed number of sandboxes booted. Fixed is the wrong shape for
+The warm pool blueprint keeps a fixed number of sandboxes booted. Fixed is the wrong shape for
 demand that comes in bursts: too small and a burst pays the cold start it was meant to
-avoid, too large and you hold pre-booted pods that nobody is asking for. This sample makes
+avoid, too large and you hold pre-booted pods that nobody is asking for. This blueprint makes
 the number follow the demand. A small in-cluster exporter counts `SandboxClaim` objects, a
 KEDA `ScaledObject` reads that count over HTTP, and the Horizontal Pod Autoscaler KEDA
 creates writes the pool's `spec.replicas`.
@@ -41,7 +41,7 @@ creates writes the pool's `spec.replicas`.
   Service.
 - **The warm pods have no network.** They boot with
   `sandbox.amazonaws.com/network-isolated: "true"`, so there is no egress to restrict and
-  the sample ships no network policy. `kubectl exec` still works, which is how the page
+  the blueprint ships no network policy. `kubectl exec` still works, which is how the page
   reads the claimed pod.
 
 *Figure 1: Warm pool autoscaling with KEDA. Claim demand reaches KEDA through the exporter's ClusterIP Service, and the Horizontal Pod Autoscaler KEDA creates writes the pool's spec.replicas, so warm capacity follows demand up and back down.*
@@ -70,16 +70,16 @@ Nothing else is pinned beyond the images in the manifests
 
 | File | What it is |
 |---|---|
-| [`deploy/warm-pool.yaml`](deploy/warm-pool.yaml) | The sample's own `SandboxTemplate` and `SandboxWarmPool`. The pool's `spec.replicas` is a floor that setup applies once; from then on KEDA owns it. |
+| [`deploy/warm-pool.yaml`](deploy/warm-pool.yaml) | The blueprint's own `SandboxTemplate` and `SandboxWarmPool`. The pool's `spec.replicas` is a floor that setup applies once; from then on KEDA owns it. |
 | [`src/exporter.py`](src/exporter.py) | The claim-demand exporter: counts this namespace's `SandboxClaim` objects and serves the count at `/metrics`. |
 | [`deploy/exporter.yaml`](deploy/exporter.yaml) | The exporter's `ServiceAccount`, `Role`, `RoleBinding`, `Deployment` and ClusterIP `Service`. |
 | [`deploy/scaledobject.yaml`](deploy/scaledobject.yaml) | The KEDA `ScaledObject`: `scaleTargetRef` the pool, a `metrics-api` trigger on the exporter, and the bounds. |
 | [`scripts/setup.sh`](scripts/setup.sh) | Check the shared installs, create the namespace, and apply the pool, the exporter and the `ScaledObject`. |
 | [`scripts/demand.sh`](scripts/demand.sh) | Drive demand `0 -> 3 -> 0` and read the pool's decision at each stage. |
 | [`scripts/control-no-autoscaler.sh`](scripts/control-no-autoscaler.sh) | The control: the same demand with the `ScaledObject` removed. |
-| [`scripts/cleanup.sh`](scripts/cleanup.sh) | Delete everything the sample created, and leave KEDA alone. |
+| [`scripts/cleanup.sh`](scripts/cleanup.sh) | Delete everything the blueprint created, and leave KEDA alone. |
 | [`scripts/common.sh`](scripts/common.sh) | The names, the pinned context, the readings and the guards the scripts share. |
-| [`.env.example`](.env.example) | The local values the sample needs, with no secrets. |
+| [`.env.example`](.env.example) | The local values the blueprint needs, with no secrets. |
 
 The scripts read `.env` (copy it from `.env.example`). `NAMESPACE` defaults to
 `warm-pool-autoscaling-keda` and reaches every object they apply, including the exporter
@@ -131,7 +131,7 @@ keda-operator image: ghcr.io/kedacore/keda:2.21.0
 ```
 
 If KEDA is already on your cluster, leave it exactly as it is: do not `helm upgrade` it, and
-do not change its values or its namespace for this sample. `setup.sh` only reads it. When it
+do not change its values or its namespace for this blueprint. `setup.sh` only reads it. When it
 is absent, setup creates nothing and stops with the command above:
 
 ```text
@@ -145,8 +145,8 @@ error: KEDA is not installed on this cluster (no scaledobjects.keda.sh CRD). Thi
 
 That block is from a separate run as well, taken before KEDA was installed: the check needs
 KEDA to be absent, and the walkthrough run cannot arrange that without removing a shared
-install, which a sample here never does. Every other output block on this page comes from
-one fresh run of the sample.
+install, which a blueprint here never does. Every other output block on this page comes from
+one fresh run of the blueprint.
 
 The `context:` line here and in the blocks below shows `sandbox-demo`, the shared default
 cluster name from the home page. The separate run that produced the block above used a
@@ -154,9 +154,9 @@ different context name, changed here to the default; the walkthrough run below u
 context named `sandbox-demo`, so its blocks are unchanged.
 
 **Step 2: The pool, and why its `spec.replicas` is not a setting.**
-[`deploy/warm-pool.yaml`](deploy/warm-pool.yaml) is the sample's own `SandboxTemplate` and
-`SandboxWarmPool`. The template is the warm pool sample's, with one difference: these pods
-set no CPU or memory requests, because this sample is about how many warm pods the pool
+[`deploy/warm-pool.yaml`](deploy/warm-pool.yaml) is the blueprint's own `SandboxTemplate` and
+`SandboxWarmPool`. The template is the warm pool blueprint's, with one difference: these pods
+set no CPU or memory requests, because this blueprint is about how many warm pods the pool
 holds rather than how big each one is. Here is the part that matters:
 
 ```yaml
@@ -218,9 +218,9 @@ open after the pool shrinks.
 **Step 3: The demand signal.** KEDA's
 [`metrics-api` scaler](https://keda.sh/docs/2.21/scalers/metrics-api/) scales on a value it
 fetches from an HTTP endpoint. KEDA ships no scaler that counts an arbitrary custom
-resource, so the sample adds the smallest thing that turns "how many `SandboxClaim` objects
+resource, so the blueprint adds the smallest thing that turns "how many `SandboxClaim` objects
 are there" into such a value. [`src/exporter.py`](src/exporter.py) lists the claims in its
-own namespace that carry the sample's label and serves the count as JSON:
+own namespace that carry the blueprint's label and serves the count as JSON:
 
 ```python
 CLAIMS_URL = (
@@ -250,7 +250,7 @@ rules:
     verbs: ["get", "list"]
 ```
 
-One rule, one resource, two read verbs, and that `Role` is everything the sample grants the
+One rule, one resource, two read verbs, and that `Role` is everything the blueprint grants the
 exporter. No `watch`, no `create`, no `patch`, no `delete`, and no `ClusterRole`: a `Role`
 cannot grant anything outside the namespace it is created in, so the exporter cannot read
 another namespace's claims even by accident. Ask the API server rather than taking the
@@ -262,7 +262,7 @@ kubectl auth can-i --list \
   -n warm-pool-autoscaling-keda
 ```
 
-The only line in the answer that this sample put there is
+The only line in the answer that this blueprint put there is
 `sandboxclaims.extensions.agents.x-k8s.io [get list]`. The rest of the list is what every
 authenticated subject on a Kubernetes cluster has, such as API discovery and self-subject
 access reviews, which no manifest here grants.
@@ -297,13 +297,13 @@ an API outage would otherwise restart the pod and lose the last good count it se
 that outage.
 
 Who can reach it is a ClusterIP `Service` on port 8080, so it is reachable from inside the
-cluster and from nowhere else. The sample creates no Ingress, LoadBalancer or NodePort. The
-response is a count of the sample's own claims and carries no credential and no claim
+cluster and from nowhere else. The blueprint creates no Ingress, LoadBalancer or NodePort. The
+response is a count of the blueprint's own claims and carries no credential and no claim
 contents, so the endpoint is unauthenticated, like any other in-cluster `/metrics`
 endpoint. On a cluster where you have turned network policy enforcement on, you can narrow
-it further with an ingress policy that admits only KEDA's namespace; this sample does not,
+it further with an ingress policy that admits only KEDA's namespace; this blueprint does not,
 because enforcement is a cluster-wide setting and turning it on is the reader's decision,
-not a sample's.
+not a blueprint's.
 
 **Step 4: The ScaledObject.** [`deploy/scaledobject.yaml`](deploy/scaledobject.yaml) points
 KEDA at the pool and at the exporter. `scaleTargetRef` names the `SandboxWarmPool` itself,
@@ -345,20 +345,20 @@ spec:
 | Field | What it does |
 |---|---|
 | `scaleTargetRef` | The `SandboxWarmPool`. KEDA creates an HPA for it and the HPA writes the pool's `/scale` subresource, exactly as it would for a Deployment. |
-| `metricType: Value` with `targetValue: "1"` | The claim count is compared with the target directly, not divided across the pods as `AverageValue` would: the metric is a count for the whole pool, not a per-pod rate. What this sample's runs establish is the two ends — no claims hold the floor, and demand at the cap lands on the cap. They do not establish the mapping in between, and the natural guess for it, one more warm pod per claim, is probably not what the HPA does: its external-metric arithmetic scales the ratio by the number of *ready* replicas. [`deploy/scaledobject.yaml`](deploy/scaledobject.yaml) says more. Rely on the bounds, not on a per-claim rule. |
+| `metricType: Value` with `targetValue: "1"` | The claim count is compared with the target directly, not divided across the pods as `AverageValue` would: the metric is a count for the whole pool, not a per-pod rate. What this blueprint's runs establish is the two ends — no claims hold the floor, and demand at the cap lands on the cap. They do not establish the mapping in between, and the natural guess for it, one more warm pod per claim, is probably not what the HPA does: its external-metric arithmetic scales the ratio by the number of *ready* replicas. [`deploy/scaledobject.yaml`](deploy/scaledobject.yaml) says more. Rely on the bounds, not on a per-claim rule. |
 | `minReplicaCount: 1` | The warm floor. At rest the pool still holds one pre-booted pod, so the first claim after a quiet spell is still adopted in under a second. |
 | `maxReplicaCount: 3` | The bound on warm capacity. However much demand the exporter reports, the pool never holds more than this. |
 | `behavior.scaleDown.stabilizationWindowSeconds: 0` | The HPA's default is 300 seconds, so with the default the pool would sit at its loaded size for five minutes after the last claim went and you could not see the scale-down at all. In production, set it to how long you are willing to pay to keep warm capacity nothing is asking for. |
 | `behavior.scaleDown.policies` | One `Pods` policy for the whole range, so the pool comes back to the floor in one step. Without a policy the HPA applies its percentage-based default, which takes several periods. |
 
-Size the bounds the way the warm pool sample says to size `replicas`: to your peak claim
+Size the bounds the way the warm pool blueprint says to size `replicas`: to your peak claim
 rate, not your total session count. KEDA is what makes that size move with the rate you
 actually see instead of being chosen once.
 
 **Step 5: Set it up.** `setup.sh` checks the runtime class, the three agent-sandbox
 extension CRDs and KEDA before it creates anything, so a missing prerequisite stops the run
 with nothing left behind. It creates the namespace only when it is absent and labels it, so
-the other scripts can tell the namespace is the sample's.
+the other scripts can tell the namespace is the blueprint's.
 
 ```bash
 cp .env.example .env      # set KUBE_CONTEXT, and NAMESPACE if you want another name
@@ -414,12 +414,12 @@ warm at the first poll. The first sandboxed pod on a cold cluster waits for Auto
 launch a sandbox-capable node, so a first run can take minutes; on this run the node was
 already there.
 
-Nothing in this sample asserts on the `ScaledObject`'s `ACTIVE` column: it reports whether
+Nothing in this blueprint asserts on the `ScaledObject`'s `ACTIVE` column: it reports whether
 KEDA's trigger currently sees demand, and it reads `Unknown` until the first poll completes.
 `demand.sh` reads the pool's own `spec.replicas` instead, which is the field the decision is
 written to.
 
-**Step 6: Drive demand up and back down.** `demand.sh` is the sample. It reads the pool at
+**Step 6: Drive demand up and back down.** `demand.sh` is the blueprint. It reads the pool at
 each stage, drives demand from 0 to 3 claims and back to 0, and asserts on `spec.replicas`
 every time.
 
@@ -560,7 +560,7 @@ own guest.
 ## No network to restrict
 
 The warm pods boot with `sandbox.amazonaws.com/network-isolated: "true"`, so there is no
-egress to restrict and the sample ships no network policy. Only loopback has an address,
+egress to restrict and the blueprint ships no network policy. Only loopback has an address,
 there is no default route, and a lookup fails. Stage 3/5 of `demand.sh` reads this from the
 claimed pod too, and prints the command above each answer, so the block below is again its
 output rather than something to run after the claims are gone:
@@ -624,7 +624,7 @@ and the IPv6-only default route, which the earlier IPv4-only version of these tw
 accepted.
 
 A pod that needs a network instead drops the annotation and ships an egress policy, as the
-[network policy](../../isolation/network-policy/README.md) sample shows.
+[network policy](../../isolation/network-policy/README.md) blueprint shows.
 
 The exporter, being an ordinary pod, does have a network: it has to reach the Kubernetes API
 to count claims. It is reached only over a ClusterIP Service, as Step 3 says.
@@ -705,7 +705,7 @@ to do with the cluster adding nodes, which is a different axis and never writes
 `SandboxWarmPool.spec.replicas`.
 
 The control puts the `ScaledObject` back when it finishes, including on an interrupt, so it
-cannot leave the sample without its autoscaler.
+cannot leave the blueprint without its autoscaler.
 
 ## Good to know
 
@@ -743,13 +743,13 @@ cannot leave the sample without its autoscaler.
   `deploy/warm-pool.yaml`, which carries `replicas: 1`, over the field the HPA owns. KEDA
   writes it back on its next sync, about 15 seconds, so this is a brief dip rather than a
   change, but do not run setup in the middle of reading a trajectory.
-- **The load this sample generates is capped.** `MAX_CLAIMS` in
+- **The load this blueprint generates is capped.** `MAX_CLAIMS` in
   [`scripts/common.sh`](scripts/common.sh) is 3, at or below `maxReplicaCount`, so a run on a
   shared cluster cannot ask for more warm capacity than the pool's own bound.
 
 ## Clean up
 
-Set the variables again if you are in a new shell, then remove everything the sample
+Set the variables again if you are in a new shell, then remove everything the blueprint
 created. The order matters: the claims first because they hold warm pods, the `ScaledObject`
 next so KEDA stops writing `spec.replicas` and removes its HPA, then the exporter, then the
 pool before the template because the pool boots replacements.
@@ -799,13 +799,13 @@ clean up complete: the claims, the ScaledObject and its HPA, the exporter, the w
 ```
 
 The claims are reported absent here because `control-no-autoscaler.sh` had already deleted
-them when it put the sample back, so this run of the clean up had none to remove. The clean
-up checks the namespace carries the sample's
+them when it put the blueprint back, so this run of the clean up had none to remove. The clean
+up checks the namespace carries the blueprint's
 label before it deletes anything inside it, deletes the claims by their exact names rather
 than by a label selector, reads a failed lookup as a failure rather than as "gone", and
 exits non-zero if it skipped something or could not confirm a delete, so an incomplete clean
 up is never reported as done. It leaves the namespace in place when anything is
-unconfirmed, rather than hiding what is left. The sample creates nothing outside the
+unconfirmed, rather than hiding what is left. The blueprint creates nothing outside the
 cluster, so there is no AWS resource to remove.
 
 **What stays.** Two shared installs, because another workload on the cluster may rely on
@@ -825,10 +825,10 @@ either:
   Anything listed there is another workload's, so leave KEDA where it is. Helm does not
   remove a chart's CRDs on uninstall, so `keda.sh` CRDs stay behind; remove them by hand only
   when you are certain nothing on the cluster uses KEDA.
-- **The agent-sandbox controller**, shared with the warm pool sample and the other
-  agent-sandbox samples. To remove it, follow the
+- **The agent-sandbox controller**, shared with the warm pool blueprint and the other
+  agent-sandbox blueprints. To remove it, follow the
   [warm pool clean up](../../getting-started/warm-pool/README.md#clean-up).
 
-If this is the only sample you ran, follow the
+If this is the only blueprint you ran, follow the
 [hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up) to remove
 the namespace and the cluster.

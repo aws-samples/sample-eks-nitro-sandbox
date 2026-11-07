@@ -26,6 +26,24 @@ if [ ! -L "$DIR/packages" ]; then
   ln -s "$LOCAL_PACKAGES" "$DIR/packages"
 fi
 
+# The app server's run-time state (pid files, locks, sockets, logs) belongs to the pod that
+# wrote it. A Restore brought it back in the folder on a new pod, beside an empty packages
+# directory, and Codex took it for an installed daemon whose binary had gone: every start
+# failed with "daemon executable not found", and so did `codex app-server daemon start`.
+# The first time this runs on a pod, Codex has not run on it yet, so whatever is there is
+# another pod's: remove it, and Codex installs and starts its daemon as on a first start.
+# Once per pod: a marker on the pod's own disk records that it was done, and a lock makes a
+# second run on the same pod (the entrypoint run again) wait for the first and then leave
+# the directory alone, since this pod's daemon may be using it by then. (It cannot be a
+# symlink to the pod's disk, as packages is: Codex refuses one there.)
+(
+  flock 9
+  if [ ! -e /tmp/codex-daemon-state-cleared ]; then
+    rm -rf "$DIR/app-server-daemon"
+    : > /tmp/codex-daemon-state-cleared
+  fi
+) 9> /tmp/codex-daemon-state.lock
+
 # Preserve any non-managed lines Codex itself wrote (e.g. the tui screen-reader flag), then
 # write the managed model/provider block.
 # Codex's built-in amazon-bedrock provider only accepts overriding base_url, auth,

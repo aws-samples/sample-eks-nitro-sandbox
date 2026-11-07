@@ -1,6 +1,6 @@
 # Read an encrypted S3 file that only the sandbox can decrypt
 
-This sample uploads a file to [Amazon S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html)
+This blueprint uploads a file to [Amazon S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html)
 as AES-256-GCM ciphertext and gets it read back inside a sandbox. A setup machine encrypts
 the file under a random data key, wraps only that key with an AWS KMS key, and uploads the
 ciphertext with a small manifest holding the wrapped key. A Python application in the
@@ -19,7 +19,7 @@ trusted with the original file and stays outside the cluster.
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page and the [Confidential section page](../README.md), which covers the trust
 boundary, the key-policy shape and the attested decrypt that this and the other Confidential
-samples share. Three samples lead into this one:
+blueprints share. Three blueprints lead into this one:
 
 - [cedar-policy](../../policy/cedar-policy/README.md) generates a Cedar policy for a
   `confidential-sandbox` pod and shows the guest enforce it, with no attestation step.
@@ -54,12 +54,12 @@ image it has just built.
 
 A run costs the KMS key, S3 storage for one 100 KiB object and its manifest, ECR storage for
 the application image, and the compute of one sandboxed pod and two small ordinary pods
-while the sample is up. The clean up schedules the key for deletion, which AWS completes
+while the blueprint is up. The clean up schedules the key for deletion, which AWS completes
 after a waiting period of at least 7 days.
 
 ## Overview
 
-The sample has one sandboxed pod and two ordinary pods, all in one namespace. The sandboxed
+The blueprint has one sandboxed pod and two ordinary pods, all in one namespace. The sandboxed
 pod reads the object and decrypts it. The two ordinary pods are controls: one runs the same
 image with `--readings-only` so the page can show what an ordinary pod reads of the machine,
 and one holds the sandboxed pod's own IAM role and asks KMS to decrypt the very same wrapped
@@ -89,12 +89,12 @@ is what lets the file be any size. Who KMS will release that key to is Figure 2.
 
 ![A setup machine outside the cluster holds the file as plaintext and an encrypt and wrap step using AES-256-GCM. Three flows leave the setup machine: step 1 encrypt, from the file to the encrypt and wrap step; step 2, kms:Encrypt wraps the data key, running along the top of the AWS Cloud frame to AWS KMS on the far right, labelled the attestation gate; and step 3, upload ciphertext and manifest, to Amazon S3, which holds the ciphertext and the manifest. Inside the AWS Cloud frame, an Amazon EKS cluster frame contains an EKS node frame labelled parent instance, untrusted, and inside that a Nitro sandbox pod frame with runtimeClassName confidential-sandbox, holding a main container that decrypts in guest memory. Step 4, read the ciphertext, runs from Amazon S3 down into the Nitro sandbox pod frame, so the guest reads the object itself rather than the node reading it. The main container exchanges two flows with AWS KMS, outside the cluster to the right: step 5, an attested kms:Decrypt, and step 6, the data key returned for the sandbox](images/figure-1-s3-encrypted-file.png)
 
-**The sandbox's network reach.** This sample ships no network policy, so the pod's egress is
+**The sandbox's network reach.** This blueprint ships no network policy, so the pod's egress is
 unrestricted. What the key policy and the bucket policy limit is access to this data key and
 these two S3 objects; neither of them limits where the pod can connect, and neither would
 stop an application that chose to send the plaintext somewhere else. Restricting the
 datapath is a separate thing, and the
-[network policy](../../isolation/network-policy/README.md) sample under Isolation is where
+[network policy](../../isolation/network-policy/README.md) blueprint under Isolation is where
 that mechanism is shown, on a sandboxed pod, with one connection allowed and one refused.
 
 ## Versions
@@ -110,7 +110,7 @@ that mechanism is shown, on a sandboxed pod, with one connection allowed and one
 | `eks-nitro-sandbox-genpolicy` | Reports no version string of its own. The pinned artifact is the application image, resolved to a digest at generation time and visible in the generated policy. |
 
 The four Python packages are in [`src/requirements.txt`](src/requirements.txt), each pinned
-to the release that was current when the sample was built.
+to the release that was current when the blueprint was built.
 
 ## Files
 
@@ -124,16 +124,16 @@ to the release that was current when the sample was built.
 | [`deploy/plain-pod.yaml`](deploy/plain-pod.yaml) | An ordinary pod running the same image with `--readings-only`, on the same node, for comparison |
 | [`deploy/credentials-pod.yaml`](deploy/credentials-pod.yaml) | An ordinary pod with the same IAM role, reading the object and asking KMS to decrypt the data key with no attestation |
 | [`deploy/bucket-policy.json`](deploy/bucket-policy.json) | The bucket policy: two object reads for the pod's role, no KMS action, and a TLS-only deny |
-| [`deploy/namespace.yaml`](deploy/namespace.yaml) | The `s3-encrypted-file-sample` namespace, labelled as the sample's own |
+| [`deploy/namespace.yaml`](deploy/namespace.yaml) | The `s3-encrypted-file-sample` namespace, labelled as the blueprint's own |
 | [`deploy/service-account.yaml`](deploy/service-account.yaml) | The pod's service account, which the Pod Identity association names |
-| [`../_shared/confidential-profile.yaml`](../_shared/confidential-profile.yaml) | The generator profile the Confidential samples share |
+| [`../_shared/confidential-profile.yaml`](../_shared/confidential-profile.yaml) | The generator profile the Confidential blueprints share |
 | [`../_shared/kms-key-policy.json`](../_shared/kms-key-policy.json) | The attestation gate: allow on a match, explicitly deny otherwise |
 | [`../_shared/attested_recipient.py`](../_shared/attested_recipient.py) | The shared attested KMS recipient: ephemeral key, attestation document, unwrap `CiphertextForRecipient` |
 | [`../_shared/pod-identity/role-trust-policy.json`](../_shared/pod-identity/role-trust-policy.json) | The role trust policy, scoped to one cluster, namespace and service account |
 | [`scripts/setup.sh`](scripts/setup.sh) | The whole flow, ending with the pods finished |
 | [`scripts/kms-gate-check.jq`](scripts/kms-gate-check.jq) | The one reading of a live key policy that both scripts use |
 | [`scripts/changed-pod.sh`](scripts/changed-pod.sh) | The refused case: one pinned value changed |
-| [`scripts/clean.sh`](scripts/clean.sh) | Remove everything the sample created |
+| [`scripts/clean.sh`](scripts/clean.sh) | Remove everything the blueprint created |
 
 ## How it works
 
@@ -345,7 +345,7 @@ back as `CiphertextForRecipient` and from the key it pinned. A response carrying
 file with AES-256-GCM, checks it against the pinned length and SHA-256, and prints the
 marker.
 
-The pod sets CPU and memory requests, where most samples here set none: generating the
+The pod sets CPU and memory requests, where most blueprints here set none: generating the
 ephemeral RSA key for the attested recipient is CPU-bound work the small default VM has
 neither the memory nor the time for.
 
@@ -519,8 +519,8 @@ looking at it:
 - **One file, read into memory in one piece.** The application reads the whole object and
   decrypts it in one AES-GCM operation, which is what lets it authenticate the file as a
   whole. A file too large for the pod's memory needs an authenticated streaming or chunked
-  format, and this sample does not implement one. The pod therefore sets requests, where most
-  samples here set none: the application imports `boto3` and `cryptography`, generates a
+  format, and this blueprint does not implement one. The pod therefore sets requests, where most
+  blueprints here set none: the application imports `boto3` and `cryptography`, generates a
   4096-bit RSA key for the attestation document, and holds the file in memory, which does not
   fit the small default VM. It sets requests only and no limits, because a sandbox is sized
   from its requests.
@@ -528,8 +528,8 @@ looking at it:
   token, runs as a numeric non-root user with `runAsNonRoot`, drops all capabilities, takes
   the `RuntimeDefault` seccomp profile and has a read-only root filesystem. Those are also
   the values the generated Cedar policy pins, so the measurement changes if any of them does.
-- **The bucket uses SSE-S3, not this sample's KMS key.** Server-side encryption with the
-  sample's own key would mean S3 calling `kms:Decrypt` itself to serve the object, and S3 has
+- **The bucket uses SSE-S3, not this blueprint's KMS key.** Server-side encryption with the
+  blueprint's own key would mean S3 calling `kms:Decrypt` itself to serve the object, and S3 has
   no attestation document, so the gate would refuse it and nobody could read the object at
   all. The confidentiality here comes from the application encryption; the bucket's default
   encryption is the at-rest default every object in it gets as well.
@@ -583,7 +583,7 @@ looking at it:
   it, and the metadata service holds no role in any case: its `iam/` paths return 404 for a
   pod whose credentials come from EKS Pod Identity. If you want the sandbox unable to reach
   it at all, that is what a network policy does, and the
-  [network policy](../../isolation/network-policy/README.md) sample shows how.
+  [network policy](../../isolation/network-policy/README.md) blueprint shows how.
 
 ## Clean up
 
@@ -629,7 +629,7 @@ bucket name are replaced as above, and the local path is shortened.
 and finding `ManagedBy=s3-encrypted-file` on it; a resource without the tag is left alone and
 the clean up reports itself incomplete. That check matters most for the bucket: emptying one
 deletes its objects, and their versions, and there is no undoing it. It deletes objects inside
-the namespace only after confirming the namespace carries this sample's label, and each pod by
+the namespace only after confirming the namespace carries this blueprint's label, and each pod by
 its exact name rather than by a label selector. A lookup that cannot run counts as a failure,
 never as "already gone", and the script exits non-zero if anything was left behind.
 

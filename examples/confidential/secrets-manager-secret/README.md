@@ -1,6 +1,6 @@
 # Release a secret only to an approved sandbox
 
-This sample stores a secret in [AWS Secrets Manager](https://docs.aws.amazon.com/secretsmanager/latest/userguide/intro.html)
+This blueprint stores a secret in [AWS Secrets Manager](https://docs.aws.amazon.com/secretsmanager/latest/userguide/intro.html)
 as ciphertext and gets it read. A setup machine encrypts a 64-byte token with an AWS KMS key
 and stores the resulting envelope in Secrets Manager, so what the service holds is not the
 secret. A small Python application in the sandbox reads that envelope, asks KMS to decrypt
@@ -17,7 +17,7 @@ decrypt it inside the application with a KMS key gated on attestation.
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page and the [Confidential section page](../README.md), which covers the trust
 boundary, the key-policy shape, the attested decrypt and the measurement caveat that this
-and the other Confidential samples share. Four samples lead into this one:
+and the other Confidential blueprints share. Four blueprints lead into this one:
 
 - [cedar-policy](../../policy/cedar-policy/README.md) generates a Cedar policy for a
   `confidential-sandbox` pod and shows the guest enforce it, with no attestation step.
@@ -50,7 +50,7 @@ schedules the key for deletion, which AWS completes after a waiting period of at
 
 ## Overview
 
-The sample has one sandboxed pod and two ordinary pods, all in one namespace, and all three
+The blueprint has one sandboxed pod and two ordinary pods, all in one namespace, and all three
 run the same image. The sandboxed pod is the workload. The two ordinary pods are controls:
 one prints the machine readings so the page can show what an ordinary pod sees, and one holds
 the sandboxed pod's own IAM role and asks KMS to decrypt the same ciphertext with no
@@ -91,7 +91,7 @@ the guest. Who AWS KMS will release it to is Figure 2.*
 | [`asn1crypto`](https://pypi.org/project/asn1crypto/) | `1.5.1` |
 | `eks-nitro-sandbox-genpolicy` | Reports no version string of its own. The pinned artifact is the image, resolved to a digest at generation time and visible in the generated policy. |
 
-The four Python pins matter more here than in most samples. The Cedar policy pins the image
+The four Python pins matter more here than in most blueprints. The Cedar policy pins the image
 digest, and the KMS key is gated on that policy's measurement, so a rebuild that resolved a
 different dependency set would be a different approved image.
 
@@ -108,16 +108,16 @@ different dependency set would be a different approved image.
 | [`deploy/plain-pod.yaml`](deploy/plain-pod.yaml) | An ordinary pod running the same image on the same node, for comparison |
 | [`deploy/credentials-pod.yaml`](deploy/credentials-pod.yaml) | An ordinary pod with the same IAM role, asking KMS to decrypt with no attestation |
 | [`deploy/secret-resource-policy.json`](deploy/secret-resource-policy.json) | The secret's resource policy: the ciphertext read and nothing else |
-| [`deploy/namespace.yaml`](deploy/namespace.yaml) | The `secrets-manager-secret-sample` namespace, labelled as the sample's own |
+| [`deploy/namespace.yaml`](deploy/namespace.yaml) | The `secrets-manager-secret-sample` namespace, labelled as the blueprint's own |
 | [`deploy/service-account.yaml`](deploy/service-account.yaml) | The service account both the sandboxed pod and the control use |
-| [`../_shared/attested_recipient.py`](../_shared/attested_recipient.py) | The attested decrypt the Confidential samples share |
-| [`../_shared/confidential-profile.yaml`](../_shared/confidential-profile.yaml) | The generator profile the Confidential samples share |
+| [`../_shared/attested_recipient.py`](../_shared/attested_recipient.py) | The attested decrypt the Confidential blueprints share |
+| [`../_shared/confidential-profile.yaml`](../_shared/confidential-profile.yaml) | The generator profile the Confidential blueprints share |
 | [`../_shared/kms-key-policy.json`](../_shared/kms-key-policy.json) | The attestation gate: allow on a match, explicitly deny otherwise |
 | [`../_shared/pod-identity/role-trust-policy.json`](../_shared/pod-identity/role-trust-policy.json) | The role trust policy, scoped to one cluster, namespace and service account |
 | [`policy/policy.generated.yaml`](policy/policy.generated.yaml) | The generated Cedar policy from a real run, committed so you can read it without running anything |
 | [`scripts/setup.sh`](scripts/setup.sh) | The whole flow, ending with the three pods finished |
 | [`scripts/changed-pod.sh`](scripts/changed-pod.sh) | The refused case: one pinned value changed |
-| [`scripts/clean.sh`](scripts/clean.sh) | Remove everything the sample created |
+| [`scripts/clean.sh`](scripts/clean.sh) | Remove everything the blueprint created |
 | [`scripts/gate.jq`](scripts/gate.jq) | The predicate both scripts read the live key policy back with |
 | [`scripts/birth-policy.jq`](scripts/birth-policy.jq) | The predicate that proves the key's first policy allows no decrypt at all |
 | [`scripts/lib.sh`](scripts/lib.sh) | The helpers the three scripts share |
@@ -182,7 +182,7 @@ out, so it names no role and needs none to exist yet, and both denies are alread
 carrying an all-zero measurement no sandbox can present. Step 3/8 adds the allow once the
 role is there.
 
-The two lines in step 6/8 are the first of the sample's claims: what went into Secrets
+The two lines in step 6/8 are the first of the blueprint's claims: what went into Secrets
 Manager hashes to something other than the value, and the value does not appear in it in
 either form. Step 2 below reads the same thing back off the service.
 
@@ -271,7 +271,7 @@ as much as what it grants: no `PutSecretValue` or `UpdateSecret`, so the workloa
 replace the ciphertext with one wrapped under a key it chose; no `DeleteSecret` or
 `DeleteResourcePolicy`; and nothing at all on AWS KMS, so this is not a second path to the
 value. Reading the secret decrypts it at rest under the AWS managed key
-`aws/secretsmanager`, which the service does on the caller's behalf; the sample's own key,
+`aws/secretsmanager`, which the service does on the caller's behalf; the blueprint's own key,
 the one the value is encrypted with, is reached only through the conditional allow in step 6.
 
 `setup.sh` reads this policy back off the secret and requires exactly that shape, because a
@@ -331,7 +331,7 @@ Neither `EXPECTED_LENGTH` nor `EXPECTED_SHA256` is a secret. `setup.sh` generate
 at random for the run, and a SHA-256 of 64 random characters cannot be reversed. They are
 there so that a decrypt returning the wrong bytes is a failure rather than a silent pass.
 
-This pod sets CPU and memory requests, where most samples here set none. The guest unpacks
+This pod sets CPU and memory requests, where most blueprints here set none. The guest unpacks
 the image inside the sandbox before the container starts, and then the application runs
 CPython with boto3 and generates a 4096-bit RSA key, which the small default VM has neither
 the memory nor the time for:
@@ -426,7 +426,7 @@ the raw value changes with it (Amazon EKS User Guide, *Cedar policies*).
 }
 ```
 
-Those two conditions are the whole gate this sample installs. They are what the generator
+Those two conditions are the whole gate this blueprint installs. They are what the generator
 emitted, with nothing added by hand; the
 [Confidential section page](../README.md#the-kms-key-policy) says why, and what pinning the
 policy measurement does and does not bind.
@@ -557,7 +557,7 @@ ciphertext was not the one the key policy gates. Both are refused rather than us
 
 `AttestedRecipient` is in
 [`../_shared/attested_recipient.py`](../_shared/attested_recipient.py), shared with the other
-Confidential samples whose workload calls KMS itself. It generates a 4096-bit RSA key, reads
+Confidential blueprints whose workload calls KMS itself. It generates a 4096-bit RSA key, reads
 a signed document from the Nitro Secure Module's device, and opens the CMS structure KMS
 returns, checking every field of it against what KMS documents. One thing to know about that
 file: the Amazon EKS User Guide, *Security model and parent instance trust assumptions*, names
@@ -679,7 +679,7 @@ ordinary pod using the same service account, so EKS Pod Identity gives it the sa
 and it runs the same image, importing the workload's own envelope reader from
 [`src/app.py`](src/app.py). It reads the ciphertext, which its role is allowed to do, and then
 asks KMS to decrypt it with no `Recipient`. Nothing about the network stands in its way: the
-sample applies no network policy, so this pod reaches the same AWS endpoints the sandbox
+blueprint applies no network policy, so this pod reaches the same AWS endpoints the sandbox
 does, and what refuses it is the key policy alone. If KMS ever did return plaintext it drops
 the response unread, so the secret could not reach the logs of a pod that is not even a
 sandbox; what it prints is the outcome and the error.
@@ -785,9 +785,9 @@ Remove it when you have read it:
 
 ## Good to know
 
-- **This sample applies no network policy.** The sandbox reaches whatever the cluster lets it
+- **This blueprint applies no network policy.** The sandbox reaches whatever the cluster lets it
   reach, and what withholds the secret is the key policy, not the network. Restricting a
-  sandbox's egress is the subject of its own sample,
+  sandbox's egress is the subject of its own blueprint,
   [network policy](../../isolation/network-policy/README.md), which shows the mechanism and
   both sides of it.
 - **The gate is the two conditions the generator emits.** They are also the minimum the
@@ -845,9 +845,9 @@ Remove it when you have read it:
   Generate with `--profile confidential` once the guest schema defines those fields.
 - **The shared profile permits instance metadata.** `_shared/confidential-profile.yaml` sets
   `imds: allow`, so the Cedar policy does not stand in the way of the metadata service, and
-  this sample applies no network policy to withhold it either. Nothing the sample does needs
+  this blueprint applies no network policy to withhold it either. Nothing the blueprint does needs
   it, and nothing it shows depends on it being unreachable; if you need it closed off, the
-  [network policy](../../isolation/network-policy/README.md) sample has the mechanism.
+  [network policy](../../isolation/network-policy/README.md) blueprint has the mechanism.
 - **`host_network` reads `true` in the generated policy.** That is not the pod using the
   node's network. The guest VM owns its own network stack, so no network namespace appears in
   the OCI spec the policy is generated from, and the generator says so in a comment beside the
@@ -900,7 +900,7 @@ and the local path are replaced with placeholders.
 `clean.sh` removes all five AWS resources, each only after reading that resource's own tags
 and finding `ManagedBy=secrets-manager-secret` on it; a resource without the tag is left alone
 and the clean up reports itself incomplete. It deletes objects inside the namespace only after
-confirming the namespace carries this sample's label, and each pod by its exact name rather
+confirming the namespace carries this blueprint's label, and each pod by its exact name rather
 than by a label selector. A lookup that cannot run counts as a failure, never as "already
 gone", and the script exits non-zero if anything was left behind.
 
@@ -914,7 +914,7 @@ repository's `tmp/` are removed only when there is nothing to come back for.
 One thing it does not do. The KMS key is scheduled, not destroyed: AWS enforces a waiting
 period of at least 7 days and there is no way to remove a key sooner. Its alias is deleted at
 once, so a later run with the same `KMS_ALIAS` makes a new key rather than finding this one.
-Nothing else is left behind, and the sample changes no cluster-wide setting, so there is
+Nothing else is left behind, and the blueprint changes no cluster-wide setting, so there is
 nothing to put back.
 
 To keep the AWS resources for another run:

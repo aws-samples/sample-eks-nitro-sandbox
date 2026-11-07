@@ -1,9 +1,9 @@
 # Warm pools with agent-sandbox
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
-on the home page, and run the [hello sandbox](../hello-sandbox/README.md) sample first so
+on the home page, and run the [hello sandbox](../hello-sandbox/README.md) blueprint first so
 you have a cluster with the runtime classes. The commands below use files from this
-repository, so clone it if you have not already, and run them from this sample's folder:
+repository, so clone it if you have not already, and run them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
@@ -130,7 +130,7 @@ torn down; nothing from that session survives into the next one:
 kubectl delete -f claim.yaml
 ```
 
-**A pattern worth copying: separate the brain from the hands.** The coding agent sample put
+**A pattern worth copying: separate the brain from the hands.** The coding agent blueprint put
 the whole agent in one sandbox, the easiest way to start. The warm pool enables the design
 Anthropic describes in
 [Scaling Managed Agents: decoupling the brain from the hands](https://www.anthropic.com/engineering/managed-agents):
@@ -180,5 +180,5 @@ kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/down
 rm -f /tmp/hands.py
 ```
 
-If this is the last sample you ran, follow the [hello sandbox](../hello-sandbox/README.md#clean-up)
+If this is the last blueprint you ran, follow the [hello sandbox](../hello-sandbox/README.md#clean-up)
 clean up to remove the namespace and the cluster.

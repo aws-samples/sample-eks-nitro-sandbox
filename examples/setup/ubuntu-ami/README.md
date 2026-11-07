@@ -1,8 +1,8 @@
 # Build an Ubuntu AMI for EKS Pod Isolation
 
-!!! danger "Not ready to merge to `main` as an available sample"
+!!! danger "Not ready to merge to `main` as an available blueprint"
 
-    This sample is **not ready to be merged to `main` and marked available** until the
+    This blueprint is **not ready to be merged to `main` and marked available** until the
     maintainers make one decision. The runtime binaries and guest image ship as one
     operator-supplied preview archive that a reader obtains from their AWS account team. Its
     exact name and every SHA-256 are pinned below, and it has no public download. Whether that
@@ -11,7 +11,7 @@
     ([Issue #10 comment](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10#issuecomment-6506808422)).
     The archive's license and redistribution terms are recorded with that decision.
 
-    Until that decision, this sample stays a draft and is not marked `(available now)`.
+    Until that decision, this blueprint stays a draft and is not marked `(available now)`.
 
 !!! warning "Status: live-validated on the GA bundle"
 
@@ -27,11 +27,11 @@ tainted managed node group to an **existing cluster**, and run an isolated pod o
 node. Ubuntu is the **node operating system**; application containers can use their own
 distributions.
 
-This sample serves readers who manage their own node OS and cannot rely on the managed
+This blueprint serves readers who manage their own node OS and cannot rely on the managed
 AMI that [Getting started](../../getting-started/hello-sandbox/README.md) depends on
 (EKS Auto Mode provisions sandbox-capable nodes for you, with no AMI build). It adds one
 new, tainted node group; the cluster's existing node groups and workloads are untouched,
-and this sample never replaces or reconfigures an existing node group.
+and this blueprint never replaces or reconfigures an existing node group.
 
 !!! warning "Stops on a documented prerequisite"
 
@@ -63,7 +63,7 @@ once present. The build host bakes the AMI, a fresh instance verifies it, then t
 AMI joins the dedicated, tainted managed node group, leaving the cluster's existing node
 groups untouched.*
 
-![The ubuntu-ami sample's architecture. Outside AWS Cloud: three pinned public inputs
+![The ubuntu-ami blueprint's architecture. Outside AWS Cloud: three pinned public inputs
 (Linux kernel source, erofs-utils source, distro packages) feed into the build host, and a
 dashed box for the EKS Pod Isolation runtime, marked user-supplied and pending public
 release, feeds the build host's SSM Session Manager once installed. Inside AWS Cloud: the
@@ -79,7 +79,7 @@ devices.](images/architecture.png)
 
 [Getting started > Hello sandbox](../../getting-started/hello-sandbox/README.md) needs no
 AMI: EKS Auto Mode already runs a sandbox-capable managed AMI, and the runtime classes
-are there on day one. This sample is for the opposite case: a cluster that manages its
+are there on day one. This blueprint is for the opposite case: a cluster that manages its
 own node OS, where the sandbox-capable AMI does not exist yet and someone has to build
 it.
 
@@ -87,9 +87,9 @@ it.
   a managed node group with a `NoSchedule` taint, so only a pod that explicitly tolerates
   it lands there. No existing node group is modified, relaunched or drained.
 - **Starts from Getting started.** Run [hello-sandbox](../../getting-started/hello-sandbox/README.md)
-  first so you have a cluster with the `isolated-sandbox` RuntimeClass; this sample adds
+  first so you have a cluster with the `isolated-sandbox` RuntimeClass; this blueprint adds
   compute to that cluster, it does not create one.
-- **A build, not just a deploy.** The other samples apply manifests to compute that
+- **A build, not just a deploy.** The other blueprints apply manifests to compute that
   already exists. This one also builds the node image: resolve the base AMI, build a
   kernel, build `erofs-utils`, install the runtime, bake and verify a fresh instance,
   then join it.
@@ -97,16 +97,16 @@ it.
 ## Prerequisites
 
 - A cluster that has finished [Getting started > Hello sandbox](../../getting-started/hello-sandbox/README.md):
-  EKS 1.36 or later with the `isolated-sandbox` RuntimeClass present. The sample reuses
+  EKS 1.36 or later with the `isolated-sandbox` RuntimeClass present. The blueprint reuses
   that RuntimeClass as it is and never creates or changes it; it checks that every label
-  the RuntimeClass selects (`eks.amazonaws.com/nitro-sandbox=true`) is one the sample's
+  the RuntimeClass selects (`eks.amazonaws.com/nitro-sandbox=true`) is one the blueprint's
   node registers with, and stops if not.
 - **The managed `vpc-cni` add-on.** A managed node group node gets its pod network from
   this add-on's `aws-node` DaemonSet; EKS Auto Mode nodes do not need it, so a cluster that
-  only ran Getting started can lack it, and then the sample's node never becomes `Ready`.
-  Its network policy setting can be on or off: the sample ships no network policy, and its
+  only ran Getting started can lack it, and then the blueprint's node never becomes `Ready`.
+  Its network policy setting can be on or off: the blueprint ships no network policy, and its
   validation sandbox boots with no network. This is a cluster-wide install, so you install
-  it yourself, at a version you pin; the sample only checks that it is `ACTIVE`
+  it yourself, at a version you pin; the blueprint only checks that it is `ACTIVE`
   ([`scripts/00c-check-cluster.sh`](scripts/00c-check-cluster.sh)) and stops with this
   command when it is missing:
 
@@ -121,7 +121,7 @@ it.
   `--resolve-conflicts NONE` makes the create fail only when the add-on would have to
   overwrite a value that is already set; it does not leave an existing `amazon-vpc-cni`
   ConfigMap alone. If the cluster already has that
-  ConfigMap and nothing owns it, as the cluster this sample was validated on did, the add-on
+  ConfigMap and nothing owns it, as the cluster this blueprint was validated on did, the add-on
   adopts it: it adds its chart's default keys and its Helm labels, and keeps
   `enable-network-policy-controller` as it was. Record the version you chose as
   `VPC_CNI_ADDON_VERSION` in `config.env`; each run records the version it found.
@@ -132,7 +132,7 @@ it.
   one term must all hold, while separate `nodeSelectorTerms` are alternatives, so a term of its
   own would not keep `aws-node` off those nodes. This is the value the validation cluster's
   add-on used, with its node label key shown as `<OTHER_CNI_NODE_LABEL>` (that install also
-  set `enableNetworkPolicy`, which this sample does not need). Save it to a file and add
+  set `enableNetworkPolicy`, which this blueprint does not need). Save it to a file and add
   `--configuration-values file://<file>` to the `create-addon` command:
 
   ```json
@@ -163,7 +163,7 @@ it.
   endpoint `aws eks describe-cluster` reports for `CLUSTER_NAME`, and stop on a mismatch or
   an unreadable context, so the kubectl side and the AWS side are always the same cluster.
 - Private subnets in the cluster's VPC with egress to Ubuntu's `apt` mirrors, kernel.org,
-  git.kernel.org, github.com, Amazon S3, and the EKS, EC2 and SSM APIs. This sample creates
+  git.kernel.org, github.com, Amazon S3, and the EKS, EC2 and SSM APIs. This blueprint creates
   no network infrastructure.
 - [`aws`](https://github.com/aws/aws-cli) CLI v2, [`kubectl`](https://github.com/kubernetes/kubectl),
   Python 3, `curl` and `tar`. Optional: the
@@ -175,9 +175,9 @@ it.
   delete objects, delete), and an EKS managed node group; to list and delete the cluster's
   access entries (the clean up removes the one EKS creates for the node role); to read the
   cluster, its add-ons and the Canonical SSM parameter; plus SSM Run Command access to the build and
-  verification instances. These are the credentials you run `./setup.sh` with; the sample
+  verification instances. These are the credentials you run `./setup.sh` with; the blueprint
   then creates two **scoped** roles of its own (below).
-- **The two scoped roles the sample creates for the resources it launches.**
+- **The two scoped roles the blueprint creates for the resources it launches.**
   [`scripts/00a-iam.sh`](scripts/00a-iam.sh) (run for you by `./setup.sh`) creates:
   - a **build-host instance role** with `AmazonSSMManagedInstanceCore` (SSM, no inbound
     rule) and nothing else standing. For the few minutes the build host downloads its
@@ -196,7 +196,7 @@ it.
   removes them and nothing else. A same-named role is reused only when it carries both tags,
   the trust policy above, exactly the managed policies above and no inline policy; anything
   else stops the run. Neither is an admin role.
-- **IMDSv2 only, hop limit 1, on every instance the sample launches.** The build host, the
+- **IMDSv2 only, hop limit 1, on every instance the blueprint launches.** The build host, the
   verification instance and the node group's nodes (through the launch template) all require
   IMDSv2 tokens with a response hop limit of 1. That stops an ordinary pod, one that does not
   use the host's network, from getting a token, so it cannot read the node role's credentials
@@ -249,7 +249,7 @@ How each pin was checked:
   and the kernel build applies it with `git am` and checks it landed as exactly one commit
   with that subject.
 - **erofs-utils.** A cgit snapshot of a tag has no upstream-published checksum, so the
-  SHA-256 is pinned by this sample itself (confirmed identical across independent fetches).
+  SHA-256 is pinned by this blueprint itself (confirmed identical across independent fetches).
 - **Base AMI.** No SHA-256 to pin: it is a signed image resolved from a Parameter Store
   value Canonical's own AWS account owns. Canonical republishes it under new serials (the
   image name ends in the serial), so the build records the image ID, name and serial it
@@ -271,7 +271,7 @@ archive is never bundled.
 
 The runtime ships as one flat zip, `nitro-sandbox-binaries-2026-10-28.zip`, with a
 `SHA256SUMS` inside that covers all eight files. It is an operator-supplied preview archive, checksum-pinned, with no public download: **ask your AWS account team for it**. Never commit it, and never put
-it in this sample folder.
+it in this blueprint folder.
 
 | File | SHA-256 | Installed on the node as |
 |---|---|---|
@@ -286,7 +286,7 @@ it in this sample folder.
 | `nitro-sandbox-agent` | `df85d0ea5b5021004110b2322283e2bd35b01c668ffd838573bc8f28bc8b6b8c` | not installed on the host: the copy inside `latest-disk.img` runs in the guest |
 
 Place the archive in `RUNTIME_ARTIFACTS_DIR`, which defaults to the repository's gitignored
-`tmp/issue10/run/runtime` (all of this sample's local state lives under `tmp/issue10/run`, in
+`tmp/issue10/run/runtime` (all of this blueprint's local state lives under `tmp/issue10/run`, in
 `logs/`, `out/` and `runtime/`). [`packages/fetch-runtime-artifacts.sh`](packages/fetch-runtime-artifacts.sh)
 checks the archive's SHA-256, refuses any member that is not a plain file with a flat name,
 unpacks it, and then fails closed unless `SHA256SUMS` lists every unpacked file exactly once,
@@ -314,9 +314,9 @@ $EDITOR config.env
 ./clean.sh --dry-run   # preview what a full clean up would remove
 ```
 
-The sample uses its own namespace, `ubuntu-ami-sample` (`NAMESPACE` in `config.env`), not the
+The blueprint uses its own namespace, `ubuntu-ami-sample` (`NAMESPACE` in `config.env`), not the
 home page's `nitro-sandboxes-demo`: `./clean.sh` deletes the namespace the run created, so it
-must be one no other sample uses.
+must be one no other blueprint uses.
 
 ```mermaid
 flowchart TB
@@ -360,7 +360,7 @@ to 7 below through the `BtfValidated=true` tag, records the AMI ID in the run's
 `tmp/issue10/run/out/runs/<run-id>/run-state.env`, and stops. It never reads or changes the
 cluster, so it needs no `KUBE_CONTEXT`, no `vpc-cni` add-on and no `NODE_SUBNET_IDS`; set
 `CLUSTER_NAME` to the cluster you will join, because the run's record keeps it. The
-`cilium-ubuntu` sample (issue #11) needs only this AMI. `RUN_ID=<id> ./setup.sh --join` does
+`cilium-ubuntu` blueprint (issue #11) needs only this AMI. `RUN_ID=<id> ./setup.sh --join` does
 step 8 for that run: before it changes anything, it checks that the run's AMI carries
 `ManagedBy`, the run's `RunId` and `BtfValidated=true`, that `KUBE_CONTEXT` is
 `CLUSTER_NAME`, and that the cluster prerequisites in step 1 hold; then it joins the node group
@@ -373,7 +373,7 @@ can take, so [`scripts/lib/aws-wait.sh`](scripts/lib/aws-wait.sh) polls instead.
 command is read about every 15 seconds until it ends, for up to its own `executionTimeout`
 plus 300 seconds, and `Failed`, `Cancelled`, `TimedOut`, `Undeliverable` or `Terminated`
 stops the run. A new AMI is read until it is `available`, for up to `AMI_WAIT_SECONDS`
-(default 7200, in `config.env`; this sample's 120 GiB AMI took about 55 minutes); `failed`,
+(default 7200, in `config.env`; this blueprint's 120 GiB AMI took about 55 minutes); `failed`,
 `error` or the deadline stops the run and names the
 AMI. After the reboot onto the new kernel, the build host must answer with a new boot ID and
 `uname -r` equal to `6.18.56-nitro-ga` within `REBOOT_WAIT_SECONDS` (default 1200) before the
@@ -383,7 +383,7 @@ in "could not determine", which stops the run.
 **1. Check the inputs and the cluster.** `./setup.sh --prepare` verifies every pinned input
 and the runtime archive on your workstation and creates nothing. A full `./setup.sh` then
 reads two cluster-wide prerequisites before it creates anything: the `vpc-cni` add-on is
-`ACTIVE`, and the shared `isolated-sandbox` RuntimeClass selects only labels the sample's
+`ACTIVE`, and the shared `isolated-sandbox` RuntimeClass selects only labels the blueprint's
 node will carry. It stops with the command to run if either is not so.
 
 **2. Resolve the base AMI.** The build resolves the Canonical EKS Ubuntu 24.04 AMI for
@@ -398,7 +398,7 @@ ID or serial.
 tagged `ManagedBy=<RESOURCE_PREFIX>` and `RunId=<run-id>`, with S3 Block Public Access on,
 default encryption (SSE-S3) and the TLS-only policy in
 [`deploy/s3-stage-bucket-policy.json`](deploy/s3-stage-bucket-policy.json); it uploads the
-sample's scripts and the archive with their SHA-256 (S3 checks it on receipt) and grants the
+blueprint's scripts and the archive with their SHA-256 (S3 checks it on receipt) and grants the
 build-host role read on this run's prefix only. The build host downloads them with its
 instance profile and checks each SHA-256 against the value `./setup.sh` sends over SSM, not
 one read from the bucket. If any staging step fails after the bucket exists, the helper removes
@@ -563,7 +563,7 @@ containerd's own `config migrate` and `config dump` show both, points kubelet's 
 `unix:///run/nitro-sandbox/cri-proxy.sock` in `/usr/local/share/eks/bootstrap.sh`, and adds
 the `snap.kubelet-eks.daemon.service.d/50-cri-proxy.conf` ordering drop-in. Both files are
 templates because Canonical's bootstrap regenerates the live ones at join.
-[`scripts/35-apparmor.sh`](scripts/35-apparmor.sh) loads the sample's scoped AppArmor profile
+[`scripts/35-apparmor.sh`](scripts/35-apparmor.sh) loads the blueprint's scoped AppArmor profile
 and stops unless the kernel reports it in enforce mode and its load service is enabled
 (`systemctl enable` and `is-enabled` both checked).
 [`scripts/36-hold-packages.sh`](scripts/36-hold-packages.sh) finds the package that owns the
@@ -604,8 +604,8 @@ remove). Only once both checks pass does the script tag the AMI
 `ManagedBy=<RESOURCE_PREFIX>` ownership tag, the pinned kernel and erofs-utils versions and
 the verification run's id. If verification fails, the AMI never receives `BtfValidated=true`,
 and the tagging step refuses any AMI that does not already carry both of this run's tags
-(`ManagedBy` and `RunId`). The verification instance is terminated however the script ends. This tag is the contract the `cilium-ubuntu` sample's (issue #11) AMI preflight checks:
-`BtfValidated=true` means "a fresh instance booted from this AMI passed this sample's
+(`ManagedBy` and `RunId`). The verification instance is terminated however the script ends. This tag is the contract the `cilium-ubuntu` blueprint's (issue #11) AMI preflight checks:
+`BtfValidated=true` means "a fresh instance booted from this AMI passed this blueprint's
 host-readiness and BTF checks," never "an AMI was merely created."
 
 **8. Join the dedicated node group, then wait for sandbox capacity.**
@@ -702,7 +702,7 @@ that accepts everything.
 
 **`BtfValidated=true` applied only after fresh-instance verification passes.** The AMI tag
 `cilium-ubuntu`'s (issue #11) AMI preflight requires before it will use an AMI from this
-sample. Written by `scripts/verify-fresh-instance.sh` via `scripts/lib/btf-tag.sh`, never at
+blueprint. Written by `scripts/verify-fresh-instance.sh` via `scripts/lib/btf-tag.sh`, never at
 `create-image` time, and never when verification fails or the AMI is not this run's own
 (`ManagedBy=<RESOURCE_PREFIX>` and `RunId=<RUN_ID>` checked first).
 
@@ -815,11 +815,11 @@ each refusal is logged; the pod mounts no host filesystem, so these are the cont
 files, not the node's. It lets runc, crun and the host signal the container, as containerd's
 own default container profile
 does (containerd `contrib/apparmor/template.go`): without those `signal` rules, a pod under
-the profile could never be stopped. `./test.sh` shows four things on the sample's node, each
+the profile could never be stopped. `./test.sh` shows four things on the blueprint's node, each
 next to its control.
 
 **1. AppArmor is on and enforcing on the host.** The kernel reports AppArmor enabled, the
-scoped profile is loaded in enforce mode, and the node's copy of the profile is this sample's
+scoped profile is loaded in enforce mode, and the node's copy of the profile is this blueprint's
 file (same sha256). The same probe reads absent for a profile the node never loaded.
 
 ```text
@@ -873,7 +873,7 @@ the node never loaded has no `DENIED` lines, as the control for both counts.
 *`./test.sh` section 3/7, the 8b lines, whole. The node's host name is shown as `<NODE_NAME>`.*
 
 **Why the profile has `signal` rules and `audit deny`.** The first version of the profile had
-neither, and a validation run of this sample on its own AMI showed what that costs. On Ubuntu
+neither, and a validation run of this blueprint on its own AMI showed what that costs. On Ubuntu
 24.04, runc runs under its own AppArmor profile, `runc`, so the stop signals a pod receives
 come from the peer `runc`. With no `signal` rule, AppArmor refused them: a pod under the
 profile could not be stopped, and kubelet kept logging
@@ -887,7 +887,7 @@ and the refused write left the profile's `DENIED` lines.
 **3. A pod naming a profile the node never loaded is refused.** The reject control,
 [`deploy/pod-apparmor-reject.yaml`](deploy/pod-apparmor-reject.yaml), is an ordinary pod on
 the same node that asks for `profile-that-does-not-exist`. `./test.sh` checks that it is
-scheduled on the sample's node, is not running, and waits with reason `CreateContainerError`
+scheduled on the blueprint's node, is not running, and waits with reason `CreateContainerError`
 and containerd's message for a missing profile, matched whole:
 `failed to get container spec opts: failed to generate apparmor spec opts: apparmor profile not found profile-that-does-not-exist`.
 
@@ -906,7 +906,7 @@ shim passes it into the guest microVM, where runc applies it. The runtime's Ubun
 (`UBUNTU.md` in the GA node-build bundle) say that on an AppArmor host "every sandbox pod
 needs `Unconfined`, or kubelet requests the `RuntimeDefault` profile, the shim forwards it
 into the guest, and runc fails with `apparmor failed to apply profile`". A validation run of
-this sample on its own AMI showed exactly that. With `type: Localhost` and the scoped
+this blueprint on its own AMI showed exactly that. With `type: Localhost` and the scoped
 profile, the sandbox pod stopped in `StartError` with
 `apparmor failed to apply profile: write fsmount:fscontext:proc/thread-self/attr/exec: invalid argument`
 (the end of the message), because the guest runs SELinux and has no AppArmor: its process
@@ -966,9 +966,9 @@ guest carries it.
 prints once on its own line, is shown as `<API_SERVICE_IP>`; no other value was replaced.
 test.sh prints each interface's name and state, not its MAC address.*
 
-The sample ships no network policy, and creates no Ingress, LoadBalancer or NodePort. For
+The blueprint ships no network policy, and creates no Ingress, LoadBalancer or NodePort. For
 how a network policy restricts where a sandboxed pod can connect, see the
-[network policy](../../isolation/network-policy/README.md) sample.
+[network policy](../../isolation/network-policy/README.md) blueprint.
 
 ### Clusterless checks
 
@@ -978,7 +978,7 @@ first on `PATH` where a live input cannot be made. The fake AWS CLI applies `--q
 [`scripts/testlib/requirements-test.txt`](scripts/testlib/requirements-test.txt); without it,
 every fake call stops with exit 98 and an "install jmespath" message, so the suites fail rather
 than pass. Install it into a virtual environment under the repository's `tmp/`, and put that
-environment first on `PATH` while the suites run (from this sample's folder):
+environment first on `PATH` while the suites run (from this blueprint's folder):
 
 ```bash
 python3 -m venv ../../../tmp/ubuntu-ami-tests
@@ -1029,12 +1029,12 @@ Run clean up right after you finish validating, before moving on:
 `tmp/issue10/run/out/run-state.env`, or the one you name with `--run-id <id>`. With neither it
 deletes nothing. It lists and deletes only resources that carry both `ManagedBy=<RESOURCE_PREFIX>`
 and that run's `RunId`, and re-reads both tags of each resource right before deleting it, so
-another run of this sample in the same account is never touched. The IAM roles and the
+another run of this blueprint in the same account is never touched. The IAM roles and the
 instance profile are found by their per-run names through IAM itself (the Resource Groups
 Tagging API does not list IAM roles). `--dry-run` changes nothing.
 
 A bare `./clean.sh` removes only the Kubernetes validation workload (after confirming the
-sample's namespace carries both of the run's labels: the scoped AppArmor pod by its exact
+blueprint's namespace carries both of the run's labels: the scoped AppArmor pod by its exact
 name, then the namespace), leaving the node group and AMI in place
 for a longer investigation. `./clean.sh --delete-aws-resources` does the full teardown: it
 removes, in order, the Kubernetes workload, the managed node group, the build and
@@ -1057,7 +1057,7 @@ if anything was skipped as not the run's, or if any lookup failed: a failed look
 the cluster, as setup does.
 
 **`--keep-ami`** keeps the run's AMI and the snapshot behind it, and lists them as
-"left in place (kept on request)" in `--dry-run` and at the end. The `cilium-ubuntu` sample
+"left in place (kept on request)" in `--dry-run` and at the end. The `cilium-ubuntu` blueprint
 (issue #11) builds on that AMI; remove it later with `./clean.sh --run-id <id>
 --delete-aws-resources`.
 
@@ -1075,7 +1075,7 @@ check this and proceeds on the run's tags.
 
 **What stays.** The clean up never removes a shared install. The `isolated-sandbox`
 RuntimeClass stays (Getting started created it). The `vpc-cni` add-on you installed as a
-prerequisite stays, and `./clean.sh` says so. If you installed it only for this sample, you
+prerequisite stays, and `./clean.sh` says so. If you installed it only for this blueprint, you
 can remove it from EKS management yourself:
 
 ```bash
@@ -1114,7 +1114,7 @@ archive: do not use it.
 The base image's containerd is outside 2.1.x to 2.3.x, the range the GA shim runs on.
 Canonical republishes the base AMI under new serials, and a new serial can ship a newer
 containerd. The run evidence records the serial and the version it found; build from a
-serial whose containerd is in range. The sample never changes containerd.
+serial whose containerd is in range. The blueprint never changes containerd.
 
 </details>
 
@@ -1131,7 +1131,7 @@ reports against its Kconfig entry's `depends on` line. A missing BTF usually mea
 <details>
 <summary>Build host unreachable over SSM, or the staged download fails</summary>
 
-Confirm the instance has the SSM agent and the sample's instance profile, and that the
+Confirm the instance has the SSM agent and the blueprint's instance profile, and that the
 subnet has egress to the SSM endpoints and to Amazon S3. There is no SSH fallback: the build
 security group opens no inbound rule by design. A download refused with `AccessDenied` means
 the build role's per-run staging read was not in place; it is added right before the
@@ -1157,7 +1157,7 @@ check `cri-proxy.service` and `/dev/nitro_enclaves` on the node. A pod stuck
 
 Confirm `libzstd-dev` is installed before `./configure`, and that the snapshot's SHA-256
 still matches the pinned value: cgit can regenerate a snapshot archive's bytes without
-changing the tag it names, and this sample's own pin tracks the bytes, not just the tag.
+changing the tag it names, and this blueprint's own pin tracks the bytes, not just the tag.
 
 </details>
 

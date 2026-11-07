@@ -111,15 +111,40 @@ async function waitForClaimPod(claimName, timeoutMs = 120000) {
 
 // Every session claim this sample made, with the pod each resolved to: [{ claimName,
 // podName }]. Used at app start to pick up sessions that kept running while the app
-// restarted. Claims without a pod yet are skipped.
+// restarted.
 export async function listSessionClaims() {
   const out = await custom.listNamespacedCustomObject({
     group: GROUP, version: VERSION, namespace: NAMESPACE, plural: "sandboxclaims",
     labelSelector: "app.kubernetes.io/part-of=coding-agents-for-developers",
   });
+  // A claim with no pod yet is returned too (podName undefined): the pick-up looks again
+  // once it has one.
   return (out?.items ?? [])
     .map((c) => ({ claimName: c.metadata?.name, podName: c.status?.sandbox?.name }))
-    .filter((c) => c.claimName && c.podName);
+    .filter((c) => c.claimName);
+}
+
+// The names of every claim this sample made, whether or not it has a pod yet. The access-
+// point sweep treats any claim as "a pod may have the folder mounted".
+export async function listClaimNames() {
+  const out = await custom.listNamespacedCustomObject({
+    group: GROUP, version: VERSION, namespace: NAMESPACE, plural: "sandboxclaims",
+    labelSelector: "app.kubernetes.io/part-of=coding-agents-for-developers",
+  });
+  return new Set((out?.items ?? []).map((c) => c.metadata?.name).filter(Boolean));
+}
+
+// Whether a claim exists, with or without a pod. "Could not tell" is an error, not "no".
+export async function claimExists(claimName) {
+  try {
+    await custom.getNamespacedCustomObject({
+      group: GROUP, version: VERSION, namespace: NAMESPACE, plural: "sandboxclaims", name: claimName,
+    });
+    return true;
+  } catch (e) {
+    if (e?.code === 404) return false;
+    throw e;
+  }
 }
 
 // The node a pod runs on, and its IP, where session-bridge listens.
@@ -166,6 +191,116 @@ export async function clearPendingStop(session) {
     await core.deleteNamespacedConfigMap({ name: pendingName(session), namespace: NAMESPACE });
   } catch (e) {
     if (e?.code !== 404) throw e;
+  }
+}
+
+// The session record: one ConfigMap per session, the source of truth for the session list.
+// A session's folder needs an access point only while a pod has it mounted, so the list
+// cannot come from access points any more. Named for the session; labelled so the list for
+// one developer is one paginated, label-selected ConfigMap list.
+const PART_OF = "coding-agents-for-developers";
+const recordName = (session) => `session-${session}`;
+// The access point being deleted for this session, written to its record before the delete
+// is asked for, so it survives an app restart: a Restore never reuses it, and waits for it
+// to be gone before making a new one.
+const DELETING_AP = "coding-agents/deleting-access-point";
+const DELETING_AT = "coding-agents/deleting-since";
+// Set when the developer pressed Delete: the session is gone from their list at once, and the
+// app finishes the Delete in the background, again after an app restart if it has to.
+const DELETE_REQUESTED = "coding-agents/delete-requested";
+const recordOf = (cm) => cm?.data?.developer && cm.data.cli && cm.data.session
+  ? {
+      developer: cm.data.developer, cli: cm.data.cli, session: cm.data.session, created: cm.data.created,
+      deletingAp: cm.metadata?.annotations?.[DELETING_AP] || null,
+      deletingSince: Number(cm.metadata?.annotations?.[DELETING_AT]) || 0,
+      deleteRequested: Boolean(cm.metadata?.annotations?.[DELETE_REQUESTED]),
+    }
+  : null;
+const MERGE_PATCH = k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch);
+
+export async function markDeleteRequested(session) {
+  await core.patchNamespacedConfigMap({
+    name: recordName(session), namespace: NAMESPACE,
+    body: { metadata: { annotations: { [DELETE_REQUESTED]: new Date().toISOString() } } },
+  }, MERGE_PATCH);
+}
+
+export async function markAccessPointDeleting(session, apId) {
+  await core.patchNamespacedConfigMap({
+    name: recordName(session), namespace: NAMESPACE,
+    body: { metadata: { annotations: { [DELETING_AP]: apId, [DELETING_AT]: String(Date.now()) } } },
+  }, MERGE_PATCH);
+}
+
+// Clear the marker, only if it still names this access point.
+export async function clearAccessPointDeleting(session, apId) {
+  const rec = await readSessionRecord(session);
+  if (!rec || rec.deletingAp !== apId) return;
+  await core.patchNamespacedConfigMap({
+    name: recordName(session), namespace: NAMESPACE,
+    body: { metadata: { annotations: { [DELETING_AP]: null, [DELETING_AT]: null } } },
+  }, MERGE_PATCH);
+}
+
+export async function createSessionRecord(developer, cli, session) {
+  await core.createNamespacedConfigMap({ namespace: NAMESPACE, body: {
+    metadata: {
+      name: recordName(session),
+      labels: {
+        "app.kubernetes.io/part-of": PART_OF,
+        "coding-agents/record": "session",
+        "coding-agents/developer": developer,
+        "coding-agents/cli": cli,
+      },
+    },
+    data: { developer, cli, session, created: new Date().toISOString() },
+  } });
+}
+
+// One session's record, or null when it has none. A record that is missing a field is an
+// error, not "no session".
+export async function readSessionRecord(session) {
+  let cm;
+  try {
+    cm = await core.readNamespacedConfigMap({ name: recordName(session), namespace: NAMESPACE });
+  } catch (e) {
+    if (e?.code === 404) return null;
+    throw e;
+  }
+  const rec = recordOf(cm);
+  if (!rec || rec.session !== session) throw new Error(`the record for session ${session} is malformed`);
+  return rec;
+}
+
+// Every session record, or one developer's: [{ developer, cli, session, created }].
+export async function listSessionRecords(developer) {
+  const selector = ["app.kubernetes.io/part-of=" + PART_OF, "coding-agents/record=session"];
+  if (developer) selector.push(`coding-agents/developer=${developer}`);
+  const out = [];
+  let _continue;
+  do {
+    const page = await core.listNamespacedConfigMap({
+      namespace: NAMESPACE, labelSelector: selector.join(","), limit: 500, _continue,
+    });
+    for (const cm of page?.items ?? []) {
+      const rec = recordOf(cm);
+      if (rec && cm.metadata?.name === recordName(rec.session)) out.push(rec);
+    }
+    _continue = page?.metadata?._continue;
+  } while (_continue);
+  return out;
+}
+
+// A delete that failed counts as done if the record is gone anyway (a timeout after it
+// went through), so Delete does not report a failure for a session it did remove.
+export async function deleteSessionRecord(session) {
+  try {
+    await core.deleteNamespacedConfigMap({ name: recordName(session), namespace: NAMESPACE });
+  } catch (e) {
+    if (e?.code === 404) return;
+    let still;
+    try { still = await readSessionRecord(session); } catch { throw e; }
+    if (still) throw e;
   }
 }
 
@@ -247,6 +382,15 @@ export async function startSession(podName, { credential, bridgeToken, fsId, apI
 // The bridge's certificate, and its token, from their root-only files in the pod. Used
 // right after start (for the certificate), and when the app picks up sessions that kept
 // running across its own restart (for both), since it keeps them only in memory.
+// Whether the session's folder is still mounted in its pod. After a clean stop it is not
+// (session-stop.sh unmounts it), even though the pod and its session-bridge are still there.
+export async function workspaceMounted(podName) {
+  const out = await execCapture(podName, ["/bin/sh", "-c", "mountpoint -q /workspace && echo mounted || echo unmounted"]);
+  if (/^mounted/m.test(out)) return true;
+  if (/^unmounted/m.test(out)) return false;
+  throw new Error(`could not tell whether /workspace is mounted in ${podName}`);
+}
+
 export async function readBridge(podName) {
   const out = await execCapture(podName, ["/bin/sh", "-c",
     "cat /dev/shm/session/bridge-token; echo; cat /dev/shm/session/bridge.crt"]);
