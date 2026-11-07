@@ -4,12 +4,18 @@ import copy
 import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+# Select the operator-installed interpreter before individual cases replace PATH.
+BASH = shutil.which("bash")
+if BASH is None:
+    raise RuntimeError("Bash is required to run the Strands Box lifecycle tests")
+BASH = str(Path(BASH).resolve(strict=True))
 SAMPLE = ROOT / "examples/subagent-security/strands-box"
 COMMON = SAMPLE / "scripts/common.sh"
 IMAGE = SAMPLE / "scripts/image.sh"
@@ -43,8 +49,19 @@ class Lifecycle(unittest.TestCase):
         env = dict(os.environ, CHECK_DIR=str(self.directory), PYTHONDONTWRITEBYTECODE="1")
         if extra:
             env.update(extra)
-        return subprocess.run(["bash", "-c", program, "check", str(COMMON), str(IMAGE)],
+        return subprocess.run([BASH, "-c", program, "check", str(COMMON), str(IMAGE)],
                               text=True, capture_output=True, env=env, cwd=ROOT)
+
+    def test_shell_ignores_bash_in_case_path(self):
+        fake_bash = self.directory / "bash"
+        fake_bash.write_text("#!/bin/sh\necho unexpected-case-bash >&2\nexit 97\n")
+        fake_bash.chmod(0o755)
+        result = self.shell("printf selected-interpreter", extra={
+            "PATH": str(self.directory) + os.pathsep + os.environ["PATH"],
+        })
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "selected-interpreter")
+        self.assertNotIn("unexpected-case-bash", result.stderr)
 
     def test_auto_mode_does_not_require_a_daemonset(self):
         result = self.shell("box_cluster_prerequisites '{}'".format(

@@ -9,8 +9,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+# Select the operator-installed interpreter before individual cases replace PATH.
+BASH = shutil.which("bash")
+if BASH is None:
+    raise RuntimeError("Bash is required to run the Strands Box lifecycle tests")
+BASH = str(Path(BASH).resolve(strict=True))
 SECTION = ROOT / "examples/subagent-security"
 
 # Unknown calls fail. Every AWS, kubectl, and Docker invocation uses this local process.
@@ -208,7 +214,7 @@ class SetupLifecycle(unittest.TestCase):
         program.write_text(STUB)
         for name in ("aws", "kubectl", "docker"):
             command = tools / name
-            command.write_text("#!/usr/bin/env bash\nexec " + shlex.quote(sys.executable) + " " +
+            command.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + " " +
                                shlex.quote(str(program)) + " " + name + ' "$@"\n')
             command.chmod(0o755)
         cloud = {"namespace_owner": None, "repositories": {}, "images": [],
@@ -226,7 +232,7 @@ class SetupLifecycle(unittest.TestCase):
 
     def invoke(self, case, script, *args):
         directory, sample, environment = case
-        result = subprocess.run(["bash", str(sample / "scripts" / script), *args], cwd=sample,
+        result = subprocess.run([BASH, str(sample / "scripts" / script), *args], cwd=sample,
                                 env=environment, capture_output=True, text=True, timeout=90)
         (directory / (script + ".log")).write_text(result.stdout + result.stderr)
         return result
@@ -243,6 +249,34 @@ class SetupLifecycle(unittest.TestCase):
     @staticmethod
     def cloud(case):
         return json.loads((case[0] / "cloud.json").read_text())
+
+    def test_setup_and_cleanup_ignore_bash_in_case_path(self):
+        case = self.new_case("baseline")
+        fake_bash = case[0] / "stub-bin/bash"
+        fake_bash.write_text("#!/bin/sh\necho unexpected-case-bash >&2\nexit 97\n")
+        fake_bash.chmod(0o755)
+        setup = self.invoke(case, "setup.sh")
+        self.assertEqual(setup.returncode, 0, setup.stdout + setup.stderr)
+        self.assertIn("SETUP_COMPLETE=true", self.record(case).read_text())
+        cleanup = self.invoke(case, "clean.sh", "--delete-aws")
+        self.assertEqual(cleanup.returncode, 0, cleanup.stdout + cleanup.stderr)
+        self.assertNotIn("unexpected-case-bash", setup.stderr + cleanup.stderr)
+        self.assertFalse(self.record(case).exists())
+
+    def test_setup_supports_bash_installed_under_a_path_with_spaces(self):
+        scratch = ROOT / "tmp/strands-box-setup-checks"
+        scratch.mkdir(parents=True, exist_ok=True)
+        directory = Path(tempfile.mkdtemp(dir=scratch)) / "operator tools"
+        directory.mkdir()
+        interpreter = directory / "bash"
+        shutil.copy2(BASH, interpreter)
+        with patch(__name__ + ".BASH", str(interpreter)):
+            case = self.new_case("baseline")
+            setup = self.invoke(case, "setup.sh")
+            self.assertEqual(setup.returncode, 0, setup.stdout + setup.stderr)
+            cleanup = self.invoke(case, "clean.sh", "--delete-aws")
+            self.assertEqual(cleanup.returncode, 0, cleanup.stdout + cleanup.stderr)
+            self.assertFalse(self.record(case).exists())
 
     def test_full_setup_and_cleanup_handle_both_bucket_region_forms(self):
         for region in ("us-east-1", "us-west-2"):
