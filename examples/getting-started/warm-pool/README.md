@@ -22,10 +22,10 @@ a Nitro Sandbox is a RuntimeClass on a pod template, agent-sandbox works with it
 unchanged.
 
 **Step 1: Install agent-sandbox** with its extensions (`SandboxTemplate`,
-`SandboxWarmPool`, `SandboxClaim`). This folder was built against v1.0.6:
+`SandboxWarmPool`, `SandboxClaim`). This folder was built against v1.0.10:
 
 ```bash
-kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml
 kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller
 ```
 
@@ -69,7 +69,7 @@ kubectl get sandboxwarmpool nitro-agent-pool
 
 ```text
 NAME               READY   DESIRED   AGE
-nitro-agent-pool   5       5         41s
+nitro-agent-pool   5       5         11s
 ```
 
 **Step 3: Claim one.** A [`SandboxClaim`](claim.yaml) is what your
@@ -94,12 +94,31 @@ time ( kubectl apply -f claim.yaml \
 sandboxclaim.extensions.agents.x-k8s.io/session-7f3a created
 sandboxclaim.extensions.agents.x-k8s.io/session-7f3a condition met
 
-real    0m1.928s
+real	0m1.978s
+user	0m0.955s
+sys	0m0.406s
 ```
 
-The claim adopts a pod that was already running, so it is Ready in under 1 second. The
-`time` above is a little longer because it includes kubectl's own round trips. The pool
-boots a replacement in the background and is back to five.
+The claim adopts a pod that was already running, so nothing boots on the claim path: the
+whole command, two kubectl round trips included, took about 2 seconds. The `launch-type`
+label shows the adopted pod came from the pool, as every pod here did:
+
+```bash
+kubectl get sandbox -o custom-columns='NAME:.metadata.name,LAUNCH-TYPE:.metadata.labels.agents\.x-k8s\.io/launch-type'
+```
+
+```text
+NAME                     LAUNCH-TYPE
+nitro-agent-pool-4pwxg   warm
+nitro-agent-pool-6j26d   warm
+nitro-agent-pool-nlbv2   warm
+nitro-agent-pool-qxf9f   warm
+nitro-agent-pool-t8fzv   warm
+nitro-agent-pool-xc4x6   warm
+```
+
+Six sandboxes for a pool of five: the claimed one, and the replacement the pool boots in the
+background to get back to five.
 
 **Step 4: Use it.** Your application talks to the claimed sandbox as it would to any pod:
 `kubectl exec` to run code, `kubectl cp` to move files, `kubectl logs` to read output.
@@ -116,11 +135,15 @@ kubectl get sandboxwarmpool nitro-agent-pool
 ```text
 45
 Traceback (most recent call last):
-  ...
+  File "<string>", line 1, in <module>
+  File "/usr/local/lib/python3.12/socket.py", line 865, in create_connection
+    raise exceptions[0]
+  File "/usr/local/lib/python3.12/socket.py", line 850, in create_connection
+    sock.connect(sa)
 OSError: [Errno 101] Network is unreachable
 command terminated with exit code 1
 NAME               READY   DESIRED   AGE
-nitro-agent-pool   5       5         79s
+nitro-agent-pool   5       5         19s
 ```
 
 Code runs, files move, and the sandbox has no route out. Delete the claim and its pod is
@@ -145,10 +168,10 @@ exec uses the sandbox's internal control channel, as step 4 showed.
 to Bedrock; the claimed sandbox runs code with no network besides loopback; the Kubernetes API is
 the only wire between them.*
 
-![A driver pod, the brain, reasons by calling Amazon Bedrock and claims a sandbox from the agent-sandbox controller's SandboxWarmPool; the claim adopts an already-booted warm pod in under 1 second and the pool refills itself in the background; the claimed pod, one of the Nitro sandboxes, the hands, runs the generated code with no network besides loopback while the driver pod talks to it only through the Kubernetes API.](images/figure-3-warm-pool.png)
+![A driver pod, the brain, reasons by calling Amazon Bedrock and claims a sandbox from the agent-sandbox controller's SandboxWarmPool; the claim adopts an already-booted warm pod and the pool refills itself in the background; the claimed pod, one of the Nitro sandboxes, the hands, runs the generated code with no network besides loopback while the driver pod talks to it only through the Kubernetes API.](images/figure-3-warm-pool.png)
 
 *Figure 4: Time to first command. A cold start pays for sandbox creation and image
-pull; a warm-pool claim adopts a sandbox that is already running, in under 1 second.*
+pull; a warm-pool claim adopts a sandbox that is already running, so nothing boots.*
 
 ```mermaid
 gantt
@@ -160,7 +183,7 @@ gantt
     pull image, start containers :a2, after a1, 3s
     first command runs           :milestone, m1, after a2, 0s
     section Warm pool claim
-    adopt pre-booted pod, under 1 s :b1, 0, 1s
+    adopt pre-booted pod :b1, 0, 1s
     first command runs           :milestone, m2, after b1, 0s
 ```
 
@@ -176,7 +199,7 @@ agent-sandbox, including its CRDs and every Sandbox resource in the cluster:
 
 ```bash
 kubectl delete -f warm-pool.yaml --ignore-not-found
-kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
+kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml
 rm -f /tmp/hands.py
 ```
 
