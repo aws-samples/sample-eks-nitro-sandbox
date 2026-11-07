@@ -1,6 +1,6 @@
 # Roadmap
 
-These samples show Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandbox`) running AI agents and untrusted code. A sample whose entry links to its page is ready to run, and is marked "available now" on its entry or in its section heading. The rest are planned.
+These samples run AI agents and untrusted code in Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandbox`). Available samples say "available now" on their entry or section heading. A linked `(draft)` sample has not met the readiness criteria. Its explicit draft status overrides inherited section status. Unlinked entries are planned.
 
 ## Layout
 

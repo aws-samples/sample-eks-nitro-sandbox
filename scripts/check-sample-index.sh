@@ -21,7 +21,7 @@
 #     twice under one parent.
 #   - docs/ROADMAP.md has a list item linking ../examples/<s>/README.md, marked
 #     "(available now)" on that line or in its "### " section heading, or "(draft)"
-#     on that sample's own line. An explicit draft overrides the section status.
+#     on that sample's own line. An explicit draft overrides inherited section status.
 #     Conflicting available and draft entries for the same sample are a finding.
 #   - README.md at the top of the repository has a list item linking examples/<s>/README.md.
 # A list item starts with "- ", indented at most three spaces, as in every index file here.
@@ -237,29 +237,60 @@ nav_problems() {
 
 # Prints the linked sample's status, or nothing when its link is missing. Draft status
 # must be explicit on the entry; it does not exempt any other index check. A "# " or
-# "## " heading ends a "### " section. One sample cannot be both available and draft.
+# "## " heading ends a "### " section. Only explicit available and draft statuses conflict.
 roadmap_state() { # sample
   markdown_text "$root/docs/ROADMAP.md" | awk -v link="](../examples/$1/README.md)" '
+    # A code span closes with the same number of backticks that opened it.
+    # Keep a non-status token in its place so adjacent text cannot become a status.
+    function visible_text(text, result, start, width, rest, offset, close_at, close_width, found, i, slashes) {
+      result = ""
+      while (match(text, /`+/)) {
+        start = RSTART; width = RLENGTH
+        slashes = 0
+        for (i = start - 1; i > 0 && substr(text, i, 1) == "\\"; i--) slashes++
+        if (slashes % 2) {
+          result = result substr(text, 1, start)
+          text = substr(text, start + 1)
+          continue
+        }
+        result = result substr(text, 1, start - 1)
+        rest = substr(text, start + width)
+        offset = 1; found = 0
+        while (match(substr(rest, offset), /`+/)) {
+          close_at = offset + RSTART - 1; close_width = RLENGTH
+          if (close_width == width) { found = 1; break }
+          offset = close_at + close_width
+        }
+        if (found) {
+          result = result "[code]"
+          text = substr(rest, close_at + close_width)
+        } else {
+          result = result substr(text, start, width)
+          text = rest
+        }
+      }
+      return result text
+    }
     /^### / { heading = $0; next }
     /^##? / { heading = ""; next }
-    /^ ? ? ?- / && index($0, link) > 0 {
+    /^ ? ? ?- / {
+      entry = visible_text($0)
+      if (index(entry, link) == 0) next
       linked = 1
-      suffix = substr($0, index($0, link) + length(link))
-      entry_draft = suffix ~ /^[ \t]+(\(available now\)[ \t]+)?\(draft\)([ \t:]|$)/
-      if (entry_draft) draft = 1
-      if (index($0, "(available now)") > 0 ||
-          (!entry_draft && index(heading, "available now") > 0)) available = 1
+      suffix = substr(entry, index(entry, link) + length(link))
+      if (suffix ~ /^[ \t]+(\(available now\)[ \t]+)?\(draft\)([ \t:]|$)/) draft = 1
+      if (index(entry, "(available now)") > 0) explicit_available = 1
+      if (index(heading, "available now") > 0) inherited_available = 1
     }
     END {
-      if (available && draft) print "conflicting"
+      if (explicit_available && draft) print "conflicting"
       else if (draft) print "draft"
-      else if (available) print "available"
+      else if (explicit_available || inherited_available) print "available"
       else if (linked) print "linked"
     }
   '
 }
 
-# 0 when the root README.md has a list item linking this sample.
 in_readme() { # sample
   markdown_text "$root/README.md" | awk -v link="](examples/$1/README.md)" '
     /^ ? ? ?- / && index($0, link) > 0 { found = 1; exit }

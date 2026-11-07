@@ -35,7 +35,7 @@ marker left in any tracked file.
 
 For an intentionally draft sample, put `(draft)` immediately after its roadmap link. The
 index check still requires its navigation entry and both index links. A draft entry overrides
-an available section heading; conflicting statuses for one sample fail. This marker does
+inherited section availability; explicit available and draft statuses for one sample conflict. This marker does
 not satisfy a sample pull request's readiness criteria.
 
 Run ASH before a pull request too, as `CONTRIBUTING.md` (*Security scanning*) says.
