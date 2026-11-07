@@ -95,14 +95,14 @@ with the command when one is missing or is set up differently from what this blu
 
 | Prerequisite | What it is | Where |
 |---|---|---|
-| agent-sandbox v1.0.6 | The `Sandbox` CRD and the controller that reconciles it. The workflow's five verbs are all operations on `Sandbox` objects. | Step 1, and [warm pool](../../getting-started/warm-pool/README.md) step 1 |
+| agent-sandbox v1.0.10 | The `Sandbox` CRD and the controller that reconciles it. The workflow's five verbs are all operations on `Sandbox` objects. | Step 1, and [warm pool](../../getting-started/warm-pool/README.md) step 1 |
 | A Temporal server | The durable workflow engine, with a PostgreSQL datastore, an admin tools pod and the Web UI. | Step 2 |
 
 ## Versions
 
 | Component | Pin |
 |---|---|
-| agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.6, as in [warm pool](../../getting-started/warm-pool/README.md) |
+| agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.10, as in [warm pool](../../getting-started/warm-pool/README.md) |
 | Temporal Helm chart ([temporalio/helm-charts](https://github.com/temporalio/helm-charts), chart `temporal`) | 1.7.0 |
 | Temporal Server image | 1.32.0, the chart's `appVersion`, left as the chart sets it |
 | Temporal Web UI image | 2.54.1, left as the chart sets it |
@@ -171,15 +171,15 @@ the pod UIDs are from the run.
 
 ## Step 1: Install agent-sandbox
 
-If you have not already, from the warm pool blueprint. This folder was built against v1.0.6:
+If you have not already, from the warm pool blueprint. This folder was built against v1.0.10:
 
 ```bash
-kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml
 kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller
 ```
 
 Nothing in this blueprint installs, upgrades or reconfigures it. It was already installed at
-v1.0.6 on the cluster these runs used, and was reused exactly as it stood;
+v1.0.10 on the cluster these runs used, and was reused exactly as it stood;
 `scripts/setup.sh` reads the CRD and the controller's `Available` condition and stops with
 the command above when either is missing.
 
@@ -343,7 +343,7 @@ cp .env.example .env    # set KUBE_CONTEXT, and NAMESPACE if you want another na
 context: sandbox-demo (pinned)   namespace: temporal-sandboxes   region: us-west-2
 
 == 1/6 prerequisites, reused as they are ==
-reusing the agent-sandbox install as it is (registry.k8s.io/agent-sandbox/agent-sandbox-controller:v1.0.6); this sample was built against v1.0.6
+reusing the agent-sandbox install as it is (registry.k8s.io/agent-sandbox/agent-sandbox-controller:v1.0.10); this sample was built against v1.0.10
 reusing the Temporal server in namespace temporal as it is (temporalio/server:1.32.0); this sample was built against chart 1.7.0
 using the cluster default storageclass auto-ebs-sc (it fits: ebs.csi.eks.amazonaws.com, gp3, encrypted); creating no class
 
