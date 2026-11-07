@@ -58,8 +58,8 @@ This folder was built against these releases:
 | Component | Version |
 |---|---|
 | Anthropic Python SDK (`anthropic`) | 1.13.0 |
-| agent-sandbox Python client (`k8s-agent-sandbox`) | 1.0.6 |
-| agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.6 |
+| agent-sandbox Python client (`k8s-agent-sandbox`) | 1.0.10 |
+| agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.10 |
 
 The files:
 
@@ -80,7 +80,7 @@ its extensions (`SandboxTemplate`, `SandboxWarmPool`, `SandboxClaim`). If you ra
 pool blueprint, this upgrades it in place:
 
 ```bash
-kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml
 kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller
 ```
 
@@ -797,5 +797,5 @@ agent-sandbox stays installed for other blueprints. To remove it as well, which 
 CRDs and every Sandbox resource in the cluster, delete the release you installed in step 1:
 
 ```bash
-kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
+kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml
 ```
