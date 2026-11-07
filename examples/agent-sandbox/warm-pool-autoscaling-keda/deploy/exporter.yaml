@@ -83,6 +83,18 @@ spec:
         app.kubernetes.io/part-of: warm-pool-autoscaling-keda
     spec:
       serviceAccountName: claim-exporter
+      # No automatic token mount. The exporter does call the API, so the token it
+      # needs is mounted explicitly by the kube-api-access volume below, at the
+      # path the automatic mount would use, with a lifetime this file states.
+      automountServiceAccountToken: false
+      # The pod-level defaults; the container below repeats them and adds the
+      # rest (no privilege escalation, read-only root, no capabilities).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: exporter
           # A stock Python image running the script from the ConfigMap, so the
@@ -106,6 +118,16 @@ spec:
               port: http
             initialDelaySeconds: 3
             periodSeconds: 5
+          # Liveness checks only that the server accepts connections. It does not
+          # use /metrics, because /metrics calls the API: an API outage would fail
+          # the probe, restart the pod and lose the last good count the exporter
+          # serves through that outage (src/exporter.py, _last_good).
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
@@ -125,10 +147,29 @@ spec:
             - name: src
               mountPath: /app
               readOnly: true
+            - name: kube-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
       volumes:
         - name: src
           configMap:
             name: claim-exporter-src
+        # The ServiceAccount token, mounted by hand in place of the automatic
+        # mount. expirationSeconds is 3600, not the automatic mount's 3607: the
+        # API server extends only a 3607-second token past its stated lifetime,
+        # so this token is valid for one hour. The kubelet rotates the file
+        # before it expires, and src/exporter.py reads it on every request.
+        - name: kube-api-access
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
 ---
 apiVersion: v1
 kind: Service
