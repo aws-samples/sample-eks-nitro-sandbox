@@ -208,6 +208,7 @@ repository:
 kubectl create namespace temporal
 openssl rand -base64 24 | tr -d '\n' \
   | kubectl -n temporal create secret generic temporal-postgresql --from-file=password=/dev/stdin
+kubectl get storageclass temporal-postgresql-gp3 || kubectl create -f deploy/temporal/storage-class.yaml
 kubectl -n temporal apply -f deploy/temporal/postgresql.yaml
 kubectl -n temporal rollout status statefulset/temporal-postgresql
 ```
@@ -1315,6 +1316,7 @@ What stays, and how to remove it:
     kubectl -n temporal delete statefulset/temporal-postgresql service/temporal-postgresql \
       configmap/temporal-postgresql-initdb secret/temporal-postgresql
     kubectl -n temporal delete pvc/data-temporal-postgresql-0
+    kubectl delete storageclass temporal-postgresql-gp3
     kubectl delete namespace temporal
   Check nothing else on your cluster uses it first:
     helm list --namespace temporal
