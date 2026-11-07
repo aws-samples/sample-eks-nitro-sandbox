@@ -1050,7 +1050,7 @@ is what finishes the job:
   2. The agent-sandbox controller, which OpenShell's Kubernetes driver creates Sandbox
      objects for. setup.sh reused the install already on this cluster and changed nothing
      about it. If nothing else uses it:
-       kubectl --context <CLUSTER_NAME> delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
+       kubectl --context <CLUSTER_NAME> delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml
 
   The isolated-sandbox RuntimeClass itself and the cluster are not this sample's either. The
   Getting started > Hello sandbox sample's clean up covers removing the cluster.
@@ -1092,7 +1092,7 @@ cluster, so `clean.sh` never removes them and prints the command for each:
   nothing else on the cluster uses it:
 
   ```bash
-  kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
+  kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml
   ```
 
 The `isolated-sandbox` RuntimeClass itself and the cluster are not this blueprint's either. The

@@ -130,7 +130,7 @@ kc api-resources --api-group=admissionregistration.k8s.io -o name 2>/dev/null |
 # when it is absent rather than installing it here.
 kc get crd sandboxes.agents.x-k8s.io -o name >/dev/null 2>&1 ||
   die "the agent-sandbox controller is not on this cluster. Install it as the Getting started > Warm pool sample does, then re-run this script:
-  kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml"
+  kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml"
 echo "  agent-sandbox: reusing the install already on this cluster"
 
 # OpenShell will not attach a RuntimeClass an operator has not approved. The label is
