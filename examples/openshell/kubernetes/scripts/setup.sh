@@ -111,7 +111,7 @@ kc cluster-info >/dev/null 2>&1 || die "no reachable cluster for context '${KUBE
 
 kc get crd sandboxes.agents.x-k8s.io -o name >/dev/null 2>&1 ||
   die "the agent-sandbox controller is not on this cluster. Install it as Getting started > Warm pool does, then re-run this script:
-  kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml"
+  kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml"
 echo "  agent-sandbox: reusing the install already on this cluster"
 
 kc api-resources --api-group=admissionregistration.k8s.io -o name 2>/dev/null |

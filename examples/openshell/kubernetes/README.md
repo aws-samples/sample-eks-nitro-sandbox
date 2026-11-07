@@ -23,7 +23,7 @@ on the home page, and run these blueprints first, which this one builds on and d
 re-explain:
 
 - [Getting started > Warm pool](../../getting-started/warm-pool/README.md): installs the
-  agent-sandbox controller v1.0.6, whose `Sandbox` API (`agents.x-k8s.io`) OpenShell's
+  agent-sandbox controller v1.0.10, whose `Sandbox` API (`agents.x-k8s.io`) OpenShell's
   Kubernetes driver drives.
 - [Getting started > Coding agent](../../getting-started/coding-agent/README.md): turns on
   network policy enforcement once per cluster, which OpenShell's own setup guide requires.
@@ -108,7 +108,7 @@ rendered values, so what actually runs is not left to each image's tag.
 
 | Component | Pin |
 |---|---|
-| agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.6, as in Getting started > Warm pool |
+| agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.10, as in Getting started > Warm pool |
 | OpenShell gateway chart (`oci://ghcr.io/nvidia/openshell/helm-chart`) | 0.1.6 |
 | OpenShell gateway, supervisor and sandbox-runtime images | the chart's `appVersion`, 0.1.6 |
 | OpenShell CLI ([releases](https://github.com/NVIDIA/OpenShell/releases)) | v0.1.6 |
@@ -456,7 +456,7 @@ the placeholder's own name would always satisfy.
 **Layer 3 — the Kubernetes `NetworkPolicy`.** Because OpenShell's Kubernetes driver creates
 `Sandbox` resources directly rather than through a `SandboxTemplate`, agent-sandbox's own
 controller applies no managed `NetworkPolicy` of its own to these pods (`networkPolicyManagement`
-is a `SandboxTemplate`-only field in the [v1.0.6 API reference](https://github.com/kubernetes-sigs/agent-sandbox/blob/v1.0.6/docs/api.md)).
+is a `SandboxTemplate`-only field in the [v1.0.10 API reference](https://github.com/kubernetes-sigs/agent-sandbox/blob/v1.0.10/docs/api.md)).
 The page lists every `NetworkPolicy` in the namespace and checks which select the
 workload pod's own labels, rather than assuming there is exactly one: there are two, both
 OpenShell's own, and only together do they say what the workload pod may actually reach.
