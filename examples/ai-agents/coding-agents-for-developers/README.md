@@ -1012,6 +1012,22 @@ error line goes to standard error and so can print before or after its exit line
       6.18.51
       fix9
   ```
+- **Codex's background app server starts fresh on every pod.** Codex runs a session on a
+  local app-server daemon. Its binaries (about 411 MB) go on the pod's own disk, not in the
+  session folder, and the image removes the daemon's run-time state (`~/.codex/app-server-daemon`:
+  pid files, locks, sockets) from the folder before Codex starts on a new pod. That state
+  belongs to the pod that wrote it: brought back by a Restore, it made Codex look for a
+  daemon binary that was not on the new pod, and every start failed with `daemon executable
+  not found ... /workspace/home/.codex/packages/app-server-daemon/current/bin/codex`. On a run
+  of this sample, a codex session that was asked one question, closed and restored came back on a new pod
+  with its conversation:
+
+  ```text
+  › Reply with the single word OTTER-7.
+  • OTTER-7
+    Worked for 41s • 00:24
+  › Ask Codex to do anything
+  ```
 - **Quitting the agent leaves a shell, with the command to go back.** When the CLI exits
   (`/exit` in Claude Code, `/quit` in Codex), the terminal prints the command that resumes
   the conversation and leaves the developer in a shell in the session's project folder, as
