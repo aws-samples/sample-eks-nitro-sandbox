@@ -221,11 +221,13 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
+          resources: { requests: { memory: 2Gi } }
 ```
 
-The pod runs as a non-root user with its own empty `/workspace`, and has no ServiceAccount
-token, so a command the model runs cannot reach the Kubernetes API. Apply the RBAC, the
-template and pool, and the poller:
+The memory request is what sizes the sandbox's VM: with none, the Nitro guest gets about
+130 MiB, too little for the worker to start. The pod runs as a non-root user with its own
+empty `/workspace`, and has no ServiceAccount token, so a command the model runs cannot
+reach the Kubernetes API. Apply the RBAC, the template and pool, and the poller:
 
 ```bash
 kubectl apply -f deploy/rbac.yaml
