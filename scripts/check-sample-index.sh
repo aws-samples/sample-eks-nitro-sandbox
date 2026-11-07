@@ -20,7 +20,9 @@
 #     each folder's samples sit under one heading title, and no heading title appears
 #     twice under one parent.
 #   - docs/ROADMAP.md has a list item linking ../examples/<s>/README.md, marked
-#     "(available now)" on that line or in the "### " heading of the section it is under.
+#     "(available now)" on that line or in its "### " section heading, or "(draft)"
+#     on that sample's own line. An explicit draft overrides the section status.
+#     Conflicting available and draft entries for the same sample are a finding.
 #   - README.md at the top of the repository has a list item linking examples/<s>/README.md.
 # A list item starts with "- ", indented at most three spaces, as in every index file here.
 # A YAML comment (#), an HTML comment or a fenced code block does not count. It also checks
@@ -233,17 +235,27 @@ nav_problems() {
   ' - "$root/mkdocs.yml"
 }
 
-# Prints "linked", "available" (linked and marked available now) or nothing, for the
-# roadmap list item that links this sample. A "# " or "## " heading ends a "### " section.
+# Prints the linked sample's status, or nothing when its link is missing. Draft status
+# must be explicit on the entry; it does not exempt any other index check. A "# " or
+# "## " heading ends a "### " section. One sample cannot be both available and draft.
 roadmap_state() { # sample
   markdown_text "$root/docs/ROADMAP.md" | awk -v link="](../examples/$1/README.md)" '
     /^### / { heading = $0; next }
     /^##? / { heading = ""; next }
     /^ ? ? ?- / && index($0, link) > 0 {
-      if (index($0, "(available now)") > 0 || index(heading, "available now") > 0) { state = "available" }
-      else if (state == "") { state = "linked" }
+      linked = 1
+      suffix = substr($0, index($0, link) + length(link))
+      entry_draft = suffix ~ /^[ \t]+(\(available now\)[ \t]+)?\(draft\)([ \t:]|$)/
+      if (entry_draft) draft = 1
+      if (index($0, "(available now)") > 0 ||
+          (!entry_draft && index(heading, "available now") > 0)) available = 1
     }
-    END { if (state != "") print state }
+    END {
+      if (available && draft) print "conflicting"
+      else if (draft) print "draft"
+      else if (available) print "available"
+      else if (linked) print "linked"
+    }
   '
 }
 
@@ -301,9 +313,10 @@ while IFS= read -r s; do
   [ -n "$s" ] || continue
   count=$((count + 1))
   case "$(roadmap_state "$s")" in
-    available) ;;
-    linked) finding "$s is linked in docs/ROADMAP.md but not marked '(available now)'" ;;
-    *) finding "$s is not linked in docs/ROADMAP.md; link its entry to ../examples/$s/README.md and mark it '(available now)'" ;;
+    available|draft) ;;
+    conflicting) finding "$s has conflicting '(available now)' and '(draft)' statuses in docs/ROADMAP.md" ;;
+    linked) finding "$s is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'" ;;
+    *) finding "$s is not linked in docs/ROADMAP.md; link its entry to ../examples/$s/README.md and mark it '(available now)' or '(draft)'" ;;
   esac
   in_readme "$s" ||
     finding "$s is not listed in README.md; add '- [<Title>](examples/$s/README.md): <one line>' under its section heading"

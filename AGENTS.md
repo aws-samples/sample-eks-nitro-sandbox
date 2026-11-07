@@ -33,6 +33,11 @@ but has no entry in the left menu, so add the `nav` line yourself.
 `docs/ROADMAP.md` or the root `README.md`, a section heading left twice, and a conflict
 marker left in any tracked file.
 
+For an intentionally draft sample, put `(draft)` immediately after its roadmap link. The
+index check still requires its navigation entry and both index links. A draft entry overrides
+an available section heading; conflicting statuses for one sample fail. This marker does
+not satisfy a sample pull request's readiness criteria.
+
 Run ASH before a pull request too, as `CONTRIBUTING.md` (*Security scanning*) says.
 
 ## A sample starts as a spec in a GitHub issue

@@ -59,7 +59,7 @@ pod network. The
 pod reaches Amazon Bedrock through a Pod Identity role that may only invoke models; its
 egress policy refuses everything else.*
 
-![A developer, outside AWS, reaches the web app's terminal through kubectl port-forward. Inside the AWS Cloud, an Amazon EKS cluster holds the web app, an ordinary trusted first-party pod that claims a pod and drives the terminal. The app claims a red Nitro sandbox pod (isolated-sandbox, one per session) from a dashed SandboxWarmPool per CLI, and mounts the session folder into it with a per-session credential. A second arrow, labelled terminal (TLS), runs from the app to the sandbox pod, which runs tmux and the CLI, session-bridge on port 7681, and its workspace at /workspace. To the right, outside the cluster, it mounts its own S3 Files access point only (one per session), which syncs with an S3 bucket (one prefix per session), and it invokes models on Amazon Bedrock through a Pod Identity role, labelled invoke models, with Codex also allowed web search. Below, a red dashed arrow to other hosts and other pods is refused by the egress policy.](figures/architecture.png)
+![A developer, outside AWS, reaches the web app's terminal through kubectl port-forward. Inside the AWS Cloud, an Amazon EKS cluster holds the web app, an ordinary trusted first-party pod that claims a pod and drives the terminal. The app claims a red Nitro sandbox pod (isolated-sandbox, one per session) from a dashed SandboxWarmPool per CLI, and mounts the session folder into it with a per-session credential. A second arrow, labelled terminal (TLS), runs from the app to the sandbox pod, which runs tmux and the CLI, session-bridge on port 7681, and its workspace at /workspace. To the right, outside the cluster, it mounts its own S3 Files access point only (one per running session), which syncs with an S3 bucket (one prefix per session), and it invokes models on Amazon Bedrock through a Pod Identity role, labelled invoke models, with Codex also allowed web search. Below, a red dashed arrow to other hosts and other pods is refused by the egress policy.](figures/architecture.png)
 
 ## Versions
 
@@ -97,7 +97,9 @@ the images record what they installed.
 
 ## Quick start
 
-With `.env` filled in (from `.env.example`) and the shared installs in place:
+With `.env` filled in (from `.env.example`) and the shared installs in place, on a clean
+environment (if the sample is already installed from an earlier checkout, run
+`./scripts/clean.sh` first; `setup.sh` stops and says so if it finds one):
 
 ```bash
 cp .env.example .env     # set CLUSTER_NAME and AWS_REGION
@@ -228,12 +230,16 @@ New agent and Restore both go through the same steps:
 
 1. The app claims a pod from the CLI's pool. The claim adopts a pod that is already running,
    so it is Ready in under a second; the pool boots a replacement.
-2. The app creates the session's access point (or finds it, on restore), rooted at
+2. At the same time, the app creates an access point for this run of the session, rooted at
    `/<developer>/<cli>/<session>` with a fixed POSIX user (uid/gid 1000) and
    `creationPermissions` that make the access point create its own root directory owned by
    that user. The app does not pre-create the folder as a bucket object: an object written
    under the prefix first is imported owned by root, which the access point's user could not
-   then write, so the CLI's home could not be created.
+   then write, so the CLI's home could not be created. On a Restore the folder is already
+   there, and the new access point opens it as it is: its owner and mode stay. The two
+   requests do not depend on each other and run side by side, so a Restore takes about as
+   long as the slower of the two, not their sum; if the access point cannot be created, the
+   app releases the claim and returns the error.
 3. The app assumes the Mount role with a session policy that names only that access point,
    and writes the resulting short-lived credential into the pod through the exec API's
    standard input, to a memory-backed file, together with a fresh token for the pod's
@@ -364,13 +370,12 @@ belongs to the pod, not the node.
 
 ```text
 POST /api/new
-/api/new developer=priya cli=oh-my-pi
-start mw45t3b4-nimble-otter: ensureAccessPoint
-start mw45t3b4-nimble-otter: claimPod (ap=fsap-0f8af1b465b164a35)
-start mw45t3b4-nimble-otter: pod=agent-oh-my-pi-tlm2v node=i-0c4718cd84fe0f8a1
-start mw45t3b4-nimble-otter: startSession azId=use1-az2
-session started in agent-oh-my-pi-tlm2v
-/api/new done session=mw45t3b4-nimble-otter
+/api/new developer=priya cli=opencode
+start mw4cvkv2-calm-panda: ensureAccessPoint + claimPod
+start mw4cvkv2-calm-panda: pod=agent-opencode-kpllb node=i-084b4ba9a2e323992 ap=fsap-0cf9f3c7f0224e654
+start mw4cvkv2-calm-panda: startSession azId=use1-az4
+session started in agent-opencode-kpllb
+/api/new done session=mw4cvkv2-calm-panda
 ```
 
 ## The session lifecycle
@@ -378,19 +383,36 @@ session started in agent-oh-my-pi-tlm2v
 A session pauses and resumes by releasing its claim and claiming a new one: the pod is
 disposable, the folder is not.
 
-*Figure 4: Pause and resume a session. Close or idle removes the claim and the pod, Restore
-mounts the same folder in a new pod, and only Delete removes the folder.*
+*Figure 4: Pause and resume a session. Close or idle removes the claim, the pod and the
+access point, Restore mounts the same folder in a new pod through a new access point, and
+only Delete removes the folder.*
 
-![Four stages of a session, left to right, above a shared storage row. The storage row, "Session folder, outlives every pod; only Delete removes it", holds the session's S3 Files access point, which syncs with the versioned S3 bucket, one prefix per session. Stage a, Running: a SandboxClaim points to a Nitro sandbox pod with pod UID A, isolated-sandbox, running the CLI in tmux with the folder at /workspace, and an edge labelled "mount at /workspace" runs down to the access point. A note says minimizing or closing the browser changes nothing in the cluster. An arrow labelled "Close, or idle 30 min: delete the SandboxClaim" leads to stage b, Paused: no SandboxClaim and no pod, while the access point and its data in S3 stay. An arrow labelled "Restore: claim a new warm pod" leads to stage c, Restored: a new SandboxClaim points to a new pod with pod UID B, which mounts the same access point, and the CLI resumes the last chat with its own continue option, reading its history from its home inside the folder. An arrow labelled Delete runs from Paused to stage d, Deleted: the folder's files, every object version and delete marker under the session prefix, then the access point, are deleted, and nothing remains.](figures/session-lifecycle.png)
+![Four stages of a session, left to right, above a shared storage row. The storage row, "Session folder, outlives every pod; only Delete removes it", holds the S3 Files access point, one per running session, which syncs with the versioned S3 bucket, one prefix per session. Stage a, Running: a SandboxClaim points to a Nitro sandbox pod with pod UID A, isolated-sandbox, running the CLI in tmux with the folder at /workspace, and an edge labelled "mount at /workspace" runs down to the access point. A note says minimizing or closing the browser changes nothing in the cluster. An arrow labelled "Close, or idle 30 min: delete the claim, then the access point" leads to stage b, Paused: no SandboxClaim and no pod; the access point goes, and the folder in S3 stays. An arrow labelled "Restore: a new warm pod and a new access point" leads to stage c, Restored: a new SandboxClaim points to a new pod with pod UID B, which mounts the folder through a new access point, and the CLI resumes the last chat with its own continue option, reading its history from its home inside the folder. An arrow labelled Delete runs from Paused to stage d, Deleted: the folder's files, every object version and delete marker under the session prefix, then the session record, are deleted, and nothing remains.](figures/session-lifecycle.png)
 
 | Action | What happens |
 |---|---|
-| New agent | The app claims a warm pod, creates the access point, mounts the folder and starts the CLI. The pool boots a replacement. |
+| New agent | The app writes the session's record, then claims a warm pod and creates the access point at the same time, mounts the folder and starts the CLI. The pool boots a replacement. If no pod or no access point can be had, the app releases the claim and removes the record, so the list has no row for a session that never ran. |
 | Minimize, or close the browser | Nothing changes in the cluster. The pod and the CLI keep running. |
-| No terminal activity for the idle period (default 30 minutes) | The app reads, every minute, the last time each session's terminal had key input or printed output (tmux's `session_activity` and `window_activity`). An agent still working on its own keeps printing, so it is not idle; a CLI waiting at its prompt prints nothing. Once the period passes, it stops the session cleanly (below) and deletes the `SandboxClaim`: the pod goes, the folder stays. |
-| Close the window | Same as idle: the session is stopped and the claim released, the folder stays, and the session moves to the session list. |
-| Restore | The app claims a new warm pod (a new pod UID), mounts the same folder and starts the CLI with its own continue-the-last-conversation option: `claude --continue`, `codex resume --last`, `kiro-cli chat --v3 --resume`, `opencode --continue`, `pi --continue` and `omp --continue`. The history is in the CLI's home inside the folder, so it comes back with it; a session restored before its first prompt starts the CLI fresh. |
-| Delete | If the session is running, the app first empties its folder through the mount, in the pod, as it stops the session. Then it deletes every object version and delete marker under the session's prefix in the (versioned) bucket. S3 Files exports a change to the bucket only after 60 seconds with no writes to the file, so a file written just before Delete can arrive after the first pass: the app lists the prefix again every 15 seconds and deletes whatever came back, until the prefix has stayed empty for 90 seconds. Only then does it delete the access point. The session list is built from access points, so a Delete that fails, or that an app restart cuts short before that last step, leaves the session in the list, and Delete can be run again (by then the bucket has been emptied, so a Delete cut short during the access point's own deletion leaves nothing behind but, at most, the access point); a failed Delete returns the error, and the row reads **unknown** and offers only Delete until the list reloads. |
+| No terminal activity for the idle period (default 30 minutes) | The app reads, every minute, the last time each session's terminal had key input or printed output (tmux's `session_activity` and `window_activity`). An agent still working on its own keeps printing, so it is not idle; a CLI waiting at its prompt prints nothing. Once the period passes, it stops the session cleanly (below), deletes the `SandboxClaim` and then the session's access point: the pod and the access point go, the folder and its files stay. |
+| Close the window | Same as idle: the session is stopped, the claim and the access point released, the folder stays, and the session moves to the session list. |
+| Restore | The app claims a new warm pod (a new pod UID) and creates a new access point on the same folder, at the same time, mounts it and starts the CLI with its own continue-the-last-conversation option: `claude --continue`, `codex resume --last`, `kiro-cli chat --v3 --resume`, `opencode --continue`, `pi --continue` and `omp --continue`. The history is in the CLI's home inside the folder, so it comes back with it; a session restored before its first prompt starts the CLI fresh. |
+| Delete | The session leaves the list at once: the app marks its record and finishes the Delete in the background. If the session is running, the app first empties its folder through the mount, in the pod, as it stops the session. Then it deletes every object version and delete marker under the session's prefix in the (versioned) bucket. S3 Files exports a change to the bucket only after 60 seconds with no writes to the file, so a file written just before Delete can arrive after the first pass: the app lists the prefix again every 15 seconds and deletes whatever came back, until the prefix has stayed empty for 90 seconds, a minute and a half to three minutes in all on these runs. Only then does it delete an access point, if one is left, and last the session's record. A closed session has no access point and its folder is drained the same way. Until the record is gone a Restore of the session is refused, and a Delete that fails, or that an app restart cuts short, is run again by the sweep a minute later. |
+
+A session keeps its access point while anything may still have its folder mounted: while
+the app tracks it, while a start is in flight, while any claim for it exists, and, after a
+stop that failed, until the recorded pod is confirmed gone. A background sweep, which
+starts a minute after its last pass ends, deletes the access point of every recorded session
+that has none of those. That is how an access-point delete that failed after a Close is
+retried (Close itself still succeeds: the session is stopped and its folder is kept). The
+sweep also deletes an access point whose session has no record and no claim: a session gets
+its record before anything is made for it, and loses it only at the end of its Delete. A pass
+works through eight sessions at a time, so with a large backlog one pass can take well over
+a minute. Before the app deletes a recorded session's access point it writes its id into the session's record,
+so a Restore never reuses one that is being deleted, even across an app restart, and the app
+makes no second access point beside one it can list: a Restore waits for the old one to be
+gone (about a second on these runs) before it makes a new one on the same folder. After an app restart, a pod is picked up again only if its folder is still mounted and only one
+usable access point is listed for its session; otherwise the app looks again on a later
+pass, or releases the claim of a pod whose folder was already unmounted.
 
 **A file written just before Delete does not come back.** On a run of this sample, 30
 files were written into a running pi session's `project/` folder and the session was
@@ -403,7 +425,7 @@ delete mw45sxsp-clever-koala: removed 19 version(s) in round 1
 
 Round 1 removed what had been exported before (the CLI's home and settings); the 30 new
 files were removed through the mount before S3 Files exported them, so they never reached
-the bucket. Delete returned (`{"ok":true}`) after 91 seconds, and the prefix had no versions
+the bucket. The Delete finished after 91 seconds, and the prefix had no versions
 and no delete markers at every check for the four minutes after the write. Before this
 change, the same check ended with the 30 files in the bucket under the deleted session's
 prefix about three minutes later: Delete had stopped looking after two empty lists 20
@@ -530,35 +552,50 @@ and the opencode window open over the session list:
 
 ![The web app with an opencode window for session proud-vole open, showing its restored conversation about the code word OTTER-3. At the bottom of the page, a dock holds one chip, "claude-code · gentle-otter", the minimized window of a second session.](figures/screenshots/two-sessions-one-minimized.png)
 
-The app keeps no database. It builds the session list from the access points' own root
-paths -- each one is `/<developer>/<cli>/<session>`, so one `ListAccessPoints` call for the
-file system yields every session's developer, CLI and name with no per-session tag read
-(which matters at scale: a developer with thousands of sessions would otherwise be thousands
-of tag lookups against the S3 Files control-plane rate limit). The session name carries a
-creation-time prefix, so the list sorts newest-first from the path alone. The access points
-also carry tags (`ManagedBy`, `developer`, `cli`, `session`, `lastUsed`) that mark ownership
-for the clean up, but the list does not depend on them. The access points, one per session:
+The app keeps no database. Each session has a record, a ConfigMap named
+`session-<session>` in the sample's namespace, labelled with its developer and CLI, so one
+developer's list is a label-selected ConfigMap list, paginated 500 records at a time. The session
+name carries a creation-time prefix, so the list sorts newest-first from the names alone.
+On a fresh install, after four New agent sessions for one developer, each closed again, and
+one for a second developer, still running, the records were:
+
+```text
+$ kubectl -n coding-agents-for-developers get configmap -l coding-agents/record=session \
+    -o custom-columns=NAME:.metadata.name,DEVELOPER:.data.developer,CLI:.data.cli
+NAME                           DEVELOPER   CLI
+session-mw5b6ec3-jolly-panda   carlos      claude-code
+session-mw5b6sm9-quiet-ibex    carlos      codex
+session-mw5b6ut9-merry-otter   carlos      kiro-cli
+session-mw5b6xe4-calm-koala    carlos      pi
+session-mw5b70es-jolly-vole    priya       opencode
+```
+
+An access point exists while a session runs (and while it is starting, or until the clean
+up after its pod has finished), rooted at `/<developer>/<cli>/<session>` and tagged
+(`ManagedBy`, `developer`, `cli`, `session`) for the clean up. The fresh file system had
+none; with the four closed sessions it held only the running one's. Restoring the codex
+session added a second while it ran:
 
 ```text
 $ aws s3files list-access-points --file-system-id <S3_FILES_FS_ID> --region <AWS_REGION> \
-    --query 'accessPoints[].{id:accessPointId,path:rootDirectory.path}' --output table
------------------------------------------------------------------------
-|                          ListAccessPoints                           |
-+-------------------------+-------------------------------------------+
-|           id            |                   path                    |
-+-------------------------+-------------------------------------------+
-|  fsap-0544cd6e...       |  /carlos/opencode/mw45svq7-merry-heron    |
-|  fsap-0027476b...       |  /sam/kiro-cli/mw45t5ns-keen-ibex         |
-|  fsap-06221bed...       |  /carlos/claude-code/mw45szt8-tidy-tapir  |
-|  fsap-0bae79b7...       |  /priya/pi/mw45sxsp-clever-koala          |
-|  fsap-0f8af1b4...       |  /priya/oh-my-pi/mw45t3b4-nimble-otter    |
-|  fsap-0e87fe27...       |  /carlos/codex/mw45t1lw-quiet-fox         |
-+-------------------------+-------------------------------------------+
+    --query 'accessPoints[].rootDirectory.path' --output text
+/carlos/codex/mw5b6sm9-quiet-ibex
+/priya/opencode/mw5b70es-jolly-vole
 ```
 
-The access-point ids are shortened here; the command prints them in full. The list is
-abridged to the six sessions of the fresh run: it also held five closed sessions from an
-earlier run on the same file system.
+Closing both deleted their access points again (`session mw5b6sm9-quiet-ibex: access point
+deleted` in the app log), and the file system had none. With a warm pod in the pool, two more
+Restores of the codex session took 2.1 and 2.2 seconds, and each Close 0.6 seconds:
+
+```text
+POST /api/restore codex -> 200 2.137230
+POST /api/close codex -> 200 0.641803
+POST /api/restore codex -> 200 2.229617
+POST /api/close codex -> 200 0.642430
+```
+
+The first Restore of it, seconds after a New agent had taken the only warm codex pod, booted
+a new one and took 21.7 seconds.
 
 ## It runs in a sandbox
 
@@ -905,10 +942,17 @@ error line goes to standard error and so can print before or after its exit line
   screen, kiro-cli (`b5wfm`) is at its sign-in menu, and the pods at `0Mi` are warm pods
   waiting for a claim. The largest, oh-my-pi, used 580 MiB of its 1536 MiB request; on an
   earlier run, Codex reached 803 MiB during a turn.
-- **Sessions are capped by the access-point quota.** Each retained session is one access
-  point, kept until Delete. S3 Files allows 25,000 access points per file system (Amazon S3
-  Files service quota *Access points per file system*, not adjustable), which is the ceiling
-  on retained sessions; Delete reclaims one.
+- **Running sessions, not retained ones, use the access-point quota.** A session holds an
+  access point while it runs, while it starts, and until the clean up after its pod has
+  finished. S3 Files allows 25,000 access points per file system (Amazon S3 Files service
+  quota *Access points per file system*, not adjustable), so that is an upper bound on
+  sessions running at once, not a number the cluster can necessarily run. A closed session
+  is a folder in the bucket and a ConfigMap, so how many are kept is limited by the
+  cluster's API server and any resource quota on the namespace, not by the access-point
+  quota. Deleting an access point
+  leaves its directory and files: on a run of this sample, a file written before Close was
+  read back, with its owner and time unchanged, through a new access point on the same
+  folder after Restore.
 - **The credential is refreshed.** An assumed-role credential lasts an hour; the app rewrites
   it after 30 minutes, so an agent left running keeps writing to its folder past an hour. A
   refresh that fails is logged by the app with the session's name

@@ -385,6 +385,128 @@ replace_line "$d/docs/ROADMAP.md" "](../examples/getting-started/hello/README.md
 expect_findings "reject: a '## ' heading ends the available '### ' section" "$d" \
   "getting-started/hello is linked in docs/ROADMAP.md but not marked '(available now)'"
 
+# --- explicit draft status -----------------------------------------------------------------
+
+# A draft is still a tracked sample. Its entry must remain in all three indexes.
+# Only a visible status immediately after its own roadmap link opts into draft status.
+d=$(new_repo accept-explicit-draft)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  "- [signing](../examples/policy/signing/README.md) (draft): a sample awaiting a maintainer decision."
+expect_ok "accept: an explicit draft remains indexed without claiming availability" "OK, 2 sample(s)" "$d"
+
+d=$(new_repo accept-draft-overrides-heading)
+replace_line "$d/docs/ROADMAP.md" "](../examples/getting-started/hello/README.md)" \
+  "- [hello](../examples/getting-started/hello/README.md) (draft): an unfinished sample."
+expect_ok "accept: per-entry draft overrides inherited availability" "OK, 2 sample(s)" "$d"
+
+d=$(new_repo accept-spaced-draft)
+spaced="- [signing](../examples/policy/signing/README.md)$(printf '\t  ')(draft)$(printf '\t '): an unfinished sample."
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" "$spaced"
+expect_ok "accept: spaces and tabs around the explicit draft marker" "OK, 2 sample(s)" "$d"
+
+d=$(new_repo accept-consistent-draft-entries)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  "- [signing](../examples/policy/signing/README.md) (draft): an unfinished sample."
+append_lines "$d/docs/ROADMAP.md" "- [signing](../examples/policy/signing/README.md) (draft): the same status."
+expect_ok "accept: repeated roadmap entries with the same explicit draft status" "OK, 2 sample(s)" "$d"
+
+for status in '(drafting)' '(draft)extra' ': the description mentions (draft).' '`(draft)`'; do
+  d=$(new_repo "reject-nonstatus-$passed")
+  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+    "- [signing](../examples/policy/signing/README.md) $status"
+  expect_findings "reject: text that is not an explicit draft status: $status" "$d" \
+    "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
+done
+
+d=$(new_repo reject-draft-heading-only)
+replace_line "$d/docs/ROADMAP.md" '### Policy' '### Policy (`policy`) (draft)'
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  "- [signing](../examples/policy/signing/README.md): an unfinished sample."
+expect_findings "reject: a draft heading cannot mark every sample as draft" "$d" \
+  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
+
+d=$(new_repo reject-draft-readme-only)
+append_lines "$d/examples/policy/signing/README.md" "" "Status: draft."
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  "- [signing](../examples/policy/signing/README.md): an unfinished sample."
+expect_findings "reject: README draft prose cannot supply a roadmap status" "$d" \
+  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
+
+d=$(new_repo reject-draft-inline-comment)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  "- [signing](../examples/policy/signing/README.md) <!-- (draft) -->: an unfinished sample."
+expect_findings "reject: a draft marker hidden in an inline HTML comment" "$d" \
+  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
+
+for hidden in comment fence; do
+  d=$(new_repo "reject-draft-$hidden")
+  if [ "$hidden" = comment ]; then
+    opener='<!--'
+    closer='-->'
+  else
+    opener='```markdown'
+    closer='```'
+  fi
+  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+    "$opener" "- [signing](../examples/policy/signing/README.md) (draft): a hidden entry." "$closer" \
+    "- [signing](../examples/policy/signing/README.md): the visible entry has no status."
+  expect_findings "reject: a hidden draft entry in a $hidden cannot supply status" "$d" \
+    "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
+done
+
+for statuses in '(available now) (draft)' '(draft) (available now)'; do
+  d=$(new_repo "reject-conflicting-status-line-$passed")
+  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+    "- [signing](../examples/policy/signing/README.md) $statuses: conflicting statuses."
+  expect_findings "reject: both explicit statuses on one line: $statuses" "$d" \
+    "policy/signing has conflicting '(available now)' and '(draft)' statuses in docs/ROADMAP.md"
+done
+
+for first in available draft; do
+  d=$(new_repo "reject-conflicting-status-entries-$first")
+  if [ "$first" = available ]; then
+    first_status='(available now)'
+    second_status='(draft)'
+  else
+    first_status='(draft)'
+    second_status='(available now)'
+  fi
+  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+    "- [signing](../examples/policy/signing/README.md) $first_status: the first entry."
+  append_lines "$d/docs/ROADMAP.md" \
+    "- [signing](../examples/policy/signing/README.md) $second_status: the conflicting entry."
+  expect_findings "reject: conflicting duplicate entries with $first first" "$d" \
+    "policy/signing has conflicting '(available now)' and '(draft)' statuses in docs/ROADMAP.md"
+done
+
+for missing in nav readme roadmap-link; do
+  d=$(new_repo "reject-draft-missing-$missing")
+  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+    "- [signing](../examples/policy/signing/README.md) (draft): an unfinished sample."
+  case "$missing" in
+    nav)
+      replace_line "$d/mkdocs.yml" "Signing: policy"
+      expected="policy/signing is not in the mkdocs.yml nav"
+      ;;
+    readme)
+      replace_line "$d/README.md" "](examples/policy/signing/README.md)"
+      expected="policy/signing is not listed in README.md"
+      ;;
+    roadmap-link)
+      replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" "- signing (draft): no link."
+      expected="policy/signing is not linked in docs/ROADMAP.md"
+      ;;
+  esac
+  expect_findings "reject: draft status does not waive the $missing requirement" "$d" "$expected"
+done
+
+d=$(new_repo reject-draft-conflict-marker)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  "- [signing](../examples/policy/signing/README.md) (draft): an unfinished sample."
+append_lines "$d/examples/policy/signing/README.md" '<<<<<<< HEAD'
+expect_findings "reject: conflict markers remain errors inside a draft sample" "$d" \
+  "merge conflict marker left at examples/policy/signing/README.md:2"
+
 # --- must reject: README.md ----------------------------------------------------------------
 
 d=$(new_repo reject-readme-in-fence)

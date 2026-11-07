@@ -80,7 +80,7 @@ Auto Mode's managed one. Cluster and node-group lifecycle were previously treate
 scope here; this section is an intentional, narrow addition: it covers building a node AMI
 for an existing cluster, not creating or managing the cluster itself.
 
-- [ubuntu-ami](../examples/setup/ubuntu-ami/README.md): build a custom Ubuntu 24.04 node
+- [ubuntu-ami](../examples/setup/ubuntu-ami/README.md) (draft): build a custom Ubuntu 24.04 node
   AMI for EKS Pod Isolation and add one dedicated, tainted managed node group to an
   existing cluster. Every public input (base AMI, kernel 6.18.56 plus AWS's public
   host-kernel commit 1e66c960, erofs-utils 1.8.10, distro packages) is pinned and
