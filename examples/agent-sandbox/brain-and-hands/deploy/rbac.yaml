@@ -1,17 +1,16 @@
 # The brain's identity, and the whole of what it may do on the Kubernetes API.
 #
-# The brain claims a pod from the pool and drives it with exec, cp and logs. It
-# cannot create or delete a pod, cannot reach another namespace, and has nothing
-# cluster-scoped.
+# The brain claims a pod from the pool and reads the Sandbox the claim adopted,
+# which is where the pod's IP is. That is all. Commands and files go to sandboxd
+# in that pod over the pod network, so the brain needs no pods/exec, no
+# pods/log, no pods/portforward and no read on pods at all: it cannot exec into
+# any pod in this namespace, its own included, and the Kubernetes API carries
+# none of the session's traffic.
 #
-# Read the exec and log rules honestly: Kubernetes RBAC selects resources by
-# name, never by label, and the pods a warm pool hands out have generated names.
-# So these rules cover EVERY pod in this namespace, the brain's own pod
-# included. The namespace is the boundary, which is why only the brain and the
-# hands belong in it. Narrowing the brain to the one pod its claim adopted
-# happens a layer up, in brain/sandbox_tool.py, which never takes a pod name as
-# a tool argument. That is an application-level control, not RBAC enforcement,
-# and it is the softer of the two.
+# The verbs are the ones the agent-sandbox MCP server's documentation lists for
+# the sandboxd in-cluster connection: the SDK creates a claim, watches it until
+# it names a Sandbox, reads that Sandbox's status, lists the session's own
+# claims by label to check a claim name belongs to it, and deletes the claim.
 #
 # <NAMESPACE> is filled in at apply time by ./scripts/setup.sh from the
 # NAMESPACE variable. Never apply this file with the placeholder in place.
@@ -22,11 +21,11 @@ metadata:
   namespace: <NAMESPACE>
   labels:
     app.kubernetes.io/part-of: brain-and-hands
-# automountServiceAccountToken stays at its default, true: the brain's kubectl
-# authenticates to the Kubernetes API with this ServiceAccount's token. Its
-# Bedrock credentials arrive separately, through the EKS Pod Identity
-# association ./scripts/setup.sh creates for this same ServiceAccount. The two
-# are unrelated.
+# automountServiceAccountToken stays at its default, true: the MCP server in the
+# brain authenticates to the Kubernetes API with this ServiceAccount's token,
+# through the SDK's in-cluster configuration. Its Bedrock credentials arrive
+# separately, through the EKS Pod Identity association ./scripts/setup.sh
+# creates for this same ServiceAccount. The two are unrelated.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -36,34 +35,12 @@ metadata:
   labels:
     app.kubernetes.io/part-of: brain-and-hands
 rules:
-  # Claim: create a SandboxClaim, read it until it names a pod, and delete it
-  # when the session ends. Each verb here is one the sandbox tool calls: create,
-  # a named get in a loop, and delete. No list and no watch, because it never
-  # enumerates claims.
   - apiGroups: ["extensions.agents.x-k8s.io"]
     resources: ["sandboxclaims"]
-    verbs: ["create", "get", "delete"]
-  # Reading the Sandbox by name is how the tool reads the launch-type label.
+    verbs: ["create", "get", "list", "watch", "delete"]
   - apiGroups: ["agents.x-k8s.io"]
     resources: ["sandboxes"]
-    verbs: ["get"]
-  # Read the claimed pod, and wait for it to be Ready. `kubectl wait` needs
-  # watch as well as get. No list: the brain never enumerates the pods in its
-  # namespace. No create and no delete: it cannot make a pod of its own,
-  # sandboxed or not.
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "watch"]
-  # Run commands and move files. Both verbs on pods/exec: kubectl's WebSocket
-  # exec executor issues a GET and falls back to a SPDY POST, so an exec that
-  # works whatever the client version needs create and get. kubectl cp goes
-  # through the same subresource.
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create", "get"]
-  - apiGroups: [""]
-    resources: ["pods/log"]
-    verbs: ["get"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

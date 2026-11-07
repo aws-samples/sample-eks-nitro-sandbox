@@ -3,18 +3,20 @@
 # There is no runtimeClassName here on purpose. The brain is not sandboxed: it
 # reasons, and it holds the credentials, so it is the part that has a network.
 # The sandbox is the OTHER pod. This one can reach the network but has no tool
-# that runs a command; the one it runs commands in has no network device.
+# that runs a command; the one it runs commands in admits only pods labelled
+# app=brain on sandboxd's two ports, and can open no connection of its own on
+# the pod network (deploy/warm-pool.yaml).
 #
 # Read that split for what it is. Code running in the hands cannot open a
-# connection of its own. It is NOT an exfiltration boundary: the output of every
+# connection of its own on the pod network. It is NOT an exfiltration boundary: the output of every
 # command comes back to this pod and goes into the next model request, and
 # nothing in this sample restricts where this pod can connect. What the split
 # buys is that attacker-controlled code never runs on the half that has the
 # network, not that data in the hands cannot leave.
 #
 # ./scripts/setup.sh fills in <NAMESPACE>, <BRAIN_IMAGE>, <AWS_REGION> and
-# <BEDROCK_MODEL_ID> at apply time. Never apply this file with a placeholder in
-# place.
+# <BEDROCK_MODEL_ID> at apply time, and creates the hands-token Secret this pod
+# mounts. Never apply this file with a placeholder in place.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -41,6 +43,8 @@ spec:
         runAsNonRoot: true
         runAsUser: 10001
         runAsGroup: 10001
+        # Makes the mounted token file group-readable by the agent's user.
+        fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -58,22 +62,42 @@ spec:
             - { name: AWS_REGION,              value: <AWS_REGION> }
             - { name: AWS_DEFAULT_REGION,      value: <AWS_REGION> }
             - { name: ANTHROPIC_MODEL,         value: <BEDROCK_MODEL_ID> }
-            # Read by brain/sandbox_tool.py. The pool it claims from and the
-            # namespace it claims in are configuration, never tool arguments,
-            # so the model cannot point the tool somewhere else.
-            - { name: HANDS_NAMESPACE, value: <NAMESPACE> }
-            - { name: HANDS_WARMPOOL,  value: hands-pool }
-            - { name: HANDS_CLAIM,     value: brain-session }
-            - { name: HANDS_CONTAINER, value: hands }
+            # Read by brain/hands_mcp.py. The pool it claims from and the
+            # namespace it claims in are configuration, hidden from the model,
+            # so it cannot point the tools somewhere else.
+            - { name: HANDS_NAMESPACE,  value: <NAMESPACE> }
+            - { name: HANDS_WARMPOOL,   value: hands-pool }
+            - { name: HANDS_TOKEN_FILE, value: /var/run/hands/token }
+            # Read by the agent-sandbox MCP server. sandboxd-in-cluster dials
+            # sandboxd in the claimed pod directly: gRPC on 9090 for commands,
+            # REST on 8080 for files. in-cluster-pod-ip takes the address from
+            # the Sandbox's status.podIPs, so the template needs no Service.
+            - { name: K8S_SANDBOX_CONNECTION__TYPE, value: sandboxd-in-cluster }
+            - { name: K8S_SANDBOX_CONNECTION__MODE, value: in-cluster-pod-ip }
+            # The server's /readyz probe lists claims here. Unused over stdio,
+            # but set so its default ("default") never names a namespace the
+            # brain has no access to.
+            - { name: K8S_SANDBOX_PROBE_NAMESPACE,  value: <NAMESPACE> }
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+          volumeMounts:
+            # The bearer token sandboxd in the hands requires. Mounted as a file
+            # and read by brain/hands_mcp.py, so it is never in this pod's spec,
+            # its environment or a command line.
+            - { name: hands-token, mountPath: /var/run/hands, readOnly: true }
           # No CPU or memory requests or limits: the brain is an ordinary pod,
           # and what it needs is whatever model client you put in it.
           #
-          # No volumes either. The image's own /workspace and /home/agent are
+          # No other volumes. The image's own /workspace and /home/agent are
           # writable by the user the container runs as, which is where the agent
-          # keeps its session state and where the sandbox tool stages a file on
-          # its way into or out of the hands. An emptyDir over /home/agent would
-          # hide the agent configuration the image bakes in there.
+          # keeps its session state. An emptyDir over /home/agent would hide the
+          # agent configuration the image bakes in there.
+      volumes:
+        - name: hands-token
+          secret:
+            secretName: hands-token  # pragma: allowlist secret -- the Secret's name, not a value
+            defaultMode: 0440
+            items:
+              - { key: token, path: token }
