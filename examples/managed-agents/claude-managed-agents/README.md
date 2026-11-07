@@ -102,16 +102,17 @@ set -a; . ./.env; set +a
 ```
 
 ```text
-Created agent agent_... (claude-sonnet-5-5)
-Created self-hosted environment env_...
+AGENT_ID is set; keeping agent agent_...
+ANTHROPIC_ENVIRONMENT_ID is set; keeping environment env_...
 
 Add these to .env:
   AGENT_ID=agent_...
   ANTHROPIC_ENVIRONMENT_ID=env_...
-Then, in the Claude Console, open Workspace > Environments > your
-environment > Generate environment key, and add it as
-  ANTHROPIC_ENVIRONMENT_KEY=...
 ```
+
+This output is from a `.env` that already held `AGENT_ID` and `ANTHROPIC_ENVIRONMENT_ID`,
+so the script kept that agent and environment. With neither set, it creates both and prints
+their ids, then tells you how to get the environment key.
 
 The agent uses the built-in `agent_toolset_20260401` tools. There is no API that creates
 an environment key, so generate it in the Console as the script says, put the three values
@@ -259,18 +260,18 @@ kubectl exec $POD -- sh -c 'env | cut -d= -f1 | grep ^ANTHROPIC_'
 
 ```text
 isolated-sandbox
-6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-25.01
+6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
+25.00
 dm-0 vda vdb vdc
 ANTHROPIC_ENVIRONMENT_ID
 ```
 
 The sandbox runs its own kernel. Its uptime matches the pod's age, about 25 seconds here,
 because the sandbox booted with the pod, and it sees virtio disks (`vda`, `vdb`, `vdc`). On the
-same node, an ordinary pod reported the node's kernel build, `#2 SMP PREEMPT_DYNAMIC Wed
-Oct  7 22:33:11 UTC 2026`, and the instance's `nvme` disks. The version string `6.18.51`
-was the same for both; the build and the boot are not. The only Anthropic variable in the
-pod is the environment id: no `ANTHROPIC_API_KEY` and no `ANTHROPIC_ENVIRONMENT_KEY`.
+same node, an ordinary pod reported the node's kernel, `6.18.56 #2 SMP PREEMPT_DYNAMIC Fri
+Oct 30 22:32:37 UTC 2026`, and the instance's `nvme` disks: a different version, build and
+boot from the sandbox's. The only Anthropic variable in the pod is the environment id: no
+`ANTHROPIC_API_KEY` and no `ANTHROPIC_ENVIRONMENT_KEY`.
 
 **Step 8: Run a session.** Start one from your machine. The script sends the task when it
 creates the session, sets a spend ceiling of $1.00 (`--budget-cents` changes it), follows
@@ -291,22 +292,22 @@ Session sesn_... created; waiting for the cluster to pick it up...
 [result:ok] done
 
 [tool] read: /workspace/report.txt
-[result:ok] 6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-         68.94 63.81
+[result:ok] 6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
+         51.98 47.44
          dm-0
          vda
          vdb
          vdc
          0
 
-[agent] I ran the four commands, wrote their combined output to `/workspace/report.txt`, and read the file back. [...]
+[agent] I ran the four commands and saved their combined output to `/workspace/report.txt`. This is what the file contains:
 
 [idle] end_turn
 
 2 tool calls, 0 errors, list cost 0.02 USD
 ```
 
-The commands ran in a sandbox: the guest's kernel build, an uptime of about a minute and
+The commands ran in a sandbox: the guest's kernel build, an uptime of under a minute and
 virtio disks. The last line of the report is `0`: the agent's `bash` tool runs with every
 `ANTHROPIC_*` variable removed from its environment. Beyond that, the sandbox process
 itself holds no key to find: its only credential is this session's token, which arrived in
@@ -322,9 +323,9 @@ kubectl logs <SANDBOX>     # the sandbox named in the poller's log; the pod has 
 ```
 
 ```text
-22:34:59,040 INFO root Creating SandboxClaim 'sandbox-claim-3c315992' in namespace 'claude-managed-agents' using warm pool 'claude-sandbox-worker'...
-22:34:59,090 INFO root Resolved sandbox name 'claude-sandbox-worker-zcw2b' from claim status (claim Ready)
-22:34:59,114 INFO worker.sandbox session=sesn_... work=sesn_... -> sandbox=claude-sandbox-worker-zcw2b
+21:34:18,750 INFO k8s_agent_sandbox.k8s_helper Creating SandboxClaim 'sandbox-claim-0eac1de0' in namespace 'nitro-sandboxes-demo' using warm pool 'claude-sandbox-worker'...
+21:34:18,822 INFO k8s_agent_sandbox.k8s_helper Resolved sandbox name 'claude-sandbox-worker-6jrhx' from claim status (claim Ready)
+21:34:18,835 INFO worker.sandbox session=sesn_... work=sesn_... -> sandbox=claude-sandbox-worker-6jrhx
 
 INFO worker.serve waiting for a dispatch on :8080
 INFO worker.serve serving session sesn_... in /workspace
@@ -335,12 +336,13 @@ INFO anthropic.lib.tools._beta_session_runner session idle for 60s after its tur
 INFO worker.serve session sesn_... finished
 ```
 
-The claim was Ready about 50 ms after the poller created it, because it adopted a sandbox
+The claim was Ready about 70 ms after the poller created it, because it adopted a sandbox
 that was already running; the pool booted a replacement in the background. When the
 session went idle the worker stopped its work item and exited, and the pod completed.
 
 To see the network policy at work, run this in a warm sandbox. The session may have used the pod from
-Step 7, so pick a running one again. The Claude API connects; the other two do not:
+Step 7, and that pod keeps running until its session has been idle for 60 seconds, so once it
+has completed, pick a running one again. The Claude API connects; the other two do not:
 
 ```bash
 POD=$(kubectl get pods -l app=claude-sandbox-worker --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
@@ -377,8 +379,8 @@ kubectl logs deploy/claude-autoscaler
 ```
 
 ```text
-INFO worker.stats_adapter environment=env_... warm pool=.../claude-sandbox-worker replicas in [1, 10] every 15s
-INFO worker.stats_adapter depth=0 pending=0 -> claude-sandbox-worker replicas None -> 1 (pool has 2)
+2026-11-07 21:36:04,484 INFO worker.stats_adapter environment=env_... warm pool=nitro-sandboxes-demo/claude-sandbox-worker replicas in [1, 10] every 15s
+2026-11-07 21:36:04,598 INFO worker.stats_adapter depth=0 pending=0 -> claude-sandbox-worker replicas None -> 1 (pool has 2)
 ```
 
 It sets the replicas on every tick, so if anything else changes them, re-applying
