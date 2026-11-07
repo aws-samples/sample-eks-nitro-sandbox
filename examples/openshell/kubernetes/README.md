@@ -175,8 +175,9 @@ changing the thing the blueprint measures.
 
 One more setting fits the workload pod to a Nitro sandbox, and it is in `scripts/demo.sh`
 rather than the adapter: the sandbox is created with `openshell sandbox create --memory 1Gi`,
-which OpenShell's Kubernetes driver writes as the agent container's memory request and
-limit. A Nitro sandbox's memory is allocated from the pod's request when its VM boots, and
+and on this page's run the agent container's memory request and limit were both `1Gi`.
+`scripts/demo.sh` stops unless both are, and prints them in the "two pods" output below.
+A Nitro sandbox's memory is allocated from the pod's request when its VM boots, and
 cannot change while the pod runs (Amazon EKS User Guide, *Isolated and confidential pods
 limitations*). With no request the guest gets a small default size, about 130 MiB on the
 [hello sandbox](../../getting-started/hello-sandbox/README.md) page. That runs the agent,
@@ -184,8 +185,7 @@ but not also the ephemeral debug container that layer 3 below adds to the same p
 runs without the request, on `c8a.large` nodes, the guest ran out of memory as that
 container started, the agent container was `OOMKilled`, the debug container never started
 (`StartError`) and the pod failed. With 1Gi, on the same nodes, it runs and shows the
-refusal. 1Gi is what this page's run used, not a documented minimum; the run's own
-"two pods" output below prints the request.
+refusal. 1Gi is what this page's run used, not a documented minimum.
 
 ## Files
 
@@ -300,15 +300,15 @@ The Helm release, and the pods in its namespace while the sandbox from Step 3 wa
 ```text
 $ helm list -n openshell-kubernetes
 NAME     	NAMESPACE           	REVISION	UPDATED                                	STATUS  	CHART           	APP VERSION
-openshell	openshell-kubernetes	1       	2026-11-07 17:19:04.632178804 +0000 UTC	deployed	helm-chart-0.1.6	0.1.6  
+openshell	openshell-kubernetes	1       	2026-11-07 17:56:16.283566625 +0000 UTC	deployed	helm-chart-0.1.6	0.1.6  
 
 $ kubectl get pods -n openshell-kubernetes
 NAME                                                 READY   STATUS        RESTARTS   AGE
-default--demo-1794072008                             1/1     Running       0          80s
-echo-api                                             1/1     Running       0          97s
-node-probe                                           1/1     Terminating   0          27s
-openshell-0                                          1/1     Running       0          2m12s
-os-supervisor-d61ebd15-ed32-4287-9c75-2ee23ddc6620   1/1     Running       0          80s
+default--demo-1794074233                             1/1     Running       0          89s
+echo-api                                             1/1     Running       0          106s
+node-probe                                           1/1     Terminating   0          29s
+openshell-0                                          1/1     Running       0          2m11s
+os-supervisor-a6433f6b-4ba3-44c0-9160-adea57c85a7d   1/1     Running       0          89s
 ```
 
 **Step 3: Reach the gateway with `kubectl port-forward`, and create one sandbox.** In a
@@ -349,19 +349,21 @@ Server Status
 
 ```text
 ==> the two pods of this one sandbox
-pod/os-supervisor-d61ebd15-ed32-4287-9c75-2ee23ddc6620 condition met
-  workload pod:   default--demo-1794072008
+pod/os-supervisor-a6433f6b-4ba3-44c0-9160-adea57c85a7d condition met
+  workload pod:   default--demo-1794074233
     runtimeClassName: isolated-sandbox
     agent container memory request: 1Gi
-  supervisor pod: os-supervisor-d61ebd15-ed32-4287-9c75-2ee23ddc6620
+    agent container memory limit:   1Gi
+  supervisor pod: os-supervisor-a6433f6b-4ba3-44c0-9160-adea57c85a7d
     runtimeClassName:
     (empty means no RuntimeClass: an ordinary pod)
   workspace PVC: Bound on openshell-kubernetes-gp3
 ```
 
-The agent container's `1Gi` memory request is the one `scripts/demo.sh` sets, for the
-reason in "The workload pod asks for 1Gi of memory" above, and the workspace claim is bound
-on the class setup chose.
+The agent container's `1Gi` memory request and limit come from the `--memory 1Gi` that
+`scripts/demo.sh` passes, for the reason in "The workload pod asks for 1Gi of memory" above;
+the script checks both before it prints them. The workspace claim is bound on the class
+setup chose.
 
 The workload pod's own kernel, boot and virtio disks, next to the same node's own view
 from an ordinary pod:
@@ -393,7 +395,7 @@ driver, as a `Secret` in its own namespace — shown here by name only:
 
 ```text
   the credential Secret, by name only -- never its value:
-openshell-cred-db8c998eac050bf9a37ef9010f606abbaf5c915b   Opaque
+openshell-cred-922590281697056a62dec8264984ccf2bf7db64b   Opaque
 ```
 
 The agent's own environment holds a placeholder, never the value:
@@ -401,7 +403,7 @@ The agent's own environment holds a placeholder, never the value:
 ```text
 ==> the agent's credential: a placeholder, never the real value
   the agent's own environment:
-DEMO_API_KEY=openshell:resolve:env:v8290868047663162937_DEMO_API_KEY
+DEMO_API_KEY=openshell:resolve:env:v16945336013537783964_DEMO_API_KEY
 ```
 
 A request to the one endpoint this sandbox's policy allows — an in-cluster HTTP echo
@@ -420,7 +422,7 @@ against:
 
 ```text
   the digest of the value the backend received (substituted by the supervisor, outside the sandbox), computed INSIDE the sandbox so the real value is never printed anywhere, including by this script:
-  resolved credential digest: 97a106f1e7ce70c193fd33065d5ff22ee19b28cf44a782ae66fc3bf9345e7441
+  resolved credential digest: fae900a9cba055945fbf269e9489336d274c125d41621e61c59f13941f174f4c
   matches the digest of the credential this run stored in the Secret: true
 ```
 
@@ -428,7 +430,7 @@ And the workload pod mounts no Secret for it at all:
 
 ```text
   no Secret for the real credential is mounted in the workload pod:
-os-sandbox-d61ebd15-ed32-4287-9c75-2ee23ddc6620-be92414f3220
+os-sandbox-a6433f6b-4ba3-44c0-9160-adea57c85a7d-f38dbc058854
 ```
 
 (That one Secret is OpenShell's own per-sandbox bootstrap material, not a provider
@@ -446,21 +448,17 @@ permission a root-owned, non-readable file would have produced on its own:
 ```text
 ==> layer 1: OpenShell's policy refuses a file outside it and a destination outside it
   a file the policy does not list (world-readable, so this is the policy and not a Unix permission):
-cat: /var/lib/dpkg/status644 /var/lib/dpkg/status
-: Permission denied
+644 /var/lib/dpkg/status
+cat: /var/lib/dpkg/status: Permission denied
 cat exit=1
   control -- a file the policy does list:
-default--demo-1794072008
+default--demo-1794074233
   a destination the policy does not list:
 bash: connect: Permission denied
 bash: line 1: /dev/tcp/kubernetes.default.svc.cluster.local/443: Permission denied
 ```
 
-`stat` succeeds and reports the file's own mode, `644`: any process could read it. The CLI
-relays the command's standard output and standard error separately (the script merges them
-only afterwards, with `2>&1`), and on this run they arrived interleaved, so `cat`'s error,
-`cat: /var/lib/dpkg/status: Permission
-denied`, is split around `stat`'s own line, `644 /var/lib/dpkg/status`. Read apart: `cat`
+`stat` succeeds and reports the file's own mode, `644`: any process could read it. `cat`
 on the very same path, moments later and at the very same uid, is refused, with exit 1 —
 which is what puts the refusal on OpenShell's policy rather than on a file mode a
 root-owned, non-readable file would have produced on its own.
@@ -473,11 +471,11 @@ one placeholder:
 ==> layer 2: the Nitro boundary -- the node is invisible, and the credential is absent
   processes visible in the guest (its own, only):
 USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
-ubuntu         1  0.4  1.0 111332 11588 ?        Ssl  17:20   0:00 /.openshell/runtime/openshell-sandbox --bootstrap /.openshell/state/bootstrap/boundary.json
-ubuntu        56  0.0  0.1   2708  1400 ?        S    17:20   0:00 sleep 3600
-ubuntu        91  0.0  0.3   7904  3900 ?        R    17:21   0:00 ps aux
+ubuntu         1  0.3  0.9 111320 11384 ?        Ssl  17:57   0:00 /.openshell/runtime/openshell-sandbox --bootstrap /.openshell/state/bootstrap/boundary.json
+ubuntu        56  0.0  0.1   2708  1424 ?        S    17:57   0:00 sleep 3600
+ubuntu        91  0.0  0.3   7904  3916 ?        R    17:58   0:00 ps aux
   the guest's environment, checked rather than eyeballed:
-DEMO_API_KEY=openshell:resolve:env:v8290868047663162937_DEMO_API_KEY
+DEMO_API_KEY=openshell:resolve:env:v16945336013537783964_DEMO_API_KEY
   no other credential-shaped variable
 ```
 
@@ -502,11 +500,11 @@ OpenShell's own, and only together do they say what the workload pod may actuall
   every NetworkPolicy in the sandbox namespace, and which select the workload pod's labels:
 NAME                                              POD-SELECTOR                                                      AGE
 openshell-sandbox-ssh                             openshell.ai/managed-by=openshell                                 111s
-openshell-sandbox-supervisors                     openshell.ai/boundary-role=supervisor                             60s
-openshell-sandbox-workloads                       openshell.ai/boundary-role=workload                               60s
-os-control-d61ebd15-ed32-4287-9c75-2ee23ddc6620   openshell.ai/boundary-pair=d61ebd15-ed32-4287-9c75-2ee23ddc6620   59s
-  workload pod labels: {"agents.x-k8s.io/sandbox-name-hash":"f101e324","openshell.ai/boundary-pair":"d61ebd15-ed32-4287-9c75-2ee23ddc6620","openshell.ai/boundary-role":"workload","topology.kubernetes.io/region":"us-east-1","topology.kubernetes.io/zone":"us-east-1b"}
-  the two NetworkPolicies selecting the workload pod (boundary-pair=d61ebd15-ed32-4287-9c75-2ee23ddc6620):
+openshell-sandbox-supervisors                     openshell.ai/boundary-role=supervisor                             67s
+openshell-sandbox-workloads                       openshell.ai/boundary-role=workload                               67s
+os-control-a6433f6b-4ba3-44c0-9160-adea57c85a7d   openshell.ai/boundary-pair=a6433f6b-4ba3-44c0-9160-adea57c85a7d   67s
+  workload pod labels: {"agents.x-k8s.io/sandbox-name-hash":"f3794e82","openshell.ai/boundary-pair":"a6433f6b-4ba3-44c0-9160-adea57c85a7d","openshell.ai/boundary-role":"workload","topology.kubernetes.io/region":"us-east-1","topology.kubernetes.io/zone":"us-east-1b"}
+  the two NetworkPolicies selecting the workload pod (boundary-pair=a6433f6b-4ba3-44c0-9160-adea57c85a7d):
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -536,8 +534,8 @@ metadata:
   labels:
     openshell.ai/component: sandbox-control-egress
     openshell.ai/managed-by: openshell
-    openshell.ai/sandbox-id: d61ebd15-ed32-4287-9c75-2ee23ddc6620
-  name: os-control-d61ebd15-ed32-4287-9c75-2ee23ddc6620
+    openshell.ai/sandbox-id: a6433f6b-4ba3-44c0-9160-adea57c85a7d
+  name: os-control-a6433f6b-4ba3-44c0-9160-adea57c85a7d
   namespace: openshell-kubernetes
 spec:
   egress:
@@ -547,20 +545,20 @@ spec:
     to:
     - podSelector:
         matchLabels:
-          openshell.ai/boundary-pair: d61ebd15-ed32-4287-9c75-2ee23ddc6620
+          openshell.ai/boundary-pair: a6433f6b-4ba3-44c0-9160-adea57c85a7d
           openshell.ai/boundary-role: supervisor
   ingress:
   - from:
     - podSelector:
         matchLabels:
-          openshell.ai/boundary-pair: d61ebd15-ed32-4287-9c75-2ee23ddc6620
+          openshell.ai/boundary-pair: a6433f6b-4ba3-44c0-9160-adea57c85a7d
           openshell.ai/boundary-role: workload
     ports:
     - port: 5500
       protocol: TCP
   podSelector:
     matchLabels:
-      openshell.ai/boundary-pair: d61ebd15-ed32-4287-9c75-2ee23ddc6620
+      openshell.ai/boundary-pair: a6433f6b-4ba3-44c0-9160-adea57c85a7d
   policyTypes:
   - Ingress
   - Egress
@@ -596,7 +594,7 @@ OpenShell entirely does not bypass the `NetworkPolicy`:
 
 ```text
   a connection from the workload pod's own network namespace, outside OpenShell's control (an ephemeral debug container sharing it), to the policy-approved backend by IP -- bypassing OpenShell entirely does not bypass the NetworkPolicy:
-Connecting to 10.100.144.165 (10.100.144.165:80)
+Connecting to 10.100.133.181 (10.100.133.181:80)
 wget: download timed out
 EXIT=1
 ```
@@ -617,23 +615,23 @@ problem:
 
 ```text
   control -- the same technique against the supervisor pod, which carries no such restriction:
-Connecting to 10.100.144.165 (10.100.144.165:80)
+Connecting to 10.100.133.181 (10.100.133.181:80)
 writing to stdout
+-                    100% |********************************|   147  0:00:00 ETA
+written to stdout
 {
   "headers": {
     "Connection": [
       "close"
     ],
     "Host": [
-      "10.100.144.165"
+      "10.100.133.181"
     ],
     "User-Agent": [
       "Wget"
     ]
   }
 }
--                    100% |********************************|   147  0:00:00 ETA
-written to stdout
 EXIT=0
 ```
 
@@ -690,7 +688,7 @@ request from the supervisor pod succeeds.
 
 ```text
 ==> the sandbox(es) this run created
-sandbox.agents.x-k8s.io "default--demo-1794072008" deleted from openshell-kubernetes namespace
+sandbox.agents.x-k8s.io "default--demo-1794074233" deleted from openshell-kubernetes namespace
 pod "node-probe" deleted from openshell-kubernetes namespace
 pod "echo-api" deleted from openshell-kubernetes namespace
 service "echo-api" deleted from openshell-kubernetes namespace

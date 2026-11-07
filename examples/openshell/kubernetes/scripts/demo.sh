@@ -162,10 +162,21 @@ for pod in json.load(sys.stdin)['items']:
 kc wait pod/"$supervisor_pod" -n "$SANDBOX_NAMESPACE" --for=condition=Ready --timeout=5m ||
   die "the supervisor pod $supervisor_pod did not reach Ready; 'kubectl describe pod/$supervisor_pod -n $SANDBOX_NAMESPACE' says why"
 
+# Asserted, not just printed: the --memory 1Gi above has to reach the agent container as
+# both its request (what the sandbox VM is sized from) and its limit.
+agent_memory_request="$(kc get pod "$workload_pod" -n "$SANDBOX_NAMESPACE" \
+  -o jsonpath='{.spec.containers[?(@.name=="agent")].resources.requests.memory}')" ||
+  die "could not read the agent container's memory request"
+agent_memory_limit="$(kc get pod "$workload_pod" -n "$SANDBOX_NAMESPACE" \
+  -o jsonpath='{.spec.containers[?(@.name=="agent")].resources.limits.memory}')" ||
+  die "could not read the agent container's memory limit"
+[[ "$agent_memory_request" == "1Gi" && "$agent_memory_limit" == "1Gi" ]] ||
+  die "the agent container in $workload_pod has memory request '$agent_memory_request' and limit '$agent_memory_limit', not the 1Gi this script asked for with --memory 1Gi"
+
 echo "  workload pod:   $workload_pod"
 kc get pod "$workload_pod" -n "$SANDBOX_NAMESPACE" -o jsonpath='    runtimeClassName: {.spec.runtimeClassName}{"\n"}'
-kc get pod "$workload_pod" -n "$SANDBOX_NAMESPACE" \
-  -o jsonpath='    agent container memory request: {.spec.containers[?(@.name=="agent")].resources.requests.memory}{"\n"}'
+echo "    agent container memory request: $agent_memory_request"
+echo "    agent container memory limit:   $agent_memory_limit"
 echo "  supervisor pod: $supervisor_pod"
 kc get pod "$supervisor_pod" -n "$SANDBOX_NAMESPACE" -o jsonpath='    runtimeClassName: {.spec.runtimeClassName}{"\n"}'
 echo "    (empty means no RuntimeClass: an ordinary pod)"
@@ -308,17 +319,20 @@ ECHO_IP="$(kc get service echo-api -n "$SANDBOX_NAMESPACE" -o jsonpath='{.spec.c
 # created, not once it has run, so this polls its terminated state. It dies unless the
 # container actually ran its command: one that never started (StartError) is terminated
 # too, with an empty log, and reading that as "no response" would show a refusal that
-# never happened.
+# never happened. The container gets a name of its own, made here and passed to kubectl
+# debug, and its status and log are read by that name: on a shared cluster someone else
+# can add an ephemeral container to the same pod, so "the last one in the list" need not
+# be this one.
 debug_wget() {
   local pod="$1" out container reason=""
   shift
-  out="$(kc debug "$pod" -n "$SANDBOX_NAMESPACE" --image=public.ecr.aws/docker/library/busybox:1.36 "$@" \
+  container="netpol-probe-$(openssl rand -hex 4)" ||
+    die "could not generate a name for the ephemeral container"
+  out="$(kc debug "$pod" -n "$SANDBOX_NAMESPACE" --image=public.ecr.aws/docker/library/busybox:1.36 \
+    --container="$container" "$@" \
     -- sh -c "wget -T 5 -O- http://$ECHO_IP/headers; echo EXIT=\$?" 2>&1)" ||
-    die "kubectl debug could not add an ephemeral container to $pod: $out"
+    die "kubectl debug could not add the ephemeral container $container to $pod: $out"
   grep -v '^Defaulting\|^--profile\|^Targeting' <<<"$out" || true
-  container="$(kc get pod "$pod" -n "$SANDBOX_NAMESPACE" -o jsonpath='{.spec.ephemeralContainers[-1:].name}')" ||
-    die "could not read the ephemeral container's name from $pod"
-  [[ -n "$container" ]] || die "kubectl debug reported success but $pod has no ephemeral container"
   for _ in $(seq 1 30); do
     reason="$(kc get pod "$pod" -n "$SANDBOX_NAMESPACE" \
       -o jsonpath="{.status.ephemeralContainerStatuses[?(@.name==\"$container\")].state.terminated.reason}")" ||

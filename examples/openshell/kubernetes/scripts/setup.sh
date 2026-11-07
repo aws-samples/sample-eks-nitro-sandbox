@@ -68,8 +68,6 @@ GATEWAY_RELEASE="${GATEWAY_RELEASE:-openshell}"
 WORKSPACE_STORAGE_CLASS="${WORKSPACE_STORAGE_CLASS:-}"
 CHOSEN_STORAGE_CLASS=""
 SAMPLE_STORAGE_CLASS="openshell-kubernetes-gp3"
-# Set to 1 only when this run actually created the sample's own class.
-CREATED_SAMPLE_STORAGE_CLASS=0
 EBS_PROVISIONER="ebs.csi.eks.amazonaws.com"
 # The reclaim policy the sample needs: the clean up deletes the claim and waits
 # for its PV to be deleted, which only releases the EBS volume when the class
@@ -134,7 +132,8 @@ sc_reclaims_on_delete() {
 # `kubectl apply`s one.
 #
 #   WORKSPACE_STORAGE_CLASS set   -> use it, after checking its provisioner is EBS CSI and
-#                          that it reclaims its volumes on delete.
+#                          that it reclaims its volumes on delete. Naming the sample's own
+#                          class takes the sample-class path below instead.
 #   WORKSPACE_STORAGE_CLASS unset -> use the one default class that fits, if exactly one
 #                          does; otherwise the sample's own class.
 choose_storage_class() {
@@ -193,8 +192,8 @@ choose_storage_class() {
 
 # ensure_sample_storage_class : make SAMPLE_STORAGE_CLASS available. Create it from
 # the manifest with `kubectl create` only when absent; reuse an existing one only
-# when it carries the sample's mark AND the right provisioner AND reclaims its
-# volumes on delete; stop otherwise.
+# when it carries the sample's mark AND fits (sc_fits: EBS CSI, gp3, encrypted,
+# reclaimPolicy Delete); stop otherwise, and never change it.
 ensure_sample_storage_class() {
   local prov rc=0
   prov="$(sc_field "$SAMPLE_STORAGE_CLASS" '{.provisioner}')" || rc=$?
@@ -203,18 +202,18 @@ ensure_sample_storage_class() {
     echo "creating storageclass/$SAMPLE_STORAGE_CLASS from deploy/storage-class.yaml"
     kc create -f "$SAMPLE_DIR/deploy/storage-class.yaml" \
       || die "could not create storageclass/$SAMPLE_STORAGE_CLASS"
-    CREATED_SAMPLE_STORAGE_CLASS=1
     return 0
   fi
   local mark mrc=0
   mark="$(sc_field "$SAMPLE_STORAGE_CLASS" '{.metadata.labels.app\.kubernetes\.io/managed-by}')" || mrc=$?
   [[ $mrc -ne 0 ]] && die "could not read the labels on storageclass/$SAMPLE_STORAGE_CLASS; stopping rather than guess"
   [[ "$mark" != "$SAMPLE" ]] && die "storageclass/$SAMPLE_STORAGE_CLASS already exists without the sample's mark (app.kubernetes.io/managed-by=$SAMPLE); it belongs to something else. Remove it or set WORKSPACE_STORAGE_CLASS to a class that uses $EBS_PROVISIONER."
-  [[ "$prov" != "$EBS_PROVISIONER" ]] && die "storageclass/$SAMPLE_STORAGE_CLASS exists with provisioner '$prov', not '$EBS_PROVISIONER'; not reusing it."
-  local rrc=0; sc_reclaims_on_delete "$SAMPLE_STORAGE_CLASS" || rrc=$?
-  [[ $rrc -eq 2 ]] && die "could not read the reclaimPolicy of storageclass/$SAMPLE_STORAGE_CLASS; stopping rather than guess"
-  [[ $rrc -eq 1 ]] && die "storageclass/$SAMPLE_STORAGE_CLASS exists without reclaimPolicy $EBS_RECLAIM_POLICY, so the clean up could not report its EBS volume gone; not reusing it. Remove it, or set WORKSPACE_STORAGE_CLASS to a class with reclaimPolicy $EBS_RECLAIM_POLICY."
-  echo "reusing storageclass/$SAMPLE_STORAGE_CLASS (carries the sample's mark, provisioner $prov, reclaimPolicy $EBS_RECLAIM_POLICY)"
+  # The mark says whose class it is, not that it is still what deploy/storage-class.yaml
+  # makes, so it gets the same check a default class gets.
+  local frc=0; sc_fits "$SAMPLE_STORAGE_CLASS" || frc=$?
+  [[ $frc -eq 2 ]] && die "could not read the provisioner, type, encryption or reclaimPolicy of storageclass/$SAMPLE_STORAGE_CLASS; stopping rather than guess"
+  [[ $frc -eq 1 ]] && die "storageclass/$SAMPLE_STORAGE_CLASS carries the sample's mark but does not fit ($EBS_PROVISIONER, gp3, encrypted, reclaimPolicy $EBS_RECLAIM_POLICY); not reusing it, and not changing it. Remove it with ./scripts/clean.sh, or set WORKSPACE_STORAGE_CLASS to another class that uses $EBS_PROVISIONER."
+  echo "reusing storageclass/$SAMPLE_STORAGE_CLASS (carries the sample's mark, and fits: $EBS_PROVISIONER, gp3, encrypted, reclaimPolicy $EBS_RECLAIM_POLICY)"
 }
 
 [[ "$CREDENTIAL_NAMESPACE" != "$GATEWAY_NAMESPACE" ]] ||
@@ -418,12 +417,13 @@ GATEWAY_IMAGE="$(jqr '.images.gateway')"
 SUPERVISOR_IMAGE="$(jqr '.images.supervisor')"
 SANDBOX_RUNTIME_IMAGE="$(jqr '.images.sandbox_runtime')"
 python3 - "$TMP_DIR/gateway-values.yaml" \
-    "${GATEWAY_IMAGE#*@}" "${SANDBOX_RUNTIME_IMAGE#*@}" "${SUPERVISOR_IMAGE#*@}" <<'PY'
+    "${GATEWAY_IMAGE#*@}" "${SANDBOX_RUNTIME_IMAGE#*@}" "${SUPERVISOR_IMAGE#*@}" \
+    "$CHOSEN_STORAGE_CLASS" <<'PY'
 import re
 import sys
 import yaml
 
-path, gateway_digest, sandbox_runtime_digest, supervisor_digest = sys.argv[1:5]
+path, gateway_digest, sandbox_runtime_digest, supervisor_digest, storage_class = sys.argv[1:6]
 digest_re = re.compile(r"^sha256:[0-9a-f]{64}$")
 for name, digest in (("gateway", gateway_digest), ("sandboxRuntime", sandbox_runtime_digest),
                       ("supervisor", supervisor_digest)):
@@ -434,7 +434,17 @@ values = yaml.safe_load(open(path))
 values.setdefault("gateway", {}).setdefault("image", {})["digest"] = gateway_digest
 values.setdefault("sandboxRuntime", {}).setdefault("image", {})["digest"] = sandbox_runtime_digest
 values.setdefault("supervisor", {}).setdefault("image", {})["digest"] = supervisor_digest
-yaml.safe_dump(values, open(path, "w"))
+with open(path, "w") as f:
+    yaml.safe_dump(values, f)
+# Read back what Helm will read: both claims must name the chosen class, as a string.
+with open(path) as f:
+    server = (yaml.safe_load(f) or {}).get("server") or {}
+for key in ("workspaceStorageClass", "dataStorageClass"):
+    got = server.get(key)
+    if not isinstance(got, str) or got != storage_class:
+        sys.exit(f"the rendered gateway values' server.{key} loads as {got!r} "
+                 f"({type(got).__name__}), not the string {storage_class!r} setup chose; "
+                 f"refusing to install")
 PY
 echo "  pinned the gateway, supervisor and sandbox-runtime images by digest"
 
