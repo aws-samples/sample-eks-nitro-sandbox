@@ -635,6 +635,30 @@ global_settings:
       path: 'examples/ci-cd/docker-builds/deploy/hello-docker.yaml'
       reason: 'The sample runs a privileged root build daemon on purpose; it reaches only the pod own guest (buildkit-job.yaml:2, hello-docker.yaml:34)'
       expiration: '2027-12-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/ci-cd/docker-builds/deploy/buildkit-job.yaml'
+      reason: 'Single privileged container; the pod-level settings (seccomp, non-root) are no-ops or impossible for it; the sandbox is the boundary (buildkit-job.yaml:34)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/ci-cd/docker-builds/deploy/buildkit-job.yaml'
+      reason: 'Privileged container: no seccomp filter applies (Seccomp: 0 with RuntimeDefault set), so the profile would be a no-op; the sandbox is the boundary (buildkit-job.yaml:34)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/ci-cd/docker-builds/deploy/buildkit-job.yaml'
+      reason: 'Pods carry app.kubernetes.io/part-of: docker-builds (buildkit-job.yaml:20), selected by the ApplicationNetworkPolicy in deploy/egress-policy.yaml (egress-policy.yaml:26-28)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/ci-cd/docker-builds/deploy/hello-docker.yaml'
+      reason: 'Single privileged container; the pod-level settings (seccomp, non-root) are no-ops or impossible for it; the sandbox is the boundary (hello-docker.yaml:35)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/ci-cd/docker-builds/deploy/hello-docker.yaml'
+      reason: 'Privileged container: no seccomp filter applies (Seccomp: 0 with RuntimeDefault set), so the profile would be a no-op; the sandbox is the boundary (hello-docker.yaml:35)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/ci-cd/docker-builds/deploy/hello-docker.yaml'
+      reason: 'Pods carry app.kubernetes.io/part-of: docker-builds (hello-docker.yaml:16), selected by the ApplicationNetworkPolicy in deploy/egress-policy.yaml (egress-policy.yaml:26-28)'
+      expiration: '2027-12-31'
     # Base image comes from a build argument that build-images.sh sets with a fixed tag (build-images.sh:29).
     - rule_id: CKV_DOCKER_7
       path: 'examples/ai-agents/coding-agents-for-developers/images/*/Dockerfile'
@@ -1286,43 +1310,6 @@ global_settings:
     - rule_id: CKV_DOCKER_8
       path: 'examples/ai-agents/coding-agents-for-developers/images/pi/Dockerfile'
       reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
-      expiration: '2027-01-31'
-    # Baseline: ci-cd/docker-builds
-    - rule_id: CKV2_K8S_6
-      path: 'examples/ci-cd/docker-builds/deploy/buildkit-job.yaml'
-      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in #141'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_22
-      path: 'examples/ci-cd/docker-builds/deploy/buildkit-job.yaml'
-      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in #141'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_29
-      path: 'examples/ci-cd/docker-builds/deploy/buildkit-job.yaml'
-      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in #141'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_31
-      path: 'examples/ci-cd/docker-builds/deploy/buildkit-job.yaml'
-      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in #141'
-      expiration: '2027-01-31'
-    - rule_id: CKV2_K8S_6
-      path: 'examples/ci-cd/docker-builds/deploy/hello-docker.yaml'
-      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in #141'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_22
-      path: 'examples/ci-cd/docker-builds/deploy/hello-docker.yaml'
-      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in #141'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_29
-      path: 'examples/ci-cd/docker-builds/deploy/hello-docker.yaml'
-      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in #141'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_31
-      path: 'examples/ci-cd/docker-builds/deploy/hello-docker.yaml'
-      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in #141'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/ci-cd/docker-builds/deploy/hello-docker.yaml'
-      reason: 'Baseline: ci-cd/docker-builds merged before the ASH gate; hardening tracked in #141'
       expiration: '2027-01-31'
     # Baseline: confidential/encrypted-image
     - rule_id: CKV2_K8S_6
