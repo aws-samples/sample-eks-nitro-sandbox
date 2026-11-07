@@ -592,6 +592,74 @@ replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
   '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
 expect_ok "accept: a comment-prefixed continuation fence keeps its body comments inert" "OK, 2 sample(s)" "$d"
 
+# A leading real comment can expose a fence, including when the comment spans lines.
+# An inline-code closer after that boundary must not consume the fence opener.
+for fence_marker in '~~~' '```'; do
+  for comment_layout in inline multiline; do
+    if [ "$comment_layout" = inline ]; then
+      prefix_lines=("  <!-- prefix --> ${fence_marker}text")
+    else
+      prefix_lines=('  <!-- prefix' "  --> ${fence_marker}text")
+    fi
+    d=$(new_repo "reject-code-crosses-comment-fence-$passed")
+    replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+      '- unmatched ` text' "${prefix_lines[@]}" '  closes` here' \
+      '  - [signing](../examples/policy/signing/README.md) (draft): hidden in the fence.' \
+      "  $fence_marker" '- [signing](../examples/policy/signing/README.md): visible, no status.'
+    expect_findings "reject: code cannot cross a $comment_layout comment-prefixed $fence_marker fence to supply status" "$d" \
+      "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
+
+    d=$(new_repo "reject-code-crosses-comment-fence-only-link-$passed")
+    replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+      '- unmatched ` text' "${prefix_lines[@]}" '  closes` here' \
+      '  - [signing](../examples/policy/signing/README.md) (draft): hidden in the fence.' \
+      "  $fence_marker"
+    expect_findings "reject: a link inside a $comment_layout comment-prefixed $fence_marker fence stays hidden" "$d" \
+      "policy/signing is not linked in docs/ROADMAP.md"
+
+    d=$(new_repo "accept-draft-after-comment-fence-$passed")
+    replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+      '- unmatched ` text' "${prefix_lines[@]}" '  closes` here' \
+      "  $fence_marker" '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
+    expect_ok "accept: a visible draft after a $comment_layout comment-prefixed $fence_marker fence" "OK, 2 sample(s)" "$d"
+  done
+done
+
+# Comment-looking text inside matched code must not erase its closing delimiters.
+for ticks in '```' '````'; do
+  d=$(new_repo "accept-continuation-code-comment-$passed")
+  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+    '- A list note.' "  ${ticks}literal <!--${ticks}" \
+    '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
+  expect_ok "accept: a $ticks inline span with a literal comment opener is not a fence" "OK, 2 sample(s)" "$d"
+done
+
+d=$(new_repo accept-continuation-code-comment-inner-ticks)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '- A list note.' '  ```text <!-- `` ` literal ```' \
+  '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
+expect_ok "accept: shorter inner tick runs and a literal comment opener stay inside matched code" "OK, 2 sample(s)" "$d"
+
+d=$(new_repo accept-continuation-code-closed-comment)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '- A list note.' '  ```literal <!-- -->```' \
+  '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
+expect_ok "accept: a closed comment-looking token inside matched continuation code" "OK, 2 sample(s)" "$d"
+
+d=$(new_repo accept-multiline-code-comment-without-fence)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '- ``literal code' '  <!-- text with no fence' '  ends here``.' \
+  '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
+expect_ok "accept: comment-looking continuation text without a fence stays inside matched code" "OK, 2 sample(s)" "$d"
+
+for literal in '<!-- literal comment' '<!-- comment -->'; do
+  d=$(new_repo "accept-fence-header-comment-$passed")
+  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+    "\`\`\`text $literal" '```' \
+    '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
+  expect_ok "accept: comment-looking text in a real fence header remains literal: $literal" "OK, 2 sample(s)" "$d"
+done
+
 for status in '(drafting)' '(draft)extra' ': the description mentions (draft).' '`(draft)`'; do
   d=$(new_repo "reject-nonstatus-$passed")
   replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \

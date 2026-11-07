@@ -94,16 +94,21 @@ markdown_text() { # file [inline-code]
       return n
     }
     function unindent(s) { sub(/^ ? ? ?/, "", s); return s }
-    function fence_opens(s,   c, n) {
+    function fence_marker(s,   c, n) {
       s = unindent(s)
       c = substr(s, 1, 1)
-      if (c != "`" && c != "~") return 0
+      if (c != "`" && c != "~") return ""
       n = fence_run(s, c)
-      if (n < 3) return 0
+      if (n < 3) return ""
       # A backtick fence cannot have a backtick in its info string; such a line is text.
-      if (c == "`" && index(substr(s, n + 1), "`") > 0) return 0
-      fchar = c
-      flen = n
+      if (c == "`" && index(substr(s, n + 1), "`") > 0) return ""
+      return substr(s, 1, n)
+    }
+    function fence_opens(s,   marker) {
+      marker = fence_marker(s)
+      if (marker == "") return 0
+      fchar = substr(marker, 1, 1)
+      flen = length(marker)
       return 1
     }
     function fence_closes(s,   n) {
@@ -112,12 +117,35 @@ markdown_text() { # file [inline-code]
       if (n < flen) return 0
       return (substr(s, n + 1) ~ /^[ \t]*$/)
     }
+    # The roadmap admits only leading real comments before a fence marker. Leave the
+    # remainder intact: stripping a comment inside matched code can manufacture a fence.
+    # nextline allows a leading comment to close on a later physical input line. This
+    # query never changes comment/fence state, including when used for lookahead.
+    function roadmap_fence(s, nextline,   prefix, e, removed, nl) {
+      prefix = ""
+      while (1) {
+        match(s, /^[ \t]*/)
+        prefix = prefix substr(s, 1, RLENGTH); s = substr(s, RLENGTH + 1)
+        if (substr(s, 1, 4) != "<!--") {
+          nl = index(s, "\n")
+          return fence_marker(prefix (nl ? substr(s, 1, nl - 1) : s))
+        }
+        s = substr(s, 5)
+        while ((e = index(s, "-->")) == 0) {
+          if (!nextline || nextline > NR) return ""
+          s = s "\n" input[nextline]; nextline++
+        }
+        removed = substr(s, 1, e + 2)
+        if (index(removed, "\n")) prefix = ""
+        s = substr(s, e + 3)
+      }
+    }
     # Only the roadmap status reader enables this mode. Buffer an index entry and its
     # indented continuations so matching code delimiters can cross physical lines.
     # Blank lines, new list items, headings, and fences end the supported continuation.
-    function continuation(s, indent,   prefix, width, i, c) {
+    function continuation(s, indent, nextline,   prefix, width, i, c) {
       if (s ~ /^[ \t]*$/ || s ~ /^ ? ? ?(- |#+[ \t])/) return 0
-      if (fence_opens(s)) return 0
+      if (roadmap_fence(s, nextline) != "") return 0
       match(s, /^[ \t]*/)
       prefix = substr(s, 1, RLENGTH); width = 0
       for (i = 1; i <= length(prefix); i++) {
@@ -130,7 +158,7 @@ markdown_text() { # file [inline-code]
     function newlines(s) { gsub(/[^\n]/, "", s); return s }
     # Interpret comments and code together. A comment cannot start inside matched code;
     # backticks inside an actual comment have no effect. Keep unmatched/escaped ticks.
-    function visible_text(text,   out, row, at, rest, e, width, offset, close_at, close_width, found, i, slashes, hidden, nl, candidate) {
+    function visible_text(text,   out, row, at, rest, e, width, offset, close_at, close_width, found, i, slashes, hidden, nl, candidate, marker) {
       out = ""; row = ""; at = 1
       while (at <= length(text)) {
         rest = substr(text, at)
@@ -157,12 +185,9 @@ markdown_text() { # file [inline-code]
         if (row ~ /^ ? ? ?$/ && substr(rest, 1, 1) ~ /[`~]/) {
           nl = index(rest, "\n")
           candidate = row (nl ? substr(rest, 1, nl - 1) : rest)
-          # Match the existing helper: comments in a fence info string are removed.
-          while ((i = index(candidate, "<!--")) > 0) {
-            hidden = substr(candidate, i + 4); e = index(hidden, "-->")
-            candidate = substr(candidate, 1, i - 1) (e ? substr(hidden, e + 3) : "")
-          }
-          if (fence_opens(candidate)) {
+          marker = roadmap_fence(candidate, 0)
+          if (marker != "") {
+            fchar = substr(marker, 1, 1); flen = length(marker)
             out = substr(out, 1, length(out) - length(row)); row = ""; fence = 1
             if (!nl) return out
             out = out "\n"; at += nl
@@ -210,7 +235,7 @@ markdown_text() { # file [inline-code]
         block = input[i]; last = i
         if (!incomment && block ~ /^ ? ? ?- /) {
           match(block, /^ */); indent = RLENGTH
-          while (last < NR && continuation(input[last + 1], indent)) {
+          while (last < NR && continuation(input[last + 1], indent, last + 2)) {
             last++; block = block "\n" input[last]
           }
         }
