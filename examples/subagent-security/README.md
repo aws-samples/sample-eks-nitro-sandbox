@@ -1,6 +1,6 @@
 # Subagent security: the same analyst, three ways to confine its tools
 
-The samples in this section run one procurement analyst three times over. The task, the
+The blueprints in this section run one procurement analyst three times over. The task, the
 inputs, the model path and the recommendation it has to produce are identical in all three.
 What changes is the layer that confines the tool processes the analyst runs inside its
 sandbox: [nono](https://github.com/nolabs-ai/nono) here,
@@ -17,8 +17,8 @@ on each page, and they do different jobs:
   application and the tool processes it starts. It is what decides which files a tool can
   open, whether it has a network at all, and which credential it holds.
 
-This page is the part the three samples share: the analyst, the case, the files, and what
-a confinement layer has to supply. Each sample's page links here instead of restating it.
+This page is the part the three blueprints share: the analyst, the case, the files, and what
+a confinement layer has to supply. Each blueprint's page links here instead of restating it.
 
 ## The analyst and its case
 
@@ -52,7 +52,7 @@ accepted, and they are deliberately separate:
 - **The citation gate** requires every original proposal's S3 key in the analysis.
 
 The recommendation heading is rendered from the checked field, not from the prose, so the
-headline and the gate always read the same value. Each sample's page shows both gates
+headline and the gate always read the same value. Each blueprint's page shows both gates
 refusing an answer as well as accepting one.
 
 ## What runs where
@@ -78,13 +78,13 @@ directory, so what passes between them passes through the controller.
 **The trusted controller owns AWS.** It downloads the proposals from Amazon S3, calls
 Amazon Bedrock and saves the report, all with the pod's EKS Pod Identity credentials. The
 confinement layer does not sign those calls, and the tool processes have no AWS role: they
-are refused the Pod Identity token file and the Pod Identity endpoint, which each sample
+are refused the Pod Identity token file and the Pod Identity endpoint, which each blueprint
 shows. No model API key is placed in the sandbox, and each page checks that by variable
 name.
 
 **The supplier API accepts an authenticated mutation on purpose.** A purchase order or a
 supplier-record change succeeds against it when the request carries the real key. That is
-what makes a refusal attributable: each sample sends the same method and path from the
+what makes a refusal attributable: each blueprint sends the same method and path from the
 trusted controller, with the same key, and shows the server accepting it. Without that
 control, a refusal could be the server's own doing rather than the confinement layer's.
 
@@ -103,7 +103,7 @@ does not decide whether the recommendation is right.
 
 ## The shared files
 
-Everything under [`analyst/`](analyst/) is shared, and each sample uses it unchanged.
+Everything under [`analyst/`](analyst/) is shared, and each blueprint uses it unchanged.
 
 | File | What it is |
 |---|---|
@@ -114,23 +114,23 @@ Everything under [`analyst/`](analyst/) is shared, and each sample uses it uncha
 | [`analyst/supplier-api/`](analyst/supplier-api/) | The synthetic supplier API and its image |
 | [`analyst/deploy/`](analyst/deploy/) | The namespace, the analyst ServiceAccount, and the supplier API Deployment and Services |
 | [`analyst/iam/`](analyst/iam/) | The Pod Identity role trust policy and the permissions the controller gets |
-| [`analyst/scripts/analyst-lib.sh`](analyst/scripts/analyst-lib.sh) | The half of setup every sample shares, sourced by each sample's own `setup.sh` |
+| [`analyst/scripts/analyst-lib.sh`](analyst/scripts/analyst-lib.sh) | The half of setup every blueprint shares, sourced by each blueprint's own `setup.sh` |
 | [`analyst/requirements.txt`](analyst/requirements.txt) | The locked, hash-pinned Python dependencies, installed with `--require-hashes` |
 
-**What a sample adds.** Its own `Dockerfile`, which puts its confinement layer in the image
+**What a blueprint adds.** Its own `Dockerfile`, which puts its confinement layer in the image
 beside the shared analyst; its own controller, which launches the tool roles through that
 layer; the profiles or configuration the layer reads; its pod; and its `setup.sh`, `run.sh`
 and `clean.sh`.
 
-**What none of them adds is a network policy.** These samples are about the boundary inside
+**What none of them adds is a network policy.** These blueprints are about the boundary inside
 the pod, between a trusted application and the tool processes it starts. None of them
 restricts its pod's egress, so on each page the confinement layer is the only boundary
 shown and the pod reaches whatever the cluster and VPC allow. Each page says so, and says
 precisely what its layer does and does not decide.
-[Isolation > Network policy](../isolation/network-policy/README.md) is the sample for
+[Isolation > Network policy](../isolation/network-policy/README.md) is the blueprint for
 restricting a sandbox's egress on the node.
 
-**What a confinement layer has to supply**, for the three samples to show the same thing:
+**What a confinement layer has to supply**, for the three blueprints to show the same thing:
 
 1. Start [`analyst/src/worker.py`](analyst/src/worker.py) as a separate process for one
    role and one action, with an environment the controller builds rather than inherits.
@@ -147,14 +147,14 @@ restricting a sandbox's egress on the node.
 A layer that cannot do one of these is worth saying so about on its page, rather than
 leaving the comparison looking even.
 
-Each sample names its own `ManagedBy` tag and its own namespace, and builds its own copy of
+Each blueprint names its own `ManagedBy` tag and its own namespace, and builds its own copy of
 the supplier API image, so two of them can run side by side in one account without either
 clean up removing the other's resources.
 
 ## Before you run one
 
-Each sample's page lists what it needs, and they all share the
-[prerequisites](../README.md#prerequisites) on the home page. Every sample here also builds
+Each blueprint's page lists what it needs, and they all share the
+[prerequisites](../README.md#prerequisites) on the home page. Every blueprint here also builds
 on three earlier ones and does not re-explain them:
 [hello sandbox](../getting-started/hello-sandbox/README.md) for the one-line opt-in and how
 a pod shows it ran in a sandbox, [coding agent](../getting-started/coding-agent/README.md)
@@ -165,7 +165,7 @@ for Bedrock through Pod Identity, and
 A run uses Amazon Bedrock tokens, stores a few small objects in Amazon S3, and keeps one
 sandboxed pod and one small ordinary pod running until you clean up.
 
-## The samples
+## The blueprints
 
 - [Procurement analyst confined by nono](nono/README.md): reader, evaluator and writer as
   separate processes under per-role nono profiles, with nono's proxy brokering the supplier

@@ -5,7 +5,7 @@ usually needs a Docker daemon, and on a shared self-hosted runner that daemon is
 privileged on the node, where a malicious `Dockerfile` or test gets at the other jobs and
 the node's credentials, or crippled, so continuous integration cannot build anything.
 
-This sample removes that choice. It runs the official
+This blueprint removes that choice. It runs the official
 [GitHub Actions Runner Controller](https://docs.github.com/en/actions/concepts/runners/actions-runner-controller)
 (ARC) on Amazon EKS so that every ephemeral runner pod ARC creates for a queued job is its
 own sandbox, with its own kernel, and is deleted when the job ends. A workflow that stands
@@ -14,7 +14,7 @@ contained to that one pod. The controller and its listener stay ordinary pods: o
 untrusted work is in a sandbox.
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
-on the home page, and run these samples first, which this one builds on:
+on the home page, and run these blueprints first, which this one builds on:
 
 - [Getting started > Hello sandbox](../../getting-started/hello-sandbox/README.md): the
   one-line opt-in, and how a pod shows that it ran in a sandbox.
@@ -27,14 +27,14 @@ on the home page, and run these samples first, which this one builds on:
   you do not trust.
 
 The commands below use files from this repository, so clone it if you have not already, and
-run them from this sample's folder:
+run them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/ci-cd/github-actions
 ```
 
-For this sample you also need [Helm](https://helm.sh/docs/intro/install/) 3.14 or later,
+For this blueprint you also need [Helm](https://helm.sh/docs/intro/install/) 3.14 or later,
 which installs the two ARC charts from an OCI registry; the scripts use `helm --labels` and
 read labels back from `helm get metadata`, neither of which is in earlier versions. You also
 need [`jq`](https://jqlang.github.io/jq/), which the scripts use to read Helm's JSON. The run
@@ -42,7 +42,7 @@ on this page used Helm 4.2.4. You also need two things of your own: a
 **test repository** you own and can afford to run untrusted-shaped jobs in, and a
 **least-privilege GitHub credential** for it. Both are described in Step 2.
 
-Every output block on this page is from one real run of this sample. Three kinds of local
+Every output block on this page is from one real run of this blueprint. Three kinds of local
 name in that output are replaced by the same placeholders the commands use, because this
 repository is public: `<CLUSTER_NAME>` for the kube context, `<OWNER>/<TEST_REPO>` for the
 test repository, and `<NODE_NAME>` for an EC2 instance id. Pod names, pod UIDs, kernel
@@ -100,10 +100,10 @@ a different one, and `scripts/setup.sh` stops if they disagree.
 The runner image tracks the chart's default rather than a pinned tag on purpose. GitHub
 stops queuing jobs to a runner more than 30 days behind a release, and its broker refuses a
 deprecated runner outright (Amazon EKS clusters are not special here; the same happens on an
-ordinary runner). A pinned older tag therefore turns into a broken sample a month later. If
+ordinary runner). A pinned older tag therefore turns into a broken blueprint a month later. If
 you need a reproducible tag, pin it and plan to move it at least monthly.
 
-This sample installs no agent-sandbox resources. The runner pods are sandboxes because of
+This blueprint installs no agent-sandbox resources. The runner pods are sandboxes because of
 one `runtimeClassName` line in the chart's `template.spec`, not because of a
 `SandboxTemplate` or a warm pool.
 
@@ -116,8 +116,8 @@ one `runtimeClassName` line in the chart's `template.spec`, not because of a
 | [`deploy/ordinary-pod.yaml`](deploy/ordinary-pod.yaml) | An ordinary pod, for the comparison in Step 6 only |
 | [`workflow/untrusted-pr-workflow.yaml`](workflow/untrusted-pr-workflow.yaml) | The untrusted-shaped workflow to copy into your test repository |
 | [`scripts/setup.sh`](scripts/setup.sh) | Creates the namespace, the credential Secret, the egress policy and the runner scale set |
-| [`scripts/clean.sh`](scripts/clean.sh) | Removes what this sample created, and says what stays |
-| [`.env.example`](.env.example) | The local values the sample needs; copy to `.env`, which git ignores |
+| [`scripts/clean.sh`](scripts/clean.sh) | Removes what this blueprint created, and says what stays |
+| [`.env.example`](.env.example) | The local values the blueprint needs; copy to `.env`, which git ignores |
 
 ## Quick start
 
@@ -142,9 +142,9 @@ kubectl get pods -n arc-runners -w
 **Step 1: Install the ARC controller, once per cluster.** The controller and the four ARC
 custom resource definitions are shared by everything on the cluster that uses ARC: one
 controller watches every namespace, and each definition holds every team's objects of that
-kind. This sample therefore never installs, upgrades or reconfigures them. If ARC is already
+kind. This blueprint therefore never installs, upgrades or reconfigures them. If ARC is already
 on your cluster, skip this step and set `ARC_VERSION` in `.env` to the version that is
-installed. If it is not, install it yourself at the version this sample pins:
+installed. If it is not, install it yourself at the version this blueprint pins:
 
 ```bash
 helm install arc oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller \
@@ -202,7 +202,7 @@ itself does not land in your shell history:
 `kubectl create secret generic --from-file`, so the credential is never an argument to a
 command and never visible to another process in `ps`, and it suspends shell tracing around
 every place that handles it. It creates the Secret when none is there, and replaces one this
-sample already owns outright rather than merging into it, so moving from a token to a GitHub
+blueprint already owns outright rather than merging into it, so moving from a token to a GitHub
 App does not leave the old token in the Secret beside the new keys.
 
 It uses no form of `kubectl apply` for the Secret at all. A client-side apply copies the
@@ -211,7 +211,7 @@ whole object, credential included, into its `last-applied-configuration` annotat
 apply adds no such annotation, but it keeps refreshing one that is already there, so a
 Secret that had once been applied client-side would go on carrying the *current* credential
 in plain view. `setup.sh` therefore uses `create` for a Secret that is absent and `replace`
-for one this sample already owns, and then removes that annotation after every write and
+for one this blueprint already owns, and then removes that annotation after every write and
 stops if it is still present — which catches a Secret left annotated by an earlier tool or
 by your own `kubectl apply`.
 
@@ -299,11 +299,11 @@ A runner pod appears only while the job runs. Watch for it with:
 
 The listener pod is the thing to watch for. It runs in `arc-systems`, not with the runners,
 and its readiness is what "registered with GitHub" means. It holds a single outbound
-long-poll HTTPS connection and creates no runner pods until a job is queued, so this sample
+long-poll HTTPS connection and creates no runner pods until a job is queued, so this blueprint
 needs no Ingress, no LoadBalancer and no NodePort: nothing accepts an inbound connection.
 
 **Step 4: Only the runner pods carry the runtime class.** The `gha-runner-scale-set` chart
-exposes `template.spec`, an ordinary Kubernetes PodSpec. That is where this sample sets the
+exposes `template.spec`, an ordinary Kubernetes PodSpec. That is where this blueprint sets the
 runtime class, so every ephemeral runner pod boots as a sandbox:
 
 ```yaml
@@ -321,7 +321,7 @@ template:
           limits:   { cpu: "1", memory: "2Gi" }
 ```
 
-Most samples here set no CPU or memory requests. This one does, for two reasons: a real
+Most blueprints here set no CPU or memory requests. This one does, for two reasons: a real
 `docker build` needs more memory than the default sandbox size, and equal requests and
 limits give the pod Guaranteed quality of service, so one queued job takes exactly one
 sandbox of a known size. Change them to suit your own builds.
@@ -347,7 +347,7 @@ isolated-sandbox
 In `dind` container mode the chart renders the `docker:dind` sidecar itself and ignores any
 container you name `dind` in `template.spec`, so its storage driver and volumes cannot be
 set through these values. The chart's default, `overlay2` on an `emptyDir` inside the guest,
-builds and runs images in the sandbox, so this sample mounts no
+builds and runs images in the sandbox, so this blueprint mounts no
 `/etc/docker/daemon.json`. If a future guest cannot run `overlay2`, the fallback is to mount
 one setting `storage-driver: vfs`.
 
@@ -633,7 +633,7 @@ owns with that pod's `EphemeralRunner`. That is the just-in-time registration co
 is what "runners register just in time" means in practice. It is worth being exact about the
 difference, because it is the whole point of this step:
 
-| | The credential this sample creates | The runner pod's JIT config |
+| | The credential this blueprint creates | The runner pod's JIT config |
 |---|---|---|
 | What it can do | administer the repository's runners | act as this one ephemeral runner, for one job |
 | How long it lasts | until you revoke it | at most this pod's lifetime |
@@ -651,7 +651,7 @@ workflow names; this one names none, and it is granted no OIDC token, which woul
 `id-token: write`.
 
 **`GITHUB_TOKEN` is the one a malicious pull request would reach for**, and its reach is set
-by the workflow's `permissions:` block, not by anything else on this page. This sample's
+by the workflow's `permissions:` block, not by anything else on this page. This blueprint's
 workflow sets the narrowest block that still lets the checkout step work if you take up the
 genuine fork pull request option below:
 
@@ -740,7 +740,7 @@ runner scale set, so uninstalling it removes them.
 That matters for clean up rather than for the runner: `scripts/clean.sh` confirms, after the
 uninstall, that no listener, pod or Secret for this scale set is left in the controller's
 namespace, and says so if any is, because what it is confirming gone is a copy of your
-credential. Revoke the credential at GitHub when you are finished with the sample; that is
+credential. Revoke the credential at GitHub when you are finished with the blueprint; that is
 the only step that makes it useless wherever a copy may remain.
 
 ## How the network policy works
@@ -806,7 +806,7 @@ spec:
 | `github.com`, `api.github.com`, `*.actions.githubusercontent.com` | What a self-hosted runner needs to register, collect a job and report back. These are a subset of GitHub's list in the [self-hosted runners reference](https://docs.github.com/en/actions/reference/self-hosted-runners-reference), enough for this workflow |
 | `codeload.github.com` | Downloads the actions a workflow refers to. This workflow uses none, so it is here for workflows that do |
 | `ghcr.io`, `*.pkg.github.com`, `pkg-containers.githubusercontent.com` | Container and package pulls from GitHub, on the same reference list. This workflow needs none of them either: the runner image is pulled by the kubelet on the node, outside this policy. Remove them if your workflows never pull from GitHub's registries, since `ghcr.io` also accepts pushes |
-| `public.ecr.aws` and `*.cloudfront.net` | The base images this sample's `docker build` pulls. Amazon ECR Public answers a layer download with a redirect to CloudFront at a generated host name, so the pull needs both |
+| `public.ecr.aws` and `*.cloudfront.net` | The base images this blueprint's `docker build` pulls. Amazon ECR Public answers a layer download with a redirect to CloudFront at a generated host name, so the pull needs both |
 | no rule for `169.254.170.23` | The runner pods have no EKS Pod Identity association and need no AWS credential. A policy for a pod that does have a role needs that rule, or its credential requests time out |
 
 Enforcement is turned on once per cluster with the `amazon-vpc-cni` ConfigMap in
@@ -843,7 +843,7 @@ Its limits are worth stating plainly, because this policy constrains untrusted c
   <Error><Code>BlobNotFound</Code><Message>The specified blob does not exist.
   ```
 
-  Measured on this sample, with the control that makes it conclusive: a stock, unsandboxed
+  Measured on this blueprint, with the control that makes it conclusive: a stock, unsandboxed
   runner's job in the same repository, with no egress policy, returns a readable log from the
   same endpoint. The job itself runs perfectly well; it is only the log delivery that fails.
   **Read the job's output from the pod instead**, from the runner's own `_diag/pages/` log,
@@ -860,7 +860,7 @@ Its limits are worth stating plainly, because this policy constrains untrusted c
   The same host serves step summaries, artifacts and the cache, so a workflow that uploads an
   artifact or uses `actions/cache` needs it too. Adding `*.blob.core.windows.net` would allow
   **any** Azure storage account, which is a wide entry to open to untrusted code, so this
-  sample leaves it off and reads the log from the cluster. Add it only if you decide the
+  blueprint leaves it off and reads the log from the cluster. Add it only if you decide the
   Actions log is worth that, and know what you are widening. GitHub notes its host list can
   change, so re-check it against the self-hosted runners reference when you build.
 - **No package index is allowed, on purpose.** The workflow installs nothing: the build runs
@@ -909,21 +909,21 @@ your repository's setting for running workflows from fork pull requests, open a 
 from a fork, and add a checkout step. Everything on this page holds unchanged: the job still
 gets one fresh sandbox, the credential still stays out of it, and the egress policy still
 applies. What changes is that the code in the sandbox is now genuinely someone else's, which
-is the case this sample exists for.
+is the case this blueprint exists for.
 
 ## Good to know
 
-- **The controller and the CRDs are shared, so this sample does not own them.** One
+- **The controller and the CRDs are shared, so this blueprint does not own them.** One
   controller watches every namespace, and deleting an ARC custom resource definition deletes
   every team's objects of that kind. `scripts/setup.sh` checks for the controller and stops
   with the command rather than installing it, and `scripts/clean.sh` never removes it.
 - **Both charts must be on one version.** The controller refuses a runner scale set built by
   a different version, which shows up as a scale set that never produces a listener.
-- **A pinned older runner image breaks the sample, not just the version number.** GitHub's
+- **A pinned older runner image breaks the blueprint, not just the version number.** GitHub's
   broker refuses a deprecated runner, the runner exits, and ARC reads that exit as "outdated"
   and tears down the listener, which leaves the queued job with nowhere to go. This is not
   specific to sandboxes: an ordinary runner pinned to the same old tag fails the same way.
-- **`maxRunners` is the cap on concurrent sandboxes.** This sample sets 2. Each runner pod
+- **`maxRunners` is the cap on concurrent sandboxes.** This blueprint sets 2. Each runner pod
   reserves its full memory request up front, so plan node capacity by reservation rather than
   by average use.
 - **The `dind` sidecar is the chart's, not yours.** In `dind` container mode the chart
@@ -1026,8 +1026,8 @@ counts as "could not determine" rather than "already gone", so anything it could
 or confirm is named at the end and makes it exit non-zero.
 
 It leaves the ARC controller and the four ARC CRDs, and prints the commands to remove them,
-because they are shared cluster-wide and this sample did not install them. If you installed
-them only for this sample, check that nothing else uses ARC first:
+because they are shared cluster-wide and this blueprint did not install them. If you installed
+them only for this blueprint, check that nothing else uses ARC first:
 
 ```bash
 kubectl get autoscalingrunnersets -A
@@ -1037,5 +1037,5 @@ Network policy enforcement is a cluster-wide setting and also stays. Two things 
 cluster are yours to remove: the workflow file in your test repository, and the credential
 you created on GitHub, which should be revoked or uninstalled rather than left to expire.
 
-To remove the namespace the Getting started samples created, and the cluster itself, follow
+To remove the namespace the Getting started blueprints created, and the cluster itself, follow
 the [Hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up).

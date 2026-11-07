@@ -2,11 +2,11 @@
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
-sample first so you have a cluster with the runtime classes. This sample builds on
+blueprint first so you have a cluster with the runtime classes. This blueprint builds on
 [warm pool](../../getting-started/warm-pool/README.md), whose `SandboxTemplate`,
 `SandboxWarmPool` and `SandboxClaim` it uses and whose agent-sandbox install (step 1) it
 needs. The commands below use files from this repository, so clone it if you have not
-already, and run them from this sample's folder:
+already, and run them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
@@ -19,7 +19,7 @@ cluster, which Step 1 has you install if it is not there already, and these on y
 because the step plugin is built in a container and pushed to Amazon ECR in your own
 account. You need no Go toolchain: the build runs inside `golang:1.26`. Beyond the cluster
 the only AWS resource is one ECR repository holding a single small image. The pool holds two
-warm pods for as long as the sample is up, and there is no model or API call anywhere in it.
+warm pods for as long as the blueprint is up, and there is no model or API call anywhere in it.
 These pods set no CPU or memory requests, so each guest gets a small default size.
 
 ## Overview
@@ -30,7 +30,7 @@ from and leaves every pod already warm in the pool exactly as it is. A `SandboxC
 after the patch adopts one of those pre-booted pods, so it gets the **old** template. That
 is the stale-adoption window, and it stays open until something replaces the warm pods.
 
-This sample measures that window by value, closes it with a drain, and then drives the same
+This blueprint measures that window by value, closes it with a drain, and then drives the same
 patch-then-drain progression from an Argo Rollouts canary timeline.
 
 - **The hazard is read, not inferred.** The template carries a revision marker,
@@ -54,7 +54,7 @@ patch-then-drain progression from an Argo Rollouts canary timeline.
   first-party software the cluster operator installed, so they stay ordinary pods. The warm
   pods run with `runtimeClassName: isolated-sandbox` and boot with
   `sandbox.amazonaws.com/network-isolated: "true"`, so they have no network to restrict and
-  the sample ships no network policy.
+  the blueprint ships no network policy.
 
 *Figure 1: Rolling a SandboxTemplate change through a warm pool with Argo Rollouts. The controller stays an ordinary pod and runs the step plugin in-process; notice that patching the template and draining the pool are two separate steps, because the patch alone leaves the already-warm pods on the old revision.*
 
@@ -77,23 +77,23 @@ to a repository your cluster can pull from.
 
 | File | What it is |
 |---|---|
-| [`deploy/warm-pool.yaml`](deploy/warm-pool.yaml) | The sample's `SandboxTemplate` at `rev-1`, carrying the revision marker, and its `SandboxWarmPool` at two replicas. |
+| [`deploy/warm-pool.yaml`](deploy/warm-pool.yaml) | The blueprint's `SandboxTemplate` at `rev-1`, carrying the revision marker, and its `SandboxWarmPool` at two replicas. |
 | [`deploy/ordinary-pod.yaml`](deploy/ordinary-pod.yaml) | The same container with no `runtimeClassName`, so each sandbox reading has something to be compared against. |
 | [`deploy/rollout.yaml`](deploy/rollout.yaml) | The `Rollout`: a marker container to version, and the canary steps that patch the template and drain the pool. |
 | [`deploy/step-plugin-config.yaml`](deploy/step-plugin-config.yaml) | The `stepPlugins` registration for the controller's `argo-rollouts-config` ConfigMap. |
 | [`deploy/step-plugin-rbac.yaml`](deploy/step-plugin-rbac.yaml) | The `ClusterRole` and `ClusterRoleBinding` that let the controller act on the agent-sandbox CRDs. |
 | [`plugin/main.go`](plugin/main.go) | The go-plugin server and the Argo Rollouts step-plugin handshake. |
 | [`plugin/plugin.go`](plugin/plugin.go) | The `StepPlugin` itself: the template patch, the drain state machine, and `Abort`/`Terminate`. |
-| [`plugin/Dockerfile`](plugin/Dockerfile) | Builds the plugin in a container, so the sample needs no Go toolchain on your machine. |
+| [`plugin/Dockerfile`](plugin/Dockerfile) | Builds the plugin in a container, so the blueprint needs no Go toolchain on your machine. |
 | [`scripts/register-step-plugin.sh`](scripts/register-step-plugin.sh) | Step 2: build, push and register the plugin on the controller. Defaults to a plan that changes nothing. |
 | [`scripts/setup.sh`](scripts/setup.sh) | Step 3: check the shared installs, create the namespace, apply the template, the pool and the ordinary pod. |
 | [`scripts/patch-template.sh`](scripts/patch-template.sh) | Step 4: patch the revision marker and nothing else, which opens the window. |
 | [`scripts/claim.sh`](scripts/claim.sh) | Steps 5 and 7: claim a pod and read its revision by value. |
 | [`scripts/drain-pool.sh`](scripts/drain-pool.sh) | Step 6: the drain, as a plain script, with no controller involved. |
 | [`scripts/run-rollout.sh`](scripts/run-rollout.sh) | Steps 10 and 11: drive the same work from a `Rollout`, and abort mid-drain on purpose. |
-| [`scripts/cleanup.sh`](scripts/cleanup.sh) | Remove the sample's objects, and optionally undo the registration. |
+| [`scripts/cleanup.sh`](scripts/cleanup.sh) | Remove the blueprint's objects, and optionally undo the registration. |
 | [`scripts/common.sh`](scripts/common.sh) | The names, the pinned context, the readings and the guards the scripts share. |
-| [`.env.example`](.env.example) | The local values the sample needs, with no values filled in. |
+| [`.env.example`](.env.example) | The local values the blueprint needs, with no values filled in. |
 
 Copy the env file before you start, and set `KUBE_CONTEXT` to the cluster you mean. Every
 script pins `--context` and `--namespace` from it, so a run never depends on the machine's
@@ -105,7 +105,7 @@ cp .env.example .env
 
 ## Prerequisites on the cluster
 
-This sample needs **two** things set up before it will run, and you set up both yourself.
+This blueprint needs **two** things set up before it will run, and you set up both yourself.
 Step 3's `setup.sh` checks for them and stops without creating anything when either is
 missing, and the clean up never undoes either.
 
@@ -115,9 +115,9 @@ missing, and the clean up never undoes either.
 | The step-plugin registration | The `stepPlugins` key in the controller's own `argo-rollouts-config` ConfigMap, an initContainer on its Deployment, a cluster-scoped `ClusterRole`, and an ECR repository holding the plugin image. | Step 2 |
 
 **Both are cluster-wide changes.** The second one in particular changes the Argo Rollouts
-controller itself, so it affects **every `Rollout` on the cluster**, not just this sample's.
+controller itself, so it affects **every `Rollout` on the cluster**, not just this blueprint's.
 Once it is applied, every other workload's Rollouts run with that initContainer on the
-controller and with the plugin registered, and the sample's clean up does not undo any of
+controller and with the plugin registered, and the blueprint's clean up does not undo any of
 it. On a shared cluster, make sure that is yours to do before you run it, and read
 "What stays" under Clean up first so you know what you are leaving behind.
 
@@ -136,7 +136,7 @@ whole cluster shares:
 ```
 
 That block comes from a separate run, with the controller installed and the registration
-absent, rather than from the walkthrough below. Nothing was created by it: the sample's
+absent, rather than from the walkthrough below. Nothing was created by it: the blueprint's
 namespace did not exist before it and did not exist after.
 
 ## Step 1: Install Argo Rollouts, or reuse the install that is there
@@ -162,7 +162,7 @@ from the walkthrough below:
 reusing the Argo Rollouts install in namespace argo-rollouts as it is (quay.io/argoproj/argo-rollouts:v1.10.1); this sample was built against Argo Rollouts v1.10.1
 ```
 
-Nothing in this sample installs, upgrades or reconfigures Argo Rollouts. It was already
+Nothing in this blueprint installs, upgrades or reconfigures Argo Rollouts. It was already
 installed at v1.10.1 on the cluster these runs used, and was reused exactly as it stood.
 
 ## Step 2: Register the step plugin on the controller
@@ -175,7 +175,7 @@ lets it act on the agent-sandbox CRDs, and an initContainer on its Deployment th
 binary.
 
 **This step changes the Argo Rollouts controller, so it affects every `Rollout` on the
-cluster, not just this sample's.** The controller loads its step plugins at start-up from
+cluster, not just this blueprint's.** The controller loads its step plugins at start-up from
 that one ConfigMap, and applying the registration restarts it. There is no per-namespace way
 to register a step plugin. That is why this is a prerequisite you run yourself rather than
 something `setup.sh` does: every script here only ever *reads* the registration and stops
@@ -283,7 +283,7 @@ The step plugin is registered. Drive the rollout:  ./scripts/run-rollout.sh
 Step 4/6 is the one to read twice: it says **merged**, not created. The ConfigMap already
 existed on this cluster, so only the `stepPlugins` key was patched in and every other key in
 it was left as it was. Step 1/6 says **reusing** for the same reason: the ECR repository was
-already there carrying this sample's `ManagedBy` tag, so it was adopted rather than recreated.
+already there carrying this blueprint's `ManagedBy` tag, so it was adopted rather than recreated.
 
 The `sha256` in step 3/6 is the hash the controller verifies before it will load the plugin,
 and it is the hash of the binary that was just built from the source in
@@ -304,7 +304,7 @@ or `GOPRIVATE`: those drop the verification rather than route around the proxy, 
 them is needed.
 
 The registration refuses to write over an install that is not yours. If the ConfigMap
-already registers step plugins that are not this sample's, or if the Deployment already sets
+already registers step plugins that are not this blueprint's, or if the Deployment already sets
 a different `securityContext.fsGroup` from the one staging the binary needs, it stops and
 says what it found rather than changing a controller other workloads depend on. It merges
 only the `stepPlugins` key, so another key such as `trafficRouterPlugins` is left alone, and
@@ -349,11 +349,11 @@ plugin writes to both, so they carry `patch` and `update`. `Sandbox` objects are
 `agents.x-k8s.io` group and the plugin only counts them and reads their hash label, so there
 is no write verb for them.
 
-## Step 3: Set up the sample
+## Step 3: Set up the blueprint
 
 This first checks all four prerequisites, and creates nothing when one of them is missing,
-as the refusal above shows. Then it creates the sample's own namespace, labelled so the
-other scripts can tell it is the sample's, and applies the `SandboxTemplate` at `rev-1`, the
+as the refusal above shows. Then it creates the blueprint's own namespace, labelled so the
+other scripts can tell it is the blueprint's, and applies the `SandboxTemplate` at `rev-1`, the
 `SandboxWarmPool` at two replicas, and the ordinary pod the sandbox readings are compared
 against. It changes nothing outside its own namespace.
 
@@ -591,7 +591,7 @@ work to do.
 
 ## Step 9: The claimed pod really ran in a Nitro sandbox
 
-The pool's pods are the only part of this sample in a sandbox, so it is worth reading that
+The pool's pods are the only part of this blueprint in a sandbox, so it is worth reading that
 off the running pod rather than trusting the manifest. Each reading is next to the same
 reading from [`deploy/ordinary-pod.yaml`](deploy/ordinary-pod.yaml), which is the same
 container with the single line `runtimeClassName: isolated-sandbox` left out.
@@ -647,10 +647,10 @@ metadata:
     sandbox.amazonaws.com/network-isolated: "true"
 ```
 
-The guest then comes up with only loopback: no route out and no DNS. This sample ships no
+The guest then comes up with only loopback: no route out and no DNS. This blueprint ships no
 network policy, because a pod with no network interface gives a policy nothing to allow or
 deny. For a sandbox that does have a network, and how to restrict where it can reach, see
-the [network policy](../../isolation/network-policy/README.md) sample.
+the [network policy](../../isolation/network-policy/README.md) blueprint.
 
 Rather than assert the isolation, here it is read from the claimed pod, with the ordinary
 pod beside it:
@@ -730,7 +730,7 @@ rollout.argoproj.io/template-bump configured
 3/3 checks passed: the Rollout drove the template patch and the pool drain
 ```
 
-Those four progress lines are the whole sample in miniature, so read them in order:
+Those four progress lines are the whole blueprint in miniature, so read them in order:
 
 | Line | What it says |
 |---|---|
@@ -777,7 +777,7 @@ to restore are persisted in the step's own status between calls.
 
 ### What the Argo Rollouts documentation does not cover
 
-Three things on this page are this sample's own design, not something the Argo Rollouts
+Three things on this page are this blueprint's own design, not something the Argo Rollouts
 documentation describes, and it is worth being explicit about which:
 
 - **Step plugins driving agent-sandbox CRDs.** The plugin interface is documented; using it
@@ -785,13 +785,13 @@ documentation describes, and it is worth being explicit about which:
   Step 2 exists only because of it.
 - **The marker-container bridge.** A `Rollout` progresses a Deployment-shaped workload. It
   does not watch a `SandboxTemplate` or a `SandboxWarmPool` and has no concept of warm
-  capacity. So this sample's `Rollout` runs one small marker container whose
+  capacity. So this blueprint's `Rollout` runs one small marker container whose
   `TEMPLATE_REVISION` is the value a CI system bumps, purely to give Argo Rollouts something
   to version, and the plugin steps do the real work. The marker pod holds no warm capacity
   and nothing claims it.
 - **`setWeight` does not apply to a warm pool.** Progressive traffic weighting assumes two
   versions running side by side with traffic split between them. A warm pool has one active
-  template, so there is nothing to split. This sample claims no progressive weighting: the
+  template, so there is nothing to split. This blueprint claims no progressive weighting: the
   progression it shows is patch, then drain.
 
 One more behaviour worth knowing, because it decides how the script drives the rollout: Argo
@@ -887,7 +887,7 @@ itself before returning failure.
   loaded into the Argo Rollouts controller process, so it acts with the controller's
   ServiceAccount cluster-wide. That is a real grant: the `ClusterRole` in Step 2 lets the
   controller patch `SandboxTemplate` and `SandboxWarmPool` objects in **every** namespace,
-  not just this sample's. Scope it to a Role in one namespace if that is too broad for you.
+  not just this blueprint's. Scope it to a Role in one namespace if that is too broad for you.
 - **The warm pods hold no API credential.** The template sets
   `automountServiceAccountToken: false`. A pod built from a `SandboxTemplate` has that
   defaulted to false already, so the line says out loud what the pod relies on rather than
@@ -902,11 +902,11 @@ itself before returning failure.
 
 ## Clean up
 
-Set the variables again if you are in a new shell. The clean up removes the sample's own
+Set the variables again if you are in a new shell. The clean up removes the blueprint's own
 namespace and everything in it, and nothing else. It takes no arguments: there is
 deliberately no flag that undoes the prerequisites, because the controller and the
 registration are shared with every `Rollout` on the cluster and a reader set them up before
-the sample ran.
+the blueprint ran.
 
 ```bash
 cp .env.example .env    # if you have not already; set KUBE_CONTEXT and NAMESPACE
@@ -938,9 +938,9 @@ check first.
 clean up complete: the sample's namespace and everything in it are gone.
 ```
 
-The clean up checks the namespace carries the sample's label before it deletes anything
+The clean up checks the namespace carries the blueprint's label before it deletes anything
 inside it, and deletes the pool first so it stops booting replacements. Inside a namespace
-it has confirmed is the sample's, the namespace label is the mark, so it does not re-check
+it has confirmed is the blueprint's, the namespace label is the mark, so it does not re-check
 each object. A lookup that fails means "could not determine", which it reports as a failure
 rather than as "gone", and the script exits non-zero when it skipped something, so an
 incomplete clean up is never reported as done.
@@ -950,7 +950,7 @@ incomplete clean up is never reported as done.
 - **The step-plugin registration.** Remove it only if nothing else on the cluster uses a
   step plugin. The order matters: take the staging off the controller *before* deleting the
   image it pulls, or the controller cannot start the next time it restarts, which would
-  break it for every workload rather than just this sample.
+  break it for every workload rather than just this blueprint.
 
   ```bash
   kubectl -n argo-rollouts patch deployment argo-rollouts --type=strategic -p '
@@ -979,8 +979,8 @@ incomplete clean up is never reported as done.
     --region "$AWS_REGION" --force
   ```
 
-  Check the ConfigMap first: if `stepPlugins` holds entries that are not this sample's two,
-  remove only this sample's rather than the whole key, and leave the rest alone.
+  Check the ConfigMap first: if `stepPlugins` holds entries that are not this blueprint's two,
+  remove only this blueprint's rather than the whole key, and leave the rest alone.
 - **Argo Rollouts.** Remove it only if nothing else uses it. Check first, across the whole
   cluster, and only then uninstall:
 
@@ -993,10 +993,10 @@ incomplete clean up is never reported as done.
   ```
 
   Anything listed there is another workload's, so leave Argo Rollouts where it is.
-- **The agent-sandbox controller**, shared with the warm pool sample and the other
-  agent-sandbox samples. To remove it, follow the
+- **The agent-sandbox controller**, shared with the warm pool blueprint and the other
+  agent-sandbox blueprints. To remove it, follow the
   [warm pool clean up](../../getting-started/warm-pool/README.md#clean-up).
 
-If this is the only sample you ran, follow the
+If this is the only blueprint you ran, follow the
 [hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up) to remove
 the namespace and the cluster.

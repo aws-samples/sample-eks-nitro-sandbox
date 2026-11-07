@@ -2,8 +2,8 @@
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
-sample first so you have a cluster with the runtime classes. The commands below use files
-from this repository, so clone it if you have not already, and run them from this sample's
+blueprint first so you have a cluster with the runtime classes. The commands below use files
+from this repository, so clone it if you have not already, and run them from this blueprint's
 folder:
 
 ```bash
@@ -11,7 +11,7 @@ git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/managed-agents/claude-managed-agents
 ```
 
-For this sample you also need [Docker](https://docs.docker.com/get-docker/), Python 3 with
+For this blueprint you also need [Docker](https://docs.docker.com/get-docker/), Python 3 with
 `venv`, and a Claude organization with access to
 [Claude Managed Agents](https://platform.claude.com/docs/en/managed-agents/overview), where
 you can create a self-hosted environment and generate its environment key in the Claude
@@ -26,7 +26,7 @@ arrives as a work item; a worker of yours claims it, runs every `bash`, `read`, 
 `edit`, `glob` and `grep` call Claude decides to make in that session, and posts each
 result back.
 
-Those tool calls are code the model chose to run, so this sample gives each session its own
+Those tool calls are code the model chose to run, so this blueprint gives each session its own
 Nitro sandbox:
 
 - **Claude reasons on Anthropic's side; the tools run in your cluster.** An ordinary poller
@@ -73,11 +73,11 @@ The files:
 | [`deploy/autoscaler.yaml`](deploy/autoscaler.yaml) | Optional: sizes the warm pool from the work queue |
 | [`deploy/claude-platform-aws/`](deploy/claude-platform-aws/egress-policy.yaml) | Optional, for [Claude Platform on AWS](#optional-run-it-on-claude-platform-on-aws): that mode's network policy, and the trust and STS policies for its Pod Identity role |
 | [`scripts/setup_agent.py`](scripts/setup_agent.py), [`submit.py`](scripts/submit.py), [`stats.py`](scripts/stats.py) | Run on your machine with the organization key (on Claude Platform on AWS, your AWS credentials): create the agent and environment, start a session, read the queue stats |
-| `.env.example` | The four values the sample needs on the Claude API; copy it to `.env`, which git ignores |
+| `.env.example` | The four values the blueprint needs on the Claude API; copy it to `.env`, which git ignores |
 
 **Step 1: Install agent-sandbox and turn on network policy.** Install the controller with
 its extensions (`SandboxTemplate`, `SandboxWarmPool`, `SandboxClaim`). If you ran the warm
-pool sample, this upgrades it in place:
+pool blueprint, this upgrades it in place:
 
 ```bash
 kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
@@ -85,7 +85,7 @@ kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller
 ```
 
 EKS Auto Mode accepts network policies without enforcing them until the Network Policy
-Controller is enabled, once per cluster. If you have not run the coding agent sample:
+Controller is enabled, once per cluster. If you have not run the coding agent blueprint:
 
 ```bash
 kubectl apply -f ../../getting-started/coding-agent/enable-network-policy.yaml
@@ -443,7 +443,7 @@ listed domains."
 ([EKS network policy documentation](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html).)
 Because the filtering lives on the node rather than in the guest, which has no access to
 that interface, nothing the model runs inside the sandbox can change it, whatever UID it
-runs as. In this sample that UID is 1000: the sandbox template sets `runAsUser: 1000`, which
+runs as. In this blueprint that UID is 1000: the sandbox template sets `runAsUser: 1000`, which
 fixes the identity the container starts with, and `runAsNonRoot: true`, which has the kubelet
 refuse to start the container at all if the image would resolve to root. Changing the policy
 is a separate matter from reaching a host it already allows: the `domainNames` caveat above
@@ -526,8 +526,8 @@ image, manifests and scripts run in this mode. Two session differences apply on 
 platform ([details](https://platform.claude.com/docs/en/build-with-claude/claude-platform-on-aws#claude-managed-agents)):
 a session on a self-hosted environment cannot attach memory stores (it is rejected when it
 is created), so the sandbox never mounts one; and a session that runs for 6 hours without a
-user event needs one to continue, which is longer than this sample's 30-minute claim deadline.
-What changes in the sample is how each part authenticates:
+user event needs one to continue, which is longer than this blueprint's 30-minute claim deadline.
+What changes in the blueprint is how each part authenticates:
 
 | | Claude API (the walkthrough above) | Claude Platform on AWS |
 |---|---|---|
@@ -549,7 +549,7 @@ outbound web identity federation once for the account; the
 covers each step. Your own AWS identity needs Managed Agents permissions, which the
 `AnthropicLimitedAccess` managed policy grants. The commands below associate the role in
 `$NAMESPACE` and apply everything else to kubectl's current namespace, which the hello
-sandbox sample set to `$NAMESPACE`. Run the Claude API walkthrough's [clean up](#clean-up)
+sandbox blueprint set to `$NAMESPACE`. Run the Claude API walkthrough's [clean up](#clean-up)
 first if it is deployed there, or set `NAMESPACE` to a new namespace and switch to it:
 
 ```bash
@@ -773,7 +773,7 @@ export AWS_REGION=<AWS_REGION>
 export REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com
 ```
 
-Remove the sample's objects, the image and its repository:
+Remove the blueprint's objects, the image and its repository:
 
 ```bash
 kubectl delete -f deploy/autoscaler.yaml --ignore-not-found
@@ -788,12 +788,12 @@ docker image rm $REGISTRY/claude-sandbox-worker:v1
 rm -rf .venv
 ```
 
-Keep `.env` if you will run the sample again. Otherwise delete it, and in the Claude Console
+Keep `.env` if you will run the blueprint again. Otherwise delete it, and in the Claude Console
 revoke the environment key, archive the agent and delete the self-hosted environment that
 step 2 created (the SDK's `client.beta.agents.archive` and
 `client.beta.environments.delete` do the last two).
 
-agent-sandbox stays installed for other samples. To remove it as well, which deletes its
+agent-sandbox stays installed for other blueprints. To remove it as well, which deletes its
 CRDs and every Sandbox resource in the cluster, delete the release you installed in step 1:
 
 ```bash

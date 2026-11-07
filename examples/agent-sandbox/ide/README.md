@@ -2,28 +2,28 @@
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
-sample first so you have a cluster with the runtime classes. This sample uses the
+blueprint first so you have a cluster with the runtime classes. This blueprint uses the
 agent-sandbox `Sandbox` API, installed in
 [warm pool](../../getting-started/warm-pool/README.md) step 1, and it reads the sandbox
 signals the [hello sandbox](../../getting-started/hello-sandbox/README.md) page introduces.
 The commands below use files from this repository, so clone it if you have not already, and
-run them from this sample's folder:
+run them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/agent-sandbox/ide
 ```
 
-For this sample you also need [Node.js](https://nodejs.org/en/download) on your own machine,
+For this blueprint you also need [Node.js](https://nodejs.org/en/download) on your own machine,
 for the `npx` that runs code-server's own password hasher (the run below used Node.js 22 and
 `argon2-cli` 0.25.1), `curl`, and a browser. A run costs you the editor's sandboxed pod
-while it is up, and its 10Gi Amazon EBS volume for as long as the sample exists. There is no
+while it is up, and its 10Gi Amazon EBS volume for as long as the blueprint exists. There is no
 model or API cost.
 
 A browser IDE is the demo people feel: a full VS Code workbench, with a terminal, on a
 project folder that is still there tomorrow. It is also an honest test of a sandbox, because
 an editor is a long-lived, stateful, network-using workload rather than a pod that prints a
-line and sleeps. This sample runs [code-server](https://github.com/coder/code-server) in a
+line and sleeps. This blueprint runs [code-server](https://github.com/coder/code-server) in a
 Nitro sandbox, as a non-root user, with its project folder on an EBS volume, and gives it
 exactly one way in.
 
@@ -92,21 +92,21 @@ This folder was built against these releases:
 |---|---|
 | [`deploy/sandbox.yaml`](deploy/sandbox.yaml) | The `Sandbox`: code-server as a non-root user, the EBS `volumeClaimTemplates` workspace, and the password hash from the Secret. |
 | [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The `ApplicationNetworkPolicy`: all ingress denied, egress to DNS and three names. |
-| [`deploy/storage-class.yaml`](deploy/storage-class.yaml) | The sample's own EBS `StorageClass`, created by setup only when the cluster has no default class that fits. |
+| [`deploy/storage-class.yaml`](deploy/storage-class.yaml) | The blueprint's own EBS `StorageClass`, created by setup only when the cluster has no default class that fits. |
 | [`deploy/pod-ordinary.yaml`](deploy/pod-ordinary.yaml) | An ordinary pod, for the side by side in Step 6. |
 | [`scripts/new-password.sh`](scripts/new-password.sh) | Generate the editor's password and its argon2 hash, on your own machine. |
 | [`scripts/setup.sh`](scripts/setup.sh) | Check the prerequisites, create the namespace, the Secret, the policy and the `Sandbox`, and wait until the editor is serving. |
 | [`scripts/port-forward.sh`](scripts/port-forward.sh) | Open the editor on your own machine, and nowhere else. |
 | [`scripts/compare.sh`](scripts/compare.sh) | Read the sandbox signals from the editor's pod and from an ordinary pod on the same node. |
-| [`scripts/cleanup.sh`](scripts/cleanup.sh) | Delete the `Sandbox`, its PVC, the EBS volume, the Secret, the policy and the namespace, and the sample's own `StorageClass` if setup made one. |
-| [`.env.example`](.env.example) | The local values the sample needs, with no secrets. |
+| [`scripts/cleanup.sh`](scripts/cleanup.sh) | Delete the `Sandbox`, its PVC, the EBS volume, the Secret, the policy and the namespace, and the blueprint's own `StorageClass` if setup made one. |
+| [`.env.example`](.env.example) | The local values the blueprint needs, with no secrets. |
 
 The scripts read `.env` (copy it from `.env.example`). `NAMESPACE` defaults to `ide`; leave
 `STORAGE_CLASS` unset to let setup choose the class (Step 3), or set it to force a specific
 one. Set `KUBE_CONTEXT` to the context of the cluster you ran Getting started on, so a run
 never depends on the machine's current context.
 
-**Step 1: Install agent-sandbox**, if you have not already from the warm pool sample. This
+**Step 1: Install agent-sandbox**, if you have not already from the warm pool blueprint. This
 folder was built against v1.0.6:
 
 ```bash
@@ -117,7 +117,7 @@ kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller
 **Step 2: Turn network policy enforcement on, once per cluster.** EKS Auto Mode accepts
 network policies without enforcing them until the `amazon-vpc-cni` ConfigMap in
 `kube-system` says so. That is a cluster-wide setting every workload on the cluster shares,
-so this sample's scripts never change it: `setup.sh` checks it, and stops with this command
+so this blueprint's scripts never change it: `setup.sh` checks it, and stops with this command
 when it is off.
 
 ```bash
@@ -137,8 +137,8 @@ here:
   for its `PersistentVolume` to be deleted and reports the EBS volume gone, which is only
   true for `Delete`; a `Retain` class is refused with a message rather than leaving a volume
   billing.
-- **Otherwise, the sample's own class.** [`deploy/storage-class.yaml`](deploy/storage-class.yaml)
-  is a non-default class named `ide-gp3`, marked as the sample's. Setup creates it with
+- **Otherwise, the blueprint's own class.** [`deploy/storage-class.yaml`](deploy/storage-class.yaml)
+  is a non-default class named `ide-gp3`, marked as the blueprint's. Setup creates it with
   `kubectl create` only when it is absent, and the clean up removes it.
 
 Setup never changes a class that already exists and never `kubectl apply`s one: a
@@ -717,7 +717,7 @@ spec:
 
 An EKS Auto Mode `ApplicationNetworkPolicy` is a `NetworkPolicy` that also accepts
 hostnames (`domainNames`) in an egress rule. The policy has no Pod Identity rule because
-this sample gives the editor no Pod Identity association and no AWS role: an editor that
+this blueprint gives the editor no Pod Identity association and no AWS role: an editor that
 needed one would also need egress to `169.254.170.23` on TCP 80.
 
 *Figure 2: How the editor's network policy works. All ingress from the pod network is refused, while `kubectl port-forward` and the kubelet's readiness probe still reach the pod; egress is allowed to CoreDNS, the extension registry's two names and the git host, and refused everywhere else.*
@@ -727,7 +727,7 @@ needed one would also need egress to `169.254.170.23` on TCP 80.
 **Where it is enforced.** On the node, outside the guest. The node's network policy agent
 attaches eBPF programs to the pod's host-side interface, which the guest has no access to, so
 nothing run inside the editor's terminal can change the policy, whatever UID it runs as. In
-this sample that UID is 1000: the pod sets `runAsUser: 1000`, which fixes the identity the
+this blueprint that UID is 1000: the pod sets `runAsUser: 1000`, which fixes the identity the
 container starts with, and `runAsNonRoot: true`, which has the kubelet refuse to start the
 container at all if the image would resolve to root. Step 5 reads those fields back off the
 live pod and Step 8 prints `uid=1000(coder)` from inside it.
@@ -750,7 +750,7 @@ kubectl get node i-0b1322681d4622d8f -o jsonpath='{.status.addresses[?(@.type=="
 
 The source address is the node's, so the request reached the editor from the node rather
 than from inside the guest, and it was addressed to the pod. The kubelet runs on that node
-too, so its readiness probe on `/healthz` is node-to-pod traffic of the same kind. Two things follow, and the sample depends on both:
+too, so its readiness probe on `/healthz` is node-to-pod traffic of the same kind. Two things follow, and the blueprint depends on both:
 the container binds `0.0.0.0:8080` rather than the guest's loopback, because the stream comes
 to the pod's address; and the policy cannot deny the node, so anything that sends from the
 node's own address, such as a `hostNetwork` pod scheduled on that node, can still reach the
@@ -763,9 +763,9 @@ controller on, which is Step 2 and a change the reader makes once per cluster; `
 checks it and stops rather than making it. After applying the policy, setup waits for the
 `PolicyEndpoint` named after it, which is how it knows the controller has handed the policy
 to the nodes, and only then creates the editor, so the policy is on the nodes before the pod
-it governs exists. That is the ordering this sample can control; whether the very first
+it governs exists. That is the ordering this blueprint can control; whether the very first
 packet a brand new pod sends is already filtered depends on the CNI's enforcing mode, which
-is a cluster-wide setting this sample does not change. This sample's workload is a bare
+is a cluster-wide setting this blueprint does not change. This blueprint's workload is a bare
 `Sandbox`, which creates no `NetworkPolicy` of its own; a `SandboxTemplate` does create one
 by default, and a template shipping its own policy needs
 `networkPolicyManagement: Unmanaged` so the controller's policy does not add itself to
@@ -866,7 +866,7 @@ pod "ide-ingress-probe" deleted from ide namespace
 
 Both attempts time out: by the pod's address and by the Service's name, which resolves to
 the same address. The editor is serving the whole time, through the port-forward on the
-operator's own machine. The probe pod is created in the sample's own namespace and deleted
+operator's own machine. The probe pod is created in the blueprint's own namespace and deleted
 by its exact name.
 
 ## Good to know
@@ -880,7 +880,7 @@ by its exact name.
   node, which is how the port-forward stream and the readiness probe arrive, and it is why a
   `hostNetwork` pod on that node could reach the editor's port too. On a cluster where that
   matters, keep `hostNetwork` pods off it with admission policy, which is a cluster-wide
-  control and so outside this sample.
+  control and so outside this blueprint.
 - **The hash in the Secret is a credential, not only a verifier.** code-server's session
   cookie is the hash itself: `isCookieValid` in `src/node/util.ts` at 4.143.1 compares the
   cookie to the configured argon2 hash. So whoever can read the Secret can set that cookie
@@ -902,7 +902,7 @@ by its exact name.
   volume has a limit of its own: expanding an EBS volume while the pod is running is not
   supported, and the pod keeps seeing the original capacity until the volume is attached to
   a sandbox again (Amazon EKS User Guide, *Isolated and confidential pods limitations*).
-  The sample's own class does not set `allowVolumeExpansion`, so on that class there is no
+  The blueprint's own class does not set `allowVolumeExpansion`, so on that class there is no
   expansion to attempt.
 - **The workspace claim is `ReadWriteOncePod`, and for a sandbox that is not a preference.**
   An EBS volume reaches a sandboxed pod as a raw block device attached to its sandbox, and a
@@ -920,7 +920,7 @@ by its exact name.
   for this workload.
 - **The pod sets a memory request and no limits.** It asks for 2Gi, because the guest is
   sized from the requests and the small default guest is not enough for code-server's
-  Node.js server and the workbench's extension host. Most samples on this site set none at
+  Node.js server and the workbench's extension host. Most blueprints on this site set none at
   all; this one says what it sets and why.
 - **The `fixuid` warning at the top of `kubectl logs ide` is expected.** The image ships a
   `fixuid` helper that can remap the container user at start-up, and it needs privileges this
@@ -931,16 +931,16 @@ by its exact name.
 - **A build-at-boot variant would need root and a privileged container.** code-server can
   also be built at start-up from a `devcontainer.json`, by a tool that extracts image layers
   onto its own root filesystem and bind-mounts it as it goes. That needs to run as root with
-  `privileged: true`, and `runAsNonRoot: true` fails it at admission. This sample uses a
+  `privileged: true`, and `runAsNonRoot: true` fails it at admission. This blueprint uses a
   prebuilt image and needs neither. A sandbox is a reasonable place to run such a variant if
   you need one, because root in the guest is root of a throwaway VM rather than of the node,
   but it is a different trade from the one on this page.
 
 ## Clean up
 
-Set the variables again if you are in a new shell, then remove everything the sample
+Set the variables again if you are in a new shell, then remove everything the blueprint
 created: the `Sandbox`, its PVC, the EBS volume behind it, the password Secret, the egress
-policy, the namespace, and the sample's own `StorageClass` if setup made one.
+policy, the namespace, and the blueprint's own `StorageClass` if setup made one.
 
 ```bash
 cp .env.example .env    # if you have not already; set KUBE_CONTEXT and NAMESPACE
@@ -976,24 +976,24 @@ clean up complete: the Sandbox, its PVC, the EBS volume, the Secret, the egress 
 The password and its hash are still in tmp/ide; delete them yourself when you are done.
 ```
 
-This run used the cluster default class, so there was no sample `StorageClass` to remove
-(step 6/6). On a run that used the sample's own class, that step reads
+This run used the cluster default class, so there was no blueprint `StorageClass` to remove
+(step 6/6). On a run that used the blueprint's own class, that step reads
 `storageclass/ide-gp3 deleted`.
 
-The clean up checks the namespace carries the sample's label before it deletes anything
+The clean up checks the namespace carries the blueprint's label before it deletes anything
 inside it, confirms each delete with a lookup that reads a failed read as a failure rather
 than "gone", and exits non-zero if it skipped something or could not confirm the EBS volume
-is gone, so an incomplete clean up is never reported as done. It removes the sample's own
-`StorageClass` only when that class carries the sample's mark, and never touches the cluster
+is gone, so an incomplete clean up is never reported as done. It removes the blueprint's own
+`StorageClass` only when that class carries the blueprint's mark, and never touches the cluster
 default. Delete `tmp/ide/password` and `tmp/ide/hashed-password` yourself when you are done
 with them.
 
 It leaves two things in place. The **agent-sandbox controller** is shared with the warm pool
-sample and the other agent-sandbox samples; to remove it, follow the
+blueprint and the other agent-sandbox blueprints; to remove it, follow the
 [warm pool clean up](../../getting-started/warm-pool/README.md#clean-up). **Network policy
 enforcement** from Step 2 is a cluster-wide setting other workloads may now depend on, so
 turn it off only if you know nothing else on the cluster needs it.
 
-If this is the only sample you ran, follow the
+If this is the only blueprint you ran, follow the
 [hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up) to remove
 the cluster.

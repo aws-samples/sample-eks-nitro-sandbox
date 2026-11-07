@@ -51,6 +51,9 @@ if [[ -n "$ns_present" ]]; then
        --cascade=foreground --wait=true --timeout=5m; then
     "${KCTL[@]}" -n "$NAMESPACE" delete applicationnetworkpolicy,networkpolicy -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
       || note_fail "network policies in $NAMESPACE: delete failed"
+    # The session records and pending-stop records, now that no app can write them.
+    "${KCTL[@]}" -n "$NAMESPACE" delete configmap -l app.kubernetes.io/part-of=$SAMPLE --ignore-not-found \
+      || note_fail "session records in $NAMESPACE: delete failed"
   else
     # Stop here: the app may still be running, and everything below (its Pod Identity
     # role, the storage, the namespace) is what it uses.
