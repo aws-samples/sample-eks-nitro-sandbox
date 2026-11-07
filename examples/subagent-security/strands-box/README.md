@@ -1,6 +1,7 @@
 # Give procurement tools separate permissions with Strands Box
 
-Run one procurement analyst inside an EKS Nitro sandbox, with separate Box permissions for its reader, evaluator, and writer tools.
+Run one procurement analyst inside AWS Nitro Sandbox on Amazon EKS.
+Give its reader, evaluator, and writer tools separate Box permissions.
 Start with the shared [prerequisites](../../README.md#prerequisites), then complete
 [hello sandbox](../../getting-started/hello-sandbox/README.md) and
 [coding agent](../../getting-started/coding-agent/README.md).
@@ -48,7 +49,7 @@ The supplier runs as an ordinary pod behind a ClusterIP Service.
 The supplier is a synthetic HTTP fixture with no authentication, private certificate, or purchasing integration.
 It accepts synthetic mutations so the example can distinguish a Box refusal from a supplier refusal.
 This example does not demonstrate supplier credential injection or private TLS trust.
-To restrict the whole pod's connections, see the [network policy](../../isolation/network-policy/README.md) sample.
+To restrict the whole pod's connections, see the [network policy](../../isolation/network-policy/README.md) blueprint.
 
 *Figure 1: One Nitro sandbox contains the controller and three separate role Boxes. Box gateways check HTTP requests before they reach the ordinary supplier pod.*
 
@@ -118,7 +119,7 @@ pod/analyst condition met
 ==> ready: run ./scripts/run.sh
 ```
 
-Setup creates the sample's namespace, images, supplier service, S3 bucket, IAM role, and Pod Identity association.
+Setup creates the blueprint's namespace, images, supplier service, S3 bucket, IAM role, and Pod Identity association.
 It saves the selected target for subsequent run and cleanup commands.
 It preserves shared controllers and cluster settings.
 
@@ -144,8 +145,8 @@ An init container runs as privileged root and sets `user.max_user_namespaces` to
 The application container is also privileged and runs as UID `1000`.
 A non-root UID does not remove its container privileges. This configuration does not establish the minimum required capabilities.
 
-The sample requests one CPU and 1 GiB of memory for the controller and Box processes.
-These requests size this workload. They are not Nitro platform minimums.
+The blueprint requests one CPU and 1 GiB of memory for the controller and Box processes.
+These requests size this workload. They are not AWS Nitro platform minimums.
 
 **Step 2: Inspect the role permissions.**
 
@@ -335,7 +336,7 @@ The Box tool processes cannot read the Pod Identity token file or connect direct
 
 ## Optional: use an ordinary EKS pod
 
-Use a separate sample namespace and resource names for this variant.
+Use a separate blueprint namespace and resource names for this variant.
 Set `DEPLOYMENT_MODE=eks` before setup.
 The [ordinary pod](deploy/eks-analyst-pod.yaml) uses `hostUsers: false`, `seccompProfile: Unconfined`, and `procMount: Unmasked`.
 Its container runs as UID `1000`, drops all capabilities, and disables privilege escalation.
@@ -358,7 +359,7 @@ It saves local results under the repository's `tmp/` directory and removes its c
 ## Good to know
 
 - Box confines the role processes. The trusted controller and its model calls remain outside those role boundaries.
-- The controller retains the network access that the cluster and VPC permit. This sample adds no pod network policy.
+- The controller retains the network access that the cluster and VPC permit. This blueprint adds no pod network policy.
 - The supplier fixture contains fictional data and has no authentication. Do not use it for real supplier data or credentials.
 - Supplier credential injection, private TLS trust, and native Box AWS credential discovery are outside this example.
 - The privileged Nitro guest configuration is not a production hardening baseline.
@@ -367,7 +368,7 @@ It saves local results under the repository's `tmp/` directory and removes its c
 
 ## Clean up
 
-Run cleanup from this sample directory. It reads the saved target and verifies resource ownership.
+Run cleanup from this blueprint directory. It reads the saved target and verifies resource ownership.
 
 ```bash
 ./scripts/clean.sh --delete-aws
@@ -389,7 +390,7 @@ namespace "<NAMESPACE>" deleted
 Cleanup complete. Shared controllers and cluster settings remain unchanged.
 ```
 
-This removes the sample's pods, namespace, Pod Identity association, bucket, IAM role, and image repositories.
+This removes the blueprint's pods, namespace, Pod Identity association, bucket, IAM role, and image repositories.
 Without `--delete-aws`, cleanup preserves the bucket, role, and image repositories.
 Local records remain under `tmp/strands-box/`. The existing cluster and shared installations remain.
 Cleanup checks the saved AWS account, cluster endpoint, and ownership identifier before deletion.

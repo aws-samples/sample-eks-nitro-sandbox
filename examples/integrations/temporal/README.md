@@ -2,12 +2,12 @@
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
-sample first so you have a cluster with the runtime classes. This sample uses the
+blueprint first so you have a cluster with the runtime classes. This blueprint uses the
 agent-sandbox `Sandbox` API, installed in
 [warm pool](../../getting-started/warm-pool/README.md) step 1, and the `operatingMode`
 suspend and resume that [pause and resume](../../agent-sandbox/pause-resume/README.md)
 establishes by hand. The commands below use files from this repository, so clone it if you
-have not already, and run them from this sample's folder:
+have not already, and run them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
@@ -15,9 +15,9 @@ cd sample-eks-nitro-sandbox/examples/integrations/temporal
 ```
 
 It also needs a **Temporal server**, which is a shared install: step 2 has you install one
-in the cluster if there is not one already, and nothing in this sample's scripts installs,
+in the cluster if there is not one already, and nothing in this blueprint's scripts installs,
 upgrades or reconfigures it. On your own machine you need `kubectl`, the AWS CLI, `helm`
-(3.x or later; these runs used 4.2.4), `docker` for the one image this sample builds (these
+(3.x or later; these runs used 4.2.4), `docker` for the one image this blueprint builds (these
 runs used 25.0.18) and `openssl` to generate the datastore password. Beyond the cluster, a
 run costs you the Temporal server's few ordinary pods and its 20Gi PostgreSQL volume for as
 long as you keep it, one ECR repository for the Worker image, and one 10Gi EBS volume for
@@ -33,7 +33,7 @@ session goes idle, brings it back, and removes it. Writing that as a script is e
 the script's own process dies in the middle, and then you have a sandbox and an EBS volume
 with nobody left who knows what they were for.
 
-This sample makes a durable workflow engine the thing that holds the lifecycle.
+This blueprint makes a durable workflow engine the thing that holds the lifecycle.
 [Temporal](https://temporal.io) runs a self-hosted server in the cluster; one workflow
 drives one agent-sandbox [`Sandbox`](https://github.com/kubernetes-sigs/agent-sandbox)
 through five activities, each a single Kubernetes operation; and the state of that
@@ -54,7 +54,7 @@ Nitro sandbox one more provider behind it.
 - **Suspend keeps the workspace; resume brings it back on a new guest.** Step 8 shows the
   pod gone and the claim still `Bound` while the `Sandbox` reports `SandboxSuspended`, and
   step 9 shows a new pod UID with the file the step wrote still on the volume.
-- **A failed activity is retried, and the attempt count is in the history.** The sample
+- **A failed activity is retried, and the attempt count is in the history.** The blueprint
   makes the step fail on its first attempt on purpose, so step 10 can show it.
 - **The run survives its Worker being deleted mid-flight.** Step 12 deletes the Worker pod
   while the sandbox is suspended. Kubernetes starts another, it replays the history, and
@@ -68,30 +68,30 @@ Nitro sandbox one more provider behind it.
 
 *Figure 1: What runs in a sandbox and what does not. The Temporal server, its datastore, the Web UI and the Worker are all ordinary pods; the one thing in a Nitro sandbox is the Sandbox the workflow drives, and the Worker reaches it only through the Kubernetes API.*
 
-![On the left, outside the AWS Cloud frame, a Your machine glyph labelled kubectl port-forward connects right into the Amazon EKS cluster frame, whose sub line reads ClusterIP only: no Ingress, LoadBalancer or NodePort. The cluster holds two namespace boxes. The upper one, namespace temporal, marked a shared install, reused as it is, holds three ordinary pods in a row: the Temporal Web UI, labelled ClusterIP, no Ingress, which the port-forward arrow arrives at; the Temporal server, labelled frontend, history, matching, worker, reached from the Web UI by an arrow labelled reads the history; and PostgreSQL, labelled history and visibility, reached from the server by an arrow labelled TCP 5432, ClusterIP. The lower box, namespace temporal-sandboxes, marked the sample's own namespace, holds two pod frames. On the left, Temporal Worker pod, marked an ordinary pod, no runtimeClassName, holds a Worker labelled polls the task queue, the trusted orchestrator, and a two-way arrow runs up from it into the Temporal server labelled polls the task queue, gRPC 7233 over ClusterIP. On the right, a red Nitro sandbox pod frame marked isolated-sandbox plus network-isolated holds a Sandbox labelled agents.x-k8s.io/v1beta1, the only pod in a sandbox. Below the namespaces sit three more things. A red Role glyph, labelled namespace-scoped RBAC, sandboxes, pods, pods/exec, is joined by a plain line up to the Worker pod. A Kubernetes API gear, labelled the only wire to the sandbox, is joined to the Worker pod by a two-way arrow labelled create, patch operatingMode, delete, and sends two arrows up into the sandbox pod: one labelled the agent-sandbox controller makes the pod, and a two-way one labelled exec the step with no network: its internal control channel. From the sandbox pod an arrow labelled mounts /workspace runs down to a Workspace volume, Amazon EBS, 10Gi, from volumeClaimTemplates. A note below the figure reads that the sandbox has no network device, because sandbox.amazonaws.com/network-isolated boots it with only loopback, so no route out, no DNS and no instance metadata; that kubectl exec still reaches it because the exec channel rides the sandbox's own internal control channel rather than a network device; and that this sample ships no network policy, so nothing here limits where the Worker or the Temporal server can connect.](images/figure-1-temporal.png)
+![On the left, outside the AWS Cloud frame, a Your machine glyph labelled kubectl port-forward connects right into the Amazon EKS cluster frame, whose sub line reads ClusterIP only: no Ingress, LoadBalancer or NodePort. The cluster holds two namespace boxes. The upper one, namespace temporal, marked a shared install, reused as it is, holds three ordinary pods in a row: the Temporal Web UI, labelled ClusterIP, no Ingress, which the port-forward arrow arrives at; the Temporal server, labelled frontend, history, matching, worker, reached from the Web UI by an arrow labelled reads the history; and PostgreSQL, labelled history and visibility, reached from the server by an arrow labelled TCP 5432, ClusterIP. The lower box, namespace temporal-sandboxes, marked the blueprint's own namespace, holds two pod frames. On the left, Temporal Worker pod, marked an ordinary pod, no runtimeClassName, holds a Worker labelled polls the task queue, the trusted orchestrator, and a two-way arrow runs up from it into the Temporal server labelled polls the task queue, gRPC 7233 over ClusterIP. On the right, a red Nitro sandbox pod frame marked isolated-sandbox plus network-isolated holds a Sandbox labelled agents.x-k8s.io/v1beta1, the only pod in a sandbox. Below the namespaces sit three more things. A red Role glyph, labelled namespace-scoped RBAC, sandboxes, pods, pods/exec, is joined by a plain line up to the Worker pod. A Kubernetes API gear, labelled the only wire to the sandbox, is joined to the Worker pod by a two-way arrow labelled create, patch operatingMode, delete, and sends two arrows up into the sandbox pod: one labelled the agent-sandbox controller makes the pod, and a two-way one labelled exec the step with no network: its internal control channel. From the sandbox pod an arrow labelled mounts /workspace runs down to a Workspace volume, Amazon EBS, 10Gi, from volumeClaimTemplates. A note below the figure reads that the sandbox has no network device, because sandbox.amazonaws.com/network-isolated boots it with only loopback, so no route out, no DNS and no instance metadata; that kubectl exec still reaches it because the exec channel rides the sandbox's own internal control channel rather than a network device; and that this blueprint ships no network policy, so nothing here limits where the Worker or the Temporal server can connect.](images/figure-1-temporal.png)
 
-### What this sample does not limit
+### What this blueprint does not limit
 
 The sandbox the workflow creates boots with
 `sandbox.amazonaws.com/network-isolated: "true"`, so it has no network interface at all,
-which step 7 shows from inside the guest. That is a property of the sandbox the sample asks
+which step 7 shows from inside the guest. That is a property of the sandbox the blueprint asks
 for, not a claim about a policy.
 
 Everything else here has whatever reach any pod on your cluster has. The Worker reaches the
-Kubernetes API and the Temporal frontend, and nothing in this sample stops it reaching
+Kubernetes API and the Temporal frontend, and nothing in this blueprint stops it reaching
 anything else; the Temporal server and its PostgreSQL are likewise unrestricted on the
 wire, and are kept off the public internet only by being ClusterIP Services with no Ingress.
-This sample ships no network policy. To restrict where a pod can connect, see the
-[network policy](../../isolation/network-policy/README.md) sample.
+This blueprint ships no network policy. To restrict where a pod can connect, see the
+[network policy](../../isolation/network-policy/README.md) blueprint.
 
-The sample creates **no EKS Pod Identity association and no IAM role**: nothing it runs in
+The blueprint creates **no EKS Pod Identity association and no IAM role**: nothing it runs in
 the cluster calls an AWS API. The AWS CLI is used only on your own machine, to create the
 ECR repository for the Worker image and to push it.
 
 ## Prerequisites on the cluster
 
 Both are shared installs. The scripts read them, reuse them exactly as they stand, and stop
-with the command when one is missing or is set up differently from what this sample needs.
+with the command when one is missing or is set up differently from what this blueprint needs.
 
 | Prerequisite | What it is | Where |
 |---|---|---|
@@ -146,15 +146,15 @@ the chart's default, 512; do not change it on a datastore that already holds his
 | [`deploy/worker.yaml`](deploy/worker.yaml) | The Worker `Deployment`: an ordinary pod, on purpose. |
 | [`deploy/rbac.yaml`](deploy/rbac.yaml) | The Worker's `ServiceAccount`, namespace-scoped `Role` and `RoleBinding`. |
 | [`deploy/ordinary-pod.yaml`](deploy/ordinary-pod.yaml) | The control for step 11: the same container with `runtimeClassName` left out. |
-| [`deploy/storage-class.yaml`](deploy/storage-class.yaml) | The sample's own EBS `StorageClass`, created by setup only when no default class fits. |
+| [`deploy/storage-class.yaml`](deploy/storage-class.yaml) | The blueprint's own EBS `StorageClass`, created by setup only when no default class fits. |
 | [`deploy/temporal/postgresql.yaml`](deploy/temporal/postgresql.yaml) | The Temporal server's datastore, for step 2. |
 | [`deploy/temporal/values.yaml`](deploy/temporal/values.yaml) | The Temporal Helm values, for step 2. |
 | [`scripts/setup.sh`](scripts/setup.sh) | Check the prerequisites, build and push the Worker image, create the namespace, read the Temporal server, deploy the Worker. |
 | [`scripts/run-workflow.sh`](scripts/run-workflow.sh) | Start a run, or read its status, result or timeline. |
 | [`scripts/compare-sandbox.sh`](scripts/compare-sandbox.sh) | Create one ordinary pod on the same node, read the same signals, delete it by name. |
-| [`scripts/cleanup.sh`](scripts/cleanup.sh) | Remove everything the sample created, and only that. |
+| [`scripts/cleanup.sh`](scripts/cleanup.sh) | Remove everything the blueprint created, and only that. |
 | [`scripts/common.sh`](scripts/common.sh) | The shared settings and the guards. Sourced, not run. |
-| [`.env.example`](.env.example) | The local values the sample needs. There are no secrets in it. |
+| [`.env.example`](.env.example) | The local values the blueprint needs. There are no secrets in it. |
 
 The scripts read `.env` (copy it from `.env.example`), and a value already set in your
 environment wins over the file. `NAMESPACE` defaults to `temporal-sandboxes`, and every
@@ -171,14 +171,14 @@ the pod UIDs are from the run.
 
 ## Step 1: Install agent-sandbox
 
-If you have not already, from the warm pool sample. This folder was built against v1.0.6:
+If you have not already, from the warm pool blueprint. This folder was built against v1.0.6:
 
 ```bash
 kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
 kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller
 ```
 
-Nothing in this sample installs, upgrades or reconfigures it. It was already installed at
+Nothing in this blueprint installs, upgrades or reconfigures it. It was already installed at
 v1.0.6 on the cluster these runs used, and was reused exactly as it stood;
 `scripts/setup.sh` reads the CRD and the controller's `Available` condition and stops with
 the command above when either is missing.
@@ -187,7 +187,7 @@ the command above when either is missing.
 
 A Temporal server is a shared install, and another workload on your cluster may already
 depend on the version and the settings it has. So this is a step you run, not something the
-sample's scripts do. Check first:
+blueprint's scripts do. Check first:
 
 ```bash
 kubectl get svc -n temporal
@@ -213,7 +213,7 @@ kubectl -n temporal rollout status statefulset/temporal-postgresql
 ```
 
 PostgreSQL has to be running before `helm install`, because the chart's schema job is a
-`pre-install` hook. Then install the chart with this sample's values:
+`pre-install` hook. Then install the chart with this blueprint's values:
 
 ```bash
 helm repo add temporal https://go.temporal.io/helm-charts && helm repo update temporal
@@ -293,7 +293,7 @@ web:
 
 `manageSchema: true` is the one that is easy to miss: without it the chart's schema Job
 does nothing and the server starts against an empty database. `namespaces.create` is what
-registers the Temporal namespace the runs land in; the sample's scripts never create it,
+registers the Temporal namespace the runs land in; the blueprint's scripts never create it,
 because this server is shared, so `setup.sh` checks for it and stops with the command when
 it is absent.
 
@@ -322,7 +322,7 @@ Run ID and start time, one near the top still shown as RUNNING and one as
 FAILED.](images/temporal-ui-workflows-list.png)
 
 *The Workflows list for the `nitro-sandbox` namespace, reached through the port-forward
-above. This capture is from a separate run of this sample on the same cluster, after the
+above. This capture is from a separate run of this blueprint on the same cluster, after the
 walkthrough below, so it could show a mix of statuses rather than only the one completed
 run the rest of this page follows; the RUNNING and FAILED entries are other runs of the
 same workflow, started the same way.*
@@ -331,7 +331,7 @@ same workflow, started the same way.*
 
 `scripts/setup.sh` checks the two shared installs, chooses the `StorageClass` the
 workflow's workspace claim will name, builds and pushes the Worker image, creates the
-sample's namespace, reads the Temporal server from a one-shot pod, and applies the Worker
+blueprint's namespace, reads the Temporal server from a one-shot pod, and applies the Worker
 with its RBAC. It creates no `Sandbox`: the workflow does that.
 
 ```bash
@@ -389,7 +389,7 @@ The docker build and push are abridged above; the account id is a placeholder. T
 matters. Every prerequisite is read before anything is created, so a missing one
 stops the run with no leftovers. The namespace is created only when it is absent and is
 labelled `app.kubernetes.io/managed-by=temporal`, because applying over an existing
-namespace counts as reusing it, which would put the sample's mark on a namespace another
+namespace counts as reusing it, which would put the blueprint's mark on a namespace another
 workload owns. The image tag is the SHA-256 of every file under `worker/`, so a change to
 any of them produces a new tag and the push cannot serve a stale image; setup checks that
 every `COPY` in the Dockerfile reads from `worker/`, because a `COPY` from outside that
@@ -397,7 +397,7 @@ folder would leave the tag unchanged while the image content moved.
 
 The one-shot preflight pod in step 5/6 of that output is how the Temporal server itself is
 read. Whether the Temporal namespace exists is a question for the server, not for
-Kubernetes, and the answer decides whether this sample can run at all. It reads three
+Kubernetes, and the answer decides whether this blueprint can run at all. It reads three
 things and writes none of them. When the Temporal namespace is missing it exits 2 and setup
 stops rather than adding a namespace to somebody else's server. That refusal, from a
 separate run with `TEMPORAL_NAMESPACE` pointed at a namespace the server does not have:
@@ -586,7 +586,7 @@ the `Sandbox` and then waits for it to be Ready, so those are two things that ca
 separately: if the create succeeds and the readiness wait times out, the object exists and
 the activity failed. A flag set on success would be false there, the `finally` would skip
 the delete, and the `Sandbox` and its billed volume would be left behind by exactly the
-failure the sample warns about in "Good to know". Set before the call, the delete is always
+failure the blueprint warns about in "Good to know". Set before the call, the delete is always
 attempted, and attempting it when nothing was created costs nothing because the delete verb
 reads a 404 as "already gone".
 
@@ -752,10 +752,10 @@ account for:
   business holding a credential for the API that manages it. The sandbox pod's volumes
   below show the projection is absent.
 
-The self-hosted Temporal server this sample uses has no authentication of its own, which is
+The self-hosted Temporal server this blueprint uses has no authentication of its own, which is
 why there is no Temporal credential to hold, and why step 2 keeps it on ClusterIP and
 reaches it only with a port-forward. The PostgreSQL password is in a Secret that only the
-Temporal server's own pods read; nothing in this sample's namespace has it.
+Temporal server's own pods read; nothing in this blueprint's namespace has it.
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n temporal-sandboxes get pod lifecycle \
@@ -971,7 +971,7 @@ are the point of putting Temporal here at all.
   another; the retry policy is what turned a failure into a second attempt instead of a
   failed run. The two-second gap between event 23 scheduling it and event 24 starting it is
   the retry policy's `initial_interval`. Note that the second `run_step`, the read-back at
-  event 53, is `attempt 1`: only the one the sample asks to fail does.
+  event 53, is `attempt 1`: only the one the blueprint asks to fail does.
 - **`TIMER_STARTED  0:02:30 server-side timer` at event 35.** The wait while the sandbox is
   suspended is the server's timer, not a sleeping process. Nothing of this workflow is in
   any process between events 35 and 36.
@@ -1060,7 +1060,7 @@ the readings above come first; it is in the table as the last row for completene
 
 ## Step 12: Delete the Worker pod mid-run
 
-This is the one the whole sample is for. Start a run, and while the sandbox is suspended,
+This is the one the whole blueprint is for. Start a run, and while the sandbox is suspended,
 delete the Worker pod by its exact name.
 
 ```bash
@@ -1153,7 +1153,7 @@ see "Good to know".
 
 The Worker is the trusted orchestrator, so it is the one component here with Kubernetes
 permissions at all. It authenticates with the ServiceAccount token step 7 accounts for, and
-this `Role` in the sample's own namespace is what bounds that token. Every verb in it is one
+this `Role` in the blueprint's own namespace is what bounds that token. Every verb in it is one
 the provider's code calls, and the comments say which call wants it. The whole rule set,
 from [`deploy/rbac.yaml`](deploy/rbac.yaml):
 
@@ -1190,7 +1190,7 @@ rules:
     verbs: ["get", "create"]
 ```
 
-There is no `ClusterRole` and no `ClusterRoleBinding` anywhere in this sample. The
+There is no `ClusterRole` and no `ClusterRoleBinding` anywhere in this blueprint. The
 namespace the Worker acts in is taken from the pod itself rather than written into its
 configuration, so it cannot be pointed at a namespace its `Role` does not cover:
 
@@ -1216,7 +1216,7 @@ two together the stream opens. So a `Role` trimmed by reading the client code ra
 trying it refuses every step the workflow runs.
 
 The Worker holds no AWS credential and no model or API key, and the self-hosted Temporal
-server this sample uses has no authentication of its own, which is exactly why the page
+server this blueprint uses has no authentication of its own, which is exactly why the page
 keeps it on ClusterIP and reaches it only with a port-forward.
 
 ## Optional: Temporal Cloud instead of a self-hosted server
@@ -1226,10 +1226,10 @@ and the workflow, the activities and the provider in this folder are identical o
 changes is the three lines that say where the server is and how to authenticate to it: the
 Worker connects to a Cloud namespace endpoint with an API key or mTLS instead of to
 `temporal-frontend.temporal.svc:7233`, and you use Cloud's hosted Web UI instead of the
-port-forward in step 2. An API key would be a Secret the Worker reads, which this sample's
+port-forward in step 2. An API key would be a Secret the Worker reads, which this blueprint's
 Worker has none of.
 
-This sample self-hosts so that it runs on nothing beyond the Getting started cluster: no
+This blueprint self-hosts so that it runs on nothing beyond the Getting started cluster: no
 account, no external endpoint and no key. Moving it to Cloud is left as an exercise.
 
 ## Good to know
@@ -1243,7 +1243,7 @@ account, no external endpoint and no key. Moving it to Cloud is left as an exerc
   workspace. Because the workflow creates the object from the manifest in its own image, a
   change to `worker/sandbox.yaml` produces a new image tag and takes effect on the next
   run, not on a `Sandbox` that already exists.
-- **An `exec` under a retry policy is at-least-once.** The step this sample runs appends a
+- **An `exec` under a retry policy is at-least-once.** The step this blueprint runs appends a
   line to a file, so a retry after an exec that succeeded and lost its answer would append
   twice. That is harmless here and is why the deliberate failure is raised before the exec
   rather than after it. A production harness would make the step idempotent, or record a
@@ -1263,14 +1263,14 @@ account, no external endpoint and no key. Moving it to Cloud is left as an exerc
   still attached, which could stall the detach. The controller re-creates the pod on
   resume, so this does not prevent the suspend and resume cycle.
 - **The Temporal server's history is what you are keeping.** Its PostgreSQL holds every
-  run, which is the record this sample is about, so the clean up keeps the server by
+  run, which is the record this blueprint is about, so the clean up keeps the server by
   default and the commands to remove it are in the clean up's own output.
 
 ## Clean up
 
-Set the variables again if you are in a new shell, then remove everything the sample
+Set the variables again if you are in a new shell, then remove everything the blueprint
 created: the Worker and its RBAC, any `Sandbox` a run left behind with its workspace
-volume, the namespace, the sample's own `StorageClass` if setup made one, and the ECR
+volume, the namespace, the blueprint's own `StorageClass` if setup made one, and the ECR
 repository.
 
 ```bash
@@ -1332,7 +1332,7 @@ name and its EBS volume confirmed gone. Step 5/6 says `not present` because this
 the cluster's default class and so created none; on a cluster with no fitting default it
 reads `storageclass/temporal-sandboxes-gp3 deleted`.
 
-The clean up checks that the namespace carries the sample's label before it deletes
+The clean up checks that the namespace carries the blueprint's label before it deletes
 anything inside it, deletes the Worker first so nothing creates another `Sandbox` while it
 works, removes the helper pod by its exact name rather than by a label selector, reads a
 failed lookup as "could not determine" rather than as "gone", and exits non-zero if it
@@ -1340,13 +1340,13 @@ skipped something or could not confirm a delete. So an incomplete clean up is ne
 reported as done.
 
 **What stays.** The **agent-sandbox controller**, shared with the warm pool and the other
-agent-sandbox samples: to remove it, follow the
+agent-sandbox blueprints: to remove it, follow the
 [warm pool clean up](../../getting-started/warm-pool/README.md#clean-up). The **Temporal
 server**, because its PostgreSQL holds the durable history of every run. Check that nothing
 else on your cluster uses it (`helm list --namespace temporal`) before you remove it, and
 then the commands in the clean up's own output above do it, along with the Temporal
 namespace on it.
 
-If this is the only sample you ran, follow the
+If this is the only blueprint you ran, follow the
 [hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up) to remove
 the namespace and the cluster.

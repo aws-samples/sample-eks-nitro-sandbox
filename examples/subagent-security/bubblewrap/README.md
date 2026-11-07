@@ -10,7 +10,7 @@ not in its mount list. The trusted controller makes every supplier and AWS call 
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page and the [Subagent security section page](../README.md), which describes the
-analyst, the case and the files this sample shares with the other two. Run these samples
+analyst, the case and the files this blueprint shares with the other two. Run these blueprints
 first, which this one builds on and which it does not re-explain:
 
 - [Getting started > Hello sandbox](../../getting-started/hello-sandbox/README.md): the
@@ -22,14 +22,14 @@ first, which this one builds on and which it does not re-explain:
   variable name and never by value.
 
 The commands below use files from this repository, so clone it if you have not already, and
-run them from this sample's folder:
+run them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/subagent-security/bubblewrap
 ```
 
-For this sample you also need [`aws`](https://aws.amazon.com/cli/),
+For this blueprint you also need [`aws`](https://aws.amazon.com/cli/),
 [`kubectl`](https://kubernetes.io/docs/reference/kubectl/),
 [`docker`](https://docs.docker.com/get-started/get-docker/),
 [`jq`](https://jqlang.org/), `openssl` and `python3` on your machine, and an Amazon Bedrock
@@ -38,11 +38,11 @@ Amazon ECR, and one of those builds bubblewrap from source, so the first build t
 minute or two longer than a plain image. A run costs one Bedrock turn, a few small Amazon S3
 objects, and one sandboxed pod plus one small ordinary pod kept running until you clean up.
 
-Every output block on this page is from one real run of this sample, run id
+Every output block on this page is from one real run of this blueprint, run id
 `0eb808c7a8244688b2ceb854d71ed07a`. Values from the account and cluster it ran on are
 replaced by the same placeholders the commands use, because this repository is public:
 `<ACCOUNT_ID>`, `<CLUSTER_NAME>` and `<NODE_NAME>`. The Region is left as `us-west-2`, the
-default this repository's samples share. Run ids, pod names, kernel builds, uptimes, device
+default this repository's blueprints share. Run ids, pod names, kernel builds, uptimes, device
 lists, inode numbers, namespace numbers, token counts and the model's own prose are exactly
 as the run printed them. Where a block shows a file from this folder rather than a run's
 output, it says so.
@@ -81,7 +81,7 @@ sandbox.
 including the supplier key and the AWS credentials; inside it, bubblewrap's boundary is the
 argument list the trusted controller assembles around each tool process it starts.*
 
-![An AWS Cloud frame holds an Amazon EKS cluster frame. Inside the cluster, a red Nitro sandbox frame labelled runtimeClassName colon isolated-sandbox contains an Analyst pod box. In that box a trusted controller sits on the left, described as owning AWS and the supplier key and as assembling every bwrap argument, with three arrows running right, labelled starts with bwrap, to three container icons: a Reader, an Evaluator and a Writer, each carrying the same sub line, own mounts and only lo. One solid arrow leaves the trusted controller, passes out of the Analyst pod box and out of the sandbox frame, and reaches a Supplier API icon in a separate Supplier API pod box, marked an ordinary pod and ClusterIP only; it is labelled TLS and the real key, because the controller makes every supplier call itself and no tool process makes any. A red dashed arrow runs from the Writer to that same Supplier API, labelled no route colon ENETUNREACH, which is the probe in which a tool process's own connection to that address failed while the controller reached the same address and port. Two more arrows leave the trusted controller on its left side, pass below every frame and reach Amazon Bedrock, for the model turn, and Amazon S3, holding the proposals and reports; both are labelled EKS Pod Identity, and no arrow to either service starts at a tool process. Every refusal on the figure starts at a tool process: nothing in this sample restricts the pod's own egress, so no frame encloses the pod's network and no path out of the pod or out of the controller is shown being refused.](images/subagent-security-bubblewrap.png)
+![An AWS Cloud frame holds an Amazon EKS cluster frame. Inside the cluster, a red Nitro sandbox frame labelled runtimeClassName colon isolated-sandbox contains an Analyst pod box. In that box a trusted controller sits on the left, described as owning AWS and the supplier key and as assembling every bwrap argument, with three arrows running right, labelled starts with bwrap, to three container icons: a Reader, an Evaluator and a Writer, each carrying the same sub line, own mounts and only lo. One solid arrow leaves the trusted controller, passes out of the Analyst pod box and out of the sandbox frame, and reaches a Supplier API icon in a separate Supplier API pod box, marked an ordinary pod and ClusterIP only; it is labelled TLS and the real key, because the controller makes every supplier call itself and no tool process makes any. A red dashed arrow runs from the Writer to that same Supplier API, labelled no route colon ENETUNREACH, which is the probe in which a tool process's own connection to that address failed while the controller reached the same address and port. Two more arrows leave the trusted controller on its left side, pass below every frame and reach Amazon Bedrock, for the model turn, and Amazon S3, holding the proposals and reports; both are labelled EKS Pod Identity, and no arrow to either service starts at a tool process. Every refusal on the figure starts at a tool process: nothing in this blueprint restricts the pod's own egress, so no frame encloses the pod's network and no path out of the pod or out of the controller is shown being refused.](images/subagent-security-bubblewrap.png)
 
 ## Versions
 
@@ -111,7 +111,7 @@ rather than reaching the sandbox.
 ## Files
 
 Everything under [`../analyst/`](../analyst/) is shared with the other Subagent security
-samples and listed on the [section page](../README.md#the-shared-files). This sample adds:
+blueprints and listed on the [section page](../README.md#the-shared-files). This blueprint adds:
 
 | File | What it is |
 |---|---|
@@ -119,19 +119,19 @@ samples and listed on the [section page](../README.md#the-shared-files). This sa
 | [`src/controller.py`](src/controller.py) | The trusted controller: it owns AWS and the supplier key, and starts each tool process |
 | [`src/sandbox.py`](src/sandbox.py) | The launcher: the `bwrap` argument list, which is the whole confinement policy |
 | [`src/filters.py`](src/filters.py) | The seccomp filters the application compiles with libseccomp |
-| [`src/toolbox.py`](src/toolbox.py) | The program bubblewrap starts: the shared worker plus this sample's probes |
+| [`src/toolbox.py`](src/toolbox.py) | The program bubblewrap starts: the shared worker plus this blueprint's probes |
 | [`src/preflight.py`](src/preflight.py) | Starts one tool process, so setup fails clearly on a guest that cannot run one |
 | [`deploy/analyst-pod.yaml`](deploy/analyst-pod.yaml) | The sandboxed pod, with the init container the guest needs |
 | [`deploy/ordinary-pod.yaml`](deploy/ordinary-pod.yaml) | An ordinary pod on the same node, for the comparison in step 11 |
-| [`scripts/setup.sh`](scripts/setup.sh) | Builds the images and creates everything the sample needs |
+| [`scripts/setup.sh`](scripts/setup.sh) | Builds the images and creates everything the blueprint needs |
 | [`scripts/run.sh`](scripts/run.sh) | Runs one procurement case and copies its result out |
 | [`scripts/correlate.py`](scripts/correlate.py) | Checks the run's record against the supplier API's own request log |
-| [`scripts/clean.sh`](scripts/clean.sh) | Removes what this sample created, and says what stays |
-| [`.env.example`](.env.example) | The local values the sample needs; copy to `.env`, which git ignores |
+| [`scripts/clean.sh`](scripts/clean.sh) | Removes what this blueprint created, and says what stays |
+| [`.env.example`](.env.example) | The local values the blueprint needs; copy to `.env`, which git ignores |
 
-## What this sample does and does not bound
+## What this blueprint does and does not bound
 
-This matters before the steps, because the sample is about confinement and it would be easy
+This matters before the steps, because the blueprint is about confinement and it would be easy
 to read more into it than it shows.
 
 **What bubblewrap bounds, and the run demonstrates:** the three tool processes the controller
@@ -140,20 +140,20 @@ written, which namespaces it has, what UID it runs as, which capabilities it hol
 it can build a further user namespace, which syscalls the application's filters refuse, and
 that it has no network.
 
-**What nothing in this sample bounds:** the analyst pod's own egress. This sample ships no
+**What nothing in this blueprint bounds:** the analyst pod's own egress. This blueprint ships no
 network policy, so the pod, and the trusted controller inside it, which is under no `bwrap`
 boundary, reaches whatever the cluster and the VPC allow. Every refusal on this page is
 bubblewrap refusing a *tool process*; none of them is the pod being unable to reach
 something. To restrict a sandbox's egress on the node, see
-[Isolation > Network policy](../../isolation/network-policy/README.md), which is the sample
+[Isolation > Network policy](../../isolation/network-policy/README.md), which is the blueprint
 for that mechanism.
 
-The two are worth keeping apart, and this sample is the clearest case of it: a tool process
+The two are worth keeping apart, and this blueprint is the clearest case of it: a tool process
 has no route to the supplier API at all, while the controller beside it reaches that same
 address and port in the same run. That pair is how the page's network refusal is
 attributable.
 
-**What this sample gives up to run bubblewrap at all**, which the other sandboxed pods here
+**What this blueprint gives up to run bubblewrap at all**, which the other sandboxed pods here
 do not: the working container is `privileged: true`, because `bwrap` cannot mount a private
 procfs in the guest without it. That rules out `allowPrivilegeEscalation: false` and it
 leaves the container's own seccomp profile unconfined, and the run prints both facts about
@@ -202,11 +202,11 @@ BEDROCK_MODEL_ID=global.anthropic.claude-sonnet-4-5-20250929-v1:0
 # ROLE_NAME=
 ```
 
-**Step 2: Build the images and create everything the sample needs.** One script, seven
+**Step 2: Build the images and create everything the blueprint needs.** One script, seven
 stages. It checks the cluster before it creates anything, builds and pushes the supplier API
 image and the analyst image, seeds the proposals into a new S3 bucket, creates the IAM role
 and its Pod Identity association, starts the sandboxed pod, and then starts one real tool
-process in it. It creates nothing outside this sample's own namespace and changes no
+process in it. It creates nothing outside this blueprint's own namespace and changes no
 cluster-wide setting.
 
 ```bash
@@ -395,7 +395,7 @@ rather than after a page of checks that would have passed anywhere.
 
 The last line before "done" is the cross-check in
 [`scripts/correlate.py`](scripts/correlate.py), which reads the supplier API's own request
-log out of its pod and compares it with the run's record. In this sample no tool process
+log out of its pod and compares it with the run's record. In this blueprint no tool process
 makes a supplier call, because none of them has a network, so what the comparison
 establishes is the other half of that claim: the only requests the server saw for this run
 are the trusted controller's own, each arriving exactly once. An empty log would satisfy
@@ -449,7 +449,7 @@ Award to **Northstar Office Systems** as the sole compliant bidder offering exce
 ```
 
 Everything from the second heading down is the model's own prose, and it cites all three
-proposal keys. The two lines above it are rendered by the sample from the checked
+proposal keys. The two lines above it are rendered by the blueprint from the checked
 `recommended_supplier` field, not from the prose, so the headline and the gate always read
 the same value. Harbor is the cheapest bid and loses on delivery; Cedar is the fastest and
 is over budget.
@@ -602,7 +602,7 @@ def command(workspace, *, extra=(), disable_userns=True):
 Three choices in it are worth saying out loud.
 
 - **`--unshare-all` is not used.** It is the best-effort form: a namespace the kernel will
-  not give it is skipped and the child runs anyway. Each namespace this sample claims is
+  not give it is skipped and the child runs anyway. Each namespace this blueprint claims is
   named one at a time, so a kernel that refuses one fails the call instead.
 - **The mounts are named one at a time too.** There is no "bind everything and then
   exclude". The child's filesystem starts empty, and it holds exactly what the list puts
@@ -734,7 +734,7 @@ list is the whole boundary: the trusted controller opens the supplier key file a
 Identity token file at UID 1000, and the same two paths are simply absent from the tool
 process's mount list, so it gets ENOENT rather than a permission error.*
 
-![A focused view of one tool process under bubblewrap. An Amazon EKS cluster frame holds a red Nitro sandbox frame labelled runtimeClassName colon isolated-sandbox, and inside that an Analyst pod box whose sub line reads that bubblewrap confines the processes the controller starts, not the pod. Along the bottom of the pod, a Trusted controller icon, described as UID 1000 and as owning AWS and the supplier key, has an arrow labelled assembles the bwrap argument list to a Reader tool process icon, described as UID 1000 and as having its own mount namespace. Two solid arrows leave the top of the trusted controller, each labelled opens at UID 1000, and reach two file icons on the right: a Supplier key file above and a Pod Identity token file below. Two red dashed arrows leave the top of the Reader tool process and reach those same two files, each labelled not in the mount list colon ENOENT, so the tool process is refused the very files the controller opens in the same run as the same UID, and the refusal is the path not being there rather than a permission error. To the right of the Reader tool process, a folder icon labelled slash input, read-only, takes a solid arrow from the tool process labelled reads and a red dashed arrow labelled write refused colon EROFS, so the one mount is shown both accepting a read and refusing a write. Every refusal on the figure starts at the tool process; no frame encloses the pod's network and no route out of the pod is shown being refused, because nothing in this sample restricts the pod's egress.](images/subagent-security-bubblewrap-mount-list.png)
+![A focused view of one tool process under bubblewrap. An Amazon EKS cluster frame holds a red Nitro sandbox frame labelled runtimeClassName colon isolated-sandbox, and inside that an Analyst pod box whose sub line reads that bubblewrap confines the processes the controller starts, not the pod. Along the bottom of the pod, a Trusted controller icon, described as UID 1000 and as owning AWS and the supplier key, has an arrow labelled assembles the bwrap argument list to a Reader tool process icon, described as UID 1000 and as having its own mount namespace. Two solid arrows leave the top of the trusted controller, each labelled opens at UID 1000, and reach two file icons on the right: a Supplier key file above and a Pod Identity token file below. Two red dashed arrows leave the top of the Reader tool process and reach those same two files, each labelled not in the mount list colon ENOENT, so the tool process is refused the very files the controller opens in the same run as the same UID, and the refusal is the path not being there rather than a permission error. To the right of the Reader tool process, a folder icon labelled slash input, read-only, takes a solid arrow from the tool process labelled reads and a red dashed arrow labelled write refused colon EROFS, so the one mount is shown both accepting a read and refusing a write. Every refusal on the figure starts at the tool process; no frame encloses the pod's network and no route out of the pod is shown being refused, because nothing in this blueprint restricts the pod's egress.](images/subagent-security-bubblewrap-mount-list.png)
 
 The run exercises the boundary in both directions, and each refusal has a control beside it
 where the same thing succeeds. These lines are from the step 3 output:
@@ -775,7 +775,7 @@ bubblewrap rather than about file permissions.
 
 What this shows is a refusal **at the UID the tool processes run as**, which is the same UID
 the controller runs as. It is not a claim about root: `bwrap` is given `--uid 1000` and no
-tool process in this sample runs as root, so the page has no evidence either way about what
+tool process in this blueprint runs as root, so the page has no evidence either way about what
 root inside the guest could open, and does not claim any.
 
 **Step 8: A forbidden process operation refused.** A tool process could try to climb out of
@@ -887,7 +887,7 @@ outside it. The other case's object is really there, because `setup.sh` seeds it
 denial names an object that exists and is readable with other credentials rather than being
 a missing key.
 
-Every supplier call in this sample is the controller's own, because no tool process has a
+Every supplier call in this blueprint is the controller's own, because no tool process has a
 network to make one with. The reply's availability map is the one input to this run that a
 supplier controls, and it is rebuilt from the case's own supplier ids before it is staged
 for the evaluator rather than forwarded: the keys come from the case document the
@@ -969,7 +969,7 @@ pod age:  43s
 node age: 15m
 6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
 42.73
-dm-0 vda vdb vdc 
+dm-0 vda vdb vdc
 m8i.enclave
 ```
 
@@ -987,7 +987,7 @@ kubectl exec ordinary-comparison -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f
 ```text
 6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
 946.95
-dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0 
+dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0
 m8i.xlarge
 ```
 
@@ -1047,7 +1047,7 @@ copy.
   child `bwrap` starts, by the kernel, at `exec` time. What the run shows is those
   restrictions holding for a process at UID 1000 making a specific call. It is not a
   demonstration that no process in the pod could reach those things by other means.
-- **It does not bound the pod.** The analyst pod has no network policy in this sample, so the
+- **It does not bound the pod.** The analyst pod has no network policy in this blueprint, so the
   pod's egress is whatever the cluster and the VPC allow. The trusted controller is under no
   `bwrap` boundary and reaches Amazon Bedrock, Amazon S3 and the supplier API directly. A
   reader who wants the pod's egress restricted on the node wants
@@ -1059,11 +1059,11 @@ copy.
 - **The controller is trusted, and is not confined.** It holds the supplier key and the AWS
   credentials by design. bubblewrap is placed around what it launches, not around it. A
   defect in the controller is not something bubblewrap is placed to catch.
-- **There is no credential broker.** The other two samples in this section have a layer that
+- **There is no credential broker.** The other two blueprints in this section have a layer that
   can hold a credential on a tool's behalf. bubblewrap has nothing of the kind, which is why
   the tool processes here are offline and the application performs their I/O. The
   [section page](../README.md#the-shared-files) lists what a layer has to supply for the
-  three samples to show the same thing; bubblewrap supplies the file and process boundary
+  three blueprints to show the same thing; bubblewrap supplies the file and process boundary
   and refuses the network outright, and supplies no allowed host and no brokered
   credential, because it has no proxy to put one in. A tool process here is handed no
   supplier credential at all, so there is nothing for the run to compare: the whole of its
@@ -1075,7 +1075,7 @@ copy.
   controller is trusted code inside the sandbox: it reads the supplier key, holds the AWS
   credentials and builds the argument lists. The boundary this page shows is around what it
   launches.
-- **The tool processes can read this sample's own code.** `/opt/analyst` and
+- **The tool processes can read this blueprint's own code.** `/opt/analyst` and
   `/opt/bubblewrap` are bound read-only, because the child has to run the worker. So a tool
   can read the controller's source, which is published here anyway. What is not in its mount
   list is the credential files and the other roles' directories, and the code it can read is
@@ -1084,15 +1084,15 @@ copy.
   `--die-with-parent` has the kernel kill the child if whatever started `bwrap` dies, and
   `--new-session` puts the child in a session of its own so it does not share the
   controller's terminal. Both are in the list this page shows and neither has a check on
-  this page, so take them as settings the sample uses rather than as behaviour it
+  this page, so take them as settings the blueprint uses rather than as behaviour it
   establishes. The [bubblewrap manual](https://github.com/containers/bubblewrap/blob/v0.13.1/bwrap.xml)
   at the pinned version is what to read for them.
 - **The child's cgroup namespace is the controller's.** The launcher does not pass
   `--unshare-cgroup`, and the run's evidence records that the one namespace it does not claim
-  is shared. bubblewrap can unshare it; this sample does not need to, and the page does not
+  is shared. bubblewrap can unshare it; this blueprint does not need to, and the page does not
   claim it.
 - **A refusal has to be told apart from a failure.** The shared worker reports a denied open
-  or socket as structured data and lets everything else raise, and this sample's probes
+  or socket as structured data and lets everything else raise, and this blueprint's probes
   report the errno of the one operation they perform. The controller then checks for the
   exact errno it asked for, never for "any error". A `bwrap` start-up failure, a timeout or a
   crash leaves no result line and fails the run, so a broken step can never read as a
@@ -1101,13 +1101,13 @@ copy.
   this layer.** `privileged: true` is what lets `bwrap` mount a private procfs in the guest,
   and it rules out `allowPrivilegeEscalation: false` and leaves the container seccomp profile
   unconfined. Step 5 prints what the controller actually holds. If that trade is not one you
-  want, the two other samples in this section run the same analyst under layers that need no
+  want, the two other blueprints in this section run the same analyst under layers that need no
   privilege.
 - **The gates are task-specific correctness checks, not a defence against prompt injection.**
   They check that the model's explicit choice matches a comparison computed without it and
   that it cited the originals. They say nothing about whether the prose is otherwise sound.
 - **The sandbox is sized by its requests.** This pod sets CPU and memory requests, which most
-  samples here do not, because it has to hold a Python interpreter, the Strands Agents and
+  blueprints here do not, because it has to hold a Python interpreter, the Strands Agents and
   AWS SDK packages and a short-lived tool process at once. A pod with no requests gets a
   small default VM of about 130 MiB and is killed for running out of memory with no output at
   all. Its limits are higher than its requests on purpose: the requests size the sandbox, and
@@ -1116,7 +1116,7 @@ copy.
 - **Everything about the supplier is synthetic.** The proposals are invented, the supplier
   API holds no real records, and a purchase order against it orders nothing. The proposals
   hold no customer data.
-- **The sample certificate authority is generated at setup and lasts 30 days.** It is created
+- **The blueprint certificate authority is generated at setup and lasts 30 days.** It is created
   on your machine, kept in a Kubernetes Secret and a ConfigMap, and never committed. Run the
   clean up and `setup.sh` again to replace expired material.
 
@@ -1163,7 +1163,7 @@ Clean up complete.
 
 It deletes in reverse order of creation, starting with the sandboxed pod, which is what
 holds sandbox capacity other workloads on the cluster share. It touches a namespace only
-when that namespace carries this sample's `app.kubernetes.io/managed-by` label, and an AWS
+when that namespace carries this blueprint's `app.kubernetes.io/managed-by` label, and an AWS
 resource only when it carries `ManagedBy=bubblewrap`. A lookup that fails counts as "could
 not determine" rather than "already gone", so anything it could not delete or confirm is
 named at the end and makes it exit non-zero.
@@ -1172,15 +1172,15 @@ Without `--delete-aws` it removes the cluster objects and the Pod Identity assoc
 keeps the S3 bucket, the IAM role and the images, so a second run skips the build. It keeps
 the run directory too, and `setup.sh` refuses to start while that directory exists:
 creating it is how `setup.sh` checks that no other run is using these names. What is in it
-is the only place an earlier run's names are written down, and every copy of this sample
+is the only place an earlier run's names are written down, and every copy of this blueprint
 marks its resources the same way, so a clean up that had lost them could report "already
 gone" for names that were never created. To start another run, finish that one with
 `--delete-aws`. If you want to keep its AWS resources, move the run directory aside rather
 than deleting it: it is the only place their names are written down, and it also holds that
-run's supplier API key and sample certificate authority.
+run's supplier API key and blueprint certificate authority.
 
-This sample changes no cluster-wide setting and installs nothing shared, so the clean up has
+This blueprint changes no cluster-wide setting and installs nothing shared, so the clean up has
 nothing of that kind to undo. The `isolated-sandbox` RuntimeClass and the cluster are not
-this sample's; the
+this blueprint's; the
 [hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up) covers
 removing the cluster itself.

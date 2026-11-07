@@ -1,5 +1,5 @@
-site_name: Amazon EKS Nitro sandbox samples
-site_description: Runnable samples for Nitro Sandboxes on Amazon EKS
+site_name: AWS Nitro Sandbox on Amazon EKS Blueprints
+site_description: Runnable blueprints for AWS Nitro Sandbox on Amazon EKS
 repo_url: https://github.com/aws-samples/sample-eks-nitro-sandbox
 repo_name: aws-samples/sample-eks-nitro-sandbox
 # docs_dir is examples/, so the "edit this page" pencil points there.

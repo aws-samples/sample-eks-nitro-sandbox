@@ -28,18 +28,18 @@ flowchart TB
 
     Cilium's kube-proxy replacement includes a socket-level load balancer whose eBPF programs
     load against the kernel's BTF type information, so every node kernel must be built with
-    `CONFIG_DEBUG_INFO_BTF=y`. The Ubuntu EKS Pod Isolation AMI this sample consumes is the
+    `CONFIG_DEBUG_INFO_BTF=y`. The Ubuntu EKS Pod Isolation AMI this blueprint consumes is the
     output of [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10),
-    rebuilt with kernel BTF enabled; this sample refuses an AMI that is not tagged as such
+    rebuilt with kernel BTF enabled; this blueprint refuses an AMI that is not tagged as such
     (`setup.sh`'s AMI preflight, stage 0 below) rather than discovering the missing BTF only
     after a node joins. `setup.sh` also gates on both running node kernels showing valid BTF
     (`/sys/kernel/btf/vmlinux`) before treating their Cilium agents as ready (stage 5).
 
-## This sample depends on #10
+## This blueprint depends on #10
 
 The sandbox node's AMI is **not** built here. It is the output of
 [#10, Build an Ubuntu AMI for EKS Pod Isolation](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10),
-rebuilt with kernel BTF enabled for Cilium's kube-proxy replacement. This sample never
+rebuilt with kernel BTF enabled for Cilium's kube-proxy replacement. This blueprint never
 guesses, publishes or hard-codes that AMI's id: `setup.sh` reads it from your own
 `config.local.env` (`SANDBOX_AMI_ID`, gitignored) and verifies its architecture, owner, a
 `ManagedBy` tag matching #10's own ownership tag, and a `BtfValidated=true` tag before using
@@ -50,14 +50,14 @@ an AMI that failed verification, or that is not #10's own, never receives it. Ch
 `ManagedBy` too (not just the AWS account that owns the AMI resource) matches that contract:
 the account-owner check says who can use the AMI, `ManagedBy` says which build produced it.
 
-#10's AMI follows the GA node-build bundle `nitro-sandbox-ga-20261028`, and this sample builds
+#10's AMI follows the GA node-build bundle `nitro-sandbox-ga-20261028`, and this blueprint builds
 none of it. The AMI's host kernel is `6.18.56-nitro-ga`: kernel.org Linux 6.18.56 plus AWS's
 public commit [amazonlinux/linux 1e66c960](https://github.com/amazonlinux/linux/commit/1e66c960b982c94bda76ebd0129eaecf0a68b46e),
 with BTF on. The runtime binaries and the guest image (guest kernel 6.18.54) come in one
 archive, `nitro-sandbox-binaries-2026-10-28.zip`, which the operator supplies to #10's build:
 it has no public download, and #10's build checks its SHA-256 (in the Versions table below)
-before installing anything. This sample never fetches, embeds or commits that archive; it
-reaches the sample only inside the AMI. See #10's README for the full dependency chain.
+before installing anything. This blueprint never fetches, embeds or commits that archive; it
+reaches the blueprint only inside the AMI. See #10's README for the full dependency chain.
 
 ## Run it
 
@@ -72,7 +72,7 @@ cp config.env.example config.local.env   # then set AWS_ACCOUNT_ID, SANDBOX_AMI_
 ```
 
 The script writes its own kubeconfig under the repository's gitignored `tmp/` directory, at
-`tmp/issue11/run/kubeconfig` (never beneath this sample folder, and never your default
+`tmp/issue11/run/kubeconfig` (never beneath this blueprint folder, and never your default
 kubeconfig), so your default kubeconfig and its current context are not touched. `setup.sh`
 prints the exact path; to use `kubectl` yourself, point `KUBECONFIG` at it, for example from
 the repository root:
@@ -81,7 +81,7 @@ the repository root:
 export KUBECONFIG="$(git rev-parse --show-toplevel)/tmp/issue11/run/kubeconfig"
 ```
 
-Once the cluster is up, prove the sample's claims and then tear it down:
+Once the cluster is up, prove the blueprint's claims and then tear it down:
 
 ```bash
 ./test.sh              # apply the workloads and policy, then prove networking, BTF and policy
@@ -107,7 +107,7 @@ health, BTF loading, ENI allocation, Service translation and the policy controls
 | [Amazon EKS Kubernetes](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html) | 1.36 | 1.36 |
 | Ubuntu system and sandbox nodes | Ubuntu 24.04 LTS (Canonical's EKS 1.36 AMI). The fresh run's `SYSTEM_AMI_ID` was Canonical's serial `20261027`, and #10's build of its sandbox AMI ran on 24.04.5 LTS | 24.04.5 LTS |
 | Ubuntu EKS Pod Isolation AMI | Output of [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10), built from the GA bundle and BTF-validated (`ManagedBy` and `BtfValidated=true` tags) | Revalidate with a fresh #10 build |
-| Host kernel on the sandbox node | `6.18.56-nitro-ga`: kernel.org Linux 6.18.56 plus the public commit [amazonlinux/linux 1e66c960](https://github.com/amazonlinux/linux/commit/1e66c960b982c94bda76ebd0129eaecf0a68b46e), built by #10 (this sample builds no kernel) | 6.18.56 |
+| Host kernel on the sandbox node | `6.18.56-nitro-ga`: kernel.org Linux 6.18.56 plus the public commit [amazonlinux/linux 1e66c960](https://github.com/amazonlinux/linux/commit/1e66c960b982c94bda76ebd0129eaecf0a68b46e), built by #10 (this blueprint builds no kernel) | 6.18.56 |
 | Guest kernel in the sandbox pod | 6.18.54, inside the bundle's guest image `latest.eif` | 6.18.54 |
 | EKS Pod Isolation runtime and guest image | `nitro-sandbox-binaries-2026-10-28.zip`, SHA-256 `6830dc8d0acb356b06753fed609ebb9f03a182e340eaa27cd9ed171f7667ba40`: operator-supplied to #10's build, which verifies it; no public download, never committed or embedded | 2026-10-28 |
 | containerd on the sandbox AMI | 2.2.1, as Canonical's EKS 1.36 Ubuntu AMI ships it; the runtime supports 2.1, 2.2 and 2.3, and its installer refuses 2.4 or later | 2.2.1 |
@@ -168,11 +168,11 @@ Every block is from one fresh run, on a new cluster in `us-west-2` with the defa
   merely copies the `BtfValidated=true` tag value without #10's own `ManagedBy` tag, is
   refused here, not discovered later as a Cilium agent that never goes ready.
 - `SYSTEM_AMI_ID`: a public Ubuntu 24.04 EKS-optimized AMI id you resolved and pinned
-  yourself (this sample does not resolve `latest` at runtime, so a re-run always boots the
+  yourself (this blueprint does not resolve `latest` at runtime, so a re-run always boots the
   AMI you validated against). Canonical publishes each build under a public SSM parameter of
   the form `/aws/service/canonical/ubuntu/eks/24.04/1.36/stable/<serial>/amd64/hvm/ebs-gp3/ami-id`;
   pick a serial, read its id with `aws ssm get-parameter --name <that path>`, and record both.
-  Only existence, state and architecture are checked; this sample does not second-guess a
+  Only existence, state and architecture are checked; this blueprint does not second-guess a
   published Canonical/AWS image.
 
 Neither check ever substitutes a guessed or published id when the one you gave fails: it
@@ -200,13 +200,13 @@ system AMI preflight passed
 
 ### 1. Create the cluster without the VPC CNI or kube-proxy
 
-eksctl creates a new VPC and an EKS 1.36 control plane, dedicated to this sample.
+eksctl creates a new VPC and an EKS 1.36 control plane, dedicated to this blueprint.
 `disableDefaultAddons` stops EKS from installing its default networking add-ons, and the
 cluster lists the ones it wants back: CoreDNS, plus the Pod Identity agent for stage 2. The
 VPC CNI and kube-proxy are not among them; Cilium does both of their jobs. No node group is
 created yet, so the first node that ever joins already has a CNI.
 
-This sample only ever creates its **own** dedicated cluster (tagged
+This blueprint only ever creates its **own** dedicated cluster (tagged
 `Demo=setup-cilium-ubuntu`); it never attaches to, modifies the CNI on, or removes
 kube-proxy from an existing cluster, because that would be unsafe on a cluster something else
 depends on.
@@ -344,7 +344,7 @@ ordinary alike) gets the per-packet load balancer instead, which does see the gu
 packets at the pod's interface. Without this setting, a sandbox pod still reaches pod IPs
 directly, but neither a ClusterIP Service nor DNS through the `kube-dns` Service answers it:
 its packets leave the pod still addressed to the ClusterIP. That is what the GA node-build
-bundle measured with Cilium 1.20.2 on Amazon Linux 2023 nodes; on Ubuntu nodes this sample's
+bundle measured with Cilium 1.20.2 on Amazon Linux 2023 nodes; on Ubuntu nodes this blueprint's
 run is the first measurement.
 
 Read the mode from a running Cilium agent, not from the `cilium-config` ConfigMap, which says
@@ -376,14 +376,14 @@ KubeProxyReplacement Details:
 The negative control, the sandbox pod's Service and DNS reachability with
 `hostNamespaceOnly: false`, needs the pods `test.sh` creates, so it is a reader step after the
 first `./test.sh`: see [The socketLB negative control](#the-socketlb-negative-control). It briefly
-changes this one Helm value on the sample's own cluster and puts it back; `test.sh` stays
+changes this one Helm value on the blueprint's own cluster and puts it back; `test.sh` stays
 read-only and never flips it.
 
 ### 4. Add the two Ubuntu node groups
 
 Both node groups are EKS managed node groups created by eksctl, each from a launch template
 `setup.sh` creates first, so the templates and everything launched from them carry this
-sample's tags from the start.
+blueprint's tags from the start.
 
 - **`system`**: the ordinary Ubuntu 24.04 node (`SYSTEM_AMI_ID`, `SYSTEM_INSTANCE_TYPE`,
   default `m7i.large`). CoreDNS, the Cilium operator and the ordinary comparison workloads
@@ -533,7 +533,7 @@ one from. So `scripts/missing-btf-control.sh` makes it a **stub-driven** run of 
 without the stub. It changes nothing on the cluster.
 
 - **What the stub does:** the script writes a stub `kubectl` under the repository's gitignored
-  `tmp/`, never in the sample folder, and puts it first on `PATH`. The stub replaces only the
+  `tmp/`, never in the blueprint folder, and puts it first on `PATH`. The stub replaces only the
   BTF read, answering `MISSING`. It passes every other call to the real `kubectl`, so the
   agent-pod lookup runs against the live cluster.
 - **What is real:** the node, its Cilium agent and the gate under test.
@@ -574,7 +574,7 @@ A pod selects `runtimeClassName: isolated-sandbox`, which must exist as a Kubern
 RuntimeClass whose scheduling labels match the sandbox node's. The GA node-build bundle's
 Ubuntu guide has the cluster's operator apply it once per cluster; this cluster is new, so
 `setup.sh` creates it, only when it is absent. A RuntimeClass is cluster-scoped, so the
-namespace's label does not mark it as the sample's: it carries the same
+namespace's label does not mark it as the blueprint's: it carries the same
 `app.kubernetes.io/part-of: setup-cilium-ubuntu` label itself, and that label is the only
 thing it adds to the bundle's object. `setup.sh` then requires that whatever is there carries
 the label and is otherwise exactly the bundle's (`check-runtimeclass`): the same handler, the
@@ -648,7 +648,7 @@ run directly on the node's kernel, so they keep their default profile, and
 `cilium_ubuntu.py check-workloads` refuses `Unconfined` on any of them. On the sandbox pod it
 accepts the pod-level field only, and refuses a container, init container, ephemeral container
 or legacy annotation setting AppArmor beside it. `test.sh` runs the same check on the pods the
-API server returns. That strict rule relies on Kubernetes 1.34 or later, which this sample's
+API server returns. That strict rule relies on Kubernetes 1.34 or later, which this blueprint's
 EKS 1.36 is: from 1.34 the API server no longer copies the pod-level field into the legacy
 per-container annotation. The GA bundle lists this as an open item it tracks with the service
 team, and Amazon Linux 2023 hosts, which have no AppArmor, need no such setting.
@@ -663,7 +663,7 @@ spec:
 
 ### 7. Tag what AWS created for the cluster
 
-Everything this run creates by name carries the sample's tags from the start (see
+Everything this run creates by name carries the blueprint's tags from the start (see
 [What stays running, and cleaning up](#what-stays-running-and-cleaning-up)). AWS also creates
 some resources for the cluster, its VPC and its node groups that have no way to be tagged at
 creation. `setup.sh`'s last step (`cilium_ubuntu.py tag-sweep`) tags exactly these, each found
@@ -695,7 +695,7 @@ Before its first write, the sweep stops and tags nothing when:
 - the read came up short (exit 2). It must find every kind the audit counts and every member of
   the list above at least as often as a fresh run leaves it. The cluster's eksctl stacks count
   only when they carry eksctl's `alpha.eksctl.io/cluster-name` tag with this cluster's exact
-  name and the sample's `Demo` tag. An empty list from AWS is a short read, never "nothing to
+  name and the blueprint's `Demo` tag. An empty list from AWS is a short read, never "nothing to
   tag";
 - a member of the list above carries another `Demo` value (exit 1), which the sweep never
   overwrites.
@@ -708,7 +708,7 @@ for example `(Demo=another-demo; not in the set tag-sweep writes, ...)`, and `se
 Running `setup.sh` again repeats the sweep, which tags only what is still untagged.
 
 **EKS can replace the control plane's interfaces later, without tags.** On an earlier run of
-this sample, `setup.sh` tagged the control plane's two network interfaces (07:40Z to 07:59Z).
+this blueprint, `setup.sh` tagged the control plane's two network interfaces (07:40Z to 07:59Z).
 At 09:05Z, about an hour and a half after that run started, EKS replaced both. The new
 interfaces carried no tags, so the tag audit that `test.sh` stage 8 runs, read again at 14:05Z,
 reported both as `MISSING network-interface <id>` (`49 resources, 2 without auto-delete=no`)
@@ -774,7 +774,7 @@ control plane, two EC2 instances, one NAT gateway); see the README for cleanup.
 
 ## Evidence (`./test.sh`)
 
-`test.sh` is read-only against the cluster's configuration: it applies the sample's own
+`test.sh` is read-only against the cluster's configuration: it applies the blueprint's own
 workloads (`deploy/workloads.yaml`) and the egress network policy (`deploy/policy.yaml`),
 waits for the seven pods to be Ready, and then proves each claim by reading the **running
 Cilium agents** rather than the Helm values or the `cilium-config` ConfigMap. It compares the
@@ -785,7 +785,7 @@ lanes.
 
 This page is about Cilium enforcing one policy on a Nitro sandbox pod as on an ordinary pod. For
 the general mechanism, restricting a sandbox's egress with a network policy, see the
-[Network policy](../../isolation/network-policy/README.md) sample.
+[Network policy](../../isolation/network-policy/README.md) blueprint.
 
 The policy `test.sh` applies is one `CiliumNetworkPolicy`, `clients-egress`. It selects the
 three client pods alike, so each L3/L4, L7 and FQDN verdict below is the same rule, enforced by
@@ -890,7 +890,7 @@ What it checks, in order:
    Identity, its role allows exactly Cilium's documented ENI actions, and neither node role
    carries `AmazonEKS_CNI_Policy`.
 3. **The sandbox pod has its own guest.** The `isolated-sandbox` RuntimeClass carries the
-   sample's mark and otherwise matches the GA bundle's, the sandbox node carries both of its
+   blueprint's mark and otherwise matches the GA bundle's, the sandbox node carries both of its
    labels and the system node neither, and of the pods the API server returns, the sandbox pod
    alone runs with AppArmor `Unconfined`. The sandbox node runs the pinned host
    kernel `6.18.56-nitro-ga` and the sandbox pod the pinned guest kernel `6.18.54`. Its guest
@@ -938,7 +938,7 @@ What it checks, in order:
 From the fresh run's first `./test.sh`, against the cluster `setup.sh` had just created.
 
 - **Stage 0 on a fresh cluster:** the cluster was new for this run. Before `setup.sh` started,
-  no cluster, eksctl stack or other run-owned resource of this sample existed, and `setup.sh`
+  no cluster, eksctl stack or other run-owned resource of this blueprint existed, and `setup.sh`
   applies neither the namespace nor the workloads. The seven pods' ages begin with this
   `test.sh`. No separate read of the namespace before stage 0 was kept.
 - **Masked:** the caller ARN, the node names, the generated pod and role names, the instance and
@@ -1129,7 +1129,7 @@ What it shows, and what it does not:
 
 ### The socketLB negative control
 
-**This step briefly breaks Service routing for the sandbox pod, on this sample's own cluster.**
+**This step briefly breaks Service routing for the sandbox pod, on this blueprint's own cluster.**
 It is the negative control for `socketLB.hostNamespaceOnly: true`
 ([stage 3](#3-install-cilium-before-any-node)): with the setting off, the sandbox pod must lose
 the ClusterIP Service and DNS through the `kube-dns` Service, while it still reaches pod IPs.
@@ -1137,11 +1137,11 @@ Run it after the first `./test.sh`, which creates the pods it probes from, and t
 `./test.sh` again. `scripts/socketlb-control.sh` does four things:
 
 1. **Checks ownership, and changes nothing unless every check passes:** the caller's account;
-   the cluster's `Demo=setup-cilium-ubuntu` tag; that this sample's own kubeconfig points at that
+   the cluster's `Demo=setup-cilium-ubuntu` tag; that this blueprint's own kubeconfig points at that
    cluster; the Helm release (`cilium` in `kube-system`, chart `cilium-1.20.2`, deployed) and
    that its values are exactly `setup.sh`'s; both agents on `Hostns-only`; the demo namespace's
    label and pods; and that the sandbox pod reaches both Services now. It exits 1 when a check
-   finds something that is not the sample's, and 2 when a check could not read.
+   finds something that is not the blueprint's, and 2 when a check could not read.
 2. **Off:** `setup.sh` step 3's `helm upgrade`, with only `--set socketLB.hostNamespaceOnly=false`
    added, then a wait for the agents to roll.
 3. **Read and probe:** both agents must read `Socket LB Coverage: Full`, which `kpr-status`
@@ -1275,7 +1275,7 @@ copies, the instance profiles the nodes use, the VPC's main route table, default
 and default network ACL, the cluster security group, and the control plane's and NAT gateway's
 interfaces) get the same tags in [stage 7](#7-tag-what-aws-created-for-the-cluster).
 
-While it is up, this sample keeps billing: the EKS control plane, one `m7i.large` and one
+While it is up, this blueprint keeps billing: the EKS control plane, one `m7i.large` and one
 `m8i.xlarge` instance with their gp3 volumes, one NAT gateway and its Elastic IP. Use the
 [AWS Pricing Calculator](https://calculator.aws/) for your own estimate.
 
@@ -1313,7 +1313,7 @@ eksctl tagged with this cluster's exact name, so another cluster's stacks, such 
 deletes ENIs and launch templates only when they carry that tag, and exits non-zero if
 anything it was asked to delete is still there: a
 lookup that fails is recorded as a failure, never read as "gone". Deleting the cluster removes
-the sample's namespace, its pods and the `isolated-sandbox` RuntimeClass with it.
+the blueprint's namespace, its pods and the `isolated-sandbox` RuntimeClass with it.
 
 **`./clean.sh` asks you to type the cluster name before it deletes anything.** Everything it
 does before that prompt only reads. `CLEAN_CONFIRM=<cluster name> ./clean.sh` answers the prompt,
