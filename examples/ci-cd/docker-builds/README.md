@@ -2,11 +2,11 @@
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
-sample first so you have an EKS Auto Mode cluster with the runtime classes. This sample also
-uses two things the [coding agent](../../getting-started/coding-agent/README.md) sample
+blueprint first so you have an EKS Auto Mode cluster with the runtime classes. This blueprint also
+uses two things the [coding agent](../../getting-started/coding-agent/README.md) blueprint
 introduces: network policy enforcement, which is turned on once per cluster, and a role
 reached through EKS Pod Identity. The commands below use files from this repository, so clone
-it if you have not already, and run them from this sample's folder:
+it if you have not already, and run them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
@@ -79,7 +79,7 @@ The files:
 | [`deploy/build-job.yaml`](deploy/build-job.yaml) | The Docker-in-Docker build `Job`, with the EBS layer cache and the optional push. |
 | [`deploy/build-configmap.yaml`](deploy/build-configmap.yaml) | The build the Job runs: the build context, `docker build`, `docker run`, and the optional push. |
 | [`deploy/cache-pvc.yaml`](deploy/cache-pvc.yaml) | The `ReadWriteOncePod` EBS claim each builder mounts at its data directory. |
-| [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The egress policy for every build pod in the sample. |
+| [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The egress policy for every build pod in the blueprint. |
 | [`deploy/egress-push-rules.yaml`](deploy/egress-push-rules.yaml) | The two rules added to that policy when the optional push is set up. |
 | [`deploy/pod-ordinary.yaml`](deploy/pod-ordinary.yaml) | An ordinary pod on the same node, for the comparisons in Step 4 and Step 5. |
 | [`deploy/buildkit-job.yaml`](deploy/buildkit-job.yaml) | Optional: the same build with a standalone BuildKit daemon. |
@@ -90,10 +90,10 @@ The files:
 | [`scripts/run-build-job.sh`](scripts/run-build-job.sh) | Runs the Docker-in-Docker Job and waits for it, with `--push` for the optional push. |
 | [`scripts/run-buildkit-job.sh`](scripts/run-buildkit-job.sh) | Optional: runs the BuildKit Job and waits for it. |
 | [`scripts/ecr-setup.sh`](scripts/ecr-setup.sh) | Optional: creates the ECR repository, the scoped role and the Pod Identity association. |
-| [`scripts/clean.sh`](scripts/clean.sh) | Removes everything the sample created, and only that. |
+| [`scripts/clean.sh`](scripts/clean.sh) | Removes everything the blueprint created, and only that. |
 
 The walkthrough uses the shared Region default from the home page and a namespace of its own,
-so the sample's objects are easy to find and remove on a shared cluster. Set them in your
+so the blueprint's objects are easy to find and remove on a shared cluster. Set them in your
 shell:
 
 ```bash
@@ -103,7 +103,7 @@ export NAMESPACE=docker-builds-sample
 
 **Step 1: Turn on network policy enforcement, once per cluster.** EKS Auto Mode accepts
 network policies but does not enforce them until the `amazon-vpc-cni` ConfigMap says so. This
-is a cluster-wide setting, so it is yours to make, not the sample's:
+is a cluster-wide setting, so it is yours to make, not the blueprint's:
 [`scripts/setup.sh`](scripts/setup.sh) only checks it and stops with this command when it is
 off.
 
@@ -116,13 +116,13 @@ kubectl get configmap -n kube-system amazon-vpc-cni -o jsonpath='{.data.enable-n
 true
 ```
 
-The cluster this run used already had enforcement on, from the coding agent sample, so the
+The cluster this run used already had enforcement on, from the coding agent blueprint, so the
 block above is the check reading `true`; the `apply` is the command for a cluster where it is
 off. Enforcement affects the whole cluster, and pods that no policy selects are unaffected.
 
 **Step 2: Start the build pod.** [`scripts/setup.sh`](scripts/setup.sh) chooses the
 StorageClass for the layer cache, creates the namespace when it is absent and labels it as
-this sample's, applies the egress policy and waits for its `PolicyEndpoint`, creates the EBS
+this blueprint's, applies the egress policy and waits for its `PolicyEndpoint`, creates the EBS
 claim and the build scripts, and starts the interactive pod. The whole opt-in is one line in
 [`deploy/hello-docker.yaml`](deploy/hello-docker.yaml):
 
@@ -189,7 +189,7 @@ Tear down:        NAMESPACE=docker-builds-sample ./scripts/clean.sh
 ```
 
 Setup chose the cluster's own default StorageClass because it fits: the Auto Mode provisioner,
-gp3 and encrypted. This sample never creates or changes a StorageClass, since that is a
+gp3 and encrypted. This blueprint never creates or changes a StorageClass, since that is a
 cluster-wide object; when no default fits, setup stops and tells you to name one with
 `STORAGE_CLASS`. The pod was Ready 15 seconds after it was created, most of that the Nitro
 sandbox being created and its guest booting.
@@ -377,7 +377,7 @@ IAM role is out of reach is the instance metadata service's doing: inside a sand
 paths return 404 (Amazon EKS User Guide, *Isolated and confidential pods limitations*, Instance
 metadata (IMDS)).
 
-This is the trade the sample is about, stated plainly: inside the sandbox the daemon has
+This is the trade the blueprint is about, stated plainly: inside the sandbox the daemon has
 everything, and the guest is where "everything" ends. A build that runs code from a pull
 request can do as it likes to the guest and its own layer cache, and the node, its kubelet,
 the other pods and the node's IAM role are all somewhere it cannot reach.
@@ -385,7 +385,7 @@ the other pods and the node's IAM role are all somewhere it cannot reach.
 **Step 6: Run the same build as a Job.** This is the CI shape: no `exec`, one Job that starts
 the daemon, builds, runs the result and ends. [`scripts/run-build-job.sh`](scripts/run-build-job.sh)
 renders [`deploy/build-job.yaml`](deploy/build-job.yaml), deletes any earlier Job of this
-sample first (a Job's pod template is immutable), applies it and waits for either terminal
+blueprint first (a Job's pod template is immutable), applies it and waits for either terminal
 condition. The container starts the daemon and hands over to the build script:
 
 ```yaml
@@ -502,7 +502,7 @@ Abridged, and the two blocks are the two runs of the same Job, one after the oth
 build of 17 seconds and a warm one of 1 second, with every step `CACHED` and no base image
 pulled. Nothing of the first run's guest survived; what survived is the EBS
 volume, which the second pod mounted at `/var/lib/docker` and found the layers and the build
-cache in. On a sample this small the saving is a few seconds, and it is the mechanism that
+cache in. On a blueprint this small the saving is a few seconds, and it is the mechanism that
 matters: on a real pipeline, with several images and dependency layers, this is the difference
 between a build that pulls and compiles everything each time and one that does not.
 
@@ -515,7 +515,7 @@ builds, give each one its own claim.
 ## How the network policy works
 
 [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) is the whole policy for every build
-pod in the sample, with the file's longer comments trimmed here. `setup.sh` renders
+pod in the blueprint, with the file's longer comments trimmed here. `setup.sh` renders
 `<NAMESPACE>`, and leaves `<ECR_PUSH_RULES>` empty unless the optional push has been set up for
 this namespace. DNS (port 53) is allowed to any IP address, which avoids the need to look up
 and substitute the cluster's CoreDNS address:
@@ -555,7 +555,7 @@ spec:
 
 | Part | What it does |
 |---|---|
-| `podSelector` | Selects every pod in the sample, interactive pod and both Jobs, by the label each one carries. |
+| `podSelector` | Selects every pod in the blueprint, interactive pod and both Jobs, by the label each one carries. |
 | `policyTypes` | Both directions, so anything not allowed below is denied. |
 | `ingress: []` | No pod may open a connection to a build pod. `kubectl exec`, `logs` and `cp` keep working: they use the sandbox's control channel, not the pod network. |
 | DNS rule | The cluster's CoreDNS Service address only, on UDP and TCP 53. |
@@ -853,7 +853,7 @@ kernel, an uptime that is this pod's, virtio disks.
 To run what BuildKit built, push it to a registry instead, which is `--output
 type=image,name=...,push=true` and the [Amazon ECR credential
 helper](https://github.com/awslabs/amazon-ecr-credential-helper) in place of `docker login`.
-This sample keeps the registry path on the Docker-in-Docker Job, where `docker push` and the
+This blueprint keeps the registry path on the Docker-in-Docker Job, where `docker push` and the
 token on standard input are the shape most pipelines already use.
 
 ## Good to know
@@ -865,7 +865,7 @@ token on standard input are the shape most pipelines already use.
   bounds is how far that reaches: one pod, one guest, one volume.
 - **Do not give the daemon a TCP listener.** The `docker:dind` image's entrypoint adds
   `--host=tcp://0.0.0.0:2375` when TLS is off, and a daemon on a port is root-equivalent
-  control of the build for anything that can reach the pod. This sample names `dockerd` and its
+  control of the build for anything that can reach the pod. This blueprint names `dockerd` and its
   Unix socket in `args` instead, so there is no listener to reach, and the policy denies all
   ingress as well.
 - **The sandbox is sized from the requests, when it boots.** In-place resize is not supported
@@ -956,8 +956,8 @@ Both cache volumes are read back from EC2 by their volume IDs, not assumed gone 
 claim disappears, because the PersistentVolume outlives the claim until the CSI driver has
 deleted the volume: that is the cheapest proof it stopped billing.
 
-What stays: network policy enforcement, which is a cluster-wide setting this sample only ever
+What stays: network policy enforcement, which is a cluster-wide setting this blueprint only ever
 read, and the cluster's StorageClass, which it chose and never changed. If this is the last
-sample you ran, follow the
+blueprint you ran, follow the
 [hello sandbox](../../getting-started/hello-sandbox/README.md#clean-up) clean up to remove the
 cluster.

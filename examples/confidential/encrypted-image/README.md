@@ -1,6 +1,6 @@
 # Run an image whose layers only the sandbox can read
 
-This sample publishes a container image to [Amazon ECR](https://docs.aws.amazon.com/AmazonECR/latest/userguide/what-is-ecr.html)
+This blueprint publishes a container image to [Amazon ECR](https://docs.aws.amazon.com/AmazonECR/latest/userguide/what-is-ecr.html)
 whose every filesystem layer is ciphertext, and gets it running. A build machine encrypts
 the layers with a data key that AWS KMS wraps. The node pulls and transfers only
 ciphertext. Inside the sandbox, the guest's own image runtime asks KMS for the layer key,
@@ -15,7 +15,7 @@ is trusted with the original image and stays outside the cluster.
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page and the [Confidential section page](../README.md), which covers the trust
 boundary, the key-policy shape and the attested decrypt that this and the other
-Confidential samples share. Three samples lead into this one:
+Confidential blueprints share. Three blueprints lead into this one:
 
 - [cedar-policy](../../policy/cedar-policy/README.md) generates a Cedar policy for a
   `confidential-sandbox` pod and shows the guest enforce it, with no attestation step.
@@ -46,13 +46,13 @@ named differently. You do not need [skopeo](https://github.com/containers/skopeo
 installed: the setup script runs it in a container.
 
 A run costs the KMS key, ECR storage for one encrypted image (about 37 MB), and the compute
-of one sandboxed pod and two small ordinary pods while the sample is up. The clean up
+of one sandboxed pod and two small ordinary pods while the blueprint is up. The clean up
 schedules the key for deletion, which AWS completes after a waiting period of at least
 7 days.
 
 ## Overview
 
-The sample has one sandboxed pod and two ordinary pods, all in one namespace. The sandboxed
+The blueprint has one sandboxed pod and two ordinary pods, all in one namespace. The sandboxed
 pod runs the encrypted image. The two ordinary pods are controls: one runs the same image
 in its original plaintext form so the page can show what an ordinary pod reads, and one
 holds the sandboxed pod's own IAM role and tries to decrypt the layer key without an
@@ -91,7 +91,7 @@ to is Figure 2.*
 | Source image for the workload | `public.ecr.aws/amazonlinux/amazonlinux:minimal` (`SOURCE_IMAGE` in `.env`) |
 | AWS CLI image, for the credentials control pod only | `public.ecr.aws/aws-cli/aws-cli:2.31.19` |
 | `eks-nitro-sandbox-genpolicy` | Reports no version string of its own. The pinned artifact is the image, resolved to a digest at generation time and visible in the generated policy. |
-| `nitro-sandbox-keyprovider` | Reports no version string of its own. The key it wrapped with is recorded in each layer's annotation, and the sample reads it back. |
+| `nitro-sandbox-keyprovider` | Reports no version string of its own. The key it wrapped with is recorded in each layer's annotation, and the blueprint reads it back. |
 
 ## Files
 
@@ -102,21 +102,21 @@ to is Figure 2.*
 | [`deploy/credentials-pod.yaml`](deploy/credentials-pod.yaml) | An ordinary pod with the same IAM role, asking KMS to decrypt the layer key with no attestation |
 | [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The sandbox's egress: DNS, Pod Identity and the KMS endpoint, nothing else |
 | [`deploy/enable-network-policy.yaml`](deploy/enable-network-policy.yaml) | The one-line, once-per-cluster change that makes network policies enforced |
-| [`deploy/namespace.yaml`](deploy/namespace.yaml) | The `encrypted-image-sample` namespace, labelled as the sample's own |
+| [`deploy/namespace.yaml`](deploy/namespace.yaml) | The `encrypted-image-sample` namespace, labelled as the blueprint's own |
 | [`deploy/service-account.yaml`](deploy/service-account.yaml) | The pod's service account, which the Pod Identity association names |
-| [`../_shared/confidential-profile.yaml`](../_shared/confidential-profile.yaml) | The generator profile the Confidential samples share |
+| [`../_shared/confidential-profile.yaml`](../_shared/confidential-profile.yaml) | The generator profile the Confidential blueprints share |
 | [`../_shared/kms-key-policy.json`](../_shared/kms-key-policy.json) | The attestation gate: allow on a match, explicitly deny otherwise |
 | [`../_shared/pod-identity/role-trust-policy.json`](../_shared/pod-identity/role-trust-policy.json) | The role trust policy, scoped to one cluster, namespace and service account |
 | [`policy/policy.generated.yaml`](policy/policy.generated.yaml) | The generated Cedar policy from a real run, committed so you can read it without running anything |
 | [`scripts/setup.sh`](scripts/setup.sh) | The whole flow, ending with the three pods running |
 | [`scripts/changed-pod.sh`](scripts/changed-pod.sh) | The refused case: one pinned value changed |
-| [`scripts/clean.sh`](scripts/clean.sh) | Remove everything the sample created |
+| [`scripts/clean.sh`](scripts/clean.sh) | Remove everything the blueprint created |
 
 ## How it works
 
 **Step 1: Turn on network policy enforcement, once for the cluster.** An EKS Auto Mode
 cluster accepts network policies without enforcing them until the `amazon-vpc-cni`
-ConfigMap says so. This is a setting the whole cluster shares, so the sample's scripts
+ConfigMap says so. This is a setting the whole cluster shares, so the blueprint's scripts
 never change it: apply it yourself, and `setup.sh` checks it and stops with this command if
 it is off. Pods that no policy selects are unaffected.
 
@@ -290,7 +290,7 @@ DOS executable (COM)
 
 `file` reporting "DOS executable (COM)" is worth a word: it is not one. `file` guesses from
 the first few bytes, and on ciphertext that guess is arbitrary, which is the point. On an
-earlier run of this sample the same command said `data`.
+earlier run of this blueprint the same command said `data`.
 
 The digest matching the descriptor is what makes the failed `gzip -t` mean something: these
 are exactly the bytes the parent instance pulls, not a truncated download. `file` has
@@ -338,15 +338,15 @@ supplemental groups are unknown, so the policy will permit additional groups bey
 ones it pins.
 ```
 
-`imagePullPolicy: Always` is deliberate, and differs from the other samples here: the guest
-asks KMS for the layer key as part of the pull, and that request is the thing this sample
+`imagePullPolicy: Always` is deliberate, and differs from the other blueprints here: the guest
+asks KMS for the layer key as part of the pull, and that request is the thing this blueprint
 is about. Both Region variables are set, to the same value, because the Pod Identity
 webhook injects `AWS_DEFAULT_REGION` only when the manifest does not already declare
 `AWS_REGION` alone; a policy generated with `--with-pod-identity` expects it in the pinned
 environment either way, and the guest refuses to create a container whose environment does
 not match.
 
-This pod also sets CPU and memory requests, where most samples here set none. The guest
+This pod also sets CPU and memory requests, where most blueprints here set none. The guest
 decrypts and unpacks every layer inside the sandbox before the container starts, and the
 small default VM has nowhere to put the unpacked filesystem:
 
@@ -803,7 +803,7 @@ the file, so nothing is substituted for it.
 | Part | What it does |
 |---|---|
 | `podSelector` | Selects only the sandboxed pod, by its `app: encrypted-image` label. Neither control pod carries that label: the plain pod is the comparison for the readings, and the credentials pod is meant to reach KMS the ordinary way, so that what stops it is the key policy and not the network. |
-| `policyTypes: [Ingress, Egress]` | Denies all ingress and all egress except the rules below. Nothing in the sample needs to reach the pod. |
+| `policyTypes: [Ingress, Egress]` | Denies all ingress and all egress except the rules below. Nothing in the blueprint needs to reach the pod. |
 | DNS rule | Lets the pod resolve names, allowed to any IP address on port 53 rather than pinned to the cluster's CoreDNS Service address. |
 | Pod Identity rule | `169.254.170.23:80` is the credential endpoint. It is served inside the guest, but the sandbox passes the requests on to the Pod Identity Agent on the node, and this policy applies to them: without the rule they time out. |
 | KMS rule | The one external destination. The `domainNames` form resolves the name and allows the addresses behind it. |
@@ -811,11 +811,11 @@ the file, so nothing is substituted for it.
 **There is no ECR rule, and none is needed.** The node pulls the encrypted layer blobs and
 transfers them into the sandbox; the guest never talks to the registry (Amazon EKS User
 Guide, *Encrypted container images*). The only call the guest makes out of the pod for this
-sample is the one `kms:Decrypt`.
+blueprint is the one `kms:Decrypt`.
 
 **It is enforced on the node, outside the guest.** The node's network policy agent attaches
 eBPF programs to the pod's host-side interface, which the guest has no access to, so nothing
-inside the sandbox can change it, whatever UID it runs as. In this sample that UID is 65534:
+inside the sandbox can change it, whatever UID it runs as. In this blueprint that UID is 65534:
 the pod sets `runAsUser: 65534` with `runAsNonRoot: true` (step 6), and the generated Cedar
 policy pins `context.run_as_user == 65534` (step 7), so root is refused twice over — once by
 the kubelet, which will not start a container that would resolve to root, and again by the
@@ -846,7 +846,7 @@ own node.
 
 - **The pod's network readings come 60 seconds in, not at start-up.** A pod's network policy
   is programmed on the node shortly after the pod starts, and a probe in its first seconds
-  can run before the policy is in force. The first run of this sample showed exactly that:
+  can run before the policy is in force. The first run of this blueprint showed exactly that:
   the blocked probe returned `HTTP 200` from a host the policy denies. The readings are
   worth nothing unless they are taken once the policy is in force, so the container waits.
 - **A pod can come up on a recycled IP with a stale datapath.** On a busy cluster, a pod
@@ -949,7 +949,7 @@ gone. The account ID is replaced with `<ACCOUNT_ID>` and the local path is short
 `clean.sh` removes all four AWS resources, each only after reading that resource's own tags
 and finding `ManagedBy=encrypted-image` on it; a resource without the tag is left alone and
 the clean up reports itself incomplete. It deletes objects inside the namespace only after
-confirming the namespace carries this sample's label, and each pod by its exact name rather
+confirming the namespace carries this blueprint's label, and each pod by its exact name rather
 than by a label selector. A lookup that cannot run counts as a failure, never as "already
 gone", and the script exits non-zero if anything was left behind.
 
