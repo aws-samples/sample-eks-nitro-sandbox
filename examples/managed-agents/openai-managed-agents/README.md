@@ -398,6 +398,12 @@ set -a; . ./.env; set +a
 .venv/bin/python scripts/submit.py "Run uname -rv and ls /sys/block with your Bash tool, write their combined output to report.txt, then read report.txt back to me."
 ```
 
+`submit.py` asks for a session budget of $1.00 (`--budget-cents` changes it; `0` asks for
+none). A project that does not accept a session budget refuses it, either as
+`Session budget configuration is not enabled` or as `unknown_parameter` on `spend_control`.
+`submit.py` then creates the session without a budget and prints a `[note]` that the session
+has no budget ceiling. Any other error from the API stops it.
+
 Abridged; your text will differ:
 
 ```text

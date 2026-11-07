@@ -112,16 +112,32 @@ def hand_off_to_launcher(launcher_url: str, token: str, session_id: str, environ
 
 
 def _is_spend_control_unsupported(exc: BadRequestError) -> bool:
-    """True if a 400 is OpenAI refusing spend_control because the project has it off.
+    """True if a 400 is OpenAI refusing spend_control because the project lacks it.
 
-    A project without per-session budgets rejects the `spend_control` parameter
-    with `400 'Session budget configuration is not enabled'` (param
-    `spend_control`). That is a property of the project, not of this request, so
-    the only honest fallback is to drop `spend_control` and create the session
-    without it -- not to retry the same body. We match on the parameter name and
-    the "not enabled" phrase (both present in OpenAI's error body) so an
-    unrelated 400 is never swallowed.
+    A project that does not accept a per-session budget refuses the
+    `spend_control` parameter in one of two ways:
+
+      * `400 'Session budget configuration is not enabled'` (param
+        `spend_control`): the project has per-session budgets turned off;
+      * `400` with error code `unknown_parameter` and param `spend_control`
+        ("Unknown parameter: 'spend_control'."): the project does not know the
+        parameter at all. A new project answered this way.
+
+    Either is a property of the project, not of this request, so the only honest
+    fallback is to drop `spend_control` and create the session without it -- not
+    to retry the same body. The second shape is read from the structured error
+    body (its `code` and `param` fields), never from the message text. Anything
+    else, including an `unknown_parameter` on another param, another
+    `spend_control` error, or an error that is not a 400, is not swallowed.
     """
+    if getattr(exc, "status_code", None) != 400:
+        return False
+
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict) and body.get("code") == "unknown_parameter" \
+            and body.get("param") == "spend_control":
+        return True
+
     text = str(getattr(exc, "message", "") or exc).lower()
     param = str(getattr(exc, "param", "") or "")
     mentions_spend_control = "spend_control" in text or param == "spend_control"
@@ -132,10 +148,11 @@ def create_session(client, agent_id: str, spend_control: dict | None) -> object:
     """Create the self-hosted session, tolerating a project without spend_control.
 
     By default submit.py asks for a per-session spend ceiling, but not every
-    project has per-session budgets enabled. If OpenAI rejects `spend_control`
-    for that reason, we retry once without it and warn, so a reader running the
-    documented defaults gets a session rather than a 400 they must decode. Any
-    other 400 is re-raised unchanged.
+    project accepts one. If OpenAI refuses `spend_control` for that reason (see
+    _is_spend_control_unsupported), we retry once without it and say so, so a
+    reader running the documented defaults gets a session rather than a 400 they
+    must decode. That session has no budget ceiling. Any other 400 is re-raised
+    unchanged.
     """
     environment = {"type": "self_hosted", "workspace_directory": WORKSPACE}
     metadata = {"sample": "openai-managed-agents-eks"}
@@ -146,9 +163,9 @@ def create_session(client, agent_id: str, spend_control: dict | None) -> object:
         )
     except BadRequestError as exc:
         if spend_control and _is_spend_control_unsupported(exc):
-            print("[note] this project does not have per-session spend_control enabled; "
-                  "creating the session without a budget ceiling. Pass --budget-cents 0 to "
-                  "skip this, or enable session budgets in your OpenAI project.")
+            print("[note] this project does not accept a session budget (spend_control), so "
+                  "this session has no budget ceiling. Pass --budget-cents 0 to skip asking "
+                  "for one.")
             return client.beta.agents.sessions.create(
                 agent_id=agent_id, environment=environment, metadata=metadata,
             )
@@ -208,9 +225,10 @@ def main() -> None:
 
     token = _launcher_token()
 
-    # SpendControl is {"limit": <USD cents>}; 0 (or a project without per-session
-    # budgets) means no ceiling. create_session tolerates a project that has
-    # spend_control turned off, so the documented default works unchanged.
+    # SpendControl is {"limit": <USD cents>}; 0 (or a project that does not
+    # accept a session budget) means no ceiling. create_session tolerates a
+    # project that refuses spend_control, so the documented default works
+    # unchanged.
     spend_control = {"limit": int(args.budget_cents)} if args.budget_cents != "0" else None
 
     # Create the session WITHOUT running a turn yet: the executor must connect
