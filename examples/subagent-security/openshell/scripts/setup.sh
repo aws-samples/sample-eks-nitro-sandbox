@@ -21,6 +21,8 @@
 #   9. builds and pushes the analyst image and the CA-extended supervisor image, and
 #      starts the model bridge;
 #  10. installs the OpenShell gateway from the pinned chart.
+# Step 1 also chooses the StorageClass the gateway's two claims name, and creates the
+# sample's own class only when STORAGE_CLASS is empty and no default class fits.
 #
 # This sample ships no network policy and does not touch the cluster-wide network policy
 # setting. OpenShell's own driver creates NetworkPolicies for the pods it generates; that
@@ -33,6 +35,7 @@
 #
 # Overridable in .env (the defaults match the page):
 #   CLUSTER_NAME AWS_REGION KUBE_CONTEXT NAMESPACE BEDROCK_MODEL_ID BUCKET ROLE_NAME
+#   STORAGE_CLASS
 set -euo pipefail
 
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -49,7 +52,7 @@ LOCAL_DIR="$TMP_DIR/local"
 
 for arg in "$@"; do
   case "$arg" in
-    --help|-h) sed -n '2,35p' "$0"; exit 0 ;;
+    --help|-h) sed -n '2,38p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -63,6 +66,8 @@ AWS_REGION="${AWS_REGION:-}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 NAMESPACE="${NAMESPACE:-subagent-security-openshell}"
 BEDROCK_MODEL_ID="${BEDROCK_MODEL_ID:-global.anthropic.claude-sonnet-4-5-20250929-v1:0}"
+# Empty (the default) lets setup choose the StorageClass; a name forces that class.
+STORAGE_CLASS="${STORAGE_CLASS:-}"
 
 # shellcheck source=../../analyst/scripts/analyst-lib.sh
 . "$SECTION_DIR/analyst/scripts/analyst-lib.sh"
@@ -157,6 +162,94 @@ for kind in mutatingadmissionpolicy mutatingadmissionpolicybinding; do
     die "the $kind $ADAPTER already exists and is not this sample's (managed-by='$owner'); created nothing."
   fi
 done
+
+# The StorageClass the gateway's database claim and the analyst's workspace claim name.
+# The chart names none unless told, and a cluster need not have a default class, so the
+# claims would stay Pending. A StorageClass is chosen, never changed: nothing here patches
+# or applies over a class, and every refusal comes before anything is created.
+SAMPLE_STORAGE_CLASS="$SAMPLE-gp3"
+EBS_PROVISIONER="ebs.csi.eks.amazonaws.com"
+
+# One field of a StorageClass: empty when the class or the field is absent, and a non-zero
+# exit only when the read itself failed, so "absent" and "could not read" stay apart.
+sc_get() { kc get storageclass "$1" --ignore-not-found -o "jsonpath=$2" 2>/dev/null; }
+
+# sc_check <class> full|reclaim : 0 it fits, 1 it does not, 2 a read failed.
+# reclaim: EBS CSI and reclaimPolicy Delete, which a class named in STORAGE_CLASS has to
+#   be. The clean up reports the EBS volumes gone once the claims' volumes are deleted,
+#   and a Retain class would leave them in the account after that report.
+# full: that, plus gp3 (or no type, which is gp3) and encrypted, which a default class
+#   has to be for setup to use it unasked.
+sc_check() {
+  local prov type enc reclaim
+  { prov="$(sc_get "$1" '{.provisioner}')" && type="$(sc_get "$1" '{.parameters.type}')" &&
+    enc="$(sc_get "$1" '{.parameters.encrypted}')" &&
+    reclaim="$(sc_get "$1" '{.reclaimPolicy}')"; } || return 2
+  [[ "$prov" == "$EBS_PROVISIONER" && "$reclaim" == Delete ]] || return 1
+  [[ "$2" == reclaim ]] && return 0
+  [[ ( -z "$type" || "$type" == gp3 ) && "$enc" == true ]] || return 1
+}
+
+# The sample's own class: created from deploy/storage-class.yaml only when absent, and
+# reused only when it carries this sample's mark and fits.
+use_sample_storage_class() {
+  local prov mark rc=0
+  prov="$(sc_get "$SAMPLE_STORAGE_CLASS" '{.provisioner}')" ||
+    die "could not read storageclass/$SAMPLE_STORAGE_CLASS; created nothing"
+  if [[ -z "$prov" ]]; then
+    kc create -f "$SAMPLE_DIR/deploy/storage-class.yaml" ||
+      die "could not create storageclass/$SAMPLE_STORAGE_CLASS"
+    state_put STORAGE_CLASS_CREATED true
+  else
+    mark="$(sc_get "$SAMPLE_STORAGE_CLASS" '{.metadata.labels.app\.kubernetes\.io/managed-by}')" ||
+      die "could not read the labels on storageclass/$SAMPLE_STORAGE_CLASS; created nothing"
+    [[ "$mark" == "$SAMPLE" ]] ||
+      die "storageclass/$SAMPLE_STORAGE_CLASS already exists and is not this sample's (managed-by='$mark'); created nothing. Remove it, or set STORAGE_CLASS in .env to a class that uses $EBS_PROVISIONER."
+    sc_check "$SAMPLE_STORAGE_CLASS" full || rc=$?
+    [[ "$rc" != 2 ]] || die "could not read storageclass/$SAMPLE_STORAGE_CLASS; created nothing"
+    [[ "$rc" == 0 ]] ||
+      die "storageclass/$SAMPLE_STORAGE_CLASS carries this sample's mark but is not $EBS_PROVISIONER, gp3, encrypted and reclaimPolicy Delete; created nothing. Run ./scripts/clean.sh, then this script again."
+    echo "  storage class: reusing $SAMPLE_STORAGE_CLASS, which carries this sample's managed-by label"
+  fi
+  CHOSEN_STORAGE_CLASS="$SAMPLE_STORAGE_CLASS"
+}
+
+CHOSEN_STORAGE_CLASS=""
+if [[ -n "$STORAGE_CLASS" && "$STORAGE_CLASS" != "$SAMPLE_STORAGE_CLASS" ]]; then
+  found="$(sc_get "$STORAGE_CLASS" '{.metadata.name}')" ||
+    die "could not read storageclass/$STORAGE_CLASS; created nothing"
+  [[ -n "$found" ]] ||
+    die "storageclass/$STORAGE_CLASS, named by STORAGE_CLASS in .env, is not on this cluster; created nothing. Name one that is, or leave STORAGE_CLASS empty to let setup choose."
+  rc=0; sc_check "$STORAGE_CLASS" reclaim || rc=$?
+  [[ "$rc" != 2 ]] || die "could not read storageclass/$STORAGE_CLASS; created nothing"
+  [[ "$rc" == 0 ]] ||
+    die "storageclass/$STORAGE_CLASS, named by STORAGE_CLASS in .env, is not $EBS_PROVISIONER with reclaimPolicy Delete, so the clean up could not report its EBS volumes gone; created nothing. Name one that is, or leave STORAGE_CLASS empty to let setup choose."
+  CHOSEN_STORAGE_CLASS="$STORAGE_CLASS"
+  echo "  storage class: $STORAGE_CLASS, named by STORAGE_CLASS in .env"
+elif [[ -n "$STORAGE_CLASS" ]]; then
+  use_sample_storage_class
+else
+  defaults="$(kc get storageclass -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{"\n"}{end}' 2>/dev/null)" ||
+    die "could not list the StorageClasses on this cluster; created nothing"
+  fitting=()
+  while read -r name; do
+    [[ -n "$name" ]] || continue
+    rc=0; sc_check "$name" full || rc=$?
+    [[ "$rc" != 2 ]] || die "could not read the default storageclass/$name; created nothing"
+    [[ "$rc" != 0 ]] || fitting+=("$name")
+  done <<<"$defaults"
+  if [[ "${#fitting[@]}" == 1 ]]; then
+    CHOSEN_STORAGE_CLASS="${fitting[0]}"
+    echo "  storage class: the cluster default $CHOSEN_STORAGE_CLASS, which is $EBS_PROVISIONER, gp3, encrypted and reclaimPolicy Delete"
+  elif [[ "${#fitting[@]}" == 0 ]]; then
+    echo "  storage class: no default class is $EBS_PROVISIONER, gp3, encrypted and reclaimPolicy Delete, so this sample uses its own"
+    use_sample_storage_class
+  else
+    echo "  storage class: ${#fitting[@]} default classes fit and this sample will not guess between them, so it uses its own"
+    use_sample_storage_class
+  fi
+fi
+state_put STORAGE_CLASS "$CHOSEN_STORAGE_CLASS"
 
 # ---------------------------------------------------------------------------
 # The parts every Subagent security sample shares
@@ -427,7 +520,7 @@ if ! kc get secret "$RELEASE-kek" -n "$NAMESPACE" -o name >/dev/null 2>&1; then
 fi
 
 analyst_render "$SAMPLE_DIR/deploy/gateway-values.yaml" "$TMP_DIR/gateway-values.yaml" \
-  "s|<RELEASE>|$RELEASE|g"
+  "s|<RELEASE>|$RELEASE|g" "s|<STORAGE_CLASS>|$CHOSEN_STORAGE_CLASS|g"
 # The pinned digests go in here rather than in the committed values file, so the file the
 # page shows carries no registry paths and one place (versions.json) holds every pin.
 python3 - "$TMP_DIR/gateway-values.yaml" "$GATEWAY_IMAGE" "$SANDBOX_RUNTIME_IMAGE" \
@@ -492,6 +585,7 @@ cat <<EOF
   bucket:      $BUCKET
   bridge role: $ROLE_NAME
   model:       $BEDROCK_MODEL_ID
+  storage:     $CHOSEN_STORAGE_CLASS
   run record:  $STATE_FILE
 
 Run one procurement case:

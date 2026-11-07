@@ -14,7 +14,8 @@
 # differs by resource, and every delete below is one of these four:
 #
 #   * this sample's ManagedBy tag or its managed-by label: the namespace, the two
-#     cluster-scoped admission objects, the IAM role, the bucket and the ECR repositories;
+#     cluster-scoped admission objects, the sample's own StorageClass (only once no claim
+#     names it), the IAM role, the bucket and the ECR repositories;
 #   * sitting inside a namespace that carries that label: everything the namespace delete
 #     takes with it, including both sandbox pods and the workspace claims;
 #   * the chart's two cluster-scoped RBAC objects, which never carry this sample's label
@@ -44,7 +45,7 @@ delete_aws=false
 for arg in "$@"; do
   case "$arg" in
     --delete-aws) delete_aws=true ;;
-    --help|-h) sed -n '2,34p' "$0"; exit 0 ;;
+    --help|-h) sed -n '2,35p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -55,7 +56,7 @@ say() { printf '\n==> %s\n' "$*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
-# 1/10 the run record, the context and the account
+# 1/11 the run record, the context and the account
 # ---------------------------------------------------------------------------
 
 # Unlike the other samples' clean ups, this one refuses to run without the record. It
@@ -114,7 +115,7 @@ lookup() {
   return 2
 }
 
-say "1/10 the run record, the context and the account"
+say "1/11 the run record, the context and the account"
 
 echo "  context:   ${KUBE_CONTEXT:-<whatever kubectl is set to>}"
 echo "  namespace: $NAMESPACE"
@@ -137,10 +138,10 @@ caller_account="$(aws sts get-caller-identity --query Account --output text 2>/d
 echo "  account:   $caller_account"
 
 # ---------------------------------------------------------------------------
-# 2/10 whose namespace it is
+# 2/11 whose namespace it is
 # ---------------------------------------------------------------------------
 
-say "2/10 whose namespace $NAMESPACE is"
+say "2/11 whose namespace $NAMESPACE is"
 
 # Four states, and only one of them lets anything inside the namespace be deleted.
 ns_state=unknown
@@ -161,10 +162,10 @@ case "$ns_state" in
 esac
 
 # ---------------------------------------------------------------------------
-# 3/10 the sandboxes, the gateway and the namespace
+# 3/11 the sandboxes, the gateway and the namespace
 # ---------------------------------------------------------------------------
 
-say "3/10 the sandboxes, the OpenShell gateway and the namespace"
+say "3/11 the sandboxes, the OpenShell gateway and the namespace"
 
 if [[ "$ns_state" == absent ]]; then
   # Nothing to delete and nothing skipped. A second clean up, or one after the namespace
@@ -249,10 +250,64 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4/10 the cluster-scoped admission adapter
+# 4/11 the claims' volumes and the sample's own StorageClass
 # ---------------------------------------------------------------------------
 
-say "4/10 the admission adapter"
+say "4/11 the volumes and the sample's own StorageClass"
+
+# The namespace delete took the claims, and the CSI driver deletes each claim's
+# PersistentVolume, and its EBS volume, after it. The class goes only after that, only
+# when it carries this sample's mark, and only when no claim anywhere still names it: a
+# second copy of this sample under another NAMESPACE uses the same class.
+SAMPLE_STORAGE_CLASS="$SAMPLE-gp3"
+if [[ "$failed" != 0 ]]; then
+  note_fail "left the volumes and storageclass/$SAMPLE_STORAGE_CLASS unchecked, because something above is unconfirmed and a claim of this sample's may still name the class"
+else
+  pvs=""
+  for _ in {1..30}; do
+    pvs="$(kc get pv -o json 2>/dev/null | jq -r --arg ns "$NAMESPACE" \
+      '.items[] | select(.spec.claimRef.namespace == $ns) | .metadata.name')" || {
+      pvs=unknown; break; }
+    [[ -n "$pvs" ]] || break
+    sleep 10
+  done
+  case "$pvs" in
+    "") echo "  no PersistentVolume is left for a claim in $NAMESPACE, so their EBS volumes are deleted." ;;
+    unknown) note_fail "could not list the PersistentVolumes, so it is unknown whether this sample's EBS volumes are deleted" ;;
+    *) note_fail "the PersistentVolumes $(paste -sd ' ' <<<"$pvs") of claims in $NAMESPACE are still there after 5 minutes" ;;
+  esac
+
+  if [[ -n "$pvs" ]]; then
+    echo "  left storageclass/$SAMPLE_STORAGE_CLASS in place while those volumes are unconfirmed."
+  elif ! sc_json="$(kc get storageclass "$SAMPLE_STORAGE_CLASS" --ignore-not-found -o json 2>/dev/null)"; then
+    note_fail "could not determine whether storageclass/$SAMPLE_STORAGE_CLASS exists; left it alone"
+  elif [[ -z "$sc_json" ]]; then
+    echo "  storageclass/$SAMPLE_STORAGE_CLASS is not there: setup used another class, or it is already gone."
+  elif [[ "$(jq -r '.metadata.labels["app.kubernetes.io/managed-by"] // ""' <<<"$sc_json")" != "$SAMPLE" ]]; then
+    note_fail "storageclass/$SAMPLE_STORAGE_CLASS does not carry app.kubernetes.io/managed-by=$SAMPLE; left it alone"
+  elif ! claims="$(kc get pvc -A -o json 2>/dev/null | jq -r --arg sc "$SAMPLE_STORAGE_CLASS" \
+      '.items[] | select(.spec.storageClassName == $sc) | "\(.metadata.namespace)/\(.metadata.name)"')"; then
+    note_fail "could not list the claims on this cluster, so it is unknown whether one still names storageclass/$SAMPLE_STORAGE_CLASS; left it in place"
+  elif [[ -n "$claims" ]]; then
+    note_fail "storageclass/$SAMPLE_STORAGE_CLASS is still named by the claims $(paste -sd ' ' <<<"$claims"); left it in place"
+  else
+    kc delete storageclass "$SAMPLE_STORAGE_CLASS" --ignore-not-found --wait=true --timeout=2m >/dev/null ||
+      note_fail "could not delete storageclass/$SAMPLE_STORAGE_CLASS"
+    if ! still="$(kc get storageclass "$SAMPLE_STORAGE_CLASS" --ignore-not-found -o name 2>/dev/null)"; then
+      note_fail "could not confirm storageclass/$SAMPLE_STORAGE_CLASS was deleted"
+    elif [[ -n "$still" ]]; then
+      note_fail "storageclass/$SAMPLE_STORAGE_CLASS is still present after the delete"
+    else
+      echo "  deleted storageclass/$SAMPLE_STORAGE_CLASS, which carried this sample's managed-by label."
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 5/11 the cluster-scoped admission adapter
+# ---------------------------------------------------------------------------
+
+say "5/11 the admission adapter"
 
 # By exact name and only with this sample's label. A label selector is not used here on
 # purpose: these are cluster-scoped objects, and a selector that matched another gateway's
@@ -290,10 +345,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5/10 the chart's cluster-scoped RBAC
+# 6/11 the chart's cluster-scoped RBAC
 # ---------------------------------------------------------------------------
 
-say "5/10 the ClusterRole and ClusterRoleBinding the chart created"
+say "6/11 the ClusterRole and ClusterRoleBinding the chart created"
 
 # helm uninstall normally takes these with it. They are checked anyway because a failed
 # uninstall leaves them, and a cluster-scoped object left behind would be adopted by the
@@ -338,10 +393,10 @@ for kind in clusterrolebinding clusterrole; do
 done
 
 # ---------------------------------------------------------------------------
-# 6/10 the EKS Pod Identity association
+# 7/11 the EKS Pod Identity association
 # ---------------------------------------------------------------------------
 
-say "6/10 the EKS Pod Identity association"
+say "7/11 the EKS Pod Identity association"
 
 if [[ -z "$CLUSTER_NAME" ]]; then
   note_fail "CLUSTER_NAME is not set, so the Pod Identity association could not be looked up or removed"
@@ -382,10 +437,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 7-9/10 the AWS resources
+# 8-10/11 the AWS resources
 # ---------------------------------------------------------------------------
 
-say "7-9/10 the IAM role, the bucket and the images"
+say "8-10/11 the IAM role, the bucket and the images"
 
 if [[ "$delete_aws" != true ]]; then
   echo "  kept the IAM role, the bucket and the images; pass --delete-aws to remove them."
@@ -498,10 +553,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 10/10 the local CLI config and state
+# 11/11 the local CLI config and state
 # ---------------------------------------------------------------------------
 
-say "10/10 the local CLI configuration and state"
+say "11/11 the local CLI configuration and state"
 
 # These hold the operator's gateway client certificate and key, which are this gateway's
 # whole access control, so they go even when something above was left behind. The run
