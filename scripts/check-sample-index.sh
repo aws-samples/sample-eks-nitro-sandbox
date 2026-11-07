@@ -86,8 +86,8 @@ finding() {
 # line, so a commented-out entry or an example in a code block does not count. A fence
 # closes only on the same character repeated at least as many times as it opened with, as
 # in CommonMark (and as in check-agent-files.sh).
-markdown_text() { # file
-  awk '
+markdown_text() { # file [inline-code]
+  awk -v mask_code="${2:-}" '
     function fence_run(s, c,   n) {
       n = 0
       while (substr(s, n + 1, 1) == c) n++
@@ -112,8 +112,116 @@ markdown_text() { # file
       if (n < flen) return 0
       return (substr(s, n + 1) ~ /^[ \t]*$/)
     }
+    # Only the roadmap status reader enables this mode. Buffer an index entry and its
+    # indented continuations so matching code delimiters can cross physical lines.
+    # Blank lines, new list items, headings, and fences end the supported continuation.
+    function continuation(s, indent,   prefix, width, i, c) {
+      if (s ~ /^[ \t]*$/ || s ~ /^ ? ? ?(- |#+[ \t])/) return 0
+      if (fence_opens(s)) return 0
+      match(s, /^[ \t]*/)
+      prefix = substr(s, 1, RLENGTH); width = 0
+      for (i = 1; i <= length(prefix); i++) {
+        c = substr(prefix, i, 1)
+        if (c == "\t") width += 4 - (width % 4)
+        else width++
+      }
+      return width >= indent + 2
+    }
+    function newlines(s) { gsub(/[^\n]/, "", s); return s }
+    # Interpret comments and code together. A comment cannot start inside matched code;
+    # backticks inside an actual comment have no effect. Keep unmatched/escaped ticks.
+    function visible_text(text,   out, row, at, rest, e, width, offset, close_at, close_width, found, i, slashes, hidden, nl, candidate) {
+      out = ""; row = ""; at = 1
+      while (at <= length(text)) {
+        rest = substr(text, at)
+        if (fence) {
+          nl = index(rest, "\n")
+          hidden = nl ? substr(rest, 1, nl - 1) : rest
+          if (fence_closes(hidden)) fence = 0
+          if (!nl) return out
+          out = out "\n"; row = ""; at += nl
+          continue
+        }
+        if (incomment) {
+          e = index(rest, "-->")
+          if (!e) return out newlines(rest)
+          hidden = newlines(substr(rest, 1, e + 2))
+          out = out hidden
+          if (hidden != "") row = ""
+          at += e + 2; incomment = 0
+          continue
+        }
+        if (substr(rest, 1, 4) == "<!--") { incomment = 1; at += 4; continue }
+        # A fence can follow a removed leading comment. Recognize it before scanning
+        # its body, so comment-looking text inside the fence cannot change state.
+        if (row ~ /^ ? ? ?$/ && substr(rest, 1, 1) ~ /[`~]/) {
+          nl = index(rest, "\n")
+          candidate = row (nl ? substr(rest, 1, nl - 1) : rest)
+          # Match the existing helper: comments in a fence info string are removed.
+          while ((i = index(candidate, "<!--")) > 0) {
+            hidden = substr(candidate, i + 4); e = index(hidden, "-->")
+            candidate = substr(candidate, 1, i - 1) (e ? substr(hidden, e + 3) : "")
+          }
+          if (fence_opens(candidate)) {
+            out = substr(out, 1, length(out) - length(row)); row = ""; fence = 1
+            if (!nl) return out
+            out = out "\n"; at += nl
+            continue
+          }
+        }
+        if (substr(rest, 1, 1) != "`") {
+          hidden = substr(rest, 1, 1); out = out hidden
+          if (hidden == "\n") row = ""
+          else row = row hidden
+          at++; continue
+        }
+        slashes = 0
+        for (i = at - 1; i > 0 && substr(text, i, 1) == "\\"; i--) slashes++
+        if (slashes % 2) { out = out "`"; row = row "`"; at++; continue }
+        width = fence_run(rest, "`")
+        offset = width + 1; found = 0
+        while (match(substr(rest, offset), /`+/)) {
+          close_at = offset + RSTART - 1; close_width = RLENGTH
+          if (close_width == width) { found = 1; break }
+          offset = close_at + close_width
+        }
+        if (found) {
+          hidden = substr(rest, 1, close_at + close_width - 1)
+          # ASCII 28 has no link/status syntax. Boundaries also stop separated text
+          # from becoming a link or an immediate status when code is removed.
+          out = out sprintf("%c", 28) newlines(hidden) sprintf("%c", 28)
+          if (index(hidden, "\n")) row = sprintf("%c", 28)
+          else row = row sprintf("%c%c", 28, 28)
+          at += length(hidden)
+        } else {
+          out = out substr(rest, 1, width); row = row substr(rest, 1, width)
+          at += width
+        }
+      }
+      return out
+    }
+    function emit_code_text(   i, last, block, indent, count, j, rows) {
+      for (i = 1; i <= NR; i++) {
+        if (fence) {
+          if (fence_closes(input[i])) fence = 0
+          print ""
+          continue
+        }
+        block = input[i]; last = i
+        if (!incomment && block ~ /^ ? ? ?- /) {
+          match(block, /^ */); indent = RLENGTH
+          while (last < NR && continuation(input[last + 1], indent)) {
+            last++; block = block "\n" input[last]
+          }
+        }
+        count = split(visible_text(block), rows, "\n")
+        for (j = 1; j <= last - i + 1; j++) print rows[j]
+        i = last
+      }
+    }
     BEGIN { fence = 0; incomment = 0 }
     { sub(/\r$/, "") }
+    mask_code { input[NR] = $0; next }
     fence {
       if (fence_closes($0)) fence = 0
       print ""
@@ -136,6 +244,7 @@ markdown_text() { # file
       if (fence_opens(line)) { fence = 1; print ""; next }
       print line
     }
+    END { if (mask_code) emit_code_text() }
   ' "$1"
 }
 
@@ -239,42 +348,11 @@ nav_problems() {
 # must be explicit on the entry; it does not exempt any other index check. A "# " or
 # "## " heading ends a "### " section. Only explicit available and draft statuses conflict.
 roadmap_state() { # sample
-  markdown_text "$root/docs/ROADMAP.md" | awk -v link="](../examples/$1/README.md)" '
-    # A code span closes with the same number of backticks that opened it.
-    # Keep a non-status token in its place so adjacent text cannot become a status.
-    function visible_text(text, result, start, width, rest, offset, close_at, close_width, found, i, slashes) {
-      result = ""
-      while (match(text, /`+/)) {
-        start = RSTART; width = RLENGTH
-        slashes = 0
-        for (i = start - 1; i > 0 && substr(text, i, 1) == "\\"; i--) slashes++
-        if (slashes % 2) {
-          result = result substr(text, 1, start)
-          text = substr(text, start + 1)
-          continue
-        }
-        result = result substr(text, 1, start - 1)
-        rest = substr(text, start + width)
-        offset = 1; found = 0
-        while (match(substr(rest, offset), /`+/)) {
-          close_at = offset + RSTART - 1; close_width = RLENGTH
-          if (close_width == width) { found = 1; break }
-          offset = close_at + close_width
-        }
-        if (found) {
-          result = result "[code]"
-          text = substr(rest, close_at + close_width)
-        } else {
-          result = result substr(text, start, width)
-          text = rest
-        }
-      }
-      return result text
-    }
+  markdown_text "$root/docs/ROADMAP.md" inline-code | awk -v link="](../examples/$1/README.md)" '
     /^### / { heading = $0; next }
     /^##? / { heading = ""; next }
     /^ ? ? ?- / {
-      entry = visible_text($0)
+      entry = $0
       if (index(entry, link) == 0) next
       linked = 1
       suffix = substr(entry, index(entry, link) + length(link))

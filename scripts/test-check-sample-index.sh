@@ -480,6 +480,118 @@ replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
   '- \`[signing](../examples/policy/signing/README.md) (draft): literal delimiters.\`'
 expect_ok "accept: escaped backticks do not hide a visible draft link" "OK, 2 sample(s)" "$d"
 
+# Masked code must not create a Markdown link or join an otherwise split status.
+for label in '`example`' '[signing]`example`'; do
+  d=$(new_repo "reject-code-synthesized-link-$passed")
+  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+    "- $label(../examples/policy/signing/README.md) (draft): no visible link."
+  expect_findings "reject: replacing code cannot create a link from $label" "$d" \
+    "policy/signing is not linked in docs/ROADMAP.md"
+done
+
+d=$(new_repo accept-visible-draft-after-code-url)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '- `example`(../examples/policy/signing/README.md): code and a URL. Actual [signing](../examples/policy/signing/README.md) (draft): unfinished.'
+expect_ok "accept: a code-and-URL example cannot hide a later visible draft link" "OK, 2 sample(s)" "$d"
+
+d=$(new_repo reject-code-synthesized-status)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '- [signing](../examples/policy/signing/README.md) (dra`example`ft): no complete status.'
+expect_findings "reject: replacing code cannot join pieces into a draft marker" "$d" \
+  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
+
+# Matching inline code can cross a physical newline inside an indented list continuation.
+for ticks in '`' '``' '```' '````'; do
+  d=$(new_repo "reject-multiline-code-draft-$passed")
+  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+    "- ${ticks}[signing](../examples/policy/signing/README.md) (draft): a code example" \
+    "  ends here${ticks}." \
+    '- [signing](../examples/policy/signing/README.md): visible, no status.'
+  expect_findings "reject: $ticks code across a list continuation cannot supply draft status" "$d" \
+    "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
+done
+
+d=$(new_repo reject-multiline-code-only-link)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '- ``[signing](../examples/policy/signing/README.md) (draft): a code example' \
+  '  ends here``.'
+expect_findings "reject: a roadmap link only inside multiline code" "$d" \
+  "policy/signing is not linked in docs/ROADMAP.md"
+
+d=$(new_repo accept-real-draft-after-multiline-code)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '- `[signing](../examples/policy/signing/README.md): a code example' \
+  '  ends here`.' \
+  '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
+expect_ok "accept: a real draft entry after a multiline code example" "OK, 2 sample(s)" "$d"
+
+for ticks in '`' '``'; do
+  d=$(new_repo "reject-multiline-code-mismatched-inner-$passed")
+  if [ "$ticks" = '`' ]; then inner='``'; else inner='`'; fi
+  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+    "- ${ticks}[signing](../examples/policy/signing/README.md) (draft): a code example" \
+    "  ${inner} still inside the example ${ticks}." \
+    '- [signing](../examples/policy/signing/README.md): visible, no status.'
+  expect_findings "reject: multiline $ticks code ignores a different $inner delimiter" "$d" \
+    "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
+done
+
+d=$(new_repo accept-unmatched-code-with-continuation)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '- unmatched ` [signing](../examples/policy/signing/README.md) (draft): visible text' \
+  '  continues without a closing delimiter.'
+expect_ok "accept: unmatched code across a continuation leaves the draft link visible" "OK, 2 sample(s)" "$d"
+
+# Inline code protects literal comment delimiters, while actual comments ignore backticks.
+for literal in '<!--' '<!-- -->' '-->'; do
+  d=$(new_repo "accept-code-comment-delimiter-$passed")
+  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+    "- \`$literal\` Actual [signing](../examples/policy/signing/README.md) (draft): unfinished."
+  expect_ok "accept: literal $literal inside inline code cannot hide a visible draft" "OK, 2 sample(s)" "$d"
+done
+
+d=$(new_repo reject-real-comment-with-code)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '- <!-- `[signing](../examples/policy/signing/README.md) (draft): hidden -->` Actual [signing](../examples/policy/signing/README.md): no status.'
+expect_findings "reject: code delimiters inside a real comment cannot supply draft status" "$d" \
+  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
+
+d=$(new_repo accept-real-comment-code-like-close)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '- <!-- ` -->` Actual [signing](../examples/policy/signing/README.md) (draft): unfinished.'
+expect_ok "accept: backticks inside a real comment do not prevent its closing delimiter" "OK, 2 sample(s)" "$d"
+
+d=$(new_repo accept-comment-opener-in-multiline-code)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '- ``literal <!-- inside code' \
+  '  ends here``.' \
+  '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
+expect_ok "accept: a comment opener inside multiline code cannot hide the next draft entry" "OK, 2 sample(s)" "$d"
+
+# A later delimiter across a block boundary does not close code in the earlier entry.
+for boundary in blank list heading fence; do
+  d=$(new_repo "accept-unmatched-code-block-boundary-$boundary")
+  case "$boundary" in
+    blank) separator='' ;;
+    list) separator='- Another list item.' ;;
+    heading) separator='### Another section' ;;
+    fence) separator='~~~text' ;;
+  esac
+  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+    '- unmatched ` [signing](../examples/policy/signing/README.md) (draft): visible text.' \
+    "$separator" '  later ` delimiter.'
+  expect_ok "accept: a $boundary boundary ends the supported inline-code continuation" "OK, 2 sample(s)" "$d"
+done
+
+d=$(new_repo accept-comment-prefixed-continuation-fence)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '- A list note before the sample.' \
+  '  <!-- prefix --> ```text' \
+  '  <!-- comment-looking text inside the fence' \
+  '  ```' \
+  '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
+expect_ok "accept: a comment-prefixed continuation fence keeps its body comments inert" "OK, 2 sample(s)" "$d"
+
 for status in '(drafting)' '(draft)extra' ': the description mentions (draft).' '`(draft)`'; do
   d=$(new_repo "reject-nonstatus-$passed")
   replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
