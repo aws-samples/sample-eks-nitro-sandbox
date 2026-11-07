@@ -92,6 +92,7 @@ nav:
       - Cedar policy: policy/cedar-policy/README.md
   - AI agents:
       - Coding agents for developers: ai-agents/coding-agents-for-developers/README.md
+      - OpenClaw Enterprise on EKS: ai-agents/openclaw-enterprise/README.md
   - Managed agents:
       - Claude Managed Agents: managed-agents/claude-managed-agents/README.md
       - OpenAI Managed Agents: managed-agents/openai-managed-agents/README.md

@@ -116,7 +116,7 @@ Agent frameworks on Amazon Bedrock:
 Agent harnesses:
 
 - hermes: the Hermes Agent harness, always on in its own sandbox with root inside it, memory on EBS kept across suspend and resume, and Amazon Bedrock with no API key in the sandbox. Spec: [#14](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/14).
-- openclaw-enterprise: OpenClaw Enterprise on EKS, each Agent in a Nitro sandbox, with the model call going through agentgateway to Amazon Bedrock. Spec: [#133](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/133).
+- [openclaw-enterprise](../examples/ai-agents/openclaw-enterprise/README.md): OpenClaw Enterprise on EKS, each Agent in a Nitro sandbox, with the model call going through agentgateway to Amazon Bedrock. Spec: [#133](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/133).
 
 ### Managed agents (`managed-agents`)
 
