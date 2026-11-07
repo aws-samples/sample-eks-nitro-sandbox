@@ -2,7 +2,7 @@
 
 These do NOT make a live call. They assert that the exact methods and keyword
 surface the sample depends on are present on openai 3.31.0 and
-k8s-agent-sandbox 1.0.6, and that a mocked client is driven the way the scripts
+k8s-agent-sandbox 1.0.10, and that a mocked client is driven the way the scripts
 drive it. A pin bump that moved any of these would fail here instead of at the
 operator's first live run.
 

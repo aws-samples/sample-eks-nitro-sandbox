@@ -11,8 +11,8 @@ dependencies = [
     # event and environment calls are checked against this pinned build.
     "openai==3.31.0",
     # The agent-sandbox client: SandboxClaim create, wait-until-Ready, pod IP,
-    # list and delete. Keep it on the same release as the controller (v1.0.6).
-    "k8s-agent-sandbox==1.0.6",
+    # list and delete. Keep it on the same release as the controller (v1.0.10).
+    "k8s-agent-sandbox==1.0.10",
 ]
 
 [project.scripts]

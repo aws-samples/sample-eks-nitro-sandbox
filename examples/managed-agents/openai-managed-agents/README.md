@@ -70,8 +70,8 @@ This folder was built against these releases:
 |---|---|
 | OpenAI Python SDK (`openai`) | 3.31.0 |
 | Codex CLI (`@openai/codex`, provides `codex exec-server`) | 0.163.0-alpha.11 |
-| agent-sandbox Python client (`k8s-agent-sandbox`) | 1.0.6 |
-| agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.6 |
+| agent-sandbox Python client (`k8s-agent-sandbox`) | 1.0.10 |
+| agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.10 |
 
 The Agents API is beta (`client.beta.agents`), so the session, event and environment calls
 were checked against the pinned SDK, not only the version string. The Codex CLI is pinned to
@@ -120,7 +120,7 @@ is application-managed provisioning, and this blueprint uses it:
 narrower than the environment key for a self-hosted session, so the sandbox must hold that
 key to run the executor. Rather than send it to the sandbox over an in-cluster HTTP request
 (which a same-namespace pod could reach, and which a label-based NetworkPolicy does not
-authenticate), the launcher puts it in the `SandboxClaim`'s `env`. agent-sandbox 1.0.6 writes
+authenticate), the launcher puts it in the `SandboxClaim`'s `env`. agent-sandbox 1.0.10 writes
 that into `SandboxClaim.spec.env`, and setting it forces a cold start from the warm-pool
 template, so the controller injects the key into a pod created specifically for this session.
 The key never crosses the pod network, and a warm pod never holds it. The warm pool still
@@ -145,7 +145,7 @@ extensions (`SandboxTemplate`, `SandboxWarmPool`, `SandboxClaim`). If you ran th
 blueprint, this upgrades it in place:
 
 ```bash
-kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml
 kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller
 ```
 
@@ -616,7 +616,7 @@ revoke the environment key and archive the agent (`client.beta.agents.delete`). 
 stays installed for other blueprints; to remove it, delete the release you installed in step 1:
 
 ```bash
-kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
+kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml
 ```
 
 ## Keep a session's workspace while it is idle
