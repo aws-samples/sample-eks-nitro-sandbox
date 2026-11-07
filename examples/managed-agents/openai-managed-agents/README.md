@@ -120,7 +120,7 @@ is application-managed provisioning, and this blueprint uses it:
 narrower than the environment key for a self-hosted session, so the sandbox must hold that
 key to run the executor. Rather than send it to the sandbox over an in-cluster HTTP request
 (which a same-namespace pod could reach, and which a label-based NetworkPolicy does not
-authenticate), the launcher puts it in the `SandboxClaim`'s `env`. agent-sandbox 1.0.10 writes
+authenticate), the launcher puts it in the `SandboxClaim`'s `env`. <!-- TODO(fresh run): re-verify on v1.0.10; this was observed on 1.0.6 --> agent-sandbox 1.0.6 writes
 that into `SandboxClaim.spec.env`, and setting it forces a cold start from the warm-pool
 template, so the controller injects the key into a pod created specifically for this session.
 The key never crosses the pod network, and a warm pod never holds it. The warm pool still
