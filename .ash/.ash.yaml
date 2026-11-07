@@ -268,7 +268,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/agent-sandbox/warm-pool-autoscaling-keda/deploy/exporter.yaml'
-      reason: 'First-party non-sandbox exporter, ClusterIP only; a sample ships no network policy (AGENTS.md, Security rules) and the page says how to add one (README.md, Step 3)'
+      reason: 'First-party non-sandbox exporter behind a ClusterIP Service (exporter.yaml:185); a sample ships no network policy (AGENTS.md:556-562), and the page says an ingress policy could narrow it and links the network policy sample (README.md:303-306, README.md:627)'
       expiration: '2027-12-31'
     # UID 1000 is load-bearing. The EFS and S3 access points enforce UID/GID 1000, and the EBS
     # pods run as UID 1000 with fsGroup 2000 to produce the write output the page shows.
