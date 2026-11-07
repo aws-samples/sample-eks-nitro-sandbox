@@ -82,7 +82,7 @@ This folder was built against these releases:
 
 | Component | Pin |
 |---|---|
-| agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.6, as in [Warm pool](../../getting-started/warm-pool/README.md) |
+| agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.10, as in [Warm pool](../../getting-started/warm-pool/README.md) |
 | code-server ([coder/code-server](https://github.com/coder/code-server)) | 4.143.1, as `ghcr.io/coder/code-server:4.143.1` |
 | `argon2-cli`, the hasher code-server's FAQ names | 0.25.1, pinned in [`scripts/new-password.sh`](scripts/new-password.sh) as `npx argon2-cli@0.25.1` |
 
@@ -107,10 +107,10 @@ one. Set `KUBE_CONTEXT` to the context of the cluster you ran Getting started on
 never depends on the machine's current context.
 
 **Step 1: Install agent-sandbox**, if you have not already from the warm pool blueprint. This
-folder was built against v1.0.6:
+folder was built against v1.0.10:
 
 ```bash
-kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml
 kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller
 ```
 
@@ -179,7 +179,7 @@ you point `LOCAL_DIR` at a directory of your own, its mode stays yours. Use
 generated a random password in tmp/ide/password
 
 hash (this is what the Kubernetes Secret will hold):
-  $argon2i$v=19$m=4096,t=3,p=1$jli6H1d0S+IEZsWOIpS4lw$b3DAXhvHr151f04iSp95cYkopjqYwqdc2dtkk7rB/To
+  $argon2i$v=19$m=4096,t=3,p=1$SCgHmgkra0a0tQVs0PA24Q$1i+/R7QykHGO7dzzogs6E7sbunX5Kn3TGnyV5uu1S6M
 
 Read the password when you need to type it:   cat tmp/ide/password
 Next:                                         ./scripts/setup.sh
@@ -279,8 +279,9 @@ spec:
 ```text
 context: sandbox-demo (pinned)   namespace: ide
 network policy enforcement is on (amazon-vpc-cni enable-network-policy-controller=true)
-CoreDNS at 10.100.0.10 (the egress policy allows DNS to it)
-using the cluster default storageclass auto-ebs-sc (it fits: ebs.csi.eks.amazonaws.com, gp3, encrypted, reclaimPolicy Delete); creating no class
+note: no default StorageClass fits (ebs.csi.eks.amazonaws.com, gp3, encrypted, reclaimPolicy Delete). Using the sample's own class ide-gp3.
+creating storageclass/ide-gp3 from deploy/storage-class.yaml
+storageclass.storage.k8s.io/ide-gp3 created
 
 == 1/5 namespace ide ==
 namespace/ide created
@@ -298,7 +299,7 @@ NAME                                                     AGE
 applicationnetworkpolicy.networking.k8s.aws/ide-egress   2s
 
 NAME                                                 AGE
-policyendpoint.networking.k8s.aws/ide-egress-mzbdn   2s
+policyendpoint.networking.k8s.aws/ide-egress-8xb94   2s
 
 == 4/5 apply sandbox/ide ==
 sandbox.agents.x-k8s.io/ide created
@@ -306,9 +307,9 @@ sandbox.agents.x-k8s.io/ide created
 == 5/5 wait for the guest to boot, mount the workspace and serve the IDE ==
 sandbox.agents.x-k8s.io/ide condition met
 NAME            STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
-workspace-ide   Bound    pvc-28ec2c6c-6f46-4aa9-9b62-fc976eec7af3   10Gi       RWOP           auto-ebs-sc    <unset>                 43s
+workspace-ide   Bound    pvc-d4c5e2fe-4c53-4224-90f3-d3b0f4f5732b   10Gi       RWOP           ide-gp3        <unset>                 32s
 NAME   TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)    AGE   SELECTOR
-ide    ClusterIP   None         <none>        8080/TCP   43s   agents.x-k8s.io/sandbox-name-hash=72cfaf5f
+ide    ClusterIP   None         <none>        8080/TCP   33s   agents.x-k8s.io/sandbox-name-hash=72cfaf5f
 
 sandbox/ide is Ready: code-server is serving on :8080 inside the guest,
 with its workspace on EBS at /home/coder/project.
@@ -325,7 +326,7 @@ already under the policy. The claim is `Bound` with access mode `RWOP`
 a headless Service: it gives the editor a name inside the cluster and publishes nothing
 outside it.
 
-The editor was Ready 43 seconds after the `Sandbox` was created on this run, because the
+The editor was Ready 32 seconds after the `Sandbox` was created on this run, because the
 cluster already had a sandbox-capable node. On a cold cluster the first sandboxed pod waits
 for Auto Mode to launch one.
 
@@ -353,7 +354,7 @@ Type:  Opaque
 Data
 ====
 hashed-password:  95 bytes
-$argon2i$v=19$m=4096,t=3,p=1$jli6H1d0S+IEZsWOIpS4lw$b3DAXhvHr151f04iSp95cYkopjqYwqdc2dtkk7rB/To
+$argon2i$v=19$m=4096,t=3,p=1$SCgHmgkra0a0tQVs0PA24Q$1i+/R7QykHGO7dzzogs6E7sbunX5Kn3TGnyV5uu1S6M
 ```
 
 There is no Ingress and no NodePort, the one Service is a headless `ClusterIP`, and the
@@ -380,8 +381,8 @@ privileged=
 allowPrivilegeEscalation=false
 capabilitiesDropped=ALL
 automountServiceAccountToken=false
-node=i-0b1322681d4622d8f
-podIP=192.168.176.240
+node=i-0d368526d0cc359b4
+podIP=192.168.124.22
 
     Environment:
       HASHED_PASSWORD:  <set to the key 'hashed-password' in secret 'ide-password'>  Optional: false
@@ -403,7 +404,7 @@ an ordinary pod it creates on the same node, then deletes that pod by its exact 
 ```text
 context: sandbox-demo (pinned)   namespace: ide
 
-== an ordinary pod on the same node (i-0b1322681d4622d8f) ==
+== an ordinary pod on the same node (i-0d368526d0cc359b4) ==
 pod/ide-ordinary created
 pod/ide-ordinary condition met
 
@@ -411,13 +412,13 @@ pod/ide-ordinary condition met
 --- sandboxed pod/ide ---
   6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
 --- ordinary pod/ide-ordinary ---
-  6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
+  6.18.56 #2 SMP PREEMPT_DYNAMIC Fri Oct 30 22:32:37 UTC 2026
 
 == cat /proc/uptime ==
 --- sandboxed pod/ide ---
-  80.82 78.70
+  37.16 35.14
 --- ordinary pod/ide-ordinary ---
-  283.22 1021.04
+  22827.43 44422.95
 
 == ls /sys/block ==
 --- sandboxed pod/ide ---
@@ -443,14 +444,14 @@ pod/ide-ordinary condition met
 
 == cat /sys/class/dmi/id/product_name ==
 --- sandboxed pod/ide ---
-  m8i.enclave
+  r8a.enclave
 --- ordinary pod/ide-ordinary ---
-  m8i.xlarge
+  r8a.large
 
 == when each pod started, to compare with its uptime ==
 NAME           CREATED                RUNTIMECLASS
-ide            2026-10-25T14:09:00Z   isolated-sandbox
-ide-ordinary   2026-10-25T14:10:32Z   <none>
+ide            2026-11-07T04:23:05Z   isolated-sandbox
+ide-ordinary   2026-11-07T04:23:49Z   <none>
 
 == where the workspace comes from, inside the guest ==
   Filesystem      Size  Used Avail Use% Mounted on
@@ -465,16 +466,16 @@ pod "ide-ordinary" deleted from ide namespace
 Four signals, each with what the ordinary pod on the same node shows instead:
 
 - **Its own kernel.** The version string is the same, `6.18.54`, but the build is not: `#1`
-  built at 17:38 on 22 October in the guest against `#2` built at 00:16 the same day on the
+  built at 17:38 on 22 October in the guest against `#2` built at 22:32 on 30 October on the
   node. `uname -r` alone is not evidence; the build is.
-- **Its own boot.** The editor's pod reports 81 seconds of uptime, which matches its own age
-  (created at 14:09:00, read about a minute and a half later), because the VM booted with the
-  pod. The ordinary pod reports 283 seconds, the node's uptime, although it had itself been
+- **Its own boot.** The editor's pod reports 37 seconds of uptime, which matches its own age
+  (created at 04:23:05, read about 44 seconds later), because the VM booted with the
+  pod. The ordinary pod reports 22827 seconds, the node's uptime, although it had itself been
   created seconds earlier: it is reading a clock that started before it existed.
 - **Virtio disks.** The guest sees `vda` to `vdd` and nothing else. The ordinary pod sees
   the instance's `nvme*` devices, plus the node's `loop*` and `zram0`.
-- **The VM's own product name.** `m8i.enclave` in the guest, where the ordinary pod reads
-  the EC2 instance type, `m8i.xlarge`.
+- **The VM's own product name.** `r8a.enclave` in the guest, where the ordinary pod reads
+  the EC2 instance type, `r8a.large`.
 
 Together they show the editor's containers ran in a VM of their own. `/home/coder/project`
 is `/dev/vdd`, one of those virtio disks, formatted `ext4` and separate from the guest's own
@@ -554,9 +555,9 @@ kubectl -n ide logs ide | grep -i 'failed login'
 ```text
 0
 0
-[2026-10-25T14:09:41.016Z] info    - Authentication is enabled
-[2026-10-25T14:09:41.016Z] info      - Using password from $HASHED_PASSWORD
-Failed login attempt {"remoteAddress":"192.168.178.104","userAgent":"curl/8.21.0","timestamp":1792937474}
+[2026-11-07T04:25:52.507Z] info    - Authentication is enabled
+[2026-11-07T04:25:52.507Z] info      - Using password from $HASHED_PASSWORD
+Failed login attempt {"remoteAddress":"192.168.124.22","userAgent":"curl/8.21.0","timestamp":1793928474}
 ```
 
 The plaintext appears zero times in the pod spec and zero times in the log, and `grep -F -f`
@@ -580,7 +581,7 @@ kubectl -n ide exec ide -- sh -c "tr '\0' ' ' < /proc/1/cmdline; echo"
 
 ```text
 uid=1000(coder) gid=1000(coder) groups=1000(coder),100(users)
-drwxrwsr-x. 3 root coder 4096 Oct 25 14:09 /home/coder/project
+drwxrwsr-x. 3 root coder 4096 Nov  7 04:23 /home/coder/project
 dumb-init /usr/bin/code-server --bind-addr=0.0.0.0:8080 --disable-telemetry --disable-update-check /home/coder/project
 ```
 
