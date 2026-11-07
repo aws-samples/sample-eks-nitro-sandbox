@@ -117,35 +117,32 @@ markdown_text() { # file [inline-code]
       if (n < flen) return 0
       return (substr(s, n + 1) ~ /^[ \t]*$/)
     }
-    # The roadmap admits only leading real comments before a fence marker. Leave the
-    # remainder intact: stripping a comment inside matched code can manufacture a fence.
-    # nextline allows a leading comment to close on a later physical input line. This
-    # query never changes comment/fence state, including when used for lookahead.
-    function roadmap_fence(s, nextline,   prefix, e, removed, nl) {
-      prefix = ""
+    # Return a fence marker position within the supplied text, or zero. Remove only
+    # leading real comments; leave the rest of its physical line intact. This query
+    # cannot read later input or change active comment/fence state.
+    function roadmap_fence(s,   size, prefix, e, removed, nl, marker) {
+      size = length(s); prefix = ""
       while (1) {
         match(s, /^[ \t]*/)
         prefix = prefix substr(s, 1, RLENGTH); s = substr(s, RLENGTH + 1)
         if (substr(s, 1, 4) != "<!--") {
           nl = index(s, "\n")
-          return fence_marker(prefix (nl ? substr(s, 1, nl - 1) : s))
+          marker = fence_marker(prefix (nl ? substr(s, 1, nl - 1) : s))
+          return marker != "" ? size - length(s) + 1 : 0
         }
         s = substr(s, 5)
-        while ((e = index(s, "-->")) == 0) {
-          if (!nextline || nextline > NR) return ""
-          s = s "\n" input[nextline]; nextline++
-        }
+        e = index(s, "-->")
+        if (!e) return 0
         removed = substr(s, 1, e + 2)
         if (index(removed, "\n")) prefix = ""
         s = substr(s, e + 3)
       }
     }
-    # Only the roadmap status reader enables this mode. Buffer an index entry and its
-    # indented continuations so matching code delimiters can cross physical lines.
-    # Blank lines, new list items, headings, and fences end the supported continuation.
-    function continuation(s, indent, nextline,   prefix, width, i, c) {
+    # One raw paragraph bounds every speculative code/comment search. Blank lines,
+    # new list items, headings, raw fences, and insufficient indentation end it.
+    function paragraph_continuation(s, indent,   prefix, width, i, c) {
       if (s ~ /^[ \t]*$/ || s ~ /^ ? ? ?(- |#+[ \t])/) return 0
-      if (roadmap_fence(s, nextline) != "") return 0
+      if (fence_marker(s) != "") return 0
       match(s, /^[ \t]*/)
       prefix = substr(s, 1, RLENGTH); width = 0
       for (i = 1; i <= length(prefix); i++) {
@@ -154,6 +151,19 @@ markdown_text() { # file [inline-code]
         else width++
       }
       return width >= indent + 2
+    }
+    # A supported fence before the proposed code closer interrupts that span. Inspect
+    # complete physical lines: truncating the closer can manufacture a backtick fence.
+    function fence_before_close(text, close_at,   at, nl, marker_at) {
+      nl = index(text, "\n"); at = 1
+      while (nl) {
+        at += nl
+        if (at > close_at) return 0
+        marker_at = roadmap_fence(substr(text, at))
+        if (marker_at && at + marker_at - 1 <= close_at) return 1
+        nl = index(substr(text, at), "\n")
+      }
+      return 0
     }
     function newlines(s) { gsub(/[^\n]/, "", s); return s }
     # Interpret comments and code together. A comment cannot start inside matched code;
@@ -185,9 +195,9 @@ markdown_text() { # file [inline-code]
         if (row ~ /^ ? ? ?$/ && substr(rest, 1, 1) ~ /[`~]/) {
           nl = index(rest, "\n")
           candidate = row (nl ? substr(rest, 1, nl - 1) : rest)
-          marker = roadmap_fence(candidate, 0)
-          if (marker != "") {
-            fchar = substr(marker, 1, 1); flen = length(marker)
+          marker = roadmap_fence(candidate)
+          if (marker) {
+            fchar = substr(candidate, marker, 1); flen = fence_run(substr(candidate, marker), fchar)
             out = substr(out, 1, length(out) - length(row)); row = ""; fence = 1
             if (!nl) return out
             out = out "\n"; at += nl
@@ -210,6 +220,7 @@ markdown_text() { # file [inline-code]
           if (close_width == width) { found = 1; break }
           offset = close_at + close_width
         }
+        if (found && fence_before_close(rest, close_at)) found = 0
         if (found) {
           hidden = substr(rest, 1, close_at + close_width - 1)
           # ASCII 28 has no link/status syntax. Boundaries also stop separated text
@@ -235,7 +246,7 @@ markdown_text() { # file [inline-code]
         block = input[i]; last = i
         if (!incomment && block ~ /^ ? ? ?- /) {
           match(block, /^ */); indent = RLENGTH
-          while (last < NR && continuation(input[last + 1], indent, last + 2)) {
+          while (last < NR && paragraph_continuation(input[last + 1], indent)) {
             last++; block = block "\n" input[last]
           }
         }

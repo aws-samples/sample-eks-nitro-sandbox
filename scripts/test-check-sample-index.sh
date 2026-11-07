@@ -660,6 +660,86 @@ for literal in '<!-- literal comment' '<!-- comment -->'; do
   expect_ok "accept: comment-looking text in a real fence header remains literal: $literal" "OK, 2 sample(s)" "$d"
 done
 
+# Fence lookahead cannot reinterpret matched code using text from another paragraph.
+for fence_marker in '~~~' '```'; do
+  for boundary in blank list heading fence unindented; do
+    case "$boundary" in
+      blank) separator_lines=('') ;;
+      list) separator_lines=('- Another list item.') ;;
+      heading) separator_lines=('### Another section') ;;
+      fence) separator_lines=('~~~text' '~~~') ;;
+      unindented) separator_lines=('Another paragraph without list indentation.') ;;
+    esac
+    d=$(new_repo "accept-code-lookahead-boundary-$passed")
+    replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+      '- ``literal code' '  <!-- token inside matched code' '  ends here``.' \
+      "${separator_lines[@]}" \
+      '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.' \
+      "  --> ${fence_marker}text"
+    expect_ok "accept: $fence_marker lookahead cannot cross a $boundary paragraph boundary" "OK, 2 sample(s)" "$d"
+  done
+
+  d=$(new_repo "accept-available-after-code-lookahead-boundary-$passed")
+  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+    '- ``literal code' '  <!-- token inside matched code' '  ends here``.' '' \
+    '- [signing](../examples/policy/signing/README.md) (available now): visible and ready.' \
+    "  --> ${fence_marker}text"
+  expect_ok "accept: $fence_marker lookahead cannot hide an available entry after matched code" "OK, 2 sample(s)" "$d"
+
+  # The closer must precede the exposed marker, even when both are in one paragraph.
+  d=$(new_repo "accept-code-closes-before-comment-fence-same-line-$passed")
+  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+    '- ``literal code' "  <!-- token ends here\`\` --> ${fence_marker}text" \
+    '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
+  expect_ok "accept: code closes before the apparent comment close and $fence_marker marker on the same line" "OK, 2 sample(s)" "$d"
+
+  d=$(new_repo "accept-code-closes-before-comment-fence-next-line-$passed")
+  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+    '- ``literal code' '  <!-- token inside matched code' '  ends here``.' \
+    "  --> ${fence_marker}text" \
+    '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
+  expect_ok "accept: code closes before a later apparent comment close and $fence_marker marker in the same paragraph" "OK, 2 sample(s)" "$d"
+
+  d=$(new_repo "reject-comment-fence-before-code-closes-$passed")
+  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+    '- ``unmatched code' '  <!-- prefix' "  --> ${fence_marker}text" '  ends here``.' \
+    '  - [signing](../examples/policy/signing/README.md) (draft): hidden in the fence.' \
+    "  $fence_marker" '- [signing](../examples/policy/signing/README.md): visible, no status.'
+  expect_findings "reject: an exposed $fence_marker fence before the code closer hides its draft example" "$d" \
+    "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
+done
+
+# A fence query must keep the entire physical line, including a proposed code closer.
+d=$(new_repo accept-backtick-info-string-code-closer)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '- ``literal code' '  <!-- prefix --> ```text ends here``.' \
+  '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
+expect_ok "accept: later backticks invalidate the apparent fence info string before the code closer" "OK, 2 sample(s)" "$d"
+
+d=$(new_repo reject-tilde-info-string-code-closer)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '- ``unmatched code' '  <!-- prefix --> ~~~text ends here``.' \
+  '  - [signing](../examples/policy/signing/README.md) (draft): hidden in the fence.' \
+  '  ~~~' '- [signing](../examples/policy/signing/README.md): visible, no status.'
+expect_findings "reject: backticks in a tilde fence info string do not close earlier code" "$d" \
+  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
+
+d=$(new_repo reject-fence-at-exact-code-closer)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '- ```unmatched code' '  <!-- prefix --> ```' \
+  '  - [signing](../examples/policy/signing/README.md) (draft): hidden in the fence.' \
+  '  ```' '- [signing](../examples/policy/signing/README.md): visible, no status.'
+expect_findings "reject: a fence at the proposed closing run is still a block boundary" "$d" \
+  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
+
+d=$(new_repo reject-real-comment-crosses-paragraph-boundary)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '- <!-- a real comment' '' \
+  '- [signing](../examples/policy/signing/README.md) (draft): hidden by the actual comment.' \
+  '-->' '- [signing](../examples/policy/signing/README.md): visible, no status.'
+expect_findings "reject: an actual open comment remains active across paragraph boundaries" "$d" \
+  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
+
 for status in '(drafting)' '(draft)extra' ': the description mentions (draft).' '`(draft)`'; do
   d=$(new_repo "reject-nonstatus-$passed")
   replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
