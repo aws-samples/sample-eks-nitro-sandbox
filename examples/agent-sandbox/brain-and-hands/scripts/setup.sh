@@ -272,8 +272,11 @@ echo "  sandboxd will require the token whose sha256 is ${token_sha256:0:12}..."
 # token Secret was deleted and minted again, would leave pods the brain cannot
 # drive while the pool still reports them ready. The digest must be one whole
 # argument of the hands container's command, not a substring of the command
-# line or an argument of some other container.
-want_arg="--auth-token-sha256=$token_sha256"
+# line or an argument of some other container. kubectl prints the command as a
+# JSON array, which escapes quotes and newlines inside an element, so an
+# unescaped [ or , followed by " is an element boundary: anchoring on those means
+# no single argument can smuggle the flag in as part of a longer string.
+has_digest() { grep -Eq "(^\[|,)\"--auth-token-sha256=${token_sha256}\"(,|\]\$)" <<<"$1"; }
 stale_hint="Run ./scripts/cleanup.sh and then this script again."
 pool_rc=0; resource_exists kc "sandboxwarmpool/$POOL" || pool_rc=$?
 tpl_rc=0;  resource_exists kc "sandboxtemplate/$TEMPLATE" || tpl_rc=$?
@@ -281,17 +284,17 @@ tpl_rc=0;  resource_exists kc "sandboxtemplate/$TEMPLATE" || tpl_rc=$?
 [[ $tpl_rc -eq 2 ]]  && die "could not read sandboxtemplate/$TEMPLATE, so whether one is already here could not be determined; stopping rather than apply over it"
 if [[ $pool_rc -eq 0 || $tpl_rc -eq 0 ]]; then
   [[ $tpl_rc -eq 0 ]] || die "sandboxwarmpool/$POOL exists but sandboxtemplate/$TEMPLATE does not, so what its warm pods were booted from cannot be told. $stale_hint"
-  tpl_cmd="$(kc get sandboxtemplate "$TEMPLATE" -o jsonpath='{range .spec.podTemplate.spec.containers[?(@.name=="hands")].command[*]}{@}{"\n"}{end}' 2>/dev/null)" \
+  tpl_cmd="$(kc get sandboxtemplate "$TEMPLATE" -o jsonpath='{.spec.podTemplate.spec.containers[?(@.name=="hands")].command}' 2>/dev/null)" \
     || die "could not read sandboxtemplate/$TEMPLATE, so whether its pods expect this token could not be determined; stopping rather than apply over it"
-  grep -Fxq -- "$want_arg" <<<"$tpl_cmd" \
+  has_digest "$tpl_cmd" \
     || die "sandboxtemplate/$TEMPLATE already exists and its hands container does not run sandboxd with this token's digest (it is from an earlier version of this sample, or the token Secret was recreated). Its warm pods would not be replaced by applying over it. $stale_hint"
   pods="$(kc get pods -l app=hands -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)" \
     || die "could not list the hands pods, so whether they expect this token could not be determined; stopping rather than apply over them"
   while IFS= read -r p; do
     [[ -n "$p" ]] || continue
-    pod_cmd="$(kc get pod "$p" -o jsonpath='{range .spec.containers[?(@.name=="hands")].command[*]}{@}{"\n"}{end}' 2>/dev/null)" \
+    pod_cmd="$(kc get pod "$p" -o jsonpath='{.spec.containers[?(@.name=="hands")].command}' 2>/dev/null)" \
       || die "could not read pod/$p, so whether it expects this token could not be determined; stopping rather than apply over it"
-    grep -Fxq -- "$want_arg" <<<"$pod_cmd" \
+    has_digest "$pod_cmd" \
       || die "pod/$p is running without sandboxd and this token's digest (it was booted from an earlier template). The pool would keep serving it. $stale_hint"
   done <<<"$pods"
   echo "  the existing template and hands pods already expect this token"

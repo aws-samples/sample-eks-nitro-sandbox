@@ -63,8 +63,12 @@ AWS_REGION="${AWS_REGION:-us-west-2}"
 # The named AWS CLI profile for the account the cluster is in. Exported so every
 # aws call the scripts make uses it; left unset, the CLI's default chain applies.
 # It names a profile and holds no credential.
+# An empty one is unset rather than exported: the AWS CLI reads an empty
+# AWS_PROFILE as a profile named "" and fails, instead of using its default chain.
 if [[ -n "${AWS_PROFILE:-}" ]]; then
   export AWS_PROFILE
+else
+  unset AWS_PROFILE
 fi
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 NAMESPACE="${NAMESPACE:-brain-and-hands}"
@@ -224,8 +228,9 @@ $(agent_sandbox_install_command)"
 }
 
 # require_network_policy_enforcement : the hands have a pod network, and the
-# policy on their template (deploy/warm-pool.yaml) is the only thing that keeps
-# everything but the brain out and everything in. EKS Auto Mode accepts network
+# policy on their template (deploy/warm-pool.yaml) is the only thing that lets
+# in only pods labelled app=brain (and the node, which Kubernetes always allows),
+# and lets the hands open no connection on the pod network. EKS Auto Mode accepts network
 # policies without enforcing them until the Network Policy Controller is turned
 # on, which is a cluster-wide setting. So this only reads it, and the page has
 # the reader turn it on.

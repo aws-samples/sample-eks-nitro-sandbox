@@ -81,7 +81,7 @@ sample is the worked version of it.
 
 *Figure 1: The brain and the hands, in two pods. The brain reasons and holds the credentials but has no tool that runs a command; the hands run every command; the brain reaches them through sandboxd on two ports that the hands' network policy opens only to pods labelled app=brain.*
 
-![Inside an AWS Cloud frame and an Amazon EKS cluster whose sub line reads that one namespace holds both halves, an Operator glyph labelled kubectl exec connects into the brain pod frame, marked an ordinary pod with no runtimeClassName, which holds Claude Code labelled no tool that runs a command. On the right, a red Nitro sandbox pods frame marked isolated-sandbox holds a claimed pod box labelled runs every command and a warm pod box labelled pre-booted, waiting. A two-way arrow labelled sandboxd: 9090 gRPC, 8080 REST, with bearer token runs from the brain pod to the claimed pod through a red network policy funnel labelled ingress from app=brain only. Below, an arrow from the brain pod labelled claim and Sandbox lifecycle, create, get, list, watch, delete, reaches a Kubernetes API gear labelled control plane only. At the right, a SandboxWarmPool document stack labelled replicas: 1 connects up into the claimed pod over an arrow labelled adopt a pre-booted pod, and up into the warm pod over an arrow labelled pool boots a replacement. Below the cluster, an arrow from the brain pod labelled InvokeModel over HTTPS reaches Amazon Bedrock, labelled Claude model, which is joined by a plain line to a red Pod Identity role glyph labelled bedrock:InvokeModel only. A note below the figure reads that the hands open no connection on the pod network and admit only pods labelled app=brain: the network policy has no egress rules, so a command in the hands can open no connection on the pod network, with no internet, no DNS and no Pod Identity endpoint, and its ingress admits only pods labelled app=brain on TCP 8080 and 9090; that the metadata endpoint inside the guest still answers but holds no role; and that sandboxd requires the bearer token, so a pod without the token cannot drive it.](images/figure-1-brain-and-hands.png)
+![Inside an AWS Cloud frame and an Amazon EKS cluster whose sub line reads that one namespace holds both halves, an Operator glyph labelled kubectl exec connects into the brain pod frame, marked an ordinary pod with no runtimeClassName, which holds Claude Code labelled no tool that runs a command. On the right, a red Nitro sandbox pods frame marked isolated-sandbox holds a claimed pod box labelled runs every command and a warm pod box labelled pre-booted, waiting. A two-way arrow labelled sandboxd: 9090 gRPC, 8080 REST, with bearer token runs from the brain pod to the claimed pod through a red network policy funnel labelled ingress from app=brain pods and the node. Below, an arrow from the brain pod labelled claim and Sandbox lifecycle, create, get, list, watch, delete, reaches a Kubernetes API gear labelled control plane only. At the right, a SandboxWarmPool document stack labelled replicas: 1 connects up into the claimed pod over an arrow labelled adopt a pre-booted pod, and up into the warm pod over an arrow labelled pool boots a replacement. Below the cluster, an arrow from the brain pod labelled InvokeModel over HTTPS reaches Amazon Bedrock, labelled Claude model, which is joined by a plain line to a red Pod Identity role glyph labelled bedrock:InvokeModel only. A note below the figure reads that the hands open no connection on the pod network and admit only pods labelled app=brain: the network policy has no egress rules, so a command in the hands can open no connection on the pod network, with no internet, no DNS and no Pod Identity endpoint, and its ingress admits only pods labelled app=brain on TCP 8080 and 9090; that the metadata endpoint inside the guest still answers but holds no role; and that sandboxd requires the bearer token, so a pod without the token cannot drive it.](images/figure-1-brain-and-hands.png)
 
 ### What this sample does not limit
 
@@ -220,11 +220,14 @@ and the enforcement setting first, so a missing prerequisite stops the run befor
 created, then builds and pushes the brain image, creates the brain's role, mints the sandboxd
 token, and applies the hands and the brain. The scripts read `.env` themselves; the commands
 after setup use the same names, so load them into your shell first, and send every `kubectl`
-below to the context `.env` names (the alias does nothing when `KUBE_CONTEXT` is empty):
+below to the context `.env` names. The function adds `--context` only when `KUBE_CONTEXT`
+is set, and an empty `AWS_PROFILE` is unset so the AWS CLI uses its default credentials:
 
 ```bash
 set -a; . ./.env; set +a
-[ -n "$KUBE_CONTEXT" ] && alias kubectl="kubectl --context $KUBE_CONTEXT"
+[ -n "$AWS_PROFILE" ] || unset AWS_PROFILE
+unalias kubectl 2>/dev/null
+kubectl() { if [ -n "$KUBE_CONTEXT" ]; then command kubectl --context "$KUBE_CONTEXT" "$@"; else command kubectl "$@"; fi; }
 ./scripts/setup.sh 2>&1 | tee setup.log
 ```
 
@@ -621,7 +624,9 @@ spec:
 
 Supplying `networkPolicy` replaces the controller's default, which admits the sandbox router
 and lets egress reach the public internet. The controller writes both policy types, so with
-no `egress` list at all every connection the hands try to open is denied. Read the object it
+no `egress` list at all every connection the hands try to open on the pod network is
+denied. Ingress is open to pods labelled `app=brain`, and to the pod's own node, which
+Kubernetes always allows: that is how the kubelet's readiness probe reaches `/v1/health`. Read the object it
 wrote:
 
 ```bash
