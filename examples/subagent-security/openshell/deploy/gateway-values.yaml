@@ -46,8 +46,9 @@ server:
   # (ebs.csi.eks.amazonaws.com, gp3, encrypted, reclaimPolicy Delete); otherwise the
   # sample's own class from deploy/storage-class.yaml. dataStorageClass is immutable
   # after install.
-  dataStorageClass: <STORAGE_CLASS>
-  workspaceStorageClass: <STORAGE_CLASS>
+  # Quoted, so a valid class name such as "null", "true" or "123" stays a string.
+  dataStorageClass: "<STORAGE_CLASS>"
+  workspaceStorageClass: "<STORAGE_CLASS>"
 
   auth:
     # Development user mode: this gateway does not authorize individual users, so

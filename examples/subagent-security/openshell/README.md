@@ -271,8 +271,8 @@ cluster's default class when exactly one is `ebs.csi.eks.amazonaws.com`, gp3, en
 `kubectl create` only when it is absent, and stops before creating anything if a class with
 that name is there without the blueprint's `app.kubernetes.io/managed-by` label. Whichever
 class it picks goes into both `server.dataStorageClass` and `server.workspaceStorageClass` in
-the rendered [`deploy/gateway-values.yaml`](deploy/gateway-values.yaml). The cluster this run
-used had no default class, so setup created the blueprint's own.
+the rendered [`deploy/gateway-values.yaml`](deploy/gateway-values.yaml). On the cluster this
+run used, no default class fit, so setup created the blueprint's own.
 
 The first five stages are the ones every Subagent security blueprint shares, which is why they
 count out of seven: this blueprint does not use the sixth, the analyst's own IAM role, because

@@ -283,7 +283,10 @@ else
     note_fail "could not determine whether storageclass/$SAMPLE_STORAGE_CLASS exists; left it alone"
   elif [[ -z "$sc_json" ]]; then
     echo "  storageclass/$SAMPLE_STORAGE_CLASS is not there: setup used another class, or it is already gone."
-  elif [[ "$(jq -r '.metadata.labels["app.kubernetes.io/managed-by"] // ""' <<<"$sc_json")" != "$SAMPLE" ]]; then
+  elif ! owner="$(jq -r '.metadata.labels["app.kubernetes.io/managed-by"] // ""' <<<"$sc_json")"; then
+    # Parsed on its own so a failed parse is a failure, not whatever jq printed first.
+    note_fail "could not read the managed-by label on storageclass/$SAMPLE_STORAGE_CLASS; left it alone"
+  elif [[ "$owner" != "$SAMPLE" ]]; then
     note_fail "storageclass/$SAMPLE_STORAGE_CLASS does not carry app.kubernetes.io/managed-by=$SAMPLE; left it alone"
   elif ! claims="$(kc get pvc -A -o json 2>/dev/null | jq -r --arg sc "$SAMPLE_STORAGE_CLASS" \
       '.items[] | select(.spec.storageClassName == $sc) | "\(.metadata.namespace)/\(.metadata.name)"')"; then
@@ -291,14 +294,19 @@ else
   elif [[ -n "$claims" ]]; then
     note_fail "storageclass/$SAMPLE_STORAGE_CLASS is still named by the claims $(paste -sd ' ' <<<"$claims"); left it in place"
   else
-    kc delete storageclass "$SAMPLE_STORAGE_CLASS" --ignore-not-found --wait=true --timeout=2m >/dev/null ||
+    sc_deleted=true
+    kc delete storageclass "$SAMPLE_STORAGE_CLASS" --ignore-not-found --wait=true --timeout=2m >/dev/null || {
+      sc_deleted=false
       note_fail "could not delete storageclass/$SAMPLE_STORAGE_CLASS"
+    }
     if ! still="$(kc get storageclass "$SAMPLE_STORAGE_CLASS" --ignore-not-found -o name 2>/dev/null)"; then
       note_fail "could not confirm storageclass/$SAMPLE_STORAGE_CLASS was deleted"
     elif [[ -n "$still" ]]; then
       note_fail "storageclass/$SAMPLE_STORAGE_CLASS is still present after the delete"
-    else
+    elif [[ "$sc_deleted" == true ]]; then
       echo "  deleted storageclass/$SAMPLE_STORAGE_CLASS, which carried this sample's managed-by label."
+    else
+      echo "  storageclass/$SAMPLE_STORAGE_CLASS is absent now, but the delete itself reported an error."
     fi
   fi
 fi
