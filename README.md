@@ -57,7 +57,7 @@ The same procurement analyst, with four choices for confining its tool processes
 - [Warm pool autoscaling with KEDA](examples/agent-sandbox/warm-pool-autoscaling-keda/README.md): KEDA reads a count of `SandboxClaim` objects and drives a warm pool's `spec.replicas` up and back down with it, with a no-autoscaler control that stays flat under the same demand.
 - [IDE in the browser](examples/agent-sandbox/ide/README.md): code-server (VS Code in the browser) in a sandbox on a persistent EBS workspace, reached only by `kubectl port-forward`, with its password an argon2 hash from a Kubernetes Secret.
 - [Roll out a SandboxTemplate change with Argo Rollouts](examples/agent-sandbox/argo-rollouts/README.md): patching a `SandboxTemplate` leaves the warm pool serving pods built from the old one, so a claim can adopt a stale pod; an Argo Rollouts canary step plugin patches the template and then drains and re-warms the pool.
-- [Brain and hands](examples/agent-sandbox/brain-and-hands/README.md): an agent split in two, a brain that reasons with no tool that runs a command and hands that run every command in a network-isolated sandbox pod claimed from a warm pool, with the Kubernetes API the only wire between them.
+- [Brain and hands](examples/agent-sandbox/brain-and-hands/README.md): an agent split in two, a brain that reasons with no tool that runs a command and hands that run every command in a sandbox pod claimed from a warm pool, reached through the agent-sandbox MCP server and sandboxd on two ports that admit only pods labelled `app=brain`.
 
 ## Storage
 

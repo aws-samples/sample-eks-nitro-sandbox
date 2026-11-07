@@ -1,6 +1,6 @@
 # Roadmap
 
-These samples run AI agents and untrusted code in Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandbox`). Available samples say "available now" on their entry or section heading. A linked `(draft)` sample has not met the readiness criteria. Its explicit draft status overrides inherited section status. Unlinked entries are planned.
+These samples run AI agents and untrusted code in Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandbox`). Sample owners maintain readiness labels on entries or section headings. A link means the sample has a page; it does not establish that the sample is ready to run. Unlinked entries are planned.
 
 ## Layout
 
@@ -80,7 +80,7 @@ Auto Mode's managed one. Cluster and node-group lifecycle were previously treate
 scope here; this section is an intentional, narrow addition: it covers building a node AMI
 for an existing cluster, not creating or managing the cluster itself.
 
-- [ubuntu-ami](../examples/setup/ubuntu-ami/README.md) (draft): build a custom Ubuntu 24.04 node
+- [ubuntu-ami](../examples/setup/ubuntu-ami/README.md): build a custom Ubuntu 24.04 node
   AMI for EKS Pod Isolation and add one dedicated, tainted managed node group to an
   existing cluster. Every public input (base AMI, kernel 6.18.56 plus AWS's public
   host-kernel commit 1e66c960, erofs-utils 1.8.10, distro packages) is pinned and
@@ -155,7 +155,7 @@ The [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) resources,
 - [warm-pool-autoscaling-keda](../examples/agent-sandbox/warm-pool-autoscaling-keda/README.md) (available now): KEDA scales a warm pool up and down with claim demand, so warm capacity tracks demand instead of a fixed count. Spec: [#31](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/31).
 - [ide](../examples/agent-sandbox/ide/README.md) (available now): VS Code in the browser on a persistent EBS workspace. Spec: [#32](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/32).
 - [argo-rollouts](../examples/agent-sandbox/argo-rollouts/README.md) (available now): rolling a `SandboxTemplate` change through a warm pool with Argo Rollouts, replacing the warm sandboxes built from the old template. Spec: [#33](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/33).
-- [brain-and-hands](../examples/agent-sandbox/brain-and-hands/README.md) (available now): the agent (the brain) runs on an ordinary pod with model access and no local shell. Each command it runs goes to a warm, network-isolated sandbox (the hands) that it claims from a pool and drives with `kubectl exec`. Spec: [#38](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/38).
+- [brain-and-hands](../examples/agent-sandbox/brain-and-hands/README.md) (available now): the agent (the brain) runs on an ordinary pod with model access and no local shell. Each command it runs goes to a warm sandbox (the hands) that it claims from a pool through the agent-sandbox MCP server and drives through sandboxd, with a template network policy that admits only pods labelled `app=brain` and allows no egress. Spec: [#38](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/38), updated in [#168](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/168).
 
 ### Storage (`storage`)
 

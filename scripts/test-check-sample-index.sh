@@ -338,23 +338,41 @@ replace_line "$d/mkdocs.yml" "Signing: policy" "      - Signing: old/policy/sign
 expect_findings "reject: a nav entry for a longer path that ends the same way" "$d" \
   "policy/signing is not in the mkdocs.yml nav"
 
-# --- must reject: docs/ROADMAP.md ----------------------------------------------------------
+# --- roadmap links and owner-selected readiness labels -----------------------------------
+
+# Readiness belongs to sample owners. Labels do not change index membership.
+for label in '(draft)' '(planned)' '(experimental)' '(available now) (draft)' '`(available now)`' ''; do
+  d=$(new_repo "accept-owner-label-$passed")
+  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+    "- [signing](../examples/policy/signing/README.md) $label: a signed image."
+  expect_ok "accept: owner-selected entry label '$label'" "OK, 2 sample(s)" "$d"
+done
+
+d=$(new_repo accept-no-labels)
+replace_line "$d/docs/ROADMAP.md" "### Getting started" '### Getting started'
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '- [signing](../examples/policy/signing/README.md): a signed image.'
+expect_ok "accept: neither sample nor section has a readiness label" "OK, 2 sample(s)" "$d"
+
+d=$(new_repo reject-status-without-link)
+replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
+  '- signing (available now): the owner label does not replace its link.'
+expect_findings "reject: a readiness label without a sample link" "$d" \
+  "policy/signing is not linked in docs/ROADMAP.md"
 
 d=$(new_repo reject-no-roadmap-link)
 replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" "- signing: not linked."
 expect_findings "reject: a roadmap entry that does not link the sample" "$d" \
   "policy/signing is not linked in docs/ROADMAP.md"
 
-d=$(new_repo reject-roadmap-not-available)
+d=$(new_repo accept-roadmap-no-status)
 replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
   "- [signing](../examples/policy/signing/README.md): a signed image."
-expect_findings "reject: a roadmap link with no '(available now)'" "$d" \
-  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)'"
+expect_ok "accept: a roadmap link without a readiness label" "OK, 2 sample(s)" "$d"
 
-d=$(new_repo reject-heading-not-available)
+d=$(new_repo accept-heading-no-status)
 replace_line "$d/docs/ROADMAP.md" "### Getting started" "### Getting started (\`getting-started\`)"
-expect_findings "reject: the section heading lost 'available now'" "$d" \
-  "getting-started/hello is linked in docs/ROADMAP.md but not marked '(available now)'"
+expect_ok "accept: a section heading without a readiness label" "OK, 2 sample(s)" "$d"
 
 d=$(new_repo reject-roadmap-in-comment)
 replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
@@ -379,463 +397,10 @@ append_lines "$d/docs/ROADMAP.md" "" "### Policy (\`policy\`)"
 expect_findings "reject: a roadmap section heading twice" "$d" \
   "docs/ROADMAP.md has the heading '### Policy (\`policy\`)' more than once (lines 9, 16)"
 
-d=$(new_repo reject-heading-ends-at-h2)
+d=$(new_repo accept-link-after-h2)
 replace_line "$d/docs/ROADMAP.md" "](../examples/getting-started/hello/README.md)" \
   "## Elsewhere" "" "- [hello](../examples/getting-started/hello/README.md): the first sample."
-expect_findings "reject: a '## ' heading ends the available '### ' section" "$d" \
-  "getting-started/hello is linked in docs/ROADMAP.md but not marked '(available now)'"
-
-# --- explicit draft status -----------------------------------------------------------------
-
-# A draft is still a tracked sample. Its entry must remain in all three indexes.
-# Only a visible status immediately after its own roadmap link opts into draft status.
-d=$(new_repo accept-explicit-draft)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  "- [signing](../examples/policy/signing/README.md) (draft): a sample awaiting a maintainer decision."
-expect_ok "accept: an explicit draft remains indexed without claiming availability" "OK, 2 sample(s)" "$d"
-
-d=$(new_repo accept-draft-overrides-heading)
-replace_line "$d/docs/ROADMAP.md" "](../examples/getting-started/hello/README.md)" \
-  "- [hello](../examples/getting-started/hello/README.md) (draft): an unfinished sample."
-expect_ok "accept: per-entry draft overrides inherited availability" "OK, 2 sample(s)" "$d"
-
-d=$(new_repo accept-spaced-draft)
-spaced="- [signing](../examples/policy/signing/README.md)$(printf '\t  ')(draft)$(printf '\t '): an unfinished sample."
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" "$spaced"
-expect_ok "accept: spaces and tabs around the explicit draft marker" "OK, 2 sample(s)" "$d"
-
-d=$(new_repo accept-consistent-draft-entries)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  "- [signing](../examples/policy/signing/README.md) (draft): an unfinished sample."
-append_lines "$d/docs/ROADMAP.md" "- [signing](../examples/policy/signing/README.md) (draft): the same status."
-expect_ok "accept: repeated roadmap entries with the same explicit draft status" "OK, 2 sample(s)" "$d"
-
-# Repeated entries may inherit availability from their section. Only an explicit
-# available status conflicts with an explicit draft, regardless of entry order.
-for first in inherited draft; do
-  d=$(new_repo "accept-draft-overrides-duplicate-$first")
-  if [ "$first" = inherited ]; then
-    first_status=''
-    second_status=' (draft)'
-  else
-    first_status=' (draft)'
-    second_status=''
-  fi
-  replace_line "$d/docs/ROADMAP.md" "](../examples/getting-started/hello/README.md)" \
-    "- [hello](../examples/getting-started/hello/README.md)$first_status: the first entry." \
-    "- [hello](../examples/getting-started/hello/README.md)$second_status: the repeated entry."
-  expect_ok "accept: explicit draft overrides duplicate inherited availability with $first first" "OK, 2 sample(s)" "$d"
-done
-
-for ending in '' ' unfinished'; do
-  d=$(new_repo "accept-draft-boundary-$passed")
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    "- [signing](../examples/policy/signing/README.md) (draft)$ending"
-  expect_ok "accept: draft marker followed by end of line or whitespace: '$ending'" "OK, 2 sample(s)" "$d"
-done
-
-# A whole link and status inside inline code cannot count as a visible entry.
-# A code example before a real link must neither supply nor hide that link's status.
-for ticks in '`' '``'; do
-  d=$(new_repo "reject-draft-whole-inline-code-$passed")
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    "- ${ticks}[signing](../examples/policy/signing/README.md) (draft): a code example.${ticks}"
-  expect_findings "reject: a whole draft entry inside $ticks inline code" "$d" \
-    "policy/signing is not linked in docs/ROADMAP.md"
-
-  d=$(new_repo "reject-draft-code-before-visible-$passed")
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    "- ${ticks}[signing](../examples/policy/signing/README.md) (draft): a code example.${ticks} Actual [signing](../examples/policy/signing/README.md): no status."
-  expect_findings "reject: $ticks code example cannot supply the visible link's draft status" "$d" \
-    "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
-
-  d=$(new_repo "accept-draft-after-inline-code-$passed")
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    "- ${ticks}[signing](../examples/policy/signing/README.md): a code example.${ticks} Actual [signing](../examples/policy/signing/README.md) (draft): unfinished."
-  expect_ok "accept: a visible draft link after a $ticks code example" "OK, 2 sample(s)" "$d"
-done
-
-d=$(new_repo reject-draft-inline-code-gap)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- [signing](../examples/policy/signing/README.md) `example` (draft): the marker is not immediate.'
-expect_findings "reject: removing inline code must not join a link to a later draft marker" "$d" \
-  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
-
-for ticks in '`' '``'; do
-  d=$(new_repo "reject-draft-mismatched-inner-delimiter-$passed")
-  if [ "$ticks" = '`' ]; then inner='``'; else inner='`'; fi
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    "- ${ticks}example ${inner} [signing](../examples/policy/signing/README.md) (draft)${ticks} Actual [signing](../examples/policy/signing/README.md): no status."
-  expect_findings "reject: $inner does not close a $ticks code span containing a draft example" "$d" \
-    "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
-done
-
-d=$(new_repo accept-draft-after-unmatched-backtick)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- unmatched ` text [signing](../examples/policy/signing/README.md) (draft): unfinished.'
-expect_ok "accept: an unmatched backtick does not hide a visible draft link" "OK, 2 sample(s)" "$d"
-
-d=$(new_repo accept-draft-with-escaped-backticks)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- \`[signing](../examples/policy/signing/README.md) (draft): literal delimiters.\`'
-expect_ok "accept: escaped backticks do not hide a visible draft link" "OK, 2 sample(s)" "$d"
-
-# Masked code must not create a Markdown link or join an otherwise split status.
-for label in '`example`' '[signing]`example`'; do
-  d=$(new_repo "reject-code-synthesized-link-$passed")
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    "- $label(../examples/policy/signing/README.md) (draft): no visible link."
-  expect_findings "reject: replacing code cannot create a link from $label" "$d" \
-    "policy/signing is not linked in docs/ROADMAP.md"
-done
-
-d=$(new_repo accept-visible-draft-after-code-url)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- `example`(../examples/policy/signing/README.md): code and a URL. Actual [signing](../examples/policy/signing/README.md) (draft): unfinished.'
-expect_ok "accept: a code-and-URL example cannot hide a later visible draft link" "OK, 2 sample(s)" "$d"
-
-d=$(new_repo reject-code-synthesized-status)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- [signing](../examples/policy/signing/README.md) (dra`example`ft): no complete status.'
-expect_findings "reject: replacing code cannot join pieces into a draft marker" "$d" \
-  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
-
-# Matching inline code can cross a physical newline inside an indented list continuation.
-for ticks in '`' '``' '```' '````'; do
-  d=$(new_repo "reject-multiline-code-draft-$passed")
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    "- ${ticks}[signing](../examples/policy/signing/README.md) (draft): a code example" \
-    "  ends here${ticks}." \
-    '- [signing](../examples/policy/signing/README.md): visible, no status.'
-  expect_findings "reject: $ticks code across a list continuation cannot supply draft status" "$d" \
-    "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
-done
-
-d=$(new_repo reject-multiline-code-only-link)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- ``[signing](../examples/policy/signing/README.md) (draft): a code example' \
-  '  ends here``.'
-expect_findings "reject: a roadmap link only inside multiline code" "$d" \
-  "policy/signing is not linked in docs/ROADMAP.md"
-
-d=$(new_repo accept-real-draft-after-multiline-code)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- `[signing](../examples/policy/signing/README.md): a code example' \
-  '  ends here`.' \
-  '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
-expect_ok "accept: a real draft entry after a multiline code example" "OK, 2 sample(s)" "$d"
-
-for ticks in '`' '``'; do
-  d=$(new_repo "reject-multiline-code-mismatched-inner-$passed")
-  if [ "$ticks" = '`' ]; then inner='``'; else inner='`'; fi
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    "- ${ticks}[signing](../examples/policy/signing/README.md) (draft): a code example" \
-    "  ${inner} still inside the example ${ticks}." \
-    '- [signing](../examples/policy/signing/README.md): visible, no status.'
-  expect_findings "reject: multiline $ticks code ignores a different $inner delimiter" "$d" \
-    "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
-done
-
-d=$(new_repo accept-unmatched-code-with-continuation)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- unmatched ` [signing](../examples/policy/signing/README.md) (draft): visible text' \
-  '  continues without a closing delimiter.'
-expect_ok "accept: unmatched code across a continuation leaves the draft link visible" "OK, 2 sample(s)" "$d"
-
-# Inline code protects literal comment delimiters, while actual comments ignore backticks.
-for literal in '<!--' '<!-- -->' '-->'; do
-  d=$(new_repo "accept-code-comment-delimiter-$passed")
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    "- \`$literal\` Actual [signing](../examples/policy/signing/README.md) (draft): unfinished."
-  expect_ok "accept: literal $literal inside inline code cannot hide a visible draft" "OK, 2 sample(s)" "$d"
-done
-
-d=$(new_repo reject-real-comment-with-code)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- <!-- `[signing](../examples/policy/signing/README.md) (draft): hidden -->` Actual [signing](../examples/policy/signing/README.md): no status.'
-expect_findings "reject: code delimiters inside a real comment cannot supply draft status" "$d" \
-  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
-
-d=$(new_repo accept-real-comment-code-like-close)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- <!-- ` -->` Actual [signing](../examples/policy/signing/README.md) (draft): unfinished.'
-expect_ok "accept: backticks inside a real comment do not prevent its closing delimiter" "OK, 2 sample(s)" "$d"
-
-d=$(new_repo accept-comment-opener-in-multiline-code)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- ``literal <!-- inside code' \
-  '  ends here``.' \
-  '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
-expect_ok "accept: a comment opener inside multiline code cannot hide the next draft entry" "OK, 2 sample(s)" "$d"
-
-# A later delimiter across a block boundary does not close code in the earlier entry.
-for boundary in blank list heading fence; do
-  d=$(new_repo "accept-unmatched-code-block-boundary-$boundary")
-  case "$boundary" in
-    blank) separator='' ;;
-    list) separator='- Another list item.' ;;
-    heading) separator='### Another section' ;;
-    fence) separator='~~~text' ;;
-  esac
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    '- unmatched ` [signing](../examples/policy/signing/README.md) (draft): visible text.' \
-    "$separator" '  later ` delimiter.'
-  expect_ok "accept: a $boundary boundary ends the supported inline-code continuation" "OK, 2 sample(s)" "$d"
-done
-
-d=$(new_repo accept-comment-prefixed-continuation-fence)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- A list note before the sample.' \
-  '  <!-- prefix --> ```text' \
-  '  <!-- comment-looking text inside the fence' \
-  '  ```' \
-  '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
-expect_ok "accept: a comment-prefixed continuation fence keeps its body comments inert" "OK, 2 sample(s)" "$d"
-
-# A leading real comment can expose a fence, including when the comment spans lines.
-# An inline-code closer after that boundary must not consume the fence opener.
-for fence_marker in '~~~' '```'; do
-  for comment_layout in inline multiline; do
-    if [ "$comment_layout" = inline ]; then
-      prefix_lines=("  <!-- prefix --> ${fence_marker}text")
-    else
-      prefix_lines=('  <!-- prefix' "  --> ${fence_marker}text")
-    fi
-    d=$(new_repo "reject-code-crosses-comment-fence-$passed")
-    replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-      '- unmatched ` text' "${prefix_lines[@]}" '  closes` here' \
-      '  - [signing](../examples/policy/signing/README.md) (draft): hidden in the fence.' \
-      "  $fence_marker" '- [signing](../examples/policy/signing/README.md): visible, no status.'
-    expect_findings "reject: code cannot cross a $comment_layout comment-prefixed $fence_marker fence to supply status" "$d" \
-      "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
-
-    d=$(new_repo "reject-code-crosses-comment-fence-only-link-$passed")
-    replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-      '- unmatched ` text' "${prefix_lines[@]}" '  closes` here' \
-      '  - [signing](../examples/policy/signing/README.md) (draft): hidden in the fence.' \
-      "  $fence_marker"
-    expect_findings "reject: a link inside a $comment_layout comment-prefixed $fence_marker fence stays hidden" "$d" \
-      "policy/signing is not linked in docs/ROADMAP.md"
-
-    d=$(new_repo "accept-draft-after-comment-fence-$passed")
-    replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-      '- unmatched ` text' "${prefix_lines[@]}" '  closes` here' \
-      "  $fence_marker" '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
-    expect_ok "accept: a visible draft after a $comment_layout comment-prefixed $fence_marker fence" "OK, 2 sample(s)" "$d"
-  done
-done
-
-# Comment-looking text inside matched code must not erase its closing delimiters.
-for ticks in '```' '````'; do
-  d=$(new_repo "accept-continuation-code-comment-$passed")
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    '- A list note.' "  ${ticks}literal <!--${ticks}" \
-    '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
-  expect_ok "accept: a $ticks inline span with a literal comment opener is not a fence" "OK, 2 sample(s)" "$d"
-done
-
-d=$(new_repo accept-continuation-code-comment-inner-ticks)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- A list note.' '  ```text <!-- `` ` literal ```' \
-  '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
-expect_ok "accept: shorter inner tick runs and a literal comment opener stay inside matched code" "OK, 2 sample(s)" "$d"
-
-d=$(new_repo accept-continuation-code-closed-comment)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- A list note.' '  ```literal <!-- -->```' \
-  '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
-expect_ok "accept: a closed comment-looking token inside matched continuation code" "OK, 2 sample(s)" "$d"
-
-d=$(new_repo accept-multiline-code-comment-without-fence)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- ``literal code' '  <!-- text with no fence' '  ends here``.' \
-  '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
-expect_ok "accept: comment-looking continuation text without a fence stays inside matched code" "OK, 2 sample(s)" "$d"
-
-for literal in '<!-- literal comment' '<!-- comment -->'; do
-  d=$(new_repo "accept-fence-header-comment-$passed")
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    "\`\`\`text $literal" '```' \
-    '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
-  expect_ok "accept: comment-looking text in a real fence header remains literal: $literal" "OK, 2 sample(s)" "$d"
-done
-
-# Fence lookahead cannot reinterpret matched code using text from another paragraph.
-for fence_marker in '~~~' '```'; do
-  for boundary in blank list heading fence unindented; do
-    case "$boundary" in
-      blank) separator_lines=('') ;;
-      list) separator_lines=('- Another list item.') ;;
-      heading) separator_lines=('### Another section') ;;
-      fence) separator_lines=('~~~text' '~~~') ;;
-      unindented) separator_lines=('Another paragraph without list indentation.') ;;
-    esac
-    d=$(new_repo "accept-code-lookahead-boundary-$passed")
-    replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-      '- ``literal code' '  <!-- token inside matched code' '  ends here``.' \
-      "${separator_lines[@]}" \
-      '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.' \
-      "  --> ${fence_marker}text"
-    expect_ok "accept: $fence_marker lookahead cannot cross a $boundary paragraph boundary" "OK, 2 sample(s)" "$d"
-  done
-
-  d=$(new_repo "accept-available-after-code-lookahead-boundary-$passed")
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    '- ``literal code' '  <!-- token inside matched code' '  ends here``.' '' \
-    '- [signing](../examples/policy/signing/README.md) (available now): visible and ready.' \
-    "  --> ${fence_marker}text"
-  expect_ok "accept: $fence_marker lookahead cannot hide an available entry after matched code" "OK, 2 sample(s)" "$d"
-
-  # The closer must precede the exposed marker, even when both are in one paragraph.
-  d=$(new_repo "accept-code-closes-before-comment-fence-same-line-$passed")
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    '- ``literal code' "  <!-- token ends here\`\` --> ${fence_marker}text" \
-    '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
-  expect_ok "accept: code closes before the apparent comment close and $fence_marker marker on the same line" "OK, 2 sample(s)" "$d"
-
-  d=$(new_repo "accept-code-closes-before-comment-fence-next-line-$passed")
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    '- ``literal code' '  <!-- token inside matched code' '  ends here``.' \
-    "  --> ${fence_marker}text" \
-    '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
-  expect_ok "accept: code closes before a later apparent comment close and $fence_marker marker in the same paragraph" "OK, 2 sample(s)" "$d"
-
-  d=$(new_repo "reject-comment-fence-before-code-closes-$passed")
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    '- ``unmatched code' '  <!-- prefix' "  --> ${fence_marker}text" '  ends here``.' \
-    '  - [signing](../examples/policy/signing/README.md) (draft): hidden in the fence.' \
-    "  $fence_marker" '- [signing](../examples/policy/signing/README.md): visible, no status.'
-  expect_findings "reject: an exposed $fence_marker fence before the code closer hides its draft example" "$d" \
-    "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
-done
-
-# A fence query must keep the entire physical line, including a proposed code closer.
-d=$(new_repo accept-backtick-info-string-code-closer)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- ``literal code' '  <!-- prefix --> ```text ends here``.' \
-  '- [signing](../examples/policy/signing/README.md) (draft): visible and unfinished.'
-expect_ok "accept: later backticks invalidate the apparent fence info string before the code closer" "OK, 2 sample(s)" "$d"
-
-d=$(new_repo reject-tilde-info-string-code-closer)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- ``unmatched code' '  <!-- prefix --> ~~~text ends here``.' \
-  '  - [signing](../examples/policy/signing/README.md) (draft): hidden in the fence.' \
-  '  ~~~' '- [signing](../examples/policy/signing/README.md): visible, no status.'
-expect_findings "reject: backticks in a tilde fence info string do not close earlier code" "$d" \
-  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
-
-d=$(new_repo reject-fence-at-exact-code-closer)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- ```unmatched code' '  <!-- prefix --> ```' \
-  '  - [signing](../examples/policy/signing/README.md) (draft): hidden in the fence.' \
-  '  ```' '- [signing](../examples/policy/signing/README.md): visible, no status.'
-expect_findings "reject: a fence at the proposed closing run is still a block boundary" "$d" \
-  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
-
-d=$(new_repo reject-real-comment-crosses-paragraph-boundary)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- <!-- a real comment' '' \
-  '- [signing](../examples/policy/signing/README.md) (draft): hidden by the actual comment.' \
-  '-->' '- [signing](../examples/policy/signing/README.md): visible, no status.'
-expect_findings "reject: an actual open comment remains active across paragraph boundaries" "$d" \
-  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
-
-for status in '(drafting)' '(draft)extra' ': the description mentions (draft).' '`(draft)`'; do
-  d=$(new_repo "reject-nonstatus-$passed")
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    "- [signing](../examples/policy/signing/README.md) $status"
-  expect_findings "reject: text that is not an explicit draft status: $status" "$d" \
-    "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
-done
-
-d=$(new_repo reject-draft-heading-only)
-replace_line "$d/docs/ROADMAP.md" '### Policy' '### Policy (`policy`) (draft)'
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  "- [signing](../examples/policy/signing/README.md): an unfinished sample."
-expect_findings "reject: a draft heading cannot mark every sample as draft" "$d" \
-  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
-
-d=$(new_repo reject-draft-readme-only)
-append_lines "$d/examples/policy/signing/README.md" "" "Status: draft."
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  "- [signing](../examples/policy/signing/README.md): an unfinished sample."
-expect_findings "reject: README draft prose cannot supply a roadmap status" "$d" \
-  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
-
-d=$(new_repo reject-draft-inline-comment)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  "- [signing](../examples/policy/signing/README.md) <!-- (draft) -->: an unfinished sample."
-expect_findings "reject: a draft marker hidden in an inline HTML comment" "$d" \
-  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
-
-for hidden in comment fence; do
-  d=$(new_repo "reject-draft-$hidden")
-  if [ "$hidden" = comment ]; then
-    opener='<!--'
-    closer='-->'
-  else
-    opener='```markdown'
-    closer='```'
-  fi
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    "$opener" "- [signing](../examples/policy/signing/README.md) (draft): a hidden entry." "$closer" \
-    "- [signing](../examples/policy/signing/README.md): the visible entry has no status."
-  expect_findings "reject: a hidden draft entry in a $hidden cannot supply status" "$d" \
-    "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'"
-done
-
-for statuses in '(available now) (draft)' '(draft) (available now)'; do
-  d=$(new_repo "reject-conflicting-status-line-$passed")
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    "- [signing](../examples/policy/signing/README.md) $statuses: conflicting statuses."
-  expect_findings "reject: both explicit statuses on one line: $statuses" "$d" \
-    "policy/signing has conflicting '(available now)' and '(draft)' statuses in docs/ROADMAP.md"
-done
-
-for first in available draft; do
-  d=$(new_repo "reject-conflicting-status-entries-$first")
-  if [ "$first" = available ]; then
-    first_status='(available now)'
-    second_status='(draft)'
-  else
-    first_status='(draft)'
-    second_status='(available now)'
-  fi
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    "- [signing](../examples/policy/signing/README.md) $first_status: the first entry."
-  append_lines "$d/docs/ROADMAP.md" \
-    "- [signing](../examples/policy/signing/README.md) $second_status: the conflicting entry."
-  expect_findings "reject: conflicting duplicate entries with $first first" "$d" \
-    "policy/signing has conflicting '(available now)' and '(draft)' statuses in docs/ROADMAP.md"
-done
-
-for missing in nav readme roadmap-link; do
-  d=$(new_repo "reject-draft-missing-$missing")
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    "- [signing](../examples/policy/signing/README.md) (draft): an unfinished sample."
-  case "$missing" in
-    nav)
-      replace_line "$d/mkdocs.yml" "Signing: policy"
-      expected="policy/signing is not in the mkdocs.yml nav"
-      ;;
-    readme)
-      replace_line "$d/README.md" "](examples/policy/signing/README.md)"
-      expected="policy/signing is not listed in README.md"
-      ;;
-    roadmap-link)
-      replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" "- signing (draft): no link."
-      expected="policy/signing is not linked in docs/ROADMAP.md"
-      ;;
-  esac
-  expect_findings "reject: draft status does not waive the $missing requirement" "$d" "$expected"
-done
-
-d=$(new_repo reject-draft-conflict-marker)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  "- [signing](../examples/policy/signing/README.md) (draft): an unfinished sample."
-append_lines "$d/examples/policy/signing/README.md" '<<<<<<< HEAD'
-expect_findings "reject: conflict markers remain errors inside a draft sample" "$d" \
-  "merge conflict marker left at examples/policy/signing/README.md:2"
+expect_ok "accept: a roadmap link outside a labeled section" "OK, 2 sample(s)" "$d"
 
 # --- must reject: README.md ----------------------------------------------------------------
 

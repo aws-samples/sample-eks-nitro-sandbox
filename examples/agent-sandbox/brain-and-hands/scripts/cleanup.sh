@@ -5,12 +5,12 @@
 #
 # ORDER MATTERS:
 #   1. the brain          -- so nothing claims another pod while this runs.
-#   2. the session claim  -- it holds a warm pod; deleting it releases the pod.
+#   2. the session claims -- each holds a pod; deleting one releases its pod.
 #   3. the warm pool      -- a pool boots a replacement for every pod that goes,
 #                            so removing it stops the loop; then wait for its
 #                            pods to actually terminate.
 #   4. the template       -- the pool references it, so it goes after the pool.
-#   5. the brain's RBAC and ServiceAccount.
+#   5. the brain's RBAC, ServiceAccount and the sandboxd token Secret.
 #   6. the AWS resources  -- the Pod Identity association first, because the
 #                            role it names goes next, then the ECR repository.
 #   7. the namespace      -- last.
@@ -73,10 +73,21 @@ if [[ $ns_absent -eq 0 ]]; then
   step "1/9 delete the brain"
   del deployment "$BRAIN"
 
-  step "2/9 delete the session claim so its warm pod is released"
-  # By exact name: the brain's sandbox tool only ever creates this one claim,
-  # named from HANDS_CLAIM in deploy/brain.yaml.
-  del sandboxclaim "$SESSION_CLAIM"
+  step "2/9 delete the session claims so their pods are released"
+  # The MCP server names each claim it creates, so the names are not known in
+  # advance. The namespace has been confirmed the sample's, so every claim in it
+  # is the sample's: list them, then delete each by the name the list returned.
+  # A failed list is a failure, never "none left".
+  cl_rc=0
+  claims="$(kc get sandboxclaims -o name 2>/dev/null)" || cl_rc=$?
+  if [[ $cl_rc -ne 0 ]]; then
+    note_fail "could not list the sandbox claims in $NAMESPACE, so whether any still hold a pod is unknown"
+  elif [[ -z "$claims" ]]; then
+    echo "  no sandbox claims in $NAMESPACE"
+  else
+    mapfile -t claim_names < <(printf '%s\n' "$claims" | sed 's|.*/||')
+    del sandboxclaim "${claim_names[@]}"
+  fi
 
   step "3/9 delete the warm pool so it stops booting replacements"
   del sandboxwarmpool "$POOL"
@@ -111,10 +122,11 @@ if [[ $ns_absent -eq 0 ]]; then
   step "4/9 delete the SandboxTemplate"
   del sandboxtemplate "$TEMPLATE"
 
-  step "5/9 delete the brain's RBAC and ServiceAccount"
+  step "5/9 delete the brain's RBAC, ServiceAccount and sandboxd token"
   del rolebinding "$BRAIN"
   del role "$BRAIN"
   del serviceaccount "$BRAIN"
+  del secret "$TOKEN_SECRET"
 fi
 
 step "6/9 delete the Pod Identity association"
@@ -221,6 +233,6 @@ fi
 if [[ $ns_absent -eq 1 ]]; then
   echo "clean up complete: nothing of this sample's was in the cluster."
 else
-  echo "clean up complete: the brain, the claim, the pool, the template, the RBAC,"
+  echo "clean up complete: the brain, the claims, the pool, the template, the RBAC, the token,"
   echo "the Pod Identity association, the IAM role, the ECR repository and the namespace are gone."
 fi

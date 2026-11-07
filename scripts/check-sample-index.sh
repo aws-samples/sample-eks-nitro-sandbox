@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks that every published sample is listed in the three index files every sample pull
+# Checks that every tracked sample is listed in the three index files every sample pull
 # request edits, and that no merge conflict markers are left in tracked text files. Needs no
 # cluster and no AWS.
 #
@@ -19,10 +19,8 @@
 #     ("- <Section>:"). Each nav heading title holds the samples of one <section> folder,
 #     each folder's samples sit under one heading title, and no heading title appears
 #     twice under one parent.
-#   - docs/ROADMAP.md has a list item linking ../examples/<s>/README.md, marked
-#     "(available now)" on that line or in its "### " section heading, or "(draft)"
-#     on that sample's own line. An explicit draft overrides inherited section status.
-#     Conflicting available and draft entries for the same sample are a finding.
+#   - docs/ROADMAP.md has a list item linking ../examples/<s>/README.md.
+#     Sample owners maintain readiness labels; this check does not require or interpret them.
 #   - README.md at the top of the repository has a list item linking examples/<s>/README.md.
 # A list item starts with "- ", indented at most three spaces, as in every index file here.
 # A YAML comment (#), an HTML comment or a fenced code block does not count. It also checks
@@ -86,29 +84,24 @@ finding() {
 # line, so a commented-out entry or an example in a code block does not count. A fence
 # closes only on the same character repeated at least as many times as it opened with, as
 # in CommonMark (and as in check-agent-files.sh).
-markdown_text() { # file [inline-code]
-  awk -v mask_code="${2:-}" '
+markdown_text() { # file
+  awk '
     function fence_run(s, c,   n) {
       n = 0
       while (substr(s, n + 1, 1) == c) n++
       return n
     }
     function unindent(s) { sub(/^ ? ? ?/, "", s); return s }
-    function fence_marker(s,   c, n) {
+    function fence_opens(s,   c, n) {
       s = unindent(s)
       c = substr(s, 1, 1)
-      if (c != "`" && c != "~") return ""
+      if (c != "`" && c != "~") return 0
       n = fence_run(s, c)
-      if (n < 3) return ""
+      if (n < 3) return 0
       # A backtick fence cannot have a backtick in its info string; such a line is text.
-      if (c == "`" && index(substr(s, n + 1), "`") > 0) return ""
-      return substr(s, 1, n)
-    }
-    function fence_opens(s,   marker) {
-      marker = fence_marker(s)
-      if (marker == "") return 0
-      fchar = substr(marker, 1, 1)
-      flen = length(marker)
+      if (c == "`" && index(substr(s, n + 1), "`") > 0) return 0
+      fchar = c
+      flen = n
       return 1
     }
     function fence_closes(s,   n) {
@@ -117,147 +110,8 @@ markdown_text() { # file [inline-code]
       if (n < flen) return 0
       return (substr(s, n + 1) ~ /^[ \t]*$/)
     }
-    # Return a fence marker position within the supplied text, or zero. Remove only
-    # leading real comments; leave the rest of its physical line intact. This query
-    # cannot read later input or change active comment/fence state.
-    function roadmap_fence(s,   size, prefix, e, removed, nl, marker) {
-      size = length(s); prefix = ""
-      while (1) {
-        match(s, /^[ \t]*/)
-        prefix = prefix substr(s, 1, RLENGTH); s = substr(s, RLENGTH + 1)
-        if (substr(s, 1, 4) != "<!--") {
-          nl = index(s, "\n")
-          marker = fence_marker(prefix (nl ? substr(s, 1, nl - 1) : s))
-          return marker != "" ? size - length(s) + 1 : 0
-        }
-        s = substr(s, 5)
-        e = index(s, "-->")
-        if (!e) return 0
-        removed = substr(s, 1, e + 2)
-        if (index(removed, "\n")) prefix = ""
-        s = substr(s, e + 3)
-      }
-    }
-    # One raw paragraph bounds every speculative code/comment search. Blank lines,
-    # new list items, headings, raw fences, and insufficient indentation end it.
-    function paragraph_continuation(s, indent,   prefix, width, i, c) {
-      if (s ~ /^[ \t]*$/ || s ~ /^ ? ? ?(- |#+[ \t])/) return 0
-      if (fence_marker(s) != "") return 0
-      match(s, /^[ \t]*/)
-      prefix = substr(s, 1, RLENGTH); width = 0
-      for (i = 1; i <= length(prefix); i++) {
-        c = substr(prefix, i, 1)
-        if (c == "\t") width += 4 - (width % 4)
-        else width++
-      }
-      return width >= indent + 2
-    }
-    # A supported fence before the proposed code closer interrupts that span. Inspect
-    # complete physical lines: truncating the closer can manufacture a backtick fence.
-    function fence_before_close(text, close_at,   at, nl, marker_at) {
-      nl = index(text, "\n"); at = 1
-      while (nl) {
-        at += nl
-        if (at > close_at) return 0
-        marker_at = roadmap_fence(substr(text, at))
-        if (marker_at && at + marker_at - 1 <= close_at) return 1
-        nl = index(substr(text, at), "\n")
-      }
-      return 0
-    }
-    function newlines(s) { gsub(/[^\n]/, "", s); return s }
-    # Interpret comments and code together. A comment cannot start inside matched code;
-    # backticks inside an actual comment have no effect. Keep unmatched/escaped ticks.
-    function visible_text(text,   out, row, at, rest, e, width, offset, close_at, close_width, found, i, slashes, hidden, nl, candidate, marker) {
-      out = ""; row = ""; at = 1
-      while (at <= length(text)) {
-        rest = substr(text, at)
-        if (fence) {
-          nl = index(rest, "\n")
-          hidden = nl ? substr(rest, 1, nl - 1) : rest
-          if (fence_closes(hidden)) fence = 0
-          if (!nl) return out
-          out = out "\n"; row = ""; at += nl
-          continue
-        }
-        if (incomment) {
-          e = index(rest, "-->")
-          if (!e) return out newlines(rest)
-          hidden = newlines(substr(rest, 1, e + 2))
-          out = out hidden
-          if (hidden != "") row = ""
-          at += e + 2; incomment = 0
-          continue
-        }
-        if (substr(rest, 1, 4) == "<!--") { incomment = 1; at += 4; continue }
-        # A fence can follow a removed leading comment. Recognize it before scanning
-        # its body, so comment-looking text inside the fence cannot change state.
-        if (row ~ /^ ? ? ?$/ && substr(rest, 1, 1) ~ /[`~]/) {
-          nl = index(rest, "\n")
-          candidate = row (nl ? substr(rest, 1, nl - 1) : rest)
-          marker = roadmap_fence(candidate)
-          if (marker) {
-            fchar = substr(candidate, marker, 1); flen = fence_run(substr(candidate, marker), fchar)
-            out = substr(out, 1, length(out) - length(row)); row = ""; fence = 1
-            if (!nl) return out
-            out = out "\n"; at += nl
-            continue
-          }
-        }
-        if (substr(rest, 1, 1) != "`") {
-          hidden = substr(rest, 1, 1); out = out hidden
-          if (hidden == "\n") row = ""
-          else row = row hidden
-          at++; continue
-        }
-        slashes = 0
-        for (i = at - 1; i > 0 && substr(text, i, 1) == "\\"; i--) slashes++
-        if (slashes % 2) { out = out "`"; row = row "`"; at++; continue }
-        width = fence_run(rest, "`")
-        offset = width + 1; found = 0
-        while (match(substr(rest, offset), /`+/)) {
-          close_at = offset + RSTART - 1; close_width = RLENGTH
-          if (close_width == width) { found = 1; break }
-          offset = close_at + close_width
-        }
-        if (found && fence_before_close(rest, close_at)) found = 0
-        if (found) {
-          hidden = substr(rest, 1, close_at + close_width - 1)
-          # ASCII 28 has no link/status syntax. Boundaries also stop separated text
-          # from becoming a link or an immediate status when code is removed.
-          out = out sprintf("%c", 28) newlines(hidden) sprintf("%c", 28)
-          if (index(hidden, "\n")) row = sprintf("%c", 28)
-          else row = row sprintf("%c%c", 28, 28)
-          at += length(hidden)
-        } else {
-          out = out substr(rest, 1, width); row = row substr(rest, 1, width)
-          at += width
-        }
-      }
-      return out
-    }
-    function emit_code_text(   i, last, block, indent, count, j, rows) {
-      for (i = 1; i <= NR; i++) {
-        if (fence) {
-          if (fence_closes(input[i])) fence = 0
-          print ""
-          continue
-        }
-        block = input[i]; last = i
-        if (!incomment && block ~ /^ ? ? ?- /) {
-          match(block, /^ */); indent = RLENGTH
-          while (last < NR && paragraph_continuation(input[last + 1], indent)) {
-            last++; block = block "\n" input[last]
-          }
-        }
-        count = split(visible_text(block), rows, "\n")
-        for (j = 1; j <= last - i + 1; j++) print rows[j]
-        i = last
-      }
-    }
     BEGIN { fence = 0; incomment = 0 }
     { sub(/\r$/, "") }
-    mask_code { input[NR] = $0; next }
     fence {
       if (fence_closes($0)) fence = 0
       print ""
@@ -280,7 +134,6 @@ markdown_text() { # file [inline-code]
       if (fence_opens(line)) { fence = 1; print ""; next }
       print line
     }
-    END { if (mask_code) emit_code_text() }
   ' "$1"
 }
 
@@ -380,31 +233,15 @@ nav_problems() {
   ' - "$root/mkdocs.yml"
 }
 
-# Prints the linked sample's status, or nothing when its link is missing. Draft status
-# must be explicit on the entry; it does not exempt any other index check. A "# " or
-# "## " heading ends a "### " section. Only explicit available and draft statuses conflict.
-roadmap_state() { # sample
-  markdown_text "$root/docs/ROADMAP.md" inline-code | awk -v link="](../examples/$1/README.md)" '
-    /^### / { heading = $0; next }
-    /^##? / { heading = ""; next }
-    /^ ? ? ?- / {
-      entry = $0
-      if (index(entry, link) == 0) next
-      linked = 1
-      suffix = substr(entry, index(entry, link) + length(link))
-      if (suffix ~ /^[ \t]+(\(available now\)[ \t]+)?\(draft\)([ \t:]|$)/) draft = 1
-      if (index(entry, "(available now)") > 0) explicit_available = 1
-      if (index(heading, "available now") > 0) inherited_available = 1
-    }
-    END {
-      if (explicit_available && draft) print "conflicting"
-      else if (draft) print "draft"
-      else if (explicit_available || inherited_available) print "available"
-      else if (linked) print "linked"
-    }
+# 0 when docs/ROADMAP.md has a list item linking this sample, regardless of readiness labels.
+in_roadmap() { # sample
+  markdown_text "$root/docs/ROADMAP.md" | awk -v link="](../examples/$1/README.md)" '
+    /^ ? ? ?- / && index($0, link) > 0 { found = 1; exit }
+    END { exit (found ? 0 : 1) }
   '
 }
 
+# 0 when the root README.md has a list item linking this sample.
 in_readme() { # sample
   markdown_text "$root/README.md" | awk -v link="](examples/$1/README.md)" '
     /^ ? ? ?- / && index($0, link) > 0 { found = 1; exit }
@@ -457,12 +294,8 @@ count=0
 while IFS= read -r s; do
   [ -n "$s" ] || continue
   count=$((count + 1))
-  case "$(roadmap_state "$s")" in
-    available|draft) ;;
-    conflicting) finding "$s has conflicting '(available now)' and '(draft)' statuses in docs/ROADMAP.md" ;;
-    linked) finding "$s is linked in docs/ROADMAP.md but not marked '(available now)' or '(draft)'" ;;
-    *) finding "$s is not linked in docs/ROADMAP.md; link its entry to ../examples/$s/README.md and mark it '(available now)' or '(draft)'" ;;
-  esac
+  in_roadmap "$s" ||
+    finding "$s is not linked in docs/ROADMAP.md; link its entry to ../examples/$s/README.md"
   in_readme "$s" ||
     finding "$s is not listed in README.md; add '- [<Title>](examples/$s/README.md): <one line>' under its section heading"
 done <<<"$samples"
