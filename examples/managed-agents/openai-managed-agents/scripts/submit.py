@@ -133,15 +133,14 @@ def _is_spend_control_unsupported(exc: BadRequestError) -> bool:
     if getattr(exc, "status_code", None) != 400:
         return False
 
+    # Both shapes are read from the structured error body the SDK delivers, so a
+    # message that merely mentions the words never removes a budget the user asked for.
     body = getattr(exc, "body", None)
-    if isinstance(body, dict) and body.get("code") == "unknown_parameter" \
-            and body.get("param") == "spend_control":
+    if not isinstance(body, dict) or body.get("param") != "spend_control":
+        return False
+    if body.get("code") == "unknown_parameter":
         return True
-
-    text = str(getattr(exc, "message", "") or exc).lower()
-    param = str(getattr(exc, "param", "") or "")
-    mentions_spend_control = "spend_control" in text or param == "spend_control"
-    return mentions_spend_control and "not enabled" in text
+    return str(body.get("message") or "").strip() == "Session budget configuration is not enabled"
 
 
 def create_session(client, agent_id: str, spend_control: dict | None) -> object:

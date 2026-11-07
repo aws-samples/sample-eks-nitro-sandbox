@@ -96,9 +96,16 @@ def test_predicate_matches_spend_control_not_enabled_by_param():
     assert submit._is_spend_control_unsupported(exc) is True
 
 
-def test_predicate_matches_spend_control_not_enabled_by_message_text():
+def test_predicate_does_not_match_not_enabled_words_without_the_param():
+    # Words in a message are not the refusal: the body must name param spend_control.
     exc = _bad_request("spend_control is not enabled for this project", param=None)
-    assert submit._is_spend_control_unsupported(exc) is True
+    assert submit._is_spend_control_unsupported(exc) is False
+
+
+def test_predicate_does_not_match_another_not_enabled_message_on_spend_control():
+    exc = _bad_request("The audit feature is not enabled; the request also mentioned spend_control.",
+                       param="spend_control")
+    assert submit._is_spend_control_unsupported(exc) is False
 
 
 def test_predicate_matches_unknown_parameter_spend_control():
@@ -149,6 +156,8 @@ def test_spend_control_400_is_tolerated_and_retried_without_it(capsys, error):
     assert len(sessions.calls) == 2, "should retry exactly once"
     assert "spend_control" in sessions.calls[0], "first attempt asks for the budget"
     assert "spend_control" not in sessions.calls[1], "retry drops the budget"
+    first_without_budget = {k: v for k, v in sessions.calls[0].items() if k != "spend_control"}
+    assert sessions.calls[1] == first_without_budget, "the retry changes nothing else"
     out = capsys.readouterr().out  # the reader is told why, and what it means
     assert "does not accept a session budget" in out
     assert "no budget ceiling" in out
