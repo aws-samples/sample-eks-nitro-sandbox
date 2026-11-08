@@ -1920,8 +1920,8 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/subagent-security/strands-box/tests/test_lifecycle.py'
-      line_start: 247
-      line_end: 247
+      line_start: 250
+      line_end: 250
       reason: 'Synthetic Kubernetes Secret reference named fixture used to prove verify_pod rejects Secret volumes; no secret value'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_14

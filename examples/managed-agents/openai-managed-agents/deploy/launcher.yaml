@@ -23,6 +23,9 @@ spec:
     metadata:
       labels:
         app: openai-launcher
+      annotations:
+        # It holds open hand-offs in memory; consolidation evicted it mid-hand-off on EKS Auto Mode.
+        karpenter.sh/do-not-disrupt: "true"
     spec:
       serviceAccountName: openai-launcher
       enableServiceLinks: false   # keeps injected <SERVICE>_* names out of the guard's way

@@ -31,10 +31,14 @@ The executor runs code the model chose to run, so this blueprint gives each sess
 Nitro sandbox:
 
 - **The harness runs at OpenAI; the tools run in your cluster.** Sessions are created with
-  `environment.type: self_hosted`. The session's `codex exec-server` connects outbound from
-  its sandbox pod and runs the agent's built-in Bash and apply-patch tools.
-- **Each session gets its own pod, from a warm pool.** An ordinary launcher pod claims a
-  booted pod from a `SandboxWarmPool` with a `SandboxClaim`. The sandbox's `SandboxTemplate`
+  `environment.type: self_hosted`. The session's `codex exec-server` runs in its sandbox pod
+  in Codex's forward mode: an executor on the pod's loopback runs the agent's built-in Bash
+  and apply-patch tools, and a forwarder connects outbound to OpenAI and relays the session
+  to it.
+- **Each session gets its own pod.** An ordinary launcher pod creates a `SandboxClaim` on a
+  `SandboxWarmPool`. The claim sets `spec.env`, so the controller starts a new pod for it (and
+  labels its sandbox `launch-type=cold`) instead of handing it a warm one, and the warm pods
+  stay unclaimed. The sandbox's `SandboxTemplate`
   sets `runtimeClassName: isolated-sandbox`, so the commands run on a kernel no other pod
   shares. A follow-up turn in the same session runs in the same pod and reads a file the
   first turn wrote.
@@ -58,11 +62,11 @@ Nitro sandbox:
 
 *Figure 1: OpenAI runs the model and session; the operator creates the session and hands the
 launcher its environment id and remote URL over an authenticated, port-forwarded ClusterIP
-Service. The launcher claims a warm Nitro sandbox and gives it the session and the environment
-key through the SandboxClaim env; the executor dials out to OpenAI, and its egress policy
-allows only the two OpenAI hosts.*
+Service. The launcher claims a Nitro sandbox and gives it the session and the environment
+key through the SandboxClaim env; the executor's forwarder dials out to OpenAI, and its egress
+policy allows only the two OpenAI hosts.*
 
-![OpenAI's Agents API holds the model, harness and self-hosted session, and returns an environment id and remote URL. On the operator's machine, scripts hold the application key, create the session, and hand its environment id and remote URL to an ordinary openai-launcher pod over a ClusterIP Service port-forward, authenticated with a bearer token. The launcher, holding only the environment key, claims a pod from a SandboxWarmPool of two and sets the session id, environment id, remote URL and environment key in the SandboxClaim env; the controller cold-starts the claimed pod with them injected, so the key reaches the pod through the control plane and never over the pod network, and a warm pod holds no key. The claimed pod is an isolated-sandbox Nitro sandbox running codex exec-server with the key in its env; it runs Bash and apply-patch tool calls in /workspace, a follow-up turn reuses the same pod, and its deny-by-default ApplicationNetworkPolicy denies all ingress and allows egress only to DNS, api.openai.com and codex-cloud-environments.chatgpt.com while refusing the internet, AWS APIs and other pods. The executor dials out to OpenAI.](images/openai-managed-agents.png)
+![OpenAI's Agents API holds the model, harness and self-hosted session, and returns an environment id and remote URL. On the operator's machine, scripts hold the application key, create the session, and hand its environment id and remote URL to an ordinary openai-launcher pod over a ClusterIP Service port-forward, authenticated with a bearer token. The launcher, holding only the environment key, claims a pod from a SandboxWarmPool of two and sets the session id, environment id, remote URL and environment key in the SandboxClaim env; the controller cold-starts the claimed pod with them injected, so the key reaches the pod through the control plane and never over the pod network, and a warm pod holds no key. The claimed pod is an isolated-sandbox Nitro sandbox running codex exec-server, as an executor on the pod's loopback and a forwarder that dials out, with the key in its env; it runs Bash and apply-patch tool calls in /workspace, a follow-up turn reuses the same pod, and its deny-by-default ApplicationNetworkPolicy denies all ingress and allows egress only to DNS, api.openai.com and codex-cloud-environments.chatgpt.com while refusing the internet, AWS APIs and other pods. The executor's forwarder dials out to OpenAI.](images/openai-managed-agents.png)
 
 This folder was built against these releases:
 
@@ -70,8 +74,8 @@ This folder was built against these releases:
 |---|---|
 | OpenAI Python SDK (`openai`) | 3.31.0 |
 | Codex CLI (`@openai/codex`, provides `codex exec-server`) | 0.163.0-alpha.11 |
-| agent-sandbox Python client (`k8s-agent-sandbox`) | 1.0.6 |
-| agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.6 |
+| agent-sandbox Python client (`k8s-agent-sandbox`) | 1.0.10 |
+| agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.10 |
 
 The Agents API is beta (`client.beta.agents`), so the session, event and environment calls
 were checked against the pinned SDK, not only the version string. The Codex CLI is pinned to
@@ -84,7 +88,7 @@ The files:
 | File | What it is |
 |---|---|
 | [`Dockerfile`](Dockerfile), [`pyproject.toml`](pyproject.toml) | The `openai-sandbox-executor` image: one image for the launcher and the sandbox, with `codex exec-server` installed |
-| `src/launcher/` | [`launch.py`](src/launcher/launch.py) (the authenticated intake that claims a sandbox per session), [`serve.py`](src/launcher/serve.py) (run one session's executor; no network intake), [`sandbox.py`](src/launcher/sandbox.py) (claim a sandbox and deliver the session through the claim env), [`guard.py`](src/launcher/guard.py) (refuse any key a role must not hold) |
+| `src/launcher/` | [`launch.py`](src/launcher/launch.py) (the authenticated intake that claims a sandbox per session), [`serve.py`](src/launcher/serve.py) (run one session's executor and its forwarder; no network intake), [`sandbox.py`](src/launcher/sandbox.py) (claim a sandbox and deliver the session through the claim env), [`guard.py`](src/launcher/guard.py) (refuse any key a role must not hold) |
 | [`deploy/sandbox-template.yaml`](deploy/sandbox-template.yaml) | The `SandboxTemplate` that runs the executor, and a `SandboxWarmPool` of two |
 | [`deploy/launcher.yaml`](deploy/launcher.yaml) | The launcher Deployment and its ClusterIP Service intake |
 | [`deploy/launcher-ingress.yaml`](deploy/launcher-ingress.yaml) | A deny-by-default ingress policy so no in-cluster pod may reach the launcher |
@@ -102,29 +106,54 @@ is application-managed provisioning, and this blueprint uses it:
 1. The operator's [`submit.py`](scripts/submit.py) creates the session with
    `environment.type: self_hosted`. OpenAI returns the session's environment id and its
    remote URL.
-2. `submit.py` POSTs those to the launcher in the cluster, over a `kubectl port-forward` to a
-   ClusterIP Service, with a bearer token the launcher checks. The blueprint creates no Ingress,
-   LoadBalancer or NodePort.
+2. `submit.py` opens the session's event stream, then POSTs the environment id and remote URL
+   to the launcher in the cluster, over a `kubectl port-forward` to a ClusterIP Service, with a
+   bearer token the launcher checks. The blueprint creates no Ingress, LoadBalancer or
+   NodePort.
 3. The launcher claims a sandbox from the `SandboxWarmPool` with a `SandboxClaim`, and sets
    the session id, environment id, remote URL and the environment key the launcher holds in
    that claim's `spec.env`. The controller cold-starts the claim's pod with those injected.
    The key travels only over the launcher's authenticated Kubernetes API connection and the
    controller, never over the pod network.
 4. [`serve.py`](src/launcher/serve.py) in the claimed pod reads the session from its own
-   environment and runs `codex exec-server --remote <remote_url> --environment-id
-   <environment_id>` with the environment key already present as `CODEX_API_KEY`. The
-   executor dials out, registers for the environment, and runs the agent's tool calls in
-   `/workspace`.
+   environment and starts `codex exec-server` as two processes, the
+   [forward mode](https://github.com/openai/codex/blob/rust-v0.163.0-alpha.11/codex-rs/exec-server/README.md#remote-connections)
+   Codex documents. Both inherit the environment key, already present as `CODEX_API_KEY`:
+
+   ```bash
+   codex exec-server --listen ws://127.0.0.1:18081
+   codex exec-server forward --remote <remote_url> --environment-id <environment_id> \
+     --connect ws://127.0.0.1:18081
+   ```
+
+   The first, the executor, listens on the pod's loopback only and runs the agent's tool
+   calls in `/workspace`. The second, the forwarder, dials out, registers for the
+   environment, and passes the session's messages to the executor unchanged. The pod reports
+   Ready only once the executor is listening. If either process exits, `serve.py` stops the
+   other and exits non-zero. Why two processes: with the pinned Codex build, the single
+   command `codex exec-server --remote <remote_url> --environment-id <environment_id>`
+   connected in our runs but left the agent with no working tool, and logged nothing, while
+   forward mode ran the tools. That is what we observed, not a documented cause.
+5. `submit.py` sends the prompt only after the open stream reports
+   `agent.session.environment.connected`, the order OpenAI's
+   [self-hosted sandbox guide](https://developers.openai.com/api/docs/guides/agents-api/environments/self-hosted)
+   gives, and keeps streaming the turn. If the environment does not connect within
+   `--connect-timeout` seconds (300 by default), or the stream reports
+   `agent.session.environment.failed`, `submit.py` exits non-zero and sends no prompt.
 
 **How the key reaches the sandbox, and why not over HTTP.** OpenAI documents no credential
 narrower than the environment key for a self-hosted session, so the sandbox must hold that
 key to run the executor. Rather than send it to the sandbox over an in-cluster HTTP request
 (which a same-namespace pod could reach, and which a label-based NetworkPolicy does not
-authenticate), the launcher puts it in the `SandboxClaim`'s `env`. agent-sandbox 1.0.6 writes
+authenticate), the launcher puts it in the `SandboxClaim`'s `env`. agent-sandbox 1.0.10 writes
 that into `SandboxClaim.spec.env`, and setting it forces a cold start from the warm-pool
 template, so the controller injects the key into a pod created specifically for this session.
-The key never crosses the pod network, and a warm pod never holds it. The warm pool still
-removes the VM-boot and image-pull latency; only the final container start is cold. This
+The key never crosses the pod network, and a warm pod never holds it. Setting
+`SandboxClaim.spec.env` makes the controller start a new pod for the claim instead of handing
+it a warm one, and label the claim's sandbox `launch-type=cold`; the warm pods stay unclaimed.
+The new pod can land on a new node: in the run on this page, EKS Auto Mode added a node for
+it, and it took 48 s from the claim to the container start, including an 11.2 s image pull.
+Step 8 shows the claim's events, and step 10 the pods after both turns. This
 mechanism is native to the agent-sandbox stack; the blueprint invents no transport or auth of
 its own for the key.
 
@@ -145,7 +174,7 @@ extensions (`SandboxTemplate`, `SandboxWarmPool`, `SandboxClaim`). If you ran th
 blueprint, this upgrades it in place:
 
 ```bash
-kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml
 kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller
 ```
 
@@ -165,11 +194,13 @@ set -a; . ./.env; set +a
 .venv/bin/python scripts/setup_agent.py
 ```
 
-With `AGENT_MODEL` set in `.env` (see "Pick a model id" below), the output names your model;
-the run captured for this page used `gpt-6-luna`:
+With `AGENT_MODEL` set in `.env` (see "Pick a model id" below), `setup_agent.py` creates the
+agent with that model and prints the new agent's id and model. If `AGENT_ID` is already set, it
+keeps that agent and creates none. The run captured for this page used `gpt-6-luna`, and its
+`.env` already held the id of an agent created for this blueprint, so it kept it:
 
 ```text
-Created agent agent_... (gpt-6-luna)
+AGENT_ID is set; keeping agent agent_...
 
 Add this to .env:
   AGENT_ID=agent_...
@@ -367,15 +398,30 @@ kubectl exec $POD -- sh -c 'env | cut -d= -f1 | grep -E "^(OPENAI_|CODEX_)" | so
 
 ```text
 isolated-sandbox
-6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-25.01
+6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
+52.63
 dm-0 vda vdb vdc
 CODEX_HOME
 CODEX_PATH
 ```
 
-The sandbox runs its own kernel. Its uptime matches the pod's age, about 25 seconds here,
-because the sandbox booted with the pod, and it sees virtio disks (`vda`, `vdb`, `vdc`). On the
+The sandbox runs its own kernel. It booted with the pod, after the pod was scheduled onto its
+node, so its uptime, about 53 seconds here, is shorter than the pod's age. In the run on this
+page the clock was read right after the uptime, and then the pod's creation time, its
+container's start time and its node (the node's name is replaced with `<NODE>`):
+
+```bash
+date -u +%FT%TZ
+kubectl get pod $POD -o jsonpath='{.metadata.creationTimestamp} {.status.containerStatuses[0].state.running.startedAt} {.spec.nodeName}{"\n"}'
+```
+
+```text
+2026-11-08T14:53:43Z
+2026-11-08T14:52:27Z 2026-11-08T14:53:30Z <NODE>
+```
+
+The pod was about 76 seconds old when its uptime read 52.63 seconds. The sandbox also sees
+virtio disks (`vda`, `vdb`, `vdc`). On the
 same node, an ordinary pod reports the node's kernel build, a `#2 SMP ...` string with a
 different date, and the instance's `nvme` disks; the version string may match, but the build
 and the boot do not. A warm sandbox holds no *credential*: the two `CODEX_*` variables it does
@@ -391,33 +437,47 @@ kubectl port-forward svc/openai-launcher 8080:8080
 ```
 
 In another, start a session from your machine. `submit.py` creates the self-hosted session,
-hands the launcher its environment id and remote URL, and streams the agent's output:
+opens its event stream, hands the launcher its environment id and remote URL, and waits for
+the executor to connect. Only then does it send the prompt, and it streams the agent's
+output:
 
 ```bash
 set -a; . ./.env; set +a
 .venv/bin/python scripts/submit.py "Run uname -rv and ls /sys/block with your Bash tool, write their combined output to report.txt, then read report.txt back to me."
 ```
 
+`submit.py` asks for a session budget of $1.00 (`--budget-cents` changes it; `0` asks for
+none). A project that does not accept a session budget refuses it, either as
+`Session budget configuration is not enabled` or as `unknown_parameter` on `spend_control`.
+`submit.py` then creates the session without a budget and prints a `[note]` that the session
+has no budget ceiling. Any other error from the API stops it.
+
 Abridged; your text will differ:
 
 ```text
-created session sesn_...
-environment env_...
-launcher claimed sandbox openai-sandbox-executor-zcw2b for sesn_...
+[note] this project does not accept a session budget (spend_control), so this session has no budget ceiling. Pass --budget-cents 0 to skip asking for one.
+created session sess_...
+environment ccarenv_...
+launcher claimed sandbox sandbox-claim-5386f568 for sess_...
+[environment connected]
 
 agent output:
 
-[environment connected]
-I ran the two commands, wrote their combined output to /workspace/report.txt, and read it
-back. The kernel build is 6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct 1 ..., uptime about a
-minute, and the disks are dm-0, vda, vdb, vdc.
+I’ll run both commands, capture their combined output in `report.txt`, then read the file back to you.`report.txt` contains:
+
+6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
+dm-0
+vda
+vdb
+vdc
 
 final status: idle
 ```
 
-The commands ran in a sandbox: the guest's kernel build, an uptime of about a minute, and
-virtio disks. In the cluster, the launcher's log names the `SandboxClaim` it created and the
-sandbox that claim adopted, and that sandbox's log shows `codex exec-server` connecting:
+The commands ran in a sandbox: the guest's kernel build and its virtio disks. In the cluster,
+the launcher's log names the `SandboxClaim` it created and the
+sandbox that claim adopted, and that sandbox's log shows `serve.py` starting the executor and
+then the forwarder:
 
 ```bash
 kubectl logs deploy/openai-launcher | grep -E 'session=|-> sandbox='
@@ -425,10 +485,43 @@ kubectl logs <SANDBOX>     # the sandbox named in the launcher's log; the pod ha
 ```
 
 ```text
-INFO launcher.sandbox session=sesn_... -> sandbox=openai-sandbox-executor-zcw2b (key delivered via claim env)
-INFO launcher.serve serving session sesn_... in /workspace
-INFO launcher.serve session sesn_...: starting codex exec-server for environment env_...
+2026-11-08 14:55:14,159 INFO launcher.sandbox session=sess_... -> sandbox=sandbox-claim-5386f568 (key delivered via claim env)
+
+2026-11-08 14:55:12,515 INFO launcher.serve serving session sess_... in /workspace
+2026-11-08 14:55:12,515 INFO launcher.serve session sess_...: starting the executor, codex exec-server --listen ws://127.0.0.1:18081
+ws://127.0.0.1:18081
+2026-11-08 14:55:12,926 INFO launcher.serve session sess_...: executor listening; starting the forwarder for environment ccarenv_...
+2026-11-08 14:55:12,930 INFO launcher.serve readiness port :8080 open while serving session sess_...
 ```
+
+The bare `ws://127.0.0.1:18081` line is the executor's own output when it starts listening.
+The readiness port opens only after that, and the claim reported Ready a second later. At their
+default log level neither Codex process logged anything more, through both this turn and the
+follow-up in step 10.
+
+The claim's events show its cold start. This listing was taken shortly after the turn; only the
+lines for the claim's own sandbox and pod are kept, and the account id is replaced with
+`<ACCOUNT_ID>`:
+
+```bash
+kubectl get events --sort-by=.lastTimestamp
+```
+
+```text
+LAST SEEN   TYPE      REASON                 OBJECT                                  MESSAGE
+85s         Normal    SandboxProvisioned     sandboxclaim/sandbox-claim-5386f568     Created Sandbox "sandbox-claim-5386f568"
+85s         Normal    SandboxPodCreated      sandbox/sandbox-claim-5386f568          Created Pod "sandbox-claim-5386f568"
+85s         Warning   FailedScheduling       pod/sandbox-claim-5386f568              0/3 nodes are available: 1 Insufficient memory, 1 node(s) didn't match Pod's node affinity/selector, 1 node(s) had untolerated taint(s). no new claims to deallocate, preemption: 0/3 nodes are available: 1 No preemption victims found for incoming pod, 2 Preemption is not helpful for scheduling.
+84s         Normal    Nominated              pod/sandbox-claim-5386f568              Pod should schedule on: nodeclaim/general-purpose-gvptt
+50s         Normal    Pulled                 pod/sandbox-claim-5386f568              Successfully pulled image "<ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/openai-sandbox-executor:latest" in 11.229s (11.23s including waiting). Image size: 338021174 bytes.
+37s         Normal    Started                pod/sandbox-claim-5386f568              Container started
+```
+
+The controller created a new sandbox and pod for the claim 85 s before this listing, rather than
+hand it a warm one. No existing node was eligible for the pod (one had insufficient memory,
+one did not match its node selector, one had a taint it does not tolerate), so EKS Auto Mode
+added one (`nodeclaim/general-purpose-gvptt`). The image pull took 11.2 s, and the container started
+37 s before the listing: 48 s from the claim to the container start.
 
 **Step 9: Prove the key separation.** The environment key reaches a claimed pod through the
 control plane, so a claimed pod does hold `CODEX_API_KEY` in its env, by design. What stays
@@ -476,20 +569,41 @@ reaches the launcher or the sandbox; the launcher holds the environment key, a c
 holds it for its one session, and a warm pod holds neither.
 
 **Step 10: A follow-up turn in the same pod.** Send a second turn to the same session. It runs
-in the same claimed pod, so the file the first turn wrote is still there:
+in the same claimed pod, so the file the first turn wrote is still there. `submit.py` opens the
+event stream and reads the environment's status first: when the environment is still
+connected it sends the prompt at once, and otherwise it waits for the connection as in step 8:
 
 ```bash
-.venv/bin/python scripts/submit.py --session-id sesn_... "Read report.txt from your working directory and tell me its first line."
+.venv/bin/python scripts/submit.py --session-id sess_... "Read report.txt from your working directory and tell me its first line."
 ```
 
 ```text
-follow-up turn in session sesn_...
-[environment connected]
-The first line of report.txt is: 6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct 1 ...
+follow-up turn in session sess_... (same claimed pod)
+[environment already connected]
+
+agent output:
+
+I’ll read the file from `/workspace` and report its first line.The first line is: `6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026`
 ```
 
-The follow-up turn read a file the first turn wrote, in the same `/workspace`, because the
-same claimed pod served both turns.
+The sandbox pods after the follow-up (the launcher's line is left out, and the node names are
+replaced with `<NODE>`):
+
+```bash
+kubectl get pods -o wide
+```
+
+```text
+NAME                               READY   STATUS    RESTARTS   AGE     IP                NODE                  NOMINATED NODE   READINESS GATES
+openai-sandbox-executor-89w7w      1/1     Running   0          4m51s   192.168.95.129    <NODE>   <none>           <none>
+openai-sandbox-executor-bh26d      1/1     Running   0          4m51s   192.168.95.128    <NODE>   <none>           <none>
+sandbox-claim-5386f568             1/1     Running   0          2m53s   192.168.101.176   <NODE>   <none>           <none>
+```
+
+`sandbox-claim-5386f568`, the pod named in step 8's launcher log, is still the only claimed pod,
+running with no restarts, and the two warm pods are still there, unclaimed. So the follow-up
+turn read the file the first turn wrote from that pod's `/workspace`: the same claimed pod
+served both turns.
 
 **Step 11: Check the egress policy.** Run the egress check (the two allowed hosts and two refused) in a running sandbox. The two
 OpenAI hosts connect; the other two do not:
@@ -528,7 +642,7 @@ its YAML does one job:
 | `policyTypes`, `Ingress` and `Egress` | Makes the selected pods default-deny in both directions, so only the rules below are allowed. |
 | `ingress`, empty | No pod may connect to a sandbox. The launcher delivers the session through the claim env, not the network, so a sandbox needs no inbound rule. |
 | `egress`, to `0.0.0.0/0` on UDP and TCP 53 | Lets the sandbox look up names, with DNS allowed to any address. |
-| `egress`, to the two `domainNames` on TCP 443 | Lets the executor register at `api.openai.com` and exchange commands and results with `codex-cloud-environments.chatgpt.com`. |
+| `egress`, to the two `domainNames` on TCP 443 | Lets the executor's forwarder register at `api.openai.com` and exchange commands and results with `codex-cloud-environments.chatgpt.com`. |
 
 Anything that matches no rule is refused: the public internet, AWS service endpoints such as
 STS, and other pods. (Kubernetes always allows traffic to and from a pod's own node, which is
@@ -543,7 +657,7 @@ egress to CoreDNS and the two OpenAI hosts; the public internet, AWS APIs and ot
 refused. The session and the environment key arrive through the SandboxClaim env, not the
 network. The policy is enforced on the node, outside the sandbox.*
 
-![A focused view of the network policy. Inside an EKS Auto Mode node, a red Nitro sandbox pod labeled openai-sandbox-executor (isolated-sandbox) runs codex exec-server and the tool calls. The sandbox accepts no ingress at all: the session and the environment key are injected into the pod through the SandboxClaim env by the controller, not sent over the network. Two egress paths are allowed, in green: CoreDNS on UDP and TCP 53, and api.openai.com with codex-cloud-environments.chatgpt.com on TCP 443. A red dashed path marks the refused traffic: the internet, AWS APIs such as STS, and other pods. A note says domainNames allows the IP addresses a host resolves to, so a different name on the same addresses would also be reachable, and that enforcement is on the node in eBPF so a command the model runs inside the sandbox cannot change it.](images/openai-managed-agents-network-policy.png)
+![A focused view of the network policy. Inside an EKS Auto Mode node, a red Nitro sandbox pod labeled openai-sandbox-executor (isolated-sandbox) runs codex exec-server, as an executor on the pod's loopback and a forwarder that dials out, and the tool calls. The sandbox accepts no ingress at all: the session and the environment key are injected into the pod through the SandboxClaim env by the controller, not sent over the network. Two egress paths are allowed, in green: CoreDNS on UDP and TCP 53, and api.openai.com with codex-cloud-environments.chatgpt.com on TCP 443. A red dashed path marks the refused traffic: the internet, AWS APIs such as STS, and other pods. A note says domainNames allows the IP addresses a host resolves to, so a different name on the same addresses would also be reachable, and that enforcement is on the node in eBPF so a command the model runs inside the sandbox cannot change it.](images/openai-managed-agents-network-policy.png)
 
 **Where it is enforced.** On EKS Auto Mode, a network policy agent on each node turns the
 policy into eBPF programs attached to the pod's host-side virtual interface, on the node,
@@ -581,7 +695,7 @@ blueprint created. For each session `cleanup.py` rechecks the session's state, d
 
 ```bash
 set -a; . ./.env; set +a
-.venv/bin/python scripts/cleanup.py sesn_... sesn_...
+.venv/bin/python scripts/cleanup.py sess_... sess_...
 ```
 
 `cleanup.py` rechecks each session's state immediately before releasing its claim, following
@@ -616,7 +730,7 @@ revoke the environment key and archive the agent (`client.beta.agents.delete`). 
 stays installed for other blueprints; to remove it, delete the release you installed in step 1:
 
 ```bash
-kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
+kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml
 ```
 
 ## Keep a session's workspace while it is idle
