@@ -149,8 +149,9 @@ that into `SandboxClaim.spec.env`, and setting it forces a cold start from the w
 template, so the controller injects the key into a pod created specifically for this session.
 The key never crosses the pod network, and a warm pod never holds it. Setting
 `SandboxClaim.spec.env` gives the claim a new pod (`launch-type=cold`), not a warm one, and the
-warm pods stay unclaimed. The new pod can land on a new node: in one run on EKS Auto Mode it
-took 71 s from the claim to the container start, including a 22.5 s image pull. This
+warm pods stay unclaimed. The new pod can land on a new node: in the run on this page, EKS
+Auto Mode added a node for it, and it took 48 s from the claim to the container start,
+including an 11.2 s image pull. This
 mechanism is native to the agent-sandbox stack; the blueprint invents no transport or auth of
 its own for the key.
 
@@ -191,11 +192,13 @@ set -a; . ./.env; set +a
 .venv/bin/python scripts/setup_agent.py
 ```
 
-With `AGENT_MODEL` set in `.env` (see "Pick a model id" below), the output names your model;
-the run captured for this page used `gpt-6-luna`:
+With `AGENT_MODEL` set in `.env` (see "Pick a model id" below), `setup_agent.py` creates the
+agent with that model and prints the new agent's id and model. If `AGENT_ID` is already set, it
+keeps that agent and creates none. The run captured for this page used `gpt-6-luna`, and its
+`.env` already held the id of an agent created for this blueprint, so it kept it:
 
 ```text
-Created agent agent_... (gpt-6-luna)
+AGENT_ID is set; keeping agent agent_...
 
 Add this to .env:
   AGENT_ID=agent_...
@@ -393,15 +396,16 @@ kubectl exec $POD -- sh -c 'env | cut -d= -f1 | grep -E "^(OPENAI_|CODEX_)" | so
 
 ```text
 isolated-sandbox
-6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct  1 23:28:07 UTC 2026
-25.01
+6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
+52.63
 dm-0 vda vdb vdc
 CODEX_HOME
 CODEX_PATH
 ```
 
-The sandbox runs its own kernel. Its uptime matches the pod's age, about 25 seconds here,
-because the sandbox booted with the pod, and it sees virtio disks (`vda`, `vdb`, `vdc`). On the
+The sandbox runs its own kernel. It booted with the pod, after the pod was scheduled onto its
+node, so its uptime, about 53 seconds here, is shorter than the pod's age (76 seconds), and it
+sees virtio disks (`vda`, `vdb`, `vdc`). On the
 same node, an ordinary pod reports the node's kernel build, a `#2 SMP ...` string with a
 different date, and the instance's `nvme` disks; the version string may match, but the build
 and the boot do not. A warm sandbox holds no *credential*: the two `CODEX_*` variables it does
@@ -435,22 +439,27 @@ has no budget ceiling. Any other error from the API stops it.
 Abridged; your text will differ:
 
 ```text
-created session sesn_...
-environment env_...
-launcher claimed sandbox openai-sandbox-executor-zcw2b for sesn_...
+[note] this project does not accept a session budget (spend_control), so this session has no budget ceiling. Pass --budget-cents 0 to skip asking for one.
+created session sess_...
+environment ccarenv_...
+launcher claimed sandbox sandbox-claim-5386f568 for sess_...
+[environment connected]
 
 agent output:
 
-[environment connected]
-I ran the two commands, wrote their combined output to /workspace/report.txt, and read it
-back. The kernel build is 6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct 1 ..., uptime about a
-minute, and the disks are dm-0, vda, vdb, vdc.
+I’ll run both commands, capture their combined output in `report.txt`, then read the file back to you.`report.txt` contains:
+
+6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
+dm-0
+vda
+vdb
+vdc
 
 final status: idle
 ```
 
-The commands ran in a sandbox: the guest's kernel build, an uptime of about a minute, and
-virtio disks. In the cluster, the launcher's log names the `SandboxClaim` it created and the
+The commands ran in a sandbox: the guest's kernel build and its virtio disks. In the cluster,
+the launcher's log names the `SandboxClaim` it created and the
 sandbox that claim adopted, and that sandbox's log shows `serve.py` starting the executor and
 then the forwarder:
 
@@ -460,10 +469,19 @@ kubectl logs <SANDBOX>     # the sandbox named in the launcher's log; the pod ha
 ```
 
 ```text
-INFO launcher.sandbox session=sesn_... -> sandbox=openai-sandbox-executor-zcw2b (key delivered via claim env)
-INFO launcher.serve serving session sesn_... in /workspace
-INFO launcher.serve session sesn_...: starting codex exec-server for environment env_...
+2026-11-08 14:55:14,159 INFO launcher.sandbox session=sess_... -> sandbox=sandbox-claim-5386f568 (key delivered via claim env)
+
+2026-11-08 14:55:12,515 INFO launcher.serve serving session sess_... in /workspace
+2026-11-08 14:55:12,515 INFO launcher.serve session sess_...: starting the executor, codex exec-server --listen ws://127.0.0.1:18081
+ws://127.0.0.1:18081
+2026-11-08 14:55:12,926 INFO launcher.serve session sess_...: executor listening; starting the forwarder for environment ccarenv_...
+2026-11-08 14:55:12,930 INFO launcher.serve readiness port :8080 open while serving session sess_...
 ```
+
+The bare `ws://127.0.0.1:18081` line is the executor's own output when it starts listening.
+The readiness port opens only after that, and the claim reported Ready a second later. At their
+default log level neither Codex process logged anything more, through both this turn and the
+follow-up in step 10.
 
 **Step 9: Prove the key separation.** The environment key reaches a claimed pod through the
 control plane, so a claimed pod does hold `CODEX_API_KEY` in its env, by design. What stays
@@ -516,13 +534,16 @@ event stream and reads the environment's status first: when the environment is s
 connected it sends the prompt at once, and otherwise it waits for the connection as in step 8:
 
 ```bash
-.venv/bin/python scripts/submit.py --session-id sesn_... "Read report.txt from your working directory and tell me its first line."
+.venv/bin/python scripts/submit.py --session-id sess_... "Read report.txt from your working directory and tell me its first line."
 ```
 
 ```text
-follow-up turn in session sesn_...
-[environment connected]
-The first line of report.txt is: 6.18.51 #1 SMP PREEMPT_DYNAMIC Thu Oct 1 ...
+follow-up turn in session sess_... (same claimed pod)
+[environment already connected]
+
+agent output:
+
+I’ll read the file from `/workspace` and report its first line.The first line is: `6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026`
 ```
 
 The follow-up turn read a file the first turn wrote, in the same `/workspace`, because the
@@ -618,7 +639,7 @@ blueprint created. For each session `cleanup.py` rechecks the session's state, d
 
 ```bash
 set -a; . ./.env; set +a
-.venv/bin/python scripts/cleanup.py sesn_... sesn_...
+.venv/bin/python scripts/cleanup.py sess_... sess_...
 ```
 
 `cleanup.py` rechecks each session's state immediately before releasing its claim, following
