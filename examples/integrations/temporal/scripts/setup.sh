@@ -140,7 +140,10 @@ step "5/6 the Temporal server, read from a one-shot pod"
 # exact name when it finishes.
 kc delete pod "$PREFLIGHT_POD" --ignore-not-found --wait=true >/dev/null 2>&1 || true
 preflight_rc=0
+# --pod-running-timeout: kubectl waits only 1m for the pod by default, and on EKS
+# Auto Mode a new node and the image pull can take longer than that.
 kc run "$PREFLIGHT_POD" --image="$WORKER_IMAGE" --restart=Never --attach --rm --quiet \
+  --pod-running-timeout=5m \
   --labels="app.kubernetes.io/managed-by=$SAMPLE" \
   --env="TEMPORAL_ADDRESS=$TEMPORAL_ADDRESS" \
   --env="TEMPORAL_NAMESPACE=$TEMPORAL_NAMESPACE" \

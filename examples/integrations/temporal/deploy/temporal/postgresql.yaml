@@ -111,9 +111,7 @@ spec:
         name: data
       spec:
         accessModes: [ReadWriteOnce]
-        # No storageClassName: this uses whatever your cluster's default class
-        # is, because it is part of the install you run rather than something
-        # the sample's scripts choose.
+        storageClassName: temporal-postgresql-gp3
         resources:
           requests:
             storage: 20Gi
