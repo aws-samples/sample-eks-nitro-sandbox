@@ -35,8 +35,9 @@ supported, and "the privilege applies within the sandbox" (*Developing with sand
 Privileged pods).
 
 - **One privileged Docker daemon per build, confined to its own guest.** The pod runs
-  `dockerd` with `privileged: true` and builds and runs a multi-stage image. Nothing about the
-  daemon is restricted or rootless.
+  `dockerd` with `privileged: true` and builds and runs a multi-stage image. The daemon is not
+  rootless and keeps every capability; its root file system is read-only, so it writes only
+  to the volumes the pod gives it.
 - **Root in the pod reaches the sandbox's kernel, not the node's.** A sysctl written as root
   inside the pod changes the guest's kernel and leaves the node's value alone, the pod's disks
   are virtio where the node's are NVMe, and the process table holds only the sandbox's own
@@ -45,7 +46,7 @@ Privileged pods).
   `exec` at all, which is the CI shape.
 - **A layer cache that outlives the Job.** The Job mounts an EBS volume at the daemon's data
   directory, so a re-run reuses the layers the previous run wrote. On the run below the cold
-  build took 17 seconds and the warm one took 1 second, with every step cached.
+  build took 33 seconds and the warm one took 1 second, with every step cached.
 - **Only the registry the build needs is reachable.** An egress policy allows DNS and the
   image registry, and nothing else: a request to any other host is refused, from the pod and
   from the containers the build runs.
@@ -75,7 +76,7 @@ The files:
 | File | What it is |
 |---|---|
 | [`deploy/namespace.yaml`](deploy/namespace.yaml) | The namespace and the `docker-builds-builder` ServiceAccount the build pods run as. |
-| [`deploy/hello-docker.yaml`](deploy/hello-docker.yaml) | The interactive build pod: one privileged `dockerd` in a sandbox, with its data directory on an `emptyDir`. |
+| [`deploy/hello-docker.yaml`](deploy/hello-docker.yaml) | The interactive build pod: one privileged `dockerd` in a sandbox, on a read-only root file system with its data directory and other writable paths on `emptyDir` volumes. |
 | [`deploy/build-job.yaml`](deploy/build-job.yaml) | The Docker-in-Docker build `Job`, with the EBS layer cache and the optional push. |
 | [`deploy/build-configmap.yaml`](deploy/build-configmap.yaml) | The build the Job runs: the build context, `docker build`, `docker run`, and the optional push. |
 | [`deploy/cache-pvc.yaml`](deploy/cache-pvc.yaml) | The `ReadWriteOncePod` EBS claim each builder mounts at its data directory. |
@@ -116,9 +117,9 @@ kubectl get configmap -n kube-system amazon-vpc-cni -o jsonpath='{.data.enable-n
 true
 ```
 
-The cluster this run used already had enforcement on, from the coding agent blueprint, so the
-block above is the check reading `true`; the `apply` is the command for a cluster where it is
-off. Enforcement affects the whole cluster, and pods that no policy selects are unaffected.
+The cluster this run used already had enforcement on from an earlier run of this step, so the
+`apply` reported the ConfigMap unchanged and the block above is the check reading `true`; on a
+cluster where it is off, the `apply` is what turns it on. Enforcement affects the whole cluster, and pods that no policy selects are unaffected.
 
 **Step 2: Start the build pod.** [`scripts/setup.sh`](scripts/setup.sh) chooses the
 StorageClass for the layer cache, creates the namespace when it is absent and labels it as
@@ -136,17 +137,35 @@ spec:
       image: public.ecr.aws/docker/library/docker:29.9.2-dind
       securityContext:
         privileged: true                      # reaches only this pod's own guest
+        readOnlyRootFilesystem: true          # writes go only to the volumes below
       args: ["dockerd", "--host=unix:///var/run/docker.sock"]
       readinessProbe:
         exec:
           command: ["docker", "info"]
+      livenessProbe:                          # held off by a startupProbe on the same command
+        exec:
+          command: ["docker", "info"]
+      volumeMounts:
+        - { name: docker-storage, mountPath: /var/lib/docker }
+        - { name: run, mountPath: /run }
+        - { name: docker-config, mountPath: /root/.docker }
+        - { name: build, mountPath: /build }
 ```
 
-Two details in that block matter. `args` names `dockerd` and its one `--host`, because the
+Three details in that block matter. `args` names `dockerd` and its one `--host`, because the
 image's own entrypoint would otherwise add `--host=tcp://0.0.0.0:2375` (or 2376 with TLS) and
 put a root-equivalent daemon on the pod network; naming the socket keeps the daemon reachable
-only from inside the pod, and keeps the entrypoint's own setup. The readiness probe is
-`docker info`, so the pod is Ready only when the daemon answers.
+only from inside the pod, and keeps the entrypoint's own setup. The probes are all
+`docker info`: the pod is Ready only when the daemon answers, and a daemon that stops
+answering is restarted, with a startup probe giving a cold start up to 150 seconds, close
+to the 155 the readiness probe allows, before the liveness probe counts.
+
+And the root file system is read-only. A privileged container keeps every capability and runs
+with no seccomp filter, so there is nothing to drop there, but it can still be kept from
+writing to its own image: the daemon's data goes to `/var/lib/docker`, its socket and
+containerd's state to `/run` (`/var/run` links to it), the `docker` CLI's state to
+`/root/.docker`, and the Dockerfile Step 3 writes to `/build`, each an `emptyDir`. The image's
+dind wrapper mounts its own tmpfs on `/tmp`.
 
 The pod asks for 1 CPU and 2 GiB, with limits to match. A sandbox is sized when it boots and
 cannot be resized in place (Amazon EKS User Guide, *Isolated and confidential pods
@@ -161,7 +180,7 @@ pull base images and compile.
 ```text
 kube context: <KUBE_CONTEXT>
 Step 1/5: choose the StorageClass for the layer cache
-  the cluster default StorageClass 'auto-ebs-sc' fits (provisioner ebs.csi.eks.amazonaws.com, gp3, encrypted). Using it.
+  STORAGE_CLASS names 'nitro-sandbox-ebs' (provisioner 'ebs.csi.eks.amazonaws.com'). Using it.
 Step 2/5: the namespace and the build ServiceAccount
 namespace/docker-builds-sample created
   created namespace 'docker-builds-sample', labelled app.kubernetes.io/part-of=docker-builds.
@@ -170,7 +189,7 @@ Step 3/5: the egress policy
 applicationnetworkpolicy.networking.k8s.aws/docker-builds-egress created
   waiting for the egress PolicyEndpoint...
 NAME                   AGE
-docker-builds-egress   2s
+docker-builds-egress   3s
 Step 4/5: the EBS layer cache claim and the build scripts
 persistentvolumeclaim/docker-build-cache created
 configmap/docker-build-script created
@@ -181,17 +200,18 @@ pod/hello-docker condition met
 
 hello-docker is Ready: a privileged Docker daemon is running in its own sandbox.
 NAME           READY   STATUS    RESTARTS   AGE   IP                NODE                  NOMINATED NODE   READINESS GATES
-hello-docker   1/1     Running   0          17s   <POD_IP>   i-<NODE>   <none>           <none>
+hello-docker   1/1     Running   0          19s   <POD_IP>   i-<NODE>   <none>           <none>
 
 Build by hand:    kubectl exec -it hello-docker -n docker-builds-sample -- sh
 Run the CI build: NAMESPACE=docker-builds-sample ./scripts/run-build-job.sh
 Tear down:        NAMESPACE=docker-builds-sample ./scripts/clean.sh
 ```
 
-Setup chose the cluster's own default StorageClass because it fits: the Auto Mode provisioner,
-gp3 and encrypted. This blueprint never creates or changes a StorageClass, since that is a
+On this run `STORAGE_CLASS` named the StorageClass, `nitro-sandbox-ebs`, and setup used it
+after checking its provisioner. With `STORAGE_CLASS` unset, setup uses the cluster's default
+StorageClass when it fits. This blueprint never creates or changes a StorageClass, since that is a
 cluster-wide object; when no default fits, setup stops and tells you to name one with
-`STORAGE_CLASS`. The pod was Ready 15 seconds after it was created, most of that the Nitro
+`STORAGE_CLASS`. The pod was Ready within 19 seconds of being created, most of that the Nitro
 sandbox being created and its guest booting.
 
 **Step 3: Build and run an image by hand.** Exec in and use the daemon as you would any
@@ -212,31 +232,39 @@ kubectl exec hello-docker -n "$NAMESPACE" -- docker run --rm hello:v1
 
 ```text
 #1 [internal] load build definition from Dockerfile
-#1 transferring dockerfile: 247B done
+#1 transferring dockerfile: 237B done
 #1 DONE 0.0s
 
 #2 [internal] load metadata for public.ecr.aws/docker/library/alpine:3.24.3
-#2 DONE 0.4s
+#2 DONE 0.5s
 
 #4 [1/2] FROM public.ecr.aws/docker/library/alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
-#4 resolve public.ecr.aws/docker/library/alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a done
+#4 resolve public.ecr.aws/docker/library/alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a 0.0s done
 #4 sha256:7b229517ed222597277036d94892173207d01a731ab3a88eeb1de2e963a2c788 3.85MB / 3.85MB 0.1s done
-#4 extracting sha256:7b229517ed222597277036d94892173207d01a731ab3a88eeb1de2e963a2c788 0.1s done
-#4 DONE 0.2s
+#4 DONE 0.1s
+
+#4 [1/2] FROM public.ecr.aws/docker/library/alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+#4 extracting sha256:7b229517ed222597277036d94892173207d01a731ab3a88eeb1de2e963a2c788
+#4 extracting sha256:7b229517ed222597277036d94892173207d01a731ab3a88eeb1de2e963a2c788 0.2s done
+#4 DONE 0.3s
 
 #5 [2/2] RUN echo "hello from an image built inside a Nitro sandbox" > /hello.txt
-#5 DONE 0.1s
+#5 DONE 0.3s
 
 #6 exporting to image
-#6 exporting layers done
-#6 exporting manifest sha256:d4360340f3d64179f39a175fb2ca35dab12e1d8a24f2acfd85f932f1ee87161d done
+#6 exporting layers 0.0s done
+#6 exporting manifest sha256:198e20d2676c884a5b62de4e053126ed82e498f87204c9c02e1e51b26c12406e done
+#6 exporting config sha256:87f4d280d5c29ddfb9c4af66536c5a5e51e87e941e08bb0bcd09b78834009333 done
+#6 exporting manifest list sha256:5c95995fdcba4cadb6ec71330510837538420adc73659c348611c9eaafd855e3 done
 #6 naming to docker.io/library/hello:v1 done
-#6 unpacking to docker.io/library/hello:v1 0.1s done
-#6 DONE 0.1s
+#6 unpacking to docker.io/library/hello:v1
+#6 unpacking to docker.io/library/hello:v1 0.2s done
+#6 DONE 0.3s
 hello from an image built inside a Nitro sandbox
 ```
 
-Abridged: the `.dockerignore` and attestation lines are left out. The daemon pulled the base
+Abridged: the `#0` builder line, the `.dockerignore` step and the attestation manifest line are
+left out. The daemon pulled the base
 image, built the layer and ran the result, all inside the pod. Read the daemon back and look
 at what the pod is running:
 
@@ -246,11 +274,11 @@ kubectl exec hello-docker -n "$NAMESPACE" -- ps -ef
 ```
 
 ```text
-server 29.9.2, storage driver overlayfs, 1 CPU, 2242408448 bytes
+server 29.9.2, storage driver overlayfs, 1 CPU, 2255425536 bytes
 PID   USER     TIME  COMMAND
     1 root      0:00 docker-init -- dockerd --host=unix:///var/run/docker.sock
-  131 root      0:00 dockerd --host=unix:///var/run/docker.sock
-  537 root      0:00 ps -ef
+  126 root      0:00 dockerd --host=unix:///var/run/docker.sock
+  610 root      0:00 ps -ef
 ```
 
 The process list is the whole of it: the daemon, its init process, and the command you ran.
@@ -280,19 +308,19 @@ kubectl get pod hello-docker ordinary-pod -n "$NAMESPACE"
 ```text
 --- hello-docker ---
 6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-22.65 17.93
+32.26 22.81
 dm-0
 vda
 vdb
 vdc
-m8i.enclave
+m5a.enclave
 PID   USER     TIME  COMMAND
     1 root      0:00 docker-init -- dockerd --host=unix:///var/run/docker.sock
-  131 root      0:00 dockerd --host=unix:///var/run/docker.sock
-  618 root      0:00 ps -ef
+  126 root      0:00 dockerd --host=unix:///var/run/docker.sock
+  766 root      0:00 ps -ef
 --- ordinary-pod ---
-6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
-3753.81 14536.68
+6.18.56 #2 SMP PREEMPT_DYNAMIC Fri Oct 30 22:32:37 UTC 2026
+3558.78 13718.03
 dm-0
 loop0
 loop1
@@ -305,28 +333,28 @@ loop7
 nvme0n1
 nvme1n1
 zram0
-m8i.xlarge
+m5a.xlarge
 PID   USER     TIME  COMMAND
     1 1000      0:00 sleep 3600
    31 1000      0:00 ps -ef
 NAME           READY   STATUS    RESTARTS   AGE
-hello-docker   1/1     Running   0          31s
-ordinary-pod   1/1     Running   0          8s
+hello-docker   1/1     Running   0          52s
+ordinary-pod   1/1     Running   0          22s
 ```
 
 Four readings, one per question:
 
-- **Its own kernel.** The version is the same, `6.18.54`, and the build is not: the sandbox is
-  on build `#1`, stamped `17:38:11`, the node on build `#2`, stamped `00:16:59`. `uname -r`
-  alone would prove nothing here.
-- **Its own boot.** The sandbox reports 22 seconds of uptime: this guest's own boot, a few
-  seconds after the pod was created, which the 31-second pod age in the last block bears out.
-  The ordinary pod reports 3753 seconds, which is the node's boot and not its own: that pod was
-  8 seconds old.
+- **Its own kernel.** The version differs, `6.18.54` in the sandbox and `6.18.56` on the node,
+  and so does the build: the sandbox is on build `#1`, stamped `Thu Oct 22 17:38:11`, the node
+  on build `#2`, stamped `Fri Oct 30 22:32:37`.
+- **Its own boot.** The sandbox reports 32 seconds of uptime: this guest's own boot, about 20
+  seconds after the pod was created, which the 52-second pod age in the last block bears out.
+  The ordinary pod reports 3558 seconds, which is the node's boot and not its own: that pod was
+  22 seconds old.
 - **Virtio disks.** The sandbox has `vda`, `vdb` and `vdc`; the node has `nvme0n1`, `nvme1n1`,
   the loop devices Bottlerocket uses and `zram0`. The build daemon unpacks every layer onto
   disks that are passed into the guest.
-- **Its own machine, and only its own processes.** `m8i.enclave` is the sandbox, `m8i.xlarge`
+- **Its own machine, and only its own processes.** `m5a.enclave` is the sandbox, `m5a.xlarge`
   the EC2 instance it was carved from. The process table in the privileged pod holds the
   daemon, its init process and the command just run: no kubelet, no node containerd, and
   nothing from any other pod on that node. Read that one honestly: a container's PID namespace
@@ -430,16 +458,16 @@ Waiting for the build to finish (a cold build pulls base images and compiles; a 
 #2 [internal] load metadata for public.ecr.aws/docker/library/golang:1.27.2-alpine3.24
 #3 [internal] load metadata for public.ecr.aws/docker/library/alpine:3.24.3
 #10 [build 4/4] RUN CGO_ENABLED=0 go build -o /hello main.go
-#10 DONE 7.0s
+#10 DONE 18.6s
 #12 exporting to image
 #12 naming to docker.io/library/hello-nitro:v1 done
-#12 DONE 0.3s
->>> build finished in 18s
+#12 DONE 0.6s
+>>> build finished in 33s
 >>> docker run hello-nitro:v1   (the image this build produced, run in this sandbox)
-hello from a docker build inside a Nitro sandbox (linux/amd64, container aad606c6f06a)
+hello from a docker build inside a Nitro sandbox (linux/amd64, container 52fbae0bbcd4)
 >>> what a nested container sees: the sandbox's own kernel and virtio disks
 6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-uptime: 22.85s
+uptime: 42.05s
 block devices:
 dm-0
 vda
@@ -448,12 +476,14 @@ vdc
 vdd
 >>> ECR_REGISTRY is unset: built and ran the image without a registry
 >>> DONE
+
+Run it again for a warm cache: NAMESPACE=docker-builds-sample ./scripts/run-build-job.sh
 ```
 
 Abridged: the build graph's per-step lines are cut down to the ones worth reading, and the
 `busybox` pull before the last block is left out. The Job built the image and ran it with no
 `exec` at any point. The container the build produced printed its own line, and the container
-the Job ran afterwards reports the same guest: the kernel built on 1 October, an uptime of 22
+the Job ran afterwards reports the same guest: the kernel stamped 22 October, an uptime of 42
 seconds that is this pod's own, and virtio disks, now with a fourth one, `vdd`, which is the
 EBS layer cache.
 
@@ -478,13 +508,13 @@ job.batch/docker-build created
 Waiting for the build to finish (a cold build pulls base images and compiles; a warm one is much faster).
 
 >>> docker build hello-nitro:v1   (layers and build cache on the EBS volume at /var/lib/docker)
-#8 [build 2/4] WORKDIR /src
+#8 [build 3/4] COPY go.mod main.go ./
 #8 CACHED
 
-#9 [build 3/4] COPY go.mod main.go ./
+#9 [build 4/4] RUN CGO_ENABLED=0 go build -o /hello main.go
 #9 CACHED
 
-#10 [build 4/4] RUN CGO_ENABLED=0 go build -o /hello main.go
+#10 [build 2/4] WORKDIR /src
 #10 CACHED
 
 #11 [stage-1 2/2] COPY --from=build /hello /hello
@@ -492,17 +522,17 @@ Waiting for the build to finish (a cold build pulls base images and compiles; a 
 
 #12 exporting to image
 #12 naming to docker.io/library/hello-nitro:v1 done
-#12 DONE 0.0s
->>> build finished in 0s
+#12 DONE 0.1s
+>>> build finished in 1s
 >>> docker run hello-nitro:v1   (the image this build produced, run in this sandbox)
-hello from a docker build inside a Nitro sandbox (linux/amd64, container 4df1dff67c3d)
+hello from a docker build inside a Nitro sandbox (linux/amd64, container 4ed7b2c8d04e)
 ```
 
 Abridged, and the two blocks are the two runs of the same Job, one after the other: a cold
-build of 17 seconds and a warm one of 1 second, with every step `CACHED` and no base image
+build of 33 seconds and a warm one of 1 second, with every step `CACHED` and no base image
 pulled. Nothing of the first run's guest survived; what survived is the EBS
 volume, which the second pod mounted at `/var/lib/docker` and found the layers and the build
-cache in. On a blueprint this small the saving is a few seconds, and it is the mechanism that
+cache in. On a blueprint this small the saving is 32 seconds, and it is the mechanism that
 matters: on a real pipeline, with several images and dependency layers, this is the difference
 between a build that pulls and compiles everything each time and one that does not.
 
@@ -558,7 +588,7 @@ spec:
 | `podSelector` | Selects every pod in the blueprint, interactive pod and both Jobs, by the label each one carries. |
 | `policyTypes` | Both directions, so anything not allowed below is denied. |
 | `ingress: []` | No pod may open a connection to a build pod. `kubectl exec`, `logs` and `cp` keep working: they use the sandbox's control channel, not the pod network. |
-| DNS rule | The cluster's CoreDNS Service address only, on UDP and TCP 53. |
+| DNS rule | Any IP address (`0.0.0.0/0`), on UDP and TCP 53, as the paragraph above says. |
 | Registry rule | `public.ecr.aws` for the API and the manifests, and `*.cloudfront.net` for the layer downloads it redirects to. |
 | `<ECR_PUSH_RULES>` | Nothing by default. [`scripts/ecr-setup.sh`](scripts/ecr-setup.sh) fills it with the Pod Identity credential address and this account's two Amazon ECR endpoints when the optional push is set up. |
 
@@ -581,7 +611,15 @@ exit=0
 Connecting to example.com (172.66.147.243:443)
 wget: download timed out
 exit=1
-Connecting to example.com (172.66.147.243:443)
+Unable to find image 'public.ecr.aws/docker/library/busybox:1.37' locally
+1.37: Pulling from docker/library/busybox
+68fe9bff2ad4: Pulling fs layer
+68fe9bff2ad4: Download complete
+9177639ff916: Download complete
+68fe9bff2ad4: Pull complete
+Digest: sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+Status: Downloaded newer image for public.ecr.aws/docker/library/busybox:1.37
+Connecting to example.com (104.20.23.154:443)
 wget: download timed out
 exit=1
 ```
@@ -664,7 +702,7 @@ kubectl get applicationnetworkpolicy docker-builds-egress -n "$NAMESPACE" \
 ```
 
 ```text
-[{"ipBlock":{"cidr":"10.100.0.10/32"}}] on [{"port":53,"protocol":"UDP"},{"port":53,"protocol":"TCP"}]
+[{"ipBlock":{"cidr":"0.0.0.0/0"}}] on [{"port":53,"protocol":"UDP"},{"port":53,"protocol":"TCP"}]
 [{"domainNames":["public.ecr.aws","*.cloudfront.net"]}] on [{"port":443,"protocol":"TCP"}]
 [{"ipBlock":{"cidr":"169.254.170.23/32"}}] on [{"port":80,"protocol":"TCP"}]
 [{"domainNames":["api.ecr.us-west-2.amazonaws.com","<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com"]}] on [{"port":443,"protocol":"TCP"}]
@@ -740,27 +778,32 @@ job.batch "docker-build" deleted from docker-builds-sample namespace
 job.batch/docker-build created
 Waiting for the build to finish (a cold build pulls base images and compiles; a warm one is much faster).
 
+Defaulted container "dind" out of: dind, ecr-token (init)
 >>> build finished in 1s
 >>> docker run hello-nitro:v1   (the image this build produced, run in this sandbox)
-hello from a docker build inside a Nitro sandbox (linux/amd64, container 2710cec16f18)
+hello from a docker build inside a Nitro sandbox (linux/amd64, container 4eaf25b11210)
 >>> pushing to <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-docker-builds
 Login Succeeded
 The push refers to repository [<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-docker-builds]
-709fa5d7c765: Waiting
+cf403d70a610: Waiting
 44136fa355b3: Waiting
+dfad60d6ce82: Waiting
 7b229517ed22: Waiting
 44136fa355b3: Pushed
-709fa5d7c765: Pushed
-ba866c29d2c8: Pushed
+dfad60d6ce82: Pushed
 7b229517ed22: Pushed
-v1: digest: sha256:4eb96f24a364486213c22c87e9e62d6f6b3e565f88c5cbadac0ed7178efa3ce9 size: 855
+cf403d70a610: Pushed
+v1: digest: sha256:5ecf21ba0a9849ebefe4d91fccd5f76b97724d113aeae7b87f77844f333b6dcc size: 855
 >>> pushed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/nitro-sample-docker-builds:v1
 >>> DONE
+
+Run it again for a warm cache: NAMESPACE=docker-builds-sample ./scripts/run-build-job.sh --push
 ```
 
-Abridged: the build graph and the nested probe are the same as the run above, and
-`docker login`'s warning about its config file is left out. The build itself was warm, because
-this run reused the same layer cache.
+Abridged: the daemon start, the build graph, every step `CACHED` as in the run above, and the
+nested probe are left out, and so is `docker login`'s warning about its config file. The probe
+read the same kernel as the run above, with one more disk, `vde`. The build itself was warm,
+because this run reused the same layer cache.
 
 Read the image back from Amazon ECR, and read what the init container logged:
 
@@ -777,8 +820,8 @@ wrote an Amazon ECR authorization token for <ACCOUNT_ID>.dkr.ecr.us-west-2.amazo
 ------------------------------------------------------------------------------------------
 |                                     DescribeImages                                     |
 +-----------+----------------------------------------------------------------------------+
-|  Digest   |  sha256:4eb96f24a364486213c22c87e9e62d6f6b3e565f88c5cbadac0ed7178efa3ce9   |
-|  Pushed   |  2026-10-25T15:10:48.798000+00:00                                          |
+|  Digest   |  sha256:5ecf21ba0a9849ebefe4d91fccd5f76b97724d113aeae7b87f77844f333b6dcc   |
+|  Pushed   |  2026-11-07T08:08:08.438000+00:00                                          |
 |  SizeBytes|  5306436                                                                   |
 +-----------+----------------------------------------------------------------------------+
 ||                                         Tags                                         ||
@@ -806,7 +849,8 @@ repository, and it is the only one there is.
 
 [BuildKit](https://github.com/moby/buildkit) is a builder rather than a container runtime, and
 it runs in a sandbox on the same terms: `buildkitd` privileged, confined to the pod's own
-guest, its cache on an EBS claim at `/var/lib/buildkit`. Because it does not run images, this
+guest, on a read-only root file system, its cache on an EBS claim at `/var/lib/buildkit` and
+its socket, temporary mounts, `buildctl` state and build context on `emptyDir` volumes. Because it does not run images, this
 Job builds the same Dockerfile and exports it as an OCI image onto the cache volume.
 [`scripts/run-buildkit-job.sh`](scripts/run-buildkit-job.sh) creates the second claim, through
 the same StorageClass the first one used, and runs the Job.
@@ -822,20 +866,20 @@ Waiting for the BuildKit build to finish.
 
 >>> starting buildkitd (its state and cache on the EBS volume)
 ID				PLATFORMS
-v806ly60evmr9jbjazdzrq07z	linux/amd64,linux/amd64/v2,linux/amd64/v3,linux/amd64/v4,linux/386
+xgios2ok2zkaiie3uifsowv7f	linux/amd64,linux/amd64/v2,linux/amd64/v3,linux/386
 >>> writing the build context
 >>> buildctl build -> OCI image at /var/lib/buildkit/hello-nitro.oci.tar
 #10 [build 4/4] RUN CGO_ENABLED=0 go build -o /hello main.go
-#10 DONE 7.0s
+#10 DONE 17.9s
 #12 exporting to oci image format
 #12 sending tarball 0.1s done
-#12 DONE 0.2s
->>> build finished in 16s
--rw-rw-rw-    1 root     root       5314048 Oct 25 15:11 /var/lib/buildkit/hello-nitro.oci.tar
->>> exported digest=sha256:de96bd14666f27d58a79c7e2a5a2cf7603af5825d53e0e84c479b26a9ec2e058
+#12 DONE 0.4s
+>>> build finished in 33s
+-rw-rw-rw-    1 root     root       5314048 Nov  7 08:09 /var/lib/buildkit/hello-nitro.oci.tar
+>>> exported digest=sha256:ccef5e79d050398d01bd57d3a20dc887a7a36c9a94bce50f3e423e26688b01df
 >>> the sandbox this build ran in: its own kernel, boot and virtio disks
 6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-uptime: 21.22s
+uptime: 40.03s
 block devices:
 dm-0
 vda
@@ -939,8 +983,8 @@ persistentvolumeclaim "buildkit-cache" deleted from docker-builds-sample namespa
 Deleting the namespace...
 namespace "docker-builds-sample" deleted
 Confirming the EBS volumes are gone (up to 180s for the CSI driver)...
-  docker-build-cache: volume vol-059669b8472084a45 is gone.
-  buildkit-cache: volume vol-0b8b36b8561a3c762 is gone.
+  docker-build-cache: volume vol-0f594f16a07087d5b is gone.
+  buildkit-cache: volume vol-064579ad41c5df6cc is gone.
 Removing the Amazon ECR push resources recorded in .docker-builds.state...
   deleted Pod Identity association <ASSOCIATION_ID>.
   deleted IAM role nitro-sample-docker-builds-push and its policy.

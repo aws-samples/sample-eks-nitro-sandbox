@@ -10,7 +10,7 @@ dependencies = [
     "anthropic[aws]==1.13.0",
     # The agent-sandbox client: SandboxClaim create, wait-until-Ready, pod IP,
     # list and delete. Keep it on the same release as the controller.
-    "k8s-agent-sandbox==1.0.6",
+    "k8s-agent-sandbox==1.0.10",
     # The autoscaler patches the SandboxWarmPool /scale subresource directly.
     "kubernetes==37.0.1",
 ]

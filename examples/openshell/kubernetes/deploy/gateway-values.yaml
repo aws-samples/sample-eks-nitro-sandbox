@@ -52,11 +52,21 @@ server:
     clientCaSecretName: <RELEASE>-server-client-ca
     clientTlsSecretName: <RELEASE>-client-tls
 
-  # Workspace PVCs bind through the cluster's own default EBS StorageClass
-  # (auto-ebs-sc, provisioner ebs.csi.eks.amazonaws.com, gp3, encrypted), which already
-  # fits what the chart needs: block-backed storage, not NFS. Named explicitly so a
-  # cluster with no default StorageClass still works, and so the page can show the bind.
-  workspaceStorageClass: <WORKSPACE_STORAGE_CLASS>
+  # Workspace PVCs bind through the StorageClass setup.sh chose. When WORKSPACE_STORAGE_CLASS
+  # is set in .env, it forces that class (which setup checks for EBS CSI provisioner and
+  # reclaimPolicy Delete). When it is unset (the default), setup chooses: the cluster's
+  # default class if exactly one fits (ebs.csi.eks.amazonaws.com, gp3, encrypted, Delete),
+  # otherwise the sample's own class (openshell-kubernetes-gp3, created from
+  # deploy/storage-class.yaml). Both class names are quoted: a valid StorageClass name
+  # such as null, true or 123 would otherwise load as a YAML null, boolean or number.
+  workspaceStorageClass: "<WORKSPACE_STORAGE_CLASS>"
+  # The gateway's own SQLite database PVC binds through the same class. Chart 0.1.6
+  # supports this parameter; earlier versions do not have it and keep a
+  # namespace-default-class annotation here, which is wrong: the chart renders the
+  # annotation into every PVC that does not name a class explicitly. Setting both
+  # workspaceStorageClass and dataStorageClass removes that annotation from the gateway's
+  # PVC. This field is immutable after install, so changing it needs helm uninstall.
+  dataStorageClass: "<DATA_STORAGE_CLASS>"
 
   # Every provider credential this gateway stores lives as a Kubernetes Secret in its
   # own namespace, never in the gateway's database and never in the namespace the

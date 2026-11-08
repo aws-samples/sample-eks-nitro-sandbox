@@ -81,6 +81,8 @@ spec:
             - { name: workspace, mountPath: /workspace }   # tool calls and skills
             - { name: memory, mountPath: /mnt/memory }     # memory stores, when attached
             - { name: tmp, mountPath: /tmp }
+          # Without a memory request the Nitro guest gets about 130 MiB and the worker is OOMKilled.
+          resources: { requests: { memory: 2Gi } }
       volumes:
         - { name: workspace, emptyDir: {} }
         - { name: memory, emptyDir: {} }
