@@ -20,16 +20,14 @@ extra_css:
   - assets/extra.css     # Amazon brand orange on top of Material's orange palette
 
 extra:
-  # Google Analytics 4. overrides/partials/integrations/analytics/google.html limits it
-  # to the published site and scopes its cookie to /sample-eks-nitro-sandbox.
+  # Google Analytics 4, Material's built-in integration. It also runs under
+  # `mkdocs serve`; filter reports on Hostname = aws-samples.github.io.
   analytics:
     provider: google
     property: G-YCK065JLFD
 
 theme:
   name: material
-  # Template overrides; outside docs_dir so they are not published as pages.
-  custom_dir: overrides
   icon:
     logo: material/cube-outline
     repo: fontawesome/brands/github
