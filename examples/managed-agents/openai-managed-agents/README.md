@@ -33,8 +33,9 @@ Nitro sandbox:
 - **The harness runs at OpenAI; the tools run in your cluster.** Sessions are created with
   `environment.type: self_hosted`. The session's `codex exec-server` connects outbound from
   its sandbox pod and runs the agent's built-in Bash and apply-patch tools.
-- **Each session gets its own pod, from a warm pool.** An ordinary launcher pod claims a
-  booted pod from a `SandboxWarmPool` with a `SandboxClaim`. The sandbox's `SandboxTemplate`
+- **Each session gets its own pod.** An ordinary launcher pod creates a `SandboxClaim` on a
+  `SandboxWarmPool`. The claim sets `spec.env`, so it gets a new pod (`launch-type=cold`), not
+  a warm one, and the warm pods stay unclaimed. The sandbox's `SandboxTemplate`
   sets `runtimeClassName: isolated-sandbox`, so the commands run on a kernel no other pod
   shares. A follow-up turn in the same session runs in the same pod and reads a file the
   first turn wrote.
@@ -58,7 +59,7 @@ Nitro sandbox:
 
 *Figure 1: OpenAI runs the model and session; the operator creates the session and hands the
 launcher its environment id and remote URL over an authenticated, port-forwarded ClusterIP
-Service. The launcher claims a warm Nitro sandbox and gives it the session and the environment
+Service. The launcher claims a Nitro sandbox and gives it the session and the environment
 key through the SandboxClaim env; the executor dials out to OpenAI, and its egress policy
 allows only the two OpenAI hosts.*
 
@@ -120,11 +121,13 @@ is application-managed provisioning, and this blueprint uses it:
 narrower than the environment key for a self-hosted session, so the sandbox must hold that
 key to run the executor. Rather than send it to the sandbox over an in-cluster HTTP request
 (which a same-namespace pod could reach, and which a label-based NetworkPolicy does not
-authenticate), the launcher puts it in the `SandboxClaim`'s `env`. <!-- TODO(fresh run): re-verify on v1.0.10; this was observed on 1.0.6 --> agent-sandbox 1.0.6 writes
+authenticate), the launcher puts it in the `SandboxClaim`'s `env`. agent-sandbox 1.0.10 writes
 that into `SandboxClaim.spec.env`, and setting it forces a cold start from the warm-pool
 template, so the controller injects the key into a pod created specifically for this session.
-The key never crosses the pod network, and a warm pod never holds it. The warm pool still
-removes the VM-boot and image-pull latency; only the final container start is cold. This
+The key never crosses the pod network, and a warm pod never holds it. Setting
+`SandboxClaim.spec.env` gives the claim a new pod (`launch-type=cold`), not a warm one, and the
+warm pods stay unclaimed. The new pod can land on a new node: in one run on EKS Auto Mode it
+took 71 s from the claim to the container start, including a 22.5 s image pull. This
 mechanism is native to the agent-sandbox stack; the blueprint invents no transport or auth of
 its own for the key.
 

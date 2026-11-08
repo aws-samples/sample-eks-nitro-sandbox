@@ -1,4 +1,4 @@
-"""Claim a warm sandbox for one session and give the session to it.
+"""Claim a sandbox for one session and give the session to it.
 
 A ``SandboxWarmPool`` keeps sandboxes booted ahead of time. This sample does not
 POST the session to a warm pod over the cluster network. Instead the launcher
@@ -11,8 +11,10 @@ those into the pod it starts for that claim, so:
     Kubernetes API connection and the controller, never over the pod network;
   * because setting the claim env forces a cold start from the warm-pool
     template, the key is only ever on a pod created for a specific session, and
-    a warm pod holds none. The warm pool still removes the VM-boot and
-    image-pull latency; only the final container start is cold.
+    a warm pod holds none. The claim gets a new pod (launch-type=cold), not a
+    warm one, and the warm pods stay unclaimed. The new pod can land on a new
+    node; in one run on EKS Auto Mode it took 71 s from the claim to the
+    container start, including a 22.5 s image pull.
 
 There is no dispatch HTTP server on the sandbox. ``serve.py`` reads its session
 from its own environment and runs the executor; it opens a readiness TCP port so
