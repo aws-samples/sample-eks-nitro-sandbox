@@ -11,10 +11,11 @@ cd sample-eks-nitro-sandbox/examples/getting-started/warm-pool
 ```
 
 A sandboxed pod does more work at startup than a regular pod: containerd launches the pod's
-Nitro sandbox, which boots with its own kernel, before the containers start. That adds about 5 to 6 seconds
-on a warm node. For an interactive agent, where a user or a model is waiting for a code
-cell to run, that is the difference between a tool that feels instant and one that feels
-slow.
+Nitro sandbox, which boots with its own kernel, before the containers start. On a node that
+is already up, with the image already pulled, a sandboxed pod took 3.2 to 3.7 seconds from
+create to Ready, against 0.8 to 0.9 seconds for an ordinary pod (Figure 4 below). For an
+interactive agent, where a user or a model is waiting for a code cell to run, that is the
+difference between a tool that feels instant and one that feels slow.
 
 [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) is a Kubernetes SIG
 project that adds a `Sandbox` API and a warm-pool controller for agent workloads. Because
@@ -22,10 +23,10 @@ a Nitro Sandbox is a RuntimeClass on a pod template, agent-sandbox works with it
 unchanged.
 
 **Step 1: Install agent-sandbox** with its extensions (`SandboxTemplate`,
-`SandboxWarmPool`, `SandboxClaim`). This folder was built against v1.0.6:
+`SandboxWarmPool`, `SandboxClaim`). This folder was built against v1.0.10:
 
 ```bash
-kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml
 kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller
 ```
 
@@ -69,7 +70,7 @@ kubectl get sandboxwarmpool nitro-agent-pool
 
 ```text
 NAME               READY   DESIRED   AGE
-nitro-agent-pool   5       5         41s
+nitro-agent-pool   5       5         11s
 ```
 
 **Step 3: Claim one.** A [`SandboxClaim`](claim.yaml) is what your
@@ -94,12 +95,33 @@ time ( kubectl apply -f claim.yaml \
 sandboxclaim.extensions.agents.x-k8s.io/session-7f3a created
 sandboxclaim.extensions.agents.x-k8s.io/session-7f3a condition met
 
-real    0m1.928s
+real	0m1.978s
+user	0m0.955s
+sys	0m0.406s
 ```
 
-The claim adopts a pod that was already running, so it is Ready in under 1 second. The
-`time` above is a little longer because it includes kubectl's own round trips. The pool
-boots a replacement in the background and is back to five.
+The claim adopts a pod that was already running, so nothing boots on the claim path. The
+`time` above covers both kubectl commands. Timed from the moment the `apply` returns, three
+claims were each Ready in 0.8 seconds, about what an ordinary pod takes to start. The
+`launch-type` label shows the adopted pod came from the pool, as every pod here did:
+
+```bash
+kubectl get sandbox -o custom-columns='NAME:.metadata.name,LAUNCH-TYPE:.metadata.labels.agents\.x-k8s\.io/launch-type'
+```
+
+```text
+NAME                     LAUNCH-TYPE
+nitro-agent-pool-4pwxg   warm
+nitro-agent-pool-6j26d   warm
+nitro-agent-pool-nlbv2   warm
+nitro-agent-pool-qxf9f   warm
+nitro-agent-pool-t8fzv   warm
+nitro-agent-pool-xc4x6   warm
+```
+
+Six sandboxes for a pool of five: the claimed one, and the replacement the pool boots in the
+background to get back to five. After each of those three claims the pool was back to five
+ready in about 4 seconds, which is a cold sandbox boot, off the path the claim waits on.
 
 **Step 4: Use it.** Your application talks to the claimed sandbox as it would to any pod:
 `kubectl exec` to run code, `kubectl cp` to move files, `kubectl logs` to read output.
@@ -116,11 +138,15 @@ kubectl get sandboxwarmpool nitro-agent-pool
 ```text
 45
 Traceback (most recent call last):
-  ...
+  File "<string>", line 1, in <module>
+  File "/usr/local/lib/python3.12/socket.py", line 865, in create_connection
+    raise exceptions[0]
+  File "/usr/local/lib/python3.12/socket.py", line 850, in create_connection
+    sock.connect(sa)
 OSError: [Errno 101] Network is unreachable
 command terminated with exit code 1
 NAME               READY   DESIRED   AGE
-nitro-agent-pool   5       5         79s
+nitro-agent-pool   5       5         19s
 ```
 
 Code runs, files move, and the sandbox has no route out. Delete the claim and its pod is
@@ -141,28 +167,35 @@ commands, and the component that can run commands has no network besides loopbac
 between them is the Kubernetes API, which keeps working under network isolation because
 exec uses the sandbox's internal control channel, as step 4 showed.
 
+The [brain and hands](../../agent-sandbox/brain-and-hands/README.md) blueprint builds this
+pattern with one change of wire. Its hands run sandboxd, the agent-sandbox runtime daemon,
+and the brain reaches it with the upstream agent-sandbox MCP server, so commands, files and
+output stay off the Kubernetes API, which is what you want once many agents run at once.
+The price is that the hands need a pod network to be reached on. So instead of booting
+network-isolated, they carry a network policy that admits only pods labelled `app=brain` (and
+the pod's own node, which Kubernetes always allows), on sandboxd's two ports, and lets them
+open no connection on the pod network. Pick the
+Kubernetes API wire shown here when exec traffic is light, and sandboxd when it is not.
+
 *Figure 3: Warm pool with the brain and hands separated. The driver pod reasons and talks
 to Bedrock; the claimed sandbox runs code with no network besides loopback; the Kubernetes API is
 the only wire between them.*
 
-![A driver pod, the brain, reasons by calling Amazon Bedrock and claims a sandbox from the agent-sandbox controller's SandboxWarmPool; the claim adopts an already-booted warm pod in under 1 second and the pool refills itself in the background; the claimed pod, one of the Nitro sandboxes, the hands, runs the generated code with no network besides loopback while the driver pod talks to it only through the Kubernetes API.](images/figure-3-warm-pool.png)
+![A driver pod, the brain, reasons by calling Amazon Bedrock and claims a sandbox from the agent-sandbox controller's SandboxWarmPool; the claim adopts an already-booted warm pod and the pool refills itself in the background; the claimed pod, one of the Nitro sandboxes, the hands, runs the generated code with no network besides loopback while the driver pod talks to it only through the Kubernetes API.](images/figure-3-warm-pool.png)
 
-*Figure 4: Time to first command. A cold start pays for sandbox creation and image
-pull; a warm-pool claim adopts a sandbox that is already running, in under 1 second.*
+*Figure 4: Time to Ready. A cold start boots a sandbox; a warm-pool claim adopts one that
+is already running, so nothing boots. Measured three times each on a node that was already
+up, with the image already pulled, timed from the moment the create returned until
+`kubectl wait` reported Ready, so each figure includes one kubectl round trip. A cold start
+on a new node, or with an image to pull, takes longer; a claim served by a warm pod waits
+on neither.*
 
-```mermaid
-gantt
-    title Time to first command (illustrative, warm node)
-    dateFormat  s
-    axisFormat  %S s
-    section Cold start
-    create sandbox, boot its kernel :a1, 0, 3s
-    pull image, start containers :a2, after a1, 3s
-    first command runs           :milestone, m1, after a2, 0s
-    section Warm pool claim
-    adopt pre-booted pod, under 1 s :b1, 0, 1s
-    first command runs           :milestone, m2, after b1, 0s
-```
+| Path to a ready pod | Create to Ready |
+|---|---|
+| Ordinary pod, cold start | 0.8 to 0.9 s |
+| Sandboxed pod, cold start | 3.2 to 3.7 s |
+| Sandboxed pod, warm-pool claim | 0.8 s |
+| The pool booting the replacement, after a claim | about 4 s, off the claim's path |
 
 **Sizing.** Each sandbox reserves its full memory request up front, so bin-packing is by
 reservation, not by usage: size requests honestly and expect fewer, larger pods per node
@@ -176,7 +209,7 @@ agent-sandbox, including its CRDs and every Sandbox resource in the cluster:
 
 ```bash
 kubectl delete -f warm-pool.yaml --ignore-not-found
-kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
+kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml
 rm -f /tmp/hands.py
 ```
 
