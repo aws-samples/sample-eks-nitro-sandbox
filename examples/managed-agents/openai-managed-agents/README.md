@@ -518,8 +518,9 @@ LAST SEEN   TYPE      REASON                 OBJECT                             
 ```
 
 The controller created a new sandbox and pod for the claim 85 s before this listing, rather than
-hand it a warm one. No node had room for the pod (`Insufficient memory`), so EKS Auto Mode added
-one (`nodeclaim/general-purpose-gvptt`). The image pull took 11.2 s, and the container started
+hand it a warm one. No existing node was eligible for the pod (one had insufficient memory,
+one did not match its node selector, one had a taint it does not tolerate), so EKS Auto Mode
+added one (`nodeclaim/general-purpose-gvptt`). The image pull took 11.2 s, and the container started
 37 s before the listing: 48 s from the claim to the container start.
 
 **Step 9: Prove the key separation.** The environment key reaches a claimed pod through the

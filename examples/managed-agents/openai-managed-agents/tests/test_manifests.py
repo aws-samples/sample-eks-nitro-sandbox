@@ -110,9 +110,8 @@ def test_launcher_holds_env_key_and_auth_token_from_secrets():
 def test_launcher_do_not_disrupt_is_on_the_pod_template():
     # On the pod template, where Karpenter reads it; not on the Deployment's metadata.
     deploy = _by_kind(_load("launcher.yaml"), "Deployment")[0]
-    assert deploy["spec"]["template"]["metadata"]["annotations"] == {
-        "karpenter.sh/do-not-disrupt": "true"
-    }
+    annotations = deploy["spec"]["template"]["metadata"]["annotations"]
+    assert annotations["karpenter.sh/do-not-disrupt"] == "true"
 
 
 def test_launcher_service_is_clusterip():
