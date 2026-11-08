@@ -331,6 +331,36 @@ class ResourceOwnership(unittest.TestCase):
                 text = (SAMPLE / "scripts" / script).read_text()
                 self.assertIn("box_load_env\nbox_load_state\n", text)
 
+    def test_env_is_read_as_data_and_only_documented_names(self):
+        sample = self.directory / "sample"
+        sample.mkdir()
+        marker = self.directory / "expanded"
+        body = ('SAMPLE_DIR="$CHECK_DIR/sample"; STATE_FILE="$CHECK_DIR/state.env"; TMP_DIR="$CHECK_DIR"\n'
+                'delete_aws=false\nbox_load_env\n'
+                'printf "%s|%s|%s|%s|%s\\n" "${AWS_PROFILE:-}" "${BUCKET:-}" "$STATE_FILE" "$TMP_DIR" "$delete_aws"')
+        accepted = ["# comment", "", "export AWS_PROFILE=\"quoted profile\"",
+                    "BUCKET='$(touch " + str(marker) + ")'", "ROLE_NAME=plain\r"]
+        (sample / ".env").write_text("\n".join(accepted) + "\n")
+        result = self.shell(body, extra={"AWS_PROFILE": "", "BUCKET": ""})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(),
+                         "quoted profile|$(touch " + str(marker) + ")|" + str(self.directory / "state.env")
+                         + "|" + str(self.directory) + "|false")
+        self.assertFalse(marker.exists())
+        refused = {"STATE_FILE": "/elsewhere/state.env", "TMP_DIR": "/elsewhere", "SAMPLE_DIR": "/elsewhere",
+                   "delete_aws": "true", "DOCKER_BUILDKIT": "0", "PATH": "/elsewhere", "BASH_ENV": "/elsewhere"}
+        for key, value in refused.items():
+            with self.subTest(key=key):
+                (sample / ".env").write_text(f"AWS_PROFILE=fine\n{key}={value}\n")
+                result = self.shell(body)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"sets {key}, which this blueprint does not read", result.stderr)
+                self.assertEqual(result.stdout, "")
+        (sample / ".env").write_text("not a setting\n")
+        result = self.shell(body)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not NAME=value", result.stderr)
+
     def test_owner_is_stable_and_changes_for_every_resource_scope(self):
         owner = self.owner()
         self.assertRegex(owner, r"^strands-box-[a-f0-9]{20}$")

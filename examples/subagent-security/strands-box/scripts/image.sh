@@ -66,7 +66,9 @@ box_build_image() {
     trap 'printf "{}\n" > "$docker_config/config.json"' EXIT
     aws ecr get-login-password --region "$AWS_REGION" |
       docker --config "$docker_config" login --username AWS --password-stdin "$registry" >/dev/null || exit 1
-    docker --config "$docker_config" build --platform "$platform" \
+    # Always BuildKit, the builder box_require_arm64_builder inspected, even if the
+    # shell has DOCKER_BUILDKIT=0 for Docker's legacy builder.
+    DOCKER_BUILDKIT=1 docker --config "$docker_config" build --platform "$platform" \
       -f "$dockerfile" -t "$ANALYST_IMAGE" "$SECTION_DIR" || exit 1
     docker --config "$docker_config" push "$ANALYST_IMAGE" >/dev/null || exit 1
     ) || die "the image build or push failed"

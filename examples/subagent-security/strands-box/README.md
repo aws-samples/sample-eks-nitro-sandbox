@@ -144,7 +144,8 @@ Resource tags and the namespace label must match it before reuse or cleanup.
 
 Each checkout stores one target in `tmp/strands-box/state.env`.
 Clean that deployment before changing the target in `.env`.
-Setup, run, and cleanup all load `.env`, so a setting such as `AWS_PROFILE=<PROFILE>` there applies to every script.
+Setup, run, and cleanup all read `.env`, so a setting such as `AWS_PROFILE=<PROFILE>` there applies to every script.
+They read it as `NAME=value` lines, without running it, and accept only the names in [.env.example](.env.example); any other name stops the script.
 Run and cleanup still take the cluster, Region, namespace, and account from the setup record, and stop if the active AWS account differs from it.
 
 The [analyst pod](deploy/analyst-pod.yaml) selects Nitro with this configuration excerpt:

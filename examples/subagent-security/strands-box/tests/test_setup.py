@@ -56,7 +56,11 @@ if tool == "docker":
     if "push" in args:
         state["images"].append(args[-1].split(".amazonaws.com/")[-1].rsplit(":", 1)[0])
     if "inspect" in args:
-        output("Name: default\nPlatforms: linux/amd64, linux/arm64")
+        platforms = "linux/amd64, linux/386" if scenario == "no-arm64" else "linux/amd64, linux/arm64"
+        output("Name: default\nPlatforms: " + platforms)
+    if "build" in args and os.environ.get("DOCKER_BUILDKIT") != "1":
+        print("legacy builder: exec format error", file=sys.stderr)
+        sys.exit(125)
     output("25.0.14")
 if tool == "kubectl":
     if args[:1] == ["--context"]:
@@ -279,6 +283,43 @@ class SetupLifecycle(unittest.TestCase):
             cleanup = self.invoke(case, "clean.sh", "--delete-aws")
             self.assertEqual(cleanup.returncode, 0, cleanup.stdout + cleanup.stderr)
             self.assertFalse(self.record(case).exists())
+
+    def test_setup_without_an_arm64_builder_stops_before_any_cloud_call(self):
+        case = self.new_case("no-arm64")
+        setup = self.invoke(case, "setup.sh")
+        self.assertNotEqual(setup.returncode, 0)
+        self.assertIn("cannot build linux/arm64 images", setup.stderr)
+        rows = [json.loads(line) for line in (case[0] / "commands.jsonl").read_text().splitlines()]
+        self.assertEqual([row for row in rows if row[0] in ("aws", "kubectl")], [])
+        self.assertFalse(self.record(case).exists())
+
+    def test_setup_builds_with_buildkit_even_when_the_shell_disables_it(self):
+        case = self.new_case("baseline")
+        case[2]["DOCKER_BUILDKIT"] = "0"
+        setup = self.invoke(case, "setup.sh")
+        self.assertEqual(setup.returncode, 0, setup.stdout + setup.stderr)
+        self.assertTrue(self.cloud(case)["images"])
+
+    def test_env_cannot_turn_on_aws_deletion_or_move_the_record(self):
+        for line in ("delete_aws=true", "STATE_FILE=/elsewhere/state.env"):
+            with self.subTest(line=line):
+                case = self.new_case("baseline")
+                setup = self.invoke(case, "setup.sh")
+                self.assertEqual(setup.returncode, 0, setup.stdout + setup.stderr)
+                (case[1] / ".env").write_text("AWS_PROFILE=synthetic\n" + line + "\n")
+                cleanup = self.invoke(case, "clean.sh")
+                self.assertNotEqual(cleanup.returncode, 0)
+                self.assertIn("does not read from .env", cleanup.stderr)
+                remaining = self.cloud(case)
+                self.assertTrue(all(remaining[key] for key in ("namespace_owner", "repositories", "bucket", "role")))
+                self.assertTrue(self.record(case).exists())
+        # With only documented settings, plain cleanup keeps the AWS resources.
+        (case[1] / ".env").write_text("AWS_PROFILE=synthetic\n")
+        cleanup = self.invoke(case, "clean.sh")
+        self.assertEqual(cleanup.returncode, 0, cleanup.stdout + cleanup.stderr)
+        remaining = self.cloud(case)
+        self.assertTrue(all(remaining[key] for key in ("repositories", "bucket", "role")))
+        self.assertFalse(remaining["namespace_owner"])
 
     def test_full_setup_and_cleanup_handle_both_bucket_region_forms(self):
         for region in ("us-east-1", "us-west-2"):

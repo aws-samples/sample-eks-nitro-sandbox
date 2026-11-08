@@ -187,16 +187,38 @@ box_require_arm64_builder() {
   config="$(mktemp -d "$TMP_DIR/docker.XXXXXX")" || die "could not create a scratch Docker configuration"
   platforms="$(docker --config "$config" buildx inspect --bootstrap 2>/dev/null |
     sed -n 's/^Platforms:[[:space:]]*//p')" || platforms=""
+  rm -rf -- "$config"
   tr ',' '\n' <<<"$platforms" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' |
     grep -xE 'linux/arm64(/v8)?' >/dev/null ||
     die "the Docker builder cannot build linux/arm64 images (it reports: ${platforms:-no platforms}). Run setup on an ARM64 host, or enable arm64 emulation for Docker Buildx: https://docs.docker.com/build/building/multi-platform/"
 }
 
-# Export the blueprint's .env, as setup does, so a setting chosen there (such as
-# AWS_PROFILE) applies to every script. Run and cleanup still take the deployment target
-# from the setup record, which box_load_state loads over these values.
+# The settings .env may hold. Read them as data, never source the file: a sourced line
+# could set the scripts' own variables (the setup record path, the --delete-aws choice).
+BOX_ENV_KEYS=(DEPLOYMENT_MODE CLUSTER_NAME AWS_REGION KUBE_CONTEXT NAMESPACE
+  BEDROCK_MODEL_ID BUCKET ROLE_NAME AWS_PROFILE)
+
+# Export the documented settings from the blueprint's .env, so a setting chosen there
+# (such as AWS_PROFILE) applies to setup, run, and cleanup alike. Run and cleanup still
+# take the deployment target from the setup record, which box_load_state loads over these.
 box_load_env() {
-  if [[ -f "$SAMPLE_DIR/.env" ]]; then set -a; source "$SAMPLE_DIR/.env"; set +a; fi
+  local file="$SAMPLE_DIR/.env" line key value known name
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] ||
+      die "$file has a line that is not NAME=value: $line"
+    key="${BASH_REMATCH[2]}" value="${BASH_REMATCH[3]}"
+    known=false
+    for name in "${BOX_ENV_KEYS[@]}"; do [[ "$key" == "$name" ]] && known=true; done
+    [[ "$known" == true ]] ||
+      die "$file sets $key, which this blueprint does not read from .env; remove it (allowed: ${BOX_ENV_KEYS[*]})"
+    # One pair of surrounding quotes is removed; nothing in the value is expanded.
+    if [[ "$value" =~ ^\"(.*)\"$ || "$value" =~ ^\'(.*)\'$ ]]; then value="${BASH_REMATCH[1]}"; fi
+    printf -v "$key" '%s' "$value"
+    export "$key"
+  done < "$file"
 }
 
 # EKS Auto Mode includes Pod Identity. Other nodes need its installed agent.
