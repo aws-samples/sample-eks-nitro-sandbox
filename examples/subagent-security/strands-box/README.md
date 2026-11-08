@@ -266,13 +266,13 @@ The boot identifiers below use placeholders. Other values come directly from the
     "kernel_release": "6.18.54",
     "kernel_version": "#1 SMP Thu Oct 22 17:48:46 UTC 2026",
     "boot_id": "<GUEST_BOOT_ID>",
-    "uptime_seconds": 73.24
+    "uptime_seconds": 63.22
   },
   "ordinary_control_kernel": {
     "kernel_release": "6.18.56",
     "kernel_version": "#2 SMP Fri Oct 30 22:32:43 UTC 2026",
     "boot_id": "<NODE_BOOT_ID>",
-    "uptime_seconds": 131.79
+    "uptime_seconds": 81.83
   }
 }
 ```
