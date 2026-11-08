@@ -27,6 +27,21 @@ The cluster needs Linux ARM64 capacity, the `isolated-sandbox` runtime, working 
 Admission must permit the privileged guest configuration below.
 A run uses Bedrock tokens, S3 objects, ECR images, and pod compute until cleanup.
 
+**Why ARM64.** Box publishes Linux builds for ARM64 only ([v0.2.1 release](https://github.com/strands-agents/box/releases/tag/v0.2.1)), so both images are `linux/arm64` and both pods select ARM64 nodes.
+That has two consequences:
+
+- **The cluster needs a node pool that offers AWS Graviton instance types.** The EKS Auto Mode `general-purpose` node pool offers only `amd64`.
+  Changing node pools affects every workload on the cluster, so this blueprint leaves it to you.
+  To add one, follow [Create a node pool for EKS Auto Mode](https://docs.aws.amazon.com/eks/latest/userguide/create-node-pool.html) with `kubernetes.io/arch` set to `arm64`.
+  Keep labels under the `kubernetes.io` domain out of the pool's template: a pool whose template carried one launched no nodes and reported no error.
+- **The machine that runs `setup.sh` must build `linux/arm64` images.** An ARM64 host does this natively.
+  On an x86_64 host, enable arm64 emulation for Docker Buildx as [Multi-platform builds](https://docs.docker.com/build/building/multi-platform/) describes.
+  Setup checks this before it creates anything. On an x86_64 host without emulation, it stops with:
+
+```text
+ERROR: the Docker builder cannot build linux/arm64 images (it reports: linux/amd64, linux/amd64/v2, linux/amd64/v3, linux/amd64/v4, linux/386). Run setup on an ARM64 host, or enable arm64 emulation for Docker Buildx: https://docs.docker.com/build/building/multi-platform/
+```
+
 ## Overview
 
 The analyst compares three fictional supplier proposals and recommends one supplier.
@@ -129,6 +144,8 @@ Resource tags and the namespace label must match it before reuse or cleanup.
 
 Each checkout stores one target in `tmp/strands-box/state.env`.
 Clean that deployment before changing the target in `.env`.
+Setup, run, and cleanup all load `.env`, so a setting such as `AWS_PROFILE=<PROFILE>` there applies to every script.
+Run and cleanup still take the cluster, Region, namespace, and account from the setup record, and stop if the active AWS account differs from it.
 
 The [analyst pod](deploy/analyst-pod.yaml) selects Nitro with this configuration excerpt:
 
