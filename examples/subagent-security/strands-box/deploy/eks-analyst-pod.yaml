@@ -1,0 +1,62 @@
+# Regular EKS requires a node runtime that supports pod user namespaces.
+# Admission must allow these seccomp and proc-mount settings.
+# This pod does not change node settings or use a Nitro runtime class.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: analyst
+  namespace: <NAMESPACE>
+  labels:
+    app: analyst
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+spec:
+  hostUsers: false
+  nodeSelector:
+    kubernetes.io/arch: arm64
+  serviceAccountName: analyst
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+  containers:
+    - name: analyst
+      image: <ANALYST_IMAGE>
+      command: ["sleep", "infinity"]
+      securityContext:
+        privileged: false
+        runAsNonRoot: true
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: Unconfined
+        procMount: Unmasked
+      env:
+        - {name: AWS_REGION, value: "<AWS_REGION>"}
+        - {name: AWS_DEFAULT_REGION, value: "<AWS_REGION>"}
+        - {name: ANALYST_BUCKET, value: "<BUCKET>"}
+        - {name: ANALYST_ROLE_NAME, value: "<ROLE_NAME>"}
+        - {name: BEDROCK_MODEL_ID, value: "<BEDROCK_MODEL_ID>"}
+        - {name: EXPERIMENTAL_LINUX_SUPPORT, value: "TRUE"}
+        - {name: SUPPLIER_API_URL, value: "http://supplier-api.<NAMESPACE>.svc.cluster.local:8080"}
+        - {name: SUPPLIER_ALIAS_URL, value: "http://supplier-api-alias.<NAMESPACE>.svc.cluster.local:8080"}
+      # These resources size the sample. They are not platform minimums.
+      resources:
+        requests: {cpu: "1", memory: 1Gi}
+        limits: {cpu: "2", memory: 2Gi}
+      readinessProbe:
+        exec: {command: ["test", "-x", "/usr/local/bin/strands-box"]}
+      volumeMounts:
+        - {name: state, mountPath: /var/lib/analyst}
+        - {name: tmp, mountPath: /tmp}
+        - {name: short-state, mountPath: /var/tmp}
+  volumes:
+    - name: state
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: short-state
+      emptyDir: {}

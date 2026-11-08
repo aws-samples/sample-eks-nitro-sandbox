@@ -1,0 +1,10 @@
+{
+  "box_revision": "e39544d49188b82933264b83159c7ccc278ced5a",
+  "architecture": "linux/arm64",
+  "experimental_linux_support": true,
+  "python_image": "public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:281d39ff02e3b389401586134ff9e6572954687822a58055ec07a60ded4e0b7f",
+  "shared_dependencies": "../analyst/requirements.txt",
+  "box_release": "v0.2.1",
+  "box_archive": "box-v0.2.1-linux-arm64.tar.gz",
+  "box_archive_sha256": "9060a4ccca1d6d5153da31e9214d3fd64c9bab0aa7762b6556d2790a8a0f06c0"
+}
