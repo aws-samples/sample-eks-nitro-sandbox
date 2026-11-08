@@ -1,0 +1,49 @@
+// Native Python uses filesystem grants; these rules govern routed shell file operations.
+@id("analyst_shell")
+permit(principal == Box::Agent::"self", action == Box::Action::"shell:exec", resource);
+@id("analyst_input_read")
+permit(principal == Box::Agent::"self", action == Box::Action::"fs:read", resource)
+when { context.input.path == "__INPUT__" || context.input.path like "__INPUT__/*" };
+@id("analyst_output")
+permit(principal == Box::Agent::"self", action in [Box::Action::"fs:read", Box::Action::"fs:write"], resource)
+when { context.input.path == "__OUTPUT__" || context.input.path like "__OUTPUT__/*" };
+
+// Permit the configured synthetic HTTP supplier origin.
+@id("supplier_connect")
+permit(principal == Box::Agent::"self", action == Box::Action::"net:connect", resource)
+when { context.input.host == "__HOST__" && context.input.port == __PORT__ };
+
+@id("supplier_read_case")
+permit(principal == Box::Agent::"self", action == Box::Action::"http:request", resource)
+when {
+    context.input.host == "__HOST__" && context.input.port == __PORT__ &&
+    context.input.method == "GET" && context.input.path == "/cases/rfp-001/suppliers"
+};
+
+@id("supplier_draft")
+permit(principal == Box::Agent::"self", action == Box::Action::"http:request", resource)
+when {
+    context.input.host == "__HOST__" && context.input.port == __PORT__ &&
+    context.input.method == "POST" && context.input.path == "/cases/rfp-001/recommendations"
+};
+
+// Count completed responses in this Box, including responses with an error status.
+@id("draft_response_budget")
+@description("Three draft responses completed in ten minutes. Wait before submitting another draft.")
+forbid(principal == Box::Agent::"self", action == Box::Action::"http:request", resource)
+when {
+    context.input.host == "__HOST__" && context.input.port == __PORT__ &&
+    context.input.method == "POST" && context.input.path == "/cases/rfp-001/recommendations"
+}
+when temporal {
+    exists (n: Long). (
+        (count for (t: Timepoint). where (
+            formerly within 600s (
+                Box::Action::"http:request"::response{
+                    input.host: "__HOST__", input.port: __PORT__,
+                    input.method: "POST", input.path: "/cases/rfp-001/recommendations"
+                } && tp(t)
+            )
+        )) == n && n >= 3
+    )
+};

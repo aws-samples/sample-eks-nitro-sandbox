@@ -107,6 +107,7 @@ nav:
       - Procurement analyst confined by nono: subagent-security/nono/README.md
       - Procurement analyst confined by bubblewrap: subagent-security/bubblewrap/README.md
       - Procurement analyst confined by OpenShell: subagent-security/openshell/README.md
+      - Procurement tools confined by Strands Box: subagent-security/strands-box/README.md
   - OpenShell:
       - OpenShell on Amazon EKS: openshell/kubernetes/README.md
   - Agent sandbox:

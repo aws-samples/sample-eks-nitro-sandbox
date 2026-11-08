@@ -22,6 +22,109 @@ global_settings:
   # UID, the poller and autoscaler, and destination pods with no policy of their own.
   # ---------------------------------------------------------------------------------------
   suppressions:
+    # Reviewed Box process launches and synthetic credential-path fixture.
+    - rule_id: B404
+      path: "examples/subagent-security/strands-box/scripts/local_driver.py"
+      line_start: 8
+      line_end: 8
+      reason: "Subprocess import is required for the separately reviewed process launch in this file; the import executes no command."
+      expiration: "2027-01-31"
+    - rule_id: B603
+      path: "examples/subagent-security/strands-box/scripts/local_driver.py"
+      line_start: 80
+      line_end: 81
+      reason: "Launches the fixed container controller with the current Python interpreter and an argument list; supplier origins and output paths come from the trusted local fixture. No agent output forms the command."
+      expiration: "2027-01-31"
+    - rule_id: B404
+      path: "examples/subagent-security/strands-box/scripts/local_supplier.py"
+      line_start: 12
+      line_end: 12
+      reason: "Subprocess import is required for the separately reviewed process launch in this file; the import executes no command."
+      expiration: "2027-01-31"
+    - rule_id: B603
+      path: "examples/subagent-security/strands-box/scripts/local_supplier.py"
+      line_start: 68
+      line_end: 72
+      reason: "Launches this repository-owned supplier helper with the current Python interpreter and an owned manifest path; separate arguments and a fixed child environment preserve process isolation."
+      expiration: "2027-01-31"
+    - rule_id: B404
+      path: "examples/subagent-security/strands-box/src/box_roles.py"
+      line_start: 7
+      line_end: 7
+      reason: "Subprocess import is required for the separately reviewed process launch in this file; the import executes no command."
+      expiration: "2027-01-31"
+    - rule_id: B603
+      path: "examples/subagent-security/strands-box/src/box_roles.py"
+      line_start: 67
+      line_end: 69
+      reason: "The trusted controller selects the absolute Box executable and configuration outside worker write grants. Arguments are passed without a shell; a restricted environment is supplied."
+      expiration: "2027-01-31"
+    - rule_id: B404
+      path: "examples/subagent-security/strands-box/tests/test_availability.py"
+      line_start: 13
+      line_end: 13
+      reason: "Subprocess import is required for the separately reviewed process launch in this file; the import executes no command."
+      expiration: "2027-01-31"
+    - rule_id: B603
+      path: "examples/subagent-security/strands-box/tests/test_availability.py"
+      line_start: 84
+      line_end: 87
+      reason: "Executes the actual correlation CLI with the current Python interpreter and owned fixture paths; separate arguments preserve exit-status and malformed-input coverage."
+      expiration: "2027-01-31"
+    - rule_id: B404
+      path: "examples/subagent-security/strands-box/tests/test_correlation.py"
+      line_start: 8
+      line_end: 8
+      reason: "Subprocess import is required for the separately reviewed process launch in this file; the import executes no command."
+      expiration: "2027-01-31"
+    - rule_id: B603
+      path: "examples/subagent-security/strands-box/tests/test_correlation.py"
+      line_start: 225
+      line_end: 225
+      reason: "Executes the actual correlation CLI with the current Python interpreter and owned fixture paths; separate arguments preserve exit-status and rejection coverage."
+      expiration: "2027-01-31"
+    - rule_id: B105
+      path: "examples/subagent-security/strands-box/tests/test_correlation.py"
+      line_start: 574
+      line_end: 574
+      reason: "The value /synthetic/token is a mocked token-file path used to test access refusal, not a password or credential value."
+      expiration: "2027-12-31"
+    - rule_id: B404
+      path: "examples/subagent-security/strands-box/tests/test_kernels.py"
+      line_start: 6
+      line_end: 6
+      reason: "Subprocess import is required for the separately reviewed process launch in this file; the import executes no command."
+      expiration: "2027-01-31"
+    - rule_id: B603
+      path: "examples/subagent-security/strands-box/tests/test_kernels.py"
+      line_start: 50
+      line_end: 51
+      reason: "Executes the actual kernel verifier CLI with the current Python interpreter and synthetic fixture arguments; tests must observe its real exit status and error output."
+      expiration: "2027-01-31"
+    - rule_id: B404
+      path: "examples/subagent-security/strands-box/tests/test_lifecycle.py"
+      line_start: 9
+      line_end: 9
+      reason: "Subprocess import is required for the separately reviewed process launch in this file; the import executes no command."
+      expiration: "2027-01-31"
+    - rule_id: B603
+      path: "examples/subagent-security/strands-box/tests/test_lifecycle.py"
+      line_start: 52
+      line_end: 53
+      reason: "Executes repository-owned test programs with the Bash executable resolved before per-case PATH changes. No agent input enters the shell program; cloud tools are replaced by test functions."
+      expiration: "2027-01-31"
+    - rule_id: B404
+      path: "examples/subagent-security/strands-box/tests/test_setup.py"
+      line_start: 8
+      line_end: 8
+      reason: "Subprocess import is required for the separately reviewed process launch in this file; the import executes no command."
+      expiration: "2027-01-31"
+    - rule_id: B603
+      path: "examples/subagent-security/strands-box/tests/test_setup.py"
+      line_start: 235
+      line_end: 236
+      reason: "Executes repository-owned setup and cleanup scripts using the preselected absolute Bash path and separate arguments. Case names and arguments are trusted fixtures; cloud and container commands use local substitutes."
+      expiration: "2027-01-31"
     # Namespace is set at apply time, never hard-coded in the manifest.
     - rule_id: CKV_K8S_21
       path: 'examples/getting-started/hello-sandbox/*.yaml'
@@ -1799,6 +1902,119 @@ global_settings:
     - rule_id: CKV_K8S_9
       path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
       reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
+      expiration: '2027-01-31'
+    # Strands Box: exact sample exceptions. Privileged Nitro configuration is a documented
+    # demonstration tradeoff, not evidence that its capabilities are minimal. Revisit
+    # these short-lived risk exceptions before using this setup for customer workloads.
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/subagent-security/strands-box/versions.json'
+      line_start: 2
+      line_end: 2
+      reason: 'Public upstream Box commit revision, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/subagent-security/strands-box/versions.json'
+      line_start: 9
+      line_end: 9
+      reason: 'Public Box release archive SHA-256 verified by Dockerfile before extraction, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/subagent-security/strands-box/tests/test_lifecycle.py'
+      line_start: 247
+      line_end: 247
+      reason: 'Synthetic Kubernetes Secret reference named fixture used to prove verify_pod rejects Secret volumes; no secret value'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_14
+      path: 'examples/subagent-security/strands-box/deploy/ordinary-pod.yaml'
+      reason: 'Template image placeholder; scripts/image.sh resolves and validates the ECR SHA-256 digest before rendering the immutable image reference'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_14
+      path: 'examples/subagent-security/strands-box/deploy/analyst-pod.yaml'
+      reason: 'Template image placeholder; scripts/image.sh resolves and validates the ECR SHA-256 digest before rendering the immutable image reference'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_14
+      path: 'examples/subagent-security/strands-box/deploy/eks-analyst-pod.yaml'
+      reason: 'Template image placeholder; scripts/image.sh resolves and validates the ECR SHA-256 digest before rendering the immutable image reference'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_14
+      path: 'examples/subagent-security/strands-box/deploy/supplier-api.yaml'
+      reason: 'Template image placeholder; scripts/image.sh resolves and validates the ECR SHA-256 digest before rendering the immutable image reference'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/subagent-security/strands-box/deploy/ordinary-pod.yaml'
+      reason: 'Idle sleep process driven by kubectl exec; run.sh checks each invoked operation and cleanup removes the pod, so restarting the sleep process adds no workflow health check'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/subagent-security/strands-box/deploy/analyst-pod.yaml'
+      reason: 'Idle sleep process driven by kubectl exec; run.sh checks each invoked operation and cleanup removes the pod, so restarting the sleep process adds no workflow health check'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/subagent-security/strands-box/deploy/eks-analyst-pod.yaml'
+      reason: 'Idle sleep process driven by kubectl exec; run.sh checks each invoked operation and cleanup removes the pod, so restarting the sleep process adds no workflow health check'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/subagent-security/strands-box/deploy/ordinary-pod.yaml'
+      reason: 'Temporary sleep-only comparison pod; run.sh waits for Running before executing the kernel observation, with no service traffic to gate'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/subagent-security/strands-box/deploy/ordinary-pod.yaml'
+      reason: 'Temporary kernel comparison pod has no service or workflow traffic; this lesson does not configure cluster network policy'
+      expiration: '2027-01-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/subagent-security/strands-box/deploy/supplier-api.yaml'
+      reason: 'Synthetic unauthenticated HTTP fixture accepts controller and Box probes; README limits it to a dedicated sample namespace and links the network-policy lesson'
+      expiration: '2027-01-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/subagent-security/strands-box/deploy/analyst-pod.yaml'
+      reason: 'Lesson tests Box role egress policy, not pod-wide filtering; trusted controller network access is outside that boundary and README links the separate network-policy lesson'
+      expiration: '2027-01-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/subagent-security/strands-box/deploy/eks-analyst-pod.yaml'
+      reason: 'Lesson tests Box role egress policy, not pod-wide filtering; trusted controller network access is outside that boundary and README links the separate network-policy lesson'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/subagent-security/strands-box/deploy/ordinary-pod.yaml'
+      reason: 'Comparison uses the same fixed image UID 1000 as the analyst; no host mounts, privileged mode, or capabilities are granted'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/subagent-security/strands-box/deploy/analyst-pod.yaml'
+      reason: 'Trusted controller uses image UID 1000; the one-shot root init sets max_user_namespaces inside the dedicated Nitro guest. No worker-node mount is exposed'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_16
+      path: 'examples/subagent-security/strands-box/deploy/analyst-pod.yaml'
+      reason: 'Documented tested sample uses privileged init and controller only inside runtimeClassName isolated-sandbox; Box contains role processes. Minimum container capabilities have not been established'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/subagent-security/strands-box/deploy/analyst-pod.yaml'
+      reason: 'Privileged Nitro guest containers permit escalation; controller and guest sysctl init are trusted. This sample does not claim an unprivileged controller or hardened container boundary'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/subagent-security/strands-box/deploy/analyst-pod.yaml'
+      reason: 'Privileged Nitro guest setup retains NET_RAW as part of its current capability set. Minimum capabilities are unqualified; Box role restrictions are a separate inner boundary'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/subagent-security/strands-box/deploy/analyst-pod.yaml'
+      reason: 'Privileged Nitro guest setup retains container capabilities; README documents this outer-container tradeoff and does not claim the capability set is minimal'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/subagent-security/strands-box/deploy/analyst-pod.yaml'
+      reason: 'Privileged Nitro guest container does not enforce an outer seccomp filter; Box applies its role sandbox inside that guest. This exception is not valid for an ordinary privileged worker pod'
+      expiration: '2027-01-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/subagent-security/strands-box/deploy/eks-analyst-pod.yaml'
+      reason: 'Optional ordinary EKS uses Unconfined so Box can create nested namespaces and mounts; hostUsers false, no privilege escalation, and dropped capabilities remain explicit. Admission must permit this setting'
+      expiration: '2027-01-31'
+    - rule_id: B108
+      path: 'examples/subagent-security/strands-box/src/controller.py'
+      line_start: 42
+      line_end: 42
+      reason: 'tempfile.mkdtemp atomically creates a random mode-0700 directory; the fixed /var/tmp parent keeps Box Unix socket paths short. This is not a predictable temporary file'
+      expiration: '2027-12-31'
+    - rule_id: B104
+      path: 'examples/subagent-security/strands-box/supplier/http_supplier.py'
+      line_start: 16
+      line_end: 17
+      reason: 'The synthetic HTTP fixture must accept requests through its ClusterIP service. It has no real supplier data, API key, or purchasing integration. This sample provides no pod-wide network restriction'
       expiration: '2027-01-31'
 scanners:
   cdk-nag:
