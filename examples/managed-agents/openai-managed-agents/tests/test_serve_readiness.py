@@ -13,9 +13,14 @@ on a serving pod.
 This test drives ``serve.main()`` on a claimed pod with ``codex exec-server``
 replaced by a controllable blocker, and proves BOTH directions:
 
+  * BEFORE the executor is listening (before ``_run_executor`` calls its
+    ``on_ready``), the readiness port is CLOSED, so the claim is not Ready yet;
   * WHILE the executor is running, the readiness port ACCEPTS a TCP connection
     (so the claim can reach Ready);
   * AFTER the executor exits, the readiness listener is torn down.
+
+``tests/test_serve_executor.py`` runs the real ``_run_executor`` with a fake
+codex and proves it calls ``on_ready`` only once the executor listens.
 
 Run with: python -m pytest
 """
@@ -71,9 +76,13 @@ def test_serving_pod_holds_readiness_port_while_codex_runs(monkeypatch, tmp_path
     # value as the executor's exit code once we let it finish.
     executor_running = threading.Event()
     release_executor = threading.Event()
+    open_before_ready: dict = {}
 
-    def _fake_run_executor(dispatch):
+    def _fake_run_executor(dispatch, on_ready):
         assert dispatch["session_id"] == "sesn_abc123"  # the serving branch ran
+        # Not ready until the executor listens: the port is still closed here.
+        open_before_ready["value"] = _readiness_accepts(port, timeout=0.3)
+        on_ready()  # the real _run_executor calls this once the executor listens
         executor_running.set()
         release_executor.wait(timeout=10)
         return 0
@@ -97,6 +106,10 @@ def test_serving_pod_holds_readiness_port_while_codex_runs(monkeypatch, tmp_path
 
     # The executor must have started on the serving branch...
     assert executor_running.wait(timeout=5), "serve never reached the executor"
+    # ...the readiness port was closed until on_ready...
+    assert open_before_ready["value"] is False, (
+        "the readiness port was open before the executor was listening"
+    )
     # ...and WHILE it runs, the readiness port must accept connections.
     assert _readiness_accepts(port), (
         "a serving pod did not open its readiness port while codex ran; the "
@@ -121,7 +134,8 @@ def test_serving_pod_closes_readiness_port_when_executor_raises(monkeypatch, tmp
     _claimed_pod_env(monkeypatch, port)
     executor_error = RuntimeError("executor failed")
 
-    def _raise_executor(_dispatch):
+    def _raise_executor(_dispatch, on_ready):
+        on_ready()  # the readiness port is open when the failure happens
         raise executor_error
 
     monkeypatch.setattr(serve, "_run_executor", _raise_executor)

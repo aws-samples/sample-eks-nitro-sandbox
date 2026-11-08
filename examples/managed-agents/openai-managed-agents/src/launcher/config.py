@@ -102,6 +102,13 @@ DEFAULT_SANDBOX_READY_TIMEOUT = 300
 # pod) must finish within it; raise it for longer tasks.
 DEFAULT_SHUTDOWN_AFTER_SECONDS = 1800
 DEFAULT_CODEX_PATH = "/usr/local/bin/codex"
+# The executor's port on a claimed pod's loopback. serve.py starts
+# `codex exec-server --listen ws://127.0.0.1:<port>` and the forwarder connects
+# to it there. It is bound to 127.0.0.1 only and is not in the template's ports,
+# so nothing outside the pod can reach it.
+EXECUTOR_LOOPBACK_PORT = 18081
+# How long serve.py waits for the executor to listen before it gives up.
+EXECUTOR_LISTEN_TIMEOUT = 60
 
 
 def require(name: str) -> str:

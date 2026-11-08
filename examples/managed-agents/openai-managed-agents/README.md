@@ -31,8 +31,10 @@ The executor runs code the model chose to run, so this blueprint gives each sess
 Nitro sandbox:
 
 - **The harness runs at OpenAI; the tools run in your cluster.** Sessions are created with
-  `environment.type: self_hosted`. The session's `codex exec-server` connects outbound from
-  its sandbox pod and runs the agent's built-in Bash and apply-patch tools.
+  `environment.type: self_hosted`. The session's `codex exec-server` runs in its sandbox pod
+  in Codex's forward mode: an executor on the pod's loopback runs the agent's built-in Bash
+  and apply-patch tools, and a forwarder connects outbound to OpenAI and relays the session
+  to it.
 - **Each session gets its own pod.** An ordinary launcher pod creates a `SandboxClaim` on a
   `SandboxWarmPool`. The claim sets `spec.env`, so it gets a new pod (`launch-type=cold`), not
   a warm one, and the warm pods stay unclaimed. The sandbox's `SandboxTemplate`
@@ -60,10 +62,10 @@ Nitro sandbox:
 *Figure 1: OpenAI runs the model and session; the operator creates the session and hands the
 launcher its environment id and remote URL over an authenticated, port-forwarded ClusterIP
 Service. The launcher claims a Nitro sandbox and gives it the session and the environment
-key through the SandboxClaim env; the executor dials out to OpenAI, and its egress policy
-allows only the two OpenAI hosts.*
+key through the SandboxClaim env; the executor's forwarder dials out to OpenAI, and its egress
+policy allows only the two OpenAI hosts.*
 
-![OpenAI's Agents API holds the model, harness and self-hosted session, and returns an environment id and remote URL. On the operator's machine, scripts hold the application key, create the session, and hand its environment id and remote URL to an ordinary openai-launcher pod over a ClusterIP Service port-forward, authenticated with a bearer token. The launcher, holding only the environment key, claims a pod from a SandboxWarmPool of two and sets the session id, environment id, remote URL and environment key in the SandboxClaim env; the controller cold-starts the claimed pod with them injected, so the key reaches the pod through the control plane and never over the pod network, and a warm pod holds no key. The claimed pod is an isolated-sandbox Nitro sandbox running codex exec-server with the key in its env; it runs Bash and apply-patch tool calls in /workspace, a follow-up turn reuses the same pod, and its deny-by-default ApplicationNetworkPolicy denies all ingress and allows egress only to DNS, api.openai.com and codex-cloud-environments.chatgpt.com while refusing the internet, AWS APIs and other pods. The executor dials out to OpenAI.](images/openai-managed-agents.png)
+![OpenAI's Agents API holds the model, harness and self-hosted session, and returns an environment id and remote URL. On the operator's machine, scripts hold the application key, create the session, and hand its environment id and remote URL to an ordinary openai-launcher pod over a ClusterIP Service port-forward, authenticated with a bearer token. The launcher, holding only the environment key, claims a pod from a SandboxWarmPool of two and sets the session id, environment id, remote URL and environment key in the SandboxClaim env; the controller cold-starts the claimed pod with them injected, so the key reaches the pod through the control plane and never over the pod network, and a warm pod holds no key. The claimed pod is an isolated-sandbox Nitro sandbox running codex exec-server, as an executor on the pod's loopback and a forwarder that dials out, with the key in its env; it runs Bash and apply-patch tool calls in /workspace, a follow-up turn reuses the same pod, and its deny-by-default ApplicationNetworkPolicy denies all ingress and allows egress only to DNS, api.openai.com and codex-cloud-environments.chatgpt.com while refusing the internet, AWS APIs and other pods. The executor's forwarder dials out to OpenAI.](images/openai-managed-agents.png)
 
 This folder was built against these releases:
 
@@ -85,7 +87,7 @@ The files:
 | File | What it is |
 |---|---|
 | [`Dockerfile`](Dockerfile), [`pyproject.toml`](pyproject.toml) | The `openai-sandbox-executor` image: one image for the launcher and the sandbox, with `codex exec-server` installed |
-| `src/launcher/` | [`launch.py`](src/launcher/launch.py) (the authenticated intake that claims a sandbox per session), [`serve.py`](src/launcher/serve.py) (run one session's executor; no network intake), [`sandbox.py`](src/launcher/sandbox.py) (claim a sandbox and deliver the session through the claim env), [`guard.py`](src/launcher/guard.py) (refuse any key a role must not hold) |
+| `src/launcher/` | [`launch.py`](src/launcher/launch.py) (the authenticated intake that claims a sandbox per session), [`serve.py`](src/launcher/serve.py) (run one session's executor and its forwarder; no network intake), [`sandbox.py`](src/launcher/sandbox.py) (claim a sandbox and deliver the session through the claim env), [`guard.py`](src/launcher/guard.py) (refuse any key a role must not hold) |
 | [`deploy/sandbox-template.yaml`](deploy/sandbox-template.yaml) | The `SandboxTemplate` that runs the executor, and a `SandboxWarmPool` of two |
 | [`deploy/launcher.yaml`](deploy/launcher.yaml) | The launcher Deployment and its ClusterIP Service intake |
 | [`deploy/launcher-ingress.yaml`](deploy/launcher-ingress.yaml) | A deny-by-default ingress policy so no in-cluster pod may reach the launcher |
@@ -113,10 +115,24 @@ is application-managed provisioning, and this blueprint uses it:
    The key travels only over the launcher's authenticated Kubernetes API connection and the
    controller, never over the pod network.
 4. [`serve.py`](src/launcher/serve.py) in the claimed pod reads the session from its own
-   environment and runs `codex exec-server --remote <remote_url> --environment-id
-   <environment_id>` with the environment key already present as `CODEX_API_KEY`. The
-   executor dials out, registers for the environment, and runs the agent's tool calls in
-   `/workspace`.
+   environment and starts `codex exec-server` as two processes, the
+   [forward mode](https://github.com/openai/codex/blob/rust-v0.163.0-alpha.11/codex-rs/exec-server/README.md#remote-connections)
+   Codex documents. Both inherit the environment key, already present as `CODEX_API_KEY`:
+
+   ```bash
+   codex exec-server --listen ws://127.0.0.1:18081
+   codex exec-server forward --remote <remote_url> --environment-id <environment_id> \
+     --connect ws://127.0.0.1:18081
+   ```
+
+   The first, the executor, listens on the pod's loopback only and runs the agent's tool
+   calls in `/workspace`. The second, the forwarder, dials out, registers for the
+   environment, and passes the session's messages to the executor unchanged. The pod reports
+   Ready only once the executor is listening. If either process exits, `serve.py` stops the
+   other and exits non-zero. Why two processes: with the pinned Codex build, the single
+   command `codex exec-server --remote <remote_url> --environment-id <environment_id>`
+   connected in our runs but left the agent with no working tool, and logged nothing, while
+   forward mode ran the tools. That is what we observed, not a documented cause.
 5. `submit.py` sends the prompt only after the open stream reports
    `agent.session.environment.connected`, the order OpenAI's
    [self-hosted sandbox guide](https://developers.openai.com/api/docs/guides/agents-api/environments/self-hosted)
@@ -435,7 +451,8 @@ final status: idle
 
 The commands ran in a sandbox: the guest's kernel build, an uptime of about a minute, and
 virtio disks. In the cluster, the launcher's log names the `SandboxClaim` it created and the
-sandbox that claim adopted, and that sandbox's log shows `codex exec-server` connecting:
+sandbox that claim adopted, and that sandbox's log shows `serve.py` starting the executor and
+then the forwarder:
 
 ```bash
 kubectl logs deploy/openai-launcher | grep -E 'session=|-> sandbox='
@@ -548,7 +565,7 @@ its YAML does one job:
 | `policyTypes`, `Ingress` and `Egress` | Makes the selected pods default-deny in both directions, so only the rules below are allowed. |
 | `ingress`, empty | No pod may connect to a sandbox. The launcher delivers the session through the claim env, not the network, so a sandbox needs no inbound rule. |
 | `egress`, to `0.0.0.0/0` on UDP and TCP 53 | Lets the sandbox look up names, with DNS allowed to any address. |
-| `egress`, to the two `domainNames` on TCP 443 | Lets the executor register at `api.openai.com` and exchange commands and results with `codex-cloud-environments.chatgpt.com`. |
+| `egress`, to the two `domainNames` on TCP 443 | Lets the executor's forwarder register at `api.openai.com` and exchange commands and results with `codex-cloud-environments.chatgpt.com`. |
 
 Anything that matches no rule is refused: the public internet, AWS service endpoints such as
 STS, and other pods. (Kubernetes always allows traffic to and from a pod's own node, which is
@@ -563,7 +580,7 @@ egress to CoreDNS and the two OpenAI hosts; the public internet, AWS APIs and ot
 refused. The session and the environment key arrive through the SandboxClaim env, not the
 network. The policy is enforced on the node, outside the sandbox.*
 
-![A focused view of the network policy. Inside an EKS Auto Mode node, a red Nitro sandbox pod labeled openai-sandbox-executor (isolated-sandbox) runs codex exec-server and the tool calls. The sandbox accepts no ingress at all: the session and the environment key are injected into the pod through the SandboxClaim env by the controller, not sent over the network. Two egress paths are allowed, in green: CoreDNS on UDP and TCP 53, and api.openai.com with codex-cloud-environments.chatgpt.com on TCP 443. A red dashed path marks the refused traffic: the internet, AWS APIs such as STS, and other pods. A note says domainNames allows the IP addresses a host resolves to, so a different name on the same addresses would also be reachable, and that enforcement is on the node in eBPF so a command the model runs inside the sandbox cannot change it.](images/openai-managed-agents-network-policy.png)
+![A focused view of the network policy. Inside an EKS Auto Mode node, a red Nitro sandbox pod labeled openai-sandbox-executor (isolated-sandbox) runs codex exec-server, as an executor on the pod's loopback and a forwarder that dials out, and the tool calls. The sandbox accepts no ingress at all: the session and the environment key are injected into the pod through the SandboxClaim env by the controller, not sent over the network. Two egress paths are allowed, in green: CoreDNS on UDP and TCP 53, and api.openai.com with codex-cloud-environments.chatgpt.com on TCP 443. A red dashed path marks the refused traffic: the internet, AWS APIs such as STS, and other pods. A note says domainNames allows the IP addresses a host resolves to, so a different name on the same addresses would also be reachable, and that enforcement is on the node in eBPF so a command the model runs inside the sandbox cannot change it.](images/openai-managed-agents-network-policy.png)
 
 **Where it is enforced.** On EKS Auto Mode, a network policy agent on each node turns the
 policy into eBPF programs attached to the pod's host-side virtual interface, on the node,
