@@ -12,8 +12,10 @@ application-managed provisioning):
      The launcher is reached over a ClusterIP Service you port-forward:
        kubectl port-forward svc/openai-launcher 8080:8080
      Every request to the launcher carries LAUNCHER_AUTH_TOKEN from your .env.
-  3. Wait on the open stream for agent.session.environment.connected (up to
-     --connect-timeout seconds, default 300). Only then send the prompt, and
+  3. Wait on the open stream for agent.session.environment.connected for this
+     session and this environment (up to --connect-timeout seconds, default
+     300; an event for another session or environment does not count). Only
+     then send the prompt, and
      keep streaming the turn, printing the agent's output. On the timeout, or on
      agent.session.environment.failed, exit non-zero and send no prompt.
 
@@ -210,9 +212,17 @@ class _EventPump:
         self._queue.put(self.END)
 
     def next(self, timeout: float | None):
-        """The next new event, or END. Raises queue.Empty on timeout, or the stream's error."""
+        """The next new event, or END. Raises the stream's error, or queue.Empty once
+        `timeout` seconds have passed. The deadline is set once, so a stream that keeps
+        replaying an event it already sent cannot hold the wait open past it."""
+        deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            item = self._queue.get(timeout=timeout)
+            remaining = None
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise queue.Empty
+            item = self._queue.get(timeout=remaining)
             if isinstance(item, BaseException):
                 raise item
             event_id = getattr(item, "event_id", None)
@@ -225,19 +235,39 @@ class _EventPump:
         self._stream.close()
 
 
-def wait_for_environment(client, events: _EventPump, environment_id: str, timeout: float) -> None:
+_ENVIRONMENT_EVENTS = ("agent.session.environment.connected", "agent.session.environment.failed")
+
+
+def _is_this_environment(event, session_id: str, environment_id: str) -> bool:
+    """True if an environment event names this session and this environment."""
+    environment = getattr(event, "environment", None)
+    return (getattr(event, "session_id", None) == session_id
+            and getattr(environment, "id", None) == environment_id)
+
+
+def wait_for_environment(client, events: _EventPump, session_id: str, environment_id: str,
+                         timeout: float) -> None:
     """Return once the environment is connected; otherwise exit non-zero. Sends nothing.
 
     An environment that is already connected (a follow-up turn) may emit no new
     connection event, so its status is read first:
-    client.beta.agents.environments.retrieve(environment_id).status.
+    client.beta.agents.environments.retrieve(environment_id).status, trusted only
+    when the API returned that same environment id. On the stream, a connected or
+    failed event counts only when its session_id is this session's and its
+    environment.id is this environment's; any other environment event is ignored.
     """
+    status = None
     try:
-        status = client.beta.agents.environments.retrieve(environment_id).status
+        info = client.beta.agents.environments.retrieve(environment_id)
     except APIStatusError as exc:
-        status = None
         print(f"[note] could not read the environment's status (HTTP {exc.status_code}); "
               "waiting for its connection event")
+    else:
+        if getattr(info, "id", None) == environment_id:
+            status = info.status
+        else:
+            print("[note] the API returned the status of another environment; "
+                  "waiting for this environment's connection event")
     if status == "connected":
         print("[environment already connected]")
         return
@@ -257,6 +287,8 @@ def wait_for_environment(client, events: _EventPump, environment_id: str, timeou
         if event is _EventPump.END:
             sys.exit("the session's event stream ended before the environment connected; "
                      "no prompt was sent.")
+        if event.type in _ENVIRONMENT_EVENTS and not _is_this_environment(event, session_id, environment_id):
+            continue  # another session's or another environment's event
         if event.type == "agent.session.environment.connected":
             print("[environment connected]")
             return
@@ -334,7 +366,7 @@ def run_turn(client, session_id: str, environment_id: str, prompt: str, connect_
     try:
         if start_executor is not None:
             start_executor()
-        wait_for_environment(client, events, environment_id, connect_timeout)
+        wait_for_environment(client, events, session_id, environment_id, connect_timeout)
         send_input(client, session_id, prompt)
         print("\nagent output:\n")
         return stream_turn(events)

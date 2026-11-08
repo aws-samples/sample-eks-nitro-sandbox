@@ -36,8 +36,9 @@ Nitro sandbox:
   and apply-patch tools, and a forwarder connects outbound to OpenAI and relays the session
   to it.
 - **Each session gets its own pod.** An ordinary launcher pod creates a `SandboxClaim` on a
-  `SandboxWarmPool`. The claim sets `spec.env`, so it gets a new pod (`launch-type=cold`), not
-  a warm one, and the warm pods stay unclaimed. The sandbox's `SandboxTemplate`
+  `SandboxWarmPool`. The claim sets `spec.env`, so the controller starts a new pod for it (and
+  labels its sandbox `launch-type=cold`) instead of handing it a warm one, and the warm pods
+  stay unclaimed. The sandbox's `SandboxTemplate`
   sets `runtimeClassName: isolated-sandbox`, so the commands run on a kernel no other pod
   shares. A follow-up turn in the same session runs in the same pod and reads a file the
   first turn wrote.
@@ -148,10 +149,11 @@ authenticate), the launcher puts it in the `SandboxClaim`'s `env`. agent-sandbox
 that into `SandboxClaim.spec.env`, and setting it forces a cold start from the warm-pool
 template, so the controller injects the key into a pod created specifically for this session.
 The key never crosses the pod network, and a warm pod never holds it. Setting
-`SandboxClaim.spec.env` gives the claim a new pod (`launch-type=cold`), not a warm one, and the
-warm pods stay unclaimed. The new pod can land on a new node: in the run on this page, EKS
-Auto Mode added a node for it, and it took 48 s from the claim to the container start,
-including an 11.2 s image pull. This
+`SandboxClaim.spec.env` makes the controller start a new pod for the claim instead of handing
+it a warm one, and label the claim's sandbox `launch-type=cold`; the warm pods stay unclaimed.
+The new pod can land on a new node: in the run on this page, EKS Auto Mode added a node for
+it, and it took 48 s from the claim to the container start, including an 11.2 s image pull.
+Step 8 shows the claim's events, and step 10 the pods after both turns. This
 mechanism is native to the agent-sandbox stack; the blueprint invents no transport or auth of
 its own for the key.
 
@@ -404,8 +406,22 @@ CODEX_PATH
 ```
 
 The sandbox runs its own kernel. It booted with the pod, after the pod was scheduled onto its
-node, so its uptime, about 53 seconds here, is shorter than the pod's age (76 seconds), and it
-sees virtio disks (`vda`, `vdb`, `vdc`). On the
+node, so its uptime, about 53 seconds here, is shorter than the pod's age. In the run on this
+page the clock was read right after the uptime, and then the pod's creation time, its
+container's start time and its node (the node's name is replaced with `<NODE>`):
+
+```bash
+date -u +%FT%TZ
+kubectl get pod $POD -o jsonpath='{.metadata.creationTimestamp} {.status.containerStatuses[0].state.running.startedAt} {.spec.nodeName}{"\n"}'
+```
+
+```text
+2026-11-08T14:53:43Z
+2026-11-08T14:52:27Z 2026-11-08T14:53:30Z <NODE>
+```
+
+The pod was about 76 seconds old when its uptime read 52.63 seconds. The sandbox also sees
+virtio disks (`vda`, `vdb`, `vdc`). On the
 same node, an ordinary pod reports the node's kernel build, a `#2 SMP ...` string with a
 different date, and the instance's `nvme` disks; the version string may match, but the build
 and the boot do not. A warm sandbox holds no *credential*: the two `CODEX_*` variables it does
@@ -483,6 +499,29 @@ The readiness port opens only after that, and the claim reported Ready a second 
 default log level neither Codex process logged anything more, through both this turn and the
 follow-up in step 10.
 
+The claim's events show its cold start. This listing was taken shortly after the turn; only the
+lines for the claim's own sandbox and pod are kept, and the account id is replaced with
+`<ACCOUNT_ID>`:
+
+```bash
+kubectl get events --sort-by=.lastTimestamp
+```
+
+```text
+LAST SEEN   TYPE      REASON                 OBJECT                                  MESSAGE
+85s         Normal    SandboxProvisioned     sandboxclaim/sandbox-claim-5386f568     Created Sandbox "sandbox-claim-5386f568"
+85s         Normal    SandboxPodCreated      sandbox/sandbox-claim-5386f568          Created Pod "sandbox-claim-5386f568"
+85s         Warning   FailedScheduling       pod/sandbox-claim-5386f568              0/3 nodes are available: 1 Insufficient memory, 1 node(s) didn't match Pod's node affinity/selector, 1 node(s) had untolerated taint(s). no new claims to deallocate, preemption: 0/3 nodes are available: 1 No preemption victims found for incoming pod, 2 Preemption is not helpful for scheduling.
+84s         Normal    Nominated              pod/sandbox-claim-5386f568              Pod should schedule on: nodeclaim/general-purpose-gvptt
+50s         Normal    Pulled                 pod/sandbox-claim-5386f568              Successfully pulled image "<ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/openai-sandbox-executor:latest" in 11.229s (11.23s including waiting). Image size: 338021174 bytes.
+37s         Normal    Started                pod/sandbox-claim-5386f568              Container started
+```
+
+The controller created a new sandbox and pod for the claim 85 s before this listing, rather than
+hand it a warm one. No node had room for the pod (`Insufficient memory`), so EKS Auto Mode added
+one (`nodeclaim/general-purpose-gvptt`). The image pull took 11.2 s, and the container started
+37 s before the listing: 48 s from the claim to the container start.
+
 **Step 9: Prove the key separation.** The environment key reaches a claimed pod through the
 control plane, so a claimed pod does hold `CODEX_API_KEY` in its env, by design. What stays
 true is that a **warm** pod holds no key, the **application** key is nowhere in the cluster,
@@ -546,8 +585,24 @@ agent output:
 I’ll read the file from `/workspace` and report its first line.The first line is: `6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026`
 ```
 
-The follow-up turn read a file the first turn wrote, in the same `/workspace`, because the
-same claimed pod served both turns.
+The sandbox pods after the follow-up (the launcher's line is left out, and the node names are
+replaced with `<NODE>`):
+
+```bash
+kubectl get pods -o wide
+```
+
+```text
+NAME                               READY   STATUS    RESTARTS   AGE     IP                NODE                  NOMINATED NODE   READINESS GATES
+openai-sandbox-executor-89w7w      1/1     Running   0          4m51s   192.168.95.129    <NODE>   <none>           <none>
+openai-sandbox-executor-bh26d      1/1     Running   0          4m51s   192.168.95.128    <NODE>   <none>           <none>
+sandbox-claim-5386f568             1/1     Running   0          2m53s   192.168.101.176   <NODE>   <none>           <none>
+```
+
+`sandbox-claim-5386f568`, the pod named in step 8's launcher log, is still the only claimed pod,
+running with no restarts, and the two warm pods are still there, unclaimed. So the follow-up
+turn read the file the first turn wrote from that pod's `/workspace`: the same claimed pod
+served both turns.
 
 **Step 11: Check the egress policy.** Run the egress check (the two allowed hosts and two refused) in a running sandbox. The two
 OpenAI hosts connect; the other two do not:

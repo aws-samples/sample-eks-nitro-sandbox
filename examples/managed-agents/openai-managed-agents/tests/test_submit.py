@@ -24,7 +24,12 @@ And, against a mocked event stream, the order a turn runs in:
   * agent.session.environment.failed, or no connection within --connect-timeout,
     sends nothing and exits non-zero;
   * a follow-up turn whose environment is already connected proceeds, and an
-    environment status the API will not return falls back to the stream's event.
+    environment status the API will not return falls back to the stream's event;
+  * only this session's own environment opens the gate: a connected or failed
+    event for another session or another environment is ignored, and a status
+    the API returns for another environment id is not trusted;
+  * a stream that keeps replaying an event it already sent cannot hold the wait
+    open past --connect-timeout.
 
 Both inputs of each accept/reject pair are exercised, per AGENTS.md.
 
@@ -264,12 +269,25 @@ def _event(kind: str, **fields):
     return SimpleNamespace(type=kind, event_id=f"evt_{next(_ids)}", **fields)
 
 
-def _connected():
-    return _event("agent.session.environment.connected", environment=SimpleNamespace(status="connected"))
+SESSION, ENVIRONMENT = "sess_1", "env_1"  # the ids of _FakeAPI's session and its environment
 
 
-def _pending():
-    return _event("agent.session.environment.pending", environment=SimpleNamespace(status="pending"))
+def _env_event(kind: str, status: str, session_id: str = SESSION, environment_id: str = ENVIRONMENT, **env):
+    """An environment event as the SDK models it: its session_id and environment.id are set."""
+    return _event(kind, session_id=session_id,
+                  environment=SimpleNamespace(id=environment_id, status=status, **env))
+
+
+def _connected(**ids):
+    return _env_event("agent.session.environment.connected", "connected", **ids)
+
+
+def _pending(**ids):
+    return _env_event("agent.session.environment.pending", "pending", **ids)
+
+
+def _failed(error: str, **ids):
+    return _env_event("agent.session.environment.failed", "failed", error=error, **ids)
 
 
 def _turn(text: str = "hello from the sandbox"):
@@ -292,11 +310,13 @@ class _FakeAPI:
     a live session's stream stays open.
     """
 
-    def __init__(self, before_input, after_input=(), env_status="pending", env_error=None):
+    def __init__(self, before_input, after_input=(), env_status="pending", env_error=None,
+                 env_retrieved_id=None):
         self.before_input = list(before_input)
         self.after_input = list(after_input)
         self.env_status = env_status
         self.env_error = env_error
+        self.env_retrieved_id = env_retrieved_id  # the id the status read returns, if not the one asked for
         self.log: list[str] = []
         self.inputs: list[list] = []
         self.input_before_connected = None
@@ -318,7 +338,7 @@ class _FakeAPI:
         self.log.append("environment status read")
         if self.env_error is not None:
             raise self.env_error
-        return SimpleNamespace(id=environment_id, status=self.env_status)
+        return SimpleNamespace(id=self.env_retrieved_id or environment_id, status=self.env_status)
 
     def _send(self, session_id, *, events, idempotency_key):
         self.log.append("input sent")
@@ -392,9 +412,7 @@ def test_first_turn_sends_the_input_after_the_environment_connects(monkeypatch, 
 
 
 def test_environment_failed_sends_nothing_and_exits_non_zero(monkeypatch, capsys):
-    failed = _event("agent.session.environment.failed",
-                    environment=SimpleNamespace(status="failed", error="executor registration refused"))
-    api = _FakeAPI(before_input=[_pending(), failed], after_input=_turn())
+    api = _FakeAPI(before_input=[_pending(), _failed("executor registration refused")], after_input=_turn())
 
     code = _run_main(monkeypatch, api, "--budget-cents", "0", "--connect-timeout", "2", "do the task")
 
@@ -451,3 +469,102 @@ def test_an_unreadable_environment_status_falls_back_to_the_connection_event(mon
     assert code == 0
     assert api.input_before_connected is False
     assert "could not read the environment's status (HTTP 404)" in capsys.readouterr().out
+
+
+# --- only this session's own environment opens the gate ----------------------
+OTHERS = pytest.mark.parametrize("other", [
+    dict(environment_id="env_other"),
+    dict(session_id="sess_other"),
+], ids=["another-environment", "another-session"])
+
+
+@OTHERS
+def test_a_connected_event_for_another_session_or_environment_sends_nothing(monkeypatch, other):
+    api = _FakeAPI(before_input=[_pending(), _connected(**other)], after_input=_turn())
+
+    code = _run_main(monkeypatch, api, "--budget-cents", "0", "--connect-timeout", "0.3", "do the task")
+
+    assert code not in (0, None)
+    assert "did not connect within 0.3s" in str(code) and "no prompt was sent" in str(code)
+    assert api.inputs == [] and "input sent" not in api.log
+
+
+@OTHERS
+def test_a_failed_event_for_another_session_or_environment_is_ignored(monkeypatch, other):
+    api = _FakeAPI(before_input=[_failed("not this environment", **other), _connected()], after_input=_turn())
+
+    code = _run_main(monkeypatch, api, "--budget-cents", "0", "--connect-timeout", "2", "do the task")
+
+    assert code == 0, "another environment's failure stopped this turn"
+    assert len(api.inputs) == 1
+
+
+def test_the_matching_connected_event_after_unrelated_ones_sends_the_input(monkeypatch):
+    api = _FakeAPI(before_input=[_connected(environment_id="env_other"), _connected(session_id="sess_other"),
+                                 _connected()], after_input=_turn())
+
+    code = _run_main(monkeypatch, api, "--budget-cents", "0", "do the task")
+
+    assert code == 0
+    assert api.input_before_connected is False, "an unrelated connected event let the input go first"
+    last_connected = max(i for i, line in enumerate(api.log) if line == "yield agent.session.environment.connected")
+    assert api.log.index("input sent") > last_connected
+    assert len(api.inputs) == 1
+
+
+def test_a_connected_status_for_another_environment_id_is_not_trusted(monkeypatch, capsys):
+    # The status read answers "connected", but for another id: wait for this one's event.
+    api = _FakeAPI(before_input=[], after_input=_turn(), env_status="connected", env_retrieved_id="env_other")
+
+    code = _run_main(monkeypatch, api, "--session-id", "sess_1", "--connect-timeout", "0.3", "read it back")
+
+    assert code not in (0, None) and "did not connect" in str(code)
+    assert api.inputs == []
+    assert "the status of another environment" in capsys.readouterr().out
+
+
+def test_a_failed_status_for_another_environment_id_does_not_stop_the_turn(monkeypatch):
+    api = _FakeAPI(before_input=[_connected()], after_input=_turn(), env_status="failed",
+                   env_retrieved_id="env_other")
+
+    code = _run_main(monkeypatch, api, "--session-id", "sess_1", "--connect-timeout", "2", "read it back")
+
+    assert code == 0
+    assert len(api.inputs) == 1
+
+
+# --- replayed duplicates cannot stretch --connect-timeout (second review) -----
+class _Stream:
+    def __init__(self, events):
+        self._events = events
+
+    def __iter__(self):
+        return iter(self._events)
+
+    def close(self):
+        pass
+
+
+def test_duplicate_events_cannot_extend_the_absolute_connection_deadline():
+    # Duplicates of one event id arrive for 0.25 s, then a connected event: with a
+    # 0.05 s timeout the wait must give up first, not accept the late connection.
+    duplicate = _pending()
+
+    def delayed_events():
+        yield duplicate
+        until = time.monotonic() + 0.25
+        while time.monotonic() < until:
+            yield duplicate
+            time.sleep(0.005)
+        yield _connected()
+
+    environments = SimpleNamespace(retrieve=lambda env_id: SimpleNamespace(id=env_id, status="pending"))
+    client = SimpleNamespace(beta=SimpleNamespace(agents=SimpleNamespace(environments=environments)))
+    pump = submit._EventPump(_Stream(delayed_events()))
+    started = time.monotonic()
+    try:
+        with pytest.raises(SystemExit, match="did not connect within 0.05s"):
+            submit.wait_for_environment(client, pump, SESSION, ENVIRONMENT, 0.05)
+    finally:
+        pump.close()
+    assert time.monotonic() - started < 0.2

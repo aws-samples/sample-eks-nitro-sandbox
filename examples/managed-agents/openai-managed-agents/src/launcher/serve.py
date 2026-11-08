@@ -17,9 +17,11 @@ that receives a credential:
     The executor listens on the pod's loopback only and runs the agent's Bash
     and apply-patch tool calls in ``/workspace``. The forwarder dials out to
     OpenAI, registers for the environment, and passes the session's messages
-    to the executor unchanged. Both inherit this process's environment, so the
-    key (``CODEX_API_KEY``) is in theirs and nowhere else. The pod reports
-    Ready only once the executor is listening. If either process exits, the
+    to the executor unchanged. The key (``CODEX_API_KEY``) stays in the claimed
+    pod, but not in one process: ``serve`` has it in its own environment, both
+    children inherit that environment, and the tool commands the executor runs
+    can read it, as the page says. The pod reports Ready only once the
+    executor is listening. If either process exits, the
     other is stopped and ``serve`` exits non-zero; SIGTERM (the claim being
     deleted, or its deadline) goes to both.
 
