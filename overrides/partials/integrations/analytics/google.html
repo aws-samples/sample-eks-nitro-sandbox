@@ -1,0 +1,48 @@
+{#-
+  Overrides Material's partials/integrations/analytics/google.html (mkdocs-material
+  9.7.7) to add two things the built-in partial cannot set:
+
+  1. It only loads on the published site, aws-samples.github.io/sample-eks-nitro-sandbox,
+     so `mkdocs serve` and any other copy of the site are not counted.
+  2. It scopes the Google Analytics cookie to /sample-eks-nitro-sandbox. github.io is a
+     public suffix, so every aws-samples project site shares the aws-samples.github.io
+     host; without a cookie_path, _ga would be shared with them.
+
+  Page views on navigation and search terms work as in Material's own partial. Re-check
+  this file against Material's when bumping mkdocs-material in requirements.txt.
+-#}
+{% if config.extra.analytics %}
+  {% set property = config.extra.analytics.property | d("", true) %}
+{% endif %}
+<script id="__analytics">
+  function __md_analytics() {
+    var host = "aws-samples.github.io"
+    var base = "/sample-eks-nitro-sandbox"
+    var path = location.pathname
+    if (location.hostname !== host || (path !== base && path.indexOf(base + "/") !== 0))
+      return
+
+    window.dataLayer = window.dataLayer || []
+    function gtag() { dataLayer.push(arguments) }
+    gtag("js", new Date())
+    gtag("config", "{{ property }}", { cookie_path: base })
+
+    document.addEventListener("DOMContentLoaded", function () {
+      /* Search terms, as in Material's partial */
+      if (document.forms.search)
+        document.forms.search.query.addEventListener("blur", function () {
+          if (this.value) gtag("event", "search", { search_term: this.value })
+        })
+
+      /* Page views after instant navigation, as in Material's partial */
+      location$.subscribe(function (url) {
+        gtag("config", "{{ property }}", { page_path: url.pathname, cookie_path: base })
+      })
+    })
+
+    var script = document.createElement("script")
+    script.async = true
+    script.src = "https://www.googletagmanager.com/gtag/js?id={{ property }}"
+    document.getElementById("__analytics").insertAdjacentElement("afterEnd", script)
+  }
+</script>
