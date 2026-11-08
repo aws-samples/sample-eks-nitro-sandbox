@@ -85,9 +85,12 @@ class Lifecycle(unittest.TestCase):
                 self.assertIn("Pod Identity", result.stderr)
 
     def test_docker_readiness_checks_have_both_outcomes(self):
-        for failed in ("none", "buildx", "info"):
+        for failed in ("none", "buildx", "info", "arm64"):
             with self.subTest(failed=failed):
-                body = ('docker() { [[ "$1" != "' + failed + '" ]]; }\n'
+                platform = "linux/amd64" if failed == "arm64" else "linux/arm64"
+                body = ('TMP_DIR="$CHECK_DIR"\n'
+                        'docker() { [[ "$1" != "' + failed + '" ]] || return 1\n'
+                        '  [[ " $* " != *" inspect "* ]] || echo "Platforms: ' + platform + '"; }\n'
                         'box_require_tools')
                 result = self.shell(body)
                 if failed == "none":
@@ -279,6 +282,147 @@ class ResourceOwnership(unittest.TestCase):
         # All fixture values are fixed strings without shell metacharacters or whitespace.
         (self.directory / "state.env").write_text("\n".join(f"{key}={value}" for key, value in state.items()) + "\n")
         return state
+
+    def test_builder_must_offer_linux_arm64(self):
+        cases = [("Platforms: linux/arm64", True),
+                 ("Platforms: linux/amd64, linux/amd64/v2, linux/arm64, linux/riscv64", True),
+                 ("Platforms: linux/amd64, linux/arm64/v8", True),
+                 ("Platforms: linux/arm64*, linux/amd64", True),
+                 ("Platforms: linux/arm64/v8*", True),
+                 ("Platforms: linux/amd64\nPlatforms: linux/arm64", True),
+                 ("Platforms: linux/amd64, linux/amd64/v2, linux/386", False),
+                 ("Platforms: linux/arm64x, linux/arm/v7", False),
+                 ("Platforms: linux/arm64**", False),
+                 ("Driver: docker", False),
+                 ("failure", False)]
+        for reply, accepted in cases:
+            with self.subTest(reply=reply):
+                calls = self.directory / "docker-calls"
+                stub = 'return 1' if reply == "failure" else 'printf "Name: default\\n%s\\n" "$REPLY"'
+                body = ('TMP_DIR="$CHECK_DIR/state"\n'
+                        'docker() { printf "%s\\n" "$*" > "$CHECK_DIR/docker-calls"\n'
+                        '  [[ -d "$2" ]] || return 97\n'
+                        '  [[ "$1 $3 $4 $5" == "--config buildx inspect --bootstrap" ]] || return 98; '
+                        + stub + '; }\nbox_require_arm64_builder')
+                result = self.shell(body, extra={"REPLY": reply})
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                # A fresh configuration directory under the blueprint's tmp/, removed afterwards.
+                config = calls.read_text().split()[1]
+                self.assertTrue(config.startswith(str(self.directory / "state") + "/docker."), config)
+                self.assertEqual(list((self.directory / "state").glob("docker.*")), [])
+                if not accepted:
+                    reported = reply.replace("Platforms: ", "").replace("\n", " ") if "Platforms" in reply else ""
+                    expected = ("ERROR: the Docker builder cannot build linux/arm64 images (it reports: "
+                                + (reported or "no platforms") + "). Run setup on an ARM64 host, or enable "
+                                "arm64 emulation for Docker Buildx: https://docs.docker.com/build/building/multi-platform/\n")
+                    if "\n" not in reply:
+                        self.assertEqual(result.stderr, expected)
+                    else:
+                        self.assertIn("cannot build linux/arm64", result.stderr)
+
+    def test_page_shows_the_exact_refusal(self):
+        page = (SAMPLE / "README.md").read_text()
+        reply = "Platforms: linux/amd64, linux/amd64/v2, linux/amd64/v3, linux/amd64/v4, linux/386"
+        result = self.shell('TMP_DIR="$CHECK_DIR"\ndocker() { printf "%s\\n" "$REPLY"; }\nbox_require_arm64_builder',
+                            extra={"REPLY": reply})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("```text\n" + result.stderr + "```", page)
+
+    def test_env_settings_reach_run_and_cleanup_but_not_the_target(self):
+        sample = self.directory / "sample"
+        sample.mkdir()
+        settings = {"AWS_PROFILE": "chosen-in-env", "NAMESPACE": "from-env",
+                    "CLUSTER_NAME": "from-env", "DEPLOYMENT_MODE": "nitro"}
+        (sample / ".env").write_text("".join(f"{key}={value}\n" for key, value in settings.items()))
+        self.write_state()
+        body = ('SAMPLE_DIR="$CHECK_DIR/sample"; STATE_FILE="$CHECK_DIR/state.env"; TMP_DIR="$CHECK_DIR"\n'
+                'box_load_env; box_load_state\n'
+                'printf "%s|%s|%s\\n" "${AWS_PROFILE:-}" "$NAMESPACE" "$CLUSTER_NAME"')
+        result = self.shell(body, extra={"AWS_PROFILE": ""})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "chosen-in-env|namespace-a|cluster-a")
+        # Without a .env, nothing is added and the record still loads.
+        (sample / ".env").unlink()
+        result = self.shell(body, extra={"AWS_PROFILE": ""})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "|namespace-a|cluster-a")
+        # A .env that names another mode is refused, not silently overridden.
+        (sample / ".env").write_text("DEPLOYMENT_MODE=eks\n")
+        result = self.shell(body)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("DEPLOYMENT_MODE differs", result.stderr)
+        for script in ("run.sh", "clean.sh"):
+            with self.subTest(script=script):
+                text = (SAMPLE / "scripts" / script).read_text()
+                self.assertIn("box_load_env\nbox_load_state\n", text)
+
+    def test_setup_record_wins_over_every_env_target_setting(self):
+        sample = self.directory / "sample"
+        sample.mkdir()
+        conflicting = {"NAMESPACE": "env-namespace", "CLUSTER_NAME": "env-cluster", "AWS_REGION": "eu-west-1",
+                       "KUBE_CONTEXT": "env-context", "BUCKET": "env-bucket", "ROLE_NAME": "env-role",
+                       "BEDROCK_MODEL_ID": "env-model", "DEPLOYMENT_MODE": "nitro", "AWS_PROFILE": "env-profile"}
+        (sample / ".env").write_text("".join(f"{key}={value}\n" for key, value in conflicting.items()))
+        names = [key for key in conflicting if key != "AWS_PROFILE"]
+        body = ('SAMPLE_DIR="$CHECK_DIR/sample"; STATE_FILE="$CHECK_DIR/state.env"; TMP_DIR="$CHECK_DIR"\n'
+                'box_load_env; box_load_state\n'
+                'for name in ' + " ".join(names + ["AWS_PROFILE"]) + '; do printf "%s=%s\\n" "$name" "${!name-<unset>}"; done')
+        state = self.write_state(BEDROCK_MODEL_ID="record-model")
+        result = self.shell(body)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        loaded = dict(line.split("=", 1) for line in result.stdout.splitlines())
+        for name in names:
+            self.assertEqual(loaded[name], state[name], name)
+        self.assertEqual(loaded["AWS_PROFILE"], "env-profile")
+        # A field the record lacks stays unset; .env never fills it in.
+        for name in ("BUCKET", "ROLE_NAME", "BEDROCK_MODEL_ID"):
+            with self.subTest(missing=name):
+                self.write_state(BEDROCK_MODEL_ID="record-model")
+                kept = [line for line in (self.directory / "state.env").read_text().splitlines()
+                        if not line.startswith(name + "=")]
+                (self.directory / "state.env").write_text("\n".join(kept) + "\n")
+                result = self.shell(body)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(name + "=<unset>\n", result.stdout)
+        for name in ("NAMESPACE", "CLUSTER_NAME", "AWS_REGION", "KUBE_CONTEXT"):
+            with self.subTest(required=name):
+                self.write_state()
+                kept = [line for line in (self.directory / "state.env").read_text().splitlines()
+                        if not line.startswith(name + "=")]
+                (self.directory / "state.env").write_text("\n".join(kept) + "\n")
+                result = self.shell(body)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"the setup record has no {name}", result.stderr)
+
+    def test_env_is_read_as_data_and_only_documented_names(self):
+        sample = self.directory / "sample"
+        sample.mkdir()
+        marker = self.directory / "expanded"
+        body = ('SAMPLE_DIR="$CHECK_DIR/sample"; STATE_FILE="$CHECK_DIR/state.env"; TMP_DIR="$CHECK_DIR"\n'
+                'delete_aws=false\nbox_load_env\n'
+                'printf "%s|%s|%s|%s|%s\\n" "${AWS_PROFILE:-}" "${BUCKET:-}" "$STATE_FILE" "$TMP_DIR" "$delete_aws"')
+        accepted = ["# comment", "", "export AWS_PROFILE=\"quoted profile\"",
+                    "BUCKET='$(touch " + str(marker) + ")'", "ROLE_NAME=plain\r"]
+        (sample / ".env").write_text("\n".join(accepted) + "\n")
+        result = self.shell(body, extra={"AWS_PROFILE": "", "BUCKET": ""})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(),
+                         "quoted profile|$(touch " + str(marker) + ")|" + str(self.directory / "state.env")
+                         + "|" + str(self.directory) + "|false")
+        self.assertFalse(marker.exists())
+        refused = {"STATE_FILE": "/elsewhere/state.env", "TMP_DIR": "/elsewhere", "SAMPLE_DIR": "/elsewhere",
+                   "delete_aws": "true", "DOCKER_BUILDKIT": "0", "PATH": "/elsewhere", "BASH_ENV": "/elsewhere"}
+        for key, value in refused.items():
+            with self.subTest(key=key):
+                (sample / ".env").write_text(f"AWS_PROFILE=fine\n{key}={value}\n")
+                result = self.shell(body)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"sets {key}, which this blueprint does not read", result.stderr)
+                self.assertEqual(result.stdout, "")
+        (sample / ".env").write_text("not a setting\n")
+        result = self.shell(body)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not NAME=value", result.stderr)
 
     def test_owner_is_stable_and_changes_for_every_resource_scope(self):
         owner = self.owner()

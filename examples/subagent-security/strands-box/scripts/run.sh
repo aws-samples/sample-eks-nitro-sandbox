@@ -11,6 +11,7 @@ for arg in "$@"; do
     *) die "unknown argument: $arg" ;;
   esac
 done
+box_load_env
 box_load_state
 [[ "${SETUP_COMPLETE:-false}" == true ]] || die "setup did not finish; run ./scripts/setup.sh again"
 for name in BUCKET ROLE_NAME BEDROCK_MODEL_ID ANALYST_IMAGE; do

@@ -57,6 +57,7 @@ confirm_absent() {
   esac
 }
 # State loading validates the target-derived owner and ECR names before any deletion.
+box_load_env
 box_load_state
 box_check_target
 ns_state="$(box_namespace_state)" || die "namespace ownership is unknown or foreign; deleted nothing"
