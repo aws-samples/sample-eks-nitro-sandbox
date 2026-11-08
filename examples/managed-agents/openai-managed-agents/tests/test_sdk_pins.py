@@ -2,7 +2,7 @@
 
 These do NOT make a live call. They assert that the exact methods and keyword
 surface the sample depends on are present on openai 3.31.0 and
-k8s-agent-sandbox 1.0.6, and that a mocked client is driven the way the scripts
+k8s-agent-sandbox 1.0.10, and that a mocked client is driven the way the scripts
 drive it. A pin bump that moved any of these would fail here instead of at the
 operator's first live run.
 
@@ -53,8 +53,15 @@ def test_agents_sessions_surface_exists():
     for name in ("create",):
         assert hasattr(agents, name), f"client.beta.agents.{name} missing"
     sessions = agents.sessions
-    for name in ("create", "retrieve", "stream", "delete"):
+    for name in ("create", "retrieve", "delete"):
         assert hasattr(sessions, name), f"client.beta.agents.sessions.{name} missing"
+    # submit.py opens the event stream with no input, waits for the environment to
+    # connect, then sends the input separately while the stream stays open.
+    stream_params = inspect.signature(sessions.events.stream).parameters
+    assert "input" not in stream_params, "sessions.events.stream must subscribe without input"
+    create_params = inspect.signature(sessions.events.create).parameters
+    assert "events" in create_params and "idempotency_key" in create_params
+    assert hasattr(agents.environments, "retrieve"), "client.beta.agents.environments.retrieve missing"
 
 
 def test_create_sandbox_accepts_env_kwarg():
@@ -72,7 +79,7 @@ def test_sdk_version_pin_declared():
 
 
 def test_submit_stream_turn_consumes_pinned_events():
-    """stream_turn drives client.beta.agents.sessions.stream and reads event.type."""
+    """stream_turn reads event.type from the stream run_turn opened with sessions.events.stream."""
     import importlib.util
     import pathlib
     import sys
@@ -88,21 +95,11 @@ def test_submit_stream_turn_consumes_pinned_events():
     finally:
         sys.path.remove(str(scripts_dir))
 
-    # A fake streaming context yielding one text-delta event and one failure event.
-    delta = MagicMock(type="agent.session.turn.output_text.delta", delta="hello")
-    err = MagicMock(type="agent.session.turn.failed")
+    # A fake stream yielding one text-delta event and one failure event, then ending.
+    delta = MagicMock(type="agent.session.turn.output_text.delta", delta="hello", event_id="evt_1")
+    err = MagicMock(type="agent.session.turn.failed", event_id="evt_2")
     err.turn.error.message = "boom"
 
-    class _Stream:
-        def __enter__(self):
-            return [delta, err]
-
-        def __exit__(self, *a):
-            return False
-
-    client = MagicMock()
-    client.beta.agents.sessions.stream.return_value = _Stream()
-
-    errors = submit.stream_turn(client, "sesn_a", "do a thing")
-    client.beta.agents.sessions.stream.assert_called_once_with("sesn_a", input="do a thing")
-    assert errors == 1  # the one turn.failed event counted
+    errors = submit.stream_turn(submit._EventPump([delta, err]))
+    # The turn.failed event, and the stream ending before the turn reached idle.
+    assert errors == 2
