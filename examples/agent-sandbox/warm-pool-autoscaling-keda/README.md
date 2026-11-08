@@ -52,7 +52,7 @@ creates writes the pool's `spec.replicas`.
 
 | Component | Pin |
 |---|---|
-| agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.6, as in [Warm pool](../../getting-started/warm-pool/README.md) |
+| agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.10, as in [Warm pool](../../getting-started/warm-pool/README.md) |
 | KEDA ([kedacore/keda](https://github.com/kedacore/keda)) | 2.21.0 |
 | KEDA Helm chart ([kedacore/charts](https://github.com/kedacore/charts)) | 2.21.0 |
 
@@ -193,7 +193,7 @@ not as the size of the pool at run time: from the moment the `ScaledObject` exis
 writes that field.
 
 That works because the `SandboxWarmPool` CRD defines a `/scale` subresource, which is the
-same thing that lets an HPA scale a Deployment. On the agent-sandbox v1.0.6 CRD its
+same thing that lets an HPA scale a Deployment. On the agent-sandbox v1.0.10 CRD its
 `specReplicasPath` is `.spec.replicas`, its `statusReplicasPath` is `.status.replicas` and
 its `labelSelectorPath` is `.status.selector`. Those three path names come from the CRD;
 what the subresource itself answers is the document below. `demand.sh` reads it in stage 1/5
@@ -206,7 +206,7 @@ kubectl get --raw \
 ```
 
 ```text
-{"kind":"Scale","apiVersion":"autoscaling/v1","metadata":{"name":"warm-pool","namespace":"warm-pool-autoscaling-keda","uid":"fbfd79a3-50a8-4409-8ee9-ec31314f67b3","resourceVersion":"18657","creationTimestamp":"2026-11-07T05:28:31Z"},"spec":{"replicas":1},"status":{"replicas":1,"selector":"agents.x-k8s.io/warm-pool-sandbox=61035b05"}}
+{"kind":"Scale","apiVersion":"autoscaling/v1","metadata":{"name":"warm-pool","namespace":"warm-pool-autoscaling-keda","uid":"b2f5e632-01dd-4f09-b0db-1f8801ff4be7","resourceVersion":"6594484","creationTimestamp":"2026-11-08T01:42:44Z"},"spec":{"replicas":1},"status":{"replicas":1,"selector":"agents.x-k8s.io/warm-pool-sandbox=61035b05"}}
 ```
 
 The pods pin their node with `karpenter.sh/do-not-disrupt: "true"`. A warm pod sits Ready
@@ -387,17 +387,21 @@ deployment.apps/claim-exporter created
 service/claim-exporter created
 Waiting for deployment "claim-exporter" rollout to finish: 0 of 1 updated replicas are available...
 deployment "claim-exporter" successfully rolled out
-  exporter is serving: 2026-11-07T05:28:38Z active_claims=0 selector=app.kubernetes.io/part-of=warm-pool-autoscaling-keda
+  exporter is serving: 2026-11-08T01:42:56Z active_claims=0 selector=app.kubernetes.io/part-of=warm-pool-autoscaling-keda
 
 == 4/5 apply the ScaledObject and wait for the HPA KEDA creates ==
 scaledobject.keda.sh/warm-pool created
   hpa/keda-hpa-warm-pool targets SandboxWarmPool/warm-pool
 
 == 5/5 wait for the pool to settle warm at the floor ==
+  readyReplicas=0/1
+  readyReplicas=0/1
+  readyReplicas=0/1
+  readyReplicas=0/1
 NAME        READY   DESIRED   AGE
-warm-pool   1       1         13s
-NAME        SCALETARGETKIND                                      SCALETARGETNAME   MIN   MAX   READY   ACTIVE    FALLBACK   PAUSED   TRIGGERS      AUTHENTICATIONS   AGE
-warm-pool   extensions.agents.x-k8s.io/v1beta1.SandboxWarmPool   warm-pool         1     3     True    Unknown   False      False    metrics-api                     6s
+warm-pool   1       1         51s
+NAME        SCALETARGETKIND                                      SCALETARGETNAME   MIN   MAX   READY   ACTIVE   FALLBACK   PAUSED   TRIGGERS      AUTHENTICATIONS   AGE
+warm-pool   extensions.agents.x-k8s.io/v1beta1.SandboxWarmPool   warm-pool         1     3     True    False    False      False    metrics-api                     37s
 
 the pool is warm at the floor and KEDA owns its spec.replicas.
 Drive demand up and back down:   ./scripts/demand.sh
@@ -407,15 +411,15 @@ Tear it down:                    ./scripts/cleanup.sh
 
 The exporter is already serving `active_claims=0`, the HPA KEDA created targets
 `SandboxWarmPool/warm-pool`, and the `ScaledObject` row shows the bounds, `MIN 1` and
-`MAX 3`. The pool is warm at the floor, 13 seconds after it was created. Stage 5/5 prints a
+`MAX 3`. The pool is warm at the floor, 51 seconds after it was created. Stage 5/5 prints a
 `readyReplicas=0/1` line each time it polls a pool that is not warm yet, so a run that is
-waiting shows what it is waiting for; this run printed none, because the pool was already
-warm at the first poll. The first sandboxed pod on a cold cluster waits for Auto Mode to
-launch a sandbox-capable node, so a first run can take minutes; on this run the node was
-already there.
+waiting shows what it is waiting for; this run printed four. The first sandboxed pod on a
+cold cluster waits for Auto Mode to launch a sandbox-capable node, so a first run can take
+minutes; on this run Auto Mode launched the node the warm pods ran on 19 seconds after the
+pool was created.
 
 Nothing in this blueprint asserts on the `ScaledObject`'s `ACTIVE` column: it reports whether
-KEDA's trigger currently sees demand, and it reads `Unknown` until the first poll completes.
+KEDA's trigger currently sees demand, and with no claims yet it reads `False` here.
 `demand.sh` reads the pool's own `spec.replicas` instead, which is the field the decision is
 written to.
 
@@ -444,27 +448,27 @@ every time.
 == 3/5 one claim adopts a pre-booted pod, and it is a sandbox ==
   PASS  claim demand-1 was created by this run (kubectl create, so an existing claim of that name would have failed here)
 sandboxclaim.extensions.agents.x-k8s.io/demand-1 condition met
-  claim demand-1 -> sandbox/warm-pool-t96cm   launch-type=warm
-  pod created   2026-11-07T05:28:31Z
-  claim created 2026-11-07T05:29:10Z
-  so the pod had already been booted and Ready for 39s when the claim was created
-  kubectl wait for the claim to report Ready, once the claim existed: 0.157s (kubectl wait exit 0)
-  (create and wait together, including both kubectl round trips: 0.214s)
+  claim demand-1 -> sandbox/warm-pool-bnsrk   launch-type=warm
+  pod created   2026-11-08T01:42:44Z
+  claim created 2026-11-08T01:45:23Z
+  so the pod had already been booted and Ready for 159s when the claim was created
+  kubectl wait for the claim to report Ready, once the claim existed: 0.967s (kubectl wait exit 0)
+  (create and wait together, including both kubectl round trips: 2.527s)
   PASS  the claim adopted a pre-booted pod from the pool (sandbox label launch-type=warm), not a cold-created one
-  PASS  the pod was created 39s before the claim existed, so it was adopted, not created for the claim
-  PASS  the claim reported Ready 0.157s after it existed: under a second, where a cold start is about 5 to 6
+  PASS  the pod was created 159s before the claim existed, so it was adopted, not created for the claim
+  PASS  the claim reported Ready 0.967s after it existed: under a second, where a cold start is about 5 to 6
 
 == 4/5 drive demand UP to 3 claims ==
   claims now: 3
   PASS  the demand is 3 claims, so the metric KEDA reads should ask for 3 warm pods
-  exporter is serving: 2026-11-07T05:29:24Z active_claims=3 selector=app.kubernetes.io/part-of=warm-pool-autoscaling-keda
-  [reading] under load spec.replicas=3  status.readyReplicas=1  claims=3
+  exporter is serving: 2026-11-08T01:46:06Z active_claims=3 selector=app.kubernetes.io/part-of=warm-pool-autoscaling-keda
+  [reading] under load spec.replicas=3  status.readyReplicas=3  claims=3
   PASS  under load KEDA raised spec.replicas from 1 to 3: the scale-up decision
   PASS  spec.replicas reached maxReplicaCount=3, matching 3 claims at targetValue 1
-  hpa/keda-hpa-warm-pool: keda-hpa-warm-pool   SandboxWarmPool/warm-pool   3/1   1     3     1     47s
+  hpa/keda-hpa-warm-pool: keda-hpa-warm-pool   SandboxWarmPool/warm-pool   3/1   1     3     1     3m11s
 
 == 5/5 drive demand DOWN to 0 claims ==
-  exporter is serving: 2026-11-07T05:29:43Z active_claims=0 selector=app.kubernetes.io/part-of=warm-pool-autoscaling-keda
+  exporter is serving: 2026-11-08T01:46:16Z active_claims=0 selector=app.kubernetes.io/part-of=warm-pool-autoscaling-keda
   [reading] drained    spec.replicas=1  status.readyReplicas=1  claims=0
   PASS  with the demand gone KEDA lowered spec.replicas from 3 to 1: the scale-down decision
   PASS  spec.replicas came all the way back to the floor minReplicaCount=1: no idle warm capacity held
@@ -491,10 +495,10 @@ the claims went `0 -> 3 -> 0`, and the exporter's own log lines show the count K
 each end of it.
 
 **Why the page reads two fields and asserts on only one.** On this run the under-load reading
-was `spec.replicas=3` and `status.readyReplicas=1`: the decision had moved to 3, and the
-capacity had not caught up yet when the reading was taken. A check on `readyReplicas` would
-have failed this run even though KEDA had made the right decision, which is exactly why the
-two fields are printed separately rather than one being taken for the other.
+was `spec.replicas=3` and `status.readyReplicas=3`: the capacity had caught up with the
+decision by the time the reading was taken. That agreement is not what shows KEDA made a
+decision, which is exactly why the two fields are printed separately rather than one being
+taken for the other.
 
 `readyReplicas` cannot carry the claim on its own, for two reasons that have nothing to do
 with timing. It lags, so a reading taken a few seconds earlier shows the old number and would
@@ -511,8 +515,9 @@ printed beside it — never asserted, and never allowed to stand in for it.
 The HPA row says the same in its own terms: `3/1` is the metric against the target, three
 claims against `targetValue: 1`, and `SandboxWarmPool/warm-pool` is what it is scaling.
 
-**Step 7: The claimed pod is a sandbox.** The first claim adopted a pod the pool had booted
-39 seconds earlier, which is what makes it sub-second: there was nothing to create. While
+**Step 7: The claimed pod is a sandbox.** The first claim adopted a pod the pool had created
+159 seconds earlier, whose guest had been up for about two minutes, which is what makes it
+sub-second: there was nothing to create. While
 the claim still holds that pod, stage 3/5 of `demand.sh` reads the three signals that show
 it ran in a sandbox of its own, and reads each one again from the exporter pod, which is an
 ordinary pod on the same cluster. These are the commands it runs:
@@ -532,30 +537,30 @@ in stage 5/5, so create one first with `kubectl -n $NS apply -f -` from the clai
 output from the fresh run, with the exporter pod's answers under the claimed pod's:
 
 ```text
-  the claimed pod (warm-pool-t96cm), in a sandbox:
+  the claimed pod (warm-pool-bnsrk), in a sandbox:
     uname -rv                        -> 6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-    cat /proc/uptime                 -> 38.46 36.44
+    cat /proc/uptime                 -> 126.76 123.80
     ls /sys/block                    -> dm-0 vda vdb vdc
     cat /sys/class/dmi/id/product_name -> c8a.enclave
-  the exporter pod (claim-exporter-54cfbb9984-c8cgn), an ordinary pod:
+  the exporter pod (claim-exporter-54cfbb9984-pbhqd), an ordinary pod:
     uname -rv                        -> 6.18.56 #2 SMP PREEMPT_DYNAMIC Fri Oct 30 22:32:37 UTC 2026
-    cat /proc/uptime                 -> 1779.53 3492.18
-    ls /sys/block                    -> dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0
-    cat /sys/class/dmi/id/product_name -> c8a.large
+    cat /proc/uptime                 -> 14680.50 27278.87
+    ls /sys/block                    -> dm-0 nvme0n1 nvme1n1 nvme2n1 zram0
+    cat /sys/class/dmi/id/product_name -> c6a.large
 ```
 
-The kernels differ: the guest runs `6.18.54`, build `#1` from 22 October, where the node
-runs `6.18.56`, build `#2` from 30 October. The pod did not boot the node's kernel. That
-kernel belongs to the pod alone.
+The kernels differ: the guest runs `6.18.54`, build `#1` from 22 October, where the ordinary
+pod reports its node's kernel, `6.18.56`, build `#2` from 30 October. An ordinary pod shares
+its node's kernel; the sandboxed pod reports one of its own. On this run the exporter was on
+a different node from the claimed pod, so the comparison is with an ordinary pod on the same
+cluster rather than with the claimed pod's own node.
 
-The uptime is the pod's own, 38 seconds, matching a pod the pool had booted 39 seconds before
-the claim adopted it, where the ordinary pod reports its node's, about 29 minutes. The block
-devices are virtio `vd*` where the ordinary pod sees the instance's `nvme*`, and the node's
-`loop*` devices with them. And the product name is `c8a.enclave`, the sandbox VM itself,
-where the ordinary pod reads the EC2 instance it shares with the other pods on its node, a
-`c8a.large`. The
-sandboxed pod never sees that instance type at all: the only machine it can describe is its
-own guest.
+The uptime is 126 seconds, less than the 159 seconds since the pool created the pod, because
+the guest boots only once the pod has a node; the ordinary pod reports its node's, about four
+hours. The block devices are virtio `vd*` where the ordinary pod sees the instance's `nvme*`.
+And the product name is `c8a.enclave`, the sandbox VM itself, where the ordinary pod reads the
+EC2 instance it runs on, a `c6a.large`. The sandboxed pod never sees an EC2 instance type at
+all: the only machine it can describe is its own guest.
 
 ## No network to restrict
 
@@ -575,14 +580,14 @@ kubectl -n $NS exec $POD -- wget -T 5 -O /dev/null https://aws.amazon.com
 ```text
   the claimed pod is network-isolated, so there is no network to restrict:
   PASS  kubectl exec into the claimed pod works, so the readings below are the pod's answers
-  $ kubectl exec warm-pool-t96cm -- ip -o addr show
+  $ kubectl exec warm-pool-bnsrk -- ip -o addr show
     1: lo    inet 127.0.0.1/8 scope host lo\       valid_lft forever preferred_lft forever
     1: lo    inet6 ::1/128 scope host noprefixroute \       valid_lft forever preferred_lft forever
   PASS  the only interface with an address in the claimed pod is loopback, in either address family: there is no network interface to carry traffic
-  $ kubectl exec warm-pool-t96cm -- ip route show default         # prints nothing: no IPv4 default route
-  $ kubectl exec warm-pool-t96cm -- ip -6 route show default      # prints nothing: no IPv6 default route
+  $ kubectl exec warm-pool-bnsrk -- ip route show default         # prints nothing: no IPv4 default route
+  $ kubectl exec warm-pool-bnsrk -- ip -6 route show default      # prints nothing: no IPv6 default route
   PASS  the claimed pod has no default route for IPv4 and none for IPv6, so nothing would know where to send a packet
-  $ kubectl exec warm-pool-t96cm -- wget -T 5 -O /dev/null https://aws.amazon.com
+  $ kubectl exec warm-pool-bnsrk -- wget -T 5 -O /dev/null https://aws.amazon.com
     wget: bad address 'aws.amazon.com'
     command terminated with exit code 1
   PASS  a request out of the claimed pod fails the way a pod with no network fails, rather than reaching anything
@@ -652,13 +657,13 @@ scaledobject.keda.sh "warm-pool" deleted from warm-pool-autoscaling-keda namespa
 == 2/4 apply the same demand: 3 claims ==
   claims now: 3
   PASS  the same demand is present for the control: 3 claims, as in demand.sh
-  exporter is serving: 2026-11-07T05:31:03Z active_claims=3 selector=app.kubernetes.io/part-of=warm-pool-autoscaling-keda
+  exporter is serving: 2026-11-08T01:47:26Z active_claims=3 selector=app.kubernetes.io/part-of=warm-pool-autoscaling-keda
   PASS  the exporter served active_claims=3, so the demand signal KEDA would have read was there
   (the demand signal is there; with no ScaledObject, nothing reads it)
 
 == 3/4 watch for the same window demand.sh gives the scale-up (300s) ==
   [reading] under load spec.replicas=1  status.readyReplicas=1  claims=3
-  spec.replicas read 30 time(s) during the window, every one of them 1
+  spec.replicas read 28 time(s) during the window, every one of them 1
   PASS  with no autoscaler, spec.replicas stayed flat at 1 under the same 3 claims
 
 == 4/4 put the sample back: claims deleted, ScaledObject re-applied ==
@@ -720,9 +725,9 @@ cannot leave the blueprint without its autoscaler.
 - **That client-side measurement includes your round trip to the cluster.** Run `demand.sh`
   from a machine far from the cluster's Region and the under-a-second check in stage 3/5 can
   fail on the network alone. On one run from a machine where a single `kubectl get` took
-  about 1.5 seconds, `kubectl wait` took 1.972 seconds and that check failed; the walkthrough
-  above was run from inside the cluster's Region, where it took 0.157 seconds. Run it from
-  close to the cluster, such as AWS CloudShell in the same Region.
+  about 1.5 seconds, `kubectl wait` took 1.972 seconds and that check failed; on the
+  walkthrough above it took 0.967 seconds. Run it from close to the cluster, such as AWS
+  CloudShell in the same Region.
 - **`spec.replicas` is not yours to set once KEDA owns it.** Editing the pool's
   `spec.replicas` by hand while the `ScaledObject` exists lasts until the HPA's next sync.
   Change `minReplicaCount` or `maxReplicaCount` on the `ScaledObject` instead.
