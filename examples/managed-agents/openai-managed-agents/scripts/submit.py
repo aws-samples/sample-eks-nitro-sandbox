@@ -6,15 +6,20 @@ application-managed provisioning):
 
   1. Create the session with environment.type: self_hosted. OpenAI returns the
      session's environment id and its remote URL.
-  2. Hand those to the launcher in the cluster, which claims a warm Nitro
-     sandbox and starts codex exec-server in it pointing at that remote URL.
+  2. Open the session's event stream, then hand the environment id and remote
+     URL to the launcher in the cluster, which claims a Nitro sandbox and starts
+     codex exec-server in it pointing at that remote URL.
      The launcher is reached over a ClusterIP Service you port-forward:
        kubectl port-forward svc/openai-launcher 8080:8080
      Every request to the launcher carries LAUNCHER_AUTH_TOKEN from your .env.
-  3. Stream the session until it settles, printing the agent's output.
+  3. Wait on the open stream for agent.session.environment.connected (up to
+     --connect-timeout seconds, default 300). Only then send the prompt, and
+     keep streaming the turn, printing the agent's output. On the timeout, or on
+     agent.session.environment.failed, exit non-zero and send no prompt.
 
 A follow-up turn in the SAME session runs in the SAME claimed pod, so files the
-first turn wrote are still there:
+first turn wrote are still there. Its environment is usually still connected:
+the API's environment status says so, and the prompt goes at once:
 
   set -a; . ./.env; set +a
   python scripts/submit.py "write hello.txt with the kernel build, then stop"
@@ -30,11 +35,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
+import uuid
 
-from openai import BadRequestError
+from openai import APIStatusError, BadRequestError
 
 from _client import make_client
 
@@ -57,6 +66,11 @@ DEFAULT_LAUNCHER_URL = "http://127.0.0.1:8080"
 # SANDBOX_READY_TIMEOUT differs from the default.
 DEFAULT_READY_TIMEOUT_HINT = 300
 HANDOFF_TIMEOUT_HEADROOM = 30
+
+# How long to wait for agent.session.environment.connected before giving up
+# without sending the prompt. OpenAI's self-hosted guide has the application open
+# the session's event stream, wait for that event, and only then send input.
+DEFAULT_CONNECT_TIMEOUT = 300
 
 
 def _handoff_timeout() -> int:
@@ -171,32 +185,161 @@ def create_session(client, agent_id: str, spend_control: dict | None) -> object:
         raise
 
 
-def stream_turn(client, session_id: str, prompt: str) -> int:
-    """Stream one turn's events and print the agent's output. Return error count."""
+class _EventPump:
+    """Read a session's event stream on a background thread, so a wait on it can time out.
+
+    The stream comes from client.beta.agents.sessions.events.stream(session_id),
+    which subscribes without sending input. Events are deduplicated by event_id,
+    as the SDK's own sessions.stream helper does.
+    """
+
+    END = object()
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._queue: queue.Queue = queue.Queue()
+        self._seen: set[str] = set()
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self) -> None:
+        try:
+            for event in self._stream:
+                self._queue.put(event)
+        except Exception as exc:  # handed to the reader of the queue
+            self._queue.put(exc)
+        self._queue.put(self.END)
+
+    def next(self, timeout: float | None):
+        """The next new event, or END. Raises queue.Empty on timeout, or the stream's error."""
+        while True:
+            item = self._queue.get(timeout=timeout)
+            if isinstance(item, BaseException):
+                raise item
+            event_id = getattr(item, "event_id", None)
+            if item is self.END or event_id is None or event_id not in self._seen:
+                if event_id is not None:
+                    self._seen.add(event_id)
+                return item
+
+    def close(self) -> None:
+        self._stream.close()
+
+
+def wait_for_environment(client, events: _EventPump, environment_id: str, timeout: float) -> None:
+    """Return once the environment is connected; otherwise exit non-zero. Sends nothing.
+
+    An environment that is already connected (a follow-up turn) may emit no new
+    connection event, so its status is read first:
+    client.beta.agents.environments.retrieve(environment_id).status.
+    """
+    try:
+        status = client.beta.agents.environments.retrieve(environment_id).status
+    except APIStatusError as exc:
+        status = None
+        print(f"[note] could not read the environment's status (HTTP {exc.status_code}); "
+              "waiting for its connection event")
+    if status == "connected":
+        print("[environment already connected]")
+        return
+    if status == "failed":
+        sys.exit("the environment's status is failed; no prompt was sent.")
+
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            sys.exit(f"the environment did not connect within {timeout:g}s; no prompt was sent. "
+                     "Check the claimed sandbox's log (kubectl logs <SANDBOX>).")
+        try:
+            event = events.next(remaining)
+        except queue.Empty:
+            continue
+        if event is _EventPump.END:
+            sys.exit("the session's event stream ended before the environment connected; "
+                     "no prompt was sent.")
+        if event.type == "agent.session.environment.connected":
+            print("[environment connected]")
+            return
+        if event.type == "agent.session.environment.failed":
+            sys.exit(f"[environment failed] {event.environment.error}; no prompt was sent.")
+        if event.type in ("agent.session.failed", "error"):
+            sys.exit(f"[session error] {event.type} before the environment connected; "
+                     "no prompt was sent.")
+
+
+def send_input(client, session_id: str, prompt: str) -> None:
+    """Submit the prompt as one user message (the shape the SDK's sessions.stream sends)."""
+    client.beta.agents.sessions.events.create(
+        session_id,
+        events=[{"type": "agent.session.input.message",
+                 "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}]}],
+        idempotency_key=str(uuid.uuid4()),
+    )
+
+
+def stream_turn(events: _EventPump) -> int:
+    """Stream one turn's events and print the agent's output. Return error count.
+
+    The turn ends as the SDK's sessions.stream helper ends it: on
+    agent.session.failed, or on agent.session.idle after the main agent's turn
+    (the first turn.created with no subagent_id) completed, failed or was cancelled.
+    """
     errors = 0
     saw_text = False
-    with client.beta.agents.sessions.stream(session_id, input=prompt) as events:
-        for event in events:
-            kind = event.type
-            if kind == "agent.session.environment.connected":
-                print("[environment connected]")
-            elif kind == "agent.session.turn.output_text.delta":
-                print(event.delta, end="", flush=True)
-                saw_text = True
-            elif kind == "agent.session.turn.output_text.done" and not saw_text:
-                print(event.text)
-            elif kind == "agent.session.turn.failed":
-                errors += 1
-                msg = event.turn.error.message if event.turn.error else "unknown"
-                print(f"\n[turn failed] {msg}")
-            elif kind == "agent.session.environment.failed":
-                errors += 1
-                print(f"\n[environment failed] {event.environment.error}")
-            elif kind in ("agent.session.failed", "error"):
-                errors += 1
-                print(f"\n[session error] {kind}")
+    turn_id = None
+    turn_ended = False
+    while True:
+        event = events.next(None)
+        if event is _EventPump.END:
+            errors += 1
+            print("\n[stream ended] the event stream closed before the turn finished")
+            break
+        kind = event.type
+        if kind == "agent.session.environment.connected":
+            print("[environment connected]")
+        elif kind == "agent.session.turn.output_text.delta":
+            print(event.delta, end="", flush=True)
+            saw_text = True
+        elif kind == "agent.session.turn.output_text.done" and not saw_text:
+            print(event.text)
+        elif kind == "agent.session.turn.failed":
+            errors += 1
+            msg = event.turn.error.message if event.turn.error else "unknown"
+            print(f"\n[turn failed] {msg}")
+        elif kind == "agent.session.environment.failed":
+            errors += 1
+            print(f"\n[environment failed] {event.environment.error}")
+        elif kind in ("agent.session.failed", "error"):
+            errors += 1
+            print(f"\n[session error] {kind}")
+        if kind == "agent.session.turn.created" and event.turn.subagent_id is None and turn_id is None:
+            turn_id = event.turn_id
+        if kind in ("agent.session.turn.completed", "agent.session.turn.failed",
+                    "agent.session.turn.cancelled") and turn_id is not None and event.turn_id == turn_id:
+            turn_ended = True
+        if kind == "agent.session.failed" or (kind == "agent.session.idle" and turn_ended):
+            break
     print()
     return errors
+
+
+def run_turn(client, session_id: str, environment_id: str, prompt: str, connect_timeout: float,
+             start_executor=None) -> int:
+    """Open the event stream, wait for the environment to connect, then send the prompt.
+
+    start_executor, if given, runs after the stream is open and before the wait:
+    the first turn hands the session to the launcher there.
+    """
+    events = _EventPump(client.beta.agents.sessions.events.stream(session_id))
+    try:
+        if start_executor is not None:
+            start_executor()
+        wait_for_environment(client, events, environment_id, connect_timeout)
+        send_input(client, session_id, prompt)
+        print("\nagent output:\n")
+        return stream_turn(events)
+    finally:
+        events.close()
 
 
 def main() -> None:
@@ -207,16 +350,21 @@ def main() -> None:
                         help=f"the launcher intake URL (default {DEFAULT_LAUNCHER_URL})")
     parser.add_argument("--budget-cents", default="100",
                         help="spend ceiling in US cents (default 100 = $1.00); 0 for none")
+    parser.add_argument("--connect-timeout", type=float, default=DEFAULT_CONNECT_TIMEOUT,
+                        help="seconds to wait for the environment to connect before giving up "
+                             f"without sending the prompt (default {DEFAULT_CONNECT_TIMEOUT})")
     args = parser.parse_args()
 
     client = make_client()
 
     # Follow-up turn: the session (and its claimed pod) already exist. The pod is
-    # the one the launcher claimed for this session; the follow-up turn's stream
-    # runs there because the executor is still connected to the same environment.
+    # the one the launcher claimed for this session; the follow-up turn runs there
+    # because the executor is still connected to the same environment.
     if args.session_id:
         print(f"follow-up turn in session {args.session_id} (same claimed pod)")
-        sys.exit(1 if stream_turn(client, args.session_id, args.task) else 0)
+        environment_id = client.beta.agents.sessions.retrieve(args.session_id).environment.id
+        errors = run_turn(client, args.session_id, environment_id, args.task, args.connect_timeout)
+        sys.exit(1 if errors else 0)
 
     agent_id = os.environ.get("AGENT_ID")
     if not agent_id:
@@ -239,10 +387,12 @@ def main() -> None:
     print(f"created session {session.id}")
     print(f"environment {env.id}")
 
-    hand_off_to_launcher(args.launcher_url, token, session.id, env.id, env.remote_url)
-
-    print("\nagent output:\n")
-    errors = stream_turn(client, session.id, args.task)
+    # Open the event stream first, then start the executor, then wait for it to
+    # connect: only a connected environment gets the prompt.
+    errors = run_turn(
+        client, session.id, env.id, args.task, args.connect_timeout,
+        start_executor=lambda: hand_off_to_launcher(args.launcher_url, token, session.id, env.id, env.remote_url),
+    )
 
     final = client.beta.agents.sessions.retrieve(session.id)
     print(f"\nfinal status: {final.status}")

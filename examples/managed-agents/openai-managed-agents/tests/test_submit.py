@@ -16,6 +16,16 @@ without a live call:
     param, another spend_control 400, a 400 that only names those words in its
     message, and an error that is not a 400.
 
+And, against a mocked event stream, the order a turn runs in:
+
+  * the event stream is open before the launcher hand-off starts the executor;
+  * no input is sent before agent.session.environment.connected, and the input
+    is sent after it;
+  * agent.session.environment.failed, or no connection within --connect-timeout,
+    sends nothing and exits non-zero;
+  * a follow-up turn whose environment is already connected proceeds, and an
+    environment status the API will not return falls back to the stream's event.
+
 Both inputs of each accept/reject pair are exercised, per AGENTS.md.
 
 Run with: python -m pytest
@@ -24,13 +34,17 @@ Run with: python -m pytest
 from __future__ import annotations
 
 import importlib.util
+import itertools
 import pathlib
 import sys
+import threading
+import time
+from types import SimpleNamespace
 
 import pytest
 
 import httpx2 as httpx  # the HTTP library openai 3.31.0 ships with
-from openai import BadRequestError, UnprocessableEntityError
+from openai import BadRequestError, NotFoundError, UnprocessableEntityError
 
 
 def _load_submit():
@@ -240,3 +254,200 @@ def test_a_budget_is_passed_through_when_the_project_supports_it():
 
     assert len(sessions.calls) == 1
     assert sessions.calls[0]["spend_control"] == {"limit": 100}
+
+
+# --- the turn waits for the environment to connect ---------------------------
+_ids = itertools.count(1)
+
+
+def _event(kind: str, **fields):
+    return SimpleNamespace(type=kind, event_id=f"evt_{next(_ids)}", **fields)
+
+
+def _connected():
+    return _event("agent.session.environment.connected", environment=SimpleNamespace(status="connected"))
+
+
+def _pending():
+    return _event("agent.session.environment.pending", environment=SimpleNamespace(status="pending"))
+
+
+def _turn(text: str = "hello from the sandbox"):
+    """The events of one finished turn, as the stream sends them after the input."""
+    turn = SimpleNamespace(subagent_id=None, error=None)
+    return [
+        _event("agent.session.in_progress"),
+        _event("agent.session.turn.created", turn=turn, turn_id="turn_1"),
+        _event("agent.session.turn.output_text.delta", delta=text),
+        _event("agent.session.turn.completed", turn=turn, turn_id="turn_1"),
+        _event("agent.session.idle"),
+    ]
+
+
+class _FakeAPI:
+    """The SDK calls submit.py makes for a turn, recording the order they happen in.
+
+    The stream yields `before_input` at once. It yields `after_input` only once an
+    input has been sent, then holds the connection open until it is closed, the way
+    a live session's stream stays open.
+    """
+
+    def __init__(self, before_input, after_input=(), env_status="pending", env_error=None):
+        self.before_input = list(before_input)
+        self.after_input = list(after_input)
+        self.env_status = env_status
+        self.env_error = env_error
+        self.log: list[str] = []
+        self.inputs: list[list] = []
+        self.input_before_connected = None
+        self._sent = threading.Event()
+        self._closed = threading.Event()
+        events = SimpleNamespace(stream=self._stream, create=self._send)
+        sessions = SimpleNamespace(create=self._create_session, retrieve=self._retrieve_session, events=events)
+        environments = SimpleNamespace(retrieve=self._retrieve_environment)
+        self.beta = SimpleNamespace(agents=SimpleNamespace(sessions=sessions, environments=environments))
+
+    def _create_session(self, **kwargs):
+        env = SimpleNamespace(type="self_hosted", id="env_1", remote_url="https://remote.test/rt")
+        return SimpleNamespace(id="sess_1", environment=env)
+
+    def _retrieve_session(self, session_id):
+        return SimpleNamespace(id=session_id, status="idle", environment=SimpleNamespace(id="env_1"))
+
+    def _retrieve_environment(self, environment_id):
+        self.log.append("environment status read")
+        if self.env_error is not None:
+            raise self.env_error
+        return SimpleNamespace(id=environment_id, status=self.env_status)
+
+    def _send(self, session_id, *, events, idempotency_key):
+        self.log.append("input sent")
+        self.inputs.append(events)
+        self._sent.set()
+
+    def _events(self):
+        for event in self.before_input:
+            if event.type == "agent.session.environment.connected":
+                time.sleep(0.05)  # room for an early input to land first
+                self.input_before_connected = self._sent.is_set()
+            self.log.append(f"yield {event.type}")
+            yield event
+        if self.after_input and self._sent.wait(5):
+            for event in self.after_input:
+                self.log.append(f"yield {event.type}")
+                yield event
+        self._closed.wait(10)
+
+    def _stream(self, session_id):
+        self.log.append("stream opened")
+        api = self
+
+        class _Stream:
+            def __iter__(self):
+                return api._events()
+
+            def close(self):
+                api.log.append("stream closed")
+                api._closed.set()
+
+        return _Stream()
+
+
+def _run_main(monkeypatch, api, *argv):
+    """Run submit.main() against `api`, with the launcher hand-off recorded, not sent."""
+    monkeypatch.setattr(submit, "make_client", lambda: api)
+    monkeypatch.setattr(submit, "hand_off_to_launcher", lambda *a: api.log.append("hand-off"))
+    monkeypatch.setenv("AGENT_ID", "agent_1")
+    monkeypatch.setenv("LAUNCHER_AUTH_TOKEN", "test-token")  # pragma: allowlist secret
+    monkeypatch.setattr(sys, "argv", ["submit.py", *argv])
+    with pytest.raises(SystemExit) as raised:
+        submit.main()
+    return raised.value.code
+
+
+def test_first_turn_sends_no_input_before_the_environment_connects(monkeypatch):
+    api = _FakeAPI(before_input=[_pending(), _pending(), _connected()], after_input=_turn())
+
+    _run_main(monkeypatch, api, "--budget-cents", "0", "do the task")
+
+    assert api.input_before_connected is False, "the input went before the environment connected"
+    assert api.log.index("input sent") > api.log.index("yield agent.session.environment.connected")
+
+
+def test_first_turn_sends_the_input_after_the_environment_connects(monkeypatch, capsys):
+    api = _FakeAPI(before_input=[_pending(), _connected()], after_input=_turn())
+
+    code = _run_main(monkeypatch, api, "--budget-cents", "0", "do the task")
+
+    assert code == 0
+    assert api.log.index("stream opened") < api.log.index("hand-off"), "the stream opens before the executor starts"
+    assert api.log.index("hand-off") < api.log.index("input sent")
+    assert len(api.inputs) == 1
+    assert api.inputs[0] == [{"type": "agent.session.input.message",
+                              "input": [{"role": "user", "content": [{"type": "input_text", "text": "do the task"}]}]}]
+    assert "stream closed" in api.log
+    out = capsys.readouterr().out
+    assert "[environment connected]" in out and "hello from the sandbox" in out
+    assert "final status: idle" in out
+
+
+def test_environment_failed_sends_nothing_and_exits_non_zero(monkeypatch, capsys):
+    failed = _event("agent.session.environment.failed",
+                    environment=SimpleNamespace(status="failed", error="executor registration refused"))
+    api = _FakeAPI(before_input=[_pending(), failed], after_input=_turn())
+
+    code = _run_main(monkeypatch, api, "--budget-cents", "0", "--connect-timeout", "2", "do the task")
+
+    assert code not in (0, None)
+    assert "environment failed" in str(code) and "no prompt was sent" in str(code)
+    assert api.inputs == [] and "input sent" not in api.log
+    assert "stream closed" in api.log
+
+
+def test_no_connection_within_the_timeout_sends_nothing_and_exits_non_zero(monkeypatch):
+    api = _FakeAPI(before_input=[_pending()], after_input=_turn())
+
+    start = time.monotonic()
+    code = _run_main(monkeypatch, api, "--budget-cents", "0", "--connect-timeout", "0.3", "do the task")
+    elapsed = time.monotonic() - start
+
+    assert code not in (0, None)
+    assert "did not connect within 0.3s" in str(code) and "no prompt was sent" in str(code)
+    assert api.inputs == [] and "input sent" not in api.log
+    assert 0.3 <= elapsed < 5
+    assert "stream closed" in api.log
+
+
+def test_follow_up_turn_with_the_environment_already_connected_proceeds(monkeypatch, capsys):
+    # No connection event comes: the environment connected during the first turn.
+    api = _FakeAPI(before_input=[], after_input=_turn("first line"), env_status="connected")
+
+    start = time.monotonic()
+    code = _run_main(monkeypatch, api, "--session-id", "sess_1", "--connect-timeout", "3", "read it back")
+
+    assert code == 0
+    assert time.monotonic() - start < 2, "an already-connected environment must not wait for the timeout"
+    assert api.log.index("environment status read") < api.log.index("input sent")
+    assert len(api.inputs) == 1
+    out = capsys.readouterr().out
+    assert "[environment already connected]" in out and "first line" in out
+
+
+def test_follow_up_turn_with_the_environment_not_connected_waits(monkeypatch):
+    api = _FakeAPI(before_input=[], after_input=_turn(), env_status="disconnected")
+
+    code = _run_main(monkeypatch, api, "--session-id", "sess_1", "--connect-timeout", "0.3", "read it back")
+
+    assert code not in (0, None) and "did not connect" in str(code)
+    assert api.inputs == []
+
+
+def test_an_unreadable_environment_status_falls_back_to_the_connection_event(monkeypatch, capsys):
+    error = _api_error(NotFoundError, 404, "No environment found", param=None)
+    api = _FakeAPI(before_input=[_pending(), _connected()], after_input=_turn(), env_error=error)
+
+    code = _run_main(monkeypatch, api, "--budget-cents", "0", "do the task")
+
+    assert code == 0
+    assert api.input_before_connected is False
+    assert "could not read the environment's status (HTTP 404)" in capsys.readouterr().out

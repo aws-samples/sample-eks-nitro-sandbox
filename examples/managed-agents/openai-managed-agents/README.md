@@ -103,9 +103,10 @@ is application-managed provisioning, and this blueprint uses it:
 1. The operator's [`submit.py`](scripts/submit.py) creates the session with
    `environment.type: self_hosted`. OpenAI returns the session's environment id and its
    remote URL.
-2. `submit.py` POSTs those to the launcher in the cluster, over a `kubectl port-forward` to a
-   ClusterIP Service, with a bearer token the launcher checks. The blueprint creates no Ingress,
-   LoadBalancer or NodePort.
+2. `submit.py` opens the session's event stream, then POSTs the environment id and remote URL
+   to the launcher in the cluster, over a `kubectl port-forward` to a ClusterIP Service, with a
+   bearer token the launcher checks. The blueprint creates no Ingress, LoadBalancer or
+   NodePort.
 3. The launcher claims a sandbox from the `SandboxWarmPool` with a `SandboxClaim`, and sets
    the session id, environment id, remote URL and the environment key the launcher holds in
    that claim's `spec.env`. The controller cold-starts the claim's pod with those injected.
@@ -116,6 +117,12 @@ is application-managed provisioning, and this blueprint uses it:
    <environment_id>` with the environment key already present as `CODEX_API_KEY`. The
    executor dials out, registers for the environment, and runs the agent's tool calls in
    `/workspace`.
+5. `submit.py` sends the prompt only after the open stream reports
+   `agent.session.environment.connected`, the order OpenAI's
+   [self-hosted sandbox guide](https://developers.openai.com/api/docs/guides/agents-api/environments/self-hosted)
+   gives, and keeps streaming the turn. If the environment does not connect within
+   `--connect-timeout` seconds (300 by default), or the stream reports
+   `agent.session.environment.failed`, `submit.py` exits non-zero and sends no prompt.
 
 **How the key reaches the sandbox, and why not over HTTP.** OpenAI documents no credential
 narrower than the environment key for a self-hosted session, so the sandbox must hold that
@@ -394,7 +401,9 @@ kubectl port-forward svc/openai-launcher 8080:8080
 ```
 
 In another, start a session from your machine. `submit.py` creates the self-hosted session,
-hands the launcher its environment id and remote URL, and streams the agent's output:
+opens its event stream, hands the launcher its environment id and remote URL, and waits for
+the executor to connect. Only then does it send the prompt, and it streams the agent's
+output:
 
 ```bash
 set -a; . ./.env; set +a
@@ -485,7 +494,9 @@ reaches the launcher or the sandbox; the launcher holds the environment key, a c
 holds it for its one session, and a warm pod holds neither.
 
 **Step 10: A follow-up turn in the same pod.** Send a second turn to the same session. It runs
-in the same claimed pod, so the file the first turn wrote is still there:
+in the same claimed pod, so the file the first turn wrote is still there. `submit.py` opens the
+event stream and reads the environment's status first: when the environment is still
+connected it sends the prompt at once, and otherwise it waits for the connection as in step 8:
 
 ```bash
 .venv/bin/python scripts/submit.py --session-id sesn_... "Read report.txt from your working directory and tell me its first line."
