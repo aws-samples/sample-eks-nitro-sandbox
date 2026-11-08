@@ -759,8 +759,8 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/openshell/kubernetes/scripts/demo.sh'
-      line_start: 208
-      line_end: 208
+      line_start: 228
+      line_end: 228
       reason: 'SHA-256 of the empty string, the digest of an empty file: a well-known constant'
       expiration: '2027-12-31'
     # Ordinary contrast pods: plain on purpose.
