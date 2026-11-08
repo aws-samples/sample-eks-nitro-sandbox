@@ -60,67 +60,67 @@ global_settings:
       reason: "The trusted controller selects the absolute Box executable and configuration outside worker write grants. Arguments are passed without a shell; a restricted environment is supplied."
       expiration: "2027-01-31"
     - rule_id: B404
-      path: "scripts/test-strands-box-availability.py"
+      path: "examples/subagent-security/strands-box/tests/test_availability.py"
       line_start: 13
       line_end: 13
       reason: "Subprocess import is required for the separately reviewed process launch in this file; the import executes no command."
       expiration: "2027-01-31"
     - rule_id: B603
-      path: "scripts/test-strands-box-availability.py"
+      path: "examples/subagent-security/strands-box/tests/test_availability.py"
       line_start: 84
       line_end: 87
       reason: "Executes the actual correlation CLI with the current Python interpreter and owned fixture paths; separate arguments preserve exit-status and malformed-input coverage."
       expiration: "2027-01-31"
     - rule_id: B404
-      path: "scripts/test-strands-box-correlation.py"
+      path: "examples/subagent-security/strands-box/tests/test_correlation.py"
       line_start: 8
       line_end: 8
       reason: "Subprocess import is required for the separately reviewed process launch in this file; the import executes no command."
       expiration: "2027-01-31"
     - rule_id: B603
-      path: "scripts/test-strands-box-correlation.py"
+      path: "examples/subagent-security/strands-box/tests/test_correlation.py"
       line_start: 225
       line_end: 225
       reason: "Executes the actual correlation CLI with the current Python interpreter and owned fixture paths; separate arguments preserve exit-status and rejection coverage."
       expiration: "2027-01-31"
     - rule_id: B105
-      path: "scripts/test-strands-box-correlation.py"
+      path: "examples/subagent-security/strands-box/tests/test_correlation.py"
       line_start: 574
       line_end: 574
       reason: "The value /synthetic/token is a mocked token-file path used to test access refusal, not a password or credential value."
       expiration: "2027-12-31"
     - rule_id: B404
-      path: "scripts/test-strands-box-kernels.py"
+      path: "examples/subagent-security/strands-box/tests/test_kernels.py"
       line_start: 6
       line_end: 6
       reason: "Subprocess import is required for the separately reviewed process launch in this file; the import executes no command."
       expiration: "2027-01-31"
     - rule_id: B603
-      path: "scripts/test-strands-box-kernels.py"
+      path: "examples/subagent-security/strands-box/tests/test_kernels.py"
       line_start: 50
       line_end: 51
       reason: "Executes the actual kernel verifier CLI with the current Python interpreter and synthetic fixture arguments; tests must observe its real exit status and error output."
       expiration: "2027-01-31"
     - rule_id: B404
-      path: "scripts/test-strands-box-lifecycle.py"
+      path: "examples/subagent-security/strands-box/tests/test_lifecycle.py"
       line_start: 9
       line_end: 9
       reason: "Subprocess import is required for the separately reviewed process launch in this file; the import executes no command."
       expiration: "2027-01-31"
     - rule_id: B603
-      path: "scripts/test-strands-box-lifecycle.py"
+      path: "examples/subagent-security/strands-box/tests/test_lifecycle.py"
       line_start: 52
       line_end: 53
       reason: "Executes repository-owned test programs with the Bash executable resolved before per-case PATH changes. No agent input enters the shell program; cloud tools are replaced by test functions."
       expiration: "2027-01-31"
     - rule_id: B404
-      path: "scripts/test-strands-box-setup.py"
+      path: "examples/subagent-security/strands-box/tests/test_setup.py"
       line_start: 8
       line_end: 8
       reason: "Subprocess import is required for the separately reviewed process launch in this file; the import executes no command."
       expiration: "2027-01-31"
     - rule_id: B603
-      path: "scripts/test-strands-box-setup.py"
+      path: "examples/subagent-security/strands-box/tests/test_setup.py"
       line_start: 235
       line_end: 236
       reason: "Executes repository-owned setup and cleanup scripts using the preselected absolute Bash path and separate arguments. Case names and arguments are trusted fixtures; cloud and container commands use local substitutes."
@@ -1919,7 +1919,7 @@ global_settings:
       reason: 'Public Box release archive SHA-256 verified by Dockerfile before extraction, not a credential'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
-      path: 'scripts/test-strands-box-lifecycle.py'
+      path: 'examples/subagent-security/strands-box/tests/test_lifecycle.py'
       line_start: 247
       line_end: 247
       reason: 'Synthetic Kubernetes Secret reference named fixture used to prove verify_pod rejects Secret volumes; no secret value'

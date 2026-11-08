@@ -338,41 +338,23 @@ replace_line "$d/mkdocs.yml" "Signing: policy" "      - Signing: old/policy/sign
 expect_findings "reject: a nav entry for a longer path that ends the same way" "$d" \
   "policy/signing is not in the mkdocs.yml nav"
 
-# --- roadmap links and owner-selected readiness labels -----------------------------------
-
-# Readiness belongs to sample owners. Labels do not change index membership.
-for label in '(draft)' '(planned)' '(experimental)' '(available now) (draft)' '`(available now)`' ''; do
-  d=$(new_repo "accept-owner-label-$passed")
-  replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-    "- [signing](../examples/policy/signing/README.md) $label: a signed image."
-  expect_ok "accept: owner-selected entry label '$label'" "OK, 2 sample(s)" "$d"
-done
-
-d=$(new_repo accept-no-labels)
-replace_line "$d/docs/ROADMAP.md" "### Getting started" '### Getting started'
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- [signing](../examples/policy/signing/README.md): a signed image.'
-expect_ok "accept: neither sample nor section has a readiness label" "OK, 2 sample(s)" "$d"
-
-d=$(new_repo reject-status-without-link)
-replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
-  '- signing (available now): the owner label does not replace its link.'
-expect_findings "reject: a readiness label without a sample link" "$d" \
-  "policy/signing is not linked in docs/ROADMAP.md"
+# --- must reject: docs/ROADMAP.md ----------------------------------------------------------
 
 d=$(new_repo reject-no-roadmap-link)
 replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" "- signing: not linked."
 expect_findings "reject: a roadmap entry that does not link the sample" "$d" \
   "policy/signing is not linked in docs/ROADMAP.md"
 
-d=$(new_repo accept-roadmap-no-status)
+d=$(new_repo reject-roadmap-not-available)
 replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
   "- [signing](../examples/policy/signing/README.md): a signed image."
-expect_ok "accept: a roadmap link without a readiness label" "OK, 2 sample(s)" "$d"
+expect_findings "reject: a roadmap link with no '(available now)'" "$d" \
+  "policy/signing is linked in docs/ROADMAP.md but not marked '(available now)'"
 
-d=$(new_repo accept-heading-no-status)
+d=$(new_repo reject-heading-not-available)
 replace_line "$d/docs/ROADMAP.md" "### Getting started" "### Getting started (\`getting-started\`)"
-expect_ok "accept: a section heading without a readiness label" "OK, 2 sample(s)" "$d"
+expect_findings "reject: the section heading lost 'available now'" "$d" \
+  "getting-started/hello is linked in docs/ROADMAP.md but not marked '(available now)'"
 
 d=$(new_repo reject-roadmap-in-comment)
 replace_line "$d/docs/ROADMAP.md" "](../examples/policy/signing/README.md)" \
@@ -397,10 +379,11 @@ append_lines "$d/docs/ROADMAP.md" "" "### Policy (\`policy\`)"
 expect_findings "reject: a roadmap section heading twice" "$d" \
   "docs/ROADMAP.md has the heading '### Policy (\`policy\`)' more than once (lines 9, 16)"
 
-d=$(new_repo accept-link-after-h2)
+d=$(new_repo reject-heading-ends-at-h2)
 replace_line "$d/docs/ROADMAP.md" "](../examples/getting-started/hello/README.md)" \
   "## Elsewhere" "" "- [hello](../examples/getting-started/hello/README.md): the first sample."
-expect_ok "accept: a roadmap link outside a labeled section" "OK, 2 sample(s)" "$d"
+expect_findings "reject: a '## ' heading ends the available '### ' section" "$d" \
+  "getting-started/hello is linked in docs/ROADMAP.md but not marked '(available now)'"
 
 # --- must reject: README.md ----------------------------------------------------------------
 

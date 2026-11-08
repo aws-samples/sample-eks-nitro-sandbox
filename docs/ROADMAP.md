@@ -1,6 +1,6 @@
 # Roadmap
 
-These samples run AI agents and untrusted code in Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandbox`). Sample owners maintain readiness labels on entries or section headings. A link means the sample has a page; it does not establish that the sample is ready to run. Unlinked entries are planned.
+These samples show Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandbox`) running AI agents and untrusted code. A sample whose entry links to its page is ready to run, and is marked "available now" on its entry or in its section heading. The rest are planned.
 
 ## Layout
 
@@ -137,7 +137,6 @@ The [Subagent security section page](../examples/subagent-security/README.md) ho
 - [nono](../examples/subagent-security/nono/README.md) (available now): the analyst confined by nono, doing useful work with bounded access. Spec: [#34](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/34).
 - [bubblewrap](../examples/subagent-security/bubblewrap/README.md) (available now): the analyst whose tool processes are confined by bubblewrap, with no network for the restricted tools. Spec: [#35](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/35).
 - [openshell](../examples/subagent-security/openshell/README.md) (available now): the analyst confined by OpenShell, whose supervisor holds the real credentials in its own pod outside the sandbox. Spec: [#36](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/36).
-
 - [strands-box](../examples/subagent-security/strands-box/README.md) (available now): a procurement analyst in a Nitro sandbox, with separate role Boxes and history-dependent HTTP policies. Spec: [#156](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/156).
 
 ### OpenShell (`openshell`)

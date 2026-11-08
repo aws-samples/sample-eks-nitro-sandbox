@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[4]
 SCRIPT = REPO / "examples/subagent-security/strands-box/scripts/compare_kernels.py"
 NODE = "synthetic-worker"
 PCI_PREFIX = "/sys/devices/pci0000:01/0000:01:00.0/0000:02:00.0/0000:03:00.0/0000:04:00.0/"

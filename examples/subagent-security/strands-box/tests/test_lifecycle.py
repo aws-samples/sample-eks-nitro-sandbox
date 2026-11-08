@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[4]
 # Select the operator-installed interpreter before individual cases replace PATH.
 BASH = shutil.which("bash")
 if BASH is None:

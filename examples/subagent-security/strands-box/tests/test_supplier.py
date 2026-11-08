@@ -11,7 +11,7 @@ import urllib.error
 import urllib.request
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[4]
 SAMPLE = ROOT / "examples/subagent-security/strands-box"
 sys.path.insert(0, str(ROOT / "examples/subagent-security/analyst/src"))
 from business import CASE

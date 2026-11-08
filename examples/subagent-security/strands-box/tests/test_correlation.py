@@ -2,7 +2,7 @@
 """Exercise the real sample correlator with synthetic accepted and rejected receipts.
 
 These fixtures are verifier inputs, not evidence of a model call or cluster deployment.
-Run from any directory: python3 scripts/test-strands-box-correlation.py
+Run from any directory: python3 examples/subagent-security/strands-box/tests/test_correlation.py
 All disposable files remain under this repository's ignored tmp/ directory.
 """
 import subprocess
@@ -19,7 +19,7 @@ import copy
 import json
 from pathlib import Path
 
-AVAILABILITY = json.loads((Path(__file__).resolve().parents[1] / 'examples/subagent-security/analyst/fixtures/availability.json').read_text())
+AVAILABILITY = json.loads((Path(__file__).resolve().parents[4] / 'examples/subagent-security/analyst/fixtures/availability.json').read_text())
 RUN_ID = 'a' * 32
 DRAFT = '/cases/rfp-001/recommendations'
 SUPPLIERS = '/cases/rfp-001/suppliers'
@@ -195,7 +195,7 @@ def filesystem_receipt(evidence):
             "checks": [row for row in evidence["checks"] if row["name"] in names], "roles": roles}
 
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[4]
 CORRELATOR = REPO / "examples/subagent-security/strands-box/scripts/correlate.py"
 
 

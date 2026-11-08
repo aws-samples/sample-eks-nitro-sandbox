@@ -19,7 +19,7 @@ import urllib.request
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[4]
 SAMPLE = ROOT / "examples/subagent-security/strands-box"
 FIXTURE = ROOT / "examples/subagent-security/analyst/fixtures/availability.json"
 CORRELATOR = SAMPLE / "scripts/correlate.py"
@@ -35,7 +35,7 @@ def module(name, path):
     return loaded
 
 
-receipt_fixtures = module("availability_receipts", ROOT / "scripts/test-strands-box-correlation.py")
+receipt_fixtures = module("availability_receipts", ROOT / "examples/subagent-security/strands-box/tests/test_correlation.py")
 local_supplier = module("availability_supplier", SAMPLE / "scripts/local_supplier.py")
 
 

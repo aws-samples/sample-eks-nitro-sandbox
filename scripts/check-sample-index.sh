@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks that every tracked sample is listed in the three index files every sample pull
+# Checks that every published sample is listed in the three index files every sample pull
 # request edits, and that no merge conflict markers are left in tracked text files. Needs no
 # cluster and no AWS.
 #
@@ -19,8 +19,8 @@
 #     ("- <Section>:"). Each nav heading title holds the samples of one <section> folder,
 #     each folder's samples sit under one heading title, and no heading title appears
 #     twice under one parent.
-#   - docs/ROADMAP.md has a list item linking ../examples/<s>/README.md.
-#     Sample owners maintain readiness labels; this check does not require or interpret them.
+#   - docs/ROADMAP.md has a list item linking ../examples/<s>/README.md, marked
+#     "(available now)" on that line or in the "### " heading of the section it is under.
 #   - README.md at the top of the repository has a list item linking examples/<s>/README.md.
 # A list item starts with "- ", indented at most three spaces, as in every index file here.
 # A YAML comment (#), an HTML comment or a fenced code block does not count. It also checks
@@ -233,11 +233,17 @@ nav_problems() {
   ' - "$root/mkdocs.yml"
 }
 
-# 0 when docs/ROADMAP.md has a list item linking this sample, regardless of readiness labels.
-in_roadmap() { # sample
+# Prints "linked", "available" (linked and marked available now) or nothing, for the
+# roadmap list item that links this sample. A "# " or "## " heading ends a "### " section.
+roadmap_state() { # sample
   markdown_text "$root/docs/ROADMAP.md" | awk -v link="](../examples/$1/README.md)" '
-    /^ ? ? ?- / && index($0, link) > 0 { found = 1; exit }
-    END { exit (found ? 0 : 1) }
+    /^### / { heading = $0; next }
+    /^##? / { heading = ""; next }
+    /^ ? ? ?- / && index($0, link) > 0 {
+      if (index($0, "(available now)") > 0 || index(heading, "available now") > 0) { state = "available" }
+      else if (state == "") { state = "linked" }
+    }
+    END { if (state != "") print state }
   '
 }
 
@@ -294,8 +300,11 @@ count=0
 while IFS= read -r s; do
   [ -n "$s" ] || continue
   count=$((count + 1))
-  in_roadmap "$s" ||
-    finding "$s is not linked in docs/ROADMAP.md; link its entry to ../examples/$s/README.md"
+  case "$(roadmap_state "$s")" in
+    available) ;;
+    linked) finding "$s is linked in docs/ROADMAP.md but not marked '(available now)'" ;;
+    *) finding "$s is not linked in docs/ROADMAP.md; link its entry to ../examples/$s/README.md and mark it '(available now)'" ;;
+  esac
   in_readme "$s" ||
     finding "$s is not listed in README.md; add '- [<Title>](examples/$s/README.md): <one line>' under its section heading"
 done <<<"$samples"

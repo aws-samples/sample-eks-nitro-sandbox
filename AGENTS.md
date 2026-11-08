@@ -33,10 +33,6 @@ but has no entry in the left menu, so add the `nav` line yourself.
 `docs/ROADMAP.md` or the root `README.md`, a section heading left twice, and a conflict
 marker left in any tracked file.
 
-Sample owners maintain readiness labels in `docs/ROADMAP.md`. The index check requires
-navigation entries and links, regardless of whether a sample has a readiness label.
-Passing this check does not establish that a sample is ready to run.
-
 Run ASH before a pull request too, as `CONTRIBUTING.md` (*Security scanning*) says.
 
 ## A sample starts as a spec in a GitHub issue
@@ -817,8 +813,8 @@ usually conflicts in those files.
   Why: `--match-head-commit` refuses the merge if someone pushed after you looked. One
   pull request was merged a minute before CodeQL had run on its new merge-commit head.
 - **Check `main` after the merge** with `./scripts/check-sample-index.sh`, and fix any
-  finding in a follow-up pull request. Why: a merge can omit a sample from an index
-  without producing a conflict.
+  finding in a follow-up pull request. Why: two samples merged without their `README.md`
+  line or their `(available now)` marker, and no conflict showed it.
 - **Take the `in progress` label off the closed issue**:
   `gh issue edit <issue> --repo aws-samples/sample-eks-nitro-sandbox --remove-label "in progress"`.
   Why: closing an issue keeps its labels, so the board shows finished work as in progress.
