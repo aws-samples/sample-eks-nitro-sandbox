@@ -85,9 +85,12 @@ class Lifecycle(unittest.TestCase):
                 self.assertIn("Pod Identity", result.stderr)
 
     def test_docker_readiness_checks_have_both_outcomes(self):
-        for failed in ("none", "buildx", "info"):
+        for failed in ("none", "buildx", "info", "arm64"):
             with self.subTest(failed=failed):
-                body = ('docker() { [[ "$1" != "' + failed + '" ]]; }\n'
+                platform = "linux/amd64" if failed == "arm64" else "linux/arm64"
+                body = ('TMP_DIR="$CHECK_DIR"\n'
+                        'docker() { [[ "$1" != "' + failed + '" ]] || return 1\n'
+                        '  [[ " $* " != *" inspect "* ]] || echo "Platforms: ' + platform + '"; }\n'
                         'box_require_tools')
                 result = self.shell(body)
                 if failed == "none":
@@ -279,6 +282,54 @@ class ResourceOwnership(unittest.TestCase):
         # All fixture values are fixed strings without shell metacharacters or whitespace.
         (self.directory / "state.env").write_text("\n".join(f"{key}={value}" for key, value in state.items()) + "\n")
         return state
+
+    def test_builder_must_offer_linux_arm64(self):
+        cases = [("Platforms: linux/arm64", True),
+                 ("Platforms: linux/amd64, linux/amd64/v2, linux/arm64, linux/riscv64", True),
+                 ("Platforms: linux/amd64, linux/arm64/v8", True),
+                 ("Platforms: linux/amd64, linux/amd64/v2, linux/386", False),
+                 ("Platforms: linux/arm64x, linux/arm/v7", False),
+                 ("Driver: docker", False),
+                 ("failure", False)]
+        for reply, accepted in cases:
+            with self.subTest(reply=reply):
+                stub = 'return 1' if reply == "failure" else 'printf "Name: default\\n%s\\n" "$REPLY"'
+                body = ('TMP_DIR="$CHECK_DIR"\n'
+                        'docker() { [[ "$1 $3 $4" == "--config buildx inspect" ]] || return 98; '
+                        + stub + '; }\nbox_require_arm64_builder')
+                result = self.shell(body, extra={"REPLY": reply})
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                if not accepted:
+                    self.assertIn("cannot build linux/arm64", result.stderr)
+                    self.assertIn("docs.docker.com/build/building/multi-platform", result.stderr)
+
+    def test_env_settings_reach_run_and_cleanup_but_not_the_target(self):
+        sample = self.directory / "sample"
+        sample.mkdir()
+        settings = {"AWS_PROFILE": "chosen-in-env", "NAMESPACE": "from-env",
+                    "CLUSTER_NAME": "from-env", "DEPLOYMENT_MODE": "nitro"}
+        (sample / ".env").write_text("".join(f"{key}={value}\n" for key, value in settings.items()))
+        self.write_state()
+        body = ('SAMPLE_DIR="$CHECK_DIR/sample"; STATE_FILE="$CHECK_DIR/state.env"; TMP_DIR="$CHECK_DIR"\n'
+                'box_load_env; box_load_state\n'
+                'printf "%s|%s|%s\\n" "${AWS_PROFILE:-}" "$NAMESPACE" "$CLUSTER_NAME"')
+        result = self.shell(body, extra={"AWS_PROFILE": ""})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "chosen-in-env|namespace-a|cluster-a")
+        # Without a .env, nothing is added and the record still loads.
+        (sample / ".env").unlink()
+        result = self.shell(body, extra={"AWS_PROFILE": ""})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "|namespace-a|cluster-a")
+        # A .env that names another mode is refused, not silently overridden.
+        (sample / ".env").write_text("DEPLOYMENT_MODE=eks\n")
+        result = self.shell(body)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("DEPLOYMENT_MODE differs", result.stderr)
+        for script in ("run.sh", "clean.sh"):
+            with self.subTest(script=script):
+                text = (SAMPLE / "scripts" / script).read_text()
+                self.assertIn("box_load_env\nbox_load_state\n", text)
 
     def test_owner_is_stable_and_changes_for_every_resource_scope(self):
         owner = self.owner()

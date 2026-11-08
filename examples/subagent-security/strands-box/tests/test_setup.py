@@ -55,6 +55,8 @@ def error(code, operation):
 if tool == "docker":
     if "push" in args:
         state["images"].append(args[-1].split(".amazonaws.com/")[-1].rsplit(":", 1)[0])
+    if "inspect" in args:
+        output("Name: default\nPlatforms: linux/amd64, linux/arm64")
     output("25.0.14")
 if tool == "kubectl":
     if args[:1] == ["--context"]:

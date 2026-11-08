@@ -13,7 +13,7 @@ for arg in "$@"; do
     *) die "unknown argument: $arg" ;;
   esac
 done
-if [[ -f "$SAMPLE_DIR/.env" ]]; then set -a; source "$SAMPLE_DIR/.env"; set +a; fi
+box_load_env
 CLUSTER_NAME="${CLUSTER_NAME:-}"
 AWS_REGION="${AWS_REGION:-}"
 NAMESPACE="${NAMESPACE:-subagent-security-strands-box}"
