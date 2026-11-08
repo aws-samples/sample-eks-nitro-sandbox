@@ -188,7 +188,8 @@ box_require_arm64_builder() {
   platforms="$(docker --config "$config" buildx inspect --bootstrap 2>/dev/null |
     sed -n 's/^Platforms:[[:space:]]*//p')" || platforms=""
   rm -rf -- "$config"
-  tr ',' '\n' <<<"$platforms" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' |
+  # Buildx marks a platform fixed on a node with a trailing "*"; drop one before matching.
+  tr ',' '\n' <<<"$platforms" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/\*$//' |
     grep -xE 'linux/arm64(/v8)?' >/dev/null ||
     die "the Docker builder cannot build linux/arm64 images (it reports: ${platforms:-no platforms}). Run setup on an ARM64 host, or enable arm64 emulation for Docker Buildx: https://docs.docker.com/build/building/multi-platform/"
 }
