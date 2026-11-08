@@ -19,6 +19,13 @@ use_directory_urls: false
 extra_css:
   - assets/extra.css     # Amazon brand orange on top of Material's orange palette
 
+extra:
+  # Google Analytics 4, Material's built-in integration. It also runs under
+  # `mkdocs serve`; filter reports on Hostname = aws-samples.github.io.
+  analytics:
+    provider: google
+    property: G-YCK065JLFD
+
 theme:
   name: material
   icon:

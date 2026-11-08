@@ -73,7 +73,7 @@ done
 say "Checking shared installs (reused as they are, never changed)"
 "${KCTL[@]}" get crd sandboxtemplates.extensions.agents.x-k8s.io >/dev/null 2>&1 \
   || die "agent-sandbox is not installed. Install it (as the warm-pool sample does):
-  kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml"
+  kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml"
 aws eks describe-addon --cluster-name "$CLUSTER_NAME" --addon-name aws-efs-csi-driver \
   --region "$AWS_REGION" --query 'addon.status' --output text >/dev/null 2>&1 \
   || die "the EFS CSI driver add-on (>= 3.0.0, for S3 Files) is not installed. See the

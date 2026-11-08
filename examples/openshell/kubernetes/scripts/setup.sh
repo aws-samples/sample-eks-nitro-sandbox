@@ -11,18 +11,21 @@
 #      enforcement and the MutatingAdmissionPolicy API;
 #   2. creates the namespace when absent, and labels it -- the gateway and its sandboxes
 #      both run there, the chart's default;
-#   3. labels the isolated-sandbox RuntimeClass for OpenShell's resource admission, when
+#   3. chooses the StorageClass the gateway's and the workspaces' claims name: the
+#      cluster's default class when exactly one fits, otherwise the sample's own class
+#      (deploy/storage-class.yaml), created only when absent;
+#   4. labels the isolated-sandbox RuntimeClass for OpenShell's resource admission, when
 #      the label is not already there;
-#   4. applies the admission adapter that fits OpenShell's generated workload pod to a
+#   5. applies the admission adapter that fits OpenShell's generated workload pod to a
 #      Nitro sandbox guest (deploy/nitro-adapter.yaml) -- a cluster-scoped object, limited
 #      by its own namespaceSelector to namespaces labelled managed-by=<sample>;
-#   5. downloads and verifies the pinned OpenShell CLI and gateway chart against
+#   6. downloads and verifies the pinned OpenShell CLI and gateway chart against
 #      versions.json;
-#   6. pins the gateway, supervisor and sandbox-runtime images by digest in the rendered
+#   7. pins the gateway, supervisor and sandbox-runtime images by digest in the rendered
 #      values, then installs the gateway chart and waits for the gateway;
-#   7. checks that neither the sandbox ServiceAccount nor the namespace's default one can
+#   8. checks that neither the sandbox ServiceAccount nor the namespace's default one can
 #      read Secrets there, since the gateway's own client certificate lives there too;
-#   8. starts the demo echo API this sample's policy and provider point at.
+#   9. starts the demo echo API this sample's policy and provider point at.
 #
 # It never changes a cluster-wide setting (network policy enforcement is checked, not
 # turned on here -- see the page), never upgrades or reconfigures a shared install such
@@ -57,7 +60,19 @@ GATEWAY_NAMESPACE="${GATEWAY_NAMESPACE:-openshell-kubernetes}"
 SANDBOX_NAMESPACE="$GATEWAY_NAMESPACE"
 CREDENTIAL_NAMESPACE="${CREDENTIAL_NAMESPACE:-openshell-kubernetes-credentials}"
 GATEWAY_RELEASE="${GATEWAY_RELEASE:-openshell}"
-WORKSPACE_STORAGE_CLASS="${WORKSPACE_STORAGE_CLASS:-auto-ebs-sc}"
+# WORKSPACE_STORAGE_CLASS, when set, names a specific class for the workspace claim and
+# overrides the choice; setup then checks that class's provisioner and that it
+# reclaims its volumes on delete. When it is unset (the default), setup CHOOSES the
+# class: the cluster's default class if exactly one fits (EBS CSI, gp3, encrypted,
+# reclaimed on delete), otherwise the sample's own class.
+WORKSPACE_STORAGE_CLASS="${WORKSPACE_STORAGE_CLASS:-}"
+CHOSEN_STORAGE_CLASS=""
+SAMPLE_STORAGE_CLASS="openshell-kubernetes-gp3"
+EBS_PROVISIONER="ebs.csi.eks.amazonaws.com"
+# The reclaim policy the sample needs: the clean up deletes the claim and waits
+# for its PV to be deleted, which only releases the EBS volume when the class
+# reclaims it rather than retaining it.
+EBS_RECLAIM_POLICY="Delete"
 GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 RUNTIME_CLASS="isolated-sandbox"
 APPROVAL_LABEL="openshell.ai/sandbox-attachable"
@@ -71,6 +86,135 @@ kc() { if [[ -n "$KUBE_CONTEXT" ]]; then kubectl --context "$KUBE_CONTEXT" "$@";
 # a space or a shell metacharacter (such as a path under a home directory with a space in
 # it) has to come back as the same string, not as a word the shell re-splits or runs.
 state_put() { printf '%s=%q\n' "$1" "$2" >> "$STATE_FILE"; }
+
+# sc_field <class> <jsonpath> : read one field of a StorageClass. Prints the value
+# (empty when the field or the class is absent) and returns non-zero only when the
+# read itself fails, so a caller can tell "absent" from "could not read".
+sc_field() {
+  local class=$1 path=$2 out rc=0
+  out="$(kc get storageclass "$class" --ignore-not-found -o "jsonpath=$path" 2>/dev/null)" || rc=$?
+  printf '%s' "$out"
+  return $rc
+}
+
+# sc_fits <class> : does this class fit the sample? EBS CSI provisioner, type gp3
+# (or unset, which is gp3), encrypted "true", and reclaimPolicy Delete so the
+# clean up's PV delete really releases the EBS volume. A class with Retain would
+# leave a volume billing after a clean up that reported success.
+#   0 it fits   1 it does not   2 a read failed
+sc_fits() {
+  local class=$1 prov type enc reclaim rc=0
+  prov="$(sc_field "$class" '{.provisioner}')" || rc=$?
+  type="$(sc_field "$class" '{.parameters.type}')" || rc=$?
+  enc="$(sc_field "$class" '{.parameters.encrypted}')" || rc=$?
+  reclaim="$(sc_field "$class" '{.reclaimPolicy}')" || rc=$?
+  [[ $rc -ne 0 ]] && return 2
+  [[ "$prov" == "$EBS_PROVISIONER" ]] || return 1
+  [[ -z "$type" || "$type" == "gp3" ]] || return 1
+  [[ "$enc" == "true" ]] || return 1
+  [[ "$reclaim" == "$EBS_RECLAIM_POLICY" ]] || return 1
+  return 0
+}
+
+# sc_reclaims_on_delete <class> : the one check the clean up depends on, applied
+# to a class the reader named in WORKSPACE_STORAGE_CLASS as well as to a default class.
+#   0 it reclaims on delete   1 it does not   2 a read failed
+sc_reclaims_on_delete() {
+  local class=$1 reclaim rc=0
+  reclaim="$(sc_field "$class" '{.reclaimPolicy}')" || rc=$?
+  [[ $rc -ne 0 ]] && return 2
+  [[ "$reclaim" == "$EBS_RECLAIM_POLICY" ]]
+}
+
+# choose_storage_class : decide which StorageClass the workspace claim names, and
+# create the sample's own class only if needed. Sets CHOSEN_STORAGE_CLASS. A
+# StorageClass is chosen, never changed: this never patches a class and never
+# `kubectl apply`s one.
+#
+#   WORKSPACE_STORAGE_CLASS set   -> use it, after checking its provisioner is EBS CSI and
+#                          that it reclaims its volumes on delete. Naming the sample's own
+#                          class takes the sample-class path below instead.
+#   WORKSPACE_STORAGE_CLASS unset -> use the one default class that fits, if exactly one
+#                          does; otherwise the sample's own class.
+choose_storage_class() {
+  if [[ -n "$WORKSPACE_STORAGE_CLASS" ]]; then
+    if [[ "$WORKSPACE_STORAGE_CLASS" == "$SAMPLE_STORAGE_CLASS" ]]; then
+      echo "WORKSPACE_STORAGE_CLASS names the sample's own class $SAMPLE_STORAGE_CLASS"
+      ensure_sample_storage_class
+      CHOSEN_STORAGE_CLASS="$SAMPLE_STORAGE_CLASS"
+      return 0
+    fi
+    local prov rc=0
+    prov="$(sc_field "$WORKSPACE_STORAGE_CLASS" '{.provisioner}')" || rc=$?
+    [[ $rc -ne 0 ]] && die "could not read storageclass/$WORKSPACE_STORAGE_CLASS; stopping rather than guess (a failed read is not 'absent')"
+    [[ -z "$prov" ]] && die "storageclass/$WORKSPACE_STORAGE_CLASS (from WORKSPACE_STORAGE_CLASS) not found. Set WORKSPACE_STORAGE_CLASS to a class that uses $EBS_PROVISIONER, or unset it to let setup choose."
+    [[ "$prov" != "$EBS_PROVISIONER" ]] && die "storageclass/$WORKSPACE_STORAGE_CLASS (from WORKSPACE_STORAGE_CLASS) uses provisioner '$prov', not '$EBS_PROVISIONER'; its volumes are not EBS CSI volumes."
+    # The clean up deletes the claim, waits for its PV to be deleted, and calls that
+    # "the EBS volume is deleted". That is only true for a class that reclaims
+    # its volumes on delete, so refuse a class where it would not be.
+    local rrc=0; sc_reclaims_on_delete "$WORKSPACE_STORAGE_CLASS" || rrc=$?
+    [[ $rrc -eq 2 ]] && die "could not read the reclaimPolicy of storageclass/$WORKSPACE_STORAGE_CLASS; stopping rather than guess"
+    [[ $rrc -eq 1 ]] && die "storageclass/$WORKSPACE_STORAGE_CLASS (from WORKSPACE_STORAGE_CLASS) does not have reclaimPolicy $EBS_RECLAIM_POLICY, so deleting the claim would leave its EBS volume behind and the clean up could not report it gone. Set WORKSPACE_STORAGE_CLASS to a class with reclaimPolicy $EBS_RECLAIM_POLICY, or unset it to let setup choose."
+    CHOSEN_STORAGE_CLASS="$WORKSPACE_STORAGE_CLASS"
+    echo "using storageclass $CHOSEN_STORAGE_CLASS (from WORKSPACE_STORAGE_CLASS), provisioner $prov, reclaimPolicy $EBS_RECLAIM_POLICY"
+    return 0
+  fi
+
+  local defaults rc=0
+  defaults="$(kc get storageclass \
+    -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{"\n"}{end}' 2>/dev/null)" || rc=$?
+  [[ $rc -ne 0 ]] && die "could not list StorageClasses; stopping rather than guess"
+
+  local fitting=() name f
+  while IFS= read -r name; do
+    [[ -z "$name" ]] && continue
+    f=0; sc_fits "$name" || f=$?
+    case $f in
+      0) fitting+=("$name") ;;
+      2) die "could not read the default storageclass/$name; stopping rather than guess" ;;
+    esac
+  done <<< "$defaults"
+
+  if [[ ${#fitting[@]} -eq 1 ]]; then
+    CHOSEN_STORAGE_CLASS="${fitting[0]}"
+    echo "using the cluster default storageclass ${CHOSEN_STORAGE_CLASS} (it fits: $EBS_PROVISIONER, gp3, encrypted, reclaimPolicy $EBS_RECLAIM_POLICY); creating no class"
+    return 0
+  fi
+
+  if [[ ${#fitting[@]} -gt 1 ]]; then
+    echo "note: ${#fitting[@]} default StorageClasses fit; not guessing which. Using the sample's own class ${SAMPLE_STORAGE_CLASS}."
+  else
+    echo "note: no default StorageClass fits ($EBS_PROVISIONER, gp3, encrypted, reclaimPolicy $EBS_RECLAIM_POLICY). Using the sample's own class ${SAMPLE_STORAGE_CLASS}."
+  fi
+  ensure_sample_storage_class
+  CHOSEN_STORAGE_CLASS="$SAMPLE_STORAGE_CLASS"
+}
+
+# ensure_sample_storage_class : make SAMPLE_STORAGE_CLASS available. Create it from
+# the manifest with `kubectl create` only when absent; reuse an existing one only
+# when it carries the sample's mark AND fits (sc_fits: EBS CSI, gp3, encrypted,
+# reclaimPolicy Delete); stop otherwise, and never change it.
+ensure_sample_storage_class() {
+  local prov rc=0
+  prov="$(sc_field "$SAMPLE_STORAGE_CLASS" '{.provisioner}')" || rc=$?
+  [[ $rc -ne 0 ]] && die "could not read storageclass/$SAMPLE_STORAGE_CLASS; stopping rather than guess"
+  if [[ -z "$prov" ]]; then
+    echo "creating storageclass/$SAMPLE_STORAGE_CLASS from deploy/storage-class.yaml"
+    kc create -f "$SAMPLE_DIR/deploy/storage-class.yaml" \
+      || die "could not create storageclass/$SAMPLE_STORAGE_CLASS"
+    return 0
+  fi
+  local mark mrc=0
+  mark="$(sc_field "$SAMPLE_STORAGE_CLASS" '{.metadata.labels.app\.kubernetes\.io/managed-by}')" || mrc=$?
+  [[ $mrc -ne 0 ]] && die "could not read the labels on storageclass/$SAMPLE_STORAGE_CLASS; stopping rather than guess"
+  [[ "$mark" != "$SAMPLE" ]] && die "storageclass/$SAMPLE_STORAGE_CLASS already exists without the sample's mark (app.kubernetes.io/managed-by=$SAMPLE); it belongs to something else. Remove it or set WORKSPACE_STORAGE_CLASS to a class that uses $EBS_PROVISIONER."
+  # The mark says whose class it is, not that it is still what deploy/storage-class.yaml
+  # makes, so it gets the same check a default class gets.
+  local frc=0; sc_fits "$SAMPLE_STORAGE_CLASS" || frc=$?
+  [[ $frc -eq 2 ]] && die "could not read the provisioner, type, encryption or reclaimPolicy of storageclass/$SAMPLE_STORAGE_CLASS; stopping rather than guess"
+  [[ $frc -eq 1 ]] && die "storageclass/$SAMPLE_STORAGE_CLASS carries the sample's mark but does not fit ($EBS_PROVISIONER, gp3, encrypted, reclaimPolicy $EBS_RECLAIM_POLICY); not reusing it, and not changing it. Remove it with ./scripts/clean.sh, or set WORKSPACE_STORAGE_CLASS to another class that uses $EBS_PROVISIONER."
+  echo "reusing storageclass/$SAMPLE_STORAGE_CLASS (carries the sample's mark, and fits: $EBS_PROVISIONER, gp3, encrypted, reclaimPolicy $EBS_RECLAIM_POLICY)"
+}
 
 [[ "$CREDENTIAL_NAMESPACE" != "$GATEWAY_NAMESPACE" ]] ||
   die "CREDENTIAL_NAMESPACE and GATEWAY_NAMESPACE are both '$GATEWAY_NAMESPACE'; the credential must live in a namespace of its own. Set a different CREDENTIAL_NAMESPACE in .env."
@@ -99,7 +243,7 @@ state_put LOCAL_DIR "$LOCAL_DIR"
 # 1. Preflight
 # ---------------------------------------------------------------------------
 
-say "checking tools and the cluster (1/8)"
+say "checking tools and the cluster (1/9)"
 
 for tool in kubectl helm jq curl openssl python3; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
@@ -111,7 +255,7 @@ kc cluster-info >/dev/null 2>&1 || die "no reachable cluster for context '${KUBE
 
 kc get crd sandboxes.agents.x-k8s.io -o name >/dev/null 2>&1 ||
   die "the agent-sandbox controller is not on this cluster. Install it as Getting started > Warm pool does, then re-run this script:
-  kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml"
+  kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml"
 echo "  agent-sandbox: reusing the install already on this cluster"
 
 kc api-resources --api-group=admissionregistration.k8s.io -o name 2>/dev/null |
@@ -129,7 +273,7 @@ echo "  network policy enforcement: on"
 # 2. The namespace
 # ---------------------------------------------------------------------------
 
-say "the namespace the gateway and its sandboxes run in (2/8)"
+say "the namespace the gateway and its sandboxes run in (2/9)"
 
 for ns in "$GATEWAY_NAMESPACE"; do
   if kc get ns "$ns" >/dev/null 2>&1; then
@@ -145,10 +289,21 @@ for ns in "$GATEWAY_NAMESPACE"; do
 done
 
 # ---------------------------------------------------------------------------
-# 3. The RuntimeClass approval label
+# 3. Choose the StorageClass
 # ---------------------------------------------------------------------------
 
-say "the isolated-sandbox RuntimeClass's OpenShell approval label (3/8)"
+say "choosing the StorageClass for workspace PVCs (3/9)"
+
+# Choose the StorageClass the workspace claim will name, before the gateway is
+# installed. The sample's own class is the one thing this may create here, and the
+# clean up removes it.
+choose_storage_class
+
+# ---------------------------------------------------------------------------
+# 4. The RuntimeClass approval label
+# ---------------------------------------------------------------------------
+
+say "the isolated-sandbox RuntimeClass's OpenShell approval label (4/9)"
 
 runtime_label="$(kc get runtimeclass "$RUNTIME_CLASS" \
   -o jsonpath="{.metadata.labels['openshell\.ai/sandbox-attachable']}" 2>/dev/null)" ||
@@ -161,10 +316,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. The admission adapter
+# 5. The admission adapter
 # ---------------------------------------------------------------------------
 
-say "the admission adapter that fits OpenShell's workload pod to a Nitro sandbox (4/8)"
+say "the admission adapter that fits OpenShell's workload pod to a Nitro sandbox (5/9)"
 
 # Two steps, not one: an object that exists but carries no managed-by label at all would
 # print an empty label value, exactly what an absent object also prints. Checking
@@ -188,10 +343,10 @@ kc apply -f "$TMP_DIR/nitro-adapter.yaml"
 echo "  applied $ADAPTER, scoped to namespaces labelled managed-by=$SAMPLE"
 
 # ---------------------------------------------------------------------------
-# 5. The pinned CLI and chart
+# 6. The pinned CLI and chart
 # ---------------------------------------------------------------------------
 
-say "the pinned OpenShell CLI and gateway chart ($UPSTREAM_REF) (5/8)"
+say "the pinned OpenShell CLI and gateway chart ($UPSTREAM_REF) (6/9)"
 
 if [[ -x "$CLI" ]]; then
   echo "  reusing the verified CLI at $CLI"
@@ -221,10 +376,10 @@ echo "  verified the gateway chart against its pinned checksum"
 state_put GATEWAY_CHART "$GATEWAY_CHART"
 
 # ---------------------------------------------------------------------------
-# 6. The gateway chart
+# 7. The gateway chart
 # ---------------------------------------------------------------------------
 
-say "the OpenShell gateway (6/8)"
+say "the OpenShell gateway (7/9)"
 
 # The gateway chart's own credential-secrets-namespace.yaml creates the credential
 # namespace as part of this install (server.credentialDrivers.kubernetesSecrets.
@@ -250,7 +405,8 @@ fi
 sed -e "s|<RELEASE>|$GATEWAY_RELEASE|g" \
     -e "s|<NAMESPACE>|$GATEWAY_NAMESPACE|g" \
     -e "s|<CREDENTIAL_NAMESPACE>|$CREDENTIAL_NAMESPACE|g" \
-    -e "s|<WORKSPACE_STORAGE_CLASS>|$WORKSPACE_STORAGE_CLASS|g" \
+    -e "s|<WORKSPACE_STORAGE_CLASS>|$CHOSEN_STORAGE_CLASS|g" \
+    -e "s|<DATA_STORAGE_CLASS>|$CHOSEN_STORAGE_CLASS|g" \
     "$SAMPLE_DIR/deploy/gateway-values.yaml" > "$TMP_DIR/gateway-values.yaml"
 
 # The pinned digests go in here rather than in the committed values file, so the
@@ -261,12 +417,13 @@ GATEWAY_IMAGE="$(jqr '.images.gateway')"
 SUPERVISOR_IMAGE="$(jqr '.images.supervisor')"
 SANDBOX_RUNTIME_IMAGE="$(jqr '.images.sandbox_runtime')"
 python3 - "$TMP_DIR/gateway-values.yaml" \
-    "${GATEWAY_IMAGE#*@}" "${SANDBOX_RUNTIME_IMAGE#*@}" "${SUPERVISOR_IMAGE#*@}" <<'PY'
+    "${GATEWAY_IMAGE#*@}" "${SANDBOX_RUNTIME_IMAGE#*@}" "${SUPERVISOR_IMAGE#*@}" \
+    "$CHOSEN_STORAGE_CLASS" <<'PY'
 import re
 import sys
 import yaml
 
-path, gateway_digest, sandbox_runtime_digest, supervisor_digest = sys.argv[1:5]
+path, gateway_digest, sandbox_runtime_digest, supervisor_digest, storage_class = sys.argv[1:6]
 digest_re = re.compile(r"^sha256:[0-9a-f]{64}$")
 for name, digest in (("gateway", gateway_digest), ("sandboxRuntime", sandbox_runtime_digest),
                       ("supervisor", supervisor_digest)):
@@ -277,7 +434,17 @@ values = yaml.safe_load(open(path))
 values.setdefault("gateway", {}).setdefault("image", {})["digest"] = gateway_digest
 values.setdefault("sandboxRuntime", {}).setdefault("image", {})["digest"] = sandbox_runtime_digest
 values.setdefault("supervisor", {}).setdefault("image", {})["digest"] = supervisor_digest
-yaml.safe_dump(values, open(path, "w"))
+with open(path, "w") as f:
+    yaml.safe_dump(values, f)
+# Read back what Helm will read: both claims must name the chosen class, as a string.
+with open(path) as f:
+    server = (yaml.safe_load(f) or {}).get("server") or {}
+for key in ("workspaceStorageClass", "dataStorageClass"):
+    got = server.get(key)
+    if not isinstance(got, str) or got != storage_class:
+        sys.exit(f"the rendered gateway values' server.{key} loads as {got!r} "
+                 f"({type(got).__name__}), not the string {storage_class!r} setup chose; "
+                 f"refusing to install")
 PY
 echo "  pinned the gateway, supervisor and sandbox-runtime images by digest"
 
@@ -318,10 +485,10 @@ kc rollout status statefulset/"$GATEWAY_RELEASE" -n "$GATEWAY_NAMESPACE" --timeo
   die "the gateway did not reach Ready; 'kubectl get pods -n $GATEWAY_NAMESPACE' says why"
 
 # ---------------------------------------------------------------------------
-# 7. Who can read Secrets where the workload pods run
+# 8. Who can read Secrets where the workload pods run
 # ---------------------------------------------------------------------------
 
-say "who can read Secrets in the namespace the workload pods run in (7/8)"
+say "who can read Secrets in the namespace the workload pods run in (8/9)"
 
 # The gateway's client-tls Secret is its own mTLS client certificate, and with
 # server.auth.allowUnauthenticatedUsers: true it is full administrative access to the
@@ -383,10 +550,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 8. The demo echo API
+# 9. The demo echo API
 # ---------------------------------------------------------------------------
 
-say "the demo echo API this sample's policy and provider point at (8/8)"
+say "the demo echo API this sample's policy and provider point at (9/9)"
 
 if kc get pod echo-api -n "$SANDBOX_NAMESPACE" >/dev/null 2>&1; then
   echo "  reusing the echo-api pod already in $SANDBOX_NAMESPACE"
