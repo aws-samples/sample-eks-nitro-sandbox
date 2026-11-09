@@ -147,7 +147,7 @@ and `public.ecr.aws/docker/library/python:3.12-slim` for the hands).
 | [`brain/claude.json`](brain/claude.json) | Marks `/workspace` trusted and the MCP server enabled, so a non-interactive run does not stop at the trust prompt. |
 | [`brain/CLAUDE.md`](brain/CLAUDE.md) | The agent's project instructions: how paths work in the hands. |
 | [`deploy/warm-pool.yaml`](deploy/warm-pool.yaml) | The hands: a `SandboxTemplate` that runs sandboxd with its network policy, and a `SandboxWarmPool` that keeps one booted. |
-| [`deploy/brain.yaml`](deploy/brain.yaml) | The brain `Deployment`. No `runtimeClassName`: the brain is not the sandboxed half. A read-only root filesystem with only `/tmp` writable, and an explicitly mounted ServiceAccount token. |
+| [`deploy/brain.yaml`](deploy/brain.yaml) | The brain `Deployment`. No `runtimeClassName`: the brain is not the sandboxed half. A read-only root filesystem with one writable volume, `/tmp`, and an explicitly mounted ServiceAccount token. |
 | [`deploy/rbac.yaml`](deploy/rbac.yaml) | The brain's `ServiceAccount`, `Role` and `RoleBinding`, and the whole of what it may do. |
 | [`iam/bedrock-invoke-policy.json`](iam/bedrock-invoke-policy.json) | The brain's only AWS permission: invoke a model. |
 | [`iam/pod-identity-trust.json`](iam/pod-identity-trust.json) | The trust policy that lets EKS Pod Identity assume the role. |
@@ -156,8 +156,8 @@ and `public.ecr.aws/docker/library/python:3.12-slim` for the hands).
 | [`scripts/common.sh`](scripts/common.sh) | The names, the pinned context, the readings and the guards the scripts share. |
 | [`.env.example`](.env.example) | The local values the blueprint needs, with no values filled in. |
 
-The brain container runs with `readOnlyRootFilesystem: true`. Only `/tmp` is writable, as an
-`emptyDir`, and `/workspace` and `/home/agent` stay on the read-only root, so the agent cannot
+The brain container runs with `readOnlyRootFilesystem: true`. The only writable volume it mounts
+is `/tmp`, an `emptyDir`, and `/workspace` and `/home/agent` stay on the read-only root, so the agent cannot
 rewrite `/workspace/.claude/settings.json` or `/home/agent/.claude.json`. Without `/tmp`,
 Claude Code fails with "EROFS: read-only file system, mkdir '/tmp/claude-10001'". The pod sets
 `automountServiceAccountToken: false` and mounts a projected ServiceAccount token, with

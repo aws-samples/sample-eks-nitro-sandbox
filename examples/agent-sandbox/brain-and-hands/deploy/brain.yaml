@@ -98,7 +98,7 @@ spec:
             - name: kube-api-access
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
-            # The only writable path. Claude Code needs it (without it: "EROFS:
+            # The only writable volume this pod mounts. Claude Code needs it (without it: "EROFS:
             # read-only file system, mkdir '/tmp/claude-10001'"). The agent's
             # home and /workspace stay on the read-only root, so the agent
             # cannot rewrite the configuration the image bakes in: its tool

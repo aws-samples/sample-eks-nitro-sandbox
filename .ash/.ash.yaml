@@ -383,7 +383,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/agent-sandbox/brain-and-hands/deploy/brain.yaml'
-      reason: 'First-party non-sandbox pod; the only network policy in the sample restricts the hands and admits only app=brain (warm-pool.yaml:53-55), a sample ships no other (AGENTS.md:556-562), and the manifest says nothing restricts where the brain connects (brain.yaml:13)'
+      reason: 'First-party non-sandbox pod; the only network policy in the sample restricts the hands and admits only app=brain (warm-pool.yaml:53-55), a sample merged before 2026-10-26 keeps the policies it was proved with and adds none (AGENTS.md:556-562), and the manifest says nothing restricts where the brain connects (brain.yaml:13)'
       expiration: '2027-12-31'
     # UID 1000 is load-bearing. The EFS and S3 access points enforce UID/GID 1000, and the EBS
     # pods run as UID 1000 with fsGroup 2000 to produce the write output the page shows.
