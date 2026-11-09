@@ -29,6 +29,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from _client import make_client
@@ -41,13 +42,16 @@ CLAIM_DELETE_TIMEOUT = 30  # a claim delete is a quick Kubernetes API call, unli
 
 def _delete_claim(launcher_url: str, token: str, session_id: str) -> None:
     """Ask the launcher to delete this session's claim (called right after the recheck)."""
+    # urlopen also opens file:// and other schemes; the launcher is an HTTP intake.
+    if urllib.parse.urlsplit(launcher_url).scheme not in ("http", "https"):
+        sys.exit(f"--launcher-url must start with http:// or https://: {launcher_url}")
     body = json.dumps({"session_id": session_id}).encode()
     req = urllib.request.Request(
         launcher_url.rstrip("/") + "/sessions/claim-delete", data=body,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=CLAIM_DELETE_TIMEOUT) as resp:  # noqa: S310 - operator's own port-forward
+        with urllib.request.urlopen(req, timeout=CLAIM_DELETE_TIMEOUT) as resp:  # noqa: S310 - http(s) only, checked above
             info = json.loads(resp.read() or b"{}")
         print(f"{session_id}: deleted {info.get('claims_deleted', 0)} claim(s); the pod stops with the claim")
     except urllib.error.HTTPError as exc:

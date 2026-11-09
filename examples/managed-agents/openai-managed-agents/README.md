@@ -169,6 +169,25 @@ blueprint uses the issue's default, operator-driven provisioning. Webhook-manage
 is out of scope: it needs a public HTTPS endpoint, and blueprints here create no Ingress,
 LoadBalancer or NodePort.
 
+**Create the blueprint's namespace.** The blueprint's own objects (its Secrets, policies,
+RBAC, sandbox template and pool, and the launcher) go into a namespace it creates for
+itself, which [Clean up](#clean-up) removes. The manifests set no namespace: kubectl applies
+them to the current context's namespace, and the launcher reads its namespace from its own
+pod and claims sandboxes there. Create the namespace, mark it as this blueprint's, and make
+it the current context's namespace:
+
+```bash
+export NAMESPACE=openai-managed-agents
+kubectl create namespace $NAMESPACE && \
+  kubectl label namespace $NAMESPACE app.kubernetes.io/part-of=openai-managed-agents
+kubectl config set-context --current --namespace=$NAMESPACE
+```
+
+`kubectl create` refuses a namespace that already exists, and the `&&` then skips the label.
+If it says `AlreadyExists`, check that the namespace is this blueprint's from an earlier run
+(`kubectl get namespace $NAMESPACE --show-labels` shows
+`app.kubernetes.io/part-of=openai-managed-agents`), or pick another name for `NAMESPACE`.
+
 **Step 1: Install agent-sandbox and turn on network policy.** Install the controller with its
 extensions (`SandboxTemplate`, `SandboxWarmPool`, `SandboxClaim`). If you ran the warm pool
 blueprint, this upgrades it in place:
@@ -256,10 +275,15 @@ export REGISTRY=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 aws ecr create-repository --repository-name openai-sandbox-executor --region $AWS_REGION
 aws ecr get-login-password --region $AWS_REGION \
   | docker login --username AWS --password-stdin $REGISTRY
-docker build --platform linux/amd64 -t $REGISTRY/openai-sandbox-executor:latest .
-docker push $REGISTRY/openai-sandbox-executor:latest
+docker build --platform linux/amd64 -t $REGISTRY/openai-sandbox-executor:v1 .
+docker push $REGISTRY/openai-sandbox-executor:v1
 docker logout $REGISTRY
 ```
+
+The launcher and the sandbox template set `imagePullPolicy: IfNotPresent` for the fixed `:v1`
+tag, so a node that already pulled `:v1` keeps using its cached copy; when you rebuild the
+image, push it under a new tag (for example `:v2`) and update the tag in
+`deploy/launcher.yaml` and `deploy/sandbox-template.yaml`.
 
 **Step 4: Give the cluster the environment key and the intake token.** The launcher needs the
 environment key (it gives it to each claimed sandbox through the claim env) and the bearer
@@ -276,6 +300,10 @@ kubectl create secret generic openai-env-key \
 kubectl create secret generic launcher-auth \
   --from-env-file=<(grep '^LAUNCHER_AUTH_TOKEN=' .env)
 ```
+
+The launcher reads both values as files, mounted read-only from these Secrets at
+`/var/run/secrets/openai-managed-agents/`, not as environment variables; it refuses to start
+if either file is missing or if either value is set in its environment.
 
 **Step 5: Apply the network policies.** [`egress-policy.yaml`](deploy/egress-policy.yaml) is an
 `ApplicationNetworkPolicy` that selects the sandbox pods: it denies all ingress (the launcher
@@ -342,7 +370,7 @@ spec:
       restartPolicy: Never              # one session, then the pod completes
       containers:
         - name: executor
-          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/openai-sandbox-executor:latest
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/openai-sandbox-executor:v1
           args: ["serve"]
           # No env in the template: a warm pod holds no key. A claimed pod gets
           # its session and CODEX_API_KEY from the SandboxClaim env the launcher
@@ -374,8 +402,18 @@ agent-sandbox `SandboxTemplate` CRD; confirm it against the controller version y
 The `readinessProbe` is a bare TCP connect on the readiness port, so the claim reports Ready
 once `serve.py` opens that port, on a warm pod and on a claimed pod alike. The pod runs as a
 non-root user with its own empty `/workspace`, and has no ServiceAccount token, so a command
-the model runs cannot reach the Kubernetes API. Apply the RBAC, the template and pool, and the
-launcher:
+the model runs cannot reach the Kubernetes API.
+
+The launcher, an ordinary pod, runs as the same non-root user, UID 10001. It does call the
+Kubernetes API, to create and watch `SandboxClaim`s, so [`launcher.yaml`](deploy/launcher.yaml)
+turns off the automatic token mount and mounts the ServiceAccount token itself, at the same
+path, with a one-hour lifetime. The Kubernetes client re-reads the file as the kubelet rotates
+it, and the launcher refuses to start without it. A liveness probe on the intake's
+unauthenticated `GET /` restarts a launcher that stops answering, after six missed probes in
+a row; the intake answers each request on its own thread, so a hand-off in progress does not
+hold the probe up.
+
+Apply the RBAC, the template and pool, and the launcher:
 
 ```bash
 kubectl apply -f deploy/rbac.yaml
@@ -508,13 +546,7 @@ kubectl get events --sort-by=.lastTimestamp
 ```
 
 ```text
-LAST SEEN   TYPE      REASON                 OBJECT                                  MESSAGE
-85s         Normal    SandboxProvisioned     sandboxclaim/sandbox-claim-5386f568     Created Sandbox "sandbox-claim-5386f568"
-85s         Normal    SandboxPodCreated      sandbox/sandbox-claim-5386f568          Created Pod "sandbox-claim-5386f568"
-85s         Warning   FailedScheduling       pod/sandbox-claim-5386f568              0/3 nodes are available: 1 Insufficient memory, 1 node(s) didn't match Pod's node affinity/selector, 1 node(s) had untolerated taint(s). no new claims to deallocate, preemption: 0/3 nodes are available: 1 No preemption victims found for incoming pod, 2 Preemption is not helpful for scheduling.
-84s         Normal    Nominated              pod/sandbox-claim-5386f568              Pod should schedule on: nodeclaim/general-purpose-gvptt
-50s         Normal    Pulled                 pod/sandbox-claim-5386f568              Successfully pulled image "<ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/openai-sandbox-executor:latest" in 11.229s (11.23s including waiting). Image size: 338021174 bytes.
-37s         Normal    Started                pod/sandbox-claim-5386f568              Container started
+TODO: output from the fresh run
 ```
 
 The controller created a new sandbox and pod for the claim 85 s before this listing, rather than
@@ -708,11 +740,13 @@ at once. Pass `--keep-claim` to delete only the API session and leave the pod ru
 example, to let a follow-up turn keep using it). Deleting a claim does not delete the session;
 deleting a session does not stop the pod. That is why both parts exist.
 
-**Remove the remaining Kubernetes objects.** Set `AWS_REGION` and `REGISTRY` again in a new
-shell:
+**Remove the remaining Kubernetes objects.** Set `AWS_REGION`, `NAMESPACE` and `REGISTRY`
+again in a new shell. The `kubectl delete` commands act on the current context's namespace,
+which is still `$NAMESPACE`:
 
 ```bash
 export AWS_REGION=<AWS_REGION>
+export NAMESPACE=openai-managed-agents
 export REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com
 
 kubectl delete -f deploy/launcher.yaml -f deploy/launcher-ingress.yaml --ignore-not-found
@@ -721,8 +755,17 @@ kubectl delete sandboxclaims -l openai.com/session-id --ignore-not-found
 kubectl delete -f deploy/egress-policy.yaml -f deploy/rbac.yaml --ignore-not-found
 kubectl delete secret openai-env-key launcher-auth --ignore-not-found
 aws ecr delete-repository --repository-name openai-sandbox-executor --region $AWS_REGION --force
-docker image rm $REGISTRY/openai-sandbox-executor:latest
+docker image rm $REGISTRY/openai-sandbox-executor:v1
 rm -rf .venv
+```
+
+Then switch back to the shared namespace, and delete the blueprint's namespace only if it
+carries the blueprint's label:
+
+```bash
+kubectl config set-context --current --namespace=nitro-sandboxes-demo
+[ "$(kubectl get namespace $NAMESPACE -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}')" = openai-managed-agents ] \
+  && kubectl delete namespace $NAMESPACE
 ```
 
 Keep `.env` if you will run the blueprint again. Otherwise delete it, and in the OpenAI console

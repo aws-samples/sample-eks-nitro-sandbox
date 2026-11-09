@@ -38,8 +38,11 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import os
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from kubernetes.config import incluster_config
 
 from . import config, guard, sandbox
 
@@ -138,13 +141,34 @@ class _Handler(BaseHTTPRequestHandler):
         """No per-request access log."""
 
 
+def _require_service_account_token() -> None:
+    """Fail closed when the pod has no ServiceAccount token to call the API with.
+
+    The launcher creates and watches SandboxClaims, so it needs the token that
+    deploy/launcher.yaml mounts by hand (automountServiceAccountToken is false).
+    Without this check the agent-sandbox client would fall back to looking for a
+    kubeconfig (k8s_agent_sandbox/k8s_helper.py) and fail with an error about
+    that file instead of the token. The paths are the Kubernetes client's own,
+    so this checks what it will read.
+    """
+    for path in (incluster_config.SERVICE_TOKEN_FILENAME, incluster_config.SERVICE_CERT_FILENAME):
+        if not (os.path.isfile(path) and os.path.getsize(path) > 0):
+            raise RuntimeError(
+                f"{path} is missing or empty, so the launcher cannot reach the "
+                "Kubernetes API to claim sandboxes; refusing to start. "
+                "deploy/launcher.yaml mounts it with the kube-api-access volume."
+            )
+
+
 def main() -> None:
     config.setup_logging()
     guard.assert_safe(guard.ROLE_LAUNCH)
-    executor_key = config.require(config.ENV_EXECUTOR_API_KEY)
+    # Both credentials are files mounted from their Secrets, not env variables.
+    executor_key = config.read_launcher_credential(config.ENV_EXECUTOR_API_KEY)
     # Fail closed: the launcher will not start without its intake auth token, so
     # the intake is never served unauthenticated.
-    auth_token = config.require(config.ENV_LAUNCHER_AUTH_TOKEN)
+    auth_token = config.read_launcher_credential(config.ENV_LAUNCHER_AUTH_TOKEN)
+    _require_service_account_token()
     dispatcher = sandbox.Dispatcher(executor_key)
     port = config.optional_int(config.ENV_LAUNCHER_PORT, config.DEFAULT_LAUNCHER_PORT)
     # Binds 0.0.0.0 so the ClusterIP Service can reach the launcher pod. The
@@ -152,6 +176,8 @@ def main() -> None:
     # ingress NetworkPolicy admits no in-cluster pod, and every request must carry
     # the bearer token. The dispatch body carries no credential (the environment
     # key stays in the launcher and goes to the sandbox through the claim env).
+    # The all-interface pod bind is intentional: the Service and the kubelet's
+    # probes reach the pod IP, and narrowing it to loopback would cut both off.
     httpd = ThreadingHTTPServer(("0.0.0.0", port), _Handler)
     httpd.dispatcher = dispatcher  # type: ignore[attr-defined]
     httpd.auth_token = auth_token  # type: ignore[attr-defined]

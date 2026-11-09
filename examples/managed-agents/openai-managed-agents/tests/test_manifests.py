@@ -8,8 +8,11 @@ half (see the README).
 from __future__ import annotations
 
 import pathlib
+import re
 
 import pytest
+
+from launcher import config
 
 yaml = pytest.importorskip("yaml")
 
@@ -95,15 +98,90 @@ def test_warm_pool_references_the_template():
     assert pool["spec"]["replicas"] >= 1
 
 
+def _launcher_pod() -> dict:
+    return _by_kind(_load("launcher.yaml"), "Deployment")[0]["spec"]["template"]["spec"]
+
+
+def _volume(pod: dict, mount_path: str) -> tuple[dict, dict]:
+    """The container's volumeMount at mount_path and the pod volume it names."""
+    container = pod["containers"][0]
+    (mount,) = [m for m in container.get("volumeMounts", []) if m["mountPath"] == mount_path]
+    (volume,) = [v for v in pod["volumes"] if v["name"] == mount["name"]]
+    return mount, volume
+
+
 # --- AC #5 + blocker 1: launcher holds the env key AND an intake auth token ---
-def test_launcher_holds_env_key_and_auth_token_from_secrets():
-    deploy = _by_kind(_load("launcher.yaml"), "Deployment")[0]
-    container = deploy["spec"]["template"]["spec"]["containers"][0]
-    env = {e["name"]: e for e in container["env"]}
-    assert "secretKeyRef" in env["OPENAI_EXECUTOR_API_KEY"]["valueFrom"]
-    assert "secretKeyRef" in env["LAUNCHER_AUTH_TOKEN"]["valueFrom"]
-    # The launcher never holds the application key.
-    assert "OPENAI_API_KEY" not in env
+# Both as files from their Secrets (CKV_K8S_35), never as environment variables.
+def test_launcher_holds_env_key_and_auth_token_as_files_from_secrets():
+    pod = _launcher_pod()
+    env = {e["name"]: e for e in pod["containers"][0].get("env", [])}
+    for name in ("OPENAI_EXECUTOR_API_KEY", "LAUNCHER_AUTH_TOKEN", "OPENAI_API_KEY"):
+        assert name not in env, f"{name} must not be an environment variable"
+    assert not any("secretKeyRef" in e.get("valueFrom", {}) for e in env.values())
+    mount, volume = _volume(pod, config.LAUNCHER_CREDENTIALS_DIR)
+    assert mount["readOnly"] is True
+    files = {
+        (source["secret"]["name"], item["key"], item["path"])
+        for source in volume["projected"]["sources"]
+        for item in source["secret"]["items"]
+    }
+    assert files == {
+        ("openai-env-key", "OPENAI_EXECUTOR_API_KEY", "OPENAI_EXECUTOR_API_KEY"),
+        ("launcher-auth", "LAUNCHER_AUTH_TOKEN", "LAUNCHER_AUTH_TOKEN"),
+    }
+
+
+# --- CKV_K8S_38: the ServiceAccount token is mounted by hand, for one hour ----
+def test_launcher_mounts_its_service_account_token_explicitly():
+    pod = _launcher_pod()
+    assert pod["automountServiceAccountToken"] is False
+    mount, volume = _volume(pod, "/var/run/secrets/kubernetes.io/serviceaccount")
+    assert mount["readOnly"] is True
+    sources = volume["projected"]["sources"]
+    (token,) = [s["serviceAccountToken"] for s in sources if "serviceAccountToken" in s]
+    assert token == {"path": "token", "expirationSeconds": 3600}
+    (ca,) = [s["configMap"] for s in sources if "configMap" in s]
+    assert ca == {"name": "kube-root-ca.crt", "items": [{"key": "ca.crt", "path": "ca.crt"}]}
+    (ns,) = [s["downwardAPI"] for s in sources if "downwardAPI" in s]
+    assert ns == {"items": [{"path": "namespace", "fieldRef": {"fieldPath": "metadata.namespace"}}]}
+
+
+# --- CKV_K8S_8: a liveness probe that a hand-off cannot fail -----------------
+def test_launcher_liveness_probe_is_the_intake_get_with_a_minute_of_grace():
+    container = _launcher_pod()["containers"][0]
+    probe = container["livenessProbe"]
+    # GET / is the unauthenticated handler (launch.py, do_GET), answered on its
+    # own thread; tests/test_launcher.py shows it answers during a hand-off.
+    assert probe["httpGet"] == {"path": "/", "port": "intake"}
+    assert {p["name"] for p in container["ports"]} == {"intake"}
+    assert probe["timeoutSeconds"] >= 5
+    assert probe["periodSeconds"] * probe["failureThreshold"] >= 60
+
+
+# --- CKV_K8S_14: one image, at a fixed tag, in both roles ---------------------
+def test_both_roles_use_the_same_image_at_a_fixed_tag():
+    launcher = _launcher_pod()["containers"][0]
+    template = _by_kind(_load("sandbox-template.yaml"), "SandboxTemplate")[0]
+    executor = template["spec"]["podTemplate"]["spec"]["containers"][0]
+    assert launcher["image"] == executor["image"]
+    repository, _, tag = launcher["image"].rpartition(":")
+    assert repository.endswith("/openai-sandbox-executor")
+    assert tag and tag != "latest"
+    assert launcher["imagePullPolicy"] == executor["imagePullPolicy"] == "IfNotPresent"
+
+
+# --- CKV_K8S_40: both roles run as the image's own high UID ------------------
+def test_both_roles_run_as_the_images_high_uid():
+    dockerfile = (SAMPLE / "Dockerfile").read_text()
+    (useradd,) = re.findall(r"^RUN useradd --uid (\d+) ", dockerfile, re.MULTILINE)
+    (user,) = re.findall(r"^USER (\S+)$", dockerfile, re.MULTILINE)
+    uid = int(useradd)
+    assert uid >= 10000
+    assert user == str(uid)
+    assert _launcher_pod()["securityContext"]["runAsUser"] == uid
+    template = _by_kind(_load("sandbox-template.yaml"), "SandboxTemplate")[0]
+    sc = template["spec"]["podTemplate"]["spec"]["securityContext"]
+    assert sc["runAsUser"] == sc["runAsGroup"] == sc["fsGroup"] == uid
 
 
 # --- b6daf49: the launcher pod is not consolidated mid-hand-off ---------------

@@ -42,6 +42,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -91,13 +92,16 @@ def _launcher_token() -> str:
 
 
 def _post(url: str, payload: dict, token: str, timeout: int) -> dict:
+    # urlopen also opens file:// and other schemes; the launcher is an HTTP intake.
+    if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
+        sys.exit(f"the launcher URL must start with http:// or https://: {url}")
     body = json.dumps(payload).encode()
     req = urllib.request.Request(
         url, data=body,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - operator's own port-forward
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - http(s) only, checked above
             return json.loads(resp.read() or b"{}")
     except urllib.error.HTTPError as exc:
         if exc.code == 401:

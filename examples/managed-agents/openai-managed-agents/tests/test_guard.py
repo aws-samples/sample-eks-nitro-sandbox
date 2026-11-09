@@ -14,6 +14,8 @@ installed: pip install .)
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 from launcher import config, guard
@@ -26,6 +28,7 @@ _VARS = [
     config.ENV_API_KEY,
     config.ENV_EXECUTOR_API_KEY,
     config.ENV_CODEX_API_KEY,
+    config.ENV_LAUNCHER_AUTH_TOKEN,
     config.ENV_BASE_URL,
     config.ENV_SESSION_ID,
     config.ENV_ENVIRONMENT_ID,
@@ -35,12 +38,24 @@ _VARS = [
 ]
 
 _REMOTE = "https://codex-cloud-environments.chatgpt.com/e/env_1"
+_LAUNCHER_FILES = (config.ENV_EXECUTOR_API_KEY, config.ENV_LAUNCHER_AUTH_TOKEN)
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
+def _clean_env(monkeypatch, tmp_path):
     for name in _VARS:
         monkeypatch.delenv(name, raising=False)
+    # The credentials directory starts absent, as on a sandbox pod.
+    monkeypatch.setattr(config, "LAUNCHER_CREDENTIALS_DIR", str(tmp_path / "credentials"))
+
+
+def _mount(*names, value="mounted-value"):
+    """Create files in the credentials directory, as the projected volume does."""
+    directory = pathlib.Path(config.LAUNCHER_CREDENTIALS_DIR)
+    directory.mkdir(exist_ok=True)
+    for name in names:
+        (directory / name).write_text(value)
+    return directory
 
 
 def _claim_env(monkeypatch, *, key=True, session=True, env=True, remote=True):
@@ -60,9 +75,19 @@ def _claim_env(monkeypatch, *, key=True, session=True, env=True, remote=True):
 def test_application_key_refused_in_every_pod(role, monkeypatch):
     monkeypatch.setenv(config.ENV_API_KEY, "x")
     if role == guard.ROLE_LAUNCH:
-        monkeypatch.setenv(config.ENV_EXECUTOR_API_KEY, "y")
-        monkeypatch.setenv(config.ENV_LAUNCHER_AUTH_TOKEN, "t")
+        _mount(*_LAUNCHER_FILES)
     with pytest.raises(RuntimeError, match=config.ENV_API_KEY):
+        guard.assert_safe(role)
+
+
+@pytest.mark.parametrize("role", [guard.ROLE_LAUNCH, guard.ROLE_SERVE])
+def test_application_key_file_refused_in_every_pod(role):
+    # The same rule for a file in the credentials directory: a Secret holding the
+    # application key mounted there is refused, by its file name.
+    if role == guard.ROLE_LAUNCH:
+        _mount(*_LAUNCHER_FILES)
+    _mount(config.ENV_API_KEY)
+    with pytest.raises(RuntimeError, match=f"{config.ENV_API_KEY} is mounted"):
         guard.assert_safe(role)
 
 
@@ -107,8 +132,8 @@ def test_serve_claimed_pod_still_refuses_application_key(monkeypatch):
 
 
 # --- the launcher holds the environment key, never the application key -------
-def test_launch_ok_with_environment_key_and_token(monkeypatch):
-    monkeypatch.setenv(config.ENV_EXECUTOR_API_KEY, "env-key")
+def test_launch_ok_with_environment_key_and_token_files():
+    _mount(*_LAUNCHER_FILES)
     guard.assert_safe(guard.ROLE_LAUNCH)
 
 
@@ -117,18 +142,60 @@ def test_launch_requires_environment_key():
         guard.assert_safe(guard.ROLE_LAUNCH)
 
 
+def test_launch_requires_environment_key_file_not_only_the_token():
+    _mount(config.ENV_LAUNCHER_AUTH_TOKEN)
+    with pytest.raises(RuntimeError, match=f"{config.ENV_EXECUTOR_API_KEY} is missing"):
+        guard.assert_safe(guard.ROLE_LAUNCH)
+
+
+@pytest.mark.parametrize("name", _LAUNCHER_FILES)
+def test_launch_refuses_its_credentials_in_the_environment(name, monkeypatch):
+    # Both are files now; an env entry left in the manifest would put a value
+    # back in the launcher's environment, so the launcher refuses to start.
+    _mount(*_LAUNCHER_FILES)
+    monkeypatch.setenv(name, "x")
+    with pytest.raises(RuntimeError, match=f"{name} set in the launcher's environment"):
+        guard.assert_safe(guard.ROLE_LAUNCH)
+
+
+@pytest.mark.parametrize("name", ["OPENAI_ORG_ID", config.ENV_CODEX_API_KEY, "other"])
+def test_launch_refuses_any_other_file_in_the_credentials_directory(name):
+    _mount(*_LAUNCHER_FILES, name)
+    with pytest.raises(RuntimeError, match=f"unexpected files in .*: {name};"):
+        guard.assert_safe(guard.ROLE_LAUNCH)
+
+
+def test_launch_skips_the_kubelet_atomic_writer_entries():
+    # A projected volume holds ..data and a timestamped .. directory beside the
+    # key files; they are not credentials and must not stop the launcher.
+    directory = _mount(*_LAUNCHER_FILES)
+    (directory / "..2026_11_09_21_00_00.000000000").mkdir()
+    (directory / "..data").symlink_to("..2026_11_09_21_00_00.000000000")
+    guard.assert_safe(guard.ROLE_LAUNCH)
+
+
 def test_launch_refuses_codex_api_key(monkeypatch):
     # The launcher never runs codex itself, so CODEX_API_KEY in its own env is wrong.
-    monkeypatch.setenv(config.ENV_EXECUTOR_API_KEY, "env-key")
+    _mount(*_LAUNCHER_FILES)
     monkeypatch.setenv(config.ENV_CODEX_API_KEY, "x")
     with pytest.raises(RuntimeError, match=config.ENV_CODEX_API_KEY):
         guard.assert_safe(guard.ROLE_LAUNCH)
 
 
 def test_base_url_is_allowed_not_a_credential(monkeypatch):
-    monkeypatch.setenv(config.ENV_EXECUTOR_API_KEY, "env-key")
+    _mount(*_LAUNCHER_FILES)
     monkeypatch.setenv(config.ENV_BASE_URL, "https://api.openai.com/v1")
     guard.assert_safe(guard.ROLE_LAUNCH)
+
+
+# --- a sandbox never holds a credential file ---------------------------------
+@pytest.mark.parametrize("claimed", [False, True])
+def test_serve_refuses_any_credential_file(claimed, monkeypatch):
+    if claimed:
+        _claim_env(monkeypatch)
+    _mount(config.ENV_EXECUTOR_API_KEY)
+    with pytest.raises(RuntimeError, match="credential files in .* on a sandbox"):
+        guard.assert_safe(guard.ROLE_SERVE)
 
 
 def test_unknown_role_rejected():
@@ -143,6 +210,14 @@ def test_guard_never_reports_a_value(monkeypatch):
     with pytest.raises(RuntimeError) as exc:
         guard.assert_safe(guard.ROLE_SERVE)
     assert secret not in str(exc.value)
+
+
+def test_guard_never_reports_a_mounted_file_value():
+    planted = "sk-mounted-value-should-never-appear"
+    _mount(config.ENV_API_KEY, value=planted)
+    with pytest.raises(RuntimeError) as exc:
+        guard.assert_safe(guard.ROLE_SERVE)
+    assert planted not in str(exc.value)
 
 
 def test_guard_partial_dispatch_never_reports_key_value(monkeypatch):

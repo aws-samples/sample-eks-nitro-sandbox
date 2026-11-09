@@ -13,7 +13,10 @@ tool calls run in the cluster. Two OpenAI keys, kept apart:
 
 So the roles differ in what they may hold:
 
-  * launcher -- the environment key, and never the application key.
+  * launcher -- the environment key, and never the application key. It holds
+    the environment key and its intake token as files in
+    config.LAUNCHER_CREDENTIALS_DIR, mounted from their Secrets, and neither in
+    its environment.
   * serve, before a claim (a warm pod) -- neither key and no session. The
     SandboxWarmPool booted it ahead of any session.
   * serve, on a claimed pod -- the whole session tuple (session id, environment
@@ -57,25 +60,42 @@ _FOREIGN_CREDENTIALS = (
     "OPENAI_ORGANIZATION",
 )
 
+# The files the launcher's credentials directory holds (deploy/launcher.yaml),
+# and the only ones it may hold. Each was an environment variable before; the
+# launcher now refuses to start if either is still set in its environment.
+_LAUNCHER_CREDENTIAL_FILES = (
+    config.ENV_EXECUTOR_API_KEY,
+    config.ENV_LAUNCHER_AUTH_TOKEN,
+)
+
 
 def assert_safe(role: str) -> None:
     """Raise unless this role's process holds exactly the credentials it should."""
     if role not in (ROLE_LAUNCH, ROLE_SERVE):
         raise ValueError(f"unknown role {role!r}")
 
-    # No pod ever holds the application key, in any role.
+    # No pod ever holds the application key, in any role, as a variable or as a
+    # file in the credentials directory.
     if os.environ.get(config.ENV_API_KEY):
         raise RuntimeError(
             f"{config.ENV_API_KEY} is set in this pod; refusing to start. The "
             "application key creates and reads sessions and stays on the "
             "operator's machine; the cluster never holds it."
         )
+    files = _credential_files()
+    if config.ENV_API_KEY in files:
+        raise RuntimeError(
+            f"{config.launcher_credential_path(config.ENV_API_KEY)} is mounted in "
+            "this pod; refusing to start. The application key creates and reads "
+            "sessions and stays on the operator's machine; the cluster never "
+            "holds it."
+        )
     _refuse_foreign_credentials(role)
 
     if role == ROLE_LAUNCH:
-        _assert_launch_safe()
+        _assert_launch_safe(files)
     else:
-        _assert_serve_safe()
+        _assert_serve_safe(files)
 
 
 def dispatched() -> bool:
@@ -87,7 +107,22 @@ def dispatched() -> bool:
     return any(os.environ.get(name) for name in _SESSION_TUPLE)
 
 
-def _assert_launch_safe() -> None:
+def _credential_files() -> list[str]:
+    """The names in config.LAUNCHER_CREDENTIALS_DIR, or none if it is absent.
+
+    The kubelet keeps its own entries there (``..data`` and a timestamped
+    ``..`` directory) to swap a Secret's files atomically; they are skipped.
+    Kubernetes refuses a Secret key or a volume item path that starts with
+    ``..``, so no credential file can hide among them.
+    """
+    try:
+        names = os.listdir(config.LAUNCHER_CREDENTIALS_DIR)
+    except FileNotFoundError:
+        return []
+    return sorted(name for name in names if not name.startswith(".."))
+
+
+def _assert_launch_safe(files: list[str]) -> None:
     # The launcher never runs codex itself, so CODEX_API_KEY in its own env is
     # unexpected; it holds only the environment key it hands on.
     if os.environ.get(config.ENV_CODEX_API_KEY):
@@ -96,16 +131,39 @@ def _assert_launch_safe() -> None:
             "start. The launcher holds the environment key as "
             f"{config.ENV_EXECUTOR_API_KEY} and never runs codex itself."
         )
-    if not os.environ.get(config.ENV_EXECUTOR_API_KEY):
+    in_env = [name for name in _LAUNCHER_CREDENTIAL_FILES if os.environ.get(name)]
+    if in_env:
         raise RuntimeError(
-            f"{config.ENV_EXECUTOR_API_KEY} is not set, so the launcher has no "
-            "environment key to give to the sandboxes it claims. Store it in the "
-            "openai-env-key Secret."
+            f"{', '.join(in_env)} set in the launcher's environment; refusing to "
+            "start. The launcher reads its credentials from files in "
+            f"{config.LAUNCHER_CREDENTIALS_DIR}, which deploy/launcher.yaml mounts "
+            "from their Secrets, so no credential belongs in its environment."
+        )
+    unexpected = [name for name in files if name not in _LAUNCHER_CREDENTIAL_FILES]
+    if unexpected:
+        raise RuntimeError(
+            f"unexpected files in {config.LAUNCHER_CREDENTIALS_DIR}: "
+            f"{', '.join(unexpected)}; refusing to start. The launcher holds only "
+            f"{' and '.join(_LAUNCHER_CREDENTIAL_FILES)} there."
+        )
+    if config.ENV_EXECUTOR_API_KEY not in files:
+        raise RuntimeError(
+            f"{config.launcher_credential_path(config.ENV_EXECUTOR_API_KEY)} is "
+            "missing, so the launcher has no environment key to give to the "
+            "sandboxes it claims. Store it in the openai-env-key Secret, which "
+            "deploy/launcher.yaml mounts there."
         )
 
 
-def _assert_serve_safe() -> None:
+def _assert_serve_safe(files: list[str]) -> None:
     """A warm pod holds neither key and no session; a claimed pod holds the whole tuple + key."""
+    # A sandbox never holds a credential file: its key arrives in the claim env.
+    if files:
+        raise RuntimeError(
+            f"credential files in {config.LAUNCHER_CREDENTIALS_DIR} on a sandbox: "
+            f"{', '.join(files)}; refusing to start. A sandbox gets its key only "
+            "from its SandboxClaim env."
+        )
     tuple_present = [name for name in _SESSION_TUPLE if os.environ.get(name)]
     has_key = bool(os.environ.get(config.ENV_CODEX_API_KEY))
 
@@ -141,6 +199,6 @@ def _refuse_foreign_credentials(role: str) -> None:
         raise RuntimeError(
             f"foreign OpenAI/Codex credential variables in this {role} pod: "
             f"{', '.join(present)}; refusing to start. Only the environment key "
-            "(as OPENAI_EXECUTOR_API_KEY in the launcher, CODEX_API_KEY in a "
-            "claimed sandbox) is expected."
+            "(as the OPENAI_EXECUTOR_API_KEY file in the launcher, CODEX_API_KEY "
+            "in a claimed sandbox) is expected."
         )
