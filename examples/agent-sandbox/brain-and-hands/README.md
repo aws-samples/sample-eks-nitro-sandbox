@@ -147,7 +147,7 @@ and `public.ecr.aws/docker/library/python:3.12-slim` for the hands).
 | [`brain/claude.json`](brain/claude.json) | Marks `/workspace` trusted and the MCP server enabled, so a non-interactive run does not stop at the trust prompt. |
 | [`brain/CLAUDE.md`](brain/CLAUDE.md) | The agent's project instructions: how paths work in the hands. |
 | [`deploy/warm-pool.yaml`](deploy/warm-pool.yaml) | The hands: a `SandboxTemplate` that runs sandboxd with its network policy, and a `SandboxWarmPool` that keeps one booted. |
-| [`deploy/brain.yaml`](deploy/brain.yaml) | The brain `Deployment`. No `runtimeClassName`: the brain is not the sandboxed half. |
+| [`deploy/brain.yaml`](deploy/brain.yaml) | The brain `Deployment`. No `runtimeClassName`: the brain is not the sandboxed half. A read-only root filesystem with only `/tmp` writable, and an explicitly mounted ServiceAccount token. |
 | [`deploy/rbac.yaml`](deploy/rbac.yaml) | The brain's `ServiceAccount`, `Role` and `RoleBinding`, and the whole of what it may do. |
 | [`iam/bedrock-invoke-policy.json`](iam/bedrock-invoke-policy.json) | The brain's only AWS permission: invoke a model. |
 | [`iam/pod-identity-trust.json`](iam/pod-identity-trust.json) | The trust policy that lets EKS Pod Identity assume the role. |
@@ -155,6 +155,15 @@ and `public.ecr.aws/docker/library/python:3.12-slim` for the hands).
 | [`scripts/cleanup.sh`](scripts/cleanup.sh) | Delete everything the blueprint created, and leave the agent-sandbox install alone. |
 | [`scripts/common.sh`](scripts/common.sh) | The names, the pinned context, the readings and the guards the scripts share. |
 | [`.env.example`](.env.example) | The local values the blueprint needs, with no values filled in. |
+
+The brain container runs with `readOnlyRootFilesystem: true`. Only `/tmp` is writable, as an
+`emptyDir`, and `/workspace` and `/home/agent` stay on the read-only root, so the agent cannot
+rewrite `/workspace/.claude/settings.json` or `/home/agent/.claude.json`. Without `/tmp`,
+Claude Code fails with "EROFS: read-only file system, mkdir '/tmp/claude-10001'". The pod sets
+`automountServiceAccountToken: false` and mounts a projected ServiceAccount token, with
+`ca.crt` and `namespace`, at the standard path. Its `expirationSeconds` is 3600, so the token
+is valid for one hour (measured at 3600 seconds). EKS Pod Identity still supplies the Bedrock
+credentials.
 
 The scripts read `.env` (copy it from `.env.example`). `NAMESPACE` defaults to
 `brain-and-hands` and reaches every object they apply. Set `KUBE_CONTEXT` to the context of
@@ -231,12 +240,13 @@ kubectl() { if [ -n "$KUBE_CONTEXT" ]; then command kubectl --context "$KUBE_CON
 ./scripts/setup.sh 2>&1 | tee setup.log
 ```
 
-The run below used `AWS_REGION=us-east-1`, so that Region appears in its output; the
-account ID is shown as `<ACCOUNT_ID>`. Abridged: the `docker build` and `docker push`
-transcripts are cut.
+The run below used `AWS_REGION=us-west-2`, so that Region appears in its output; the
+account ID is shown as `<ACCOUNT_ID>` and the Pod Identity association ID as
+`<ASSOCIATION_ID>`. Abridged: the `docker login` warning and the `docker build` and
+`docker push` transcripts are cut.
 
 ```text
-context: sandbox-demo (pinned)   namespace: brain-and-hands   region: us-east-1
+context: sandbox-demo (pinned)   namespace: brain-and-hands   region: us-west-2
 reusing the agent-sandbox install as it is (registry.k8s.io/agent-sandbox/agent-sandbox-controller:v1.0.10); this sample was built against v1.0.10
 network policy enforcement is on (amazon-vpc-cni enable-network-policy-controller=true)
 
@@ -249,8 +259,8 @@ created namespace brain-and-hands, labelled app.kubernetes.io/managed-by=brain-a
 created ECR repository brain-and-hands, tagged ManagedBy=brain-and-hands
 
 == 3/7 build and push the brain image ==
-  <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/brain-and-hands:e4e6d2f5a44b9138
-e4e6d2f5a44b9138: digest: sha256:320aab689152371f15f4137233f0e286ce05fda4392693740dcea7b230c9939f size: 3663
+  <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/brain-and-hands:e4e6d2f5a44b9138
+e4e6d2f5a44b9138: digest: sha256:845ace273807135413353c4c0f1115d71fee0af347e1732ad7b4208785aae0e6 size: 3663
 
 == 4/7 the brain's Bedrock role, through EKS Pod Identity ==
 created IAM role brain-and-hands-brain, tagged ManagedBy=brain-and-hands
@@ -265,7 +275,7 @@ rolebinding.rbac.authorization.k8s.io/brain created
 
 == 6/7 the sandboxd token ==
   created secret/hands-token
-  sandboxd will require the token whose sha256 is 20cb31f13043...
+  sandboxd will require the token whose sha256 is e0aaecdd97db...
 
 == 7/7 the hands, then the brain ==
 sandboxtemplate.extensions.agents.x-k8s.io/hands created
@@ -276,10 +286,12 @@ deployment "brain" successfully rolled out
   waiting for the pool to boot its warm pod (the first sandboxed pod on a cold cluster waits for a sandbox-capable node)
   readyReplicas=0/1
   readyReplicas=0/1
+  readyReplicas=0/1
 NAME         READY   DESIRED   AGE
-hands-pool   1       1         26s
+hands-pool   1       1         31s
 NAME    READY   UP-TO-DATE   AVAILABLE   AGE
-brain   1/1     1            1           25s
+brain   1/1     1            1           30s
+
 the brain is up with a warm pod waiting. Drive it:
   kubectl -n brain-and-hands exec deploy/brain -- claude -p 'Create a sandbox, print its kernel, and tell me whether you can reach the internet from it.'
 Tear it down:   ./scripts/cleanup.sh
@@ -297,17 +309,17 @@ kubectl -n $NAMESPACE get sandboxwarmpool,deploy,pods,networkpolicy
 
 ```text
 NAME                                                    READY   DESIRED   AGE
-sandboxwarmpool.extensions.agents.x-k8s.io/hands-pool   1       1         28s
+sandboxwarmpool.extensions.agents.x-k8s.io/hands-pool   1       1         33s
 
 NAME                    READY   UP-TO-DATE   AVAILABLE   AGE
-deployment.apps/brain   1/1     1            1           26s
+deployment.apps/brain   1/1     1            1           32s
 
 NAME                         READY   STATUS    RESTARTS   AGE
-pod/brain-6768bbd499-rpg7f   1/1     Running   0          26s
-pod/hands-pool-7b5xp         1/1     Running   0          28s
+pod/brain-79964cdbfd-bsp82   1/1     Running   0          32s
+pod/hands-pool-ckq5r         1/1     Running   0          34s
 
 NAME                                                   POD-SELECTOR                                         AGE
-networkpolicy.networking.k8s.io/hands-network-policy   agents.x-k8s.io/sandbox-template-ref-hash=04187fa9   28s
+networkpolicy.networking.k8s.io/hands-network-policy   agents.x-k8s.io/sandbox-template-ref-hash=04187fa9   35s
 ```
 
 Two pods, an ordinary one and a sandboxed one waiting to be claimed, and the one network
@@ -378,21 +390,14 @@ Write
 CronCreate
 CronDelete
 CronList
-ListMcpResourcesTool
 NotebookEdit
-ReadMcpResourceDirTool
-ReadMcpResourceTool
 SendMessage
 TaskStop
-mcp__hands__create_sandbox
-mcp__hands__delete_sandbox
-mcp__hands__download_file
-mcp__hands__execute_command
-mcp__hands__file_exists
-mcp__hands__get_sandbox_status
-mcp__hands__list_files
-mcp__hands__upload_file
 ```
+
+In this run the list does not name the `hands` MCP server's tools, although the agent names
+`mcp__hands__execute_command` in its next answer and uses those tools in steps 6 and 7.
+Step 5 shows their schema.
 
 Now ask it to run something locally:
 
@@ -402,11 +407,11 @@ kubectl -n $NAMESPACE exec deploy/brain -- \
 ```
 
 ```text
-No, I can't run that on my own machine. I have no shell tool of my own. The tools I have are file read/write/edit, glob, grep, and a few others, and none of them runs commands.
+I can't run that command the way you asked, because I don't have a tool that runs commands directly on my own machine.
 
-To run `id -un && hostname` directly, I would need a shell tool such as Bash. I don't have one.
+The only command-execution tool I have is `mcp__hands__execute_command`. It needs a `sandbox_claim_name` and runs inside a sandbox, so it isn't my own shell. I don't have a plain Bash or shell tool. My other tools only read, write, edit and search files, and none of them can run a command.
 
-The only way I can run commands is through the `hands` MCP server's `execute_command`, and that runs inside a sandbox, not on my own machine. You asked me not to use a sandbox, so I haven't run anything. If a sandbox is fine, tell me and I'll create one and run the command there. The output would then be the sandbox's user and hostname, not my own machine's.
+To run `id -un && hostname` directly, I would need a local shell tool such as Bash. If a sandbox is acceptable, I can create one with `create_sandbox` and run it there. The output would then show the sandbox's user and hostname, not my own machine's.
 ```
 
 The permission rules are enforced by Claude Code, not by the model, so this is not the model
@@ -476,13 +481,12 @@ kubectl -n $NAMESPACE exec deploy/brain -- \
 ```
 
 ```text
-Here is what each step returned:
+All three steps ran, and I deleted the sandbox (`sandbox-claim-3fcd4c3a`) at the end.
 
 1. **`uname -rv`** returned `6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026`.
 2. **Python file:** I wrote `answer.py` containing `print(6*7)` and ran it. It printed `42`.
-3. **Fetching https://example.com with python3:** this failed. `urllib.request.urlopen` raised `URLError: [Errno -3] Temporary failure in name resolution`. The sandbox couldn't resolve the hostname, so it most likely has no outbound network or DNS. I didn't try other ways of reaching the site.
-4. **Cleanup:** I deleted the sandbox, `sandbox-claim-a9d9fcb3`.
-[turn took 34s]
+3. **Fetching https://example.com with python3** failed. `urllib.request.urlopen` raised `URLError: <urlopen error [Errno -3] Temporary failure in name resolution>`. The sandbox couldn't resolve the hostname, so it most likely has no outbound network or DNS access. I didn't test connecting by IP address, so I can't say whether other network access is blocked too.
+[turn took 35s]
 ```
 
 That is the whole pattern in one turn: the model decided to run a command, the command ran
@@ -510,30 +514,28 @@ sleep 20; echo "# 20 seconds later"; kubectl -n $NAMESPACE get sandboxwarmpool h
 ```
 
 ```text
-The sandbox is created and ready. I haven't deleted it, as you asked.
+The sandbox is created and ready. I haven't deleted it.
 
-- **Claim name:** `sandbox-claim-df610a69`
-- **Status:** `SandboxReady` (ready: true, message "Pod is Ready")
+- **Claim name:** `sandbox-claim-eac91254`
+- **Status:** `SandboxReady` (pod is Ready)
 
-It uses the default auto-shutdown of 300 seconds (5 minutes), so it will shut itself down after that unless you extend it.
-
+It was created with the default auto-shutdown of 300 seconds (5 minutes), so it will shut down on its own after that unless you ask me to extend it.
 NAME                     READY   SANDBOX            REASON              AGE
-sandbox-claim-df610a69   True    hands-pool-mbsw2   DependenciesReady   6s
+sandbox-claim-eac91254   True    hands-pool-8dzf9   DependenciesReady   4s
 NAME               LAUNCH-TYPE
-hands-pool-mbsw2   warm
-hands-pool-mfvxq   warm
+hands-pool-8dzf9   warm
+hands-pool-pwkph   warm
 NAME         READY   DESIRED   AGE
-hands-pool           1         116s
-
+hands-pool           1         107s
 # 20 seconds later
 NAME         READY   DESIRED   AGE
-hands-pool   1       1         2m17s
+hands-pool   1       1         2m8s
 ```
 
 The claim is `Ready`, and the `launch-type` label says the pod it holds was adopted from the
-pool rather than cold-started. The pool had no warm pod
-ready right after the claim and was back to one within 20 seconds, so while a session holds
-a pod the steady state is two pods: the claimed one and the next one waiting. Size
+pool rather than cold-started. The pool had no warm pod ready right after the claim and was
+back to one at the reading 20 seconds later, so while a session holds a pod the steady state
+is two pods: the claimed one and the next one waiting. Size
 `replicas` to your peak claim rate rather than your total session count, as the
 [warm pool](../../getting-started/warm-pool/README.md) page sets out.
 
@@ -560,19 +562,19 @@ echo "--- the brain, an ordinary pod ---"; kubectl -n $NAMESPACE exec deploy/bra
 ```text
 --- the claimed sandbox pod ---
 kernel:        6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-product name:  m8a.enclave
+product name:  m5a.enclave
 disks:         dm-0 vda vdb vdc vdd
-uptime:        94.49s
+uptime:        65.63s
 --- the pool's replacement pod ---
 kernel:        6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-product name:  m8a.enclave
+product name:  m5a.enclave
 disks:         dm-0 vda vdb vdc vdd
-uptime:        32.53s
+uptime:        32.43s
 --- the brain, an ordinary pod ---
 kernel:        6.18.56 #2 SMP PREEMPT_DYNAMIC Fri Oct 30 22:32:37 UTC 2026
-product name:  m8a.large
+product name:  m5a.xlarge
 disks:         dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0
-uptime:        17571.28s
+uptime:        218354.03s
 ```
 
 The three pods ran on the same node (the next block shows it), and the readings still
@@ -581,12 +583,12 @@ split two against one:
 | Reading | The sandbox pods | The brain, an ordinary pod |
 |---|---|---|
 | `uname -rv` | `6.18.54 #1`, the guest kernel | `6.18.56 #2`, its node's kernel |
-| `/sys/class/dmi/id/product_name` | `m8a.enclave`, the VM | `m8a.large`, the EC2 instance |
+| `/sys/class/dmi/id/product_name` | `m5a.enclave`, the VM | `m5a.xlarge`, the EC2 instance |
 | `ls /sys/block` | `vda vdb vdc vdd`, virtio devices | `nvme0n1 nvme1n1`, the instance's disks |
-| `/proc/uptime` | 94s and 33s, each pod's own age | 17571s, the node's uptime |
+| `/proc/uptime` | 66s and 32s, each pod's own age | 218354s, the node's uptime |
 
 The two uptimes are the clearest reading: both sandbox pods share a node with the brain,
-and each reports its own boot, a minute apart, because each got its own VM.
+and each reports its own boot, about half a minute apart, because each got its own VM.
 
 ```bash
 kubectl -n $NAMESPACE get pods \
@@ -595,9 +597,9 @@ kubectl -n $NAMESPACE get pods \
 
 ```text
 NAME                     NODE                  RUNTIMECLASS
-brain-6768bbd499-rpg7f   <NODE_A>   <none>
-hands-pool-mbsw2         <NODE_A>   isolated-sandbox
-hands-pool-mfvxq         <NODE_A>   isolated-sandbox
+brain-79964cdbfd-bsp82   <NODE_A>   <none>
+hands-pool-8dzf9         <NODE_A>   isolated-sandbox
+hands-pool-pwkph         <NODE_A>   isolated-sandbox
 ```
 
 The runtime class shows what was asked for rather than what ran, which is why the readings
@@ -633,8 +635,9 @@ wrote:
 kubectl -n $NAMESPACE get networkpolicy hands-network-policy -o yaml
 ```
 
-Abridged: the object's server-set metadata (timestamps, UIDs, finalizers, the owner
-reference's API version and UID) is cut; `spec` is shown whole.
+Abridged: the object's server-set metadata (creation timestamp, finalizers, generation,
+resource version, UIDs, and the owner reference's controller fields and UID) is cut; `spec`
+is shown whole.
 
 ```text
 apiVersion: networking.k8s.io/v1
@@ -643,7 +646,8 @@ metadata:
   name: hands-network-policy
   namespace: brain-and-hands
   ownerReferences:
-  - kind: SandboxTemplate
+  - apiVersion: extensions.agents.x-k8s.io/v1beta1
+    kind: SandboxTemplate
     name: hands
 spec:
   ingress:
@@ -677,7 +681,6 @@ Traceback (most recent call last):
   File "<string>", line 1, in <module>
 socket.gaierror: [Errno -3] Temporary failure in name resolution
 command terminated with exit code 1
-
 Traceback (most recent call last):
   File "<string>", line 1, in <module>
   File "/usr/local/lib/python3.12/socket.py", line 865, in create_connection
@@ -717,12 +720,15 @@ kubectl -n $NAMESPACE delete pod not-the-brain
 ```
 
 ```text
+pod/not-the-brain created
+pod/not-the-brain condition met
 --- from not-the-brain ---
 8080 TimeoutError: timed out
 9090 TimeoutError: timed out
 --- from the brain ---
 8080 connected
 9090 connected
+pod "not-the-brain" deleted from brain-and-hands namespace
 ```
 
 **Step 10: sandboxd refuses a request without the token.** The policy decides who can reach
@@ -780,10 +786,8 @@ print("GET /latest/meta-data/iam/security-credentials/:", st)
 
 ```text
 (none)
-
 ls: cannot access '/var/run/secrets/kubernetes.io/serviceaccount/': No such file or directory
 command terminated with exit code 2
-
 Traceback (most recent call last):
   File "<string>", line 1, in <module>
   File "/usr/local/lib/python3.12/socket.py", line 865, in create_connection
@@ -792,7 +796,6 @@ Traceback (most recent call last):
     sock.connect(sa)
 TimeoutError: timed out
 command terminated with exit code 1
-
 PUT /latest/api/token: 200
 GET /latest/meta-data/iam/security-credentials/: 404
 ```
@@ -844,7 +847,7 @@ aws iam list-role-policies --role-name $POD_IDENTITY_ROLE_NAME --query PolicyNam
                 "bedrock:InvokeModel",
                 "bedrock:InvokeModelWithResponseStream"
             ],
-            "Resource": "arn:aws:bedrock:us-east-1:<ACCOUNT_ID>:inference-profile/us.anthropic.claude-sonnet-5-5"
+            "Resource": "arn:aws:bedrock:us-west-2:<ACCOUNT_ID>:inference-profile/us.anthropic.claude-sonnet-5-5"
         },
         {
             "Sid": "InvokeTheFoundationModelsThatProfileRoutesTo",
@@ -946,13 +949,13 @@ sleep 45; kubectl -n $NAMESPACE get sandboxclaim,sandboxwarmpool,pods
 ```
 
 ```text
-sandboxclaim.extensions.agents.x-k8s.io "sandbox-claim-df610a69" deleted from brain-and-hands namespace
+sandboxclaim.extensions.agents.x-k8s.io "sandbox-claim-eac91254" deleted from brain-and-hands namespace
 NAME                                                    READY   DESIRED   AGE
-sandboxwarmpool.extensions.agents.x-k8s.io/hands-pool   1       1         4m47s
+sandboxwarmpool.extensions.agents.x-k8s.io/hands-pool   1       1         5m14s
 
 NAME                         READY   STATUS    RESTARTS   AGE
-pod/brain-6768bbd499-rpg7f   1/1     Running   0          4m45s
-pod/hands-pool-mfvxq         1/1     Running   0          2m58s
+pod/brain-79964cdbfd-bsp82   1/1     Running   0          5m12s
+pod/hands-pool-pwkph         1/1     Running   0          3m33s
 ```
 
 ## Good to know
@@ -1004,7 +1007,7 @@ runs, and the pool before the template it references:
 ```
 
 ```text
-context: sandbox-demo (pinned)   namespace: brain-and-hands   region: us-east-1
+context: sandbox-demo (pinned)   namespace: brain-and-hands   region: us-west-2
 
 == 1/9 delete the brain ==
 deployment.apps "brain" deleted from brain-and-hands namespace
