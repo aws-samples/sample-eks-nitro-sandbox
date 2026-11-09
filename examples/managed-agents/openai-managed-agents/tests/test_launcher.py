@@ -109,6 +109,19 @@ def test_dispatch_with_right_token_succeeds(server):
     assert d.dispatched_with == ("sesn_a", "env_a", REMOTE)
 
 
+# --- the helper's own scheme guard (the B310 suppression rests on it) ---------
+@pytest.mark.parametrize("base", ["file:///etc", "ftp://127.0.0.1:8080", "https://127.0.0.1:8080", "127.0.0.1:8080"])
+def test_req_refuses_a_non_http_base_before_urlopen(base, monkeypatch):
+    # The accepting case is every test above, which calls _req with the fixture's
+    # http:// base. Here urlopen fails the test if it is reached at all.
+    def fail_on_call(*args, **kwargs):
+        raise AssertionError(f"urlopen was called for {base}")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail_on_call)
+    with pytest.raises(ValueError, match="plain HTTP on loopback"):
+        _req(base, "/", None, method="GET")
+
+
 # --- routing and validation --------------------------------------------------
 def test_bad_field_is_400(server):
     base, _ = server

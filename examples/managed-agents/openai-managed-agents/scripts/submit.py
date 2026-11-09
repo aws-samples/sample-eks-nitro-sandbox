@@ -11,7 +11,7 @@ application-managed provisioning):
      codex exec-server in it pointing at that remote URL.
      The launcher is reached over a ClusterIP Service you port-forward:
        kubectl port-forward svc/openai-launcher 8080:8080
-     Every request to the launcher carries LAUNCHER_AUTH_TOKEN from your .env.
+     Every request this script sends to the launcher carries LAUNCHER_AUTH_TOKEN from your .env.
   3. Wait on the open stream for agent.session.environment.connected for this
      session and this environment (up to --connect-timeout seconds, default
      300; an event for another session or environment does not count). Only

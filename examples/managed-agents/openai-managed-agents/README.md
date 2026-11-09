@@ -174,20 +174,38 @@ LoadBalancer or NodePort.
 RBAC, sandbox template and pool, and the launcher) go into a namespace it creates for
 itself, which [Clean up](#clean-up) removes. The manifests set no namespace: kubectl applies
 them to the current context's namespace, and the launcher reads its namespace from its own
-pod and claims sandboxes there. Create the namespace, mark it as this blueprint's, and make
-it the current context's namespace:
+pod and claims sandboxes there. The block below looks the namespace up first. If it is absent,
+the block creates it, marks it as this blueprint's with a label, and only then makes it the
+current context's namespace. If it already exists and carries that label (from an earlier
+run), the block only makes it the current context's namespace:
 
 ```bash
 export NAMESPACE=openai-managed-agents
-kubectl create namespace $NAMESPACE && \
-  kubectl label namespace $NAMESPACE app.kubernetes.io/part-of=openai-managed-agents
-kubectl config set-context --current --namespace=$NAMESPACE
+
+if ! found=$(kubectl get namespace "$NAMESPACE" --ignore-not-found -o name); then
+  echo "Setup stopped: could not look up namespace $NAMESPACE. The context is unchanged." >&2
+elif [ -n "$found" ]; then
+  if owner=$(kubectl get namespace "$NAMESPACE" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}') \
+      && [ "$owner" = openai-managed-agents ]; then
+    kubectl config set-context --current --namespace="$NAMESPACE"
+  else
+    echo "Setup stopped: namespace $NAMESPACE already exists and does not carry" \
+      "app.kubernetes.io/part-of=openai-managed-agents (label value read: '$owner')." \
+      "The context is unchanged." >&2
+  fi
+elif ! kubectl create namespace "$NAMESPACE"; then
+  echo "Setup stopped: could not create namespace $NAMESPACE. The context is unchanged." >&2
+elif ! kubectl label namespace "$NAMESPACE" app.kubernetes.io/part-of=openai-managed-agents; then
+  echo "Setup stopped: created namespace $NAMESPACE but could not label it." \
+    "The context is unchanged; label the namespace or delete it before you go on." >&2
+else
+  kubectl config set-context --current --namespace="$NAMESPACE"
+fi
 ```
 
-`kubectl create` refuses a namespace that already exists, and the `&&` then skips the label.
-If it says `AlreadyExists`, check that the namespace is this blueprint's from an earlier run
-(`kubectl get namespace $NAMESPACE --show-labels` shows
-`app.kubernetes.io/part-of=openai-managed-agents`), or pick another name for `NAMESPACE`.
+If it prints `Setup stopped`, nothing after this step is safe to run: the current context still
+points at the namespace it pointed at before. A namespace that exists without the label belongs
+to someone else, so pick another name for `NAMESPACE` rather than labelling it yourself.
 
 **Step 1: Install agent-sandbox and turn on network policy.** Install the controller with its
 extensions (`SandboxTemplate`, `SandboxWarmPool`, `SandboxClaim`). If you ran the warm pool
@@ -743,17 +761,18 @@ example, to let a follow-up turn keep using it). Deleting a claim does not delet
 deleting a session does not stop the pod. That is why both parts exist.
 
 **Remove the remaining Kubernetes objects.** Set `NAMESPACE` again in a new shell. The block
-first checks that `$NAMESPACE` exists and carries the blueprint's label, and deletes nothing
-unless it does; every command in it names `$NAMESPACE` itself rather than relying on the
-current context. It then switches the context back to `nitro-sandboxes-demo`, the shared
+first checks that the lookup of `$NAMESPACE` succeeds and that it carries the blueprint's
+label, and deletes nothing unless both hold; every command in it names `$NAMESPACE` itself
+rather than relying on the current context. It then switches the context back to
+`nitro-sandboxes-demo`, the shared
 namespace the [home page](../../README.md#prerequisites) sets up (the Claude blueprint's clean
 up does the same), and deletes the blueprint's namespace:
 
 ```bash
 export NAMESPACE=openai-managed-agents
 
-owner=$(kubectl get namespace "$NAMESPACE" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}')
-if [ "$owner" = openai-managed-agents ]; then
+if owner=$(kubectl get namespace "$NAMESPACE" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}') \
+    && [ "$owner" = openai-managed-agents ]; then
   kubectl delete -n "$NAMESPACE" -f deploy/launcher.yaml -f deploy/launcher-ingress.yaml --ignore-not-found
   kubectl delete -n "$NAMESPACE" -f deploy/sandbox-template.yaml --ignore-not-found
   kubectl delete -n "$NAMESPACE" sandboxclaims -l openai.com/session-id --ignore-not-found
@@ -768,8 +787,9 @@ else
 fi
 ```
 
-If it prints `Clean up NOT done`, the namespace is not this blueprint's, or `NAMESPACE` holds a
-different name from the one you set up with. Check both before you delete anything in it.
+If it prints `Clean up NOT done`, kubectl could not read the namespace, the namespace is not
+this blueprint's, or `NAMESPACE` holds a different name from the one you set up with. Check
+those before you delete anything in it.
 
 **Remove the image and the local files.** These are not in the namespace. Set `AWS_REGION` and
 `REGISTRY` again in a new shell:
