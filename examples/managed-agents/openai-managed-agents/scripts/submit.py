@@ -86,7 +86,7 @@ def _launcher_token() -> str:
     if not token:
         sys.exit(
             "Set LAUNCHER_AUTH_TOKEN in .env (the same value stored in the "
-            "launcher-auth Secret). The launcher authenticates every request with it."
+            "launcher-auth Secret). The launcher checks it on every claim and release request."
         )
     return token
 

@@ -50,15 +50,15 @@ ENV_REMOTE_URL = "OPENAI_REMOTE_URL"
 
 # --- The launcher intake's authentication token ------------------------------
 # The operator reaches the launcher's intake over a kubectl port-forward to its
-# ClusterIP Service. The intake authenticates every request with this
-# pre-shared bearer token: the launcher reads it from the launcher-auth Secret,
-# mounted as a file (LAUNCHER_CREDENTIALS_DIR below), and submit.py sends it
-# from the operator's .env. The launcher refuses to start without it (fail
-# closed), and the intake rejects any request whose bearer token does not
-# match, so a NetworkPolicy is reachability and this token is authentication.
-# It is a shared secret the operator already holds to deploy the launcher, not
-# minted auth: no pod but the launcher reads it, and the operator rotates it by
-# replacing the Secret and restarting the launcher.
+# ClusterIP Service. The intake authenticates every claim and release POST
+# with this pre-shared bearer token; GET / is a token-free probe with no data.
+# The launcher reads it from the launcher-auth Secret, mounted as a file
+# (LAUNCHER_CREDENTIALS_DIR below), and submit.py sends it from the operator's
+# .env. The launcher refuses to start without it (fail closed), and the intake
+# rejects any POST whose bearer token does not match: a NetworkPolicy is
+# reachability and this token is authentication. It is a shared secret the
+# operator already holds, not minted auth: no pod but the launcher reads it,
+# and the operator rotates it by replacing the Secret and restarting the launcher.
 ENV_LAUNCHER_AUTH_TOKEN = "LAUNCHER_AUTH_TOKEN"
 
 # --- Where the launcher reads its two credentials -----------------------------

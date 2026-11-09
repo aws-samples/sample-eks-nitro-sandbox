@@ -15,6 +15,7 @@ installed: pip install .)
 from __future__ import annotations
 
 import pathlib
+import re
 
 import pytest
 
@@ -171,7 +172,35 @@ def test_launch_skips_the_kubelet_atomic_writer_entries():
     directory = _mount(*_LAUNCHER_FILES)
     (directory / "..2026_11_09_21_00_00.000000000").mkdir()
     (directory / "..data").symlink_to("..2026_11_09_21_00_00.000000000")
+    (directory / "..data_tmp").symlink_to("..2026_11_09_21_00_00.000000000")
     guard.assert_safe(guard.ROLE_LAUNCH)
+
+
+@pytest.mark.parametrize("make", [
+    "file:..creds",                              # any other ..name
+    "file:..data",                               # the writer's name, but a plain file
+    "file:..2026_11_09_21_00_00.123",            # a timestamp name, but a file
+    "symlink:..2026_11_09_21_00_00.123",         # a timestamp name, but a symlink
+    "dir:..2026_11_09_21_00_00",                 # no digits after the seconds
+])
+def test_launch_refuses_a_dotdot_entry_the_kubelet_does_not_write(make):
+    kind, name = make.split(":", 1)
+    directory = _mount(*_LAUNCHER_FILES)
+    path = directory / name
+    if kind == "file":
+        path.write_text("x")
+    elif kind == "symlink":
+        path.symlink_to(config.ENV_EXECUTOR_API_KEY)
+    else:
+        path.mkdir()
+    with pytest.raises(RuntimeError, match=re.escape(f": {name};")):
+        guard.assert_safe(guard.ROLE_LAUNCH)
+
+
+def test_serve_refuses_a_dotdot_file_on_a_sandbox():
+    _mount("..creds")
+    with pytest.raises(RuntimeError, match="credential files in .* on a sandbox: \\.\\.creds;"):
+        guard.assert_safe(guard.ROLE_SERVE)
 
 
 def test_launch_refuses_codex_api_key(monkeypatch):

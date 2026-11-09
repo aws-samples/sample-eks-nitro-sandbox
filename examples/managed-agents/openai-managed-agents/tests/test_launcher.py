@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import re
 import threading
 import urllib.error
@@ -177,6 +178,7 @@ def test_liveness_answers_while_a_hand_off_is_in_progress(server):
 # --- main(): credentials from files, and the ServiceAccount token ------------
 EXECUTOR_FILE_VALUE = "executor-key-from-the-mounted-file"
 INTAKE_FILE_VALUE = "intake-value-from-the-mounted-file"
+FAKE_SA_JWT = "header.payload.signature"  # the fake ServiceAccount file's content
 
 
 class _FakeServer:
@@ -214,7 +216,7 @@ def launcher_pod(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "LAUNCHER_CREDENTIALS_DIR", str(credentials))
     service_account = tmp_path / "serviceaccount"
     service_account.mkdir()
-    (service_account / "token").write_text("header.payload.signature")
+    (service_account / "token").write_text(FAKE_SA_JWT)
     (service_account / "ca.crt").write_text("-----BEGIN CERTIFICATE-----\n")
     monkeypatch.setattr(launch.incluster_config, "SERVICE_TOKEN_FILENAME", str(service_account / "token"))
     monkeypatch.setattr(launch.incluster_config, "SERVICE_CERT_FILENAME", str(service_account / "ca.crt"))
@@ -226,7 +228,8 @@ def launcher_pod(tmp_path, monkeypatch):
     return credentials, service_account
 
 
-def test_main_reads_both_credentials_from_files_and_serves(launcher_pod):
+def test_main_reads_both_credentials_from_files_and_serves(launcher_pod, caplog, capsys):
+    caplog.set_level(logging.DEBUG)
     launch.main()
     assert _RecordingDispatcher.built_with == [EXECUTOR_FILE_VALUE]  # trailing newline stripped
     (srv,) = _FakeServer.created
@@ -234,23 +237,43 @@ def test_main_reads_both_credentials_from_files_and_serves(launcher_pod):
     host, port = srv.address
     assert ipaddress.ip_address(host).is_unspecified  # the all-interface pod bind
     assert port == config.DEFAULT_LAUNCHER_PORT
+    # The preflight reads the ServiceAccount token but never logs or prints it.
+    printed = capsys.readouterr()
+    for text in (caplog.text, printed.out, printed.err):
+        assert FAKE_SA_JWT not in text
 
 
 @pytest.mark.parametrize("name", ["token", "ca.crt"])
-@pytest.mark.parametrize("state", ["missing", "empty"])
+@pytest.mark.parametrize("state", ["missing", "empty", "whitespace", "directory"])
 def test_main_refuses_to_start_without_a_service_account_token(launcher_pod, name, state):
     # automountServiceAccountToken is false; without the hand-mounted volume the
     # launcher must stop at startup, naming the file, before it builds a client
-    # or serves the intake.
+    # or serves the intake. A file of only whitespace counts as empty.
     _, service_account = launcher_pod
-    if state == "missing":
-        (service_account / name).unlink()
-    else:
-        (service_account / name).write_text("")
-    with pytest.raises(RuntimeError, match=re.escape(f"{service_account / name} is missing or empty") + ".*refusing to start"):
+    path = service_account / name
+    path.unlink()
+    if state == "empty":
+        path.write_text("")
+    elif state == "whitespace":
+        path.write_text(" \n\t\n")
+    elif state == "directory":
+        path.mkdir()
+    message = re.escape(f"{path} is missing, empty or only whitespace") + ".*refusing to start"
+    with pytest.raises(RuntimeError, match=message) as exc:
         launch.main()
+    assert FAKE_SA_JWT not in str(exc.value)
     assert _RecordingDispatcher.built_with == []
     assert _FakeServer.created == []
+
+
+@pytest.mark.parametrize("padding", [("", "\n"), ("  ", "  ")])
+def test_main_accepts_a_token_with_surrounding_whitespace(launcher_pod, padding):
+    # The other side of the whitespace check: a real token padded by a newline or
+    # spaces is still a token, and the launcher starts.
+    _, service_account = launcher_pod
+    (service_account / "token").write_text(padding[0] + FAKE_SA_JWT + padding[1])
+    launch.main()
+    assert len(_FakeServer.created) == 1
 
 
 @pytest.mark.parametrize("name", [config.ENV_EXECUTOR_API_KEY, config.ENV_LAUNCHER_AUTH_TOKEN])

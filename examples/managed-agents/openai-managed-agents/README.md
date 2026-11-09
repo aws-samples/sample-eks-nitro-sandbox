@@ -52,8 +52,9 @@ Nitro sandbox:
   is checked by variable name, without printing values.
 - **The operator's intake is reachability-gated and authenticated.** The launcher's intake
   Service is `ClusterIP`, a deny-by-default ingress `ApplicationNetworkPolicy` admits no
-  in-cluster pod, and every request carries a bearer token the launcher verifies. A
-  NetworkPolicy is reachability; the token is authentication.
+  in-cluster pod, and every request that claims or releases a sandbox (a `POST`) must carry a
+  bearer token the launcher verifies. `GET /` answers without one and returns only a health
+  status, for the probes. A NetworkPolicy is reachability; the token is authentication.
 - **The sandbox reaches only what the executor needs.** An `ApplicationNetworkPolicy` denies
   all ingress and allows egress to CoreDNS, `api.openai.com` and
   `codex-cloud-environments.chatgpt.com`, the two hosts
@@ -287,8 +288,8 @@ image, push it under a new tag (for example `:v2`) and update the tag in
 
 **Step 4: Give the cluster the environment key and the intake token.** The launcher needs the
 environment key (it gives it to each claimed sandbox through the claim env) and the bearer
-token it checks on every intake request. Both are read from `.env`, so no value appears on a
-command line. Generate a token first if you have not:
+token it checks on every claim and release request. Both are read from `.env`, so no value
+appears on a command line. Generate a token first if you have not:
 
 ```bash
 grep -q '^LAUNCHER_AUTH_TOKEN=.\+' .env || \
@@ -712,7 +713,8 @@ publishes only IPv4, so its single attempt times out. The IPv4 block is identica
 the environment key arrive in the pod's env from the `SandboxClaim`, set by the launcher over
 its authenticated Kubernetes API connection. The launcher's own intake, which the operator
 reaches by port-forward, is guarded two ways: a deny-by-default ingress policy admits no
-in-cluster pod, and the launcher checks a bearer token on every request. The blueprint publishes
+in-cluster pod, and the launcher checks a bearer token on every request that claims or releases
+a sandbox (its unauthenticated `GET /` returns only a health status). The blueprint publishes
 no Ingress and no host port anywhere.
 
 ## Clean up
@@ -740,32 +742,45 @@ at once. Pass `--keep-claim` to delete only the API session and leave the pod ru
 example, to let a follow-up turn keep using it). Deleting a claim does not delete the session;
 deleting a session does not stop the pod. That is why both parts exist.
 
-**Remove the remaining Kubernetes objects.** Set `AWS_REGION`, `NAMESPACE` and `REGISTRY`
-again in a new shell. The `kubectl delete` commands act on the current context's namespace,
-which is still `$NAMESPACE`:
+**Remove the remaining Kubernetes objects.** Set `NAMESPACE` again in a new shell. The block
+first checks that `$NAMESPACE` exists and carries the blueprint's label, and deletes nothing
+unless it does; every command in it names `$NAMESPACE` itself rather than relying on the
+current context. It then switches the context back to `nitro-sandboxes-demo`, the shared
+namespace the [home page](../../README.md#prerequisites) sets up (the Claude blueprint's clean
+up does the same), and deletes the blueprint's namespace:
+
+```bash
+export NAMESPACE=openai-managed-agents
+
+owner=$(kubectl get namespace "$NAMESPACE" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}')
+if [ "$owner" = openai-managed-agents ]; then
+  kubectl delete -n "$NAMESPACE" -f deploy/launcher.yaml -f deploy/launcher-ingress.yaml --ignore-not-found
+  kubectl delete -n "$NAMESPACE" -f deploy/sandbox-template.yaml --ignore-not-found
+  kubectl delete -n "$NAMESPACE" sandboxclaims -l openai.com/session-id --ignore-not-found
+  kubectl delete -n "$NAMESPACE" -f deploy/egress-policy.yaml -f deploy/rbac.yaml --ignore-not-found
+  kubectl delete -n "$NAMESPACE" secret openai-env-key launcher-auth --ignore-not-found
+  kubectl config set-context --current --namespace=nitro-sandboxes-demo
+  kubectl delete namespace "$NAMESPACE"
+else
+  echo "Clean up NOT done: namespace $NAMESPACE could not be read or does not carry" \
+    "app.kubernetes.io/part-of=openai-managed-agents (label value: '$owner')." \
+    "No Kubernetes object was deleted and the context was left as it is." >&2
+fi
+```
+
+If it prints `Clean up NOT done`, the namespace is not this blueprint's, or `NAMESPACE` holds a
+different name from the one you set up with. Check both before you delete anything in it.
+
+**Remove the image and the local files.** These are not in the namespace. Set `AWS_REGION` and
+`REGISTRY` again in a new shell:
 
 ```bash
 export AWS_REGION=<AWS_REGION>
-export NAMESPACE=openai-managed-agents
 export REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com
 
-kubectl delete -f deploy/launcher.yaml -f deploy/launcher-ingress.yaml --ignore-not-found
-kubectl delete -f deploy/sandbox-template.yaml --ignore-not-found
-kubectl delete sandboxclaims -l openai.com/session-id --ignore-not-found
-kubectl delete -f deploy/egress-policy.yaml -f deploy/rbac.yaml --ignore-not-found
-kubectl delete secret openai-env-key launcher-auth --ignore-not-found
 aws ecr delete-repository --repository-name openai-sandbox-executor --region $AWS_REGION --force
 docker image rm $REGISTRY/openai-sandbox-executor:v1
 rm -rf .venv
-```
-
-Then switch back to the shared namespace, and delete the blueprint's namespace only if it
-carries the blueprint's label:
-
-```bash
-kubectl config set-context --current --namespace=nitro-sandboxes-demo
-[ "$(kubectl get namespace $NAMESPACE -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}')" = openai-managed-agents ] \
-  && kubectl delete namespace $NAMESPACE
 ```
 
 Keep `.env` if you will run the blueprint again. Otherwise delete it, and in the OpenAI console

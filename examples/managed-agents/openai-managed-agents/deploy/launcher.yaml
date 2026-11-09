@@ -8,8 +8,8 @@
 # ClusterIP Service below. There is no Ingress, LoadBalancer or NodePort. Two
 # layers guard the intake: a deny-by-default ingress NetworkPolicy
 # (launcher-ingress.yaml) so no in-cluster pod may reach the Service, and a
-# bearer token on every request (launcher-auth Secret) so a caller that did
-# reach it still cannot drive it.
+# bearer token on every claim and release POST (launcher-auth Secret) so a
+# caller that did reach it still cannot drive it; GET / is the token-free probe.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -94,9 +94,9 @@ spec:
         #     through the claim env. Never the application key: guard.py refuses
         #     a pod that holds it, in its environment or as a file here.
         #   LAUNCHER_AUTH_TOKEN  the intake's bearer token. The launcher refuses
-        #     to start without it (fail closed) and rejects any request whose
-        #     token does not match. submit.py/cleanup.py send it from the
-        #     operator's .env.
+        #     to start without it (fail closed) and rejects any claim or release
+        #     POST whose token does not match. submit.py/cleanup.py send it from
+        #     the operator's .env.
         - name: launcher-credentials
           projected:
             sources:
@@ -114,7 +114,9 @@ spec:
         # mount. expirationSeconds is 3600, not the automatic mount's 3607: the
         # API server extends only a 3607-second token past its stated lifetime,
         # so this token is valid for one hour. The kubelet rotates the file
-        # before it expires, and the Kubernetes client re-reads it.
+        # before it expires, and the Kubernetes Python client re-reads it: its
+        # in-cluster loader has refreshed the token from the file by default
+        # since client 12.0.0 (try_refresh_token).
         - name: kube-api-access
           projected:
             sources:

@@ -7,6 +7,7 @@ half (see the README).
 
 from __future__ import annotations
 
+import copy
 import pathlib
 import re
 
@@ -63,6 +64,49 @@ def test_sandbox_denies_all_ingress():
     # so the sandbox needs no ingress at all.
     policy = _by_kind(_load("egress-policy.yaml"), "ApplicationNetworkPolicy")[0]
     assert policy["spec"]["ingress"] == []
+
+
+# --- CKV2_K8S_6: the ingress policy selects the launcher's own pods ----------
+def _selects(selector: dict, labels: dict) -> bool:
+    """A label selector with matchLabels only (what these files use) selects labels."""
+    assert set(selector) <= {"matchLabels"}, "only matchLabels selectors are handled here"
+    match = selector.get("matchLabels") or {}
+    return bool(match) and all(labels.get(k) == v for k, v in match.items())
+
+
+def _ingress_policy_covers_launcher(policy: dict, deployment: dict, service: dict) -> bool:
+    """The CKV2_K8S_6 suppression's premise: the policy selects every launcher pod,
+    and the Service's selector reaches only pods the policy selects."""
+    pod_labels = deployment["spec"]["template"]["metadata"]["labels"]
+    return (
+        _selects(policy["spec"]["podSelector"], pod_labels)
+        and _selects(deployment["spec"]["selector"], pod_labels)
+        and all(pod_labels.get(k) == v for k, v in service["spec"]["selector"].items())
+        and _selects(policy["spec"]["podSelector"], service["spec"]["selector"])
+    )
+
+
+def _launcher_objects() -> tuple[dict, dict, dict]:
+    policy = _by_kind(_load("launcher-ingress.yaml"), "ApplicationNetworkPolicy")[0]
+    docs = _load("launcher.yaml")
+    return policy, _by_kind(docs, "Deployment")[0], _by_kind(docs, "Service")[0]
+
+
+def test_launcher_ingress_policy_selects_the_launcher_pods_and_service():
+    assert _ingress_policy_covers_launcher(*_launcher_objects())
+
+
+@pytest.mark.parametrize("mutate", ["pod label", "policy selector", "service selector"])
+def test_launcher_ingress_relation_check_rejects_a_mismatch(mutate):
+    # The check above must fail on a mutated copy, or it proves nothing.
+    policy, deployment, service = copy.deepcopy(_launcher_objects())
+    if mutate == "pod label":
+        deployment["spec"]["template"]["metadata"]["labels"]["app"] = "renamed-launcher"
+    elif mutate == "policy selector":
+        policy["spec"]["podSelector"]["matchLabels"]["app"] = "renamed-launcher"
+    else:
+        service["spec"]["selector"]["app"] = "renamed-launcher"
+    assert not _ingress_policy_covers_launcher(policy, deployment, service)
 
 
 # --- blocker 1: the launcher has a deny-by-default ingress policy -------------

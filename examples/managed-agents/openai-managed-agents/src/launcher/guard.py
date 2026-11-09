@@ -38,6 +38,7 @@ this.
 from __future__ import annotations
 
 import os
+import re
 
 from . import config
 
@@ -110,16 +111,32 @@ def dispatched() -> bool:
 def _credential_files() -> list[str]:
     """The names in config.LAUNCHER_CREDENTIALS_DIR, or none if it is absent.
 
-    The kubelet keeps its own entries there (``..data`` and a timestamped
-    ``..`` directory) to swap a Secret's files atomically; they are skipped.
-    Kubernetes refuses a Secret key or a volume item path that starts with
-    ``..``, so no credential file can hide among them.
+    The kubelet's atomic writer keeps its own entries beside a projected
+    volume's files: the ``..data`` symlink (``..data_tmp`` while it swaps it)
+    and a ``..<UTC timestamp>.<digits>`` directory. Exactly those are skipped,
+    and only in those forms (a symlink, a directory). Every other name is
+    returned, including one that starts with ``..``, so the callers refuse it.
     """
+    directory = config.LAUNCHER_CREDENTIALS_DIR
     try:
-        names = os.listdir(config.LAUNCHER_CREDENTIALS_DIR)
+        names = os.listdir(directory)
     except FileNotFoundError:
         return []
-    return sorted(name for name in names if not name.startswith(".."))
+    return sorted(name for name in names if not _kubelet_entry(directory, name))
+
+
+# The atomic writer's directory: "..2006_01_02_15_04_05." plus os.MkdirTemp digits.
+_KUBELET_TS_DIR = re.compile(r"^\.\.\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}\.\d+$")
+
+
+def _kubelet_entry(directory: str, name: str) -> bool:
+    """True only for the kubelet atomic writer's own entries, in their own forms."""
+    path = os.path.join(directory, name)
+    if name in ("..data", "..data_tmp"):
+        return os.path.islink(path)
+    if _KUBELET_TS_DIR.match(name):
+        return os.path.isdir(path) and not os.path.islink(path)
+    return False
 
 
 def _assert_launch_safe(files: list[str]) -> None:

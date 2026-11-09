@@ -13,12 +13,14 @@ authentication:
   * a deny-by-default ingress ``ApplicationNetworkPolicy`` (see
     ``deploy/launcher-ingress.yaml``) so no in-cluster pod may reach the
     launcher Service; and
-  * a pre-shared bearer token on every request. The launcher loads it from a
-    mounted Secret and refuses to start without it; the intake rejects any
-    request whose ``Authorization: Bearer`` token does not match, in constant
-    time. ``submit.py`` sends it from the operator's ``.env``. This is a shared
-    secret the operator already holds to deploy the launcher, so an ordinary
-    in-cluster caller that reached the Service still cannot drive it.
+  * a pre-shared bearer token on every POST, the requests that claim or release
+    a sandbox. The launcher reads it from a mounted Secret file and refuses to
+    start without it; the intake rejects any POST whose ``Authorization: Bearer``
+    token does not match, in constant time. ``submit.py`` sends it from the
+    operator's ``.env``. This is a shared secret the operator already holds to
+    deploy the launcher, so an ordinary in-cluster caller that reached the
+    Service still cannot drive it. ``GET /`` answers without the token, for the
+    readiness and liveness probes, and returns only ``{"status": "ok"}``.
 
 Why this and not a poller like the Claude sample: the OpenAI self-hosted
 executor dials OUT to the environment's remote URL and there is no work queue to
@@ -38,7 +40,6 @@ from __future__ import annotations
 import hmac
 import json
 import logging
-import os
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -55,7 +56,7 @@ _BEARER_RE = re.compile(r"^Bearer (?P<token>[A-Za-z0-9._\-]{1,4096})$")
 
 
 class _Handler(BaseHTTPRequestHandler):
-    """Claim or release a sandbox for a session. Every request must authenticate."""
+    """Claim or release a sandbox for a session. Every POST must authenticate; GET / is the probe."""
 
     def _authenticated(self) -> bool:
         """Constant-time check of the request's bearer token against the launcher's."""
@@ -149,15 +150,25 @@ def _require_service_account_token() -> None:
     Without this check the agent-sandbox client would fall back to looking for a
     kubeconfig (k8s_agent_sandbox/k8s_helper.py) and fail with an error about
     that file instead of the token. The paths are the Kubernetes client's own,
-    so this checks what it will read.
+    so this checks what it will read. Each file is read only to test that it
+    holds something other than whitespace; its content is never logged.
     """
     for path in (incluster_config.SERVICE_TOKEN_FILENAME, incluster_config.SERVICE_CERT_FILENAME):
-        if not (os.path.isfile(path) and os.path.getsize(path) > 0):
+        if not _has_content(path):
             raise RuntimeError(
-                f"{path} is missing or empty, so the launcher cannot reach the "
-                "Kubernetes API to claim sandboxes; refusing to start. "
+                f"{path} is missing, empty or only whitespace, so the launcher cannot "
+                "reach the Kubernetes API to claim sandboxes; refusing to start. "
                 "deploy/launcher.yaml mounts it with the kube-api-access volume."
             )
+
+
+def _has_content(path: str) -> bool:
+    """True if ``path`` is a readable file holding more than whitespace."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return bool(handle.read().strip())
+    except (OSError, UnicodeDecodeError):
+        return False
 
 
 def main() -> None:
@@ -166,16 +177,17 @@ def main() -> None:
     # Both credentials are files mounted from their Secrets, not env variables.
     executor_key = config.read_launcher_credential(config.ENV_EXECUTOR_API_KEY)
     # Fail closed: the launcher will not start without its intake auth token, so
-    # the intake is never served unauthenticated.
+    # the claim and release routes are never served without it.
     auth_token = config.read_launcher_credential(config.ENV_LAUNCHER_AUTH_TOKEN)
     _require_service_account_token()
     dispatcher = sandbox.Dispatcher(executor_key)
     port = config.optional_int(config.ENV_LAUNCHER_PORT, config.DEFAULT_LAUNCHER_PORT)
     # Binds 0.0.0.0 so the ClusterIP Service can reach the launcher pod. The
     # launcher publishes no host port; its Service is ClusterIP, a deny-by-default
-    # ingress NetworkPolicy admits no in-cluster pod, and every request must carry
-    # the bearer token. The dispatch body carries no credential (the environment
-    # key stays in the launcher and goes to the sandbox through the claim env).
+    # ingress NetworkPolicy admits no in-cluster pod, every POST (claim or release)
+    # must carry the bearer token, and GET / answers without it with no data.
+    # The dispatch body carries no credential (the environment key stays in the
+    # launcher and goes to the sandbox through the claim env).
     # The all-interface pod bind is intentional: the Service and the kubelet's
     # probes reach the pod IP, and narrowing it to loopback would cut both off.
     httpd = ThreadingHTTPServer(("0.0.0.0", port), _Handler)
