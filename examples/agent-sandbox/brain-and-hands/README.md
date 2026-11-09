@@ -156,14 +156,14 @@ and `public.ecr.aws/docker/library/python:3.12-slim` for the hands).
 | [`scripts/common.sh`](scripts/common.sh) | The names, the pinned context, the readings and the guards the scripts share. |
 | [`.env.example`](.env.example) | The local values the blueprint needs, with no values filled in. |
 
-The brain container runs with `readOnlyRootFilesystem: true`. The only writable volume it mounts
-is `/tmp`, an `emptyDir`, and `/workspace` and `/home/agent` stay on the read-only root, so the agent cannot
-rewrite `/workspace/.claude/settings.json` or `/home/agent/.claude.json`. Without `/tmp`,
-Claude Code fails with "EROFS: read-only file system, mkdir '/tmp/claude-10001'". The pod sets
-`automountServiceAccountToken: false` and mounts a projected ServiceAccount token, with
-`ca.crt` and `namespace`, at the standard path. Its `expirationSeconds` is 3600, so the token
-is valid for one hour (measured at 3600 seconds). EKS Pod Identity still supplies the Bedrock
-credentials.
+The brain container runs with `readOnlyRootFilesystem: true`. The only writable volume it
+mounts is `/tmp`, an `emptyDir`, and `/workspace` and `/home/agent` stay on the read-only
+root, so the agent cannot rewrite `/workspace/.claude/settings.json` or
+`/home/agent/.claude.json`. Without `/tmp`, Claude Code fails with "EROFS: read-only file
+system, mkdir '/tmp/claude-10001'". The pod sets `automountServiceAccountToken: false` and
+mounts a projected ServiceAccount token, with `ca.crt` and `namespace`, at the standard
+path. Its `expirationSeconds` is 3600, so the token is valid for one hour (measured at 3600
+seconds). EKS Pod Identity still supplies the Bedrock credentials.
 
 The scripts read `.env` (copy it from `.env.example`). `NAMESPACE` defaults to
 `brain-and-hands` and reaches every object they apply. Set `KUBE_CONTEXT` to the context of
