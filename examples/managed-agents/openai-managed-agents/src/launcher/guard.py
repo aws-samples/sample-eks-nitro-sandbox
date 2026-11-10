@@ -61,8 +61,9 @@ _FOREIGN_CREDENTIALS = (
     "OPENAI_ORGANIZATION",
 )
 
-# The files the launcher's credentials directory holds (deploy/launcher.yaml),
-# and the only ones it may hold. Each was an environment variable before; the
+# The files the launcher's credentials directory holds (deploy/launcher.yaml).
+# Besides the kubelet atomic writer's own entries (_launcher_unexpected), they
+# are the only names it may hold. Each was an environment variable before; the
 # launcher now refuses to start if either is still set in its environment.
 _LAUNCHER_CREDENTIAL_FILES = (
     config.ENV_EXECUTOR_API_KEY,
@@ -76,27 +77,25 @@ def assert_safe(role: str) -> None:
         raise ValueError(f"unknown role {role!r}")
 
     # No pod ever holds the application key, in any role, as a variable or as a
-    # file in the credentials directory.
+    # file in the credentials directory. The top-level file is refused here in
+    # both roles; deeper in the directory, a sandbox refuses every entry
+    # (_assert_serve_safe) and the launcher lists the kubelet's timestamp
+    # directories too (_launcher_unexpected).
     if os.environ.get(config.ENV_API_KEY):
         raise RuntimeError(
             f"{config.ENV_API_KEY} is set in this pod; refusing to start. The "
             "application key creates and reads sessions and stays on the "
             "operator's machine; the cluster never holds it."
         )
-    files = _credential_files()
-    if config.ENV_API_KEY in files:
-        raise RuntimeError(
-            f"{config.launcher_credential_path(config.ENV_API_KEY)} is mounted in "
-            "this pod; refusing to start. The application key creates and reads "
-            "sessions and stays on the operator's machine; the cluster never "
-            "holds it."
-        )
+    names = _credential_dir_names()
+    if config.ENV_API_KEY in names:
+        raise _application_key_mounted(config.launcher_credential_path(config.ENV_API_KEY))
     _refuse_foreign_credentials(role)
 
     if role == ROLE_LAUNCH:
-        _assert_launch_safe(files)
+        _assert_launch_safe(names)
     else:
-        _assert_serve_safe(files)
+        _assert_serve_safe(names)
 
 
 def dispatched() -> bool:
@@ -108,38 +107,101 @@ def dispatched() -> bool:
     return any(os.environ.get(name) for name in _SESSION_TUPLE)
 
 
-def _credential_files() -> list[str]:
-    """The names in config.LAUNCHER_CREDENTIALS_DIR, or none if it is absent.
+def _application_key_mounted(path: str) -> RuntimeError:
+    return RuntimeError(
+        f"{path} is mounted in this pod; refusing to start. The application key "
+        "creates and reads sessions and stays on the operator's machine; the "
+        "cluster never holds it."
+    )
 
-    The kubelet's atomic writer keeps its own entries beside a projected
-    volume's files: the ``..data`` symlink (``..data_tmp`` while it swaps it)
-    and a ``..<UTC timestamp>.<digits>`` directory. Exactly those are skipped,
-    and only in those forms (a symlink, a directory). Every other name is
-    returned, including one that starts with ``..``, so the callers refuse it.
+
+def _credential_dir_names() -> list[str]:
+    """Every name in config.LAUNCHER_CREDENTIALS_DIR, sorted, or none if it is absent.
+
+    Nothing is skipped here: each role decides which entries it accepts.
     """
-    directory = config.LAUNCHER_CREDENTIALS_DIR
     try:
-        names = os.listdir(directory)
+        return sorted(os.listdir(config.LAUNCHER_CREDENTIALS_DIR))
     except FileNotFoundError:
         return []
-    return sorted(name for name in names if not _kubelet_entry(directory, name))
 
 
+# The kubelet's atomic writer, which fills the projected volume in
+# deploy/launcher.yaml, keeps its own entries beside the names it publishes: a
+# timestamp directory holding the files themselves, ..data linking to it by its
+# bare name, ..data_tmp linking to the next one while the writer swaps it in,
+# and each published name a symlink through ..data.
+_KUBELET_DATA_LINKS = ("..data", "..data_tmp")
 # The atomic writer's directory: "..2006_01_02_15_04_05." plus os.MkdirTemp digits.
 _KUBELET_TS_DIR = re.compile(r"^\.\.\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}\.\d+$")
 
 
-def _kubelet_entry(directory: str, name: str) -> bool:
-    """True only for the kubelet atomic writer's own entries, in their own forms."""
-    path = os.path.join(directory, name)
-    if name in ("..data", "..data_tmp"):
-        return os.path.islink(path)
-    if _KUBELET_TS_DIR.match(name):
-        return os.path.isdir(path) and not os.path.islink(path)
-    return False
+def _real_dir(path: str) -> bool:
+    return os.path.isdir(path) and not os.path.islink(path)
 
 
-def _assert_launch_safe(files: list[str]) -> None:
+def _launcher_unexpected(names: list[str]) -> list[str]:
+    """The entries of the launcher's credentials directory that it must not hold.
+
+    ``names`` is the directory's top level. Accepted there:
+
+      * the names in _LAUNCHER_CREDENTIAL_FILES, of any type. Where a symlink
+        among them points is not checked;
+      * ``..data`` and ``..data_tmp``, each only as a symlink whose target, as
+        os.readlink returns it, is one path component (no "/", not absolute)
+        that matches _KUBELET_TS_DIR and names a real directory (not a symlink)
+        in this directory, which the next rule then lists;
+      * a name that matches _KUBELET_TS_DIR, only as a real directory (not a
+        symlink). Every such directory is listed, whether or not a link names
+        it. Inside it, the application key is refused as mounted, and the only
+        names accepted are those in _LAUNCHER_CREDENTIAL_FILES that are not a
+        directory (or a symlink to one). Any other name there, including a
+        directory of any name and the writer's own names, is returned as
+        ``<timestamp directory>/<name>``. Nothing below that level is listed.
+
+    Every other top-level name is returned, including one that starts with
+    ``..``.
+    """
+    directory = config.LAUNCHER_CREDENTIALS_DIR
+    unexpected = []
+    for name in names:
+        path = os.path.join(directory, name)
+        if name in _LAUNCHER_CREDENTIAL_FILES:
+            continue
+        if name in _KUBELET_DATA_LINKS:
+            if _kubelet_data_link(directory, path):
+                continue
+        elif _KUBELET_TS_DIR.match(name) and _real_dir(path):
+            unexpected.extend(_timestamp_dir_unexpected(directory, name))
+            continue
+        unexpected.append(name)
+    return unexpected
+
+
+def _kubelet_data_link(directory: str, path: str) -> bool:
+    """True for a ..data or ..data_tmp link in the form the atomic writer makes it."""
+    if not os.path.islink(path):
+        return False
+    target = os.readlink(path)
+    if "/" in target or os.path.isabs(target) or not _KUBELET_TS_DIR.match(target):
+        return False
+    return _real_dir(os.path.join(directory, target))
+
+
+def _timestamp_dir_unexpected(directory: str, ts_dir: str) -> list[str]:
+    """The names inside one timestamp directory that the launcher must not hold."""
+    unexpected = []
+    for name in sorted(os.listdir(os.path.join(directory, ts_dir))):
+        path = os.path.join(directory, ts_dir, name)
+        if name == config.ENV_API_KEY:
+            raise _application_key_mounted(path)
+        if name in _LAUNCHER_CREDENTIAL_FILES and not os.path.isdir(path):
+            continue
+        unexpected.append(f"{ts_dir}/{name}")
+    return unexpected
+
+
+def _assert_launch_safe(names: list[str]) -> None:
     # The launcher never runs codex itself, so CODEX_API_KEY in its own env is
     # unexpected; it holds only the environment key it hands on.
     if os.environ.get(config.ENV_CODEX_API_KEY):
@@ -156,14 +218,15 @@ def _assert_launch_safe(files: list[str]) -> None:
             f"{config.LAUNCHER_CREDENTIALS_DIR}, which deploy/launcher.yaml mounts "
             "from their Secrets, so no credential belongs in its environment."
         )
-    unexpected = [name for name in files if name not in _LAUNCHER_CREDENTIAL_FILES]
+    unexpected = _launcher_unexpected(names)
     if unexpected:
         raise RuntimeError(
             f"unexpected files in {config.LAUNCHER_CREDENTIALS_DIR}: "
             f"{', '.join(unexpected)}; refusing to start. The launcher holds only "
-            f"{' and '.join(_LAUNCHER_CREDENTIAL_FILES)} there."
+            f"{' and '.join(_LAUNCHER_CREDENTIAL_FILES)} there, beside the "
+            "kubelet atomic writer's own entries."
         )
-    if config.ENV_EXECUTOR_API_KEY not in files:
+    if config.ENV_EXECUTOR_API_KEY not in names:
         raise RuntimeError(
             f"{config.launcher_credential_path(config.ENV_EXECUTOR_API_KEY)} is "
             "missing, so the launcher has no environment key to give to the "
@@ -172,14 +235,18 @@ def _assert_launch_safe(files: list[str]) -> None:
         )
 
 
-def _assert_serve_safe(files: list[str]) -> None:
+def _assert_serve_safe(names: list[str]) -> None:
     """A warm pod holds neither key and no session; a claimed pod holds the whole tuple + key."""
     # A sandbox never holds a credential file: its key arrives in the claim env.
-    if files:
+    # deploy/sandbox-template.yaml mounts nothing at this path, so every entry
+    # there is refused, the kubelet atomic writer's own included. An absent or
+    # empty directory passes.
+    if names:
         raise RuntimeError(
             f"credential files in {config.LAUNCHER_CREDENTIALS_DIR} on a sandbox: "
-            f"{', '.join(files)}; refusing to start. A sandbox gets its key only "
-            "from its SandboxClaim env."
+            f"{', '.join(names)}; refusing to start. A sandbox gets its key only "
+            "from its SandboxClaim env, and deploy/sandbox-template.yaml mounts "
+            "nothing there."
         )
     tuple_present = [name for name in _SESSION_TUPLE if os.environ.get(name)]
     has_key = bool(os.environ.get(config.ENV_CODEX_API_KEY))

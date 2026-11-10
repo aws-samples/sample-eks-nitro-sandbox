@@ -59,6 +59,47 @@ def _mount(*names, value="mounted-value"):
     return directory
 
 
+# Timestamp directory names in the atomic writer's form.
+_TS = "..2026_11_09_21_00_00.000000000"
+_TS_NEXT = "..2026_11_09_22_00_00.111111111"
+
+
+def _kubelet_volume(*names, ts=_TS):
+    """Lay out the credentials directory as the kubelet's atomic writer does.
+
+    The files are in a timestamp directory, ``..data`` links to it by its bare
+    name, and each published name is a symlink through ``..data``.
+    """
+    directory = pathlib.Path(config.LAUNCHER_CREDENTIALS_DIR)
+    directory.mkdir(exist_ok=True)
+    (directory / ts).mkdir()
+    for name in names:
+        (directory / ts / name).write_text("mounted-value")
+        (directory / name).symlink_to(f"..data/{name}")
+    (directory / "..data").symlink_to(ts)
+    return directory
+
+
+def _swap_in(directory, *names, ts=_TS_NEXT):
+    """The writer part-way through an update: the next directory, and ..data_tmp linking to it."""
+    (directory / ts).mkdir()
+    for name in names:
+        (directory / ts / name).write_text("mounted-value")
+    (directory / "..data_tmp").symlink_to(ts)
+
+
+def _refused(role):
+    """Run the guard expecting a credentials-directory refusal; return the entries it lists."""
+    with pytest.raises(RuntimeError) as exc:
+        guard.assert_safe(role)
+    message = str(exc.value)
+    kind = "unexpected files in " if role == guard.ROLE_LAUNCH else "credential files in "
+    assert message.startswith(kind), message
+    listed = re.search(r": ([^;]*); refusing to start", message)
+    assert listed, message
+    return listed.group(1).split(", ")
+
+
 def _claim_env(monkeypatch, *, key=True, session=True, env=True, remote=True):
     """Set a claimed-pod environment, optionally dropping fields to test partials."""
     if key:
@@ -201,6 +242,146 @@ def test_serve_refuses_a_dotdot_file_on_a_sandbox():
     _mount("..creds")
     with pytest.raises(RuntimeError, match="credential files in .* on a sandbox: \\.\\.creds;"):
         guard.assert_safe(guard.ROLE_SERVE)
+
+
+# --- the atomic writer's entries, only in the form the kubelet makes them ----
+@pytest.mark.parametrize("stage", ["settled", "swapping", "swapped"])
+def test_launch_accepts_the_kubelet_projected_volume(stage):
+    # The real layout: the published names linked through ..data. While the
+    # writer updates it, the next timestamp directory and ..data_tmp; just after,
+    # ..data on the next directory, with the old one not yet removed.
+    directory = _kubelet_volume(*_LAUNCHER_FILES)
+    if stage != "settled":
+        _swap_in(directory, *_LAUNCHER_FILES)
+    if stage == "swapped":
+        (directory / "..data_tmp").replace(directory / "..data")
+    guard.assert_safe(guard.ROLE_LAUNCH)
+
+
+@pytest.mark.parametrize("names", [(), _LAUNCHER_FILES], ids=["writer-only", "launcher-volume"])
+@pytest.mark.parametrize("claimed", [False, True])
+def test_serve_refuses_a_kubelet_projected_volume(names, claimed, monkeypatch):
+    # sandbox-template.yaml mounts nothing at this path, so a sandbox refuses even
+    # the writer's own entries.
+    if claimed:
+        _claim_env(monkeypatch)
+    _kubelet_volume(*names)
+    assert _refused(guard.ROLE_SERVE) == sorted([_TS, "..data", *names])
+
+
+@pytest.mark.parametrize("present", [False, True], ids=["absent", "empty"])
+@pytest.mark.parametrize("claimed", [False, True])
+def test_serve_accepts_an_absent_or_empty_credentials_directory(present, claimed, monkeypatch):
+    if claimed:
+        _claim_env(monkeypatch)
+    if present:
+        pathlib.Path(config.LAUNCHER_CREDENTIALS_DIR).mkdir()
+    guard.assert_safe(guard.ROLE_SERVE)
+    assert guard.dispatched() is claimed
+
+
+def _bad_target(form, directory):
+    """Make what a malformed ..data or ..data_tmp link points at; return the link's target."""
+    outside = directory.parent / "outside"
+    if form == "absolute":  # outside the directory, by absolute path
+        target = outside / _TS_NEXT
+        target.mkdir(parents=True)
+        (target / config.ENV_API_KEY).write_text("mounted-value")
+        return str(target)
+    if form == "parent":  # outside the directory, through ../
+        outside.mkdir()
+        (outside / config.ENV_API_KEY).write_text("mounted-value")
+        return "../outside"
+    if form == "subdir":  # a timestamp name, one level down
+        (directory / "sub" / _TS_NEXT).mkdir(parents=True)
+        return f"sub/{_TS_NEXT}"
+    if form == "dot-slash":  # the real timestamp directory, but through a path
+        return f"./{_TS}"
+    if form == "file":  # a timestamp name, but a regular file
+        (directory / _TS_NEXT).write_text("x")
+        return _TS_NEXT
+    if form == "symlink":  # a timestamp name, but a symlink to a directory
+        (directory / _TS_NEXT).symlink_to(_TS)
+        return _TS_NEXT
+    if form == "name":  # a real directory, without the timestamp form
+        (directory / "payload").mkdir()
+        return "payload"
+    assert form == "dangling"  # a timestamp name that does not exist
+    return _TS_NEXT
+
+
+@pytest.mark.parametrize(
+    "form", ["absolute", "parent", "subdir", "dot-slash", "file", "symlink", "name", "dangling"]
+)
+@pytest.mark.parametrize("link", ["..data", "..data_tmp"])
+@pytest.mark.parametrize("role", [guard.ROLE_LAUNCH, guard.ROLE_SERVE])
+def test_a_data_link_the_kubelet_does_not_make_is_refused(role, link, form):
+    # The writer links ..data (and ..data_tmp) to a timestamp directory beside
+    # it, by its bare name. Any other link under those names is refused itself,
+    # whatever it points at.
+    directory = _kubelet_volume(*(_LAUNCHER_FILES if role == guard.ROLE_LAUNCH else ()))
+    if link == "..data":
+        (directory / link).unlink()
+    (directory / link).symlink_to(_bad_target(form, directory))
+    assert link in _refused(role)
+
+
+@pytest.mark.parametrize("where", ["current", "next", "orphan"])
+def test_launch_refuses_the_application_key_inside_a_timestamp_directory(where):
+    # Every timestamp directory is listed, so the key cannot sit behind ..data,
+    # behind ..data_tmp, or in a directory no link names, with no top-level
+    # name of its own.
+    directory = _kubelet_volume(*_LAUNCHER_FILES)
+    ts = _TS
+    if where != "current":
+        ts = _TS_NEXT
+        (directory / ts).mkdir()
+        if where == "next":
+            (directory / "..data_tmp").symlink_to(ts)
+    (directory / ts / config.ENV_API_KEY).write_text("mounted-value")
+    with pytest.raises(RuntimeError, match=re.escape(f"{ts}/{config.ENV_API_KEY} is mounted")):
+        guard.assert_safe(guard.ROLE_LAUNCH)
+
+
+@pytest.mark.parametrize("claimed", [False, True])
+def test_serve_refuses_the_application_key_inside_a_timestamp_directory(claimed, monkeypatch):
+    if claimed:
+        _claim_env(monkeypatch)
+    directory = _kubelet_volume()
+    (directory / _TS / config.ENV_API_KEY).write_text("mounted-value")
+    assert _refused(guard.ROLE_SERVE) == [_TS, "..data"]
+
+
+@pytest.mark.parametrize("make", [
+    "file:other",       # a name the launcher does not hold
+    "file:..creds",     # any ..name
+    "symlink:..data",   # the writer's link name, but nested
+    "dir:nested",       # a nested directory
+    f"dir:{_TS_NEXT}",  # the writer's directory form, but nested
+])
+def test_launch_refuses_other_names_inside_a_timestamp_directory(make):
+    kind, name = make.split(":", 1)
+    directory = _kubelet_volume(*_LAUNCHER_FILES)
+    path = directory / _TS / name
+    if kind == "file":
+        path.write_text("x")
+    elif kind == "symlink":
+        path.symlink_to(config.ENV_EXECUTOR_API_KEY)
+    else:
+        path.mkdir()
+    assert _refused(guard.ROLE_LAUNCH) == [f"{_TS}/{name}"]
+
+
+@pytest.mark.parametrize("kind", ["dir", "symlink-to-dir"])
+def test_launch_refuses_a_credential_name_that_is_a_directory_inside_a_timestamp_directory(kind):
+    directory = _kubelet_volume(config.ENV_EXECUTOR_API_KEY)
+    name = config.ENV_LAUNCHER_AUTH_TOKEN
+    if kind == "dir":
+        (directory / _TS / name).mkdir()
+    else:
+        (directory / _TS / name).symlink_to(directory.parent)
+    (directory / name).symlink_to(f"..data/{name}")
+    assert _refused(guard.ROLE_LAUNCH) == [f"{_TS}/{name}"]
 
 
 def test_launch_refuses_codex_api_key(monkeypatch):
