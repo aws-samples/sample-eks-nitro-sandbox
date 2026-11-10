@@ -375,7 +375,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/subagent-security/analyst/deploy/supplier-api.yaml'
-      reason: 'Ordinary synthetic supplier pod behind ClusterIP Services only (supplier-api.yaml:1-6,24,38); a sample ships no network policy (AGENTS.md:556-562), and the section page says none of these blueprints adds one and links the network policy sample (subagent-security/README.md:125-131)'
+      reason: 'By design: an ordinary synthetic supplier pod with ClusterIP Services only and no external endpoint (supplier-api.yaml:1-6,24,38), whose reach no policy restricts; a sample ships no network policy (AGENTS.md:556-562), and the section page says none of these blueprints adds one and links the network policy sample (subagent-security/README.md:125-131)'
       expiration: '2027-12-31'
     # UID 1000 is load-bearing. The EFS and S3 access points enforce UID/GID 1000, and the EBS
     # pods run as UID 1000 with fsGroup 2000 to produce the write output the page shows.
