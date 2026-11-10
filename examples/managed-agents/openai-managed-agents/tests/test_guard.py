@@ -381,7 +381,76 @@ def test_launch_refuses_a_credential_name_that_is_a_directory_inside_a_timestamp
     else:
         (directory / _TS / name).symlink_to(directory.parent)
     (directory / name).symlink_to(f"..data/{name}")
-    assert _refused(guard.ROLE_LAUNCH) == [f"{_TS}/{name}"]
+    # Both levels apply the rule: the name inside, and the top-level link to it,
+    # which now resolves to a directory.
+    assert _refused(guard.ROLE_LAUNCH) == [f"{_TS}/{name} (a directory)", f"{name} (a directory)"]
+
+
+# --- the timestamp name is matched exactly ------------------------------------
+_TS_FORMS = {
+    "exact": _TS_NEXT,
+    "trailing-newline": _TS_NEXT + "\n",
+    # Arabic-Indic digits, which \d would also match: in the year, and after the dot.
+    "non-ascii-year": "..\u0662\u0660\u0662\u0666" + _TS_NEXT[6:],
+    "non-ascii-suffix": _TS_NEXT.rsplit(".", 1)[0] + ".\u0661\u0661",
+}
+
+
+@pytest.mark.parametrize("link", ["unlinked", "..data", "..data_tmp"])
+@pytest.mark.parametrize("form", list(_TS_FORMS))
+def test_launch_matches_a_timestamp_directory_name_exactly(form, link):
+    # A second timestamp-form directory beside the real layout: accepted with the
+    # writer's exact name, whether no link, ..data or ..data_tmp names it. With a
+    # trailing newline, or non-ASCII digits, it is not a timestamp directory, so
+    # it is refused as an unexpected entry, and so is a link to it.
+    directory = _kubelet_volume(*_LAUNCHER_FILES)
+    name = _TS_FORMS[form]
+    (directory / name).mkdir()
+    for file in _LAUNCHER_FILES:
+        (directory / name / file).write_text("mounted-value")
+    if link == "..data":
+        (directory / link).unlink()
+    if link != "unlinked":
+        (directory / link).symlink_to(name)
+    if form == "exact":
+        guard.assert_safe(guard.ROLE_LAUNCH)
+        return
+    assert _refused(guard.ROLE_LAUNCH) == sorted([name] + ([link] if link != "unlinked" else []))
+
+
+# --- a top-level credential name is never a directory --------------------------
+@pytest.mark.parametrize("shape", [
+    "file",                      # a plain file: accepted
+    "kubelet-link",              # a symlink through ..data to a file: accepted
+    "dir",                       # a directory
+    "dir-holding-application-key",
+    "link-to-outside-dir",       # a symlink to a directory outside, holding the key
+    "link-to-data",              # a symlink to ..data, the timestamp directory
+])
+@pytest.mark.parametrize("name", _LAUNCHER_FILES)
+def test_launch_refuses_a_top_level_credential_name_that_is_a_directory(name, shape):
+    if shape == "file":
+        _mount(*_LAUNCHER_FILES)
+        guard.assert_safe(guard.ROLE_LAUNCH)
+        return
+    directory = _kubelet_volume(*_LAUNCHER_FILES)
+    if shape == "kubelet-link":
+        guard.assert_safe(guard.ROLE_LAUNCH)
+        return
+    path = directory / name
+    path.unlink()
+    if shape.startswith("dir"):
+        path.mkdir()
+        if shape == "dir-holding-application-key":
+            (path / config.ENV_API_KEY).write_text("mounted-value")
+    elif shape == "link-to-outside-dir":
+        outside = directory.parent / "outside"
+        outside.mkdir()
+        (outside / config.ENV_API_KEY).write_text("mounted-value")
+        path.symlink_to(outside)
+    else:
+        path.symlink_to("..data")
+    assert _refused(guard.ROLE_LAUNCH) == [f"{name} (a directory)"]
 
 
 def test_launch_refuses_codex_api_key(monkeypatch):

@@ -133,11 +133,19 @@ def _credential_dir_names() -> list[str]:
 # and each published name a symlink through ..data.
 _KUBELET_DATA_LINKS = ("..data", "..data_tmp")
 # The atomic writer's directory: "..2006_01_02_15_04_05." plus os.MkdirTemp digits.
-_KUBELET_TS_DIR = re.compile(r"^\.\.\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}\.\d+$")
+# Always matched against the whole name (fullmatch): "$" would also accept a name
+# with a trailing newline. The digits are spelled [0-9], because \d also matches
+# non-ASCII digits, which the writer never uses.
+_KUBELET_TS_DIR = re.compile(r"\.\.[0-9]{4}_[0-9]{2}_[0-9]{2}_[0-9]{2}_[0-9]{2}_[0-9]{2}\.[0-9]+")
 
 
 def _real_dir(path: str) -> bool:
     return os.path.isdir(path) and not os.path.islink(path)
+
+
+def _credential_name_unexpected(path: str, listed: str) -> list[str]:
+    """A launcher credential name is accepted only when it is not a directory or a symlink to one."""
+    return [f"{listed} (a directory)"] if os.path.isdir(path) else []
 
 
 def _launcher_unexpected(names: list[str]) -> list[str]:
@@ -145,19 +153,24 @@ def _launcher_unexpected(names: list[str]) -> list[str]:
 
     ``names`` is the directory's top level. Accepted there:
 
-      * the names in _LAUNCHER_CREDENTIAL_FILES, of any type. Where a symlink
-        among them points is not checked;
+      * the names in _LAUNCHER_CREDENTIAL_FILES, only when they are not a
+        directory or a symlink to one (such a name is returned as
+        ``<name> (a directory)``). Where a symlink among them points is not
+        otherwise checked;
       * ``..data`` and ``..data_tmp``, each only as a symlink whose target, as
         os.readlink returns it, is one path component (no "/", not absolute)
-        that matches _KUBELET_TS_DIR and names a real directory (not a symlink)
-        in this directory, which the next rule then lists;
-      * a name that matches _KUBELET_TS_DIR, only as a real directory (not a
-        symlink). Every such directory is listed, whether or not a link names
-        it. Inside it, the application key is refused as mounted, and the only
-        names accepted are those in _LAUNCHER_CREDENTIAL_FILES that are not a
-        directory (or a symlink to one). Any other name there, including a
-        directory of any name and the writer's own names, is returned as
-        ``<timestamp directory>/<name>``. Nothing below that level is listed.
+        that matches _KUBELET_TS_DIR as a whole and names a real directory (not
+        a symlink) in this directory, which the next rule then lists;
+      * a name that matches _KUBELET_TS_DIR as a whole, only as a real
+        directory (not a symlink). Every such directory is listed, whether or
+        not a link names it. Inside it, the application key is refused as
+        mounted, and the only names accepted are those in
+        _LAUNCHER_CREDENTIAL_FILES, by the same rule as at the top level (such
+        a name that is a directory or a symlink to one is returned as
+        ``<timestamp directory>/<name> (a directory)``). Any other name there,
+        including a directory of any other name and the writer's own names, is
+        returned as ``<timestamp directory>/<name>``. Nothing below that level
+        is listed.
 
     Every other top-level name is returned, including one that starts with
     ``..``.
@@ -167,11 +180,12 @@ def _launcher_unexpected(names: list[str]) -> list[str]:
     for name in names:
         path = os.path.join(directory, name)
         if name in _LAUNCHER_CREDENTIAL_FILES:
+            unexpected.extend(_credential_name_unexpected(path, name))
             continue
         if name in _KUBELET_DATA_LINKS:
             if _kubelet_data_link(directory, path):
                 continue
-        elif _KUBELET_TS_DIR.match(name) and _real_dir(path):
+        elif _KUBELET_TS_DIR.fullmatch(name) and _real_dir(path):
             unexpected.extend(_timestamp_dir_unexpected(directory, name))
             continue
         unexpected.append(name)
@@ -183,7 +197,7 @@ def _kubelet_data_link(directory: str, path: str) -> bool:
     if not os.path.islink(path):
         return False
     target = os.readlink(path)
-    if "/" in target or os.path.isabs(target) or not _KUBELET_TS_DIR.match(target):
+    if "/" in target or os.path.isabs(target) or not _KUBELET_TS_DIR.fullmatch(target):
         return False
     return _real_dir(os.path.join(directory, target))
 
@@ -195,7 +209,8 @@ def _timestamp_dir_unexpected(directory: str, ts_dir: str) -> list[str]:
         path = os.path.join(directory, ts_dir, name)
         if name == config.ENV_API_KEY:
             raise _application_key_mounted(path)
-        if name in _LAUNCHER_CREDENTIAL_FILES and not os.path.isdir(path):
+        if name in _LAUNCHER_CREDENTIAL_FILES:
+            unexpected.extend(_credential_name_unexpected(path, f"{ts_dir}/{name}"))
             continue
         unexpected.append(f"{ts_dir}/{name}")
     return unexpected
@@ -223,8 +238,8 @@ def _assert_launch_safe(names: list[str]) -> None:
         raise RuntimeError(
             f"unexpected files in {config.LAUNCHER_CREDENTIALS_DIR}: "
             f"{', '.join(unexpected)}; refusing to start. The launcher holds only "
-            f"{' and '.join(_LAUNCHER_CREDENTIAL_FILES)} there, beside the "
-            "kubelet atomic writer's own entries."
+            f"{' and '.join(_LAUNCHER_CREDENTIAL_FILES)} there, neither of them a "
+            "directory, beside the kubelet atomic writer's own entries."
         )
     if config.ENV_EXECUTOR_API_KEY not in names:
         raise RuntimeError(
