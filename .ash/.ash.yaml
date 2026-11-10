@@ -144,11 +144,11 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_21
       path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
-      reason: 'No namespace in the manifest; the page creates and labels $NAMESPACE and sets it as the current context only once it is the sample''s (README.md:183-203)'
+      reason: 'No namespace in the manifest; the page creates and labels $NAMESPACE and sets it as the current context only once it is the sample''s (README.md:183-211)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_21
       path: 'examples/managed-agents/openai-managed-agents/deploy/rbac.yaml'
-      reason: 'No namespace in the manifest; the page creates and labels $NAMESPACE and sets it as the current context only once it is the sample''s (README.md:183-203)'
+      reason: 'No namespace in the manifest; the page creates and labels $NAMESPACE and sets it as the current context only once it is the sample''s (README.md:183-211)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_21
       path: 'examples/policy/cedar-policy/deploy/pod.yaml'

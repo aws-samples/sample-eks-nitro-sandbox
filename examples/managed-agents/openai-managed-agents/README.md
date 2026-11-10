@@ -187,7 +187,11 @@ if ! found=$(kubectl get namespace "$NAMESPACE" --ignore-not-found -o name); the
 elif [ -n "$found" ]; then
   if owner=$(kubectl get namespace "$NAMESPACE" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}') \
       && [ "$owner" = openai-managed-agents ]; then
-    kubectl config set-context --current --namespace="$NAMESPACE"
+    if ! kubectl config set-context --current --namespace="$NAMESPACE"; then
+      echo "Setup stopped: could not make $NAMESPACE the current context's namespace." \
+        "The context is unchanged." >&2
+      false
+    fi
   else
     echo "Setup stopped: namespace $NAMESPACE already exists and does not carry" \
       "app.kubernetes.io/part-of=openai-managed-agents (label value read: '$owner')." \
@@ -199,7 +203,11 @@ elif ! kubectl label namespace "$NAMESPACE" app.kubernetes.io/part-of=openai-man
   echo "Setup stopped: created namespace $NAMESPACE but could not label it." \
     "The context is unchanged; label the namespace or delete it before you go on." >&2
 else
-  kubectl config set-context --current --namespace="$NAMESPACE"
+  if ! kubectl config set-context --current --namespace="$NAMESPACE"; then
+    echo "Setup stopped: could not make $NAMESPACE the current context's namespace." \
+      "The context is unchanged." >&2
+    false
+  fi
 fi
 ```
 
@@ -234,8 +242,10 @@ set -a; . ./.env; set +a
 
 With `AGENT_MODEL` set in `.env` (see "Pick a model id" below), `setup_agent.py` creates the
 agent with that model and prints the new agent's id and model. If `AGENT_ID` is already set, it
-keeps that agent and creates none. The run captured for this page used `gpt-6-luna`, and its
-`.env` had no agent id yet, so `setup_agent.py` created the agent and printed its id:
+keeps that agent and creates none. The run captured for this page used `gpt-6-luna`. Its first
+pass at this step kept an `AGENT_ID` left in `.env` from an agent that no longer existed, so
+step 8 then failed with a 404. The block below is from running this step again with `AGENT_ID`
+unset, when `setup_agent.py` created the agent and printed its id:
 
 ```text
 Created agent agent_... (gpt-6-luna)
