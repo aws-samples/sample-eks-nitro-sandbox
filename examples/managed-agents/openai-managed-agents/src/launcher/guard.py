@@ -25,6 +25,12 @@ So the roles differ in what they may hold:
     existed as a warm pod: setting the claim's env forces a cold start, so the
     key is only present on a pod created for a specific session.
 
+The guard checks the application key by name, never by content: a variable
+named OPENAI_API_KEY, or an entry of that name in
+config.LAUNCHER_CREDENTIALS_DIR (in the launcher, also inside the kubelet's
+timestamp directories there). Where the launcher's two credential-name links
+point is not checked.
+
 Unlike the Claude sample there is no per-session token: OpenAI documents no
 credential narrower than the environment key for a self-hosted session, and
 OpenAI notes the agent-generated code the executor runs can read it
@@ -37,8 +43,12 @@ this.
 
 from __future__ import annotations
 
+import errno
 import os
 import re
+import stat
+import time
+from typing import NamedTuple
 
 from . import config
 
@@ -62,7 +72,7 @@ _FOREIGN_CREDENTIALS = (
 )
 
 # The files the launcher's credentials directory holds (deploy/launcher.yaml).
-# Besides the kubelet atomic writer's own entries (_launcher_unexpected), they
+# Besides the kubelet atomic writer's own entries (_launcher_attempt), they
 # are the only names it may hold. Each was an environment variable before; the
 # launcher now refuses to start if either is still set in its environment.
 _LAUNCHER_CREDENTIAL_FILES = (
@@ -76,24 +86,30 @@ def assert_safe(role: str) -> None:
     if role not in (ROLE_LAUNCH, ROLE_SERVE):
         raise ValueError(f"unknown role {role!r}")
 
-    # No pod ever holds the application key, in any role, as a variable or as a
-    # file in the credentials directory. The top-level file is refused here in
-    # both roles; deeper in the directory, a sandbox refuses every entry
-    # (_assert_serve_safe) and the launcher lists the kubelet's timestamp
-    # directories too (_launcher_unexpected).
+    # The application key is refused in every role by NAME: a variable named
+    # OPENAI_API_KEY, or an entry of that name in the credentials directory.
+    # The entry is refused at the top level in both roles; deeper in the
+    # directory, a sandbox refuses every entry (_assert_serve_safe) and the
+    # launcher lists the kubelet's timestamp directories too
+    # (_launcher_attempt). No content is read, and where the launcher's two
+    # credential-name links point is not checked, so a file one of them links
+    # to is read as that credential whatever it holds.
     if os.environ.get(config.ENV_API_KEY):
         raise RuntimeError(
             f"{config.ENV_API_KEY} is set in this pod; refusing to start. The "
             "application key creates and reads sessions and stays on the "
             "operator's machine; the cluster never holds it."
         )
-    names = _credential_dir_names()
-    if config.ENV_API_KEY in names:
-        raise _application_key_mounted(config.launcher_credential_path(config.ENV_API_KEY))
+    if role == ROLE_LAUNCH:
+        names, unexpected = _settled_launcher_listing()
+    else:
+        names, unexpected = _credential_dir_names(), []
+        if config.ENV_API_KEY in names:
+            raise _application_key_mounted(config.launcher_credential_path(config.ENV_API_KEY))
     _refuse_foreign_credentials(role)
 
     if role == ROLE_LAUNCH:
-        _assert_launch_safe(names)
+        _assert_launch_safe(names, unexpected)
     else:
         _assert_serve_safe(names)
 
@@ -115,15 +131,26 @@ def _application_key_mounted(path: str) -> RuntimeError:
     )
 
 
+def _could_not_inspect(path: str, exc: OSError) -> RuntimeError:
+    return RuntimeError(
+        f"could not inspect {exc.filename or path} ({type(exc).__name__}); "
+        "refusing to start."
+    )
+
+
 def _credential_dir_names() -> list[str]:
     """Every name in config.LAUNCHER_CREDENTIALS_DIR, sorted, or none if it is absent.
 
-    Nothing is skipped here: each role decides which entries it accepts.
+    The sandbox's one listing; it refuses any name in it. Nothing is skipped.
+    Any other error listing the directory is a refusal, never an OSError.
     """
+    directory = config.LAUNCHER_CREDENTIALS_DIR
     try:
-        return sorted(os.listdir(config.LAUNCHER_CREDENTIALS_DIR))
+        return sorted(os.listdir(directory))
     except FileNotFoundError:
         return []
+    except OSError as exc:
+        raise _could_not_inspect(directory, exc) from None
 
 
 # The kubelet's atomic writer, which fills the projected volume in
@@ -139,8 +166,96 @@ _KUBELET_DATA_LINKS = ("..data", "..data_tmp")
 _KUBELET_TS_DIR = re.compile(r"\.\.[0-9]{4}_[0-9]{2}_[0-9]{2}_[0-9]{2}_[0-9]{2}_[0-9]{2}\.[0-9]+")
 
 
-def _real_dir(path: str) -> bool:
-    return os.path.isdir(path) and not os.path.islink(path)
+# The kubelet's atomic writer renames ..data_tmp over ..data and removes the
+# old timestamp directory while the launcher may be checking the directory, so
+# a launcher check is retried when the directory changes under it: at most
+# _SETTLE_ATTEMPTS attempts, _SETTLE_WAIT_SECONDS apart (at most 0.4 s of
+# waiting in all). _sleep is a module attribute so the tests can replace it.
+_SETTLE_ATTEMPTS = 3
+_SETTLE_WAIT_SECONDS = 0.2
+_sleep = time.sleep
+
+
+class _Entry(NamedTuple):
+    """One top-level entry as one listing saw it: lstat file type, and readlink target if a symlink."""
+
+    name: str
+    kind: int
+    target: str | None
+
+
+class _Unsettled(Exception):
+    """The credentials directory changed during one launcher attempt."""
+
+
+def _settled_launcher_listing() -> tuple[list[str], list[str]]:
+    """The launcher's check of its credentials directory, from one attempt that was stable.
+
+    Returns the attempt's top-level names and the entries it must not hold
+    (see _launcher_attempt). An attempt is unstable when a top-level entry it
+    listed vanishes or changes type while it runs (FileNotFoundError or
+    NotADirectoryError from an lstat, readlink or listdir of it, or readlink
+    finding it is no longer a symlink), or when the top-level listing taken at
+    its end differs from the one at its start in any name, type or link
+    target. An unstable attempt is retried with a fresh listing, at most
+    _SETTLE_ATTEMPTS (3) attempts, waiting _SETTLE_WAIT_SECONDS (0.2 s) before
+    each retry, so at most 0.4 s of waiting. If every attempt is unstable the
+    launcher refuses to start, naming the directory.
+
+    Not retried: a stable attempt's unexpected entries (refused by the caller
+    at once), an entry named OPENAI_API_KEY in any attempt, stable or not
+    (refused at once), and any other OSError (refused at once, naming the
+    path and the error class). No OSError leaves the guard.
+    """
+    directory = config.LAUNCHER_CREDENTIALS_DIR
+    for attempt in range(_SETTLE_ATTEMPTS):
+        if attempt:
+            _sleep(_SETTLE_WAIT_SECONDS)
+        try:
+            return _launcher_attempt(directory)
+        except (_Unsettled, FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError as exc:
+            raise _could_not_inspect(directory, exc) from None
+    raise RuntimeError(
+        f"the credentials directory {directory} did not settle: it changed "
+        f"during each of {_SETTLE_ATTEMPTS} checks, {_SETTLE_WAIT_SECONDS} s "
+        "apart; refusing to start."
+    )
+
+
+def _snapshot(directory: str) -> tuple[_Entry, ...]:
+    """One top-level listing of the credentials directory, sorted, with each entry's type.
+
+    An absent directory is an empty listing. Any other error listing the
+    directory itself is a refusal: a mount that is not a directory does not
+    settle by waiting. An entry named OPENAI_API_KEY is refused as mounted as
+    soon as the names are read, before any entry is examined. An entry that
+    vanishes raises FileNotFoundError, and a symlink that stops being one
+    raises _Unsettled.
+    """
+    try:
+        names = sorted(os.listdir(directory))
+    except FileNotFoundError:
+        return ()
+    except OSError as exc:
+        raise _could_not_inspect(directory, exc) from None
+    if config.ENV_API_KEY in names:
+        raise _application_key_mounted(os.path.join(directory, config.ENV_API_KEY))
+    entries = []
+    for name in names:
+        path = os.path.join(directory, name)
+        mode = os.lstat(path).st_mode
+        target = None
+        if stat.S_ISLNK(mode):
+            try:
+                target = os.readlink(path)
+            except OSError as exc:
+                if exc.errno == errno.EINVAL:
+                    raise _Unsettled from None
+                raise
+        entries.append(_Entry(name, stat.S_IFMT(mode), target))
+    return tuple(entries)
 
 
 def _credential_name_unexpected(path: str, listed: str) -> list[str]:
@@ -148,23 +263,25 @@ def _credential_name_unexpected(path: str, listed: str) -> list[str]:
     return [f"{listed} (a directory)"] if os.path.isdir(path) else []
 
 
-def _launcher_unexpected(names: list[str]) -> list[str]:
-    """The entries of the launcher's credentials directory that it must not hold.
+def _launcher_attempt(directory: str) -> tuple[list[str], list[str]]:
+    """One attempt: one top-level listing, every check made against it, and a closing listing.
 
-    ``names`` is the directory's top level. Accepted there:
+    Accepted at the top level of the listing:
 
       * the names in _LAUNCHER_CREDENTIAL_FILES, only when they are not a
         directory or a symlink to one (such a name is returned as
         ``<name> (a directory)``). Where a symlink among them points is not
         otherwise checked;
       * ``..data`` and ``..data_tmp``, each only as a symlink whose target, as
-        os.readlink returns it, is one path component (no "/", not absolute)
-        that matches _KUBELET_TS_DIR as a whole and names a real directory (not
-        a symlink) in this directory, which the next rule then lists;
+        os.readlink returned it in this listing, is one path component (no
+        "/", not absolute) that matches _KUBELET_TS_DIR as a whole and is the
+        name of a real directory (not a symlink) in this same listing, which
+        the next rule then lists. So every directory a link resolves to is
+        listed in this attempt;
       * a name that matches _KUBELET_TS_DIR as a whole, only as a real
         directory (not a symlink). Every such directory is listed, whether or
-        not a link names it. Inside it, the application key is refused as
-        mounted, and the only names accepted are those in
+        not a link names it. Inside it, an entry named OPENAI_API_KEY is
+        refused as mounted, and the only names accepted are those in
         _LAUNCHER_CREDENTIAL_FILES, by the same rule as at the top level (such
         a name that is a directory or a symlink to one is returned as
         ``<timestamp directory>/<name> (a directory)``). Any other name there,
@@ -173,33 +290,39 @@ def _launcher_unexpected(names: list[str]) -> list[str]:
         is listed.
 
     Every other top-level name is returned, including one that starts with
-    ``..``.
+    ``..``. A top-level entry named OPENAI_API_KEY is refused as mounted at
+    once (_snapshot). The attempt raises _Unsettled when the closing listing
+    differs from the opening one.
     """
-    directory = config.LAUNCHER_CREDENTIALS_DIR
+    first = _snapshot(directory)
+    names = [entry.name for entry in first]
+    listed = {entry.name: entry for entry in first}
     unexpected = []
-    for name in names:
-        path = os.path.join(directory, name)
-        if name in _LAUNCHER_CREDENTIAL_FILES:
-            unexpected.extend(_credential_name_unexpected(path, name))
-            continue
-        if name in _KUBELET_DATA_LINKS:
-            if _kubelet_data_link(directory, path):
-                continue
-        elif _KUBELET_TS_DIR.fullmatch(name) and _real_dir(path):
-            unexpected.extend(_timestamp_dir_unexpected(directory, name))
-            continue
-        unexpected.append(name)
-    return unexpected
+    for entry in first:
+        path = os.path.join(directory, entry.name)
+        if entry.name in _LAUNCHER_CREDENTIAL_FILES:
+            unexpected.extend(_credential_name_unexpected(path, entry.name))
+        elif entry.name in _KUBELET_DATA_LINKS:
+            if not _kubelet_data_link(entry, listed):
+                unexpected.append(entry.name)
+        elif _KUBELET_TS_DIR.fullmatch(entry.name) and entry.kind == stat.S_IFDIR:
+            unexpected.extend(_timestamp_dir_unexpected(directory, entry.name))
+        else:
+            unexpected.append(entry.name)
+    if _snapshot(directory) != first:
+        raise _Unsettled
+    return names, unexpected
 
 
-def _kubelet_data_link(directory: str, path: str) -> bool:
-    """True for a ..data or ..data_tmp link in the form the atomic writer makes it."""
-    if not os.path.islink(path):
+def _kubelet_data_link(entry: _Entry, listed: dict[str, _Entry]) -> bool:
+    """True for a ..data or ..data_tmp link in the form the atomic writer makes it, in this listing."""
+    target = entry.target  # None unless the entry was a symlink in this listing
+    if target is None:
         return False
-    target = os.readlink(path)
     if "/" in target or os.path.isabs(target) or not _KUBELET_TS_DIR.fullmatch(target):
         return False
-    return _real_dir(os.path.join(directory, target))
+    resolved = listed.get(target)
+    return resolved is not None and resolved.kind == stat.S_IFDIR
 
 
 def _timestamp_dir_unexpected(directory: str, ts_dir: str) -> list[str]:
@@ -216,7 +339,7 @@ def _timestamp_dir_unexpected(directory: str, ts_dir: str) -> list[str]:
     return unexpected
 
 
-def _assert_launch_safe(names: list[str]) -> None:
+def _assert_launch_safe(names: list[str], unexpected: list[str]) -> None:
     # The launcher never runs codex itself, so CODEX_API_KEY in its own env is
     # unexpected; it holds only the environment key it hands on.
     if os.environ.get(config.ENV_CODEX_API_KEY):
@@ -233,7 +356,6 @@ def _assert_launch_safe(names: list[str]) -> None:
             f"{config.LAUNCHER_CREDENTIALS_DIR}, which deploy/launcher.yaml mounts "
             "from their Secrets, so no credential belongs in its environment."
         )
-    unexpected = _launcher_unexpected(names)
     if unexpected:
         raise RuntimeError(
             f"unexpected files in {config.LAUNCHER_CREDENTIALS_DIR}: "

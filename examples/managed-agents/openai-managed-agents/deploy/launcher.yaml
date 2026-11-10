@@ -92,7 +92,7 @@ spec:
         #   OPENAI_EXECUTOR_API_KEY  the environment key: the launcher's only
         #     OpenAI credential, held here and given to each claimed sandbox
         #     through the claim env. Never the application key: guard.py refuses
-        #     a pod that holds it, in its environment or as a file here.
+        #     a pod with it set in its env or an entry named for it here (by name).
         #   LAUNCHER_AUTH_TOKEN  the intake's bearer token. The launcher refuses
         #     to start without it (fail closed) and rejects any claim or release
         #     POST whose token does not match. submit.py/cleanup.py send it from

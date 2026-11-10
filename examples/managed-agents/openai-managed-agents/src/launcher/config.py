@@ -26,8 +26,8 @@ import os
 
 # --- OpenAI credentials ------------------------------------------------------
 # The application key: creates agents and sessions and reads every session.
-# scripts/ use it on the operator's machine; guard.py refuses to run a pod that
-# holds it.
+# scripts/ use it on the operator's machine; guard.py refuses a pod with it set
+# in its env or an entry named for it in LAUNCHER_CREDENTIALS_DIR (by name).
 ENV_API_KEY = "OPENAI_API_KEY"
 # The environment key: the executor's only credential, held by the launcher.
 # codex exec-server reads it as CODEX_API_KEY inside the sandbox. The launcher
