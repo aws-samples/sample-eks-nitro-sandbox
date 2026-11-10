@@ -111,7 +111,7 @@ class _Step:
     """A change to the directory, made at one point in the guard's own filesystem calls."""
 
     when: str                     # "before" or "after" the call
-    call: str                     # "listdir", "lstat" or "readlink"
+    call: str                     # "listdir", "lstat", "readlink" or "stat"
     path: pathlib.Path
     action: Callable[[], None]
     skip: int = 0                 # matching calls to let through first
@@ -156,6 +156,9 @@ class _RacingOs:
 
     def readlink(self, path):
         return self._call("readlink", path, os.readlink)
+
+    def stat(self, path):
+        return self._call("stat", path, os.stat)
 
 
 def _race(monkeypatch, *steps, hidden=None):
@@ -597,7 +600,8 @@ def test_launch_lists_the_directory_a_new_data_link_points_to(monkeypatch, sleep
     # Form D: the listing is taken before the writer creates the next timestamp
     # directory, which holds an OPENAI_API_KEY entry, and points ..data at it.
     # The link's target is not in that listing, so the attempt does not accept
-    # it; the retry lists the new directory and refuses the entry by name.
+    # it; the closing snapshot lists the new directory and refuses the entry by
+    # name at once, in the same attempt.
     directory = _kubelet_volume(*_LAUNCHER_FILES)
 
     def write_next():
@@ -609,7 +613,7 @@ def test_launch_lists_the_directory_a_new_data_link_points_to(monkeypatch, sleep
     with pytest.raises(RuntimeError, match=re.escape(f"{_TS_NEXT}/{config.ENV_API_KEY} is mounted")):
         guard.assert_safe(guard.ROLE_LAUNCH)
     assert step.ran == 1
-    assert len(sleeps) == 1
+    assert sleeps == []
 
 
 def test_launch_refuses_a_data_link_to_a_directory_its_listing_does_not_name(monkeypatch, sleeps):
@@ -752,6 +756,209 @@ def test_a_credentials_path_that_is_not_a_directory_is_refused_without_an_oserro
     path.write_text("x")
     with pytest.raises(RuntimeError, match=re.escape(f"could not inspect {path} (NotADirectoryError)")):
         guard.assert_safe(role)
+
+
+# --- a timestamp directory changes while the launcher checks it ---------------
+def _second_timestamp_dir(directory, *names):
+    """An unlinked next timestamp directory beside the real layout, as the writer starts one."""
+    (directory / _TS_NEXT).mkdir()
+    for name in names:
+        (directory / _TS_NEXT / name).write_text("mounted-value")
+    return directory / _TS_NEXT
+
+
+@pytest.mark.parametrize("where", ["linked", "unlinked"])
+def test_launch_refuses_the_application_key_added_to_a_listed_timestamp_directory(where, monkeypatch, sleeps):
+    # The entry is created just after the opening snapshot lists the directory.
+    # The closing snapshot lists it again and refuses the name at once, in the
+    # same attempt.
+    directory = _kubelet_volume(*_LAUNCHER_FILES)
+    ts = directory / _TS if where == "linked" else _second_timestamp_dir(directory, *_LAUNCHER_FILES)
+    planted = ts / config.ENV_API_KEY
+    step = _Step("after", "listdir", ts, lambda: planted.write_text("mounted-value"))
+    _race(monkeypatch, step)
+    with pytest.raises(RuntimeError) as exc:
+        guard.assert_safe(guard.ROLE_LAUNCH)
+    assert str(exc.value).startswith(f"{planted} is mounted in this pod; refusing to start.")
+    assert "mounted-value" not in str(exc.value)
+    assert step.ran == 1
+    assert sleeps == []
+
+
+@pytest.mark.parametrize("call", ["listdir", "lstat"])
+def test_launch_accepts_once_an_unexpected_nested_entry_is_removed(call, monkeypatch, sleeps):
+    # The entry is in the opening snapshot and removed just after the directory
+    # is listed, or just after the entry's own lstat. The attempt is unstable
+    # (a vanished entry, or a closing snapshot that differs), and the retry
+    # checks the valid final layout.
+    directory = _kubelet_volume(*_LAUNCHER_FILES)
+    bad = directory / _TS / "other"
+    bad.write_text("x")
+    step = _Step("after", call, directory / _TS if call == "listdir" else bad, bad.unlink)
+    _race(monkeypatch, step)
+    guard.assert_safe(guard.ROLE_LAUNCH)
+    assert step.ran == 1
+    assert sleeps == [0.2]
+
+
+@pytest.mark.parametrize("already", [(), (config.ENV_EXECUTOR_API_KEY,)], ids=["first-file", "second-file"])
+def test_launch_accepts_a_projected_name_written_into_a_new_timestamp_directory(already, monkeypatch, sleeps):
+    # What the writer does mid-payload: it writes the next file into its new,
+    # unlinked timestamp directory just after the opening snapshot listed it.
+    # The closing snapshot differs, and the retry checks the directory again.
+    directory = _kubelet_volume(*_LAUNCHER_FILES)
+    ts = _second_timestamp_dir(directory, *already)
+    name = config.ENV_LAUNCHER_AUTH_TOKEN if already else config.ENV_EXECUTOR_API_KEY
+    step = _Step("after", "listdir", ts, lambda: (ts / name).write_text("mounted-value"))
+    _race(monkeypatch, step)
+    guard.assert_safe(guard.ROLE_LAUNCH)
+    assert step.ran == 1
+    assert sleeps == [0.2]
+
+
+@pytest.mark.parametrize("change", ["file-becomes-link", "link-repointed", "file-becomes-directory"])
+def test_launch_retries_when_a_nested_entry_changes_type_or_target(change, monkeypatch, sleeps):
+    # The change lands after the opening snapshot's lstat or readlink of the
+    # entry, so only the closing snapshot can see it. The retry checks what is
+    # there then.
+    directory = _kubelet_volume(*_LAUNCHER_FILES)
+    token = directory / _TS / config.ENV_LAUNCHER_AUTH_TOKEN
+
+    def to_link():
+        token.unlink()
+        token.symlink_to(config.ENV_EXECUTOR_API_KEY)
+
+    def repoint():
+        token.unlink()
+        token.symlink_to(f"./{config.ENV_EXECUTOR_API_KEY}")
+
+    def to_dir():
+        token.unlink()
+        token.mkdir()
+
+    if change == "link-repointed":
+        to_link()
+        step = _Step("after", "readlink", token, repoint)
+    else:
+        step = _Step("after", "lstat", token, to_link if change == "file-becomes-link" else to_dir)
+    _race(monkeypatch, step)
+    if change == "file-becomes-directory":
+        name = config.ENV_LAUNCHER_AUTH_TOKEN
+        assert _refused(guard.ROLE_LAUNCH) == [f"{_TS}/{name} (a directory)", f"{name} (a directory)"]
+    else:
+        guard.assert_safe(guard.ROLE_LAUNCH)
+    assert step.ran == 1
+    assert sleeps == [0.2]
+
+
+def test_launch_refuses_a_timestamp_directory_that_never_settles(monkeypatch, sleeps):
+    # A new name appears in the linked timestamp directory after every listing
+    # of it, so no attempt is stable.
+    directory = _kubelet_volume(*_LAUNCHER_FILES)
+    made = []
+
+    def add_name():
+        made.append(directory / _TS / f"other-{len(made) + 1}")
+        made[-1].write_text("x")
+
+    _race(monkeypatch, _Step("after", "listdir", directory / _TS, add_name, times=None))
+    with pytest.raises(RuntimeError) as exc:
+        guard.assert_safe(guard.ROLE_LAUNCH)
+    assert str(exc.value) == (
+        f"the credentials directory {directory} did not settle: it changed during "
+        "each of 3 checks, 0.2 s apart; refusing to start."
+    )
+    assert sleeps == [0.2, 0.2]
+    assert len(made) == 6
+
+
+@pytest.mark.parametrize("phase", ["new-empty", "new-one-file", "new-complete", "old-removed"])
+def test_launch_accepts_each_writer_phase_in_one_attempt(phase, sleeps):
+    # The writer's other states, beside settled, swapping and swapped: a new
+    # timestamp directory being filled before ..data_tmp exists, and the final
+    # layout once the old directory is gone.
+    if phase == "old-removed":
+        directory = _swapped()
+        shutil.rmtree(directory / _TS)
+    else:
+        directory = _kubelet_volume(*_LAUNCHER_FILES)
+        count = {"new-empty": 0, "new-one-file": 1, "new-complete": 2}[phase]
+        _second_timestamp_dir(directory, *_LAUNCHER_FILES[:count])
+    guard.assert_safe(guard.ROLE_LAUNCH)
+    assert sleeps == []
+
+
+# --- a credential name the guard cannot follow ---------------------------------
+@pytest.mark.parametrize("where", ["top-level", "timestamp-directory"])
+def test_launch_refuses_a_credential_name_it_cannot_stat_without_an_oserror(where, monkeypatch, sleeps):
+    # os.stat of the name raises PermissionError (a target under an unreadable
+    # directory): refused at once, naming the path and the error class only.
+    directory = _kubelet_volume(*_LAUNCHER_FILES)
+    name = config.ENV_LAUNCHER_AUTH_TOKEN
+    path = directory / name if where == "top-level" else directory / _TS / name
+
+    def deny():
+        raise PermissionError(errno.EACCES, "Permission denied", str(path))
+
+    _race(monkeypatch, _Step("before", "stat", path, deny))
+    with pytest.raises(RuntimeError) as exc:
+        guard.assert_safe(guard.ROLE_LAUNCH)
+    assert str(exc.value) == f"could not inspect {path} (PermissionError); refusing to start."
+    assert sleeps == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can stat through a mode-000 directory")
+def test_launch_refuses_a_credential_link_to_a_directory_under_an_unreadable_parent(sleeps):
+    # Round 5's shape on a real filesystem: the link's target is a directory the
+    # launcher cannot reach. os.path.isdir would call it "not a directory".
+    directory = _kubelet_volume(*_LAUNCHER_FILES)
+    locked = directory.parent / "locked"
+    (locked / "directory").mkdir(parents=True)
+    link = directory / config.ENV_LAUNCHER_AUTH_TOKEN
+    link.unlink()
+    link.symlink_to(locked / "directory")
+    locked.chmod(0)
+    try:
+        with pytest.raises(RuntimeError) as exc:
+            guard.assert_safe(guard.ROLE_LAUNCH)
+    finally:
+        locked.chmod(0o700)
+    assert str(exc.value) == f"could not inspect {link} (PermissionError); refusing to start."
+    assert sleeps == []
+
+
+@pytest.mark.parametrize("where", ["top-level", "timestamp-directory"])
+def test_launch_refuses_a_dangling_credential_link_in_a_stable_attempt(where, sleeps):
+    # A credential name whose target is missing, with nothing changing: the
+    # attempt is stable, so it is refused at once, with no retry.
+    directory = _kubelet_volume(*_LAUNCHER_FILES)
+    name = config.ENV_LAUNCHER_AUTH_TOKEN
+    if where == "top-level":
+        (directory / name).unlink()
+        (directory / name).symlink_to("..data/missing")
+        listed = [f"{name} (a dangling link)"]
+    else:
+        inner = directory / _TS / name
+        inner.unlink()
+        inner.symlink_to("missing")
+        # The top-level link resolves through ..data to the same missing target.
+        listed = [f"{_TS}/{name} (a dangling link)", f"{name} (a dangling link)"]
+    assert _refused(guard.ROLE_LAUNCH) == listed
+    assert sleeps == []
+
+
+def test_launch_accepts_a_swap_that_leaves_a_name_unresolvable_during_the_check(monkeypatch, sleeps):
+    # Just after the rename, the writer removes the old timestamp directory
+    # while the launcher is about to stat a credential name inside it. That stat
+    # finds nothing, but the closing snapshot no longer lists the directory, so
+    # the attempt is retried instead of refused.
+    directory = _swapped()
+    old = directory / _TS
+    step = _Step("before", "stat", old / config.ENV_EXECUTOR_API_KEY, lambda: shutil.rmtree(old))
+    _race(monkeypatch, step)
+    guard.assert_safe(guard.ROLE_LAUNCH)
+    assert step.ran == 1
+    assert sleeps == [0.2]
 
 
 def test_launch_refuses_codex_api_key(monkeypatch):

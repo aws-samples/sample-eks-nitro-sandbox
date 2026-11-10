@@ -177,11 +177,24 @@ _sleep = time.sleep
 
 
 class _Entry(NamedTuple):
-    """One top-level entry as one listing saw it: lstat file type, and readlink target if a symlink."""
+    """One entry as one listing saw it: lstat file type, and readlink target if a symlink."""
 
     name: str
     kind: int
     target: str | None
+
+
+class _Listing(NamedTuple):
+    """One snapshot of the credentials directory, as an attempt opens or closes with it.
+
+    ``top`` is every top-level entry. ``nested`` holds, for each top-level
+    entry that is a timestamp directory (a real directory whose name matches
+    _KUBELET_TS_DIR as a whole), that directory's name and its entries. Two
+    snapshots are equal only when both levels are.
+    """
+
+    top: tuple[_Entry, ...]
+    nested: tuple[tuple[str, tuple[_Entry, ...]], ...]
 
 
 class _Unsettled(Exception):
@@ -192,18 +205,20 @@ def _settled_launcher_listing() -> tuple[list[str], list[str]]:
     """The launcher's check of its credentials directory, from one attempt that was stable.
 
     Returns the attempt's top-level names and the entries it must not hold
-    (see _launcher_attempt). An attempt is unstable when a top-level entry it
-    listed vanishes or changes type while it runs (FileNotFoundError or
-    NotADirectoryError from an lstat, readlink or listdir of it, or readlink
-    finding it is no longer a symlink), or when the top-level listing taken at
-    its end differs from the one at its start in any name, type or link
-    target. An unstable attempt is retried with a fresh listing, at most
-    _SETTLE_ATTEMPTS (3) attempts, waiting _SETTLE_WAIT_SECONDS (0.2 s) before
-    each retry, so at most 0.4 s of waiting. If every attempt is unstable the
-    launcher refuses to start, naming the directory.
+    (see _launcher_attempt). An attempt is unstable when an entry it listed,
+    at the top level or inside a timestamp directory, vanishes or changes
+    type while it runs (FileNotFoundError or NotADirectoryError from an lstat,
+    readlink or listdir of it, or readlink finding it is no longer a symlink),
+    or when the snapshot taken at its end differs from the one at its start
+    (see _snapshot for what a snapshot holds). An unstable attempt is retried
+    with a fresh snapshot, at most _SETTLE_ATTEMPTS (3) attempts, waiting
+    _SETTLE_WAIT_SECONDS (0.2 s) before each retry, so at most 0.4 s of
+    waiting. If every attempt is unstable the launcher refuses to start,
+    naming the directory.
 
     Not retried: a stable attempt's unexpected entries (refused by the caller
-    at once), an entry named OPENAI_API_KEY in any attempt, stable or not
+    at once), an entry named OPENAI_API_KEY in any listing of any attempt,
+    opening or closing, top level or timestamp directory, stable or not
     (refused at once), and any other OSError (refused at once, naming the
     path and the error class). No OSError leaves the guard.
     """
@@ -224,32 +239,50 @@ def _settled_launcher_listing() -> tuple[list[str], list[str]]:
     )
 
 
-def _snapshot(directory: str) -> tuple[_Entry, ...]:
-    """One top-level listing of the credentials directory, sorted, with each entry's type.
+def _snapshot(directory: str) -> _Listing:
+    """One snapshot of the credentials directory: both levels, sorted, with each entry's type.
 
-    An absent directory is an empty listing. Any other error listing the
+    What it holds, and so what the closing comparison covers: every top-level
+    name with its lstat file type and, for a symlink, its readlink target;
+    and for each top-level timestamp directory, its names with the same lstat
+    type and readlink target. Not covered: file contents, sizes, modes and
+    times, anything below a timestamp directory, and where a symlink's target
+    leads beyond what the two levels list.
+
+    An absent directory is an empty snapshot. Any other error listing the
     directory itself is a refusal: a mount that is not a directory does not
-    settle by waiting. An entry named OPENAI_API_KEY is refused as mounted as
-    soon as the names are read, before any entry is examined. An entry that
-    vanishes raises FileNotFoundError, and a symlink that stops being one
-    raises _Unsettled.
+    settle by waiting. An entry named OPENAI_API_KEY, at either level, is
+    refused as mounted as soon as that level's names are read, before any of
+    them is examined. An entry or timestamp directory that vanishes raises
+    FileNotFoundError, and a symlink that stops being one raises _Unsettled.
     """
     try:
         names = sorted(os.listdir(directory))
     except FileNotFoundError:
-        return ()
+        return _Listing((), ())
     except OSError as exc:
         raise _could_not_inspect(directory, exc) from None
+    top = _entries(directory, names)
+    nested = []
+    for entry in top:
+        if _KUBELET_TS_DIR.fullmatch(entry.name) and entry.kind == stat.S_IFDIR:
+            path = os.path.join(directory, entry.name)
+            nested.append((entry.name, _entries(path, sorted(os.listdir(path)))))
+    return _Listing(top, tuple(nested))
+
+
+def _entries(path: str, names: list[str]) -> tuple[_Entry, ...]:
+    """The entries of one directory listing, refusing an OPENAI_API_KEY name before any lstat."""
     if config.ENV_API_KEY in names:
-        raise _application_key_mounted(os.path.join(directory, config.ENV_API_KEY))
+        raise _application_key_mounted(os.path.join(path, config.ENV_API_KEY))
     entries = []
     for name in names:
-        path = os.path.join(directory, name)
-        mode = os.lstat(path).st_mode
+        entry_path = os.path.join(path, name)
+        mode = os.lstat(entry_path).st_mode
         target = None
         if stat.S_ISLNK(mode):
             try:
-                target = os.readlink(path)
+                target = os.readlink(entry_path)
             except OSError as exc:
                 if exc.errno == errno.EINVAL:
                     raise _Unsettled from None
@@ -259,19 +292,36 @@ def _snapshot(directory: str) -> tuple[_Entry, ...]:
 
 
 def _credential_name_unexpected(path: str, listed: str) -> list[str]:
-    """A launcher credential name is accepted only when it is not a directory or a symlink to one."""
-    return [f"{listed} (a directory)"] if os.path.isdir(path) else []
+    """A launcher credential name is accepted only when it is not a directory or a symlink to one.
+
+    The type is the one os.stat finds, following a symlink. A name whose
+    target is missing (FileNotFoundError or NotADirectoryError from that
+    stat) is returned as ``<name> (a dangling link)``, so a stable attempt
+    refuses it at once. When the writer is the cause, it has also changed
+    something the snapshot lists (it renamed ..data, or removed or emptied a
+    timestamp directory), so the attempt is unstable and is retried instead.
+    Any other error from that stat, PermissionError included, is a refusal at
+    once naming the path and the error class.
+    """
+    try:
+        mode = os.stat(path).st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        return [f"{listed} (a dangling link)"]
+    except OSError as exc:
+        raise _could_not_inspect(path, exc) from None
+    return [f"{listed} (a directory)"] if stat.S_ISDIR(mode) else []
 
 
 def _launcher_attempt(directory: str) -> tuple[list[str], list[str]]:
-    """One attempt: one top-level listing, every check made against it, and a closing listing.
+    """One attempt: one snapshot, every check made against it, and a closing snapshot.
 
-    Accepted at the top level of the listing:
+    Accepted at the top level of the snapshot:
 
-      * the names in _LAUNCHER_CREDENTIAL_FILES, only when they are not a
-        directory or a symlink to one (such a name is returned as
-        ``<name> (a directory)``). Where a symlink among them points is not
-        otherwise checked;
+      * the names in _LAUNCHER_CREDENTIAL_FILES, only when os.stat finds they
+        are not a directory or a symlink to one (such a name is returned as
+        ``<name> (a directory)``, and one whose target is missing as
+        ``<name> (a dangling link)``; see _credential_name_unexpected). Where
+        a symlink among them points is not otherwise checked;
       * ``..data`` and ``..data_tmp``, each only as a symlink whose target, as
         os.readlink returned it in this listing, is one path component (no
         "/", not absolute) that matches _KUBELET_TS_DIR as a whole and is the
@@ -279,34 +329,39 @@ def _launcher_attempt(directory: str) -> tuple[list[str], list[str]]:
         the next rule then lists. So every directory a link resolves to is
         listed in this attempt;
       * a name that matches _KUBELET_TS_DIR as a whole, only as a real
-        directory (not a symlink). Every such directory is listed, whether or
-        not a link names it. Inside it, an entry named OPENAI_API_KEY is
-        refused as mounted, and the only names accepted are those in
+        directory (not a symlink). Every such directory is listed in the
+        snapshot, whether or not a link names it, and checked from that
+        listing. Inside it, an entry named OPENAI_API_KEY is refused as
+        mounted (_snapshot), and the only names accepted are those in
         _LAUNCHER_CREDENTIAL_FILES, by the same rule as at the top level (such
         a name that is a directory or a symlink to one is returned as
-        ``<timestamp directory>/<name> (a directory)``). Any other name there,
-        including a directory of any other name and the writer's own names, is
-        returned as ``<timestamp directory>/<name>``. Nothing below that level
-        is listed.
+        ``<timestamp directory>/<name> (a directory)``, and one whose target
+        is missing as ``<timestamp directory>/<name> (a dangling link)``). Any
+        other name there, including a directory of any other name and the
+        writer's own names, is returned as ``<timestamp directory>/<name>``.
+        Nothing below that level is listed.
 
     Every other top-level name is returned, including one that starts with
     ``..``. A top-level entry named OPENAI_API_KEY is refused as mounted at
-    once (_snapshot). The attempt raises _Unsettled when the closing listing
-    differs from the opening one.
+    once (_snapshot). The attempt raises _Unsettled when the closing snapshot
+    differs from the opening one at either level; the closing snapshot also
+    refuses an OPENAI_API_KEY name at either level at once.
     """
     first = _snapshot(directory)
-    names = [entry.name for entry in first]
-    listed = {entry.name: entry for entry in first}
+    names = [entry.name for entry in first.top]
+    listed = {entry.name: entry for entry in first.top}
+    timestamp_dirs = dict(first.nested)
     unexpected = []
-    for entry in first:
+    for entry in first.top:
         path = os.path.join(directory, entry.name)
         if entry.name in _LAUNCHER_CREDENTIAL_FILES:
             unexpected.extend(_credential_name_unexpected(path, entry.name))
         elif entry.name in _KUBELET_DATA_LINKS:
             if not _kubelet_data_link(entry, listed):
                 unexpected.append(entry.name)
-        elif _KUBELET_TS_DIR.fullmatch(entry.name) and entry.kind == stat.S_IFDIR:
-            unexpected.extend(_timestamp_dir_unexpected(directory, entry.name))
+        elif entry.name in timestamp_dirs:
+            inside = timestamp_dirs[entry.name]
+            unexpected.extend(_timestamp_dir_unexpected(directory, entry.name, inside))
         else:
             unexpected.append(entry.name)
     if _snapshot(directory) != first:
@@ -325,17 +380,21 @@ def _kubelet_data_link(entry: _Entry, listed: dict[str, _Entry]) -> bool:
     return resolved is not None and resolved.kind == stat.S_IFDIR
 
 
-def _timestamp_dir_unexpected(directory: str, ts_dir: str) -> list[str]:
-    """The names inside one timestamp directory that the launcher must not hold."""
+def _timestamp_dir_unexpected(
+    directory: str, ts_dir: str, entries: tuple[_Entry, ...]
+) -> list[str]:
+    """The names inside one timestamp directory that the launcher must not hold.
+
+    ``entries`` is the directory as the attempt's snapshot listed it. An
+    OPENAI_API_KEY name was already refused when the snapshot listed them.
+    """
     unexpected = []
-    for name in sorted(os.listdir(os.path.join(directory, ts_dir))):
-        path = os.path.join(directory, ts_dir, name)
-        if name == config.ENV_API_KEY:
-            raise _application_key_mounted(path)
-        if name in _LAUNCHER_CREDENTIAL_FILES:
-            unexpected.extend(_credential_name_unexpected(path, f"{ts_dir}/{name}"))
+    for entry in entries:
+        path = os.path.join(directory, ts_dir, entry.name)
+        if entry.name in _LAUNCHER_CREDENTIAL_FILES:
+            unexpected.extend(_credential_name_unexpected(path, f"{ts_dir}/{entry.name}"))
             continue
-        unexpected.append(f"{ts_dir}/{name}")
+        unexpected.append(f"{ts_dir}/{entry.name}")
     return unexpected
 
 

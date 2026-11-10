@@ -1172,14 +1172,14 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: B105
       path: 'examples/managed-agents/openai-managed-agents/tests/test_guard.py'
-      line_start: 788
-      line_end: 788
+      line_start: 995
+      line_end: 995
       reason: 'Fake sk- key a test uses to prove the key never appears in output'
       expiration: '2027-12-31'
     - rule_id: B105
       path: 'examples/managed-agents/openai-managed-agents/tests/test_guard.py'
-      line_start: 804
-      line_end: 804
+      line_start: 1011
+      line_end: 1011
       reason: 'Fake sk- key a test uses to prove the key never appears in output'
       expiration: '2027-12-31'
     - rule_id: B105
@@ -1245,14 +1245,14 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/managed-agents/openai-managed-agents/tests/test_guard.py'
-      line_start: 788
-      line_end: 788
+      line_start: 995
+      line_end: 995
       reason: 'Fake sk- key a test uses to prove the key never appears in output'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/managed-agents/openai-managed-agents/tests/test_guard.py'
-      line_start: 804
-      line_end: 804
+      line_start: 1011
+      line_end: 1011
       reason: 'Fake sk- key a test uses to prove the key never appears in output'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
