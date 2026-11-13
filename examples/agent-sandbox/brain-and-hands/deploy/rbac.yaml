@@ -21,9 +21,10 @@ metadata:
   namespace: <NAMESPACE>
   labels:
     app.kubernetes.io/part-of: brain-and-hands
-# automountServiceAccountToken stays at its default, true: the MCP server in the
-# brain authenticates to the Kubernetes API with this ServiceAccount's token,
-# through the SDK's in-cluster configuration. Its Bedrock credentials arrive
+# The MCP server in the brain authenticates to the Kubernetes API with this
+# ServiceAccount's token, through the SDK's in-cluster configuration. The brain
+# does not take the automatic token mount: deploy/brain.yaml mounts the token
+# explicitly, with a one-hour lifetime. Its Bedrock credentials arrive
 # separately, through the EKS Pod Identity association ./scripts/setup.sh
 # creates for this same ServiceAccount. The two are unrelated.
 ---
