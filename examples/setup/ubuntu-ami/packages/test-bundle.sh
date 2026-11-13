@@ -32,6 +32,9 @@
 # same path end to end with inputs small enough to run with no network and in under a
 # second, not a different code path kept only for tests.
 set -euo pipefail
+# A reader's own config.env (in the sample folder or ~/ubuntu-ami/) must not change what this suite
+# tests: scripts/lib/common.sh skips it while this test hook is set.
+export UBUNTU_AMI_TESTS_IGNORE_CONFIG_ENV=1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/bundle-common.sh
 . "$HERE/lib/bundle-common.sh"

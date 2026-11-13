@@ -40,11 +40,15 @@ fi
 
 # config.env is local and gitignored; config.env.example documents every variable with a
 # placeholder. Both the workstation driver and a build-host copy of this directory look for
-# it in the sample root.
-for __common_cfg in "$SAMPLE_DIR/config.env" "$HOME/ubuntu-ami/config.env"; do
-  [ -f "$__common_cfg" ] && { . "$__common_cfg"; break; }
-done
-unset __common_cfg
+# it in the sample root. UBUNTU_AMI_TESTS_IGNORE_CONFIG_ENV=1 is a TEST HOOK: the clusterless
+# suites (scripts/test-*.sh, packages/test-*.sh) export it so a reader's own config.env cannot
+# change what they test; nothing else sets it, so a real run always reads config.env.
+if [ "${UBUNTU_AMI_TESTS_IGNORE_CONFIG_ENV:-}" != 1 ]; then
+  for __common_cfg in "$SAMPLE_DIR/config.env" "$HOME/ubuntu-ami/config.env"; do
+    [ -f "$__common_cfg" ] && { . "$__common_cfg"; break; }
+  done
+  unset __common_cfg
+fi
 
 : "${AWS_REGION:=us-west-2}"
 : "${CLUSTER_NAME:=sandbox-demo}"   # the home page's default; the shell's own value wins

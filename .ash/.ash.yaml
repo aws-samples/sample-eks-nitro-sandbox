@@ -1300,26 +1300,26 @@ global_settings:
     # Pinned lines: test fixtures (a fake commit SHA, env-record strings with placeholder values).
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/packages/test-inputs.sh'
-      line_start: 283
-      line_end: 283
+      line_start: 286
+      line_end: 286
       reason: 'Fake commit SHA in a test fixture, not a secret'
       expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/scripts/test-apparmor-checks.sh'
-      line_start: 333
-      line_end: 333
+      line_start: 336
+      line_end: 336
       reason: 'Test fixture: a run-state record of placeholder names, Region and AMI id, not a secret'
       expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/scripts/test-run-scope.sh'
-      line_start: 768
-      line_end: 768
+      line_start: 771
+      line_end: 771
       reason: 'Test fixture: a run-state record of placeholder names and Region, not a secret'
       expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/scripts/test-setup-flow.sh'
-      line_start: 406
-      line_end: 406
+      line_start: 409
+      line_end: 409
       reason: 'Test fixture: a run-state record of placeholder names and Region, not a secret'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
