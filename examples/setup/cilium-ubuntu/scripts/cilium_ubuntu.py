@@ -114,6 +114,18 @@ EXPECTED_AMI_TAG = ("BtfValidated", "true")
 # AMI sets SANDBOX_AMI_MANAGED_BY_VALUE in config.local.env to match.
 EXPECTED_AMI_OWNER_TAG_KEY = "ManagedBy"
 DEFAULT_SANDBOX_AMI_MANAGED_BY_VALUE = "ubuntu-ami-sample"
+# The release tags ../ubuntu-ami writes on an AMI it builds from the public Nitro Sandbox
+# releases (issue #218), each paired with the scripts/common.sh pin it must equal exactly. An
+# AMI built from the earlier preview runtime archive carries ManagedBy and BtfValidated but
+# none of these, so the preflight refuses it. The expected values are read from the pins
+# common.sh exports (pin() below), never from a literal here.
+EXPECTED_AMI_RELEASE_TAGS = (
+    ("RuntimeRelease", "NITRO_SANDBOX_RUNTIME_VERSION"),
+    ("GuestImageRelease", "GUEST_IMAGE_RELEASE"),
+    ("FirecrackerVersion", "FIRECRACKER_VERSION"),
+    ("HostKernelPatch", "HOST_KERNEL_PATCH_COMMIT"),
+    ("GuestKernelRelease", "GUEST_KERNEL_RELEASE"),
+)
 
 
 class DemoError(RuntimeError):
@@ -149,6 +161,14 @@ def kube_json(*args):
 def setting(name):
     value = os.environ.get(name, "").strip()
     require(value, f"{name} is empty; set it in config.local.env")
+    return value
+
+
+def pin(name):
+    """A version pin scripts/common.sh exports. Never defaulted here: when it is unset the
+    caller did not source common.sh, and there would be nothing to compare against."""
+    value = os.environ.get(name, "").strip()
+    require(value, f"{name} is not set; it is a pin scripts/common.sh exports, so run this through setup.sh")
     return value
 
 
@@ -377,7 +397,10 @@ def cmd_check_sandbox_ami(_):
     never substitutes a different AMI and never guesses one when the check fails: it only
     confirms the id the caller supplied in config.local.env is the shape issue #10's Ubuntu
     Pod Isolation build produces, so a stale or mistyped id (an ordinary Ubuntu AMI, someone
-    else's AMI, last month's pre-BTF-fix build) is refused before it reaches EC2."""
+    else's AMI, last month's pre-BTF-fix build, a build from the preview runtime archive) is
+    refused before it reaches EC2."""
+    # The pins are read first, so a run that did not source common.sh stops before any AWS call.
+    release_pins = [(key, name, pin(name)) for key, name in EXPECTED_AMI_RELEASE_TAGS]
     ami = setting("SANDBOX_AMI_ID")
     require(re.fullmatch(r"ami-[0-9a-f]{17}", ami), f"SANDBOX_AMI_ID '{ami}' is not a well-formed AMI id")
     owner_account = setting("AWS_ACCOUNT_ID")
@@ -409,12 +432,24 @@ def cmd_check_sandbox_ami(_):
             f"AMI {ami} is not tagged {EXPECTED_AMI_TAG[0]}={EXPECTED_AMI_TAG[1]}; it was not produced (or was "
             "not re-validated) by the ../ubuntu-ami BTF-enabled build this sample depends on. "
             "Build and tag the AMI with that sample first, or re-check an existing one against its README.")
+    # Which releases the AMI was built from. Each tag must equal its pin exactly, with no
+    # prefix or suffix tolerance: a GuestKernelRelease holding the host kernel's release (which
+    # starts with the guest pin and adds a local-version suffix) never passes.
+    for key, pin_name, want in release_pins:
+        have = tags.get(key)
+        found = f"it has no {key} tag" if have is None else f"it is tagged {key}='{have}'"
+        require(have == want,
+                f"AMI {ami} is not tagged {key}={want} (the {pin_name} pin in scripts/common.sh); {found}. "
+                "It was not built by ../ubuntu-ami from the public releases this sample pins: an AMI "
+                "built from the earlier preview runtime archive carries none of these tags. Build a new "
+                "AMI with that sample.")
     root = next((m for m in image.get("BlockDeviceMappings", []) if m.get("DeviceName") == image.get("RootDeviceName")), None)
     require(root is not None, f"AMI {ami} has no root device mapping matching '{image.get('RootDeviceName')}'")
     print(f"AMI {ami}: {name}")
     print(f"  architecture={image['Architecture']} virtualization={image['VirtualizationType']} "
           f"owner={image.get('OwnerId')} {EXPECTED_AMI_OWNER_TAG_KEY}={tags.get(EXPECTED_AMI_OWNER_TAG_KEY)} "
           f"{EXPECTED_AMI_TAG[0]}={tags.get(EXPECTED_AMI_TAG[0])}")
+    print("  " + " ".join(f"{key}={tags.get(key)}" for key, _, _ in release_pins))
     print("sandbox AMI preflight passed")
 
 

@@ -52,6 +52,13 @@ an AMI that failed verification, or that is not #10's own, never receives it. Ch
 `ManagedBy` too (not just the AWS account that owns the AMI resource) matches that contract:
 the account-owner check says who can use the AMI, `ManagedBy` says which build produced it.
 
+#10's build from the public releases ([#218](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/218))
+also tags the AMI with the releases it was built from: `RuntimeRelease`, `GuestImageRelease`,
+`FirecrackerVersion`, `HostKernelPatch` and `GuestKernelRelease`. The preflight requires each
+one to equal its pin in `scripts/common.sh` exactly (the [Versions](#versions) table gives the
+values). An AMI that #10 built from the earlier preview runtime archive carries `ManagedBy` and
+`BtfValidated=true` but none of these tags, so it is refused.
+
 #10's AMI is built from the public Nitro Sandbox releases that the Amazon EKS User Guide page
 [Create and update a Nitro Sandbox AMI](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-ami-create-update.html)
 names, and this blueprint builds none of them. The AMI's host kernel is `6.18.56-nitro-ga`:
@@ -114,7 +121,7 @@ the policy controls still hold.**
 |---|---|---|
 | [Amazon EKS Kubernetes](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html) | 1.36 | 1.36 |
 | Ubuntu system and sandbox nodes | Ubuntu 24.04 LTS (Canonical's EKS 1.36 AMI). The fresh run's `SYSTEM_AMI_ID` was Canonical's serial `20261027`, and #10's build of its sandbox AMI ran on 24.04.5 LTS | 24.04.5 LTS |
-| Ubuntu EKS Pod Isolation AMI | Output of [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10), built from the public releases in this table and BTF-validated (`ManagedBy` and `BtfValidated=true` tags) | Revalidate with a fresh #10 build |
+| Ubuntu EKS Pod Isolation AMI | Output of [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10), built from the public releases in this table and BTF-validated (`ManagedBy` and `BtfValidated=true` tags, and the five release tags [stage 0](#0-prerequisites-and-the-ami-preflight) checks) | Revalidate with a fresh #10 build |
 | Host kernel on the sandbox node | `6.18.56-nitro-ga`: kernel.org Linux 6.18.56 plus the patch at the public commit [amazonlinux/linux 4ae89f6e](https://github.com/amazonlinux/linux/commit/4ae89f6e09f949848123407602b4e5a8bb8d8631), whose `.patch` file (494,711 bytes) has SHA-256 `5f9c52ae83e20403846e7c10aed6ed6fcabbd4069b76f50b1a2a42577b95f1a0`, built by #10 (this blueprint builds no kernel) | 6.18.56 |
 | Guest kernel in the sandbox pod | 6.18.56, inside the guest image's `nitro-sandbox-guest.eif`, read from the EIF's kernel version string. TODO(#219 fresh run): confirm it with `uname -r` in the sandbox pod | 6.18.56 (2026-11-13) |
 | Nitro Sandboxes runtime release | `0.1.4274.0`, signed by AWS; its x86_64 `nitro-sandboxes-runtime.tar.gz` has SHA-256 `abc1d0032014f763715c2829ef1a104d768c3e0a76fa91cd2668d87678db3c57` in the release's signed `SHA256SUM`. The node runs its shim, `containerd-shim-nitro-sandbox-v2` | 0.1.4274.0 (2026-11-13) |
@@ -139,7 +146,7 @@ Where those run values come from:
 
 | Stage | What you configure | What you see |
 |---|---|---|
-| [0. Prerequisites and the AMI preflight](#0-prerequisites-and-the-ami-preflight) | `config.local.env`: account, Region, both AMI ids | The sandbox AMI's architecture, owner and `BtfValidated` tag confirmed before anything is created |
+| [0. Prerequisites and the AMI preflight](#0-prerequisites-and-the-ami-preflight) | `config.local.env`: account, Region, both AMI ids | The sandbox AMI's architecture, owner, `BtfValidated` tag and release tags confirmed before anything is created |
 | [1. Create the cluster without the VPC CNI or kube-proxy](#1-create-the-cluster-without-the-vpc-cni-or-kube-proxy) | eksctl `addonsConfig` | No `aws-node` and no `kube-proxy` |
 | [2. Give the Cilium operator its own AWS role](#2-give-the-cilium-operator-its-own-aws-role) | One Pod Identity association | Node roles without ENI permissions |
 | [3. Install Cilium before any node](#3-install-cilium-before-any-node) | Helm values: ENI mode, kube-proxy replacement, `socketLB.hostNamespaceOnly` | Cilium waiting for nodes |
@@ -177,6 +184,14 @@ Every block is from one fresh run, on a new cluster in `us-west-2` with the defa
   alongside it. A stale id, a mistyped id, an AMI from before #10's BTF fix, or an AMI that
   merely copies the `BtfValidated=true` tag value without #10's own `ManagedBy` tag, is
   refused here, not discovered later as a Cilium agent that never goes ready.
+  It must also carry the five release tags, each equal to its pin in `scripts/common.sh`
+  with no prefix or suffix tolerance: `RuntimeRelease` (`NITRO_SANDBOX_RUNTIME_VERSION`),
+  `GuestImageRelease` (`GUEST_IMAGE_RELEASE`), `FirecrackerVersion` (`FIRECRACKER_VERSION`),
+  `HostKernelPatch` (`HOST_KERNEL_PATCH_COMMIT`) and `GuestKernelRelease`
+  (`GUEST_KERNEL_RELEASE`). An AMI built from the earlier preview runtime archive has none
+  of them and is refused, as is one whose `GuestKernelRelease` holds the host kernel's
+  release (`6.18.56-nitro-ga`) instead of the guest's. The refusal names the tag and the
+  value it expected.
 - `SYSTEM_AMI_ID`: a public Ubuntu 24.04 EKS-optimized AMI id you resolved and pinned
   yourself (this blueprint does not resolve `latest` at runtime, so a re-run always boots the
   AMI you validated against). Canonical publishes each build under a public SSM parameter of
