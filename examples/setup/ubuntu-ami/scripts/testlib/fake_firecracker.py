@@ -2,11 +2,14 @@
 """fake_firecracker.py: a stand-in for /usr/bin/firecracker v1.18.0, for scripts/test-smoke.sh.
 
 It serves the Firecracker HTTP API on the Unix socket named by --api-sock (every other flag is
-ignored), checks each PUT body against the v1.18.0 request schema of that endpoint as strictly
-as upstream does (serde deny_unknown_fields: an unknown field, a missing required field, a wrong
-type, a body that is not JSON or an unknown endpoint is answered 400 with {"fault_message": ...}),
-and answers 204 to a valid PUT. After a 2xx InstanceStart it binds the /vsock uds_path and
-answers "CONNECT 1024\\n" with "OK 1073741824\\n", the handshake the guest agent gives.
+ignored) and answers 204 to a valid PUT. It checks each PUT body against the top level of the
+v1.18.0 request schema of that endpoint, as upstream does (serde deny_unknown_fields): an unknown
+field, a missing required field, a top-level value of the wrong type, a body that is not JSON or an
+unknown endpoint is answered 400 with {"fault_message": ...}. It does not check inside list or
+object values: upstream also refuses a malformed element, such as cpu_ids [true] or numa_nodes [{}]
+in /enclave, which this stand-in answers 204. Its fidelity covers the request shapes 40-smoke.sh
+sends, none of which holds a list or object value. After a 2xx InstanceStart it binds the /vsock
+uds_path and answers "CONNECT 1024\\n" with "OK 1073741824\\n", the handshake the guest agent gives.
 
 Python 3.9 compatible, standard library only, no subprocess. Environment:
   FAKE_FC_ROOTS=<dir>[:<dir>]  the only folders the fake looks at or binds in: a path a request
@@ -35,7 +38,8 @@ import threading
 # The request schemas, embedded from the release's own spec, firecracker_spec-v1.18.0.yaml in
 # release-v1.18.0-x86_64 (Firecracker v1.18.0), section "definitions". Every property each
 # definition lists, with its type ($ref fields as the referenced definition's type), and its
-# "required" list. Nothing else is accepted.
+# "required" list. Nothing else is accepted at the top level of a body; the elements of a list
+# value and the fields of an object value are not checked (see the module docstring).
 SCHEMAS = {
     "BootSource": {
         "required": ["kernel_image_path"],

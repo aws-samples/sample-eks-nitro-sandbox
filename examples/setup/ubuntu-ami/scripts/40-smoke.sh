@@ -24,8 +24,8 @@
 # The fixed system paths below are prefixed with $SYSROOT, the sample's test hook (empty on every
 # real host, see lib/common.sh), so scripts/test-smoke.sh can run this script against a fixture tree.
 # Its scratch files go in one private folder, $TMPDIR/smoke-XXXXXX (/tmp/smoke-XXXXXX on the build
-# host), removed at the end; the smoke- prefix lets 50-bake-prep.sh's "$R"/tmp/smoke-* removal also
-# catch a folder an interrupted run left behind.
+# host), removed at the end, also after an early failure; the smoke- prefix lets 50-bake-prep.sh's
+# "$R"/tmp/smoke-* removal also catch a folder an interrupted run left behind.
 [ "$(id -u)" = 0 ] || exec sudo -E bash "$0" "$@"
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -71,8 +71,21 @@ PY
 # symlink first.
 D=$(mktemp -d "${TMPDIR:-/tmp}/smoke-XXXXXX") || { echo "private temp folder creation failed"; exit 1; }
 SOCK="$D/smoke.sock"; UDS="$D/smoke.vsock"; OVL="$D/smoke.overlay.img"; TAP=tap-smoke
+# cleanup stops Firecracker if it was started, deletes the tap once it may exist, and removes the
+# private folder with the 2 GiB sparse overlay disk. It runs once: in line at the end of a run, and
+# from the EXIT trap after an early exit (a failed overlay disk or tap), so that leaves nothing behind.
+pid=""; tap_tried=0; cleaned=0
+cleanup() {
+  [ "$cleaned" = 0 ] || return 0
+  cleaned=1
+  if [ -n "$pid" ]; then kill "$pid" 2>/dev/null; sleep 2; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; fi
+  [ "$tap_tried" = 0 ] || ip link del "$TAP" 2>/dev/null
+  rm -rf -- "$D"
+}
+trap cleanup EXIT
 rm -f "$SOCK" "$UDS"
 mk_overlay "$OVL" || { echo "overlay disk creation failed"; exit 1; }
+tap_tried=1
 mk_tap "$TAP" || { echo "tap creation failed"; exit 1; }
 "$FC" --api-sock "$SOCK" --log-path "$LOG/smoke.fc.log" --level Debug --show-level --show-log-origin > "$LOG/smoke.console" 2>&1 &
 pid=$!
@@ -97,8 +110,7 @@ if [ "$pass" = 1 ]; then
   cat "$D/smoke-agent.out" 2>/dev/null || true
 fi
 echo "--- process alive: $(kill -0 "$pid" 2>/dev/null && echo yes || echo NO); agent reachable: $up after ${t}s"
-kill "$pid" 2>/dev/null; sleep 2; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-ip link del "$TAP" 2>/dev/null; rm -rf -- "$D"
+cleanup
 
 echo "smoke $(date -u +%FT%TZ): $([ "$pass" = 1 ] && [ "$up" = 1 ] && echo PASS || echo FAIL); debug_mode=${SHIM_DEBUG}" \
   | sudo tee -a "$IMAGE_MANIFEST"

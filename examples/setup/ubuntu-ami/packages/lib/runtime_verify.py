@@ -22,13 +22,21 @@ trust root, and every check fails closed (exit 1, a FATAL line naming what is wr
 
 The folder it is given is checked before anything is created or removed in it, and a refusal
 changes nothing. It must not be a symbolic link. When it already exists and is not empty, it must
-carry this helper's marker file (.fetch-runtime-artifacts, written when the helper first uses the
-folder), unless the caller passes --run-folder: packages/fetch-runtime-artifacts.sh passes it only
-for the sample's own run folder, RUNTIME_ARTIFACTS_DIR after scripts/lib/common.sh's path guard,
-which the kernel and erofs-utils fetchers share. The helper removes only the folders it made
-itself (metadata, downloads, node-files, signed-manifest), each recognised by its own marker file
-(.made-by-fetch-runtime-artifacts); one of those names that exists without that marker, or is not
-a real folder, is refused and left as it is.
+carry this helper's marker file (.fetch-runtime-artifacts, written with a random token when the
+helper first uses the folder), unless the caller passes --run-folder: packages/fetch-runtime-artifacts.sh
+passes it only for the sample's own run folder, RUNTIME_ARTIFACTS_DIR after scripts/lib/common.sh's
+path guard, which the kernel and erofs-utils fetchers share. The helper removes only the folders it
+made itself (metadata, downloads, node-files, signed-manifest), each recognised by its own marker
+file (.made-by-fetch-runtime-artifacts) holding the same token as the destination's; one of those
+names that exists without that marker, with another folder's token, or that is not a real folder
+holding only files, is refused and left as it is.
+
+The folder is opened once, without following a link, and checked to be the one those checks saw;
+the helper then works inside it as its working directory, so every later file operation is
+relative to that folder and its path is never resolved again. Should another process replace the
+folder's path while the helper runs (it needs write access to the folder's parent), the helper
+still changes nothing outside the folder it checked, and it stops with an error before it
+replaces another of its folders and before it reports success.
 
 Downloads use curl (-fsSL, retries), so a reader's proxy settings apply. Needs openssl for the
 signature and Python 3.9 or later (the workstation's python3 can be older than the build host's).
@@ -36,6 +44,7 @@ signature and Python 3.9 or later (the workstation's python3 can be older than t
 import hashlib
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -49,11 +58,14 @@ KINDS = ("signed-archive", "sidecar-file", "archive-member")
 # A published sidecar: exactly one line, the SHA-256, then optionally whitespace and one file name.
 SIDECAR = re.compile(r"([0-9a-f]{64})(?:[ \t]+([A-Za-z0-9][A-Za-z0-9._-]*))?\n?")
 # The marker in a destination folder this helper may use, and the one in each folder it made there.
+# Each holds the destination's random token on its last line, so a marker copied from another
+# destination does not make a folder this helper's own.
 DEST_MARK, DEST_TEXT = ".fetch-runtime-artifacts", (
     "packages/fetch-runtime-artifacts.sh keeps its metadata, downloads, node-files and signed-manifest\n"
     "folders here, and removes only those folders, each when it carries its own marker.\n")
 MADE_MARK, MADE_TEXT = ".made-by-fetch-runtime-artifacts", (
     "made by packages/fetch-runtime-artifacts.sh, which replaces this folder on its next run\n")
+TOKEN = re.compile(r"token=([0-9a-f]{32})\n")
 
 
 class Refused(Exception):
@@ -258,60 +270,141 @@ def read_members(archive, flat, wanted, out_dir):
         raise Refused(f"{os.path.basename(archive)} is not a readable gzip tar: {e}")
 
 
-def is_marked(folder, mark, text):
-    """True when <folder>/<mark> is a regular file (not a link) holding exactly <text>."""
-    p = os.path.join(folder, mark)
+NOFOLLOW_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def same_folder(a, b):
+    return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
+
+
+def mark_token(mark, text, dir_fd=None):
+    """The token in the marker file <mark> (in the folder open as <dir_fd>, else the working directory),
+    or None unless it is a regular file, not a link, holding exactly <text> and then one token line."""
     try:
-        if not stat.S_ISREG(os.lstat(p).st_mode):
-            return False
-        with open(p) as f:
-            return f.read() == text
+        fd = os.open(mark, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
     except OSError:
-        return False
+        return None
+    with os.fdopen(fd, errors="replace") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            return None
+        data = f.read(4096)
+    m = TOKEN.fullmatch(data[len(text):]) if data.startswith(text) else None
+    return m.group(1) if m else None
 
 
-def write_mark(folder, mark, text):
-    fd = os.open(os.path.join(folder, mark), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
+def write_mark(mark, text, token, dir_fd=None):
+    fd = os.open(mark, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=dir_fd)
     with os.fdopen(fd, "w") as f:
-        f.write(text)
+        f.write(f"{text}token={token}\n")
+
+
+def own_folder(dest, name, token, outcome):
+    """Open the folder <name> in the working directory (the claimed destination) without following a
+    link, and check that this helper made it there: its marker holds this destination's <token>, and
+    it holds only files (this helper never makes a folder inside one). Returns the open descriptor."""
+    refused = Refused(f"{os.path.join(dest, name)} exists and this helper did not make it (it is not a real folder "
+                      f"holding {MADE_MARK} with this destination's token, and only files); move it away. {outcome}")
+    if token is None:
+        raise refused
+    try:
+        fd = os.open(name, NOFOLLOW_DIR)
+    except OSError:
+        raise refused
+    try:
+        if mark_token(MADE_MARK, MADE_TEXT, fd) != token or any(
+                stat.S_ISDIR(os.stat(e, dir_fd=fd, follow_symlinks=False).st_mode) for e in os.listdir(fd)):
+            raise refused
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
 
 def claim_dest(dest, run_folder, owned):
     """Check, before anything is created or removed, that this helper may use <dest> and replace its
-    <owned> folders there; then create <dest> (and its marker) when needed. A refusal changes nothing."""
-    if os.path.islink(dest):
+    <owned> folders there; create <dest> when it is absent. <dest> is then opened once, without
+    following a link, checked to be the folder the checks saw, and made the working directory: from
+    here on every file operation is relative to it. Writes the destination's marker, with a new random
+    token, when it has none, and returns the token. A refusal changes nothing."""
+    try:
+        st = os.lstat(dest)
+    except FileNotFoundError:
+        st = None
+    if st is not None and stat.S_ISLNK(st.st_mode):
         raise Refused(f"the destination {dest} is a symbolic link; give the real folder. Nothing was changed.")
-    if os.path.lexists(dest):
-        if not stat.S_ISDIR(os.lstat(dest).st_mode):
-            raise Refused(f"the destination {dest} exists and is not a folder. Nothing was changed.")
-        if os.path.lexists(os.path.join(dest, DEST_MARK)):
-            if not is_marked(dest, DEST_MARK, DEST_TEXT):
-                raise Refused(f"{os.path.join(dest, DEST_MARK)} is not this helper's marker file. Nothing was changed.")
-        elif not run_folder and os.listdir(dest):
-            raise Refused(f"the destination {dest} is not empty and has no {DEST_MARK} marker, so this helper did not "
-                          f"make it; give a new or empty folder. Nothing was changed.")
+    if st is not None and not stat.S_ISDIR(st.st_mode):
+        raise Refused(f"the destination {dest} exists and is not a folder. Nothing was changed.")
+    changed = Refused(f"the destination {dest} changed while this helper was checking it; give a folder no other "
+                      f"process changes. Nothing was changed.")
+    if st is None:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        try:
+            os.mkdir(dest)
+        except FileExistsError:
+            raise changed
+        st = os.lstat(dest)
+    try:
+        fd = os.open(dest, NOFOLLOW_DIR)
+    except OSError:
+        raise changed
+    try:
+        if not same_folder(os.fstat(fd), st):
+            raise changed
+        os.fchdir(fd)
+    finally:
+        os.close(fd)
+    entries = os.listdir(".")
+    token = None
+    if DEST_MARK in entries:
+        token = mark_token(DEST_MARK, DEST_TEXT)
+        if token is None:
+            raise Refused(f"{os.path.join(dest, DEST_MARK)} is not this helper's marker file. Nothing was changed.")
+    elif not run_folder and entries:
+        raise Refused(f"the destination {dest} is not empty and has no {DEST_MARK} marker, so this helper did not "
+                      f"make it; give a new or empty folder. Nothing was changed.")
     for name in owned:
-        p = os.path.join(dest, name)
-        if not os.path.lexists(p):
-            continue
-        if not stat.S_ISDIR(os.lstat(p).st_mode) or not is_marked(p, MADE_MARK, MADE_TEXT):
-            raise Refused(f"{p} exists and this helper did not make it (it is not a real folder holding {MADE_MARK}); "
-                          f"move it away. Nothing was changed.")
-    os.makedirs(dest, exist_ok=True)
-    if not os.path.lexists(os.path.join(dest, DEST_MARK)):
-        write_mark(dest, DEST_MARK, DEST_TEXT)
+        if os.path.lexists(name):
+            os.close(own_folder(dest, name, token, "Nothing was changed."))
+    if token is None:
+        token = secrets.token_hex(16)
+        write_mark(DEST_MARK, DEST_TEXT, token)
+    return token
 
 
-def fresh_folder(dest, name):
-    """Replace <dest>/<name>, which claim_dest has checked is absent or a folder this helper made."""
-    p = os.path.join(dest, name)
-    if os.path.lexists(p):
-        if not stat.S_ISDIR(os.lstat(p).st_mode) or not is_marked(p, MADE_MARK, MADE_TEXT):
-            raise Refused(f"{p} changed while this helper ran; it is not a folder this helper made. Nothing more was removed.")
-        shutil.rmtree(p)
-    os.mkdir(p)
-    write_mark(p, MADE_MARK, MADE_TEXT)
-    return p
+def still_here(dest):
+    """Refuse when <dest> no longer names the folder this helper checked and works in (its working
+    directory): another process replaced it. Nothing outside that folder has been changed."""
+    try:
+        st = os.lstat(dest)
+    except OSError:
+        st = None
+    if st is None or not stat.S_ISDIR(st.st_mode) or not same_folder(st, os.stat(".")):
+        raise Refused(f"the destination {dest} was replaced while this helper ran: it no longer names the folder this "
+                      f"helper checked and works in. Nothing outside that folder was changed; give a folder no other "
+                      f"process changes.")
+
+
+def fresh_folder(dest, name, token):
+    """Replace the folder <name> in the claimed destination (the working directory): when it exists it
+    must still be one this helper made there, and it is emptied through a descriptor opened without
+    following a link, then removed and made again with its marker. Refuses first when <dest> no
+    longer names the destination. Returns <name>, relative to the destination."""
+    still_here(dest)
+    if os.path.lexists(name):
+        fd = own_folder(dest, name, token, "Nothing more was removed.")
+        try:
+            for entry in os.listdir(fd):
+                os.unlink(entry, dir_fd=fd)
+        finally:
+            os.close(fd)
+        os.rmdir(name)
+    os.mkdir(name)
+    fd = os.open(name, NOFOLLOW_DIR)
+    try:
+        write_mark(MADE_MARK, MADE_TEXT, token, fd)
+    finally:
+        os.close(fd)
+    return name
 
 
 def main(argv):
@@ -320,13 +413,16 @@ def main(argv):
         print(__doc__, file=sys.stderr)
         return 2
     mode, lock_path, dest = argv[1], os.path.abspath(argv[2]), argv[3].rstrip("/") or "/"
+    if not os.path.isabs(dest):
+        dest = os.path.join(os.getcwd(), dest)
+    node_shown = os.path.join(os.path.abspath(dest), "node-files")
     try:
         sel = plan(lock_path)
         lock_dir = os.path.dirname(lock_path)
-        claim_dest(dest, run_folder, ["metadata"] if mode == "check" else ["downloads", "node-files", "signed-manifest"])
-        dest = os.path.abspath(dest)
-        work = fresh_folder(dest, "metadata" if mode == "check" else "downloads")
-        node = fresh_folder(dest, "node-files") if mode == "fetch" else None
+        token = claim_dest(dest, run_folder, ["metadata"] if mode == "check" else ["downloads", "node-files", "signed-manifest"])
+        # From here the working directory is the claimed destination, and every path is relative to it.
+        work = fresh_folder(dest, "metadata" if mode == "check" else "downloads", token)
+        node = fresh_folder(dest, "node-files", token) if mode == "fetch" else None
         children = {}
         for b in sel.values():
             if b["kind"] == "archive-member":
@@ -338,6 +434,7 @@ def main(argv):
             elif b["kind"] == "sidecar-file":
                 check_sidecar(b, work)
         if mode == "check":
+            still_here(dest)
             log(f"runtime inputs checked against sources.lock with no large download: "
                 f"{sum(1 for b in sel.values() if b['kind'] != 'archive-member')} published inputs")
             return 0
@@ -356,7 +453,7 @@ def main(argv):
                              {k["member"]: (k["id"], k["sha256"]) for k in kids}, node)
             if b.get("install", "none") != "none":
                 os.replace(path, os.path.join(node, b["id"]))
-        kd = fresh_folder(dest, "signed-manifest")
+        kd = fresh_folder(dest, "signed-manifest", token)
         for b, (man, sig) in kept:
             shutil.copyfile(man, os.path.join(kd, f"{b['id']}.SHA256SUM"))
             shutil.copyfile(sig, os.path.join(kd, f"{b['id']}.SHA256SUM.sig"))
@@ -364,8 +461,9 @@ def main(argv):
         have = sorted(n for n in os.listdir(node) if n != MADE_MARK)
         if have != want:
             raise Refused(f"node-files holds {have}, not the installable blocks {want}")
-        log(f"runtime inputs verified against sources.lock: {len(want)} node files in {node}")
-        print(node)
+        still_here(dest)
+        log(f"runtime inputs verified against sources.lock: {len(want)} node files in {node_shown}")
+        print(node_shown)
         return 0
     except Refused as e:
         die(str(e))

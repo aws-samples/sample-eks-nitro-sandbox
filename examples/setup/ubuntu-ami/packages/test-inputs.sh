@@ -115,8 +115,9 @@ echo
 echo "== 2/4 the destination folder: fetch-runtime-artifacts.sh <dest> (review MUST-FIX 1) ========"
 # A positional destination is not RUNTIME_ARTIFACTS_DIR, so scripts/lib/common.sh's path guard never
 # sees it. The script must refuse a link, and a folder that is not empty and that it did not make,
-# before it creates or removes anything; and it may replace only the folders it made itself. Every
-# case uses the good fixture set. tree_sum lists every path under a folder with its type, link
+# before it creates or removes anything; it may replace only the folders it made itself, for this
+# destination; and once it has checked the folder it must never act through the folder's path again.
+# Every case uses the good fixture set. tree_sum lists every path under a folder with its type, link
 # target and content hash, so a refusal is shown to have changed nothing.
 D="$WORK/dest"; mkdir -p "$D"
 tree_sum() { (cd "$1" && find . -printf '%y %p %l\n' | sort && find . -type f -exec sha256sum {} + | sort); }
@@ -170,6 +171,44 @@ F="$D/forged"; mkdir -p "$F/downloads"; printf 'sentinel\n' > "$F/downloads/keep
 before="$(tree_sum "$F")"; rc=0; pd "$WORK/d-forged.log" "$F" || rc=$?
 check "REJECT a folder whose marker file is not this script's" 1 "$rc" "$WORK/d-forged.log" "$F/.fetch-runtime-artifacts is not this helper's marker file"
 [ "$(tree_sum "$F")" = "$before" ]; check "  ... byte-unchanged" 0 $? "$WORK/d-forged.log"
+# Review R2c MUST-FIX 1: each marker carries the destination's random token, and the helper works
+# inside the folder it checked (opened once, without following a link), never through its path again.
+tok() { sed -n 's/^token=\([0-9a-f]\{32\}\)$/\1/p' "$1"; }
+A="$D/tokA"; B="$D/tokB"; pd "$WORK/d-ta.log" "$A"; pd "$WORK/d-tb.log" "$B"
+ta="$(tok "$A/.fetch-runtime-artifacts")"; tb="$(tok "$B/.fetch-runtime-artifacts")"
+okt=0; { [ -n "$ta" ] && [ -n "$tb" ] && [ "$ta" != "$tb" ]; } || okt=1
+for d in downloads node-files signed-manifest; do [ "$(tok "$A/$d/.made-by-fetch-runtime-artifacts")" = "$ta" ] || okt=1; done
+check "ACCEPT: each destination gets its own random token, and every folder it made there carries that token" 0 $okt "$WORK/d-ta.log"
+rm -rf "$A/downloads"; mkdir "$A/downloads"; cp -- "$B/downloads/.made-by-fetch-runtime-artifacts" "$A/downloads/"
+printf 'sentinel\n' > "$A/downloads/keep.txt"; before="$(tree_sum "$A")"; rc=0; pd "$WORK/d-tok.log" "$A" || rc=$?
+check "REJECT a downloads/ whose marker was copied from another destination (another token)" 1 "$rc" "$WORK/d-tok.log" "$A/downloads exists and this helper did not make it"
+[ "$(tree_sum "$A")" = "$before" ]; check "  ... the sentinel and the rest of the folder are byte-unchanged" 0 $? "$WORK/d-tok.log"
+M3="$D/marked3"; pd "$WORK/d-m3a.log" "$M3"; mkdir "$M3/node-files/sub"; printf 'sentinel\n' > "$M3/node-files/sub/keep.txt"
+before="$(tree_sum "$M3")"; rc=0; pd "$WORK/d-m3.log" "$M3" || rc=$?
+check "REJECT a folder it made that now holds a folder (it never makes one there)" 1 "$rc" "$WORK/d-m3.log" "$M3/node-files exists and this helper did not make it"
+[ "$(tree_sum "$M3")" = "$before" ]; check "  ... byte-unchanged" 0 $? "$WORK/d-m3.log"
+L="$D/legacy"; mkdir -p "$L/downloads"; printf 'sentinel\n' > "$L/downloads/keep.txt"
+printf 'packages/fetch-runtime-artifacts.sh keeps its metadata, downloads, node-files and signed-manifest\nfolders here, and removes only those folders, each when it carries its own marker.\n' > "$L/.fetch-runtime-artifacts"
+printf 'made by packages/fetch-runtime-artifacts.sh, which replaces this folder on its next run\n' > "$L/downloads/.made-by-fetch-runtime-artifacts"
+before="$(tree_sum "$L")"; rc=0; pd "$WORK/d-legacy.log" "$L" || rc=$?
+check "REJECT markers with no token (a plain marker anyone can copy)" 1 "$rc" "$WORK/d-legacy.log" "$L/.fetch-runtime-artifacts is not this helper's marker file"
+[ "$(tree_sum "$L")" = "$before" ]; check "  ... byte-unchanged" 0 $? "$WORK/d-legacy.log"
+# The review's race: another process with write access to the destination's parent replaces the
+# checked destination with a link to another folder X while the helper runs. X holds downloads/,
+# node-files/ and signed-manifest/, each with a copy of the destination's own markers (its token
+# too) and a sentinel. The swap happens at the helper's first download, after the checks; a curl
+# wrapper first on PATH makes it, once, then runs the real curl.
+R="$D/race"; X="$D/other"; pd "$WORK/d-race0.log" "$R"; mkdir -p "$X"; cp -- "$R/.fetch-runtime-artifacts" "$X/"
+for d in downloads node-files signed-manifest; do
+  mkdir -p "$X/$d"; cp -- "$R/$d/.made-by-fetch-runtime-artifacts" "$X/$d/"; printf 'sentinel %s\n' "$d" > "$X/$d/keep.txt"; done
+SW="$WORK/bin-swap"; mkdir -p "$SW"; : > "$SW/armed"
+printf '#!/bin/bash\nif [ -e %q ]; then rm -f %q; mv -- %q %q && ln -s %q %q; fi\nexec %q "$@"\n' \
+  "$SW/armed" "$SW/armed" "$R" "$R.checked" "$X" "$R" "$(command -v curl)" > "$SW/curl"; chmod +x "$SW/curl"
+before="$(tree_sum "$X")"; rc=0; pd "$WORK/d-race.log" "$R" PATH="$SW:$PATH" || rc=$?
+check "REJECT a destination replaced by a link to another folder while the helper runs (fails closed)" 1 "$rc" "$WORK/d-race.log" \
+  "the destination $R was replaced while this helper ran"
+[ -L "$R" ] && [ ! -e "$SW/armed" ] && [ "$(tree_sum "$X")" = "$before" ]
+check "  ... the swap happened, and every sentinel in the other folder is byte-unchanged, nothing added or removed" 0 $? "$WORK/d-race.log"
 # The run folder itself (RUNTIME_ARTIFACTS_DIR, checked by common.sh) is shared with the kernel,
 # patch and erofs-utils fetchers, so it may hold their files without a marker; the script's own
 # folders inside it still need theirs.

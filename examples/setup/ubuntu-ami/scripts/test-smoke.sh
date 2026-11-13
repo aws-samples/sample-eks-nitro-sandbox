@@ -6,12 +6,15 @@
 #
 #   scripts/test-smoke.sh
 #
-#   1  the fake answers Firecracker v1.18.0's API as strictly as upstream (it is not a yes-machine),
-#      and looks only inside its fixture folders (FAKE_FC_ROOTS), whatever path a request names
+#   1  the fake refuses what Firecracker v1.18.0's API refuses in the request shapes 40-smoke.sh
+#      sends (unknown or missing top-level fields, wrong top-level types, unknown endpoints; it does
+#      not check inside list or object values), and looks only inside its fixture folders
+#      (FAKE_FC_ROOTS), whatever path a request names
 #   2  ACCEPT: the exact PUT sequence, the /enclave and /boot-source bodies, the vsock handshake,
 #      the manifest line and the stage's own cleanup; again with SHIM_DEBUG=true
 #   3  REJECT: a non-2xx API answer, an early Firecracker exit, a garbled, silent or unreachable
-#      agent, a missing EIF, and SHIM_DEBUG=maybe
+#      agent, a missing EIF, SHIM_DEBUG=maybe, and a failed overlay disk or tap (the stage's
+#      private folder is removed all the same)
 #   4  BOTH WAYS: the preview-era pcie_mode /enclave field is refused, while the real body passes
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,11 +68,15 @@ SH
 cat > "$STUB/ip" <<'SH'
 #!/bin/bash
 printf '%s\n' "$*" >> "${STUB_LOG:?}/ip.log"
+# STUB_IP_FAIL=tuntap: `ip tuntap add` fails, as it does when the host cannot make a tap
+[ "${STUB_IP_FAIL:-}" = tuntap ] && [ "${1:-}" = tuntap ] && { echo "ioctl(TUNSETIFF): Operation not permitted" >&2; exit 1; }
 exit 0
 SH
 cat > "$STUB/sfdisk" <<'SH'
 #!/bin/bash
-{ printf 'args: %s\n' "$*"; cat; } >> "${STUB_LOG:?}/sfdisk.log"
+{ printf 'args: %s\n' "$*"; printf 'target size: %s\n' "$(stat -c %s -- "${@: -1}" 2>/dev/null)"; cat; } >> "${STUB_LOG:?}/sfdisk.log"
+# STUB_SFDISK_FAIL=1: writing the partition table fails
+[ -n "${STUB_SFDISK_FAIL:-}" ] && { echo "sfdisk: failed to write disklabel" >&2; exit 1; }
 exit 0
 SH
 cat > "$STUB/sleep" <<'SH'
@@ -156,7 +163,7 @@ for line in open(sys.argv[1]):
        <(printf '%s\n' "${want[@]}") > "$WORK/$n.puts.diff"
 }
 
-echo "== 1/4 the fake itself: Firecracker v1.18.0's API, strictly ============================"
+echo "== 1/4 the fake itself: Firecracker v1.18.0's API, in the shapes 40-smoke.sh sends ========"
 FS="$SHORT/self"; mkdir -m 0700 "$FS"
 FAKE_FC_ROOTS="$FS" FAKE_FC_LOG="$WORK/self.jsonl" FAKE_FC_STARTED="$WORK/self-started.jsonl" python3 "$FAKE" --api-sock "$FS/api.sock" --level Debug > "$WORK/self.out" 2>&1 &
 fpid=$!
@@ -259,6 +266,29 @@ n=badflag; mkroot "$n"
 smoke "$n" scripts/40-smoke.sh SHIM_DEBUG=maybe
 check "REJECT SHIM_DEBUG=maybe (precondition)" 2 "$rc" "$WORK/$n.log" 'SMOKE PRECONDITION FAIL: SHIM_DEBUG must be true or false'
 untouched "$n"
+
+# Review R2c MUST-FIX 2: a failure after the stage made its private folder (the overlay disk's
+# partition table, or the tap) must still remove that folder and the 2 GiB sparse overlay in it.
+early() { # early <name>: the stage stopped after making its folder, before Firecracker started, and left nothing
+  local n="$1" s="$WORK/$1/stub"
+  [ ! -e "$s/fc-started.jsonl" ] && [ ! -e "$s/fc-requests.jsonl" ]; ok "  ... the fake Firecracker never started" $?
+  grep -qE "^args: -q $SHORT/$n/smoke-[A-Za-z0-9]{6}/smoke.overlay.img\$" "$s/sfdisk.log" && grep -qx 'target size: 2147483648' "$s/sfdisk.log"
+  ok "  ... the stage had made its 2 GiB sparse overlay disk in \$TMPDIR/smoke-XXXXXX (sfdisk saw it)" $?
+  [ -z "$(find "$SHORT/$n" -mindepth 1 -maxdepth 1 -name 'smoke-*' -print)" ] && [ -z "$(ls -A "$SHORT/$n")" ]
+  ok "  ... no smoke-* folder and nothing else is left in TMPDIR" $?
+  [ ! -e "$WORK/$n/etc/ubuntu-ami-sample-manifest" ]; ok "  ... no manifest line" $?
+}
+n=overlayfail; mkroot "$n"
+smoke "$n" scripts/40-smoke.sh STUB_SFDISK_FAIL=1
+check "REJECT a failed overlay disk (sfdisk cannot write its partition table)" 1 "$rc" "$WORK/$n.log" '^overlay disk creation failed$'
+early "$n"
+[ ! -e "$WORK/$n/stub/ip.log" ]; ok "  ... and no tap was tried, so none is deleted" $?
+n=tapfail; mkroot "$n"
+smoke "$n" scripts/40-smoke.sh STUB_IP_FAIL=tuntap
+check "REJECT a failed tap (ip tuntap add fails)" 1 "$rc" "$WORK/$n.log" '^tap creation failed$'
+early "$n"
+[ "$(cat "$WORK/$n/stub/ip.log" 2>/dev/null)" = "$(printf 'link del tap-smoke\ntuntap add dev tap-smoke mode tap\nlink del tap-smoke')" ]
+ok "  ... and the clean up deleted the tap name it tried to make (ip log)" $?
 
 echo
 echo "== 4/4 BOTH WAYS: the fake would have caught the R1 pcie_mode regression ===================="

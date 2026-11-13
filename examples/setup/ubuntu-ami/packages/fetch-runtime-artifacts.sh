@@ -25,9 +25,11 @@
 #
 # <dest-dir> is checked before anything is created or removed in it: it must not be a symbolic
 # link, and an existing folder that is not empty must carry this script's marker file
-# (.fetch-runtime-artifacts), unless it is RUNTIME_ARTIFACTS_DIR itself, the run folder
-# scripts/lib/common.sh has already checked. Only the folders this script made there (metadata,
-# downloads, node-files, signed-manifest, each with its own marker) are ever replaced.
+# (.fetch-runtime-artifacts, with the folder's random token), unless it is RUNTIME_ARTIFACTS_DIR
+# itself, the run folder scripts/lib/common.sh has already checked. Only the folders this script made
+# there (metadata, downloads, node-files, signed-manifest, each with a marker holding the same token)
+# are ever replaced. The helper then works inside the folder it checked, never through its path
+# again, and stops with an error if that path is replaced while it runs.
 #
 # Every check fails closed (exit 1, the reason on a FATAL line, no override flag). The work is in
 # packages/lib/runtime_verify.py.
