@@ -41,21 +41,39 @@ CILIUM_CHART=oci://quay.io/cilium/charts/cilium
 EKSCTL_MIN_VERSION=0.230.0
 KUBERNETES_VERSION=1.36
 
-# What the sandbox node runs, from the GA node-build bundle nitro-sandbox-ga-20261028 that the
-# ../ubuntu-ami (#10) AMI is built from. This sample builds none of it; test.sh asserts the two
-# kernel releases on the live node and pod.
-#   host kernel   kernel.org linux 6.18.56 plus AWS's public commit amazonlinux/linux 1e66c960,
-#                 local version -nitro-ga (what the sandbox node's `uname -r` shows)
-#   guest kernel  inside the bundle's guest image latest.eif (what the sandbox pod's `uname -r` shows)
+# What the sandbox node runs: the public releases that the Amazon EKS User Guide page "Create
+# and update a Nitro Sandbox AMI" names, which the ../ubuntu-ami AMI is built from. This
+# sample downloads, verifies and builds none of it; it reaches the sample only inside that
+# AMI. The values are recorded here so the README and the AMI you consume can be compared
+# against one place, and test.sh asserts the two kernel releases on the live node and pod.
+#   host kernel   kernel.org linux 6.18.56 plus the patch at AWS's public commit
+#                 amazonlinux/linux 4ae89f6e, local version -nitro-ga (what the sandbox
+#                 node's `uname -r` shows)
+#   guest kernel  inside the guest image's EIF (what the sandbox pod's `uname -r` shows)
 HOST_KERNEL_RELEASE=6.18.56-nitro-ga
-GUEST_KERNEL_RELEASE=6.18.54
-# The runtime binaries and guest image come in one archive the operator supplies to the #10
-# build, which checks this SHA-256 before it installs anything. It has no public download, so
-# this sample never fetches, verifies, embeds or commits it; the values are recorded here so
-# the README and the AMI you consume can be compared against one place.
-RUNTIME_ARCHIVE=nitro-sandbox-binaries-2026-10-28.zip
-RUNTIME_ARCHIVE_SHA256=6830dc8d0acb356b06753fed609ebb9f03a182e340eaa27cd9ed171f7667ba40
-export HOST_KERNEL_RELEASE GUEST_KERNEL_RELEASE RUNTIME_ARCHIVE RUNTIME_ARCHIVE_SHA256
+HOST_KERNEL_PATCH_COMMIT=4ae89f6e09f949848123407602b4e5a8bb8d8631
+# TODO(#219 fresh run): 6.18.56 is the release in the kernel version string of the pinned
+# GUEST_IMAGE_RELEASE EIF, read offline. Confirm it with `uname -r` inside the sandbox pod on
+# an AMI built from that release; if the live value differs, this pin and the README follow it.
+# test.sh matches it exactly, since it is a prefix of HOST_KERNEL_RELEASE.
+GUEST_KERNEL_RELEASE=6.18.56
+# The signed Nitro Sandboxes runtime release, by version (never "latest"), and the SHA-256 of
+# its x86_64 nitro-sandboxes-runtime.tar.gz as the release's signed SHA256SUM lists it.
+NITRO_SANDBOX_RUNTIME_VERSION=0.1.4274.0
+NITRO_SANDBOX_RUNTIME_SHA256=abc1d0032014f763715c2829ef1a104d768c3e0a76fa91cd2668d87678db3c57
+# The guest image pair AWS publishes in Amazon S3 by Kubernetes patch version and release
+# date, amd64, with the SHA-256 of each file as its .sha256 file gives it.
+GUEST_IMAGE_RELEASE=1.36.5/2026-11-06
+GUEST_IMAGE_EIF_SHA256=bcbf2e9da531ffaee6691db5661c75b3564f151cb411227c5a7f9a530db72182
+GUEST_IMAGE_DISK_SHA256=08f8e6d2d032829bff9c4c4907cd44242f46bcf6b1bbc2e6aea691c82bee902c
+# Firecracker and jailer, from the Firecracker project's GitHub release, with the SHA-256 of
+# its firecracker-v1.18.0-x86_64.tgz as the release's .sha256.txt file gives it.
+FIRECRACKER_VERSION=v1.18.0
+FIRECRACKER_SHA256=1ac8eec866dd5eea14efecf6323e22b23eea24054545338a5b34bc5bca6623cd
+export HOST_KERNEL_RELEASE HOST_KERNEL_PATCH_COMMIT GUEST_KERNEL_RELEASE \
+  NITRO_SANDBOX_RUNTIME_VERSION NITRO_SANDBOX_RUNTIME_SHA256 \
+  GUEST_IMAGE_RELEASE GUEST_IMAGE_EIF_SHA256 GUEST_IMAGE_DISK_SHA256 \
+  FIRECRACKER_VERSION FIRECRACKER_SHA256
 
 # The sample's namespace and the label that marks it the sample's. A script reuses or deletes
 # the namespace, or anything in it, only when the label is present; otherwise it stops.

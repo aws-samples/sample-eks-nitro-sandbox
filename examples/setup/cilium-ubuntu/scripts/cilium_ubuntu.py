@@ -1075,19 +1075,24 @@ def cmd_check_cilium_values(args):
     sys.exit(1 if problems else 0)
 
 
-def kernel_release_matches(got, want):
+def kernel_release_matches(got, want, exact=False):
     """True when a `uname -r` value is the pinned release, or the pinned release followed by a
-    '-' or '+' build suffix (6.18.54 matches 6.18.54 and 6.18.54-1, not 6.18.540)."""
+    '-' or '+' build suffix (6.18.54 matches 6.18.54 and 6.18.54-1, not 6.18.540). With exact,
+    only the pinned release itself matches: the guest pin 6.18.56 is a prefix of the host's
+    6.18.56-nitro-ga, so the guest check must not accept the host's string."""
+    if exact:
+        return bool(got) and got == want
     return bool(got) and (got == want or (got.startswith(want) and got[len(want)] in "-+"))
 
 
 def cmd_kernel_release(args):
     got = args.got.strip()
+    how = " (exact match)" if args.exact else ""
     if not got:
-        print(f"kernel release unreadable (empty), expected {args.want}")
+        print(f"kernel release unreadable (empty), expected {args.want}{how}")
         sys.exit(1)
-    ok = kernel_release_matches(got, args.want)
-    print(f"kernel release {got} {'is' if ok else 'is not'} the pinned {args.want}")
+    ok = kernel_release_matches(got, args.want, exact=args.exact)
+    print(f"kernel release {got} {'is' if ok else 'is not'} the pinned {args.want}{how}")
     sys.exit(0 if ok else 1)
 
 
@@ -1911,6 +1916,8 @@ def main():
     p.add_argument("--file")
     p.set_defaults(func=cmd_check_cilium_values)
     p = sub.add_parser("kernel-release")
+    p.add_argument("--exact", action="store_true",
+                   help="accept only the pinned release itself, with no build suffix")
     p.add_argument("want")
     p.add_argument("got")
     p.set_defaults(func=cmd_kernel_release)

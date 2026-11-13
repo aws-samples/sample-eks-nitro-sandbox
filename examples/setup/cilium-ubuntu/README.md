@@ -11,10 +11,12 @@ on an ordinary pod.
 > cluster, the Cilium operator's AWS permissions, the Cilium install itself, the two Ubuntu node
 > groups, the BTF gate, the isolated-sandbox RuntimeClass, and the sandbox pod / Service
 > boundary / policy evidence (`test.sh`, `clean.sh`, `deploy/workloads.yaml`,
-> `deploy/policy.yaml`). The pins follow the GA node-build bundle `nitro-sandbox-ga-20261028`.
-> Every output block on this page comes from one fresh run that followed this page from a clean
-> checkout, on a new cluster (see
-> [Where the output blocks come from](#where-the-output-blocks-come-from)).
+> `deploy/policy.yaml`). The pins follow the public Nitro Sandbox releases listed under
+> [Versions](#versions). Every output block on this page comes from one fresh run that
+> followed this page from a clean checkout, on a new cluster (see
+> [Where the output blocks come from](#where-the-output-blocks-come-from)). TODO(#219 fresh
+> run): that run used an AMI built from the earlier preview runtime archive; the fresh run on
+> an AMI built from the public releases replaces every block.
 
 ```mermaid
 flowchart TB
@@ -50,14 +52,17 @@ an AMI that failed verification, or that is not #10's own, never receives it. Ch
 `ManagedBy` too (not just the AWS account that owns the AMI resource) matches that contract:
 the account-owner check says who can use the AMI, `ManagedBy` says which build produced it.
 
-#10's AMI follows the GA node-build bundle `nitro-sandbox-ga-20261028`, and this blueprint builds
-none of it. The AMI's host kernel is `6.18.56-nitro-ga`: kernel.org Linux 6.18.56 plus AWS's
-public commit [amazonlinux/linux 1e66c960](https://github.com/amazonlinux/linux/commit/1e66c960b982c94bda76ebd0129eaecf0a68b46e),
-with BTF on. The runtime binaries and the guest image (guest kernel 6.18.54) come in one
-archive, `nitro-sandbox-binaries-2026-10-28.zip`, which the operator supplies to #10's build:
-it has no public download, and #10's build checks its SHA-256 (in the Versions table below)
-before installing anything. This blueprint never fetches, embeds or commits that archive; it
-reaches the blueprint only inside the AMI. See #10's README for the full dependency chain.
+#10's AMI is built from the public Nitro Sandbox releases that the Amazon EKS User Guide page
+[Create and update a Nitro Sandbox AMI](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-ami-create-update.html)
+names, and this blueprint builds none of them. The AMI's host kernel is `6.18.56-nitro-ga`:
+kernel.org Linux 6.18.56 plus the patch at AWS's public commit
+[amazonlinux/linux 4ae89f6e](https://github.com/amazonlinux/linux/commit/4ae89f6e09f949848123407602b4e5a8bb8d8631),
+with BTF on. The node also carries the shim from the signed Nitro Sandboxes runtime release
+`0.1.4274.0`, Firecracker and jailer `v1.18.0`, and the guest image pair AWS publishes in
+Amazon S3 as release `1.36.5/2026-11-06` (an EIF holding the guest kernel and agent, and its
+guest disk image). The Versions table below gives each pin, and #10's README says how its build
+downloads and verifies them. This blueprint never fetches, embeds or commits any of them; they
+reach the blueprint only inside the AMI. See #10's README for the full dependency chain.
 
 ## Run it
 
@@ -96,21 +101,26 @@ removes and the cost this cluster accrues while it exists.
 
 ## Versions
 
-Pins from the GA node-build bundle `nitro-sandbox-ga-20261028` and issue #11's validated
-Cilium path. `scripts/common.sh` holds the same values, and `test.sh` asserts the two kernel
-releases on the live node and pod. **Re-check every pin together on a fresh Ubuntu cluster
-before trusting a result; a version string alone is not sufficient evidence that Cilium
-health, BTF loading, ENI allocation, Service translation and the policy controls still hold.**
+Pins from the public Nitro Sandbox releases that the Amazon EKS User Guide pages
+[Create and update a Nitro Sandbox AMI](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-ami-create-update.html)
+and [Download and verify the runtime binaries](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-download-binaries.html)
+name, and from issue #11's validated Cilium path. `scripts/common.sh` holds the same values,
+and `test.sh` asserts the two kernel releases on the live node and pod. **Re-check every pin
+together on a fresh Ubuntu cluster before trusting a result; a version string alone is not
+sufficient evidence that Cilium health, BTF loading, ENI allocation, Service translation and
+the policy controls still hold.**
 
 | Component | Pin | Latest checked (2026-10-28) |
 |---|---|---|
 | [Amazon EKS Kubernetes](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html) | 1.36 | 1.36 |
 | Ubuntu system and sandbox nodes | Ubuntu 24.04 LTS (Canonical's EKS 1.36 AMI). The fresh run's `SYSTEM_AMI_ID` was Canonical's serial `20261027`, and #10's build of its sandbox AMI ran on 24.04.5 LTS | 24.04.5 LTS |
-| Ubuntu EKS Pod Isolation AMI | Output of [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10), built from the GA bundle and BTF-validated (`ManagedBy` and `BtfValidated=true` tags) | Revalidate with a fresh #10 build |
-| Host kernel on the sandbox node | `6.18.56-nitro-ga`: kernel.org Linux 6.18.56 plus the public commit [amazonlinux/linux 1e66c960](https://github.com/amazonlinux/linux/commit/1e66c960b982c94bda76ebd0129eaecf0a68b46e), built by #10 (this blueprint builds no kernel) | 6.18.56 |
-| Guest kernel in the sandbox pod | 6.18.54, inside the bundle's guest image `latest.eif` | 6.18.54 |
-| EKS Pod Isolation runtime and guest image | `nitro-sandbox-binaries-2026-10-28.zip`, SHA-256 `6830dc8d0acb356b06753fed609ebb9f03a182e340eaa27cd9ed171f7667ba40`: operator-supplied to #10's build, which verifies it; no public download, never committed or embedded | 2026-10-28 |
-| containerd on the sandbox AMI | 2.2.1, as Canonical's EKS 1.36 Ubuntu AMI ships it; the runtime supports 2.1, 2.2 and 2.3, and its installer refuses 2.4 or later | 2.2.1 |
+| Ubuntu EKS Pod Isolation AMI | Output of [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10), built from the public releases in this table and BTF-validated (`ManagedBy` and `BtfValidated=true` tags) | Revalidate with a fresh #10 build |
+| Host kernel on the sandbox node | `6.18.56-nitro-ga`: kernel.org Linux 6.18.56 plus the patch at the public commit [amazonlinux/linux 4ae89f6e](https://github.com/amazonlinux/linux/commit/4ae89f6e09f949848123407602b4e5a8bb8d8631), built by #10 (this blueprint builds no kernel) | 6.18.56 |
+| Guest kernel in the sandbox pod | 6.18.56, inside the guest image's `nitro-sandbox-guest.eif`, read from the EIF's kernel version string. TODO(#219 fresh run): confirm it with `uname -r` in the sandbox pod | 6.18.56 (2026-11-13) |
+| Nitro Sandboxes runtime release | `0.1.4274.0`, signed by AWS; its x86_64 `nitro-sandboxes-runtime.tar.gz` has SHA-256 `abc1d0032014f763715c2829ef1a104d768c3e0a76fa91cd2668d87678db3c57` in the release's signed `SHA256SUM`. The node runs its shim, `containerd-shim-nitro-sandbox-v2` | 0.1.4274.0 (2026-11-13) |
+| Guest image | Release `1.36.5/2026-11-06`, amd64, in Amazon S3: `nitro-sandbox-guest.eif` SHA-256 `bcbf2e9da531ffaee6691db5661c75b3564f151cb411227c5a7f9a530db72182` and `nitro-sandbox-guest-disk.img` SHA-256 `08f8e6d2d032829bff9c4c4907cd44242f46bcf6b1bbc2e6aea691c82bee902c`, as each file's `.sha256` file gives them | 1.36.5/2026-11-06 (2026-11-13) |
+| [Firecracker](https://github.com/firecracker-microvm/firecracker) and jailer | [v1.18.0](https://github.com/firecracker-microvm/firecracker/releases/tag/v1.18.0); `firecracker-v1.18.0-x86_64.tgz` SHA-256 `1ac8eec866dd5eea14efecf6323e22b23eea24054545338a5b34bc5bca6623cd`, as the release's `.sha256.txt` file gives it | v1.18.0 (2026-11-13) |
+| containerd on the sandbox AMI | 2.2.1, as Canonical's EKS 1.36 Ubuntu AMI ships it; the Amazon EKS User Guide asks for 2.0 or later, and #10's build accepts 2.1, 2.2 and 2.3, the range it was proved on | 2.2.1 |
 | erofs-utils on the sandbox AMI | 1.8.10 with zstd, built by #10 | 1.8.10 |
 | [Cilium](https://github.com/cilium/cilium) Helm chart | 1.20.2 | 1.20.2 |
 | [eksctl](https://github.com/eksctl-io/eksctl) | 0.230.0 or newer; the fresh run used 0.230.0. eksctl takes the list of EKS versions from the EKS API (since [0.202.0](https://github.com/eksctl-io/eksctl/releases/tag/v0.202.0)), so 0.230.0 is the release this path was first validated with, not a 1.36-specific minimum | 0.231.0 |
@@ -893,7 +903,7 @@ What it checks, in order:
    blueprint's mark and otherwise matches the GA bundle's, the sandbox node carries both of its
    labels and the system node neither, and of the pods the API server returns, the sandbox pod
    alone runs with AppArmor `Unconfined`. The sandbox node runs the pinned host
-   kernel `6.18.56-nitro-ga` and the sandbox pod the pinned guest kernel `6.18.54`. Its guest
+   kernel `6.18.56-nitro-ga` and the sandbox pod exactly the pinned guest kernel `6.18.56`. Its guest
    kernel differs from the node kernel, it sees virtio disks (no node `nvme`), and its boot
    uptime is its own, while `neighbor`, an ordinary pod on the same node, shares the node
    kernel and sees the node's `nvme`. The
