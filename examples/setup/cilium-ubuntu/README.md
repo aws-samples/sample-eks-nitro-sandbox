@@ -110,12 +110,12 @@ together on a fresh Ubuntu cluster before trusting a result; a version string al
 sufficient evidence that Cilium health, BTF loading, ENI allocation, Service translation and
 the policy controls still hold.**
 
-| Component | Pin | Latest checked (2026-10-28) |
+| Component | Pin | Latest checked (on 2026-10-28 unless the row gives a date) |
 |---|---|---|
 | [Amazon EKS Kubernetes](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html) | 1.36 | 1.36 |
 | Ubuntu system and sandbox nodes | Ubuntu 24.04 LTS (Canonical's EKS 1.36 AMI). The fresh run's `SYSTEM_AMI_ID` was Canonical's serial `20261027`, and #10's build of its sandbox AMI ran on 24.04.5 LTS | 24.04.5 LTS |
 | Ubuntu EKS Pod Isolation AMI | Output of [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10), built from the public releases in this table and BTF-validated (`ManagedBy` and `BtfValidated=true` tags) | Revalidate with a fresh #10 build |
-| Host kernel on the sandbox node | `6.18.56-nitro-ga`: kernel.org Linux 6.18.56 plus the patch at the public commit [amazonlinux/linux 4ae89f6e](https://github.com/amazonlinux/linux/commit/4ae89f6e09f949848123407602b4e5a8bb8d8631), built by #10 (this blueprint builds no kernel) | 6.18.56 |
+| Host kernel on the sandbox node | `6.18.56-nitro-ga`: kernel.org Linux 6.18.56 plus the patch at the public commit [amazonlinux/linux 4ae89f6e](https://github.com/amazonlinux/linux/commit/4ae89f6e09f949848123407602b4e5a8bb8d8631), whose `.patch` file (494,711 bytes) has SHA-256 `5f9c52ae83e20403846e7c10aed6ed6fcabbd4069b76f50b1a2a42577b95f1a0`, built by #10 (this blueprint builds no kernel) | 6.18.56 |
 | Guest kernel in the sandbox pod | 6.18.56, inside the guest image's `nitro-sandbox-guest.eif`, read from the EIF's kernel version string. TODO(#219 fresh run): confirm it with `uname -r` in the sandbox pod | 6.18.56 (2026-11-13) |
 | Nitro Sandboxes runtime release | `0.1.4274.0`, signed by AWS; its x86_64 `nitro-sandboxes-runtime.tar.gz` has SHA-256 `abc1d0032014f763715c2829ef1a104d768c3e0a76fa91cd2668d87678db3c57` in the release's signed `SHA256SUM`. The node runs its shim, `containerd-shim-nitro-sandbox-v2` | 0.1.4274.0 (2026-11-13) |
 | Guest image | Release `1.36.5/2026-11-06`, amd64, in Amazon S3: `nitro-sandbox-guest.eif` SHA-256 `bcbf2e9da531ffaee6691db5661c75b3564f151cb411227c5a7f9a530db72182` and `nitro-sandbox-guest-disk.img` SHA-256 `08f8e6d2d032829bff9c4c4907cd44242f46bcf6b1bbc2e6aea691c82bee902c`, as each file's `.sha256` file gives them | 1.36.5/2026-11-06 (2026-11-13) |

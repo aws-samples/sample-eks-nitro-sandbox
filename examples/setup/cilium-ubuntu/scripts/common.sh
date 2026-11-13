@@ -51,7 +51,10 @@ KUBERNETES_VERSION=1.36
 #                 node's `uname -r` shows)
 #   guest kernel  inside the guest image's EIF (what the sandbox pod's `uname -r` shows)
 HOST_KERNEL_RELEASE=6.18.56-nitro-ga
+# The patch commit, and the SHA-256 of its .patch file as GitHub serves it at
+# https://github.com/amazonlinux/linux/commit/<commit>.patch (494,711 bytes).
 HOST_KERNEL_PATCH_COMMIT=4ae89f6e09f949848123407602b4e5a8bb8d8631
+HOST_KERNEL_PATCH_SHA256=5f9c52ae83e20403846e7c10aed6ed6fcabbd4069b76f50b1a2a42577b95f1a0
 # TODO(#219 fresh run): 6.18.56 is the release in the kernel version string of the pinned
 # GUEST_IMAGE_RELEASE EIF, read offline. Confirm it with `uname -r` inside the sandbox pod on
 # an AMI built from that release; if the live value differs, this pin and the README follow it.
@@ -70,7 +73,7 @@ GUEST_IMAGE_DISK_SHA256=08f8e6d2d032829bff9c4c4907cd44242f46bcf6b1bbc2e6aea691c8
 # its firecracker-v1.18.0-x86_64.tgz as the release's .sha256.txt file gives it.
 FIRECRACKER_VERSION=v1.18.0
 FIRECRACKER_SHA256=1ac8eec866dd5eea14efecf6323e22b23eea24054545338a5b34bc5bca6623cd
-export HOST_KERNEL_RELEASE HOST_KERNEL_PATCH_COMMIT GUEST_KERNEL_RELEASE \
+export HOST_KERNEL_RELEASE HOST_KERNEL_PATCH_COMMIT HOST_KERNEL_PATCH_SHA256 GUEST_KERNEL_RELEASE \
   NITRO_SANDBOX_RUNTIME_VERSION NITRO_SANDBOX_RUNTIME_SHA256 \
   GUEST_IMAGE_RELEASE GUEST_IMAGE_EIF_SHA256 GUEST_IMAGE_DISK_SHA256 \
   FIRECRACKER_VERSION FIRECRACKER_SHA256
