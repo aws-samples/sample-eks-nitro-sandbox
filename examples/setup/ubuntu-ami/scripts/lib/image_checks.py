@@ -172,10 +172,23 @@ def check_shim(text, image_dir="/var/lib/nitro-sandbox-images", debug=False, dat
             f"kubeconfig_path is {shim.get('kubeconfig_path')!r}, must be {KUBECONFIG_PATH!r}")
     require(shim.get("format_overlay") is True, f"format_overlay is {shim.get('format_overlay')!r}, must be true")
     require(shim.get("debug") is debug, f"debug must be {str(debug).lower()} (SHIM_DEBUG)")
-    dbd = str(shim.get("data_base_dir", "")).rstrip("/") + "/"
-    require(not dbd.startswith(image_dir.rstrip("/") + "/"), "data_base_dir must not be inside the guest image folder")
+    require_apart(os.path.dirname(str(shim.get("kernel_path", ""))), str(shim.get("data_base_dir", "")))
     return (f"shim config: latest.eif, kubeconfig_path, format_overlay, cpu_overcommit, pcie_slots={PCIE_SLOTS}, "
             f"data_base_dir, debug={str(debug).lower()}, no other key")
+
+
+def require_apart(image_dir, data_dir):
+    """The guest image folder (kernel_path's folder) and data_base_dir must be apart in both directions:
+    the Amazon EKS User Guide keeps the EIF and the disk outside data_base_dir, and the shim's data must
+    not sit among the guest image files. Compared canonical, as whole path components."""
+    require(image_dir.startswith("/") and data_dir.startswith("/"),
+            f"the guest image folder {image_dir!r} and data_base_dir {data_dir!r} must both be absolute")
+    img, dat = os.path.realpath(image_dir), os.path.realpath(data_dir)
+    require(img != dat, f"the guest image folder and data_base_dir are the same folder ({img}); the shim needs them apart")
+    require(not (img + "/").startswith(dat.rstrip("/") + "/"),
+            f"the guest image folder {img} is inside data_base_dir {dat}; the guest image must stay outside it")
+    require(not (dat + "/").startswith(img.rstrip("/") + "/"),
+            f"data_base_dir {dat} is inside the guest image folder {img}; the shim needs them apart")
 
 
 def eif_kernel_release(data):

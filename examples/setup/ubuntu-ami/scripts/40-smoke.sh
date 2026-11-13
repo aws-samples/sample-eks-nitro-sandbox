@@ -20,6 +20,12 @@
 # This hand boot passes that same path to /boot-source, as the shim does, and Firecracker loads it
 # as a pre-built EIF. The guest then boots its own init and starts the agent, which answers the
 # handshake within seconds once its data partition is there (see mk_overlay).
+#
+# The fixed system paths below are prefixed with $SYSROOT, the sample's test hook (empty on every
+# real host, see lib/common.sh), so scripts/test-smoke.sh can run this script against a fixture tree.
+# Its scratch files go in one private folder, $TMPDIR/smoke-XXXXXX (/tmp/smoke-XXXXXX on the build
+# host), removed at the end; the smoke- prefix lets 50-bake-prep.sh's "$R"/tmp/smoke-* removal also
+# catch a folder an interrupted run left behind.
 [ "$(id -u)" = 0 ] || exec sudo -E bash "$0" "$@"
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,16 +35,16 @@ LOG="${LOG_DIR:-$HOME/logs}"; mkdir -p "$LOG"
 
 # The same paths the shim config (/etc/containerd/nitro-sandbox.toml) names: the guest boot image
 # (latest.eif, guest kernel inside) and the rootfs.ext4 symlink to latest-disk.img.
-K="$NITRO_SANDBOX_IMAGE_DIR/latest.eif"; R="$NITRO_SANDBOX_IMAGE_DIR/rootfs.ext4"; FC=/usr/bin/firecracker
-ls -l /dev/nitro_enclaves "$K" "$R" "$FC" || { echo "SMOKE PRECONDITION FAIL"; exit 2; }
+K="$SYSROOT$NITRO_SANDBOX_IMAGE_DIR/latest.eif"; R="$SYSROOT$NITRO_SANDBOX_IMAGE_DIR/rootfs.ext4"; FC="$SYSROOT/usr/bin/firecracker"
+ls -l "$SYSROOT/dev/nitro_enclaves" "$K" "$R" "$FC" || { echo "SMOKE PRECONDITION FAIL"; exit 2; }
 
 BOOT_ARGS="console=ttyS0 reboot=k panic=1 root=/dev/vda ro init=/sbin/nitro-sandbox-agent setup-ephemeral-storage --exec-init overlay_root=vdb rootwait net.ifnames=0 quiet"
 NONE_GUID=0FC63DAF-8483-4772-8E79-3D69D8477DE4   # Discoverable Partitions Spec: "Linux generic data"
 case "$SHIM_DEBUG" in true|false) ;; *) echo "SMOKE PRECONDITION FAIL: SHIM_DEBUG must be true or false"; exit 2;; esac
 ENCLAVE_CFG="{\"debug_mode\":${SHIM_DEBUG},\"direct_mode\":false,\"hotplug_mode\":true,\"cpu_overcommit\":true,\"cpu_accounting\":false}"
 
-put() { local code; code=$(curl -s -o /tmp/smoke-api.out -w '%{http_code}' --unix-socket "$SOCK" -X PUT "http://localhost$1" -H 'Content-Type: application/json' -d "$2")
-        echo "PUT $1 -> $code $(cat /tmp/smoke-api.out)"; [[ $code == 2* ]]; }
+put() { local code; code=$(curl -s -o "$D/smoke-api.out" -w '%{http_code}' --unix-socket "$SOCK" -X PUT "http://localhost$1" -H 'Content-Type: application/json' -d "$2")
+        echo "PUT $1 -> $code $(cat "$D/smoke-api.out")"; [[ $code == 2* ]]; }
 # The overlay data disk: a GPT with one partition over the whole disk, type "Linux generic data",
 # labelled BOTTLEROCKET-DATA (the layout `sgdisk -n 1:0:0` gives: first usable LBA 34, partition
 # from sector 2048 to the end). The guest in latest.eif is Bottlerocket-based: its storage
@@ -60,7 +66,11 @@ except Exception as e:
 PY
 }
 
-SOCK=/tmp/smoke.sock; UDS=/tmp/smoke.vsock; OVL=/tmp/smoke.overlay.img; TAP=tap-smoke
+# Every scratch file sits in one private folder from mktemp -d (mode 0700, under $TMPDIR or /tmp,
+# named smoke-XXXXXX for 50-bake-prep.sh), never at a fixed /tmp name another user could create or
+# symlink first.
+D=$(mktemp -d "${TMPDIR:-/tmp}/smoke-XXXXXX") || { echo "private temp folder creation failed"; exit 1; }
+SOCK="$D/smoke.sock"; UDS="$D/smoke.vsock"; OVL="$D/smoke.overlay.img"; TAP=tap-smoke
 rm -f "$SOCK" "$UDS"
 mk_overlay "$OVL" || { echo "overlay disk creation failed"; exit 1; }
 mk_tap "$TAP" || { echo "tap creation failed"; exit 1; }
@@ -82,13 +92,13 @@ if [ "$pass" = 1 ]; then
   for t in $(seq 3 3 150); do
     sleep 3
     kill -0 "$pid" 2>/dev/null || { echo "firecracker exited early"; break; }
-    if agent_up "$UDS" >/tmp/smoke-agent.out 2>&1; then up=1; break; fi
+    if agent_up "$UDS" >"$D/smoke-agent.out" 2>&1; then up=1; break; fi
   done
-  cat /tmp/smoke-agent.out 2>/dev/null || true
+  cat "$D/smoke-agent.out" 2>/dev/null || true
 fi
 echo "--- process alive: $(kill -0 "$pid" 2>/dev/null && echo yes || echo NO); agent reachable: $up after ${t}s"
 kill "$pid" 2>/dev/null; sleep 2; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-ip link del "$TAP" 2>/dev/null; rm -f "$SOCK" "$UDS" "$OVL"
+ip link del "$TAP" 2>/dev/null; rm -rf -- "$D"
 
 echo "smoke $(date -u +%FT%TZ): $([ "$pass" = 1 ] && [ "$up" = 1 ] && echo PASS || echo FAIL); debug_mode=${SHIM_DEBUG}" \
   | sudo tee -a "$IMAGE_MANIFEST"

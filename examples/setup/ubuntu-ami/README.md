@@ -290,6 +290,27 @@ a workstation or in a build pipeline.
 | `SHA256SUM` and `SHA256SUM.sig`, the runtime release's signed manifest | `33df467673f08654c611c0820bd7c6449a7bd5280c3a0690e36dbb475ceed972` (the manifest) | `/usr/local/share/ubuntu-ami-sample/runtime/`, so the image's own check can verify the signature again |
 | The runtime release's other files (`nitro-sandbox-agent`, `eks-nitro-sandbox-genpolicy`, `ecs-nitro-sandbox-genpolicy`, `nitro-sandbox-keyprovider`, `nitro-sandbox-policy-eval`, `nitro-sandbox-shim-logger-wrapper`), and the two archives | | not installed; the downloads are removed before baking |
 
+The runtime stages also write the node's wiring. A *modified* file is Canonical's own, changed in
+place, with an unchanged copy kept beside it as `.orig`; every other row is a new file.
+[`scripts/30-runtime-install.sh`](scripts/30-runtime-install.sh) writes the first six rows and
+[`scripts/31-wire-containerd.sh`](scripts/31-wire-containerd.sh) the rest.
+
+| Path on the node | New or modified | What it holds |
+|---|---|---|
+| `/usr/local/share/ubuntu-ami-sample/runtime/runtime-release.SHA256SUM` | new, mode 0644 | the runtime release's signed manifest, as downloaded |
+| `/usr/local/share/ubuntu-ami-sample/runtime/runtime-release.SHA256SUM.sig` | new, mode 0644 | its detached signature |
+| `/var/lib/nitro-sandbox-images/rootfs.ext4` | new symbolic link | `latest-disk.img`, the name the shim attaches the guest disk by |
+| `/etc/containerd/nitro-sandbox.toml` | new, mode 0644 | the shim config: `kernel_path` (`latest.eif`), `kubeconfig_path`, `format_overlay = true`, `cpu_overcommit = true`, `pcie_slots = 110`, `data_base_dir = "/var/lib/nitro-sandbox"`, `debug = false` |
+| `/etc/systemd/system/cri-proxy.service` | new, mode 0644, enabled, not started | the shim's `cri-proxy` on `/run/nitro-sandbox/cri-proxy.sock`, in front of containerd's socket |
+| `/etc/modules-load.d/nitro-sandbox-tun.conf` | new | `tun`, loaded at boot (the shim makes one TAP device per sandbox) |
+| `/usr/local/share/eks/containerd-config.toml` | modified (copy in `containerd-config.toml.orig`) | `discard_unpacked_layers = false` in the cri containerd table, and the `isolated-sandbox` and `confidential-sandbox` handlers: `runtime_type = "io.containerd.nitro-sandbox.v2"`, `sandboxer = "shim"`, `privileged_without_host_devices = true` |
+| `/usr/local/share/eks/bootstrap.sh` | modified (copy in `bootstrap.sh.orig`) | the `snap set kubelet-eks container-runtime-endpoint=` value changed to `unix:///run/nitro-sandbox/cri-proxy.sock` |
+| `/etc/systemd/system/snap.kubelet-eks.daemon.service.d/50-cri-proxy.conf` | new | `[Unit]` `Wants=`, `After=` and `PartOf=cri-proxy.service`, so kubelet starts after the proxy and is restarted when the proxy restarts |
+| `/etc/ubuntu-ami-sample-manifest` | new | the provenance manifest the build stages append to, including every installed runtime file's path, mode and SHA-256 |
+
+The host kernel, `mkfs.erofs`, the AppArmor profile and the package holds are described with their
+own build steps below.
+
 [`packages/fetch-runtime-artifacts.sh`](packages/fetch-runtime-artifacts.sh) does the downloads and
 the checks, on the build host, from
 [`scripts/30-runtime-install.sh`](scripts/30-runtime-install.sh). It checks the public key and the
@@ -638,7 +659,11 @@ that accepts everything.
 | `vsock` and TUN | `/dev/vhost-vsock` and `/dev/net/tun` present | the same probes on devices that do not exist |
 | EROFS + zstd | `mkfs.erofs` 1.8.10 builds a zstd image as a systemd service | erofs-utils without zstd |
 | containerd | 2.1.x, 2.2.x, 2.3.x | 2.4.0 and later, 2.0.x and earlier, unreadable versions |
-| Runtime release, guest image, Firecracker | the pinned public key, a manifest that verifies with it and lists the archive and the shim at their pins, every sidecar and download at its pin, archives whose members are all safe | another key, a bad signature, a manifest changed after signing or not the pinned one, a manifest without the shim or with a malformed line, a sidecar that disagrees or is not a hash, a swapped or non-tar archive, a member with a path, `..`, an absolute name or a link, two members of one name, a missing or tampered shim or jailer, a failed download |
+| Runtime release, guest image, Firecracker | the pinned public key, a manifest that verifies with it and lists the archive and the shim at their pins, every sidecar (one line: the SHA-256, then at most the file's own name) and download at its pin, archives whose members are all safe | another key, a bad signature, a manifest changed after signing or not the pinned one, a manifest without the shim or with a malformed line, a sidecar that disagrees, is not a hash, has a second line or names another file, a swapped or non-tar archive, a member with a path, `..`, an absolute name or a link, two members of one name, a missing or tampered shim or jailer, a failed download |
+| Runtime download folder | a new or empty folder, a folder it made before (it carries the script's marker), the run folder `RUNTIME_ARTIFACTS_DIR`; only the folders the script made there are replaced | a symbolic link, a folder that is not empty and that it did not make, one of its folder names there that it did not make (or a link to one), a forged marker; each refusal changes nothing |
+| Guest image and data folders | `/var/lib/nitro-sandbox-images` and `/var/lib/nitro-sandbox`, which are apart | the image folder inside the data folder, the data folder inside the image folder, one folder for both, also when spelled with `..`; refused by the install stage and by the shim config check |
+| Runtime install stage | the full install in a fixture tree: the five files at their paths, modes and pins, the `rootfs.ext4` link, the kept manifest, the shim config, `cri-proxy.service` enabled, the `tun` module file | an `install=` line that is relative, holds `..` or has a mode that is not octal, a block with no verified file, a runtime input that does not verify, an installed copy that is not its pin, a failed `systemctl enable`, no `/dev/nitro_enclaves` or `/dev/net/tun` |
+| Smoke boot stage | against a stand-in for Firecracker v1.18.0's API: the eight API calls in the shim's order, the exact `/enclave` body, the EIF as the boot source, the agent's `OK` handshake, the stage's own clean up | a call answered with an error, a field the v1.18.0 API does not define (such as the preview-era `pcie_mode`), Firecracker exiting early, a garbled, empty or unreachable agent, a missing EIF |
 | Installed runtime files | every file at its pinned path, mode and SHA-256; the kept manifest verifies again | a wrong mode, a tampered shim or EIF, a missing disk, a bad signature, a changed or missing kept manifest |
 | Runtime wiring | both handlers in containerd's migrated config dump, the endpoint at the CRI proxy, the shim config with only the keys the shim reads | a handler name that is not registered, a key the shim does not read (such as `rootfs_path`) |
 | Node labels and taint | one active `bootstrap.sh` command for this cluster, its name last after every option, whose `--kubelet-extra-args` carry all three labels and the taint | any one missing, the strings only in a comment, an `exit` before the command, two commands, a command for another cluster, the cluster name first or before an option |
@@ -785,12 +810,14 @@ export PATH="$(cd ../../../tmp/ubuntu-ami-tests/bin && pwd):$PATH"
 
 ```bash
 bash packages/test-bundle.sh          # bundle built and consumed against sources.lock; tampered, unlisted and unsafe members refused
-bash packages/test-inputs.sh          # runtime release signature and pins, guest image and Firecracker, unsafe archive members, host-kernel patch, both ways
+bash packages/test-inputs.sh          # runtime release signature and pins, guest image and Firecracker, unsafe archive members, the download folder, host-kernel patch, both ways
 bash scripts/test-host-gates.sh       # containerd gate, .config assertion, root filesystem at boot, IMDS token never on argv
+bash scripts/test-runtime-install.sh  # the full runtime install stage in a fixture tree, and every refusal, including nested guest image and data folders (Python 3.11+)
+bash scripts/test-smoke.sh            # the Firecracker smoke stage against a stand-in for the v1.18.0 API: the exact calls and bodies, the handshake, every refusal, the clean up
 bash scripts/test-cluster-gates.sh    # kube context, vpc-cni ACTIVE (network policy on or off), RuntimeClass, user data, node capacity, namespace, pod wait
 bash scripts/test-launch-specs.sh     # IMDSv2 hop limit 1, enclaves and run tags on the node template, verification instance and build host; strict bootstrap.sh user data
 bash scripts/test-run-scope.sh        # per-run IAM, run-scoped clean up, the run's lock and record, IAM by name, the node role's access entry, --keep-ami, every failed lookup, --list-runs, staging revocation
-bash scripts/test-image-checks.sh     # containerd wiring, the shim config's keys, AppArmor stage, package holds, bake residue, verify-image.py with the guest kernel in the EIF and the signed manifest (Python 3.11+)
+bash scripts/test-image-checks.sh     # containerd wiring, the shim config's keys and folders, AppArmor stage, package holds, bake residue, verify-image.py with the guest kernel in the EIF and the signed manifest (Python 3.11+)
 bash scripts/test-apparmor-checks.sh  # test.sh's AppArmor checks (its node probe run on a fake journal), the Unconfined sandbox, the guest kernel against its pin and the AMI's tag, the no-network checks and their control, the run's lock and record; the profile's structure, signal and audit-deny rules
 bash scripts/test-btf-tag.sh          # BtfValidated=true and the build-metadata tags only after both fresh-instance checks pass, only on this run's AMI
 bash scripts/test-setup-flow.sh       # bounded SSM, AMI, status and reboot waits; --ami-only and --join, the run's record (cluster and Region) and lock, both ways

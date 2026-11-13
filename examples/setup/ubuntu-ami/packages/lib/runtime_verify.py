@@ -3,12 +3,13 @@
 against packages/sources.lock. Called by packages/fetch-runtime-artifacts.sh; sources.lock is the
 trust root, and every check fails closed (exit 1, a FATAL line naming what is wrong).
 
-  runtime_verify.py check <lock-file> <work-dir>
+  runtime_verify.py check <lock-file> <work-dir> [--run-folder]
       the small public files only, with no large download: for each signed-archive block, the
       committed public key's SHA-256, the manifest's SHA-256, its signature (openssl dgst -sha384
       -verify), and that it lists the archive and every pinned member with the pinned hash; for
-      each sidecar-file block, the published sidecar's value against the pin.
-  runtime_verify.py fetch <lock-file> <dest-dir>
+      each sidecar-file block, the published sidecar (exactly one line: the SHA-256, then
+      optionally the block's file name) against the pin. Uses <work-dir>/metadata.
+  runtime_verify.py fetch <lock-file> <dest-dir> [--run-folder]
       everything `check` does, then each archive and file itself: its SHA-256 against the pin;
       every member of each archive checked before anything is read out of it (a signed archive
       must be flat, regular files only; a sidecar-verified archive may hold folders but no
@@ -19,6 +20,16 @@ trust root, and every check fails closed (exit 1, a FATAL line naming what is wr
       <dest-dir>/node-files and <dest-dir>/downloads are made fresh on every run. Prints
       <dest-dir>/node-files as its last line.
 
+The folder it is given is checked before anything is created or removed in it, and a refusal
+changes nothing. It must not be a symbolic link. When it already exists and is not empty, it must
+carry this helper's marker file (.fetch-runtime-artifacts, written when the helper first uses the
+folder), unless the caller passes --run-folder: packages/fetch-runtime-artifacts.sh passes it only
+for the sample's own run folder, RUNTIME_ARTIFACTS_DIR after scripts/lib/common.sh's path guard,
+which the kernel and erofs-utils fetchers share. The helper removes only the folders it made
+itself (metadata, downloads, node-files, signed-manifest), each recognised by its own marker file
+(.made-by-fetch-runtime-artifacts); one of those names that exists without that marker, or is not
+a real folder, is refused and left as it is.
+
 Downloads use curl (-fsSL, retries), so a reader's proxy settings apply. Needs openssl for the
 signature and Python 3.9 or later (the workstation's python3 can be older than the build host's).
 """
@@ -26,6 +37,7 @@ import hashlib
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -34,6 +46,14 @@ HEX64 = re.compile(r"^[0-9a-f]{64}$")
 FLAT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 URL = re.compile(r"^(https|file)://[^\s]+$")
 KINDS = ("signed-archive", "sidecar-file", "archive-member")
+# A published sidecar: exactly one line, the SHA-256, then optionally whitespace and one file name.
+SIDECAR = re.compile(r"([0-9a-f]{64})(?:[ \t]+([A-Za-z0-9][A-Za-z0-9._-]*))?\n?")
+# The marker in a destination folder this helper may use, and the one in each folder it made there.
+DEST_MARK, DEST_TEXT = ".fetch-runtime-artifacts", (
+    "packages/fetch-runtime-artifacts.sh keeps its metadata, downloads, node-files and signed-manifest\n"
+    "folders here, and removes only those folders, each when it carries its own marker.\n")
+MADE_MARK, MADE_TEXT = ".made-by-fetch-runtime-artifacts", (
+    "made by packages/fetch-runtime-artifacts.sh, which replaces this folder on its next run\n")
 
 
 class Refused(Exception):
@@ -179,11 +199,15 @@ def check_signed(b, members, lock_dir, work):
 
 def check_sidecar(b, work):
     side = curl(b["sidecar"], os.path.join(work, f"{b['id']}.sidecar"))
-    with open(side) as f:
-        fields = f.read().split()
-    value = fields[0] if fields else ""
-    if not HEX64.match(value):
-        raise Refused(f"the sidecar {b['sidecar']} does not start with a SHA-256: {value[:80]!r}")
+    with open(side, "rb") as f:
+        raw = f.read(4096)
+    text = raw.decode("ascii", "replace")
+    m = SIDECAR.fullmatch(text)
+    if m is None:
+        raise Refused(f"the sidecar {b['sidecar']} is not one line holding a SHA-256 and at most a file name: {text[:80]!r}")
+    value, name = m.group(1), m.group(2)
+    if name is not None and name != b["file"]:
+        raise Refused(f"the sidecar {b['sidecar']} names {name!r}, not {b['file']!r}")
     if value != b["sha256"]:
         raise Refused(f"the sidecar {b['sidecar']} says {value}, not the {b['sha256']} sources.lock pins for {b['file']}")
     log(f"ok: {b['id']} {b['ref']}: its published sidecar matches the pin")
@@ -234,20 +258,75 @@ def read_members(archive, flat, wanted, out_dir):
         raise Refused(f"{os.path.basename(archive)} is not a readable gzip tar: {e}")
 
 
+def is_marked(folder, mark, text):
+    """True when <folder>/<mark> is a regular file (not a link) holding exactly <text>."""
+    p = os.path.join(folder, mark)
+    try:
+        if not stat.S_ISREG(os.lstat(p).st_mode):
+            return False
+        with open(p) as f:
+            return f.read() == text
+    except OSError:
+        return False
+
+
+def write_mark(folder, mark, text):
+    fd = os.open(os.path.join(folder, mark), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+
+
+def claim_dest(dest, run_folder, owned):
+    """Check, before anything is created or removed, that this helper may use <dest> and replace its
+    <owned> folders there; then create <dest> (and its marker) when needed. A refusal changes nothing."""
+    if os.path.islink(dest):
+        raise Refused(f"the destination {dest} is a symbolic link; give the real folder. Nothing was changed.")
+    if os.path.lexists(dest):
+        if not stat.S_ISDIR(os.lstat(dest).st_mode):
+            raise Refused(f"the destination {dest} exists and is not a folder. Nothing was changed.")
+        if os.path.lexists(os.path.join(dest, DEST_MARK)):
+            if not is_marked(dest, DEST_MARK, DEST_TEXT):
+                raise Refused(f"{os.path.join(dest, DEST_MARK)} is not this helper's marker file. Nothing was changed.")
+        elif not run_folder and os.listdir(dest):
+            raise Refused(f"the destination {dest} is not empty and has no {DEST_MARK} marker, so this helper did not "
+                          f"make it; give a new or empty folder. Nothing was changed.")
+    for name in owned:
+        p = os.path.join(dest, name)
+        if not os.path.lexists(p):
+            continue
+        if not stat.S_ISDIR(os.lstat(p).st_mode) or not is_marked(p, MADE_MARK, MADE_TEXT):
+            raise Refused(f"{p} exists and this helper did not make it (it is not a real folder holding {MADE_MARK}); "
+                          f"move it away. Nothing was changed.")
+    os.makedirs(dest, exist_ok=True)
+    if not os.path.lexists(os.path.join(dest, DEST_MARK)):
+        write_mark(dest, DEST_MARK, DEST_TEXT)
+
+
+def fresh_folder(dest, name):
+    """Replace <dest>/<name>, which claim_dest has checked is absent or a folder this helper made."""
+    p = os.path.join(dest, name)
+    if os.path.lexists(p):
+        if not stat.S_ISDIR(os.lstat(p).st_mode) or not is_marked(p, MADE_MARK, MADE_TEXT):
+            raise Refused(f"{p} changed while this helper ran; it is not a folder this helper made. Nothing more was removed.")
+        shutil.rmtree(p)
+    os.mkdir(p)
+    write_mark(p, MADE_MARK, MADE_TEXT)
+    return p
+
+
 def main(argv):
-    if len(argv) != 4 or argv[1] not in ("check", "fetch"):
+    run_folder = argv[4:] == ["--run-folder"]
+    if len(argv) not in (4, 5) or argv[1] not in ("check", "fetch") or (len(argv) == 5 and not run_folder):
         print(__doc__, file=sys.stderr)
         return 2
-    mode, lock_path, dest = argv[1], os.path.abspath(argv[2]), os.path.abspath(argv[3])
+    mode, lock_path, dest = argv[1], os.path.abspath(argv[2]), argv[3].rstrip("/") or "/"
     try:
         sel = plan(lock_path)
         lock_dir = os.path.dirname(lock_path)
-        work = os.path.join(dest, "metadata") if mode == "check" else os.path.join(dest, "downloads")
-        node = os.path.join(dest, "node-files")
-        for d in ([work] if mode == "check" else [work, node]):
-            if os.path.lexists(d):
-                shutil.rmtree(d)
-            os.makedirs(d)
+        claim_dest(dest, run_folder, ["metadata"] if mode == "check" else ["downloads", "node-files", "signed-manifest"])
+        dest = os.path.abspath(dest)
+        work = fresh_folder(dest, "metadata" if mode == "check" else "downloads")
+        node = fresh_folder(dest, "node-files") if mode == "fetch" else None
         children = {}
         for b in sel.values():
             if b["kind"] == "archive-member":
@@ -277,15 +356,12 @@ def main(argv):
                              {k["member"]: (k["id"], k["sha256"]) for k in kids}, node)
             if b.get("install", "none") != "none":
                 os.replace(path, os.path.join(node, b["id"]))
-        kd = os.path.join(dest, "signed-manifest")
-        if os.path.lexists(kd):
-            shutil.rmtree(kd)
-        os.makedirs(kd)
+        kd = fresh_folder(dest, "signed-manifest")
         for b, (man, sig) in kept:
             shutil.copyfile(man, os.path.join(kd, f"{b['id']}.SHA256SUM"))
             shutil.copyfile(sig, os.path.join(kd, f"{b['id']}.SHA256SUM.sig"))
         want = sorted(b["id"] for b in sel.values() if b.get("install", "none") != "none")
-        have = sorted(os.listdir(node))
+        have = sorted(n for n in os.listdir(node) if n != MADE_MARK)
         if have != want:
             raise Refused(f"node-files holds {have}, not the installable blocks {want}")
         log(f"runtime inputs verified against sources.lock: {len(want)} node files in {node}")
@@ -293,6 +369,8 @@ def main(argv):
         return 0
     except Refused as e:
         die(str(e))
+    except OSError as e:
+        die(f"{e.filename or dest}: {e.strerror or e}")
 
 
 if __name__ == "__main__":

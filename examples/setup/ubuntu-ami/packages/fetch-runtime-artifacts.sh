@@ -23,6 +23,12 @@
 # named by its sources.lock id; the signed manifest and its signature are kept in
 # <dest-dir>/signed-manifest. It prints the node-files folder as its last line.
 #
+# <dest-dir> is checked before anything is created or removed in it: it must not be a symbolic
+# link, and an existing folder that is not empty must carry this script's marker file
+# (.fetch-runtime-artifacts), unless it is RUNTIME_ARTIFACTS_DIR itself, the run folder
+# scripts/lib/common.sh has already checked. Only the folders this script made there (metadata,
+# downloads, node-files, signed-manifest, each with its own marker) are ever replaced.
+#
 # Every check fails closed (exit 1, the reason on a FATAL line, no override flag). The work is in
 # packages/lib/runtime_verify.py.
 set -euo pipefail
@@ -36,13 +42,19 @@ done
 
 if [[ "${1:-}" == --check ]]; then
   [[ $# -eq 1 ]] || die "--check takes no other argument"
-  python3 "$HERE/lib/runtime_verify.py" check "$LOCK_FILE" "$RUNTIME_ARTIFACTS_DIR" \
+  python3 "$HERE/lib/runtime_verify.py" check "$LOCK_FILE" "$RUNTIME_ARTIFACTS_DIR" --run-folder \
     || die "the runtime inputs did not verify against packages/sources.lock (see the FATAL line above)"
   exit 0
 fi
 case "${1:-}" in -*) die "unknown argument: $1 (supported: --check, or a destination folder)" ;; esac
 [[ $# -le 1 ]] || die "too many arguments"
 DEST="${1:-$RUNTIME_ARTIFACTS_DIR}"
-mkdir -p "$DEST"
-python3 "$HERE/lib/runtime_verify.py" fetch "$LOCK_FILE" "$DEST" \
+[[ -n "$DEST" ]] || die "the destination folder is empty"
+case "$DEST" in /*) ;; *) DEST="$PWD/$DEST" ;; esac
+while [[ "$DEST" == */ && "$DEST" != / ]]; do DEST="${DEST%/}"; done   # so a link given as link/ is still a link
+run_folder=""
+if [[ ! -L "$DEST" ]] && [[ "$(canon_path "$DEST")" == "$RUNTIME_ARTIFACTS_DIR" ]]; then
+  run_folder=--run-folder
+fi
+python3 "$HERE/lib/runtime_verify.py" fetch "$LOCK_FILE" "$DEST" ${run_folder:+"$run_folder"} \
   || die "the runtime inputs did not verify against packages/sources.lock (see the FATAL line above)"

@@ -68,7 +68,9 @@ def main(fx, lock, case="good"):
     openssl("ecparam", "-name", "secp384r1", "-genkey", "-noout", "-out", other)
 
     # --- the runtime release ---------------------------------------------------------------------
-    shim = b"fixture shim\n"
+    # The shim stand-in is a tiny shell script, so scripts/30-runtime-install.sh can run its
+    # `containerd-shim-nitro-sandbox-v2 --version` against the installed copy in a fixture root.
+    shim = b'#!/bin/sh\necho "containerd-shim-nitro-sandbox-v2 fixture stand-in"\n'
     pinned_shim = shim
     members = [("fx-shim", shim), ("fx-agent", b"fixture agent, not installed\n")]
     if case == "shim-tampered":        # the archive carries another shim than the signed pin
@@ -99,8 +101,10 @@ def main(fx, lock, case="good"):
     # --- the guest image pair --------------------------------------------------------------------
     eif, disk = b"fixture guest boot image\n", b"fixture guest disk\n"
     write("guest.eif", eif if case != "file-mismatch" else b"another guest image\n")
-    write("guest.eif.sha256", f"{sha(eif)} guest.eif\n".encode() if case not in ("sidecar-mismatch", "sidecar-garbled")
-          else (f"{sha(b'other')} guest.eif\n" if case == "sidecar-mismatch" else "<html>not found</html>\n").encode())
+    sidecars = {"sidecar-mismatch": f"{sha(b'other')} guest.eif\n", "sidecar-garbled": "<html>not found</html>\n",
+                "sidecar-extra-line": f"{sha(eif)} guest.eif\nnot a hash line\n",
+                "sidecar-other-name": f"{sha(eif)} other.eif\n", "sidecar-hash-only": f"{sha(eif)}\n"}
+    write("guest.eif.sha256", sidecars.get(case, f"{sha(eif)} guest.eif\n").encode())
     write("guest-disk.img", disk)
     write("guest-disk.img.sha256", f"{sha(disk)} guest-disk.img\n".encode())
 

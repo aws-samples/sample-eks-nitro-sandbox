@@ -97,7 +97,7 @@ source=https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git/sna
 sha256=05eb4edebe11decce6ecb34e98d2f80c8cd283c2f2967d8ba7efd58418570514
 verify=This is a cgit-generated snapshot of a tag, not an upstream release tarball with its
   own published checksum, so the SHA-256 is pinned BY THIS SAMPLE (confirmed identical
-  across independent fetches, most recently on 2026-10-28), not quoted from upstream. A
+  across independent fetches, most recently on 2026-11-13), not quoted from upstream. A
   re-fetch that disagrees means cgit's archive generation changed; re-confirm by hand and
   update this file and packages/SOURCES.txt together before trusting a new value. The build
   checks `mkfs.erofs --version` reports this version and records the installed binary's own

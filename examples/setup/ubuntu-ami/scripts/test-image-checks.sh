@@ -243,6 +243,23 @@ check "REJECT the stage when containerd's migrated dump has privileged_without_h
 [ "$(STUB_DUMP_BREAK=priv containerd -c "$R1/usr/local/share/eks/containerd-config.toml" config dump | grep -c '^privileged_without_host_devices = false$')" = 2 ] \
   && ! STUB_DUMP_BREAK=priv containerd -c "$R1/usr/local/share/eks/containerd-config.toml" config dump | grep -q '^privileged_without_host_devices = true$'
 ok "  ... the probe dump sets it false on both handlers and true on none" $?
+# The shim config's guest image folder and data_base_dir must be apart in both directions, compared
+# canonical (review MUST-FIX 2). The real check, scripts/lib/image_checks.py shim, as
+# verify-image.py runs it, on a shim config naming the case's two folders.
+SC="$WORK/shimcfg"; mkdir -p "$SC"
+while IFS='|' read -r name img dat rx why; do
+  [ -n "$name" ] || continue
+  printf 'kernel_path     = "%s/latest.eif"\nkubeconfig_path = "/var/lib/kubelet/kubeconfig"\nformat_overlay  = true\ncpu_overcommit  = true\npcie_slots      = 110\ndata_base_dir   = "%s"\ndebug           = false\n' \
+    "$img" "$dat" > "$SC/$name.toml"
+  rc=0; NITRO_SANDBOX_IMAGE_DIR="$img" NITRO_SANDBOX_DATA_DIR="$dat" "$PY" "$HERE/lib/image_checks.py" shim "$SC/$name.toml" > "$WORK/s-$name.log" 2>&1 || rc=$?
+  if [ -z "$rx" ]; then check "$why" 0 "$rc" "$WORK/s-$name.log" '^ok: shim config'; else check "$why" 1 "$rc" "$WORK/s-$name.log" "$rx"; fi
+done <<'CASES'
+apart|/var/lib/nitro-sandbox-images|/var/lib/nitro-sandbox||ACCEPT the default folders, which are apart (one name is a prefix of the other, not a parent)
+image-in-data|/var/lib/nitro-sandbox/images|/var/lib/nitro-sandbox|the guest image folder /var/lib/nitro-sandbox/images is inside data_base_dir /var/lib/nitro-sandbox|REJECT the review's probe: the guest image folder inside data_base_dir
+data-in-image|/var/lib/nitro-sandbox-images|/var/lib/nitro-sandbox-images/data|data_base_dir /var/lib/nitro-sandbox-images/data is inside the guest image folder|REJECT data_base_dir inside the guest image folder
+same|/var/lib/nitro-sandbox|/var/lib/nitro-sandbox|are the same folder|REJECT one folder for both
+dotdot|/var/lib/nitro-sandbox/x/../images|/var/lib/nitro-sandbox|the guest image folder /var/lib/nitro-sandbox/images is inside data_base_dir|REJECT the guest image folder inside data_base_dir when it is spelled with ..
+CASES
 
 echo
 echo "== 2/5 AppArmor: scripts/35-apparmor.sh (M8) ==========================================="

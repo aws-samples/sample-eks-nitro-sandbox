@@ -8,7 +8,11 @@
 # Sandbox AMI" and "Download and verify the runtime binaries" name
 # (https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-ami-create-update.html and
 # https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-download-binaries.html, read on
-# 2026-11-13). Every SHA-256 below was computed by this sample from a fresh download on 2026-11-13.
+# 2026-11-13). The SHA-256s of the runtime release, the guest image pair, Firecracker and the
+# host-kernel patch were computed by this sample from fresh downloads on 2026-11-13. The kernel
+# and erofs-utils pins are unchanged from earlier rounds and were confirmed again on 2026-11-13:
+# the kernel's against the linux-6.18.56.tar.xz line of kernel.org's sha256sums.asc, the
+# erofs-utils snapshot's from a fresh download.
 #
 #    - Ubuntu 24.04 EKS base AMI: resolved per Region at run time from Canonical's public SSM
 #      parameter path; see packages/sources.lock, id=base-ami-ubuntu-2404. Canonical republishes
@@ -87,7 +91,21 @@
 # scripts/verify-fresh-instance.sh, via scripts/lib/btf-tag.sh, has seen a SECOND, fresh
 # instance launched from the AMI pass verify-image.py and 40-smoke.sh. It is never set at
 # create-image time, never set when that verification fails, and never written to an AMI that
-# does not already carry this run's ManagedBy tag. With it come the build-metadata tags
-# KernelVersion, ErofsUtilsVersion, NitroSandboxRuntime (the runtime release version),
-# NitroSandboxGuestImage (the guest image release) and Firecracker. The cilium-ubuntu sample
-# (issue #11) reads BtfValidated=true before it will use an AMI this sample produced.
+# does not already carry this run's ManagedBy tag. With it come the build-metadata tags below;
+# scripts/verify-fresh-instance.sh reads the five GA tags' values from packages/sources.lock, and
+# the README's AMI tag table lists every tag:
+#      KernelVersion        the host kernel release, KERNEL_VERSION (6.18.56, the
+#                           linux-kernel-source ref)
+#      ErofsUtilsVersion    the erofs-utils release, EROFS_UTILS_VERSION (1.8.10, the
+#                           erofs-utils-source ref)
+#      RuntimeRelease       the runtime release, from id=runtime-release ref (0.1.4274.0)
+#      GuestImageRelease    the guest image release, from id=guest-image-eif ref (1.36.5/2026-11-06)
+#      FirecrackerVersion   the Firecracker release, from id=firecracker-release ref (v1.18.0)
+#      HostKernelPatch      the host-kernel patch commit, from id=host-kernel-patch ref
+#                           (4ae89f6e09f949848123407602b4e5a8bb8d8631)
+#      GuestKernelRelease   the guest kernel release, from id=guest-image-eif guest_kernel
+#                           (6.18.56), the release verify-image.py read out of the staged EIF;
+#                           ./test.sh checks that a sandbox pod's uname -r equals this tag
+#      BtfValidatedBuildId  the verification instance's name
+# The cilium-ubuntu sample (issue #11) reads BtfValidated=true before it will use an AMI this
+# sample produced.

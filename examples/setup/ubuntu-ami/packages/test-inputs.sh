@@ -2,7 +2,8 @@
 # test-inputs.sh: proves the input checks both ways, in the REAL scripts, with no AWS and no
 # network reached:
 #   packages/fetch-runtime-artifacts.sh  (the signed runtime release, the guest image pair and
-#                                         Firecracker, in --check mode and in full)
+#                                         Firecracker, in --check mode and in full, and the
+#                                         destination folder it may use)
 #   packages/fetch-kernel-patch.sh       (the Amazon Linux sandbox patch as a .patch)
 #
 #   packages/test-inputs.sh
@@ -54,7 +55,7 @@ rt() {
 # no_partial <case>: nothing but whole, verified files in node-files (no .part file left behind)
 no_partial() { [ -z "$(find "$WORK/$1/out" -name '*.part' 2>/dev/null)" ]; }
 
-echo "== 1/3 runtime inputs: packages/fetch-runtime-artifacts.sh ============================="
+echo "== 1/4 runtime inputs: packages/fetch-runtime-artifacts.sh ============================="
 rc=0; rt good check || rc=$?
 check "ACCEPT --check on a good set: key pin, manifest pin, signature, manifest lines and the three sidecars" 0 "$rc" "$WORK/good-check.log" \
   'runtime inputs checked against sources.lock with no large download: 4 published inputs'
@@ -62,13 +63,15 @@ rc=0; rt good fetch || rc=$?
 check "ACCEPT the full fetch of a good set: every download and every member matches its pin" 0 "$rc" "$WORK/good-fetch.log" \
   'runtime inputs verified against sources.lock: 5 node files in '
 [ "$(ls "$WORK/good/out/node-files" | tr '\n' ' ')" = "firecracker guest-image-disk guest-image-eif jailer runtime-shim " ] \
-  && cmp -s "$WORK/good/out/node-files/runtime-shim" <(printf 'fixture shim\n') \
+  && [ "$(sha "$WORK/good/out/node-files/runtime-shim")" = "$(sed -n '/^id=runtime-shim$/,/^$/s/^sha256=//p' "$WORK/good/fixture.lock")" ] \
   && cmp -s "$WORK/good/out/node-files/jailer" <(printf 'fixture jailer\n') \
   && cmp -s "$WORK/good/out/signed-manifest/runtime-release.SHA256SUM" "$WORK/good/fx/SHA256SUM" \
   && [ "$(tail -n 1 "$WORK/good-fetch.log")" = "$WORK/good/out/node-files" ]
 check "  ... node-files holds exactly the five installable files, named by block id, the signed manifest is kept, and the last line names node-files" 0 $? "$WORK/good-fetch.log"
 rc=0; rt check-only check || rc=$?
 check "ACCEPT --check when none of the large files can be downloaded (it downloads none of them)" 0 "$rc" "$WORK/check-only-check.log" 'with no large download'
+rc=0; rt sidecar-hash-only check || rc=$?
+check "ACCEPT a sidecar that holds only the SHA-256, on one line" 0 "$rc" "$WORK/sidecar-hash-only-check.log" 'guest-image-eif fixture/amd64: its published sidecar matches the pin'
 rc=0; rt check-only fetch || rc=$?
 check "REJECT the full fetch of that same set: the archive cannot be downloaded" 1 "$rc" "$WORK/check-only-fetch.log" 'could not download file://.*absent-runtime.tar.gz'
 while IFS='|' read -r c mode rx why; do
@@ -84,7 +87,9 @@ manifest-pin|check|the manifest file://.* has SHA-256 [0-9a-f]{64}, not the|REJE
 manifest-no-shim|check|the signed manifest lists fx-shim as <absent>|REJECT a signed manifest that does not list the shim
 manifest-bad-line|check|has a line that is not '<sha256>  <file name>': 'not a manifest line'|REJECT a signed manifest with a malformed line
 sidecar-mismatch|check|sidecar .*guest.eif.sha256 says [0-9a-f]{64}, not the|REJECT a guest image sidecar that disagrees with the pin
-sidecar-garbled|check|sidecar .*guest.eif.sha256 does not start with a SHA-256|REJECT a sidecar that is not a SHA-256 (an error page)
+sidecar-garbled|check|sidecar .*guest.eif.sha256 is not one line holding a SHA-256 and at most a file name|REJECT a sidecar that is not a SHA-256 (an error page)
+sidecar-extra-line|check|sidecar .*guest.eif.sha256 is not one line holding a SHA-256 and at most a file name: '[0-9a-f]{64} guest.eif\\nnot a|REJECT a sidecar whose first line is the right SHA-256 but which has a second, malformed line (review LOW 1)
+sidecar-other-name|check|sidecar .*guest.eif.sha256 names 'other.eif', not 'guest.eif'|REJECT a sidecar with the right SHA-256 that names another file
 archive-swapped|fetch|runtime.tar.gz from file://.* has SHA-256 [0-9a-f]{64}, not the|REJECT a runtime archive that is not the one the signed manifest lists (wrong hash)
 not-a-tar|fetch|runtime.tar.gz is not a readable gzip tar|REJECT a runtime archive that is not a gzip tar
 member-path|fetch|runtime.tar.gz has members that are not regular files with flat names: \['sub/evil'\]|REJECT a runtime archive member with a path, before anything is read out
@@ -107,7 +112,84 @@ rc=0; LOCK_FILE="$WORK/good/fixture.lock" RUNTIME_ARTIFACTS_DIR="$WORK/good/out"
 check "REJECT an unknown option" 1 "$rc" "$WORK/badarg.log" 'unknown argument: --checkk'
 
 echo
-echo "== 2/3 the real pins: packages/sources.lock against real copies of the runtime inputs ======"
+echo "== 2/4 the destination folder: fetch-runtime-artifacts.sh <dest> (review MUST-FIX 1) ========"
+# A positional destination is not RUNTIME_ARTIFACTS_DIR, so scripts/lib/common.sh's path guard never
+# sees it. The script must refuse a link, and a folder that is not empty and that it did not make,
+# before it creates or removes anything; and it may replace only the folders it made itself. Every
+# case uses the good fixture set. tree_sum lists every path under a folder with its type, link
+# target and content hash, so a refusal is shown to have changed nothing.
+D="$WORK/dest"; mkdir -p "$D"
+tree_sum() { (cd "$1" && find . -printf '%y %p %l\n' | sort && find . -type f -exec sha256sum {} + | sort); }
+pd() { # pd <log> <dest> [VAR=value...]: the REAL full fetch of the good set into <dest>
+  local log="$1" dest="$2"; shift 2
+  env LOCK_FILE="$WORK/good/fixture.lock" RUNTIME_ARTIFACTS_DIR="$WORK/good/out" "$@" \
+    bash "$HERE/fetch-runtime-artifacts.sh" "$dest" > "$log" 2>&1
+}
+made() { local d; [ -f "$1/.fetch-runtime-artifacts" ] || return 1
+  for d in downloads node-files signed-manifest; do [ -f "$1/$d/.made-by-fetch-runtime-artifacts" ] || return 1; done; }
+# The review's probe, as it ran it: a folder outside the run folder that already holds
+# downloads/, node-files/ and signed-manifest/ with a sentinel file each, and a curl that fails.
+P="$D/probe"; mkdir -p "$P/downloads" "$P/node-files" "$P/signed-manifest"
+for d in downloads node-files signed-manifest; do printf 'sentinel %s\n' "$d" > "$P/$d/keep.txt"; done
+before="$(tree_sum "$P")"
+NC="$WORK/bin-nocurl"; mkdir -p "$NC"
+printf '#!/bin/bash\necho called >> "%s/curl-calls"\necho "stub curl refusal" >&2\nexit 77\n' "$NC" > "$NC/curl"; chmod +x "$NC/curl"
+rc=0; pd "$WORK/d-probe.log" "$P" PATH="$NC:$PATH" || rc=$?
+check "REJECT the review's probe: a destination outside the run folder holding downloads/, node-files/ and signed-manifest/keep.txt, with a failing curl" 1 "$rc" "$WORK/d-probe.log" \
+  "the destination $P is not empty and has no .fetch-runtime-artifacts marker, so this helper did not make it"
+[ "$(tree_sum "$P")" = "$before" ] && [ ! -e "$NC/curl-calls" ]
+check "  ... every sentinel byte-unchanged, nothing added or removed, and curl never called" 0 $? "$WORK/d-probe.log"
+rc=0; pd "$WORK/d-probe2.log" "$P" || rc=$?
+check "REJECT that same folder when every download would succeed (refused for what it is, before any download)" 1 "$rc" "$WORK/d-probe2.log" 'is not empty and has no .fetch-runtime-artifacts marker'
+[ "$(tree_sum "$P")" = "$before" ]; check "  ... and it is still byte-unchanged" 0 $? "$WORK/d-probe2.log"
+N="$D/new/sub"; rc=0; pd "$WORK/d-new.log" "$N" || rc=$?
+check "ACCEPT a destination that does not exist yet: made, with its marker and one marker in each folder it made" 0 "$rc" "$WORK/d-new.log" \
+  "runtime inputs verified against sources.lock: 5 node files in $N/node-files"
+made "$N" && [ "$(tail -n 1 "$WORK/d-new.log")" = "$N/node-files" ]; check "  ... the markers are there and the last line names node-files" 0 $? "$WORK/d-new.log"
+printf 'mine\n' > "$N/notes.txt"; rc=0; pd "$WORK/d-rerun.log" "$N" || rc=$?
+check "ACCEPT a re-run into the folder it made: its own folders are replaced" 0 "$rc" "$WORK/d-rerun.log" 'runtime inputs verified against sources.lock: 5 node files'
+cmp -s "$N/notes.txt" <(printf 'mine\n') && made "$N"; check "  ... and a file beside them that it did not make is left as it was" 0 $? "$WORK/d-rerun.log"
+E="$D/empty"; mkdir -p "$E"; rc=0; pd "$WORK/d-empty.log" "$E" || rc=$?
+check "ACCEPT an existing empty folder" 0 "$rc" "$WORK/d-empty.log" 'runtime inputs verified against sources.lock: 5 node files'
+T="$D/target"; mkdir -p "$T"; ln -s "$T" "$D/link"
+rc=0; pd "$WORK/d-link.log" "$D/link" || rc=$?
+check "REJECT a destination that is a symbolic link (to an empty folder)" 1 "$rc" "$WORK/d-link.log" "the destination $D/link is a symbolic link; give the real folder"
+rc=0; pd "$WORK/d-link2.log" "$D/link/" || rc=$?
+check "REJECT the same link written with a trailing slash" 1 "$rc" "$WORK/d-link2.log" "the destination $D/link is a symbolic link"
+[ -z "$(ls -A "$T")" ]; check "  ... and nothing was written where the link points" 0 $? "$WORK/d-link2.log"
+M="$D/marked"; pd "$WORK/d-m0.log" "$M"; rm -rf "$M/downloads"; mkdir "$M/downloads"; printf 'sentinel\n' > "$M/downloads/keep.txt"
+before="$(tree_sum "$M")"; rc=0; pd "$WORK/d-m1.log" "$M" || rc=$?
+check "REJECT a folder it made whose downloads/ it did not make (no marker inside)" 1 "$rc" "$WORK/d-m1.log" "$M/downloads exists and this helper did not make it"
+[ "$(tree_sum "$M")" = "$before" ]; check "  ... the sentinel and the rest of the folder are byte-unchanged" 0 $? "$WORK/d-m1.log"
+M2="$D/marked2"; pd "$WORK/d-m2a.log" "$M2"; O="$D/outside"; mkdir -p "$O"; printf 'sentinel\n' > "$O/keep.txt"
+cp -- "$M2/node-files/.made-by-fetch-runtime-artifacts" "$O/"; rm -rf "$M2/node-files"; ln -s "$O" "$M2/node-files"
+before="$(tree_sum "$O")$(tree_sum "$M2")"; rc=0; pd "$WORK/d-m2.log" "$M2" || rc=$?
+check "REJECT a folder it made whose node-files is a link to an outside folder (even one carrying a copied marker)" 1 "$rc" "$WORK/d-m2.log" "$M2/node-files exists and this helper did not make it"
+[ "$(tree_sum "$O")$(tree_sum "$M2")" = "$before" ]; check "  ... the outside folder and the link are left as they were" 0 $? "$WORK/d-m2.log"
+F="$D/forged"; mkdir -p "$F/downloads"; printf 'sentinel\n' > "$F/downloads/keep.txt"; printf 'not the marker\n' > "$F/.fetch-runtime-artifacts"
+before="$(tree_sum "$F")"; rc=0; pd "$WORK/d-forged.log" "$F" || rc=$?
+check "REJECT a folder whose marker file is not this script's" 1 "$rc" "$WORK/d-forged.log" "$F/.fetch-runtime-artifacts is not this helper's marker file"
+[ "$(tree_sum "$F")" = "$before" ]; check "  ... byte-unchanged" 0 $? "$WORK/d-forged.log"
+# The run folder itself (RUNTIME_ARTIFACTS_DIR, checked by common.sh) is shared with the kernel,
+# patch and erofs-utils fetchers, so it may hold their files without a marker; the script's own
+# folders inside it still need theirs.
+RF="$WORK/runfolder"; mkdir -p "$RF"; printf 'kernel tarball stand-in\n' > "$RF/linux-fixture.tar.xz"
+rf() { local log="$1" dir="$2"; shift 2; LOCK_FILE="$WORK/good/fixture.lock" RUNTIME_ARTIFACTS_DIR="$dir" bash "$HERE/fetch-runtime-artifacts.sh" "$@" > "$log" 2>&1; }
+rc=0; rf "$WORK/d-rf-check.log" "$RF" --check || rc=$?
+check "ACCEPT --check in the run folder while it holds another fetcher's file and no marker yet" 0 "$rc" "$WORK/d-rf-check.log" 'with no large download'
+rc=0; rf "$WORK/d-rf-fetch.log" "$RF" || rc=$?
+check "ACCEPT the full fetch into the run folder (no destination given)" 0 "$rc" "$WORK/d-rf-fetch.log" "5 node files in $RF/node-files"
+rc=0; rf "$WORK/d-rf-pos.log" "$RF" "$RF" || rc=$?
+check "ACCEPT the run folder given as the destination, as 30-runtime-install.sh gives it" 0 "$rc" "$WORK/d-rf-pos.log" "5 node files in $RF/node-files"
+cmp -s "$RF/linux-fixture.tar.xz" <(printf 'kernel tarball stand-in\n') && made "$RF" && [ -f "$RF/metadata/.made-by-fetch-runtime-artifacts" ]
+check "  ... the other fetcher's file is left as it was" 0 $? "$WORK/d-rf-pos.log"
+RS="$WORK/runstale"; mkdir -p "$RS/metadata"; printf 'sentinel\n' > "$RS/metadata/keep.txt"; before="$(tree_sum "$RS")"
+rc=0; rf "$WORK/d-rs.log" "$RS" --check || rc=$?
+check "REJECT --check when the run folder holds a metadata/ this script did not make" 1 "$rc" "$WORK/d-rs.log" "$RS/metadata exists and this helper did not make it"
+[ "$(tree_sum "$RS")" = "$before" ]; check "  ... byte-unchanged" 0 $? "$WORK/d-rs.log"
+
+echo
+echo "== 3/4 the real pins: packages/sources.lock against real copies of the runtime inputs ======"
 if [[ -n "${REAL_RUNTIME_DL:-}" ]]; then
   # The real lock with every URL served from REAL_RUNTIME_DL, and the real public key beside it.
   mkdir -p "$WORK/real" && cp -- "$HERE/nitro-sandboxes-runtime-v1.pub" "$WORK/real/"
@@ -145,7 +227,7 @@ else
 fi
 
 echo
-echo "== 3/3 host-kernel patch: packages/fetch-kernel-patch.sh =============================="
+echo "== 4/4 host-kernel patch: packages/fetch-kernel-patch.sh =============================="
 STUB="$WORK/bin"; mkdir -p "$STUB"
 # Stub curl: copy $STUB_CURL_FROM to the -o target; fail like curl -f when it is unset.
 cat > "$STUB/curl" <<'SH'
