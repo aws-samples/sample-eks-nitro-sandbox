@@ -6,7 +6,8 @@
 #
 #   scripts/test-smoke.sh
 #
-#   1  the fake answers Firecracker v1.18.0's API as strictly as upstream (it is not a yes-machine)
+#   1  the fake answers Firecracker v1.18.0's API as strictly as upstream (it is not a yes-machine),
+#      and looks only inside its fixture folders (FAKE_FC_ROOTS), whatever path a request names
 #   2  ACCEPT: the exact PUT sequence, the /enclave and /boot-source bodies, the vsock handshake,
 #      the manifest line and the stage's own cleanup; again with SHIM_DEBUG=true
 #   3  REJECT: a non-2xx API answer, an early Firecracker exit, a garbled, silent or unreachable
@@ -104,7 +105,7 @@ smoke() { # smoke <name> <script under the sample> [VAR=value...]: run it in roo
   local n="$1" s="$2" r="$WORK/$1"; shift 2
   rc=0
   timeout 120 env SYSROOT="$r" HOME="$r/root" ISSUE10_RUN_DIR="$r/hostrun" TMPDIR="$SHORT/$n" STUB_LOG="$r/stub" \
-    FAKE_FC_LOG="$r/stub/fc-requests.jsonl" FAKE_FC_STARTED="$r/stub/fc-started.jsonl" SHIM_DEBUG=false "$@" \
+    FAKE_FC_ROOTS="$r:$SHORT/$n" FAKE_FC_LOG="$r/stub/fc-requests.jsonl" FAKE_FC_STARTED="$r/stub/fc-started.jsonl" SHIM_DEBUG=false "$@" \
     bash "$r/$STAGE/$s" > "$WORK/$n.log" 2>&1 || rc=$?
 }
 fcq() { # fcq <name> <python expression> [args...]: 0 when the expression holds over the fake's request log.
@@ -157,7 +158,7 @@ for line in open(sys.argv[1]):
 
 echo "== 1/4 the fake itself: Firecracker v1.18.0's API, strictly ============================"
 FS="$SHORT/self"; mkdir -m 0700 "$FS"
-FAKE_FC_LOG="$WORK/self.jsonl" FAKE_FC_STARTED="$WORK/self-started.jsonl" python3 "$FAKE" --api-sock "$FS/api.sock" --level Debug > "$WORK/self.out" 2>&1 &
+FAKE_FC_ROOTS="$FS" FAKE_FC_LOG="$WORK/self.jsonl" FAKE_FC_STARTED="$WORK/self-started.jsonl" python3 "$FAKE" --api-sock "$FS/api.sock" --level Debug > "$WORK/self.out" 2>&1 &
 fpid=$!
 for _ in $(seq 1 100); do [ -S "$FS/api.sock" ] && break; /bin/sleep 0.05; done
 api() { curl -s -o "$WORK/self.body" -w '%{http_code}' --unix-socket "$FS/api.sock" -X PUT "http://localhost$1" -H 'Content-Type: application/json' -d "$2"; }
@@ -171,13 +172,17 @@ answers "a missing required field (/boot-source with no kernel_image_path)" 400 
 answers "a body that is not JSON" 400 'deserializing the json body' /machine-config 'vcpu_count=2'
 answers "a field of the wrong type" 400 'invalid type for `vcpu_count`' /machine-config '{"vcpu_count":"2","mem_size_mib":1024}'
 answers "an unknown endpoint (/entropy, which the shim never adds)" 400 'Invalid request method and/or path: PUT /entropy' /entropy '{}'
-answers "a kernel_image_path that is not a file" 400 'cannot be opened' /boot-source '{"kernel_image_path":"/nonexistent/latest.eif"}'
-answers "a drive whose path_on_host does not exist" 400 'backing file' /drives/rootfs '{"drive_id":"rootfs","path_on_host":"/nonexistent/rootfs.ext4","is_root_device":false,"is_read_only":true}'
+answers "a kernel_image_path that is not a file" 400 'cannot be opened' /boot-source "{\"kernel_image_path\":\"$FS/nonexistent/latest.eif\"}"
+answers "a drive whose path_on_host does not exist" 400 'backing file' /drives/rootfs "{\"drive_id\":\"rootfs\",\"path_on_host\":\"$FS/nonexistent/rootfs.ext4\",\"is_root_device\":false,\"is_read_only\":true}"
+# A path in a request is the client's choice, so the fake looks only inside FAKE_FC_ROOTS.
+answers "a kernel_image_path outside its fixture folders (an absolute system path)" 400 'outside the folders this fake may look at' /boot-source '{"kernel_image_path":"/etc/hostname"}'
+answers "a drive path_on_host that climbs out of its fixture folder with .." 400 'path_on_host .* is outside the folders' /drives/rootfs "{\"drive_id\":\"rootfs\",\"path_on_host\":\"$FS/../escape.img\",\"is_root_device\":false,\"is_read_only\":true}"
+answers "a vsock uds_path outside its fixture folders" 400 'uds_path .* is outside the folders' /vsock '{"guest_cid":3,"uds_path":"/tmp/fake-firecracker-escape.vsock"}'
 answers "a drive whose drive_id is not the one in the path" 400 'id from the path does not match' /drives/rootfs "{\"drive_id\":\"other\",\"path_on_host\":\"$FAKE\",\"is_root_device\":false,\"is_read_only\":true}"
 answers "InstanceStart before any boot source" 400 'without kernel configuration' /actions '{"action_type":"InstanceStart"}'
 answers "a valid /machine-config" 204 "" /machine-config '{"vcpu_count":2,"mem_size_mib":1024}'
-[ "$(wc -l < "$WORK/self.jsonl")" = 10 ] && grep -q '"path": "/entropy".*"status": 400' "$WORK/self.jsonl"
-ok "fake: every request is recorded with the status it answered" $?
+[ "$(wc -l < "$WORK/self.jsonl")" = 13 ] && grep -q '"path": "/entropy".*"status": 400' "$WORK/self.jsonl" && [ ! -e /tmp/fake-firecracker-escape.vsock ]
+ok "fake: every request is recorded with the status it answered, and nothing was bound outside its folders" $?
 kill -TERM "$fpid"; frc=0; wait "$fpid" || frc=$?
 [ "$frc" = 0 ]; ok "fake: SIGTERM ends it cleanly (status $frc)" $?
 

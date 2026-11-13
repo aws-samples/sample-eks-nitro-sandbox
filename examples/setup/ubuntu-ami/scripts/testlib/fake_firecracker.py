@@ -9,6 +9,9 @@ and answers 204 to a valid PUT. After a 2xx InstanceStart it binds the /vsock ud
 answers "CONNECT 1024\\n" with "OK 1073741824\\n", the handshake the guest agent gives.
 
 Python 3.9 compatible, standard library only, no subprocess. Environment:
+  FAKE_FC_ROOTS=<dir>[:<dir>]  the only folders the fake looks at or binds in: a path a request
+                             names (a kernel, a drive, the vsock socket) outside them is answered
+                             400, and with none given every such path is
   FAKE_FC_LOG=<file>         append one JSON line per request: method, path, body, status
   FAKE_FC_STARTED=<file>     append one JSON line at start: pid and argv
   FAKE_FC_FAIL_PATH=<path>   answer 400 to a PUT on that path
@@ -145,6 +148,21 @@ class State:
 STATE = State()
 
 
+def confined(p):
+    """The real path of <p> when it lies inside one of the FAKE_FC_ROOTS folders, else None. A path in
+    a request is the client's choice, so the fake looks only inside the fixture folders the test
+    names (the real path, links resolved, below a root's real path), never anywhere a request says."""
+    full = os.path.realpath(p)
+    for root in os.environ.get("FAKE_FC_ROOTS", "").split(":"):
+        if root and full.startswith(os.path.realpath(root) + os.sep):
+            return full
+    return None
+
+
+def outside(key, value):
+    return "%s %r is outside the folders this fake may look at (FAKE_FC_ROOTS)" % (key, value)
+
+
 def record(entry):
     path = os.environ.get("FAKE_FC_LOG")
     if path:
@@ -178,7 +196,7 @@ def start_vsock():
     if mode == "none" or STATE.config.get("/vsock") is None:
         return
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    listener.bind(STATE.config["/vsock"]["uds_path"])
+    listener.bind(confined(STATE.config["/vsock"]["uds_path"]))
     listener.listen(8)
     STATE.vsock = listener
     threading.Thread(target=vsock_serve, args=(listener, mode), daemon=True).start()
@@ -212,11 +230,22 @@ def decide(path, body):
         return 400, "The requested operation is not supported after starting the microVM.", None
     if defn == "BootSource":
         for key in ("kernel_image_path", "initrd_path"):
-            if key in body and not os.path.isfile(body[key]):
-                return 400, "The %s file cannot be opened: No such file or directory (os error 2)" % key, None
+            if key in body:
+                full = confined(body[key])
+                if full is None:
+                    return 400, outside(key, body[key]), None
+                if not os.path.isfile(full):
+                    return 400, "The %s file cannot be opened: No such file or directory (os error 2)" % key, None
     if defn == "Drive" and "socket" not in body:
-        if "path_on_host" not in body or not os.path.exists(body["path_on_host"]):
-            return 400, "Unable to create the block device: cannot open the backing file %r" % body.get("path_on_host"), None
+        if "path_on_host" not in body:
+            return 400, "Unable to create the block device: cannot open the backing file None", None
+        full = confined(body["path_on_host"])
+        if full is None:
+            return 400, outside("path_on_host", body["path_on_host"]), None
+        if not os.path.exists(full):
+            return 400, "Unable to create the block device: cannot open the backing file %r" % body["path_on_host"], None
+    if defn == "Vsock" and confined(body["uds_path"]) is None:
+        return 400, outside("uds_path", body["uds_path"]), None
     STATE.config[path] = body
     return 204, None, None
 
