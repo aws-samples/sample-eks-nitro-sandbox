@@ -1,26 +1,12 @@
 # Build an Ubuntu AMI for EKS Pod Isolation
 
-!!! danger "Not ready to merge to `main` as an available blueprint"
+!!! warning "Status: rebuilt on the public GA releases, fresh run pending"
 
-    This blueprint is **not ready to be merged to `main` and marked available** until the
-    maintainers make one decision. The runtime binaries and guest image ship as one
-    operator-supplied preview archive that a reader obtains from their AWS account team. Its
-    exact name and every SHA-256 are pinned below, and it has no public download. Whether that
-    meets the Issue #10 criterion that every required input is available to an external
-    reader is waiting on the maintainers
-    ([Issue #10 comment](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10#issuecomment-6506808422)).
-    The archive's license and redistribution terms are recorded with that decision.
-
-    Until that decision, this blueprint stays a draft and is not marked `(available now)`.
-
-!!! warning "Status: live-validated on the GA bundle"
-
-    Run `20261030t025526z407c`, an independent walk of this page from a fresh clone, built
-    the AMI from the Nitro sandbox GA node-build bundle dated 2026-10-28, verified it on a
-    second, fresh instance, joined the dedicated node group, passed every `./test.sh` check
-    (52 passed, 0 failed), and was then cleaned up completely, its AMI and snapshot included.
-    Every output block under [Evidence](#evidence) comes from that run. Every clusterless
-    check is proven both ways (see [Clusterless checks](#clusterless-checks)).
+    This version builds the AMI from the public Nitro Sandbox releases that the Amazon EKS User
+    Guide names: the signed runtime release `0.1.4274.0`, the guest image `1.36.5/2026-11-06` and
+    Firecracker `v1.18.0`. Its fresh run on a live cluster has not happened yet, so every output
+    block on this page reads `TODO: output from the fresh run` until that run fills it. Every
+    clusterless check is proven both ways (see [Clusterless checks](#clusterless-checks)).
 
 Build a custom Ubuntu 24.04 node AMI for Amazon EKS Pod Isolation, add one dedicated,
 tainted managed node group to an **existing cluster**, and run an isolated pod on that
@@ -33,17 +19,14 @@ AMI that [Getting started](../../getting-started/hello-sandbox/README.md) depend
 new, tainted node group; the cluster's existing node groups and workloads are untouched,
 and this blueprint never replaces or reconfigures an existing node group.
 
-!!! warning "Stops on a documented prerequisite"
-
-    The Nitro sandbox runtime archive (`nitro-sandbox-binaries-2026-10-28.zip`: the
-    containerd shim and CRI proxy, Firecracker and its jailer, the guest boot image and root
-    disk, the policy generator and the key provider) is an **operator-supplied preview
-    archive, checksum-pinned, with no public download**. Every other input is public, pinned
-    and checksum-verified, including the
-    host-kernel change, which is AWS's public kernel commit on GitHub. Until you place the
-    archive where `config.env` says, `./setup.sh --prepare` stops cleanly at that
-    prerequisite rather than substituting an internal or private artifact. See
-    [The runtime archive](#the-runtime-archive).
+Every input is public. The Nitro Sandbox runtime release, the guest image and Firecracker come
+from the locations the Amazon EKS User Guide gives in
+[Create and update a Nitro Sandbox AMI](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-ami-create-update.html)
+and [Download and verify the runtime binaries](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-download-binaries.html);
+the host kernel is kernel.org's source with the Amazon Linux sandbox patch that the first page
+links. Each one is pinned and checked against its pin before it is used, and the build host
+downloads the runtime inputs itself. See
+[Public inputs, pinned and checksum-verified](#public-inputs-pinned-and-checksum-verified).
 
 ```mermaid
 flowchart TB
@@ -53,27 +36,28 @@ flowchart TB
   D --> E["Isolated pod in a Nitro guest"]
 ```
 
-Allow about two hours for a fresh full `./setup.sh`. In the validation run it took 1 h 49 min:
-about 25 minutes for the kernel stage on the `m8i.4xlarge` build host, and about an hour
-waiting for the 120 GiB AMI to become available.
+Allow about two hours for a fresh full `./setup.sh`. An earlier validation run of this sample took
+1 h 49 min: about 25 minutes for the kernel stage on the `m8i.4xlarge` build host, and about an
+hour waiting for the 120 GiB AMI to become available.
 
 *Figure 1: The ubuntu-ami architecture, from pinned public inputs to the isolated sandbox
-pod. Pinned public inputs feed the build host; the user-supplied runtime archive installs
-once present. The build host bakes the AMI, a fresh instance verifies it, then the verified
+pod. Four public inputs, the Nitro sandbox runtime among them, are fetched and verified on the
+build instance. The build host bakes the AMI, a fresh instance verifies it, then the verified
 AMI joins the dedicated, tainted managed node group, leaving the cluster's existing node
 groups untouched.*
 
-![The ubuntu-ami blueprint's architecture. Outside AWS Cloud: three pinned public inputs
-(Linux kernel source, erofs-utils source, distro packages) feed into the build host, and a
-dashed box for the EKS Pod Isolation runtime, marked user-supplied and pending public
-release, feeds the build host's SSM Session Manager once installed. Inside AWS Cloud: the
-build host (EC2, no inbound rule, reached only over SSM) builds the AMI and bakes it into a
-fresh instance for verification. The verified instance joins the existing Amazon EKS
-cluster's dedicated managed node group, which carries a NoSchedule taint and is separate
-from the cluster's existing, untouched node groups. Inside that node group, the Ubuntu node
-(EC2 instance) runs an isolated sandbox pod with runtimeClassName isolated-sandbox,
-containing a Nitro guest VM with its own kernel and guest virtio block
-devices.](images/architecture.png)
+![The ubuntu-ami blueprint's architecture. Outside AWS Cloud, four public inputs feed the
+build instance, with the label fetch + verify: the Linux kernel source from kernel.org, pinned
+and checksummed; the erofs-utils source from kernel.org cgit, pinned and checksummed; distro
+packages from Ubuntu apt, with signed metadata; and the Nitro sandbox runtime from AWS and
+GitHub, signed or pinned. Inside AWS Cloud, the build host (EC2, no inbound rule, reached only
+over SSM) holds the build instance, which builds the kernel and erofs-utils, and SSM Session
+Manager, with no SSH and no bastion. The build host bakes the AMI, and a fresh verification
+instance boots from the new AMI. The verified instance joins the existing Amazon EKS cluster's
+dedicated managed node group, which carries a NoSchedule taint and is separate from the
+cluster's existing, untouched node groups. Inside that node group, the Ubuntu node (EC2
+instance) runs an isolated sandbox pod with runtimeClassName isolated-sandbox, containing a
+Nitro guest VM with its own kernel and guest virtio block devices.](images/architecture.png)
 
 ## How this differs from Getting started
 
@@ -163,10 +147,11 @@ it.
   endpoint `aws eks describe-cluster` reports for `CLUSTER_NAME`, and stop on a mismatch or
   an unreadable context, so the kubectl side and the AWS side are always the same cluster.
 - Private subnets in the cluster's VPC with egress to Ubuntu's `apt` mirrors, kernel.org,
-  git.kernel.org, github.com, Amazon S3, and the EKS, EC2 and SSM APIs. This blueprint creates
-  no network infrastructure.
+  git.kernel.org, github.com and its release downloads, the runtime release's CloudFront host
+  (`d1uvmbvklg8rt.cloudfront.net`), Amazon S3 (the guest image is in `us-west-2`), and the EKS,
+  EC2 and SSM APIs. This blueprint creates no network infrastructure.
 - [`aws`](https://github.com/aws/aws-cli) CLI v2, [`kubectl`](https://github.com/kubernetes/kubectl),
-  Python 3, `curl` and `tar`. Optional: the
+  Python 3, `curl`, `tar` and `openssl` (it verifies the runtime release's signature). Optional: the
   [AWS Session Manager plugin](https://github.com/aws/session-manager-plugin), for an
   interactive shell on the build host while you debug; `./setup.sh` warns when it is missing.
 - Operator IAM permissions to create and remove EC2 instances, images, snapshots, a
@@ -212,7 +197,7 @@ it.
   inbound port (`./setup.sh` checks it has none); you reach the build and verification
   instances over SSM, which needs no bastion, no SSH key and no open port.
 - **A build instance type with room for the kernel compile.** The default build host is
-  `m8i.4xlarge`, the type the GA bundle's kernel build was validated on; on `m8i.xlarge`
+  `m8i.4xlarge`, the type this blueprint's kernel build was validated on; on `m8i.xlarge`
   the compile takes about four times as long. Nitro Enclaves must be enabled on it (the
   script does that) and Secure Boot off (Canonical's EKS AMI boots with it off; the build
   checks).
@@ -229,8 +214,13 @@ pins live, with a note on how each was obtained and verified. The plain-text
 |---|---|---|---|
 | Ubuntu 24.04 EKS base AMI | Kubernetes 1.36 | n/a (signed AMI) | Canonical's public EKS AMI SSM parameter path, resolved per Region at build time |
 | Linux kernel source | `6.18.56` | `4633bbda2ab95eaf2a7af4041236451d6759c72e6946265531af4b3aacefbf89` | [`linux-6.18.56.tar.xz`](https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.56.tar.xz) on kernel.org |
-| Host-kernel patch | commit `1e66c960b982c94bda76ebd0129eaecf0a68b46e` | `051ede9dff52d24fb7ff47dd783a9eb2f6b18c742dbf151926cb48304d72924b` | [amazonlinux/linux 1e66c960 as a patch](https://github.com/amazonlinux/linux/commit/1e66c960b982c94bda76ebd0129eaecf0a68b46e.patch) on GitHub |
+| Host-kernel patch | commit `4ae89f6e09f949848123407602b4e5a8bb8d8631` | `5f9c52ae83e20403846e7c10aed6ed6fcabbd4069b76f50b1a2a42577b95f1a0` | [amazonlinux/linux 4ae89f6e as a patch](https://github.com/amazonlinux/linux/commit/4ae89f6e09f949848123407602b4e5a8bb8d8631.patch) on GitHub |
 | erofs-utils source | `1.8.10` | `05eb4edebe11decce6ecb34e98d2f80c8cd283c2f2967d8ba7efd58418570514` | kernel.org cgit snapshot `erofs-utils-1.8.10.tar.gz` |
+| Nitro Sandbox runtime release, x86_64 | `0.1.4274.0` | `abc1d0032014f763715c2829ef1a104d768c3e0a76fa91cd2668d87678db3c57` | [`nitro-sandboxes-runtime.tar.gz`](https://d1uvmbvklg8rt.cloudfront.net/0.1.4274.0/x86_64/nitro-sandboxes-runtime.tar.gz), with its signed [`SHA256SUM`](https://d1uvmbvklg8rt.cloudfront.net/0.1.4274.0/x86_64/SHA256SUM) (`33df467673f08654c611c0820bd7c6449a7bd5280c3a0690e36dbb475ceed972`) and [`SHA256SUM.sig`](https://d1uvmbvklg8rt.cloudfront.net/0.1.4274.0/x86_64/SHA256SUM.sig) |
+| Its signing key | `nitro-sandboxes-runtime-v1` | `8b61298c0cb361b352063eb4ae8c89d38270d6f8e96131ef93f238aba6137256` | [`packages/nitro-sandboxes-runtime-v1.pub`](packages/nitro-sandboxes-runtime-v1.pub), the key the User Guide prints |
+| Guest image EIF, amd64 | `1.36.5/2026-11-06` | `bcbf2e9da531ffaee6691db5661c75b3564f151cb411227c5a7f9a530db72182` | [`nitro-sandbox-guest.eif`](https://amazon-eks.s3.us-west-2.amazonaws.com/1.36.5/2026-11-06/nitro-sandbox-guest/linux/amd64/nitro-sandbox-guest.eif) in Amazon S3, with its `.sha256` sidecar |
+| Guest image disk, amd64 | `1.36.5/2026-11-06` | `08f8e6d2d032829bff9c4c4907cd44242f46bcf6b1bbc2e6aea691c82bee902c` | [`nitro-sandbox-guest-disk.img`](https://amazon-eks.s3.us-west-2.amazonaws.com/1.36.5/2026-11-06/nitro-sandbox-guest/linux/amd64/nitro-sandbox-guest-disk.img) in Amazon S3, with its `.sha256` sidecar |
+| Firecracker and jailer | `v1.18.0` | `1ac8eec866dd5eea14efecf6323e22b23eea24054545338a5b34bc5bca6623cd` | [`firecracker-v1.18.0-x86_64.tgz`](https://github.com/firecracker-microvm/firecracker/releases/download/v1.18.0/firecracker-v1.18.0-x86_64.tgz) on GitHub, with its `.sha256.txt` |
 | Distro packages | capability-asserted, versions recorded from the run | verified by `apt`'s signed repository metadata | Ubuntu `apt` repositories |
 
 How each pin was checked:
@@ -241,8 +231,9 @@ How each pin was checked:
   (`B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1`, from kernel.org's `pgpkeys` repository); the
   tarball also verifies against its stable-release signature `linux-6.18.56.tar.sign`
   (`647F28654894E3BD457199BE38DBBDC86092693E`).
-- **Host-kernel patch.** One squashed public commit on Amazon Linux's kernel tree,
-  `nitro_enclaves: Amazon Nitro Enclaves extension (port onto 6.18.48)`, which applies
+- **Host-kernel patch.** The Amazon Linux sandbox patch that *Create and update a Nitro Sandbox
+  AMI* links for operating systems other than Amazon Linux: one squashed commit on Amazon Linux's
+  kernel tree, `nitro_enclaves: Amazon Nitro Enclaves extension (port onto 6.18.48)`, which applies
   cleanly to kernel.org 6.18.56. GitHub serves any commit as a patch at its commit URL plus
   `.patch`; [`packages/fetch-kernel-patch.sh`](packages/fetch-kernel-patch.sh) checks the
   SHA-256 and the commit id in the patch's first line before the file takes its final name,
@@ -250,6 +241,20 @@ How each pin was checked:
   with that subject.
 - **erofs-utils.** A cgit snapshot of a tag has no upstream-published checksum, so the
   SHA-256 is pinned by this blueprint itself (confirmed identical across independent fetches).
+- **Runtime release.** AWS signs the release's `SHA256SUM` (ECDSA P-384 over SHA-384), and the
+  build verifies that signature with `openssl dgst -sha384 -verify` and the committed public key,
+  whose own SHA-256 is pinned, as *Download and verify the runtime binaries* describes. The
+  manifest's SHA-256, the archive's and the shim's are pinned too, so another release signed with
+  the same key is still refused. The downloaded `SHA256SUM` is the one AWS signs, not the copy
+  inside the archive.
+- **Guest image.** Each file's `.sha256` sidecar is served from the same unauthenticated place as
+  the file, so it gives integrity, not authenticity. This blueprint pins both SHA-256s itself,
+  from full downloads that matched their sidecars, and the build checks the sidecar and the file
+  against the pin. The EIF and the disk come from the same release: the disk's dm-verity root
+  hash is in the EIF's measured kernel command line.
+- **Firecracker.** The release's `.sha256.txt` and the pin must agree, and the two binaries the
+  build reads out of the tarball are pinned by their own SHA-256 (the values the tarball's own
+  `SHA256SUMS` lists).
 - **Base AMI.** No SHA-256 to pin: it is a signed image resolved from a Parameter Store
   value Canonical's own AWS account owns. Canonical republishes it under new serials (the
   image name ends in the serial), so the build records the image ID, name and serial it
@@ -265,33 +270,37 @@ To produce one offline-consumable archive of the pinned public file inputs (kern
 host-kernel patch, erofs-utils) with its SBOM, license summary and provenance record, run
 [`packages/make-bundle.sh build`](packages/make-bundle.sh); consume a pre-built bundle on
 a restricted-network host with `packages/make-bundle.sh consume <bundle-dir>`. The runtime
-archive is never bundled.
+release, the guest image and Firecracker are never bundled: the build host downloads them.
 
-### The runtime archive
+### The runtime inputs, and what lands on the node
 
-The runtime ships as one flat zip, `nitro-sandbox-binaries-2026-10-28.zip`, with a
-`SHA256SUMS` inside that covers all eight files. It is an operator-supplied preview archive, checksum-pinned, with no public download: **ask your AWS account team for it**. Never commit it, and never put
-it in this blueprint folder.
+The node gets what *Create and update a Nitro Sandbox AMI* puts on it: the shim, which also runs
+as the CRI proxy, Firecracker and its jailer, the guest image pair with its shim config, the
+`cri-proxy` unit and the two containerd runtime handlers. The rest of the runtime release is not
+installed: the guest agent runs inside the guest image, and `eks-nitro-sandbox-genpolicy` runs on
+a workstation or in a build pipeline.
 
 | File | SHA-256 | Installed on the node as |
 |---|---|---|
-| `nitro-sandbox-binaries-2026-10-28.zip` (the archive) | `6830dc8d0acb356b06753fed609ebb9f03a182e340eaa27cd9ed171f7667ba40` | not installed; verified, unpacked, then removed before baking |
-| `containerd-shim-nitro-sandbox-v2` | `991a3786577d19ec3ee5005c90530cc1b2464c052af0218b1064f54c3c2aa7c9` | `/usr/sbin/containerd-shim-nitro-sandbox-v2`, mode 0755 (also the CRI proxy) |
-| `firecracker` | `13a369b76af5f87039944f52dd6c4ef292cfdfc818a9b6e87d174b86920f5a31` | `/usr/bin/firecracker`, mode 0755 |
-| `jailer` | `b7067964a02a0f6a35244a54a763f8bc420dac8c5ff4d471b2102845357293a3` | `/usr/bin/jailer`, mode 0755 (it unpacks as 0644) |
-| `eks-nitro-sandbox-genpolicy` | `8bb076d5f4c631f9a0a91c58f249876f49d1c4f794b7241fbbbb2398da3fbad2` | `/usr/local/bin/eks-nitro-sandbox-genpolicy`, mode 0755 |
-| `nitro-sandbox-keyprovider` | `57407a2f47e56ee46736bcdce73d48a6a10af25c613dfa08370cd0c081814c3f` | `/usr/local/bin/nitro-sandbox-keyprovider`, mode 0755 |
-| `latest.eif` | `31f21cf805e193710295a1dbee2e98847c4d8a0cc040597cb6abc39d3aad5105` | `/var/lib/nitro-sandbox-images/latest.eif`, mode 0644 (guest boot image, guest kernel 6.18.54) |
-| `latest-disk.img` | `932a251aab211785c10620ab17ac314f5c09da3c2b61f7917acdf2208b6c3eb7` | `/var/lib/nitro-sandbox-images/latest-disk.img`, mode 0644, with `rootfs.ext4` linked to it |
-| `nitro-sandbox-agent` | `df85d0ea5b5021004110b2322283e2bd35b01c668ffd838573bc8f28bc8b6b8c` | not installed on the host: the copy inside `latest-disk.img` runs in the guest |
+| `containerd-shim-nitro-sandbox-v2`, from the runtime release | `fe86bb80bdd69443135300105ce20bc2d1e6f24ef97591f9a5da7ab56a3c67c3` | `/usr/sbin/containerd-shim-nitro-sandbox-v2`, mode 0755 (also the CRI proxy) |
+| `firecracker-v1.18.0-x86_64`, from the Firecracker release | `b33f46cd6d88834cf6a4f8d184f08f219809c636236bffd286d233a60602a2ba` | `/usr/bin/firecracker`, mode 0755 |
+| `jailer-v1.18.0-x86_64`, from the Firecracker release | `ddadbaa15b5c942271a83b7040ca7259c8ccf92a9e08d44cce0b86fa407ba460` | `/usr/bin/jailer`, mode 0755 |
+| `nitro-sandbox-guest.eif` | `bcbf2e9da531ffaee6691db5661c75b3564f151cb411227c5a7f9a530db72182` | `/var/lib/nitro-sandbox-images/latest.eif`, mode 0644 (guest boot image, guest kernel 6.18.56) |
+| `nitro-sandbox-guest-disk.img` | `08f8e6d2d032829bff9c4c4907cd44242f46bcf6b1bbc2e6aea691c82bee902c` | `/var/lib/nitro-sandbox-images/latest-disk.img`, mode 0644, with `rootfs.ext4` linked to it |
+| `SHA256SUM` and `SHA256SUM.sig`, the runtime release's signed manifest | `33df467673f08654c611c0820bd7c6449a7bd5280c3a0690e36dbb475ceed972` (the manifest) | `/usr/local/share/ubuntu-ami-sample/runtime/`, so the image's own check can verify the signature again |
+| The runtime release's other files (`nitro-sandbox-agent`, `eks-nitro-sandbox-genpolicy`, `ecs-nitro-sandbox-genpolicy`, `nitro-sandbox-keyprovider`, `nitro-sandbox-policy-eval`, `nitro-sandbox-shim-logger-wrapper`), and the two archives | | not installed; the downloads are removed before baking |
 
-Place the archive in `RUNTIME_ARTIFACTS_DIR`, which defaults to the repository's gitignored
-`tmp/issue10/run/runtime` (all of this blueprint's local state lives under `tmp/issue10/run`, in
-`logs/`, `out/` and `runtime/`). [`packages/fetch-runtime-artifacts.sh`](packages/fetch-runtime-artifacts.sh)
-checks the archive's SHA-256, refuses any member that is not a plain file with a flat name,
-unpacks it, and then fails closed unless `SHA256SUMS` lists every unpacked file exactly once,
-every hash matches, and every file matches its pin in `packages/sources.lock`, so a
-re-packed archive whose `SHA256SUMS` was edited to match is still refused.
+[`packages/fetch-runtime-artifacts.sh`](packages/fetch-runtime-artifacts.sh) does the downloads and
+the checks, on the build host, from
+[`scripts/30-runtime-install.sh`](scripts/30-runtime-install.sh). It checks the public key and the
+signed manifest first, then every download against its pin. Before it reads anything out of an
+archive, it checks every member: the runtime archive must hold only regular files with flat names,
+and nothing in either archive may be absolute, hold `..`, be a link or a device, or appear twice.
+Then it checks each file it reads out against its pin, and refuses on the first mismatch, with no
+override flag. Everything it fetches stays under `RUNTIME_ARTIFACTS_DIR`: on the build host
+`/var/lib/ubuntu-ami-sample/run/runtime`, which bake-prep removes; on your workstation, for
+`./setup.sh --prepare`, the repository's gitignored `tmp/issue10/run/runtime` (all of this
+blueprint's local state lives under `tmp/issue10/run`, in `logs/`, `out/` and `runtime/`).
 
 ## Build
 
@@ -305,7 +314,7 @@ cp config.env.example config.env
 # current context.
 $EDITOR config.env
 
-./setup.sh --prepare   # local only: verify every pinned input and the runtime archive
+./setup.sh --prepare   # local only: verify every pinned input this workstation can reach
 ./setup.sh             # check the cluster, build, bake, verify, join, and run the pods
 # or in two stages:
 #   ./setup.sh --ami-only              # build, verify and tag the AMI; no cluster needed
@@ -320,14 +329,14 @@ must be one no other blueprint uses.
 
 ```mermaid
 flowchart TB
-  P["Verify pinned inputs + runtime archive locally"] --> Q["Check vpc-cni add-on + RuntimeClass (read only)"]
+  P["Verify pinned inputs + the runtime release's signed manifest locally"] --> Q["Check vpc-cni add-on + RuntimeClass (read only)"]
   Q --> Z["Create scoped IAM roles + build-host instance profile"]
   Z --> A["Resolve base AMI via SSM; record serial"]
-  A --> S["Per-run S3 staging bucket; upload scripts + runtime archive"]
+  A --> S["Per-run S3 staging bucket; upload the scripts"]
   S --> B["Build host downloads + verifies; containerd 2.1 to 2.3 gate"]
   B --> C["Kernel 6.18.56 + public patch; assert .config after olddefconfig"]
   C --> D["erofs-utils 1.8.10 with zstd"]
-  D --> G["Install runtime; wire containerd + kubelet; load AppArmor profile"]
+  D --> G["Download + verify runtime, guest image, Firecracker; install; wire containerd + kubelet; load AppArmor profile"]
   G --> H["Bake; verify a fresh instance; tag BtfValidated=true"]
   H --> I["Join tainted node group; wait for nitro-sandbox capacity; apply pods"]
 ```
@@ -380,8 +389,10 @@ AMI. After the reboot onto the new kernel, the build host must answer with a new
 next stage runs, and the run's evidence records both boot IDs. A read that keeps failing ends
 in "could not determine", which stops the run.
 
-**1. Check the inputs and the cluster.** `./setup.sh --prepare` verifies every pinned input
-and the runtime archive on your workstation and creates nothing. A full `./setup.sh` then
+**1. Check the inputs and the cluster.** `./setup.sh --prepare` verifies, on your workstation, every
+pinned input it can reach without the large runtime downloads (the kernel, the patch, erofs-utils,
+the runtime release's signed manifest and the guest image and Firecracker sidecars), and creates
+nothing. A full `./setup.sh` then
 reads two cluster-wide prerequisites before it creates anything: the `vpc-cni` add-on is
 `ACTIVE`, and the shared `isolated-sandbox` RuntimeClass selects only labels the blueprint's
 node will carry. It stops with the command to run if either is not so.
@@ -392,15 +403,15 @@ the image ID, name and serial it got in the run's private evidence (under
 `tmp/issue10/run/out/runs/<run-id>/evidence/`), not on the image. It never hard-codes an AMI
 ID or serial.
 
-**3. Stage the files through a private, per-run S3 bucket.** The runtime archive is about
-150 MB and its guest disk unpacks to 2 GiB, so nothing large is pushed through an SSM shell.
+**3. Stage the scripts through a private, per-run S3 bucket.** Nothing is pushed through an SSM
+shell, and the build host downloads the runtime inputs from their public locations itself (step 6).
 [`scripts/00b-stage-bucket.sh`](scripts/00b-stage-bucket.sh) creates a bucket for this run,
 tagged `ManagedBy=<RESOURCE_PREFIX>` and `RunId=<run-id>`, with S3 Block Public Access on,
 default encryption (SSE-S3) and the TLS-only policy in
 [`deploy/s3-stage-bucket-policy.json`](deploy/s3-stage-bucket-policy.json); it uploads the
-blueprint's scripts and the archive with their SHA-256 (S3 checks it on receipt) and grants the
+blueprint's scripts with their SHA-256 (S3 checks it on receipt) and grants the
 build-host role read on this run's prefix only. The build host downloads them with its
-instance profile and checks each SHA-256 against the value `./setup.sh` sends over SSM, not
+instance profile and checks the SHA-256 against the value `./setup.sh` sends over SSM, not
 one read from the bucket. If any staging step fails after the bucket exists, the helper removes
 what it created before it stops. Then the staged objects and the build role's read are deleted,
 but only after the bucket and the role are confirmed to carry this run's two tags and the role's
@@ -410,9 +421,12 @@ stops. The empty bucket stays until
 `./clean.sh --delete-aws-resources` removes it.
 
 **4. Check containerd, then build the host kernel.** The build host's first preflight reads
-the booted base image's containerd: the GA shim runs on containerd 2.1.x, 2.2.x and 2.3.x,
-and the build stops before anything is compiled on 2.4 or later, or anything older than 2.1
-(a new Canonical serial can ship a newer containerd). [`scripts/10-kernel.sh`](scripts/10-kernel.sh)
+the booted base image's containerd: this blueprint is validated on containerd 2.1.x, 2.2.x and
+2.3.x (the User Guide asks for 2.0 or later), and the build stops before anything is compiled on
+2.4 or later, or anything older than 2.1 (a new Canonical serial can ship a newer containerd). The
+same preflight checks the runtime release's signed manifest and the guest image and Firecracker
+sidecars against their pins, so a moved pin stops the build before the compile.
+[`scripts/10-kernel.sh`](scripts/10-kernel.sh)
 then fetches and verifies kernel.org `linux-6.18.56.tar.xz` and the public patch, applies the
 patch in a throwaway git repository and checks it is the expected single commit, and starts
 `.config` from the running node's own config. It asserts on the result of `olddefconfig`,
@@ -441,107 +455,25 @@ build applies it to `.config` right after `make olddefconfig`, prints one `ok:` 
 symbol, and stops before anything is compiled if a required symbol is missing or has the wrong
 value. SSM Run Command returns only the first 24,000 characters of a command's output, and
 the kernel stage prints far more than that, so those `ok:` lines do not reach the run's
-evidence. Run `20261030t025526z407c` passed that gate: its build went on to compile the kernel
-and rebooted the build host onto `6.18.56-nitro-ga`. Once the runtime was installed,
-`verify-image.py` checked on the build host, running that kernel, what those symbols provide:
+evidence. A build that passes the gate goes on to compile the kernel and reboots the build host
+onto `6.18.56-nitro-ga`. Once the runtime is installed, `verify-image.py` checks on the build
+host, running that kernel, what those symbols provide (the end of its result, from `./setup.sh`
+step 7):
 
 ```text
-  [build]   "checks": {
-  [build]     "host_kernel": {
-  [build]       "ok": true,
-  [build]       "detail": "6.18.56-nitro-ga"
-  [build]     },
-  [build]     "nitro_enclaves_device": {
-  [build]       "ok": true,
-  [build]       "detail": "/dev/nitro_enclaves"
-  [build]     },
-  [build]     "btf": {
-  [build]       "ok": true,
-  [build]       "detail": "/sys/kernel/btf/vmlinux 6817803 bytes"
-  [build]     },
-  [build]     "cma": {
-  [build]       "ok": true,
-  [build]       "detail": "CmaTotal 61526016 kB"
-  [build]     },
-  [build]     "vsock": {
-  [build]       "ok": true,
-  [build]       "detail": "/dev/vhost-vsock"
-  [build]     },
-  [build]     "tun": {
-  [build]       "ok": true,
-  [build]       "detail": "/dev/net/tun"
-  [build]     },
-  [build]     "erofs": {
-  [build]       "ok": true,
-  [build]       "detail": "erofs in /proc/filesystems"
-  [build]     },
-  [build]     "apparmor": {
-  [build]       "ok": true,
-  [build]       "detail": "enabled; ubuntu-ami-sample-profile loaded in enforce mode"
-  [build]     },
-  [build]     "containerd_version": {
-  [build]       "ok": true,
-  [build]       "detail": "containerd 2.2.1 (2.2.1): supported by the GA shim (2.1.x to 2.3.x)"
-  [build]     },
-  [build]     "runtime_wiring": {
-  [build]       "ok": true,
-  [build]       "detail": "template, dump, bootstrap endpoint, shim config, drop-in and cri-proxy unit parsed and correct"
-  [build]     },
-  [build]     "guest_image": {
-  [build]       "ok": true,
-  [build]       "detail": "/var/lib/nitro-sandbox-images: latest.eif, latest-disk.img, rootfs.ext4 -> latest-disk.img"
-  [build]     },
-  [build]     "mkfs_erofs": {
-  [build]       "ok": true,
-  [build]       "detail": "mkfs.erofs (erofs-utils) 1.8.10; zstd ok as a systemd service"
-  [build]     },
-  [build]     "runtime_payloads": {
-  [build]       "ok": true,
-  [build]       "detail": "7 installed files match SHA256SUMS and sources.lock, with their modes"
-  [build]     },
-  [build]     "package_holds": {
-  [build]       "ok": true,
-  [build]       "detail": "held and blacklisted for unattended upgrades: containerd linux-aws linux-headers-aws linux-image-aws"
-  [build]     }
-  [build]   }
-  [build] image_configuration: PASS (14 checks)
+TODO: output from the fresh run
 ```
 
-*Abridged:* `./setup.sh` step 7, the end of the build host's `verify-image.py` result from run
-`20261030t025526z407c`: its `checks` map and its summary line, whole. The JSON's first three
-lines and its closing brace are left out. Each line keeps the `[build]` prefix `./setup.sh`
-puts on the build host's output; no value was replaced. Step 9 repeats the same 14 checks on a
-second, fresh instance before `BtfValidated=true` is tagged (that block is under
-[Evidence](#evidence)).
+Step 9 repeats the same checks on a second, fresh instance before `BtfValidated=true` is tagged
+(that block is under [Evidence](#evidence)).
 
 On the node that joined from the AMI, `./test.sh` section 2/7 reads the same host requirements
 again, each device and feature probe next to the same probe of something that does not exist
 (the `_bogus` lines):
 
 ```text
-  node> KERNEL=6.18.56-nitro-ga
-  node> btf=present
-  node> btf_bogus=absent
-  node> ne=present
-  node> ne_bogus=absent
-  node> vsock=present
-  node> vsock_bogus=absent
-  node> tun=present
-  node> tun_bogus=absent
-  node> cma=14456832
-  node> cma_bogus=
-  node> erofs=present
-  node> erofs_bogus=absent
-  node> handler=present
-  node> handler_bogus=absent
-  node> containerd_gate=ok
-  node> containerd_version=containerd github.com/containerd/containerd/v2 2.2.1
+TODO: output from the fresh run
 ```
-
-*Abridged:* the node's readings from `./test.sh` section 2/7 of run `20261030t025526z407c`,
-the 17 lines after the section's header line; the AppArmor readings that follow are shown
-under [Evidence](#evidence), and the section's `PASS` lines are left out. No value was
-replaced.
 
 **5. Build erofs-utils with zstd.** The containerd shim builds each container's EROFS
 filesystem with zstd and has no fallback, and Ubuntu 24.04's erofs-utils 1.7.1 has no zstd.
@@ -551,10 +483,14 @@ The build fetches the `1.8.10` snapshot, verifies it, builds it with
 how containerd runs it.
 
 **6. Install and wire the runtime.** [`scripts/30-runtime-install.sh`](scripts/30-runtime-install.sh)
-re-verifies the archive, installs each file at the path and mode in the table above, links
-`rootfs.ext4`, writes `/etc/containerd/nitro-sandbox.toml` with `debug = false` (the
-production setting; `SHIM_DEBUG=true` gives debug-mode enclaves for troubleshooting only), and
-installs and enables, but does not start, `cri-proxy.service`.
+downloads the runtime release, the guest image pair and Firecracker and verifies them (see
+[The runtime inputs, and what lands on the node](#the-runtime-inputs-and-what-lands-on-the-node)),
+installs each file at the path and mode in that table, keeps the signed manifest on the image,
+links `rootfs.ext4`, and writes `/etc/containerd/nitro-sandbox.toml` with the keys the User
+Guide's shim config sets (`kernel_path` at the staged EIF, `kubeconfig_path`,
+`format_overlay = true`), `cpu_overcommit = true`, `pcie_slots = 110` and `data_base_dir`, and
+`debug = false` (the production setting; `SHIM_DEBUG=true` gives debug-mode enclaves for
+troubleshooting only). It installs and enables, but does not start, `cri-proxy.service`.
 [`scripts/31-wire-containerd.sh`](scripts/31-wire-containerd.sh) adds the `isolated-sandbox`
 and `confidential-sandbox` handlers to Canonical's containerd template
 `/usr/local/share/eks/containerd-config.toml` (config version 2, with
@@ -570,8 +506,8 @@ and stops unless the kernel reports it in enforce mode and its load service is e
 `containerd` binary with `dpkg -S` and holds what it finds (on Canonical's serial `20261027`
 that was `containerd`), together with the installed Ubuntu kernel meta-packages, with
 `apt-mark hold` and in `Unattended-Upgrade::Package-Blacklist`, so an
-unattended upgrade can neither move containerd past the GA shim's range nor pull a stock
-kernel that GRUB could boot instead of `6.18.56-nitro-ga`. Everything else keeps the base
+unattended upgrade can neither move containerd past the range this blueprint is validated on nor
+pull a stock kernel that GRUB could boot instead of `6.18.56-nitro-ga`. Everything else keeps the base
 AMI's update policy: package-list refresh and unattended security upgrades stay on.
 
 > **Trade-off: held packages get updates only through a new AMI build.** containerd and the
@@ -581,32 +517,60 @@ AMI's update policy: package-list refresh and unattended security upgrades stay 
 **Observe:** a completed `./setup.sh` writes a plain-text manifest on the image,
 `/etc/ubuntu-ami-sample-manifest`, recording the kernel release and the SHA-256 of its
 tarball and patch, the erofs-utils version and installed binary hash, each installed runtime
-file's path, mode and SHA-256, the observed containerd version and the shim's debug setting,
-so a later reader can audit the image without the build host.
+file's path, mode, SHA-256 and `sources.lock` block, the runtime release, guest image and
+Firecracker versions, the observed containerd version and the shim's debug setting, so a later
+reader can audit the image without the build host. The runtime release's signed `SHA256SUM` and
+its signature stay on the image too, in `/usr/local/share/ubuntu-ami-sample/runtime/`.
 
 **7. Verify a fresh instance, then tag the AMI `BtfValidated=true`.** Before baking,
 [`scripts/50-bake-prep.sh`](scripts/50-bake-prep.sh) removes the kernel tree, the downloaded
-kernel tarball and patch, the archives, the staged downloads, the build toolchain, SSH host
-keys and the machine ID, and refuses to continue if any of them is still there, or if its scan
-for them fails ("could not determine" is a failure, never a pass). It does not change the
-base AMI's apt update policy. After the AMI
+kernel tarball and patch, the runtime release, guest image and Firecracker downloads, the staged
+scripts, the build toolchain, SSH host keys and the machine ID, and refuses to continue if any of
+them is still there, or if its scan for them fails ("could not determine" is a failure, never a
+pass). It does not change the base AMI's apt update policy. After the AMI
 is registered, `./setup.sh` launches a SECOND, fresh instance from it
 ([`scripts/verify-fresh-instance.sh`](scripts/verify-fresh-instance.sh)) and runs
 [`scripts/verify-image.py`](scripts/verify-image.py) and `40-smoke.sh` on that instance, never
 on the build host's own run. `verify-image.py` checks the kernel release
 `6.18.56-nitro-ga`, `/dev/nitro_enclaves`, BTF, a CMA reservation, vsock, TUN, EROFS,
 AppArmor with the scoped profile loaded, containerd 2.1.x to 2.3.x, both handlers, the kubelet
-endpoint, `mkfs.erofs` 1.8.10 with zstd as a service sees it, and every installed runtime file
-against `SHA256SUMS` and its pin, the AppArmor profile in enforce mode, and the package
-holds. Each check raises its own failure (no Python `assert`, which `python3 -O` would
+endpoint, the shim config (only the keys the shim reads), the guest image layout, the guest
+kernel release inside `latest.eif` (read from its kernel's header and compared whole with the pin,
+`6.18.56`, so the host's `6.18.56-nitro-ga` is refused), `mkfs.erofs` 1.8.10 with zstd as a
+service sees it, every installed runtime file against its pin, the runtime release's signed
+manifest (its signature verified again with the committed key), and the package holds: 16 checks.
+Each check raises its own failure (no Python `assert`, which `python3 -O` would
 remove). Only once both checks pass does the script tag the AMI
 `BtfValidated=true` ([`scripts/lib/btf-tag.sh`](scripts/lib/btf-tag.sh)), alongside the
-`ManagedBy=<RESOURCE_PREFIX>` ownership tag, the pinned kernel and erofs-utils versions and
-the verification run's id. If verification fails, the AMI never receives `BtfValidated=true`,
+`ManagedBy=<RESOURCE_PREFIX>` ownership tag and the build-metadata tags below.
+If verification fails, the AMI never receives `BtfValidated=true` or those tags,
 and the tagging step refuses any AMI that does not already carry both of this run's tags
 (`ManagedBy` and `RunId`). The verification instance is terminated however the script ends. This tag is the contract the `cilium-ubuntu` blueprint's (issue #11) AMI preflight checks:
 `BtfValidated=true` means "a fresh instance booted from this AMI passed this blueprint's
 host-readiness and BTF checks," never "an AMI was merely created."
+
+The tags the AMI carries once it is verified, each value read from `packages/sources.lock`, the
+run or its configuration, never typed twice:
+
+| Tag | Value | Set when |
+|---|---|---|
+| `Name` | `<RESOURCE_PREFIX>-<RUN_ID>` | `create-image` (`./setup.sh` step 8/10) |
+| `ManagedBy` | `ubuntu-ami-sample` (`RESOURCE_PREFIX`) | `create-image`; kept by the verification |
+| `RunId` | `<RUN_ID>` | `create-image` |
+| `BaseAmiSerial` | the Canonical base AMI serial the run resolved | `create-image` |
+| `BtfValidated` | `true` | only after the fresh instance passes `verify-image.py` and `40-smoke.sh` |
+| `KernelVersion` | `6.18.56` (`KERNEL_VERSION`) | with `BtfValidated` |
+| `ErofsUtilsVersion` | `1.8.10` (`EROFS_UTILS_VERSION`) | with `BtfValidated` |
+| `RuntimeRelease` | `0.1.4274.0` (`runtime-release` `ref`) | with `BtfValidated` |
+| `GuestImageRelease` | `1.36.5/2026-11-06` (`guest-image-eif` `ref`) | with `BtfValidated` |
+| `FirecrackerVersion` | `v1.18.0` (`firecracker-release` `ref`) | with `BtfValidated` |
+| `HostKernelPatch` | `4ae89f6e09f949848123407602b4e5a8bb8d8631` (`host-kernel-patch` `ref`) | with `BtfValidated` |
+| `GuestKernelRelease` | `6.18.56` (`guest-image-eif` `guest_kernel`, the release `verify-image.py` read out of `latest.eif`) | with `BtfValidated` |
+| `BtfValidatedBuildId` | `<RESOURCE_PREFIX>-<RUN_ID>-verify`, the verification instance's name | with `BtfValidated` |
+
+The snapshot behind the AMI carries `Name`, `ManagedBy` and `RunId`. `GuestKernelRelease` is the
+pin because the build cannot run a sandbox pod before the AMI exists: `./test.sh` section 5/7 then
+checks, on the node, that the sandbox pod's `uname -r` is that tag's value.
 
 **8. Join the dedicated node group, then wait for sandbox capacity.**
 [`scripts/join-nodegroup.sh`](scripts/join-nodegroup.sh) creates the launch template and the
@@ -627,50 +591,35 @@ and advertises allocatable `eks.amazonaws.com/nitro-sandbox` greater than zero (
 resource the RuntimeClass's overhead requests), and stops with a clear message if it does not.
 
 > **containerd is a gate, not an install.** The build checks that the base image's
-> containerd is one the GA shim runs on; it never upgrades or downgrades the containerd
-> already on the base AMI.
+> containerd is in the range this blueprint is validated on; it never upgrades or downgrades the
+> containerd already on the base AMI.
 
 ## Evidence
 
-> **Every block on this page is from one fresh run**, `20261030t025526z407c`: an independent
-> walk of this page from a fresh clone, which ran a full `./setup.sh` (with the fresh-instance
-> verification) and then `./test.sh` (52 passed, 0 failed). Lines are copied whole and in
-> order. Values from the test account are shown as placeholders, and the note under each block
-> says which ones, and whether lines were left out.
+> **Every output block on this page will come from one fresh run** of this version: a full
+> `./setup.sh` (with the fresh-instance verification), then `./test.sh`. Until that run, each
+> block reads `TODO: output from the fresh run`. Lines will be copied whole and in order, values
+> from the test account shown as placeholders, and the note under each block will say which
+> ones, and whether lines were left out.
 
 **Node vs guest kernel, and host vs guest block devices.** The same shape Getting started
 uses: the ordinary pod shares the node's kernel, `6.18.56-nitro-ga`, and sees the
-instance's `nvme*` disks; the isolated-sandbox pod reports its own guest kernel, `6.18.54`
-(the kernel inside `latest.eif`), and sees only virtio `vd*` disks, no `nvme*`.
+instance's `nvme*` disks; the isolated-sandbox pod reports its own guest kernel, `6.18.56`
+(the kernel inside `latest.eif`, compared whole, since it shares its base release with the
+host's), and sees only virtio `vd*` disks, no `nvme*`. `./test.sh` also reads the AMI's
+`GuestKernelRelease` tag, from the AMI the run recorded, and checks that the sandbox pod reports
+exactly that release.
 
 ```text
-== 5/7 guest boundary: kernel and block devices, ordinary pod vs isolated-sandbox pod =====
-  ordinary pod kernel:         6.18.56-nitro-ga
-  ordinary pod /sys/block:     loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 loop8 nvme0n1
-  isolated-sandbox kernel:     6.18.54
-  isolated-sandbox /sys/block: dm-0 vda vdb vdc
-  PASS  the ordinary pod shares the host kernel 6.18.56-nitro-ga
-  PASS  the sandbox pod runs the guest kernel 6.18.54, not the host's
-  PASS  the ordinary pod sees the host's nvme* devices
-  PASS  the sandbox pod sees virtio vd* devices and no nvme*
+TODO: output from the fresh run
 ```
-
-*`./test.sh` section 5/7, whole. No value was replaced; the trailing space at the end of the
-two `/sys/block` lines was removed.*
 
 **Boot uptime matches the pod's age**, because the VM boots with the pod, while the ordinary
 pod reads the host's much longer uptime:
 
 ```text
-== 6/7 guest boundary: boot uptime matches the sandbox pod's age, not the host's =========
-  host uptime (ordinary pod): 696 s
-  sandbox guest uptime:       567 s
-  sandbox pod age:            573 s (started 2026-10-30T04:44:15Z)
-  PASS  the sandbox guest booted with its pod (uptime <= pod age + 120 s)
-  PASS  the sandbox guest booted after the host (guest uptime < host uptime)
+TODO: output from the fresh run
 ```
-
-*`./test.sh` section 6/7, whole. No value was replaced.*
 
 **Host-requirement accept/reject controls.** Each control below is proven both ways: one
 input that has the requirement and passes, one that is missing it and is refused, per this
@@ -682,21 +631,23 @@ that accepts everything.
 | Kernel config assertion | every required symbol present after `olddefconfig` | `CONFIG_NITRO_ENCLAVES=m`, BTF off or missing, module BTF off, CMA off, `VHOST_VSOCK` or `TUN` dropped, the `VIRT_DRIVERS` gate off |
 | Root filesystem at boot | `CONFIG_EXT4_FS=y` with or without `ext4.ko`; `=m` with `ext4.ko` (plain or compressed) in the initramfs | `=m` with no `ext4.ko`, a file that only starts with `ext4.ko`, EXT4 not set |
 | Host kernel | the node reports `6.18.56-nitro-ga` | any other release |
+| Guest kernel | `6.18.56` inside `latest.eif` (its kernel's header), and the same from `uname -r` in the sandbox pod, which also equals the AMI's `GuestKernelRelease` tag | the host's `6.18.56-nitro-ga`, a suffixed release, `6.18.54`, a file that is not an EIF, a tag that is wrong, empty or unreadable, a run with no recorded AMI |
 | BTF presence | `/sys/kernel/btf/vmlinux` present and non-empty | the same probe on a path that does not exist |
 | Nitro Enclaves device | `/dev/nitro_enclaves` present after reboot | the same probe on a device that does not exist |
 | CMA pool | a non-zero `CmaTotal` | the same probe on a key that does not exist |
 | `vsock` and TUN | `/dev/vhost-vsock` and `/dev/net/tun` present | the same probes on devices that do not exist |
 | EROFS + zstd | `mkfs.erofs` 1.8.10 builds a zstd image as a systemd service | erofs-utils without zstd |
 | containerd | 2.1.x, 2.2.x, 2.3.x | 2.4.0 and later, 2.0.x and earlier, unreadable versions |
-| Runtime archive | the pinned archive, every payload listed once and matching | a wrong archive hash, a tampered payload, a payload missing from `SHA256SUMS`, an unlisted extra file, a duplicate entry, a re-packed payload |
-| Runtime wiring | both handlers in containerd's migrated config dump, the endpoint at the CRI proxy | a handler name that is not registered |
+| Runtime release, guest image, Firecracker | the pinned public key, a manifest that verifies with it and lists the archive and the shim at their pins, every sidecar and download at its pin, archives whose members are all safe | another key, a bad signature, a manifest changed after signing or not the pinned one, a manifest without the shim or with a malformed line, a sidecar that disagrees or is not a hash, a swapped or non-tar archive, a member with a path, `..`, an absolute name or a link, two members of one name, a missing or tampered shim or jailer, a failed download |
+| Installed runtime files | every file at its pinned path, mode and SHA-256; the kept manifest verifies again | a wrong mode, a tampered shim or EIF, a missing disk, a bad signature, a changed or missing kept manifest |
+| Runtime wiring | both handlers in containerd's migrated config dump, the endpoint at the CRI proxy, the shim config with only the keys the shim reads | a handler name that is not registered, a key the shim does not read (such as `rootfs_path`) |
 | Node labels and taint | one active `bootstrap.sh` command for this cluster, its name last after every option, whose `--kubelet-extra-args` carry all three labels and the taint | any one missing, the strings only in a comment, an `exit` before the command, two commands, a command for another cluster, the cluster name first or before an option |
 | Launch specs | IMDSv2 required, hop limit 1, enclaves on, `ManagedBy` and `RunId` on instance and volume | IMDSv1 allowed, hop limit 2, no metadata options, IMDS off, enclaves off, a volume without `RunId`, another run's `RunId` |
 | Kube context | the context's server is `CLUSTER_NAME`'s API endpoint | another cluster's server, an unknown context, no `KUBE_CONTEXT` |
 | AppArmor stage | the profile loaded in enforce mode, its service enabled | complain mode, a failed `systemctl enable`, a service that is not enabled |
 | AppArmor profile rules | `signal (receive)` from `runc` and `unconfined`, `signal (send,receive)` with itself, `audit deny /etc/shadow* w,`, no plain `deny` | a `signal` rule missing or only in a comment, a plain `deny`, no `/etc/shadow` rule, another profile name |
 | Package holds | the containerd owner and the kernel meta-packages held and blacklisted | a hold missing from `apt-mark showhold` or from the blacklist |
-| Bake residue | no build residue left | residue present, or a scan that fails |
+| Bake residue | no build residue left | residue present (a kernel or erofs-utils archive, a runtime download under its download name, a partial download), or a scan that fails |
 | Sandbox capacity | the node advertises `eks.amazonaws.com/nitro-sandbox` > 0 | zero, absent, or a node that is not `Ready` |
 | No network in the validation sandbox | the `network-isolated` annotation read back; only loopback has an address; no route; every interface but `lo` down (a `dummy0` that is down passes); the connect fails with `Network is unreachable` while the ordinary pod's connects | an extra IPv4 or IPv6 address, a route, an interface other than `lo` that is up, a refused or timed-out connect, an unreadable file or an incomplete read |
 
@@ -707,105 +658,8 @@ blueprint. Written by `scripts/verify-fresh-instance.sh` via `scripts/lib/btf-ta
 (`ManagedBy=<RESOURCE_PREFIX>` and `RunId=<RUN_ID>` checked first).
 
 ```text
-[2026-10-30T04:29:26Z] Step 9/10: fresh-instance verification on a SECOND instance, then tag BtfValidated=true on success (scripts/verify-fresh-instance.sh)
-[2026-10-30T04:29:26Z] launching fresh verification instance ubuntu-ami-sample-20261030t025526z407c-verify from <AMI_ID>
-LAUNCH SPEC OK: <repository>/tmp/issue10/run/out/runs/20261030t025526z407c/verify-instance-launch.json
-[2026-10-30T04:29:29Z] instance: <INSTANCE_ID>
-[2026-10-30T04:32:33Z] running: verify-image.py
-Success
-{
-  "image_configuration": "PASS",
-  "failed": [],
-  "checks": {
-    "host_kernel": {
-      "ok": true,
-      "detail": "6.18.56-nitro-ga"
-    },
-    "nitro_enclaves_device": {
-      "ok": true,
-      "detail": "/dev/nitro_enclaves"
-    },
-    "btf": {
-      "ok": true,
-      "detail": "/sys/kernel/btf/vmlinux 6817803 bytes"
-    },
-    "cma": {
-      "ok": true,
-      "detail": "CmaTotal 14456832 kB"
-    },
-    "vsock": {
-      "ok": true,
-      "detail": "/dev/vhost-vsock"
-    },
-    "tun": {
-      "ok": true,
-      "detail": "/dev/net/tun"
-    },
-    "erofs": {
-      "ok": true,
-      "detail": "erofs in /proc/filesystems"
-    },
-    "apparmor": {
-      "ok": true,
-      "detail": "enabled; ubuntu-ami-sample-profile loaded in enforce mode"
-    },
-    "containerd_version": {
-      "ok": true,
-      "detail": "containerd 2.2.1 (2.2.1): supported by the GA shim (2.1.x to 2.3.x)"
-    },
-    "runtime_wiring": {
-      "ok": true,
-      "detail": "template, dump, bootstrap endpoint, shim config, drop-in and cri-proxy unit parsed and correct"
-    },
-    "guest_image": {
-      "ok": true,
-      "detail": "/var/lib/nitro-sandbox-images: latest.eif, latest-disk.img, rootfs.ext4 -> latest-disk.img"
-    },
-    "mkfs_erofs": {
-      "ok": true,
-      "detail": "mkfs.erofs (erofs-utils) 1.8.10; zstd ok as a systemd service"
-    },
-    "runtime_payloads": {
-      "ok": true,
-      "detail": "7 installed files match SHA256SUMS and sources.lock, with their modes"
-    },
-    "package_holds": {
-      "ok": true,
-      "detail": "held and blacklisted for unattended upgrades: containerd linux-aws linux-headers-aws linux-image-aws"
-    }
-  }
-}
-image_configuration: PASS (14 checks)
-
-[2026-10-30T04:40:05Z] running: 40-smoke.sh
-Success
-crw-rw---- 1 root root  10, 260 Oct 30 04:30 /dev/nitro_enclaves
--rwxr-xr-x 1 root root  4763448 Oct 30 03:27 /usr/bin/firecracker
--rw-r--r-- 1 root root 13004876 Oct 30 03:27 /var/lib/nitro-sandbox-images/latest.eif
-lrwxrwxrwx 1 root root       15 Oct 30 03:27 /var/lib/nitro-sandbox-images/rootfs.ext4 -> latest-disk.img
-PUT /machine-config -> 204
-PUT /boot-source -> 204
-PUT /drives/rootfs -> 204
-PUT /drives/overlay -> 204
-PUT /vsock -> 204
-PUT /network-interfaces/eth0 -> 204
-PUT /enclave -> 204
-PUT /actions -> 204
-vsock handshake reply: 'OK 1073741824'
---- process alive: yes; agent reachable: 1 after 3s
-smoke 2026-10-30T04:40:11Z: PASS; debug_mode=false
-
-[2026-10-30T04:40:23Z] terminating verification instance <INSTANCE_ID>
-[2026-10-30T04:40:56Z] fresh-instance verification PASS
-[2026-10-30T04:40:58Z] tagged <AMI_ID> BtfValidated=true (fresh-instance verification passed; ManagedBy=ubuntu-ami-sample preserved)
+TODO: output from the fresh run
 ```
-
-*`./setup.sh` step 9, from the step line to the `BtfValidated=true` tag line, whole. This run
-was a full `./setup.sh`, which goes on to step 10 and joins the node group; a
-`./setup.sh --ami-only` run stops after this tag instead. The AMI id, the verification
-instance's id and the repository's absolute path are shown as `<AMI_ID>`, `<INSTANCE_ID>`
-and `<repository>`; the trailing space at the end of the eight `PUT` lines was removed. The
-tag is written 2 s after the `PASS` line, never before it.*
 
 **AppArmor.** AppArmor stays enabled on the host, and the node loads one scoped profile,
 [`manifests/ubuntu-ami-sample-profile`](manifests/ubuntu-ami-sample-profile), installed onto
@@ -823,20 +677,8 @@ scoped profile is loaded in enforce mode, and the node's copy of the profile is 
 file (same sha256). The same probe reads absent for a profile the node never loaded.
 
 ```text
-  node> apparmor_enabled=Y
-  node> apparmor_profile=loaded
-  node> apparmor_profile_bogus=absent
-  node> apparmor_profile_mode=enforce
-  node> apparmor_profile_sha256=b285f498d97bdc427d0303b96d6c68eb86a8caf83a8d9d2b0570e3ba6381548f
-  -- 8a: AppArmor is on and enforcing on the host
-  PASS  AppArmor is enabled host-wide on the node (enabled=Y)
-  PASS  ACCEPT: the scoped profile ubuntu-ami-sample-profile is loaded on the node in enforce mode (mode=enforce)
-  PASS  REJECT: the same probe reads absent for a profile the node never loaded
-  PASS  the profile on the node is this sample's manifests/ubuntu-ami-sample-profile (sha256 b285f498d97bdc427d0303b96d6c68eb86a8caf83a8d9d2b0570e3ba6381548f)
+TODO: output from the fresh run
 ```
-
-*Abridged:* the five AppArmor readings `./test.sh` takes on the node in section 2/7, then the
-8a lines of section 3/7. No value was replaced.
 
 **2. The scoped profile working, on an ordinary pod.**
 [`deploy/pod-apparmor-scoped.yaml`](deploy/pod-apparmor-scoped.yaml) is an ordinary (runc)
@@ -851,26 +693,8 @@ within its 15 s grace period, with no `DENIED` signal logged under the profile. 
 the node never loaded has no `DENIED` lines, as the control for both counts.
 
 ```text
-  -- 8b: the scoped profile works on an ordinary pod on the same node (apparmor-scoped-pod)
-  scoped pod: node=<NODE_NAME> type=Localhost profile=ubuntu-ami-sample-profile phase=Running
-  PASS  the scoped pod requests Localhost ubuntu-ami-sample-profile and runs on the sandbox node (phase=Running)
-  scoped attr/current: 'ubuntu-ami-sample-profile (enforce)'  ordinary attr/current: 'cri-containerd.apparmor.d (enforce)'
-  PASS  ACCEPT: the scoped pod's process is confined by 'ubuntu-ami-sample-profile (enforce)' (attr/current)
-  PASS  REJECT: the same label read on the ordinary pod, which requests no profile, does not name ubuntu-ami-sample-profile
-  scoped pod: write to /etc/shadow: sh: line 1: /etc/shadow: Permission denied WRITE-FAILED
-  scoped pod: write to /etc/ubuntu-ami-sample-write-control: WRITTEN
-  PASS  ACCEPT: the scoped pod's write to /etc/shadow is refused with EACCES (Permission denied)
-  PASS  REJECT: the same pod's write to a path the profile does not deny succeeds (so the refusal is the profile's)
-  node DENIED lines since T0=1793335994 for that write: ubuntu-ami-sample-profile 3, profile-that-does-not-exist 0
-  PASS  ACCEPT: the node's kernel logged the profile's DENIED line for that write since T0
-  PASS  REJECT: the same count for a profile the node never loaded is 0
-  scoped pod deleted by its exact name: gone=yes after 1 s (grace 15 s); signal DENIED lines since T0: ubuntu-ami-sample-profile 0, profile-that-does-not-exist 0
-  PASS  ACCEPT: deleted by its exact name, the scoped pod is gone within its grace period (1 s <= 15 s)
-  PASS  ACCEPT: the node logged no DENIED signal under ubuntu-ami-sample-profile since T0 (the profile lets runc stop the pod)
-  PASS  REJECT: the same signal count for a profile the node never loaded is 0
+TODO: output from the fresh run
 ```
-
-*`./test.sh` section 3/7, the 8b lines, whole. The node's host name is shown as `<NODE_NAME>`.*
 
 **Why the profile has `signal` rules and `audit deny`.** The first version of the profile had
 neither, and a validation run of this blueprint on its own AMI showed what that costs. On Ubuntu
@@ -880,9 +704,9 @@ profile could not be stopped, and kubelet kept logging
 `runc did not terminate successfully: exit status 1: unable to signal init: permission denied`
 (the end of the message). And a plain `deny` rule refuses without logging, so the refused
 `/etc/shadow` write left no `DENIED` line. The profile now has the `signal` rules of
-containerd's default container profile, and every deny rule is `audit deny`. The block above
-shows both on this run: the pod was gone 1 s into its 15 s grace period with 0 signal denials,
-and the refused write left the profile's `DENIED` lines.
+containerd's default container profile, and every deny rule is `audit deny`. The 8b block shows
+both on a run: the pod is gone within its 15 s grace period with no signal denials, and the
+refused write leaves the profile's `DENIED` lines.
 
 **3. A pod naming a profile the node never loaded is refused.** The reject control,
 [`deploy/pod-apparmor-reject.yaml`](deploy/pod-apparmor-reject.yaml), is an ordinary pod on
@@ -892,21 +716,16 @@ and containerd's message for a missing profile, matched whole:
 `failed to get container spec opts: failed to generate apparmor spec opts: apparmor profile not found profile-that-does-not-exist`.
 
 ```text
-  -- 8c: a pod naming a profile the node never loaded is refused
-  reject control: node=<NODE_NAME> phase=Pending reason=CreateContainerError message: failed to get container spec opts: failed to generate apparmor spec opts: apparmor profile not found profile-that-does-not-exist
-  PASS  REJECT: a pod naming an unloaded AppArmor profile is refused on the sandbox node: CreateContainerError 'failed to get container spec opts: failed to generate apparmor spec opts: apparmor profile not found profile-that-does-not-exist'
+TODO: output from the fresh run
 ```
-
-*`./test.sh` section 3/7, the 8c lines, whole. The node's host name is shown as `<NODE_NAME>`.*
 
 **4. Why the sandbox pod runs `Unconfined`.** The isolated-sandbox pod,
 [`deploy/pod-isolated-sandbox.yaml`](deploy/pod-isolated-sandbox.yaml), sets
 `appArmorProfile` `type: Unconfined`. A sandbox pod's profile is not applied on the host: the
-shim passes it into the guest microVM, where runc applies it. The runtime's Ubuntu build notes
-(`UBUNTU.md` in the GA node-build bundle) say that on an AppArmor host "every sandbox pod
-needs `Unconfined`, or kubelet requests the `RuntimeDefault` profile, the shim forwards it
-into the guest, and runc fails with `apparmor failed to apply profile`". A validation run of
-this blueprint on its own AMI showed exactly that. With `type: Localhost` and the scoped
+shim passes it into the guest microVM, where runc applies it. On an AppArmor host every sandbox
+pod therefore needs `Unconfined`; otherwise kubelet requests the `RuntimeDefault` profile, the shim
+forwards it into the guest, and runc fails with `apparmor failed to apply profile`. A validation
+run of this blueprint on its own AMI showed exactly that. With `type: Localhost` and the scoped
 profile, the sandbox pod stopped in `StartError` with
 `apparmor failed to apply profile: write fsmount:fscontext:proc/thread-self/attr/exec: invalid argument`
 (the end of the message), because the guest runs SELinux and has no AppArmor: its process
@@ -914,12 +733,8 @@ label is `system_u:system_r:runtime_t:s0:c0.c1023`. The microVM is the sandbox p
 `./test.sh` prints the sandbox's own label and checks that the pod runs with `Unconfined`.
 
 ```text
-  -- why the sandbox pod runs Unconfined
-  sandbox pod: appArmorProfile type=Unconfined phase=Running attr/current (the guest's own label): 'system_u:system_r:runtime_t:s0:c0.c1023'
-  PASS  the sandbox pod runs with appArmorProfile Unconfined, as the GA build notes require (phase=Running)
+TODO: output from the fresh run
 ```
-
-*`./test.sh` section 3/7, its last three lines, whole. No value was replaced.*
 
 ### The validation sandbox has no network
 
@@ -945,26 +760,8 @@ reports a `podIP` for the sandbox pod: the host side allocates it, and no interf
 guest carries it.
 
 ```text
-== 7/7 the validation sandbox has no network ============================================
-  sandbox pod annotation sandbox.amazonaws.com/network-isolated: true
-  PASS  the sandbox pod carries sandbox.amazonaws.com/network-isolated="true" (read back from the API)
-  sandbox interfaces (/sys/class/net, operstate): dummy0 down, lo unknown
-  sandbox IPv4 local addresses (/proc/net/fib_trie): 127.0.0.1
-  sandbox IPv6 addresses (/proc/net/if_inet6): ::1 on lo
-  sandbox IPv4 routes (/proc/net/route): none (header line only)
-  PASS  only loopback has an address in the sandbox (IPv4: 127.0.0.1; IPv6: ::1 on lo)
-  PASS  the sandbox has no route (/proc/net/route: none (header line only))
-  PASS  every sandbox interface other than lo is down (dummy0 down, lo unknown)
-  kubernetes Service ClusterIP (read from the API): <API_SERVICE_IP>
-  sandbox TCP connect to that ClusterIP on 443: errno=ENETUNREACH (Network is unreachable)
-  PASS  the sandbox's TCP connect to the API Service fails with Network is unreachable (ENETUNREACH)
-  ordinary pod TCP connect to that ClusterIP on 443: connected
-  PASS  the same connect from the ordinary pod succeeds (control for the previous check)
+TODO: output from the fresh run
 ```
-
-*`./test.sh` section 7/7, whole. The cluster's `kubernetes` Service ClusterIP, which test.sh
-prints once on its own line, is shown as `<API_SERVICE_IP>`; no other value was replaced.
-test.sh prints each interface's name and state, not its MAC address.*
 
 The blueprint ships no network policy, and creates no Ingress, LoadBalancer or NodePort. For
 how a network policy restricts where a sandboxed pod can connect, see the
@@ -988,21 +785,21 @@ export PATH="$(cd ../../../tmp/ubuntu-ami-tests/bin && pwd):$PATH"
 
 ```bash
 bash packages/test-bundle.sh          # bundle built and consumed against sources.lock; tampered, unlisted and unsafe members refused
-bash packages/test-inputs.sh          # runtime archive and host-kernel patch (cached or downloaded), both ways
+bash packages/test-inputs.sh          # runtime release signature and pins, guest image and Firecracker, unsafe archive members, host-kernel patch, both ways
 bash scripts/test-host-gates.sh       # containerd gate, .config assertion, root filesystem at boot, IMDS token never on argv
 bash scripts/test-cluster-gates.sh    # kube context, vpc-cni ACTIVE (network policy on or off), RuntimeClass, user data, node capacity, namespace, pod wait
 bash scripts/test-launch-specs.sh     # IMDSv2 hop limit 1, enclaves and run tags on the node template, verification instance and build host; strict bootstrap.sh user data
 bash scripts/test-run-scope.sh        # per-run IAM, run-scoped clean up, the run's lock and record, IAM by name, the node role's access entry, --keep-ami, every failed lookup, --list-runs, staging revocation
-bash scripts/test-image-checks.sh     # containerd wiring, AppArmor stage, package holds, bake residue, verify-image.py (Python 3.11+)
-bash scripts/test-apparmor-checks.sh  # test.sh's AppArmor checks (its node probe run on a fake journal), the Unconfined sandbox, the no-network checks and their control, the run's lock and record; the profile's structure, signal and audit-deny rules
-bash scripts/test-btf-tag.sh          # BtfValidated=true only after both fresh-instance checks pass, only on this run's AMI
+bash scripts/test-image-checks.sh     # containerd wiring, the shim config's keys, AppArmor stage, package holds, bake residue, verify-image.py with the guest kernel in the EIF and the signed manifest (Python 3.11+)
+bash scripts/test-apparmor-checks.sh  # test.sh's AppArmor checks (its node probe run on a fake journal), the Unconfined sandbox, the guest kernel against its pin and the AMI's tag, the no-network checks and their control, the run's lock and record; the profile's structure, signal and audit-deny rules
+bash scripts/test-btf-tag.sh          # BtfValidated=true and the build-metadata tags only after both fresh-instance checks pass, only on this run's AMI
 bash scripts/test-setup-flow.sh       # bounded SSM, AMI, status and reboot waits; --ami-only and --join, the run's record (cluster and Region) and lock, both ways
 bash scripts/test-local-paths.sh      # local state only under the repository's tmp/; the cluster, Region and namespace defaults
 ```
 
 ## Cost note
 
-Measured on the validation run, `20261030t025526z407c`, in `us-west-2` at on-demand prices:
+Measured on an earlier validation run of this blueprint, in `us-west-2` at on-demand prices:
 the `m8i.4xlarge` build host ran about 1.5 h, the `m8i.xlarge` verification instance about
 0.2 h and the `m8i.xlarge` node about 0.4 h, which comes to about $1.50 for the run with its
 EBS volumes, the AMI snapshot, S3 staging and NAT data transfer. That excludes the existing
@@ -1096,22 +893,23 @@ not affected.
 ## Troubleshooting
 
 <details>
-<summary>Preflight stops with the runtime-archive prerequisite</summary>
+<summary>A runtime input is refused: a signature, sidecar or SHA-256 failure</summary>
 
-Expected until you place `nitro-sandbox-binaries-2026-10-28.zip`, an operator-supplied
-preview archive, checksum-pinned, with no public download, which you obtain from your AWS
-account team; see
-[The runtime archive](#the-runtime-archive). Put it in
-`RUNTIME_ARTIFACTS_DIR` (default `tmp/issue10/run/runtime` at the repository root) and re-run
-`./setup.sh --prepare`. A SHA-256 or `SHA256SUMS` failure means the file is not the pinned
-archive: do not use it.
+`./setup.sh --prepare`, the build host's preflight and `scripts/30-runtime-install.sh` stop on the
+first input that does not match `packages/sources.lock`, and name it on a `FATAL` line. A
+signature that does not verify, or a download whose SHA-256 is not the pin, means the file is not
+the one this blueprint pins: do not use it. If AWS has published a newer release, the pinned one
+stays where it is (each URL names its version), so the pin still verifies; move to the new release
+deliberately, by re-pinning it in `packages/sources.lock`, `packages/SOURCES.txt` and the tables on
+this page together, and re-running the build. A `could not download` failure usually means the
+build subnet has no egress to one of the hosts in [Prerequisites](#prerequisites).
 
 </details>
 
 <details>
 <summary>The build host stops on containerd</summary>
 
-The base image's containerd is outside 2.1.x to 2.3.x, the range the GA shim runs on.
+The base image's containerd is outside 2.1.x to 2.3.x, the range this blueprint is validated on.
 Canonical republishes the base AMI under new serials, and a new serial can ship a newer
 containerd. The run evidence records the serial and the version it found; build from a
 serial whose containerd is in range. The blueprint never changes containerd.
@@ -1164,11 +962,11 @@ changing the tag it names, and this blueprint's own pin tracks the bytes, not ju
 <details>
 <summary>Origin and source layout</summary>
 
-Ported from the maintainers' internal demo for this node and reconciled with the Nitro
-sandbox GA node-build bundle dated 2026-10-28, following this repository's rule to leave
-behind internal source trees, hosts and URLs. The host kernel is built from public, pinned
-inputs (kernel.org and AWS's public kernel commit), and the runtime is consumed as an
-operator-supplied preview archive, checksum-pinned, with no public download. See
+Ported from the maintainers' internal demo for this node, following this repository's rule to
+leave behind internal source trees, hosts and URLs, and moved to the public releases when Nitro
+Sandbox became generally available. The host kernel is built from public, pinned inputs
+(kernel.org and the Amazon Linux sandbox patch), and the runtime release, the guest image and
+Firecracker are the public, pinned downloads the Amazon EKS User Guide names. See
 [Public inputs, pinned and checksum-verified](#public-inputs-pinned-and-checksum-verified)
 and [`packages/SOURCES.txt`](packages/SOURCES.txt) for the full provenance record.
 

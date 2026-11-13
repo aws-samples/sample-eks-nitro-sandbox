@@ -54,7 +54,7 @@ unset __common_cfg
 : "${NAMESPACE:=ubuntu-ami-sample}"
 : "${KERNEL_VERSION:=6.18.56}"
 # The host kernel's local version suffix: the built kernel reports uname -r
-# ${KERNEL_VERSION}${KERNEL_LOCALVERSION} (6.18.56-nitro-ga), as the GA bundle's build does.
+# ${KERNEL_VERSION}${KERNEL_LOCALVERSION} (6.18.56-nitro-ga).
 : "${KERNEL_LOCALVERSION:=-nitro-ga}"
 : "${EROFS_UTILS_VERSION:=1.8.10}"
 : "${RUNTIME_ARTIFACTS_DIR:=$ISSUE10_RUN_DIR/runtime}"
@@ -430,7 +430,7 @@ lock_field() { # lock_field <id> <field>
 }
 
 # lock_ids_where <field> <value> : print, in file order, the id of every LOCK_FILE block whose
-# <field> line is exactly <field>=<value> (for example `lock_ids_where kind runtime-payload`).
+# <field> line is exactly <field>=<value> (for example `lock_ids_where kind signed-archive`).
 lock_ids_where() { # lock_ids_where <field> <value>
   awk -F= -v f="$1" -v want="$2" '
     /^id=/ { id = substr($0, 4) }

@@ -3,7 +3,7 @@
 # every check test.sh makes reaches it through kubectl exec. test.sh section 7/7 shows the
 # result: only loopback has an address, the sandbox has no route, and a connect to the cluster's
 # API Service fails with "Network is unreachable".
-# appArmorProfile is Unconfined, as the Nitro sandbox GA build notes require on an Ubuntu host:
+# appArmorProfile is Unconfined, as an Ubuntu host with AppArmor requires of a sandbox pod:
 # a sandbox pod's AppArmor profile is not applied on the host. The shim passes it into the
 # guest microVM, where runc applies it, and the guest runs SELinux and has no AppArmor, so any
 # Localhost or RuntimeDefault profile fails there with "apparmor failed to apply profile". The

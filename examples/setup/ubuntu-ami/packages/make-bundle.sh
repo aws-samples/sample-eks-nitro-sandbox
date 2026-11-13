@@ -13,12 +13,14 @@
 # kernel source, AWS's public host-kernel patch, erofs-utils source). It never bundles the
 # Ubuntu base AMI (resolved per Region from a signed SSM parameter, not a file to archive) or
 # distro apt packages (capability-asserted against a reader's own apt snapshot, not a moving
-# target to pin here; see sources.lock block 6).
+# target to pin here; see sources.lock block 8).
 #
-# What this never bundles: the Nitro sandbox runtime archive (sources.lock block 5,
-# status=operator-supplied), an operator-supplied preview archive, checksum-pinned, with no public download: `build` skips every
-# input whose status is not `available`, and the emitted manifest lists it as an external slot
-# the operator fills from their own copy. This command never fetches, embeds or commits it.
+# What this never bundles: the Nitro Sandbox runtime release, the guest image pair and
+# Firecracker (sources.lock blocks 5 to 7, kinds signed-archive, sidecar-file and archive-member):
+# the build host downloads and verifies those itself (packages/fetch-runtime-artifacts.sh), and the
+# guest disk alone is 2 GiB. `build` takes only kind=file inputs, and skips any whose status is not
+# `available`, listing it in the emitted manifest as an external slot. This command never fetches,
+# embeds or commits an input that is not available.
 #
 # Determinism: the archive this command produces is byte-identical across two runs over
 # the same inputs (same member order, same mtime/owner/group, no host-dependent metadata),

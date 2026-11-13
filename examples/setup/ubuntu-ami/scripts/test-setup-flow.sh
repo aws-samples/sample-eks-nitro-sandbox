@@ -229,7 +229,7 @@ s["ec2"]["instances"] = []
 s["image"] = {"pending_reads": 3}'
 su() { # su <case> [args]: the real setup.sh with the fixture inputs, plus SU_ENV
   local c="$1"; shift
-  env LOCK_FILE="$WORK/fixture.lock" RUNTIME_ARTIFACT_FILE=fixture.zip BUILD_SUBNET_ID=subnet-0example1 \
+  env LOCK_FILE="$WORK/fixture.lock" BUILD_SUBNET_ID=subnet-0example1 \
     NODE_SUBNET_IDS=subnet-0example2 SSM_ONLINE_TRIES=2 "${SU_ENV[@]}" bash "$SAMPLE/setup.sh" "$@" > "$WORK/$c.log" 2>&1 < /dev/null
 }
 SU_ENV=()

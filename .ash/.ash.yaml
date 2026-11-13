@@ -1300,27 +1300,21 @@ global_settings:
     # Pinned lines: test fixtures (a fake commit SHA, env-record strings with placeholder values).
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/packages/test-inputs.sh'
-      line_start: 149
-      line_end: 149
+      line_start: 162
+      line_end: 162
       reason: 'Fake commit SHA in a test fixture, not a secret'
       expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/scripts/test-apparmor-checks.sh'
-      line_start: 329
-      line_end: 329
-      reason: 'Test fixture: a run-state record of placeholder names and Region, not a secret'
+      line_start: 333
+      line_end: 333
+      reason: 'Test fixture: a run-state record of placeholder names, Region and AMI id, not a secret'
       expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/scripts/test-run-scope.sh'
       line_start: 768
       line_end: 768
       reason: 'Test fixture: a run-state record of placeholder names and Region, not a secret'
-      expiration: '2027-12-31'
-    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
-      path: 'examples/setup/ubuntu-ami/scripts/test-run-scope.sh'
-      line_start: 1072
-      line_end: 1072
-      reason: 'Fake commit SHA in a test fixture, not a secret'
       expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/scripts/test-setup-flow.sh'
@@ -1330,9 +1324,58 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/scripts/testlib/fixture_inputs.py'
-      line_start: 30
-      line_end: 30
+      line_start: 29
+      line_end: 29
       reason: 'Fake commit SHA in a test fixture, not a secret'
+      expiration: '2027-12-31'
+    # ubuntu-ami runtime verification: curl and openssl run with fixed argument lists, no shell.
+    - rule_id: B404
+      path: 'examples/setup/ubuntu-ami/packages/lib/runtime_verify.py'
+      line_start: 29
+      line_end: 29
+      reason: 'Imports subprocess to run curl and openssl with fixed argument lists; the import runs nothing'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/setup/ubuntu-ami/packages/lib/runtime_verify.py'
+      line_start: 127
+      line_end: 128
+      reason: 'curl with a fixed argument list and no shell; the URL and the output path come from packages/sources.lock and the helper''s own folder'
+      expiration: '2027-12-31'
+    - rule_id: B607
+      path: 'examples/setup/ubuntu-ami/packages/lib/runtime_verify.py'
+      line_start: 127
+      line_end: 128
+      reason: 'curl is taken from PATH on purpose, as the sample''s shell helpers take it'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/setup/ubuntu-ami/packages/lib/runtime_verify.py'
+      line_start: 166
+      line_end: 167
+      reason: 'openssl dgst with a fixed argument list and no shell; its files are the committed key and the downloaded manifest and signature'
+      expiration: '2027-12-31'
+    - rule_id: B607
+      path: 'examples/setup/ubuntu-ami/packages/lib/runtime_verify.py'
+      line_start: 166
+      line_end: 167
+      reason: 'openssl is taken from PATH on purpose, as the Amazon EKS User Guide''s own verification command does'
+      expiration: '2027-12-31'
+    - rule_id: B404
+      path: 'examples/setup/ubuntu-ami/scripts/testlib/fixture_inputs.py'
+      line_start: 25
+      line_end: 25
+      reason: 'Test fixture: imports subprocess to run openssl with fixed arguments; the import runs nothing'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/setup/ubuntu-ami/scripts/testlib/fixture_inputs.py'
+      line_start: 54
+      line_end: 54
+      reason: 'Test fixture: openssl with fixed arguments and no shell makes the clusterless tests'' key pair and signature'
+      expiration: '2027-12-31'
+    - rule_id: B607
+      path: 'examples/setup/ubuntu-ami/scripts/testlib/fixture_inputs.py'
+      line_start: 54
+      line_end: 54
+      reason: 'Test fixture: openssl is taken from PATH on purpose, as the tests'' other tools are'
       expiration: '2027-12-31'
     # ---- Baseline: hardening not done yet. Each expires 2027-01-31, so CI fails again ----
     # ---- unless the sample follow-up PR fixes the finding and deletes its entry. ----

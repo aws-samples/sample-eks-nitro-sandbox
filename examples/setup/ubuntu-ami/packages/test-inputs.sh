@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
-# test-inputs.sh: proves the two GA input checks both ways, in the REAL scripts, with no AWS and
-# no network reached:
-#   packages/fetch-runtime-artifacts.sh  (the operator-supplied runtime zip and its payloads)
-#   packages/fetch-kernel-patch.sh       (AWS's public host-kernel commit as a .patch)
+# test-inputs.sh: proves the input checks both ways, in the REAL scripts, with no AWS and no
+# network reached:
+#   packages/fetch-runtime-artifacts.sh  (the signed runtime release, the guest image pair and
+#                                         Firecracker, in --check mode and in full)
+#   packages/fetch-kernel-patch.sh       (the Amazon Linux sandbox patch as a .patch)
 #
 #   packages/test-inputs.sh
-#   REAL_RUNTIME_ARCHIVE=/path/to/nitro-sandbox-binaries-2026-10-28.zip packages/test-inputs.sh
-#       also runs the real archive against the real packages/sources.lock (unpacks ~2.3 GB)
+#   REAL_RUNTIME_DL=<folder> packages/test-inputs.sh
+#       also runs the REAL packages/sources.lock against real copies of the runtime inputs: a
+#       folder holding each file under the name at the end of its URL (nitro-sandboxes-runtime.tar.gz,
+#       SHA256SUM, SHA256SUM.sig, nitro-sandbox-guest.eif and .sha256, nitro-sandbox-guest-disk.img
+#       and .sha256, firecracker-v1.18.0-x86_64.tgz and .sha256.txt), served through file:// URLs
 #
-# Fixtures are small files with the eight real payload names, zipped per case, with a test-local
-# lock file pinned to each case's own archive (so the archive check passes and the check the
-# case is about is the one that answers). curl is a stub first on PATH that copies a local file
-# to curl's -o target, so fetch-kernel-patch.sh runs unchanged. The real pinned patch, when it is
-# cached under the repository's tmp/ (setup.sh --prepare or fetch-kernel-patch.sh leaves it
-# there), is also run against the REAL packages/sources.lock, accepted, and refused tampered.
+# The fixtures are scripts/testlib/fixture_inputs.py: small files in the real shapes, a runtime
+# release signed with a P-384 test key made per case, and a test lock in the real file's shape, so
+# the check a case is about is the one that answers. curl is real (file:// URLs). For the patch,
+# curl is a stub first on PATH that copies a local file to curl's -o target, so
+# fetch-kernel-patch.sh runs unchanged. The real pinned patch, when it is cached under the
+# repository's tmp/ (setup.sh --prepare or fetch-kernel-patch.sh leaves it there), is also run
+# against the REAL packages/sources.lock, accepted, and refused tampered.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAMPLE_DIR_REAL="$(cd "$HERE/.." && pwd)"
@@ -33,106 +38,114 @@ check() { # check <description> <expected-rc> <actual-rc> <log> [<regex the log 
 }
 sha() { sha256sum "$1" | awk '{print $1}'; }
 
-# --- Runtime archive fixtures -------------------------------------------------------------------
-NAMES=(containerd-shim-nitro-sandbox-v2 eks-nitro-sandbox-genpolicy firecracker jailer latest-disk.img latest.eif nitro-sandbox-agent nitro-sandbox-keyprovider)
-SRC="$WORK/payloads"; mkdir -p "$SRC"
-for n in "${NAMES[@]}"; do printf 'fixture payload %s\n' "$n" > "$SRC/$n"; done
+# rt <case> <check|fetch> : make the case's fixtures, then run the REAL fetch-runtime-artifacts.sh
+# on them; its log is $WORK/<case>-<mode>.log and its output folder $WORK/<case>/out.
+rt() {
+  local c="$1" mode="$2"
+  mkdir -p "$WORK/$c/fx" "$ISSUE10_RUN_DIR"
+  [ -s "$WORK/$c/fixture.lock" ] || python3 "$SAMPLE_DIR_REAL/scripts/testlib/fixture_inputs.py" "$WORK/$c/fx" "$WORK/$c/fixture.lock" "$c" \
+    || { echo "fixture_inputs.py failed for $c" > "$WORK/$c-$mode.log"; return 99; }
+  if [ "$mode" = check ]; then
+    LOCK_FILE="$WORK/$c/fixture.lock" RUNTIME_ARTIFACTS_DIR="$WORK/$c/out" bash "$HERE/fetch-runtime-artifacts.sh" --check > "$WORK/$c-$mode.log" 2>&1
+  else
+    LOCK_FILE="$WORK/$c/fixture.lock" RUNTIME_ARTIFACTS_DIR="$WORK/$c/out" bash "$HERE/fetch-runtime-artifacts.sh" > "$WORK/$c-$mode.log" 2>&1
+  fi
+}
+# no_partial <case>: nothing but whole, verified files in node-files (no .part file left behind)
+no_partial() { [ -z "$(find "$WORK/$1/out" -name '*.part' 2>/dev/null)" ]; }
 
-# make_case <case> : build $WORK/<case>/runtime/fixture.zip for the named shape (python3 zipfile).
-make_case() {
-  mkdir -p "$WORK/$1/runtime"
-  python3 - "$1" "$SRC" "$WORK/$1/runtime/fixture.zip" "${NAMES[@]}" <<'PY'
-import hashlib, sys, warnings, zipfile
-case, src, out, names = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
-files = {n: open(f"{src}/{n}", "rb").read() for n in names}
-sums = {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}
-lines = [f"{sums[n]}  {n}" for n in sorted(files)]
-extra = []
-if case == "tampered":          # payload changed after SHA256SUMS was written
-    files["jailer"] = b"tampered jailer\n"
-elif case == "missing-line":    # a payload SHA256SUMS does not list
-    lines = [l for l in lines if not l.endswith("  firecracker")]
-elif case == "extra-file":      # an unpacked file SHA256SUMS does not list
-    extra = [("extra-tool", b"not listed\n")]
-elif case == "dup-line":        # SHA256SUMS lists a file twice
-    lines.append(f"{sums['latest.eif']}  latest.eif")
-elif case == "repacked":        # payload AND its SHA256SUMS line changed together
-    files["firecracker"] = b"repacked firecracker\n"
-    lines = [f"{hashlib.sha256(files[n]).hexdigest()}  {n}" for n in sorted(files)]
-elif case == "unpinned":        # a ninth payload, listed in SHA256SUMS, that sources.lock does not pin
-    bonus = b"unpinned\n"
-    extra = [("bonus-binary", bonus)]
-    lines.append(hashlib.sha256(bonus).hexdigest() + "  bonus-binary")
-    lines.sort(key=lambda l: l.split("  ", 1)[1])
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore")
-    with zipfile.ZipFile(out, "w") as z:
-        z.writestr("SHA256SUMS", "\n".join(lines) + "\n")
-        for n, b in files.items():
-            z.writestr(n, b)
-        for n, b in extra:
-            z.writestr(n, b)
-        if case == "dup-member":    # two members with the same name
-            z.writestr("jailer", b"second jailer\n")
-        if case == "dir-member":    # a member inside a folder
-            z.writestr("sub/evil", b"x\n")
-        if case == "symlink-member":  # a member recorded as a symbolic link
-            zi = zipfile.ZipInfo("jailer-link")
-            zi.external_attr = (0o120777) << 16
-            z.writestr(zi, "/usr/bin/jailer")
+echo "== 1/3 runtime inputs: packages/fetch-runtime-artifacts.sh ============================="
+rc=0; rt good check || rc=$?
+check "ACCEPT --check on a good set: key pin, manifest pin, signature, manifest lines and the three sidecars" 0 "$rc" "$WORK/good-check.log" \
+  'runtime inputs checked against sources.lock with no large download: 4 published inputs'
+rc=0; rt good fetch || rc=$?
+check "ACCEPT the full fetch of a good set: every download and every member matches its pin" 0 "$rc" "$WORK/good-fetch.log" \
+  'runtime inputs verified against sources.lock: 5 node files in '
+[ "$(ls "$WORK/good/out/node-files" | tr '\n' ' ')" = "firecracker guest-image-disk guest-image-eif jailer runtime-shim " ] \
+  && cmp -s "$WORK/good/out/node-files/runtime-shim" <(printf 'fixture shim\n') \
+  && cmp -s "$WORK/good/out/node-files/jailer" <(printf 'fixture jailer\n') \
+  && cmp -s "$WORK/good/out/signed-manifest/runtime-release.SHA256SUM" "$WORK/good/fx/SHA256SUM" \
+  && [ "$(tail -n 1 "$WORK/good-fetch.log")" = "$WORK/good/out/node-files" ]
+check "  ... node-files holds exactly the five installable files, named by block id, the signed manifest is kept, and the last line names node-files" 0 $? "$WORK/good-fetch.log"
+rc=0; rt check-only check || rc=$?
+check "ACCEPT --check when none of the large files can be downloaded (it downloads none of them)" 0 "$rc" "$WORK/check-only-check.log" 'with no large download'
+rc=0; rt check-only fetch || rc=$?
+check "REJECT the full fetch of that same set: the archive cannot be downloaded" 1 "$rc" "$WORK/check-only-fetch.log" 'could not download file://.*absent-runtime.tar.gz'
+while IFS='|' read -r c mode rx why; do
+  [ -n "$c" ] || continue
+  rc=0; rt "$c" "$mode" || rc=$?
+  check "$why" 1 "$rc" "$WORK/$c-$mode.log" "$rx"
+  if [ "$mode" = fetch ]; then no_partial "$c"; check "  ... and no .part file is left behind ($c)" 0 $? "$WORK/$c-$mode.log"; fi
+done <<'CASES'
+wrong-key|check|the public key fixture-runtime-v1.pub has SHA-256 [0-9a-f]{64}, not the|REJECT a public key that is not the one sources.lock pins
+bad-sig|check|signature over .* does not verify with fixture-runtime-v1.pub|REJECT a manifest signed with another key (a bad signature)
+manifest-changed|check|signature over .* does not verify|REJECT a manifest changed after it was signed, even with its pin changed to match
+manifest-pin|check|the manifest file://.* has SHA-256 [0-9a-f]{64}, not the|REJECT a signed manifest that is not the one sources.lock pins
+manifest-no-shim|check|the signed manifest lists fx-shim as <absent>|REJECT a signed manifest that does not list the shim
+manifest-bad-line|check|has a line that is not '<sha256>  <file name>': 'not a manifest line'|REJECT a signed manifest with a malformed line
+sidecar-mismatch|check|sidecar .*guest.eif.sha256 says [0-9a-f]{64}, not the|REJECT a guest image sidecar that disagrees with the pin
+sidecar-garbled|check|sidecar .*guest.eif.sha256 does not start with a SHA-256|REJECT a sidecar that is not a SHA-256 (an error page)
+archive-swapped|fetch|runtime.tar.gz from file://.* has SHA-256 [0-9a-f]{64}, not the|REJECT a runtime archive that is not the one the signed manifest lists (wrong hash)
+not-a-tar|fetch|runtime.tar.gz is not a readable gzip tar|REJECT a runtime archive that is not a gzip tar
+member-path|fetch|runtime.tar.gz has members that are not regular files with flat names: \['sub/evil'\]|REJECT a runtime archive member with a path, before anything is read out
+member-dup|fetch|runtime.tar.gz has more than one member named: \['fx-agent'\]|REJECT a runtime archive with two members of the same name
+member-link|fetch|runtime.tar.gz has members that are not regular files with flat names: \['fx-link'\]|REJECT a runtime archive member that is a symbolic link
+shim-tampered|fetch|fx-shim in runtime.tar.gz has SHA-256 [0-9a-f]{64}, not the [0-9a-f]{64} sources.lock pins for runtime-shim|REJECT a shim that is not its pin, in an archive the signed manifest lists
+file-mismatch|fetch|guest.eif from file://.* has SHA-256 [0-9a-f]{64}, not the|REJECT a guest image file that disagrees with its pin (its sidecar agrees)
+fc-traversal|fetch|firecracker-fx.tgz has members that are not regular files or folders inside it: \['release-fx/../../escaped'\]|REJECT a Firecracker tarball member that climbs out with ..
+fc-absolute|fetch|firecracker-fx.tgz has members that are not regular files or folders inside it: \['/etc/escaped'\]|REJECT a Firecracker tarball member with an absolute path
+fc-link|fetch|firecracker-fx.tgz has members that are not regular files or folders inside it: \['release-fx/link'\]|REJECT a Firecracker tarball member that is a hard link
+fc-missing-member|fetch|firecracker-fx.tgz has no regular file release-fx/jailer-fx \(sources.lock block jailer\)|REJECT a Firecracker tarball without the jailer
+fc-jailer-tampered|fetch|release-fx/jailer-fx in firecracker-fx.tgz has SHA-256 [0-9a-f]{64}, not the [0-9a-f]{64} sources.lock pins for jailer|REJECT a jailer that is not its pin
+download-fails|fetch|could not download file://.*missing.tar.gz|REJECT when a download fails
+CASES
+[ ! -e "$WORK/escaped" ] && [ ! -e "$WORK/fc-traversal/escaped" ] && [ ! -e "$WORK/fc-traversal/out/escaped" ]
+check "  ... no refused member was written anywhere" 0 $? "$WORK/fc-traversal-fetch.log"
+[ ! -e "$WORK/shim-tampered/out/node-files/runtime-shim" ] && [ ! -e "$WORK/fc-jailer-tampered/out/node-files/jailer" ]
+check "  ... and a member that fails its pin never reaches node-files" 0 $? "$WORK/shim-tampered-fetch.log"
+rc=0; LOCK_FILE="$WORK/good/fixture.lock" RUNTIME_ARTIFACTS_DIR="$WORK/good/out" bash "$HERE/fetch-runtime-artifacts.sh" --checkk > "$WORK/badarg.log" 2>&1 || rc=$?
+check "REJECT an unknown option" 1 "$rc" "$WORK/badarg.log" 'unknown argument: --checkk'
+
+echo
+echo "== 2/3 the real pins: packages/sources.lock against real copies of the runtime inputs ======"
+if [[ -n "${REAL_RUNTIME_DL:-}" ]]; then
+  # The real lock with every URL served from REAL_RUNTIME_DL, and the real public key beside it.
+  mkdir -p "$WORK/real" && cp -- "$HERE/nitro-sandboxes-runtime-v1.pub" "$WORK/real/"
+  python3 - "$HERE/sources.lock" "$REAL_RUNTIME_DL" "$WORK/real/sources.lock" <<'PY'
+import os, re, sys
+lock, dl, out = sys.argv[1], os.path.abspath(sys.argv[2]), sys.argv[3]
+text = open(lock).read()
+text = re.sub(r"^(source|manifest|signature|sidecar)=https://\S+/([^/\s]+)$",
+              lambda m: f"{m.group(1)}=file://{dl}/{m.group(2)}", text, flags=re.M)
+open(out, "w").write(text)
 PY
-}
-# write_lock <case> <archive-sha256> : a test lock in the real file's shape, payloads pinned to the fixtures.
-write_lock() {
-  {
-    printf 'id=runtime-archive\nkind=file\nref=fixture\nfile=fixture.zip\nsource=operator-supplied fixture\nsha256=%s\nstatus=operator-supplied\n\n' "$2"
-    for n in "${NAMES[@]}"; do
-      printf 'id=runtime-payload-%s\nkind=runtime-payload\narchive=runtime-archive\nref=fixture\nfile=%s\nsource=member of runtime-archive\nsha256=%s\ninstall=none\nstatus=operator-supplied\n\n' \
-        "$(printf '%s' "$n" | tr . -)" "$n" "$(sha "$SRC/$n")"
-    done
-  } > "$WORK/$1/sources.lock"
-}
-run_archive() { # run_archive <case> : run the REAL fetch-runtime-artifacts.sh on the case
-  LOCK_FILE="$WORK/$1/sources.lock" RUNTIME_ARTIFACTS_DIR="$WORK/$1/runtime" RUNTIME_ARTIFACT_FILE=fixture.zip \
-    bash "$HERE/fetch-runtime-artifacts.sh" > "$WORK/$1.log" 2>&1
-}
-
-echo "== 1/2 runtime archive: packages/fetch-runtime-artifacts.sh ========================="
-for c in good wrong-hash tampered missing-line extra-file dup-line repacked unpinned dup-member dir-member symlink-member; do
-  make_case "$c"
-  if [[ "$c" == wrong-hash ]]; then write_lock "$c" "$(printf '0%.0s' {1..64})"; else write_lock "$c" "$(sha "$WORK/$c/runtime/fixture.zip")"; fi
-  rc=0; run_archive "$c" || rc=$?
-  case "$c" in
-    good)         check "ACCEPT a good zip: archive pin, SHA256SUMS coverage, payload hashes and pins all match" 0 "$rc" "$WORK/$c.log" 'runtime archive fixture.zip verified: 8 payloads'
-                  [[ -f "$WORK/$c/runtime/unpacked/latest-disk.img" ]]; check "ACCEPT unpacks every payload into RUNTIME_ARTIFACTS_DIR/unpacked" 0 $? "$WORK/$c.log" ;;
-    wrong-hash)   check "REJECT an archive whose SHA-256 is not the runtime-archive pin" 1 "$rc" "$WORK/$c.log" 'SHA-256 mismatch' ;;
-    tampered)     check "REJECT a payload that no longer matches its SHA256SUMS line" 1 "$rc" "$WORK/$c.log" 'jailer: FAILED' ;;
-    missing-line) check "REJECT a payload missing from SHA256SUMS" 1 "$rc" "$WORK/$c.log" 'does not cover exactly the unpacked files' ;;
-    extra-file)   check "REJECT an extra unpacked file SHA256SUMS does not list" 1 "$rc" "$WORK/$c.log" 'does not cover exactly the unpacked files' ;;
-    dup-line)     check "REJECT a SHA256SUMS that lists a file twice" 1 "$rc" "$WORK/$c.log" 'lists a file more than once: latest.eif' ;;
-    repacked)     check "REJECT a re-packed payload whose SHA256SUMS line was edited to match (sources.lock pin)" 1 "$rc" "$WORK/$c.log" 'payload firecracker has SHA-256 .* not the' ;;
-    unpinned)     check "REJECT a listed payload sources.lock does not pin" 1 "$rc" "$WORK/$c.log" 'not the set packages/sources.lock pins' ;;
-    dup-member)   check "REJECT a zip with two members of the same name" 1 "$rc" "$WORK/$c.log" 'more than one member named: jailer' ;;
-    dir-member)   check "REJECT a zip member inside a folder" 1 "$rc" "$WORK/$c.log" "not plain, flat file names: 'sub/evil'" ;;
-    symlink-member) check "REJECT a zip member recorded as a symbolic link" 1 "$rc" "$WORK/$c.log" "not plain, flat file names: 'jailer-link'" ;;
-  esac
-done
-mkdir -p "$WORK/absent/runtime"; write_lock absent "$(printf '0%.0s' {1..64})"
-rc=0; run_archive absent || rc=$?
-check "STOP (exit 3, the documented prerequisite) when the operator has not placed the archive" 3 "$rc" "$WORK/absent.log" 'PREREQUISITE NOT MET'
-
-if [[ -n "${REAL_RUNTIME_ARCHIVE:-}" ]]; then
-  mkdir -p "$WORK/real/runtime"; cp -- "$REAL_RUNTIME_ARCHIVE" "$WORK/real/runtime/"
-  rc=0
-  RUNTIME_ARTIFACTS_DIR="$WORK/real/runtime" RUNTIME_ARTIFACT_FILE="$(basename "$REAL_RUNTIME_ARCHIVE")" \
-    bash "$HERE/fetch-runtime-artifacts.sh" > "$WORK/real.log" 2>&1 || rc=$?
-  check "ACCEPT the real runtime archive against the REAL packages/sources.lock" 0 "$rc" "$WORK/real.log" 'verified: 8 payloads match SHA256SUMS and packages/sources.lock'
+  real() { LOCK_FILE="$WORK/real/sources.lock" RUNTIME_ARTIFACTS_DIR="$WORK/real/out" bash "$HERE/fetch-runtime-artifacts.sh" "$@"; }
+  rc=0; real > "$WORK/real.log" 2>&1 || rc=$?
+  check "ACCEPT the real runtime release, guest image pair and Firecracker against the REAL packages/sources.lock pins and key" 0 "$rc" "$WORK/real.log" \
+    'runtime-release 0\.1\.4274\.0: signature Verified OK with nitro-sandboxes-runtime-v1\.pub.*'
+  grep -q 'runtime inputs verified against sources.lock: 5 node files' "$WORK/real.log"
+  check "  ... and it read out the five node files" 0 $? "$WORK/real.log"
+  # The guest kernel release inside the real EIF, read the way verify-image.py reads the staged copy.
+  want_gk="$(sed -n '/^id=guest-image-eif$/,/^$/s/^guest_kernel=//p' "$HERE/sources.lock")"
+  python3 "$SAMPLE_DIR_REAL/scripts/lib/image_checks.py" eif-kernel "$WORK/real/out/node-files/guest-image-eif" > "$WORK/real-eif.log" 2>&1
+  rc=$?; [ "$rc" = 0 ] && [ -n "$want_gk" ] && [ "$(cat "$WORK/real-eif.log")" = "$want_gk" ]
+  check "ACCEPT the real guest EIF: the release its bzImage header names is the pinned guest_kernel ($want_gk)" 0 $? "$WORK/real-eif.log"
+  # One byte changed in a copy of the real runtime archive: the full fetch refuses it.
+  mkdir -p "$WORK/real-t/dl"; cp -- "$HERE/nitro-sandboxes-runtime-v1.pub" "$WORK/real-t/"
+  DL_ABS="$(cd "$REAL_RUNTIME_DL" && pwd)"
+  for f in "$DL_ABS"/*; do [ "$(basename "$f")" = nitro-sandboxes-runtime.tar.gz ] || ln -s "$f" "$WORK/real-t/dl/$(basename "$f")"; done
+  python3 -c 'import sys; b=bytearray(open(sys.argv[1],"rb").read()); b[len(b)//2]^=1; open(sys.argv[2],"wb").write(b)' \
+    "$DL_ABS/nitro-sandboxes-runtime.tar.gz" "$WORK/real-t/dl/nitro-sandboxes-runtime.tar.gz"
+  sed "s#file://$DL_ABS/#file://$WORK/real-t/dl/#" "$WORK/real/sources.lock" > "$WORK/real-t/sources.lock"
+  rc=0; LOCK_FILE="$WORK/real-t/sources.lock" RUNTIME_ARTIFACTS_DIR="$WORK/real-t/out" bash "$HERE/fetch-runtime-artifacts.sh" > "$WORK/real-t.log" 2>&1 || rc=$?
+  check "REJECT the real runtime archive with one byte changed, against the REAL pins" 1 "$rc" "$WORK/real-t.log" \
+    'nitro-sandboxes-runtime.tar.gz from file://.* has SHA-256 [0-9a-f]{64}, not the abc1d003'
 else
-  echo "  SKIP  the real runtime archive (set REAL_RUNTIME_ARCHIVE to run it)"; skip=$((skip+1))
+  echo "  SKIP  the real runtime inputs (set REAL_RUNTIME_DL to a folder of real copies to run them)"; skip=$((skip+1))
 fi
 
 echo
-echo "== 2/2 host-kernel patch: packages/fetch-kernel-patch.sh =============================="
+echo "== 3/3 host-kernel patch: packages/fetch-kernel-patch.sh =============================="
 STUB="$WORK/bin"; mkdir -p "$STUB"
 # Stub curl: copy $STUB_CURL_FROM to the -o target; fail like curl -f when it is unset.
 cat > "$STUB/curl" <<'SH'
@@ -186,11 +199,12 @@ cmp -s "$WORK/p-cache-tampered/$COMMIT.patch" "$WORK/good.patch"
 check "  ... and the file under the final name is now the verified download" 0 $? "$WORK/p-cache-tampered.log"
 
 REAL_PATCH="${REAL_KERNEL_PATCH:-$REPO_ROOT_REAL/tmp/issue10/run/runtime/$(sed -n 's/^file=//p' "$HERE/sources.lock" | grep '\.patch$' | head -n 1)}"
+REAL_COMMIT="$(sed -n '/^id=host-kernel-patch$/,/^$/s/^ref=//p' "$HERE/sources.lock")"
 if [[ -s "$REAL_PATCH" ]]; then
   cp -- "$REAL_PATCH" "$WORK/real.patch"
   python3 -c 'import sys; p=sys.argv[1]; b=bytearray(open(p,"rb").read()); b[-2]^=1; open(sys.argv[2],"wb").write(b)' "$WORK/real.patch" "$WORK/real-tampered.patch"
   rc=0; run_patch real "$HERE/sources.lock" "$WORK/real.patch" || rc=$?
-  check "ACCEPT the real cached patch against the REAL packages/sources.lock pin" 0 "$rc" "$WORK/p-real.log" 'verified sha256 .*1e66c960b982c94bda76ebd0129eaecf0a68b46e'
+  check "ACCEPT the real cached patch against the REAL packages/sources.lock pin" 0 "$rc" "$WORK/p-real.log" "verified sha256 .*$REAL_COMMIT"
   rc=0; run_patch real-tampered "$HERE/sources.lock" "$WORK/real-tampered.patch" || rc=$?
   check "REJECT the real patch with one byte changed against the REAL pin" 1 "$rc" "$WORK/p-real-tampered.log" 'failed its checks: SHA-256 mismatch'
 else
@@ -200,4 +214,4 @@ fi
 echo
 printf 'passed %d, failed %d, skipped %d\n' "$pass" "$fail" "$skip"
 [[ "$fail" -eq 0 ]] || exit 1
-echo "runtime archive and host-kernel patch checks proven both ways in the real scripts."
+echo "runtime input and host-kernel patch checks proven both ways in the real scripts."

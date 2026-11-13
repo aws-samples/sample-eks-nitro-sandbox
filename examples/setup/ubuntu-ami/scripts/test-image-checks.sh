@@ -284,7 +284,8 @@ bake_root() { # bake_root <dir>: a build host's leftovers, in a copy of the samp
   : > "$r/root/linux-6.18.56/Makefile"; : > "$r/var/lib/ubuntu-ami-sample/stage/x.zip"
   : > "$r/etc/ssh/ssh_host_ed25519_key"; : > "$r/etc/ssh/ssh_host_ed25519_key.pub"; echo 0123abcd > "$r/etc/machine-id"
   cp -a "$SAMPLE/." "$r/usr/local/share/ubuntu-ami-sample/"
-  mkdir -p "$r/hostrun/runtime"; : > "$r/hostrun/runtime/linux-6.18.56.tar.xz"
+  mkdir -p "$r/hostrun/runtime/downloads" "$r/hostrun/runtime/node-files"; : > "$r/hostrun/runtime/linux-6.18.56.tar.xz"
+  : > "$r/hostrun/runtime/downloads/nitro-sandboxes-runtime.tar.gz"; : > "$r/hostrun/runtime/node-files/guest-image-disk"
 }
 bake() { local r="$1" log="$2"; shift 2
   env SYSROOT="$r" HOME="$r/root" ISSUE10_RUN_DIR="$r/hostrun" STAGE_DIR="$r/var/lib/ubuntu-ami-sample/stage" "$@" \
@@ -302,6 +303,10 @@ check "REJECT (could not determine) when the residue scan itself fails (H9)" 1 "
 B3="$WORK/bake3"; bake_root "$B3"; : > "$B3/opt/erofs-utils-1.8.10.tar.gz"
 rc=0; bake "$B3" "$WORK/b-left.log" || rc=$?
 check "REJECT when a build archive survives somewhere the removal list does not cover" 1 "$rc" "$WORK/b-left.log" 'STILL PRESENT: .*erofs-utils-1.8.10.tar.gz'
+B4="$WORK/bake4"; bake_root "$B4"; : > "$B4/opt/nitro-sandbox-guest-disk.img"; : > "$B4/opt/firecracker-v1.18.0-x86_64.tgz.part"
+rc=0; bake "$B4" "$WORK/b-left4.log" || rc=$?
+check "REJECT when a runtime download (the guest disk under its download name, a partial Firecracker tarball) survives" 1 "$rc" "$WORK/b-left4.log" 'STILL PRESENT: .*nitro-sandbox-guest-disk.img'
+grep -q 'STILL PRESENT: .*firecracker-v1.18.0-x86_64.tgz.part' "$WORK/b-left4.log"; ok "  ... both are named" $?
 rc=0; env SYSROOT="$B3" bash "$HERE/50-bake-prep.sh" > "$WORK/b-checkout.log" 2>&1 || rc=$?
 check "REJECT running bake prep from a repository checkout" 1 "$rc" "$WORK/b-checkout.log" 'runs on the build host only'
 
@@ -315,43 +320,88 @@ mkdir -p "$G/dev/net" "$G/sys/kernel/btf" "$G/proc" "$G/sys/module/apparmor/para
 ln -s /dev/null "$G/dev/nitro_enclaves"; ln -s /dev/null "$G/dev/vhost-vsock"; ln -s /dev/null "$G/dev/net/tun"
 echo btf > "$G/sys/kernel/btf/vmlinux"; printf 'MemTotal: 16000000 kB\nCmaTotal: 1048576 kB\n' > "$G/proc/meminfo"
 printf 'nodev\tproc\n\text4\n\terofs\n' > "$G/proc/filesystems"; echo Y > "$G/sys/module/apparmor/parameters/enabled"
-printf 'kernel_path     = "/var/lib/nitro-sandbox-images/latest.eif"\nrootfs_path     = "/var/lib/nitro-sandbox-images/rootfs.ext4"\npcie_slots      = 110\nnitro_sandbox   = true\ncpu_overcommit  = true\ndata_base_dir   = "/var/lib/nitro-sandbox"\nkubeconfig_path = "/var/lib/kubelet/kubeconfig"\nformat_overlay  = true\ndebug           = false\n' > "$G/etc/containerd/nitro-sandbox.toml"
+printf 'kernel_path     = "/var/lib/nitro-sandbox-images/latest.eif"\nkubeconfig_path = "/var/lib/kubelet/kubeconfig"\nformat_overlay  = true\ncpu_overcommit  = true\npcie_slots      = 110\ndata_base_dir   = "/var/lib/nitro-sandbox"\ndebug           = false\n' > "$G/etc/containerd/nitro-sandbox.toml"
 cat > "$G/usr/local/bin/mkfs.erofs" <<'SH'
 #!/bin/bash
 case "$1" in --version|-V) echo "mkfs.erofs ${STUB_EROFS_VERSION:-1.8.10}" ;; -zzstd,1) : > "$2" ;; *) exit 2 ;; esac
 SH
 chmod +x "$G/usr/local/bin/mkfs.erofs"
-# Runtime payloads at their sources.lock paths and modes, with a test lock pinned to these bytes.
-"$PY" - "$SAMPLE/packages/sources.lock" "$G" "$WORK/test.lock" <<'PY'
-import hashlib, os, re, sys
-lock, root, out = sys.argv[1:4]
-text = open(lock).read()
-blocks = text.split("\n\n")
-sums = []
+# Every file sources.lock installs, at its path and mode, with a test lock pinned to these bytes: the
+# real lock's blocks, each install= block's sha256 replaced, and the signed-archive block pointed at a
+# P-384 test key beside the test lock, whose signed manifest (listing the archive and the shim) is
+# kept on the image where 30-runtime-install.sh keeps the real one. A second key signs the bad case.
+openssl ecparam -name secp384r1 -genkey -noout -out "$WORK/sign.key" 2>/dev/null \
+  && openssl ec -in "$WORK/sign.key" -pubout -out "$WORK/fixture-runtime-v1.pub" 2>/dev/null \
+  && openssl ecparam -name secp384r1 -genkey -noout -out "$WORK/other.key" 2>/dev/null
+ok "a P-384 test key pair is made with openssl" $?
+"$PY" - "$SAMPLE/packages/sources.lock" "$G" "$WORK/test.lock" "$WORK" <<'PY'
+import hashlib, os, re, struct, subprocess, sys
+lock, root, out, work = sys.argv[1:5]
+sha = lambda b: hashlib.sha256(b).hexdigest()
+
+def eif(release):
+    """A small Enclave Image File: a kernel section whose bzImage setup header names <release>."""
+    k = bytearray(0x400)
+    k[0x202:0x206] = b"HdrS"
+    struct.pack_into("<H", k, 0x20E, 0x100)
+    s = f"{release} (builder@fixture) #1 SMP".encode() + b"\0"
+    k[0x300:0x300 + len(s)] = s
+    secs = [(1, bytes(k)), (2, b"console=ttyS0\0")]
+    offs, body, pos = [], b"", 548
+    for t, d in secs:
+        offs.append(pos)
+        chunk = struct.pack(">HHQ", t, 0, len(d)) + d
+        body += chunk
+        pos += len(chunk)
+    sizes = [len(d) for _, d in secs]
+    head = struct.pack(">4sHHQQHH", b".eif", 4, 0, 1 << 29, 2, 0, len(secs))
+    head += struct.pack(">32Q", *(offs + [0] * (32 - len(offs)))) + struct.pack(">32Q", *(sizes + [0] * (32 - len(sizes))))
+    return head + struct.pack(">II", 0, 0) + body
+open(f"{work}/eif-host.eif", "wb").write(eif("6.18.56-nitro-ga"))
+blocks = open(lock).read().split("\n\n")
+field = lambda b, k: (re.search(rf"^{k}=(.*)$", b, re.M) or [None, None])[1]
+pins, signed = {}, None
 for i, b in enumerate(blocks):
-    if "\nkind=runtime-payload\n" not in "\n" + b + "\n":
+    bid, inst = field(b, "id"), field(b, "install")
+    if field(b, "kind") == "signed-archive":
+        signed = i
+    if not inst or inst == "none":
         continue
-    f = re.search(r"^file=(.*)$", b, re.M).group(1)
-    inst = re.search(r"^install=(.*)$", b, re.M).group(1)
-    data = f"fixture payload {f}\n".encode()
-    h = hashlib.sha256(data).hexdigest()
-    sums.append(f"{h}  {f}")
-    blocks[i] = re.sub(r"^sha256=.*$", f"sha256={h}", b, flags=re.M)
-    if inst != "none":
-        dest, mode = inst.split()
-        p = root + dest
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        open(p, "wb").write(data)
-        os.chmod(p, int(mode, 8))
+    data = eif(field(b, "guest_kernel")) if field(b, "guest_kernel") else f"fixture node file {bid}\n".encode()
+    pins[bid] = sha(data)
+    blocks[i] = re.sub(r"^sha256=.*$", f"sha256={pins[bid]}", b, flags=re.M)
+    dest, mode = inst.split()
+    p = root + dest
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    open(p, "wb").write(data)
+    os.chmod(p, int(mode, 8))
+assert signed is not None and len(pins) == 5, (signed, pins)
+b = blocks[signed]
+sid, archive = field(b, "id"), field(b, "file")
+archive_sha = sha(b"fixture archive\n")
+shim = [x for x in blocks if field(x, "kind") == "archive-member" and field(x, "archive") == sid]
+man = f"{archive_sha}  {archive}\n" + "".join(f"{pins[field(x, 'id')]}  {field(x, 'member')}\n" for x in shim)
+d = root + "/usr/local/share/ubuntu-ami-sample/runtime"
+os.makedirs(d, exist_ok=True)
+open(f"{d}/{sid}.SHA256SUM", "w").write(man)
+subprocess.run(["openssl", "dgst", "-sha384", "-sign", f"{work}/sign.key", "-out", f"{d}/{sid}.SHA256SUM.sig", f"{d}/{sid}.SHA256SUM"], check=True)
+pub = open(f"{work}/fixture-runtime-v1.pub", "rb").read()
+for k, v in (("sha256", archive_sha), ("manifest_sha256", sha(man.encode())), ("public_key", "fixture-runtime-v1.pub"),
+             ("public_key_sha256", sha(pub))):
+    b = re.sub(rf"^{k}=.*$", f"{k}={v}", b, flags=re.M)
+blocks[signed] = b
 open(out, "w").write("\n\n".join(blocks))
-open(root + "/usr/local/share/ubuntu-ami-sample/runtime-SHA256SUMS", "w").write("\n".join(sorted(sums, key=lambda l: l.split("  ")[1])) + "\n")
 PY
+ok "  ... and the five node files, the signed manifest and the test lock are written" $?
 ln -sfn latest-disk.img "$G/var/lib/nitro-sandbox-images/rootfs.ext4"
 vi() { local r="$1" log="$2"; shift 2; env SYSROOT="$r" LOCK_FILE="$WORK/test.lock" "$@" "$PY" "$HERE/verify-image.py" > "$log" 2>&1; }
 for mode in plain optimized; do
   if [ "$mode" = optimized ]; then OPT=(PYTHONOPTIMIZE=1); else OPT=(); fi
   rc=0; vi "$G" "$WORK/v-good-$mode.log" "${OPT[@]}" || rc=$?
   check "[$mode] ACCEPT the good image: every check passes" 0 "$rc" "$WORK/v-good-$mode.log" '"image_configuration": "PASS"'
+  grep -q '"detail": "latest.eif boots guest kernel 6.18.56, the pinned guest_kernel"' "$WORK/v-good-$mode.log" \
+    && grep -qx 'image_configuration: PASS (16 checks)' "$WORK/v-good-$mode.log"
+  ok "  ... [$mode] including the guest kernel 6.18.56 read out of latest.eif, 16 checks in all" $?
   # one broken image per check: copy, break one thing, expect that check (and only a FAIL) to answer
   # name|failed check[|text the failed check's detail must contain]
   while IFS='|' read -r name failed_check detail; do
@@ -371,8 +421,17 @@ for mode in plain optimized; do
       datadir)    sed -i 's#^data_base_dir   = "/var/lib/nitro-sandbox"$#data_base_dir   = "/wrong/data/path"#' "$b/etc/containerd/nitro-sandbox.toml" ;;
       kubeconfig) sed -i 's#^kubeconfig_path = "/var/lib/kubelet/kubeconfig"$#kubeconfig_path = "/wrong/kubeconfig"#' "$b/etc/containerd/nitro-sandbox.toml" ;;
       overlay)    sed -i 's/^format_overlay  = true$/format_overlay  = false/' "$b/etc/containerd/nitro-sandbox.toml" ;;
+      stalekey)   printf 'rootfs_path     = "/var/lib/nitro-sandbox-images/rootfs.ext4"\n' >> "$b/etc/containerd/nitro-sandbox.toml" ;;
       jailermode) chmod 0644 "$b/usr/bin/jailer" ;;
       tamper)     echo tampered >> "$b/usr/sbin/containerd-shim-nitro-sandbox-v2" ;;
+      eiftamper)  echo tampered >> "$b/var/lib/nitro-sandbox-images/latest.eif" ;;
+      eifhost)    cp "$WORK/eif-host.eif" "$b/var/lib/nitro-sandbox-images/latest.eif" ;;
+      eifnot)     printf 'not an enclave image\n' > "$b/var/lib/nitro-sandbox-images/latest.eif" ;;
+      nodisk)     rm "$b/var/lib/nitro-sandbox-images/latest-disk.img" ;;
+      sigbad)     openssl dgst -sha384 -sign "$WORK/other.key" -out "$b/usr/local/share/ubuntu-ami-sample/runtime/runtime-release.SHA256SUM.sig" \
+                    "$b/usr/local/share/ubuntu-ami-sample/runtime/runtime-release.SHA256SUM" ;;
+      mantamper)  echo "$(printf '%064d' 0)  extra" >> "$b/usr/local/share/ubuntu-ami-sample/runtime/runtime-release.SHA256SUM" ;;
+      noman)      rm "$b/usr/local/share/ubuntu-ami-sample/runtime/runtime-release.SHA256SUM" ;;
       hold)       grep -vx containerd-app "$b/.held" > "$b/.held.new"; mv "$b/.held.new" "$b/.held" ;;
       containerd) env=(STUB_CONTAINERD_LINE="containerd github.com/containerd/containerd/v2 2.4.0 ") ;;
       erofs)      env=(STUB_EROFS_VERSION=1.7.1) ;;
@@ -395,8 +454,16 @@ pcie|runtime_wiring|pcie_slots is 1, must be 110
 datadir|runtime_wiring|data_base_dir is '/wrong/data/path', must be '/var/lib/nitro-sandbox'
 kubeconfig|runtime_wiring|kubeconfig_path is '/wrong/kubeconfig', must be '/var/lib/kubelet/kubeconfig'
 overlay|runtime_wiring|format_overlay is False, must be true
-jailermode|runtime_payloads
-tamper|runtime_payloads
+stalekey|runtime_wiring|the shim config sets ['rootfs_path'], which the shim does not read
+jailermode|runtime_files|/usr/bin/jailer has mode 0o644, expected 0755
+tamper|runtime_files|/usr/sbin/containerd-shim-nitro-sandbox-v2 has SHA-256
+eiftamper|runtime_files|/var/lib/nitro-sandbox-images/latest.eif has SHA-256
+eifhost|guest_kernel|latest.eif boots guest kernel '6.18.56-nitro-ga', not the '6.18.56' sources.lock pins
+eifnot|guest_kernel|latest.eif is not an Enclave Image File
+nodisk|runtime_files|/var/lib/nitro-sandbox-images/latest-disk.img is not a regular file
+sigbad|runtime_signature|the signature over runtime-release.SHA256SUM does not verify
+mantamper|runtime_signature|runtime-release.SHA256SUM is not the manifest sources.lock pins
+noman|runtime_signature|runtime-release.SHA256SUM or its .sig is missing
 hold|package_holds
 containerd|containerd_version
 erofs|mkfs_erofs

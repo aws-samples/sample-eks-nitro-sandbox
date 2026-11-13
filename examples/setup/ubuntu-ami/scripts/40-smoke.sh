@@ -3,21 +3,23 @@
 # only on a successful vsock handshake with the guest agent. Runs on the build host after
 # the reboot, and on any instance launched from the finished AMI.
 #
-# Mirror the shim precisely or this test lies: no huge pages (the GA archive's Firecracker
-# refuses them for a Nitro Enclave, and the GA shim sends none), the shim's boot args, a
+# Mirror the shim precisely or this test lies: no huge pages (Firecracker refuses them for a
+# Nitro Enclave, and the shim sends none), the shim's boot args, a
 # read-only rootfs drive, an overlay data disk, vsock guest_cid 3, one tap network interface,
 # then /enclave and InstanceStart. No /entropy: the shim never adds one. PASS is the vsock
-# "CONNECT 1024" handshake answering "OK <port>", not console text.
+# "CONNECT 1024" handshake answering "OK <port>", not console text. The /enclave body uses only
+# the fields of Firecracker v1.18.0's EnclaveConfig (firecracker_spec-v1.18.0.yaml in the
+# release): debug_mode, direct_mode, hotplug_mode, cpu_overcommit and cpu_accounting.
 #
 # set -uo pipefail, not -e: this script tallies its own pass/fail (the put() PUT calls set
 # pass=0 on failure but keep going) so it can still run its cleanup and print a result after
 # a failed API call, the same continue-on-error discipline test.sh and clean.sh use. -u is
 # on to catch an unset variable rather than let it silently expand empty.
 #
-# GA bundle note: the guest boot image is now latest.eif (the shim config's kernel_path), not a
-# bare guest kernel. This hand boot passes that same path to /boot-source, as the shim does, and
-# Firecracker loads it as a pre-built EIF. The guest then boots its own init and starts the agent,
-# which answers the handshake within seconds once its data partition is there (see mk_overlay).
+# The guest boot image is latest.eif (the shim config's kernel_path), not a bare guest kernel.
+# This hand boot passes that same path to /boot-source, as the shim does, and Firecracker loads it
+# as a pre-built EIF. The guest then boots its own init and starts the agent, which answers the
+# handshake within seconds once its data partition is there (see mk_overlay).
 [ "$(id -u)" = 0 ] || exec sudo -E bash "$0" "$@"
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,21 +27,21 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/common.sh"
 LOG="${LOG_DIR:-$HOME/logs}"; mkdir -p "$LOG"
 
-# The same paths the shim config (/etc/containerd/nitro-sandbox.toml) names: the GA guest boot
-# image (latest.eif, guest kernel inside) and the rootfs.ext4 symlink to latest-disk.img.
+# The same paths the shim config (/etc/containerd/nitro-sandbox.toml) names: the guest boot image
+# (latest.eif, guest kernel inside) and the rootfs.ext4 symlink to latest-disk.img.
 K="$NITRO_SANDBOX_IMAGE_DIR/latest.eif"; R="$NITRO_SANDBOX_IMAGE_DIR/rootfs.ext4"; FC=/usr/bin/firecracker
 ls -l /dev/nitro_enclaves "$K" "$R" "$FC" || { echo "SMOKE PRECONDITION FAIL"; exit 2; }
 
 BOOT_ARGS="console=ttyS0 reboot=k panic=1 root=/dev/vda ro init=/sbin/nitro-sandbox-agent setup-ephemeral-storage --exec-init overlay_root=vdb rootwait net.ifnames=0 quiet"
 NONE_GUID=0FC63DAF-8483-4772-8E79-3D69D8477DE4   # Discoverable Partitions Spec: "Linux generic data"
 case "$SHIM_DEBUG" in true|false) ;; *) echo "SMOKE PRECONDITION FAIL: SHIM_DEBUG must be true or false"; exit 2;; esac
-ENCLAVE_CFG="{\"debug_mode\":${SHIM_DEBUG},\"pcie_mode\":true,\"direct_mode\":false,\"hotplug_mode\":true,\"cpu_overcommit\":true,\"cpu_accounting\":false}"
+ENCLAVE_CFG="{\"debug_mode\":${SHIM_DEBUG},\"direct_mode\":false,\"hotplug_mode\":true,\"cpu_overcommit\":true,\"cpu_accounting\":false}"
 
 put() { local code; code=$(curl -s -o /tmp/smoke-api.out -w '%{http_code}' --unix-socket "$SOCK" -X PUT "http://localhost$1" -H 'Content-Type: application/json' -d "$2")
         echo "PUT $1 -> $code $(cat /tmp/smoke-api.out)"; [[ $code == 2* ]]; }
 # The overlay data disk: a GPT with one partition over the whole disk, type "Linux generic data",
 # labelled BOTTLEROCKET-DATA (the layout `sgdisk -n 1:0:0` gives: first usable LBA 34, partition
-# from sector 2048 to the end). The GA guest in latest.eif is Bottlerocket-based: its storage
+# from sector 2048 to the end). The guest in latest.eif is Bottlerocket-based: its storage
 # units and the agent's setup-ephemeral-storage wait for /dev/disk/by-partlabel/BOTTLEROCKET-DATA
 # and format it themselves, so with any other label the agent never starts. Written with sfdisk
 # (package fdisk, installed on Canonical's EKS image); sgdisk (package gdisk) is not on that image.
