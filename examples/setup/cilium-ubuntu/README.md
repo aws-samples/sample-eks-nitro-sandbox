@@ -659,7 +659,16 @@ spec:
   securityContext:
     appArmorProfile:
       type: Unconfined
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile: { type: RuntimeDefault }
 ```
+
+The user and seccomp settings beside it are the same on every pod in `deploy/workloads.yaml`:
+each runs as `nobody` with no privilege escalation, no capabilities and a read-only root
+filesystem, and the six `httpd` pods serve their pages from a small `emptyDir` at `/www`, with
+HTTP readiness and liveness probes on port 8080.
 
 ### 7. Tag what AWS created for the cluster
 
