@@ -26,8 +26,8 @@ import os
 
 # --- OpenAI credentials ------------------------------------------------------
 # The application key: creates agents and sessions and reads every session.
-# scripts/ use it on the operator's machine; guard.py refuses to run a pod that
-# holds it.
+# scripts/ use it on the operator's machine; guard.py refuses a pod with it set
+# in its env or an entry named for it in LAUNCHER_CREDENTIALS_DIR (by name).
 ENV_API_KEY = "OPENAI_API_KEY"
 # The environment key: the executor's only credential, held by the launcher.
 # codex exec-server reads it as CODEX_API_KEY inside the sandbox. The launcher
@@ -50,15 +50,24 @@ ENV_REMOTE_URL = "OPENAI_REMOTE_URL"
 
 # --- The launcher intake's authentication token ------------------------------
 # The operator reaches the launcher's intake over a kubectl port-forward to its
-# ClusterIP Service. The intake authenticates every request with this
-# pre-shared bearer token: the launcher loads it from a mounted Secret, and
-# submit.py sends it from the operator's .env. The launcher refuses to start
-# without it (fail closed), and the intake rejects any request whose bearer
-# token does not match, so a NetworkPolicy is reachability and this token is
-# authentication. It is a shared secret the operator already holds to deploy the
-# launcher, not minted auth: no pod but the launcher reads it, and the operator
-# rotates it by replacing the Secret.
+# ClusterIP Service. The intake authenticates every claim and release POST
+# with this pre-shared bearer token; GET / is a token-free probe with no data.
+# The launcher reads it from the launcher-auth Secret, mounted as a file
+# (LAUNCHER_CREDENTIALS_DIR below), and submit.py sends it from the operator's
+# .env. The launcher refuses to start without it (fail closed), and the intake
+# rejects any POST whose bearer token does not match: a NetworkPolicy is
+# reachability and this token is authentication. It is a shared secret the
+# operator already holds, not minted auth: no pod but the launcher reads it,
+# and the operator rotates it by replacing the Secret and restarting the launcher.
 ENV_LAUNCHER_AUTH_TOKEN = "LAUNCHER_AUTH_TOKEN"
+
+# --- Where the launcher reads its two credentials -----------------------------
+# deploy/launcher.yaml mounts the openai-env-key and launcher-auth Secrets here,
+# read-only, one file per key, each named like the variable above
+# (OPENAI_EXECUTOR_API_KEY, LAUNCHER_AUTH_TOKEN). Neither value is in the
+# launcher's environment. The sandbox is unchanged: it still reads
+# CODEX_API_KEY from the env its SandboxClaim sets (see sandbox.py).
+LAUNCHER_CREDENTIALS_DIR = "/var/run/secrets/openai-managed-agents"
 
 # --- This sample -------------------------------------------------------------
 ENV_SANDBOX_NAMESPACE = "SANDBOX_NAMESPACE"  # where the warm pool and claims live
@@ -116,6 +125,27 @@ def require(name: str) -> str:
     value = os.environ.get(name)
     if not value:
         raise RuntimeError(f"{name} is required but not set")
+    return value
+
+
+def launcher_credential_path(name: str) -> str:
+    """The file in LAUNCHER_CREDENTIALS_DIR that holds the launcher credential ``name``."""
+    return os.path.join(LAUNCHER_CREDENTIALS_DIR, name)
+
+
+def read_launcher_credential(name: str) -> str:
+    """Return a launcher credential from its mounted file, or raise naming the file.
+
+    The error names the path, never the value, when the file is missing or empty.
+    """
+    path = launcher_credential_path(name)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = handle.read().strip()
+    except FileNotFoundError:
+        raise RuntimeError(f"{path} is required but missing") from None
+    if not value:
+        raise RuntimeError(f"{path} is required but empty")
     return value
 
 
