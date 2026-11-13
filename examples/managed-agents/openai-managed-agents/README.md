@@ -52,8 +52,9 @@ Nitro sandbox:
   is checked by variable name, without printing values.
 - **The operator's intake is reachability-gated and authenticated.** The launcher's intake
   Service is `ClusterIP`, a deny-by-default ingress `ApplicationNetworkPolicy` admits no
-  in-cluster pod, and every request carries a bearer token the launcher verifies. A
-  NetworkPolicy is reachability; the token is authentication.
+  in-cluster pod, and every request that claims or releases a sandbox (a `POST`) must carry a
+  bearer token the launcher verifies. `GET /` answers without one and returns only a health
+  status, for the probes. A NetworkPolicy is reachability; the token is authentication.
 - **The sandbox reaches only what the executor needs.** An `ApplicationNetworkPolicy` denies
   all ingress and allows egress to CoreDNS, `api.openai.com` and
   `codex-cloud-environments.chatgpt.com`, the two hosts
@@ -152,7 +153,7 @@ The key never crosses the pod network, and a warm pod never holds it. Setting
 `SandboxClaim.spec.env` makes the controller start a new pod for the claim instead of handing
 it a warm one, and label the claim's sandbox `launch-type=cold`; the warm pods stay unclaimed.
 The new pod can land on a new node: in the run on this page, EKS Auto Mode added a node for
-it, and it took 48 s from the claim to the container start, including an 11.2 s image pull.
+it, and it took 64 s from the claim to the container start, including an 11.5 s image pull.
 Step 8 shows the claim's events, and step 10 the pods after both turns. This
 mechanism is native to the agent-sandbox stack; the blueprint invents no transport or auth of
 its own for the key.
@@ -168,6 +169,51 @@ event streaming, but no "list sessions awaiting an environment connection" call,
 blueprint uses the issue's default, operator-driven provisioning. Webhook-managed provisioning
 is out of scope: it needs a public HTTPS endpoint, and blueprints here create no Ingress,
 LoadBalancer or NodePort.
+
+**Create the blueprint's namespace.** The blueprint's own objects (its Secrets, policies,
+RBAC, sandbox template and pool, and the launcher) go into a namespace it creates for
+itself, which [Clean up](#clean-up) removes. The manifests set no namespace: kubectl applies
+them to the current context's namespace, and the launcher reads its namespace from its own
+pod and claims sandboxes there. The block below looks the namespace up first. If it is absent,
+the block creates it, marks it as this blueprint's with a label, and only then makes it the
+current context's namespace. If it already exists and carries that label (from an earlier
+run), the block only makes it the current context's namespace:
+
+```bash
+export NAMESPACE=openai-managed-agents
+
+if ! found=$(kubectl get namespace "$NAMESPACE" --ignore-not-found -o name); then
+  echo "Setup stopped: could not look up namespace $NAMESPACE. The context is unchanged." >&2
+elif [ -n "$found" ]; then
+  if owner=$(kubectl get namespace "$NAMESPACE" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}') \
+      && [ "$owner" = openai-managed-agents ]; then
+    if ! kubectl config set-context --current --namespace="$NAMESPACE"; then
+      echo "Setup stopped: could not make $NAMESPACE the current context's namespace." \
+        "The context is unchanged." >&2
+      false
+    fi
+  else
+    echo "Setup stopped: namespace $NAMESPACE already exists and does not carry" \
+      "app.kubernetes.io/part-of=openai-managed-agents (label value read: '$owner')." \
+      "The context is unchanged." >&2
+  fi
+elif ! kubectl create namespace "$NAMESPACE"; then
+  echo "Setup stopped: could not create namespace $NAMESPACE. The context is unchanged." >&2
+elif ! kubectl label namespace "$NAMESPACE" app.kubernetes.io/part-of=openai-managed-agents; then
+  echo "Setup stopped: created namespace $NAMESPACE but could not label it." \
+    "The context is unchanged; label the namespace or delete it before you go on." >&2
+else
+  if ! kubectl config set-context --current --namespace="$NAMESPACE"; then
+    echo "Setup stopped: could not make $NAMESPACE the current context's namespace." \
+      "The context is unchanged." >&2
+    false
+  fi
+fi
+```
+
+If it prints `Setup stopped`, nothing after this step is safe to run: the current context still
+points at the namespace it pointed at before. A namespace that exists without the label belongs
+to someone else, so pick another name for `NAMESPACE` rather than labelling it yourself.
 
 **Step 1: Install agent-sandbox and turn on network policy.** Install the controller with its
 extensions (`SandboxTemplate`, `SandboxWarmPool`, `SandboxClaim`). If you ran the warm pool
@@ -196,11 +242,13 @@ set -a; . ./.env; set +a
 
 With `AGENT_MODEL` set in `.env` (see "Pick a model id" below), `setup_agent.py` creates the
 agent with that model and prints the new agent's id and model. If `AGENT_ID` is already set, it
-keeps that agent and creates none. The run captured for this page used `gpt-6-luna`, and its
-`.env` already held the id of an agent created for this blueprint, so it kept it:
+keeps that agent and creates none. The run captured for this page used `gpt-6-luna`. Its first
+pass at this step kept an `AGENT_ID` left in `.env` from an agent that no longer existed, so
+step 8 then failed with a 404. The block below is from running this step again with `AGENT_ID`
+unset, when `setup_agent.py` created the agent and printed its id:
 
 ```text
-AGENT_ID is set; keeping agent agent_...
+Created agent agent_... (gpt-6-luna)
 
 Add this to .env:
   AGENT_ID=agent_...
@@ -256,15 +304,20 @@ export REGISTRY=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 aws ecr create-repository --repository-name openai-sandbox-executor --region $AWS_REGION
 aws ecr get-login-password --region $AWS_REGION \
   | docker login --username AWS --password-stdin $REGISTRY
-docker build --platform linux/amd64 -t $REGISTRY/openai-sandbox-executor:latest .
-docker push $REGISTRY/openai-sandbox-executor:latest
+docker build --platform linux/amd64 -t $REGISTRY/openai-sandbox-executor:v1 .
+docker push $REGISTRY/openai-sandbox-executor:v1
 docker logout $REGISTRY
 ```
 
+The launcher and the sandbox template set `imagePullPolicy: IfNotPresent` for the fixed `:v1`
+tag, so a node that already pulled `:v1` keeps using its cached copy; when you rebuild the
+image, push it under a new tag (for example `:v2`) and update the tag in
+`deploy/launcher.yaml` and `deploy/sandbox-template.yaml`.
+
 **Step 4: Give the cluster the environment key and the intake token.** The launcher needs the
 environment key (it gives it to each claimed sandbox through the claim env) and the bearer
-token it checks on every intake request. Both are read from `.env`, so no value appears on a
-command line. Generate a token first if you have not:
+token it checks on every claim and release request. Both are read from `.env`, so no value
+appears on a command line. Generate a token first if you have not:
 
 ```bash
 grep -q '^LAUNCHER_AUTH_TOKEN=.\+' .env || \
@@ -276,6 +329,10 @@ kubectl create secret generic openai-env-key \
 kubectl create secret generic launcher-auth \
   --from-env-file=<(grep '^LAUNCHER_AUTH_TOKEN=' .env)
 ```
+
+The launcher reads both values as files, mounted read-only from these Secrets at
+`/var/run/secrets/openai-managed-agents/`, not as environment variables; it refuses to start
+if either file is missing or if either value is set in its environment.
 
 **Step 5: Apply the network policies.** [`egress-policy.yaml`](deploy/egress-policy.yaml) is an
 `ApplicationNetworkPolicy` that selects the sandbox pods: it denies all ingress (the launcher
@@ -342,7 +399,7 @@ spec:
       restartPolicy: Never              # one session, then the pod completes
       containers:
         - name: executor
-          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/openai-sandbox-executor:latest
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/openai-sandbox-executor:v1
           args: ["serve"]
           # No env in the template: a warm pod holds no key. A claimed pod gets
           # its session and CODEX_API_KEY from the SandboxClaim env the launcher
@@ -374,8 +431,18 @@ agent-sandbox `SandboxTemplate` CRD; confirm it against the controller version y
 The `readinessProbe` is a bare TCP connect on the readiness port, so the claim reports Ready
 once `serve.py` opens that port, on a warm pod and on a claimed pod alike. The pod runs as a
 non-root user with its own empty `/workspace`, and has no ServiceAccount token, so a command
-the model runs cannot reach the Kubernetes API. Apply the RBAC, the template and pool, and the
-launcher:
+the model runs cannot reach the Kubernetes API.
+
+The launcher, an ordinary pod, runs as the same non-root user, UID 10001. It does call the
+Kubernetes API, to create and watch `SandboxClaim`s, so [`launcher.yaml`](deploy/launcher.yaml)
+turns off the automatic token mount and mounts the ServiceAccount token itself, at the same
+path, with a one-hour lifetime. The Kubernetes client re-reads the file as the kubelet rotates
+it, and the launcher refuses to start without it. A liveness probe on the intake's
+unauthenticated `GET /` restarts a launcher that stops answering, after six missed probes in
+a row; the intake answers each request on its own thread, so a hand-off in progress does not
+hold the probe up.
+
+Apply the RBAC, the template and pool, and the launcher:
 
 ```bash
 kubectl apply -f deploy/rbac.yaml
@@ -399,14 +466,14 @@ kubectl exec $POD -- sh -c 'env | cut -d= -f1 | grep -E "^(OPENAI_|CODEX_)" | so
 ```text
 isolated-sandbox
 6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-52.63
+205.67
 dm-0 vda vdb vdc
 CODEX_HOME
 CODEX_PATH
 ```
 
 The sandbox runs its own kernel. It booted with the pod, after the pod was scheduled onto its
-node, so its uptime, about 53 seconds here, is shorter than the pod's age. In the run on this
+node, so its uptime, about 206 seconds here, is shorter than the pod's age. In the run on this
 page the clock was read right after the uptime, and then the pod's creation time, its
 container's start time and its node (the node's name is replaced with `<NODE>`):
 
@@ -416,11 +483,11 @@ kubectl get pod $POD -o jsonpath='{.metadata.creationTimestamp} {.status.contain
 ```
 
 ```text
-2026-11-08T14:53:43Z
-2026-11-08T14:52:27Z 2026-11-08T14:53:30Z <NODE>
+2026-11-10T03:46:21Z
+2026-11-10T03:42:06Z 2026-11-10T03:43:31Z <NODE>
 ```
 
-The pod was about 76 seconds old when its uptime read 52.63 seconds. The sandbox also sees
+The pod was about 255 seconds old when its uptime read 205.67 seconds. The sandbox also sees
 virtio disks (`vda`, `vdb`, `vdc`). On the
 same node, an ordinary pod reports the node's kernel build, a `#2 SMP ...` string with a
 different date, and the instance's `nvme` disks; the version string may match, but the build
@@ -458,12 +525,12 @@ Abridged; your text will differ:
 [note] this project does not accept a session budget (spend_control), so this session has no budget ceiling. Pass --budget-cents 0 to skip asking for one.
 created session sess_...
 environment ccarenv_...
-launcher claimed sandbox sandbox-claim-5386f568 for sess_...
+launcher claimed sandbox sandbox-claim-02546f52 for sess_...
 [environment connected]
 
 agent output:
 
-I’ll run both commands, capture their combined output in `report.txt`, then read the file back to you.`report.txt` contains:
+I’ll run both commands, capture their combined output in `/workspace/report.txt`, then read the file back.The combined output from `uname -rv` and `ls /sys/block`, read from [report.txt](/workspace/report.txt):
 
 6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
 dm-0
@@ -485,13 +552,13 @@ kubectl logs <SANDBOX>     # the sandbox named in the launcher's log; the pod ha
 ```
 
 ```text
-2026-11-08 14:55:14,159 INFO launcher.sandbox session=sess_... -> sandbox=sandbox-claim-5386f568 (key delivered via claim env)
+2026-11-10 03:56:07,453 INFO launcher.sandbox session=sess_... -> sandbox=sandbox-claim-02546f52 (key delivered via claim env)
 
-2026-11-08 14:55:12,515 INFO launcher.serve serving session sess_... in /workspace
-2026-11-08 14:55:12,515 INFO launcher.serve session sess_...: starting the executor, codex exec-server --listen ws://127.0.0.1:18081
+2026-11-10 03:56:05,890 INFO launcher.serve serving session sess_... in /workspace
+2026-11-10 03:56:05,890 INFO launcher.serve session sess_...: starting the executor, codex exec-server --listen ws://127.0.0.1:18081
 ws://127.0.0.1:18081
-2026-11-08 14:55:12,926 INFO launcher.serve session sess_...: executor listening; starting the forwarder for environment ccarenv_...
-2026-11-08 14:55:12,930 INFO launcher.serve readiness port :8080 open while serving session sess_...
+2026-11-10 03:56:06,508 INFO launcher.serve session sess_...: executor listening; starting the forwarder for environment ccarenv_...
+2026-11-10 03:56:06,512 INFO launcher.serve readiness port :8080 open while serving session sess_...
 ```
 
 The bare `ws://127.0.0.1:18081` line is the executor's own output when it starts listening.
@@ -508,20 +575,27 @@ kubectl get events --sort-by=.lastTimestamp
 ```
 
 ```text
-LAST SEEN   TYPE      REASON                 OBJECT                                  MESSAGE
-85s         Normal    SandboxProvisioned     sandboxclaim/sandbox-claim-5386f568     Created Sandbox "sandbox-claim-5386f568"
-85s         Normal    SandboxPodCreated      sandbox/sandbox-claim-5386f568          Created Pod "sandbox-claim-5386f568"
-85s         Warning   FailedScheduling       pod/sandbox-claim-5386f568              0/3 nodes are available: 1 Insufficient memory, 1 node(s) didn't match Pod's node affinity/selector, 1 node(s) had untolerated taint(s). no new claims to deallocate, preemption: 0/3 nodes are available: 1 No preemption victims found for incoming pod, 2 Preemption is not helpful for scheduling.
-84s         Normal    Nominated              pod/sandbox-claim-5386f568              Pod should schedule on: nodeclaim/general-purpose-gvptt
-50s         Normal    Pulled                 pod/sandbox-claim-5386f568              Successfully pulled image "<ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/openai-sandbox-executor:latest" in 11.229s (11.23s including waiting). Image size: 338021174 bytes.
-37s         Normal    Started                pod/sandbox-claim-5386f568              Container started
+LAST SEEN   TYPE      REASON               OBJECT                                  MESSAGE
+115s        Normal    SandboxProvisioned   sandboxclaim/sandbox-claim-02546f52     Created Sandbox "sandbox-claim-02546f52"
+50s         Normal    SandboxReady         sandbox/sandbox-claim-02546f52          Sandbox is ready
+87s         Normal    Scheduled            pod/sandbox-claim-02546f52              Successfully assigned openai-managed-agents/sandbox-claim-02546f52 to <NODE>
+87s         Warning   FailedScheduling     pod/sandbox-claim-02546f52              0/3 nodes are available: 1 Insufficient memory, 1 node(s) didn't match Pod's node affinity/selector, 1 node(s) had untolerated taint(s). no new claims to deallocate, preemption: 0/3 nodes are available: 1 No preemption victims found for incoming pod, 2 Preemption is not helpful for scheduling.
+88s         Warning   FailedScheduling     pod/sandbox-claim-02546f52              0/3 nodes are available: 1 Insufficient memory, 1 node(s) didn't match Pod's node affinity/selector, 1 node(s) had untolerated taint(s). no new claims to deallocate, preemption: 0/3 nodes are available: 1 No preemption victims found for incoming pod, 2 Preemption is not helpful for scheduling.
+115s        Warning   FailedScheduling     pod/sandbox-claim-02546f52              0/2 nodes are available: 1 Insufficient memory, 1 node(s) didn't match Pod's node affinity/selector. no new claims to deallocate, preemption: 0/2 nodes are available: 1 No preemption victims found for incoming pod, 1 Preemption is not helpful for scheduling.
+115s        Normal    SandboxPodCreated    sandbox/sandbox-claim-02546f52          Created Pod "sandbox-claim-02546f52"
+113s        Normal    Nominated            pod/sandbox-claim-02546f52              Pod should schedule on: nodeclaim/general-purpose-xx725
+81s         Normal    Pulling              pod/sandbox-claim-02546f52              Pulling image "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/openai-sandbox-executor:v1"
+70s         Normal    Created              pod/sandbox-claim-02546f52              Container created
+70s         Normal    Pulled               pod/sandbox-claim-02546f52              Successfully pulled image "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/openai-sandbox-executor:v1" in 11.501s (11.501s including waiting). Image size: 338293738 bytes.
+51s         Normal    Started              pod/sandbox-claim-02546f52              Container started
+51s         Warning   Unhealthy            pod/sandbox-claim-02546f52              Readiness probe failed: dial tcp 192.168.104.144:8080: connect: connection refused
 ```
 
-The controller created a new sandbox and pod for the claim 85 s before this listing, rather than
+The controller created a new sandbox and pod for the claim 115 s before this listing, rather than
 hand it a warm one. No existing node was eligible for the pod (one had insufficient memory,
 one did not match its node selector, one had a taint it does not tolerate), so EKS Auto Mode
-added one (`nodeclaim/general-purpose-gvptt`). The image pull took 11.2 s, and the container started
-37 s before the listing: 48 s from the claim to the container start.
+added one (`nodeclaim/general-purpose-xx725`). The image pull took 11.5 s, and the container started
+51 s before the listing: 64 s from the claim to the container start.
 
 **Step 9: Prove the key separation.** The environment key reaches a claimed pod through the
 control plane, so a claimed pod does hold `CODEX_API_KEY` in its env, by design. What stays
@@ -583,7 +657,7 @@ follow-up turn in session sess_... (same claimed pod)
 
 agent output:
 
-I’ll read the file from `/workspace` and report its first line.The first line is: `6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026`
+I’ll read `report.txt` from the workspace and return its first line.`6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026`
 ```
 
 The sandbox pods after the follow-up (the launcher's line is left out, and the node names are
@@ -595,12 +669,12 @@ kubectl get pods -o wide
 
 ```text
 NAME                               READY   STATUS    RESTARTS   AGE     IP                NODE                  NOMINATED NODE   READINESS GATES
-openai-sandbox-executor-89w7w      1/1     Running   0          4m51s   192.168.95.129    <NODE>   <none>           <none>
-openai-sandbox-executor-bh26d      1/1     Running   0          4m51s   192.168.95.128    <NODE>   <none>           <none>
-sandbox-claim-5386f568             1/1     Running   0          2m53s   192.168.101.176   <NODE>   <none>           <none>
+openai-sandbox-executor-95tfd      1/1     Running   0          16m     192.168.112.209   <NODE>   <none>           <none>
+openai-sandbox-executor-kbzn9      1/1     Running   0          16m     192.168.112.208   <NODE>   <none>           <none>
+sandbox-claim-02546f52             1/1     Running   0          3m37s   192.168.104.144   <NODE>   <none>           <none>
 ```
 
-`sandbox-claim-5386f568`, the pod named in step 8's launcher log, is still the only claimed pod,
+`sandbox-claim-02546f52`, the pod named in step 8's launcher log, is still the only claimed pod,
 running with no restarts, and the two warm pods are still there, unclaimed. So the follow-up
 turn read the file the first turn wrote from that pod's `/workspace`: the same claimed pod
 served both turns.
@@ -680,7 +754,8 @@ publishes only IPv4, so its single attempt times out. The IPv4 block is identica
 the environment key arrive in the pod's env from the `SandboxClaim`, set by the launcher over
 its authenticated Kubernetes API connection. The launcher's own intake, which the operator
 reaches by port-forward, is guarded two ways: a deny-by-default ingress policy admits no
-in-cluster pod, and the launcher checks a bearer token on every request. The blueprint publishes
+in-cluster pod, and the launcher checks a bearer token on every request that claims or releases
+a sandbox (its unauthenticated `GET /` returns only a health status). The blueprint publishes
 no Ingress and no host port anywhere.
 
 ## Clean up
@@ -708,20 +783,46 @@ at once. Pass `--keep-claim` to delete only the API session and leave the pod ru
 example, to let a follow-up turn keep using it). Deleting a claim does not delete the session;
 deleting a session does not stop the pod. That is why both parts exist.
 
-**Remove the remaining Kubernetes objects.** Set `AWS_REGION` and `REGISTRY` again in a new
-shell:
+**Remove the remaining Kubernetes objects.** Set `NAMESPACE` again in a new shell. The block
+first checks that the lookup of `$NAMESPACE` succeeds and that it carries the blueprint's
+label, and deletes nothing unless both hold; every command in it names `$NAMESPACE` itself
+rather than relying on the current context. It then switches the context back to
+`nitro-sandboxes-demo`, the shared
+namespace the [home page](../../README.md#prerequisites) sets up (the Claude blueprint's clean
+up does the same), and deletes the blueprint's namespace:
+
+```bash
+export NAMESPACE=openai-managed-agents
+
+if owner=$(kubectl get namespace "$NAMESPACE" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}') \
+    && [ "$owner" = openai-managed-agents ]; then
+  kubectl delete -n "$NAMESPACE" -f deploy/launcher.yaml -f deploy/launcher-ingress.yaml --ignore-not-found
+  kubectl delete -n "$NAMESPACE" -f deploy/sandbox-template.yaml --ignore-not-found
+  kubectl delete -n "$NAMESPACE" sandboxclaims -l openai.com/session-id --ignore-not-found
+  kubectl delete -n "$NAMESPACE" -f deploy/egress-policy.yaml -f deploy/rbac.yaml --ignore-not-found
+  kubectl delete -n "$NAMESPACE" secret openai-env-key launcher-auth --ignore-not-found
+  kubectl config set-context --current --namespace=nitro-sandboxes-demo
+  kubectl delete namespace "$NAMESPACE"
+else
+  echo "Clean up NOT done: namespace $NAMESPACE could not be read or does not carry" \
+    "app.kubernetes.io/part-of=openai-managed-agents (label value: '$owner')." \
+    "No Kubernetes object was deleted and the context was left as it is." >&2
+fi
+```
+
+If it prints `Clean up NOT done`, kubectl could not read the namespace, the namespace is not
+this blueprint's, or `NAMESPACE` holds a different name from the one you set up with. Check
+those before you delete anything in it.
+
+**Remove the image and the local files.** These are not in the namespace. Set `AWS_REGION` and
+`REGISTRY` again in a new shell:
 
 ```bash
 export AWS_REGION=<AWS_REGION>
 export REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com
 
-kubectl delete -f deploy/launcher.yaml -f deploy/launcher-ingress.yaml --ignore-not-found
-kubectl delete -f deploy/sandbox-template.yaml --ignore-not-found
-kubectl delete sandboxclaims -l openai.com/session-id --ignore-not-found
-kubectl delete -f deploy/egress-policy.yaml -f deploy/rbac.yaml --ignore-not-found
-kubectl delete secret openai-env-key launcher-auth --ignore-not-found
 aws ecr delete-repository --repository-name openai-sandbox-executor --region $AWS_REGION --force
-docker image rm $REGISTRY/openai-sandbox-executor:latest
+docker image rm $REGISTRY/openai-sandbox-executor:v1
 rm -rf .venv
 ```
 

@@ -143,6 +143,14 @@ global_settings:
       reason: 'Applied into the namespace set as the current context; never hard-coded'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_21
+      path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
+      reason: 'No namespace in the manifest; the page creates and labels $NAMESPACE and sets it as the current context only once it is the sample''s (README.md:183-211)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_21
+      path: 'examples/managed-agents/openai-managed-agents/deploy/rbac.yaml'
+      reason: 'No namespace in the manifest; the page creates and labels $NAMESPACE and sets it as the current context only once it is the sample''s (README.md:183-211)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_21
       path: 'examples/policy/cedar-policy/deploy/pod.yaml'
       reason: 'setup.sh renders .metadata.namespace from $NAMESPACE before apply'
       expiration: '2027-12-31'
@@ -162,6 +170,10 @@ global_settings:
     - rule_id: CKV2_K8S_6
       path: 'examples/storage/s3-files/deploy/s3-files.yaml'
       reason: 'Pods carry app: s3-files-shared, selected by the ApplicationNetworkPolicy in deploy/egress-policy.yaml'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
+      reason: 'Pod carries app: openai-launcher (launcher.yaml:25), selected by the deny-by-default ApplicationNetworkPolicy in deploy/launcher-ingress.yaml:20-22'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/policy/cedar-policy/deploy/pod.yaml'
@@ -1090,7 +1102,103 @@ global_settings:
     # Intentional all-interface bind, documented at the call site.
     - rule_id: python.lang.security.audit.network.bind.avoid-bind-to-all-interfaces
       path: 'examples/managed-agents/openai-managed-agents/src/launcher/serve.py'
-      reason: 'Kubelet probes the pod IP; no host port or Service publishes it and deny-all ingress governs it (serve.py:76-78)'
+      reason: 'Kubelet probes the pod IP; no host port or Service publishes it and deny-all ingress governs it (serve.py:88-90)'
+      expiration: '2027-12-31'
+    - rule_id: B104
+      path: 'examples/managed-agents/openai-managed-agents/src/launcher/serve.py'
+      line_start: 91
+      line_end: 91
+      reason: 'Kubelet probes the pod IP; no host port or Service publishes it and deny-all ingress governs it (serve.py:88-90)'
+      expiration: '2027-12-31'
+    - rule_id: B104
+      path: 'examples/managed-agents/openai-managed-agents/src/launcher/launch.py'
+      line_start: 193
+      line_end: 193
+      reason: 'The ClusterIP Service and kubelet probes reach the pod IP; no host port publishes it, deny-all ingress admits no pod, every claim or release POST needs the bearer token, and GET / answers without it with no data (launch.py:185-192)'
+      expiration: '2027-12-31'
+    # openai-managed-agents (#150): the bandit findings ASH posted on #197. pytest asserts, the two
+    # fixed-argument codex launches, urlopen after an http(s) check, and test fakes and names.
+    - rule_id: B101
+      path: 'examples/managed-agents/openai-managed-agents/tests/*.py'
+      reason: 'pytest asserts by design; nothing under tests/ ships in the image (Dockerfile:38-39 copies pyproject.toml and src/ only)'
+      expiration: '2027-12-31'
+    - rule_id: B404
+      path: 'examples/managed-agents/openai-managed-agents/src/launcher/serve.py'
+      line_start: 45
+      line_end: 45
+      reason: 'Subprocess import is required for the two codex launches in this file; the import executes no command.'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/managed-agents/openai-managed-agents/src/launcher/serve.py'
+      line_start: 225
+      line_end: 225
+      reason: 'Fixed argument list, no shell: codex exec-server --listen on loopback (serve.py:145); the codex path is CODEX_PATH from the Dockerfile (Dockerfile:53). No agent output forms the command.'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/managed-agents/openai-managed-agents/src/launcher/serve.py'
+      line_start: 240
+      line_end: 240
+      reason: 'Fixed argument list, no shell: codex exec-server forward (serve.py:148-157) with CODEX_PATH from the Dockerfile (Dockerfile:53) and the claim env ids, checked by ID_RE and URL_RE first (serve.py:66-69). No agent output forms the command.'
+      expiration: '2027-12-31'
+    - rule_id: B310
+      path: 'examples/managed-agents/openai-managed-agents/scripts/submit.py'
+      line_start: 104
+      line_end: 104
+      reason: 'urlopen only after the http/https scheme check (submit.py:96-97); the URL is the launcher intake, the operator port-forward by default'
+      expiration: '2027-12-31'
+    - rule_id: B310
+      path: 'examples/managed-agents/openai-managed-agents/scripts/cleanup.py'
+      line_start: 54
+      line_end: 54
+      reason: 'urlopen only after the http/https scheme check (cleanup.py:46-47); the URL is the launcher intake, the operator port-forward by default'
+      expiration: '2027-12-31'
+    - rule_id: B310
+      path: 'examples/managed-agents/openai-managed-agents/tests/test_launcher.py'
+      line_start: 80
+      line_end: 80
+      reason: 'urlopen only after the http scheme check (test_launcher.py:76-77); the URL is the in-process test intake on 127.0.0.1'
+      expiration: '2027-12-31'
+    - rule_id: B105
+      path: 'examples/managed-agents/openai-managed-agents/src/launcher/config.py'
+      line_start: 62
+      line_end: 62
+      reason: 'Name of the environment variable that holds the token, not the token'
+      expiration: '2027-12-31'
+    - rule_id: B105
+      path: 'examples/managed-agents/openai-managed-agents/tests/test_dispatch.py'
+      line_start: 25
+      line_end: 25
+      reason: 'Fake sk- key a test uses to prove the key is never logged'
+      expiration: '2027-12-31'
+    - rule_id: B105
+      path: 'examples/managed-agents/openai-managed-agents/tests/test_guard.py'
+      line_start: 995
+      line_end: 995
+      reason: 'Fake sk- key a test uses to prove the key never appears in output'
+      expiration: '2027-12-31'
+    - rule_id: B105
+      path: 'examples/managed-agents/openai-managed-agents/tests/test_guard.py'
+      line_start: 1011
+      line_end: 1011
+      reason: 'Fake sk- key a test uses to prove the key never appears in output'
+      expiration: '2027-12-31'
+    - rule_id: B105
+      path: 'examples/managed-agents/openai-managed-agents/tests/test_launcher.py'
+      line_start: 29
+      line_end: 29
+      reason: 'Fake bearer token for the in-process test intake'
+      expiration: '2027-12-31'
+    - rule_id: B105
+      path: 'examples/managed-agents/openai-managed-agents/tests/test_launcher.py'
+      line_start: 31
+      line_end: 31
+      reason: 'Fake sk- key a test uses to prove the key never leaks to a client'
+      expiration: '2027-12-31'
+    - rule_id: B106
+      path: 'examples/managed-agents/openai-managed-agents/tests/test_launcher.py'
+      line_start: 99
+      line_end: 99
+      reason: 'Wrong bearer token a test sends to prove the intake rejects it'
       expiration: '2027-12-31'
     # Pinned lines: names of Secrets, keys and env vars, and fake keys in tests; no secret values.
     - rule_id: CKV_SECRET_6
@@ -1137,20 +1245,20 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/managed-agents/openai-managed-agents/tests/test_guard.py'
-      line_start: 141
-      line_end: 141
+      line_start: 995
+      line_end: 995
       reason: 'Fake sk- key a test uses to prove the key never appears in output'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/managed-agents/openai-managed-agents/tests/test_guard.py'
-      line_start: 149
-      line_end: 149
+      line_start: 1011
+      line_end: 1011
       reason: 'Fake sk- key a test uses to prove the key never appears in output'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/managed-agents/openai-managed-agents/tests/test_launcher.py'
-      line_start: 24
-      line_end: 24
+      line_start: 31
+      line_end: 31
       reason: 'Fake sk- key a test uses to prove the key never leaks to a client'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
@@ -1717,39 +1825,6 @@ global_settings:
     - rule_id: CKV_K8S_9
       path: 'examples/integrations/temporal/deploy/worker.yaml'
       reason: 'Baseline: integrations/temporal merged before the ASH gate; hardening tracked in #149'
-      expiration: '2027-01-31'
-    # Baseline: managed-agents/openai-managed-agents
-    - rule_id: CKV2_K8S_6
-      path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
-      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in #150'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_14
-      path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
-      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in #150'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_21
-      path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
-      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in #150'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_35
-      path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
-      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in #150'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_38
-      path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
-      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in #150'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_40
-      path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
-      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in #150'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/managed-agents/openai-managed-agents/deploy/launcher.yaml'
-      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in #150'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_21
-      path: 'examples/managed-agents/openai-managed-agents/deploy/rbac.yaml'
-      reason: 'Baseline: managed-agents/openai-managed-agents merged before the ASH gate; hardening tracked in #150'
       expiration: '2027-01-31'
     # Baseline: subagent-security/bubblewrap
     - rule_id: CKV2_K8S_6
