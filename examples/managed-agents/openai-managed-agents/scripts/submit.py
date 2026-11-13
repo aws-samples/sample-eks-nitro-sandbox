@@ -11,7 +11,7 @@ application-managed provisioning):
      codex exec-server in it pointing at that remote URL.
      The launcher is reached over a ClusterIP Service you port-forward:
        kubectl port-forward svc/openai-launcher 8080:8080
-     Every request to the launcher carries LAUNCHER_AUTH_TOKEN from your .env.
+     Every request this script sends to the launcher carries LAUNCHER_AUTH_TOKEN from your .env.
   3. Wait on the open stream for agent.session.environment.connected for this
      session and this environment (up to --connect-timeout seconds, default
      300; an event for another session or environment does not count). Only
@@ -42,6 +42,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -85,19 +86,22 @@ def _launcher_token() -> str:
     if not token:
         sys.exit(
             "Set LAUNCHER_AUTH_TOKEN in .env (the same value stored in the "
-            "launcher-auth Secret). The launcher authenticates every request with it."
+            "launcher-auth Secret). The launcher checks it on every claim and release request."
         )
     return token
 
 
 def _post(url: str, payload: dict, token: str, timeout: int) -> dict:
+    # urlopen also opens file:// and other schemes; the launcher is an HTTP intake.
+    if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
+        sys.exit(f"the launcher URL must start with http:// or https://: {url}")
     body = json.dumps(payload).encode()
     req = urllib.request.Request(
         url, data=body,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - operator's own port-forward
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - http(s) only, checked above
             return json.loads(resp.read() or b"{}")
     except urllib.error.HTTPError as exc:
         if exc.code == 401:

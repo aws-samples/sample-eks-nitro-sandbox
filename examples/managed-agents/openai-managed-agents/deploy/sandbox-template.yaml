@@ -51,14 +51,17 @@ spec:
       terminationGracePeriodSeconds: 90
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
-        fsGroup: 1000
+        # The image's own user (Dockerfile, useradd --uid 10001), the same UID the
+        # launcher runs as.
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: executor
-          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/openai-sandbox-executor:latest
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/openai-sandbox-executor:v1
+          imagePullPolicy: IfNotPresent
           args: ["serve"]
           ports:
             - name: ready
