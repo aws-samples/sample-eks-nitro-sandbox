@@ -8,13 +8,17 @@ fails loudly rather than joining the cluster.
 
 Checks: host kernel release, /dev/nitro_enclaves, kernel BTF, a CMA reservation, vsock, TUN,
 EROFS, AppArmor enabled with the sample's scoped profile loaded in ENFORCE mode, containerd in
-the GA shim's 2.1.x to 2.3.x range (scripts/30-runtime-install.sh --check-containerd), both
-runtime handlers parsed from Canonical's containerd template and from containerd's own migrated
-dump, the one active kubelet endpoint at the CRI proxy, the kubelet-eks ordering drop-in and the
-cri-proxy unit (directives parsed, comments ignored), the shim config, the guest image layout,
-mkfs.erofs 1.8.10 with zstd as a systemd service sees it, every installed runtime binary and
-image file against the archive's SHA256SUMS and packages/sources.lock, and the package holds
-36-hold-packages.sh set (containerd and the kernel meta-packages).
+the 2.1.x to 2.3.x range this sample is validated on (scripts/30-runtime-install.sh
+--check-containerd), both runtime handlers parsed from Canonical's containerd template and from
+containerd's own migrated dump, the one active kubelet endpoint at the CRI proxy, the kubelet-eks
+ordering drop-in and the cri-proxy unit (directives parsed, comments ignored), the shim config,
+the guest image layout, the guest kernel release inside the staged EIF (read from its bzImage
+header, equal to the pinned guest_kernel the AMI is tagged with), mkfs.erofs 1.8.10 with zstd as
+a systemd service sees it, every file
+packages/sources.lock installs on the node at its path, mode and pinned SHA-256, the runtime
+release's signed manifest kept on the image (its signature verified again with the committed
+public key, and its shim line), and the package holds 36-hold-packages.sh set (containerd and the
+kernel meta-packages).
 
 Every condition is checked with require() (scripts/lib/image_checks.py), which raises whatever
 the interpreter's optimization level; `python3 -O` and PYTHONOPTIMIZE cannot turn a check off.
@@ -43,6 +47,8 @@ DATA_DIR = os.environ.get("NITRO_SANDBOX_DATA_DIR", ic.DATA_DIR)
 LOCALVERSION = os.environ.get("KERNEL_LOCALVERSION", "-nitro-ga")
 SHIM_DEBUG = os.environ.get("SHIM_DEBUG", "false") == "true"
 PROFILE_NAME = "ubuntu-ami-sample-profile"
+# Where 30-runtime-install.sh keeps the runtime release's signed manifest and its signature.
+SIGNED_DIR = "/usr/local/share/ubuntu-ami-sample/runtime"
 
 
 def P(path):
@@ -158,6 +164,16 @@ def checks(lock):
             require(f.is_file() and f.stat().st_size > 0, f"{IMAGE_DIR}/{name} is missing or empty")
         return f"{IMAGE_DIR}: latest.eif, latest-disk.img, rootfs.ext4 -> latest-disk.img"
 
+    def guest_kernel():
+        # The pin the AMI's GuestKernelRelease tag carries: it must be what the staged EIF boots,
+        # compared whole (the host's 6.18.56-nitro-ga shares the base release and is refused).
+        pinned = [b for b in lock.values() if "guest_kernel" in b]
+        require(len(pinned) == 1, f"sources.lock has {len(pinned)} blocks with guest_kernel=, expected 1")
+        want = pinned[0]["guest_kernel"]
+        got = ic.eif_kernel_release(P(f"{IMAGE_DIR}/latest.eif").read_bytes())
+        require(got == want, f"latest.eif boots guest kernel {got!r}, not the {want!r} sources.lock pins")
+        return f"latest.eif boots guest kernel {got}, the pinned guest_kernel"
+
     def mkfs_erofs():
         want = lock["erofs-utils-source"]["ref"]
         mk = str(P("/usr/local/bin/mkfs.erofs"))
@@ -176,30 +192,45 @@ def checks(lock):
             require(z.returncode == 0, "mkfs.erofs -zzstd,1 fails as a systemd service (no zstd?)")
         return f"{first}; zstd ok as a systemd service"
 
-    def runtime_payloads():
-        sums_path = P("/usr/local/share/ubuntu-ami-sample/runtime-SHA256SUMS")
-        sums = {}
-        for line in sums_path.read_text().splitlines():
-            m = re.fullmatch(r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._-]*)", line)
-            require(m is not None, f"malformed line in runtime-SHA256SUMS: {line!r}")
-            require(m.group(2) not in sums, f"runtime-SHA256SUMS lists {m.group(2)} twice")
-            sums[m.group(2)] = m.group(1)
-        payloads = {b["file"]: b for b in lock.values() if b.get("kind") == "runtime-payload"}
-        require(set(sums) == set(payloads), "runtime-SHA256SUMS and sources.lock list different payloads")
+    def runtime_files():
+        installs = sorted((i, b) for i, b in lock.items() if b.get("install", "none") != "none")
+        require(installs, "sources.lock names no file to install on the node")
         checked = []
-        for name, b in sorted(payloads.items()):
-            require(sums[name] == b["sha256"], f"{name}: SHA256SUMS and sources.lock disagree")
-            if b.get("install", "none") == "none":
-                continue
+        for bid, b in installs:
             dest, mode = b["install"].split()
             p = P(dest)
             st = os.lstat(p) if os.path.lexists(p) else None
             require(st is not None and stat.S_ISREG(st.st_mode), f"{dest} is not a regular file")
             require(stat.S_IMODE(st.st_mode) == int(mode, 8), f"{dest} has mode {oct(stat.S_IMODE(st.st_mode))}, expected {mode}")
             got = sha256(p)
-            require(got == sums[name], f"{dest} has SHA-256 {got}, not its SHA256SUMS line {sums[name]}")
+            require(got == b["sha256"], f"{dest} has SHA-256 {got}, not the {b['sha256']} sources.lock pins for {bid}")
             checked.append(dest)
-        return f"{len(checked)} installed files match SHA256SUMS and sources.lock, with their modes"
+        return f"{len(checked)} installed files match their sources.lock pins, with their modes"
+
+    def runtime_signature():
+        signed = sorted((i, b) for i, b in lock.items() if b.get("kind") == "signed-archive")
+        require(signed, "sources.lock has no signed-archive block")
+        for bid, b in signed:
+            key = LOCK_FILE.parent / b["public_key"]
+            require(key.is_file() and sha256(key) == b["public_key_sha256"],
+                    f"the public key {b['public_key']} beside sources.lock is missing or not its pinned SHA-256")
+            man = P(f"{SIGNED_DIR}/{bid}.SHA256SUM")
+            sig = P(f"{SIGNED_DIR}/{bid}.SHA256SUM.sig")
+            require(man.is_file() and sig.is_file(), f"{SIGNED_DIR}/{bid}.SHA256SUM or its .sig is missing")
+            require(sha256(man) == b["manifest_sha256"], f"{bid}.SHA256SUM is not the manifest sources.lock pins")
+            v = run(["openssl", "dgst", "-sha384", "-verify", str(key), "-signature", str(sig), str(man)])
+            require(v.returncode == 0 and v.stdout.strip() == "Verified OK",
+                    f"the signature over {bid}.SHA256SUM does not verify: {(v.stdout.strip() or v.stderr.strip())[:120]!r}")
+            sums = {}
+            for line in man.read_text().splitlines():
+                m = re.fullmatch(r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._-]*)", line)
+                require(m is not None, f"malformed line in {bid}.SHA256SUM: {line!r}")
+                sums[m.group(2)] = m.group(1)
+            members = [m for m in lock.values() if m.get("kind") == "archive-member" and m.get("archive") == bid]
+            for name, want in [(b["file"], b["sha256"])] + [(m["member"], m["sha256"]) for m in members]:
+                require(sums.get(name) == want, f"{bid}.SHA256SUM lists {name} as {sums.get(name)!r}, not its pin {want}")
+        names = ", ".join(f"{i} {b['ref']}" for i, b in signed)
+        return f"{names}: signed manifest Verified OK, and it lists the archive and the shim with their pins"
 
     def holds():
         listed = [l.strip() for l in P("/usr/local/share/ubuntu-ami-sample/held-packages").read_text().splitlines() if l.strip()]
@@ -225,8 +256,8 @@ def checks(lock):
         ("host_kernel", kernel), ("nitro_enclaves_device", char_dev("/dev/nitro_enclaves")), ("btf", btf),
         ("cma", cma), ("vsock", char_dev("/dev/vhost-vsock")), ("tun", char_dev("/dev/net/tun")), ("erofs", erofs),
         ("apparmor", apparmor), ("containerd_version", containerd), ("runtime_wiring", wiring),
-        ("guest_image", guest_image), ("mkfs_erofs", mkfs_erofs), ("runtime_payloads", runtime_payloads),
-        ("package_holds", holds),
+        ("guest_image", guest_image), ("guest_kernel", guest_kernel), ("mkfs_erofs", mkfs_erofs), ("runtime_files", runtime_files),
+        ("runtime_signature", runtime_signature), ("package_holds", holds),
     ]
 
 

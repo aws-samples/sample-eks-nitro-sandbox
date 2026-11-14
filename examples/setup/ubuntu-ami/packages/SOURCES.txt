@@ -3,10 +3,17 @@
 # packages/sources.lock is the machine-checked lock file the build scripts read; this file
 # is the human-readable provenance note the README's "Public inputs" section points to.
 #
-# The inputs come from the Nitro sandbox GA node-build bundle dated 2026-10-28
-# (nitro-sandbox-ga-20261028). Two classes:
+# Every input is public and obtainable by an anonymous repository reader. The Nitro Sandbox
+# inputs come from the locations the Amazon EKS User Guide pages "Create and update a Nitro
+# Sandbox AMI" and "Download and verify the runtime binaries" name
+# (https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-ami-create-update.html and
+# https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-download-binaries.html, read on
+# 2026-11-13). The SHA-256s of the runtime release, the guest image pair, Firecracker and the
+# host-kernel patch were computed by this sample from fresh downloads on 2026-11-13. The kernel
+# and erofs-utils pins are unchanged from earlier rounds and were confirmed again on 2026-11-13:
+# the kernel's against the linux-6.18.56.tar.xz line of kernel.org's sha256sums.asc, the
+# erofs-utils snapshot's from a fresh download.
 #
-# 1. PUBLIC, PINNED, CHECKSUMMED (obtainable by an anonymous repository reader today)
 #    - Ubuntu 24.04 EKS base AMI: resolved per Region at run time from Canonical's public SSM
 #      parameter path; see packages/sources.lock, id=base-ami-ubuntu-2404. Canonical republishes
 #      "current" under new serials, so no AMI id or serial is tracked here; each run records the
@@ -16,33 +23,51 @@
 #      linux-6.18.56.tar.xz line of kernel.org's sha256sums.asc, whose signature verifies with
 #      the Kernel.org checksum autosigner key (B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1). The
 #      tarball also verifies against its stable-release signature linux-6.18.56.tar.sign
-#      (647F28654894E3BD457199BE38DBBDC86092693E). The value equals the one the GA bundle's
-#      build-kernel-ubuntu.sh pins. See id=linux-kernel-source.
-#    - Host-kernel patch: AWS's public commit amazonlinux/linux
-#      1e66c960b982c94bda76ebd0129eaecf0a68b46e ("nitro_enclaves: Amazon Nitro Enclaves
-#      extension (port onto 6.18.48)"), fetched from GitHub as a .patch, SHA-256 pinned as the
-#      GA bundle pins it, applied as exactly one commit with `git am`; see id=host-kernel-patch.
-#      This one public commit replaces the earlier, separately distributed patch series.
+#      (647F28654894E3BD457199BE38DBBDC86092693E). See id=linux-kernel-source.
+#    - Host-kernel patch: the Amazon Linux sandbox patch the User Guide links for operating
+#      systems other than Amazon Linux, commit amazonlinux/linux
+#      4ae89f6e09f949848123407602b4e5a8bb8d8631 ("nitro_enclaves: Amazon Nitro Enclaves extension
+#      (port onto 6.18.48)"), fetched from GitHub as a .patch, SHA-256 pinned by this sample,
+#      applied as exactly one commit with `git am`; see id=host-kernel-patch. Everything after the
+#      patch's first line (git's "From <commit>" header) is byte-identical to commit 1e66c960,
+#      which this sample pinned before, so the kernel it builds is unchanged.
 #    - erofs-utils 1.8.10 source: kernel.org cgit snapshot of the tagged release. A cgit
 #      snapshot has no upstream-published checksum, so the SHA-256 is pinned BY THIS SAMPLE
 #      (confirmed identical across independent fetches); see id=erofs-utils-source.
+#    - Nitro Sandbox runtime release 0.1.4274.0, x86_64:
+#      https://d1uvmbvklg8rt.cloudfront.net/0.1.4274.0/x86_64/nitro-sandboxes-runtime.tar.gz, with
+#      SHA256SUM and its detached signature SHA256SUM.sig beside it. The signature is ECDSA P-384
+#      over SHA-384 and verifies with `openssl dgst -sha384 -verify`. The public key,
+#      packages/nitro-sandboxes-runtime-v1.pub, is a byte copy of the key the "Download and verify
+#      the runtime binaries" page prints (PEM, 215 bytes, SHA-256
+#      8b61298c0cb361b352063eb4ae8c89d38270d6f8e96131ef93f238aba6137256; compared with the page
+#      again on 2026-11-13). The downloaded SHA256SUM, not the copy inside the archive, is the file
+#      AWS signs. Of the archive's binaries only the shim, containerd-shim-nitro-sandbox-v2 (also
+#      the CRI proxy), goes on the node; the guest agent runs inside the guest image, and
+#      eks-nitro-sandbox-genpolicy runs on a workstation or in a build pipeline. The release is
+#      published under the AWS Intellectual Property License (its LICENSE file); this sample
+#      downloads it at build time and never redistributes it. See id=runtime-release and
+#      id=runtime-shim.
+#    - Guest image, a matched pair, release 1.36.5/2026-11-06, amd64:
+#      https://amazon-eks.s3.us-west-2.amazonaws.com/1.36.5/2026-11-06/nitro-sandbox-guest/linux/amd64/
+#      nitro-sandbox-guest.eif and nitro-sandbox-guest-disk.img, each with a .sha256 sidecar. The
+#      sidecars are served from the same unauthenticated location as the files, so they give
+#      integrity, not authenticity: this sample pins both SHA-256s itself (each computed from a full
+#      download that matched its sidecar) and the build checks the sidecar and the file against the
+#      pin. The guest kernel inside the EIF is 6.18.56, read offline from the bzImage setup header
+#      in the EIF's kernel section. See id=guest-image-eif and id=guest-image-disk.
+#    - Firecracker and jailer v1.18.0 (the User Guide asks for v1.18.0 or later): the GitHub
+#      release firecracker-v1.18.0-x86_64.tgz, checked against the .sha256.txt published beside
+#      it; the two binaries in it are pinned by their own SHA-256 (the values the tarball's
+#      SHA256SUMS lists). Apache-2.0. See id=firecracker-release, id=firecracker and id=jailer.
 #    - Distro packages (kernel-build toolchain, erofs-utils build dependencies): Ubuntu apt
 #      repositories, verified by apt's own signed repository metadata; see id=distro-packages.
 #      containerd comes with the base AMI and is checked, never installed or changed.
 #
-# 2. OPERATOR-SUPPLIED PREVIEW ARCHIVE, CHECKSUM-PINNED, WITH NO PUBLIC DOWNLOAD
-#    - The Nitro sandbox runtime archive, nitro-sandbox-binaries-2026-10-28.zip: one flat zip
-#      holding the containerd shim (also the CRI proxy), Firecracker and its jailer, the guest
-#      boot image latest.eif (guest kernel 6.18.54) and root disk latest-disk.img, the policy
-#      generator, the key provider, the guest agent, and a SHA256SUMS covering all eight. While
-#      Nitro sandboxes are in preview the reader obtains it from their AWS account team; there
-#      is no public URL to cite. The archive SHA-256 and every payload SHA-256 are pinned in
-#      sources.lock (id=runtime-archive and the runtime-payload-* blocks). The build verifies the
-#      archive, then fails closed unless SHA256SUMS lists every unpacked file exactly once, every
-#      hash matches, and every payload matches its sources.lock pin. It is never committed, never
-#      put in the sample folder, and never fetched by this sample: the operator places it in
-#      RUNTIME_ARTIFACTS_DIR (default: the repository's gitignored tmp/issue10/run/runtime), and
-#      setup.sh carries it to the build host through a private, per-run S3 staging bucket.
+# The build host downloads the runtime release, the guest image pair and Firecracker itself and
+# verifies them there (packages/fetch-runtime-artifacts.sh, called by scripts/30-runtime-install.sh);
+# ./setup.sh --prepare on the workstation verifies the signed manifest and the published sidecars
+# without the large downloads.
 #
 # NEVER AN INPUT HERE: Amazon-internal source trees, internal package mirrors, internal hosts,
 # private URLs. The sample must not require or name any of these.
@@ -55,14 +80,32 @@
 # The on-image manifest (/etc/ubuntu-ami-sample-manifest), written by the build stages, is the
 # sample's software bill of materials for the node: the kernel release and the SHA-256 of its
 # tarball and patch, the erofs-utils version and installed mkfs.erofs SHA-256, each installed
-# runtime file's path, mode and SHA-256, the observed containerd version, and the shim's debug
-# setting. It names only public inputs and the runtime archive's own file names, and carries no
-# value from the author's account or environment.
+# runtime file's path, mode, SHA-256 and sources.lock block, the runtime release, guest image and
+# Firecracker versions, the observed containerd version, and the shim's debug setting. The runtime
+# release's signed SHA256SUM and its signature stay on the image under
+# /usr/local/share/ubuntu-ami-sample/runtime/. The manifest names only public inputs and carries
+# no value from the author's account or environment.
 #
 # AMI output interface: the AMI this sample bakes carries ManagedBy=<RESOURCE_PREFIX> (every
 # resource this sample creates carries it) and RunId, and BtfValidated=true once
 # scripts/verify-fresh-instance.sh, via scripts/lib/btf-tag.sh, has seen a SECOND, fresh
 # instance launched from the AMI pass verify-image.py and 40-smoke.sh. It is never set at
 # create-image time, never set when that verification fails, and never written to an AMI that
-# does not already carry this run's ManagedBy tag. The cilium-ubuntu sample (issue #11) reads
-# BtfValidated=true before it will use an AMI this sample produced.
+# does not already carry this run's ManagedBy tag. With it come the build-metadata tags below;
+# scripts/verify-fresh-instance.sh reads the five GA tags' values from packages/sources.lock, and
+# the README's AMI tag table lists every tag:
+#      KernelVersion        the host kernel release, KERNEL_VERSION (6.18.56, the
+#                           linux-kernel-source ref)
+#      ErofsUtilsVersion    the erofs-utils release, EROFS_UTILS_VERSION (1.8.10, the
+#                           erofs-utils-source ref)
+#      RuntimeRelease       the runtime release, from id=runtime-release ref (0.1.4274.0)
+#      GuestImageRelease    the guest image release, from id=guest-image-eif ref (1.36.5/2026-11-06)
+#      FirecrackerVersion   the Firecracker release, from id=firecracker-release ref (v1.18.0)
+#      HostKernelPatch      the host-kernel patch commit, from id=host-kernel-patch ref
+#                           (4ae89f6e09f949848123407602b4e5a8bb8d8631)
+#      GuestKernelRelease   the guest kernel release, from id=guest-image-eif guest_kernel
+#                           (6.18.56), the release verify-image.py read out of the staged EIF;
+#                           ./test.sh checks that a sandbox pod's uname -r equals this tag
+#      BtfValidatedBuildId  the verification instance's name
+# The cilium-ubuntu sample (issue #11) reads BtfValidated=true before it will use an AMI this
+# sample produced.

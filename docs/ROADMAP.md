@@ -80,14 +80,14 @@ Auto Mode's managed one. Cluster and node-group lifecycle were previously treate
 scope here; this section is an intentional, narrow addition: it covers building a node AMI
 for an existing cluster, not creating or managing the cluster itself.
 
-- [ubuntu-ami](../examples/setup/ubuntu-ami/README.md): build a custom Ubuntu 24.04 node
-  AMI for EKS Pod Isolation and add one dedicated, tainted managed node group to an
-  existing cluster. Every public input (base AMI, kernel 6.18.56 plus AWS's public
-  host-kernel commit 1e66c960, erofs-utils 1.8.10, distro packages) is pinned and
-  checksum-verified. The Nitro sandbox runtime is an operator-supplied preview archive,
-  checksum-pinned, with no public download. Validated end to end on a live cluster; whether
-  that archive meets the spec's public-input criterion is waiting on the maintainers. Spec:
-  [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10).
+- [ubuntu-ami](../examples/setup/ubuntu-ami/README.md) (available now): build a custom Ubuntu 24.04
+  node AMI for EKS Pod Isolation and add one dedicated, tainted managed node group to an
+  existing cluster. Every input is public, pinned and checksum-verified: the base AMI, kernel
+  6.18.56 plus the Amazon Linux sandbox patch (commit 4ae89f6e), erofs-utils 1.8.10, distro
+  packages, and the Nitro Sandbox runtime release 0.1.4274.0 (signature verified), the guest
+  image 1.36.5/2026-11-06 and Firecracker v1.18.0 from the locations the Amazon EKS User Guide
+  names. Spec: [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10); moved to
+  the public releases in [#218](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/218).
 - [cilium-ubuntu](../examples/setup/cilium-ubuntu/README.md) (available now): a dedicated
   disposable cluster with Cilium as the only CNI, in ENI mode with kube-proxy replacement, and
   the two Ubuntu node groups (system and sandbox) from `ubuntu-ami` above joining it. Spec: [#11](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/11).

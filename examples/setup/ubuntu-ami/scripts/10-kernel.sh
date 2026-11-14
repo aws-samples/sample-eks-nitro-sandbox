@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 10-kernel.sh: build the Nitro Sandbox HOST kernel from kernel.org linux-6.18.56 plus AWS's
-# public kernel commit (amazonlinux/linux 1e66c960), install it, and make it the default GRUB
-# boot entry. Stops short of the reboot so the GRUB state can be read first. Mirrors the GA
-# node-build bundle's build-kernel-ubuntu.sh.
+# 10-kernel.sh: build the Nitro Sandbox HOST kernel from kernel.org linux-6.18.56 plus the
+# Amazon Linux sandbox patch the Amazon EKS User Guide names (amazonlinux/linux 4ae89f6e),
+# install it, and make it the default GRUB boot entry. Stops short of the reboot so the GRUB
+# state can be read first.
 #
 #   sudo scripts/10-kernel.sh                   # the build (on the build host)
 #   scripts/10-kernel.sh --assert-config FILE   # only run the .config assertions on FILE

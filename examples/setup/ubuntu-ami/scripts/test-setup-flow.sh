@@ -34,6 +34,9 @@
 # The fake keeps a JSON state file per case and logs every call. Poll intervals are 0 here.
 # The account id is the AWS documentation's example id.
 set -uo pipefail
+# A reader's own config.env (in the sample folder or ~/ubuntu-ami/) must not change what this suite
+# tests: scripts/lib/common.sh skips it while this test hook is set.
+export UBUNTU_AMI_TESTS_IGNORE_CONFIG_ENV=1
 export PYTHONDONTWRITEBYTECODE=1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAMPLE="$(cd "$HERE/.." && pwd)"
@@ -229,7 +232,7 @@ s["ec2"]["instances"] = []
 s["image"] = {"pending_reads": 3}'
 su() { # su <case> [args]: the real setup.sh with the fixture inputs, plus SU_ENV
   local c="$1"; shift
-  env LOCK_FILE="$WORK/fixture.lock" RUNTIME_ARTIFACT_FILE=fixture.zip BUILD_SUBNET_ID=subnet-0example1 \
+  env LOCK_FILE="$WORK/fixture.lock" BUILD_SUBNET_ID=subnet-0example1 \
     NODE_SUBNET_IDS=subnet-0example2 SSM_ONLINE_TRIES=2 "${SU_ENV[@]}" bash "$SAMPLE/setup.sh" "$@" > "$WORK/$c.log" 2>&1 < /dev/null
 }
 SU_ENV=()

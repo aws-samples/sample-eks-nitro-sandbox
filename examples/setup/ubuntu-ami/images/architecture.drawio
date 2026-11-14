@@ -17,12 +17,9 @@
           <mxGeometry x="40" y="640" width="80" height="80" as="geometry" />
         </mxCell>
 
-        <!-- The external, user-supplied runtime slot: pending public release, drawn distinctly (grey dashed) -->
-        <mxCell id="input-runtime" value="&lt;div style=&quot;font-size:20px;line-height:24px&quot;&gt;EKS Pod Isolation runtime&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;user-supplied, pending public release&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="rounded=0;html=1;whiteSpace=nowrap;strokeColor=#7D8998;fillColor=none;strokeWidth=2;dashed=1;dashPattern=8 5;fixDash=1;verticalAlign=top;align=left;spacing=0;spacingLeft=16;spacingTop=4;fontSize=14;fontStyle=1;fontColor=#5A6B86;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
-          <mxGeometry x="40" y="920" width="400" height="200" as="geometry" />
-        </mxCell>
-        <mxCell id="input-runtime-icon" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#7D8998;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.document;spacing=0;fontSize=24;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="input-runtime">
-          <mxGeometry x="160" y="90" width="80" height="80" as="geometry" />
+        <!-- Fourth public input: the Nitro sandbox runtime (runtime release, guest image, Firecracker), downloaded and verified on the build host; same column and 280 px pitch as the three above -->
+        <mxCell id="input-runtime" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Nitro sandbox runtime&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;AWS and GitHub, signed or pinned&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.document;spacing=0;fontSize=24;fontColor=#232F3E;fontStyle=0;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="40" y="920" width="80" height="80" as="geometry" />
         </mxCell>
 
         <!-- AWS Cloud frame -->
@@ -110,14 +107,12 @@
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="e-runtime-build" value="install, once present" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#7D8998;strokeWidth=2.5;dashed=1;dashPattern=8 6;fixDash=1;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;" edge="1" parent="1" source="input-runtime" target="buildhost-ssm">
+        <mxCell id="e-runtime-build" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;dashed=0;endArrow=block;endFill=1;endSize=10;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="input-runtime" target="buildhost-ec2">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="240" y="700" />
-              <mxPoint x="1220" y="700" />
-              <mxPoint x="1220" y="400" />
+              <mxPoint x="860" y="960" />
+              <mxPoint x="860" y="400" />
             </Array>
-            <mxPoint x="0" y="-30" as="offset" />
           </mxGeometry>
         </mxCell>
 

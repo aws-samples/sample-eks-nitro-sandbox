@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # 50-bake-prep.sh: idempotent sanitization run over SSM before an AMI is created from the
 # build host. Removes the build toolchain, the kernel tree, the downloaded kernel tarball and
-# kernel patch, the runtime archive and its unpacked copy, the S3-staged downloads, SSH host
-# keys and machine identity. Keeps the installed runtime, the guest image, the verification
-# scripts (/usr/local/share/ubuntu-ami-sample), the AppArmor profile, the package holds and the
+# kernel patch, the runtime release, guest image and Firecracker downloads, the S3-staged
+# scripts, SSH host keys and machine identity. Keeps the installed runtime, the guest image, the
+# signed runtime manifest, the verification scripts (/usr/local/share/ubuntu-ami-sample), the
+# AppArmor profile, the package holds and the
 # on-image manifest. It does NOT change the base AMI's apt update policy (package-list refresh
 # and unattended security upgrades stay as Canonical set them; 36-hold-packages.sh holds only
 # what the image pins).
@@ -30,7 +31,7 @@ sudo apt-get -o DPkg::Lock::Timeout=600 purge -y \
 REMOVE=(
   "$HOME/linux-${KERNEL_VERSION}"        # kernel tree (10-kernel.sh)
   "$HOME/build-erofs"                    # erofs-utils tree (20-erofs-utils.sh)
-  "$RUNTIME_ARTIFACTS_DIR"               # kernel tarball, kernel patch, erofs tarball, runtime zip + unpacked copy
+  "$RUNTIME_ARTIFACTS_DIR"               # kernel tarball, kernel patch, erofs tarball, the runtime, guest image and Firecracker downloads
   "$STAGE_DIR"                           # the S3-staged downloads (setup.sh)
 )
 for p in "${REMOVE[@]}"; do sudo rm -rf -- "$p"; done
@@ -58,10 +59,16 @@ for p in "${REMOVE[@]}"; do
   [ ! -e "$p" ] || { echo "STILL PRESENT: $p" >&2; left=1; }
 done
 # The whole-filesystem residue scan must COMPLETE: a find that fails (an unreadable directory,
-# an I/O error) leaves the result unknown, which stops the bake.
+# an I/O error) leaves the result unknown, which stops the bake. It looks for every downloaded
+# file by name: the kernel tarball and patch, the erofs-utils snapshot, and the runtime release,
+# guest image and Firecracker downloads (installed under other names, so a copy under the
+# download name is residue).
 scan_out=$(mktemp); scan_err=$(mktemp)
-if sudo find "${R:-/}" -xdev \( -name "linux-${KERNEL_VERSION}.tar.xz*" -o -name "$(lock_field host-kernel-patch file)*" \
-     -o -name "$(lock_field runtime-archive file)*" -o -name 'erofs-utils-*.tar.gz*' \) -print >"$scan_out" 2>"$scan_err"; then
+names=(-name "linux-${KERNEL_VERSION}.tar.xz*" -o -name "$(lock_field host-kernel-patch file)*" -o -name 'erofs-utils-*.tar.gz*')
+for id in $(lock_ids_where kind signed-archive) $(lock_ids_where kind sidecar-file); do
+  names+=(-o -name "$(lock_field "$id" file)*")
+done
+if sudo find "${R:-/}" -xdev \( "${names[@]}" \) -print >"$scan_out" 2>"$scan_err"; then
   leftovers=$(cat "$scan_out")
 else
   msg=$(head -n 3 "$scan_err"); rm -f "$scan_out" "$scan_err"
