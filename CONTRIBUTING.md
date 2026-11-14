@@ -7,6 +7,32 @@ Please read through this document before submitting any issues or pull requests 
 information to effectively respond to your bug report or contribution.
 
 
+## Your first contribution
+
+New contributors are welcome here, and a first contribution does not have to be large. A typo fix, a
+clearer sentence on a sample's page, a small script fix, or a good bug report all help, and all are
+genuine contributions.
+
+A good place to start is an issue labeled [`good first issue`](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+or [`help wanted`](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22);
+see [Finding contributions to work on](#finding-contributions-to-work-on) below. If something in a
+blueprint is unclear or looks wrong, that is worth an issue even if you are not sure it is a bug.
+
+A few things make contributing here easier for everyone:
+
+* **Ask when unsure.** Prefer asking on the issue or pull request over guessing. There are no silly
+  questions, and asking early saves everyone time.
+* **Communicate in writing.** Keep the discussion on the issue and the pull request, so anyone can
+  follow why a change was made.
+* **Be kind and patient.** This is a worldwide community across many time zones, so a reply may not
+  come straight away. Be respectful and professional in every exchange.
+* **Keep a change focused.** A pull request that does one thing is easier to review and merge than one
+  that changes many unrelated things at once.
+
+If you used an AI tool to help prepare your contribution, you are still responsible for understanding
+every change in it and for engaging with reviewers yourself.
+
+
 ## Reporting Bugs/Feature Requests
 
 We welcome you to use the GitHub issue tracker to report bugs or suggest features.
