@@ -13,10 +13,8 @@ on an ordinary pod.
 > boundary / policy evidence (`test.sh`, `clean.sh`, `deploy/workloads.yaml`,
 > `deploy/policy.yaml`). The pins follow the public Nitro Sandbox releases listed under
 > [Versions](#versions). Every output block on this page comes from one fresh run that
-> followed this page from a clean checkout, on a new cluster (see
-> [Where the output blocks come from](#where-the-output-blocks-come-from)). TODO(#219 fresh
-> run): that run used an AMI built from the earlier preview runtime archive; the fresh run on
-> an AMI built from the public releases replaces every block.
+> followed this page from a clean checkout, on a new cluster and a sandbox AMI built from those
+> releases (see [Where the output blocks come from](#where-the-output-blocks-come-from)).
 
 ```mermaid
 flowchart TB
@@ -121,9 +119,9 @@ the policy controls still hold.**
 |---|---|---|
 | [Amazon EKS Kubernetes](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html) | 1.36 | 1.36 |
 | Ubuntu system and sandbox nodes | Ubuntu 24.04 LTS (Canonical's EKS 1.36 AMI). The fresh run's `SYSTEM_AMI_ID` was Canonical's serial `20261027`, and #10's build of its sandbox AMI ran on 24.04.5 LTS | 24.04.5 LTS |
-| Ubuntu EKS Pod Isolation AMI | Output of [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10), built from the public releases in this table and BTF-validated (`ManagedBy` and `BtfValidated=true` tags, and the five release tags [stage 0](#0-prerequisites-and-the-ami-preflight) checks) | Revalidate with a fresh #10 build |
+| Ubuntu EKS Pod Isolation AMI | Output of [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10), built from the public releases in this table and BTF-validated (`ManagedBy` and `BtfValidated=true` tags, and the five release tags [stage 0](#0-prerequisites-and-the-ami-preflight) checks) | Built from these releases and run on 2026-11-13 |
 | Host kernel on the sandbox node | `6.18.56-nitro-ga`: kernel.org Linux 6.18.56 plus the patch at the public commit [amazonlinux/linux 4ae89f6e](https://github.com/amazonlinux/linux/commit/4ae89f6e09f949848123407602b4e5a8bb8d8631), whose `.patch` file (494,711 bytes) has SHA-256 `5f9c52ae83e20403846e7c10aed6ed6fcabbd4069b76f50b1a2a42577b95f1a0`, built by #10 (this blueprint builds no kernel) | 6.18.56 |
-| Guest kernel in the sandbox pod | 6.18.56, inside the guest image's `nitro-sandbox-guest.eif`, read from the EIF's kernel version string. TODO(#219 fresh run): confirm it with `uname -r` in the sandbox pod | 6.18.56 (2026-11-13) |
+| Guest kernel in the sandbox pod | 6.18.56, inside the guest image's `nitro-sandbox-guest.eif`; the fresh run's sandbox pod showed `6.18.56` with `uname -r` | 6.18.56 (2026-11-13) |
 | Nitro Sandboxes runtime release | `0.1.4274.0`, signed by AWS; its x86_64 `nitro-sandboxes-runtime.tar.gz` has SHA-256 `abc1d0032014f763715c2829ef1a104d768c3e0a76fa91cd2668d87678db3c57` in the release's signed `SHA256SUM`. The node runs its shim, `containerd-shim-nitro-sandbox-v2` | 0.1.4274.0 (2026-11-13) |
 | Guest image | Release `1.36.5/2026-11-06`, amd64, in Amazon S3: `nitro-sandbox-guest.eif` SHA-256 `bcbf2e9da531ffaee6691db5661c75b3564f151cb411227c5a7f9a530db72182` and `nitro-sandbox-guest-disk.img` SHA-256 `08f8e6d2d032829bff9c4c4907cd44242f46bcf6b1bbc2e6aea691c82bee902c`, as each file's `.sha256` file gives them | 1.36.5/2026-11-06 (2026-11-13) |
 | [Firecracker](https://github.com/firecracker-microvm/firecracker) and jailer | [v1.18.0](https://github.com/firecracker-microvm/firecracker/releases/tag/v1.18.0); `firecracker-v1.18.0-x86_64.tgz` SHA-256 `1ac8eec866dd5eea14efecf6323e22b23eea24054545338a5b34bc5bca6623cd`, as the release's `.sha256.txt` file gives it | v1.18.0 (2026-11-13) |
@@ -218,6 +216,7 @@ Caller: <CALLER_ARN>
 cilium-values.yaml: 0 problem(s) with kubeProxyReplacement, socketLB.hostNamespaceOnly, eni.enabled, ipam.mode, routingMode
 AMI <SANDBOX_AMI_ID>: <SANDBOX_AMI_NAME>
   architecture=x86_64 virtualization=hvm owner=<ACCOUNT_ID> ManagedBy=ubuntu-ami-sample BtfValidated=true
+  RuntimeRelease=0.1.4274.0 GuestImageRelease=1.36.5/2026-11-06 FirecrackerVersion=v1.18.0 HostKernelPatch=4ae89f6e09f949848123407602b4e5a8bb8d8631 GuestKernelRelease=6.18.56
 sandbox AMI preflight passed
 AMI <SYSTEM_AMI_ID>: ubuntu-eks/k8s_1.36/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-20261027
 system AMI preflight passed
@@ -482,11 +481,11 @@ The two reads above, one after the other, run after `setup.sh`.
 
 ```text
 NAME                                         STATUS   ROLES    AGE     VERSION   NODEGROUP   NITRO-SANDBOX   NITRO
-<SANDBOX_NODE>   Ready    <none>   3m51s   v1.36.4   sandbox     true            true
-<SYSTEM_NODE>   Ready    <none>   3m45s   v1.36.4   system
+<SYSTEM_NODE>    Ready    <none>   3m31s   v1.36.4   system
+<SANDBOX_NODE>   Ready    <none>   3m33s   v1.36.4   sandbox     true            true
 NAME           READY   STATUS    RESTARTS   AGE     IP             NODE                                         NOMINATED NODE   READINESS GATES
-<CILIUM_AGENT_SANDBOX>   1/1     Running   0          3m52s   <SANDBOX_NODE_IP>   <SANDBOX_NODE>   <none>           <none>
-<CILIUM_AGENT_SYSTEM>   1/1     Running   0          3m46s   <SYSTEM_NODE_IP>   <SYSTEM_NODE>   <none>           <none>
+<CILIUM_AGENT_SANDBOX>   1/1     Running   0          3m34s   <SANDBOX_NODE_IP>   <SANDBOX_NODE>   <none>           <none>
+<CILIUM_AGENT_SYSTEM>   1/1     Running   0          3m32s   <SYSTEM_NODE_IP>    <SYSTEM_NODE>    <none>           <none>
 ```
 
 Before the sandbox node group is created, `setup.sh` also checks that the Cilium agent
@@ -532,13 +531,13 @@ gate prints `BTF present on node ...` for both nodes (step 6/8).
 - **Run-specific:** the times and the BTF file sizes, which differ between the two kernels.
 
 ```text
-== 2026-10-30T00:22:29Z <CILIUM_AGENT_SANDBOX> (sandbox node) raw BTF read
+== 2026-11-13T23:21:36Z <CILIUM_AGENT_SANDBOX> (sandbox node) raw BTF read
 PRESENT
--r--r--r-- 1 root root 6817864 Oct 30 00:18 /sys/kernel/btf/vmlinux
+-r--r--r-- 1 root root 6818090 Nov 13 23:18 /sys/kernel/btf/vmlinux
 rc=0
-== 2026-10-30T00:22:32Z <CILIUM_AGENT_SYSTEM> (system node) raw BTF read
+== 2026-11-13T23:21:39Z <CILIUM_AGENT_SYSTEM> (system node) raw BTF read
 PRESENT
--r--r--r-- 1 root root 7160284 Oct 30 00:18 /sys/kernel/btf/vmlinux
+-r--r--r-- 1 root root 7160284 Nov 13 23:18 /sys/kernel/btf/vmlinux
 rc=0
 ```
 
@@ -579,13 +578,13 @@ without the stub. It changes nothing on the cluster.
 - **Run-specific:** the times.
 
 ```text
-== 2026-10-30T00:22:38Z STUB-DRIVEN: real scripts/cilium_ubuntu.py check-btf sandbox <SANDBOX_NODE>, with <REPO_ROOT>/tmp/issue11/run/missing-btf-stub.<RANDOM_SUFFIX> first on PATH
+== 2026-11-13T23:21:43Z STUB-DRIVEN: real scripts/cilium_ubuntu.py check-btf sandbox <SANDBOX_NODE>, with <REPO_ROOT>/tmp/issue11/run/missing-btf-stub.<RANDOM_SUFFIX> first on PATH
 stub sha256 <STUB_SHA256>
 kubectl resolves to: <REPO_ROOT>/tmp/issue11/run/missing-btf-stub.<RANDOM_SUFFIX>/kubectl
 error: node <SANDBOX_NODE> (nodegroup sandbox) has no BTF at /sys/kernel/btf/vmlinux (read: 'MISSING'); its Cilium agent cannot load the kube-proxy-replacement datapath, even though the agent may still report Ready. This node's kernel was not built with CONFIG_DEBUG_INFO_BTF=y; see ../ubuntu-ami for the BTF-enabled build this sample depends on.
 rc=1
 the stub answered 1 BTF read(s) with MISSING and passed 1 other call(s) to <REAL_KUBECTL>
-== 2026-10-30T00:22:40Z real check-btf sandbox <SANDBOX_NODE>, no stub (accept half, beside the reject)
+== 2026-11-13T23:21:44Z real check-btf sandbox <SANDBOX_NODE>, no stub (accept half, beside the reject)
 kubectl resolves to: <REAL_KUBECTL>
 BTF present on node <SANDBOX_NODE> (nodegroup sandbox)
 rc=0
@@ -645,11 +644,11 @@ apiVersion: node.k8s.io/v1
 handler: isolated-sandbox
 kind: RuntimeClass
 metadata:
-  creationTimestamp: "2026-10-30T00:20:51Z"
+  creationTimestamp: "2026-11-13T23:20:06Z"
   labels:
     app.kubernetes.io/part-of: setup-cilium-ubuntu
   name: isolated-sandbox
-  resourceVersion: "2792"
+  resourceVersion: "2566"
   uid: <RUNTIMECLASS_UID>
 overhead:
   podFixed:
@@ -772,13 +771,13 @@ tagged instance-profile eks-<SYSTEM_NODEGROUP_UUID>
 tagged instance-profile eks-<SANDBOX_NODEGROUP_UUID>
 tagged asg eks-sandbox-<SANDBOX_NODEGROUP_UUID> (PropagateAtLaunch)
 tagged asg eks-system-<SYSTEM_NODEGROUP_UUID> (PropagateAtLaunch)
-tagged security-group <SECURITY_GROUP_ID_1>
-tagged security-group <SECURITY_GROUP_ID_3>
-tagged route-table <ROUTE_TABLE_ID_4>
+tagged security-group <SECURITY_GROUP_ID_2>
+tagged security-group <SECURITY_GROUP_ID_4>
+tagged route-table <ROUTE_TABLE_ID_1>
 tagged network-acl <NETWORK_ACL_ID>
-tagged network-interface <NETWORK_INTERFACE_ID_6>
-tagged network-interface <NETWORK_INTERFACE_ID_3>
+tagged network-interface <NETWORK_INTERFACE_ID_5>
 tagged network-interface <NETWORK_INTERFACE_ID_4>
+tagged network-interface <NETWORK_INTERFACE_ID_6>
 tagged launch-template <EKS_LAUNCH_TEMPLATE_COPY_ID_1>
 tagged launch-template <EKS_LAUNCH_TEMPLATE_COPY_ID_2>
 tag-sweep: tagged 13 of the 13 resources in its set for cluster nitro-cilium-ubuntu and VPC <VPC_ID>; 0 already carried auto-delete=no, and nothing outside the set was written
@@ -997,7 +996,7 @@ all seven pods Ready; the egress policy clients-egress is applied.
   [PASS] cilium-dbg status --brief is OK on both agents (2/2)
   [PASS] both agents replace kube-proxy, socket load balancer in the host namespace only (sandbox: KubeProxyReplacement True, Socket LB Enabled, coverage Hostns-only; system: KubeProxyReplacement True, Socket LB Enabled, coverage Hostns-only)
   [PASS] neither Ubuntu node's iptables holds a kube-proxy chain (sandbox: 0 kube-proxy chains in iptables-nft (mangle raw filter nat), ip6tables-nft (mangle filter nat), iptables-legacy (no tables), ip6tables-legacy (no tables); system: 0 kube-proxy chains in iptables-nft (mangle raw filter nat), ip6tables-nft (mangle filter nat), iptables-legacy (no tables), ip6tables-legacy (no tables))
-  [PASS] both Ubuntu node kernels expose valid BTF: both agents loaded their full eBPF datapath (sandbox: 0 'Failed to initialize datapath' / 'no BTF found' lines in 872 agent log lines and 0 other line(s); system: 0 'Failed to initialize datapath' / 'no BTF found' lines in 1049 agent log lines and 0 other line(s))
+  [PASS] both Ubuntu node kernels expose valid BTF: both agents loaded their full eBPF datapath (sandbox: 0 'Failed to initialize datapath' / 'no BTF found' lines in 862 agent log lines and 0 other line(s); system: 0 'Failed to initialize datapath' / 'no BTF found' lines in 1066 agent log lines and 0 other line(s))
   [PASS] Cilium on the sandbox node holds the server ClusterIP in its own load balancer (<SERVER_CLUSTER_IP>:80 -> <SERVER_POD_IP>:8080, active)
 
 === 1b. The Cilium operator's AWS credentials ===
@@ -1017,11 +1016,11 @@ node role <SYSTEM_NODE_ROLE> (system): AmazonEC2ContainerRegistryPullOnly, Amazo
   [PASS] the sandbox node runs the pinned host kernel (kernel release 6.18.56-nitro-ga is the pinned 6.18.56-nitro-ga)
   [PASS] sandbox node <SANDBOX_NODE> advertises positive allocatable eks.amazonaws.com/nitro-sandbox (20)
   [PASS] the capacity check reads absent for a nonexistent allocatable key on <SANDBOX_NODE> (reject control)
-  [PASS] sandbox pod guest kernel (6.18.54) differs from its Ubuntu node's kernel (6.18.56-nitro-ga)
-  [PASS] sandbox pod runs the pinned guest kernel from the bundle's guest image (kernel release 6.18.54 is the pinned 6.18.54)
+  [PASS] sandbox pod guest kernel (6.18.56) differs from its Ubuntu node's kernel (6.18.56-nitro-ga)
+  [PASS] sandbox pod runs the pinned guest kernel from the pinned guest image (kernel release 6.18.56 is the pinned 6.18.56 (exact match))
   [PASS] control: an ordinary pod shares its node's kernel (7.0.0-1014-aws), so the check above discriminates
   [PASS] neighbor: an ordinary pod on the same Ubuntu sandbox node runs on that node's kernel (6.18.56-nitro-ga)
-  [PASS] sandbox pod sees its own virtio disks (dm-0 vda vdb vdc ), no node nvme, and its own boot (uptime 81.89s)
+  [PASS] sandbox pod sees its own virtio disks (dm-0 vda vdb vdc ), no node nvme, and its own boot (uptime 74.93s)
   [PASS] neighbor: the ordinary pod on the same node sees the node's nvme disks (loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 loop8 nvme0n1 ), so the check above discriminates
 
 === 3. Its IP is a VPC address with a CiliumEndpoint ===
@@ -1140,13 +1139,13 @@ both names, and `fqdn-cache-read: PASS` with the number of rows for each name.
 - **Run-specific:** the times, the TTLs, the expiration times, and the answer and row counts.
 
 ```text
-== 2026-10-30T00:28:05Z nslookup checkip.amazonaws.com from the sandbox pod: rc=0, 8 answer record(s)
-== 2026-10-30T00:28:06Z nslookup example.net from the sandbox pod: rc=0, 4 answer record(s)
-== 2026-10-30T00:28:07Z <CILIUM_AGENT_SANDBOX> (the sandbox pod's node <SANDBOX_NODE>): cilium-dbg fqdn cache list, the header and endpoint <NITRO_ENDPOINT_ID>'s lookup rows
+== 2026-11-13T23:27:09Z nslookup checkip.amazonaws.com from the sandbox pod: rc=0, 8 answer record(s)
+== 2026-11-13T23:27:10Z nslookup example.net from the sandbox pod: rc=0, 4 answer record(s)
+== 2026-11-13T23:27:11Z <CILIUM_AGENT_SANDBOX> (the sandbox pod's node <SANDBOX_NODE>): cilium-dbg fqdn cache list, the header and endpoint <NITRO_ENDPOINT_ID>'s lookup rows
 Endpoint   Source       FQDN                                           TTL   ExpirationTime             IPs
-<NITRO_ENDPOINT_ID>       lookup       checkip.amazonaws.com.                         30    2026-10-30T00:28:35.148Z   <RESOLVED_IPS>
-<NITRO_ENDPOINT_ID>       lookup       example.net.                                   30    2026-10-30T00:28:36.197Z   <RESOLVED_IPS>
-<NITRO_ENDPOINT_ID>       lookup       example.net.                                   30    2026-10-30T00:28:36.197Z   <RESOLVED_IPS>
+<NITRO_ENDPOINT_ID>         lookup       checkip.amazonaws.com.                         7     2026-11-13T23:27:16.268Z   <RESOLVED_IPS>
+<NITRO_ENDPOINT_ID>         lookup       example.net.                                   30    2026-11-13T23:27:40.357Z   <RESOLVED_IPS>
+<NITRO_ENDPOINT_ID>         lookup       example.net.                                   30    2026-11-13T23:27:40.357Z   <RESOLVED_IPS>
 fqdn-cache-read: PASS: endpoint <NITRO_ENDPOINT_ID> has lookup rows for checkip.amazonaws.com. (1) and example.net. (2)
 ```
 
@@ -1198,9 +1197,15 @@ Run it after the first `./test.sh`, which creates the pods it probes from, and t
 
 Run after the first `./test.sh` and the FQDN read above.
 
+- **A second run of the control:** this output is from the run's second `socketlb-control.sh`,
+  with the command unchanged, after the first one had already switched coverage off and
+  restored it. So it starts at Helm revision 3, switches to revision 4 and restores revision 5,
+  where a first run reads revisions 1 to 3.
 - **Masked:** the caller ARN, the kube context, the repository's absolute path (`<REPO_ROOT>`),
   the agent pod and node names, and every pod, Service and DNS address. Each roll replaces both
-  agent pods: `_2` names the agents after the off upgrade, `_3` after the restore.
+  agent pods, and an agent's suffix is the Helm revision whose roll created it: `_3` names the
+  agents this run started with, `_4` the agents after the off upgrade, `_5` after the restore.
+  The agents with no suffix in the blocks above are revision 1's.
 - **Cut:** the interface lists inside the two `KubeProxyReplacement` lines, to `[...]`.
 - **Run-specific:** the times and the Helm revisions.
 - **Not shown:** the run's own start, end and exit-code lines around the command (exit code 0).
@@ -1210,21 +1215,21 @@ Run after the first `./test.sh` and the FQDN read above.
 Caller: <CALLER_ARN>
 cluster nitro-cilium-ubuntu: ACTIVE, tagged Demo=setup-cilium-ubuntu
 kube context: <KUBE_CONTEXT>, in <REPO_ROOT>/tmp/issue11/run/kubeconfig, points at cluster nitro-cilium-ubuntu
-Helm release cilium in kube-system: chart cilium-1.20.2, deployed, revision 1
+Helm release cilium in kube-system: chart cilium-1.20.2, deployed, revision 3
 the release's values are setup.sh's (socketLB.hostNamespaceOnly true)
-== 2026-10-30T00:28:22Z <CILIUM_AGENT_SANDBOX> (sandbox node <SANDBOX_NODE>): Socket LB Coverage Hostns-only, kpr-status rc=0
+== 2026-11-13T23:34:07Z <CILIUM_AGENT_SANDBOX_3> (sandbox node <SANDBOX_NODE>): Socket LB Coverage Hostns-only, kpr-status rc=0
    as expected: coverage Hostns-only, which kpr-status accepts
-== 2026-10-30T00:28:25Z <CILIUM_AGENT_SYSTEM> (system node <SYSTEM_NODE>): Socket LB Coverage Hostns-only, kpr-status rc=0
+== 2026-11-13T23:34:10Z <CILIUM_AGENT_SYSTEM_3> (system node <SYSTEM_NODE>): Socket LB Coverage Hostns-only, kpr-status rc=0
    as expected: coverage Hostns-only, which kpr-status accepts
 namespace cilium-ubuntu-demo carries app.kubernetes.io/part-of=setup-cilium-ubuntu
-== 2026-10-30T00:28:33Z server pod <SERVER_POD_IP>, Service server ClusterIP <SERVER_CLUSTER_IP>, kube-dns <KUBE_DNS_IP>, CoreDNS pod <COREDNS_POD_IP>
+== 2026-11-13T23:34:17Z server pod <SERVER_POD_IP>, Service server ClusterIP <SERVER_CLUSTER_IP>, kube-dns <KUBE_DNS_IP>, CoreDNS pod <COREDNS_POD_IP>
 nitro      -> ClusterIP <SERVER_CLUSTER_IP>:80 rc=0 want=ok got=ok out=server
 nitro      nslookup server.cilium-ubuntu-demo.svc.cluster.local via kube-dns Service <KUBE_DNS_IP> rc=0 want=ok got=ok out=Server:		<KUBE_DNS_IP> Address:	<KUBE_DNS_IP>:53   Name:	server.cilium-ubuntu-demo.svc.cluster.local Address: <SERVER_CLUSTER_IP>
 
 === 2. off: socketLB.hostNamespaceOnly=false (this briefly breaks Service routing for the sandbox pod) ===
-== 2026-10-30T00:28:35Z helm upgrade: setup.sh step 3's command, plus --set socketLB.hostNamespaceOnly=false
-helm rc=0, revision 2
-== 2026-10-30T00:28:45Z waiting for the agents to roll
+== 2026-11-13T23:34:20Z helm upgrade: setup.sh step 3's command, plus --set socketLB.hostNamespaceOnly=false
+helm rc=0, revision 4
+== 2026-11-13T23:34:30Z waiting for the agents to roll
 Waiting for daemon set "cilium" rollout to finish: 0 of 2 updated pods are available...
 Waiting for daemon set "cilium" rollout to finish: 1 of 2 updated pods are available...
 daemon set "cilium" successfully rolled out
@@ -1232,7 +1237,7 @@ deployment "cilium-operator" successfully rolled out
 both agents report OK
 
 === 3. read and probe: both agents must read Full; only the sandbox pod loses the ClusterIP and the kube-dns Service ===
-== 2026-10-30T00:29:05Z <CILIUM_AGENT_SANDBOX_2> (sandbox node <SANDBOX_NODE>): Socket LB lines of cilium-dbg status --verbose
+== 2026-11-13T23:34:51Z <CILIUM_AGENT_SANDBOX_4> (sandbox node <SANDBOX_NODE>): Socket LB lines of cilium-dbg status --verbose
 KubeProxyReplacement:   True   [...]
   Status:               True
   Socket LB:            Enabled
@@ -1242,7 +1247,7 @@ KubeProxyReplacement:   True   [...]
 Socket LB Coverage: Full
 kpr-status rc=1
    as expected: coverage Full, which kpr-status refuses
-== 2026-10-30T00:29:08Z <CILIUM_AGENT_SYSTEM_2> (system node <SYSTEM_NODE>): Socket LB lines of cilium-dbg status --verbose
+== 2026-11-13T23:34:54Z <CILIUM_AGENT_SYSTEM_4> (system node <SYSTEM_NODE>): Socket LB lines of cilium-dbg status --verbose
 KubeProxyReplacement:   True   [...]
   Status:               True
   Socket LB:            Enabled
@@ -1252,7 +1257,7 @@ KubeProxyReplacement:   True   [...]
 Socket LB Coverage: Full
 kpr-status rc=1
    as expected: coverage Full, which kpr-status refuses
-== 2026-10-30T00:29:08Z server pod <SERVER_POD_IP>, Service server ClusterIP <SERVER_CLUSTER_IP>, kube-dns <KUBE_DNS_IP>, CoreDNS pod <COREDNS_POD_IP>
+== 2026-11-13T23:34:54Z server pod <SERVER_POD_IP>, Service server ClusterIP <SERVER_CLUSTER_IP>, kube-dns <KUBE_DNS_IP>, CoreDNS pod <COREDNS_POD_IP>
 nitro      -> server pod IP <SERVER_POD_IP>:8080 rc=0 want=ok got=ok out=server
 nitro      -> ClusterIP <SERVER_CLUSTER_IP>:80 rc=1 want=timeout got=timeout out=wget: download timed out command terminated with exit code 1
 nitro      nslookup server.cilium-ubuntu-demo.svc.cluster.local via kube-dns Service <KUBE_DNS_IP> rc=1 want=timeout got=timeout out=;; connection timed out; no servers could be reached  command terminated with exit code 1
@@ -1272,17 +1277,17 @@ node-probe nslookup server.cilium-ubuntu-demo.svc.cluster.local via CoreDNS pod 
 both agents read Full; the sandbox pod lost the ClusterIP and the kube-dns Service and kept both pod IPs; every other lane kept all four
 
 === back on: the same upgrade without the override, in a session of its own (Ctrl-C cannot stop it) ===
-== 2026-10-30T00:29:35Z helm upgrade: setup.sh step 3's command
-helm rc=0, revision 3
-== 2026-10-30T00:29:45Z waiting for the agents to roll
+== 2026-11-13T23:35:21Z helm upgrade: setup.sh step 3's command
+helm rc=0, revision 5
+== 2026-11-13T23:35:30Z waiting for the agents to roll
 Waiting for daemon set "cilium" rollout to finish: 0 of 2 updated pods are available...
 Waiting for daemon set "cilium" rollout to finish: 1 of 2 updated pods are available...
 daemon set "cilium" successfully rolled out
 deployment "cilium-operator" successfully rolled out
 both agents report OK
-== 2026-10-30T00:30:08Z <CILIUM_AGENT_SANDBOX_3> (sandbox node <SANDBOX_NODE>): Socket LB Coverage Hostns-only, kpr-status rc=0
+== 2026-11-13T23:35:51Z <CILIUM_AGENT_SANDBOX_5> (sandbox node <SANDBOX_NODE>): Socket LB Coverage Hostns-only, kpr-status rc=0
    as expected: coverage Hostns-only, which kpr-status accepts
-== 2026-10-30T00:30:11Z <CILIUM_AGENT_SYSTEM_3> (system node <SYSTEM_NODE>): Socket LB Coverage Hostns-only, kpr-status rc=0
+== 2026-11-13T23:35:53Z <CILIUM_AGENT_SYSTEM_5> (system node <SYSTEM_NODE>): Socket LB Coverage Hostns-only, kpr-status rc=0
    as expected: coverage Hostns-only, which kpr-status accepts
 the release's values are setup.sh's (socketLB.hostNamespaceOnly true)
 restore verified: both agents read Hostns-only and the release's values are setup.sh's
@@ -1318,20 +1323,21 @@ end lines around each command:
 
 | Command | Wall time |
 |---|---|
-| `./setup.sh` | 20 min 28 s |
-| `./scripts/missing-btf-control.sh` | 5 s |
-| `./test.sh` | 5 min 3 s (the second, after the socketLB control: 4 min 39 s) |
-| `./scripts/fqdn-cache-read.sh` | 7 s |
-| `./scripts/socketlb-control.sh` | 2 min 1 s |
-| `./clean.sh --dry-run` | 42 s |
-| `./clean.sh` | 9 min 48 s |
+| `./setup.sh` | 19 min 22 s |
+| `./scripts/missing-btf-control.sh` | 4 s |
+| `./test.sh` | 4 min 46 s (the second, after the socketLB control: 4 min 25 s) |
+| `./scripts/fqdn-cache-read.sh` | 6 s |
+| `./scripts/socketlb-control.sh` | 1 min 57 s (the run shown above) |
+| `./clean.sh --dry-run` | 36 s |
+| `./clean.sh` | 9 min 52 s |
 
-From the start of `setup.sh` to the end of `clean.sh` took 44 min 26 s, including the reads
-between the commands. The run estimated its own spend at about $0.28, or about $0.65 if the whole
+From the start of `setup.sh` to the end of `clean.sh` took 49 min 20 s, including the reads
+between the commands. The run estimated its own spend at about $0.32, or about $0.73 if the whole
 control-plane interval is billed at the EKS extended-support rate. It counted the control plane
-and the NAT gateway as billing for that whole interval (0.741 hours), and the system and
-sandbox instances for 0.470 and 0.410 hours, from its stage durations (the sandbox node group
-is deleted first). It priced them at conservative working rates: $0.10 per
+and the NAT gateway as billing for that whole interval (0.822 hours), and the system and
+sandbox instances for 0.536 and 0.484 hours, from each node group's stack deployment until
+eksctl reported the group deleted (the sandbox node group is deleted first). It priced them at
+conservative working rates: $0.10 per
 control-plane hour ($0.60 for the extended-support figure), about $0.1008 an hour for the
 `m7i.large`, $0.252 an hour budgeted for the `m8i.xlarge`, about $0.045 an hour for the NAT
 gateway and $0.005 for its public IPv4 address, plus $0.02 for the gp3 volumes and data
@@ -1420,10 +1426,10 @@ Cluster nitro-cilium-ubuntu (ACTIVE) and every resource it owns:
   volume             <VOLUME_ID_2>
   instance-profile   eks-<SYSTEM_NODEGROUP_UUID>
   instance-profile   eks-<SANDBOX_NODEGROUP_UUID>
-  launch-template    <EKS_LAUNCH_TEMPLATE_COPY_ID_1>
-  launch-template    <EKS_LAUNCH_TEMPLATE_COPY_ID_2>
   launch-template    <SANDBOX_LAUNCH_TEMPLATE_ID>
+  launch-template    <EKS_LAUNCH_TEMPLATE_COPY_ID_1>
   launch-template    <SYSTEM_LAUNCH_TEMPLATE_ID>
+  launch-template    <EKS_LAUNCH_TEMPLATE_COPY_ID_2>
 Unattached Cilium ENIs in <VPC_ID>: none
 
 Node launch templates (nitro-cilium-ubuntu-system,nitro-cilium-ubuntu-sandbox): <SANDBOX_LAUNCH_TEMPLATE_ID> <SYSTEM_LAUNCH_TEMPLATE_ID>
@@ -1442,64 +1448,65 @@ this output.
 - **Masked:** the caller ARN, the node names and the launch template ids.
 - **Run-specific:** the times and the waits.
 - **Not shown:** the run's own start, end and exit-code lines around the command (exit code 0,
-  9 minutes 48 seconds).
+  9 minutes 52 seconds).
 
 ```text
 Caller: <CALLER_ARN>
 
 === 1/4 node groups ===
-2026-10-30 00:36:23 [ℹ]  1 nodegroup (sandbox) was included (based on the include/exclude rules)
-2026-10-30 00:36:23 [ℹ]  will drain 1 nodegroup(s) in cluster "nitro-cilium-ubuntu"
-2026-10-30 00:36:23 [ℹ]  starting parallel draining, max in-flight of 1
-2026-10-30 00:36:23 [ℹ]  cordon node "<SANDBOX_NODE>"
-2026-10-30 00:36:23 [!]  deleting Pods not managed by ReplicationController, ReplicaSet, Job, DaemonSet or StatefulSet: cilium-ubuntu-demo/neighbor, cilium-ubuntu-demo/nitro, cilium-ubuntu-demo/node-probe
-2026-10-30 00:36:24 [✔]  drained all nodes: [<SANDBOX_NODE>]
-2026-10-30 00:36:24 [ℹ]  will delete 1 nodegroups from cluster "nitro-cilium-ubuntu"
-2026-10-30 00:36:24 [ℹ]  1 task: { 1 task: { delete nodegroup "sandbox" } }
-2026-10-30 00:36:25 [ℹ]  will delete stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox"
-2026-10-30 00:36:25 [ℹ]  waiting for stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox" to get deleted
-2026-10-30 00:36:25 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox"
-2026-10-30 00:36:55 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox"
-2026-10-30 00:37:26 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox"
-2026-10-30 00:39:01 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox"
-2026-10-30 00:40:15 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox"
-2026-10-30 00:40:15 [✔]  deleted 1 nodegroup(s) from cluster "nitro-cilium-ubuntu"
-2026-10-30 00:40:17 [ℹ]  1 nodegroup (system) was included (based on the include/exclude rules)
-2026-10-30 00:40:17 [ℹ]  will drain 1 nodegroup(s) in cluster "nitro-cilium-ubuntu"
-2026-10-30 00:40:17 [ℹ]  starting parallel draining, max in-flight of 1
-2026-10-30 00:40:18 [ℹ]  cordon node "<SYSTEM_NODE>"
-2026-10-30 00:40:18 [!]  deleting Pods not managed by ReplicationController, ReplicaSet, Job, DaemonSet or StatefulSet: cilium-ubuntu-demo/api, cilium-ubuntu-demo/control, cilium-ubuntu-demo/other, cilium-ubuntu-demo/server
-2026-10-30 00:40:35 [✔]  drained all nodes: [<SYSTEM_NODE>]
-2026-10-30 00:40:35 [ℹ]  will delete 1 nodegroups from cluster "nitro-cilium-ubuntu"
-2026-10-30 00:40:36 [ℹ]  1 task: { 1 task: { delete nodegroup "system" } }
-2026-10-30 00:40:36 [ℹ]  will delete stack "eksctl-nitro-cilium-ubuntu-nodegroup-system"
-2026-10-30 00:40:36 [ℹ]  waiting for stack "eksctl-nitro-cilium-ubuntu-nodegroup-system" to get deleted
-2026-10-30 00:40:36 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-system"
-2026-10-30 00:41:07 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-system"
-2026-10-30 00:42:04 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-system"
-2026-10-30 00:43:53 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-system"
-2026-10-30 00:43:53 [✔]  deleted 1 nodegroup(s) from cluster "nitro-cilium-ubuntu"
+2026-11-13 23:41:26 [ℹ]  1 nodegroup (sandbox) was included (based on the include/exclude rules)
+2026-11-13 23:41:26 [ℹ]  will drain 1 nodegroup(s) in cluster "nitro-cilium-ubuntu"
+2026-11-13 23:41:26 [ℹ]  starting parallel draining, max in-flight of 1
+2026-11-13 23:41:26 [ℹ]  cordon node "<SANDBOX_NODE>"
+2026-11-13 23:41:26 [!]  deleting Pods not managed by ReplicationController, ReplicaSet, Job, DaemonSet or StatefulSet: cilium-ubuntu-demo/neighbor, cilium-ubuntu-demo/nitro, cilium-ubuntu-demo/node-probe
+2026-11-13 23:41:27 [✔]  drained all nodes: [<SANDBOX_NODE>]
+2026-11-13 23:41:27 [ℹ]  will delete 1 nodegroups from cluster "nitro-cilium-ubuntu"
+2026-11-13 23:41:27 [ℹ]  1 task: { 1 task: { delete nodegroup "sandbox" } }
+2026-11-13 23:41:28 [ℹ]  will delete stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox"
+2026-11-13 23:41:28 [ℹ]  waiting for stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox" to get deleted
+2026-11-13 23:41:28 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox"
+2026-11-13 23:41:58 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox"
+2026-11-13 23:42:56 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox"
+2026-11-13 23:44:38 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-sandbox"
+2026-11-13 23:44:38 [✔]  deleted 1 nodegroup(s) from cluster "nitro-cilium-ubuntu"
+2026-11-13 23:44:40 [ℹ]  1 nodegroup (system) was included (based on the include/exclude rules)
+2026-11-13 23:44:40 [ℹ]  will drain 1 nodegroup(s) in cluster "nitro-cilium-ubuntu"
+2026-11-13 23:44:40 [ℹ]  starting parallel draining, max in-flight of 1
+2026-11-13 23:44:41 [ℹ]  cordon node "<SYSTEM_NODE>"
+2026-11-13 23:44:41 [!]  deleting Pods not managed by ReplicationController, ReplicaSet, Job, DaemonSet or StatefulSet: cilium-ubuntu-demo/api, cilium-ubuntu-demo/control, cilium-ubuntu-demo/other, cilium-ubuntu-demo/server
+2026-11-13 23:44:53 [✔]  drained all nodes: [<SYSTEM_NODE>]
+2026-11-13 23:44:53 [ℹ]  will delete 1 nodegroups from cluster "nitro-cilium-ubuntu"
+2026-11-13 23:44:53 [ℹ]  1 task: { 1 task: { delete nodegroup "system" } }
+2026-11-13 23:44:54 [ℹ]  will delete stack "eksctl-nitro-cilium-ubuntu-nodegroup-system"
+2026-11-13 23:44:54 [ℹ]  waiting for stack "eksctl-nitro-cilium-ubuntu-nodegroup-system" to get deleted
+2026-11-13 23:44:54 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-system"
+2026-11-13 23:45:24 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-system"
+2026-11-13 23:46:17 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-system"
+2026-11-13 23:47:46 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-nodegroup-system"
+2026-11-13 23:47:46 [✔]  deleted 1 nodegroup(s) from cluster "nitro-cilium-ubuntu"
 
 === 2/4 ENIs Cilium created (instances do not always take them along) ===
 
 === 3/4 cluster, VPC and IAM roles (eksctl stacks) ===
-2026-10-30 00:43:56 [ℹ]  deleting EKS cluster "nitro-cilium-ubuntu"
-2026-10-30 00:43:56 [ℹ]  deleted 0 Fargate profile(s)
-2026-10-30 00:43:57 [✔]  kubeconfig has been updated
-2026-10-30 00:43:57 [ℹ]  cleaning up AWS load balancers created by Kubernetes objects of Kind Service, Ingress, or Gateway
-2026-10-30 00:43:59 [ℹ]
+2026-11-13 23:47:48 [ℹ]  deleting EKS cluster "nitro-cilium-ubuntu"
+2026-11-13 23:47:48 [ℹ]  deleted 0 Fargate profile(s)
+2026-11-13 23:47:49 [✔]  kubeconfig has been updated
+2026-11-13 23:47:49 [ℹ]  cleaning up AWS load balancers created by Kubernetes objects of Kind Service, Ingress, or Gateway
+2026-11-13 23:47:51 [ℹ]
 2 sequential tasks: { deleting IAM resources stack "eksctl-nitro-cilium-ubuntu-podidentityrole-kube-system-cilium-operator", delete cluster control plane "nitro-cilium-ubuntu"
 }
-2026-10-30 00:44:00 [ℹ]  will delete stack "eksctl-nitro-cilium-ubuntu-podidentityrole-kube-system-cilium-operator"
-2026-10-30 00:44:00 [ℹ]  waiting for stack "eksctl-nitro-cilium-ubuntu-podidentityrole-kube-system-cilium-operator" to get deleted
-2026-10-30 00:44:00 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-podidentityrole-kube-system-cilium-operator"
-2026-10-30 00:44:30 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-podidentityrole-kube-system-cilium-operator"
-2026-10-30 00:44:30 [ℹ]  will delete stack "eksctl-nitro-cilium-ubuntu-cluster"
-2026-10-30 00:44:30 [ℹ]  waiting for stack "eksctl-nitro-cilium-ubuntu-cluster" to get deleted
-2026-10-30 00:44:30 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-cluster"
-2026-10-30 00:45:00 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-cluster"
-2026-10-30 00:45:56 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-cluster"
-2026-10-30 00:45:56 [✔]  all cluster resources were deleted
+2026-11-13 23:47:51 [ℹ]  will delete stack "eksctl-nitro-cilium-ubuntu-podidentityrole-kube-system-cilium-operator"
+2026-11-13 23:47:51 [ℹ]  waiting for stack "eksctl-nitro-cilium-ubuntu-podidentityrole-kube-system-cilium-operator" to get deleted
+2026-11-13 23:47:51 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-podidentityrole-kube-system-cilium-operator"
+2026-11-13 23:48:22 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-podidentityrole-kube-system-cilium-operator"
+2026-11-13 23:48:22 [ℹ]  will delete stack "eksctl-nitro-cilium-ubuntu-cluster"
+2026-11-13 23:48:22 [ℹ]  waiting for stack "eksctl-nitro-cilium-ubuntu-cluster" to get deleted
+2026-11-13 23:48:22 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-cluster"
+2026-11-13 23:48:52 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-cluster"
+2026-11-13 23:49:28 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-cluster"
+2026-11-13 23:50:20 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-cluster"
+2026-11-13 23:51:06 [ℹ]  waiting for CloudFormation stack "eksctl-nitro-cilium-ubuntu-cluster"
+2026-11-13 23:51:06 [✔]  all cluster resources were deleted
 
 === 4/4 node launch templates ===
 deleted <SANDBOX_LAUNCH_TEMPLATE_ID>

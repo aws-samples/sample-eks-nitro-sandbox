@@ -55,10 +55,10 @@ HOST_KERNEL_RELEASE=6.18.56-nitro-ga
 # https://github.com/amazonlinux/linux/commit/<commit>.patch (494,711 bytes).
 HOST_KERNEL_PATCH_COMMIT=4ae89f6e09f949848123407602b4e5a8bb8d8631
 HOST_KERNEL_PATCH_SHA256=5f9c52ae83e20403846e7c10aed6ed6fcabbd4069b76f50b1a2a42577b95f1a0
-# TODO(#219 fresh run): 6.18.56 is the release in the kernel version string of the pinned
-# GUEST_IMAGE_RELEASE EIF, read offline. Confirm it with `uname -r` inside the sandbox pod on
-# an AMI built from that release; if the live value differs, this pin and the README follow it.
-# test.sh matches it exactly, since it is a prefix of HOST_KERNEL_RELEASE.
+# The guest kernel release of the pinned GUEST_IMAGE_RELEASE EIF: the release in its kernel
+# version string, and what `uname -r` showed inside the sandbox pod on the fresh run of
+# 2026-11-13, on an AMI built from that release. test.sh matches it exactly, since it is a
+# prefix of HOST_KERNEL_RELEASE.
 GUEST_KERNEL_RELEASE=6.18.56
 # The signed Nitro Sandboxes runtime release, by version (never "latest"), and the SHA-256 of
 # its x86_64 nitro-sandboxes-runtime.tar.gz as the release's signed SHA256SUM lists it.
