@@ -269,7 +269,10 @@ Add this to .env:
 When it creates an agent with `AGENT_MODEL` unset or blank, as `.env.example` ships it,
 `setup_agent.py` prints a `[note]` that it is falling back to a placeholder id and continues;
 set a real id to avoid that. Keeping an existing agent uses no model, so it prints no note. Put `AGENT_ID` in `.env` and load
-the file again with `set -a; . ./.env; set +a`. The agent is created without hosted tools: the
+the file again with `set -a; . ./.env; set +a`. Because that command *runs* what it finds
+rather than just assigning it, `setup_agent.py` checks the returned id against a plain-token
+grammar before printing it, and stops without printing anything pasteable if the endpoint
+`OPENAI_BASE_URL` selects returns something else. The agent is created without hosted tools: the
 executor provides the Bash and apply-patch tools. The self-hosted environment is created per
 session by `submit.py`, not here, because a self-hosted environment is the live connection to
 one running executor.
