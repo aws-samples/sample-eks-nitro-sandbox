@@ -1417,6 +1417,14 @@ global_settings:
       path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
       reason: 'node-probe uses hostNetwork on purpose: the node namespace is where Cilium serves Services (workloads.yaml:10-11)'
       expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
+      reason: 'Only node-probe has none: an idle host-network pod (sleep loop) driven by kubectl exec; a probe gates nothing (workloads.yaml:169-170). The six httpd pods have HTTP probes'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
+      reason: 'Only node-probe has none: an idle host-network pod (sleep loop) driven by kubectl exec; a probe gates nothing (workloads.yaml:169-170). The six httpd pods have HTTP probes'
+      expiration: '2027-12-31'
     # Pinned lines: test fixtures (a fake commit SHA, env-record strings with placeholder values).
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/packages/test-inputs.sh'
@@ -1850,51 +1858,6 @@ global_settings:
     - rule_id: CKV_DOCKER_3
       path: 'examples/subagent-security/openshell/supervisor/Dockerfile'
       reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in #152'
-      expiration: '2027-01-31'
-    # Baseline: setup/cilium-ubuntu
-    - rule_id: CKV_K8S_20
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_22
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_23
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_28
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_29
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_30
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_31
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_37
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_40
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_9
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
       expiration: '2027-01-31'
     # Baseline: setup/ubuntu-ami
     - rule_id: CKV2_K8S_6
