@@ -253,7 +253,10 @@ box_preflight() {
     die "could not read the AWS account; check your credentials"
   echo "  account:  $ACCOUNT_ID"
   echo "  region:   $AWS_REGION"
-  echo "  context:  $(kc config current-context)"
+  # kubectl config current-context ignores --context, so name KUBE_CONTEXT when it is set.
+  # When it is empty or unset, kc leaves every call unpinned, so the kubeconfig's own context
+  # is the one they use and the one to print. setup.sh fills it in before it reaches here.
+  echo "  context:  ${KUBE_CONTEXT:-$(kubectl config current-context)}"
   if [[ "$DEPLOYMENT_MODE" == nitro ]]; then
     kc get runtimeclass isolated-sandbox -o name >/dev/null 2>&1 ||
       die "isolated-sandbox is unavailable; complete the Getting started samples before setup"
