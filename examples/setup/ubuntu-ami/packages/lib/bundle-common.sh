@@ -131,8 +131,8 @@ bundle_create_archive() { # bundle_create_archive <output-tar> <staging-dir>
 # Emit the machine-checkable SBOM + license summary + provenance record as one JSON
 # document. <components-csv> is a semicolon-separated list of "id" tokens that were
 # actually bundled (so the manifest lists exactly what is in the archive, not every block
-# in the lock file, which also carries the operator-supplied runtime archive this command
-# never bundles).
+# in the lock file, which also carries the runtime release, guest image and Firecracker blocks
+# this command never bundles).
 bundle_write_manifest() { # bundle_write_manifest <manifest-json> <lock-file> <staging-dir> <archive-file> <components-csv> <command-version>
   local manifest="$1" lock_file="$2" staging="$3" archive="$4" components_csv="$5" cmd_version="$6"
   local tmp
@@ -166,9 +166,9 @@ bundle_write_manifest() { # bundle_write_manifest <manifest-json> <lock-file> <s
       printf '    }'
     done
     printf '\n  ],\n'
-    # Every kind=file input that is not a public, fetchable one (status other than available,
-    # e.g. the operator-supplied runtime archive) is listed as an external slot this bundle
-    # never fetches, embeds or commits, read from the lock file rather than hard-coded.
+    # Every kind=file input that is not a public, fetchable one (status other than available)
+    # is listed as an external slot this bundle never fetches, embeds or commits, read from the
+    # lock file rather than hard-coded. The sample's own lock has none today.
     printf '  "external_unbundled_slots": [\n'
     local sfirst=1 sid skind sstatus sfile ssha
     while IFS= read -r sid; do
@@ -184,7 +184,7 @@ bundle_write_manifest() { # bundle_write_manifest <manifest-json> <lock-file> <s
       printf '      "status": "%s",\n' "$sstatus"
       printf '      "file": "%s",\n' "$sfile"
       printf '      "sha256": "%s",\n' "$ssha"
-      printf '      "note": "Not a public download. This bundle command never fetches, embeds or commits it; the operator places it at RUNTIME_ARTIFACTS_DIR and the build verifies it against sources.lock."\n'
+      printf '      "note": "Not available as a public download. This bundle command never fetches, embeds or commits it."\n'
       printf '    }'
     done < <(bundle_lock_ids "$lock_file")
     printf '\n  ],\n'

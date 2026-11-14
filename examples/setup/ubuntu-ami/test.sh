@@ -16,8 +16,9 @@
 # bounded, for both validation pods to be Ready (scripts/wait-pods-ready.sh), so a test.sh run
 # straight after setup.sh does not read pods that are still starting. Expected values come from
 # packages/sources.lock: the host kernel is <linux-kernel-source ref>${KERNEL_LOCALVERSION}
-# (6.18.56-nitro-ga) and the sandbox's guest kernel is the runtime archive's guest_kernel
-# (6.18.54). Every helper pod this script creates (one kubectl debug pod, the AppArmor scoped pod
+# (6.18.56-nitro-ga) and the sandbox's guest kernel is the guest image's guest_kernel (6.18.56,
+# compared whole, since it shares its base release with the host's). Every helper pod this script
+# creates (one kubectl debug pod, the AppArmor scoped pod
 # and the AppArmor reject control) lives in the sample's namespace and is deleted by its exact
 # name. The scoped AppArmor profile is proven on an ordinary pod on the same node, because the
 # sandbox pod runs Unconfined (deploy/pod-isolated-sandbox.yaml says why). Overridable bounded
@@ -40,7 +41,7 @@ SANDBOX_POD=isolated-sandbox-pod
 SCOPED_POD=apparmor-scoped-pod
 SAMPLE_PROFILE=ubuntu-ami-sample-profile
 HOST_KERNEL="$(lock_field linux-kernel-source ref)${KERNEL_LOCALVERSION}"
-GUEST_KERNEL="$(lock_field runtime-archive guest_kernel)"
+GUEST_KERNEL="$(lock_field guest-image-eif guest_kernel)" || die "packages/sources.lock has no guest_kernel= for guest-image-eif"
 
 pass=0; fail=0
 assert() { # assert <description> <status>
@@ -181,7 +182,7 @@ done
 cma=$(v cma); cma_bogus=$(v cma_bogus)
 assert "ACCEPT cma: a non-zero CMA pool is reserved (CmaTotal=${cma:-0} kB)" $([[ "${cma:-0}" =~ ^[0-9]+$ && "${cma:-0}" -gt 0 ]]; echo $?)
 assert "REJECT cma: the same probe reads nothing for a bogus meminfo key" $([[ -z "$cma_bogus" ]]; echo $?)
-assert "containerd on the node passes the GA shim's 2.1.x to 2.3.x gate ($(v containerd_version))" $([[ "$(v containerd_gate)" == ok ]]; echo $?)
+assert "containerd on the node passes the 2.1.x to 2.3.x gate this sample is validated on ($(v containerd_version))" $([[ "$(v containerd_gate)" == ok ]]; echo $?)
 
 echo "== 3/7 AppArmor (criterion 8): host on and enforcing, scoped profile working, refused control"
 echo "  -- 8a: AppArmor is on and enforcing on the host"
@@ -248,7 +249,7 @@ echo "  -- why the sandbox pod runs Unconfined"
 sbx_type=$(kc get pod "$SANDBOX_POD" -n "$NAMESPACE" -o jsonpath='{.spec.securityContext.appArmorProfile.type}' 2>/dev/null)
 sbx_phase=$(kc get pod "$SANDBOX_POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
 echo "  sandbox pod: appArmorProfile type=${sbx_type:-<none>} phase=${sbx_phase:-<none>} attr/current (the guest's own label): '${sbx_attr:-<unreadable>}'"
-assert "the sandbox pod runs with appArmorProfile Unconfined, as the GA build notes require (phase=${sbx_phase:-<none>})" \
+assert "the sandbox pod runs with appArmorProfile Unconfined, as an AppArmor host requires (phase=${sbx_phase:-<none>})" \
   $([[ "$sbx_type" == Unconfined && "$sbx_phase" == Running ]]; echo $?)
 
 echo "== 4/7 positive sandbox capacity ======================================================"
@@ -272,7 +273,19 @@ echo "  ordinary pod /sys/block:     $ord_disks"
 echo "  isolated-sandbox kernel:     $sbx_kernel"
 echo "  isolated-sandbox /sys/block: $sbx_disks"
 assert "the ordinary pod shares the host kernel $HOST_KERNEL" $([[ "$ord_kernel" == "$HOST_KERNEL" ]]; echo $?)
-assert "the sandbox pod runs the guest kernel $GUEST_KERNEL, not the host's" $([[ "$sbx_kernel" == "$GUEST_KERNEL"* && "$sbx_kernel" != "$HOST_KERNEL" ]]; echo $?)
+assert "the sandbox pod runs the guest kernel $GUEST_KERNEL, not the host's" $([[ "$sbx_kernel" == "$GUEST_KERNEL" && "$sbx_kernel" != "$HOST_KERNEL" ]]; echo $?)
+# The AMI says which guest kernel it boots (GuestKernelRelease, tagged with BtfValidated=true once
+# verify-image.py read that release out of the staged EIF); the pod must report exactly that.
+# A run with no AMI_ID in its record, or a read that fails, is "could not determine": it fails.
+ami_id=$(sed -n 's/^AMI_ID=//p' "$RUN_STATE_DIR/run-state.env" 2>/dev/null | tail -n 1)
+ami_guest=""
+if [[ "$ami_id" =~ ^ami-[0-9a-f]+$ ]]; then
+  ami_guest=$(aws ec2 describe-images --region "$AWS_REGION" --image-ids "$ami_id" --output json 2>/dev/null \
+    | json_get 'next((t["Value"] for t in (d["Images"][0].get("Tags", []) if d.get("Images") else []) if t["Key"] == "GuestKernelRelease"), "")' 2>/dev/null) \
+    || ami_guest=""
+fi
+echo "  the AMI's GuestKernelRelease tag: ${ami_guest:-<unreadable>}"
+assert "the sandbox pod's kernel is the AMI's GuestKernelRelease tag (${ami_guest:-<unreadable>})" $([[ -n "$ami_guest" && "$sbx_kernel" == "$ami_guest" ]]; echo $?)
 assert "the ordinary pod sees the host's nvme* devices" $([[ "$ord_disks" == *nvme* ]]; echo $?)
 assert "the sandbox pod sees virtio vd* devices and no nvme*" $([[ "$sbx_disks" == *vd* && "$sbx_disks" != *nvme* ]]; echo $?)
 

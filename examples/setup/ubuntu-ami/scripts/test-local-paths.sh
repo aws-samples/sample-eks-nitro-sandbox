@@ -35,6 +35,9 @@
 #      defaults (sandbox-demo, us-west-2), and NAMESPACE is the sample's own whatever the shell has.
 # The test itself creates nothing outside the repository's tmp/.
 set -uo pipefail
+# A reader's own config.env (in the sample folder or ~/ubuntu-ami/) must not change what this suite
+# tests: scripts/lib/common.sh skips it while this test hook is set.
+export UBUNTU_AMI_TESTS_IGNORE_CONFIG_ENV=1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"            # .../examples/setup/ubuntu-ami/scripts
 SAMPLE_DIR_REAL="$(cd "$HERE/.." && pwd)"                        # .../examples/setup/ubuntu-ami
 REPO_ROOT_REAL="$(cd "$SAMPLE_DIR_REAL/../../.." && pwd)"        # repo root
@@ -263,16 +266,21 @@ assert_true "  ... and nothing was written in any of the inherited folders (or t
 echo "== 7/7 the cluster, Region and namespace a run uses: config.env.example and common.sh ====="
 # The README's Build block says the reader's own CLUSTER_NAME and AWS_REGION stay in effect after
 # `cp config.env.example config.env`, and that the sample uses its own namespace. The real
-# common.sh sources a config.env copied from the example; it finds it where a build host's copy
-# would be ($HOME/ubuntu-ami/config.env), so nothing is written into the sample folder.
-mkdir -p "$WORK/hdir/ubuntu-ami" "$WORK/hdir-none"
+# common.sh's own config.env search runs here (the suite's test hook is unset for these cases),
+# from a copy of the sample laid out as in a checkout, which holds no config.env, so a reader's own
+# config.env is never read. It finds the copied example where a build host's copy would be
+# ($HOME/ubuntu-ami/config.env), so nothing is written into the sample folder.
+mkdir -p "$WORK/hdir/ubuntu-ami" "$WORK/hdir-none" "$WORK/cfgrepo/examples/setup"
 cp "$SAMPLE_DIR_REAL/config.env.example" "$WORK/hdir/ubuntu-ami/config.env"
+cp -- "$REPO_ROOT_REAL/AGENTS.md" "$WORK/cfgrepo/"; cp -a "$SAMPLE_DIR_REAL" "$WORK/cfgrepo/examples/setup/"
+rm -f "$WORK/cfgrepo/examples/setup/$(basename "$SAMPLE_DIR_REAL")/config.env"
+CFG_SAMPLE="$WORK/cfgrepo/examples/setup/$(basename "$SAMPLE_DIR_REAL")"
 names() { # names <home> [VAR=value...]: CLUSTER_NAME|AWS_REGION|NAMESPACE after common.sh
   local h="$1"; shift
   env -u CLUSTER_NAME -u AWS_REGION -u NAMESPACE -u LOG_DIR -u OUT_DIR -u RUNTIME_ARTIFACTS_DIR -u ISSUE10_RUN_DIR -u REPO_ROOT \
-    HOME="$h" SAMPLE_DIR="$SAMPLE_DIR_REAL" "$@" bash -c '. "$1" >/dev/null 2>&1; printf "%s|%s|%s" "$CLUSTER_NAME" "$AWS_REGION" "$NAMESPACE"' _ "$COMMON"
+    -u UBUNTU_AMI_TESTS_IGNORE_CONFIG_ENV HOME="$h" SAMPLE_DIR="$CFG_SAMPLE" "$@" \
+    bash -c '. "$1" >/dev/null 2>&1; printf "%s|%s|%s" "$CLUSTER_NAME" "$AWS_REGION" "$NAMESPACE"' _ "$CFG_SAMPLE/scripts/lib/common.sh"
 }
-[ ! -e "$SAMPLE_DIR_REAL/config.env" ] || echo "  NOTE  $SAMPLE_DIR_REAL/config.env exists and is sourced first; these cases read it, not the example"
 # sources_clean <file>: source it under the entrypoints' discipline (set -euo pipefail) in an
 # empty environment; 0 only when the source exits 0 AND writes nothing to stderr. SRC_RC and
 # SRC_ERR say what it did.
@@ -306,6 +314,20 @@ assert_true "ACCEPT the same defaults from common.sh alone, with no config.env (
 got=$(names "$WORK/hdir" NAMESPACE=nitro-sandboxes-demo)
 [ "$got" = "sandbox-demo|us-west-2|ubuntu-ami-sample" ]
 assert_true "REJECT the home page's shared NAMESPACE: config.env sets the sample's own ubuntu-ami-sample ($got)" $?
+# The suites' test hook, both ways: a config.env in the sample folder and one in ~/ubuntu-ami/ are
+# each read by a normal run, and neither is read while UBUNTU_AMI_TESTS_IGNORE_CONFIG_ENV=1.
+mkdir -p "$WORK/hdir-reader/ubuntu-ami"
+printf 'export NAMESPACE=reader-home-namespace\n' > "$WORK/hdir-reader/ubuntu-ami/config.env"
+got=$(names "$WORK/hdir-reader"); [ "$got" = "sandbox-demo|us-west-2|reader-home-namespace" ]
+assert_true "ACCEPT a normal run reading ~/ubuntu-ami/config.env ($got)" $?
+got=$(names "$WORK/hdir-reader" UBUNTU_AMI_TESTS_IGNORE_CONFIG_ENV=1); [ "$got" = "sandbox-demo|us-west-2|ubuntu-ami-sample" ]
+assert_true "REJECT ~/ubuntu-ami/config.env while the suites' test hook is set: not read ($got)" $?
+printf 'export NAMESPACE=reader-sample-namespace\n' > "$CFG_SAMPLE/config.env"
+got=$(names "$WORK/hdir-none"); [ "$got" = "sandbox-demo|us-west-2|reader-sample-namespace" ]
+assert_true "ACCEPT a normal run reading the sample folder's config.env ($got)" $?
+got=$(names "$WORK/hdir-none" UBUNTU_AMI_TESTS_IGNORE_CONFIG_ENV=1); [ "$got" = "sandbox-demo|us-west-2|ubuntu-ami-sample" ]
+assert_true "REJECT the sample folder's config.env while the suites' test hook is set: not read ($got)" $?
+rm -f "$CFG_SAMPLE/config.env"
 
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"

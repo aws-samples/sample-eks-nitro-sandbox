@@ -40,11 +40,15 @@ fi
 
 # config.env is local and gitignored; config.env.example documents every variable with a
 # placeholder. Both the workstation driver and a build-host copy of this directory look for
-# it in the sample root.
-for __common_cfg in "$SAMPLE_DIR/config.env" "$HOME/ubuntu-ami/config.env"; do
-  [ -f "$__common_cfg" ] && { . "$__common_cfg"; break; }
-done
-unset __common_cfg
+# it in the sample root. UBUNTU_AMI_TESTS_IGNORE_CONFIG_ENV=1 is a TEST HOOK: the clusterless
+# suites (scripts/test-*.sh, packages/test-*.sh) export it so a reader's own config.env cannot
+# change what they test; nothing else sets it, so a real run always reads config.env.
+if [ "${UBUNTU_AMI_TESTS_IGNORE_CONFIG_ENV:-}" != 1 ]; then
+  for __common_cfg in "$SAMPLE_DIR/config.env" "$HOME/ubuntu-ami/config.env"; do
+    [ -f "$__common_cfg" ] && { . "$__common_cfg"; break; }
+  done
+  unset __common_cfg
+fi
 
 : "${AWS_REGION:=us-west-2}"
 : "${CLUSTER_NAME:=sandbox-demo}"   # the home page's default; the shell's own value wins
@@ -54,7 +58,7 @@ unset __common_cfg
 : "${NAMESPACE:=ubuntu-ami-sample}"
 : "${KERNEL_VERSION:=6.18.56}"
 # The host kernel's local version suffix: the built kernel reports uname -r
-# ${KERNEL_VERSION}${KERNEL_LOCALVERSION} (6.18.56-nitro-ga), as the GA bundle's build does.
+# ${KERNEL_VERSION}${KERNEL_LOCALVERSION} (6.18.56-nitro-ga).
 : "${KERNEL_LOCALVERSION:=-nitro-ga}"
 : "${EROFS_UTILS_VERSION:=1.8.10}"
 : "${RUNTIME_ARTIFACTS_DIR:=$ISSUE10_RUN_DIR/runtime}"
@@ -430,7 +434,7 @@ lock_field() { # lock_field <id> <field>
 }
 
 # lock_ids_where <field> <value> : print, in file order, the id of every LOCK_FILE block whose
-# <field> line is exactly <field>=<value> (for example `lock_ids_where kind runtime-payload`).
+# <field> line is exactly <field>=<value> (for example `lock_ids_where kind signed-archive`).
 lock_ids_where() { # lock_ids_where <field> <value>
   awk -F= -v f="$1" -v want="$2" '
     /^id=/ { id = substr($0, 4) }

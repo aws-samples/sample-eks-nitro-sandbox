@@ -6,20 +6,32 @@
 #
 # Format, one input per block:
 #   id=<stable identifier>
-#   kind=<ssm-ami|file|runtime-payload>
+#   kind=<ssm-ami|file|signed-archive|sidecar-file|archive-member>
 #   ref=<version/ref>
-#   source=<public URL, SSM parameter path, or how an operator-supplied input is obtained;
-#          never an internal/private location>
-#   sha256=<hex digest; required for kind=file and kind=runtime-payload; "n/a" for an AMI
-#          resolved by signed SSM parameter or a capability-asserted input>
+#   source=<public URL or SSM parameter path; never an internal/private location>
+#   sha256=<hex digest; "n/a" only for an AMI resolved by signed SSM parameter or a
+#          capability-asserted input>
 #   verify=<short note on how this input is obtained and verified>
-#   status=<available|operator-supplied>
+#   status=available
+# The kinds:
+#   file            a public download pinned by its SHA-256 (packages/fetch-*.sh, make-bundle.sh)
+#   signed-archive  a release archive whose SHA256SUM manifest is signed (manifest=, its pinned
+#                   manifest_sha256=, signature=, and public_key= with its pinned public_key_sha256=)
+#   sidecar-file    a public download published with a sidecar holding its SHA-256 (sidecar=); the
+#                   sidecar's value and the downloaded file must both equal sha256=
+#   archive-member  one file read from the archive block named by archive= (member= is its name in
+#                   the archive), pinned by its own SHA-256
 # Extra keys some blocks carry:
-#   file=      the file name the input is fetched or supplied under
+#   file=      the file name the input is fetched under
 #   subject=   (kernel patch) the commit subject the applied patch must carry
-#   archive=   (runtime-payload) the id of the archive the payload ships in
-#   install=   (runtime-payload) "<absolute path> <octal mode>" on the node, or "none"
-#   guest_kernel= (runtime archive) the guest kernel release inside latest.eif
+#   arch=      the architecture the input is for (x86_64 or amd64, as its publisher names it)
+#   install=   "<absolute path> <octal mode>" on the node, or "none"
+#   guest_kernel= (guest boot image) the guest kernel release inside it: what uname -r prints in
+#              a sandbox pod; scripts/verify-image.py reads it out of the staged EIF and requires
+#              this exact value, and the AMI is tagged GuestKernelRelease=<this value>
+# The signed-archive, sidecar-file and archive-member blocks are read by
+# packages/fetch-runtime-artifacts.sh (packages/lib/runtime_verify.py); make-bundle.sh bundles only
+# kind=file inputs, so the runtime, the guest image and Firecracker are never bundled.
 #
 # A line is read as `key=value`; a block ends at a blank line. Unknown keys are ignored by
 # the fetch helpers (forward-compatible), but `id`, `kind`, `ref`, `source` and `status` are
@@ -58,19 +70,20 @@ verify=The linux-6.18.56.tar.xz line of kernel.org's
   every run; a mismatch aborts before the tarball is unpacked.
 status=available
 
-# --- 3. Host-kernel patch: AWS's public Nitro Sandbox kernel commit (GitHub) ----------------
+# --- 3. Host-kernel patch: the Amazon Linux sandbox patch the Amazon EKS User Guide names ----
 # ONE squashed public commit on Amazon Linux's kernel tree, fetched as a git-format patch and
 # applied to the kernel.org 6.18.56 tree above with `git am` in a throwaway repository.
 id=host-kernel-patch
 kind=file
-ref=1e66c960b982c94bda76ebd0129eaecf0a68b46e
-file=1e66c960b982c94bda76ebd0129eaecf0a68b46e.patch
-source=https://github.com/amazonlinux/linux/commit/1e66c960b982c94bda76ebd0129eaecf0a68b46e.patch
-sha256=051ede9dff52d24fb7ff47dd783a9eb2f6b18c742dbf151926cb48304d72924b
+ref=4ae89f6e09f949848123407602b4e5a8bb8d8631
+file=4ae89f6e09f949848123407602b4e5a8bb8d8631.patch
+source=https://github.com/amazonlinux/linux/commit/4ae89f6e09f949848123407602b4e5a8bb8d8631.patch
+sha256=5f9c52ae83e20403846e7c10aed6ed6fcabbd4069b76f50b1a2a42577b95f1a0
 subject=nitro_enclaves: Amazon Nitro Enclaves extension (port onto 6.18.48)
-verify=GitHub serves any commit as a git-format patch at <commit URL>.patch. The SHA-256 is the
-  value the GA node-build bundle (nitro-sandbox-ga-20261028) pins, re-confirmed by this sample
-  on a fresh download. packages/fetch-kernel-patch.sh checks the SHA-256 and that the patch's
+verify=The commit the Amazon EKS User Guide page "Create and update a Nitro Sandbox AMI" links
+  as the sandbox patch for operating systems other than Amazon Linux. GitHub serves any commit
+  as a git-format patch at <commit URL>.patch; the SHA-256 is pinned by this sample from a fresh
+  download (2026-11-13). packages/fetch-kernel-patch.sh checks the SHA-256 and that the patch's
   first line names this commit before the patch takes its final name; scripts/10-kernel.sh
   checks it applies as exactly one commit with the subject above.
 status=available
@@ -84,124 +97,122 @@ source=https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git/sna
 sha256=05eb4edebe11decce6ecb34e98d2f80c8cd283c2f2967d8ba7efd58418570514
 verify=This is a cgit-generated snapshot of a tag, not an upstream release tarball with its
   own published checksum, so the SHA-256 is pinned BY THIS SAMPLE (confirmed identical
-  across independent fetches, most recently on 2026-10-28), not quoted from upstream. A
+  across independent fetches, most recently on 2026-11-13), not quoted from upstream. A
   re-fetch that disagrees means cgit's archive generation changed; re-confirm by hand and
   update this file and packages/SOURCES.txt together before trusting a new value. The build
   checks `mkfs.erofs --version` reports this version and records the installed binary's own
   SHA-256 into the on-image manifest.
 status=available
 
-# --- 5. Nitro sandbox runtime binaries + guest image (operator-supplied preview archive, checksum-pinned, with no public download)
-# One flat zip from the GA node-build bundle, so the operator obtains it from their AWS
-# account team and places it at
-# RUNTIME_ARTIFACTS_DIR (default: the repository's gitignored tmp/issue10/run/runtime). This
-# sample never fetches, embeds, uploads anywhere public or commits it.
-# packages/fetch-runtime-artifacts.sh verifies the archive SHA-256 below, then fails closed
-# unless the SHA256SUMS inside lists every unpacked file exactly once, every hash matches, and
-# every payload matches its runtime-payload pin below.
-id=runtime-archive
-kind=file
-ref=nitro-sandbox-ga-20261028
-file=nitro-sandbox-binaries-2026-10-28.zip
-source=operator-supplied: an operator-supplied preview archive, checksum-pinned, with no public download; obtained from your AWS account team
-sha256=6830dc8d0acb356b06753fed609ebb9f03a182e340eaa27cd9ed171f7667ba40
-size=148284530
-guest_kernel=6.18.54
-verify=Archive SHA-256 as shipped in the GA node-build bundle nitro-sandbox-ga-20261028,
-  re-computed by this sample on the operator's copy. Its own SHA256SUMS covers all eight
-  payloads below; each payload is also pinned here, so a re-packed archive whose SHA256SUMS
-  was edited to match is still refused.
-status=operator-supplied
+# --- 5. Nitro Sandbox runtime release (AWS, public, signed) ---------------------------------
+# The release the Amazon EKS User Guide page "Download and verify the runtime binaries"
+# describes. The archive holds the shim, the guest agent, the policy generators, the key
+# provider and their licenses; only the shim is installed on the node (it also runs as the CRI
+# proxy). The guest agent runs inside the guest image, and eks-nitro-sandbox-genpolicy is a
+# workstation tool.
+id=runtime-release
+kind=signed-archive
+ref=0.1.4274.0
+arch=x86_64
+file=nitro-sandboxes-runtime.tar.gz
+source=https://d1uvmbvklg8rt.cloudfront.net/0.1.4274.0/x86_64/nitro-sandboxes-runtime.tar.gz
+sha256=abc1d0032014f763715c2829ef1a104d768c3e0a76fa91cd2668d87678db3c57
+manifest=https://d1uvmbvklg8rt.cloudfront.net/0.1.4274.0/x86_64/SHA256SUM
+manifest_sha256=33df467673f08654c611c0820bd7c6449a7bd5280c3a0690e36dbb475ceed972
+signature=https://d1uvmbvklg8rt.cloudfront.net/0.1.4274.0/x86_64/SHA256SUM.sig
+public_key=nitro-sandboxes-runtime-v1.pub
+public_key_sha256=8b61298c0cb361b352063eb4ae8c89d38270d6f8e96131ef93f238aba6137256
+verify=The downloaded SHA256SUM (not the copy inside the archive) is the file AWS signs: its
+  ECDSA P-384 signature SHA256SUM.sig verifies with `openssl dgst -sha384 -verify` against the
+  public key the User Guide prints, committed beside this file. The manifest's own SHA-256,
+  the archive's and the shim's are pinned here as well, so a different release signed with
+  the same key is still refused. Pinned to the version, never `latest`.
+status=available
 
-id=runtime-payload-containerd-shim-nitro-sandbox-v2
-kind=runtime-payload
-archive=runtime-archive
-ref=nitro-sandbox-ga-20261028
+id=runtime-shim
+kind=archive-member
+archive=runtime-release
+ref=0.1.4274.0
 file=containerd-shim-nitro-sandbox-v2
-source=member of runtime-archive
-sha256=991a3786577d19ec3ee5005c90530cc1b2464c052af0218b1064f54c3c2aa7c9
+member=containerd-shim-nitro-sandbox-v2
+source=member of runtime-release
+sha256=fe86bb80bdd69443135300105ce20bc2d1e6f24ef97591f9a5da7ab56a3c67c3
 install=/usr/sbin/containerd-shim-nitro-sandbox-v2 0755
-verify=SHA256SUMS line in runtime-archive; the shim also serves the CRI proxy (cri-proxy subcommand). It reports its version as dev.
-status=operator-supplied
+verify=Its line in the signed SHA256SUM and this pin must agree. The shim also serves the CRI
+  proxy (cri-proxy subcommand).
+status=available
 
-id=runtime-payload-eks-nitro-sandbox-genpolicy
-kind=runtime-payload
-archive=runtime-archive
-ref=nitro-sandbox-ga-20261028
-file=eks-nitro-sandbox-genpolicy
-source=member of runtime-archive
-sha256=8bb076d5f4c631f9a0a91c58f249876f49d1c4f794b7241fbbbb2398da3fbad2
-install=/usr/local/bin/eks-nitro-sandbox-genpolicy 0755
-verify=SHA256SUMS line in runtime-archive.
-status=operator-supplied
-
-id=runtime-payload-firecracker
-kind=runtime-payload
-archive=runtime-archive
-ref=nitro-sandbox-ga-20261028
-file=firecracker
-source=member of runtime-archive
-sha256=13a369b76af5f87039944f52dd6c4ef292cfdfc818a9b6e87d174b86920f5a31
-install=/usr/bin/firecracker 0755
-verify=SHA256SUMS line in runtime-archive.
-status=operator-supplied
-
-id=runtime-payload-jailer
-kind=runtime-payload
-archive=runtime-archive
-ref=nitro-sandbox-ga-20261028
-file=jailer
-source=member of runtime-archive
-sha256=b7067964a02a0f6a35244a54a763f8bc420dac8c5ff4d471b2102845357293a3
-install=/usr/bin/jailer 0755
-verify=SHA256SUMS line in runtime-archive. It unpacks as mode 0644; the install step sets 0755.
-status=operator-supplied
-
-id=runtime-payload-latest-disk-img
-kind=runtime-payload
-archive=runtime-archive
-ref=nitro-sandbox-ga-20261028
-file=latest-disk.img
-source=member of runtime-archive
-sha256=932a251aab211785c10620ab17ac314f5c09da3c2b61f7917acdf2208b6c3eb7
-install=/var/lib/nitro-sandbox-images/latest-disk.img 0644
-verify=SHA256SUMS line in runtime-archive. The guest root disk (2 GiB); rootfs.ext4 is a symlink to it.
-status=operator-supplied
-
-id=runtime-payload-latest-eif
-kind=runtime-payload
-archive=runtime-archive
-ref=nitro-sandbox-ga-20261028
-file=latest.eif
-source=member of runtime-archive
-sha256=31f21cf805e193710295a1dbee2e98847c4d8a0cc040597cb6abc39d3aad5105
+# --- 6. Guest image, a matched pair (AWS, public Amazon S3 location) -----------------------
+# Keyed by the cluster's Kubernetes patch version, the release date and the node architecture.
+# The two files come from one release: the disk is a dm-verity image whose root hash is in the
+# EIF's measured kernel command line. The .sha256 sidecar beside each file is served from the
+# same unauthenticated location, so it gives integrity, not authenticity: this sample pins
+# both hashes itself, from a full download of each file on 2026-11-13 that matched its sidecar.
+id=guest-image-eif
+kind=sidecar-file
+ref=1.36.5/2026-11-06
+arch=amd64
+file=nitro-sandbox-guest.eif
+source=https://amazon-eks.s3.us-west-2.amazonaws.com/1.36.5/2026-11-06/nitro-sandbox-guest/linux/amd64/nitro-sandbox-guest.eif
+sidecar=https://amazon-eks.s3.us-west-2.amazonaws.com/1.36.5/2026-11-06/nitro-sandbox-guest/linux/amd64/nitro-sandbox-guest.eif.sha256
+sha256=bcbf2e9da531ffaee6691db5661c75b3564f151cb411227c5a7f9a530db72182
+guest_kernel=6.18.56
 install=/var/lib/nitro-sandbox-images/latest.eif 0644
-verify=SHA256SUMS line in runtime-archive. The guest boot image; it carries guest kernel 6.18.54.
-status=operator-supplied
+verify=The Enclave Image File: the guest kernel, its command line and the Nitro Sandbox agent.
+  guest_kernel is the release its bzImage setup header names (read offline from this file on
+  2026-11-13); scripts/verify-image.py reads it again from the staged copy.
+status=available
 
-id=runtime-payload-nitro-sandbox-agent
-kind=runtime-payload
-archive=runtime-archive
-ref=nitro-sandbox-ga-20261028
-file=nitro-sandbox-agent
-source=member of runtime-archive
-sha256=df85d0ea5b5021004110b2322283e2bd35b01c668ffd838573bc8f28bc8b6b8c
+id=guest-image-disk
+kind=sidecar-file
+ref=1.36.5/2026-11-06
+arch=amd64
+file=nitro-sandbox-guest-disk.img
+source=https://amazon-eks.s3.us-west-2.amazonaws.com/1.36.5/2026-11-06/nitro-sandbox-guest/linux/amd64/nitro-sandbox-guest-disk.img
+sidecar=https://amazon-eks.s3.us-west-2.amazonaws.com/1.36.5/2026-11-06/nitro-sandbox-guest/linux/amd64/nitro-sandbox-guest-disk.img.sha256
+sha256=08f8e6d2d032829bff9c4c4907cd44242f46bcf6b1bbc2e6aea691c82bee902c
+install=/var/lib/nitro-sandbox-images/latest-disk.img 0644
+verify=The guest root disk (2 GiB); rootfs.ext4 is a symlink to it, beside the EIF.
+status=available
+
+# --- 7. Firecracker and jailer (the open source Firecracker project, GitHub release) ---------
+id=firecracker-release
+kind=sidecar-file
+ref=v1.18.0
+file=firecracker-v1.18.0-x86_64.tgz
+source=https://github.com/firecracker-microvm/firecracker/releases/download/v1.18.0/firecracker-v1.18.0-x86_64.tgz
+sidecar=https://github.com/firecracker-microvm/firecracker/releases/download/v1.18.0/firecracker-v1.18.0-x86_64.tgz.sha256.txt
+sha256=1ac8eec866dd5eea14efecf6323e22b23eea24054545338a5b34bc5bca6623cd
 install=none
-verify=SHA256SUMS line in runtime-archive. Not installed on the host: the copy inside latest-disk.img runs in the guest.
-status=operator-supplied
+verify=The release's .sha256.txt and this pin must agree. The User Guide asks for v1.18.0 or
+  later; this sample pins v1.18.0.
+status=available
 
-id=runtime-payload-nitro-sandbox-keyprovider
-kind=runtime-payload
-archive=runtime-archive
-ref=nitro-sandbox-ga-20261028
-file=nitro-sandbox-keyprovider
-source=member of runtime-archive
-sha256=57407a2f47e56ee46736bcdce73d48a6a10af25c613dfa08370cd0c081814c3f
-install=/usr/local/bin/nitro-sandbox-keyprovider 0755
-verify=SHA256SUMS line in runtime-archive.
-status=operator-supplied
+id=firecracker
+kind=archive-member
+archive=firecracker-release
+ref=v1.18.0
+file=firecracker
+member=release-v1.18.0-x86_64/firecracker-v1.18.0-x86_64
+source=member of firecracker-release
+sha256=b33f46cd6d88834cf6a4f8d184f08f219809c636236bffd286d233a60602a2ba
+install=/usr/bin/firecracker 0755
+verify=The value the release tarball's own SHA256SUMS lists for this member.
+status=available
 
-# --- 6. Distro packages (Ubuntu apt repositories; capability-asserted, not SHA-256 pinned) --
+id=jailer
+kind=archive-member
+archive=firecracker-release
+ref=v1.18.0
+file=jailer
+member=release-v1.18.0-x86_64/jailer-v1.18.0-x86_64
+source=member of firecracker-release
+sha256=ddadbaa15b5c942271a83b7040ca7259c8ccf92a9e08d44cce0b86fa407ba460
+install=/usr/bin/jailer 0755
+verify=The value the release tarball's own SHA256SUMS lists for this member.
+status=available
+
+# --- 8. Distro packages (Ubuntu apt repositories; capability-asserted, not SHA-256 pinned) --
 # Kernel-build toolchain: build-essential flex bison bc gawk libelf-dev libdw-dev libssl-dev
 #   dwarves git curl xz-utils
 # erofs-utils build: libzstd-dev liblz4-dev uuid-dev autoconf automake libtool pkg-config

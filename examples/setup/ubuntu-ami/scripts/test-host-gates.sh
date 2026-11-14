@@ -11,6 +11,9 @@
 #
 #   scripts/test-host-gates.sh
 set -uo pipefail
+# A reader's own config.env (in the sample folder or ~/ubuntu-ami/) must not change what this suite
+# tests: scripts/lib/common.sh skips it while this test hook is set.
+export UBUNTU_AMI_TESTS_IGNORE_CONFIG_ENV=1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAMPLE_DIR_REAL="$(cd "$HERE/.." && pwd)"
 REPO_ROOT_REAL="$(cd "$SAMPLE_DIR_REAL/../../.." && pwd)"
@@ -52,7 +55,7 @@ u2.2.7|containerd github.com/containerd/containerd/v2 2.2.7 abc123|0|ACCEPT a la
 v2.1.5|containerd github.com/containerd/containerd/v2 v2.1.5 fcd43222|0|ACCEPT upstream v2.1.5
 a2.3.0|containerd github.com/containerd/containerd/v2 2.3.0 |0|ACCEPT 2.3.0
 a2.3.7|containerd github.com/containerd/containerd/v2 2.3.7+unknown |0|ACCEPT 2.3.7+unknown (AL2023 build string)
-r2.4.0|containerd github.com/containerd/containerd/v2 2.4.0 |1|REJECT 2.4.0 (newer than the GA shim is tested on)
+r2.4.0|containerd github.com/containerd/containerd/v2 2.4.0 |1|REJECT 2.4.0 (newer than this sample is validated on)
 r2.10.1|containerd github.com/containerd/containerd/v2 2.10.1 |1|REJECT 2.10.1 (newer, not read as 2.1)
 r2.0.5|containerd github.com/containerd/containerd/v2 v2.0.5 |1|REJECT 2.0.5 (older than 2.1)
 r1.7.28|containerd github.com/containerd/containerd 1.7.28 |1|REJECT 1.7.28
@@ -62,9 +65,9 @@ rjunk|runc version 1.2.3|1|REJECT output that is not containerd's
 CASES
 rc=0; gate fails "containerd github.com/containerd/containerd/v2 2.2.1 " 1 || rc=$?
 check "REJECT a containerd whose --version exits non-zero, even with a good version line" 1 "$rc" "$WORK/cd-fails.log" 'failed \(exit 1\)'
-grep -q 'supported by the GA shim' "$WORK/cd-u2.2.1.log"; check "the ACCEPT verdict says why (supported by the GA shim)" 0 $? "$WORK/cd-u2.2.1.log"
-grep -q 'newer than the GA shim is tested on' "$WORK/cd-r2.4.0.log"; check "the 2.4 REJECT verdict says why (newer than tested)" 0 $? "$WORK/cd-r2.4.0.log"
-grep -q 'older than the GA shim supports' "$WORK/cd-r2.0.5.log"; check "the 2.0 REJECT verdict says why (older than supported)" 0 $? "$WORK/cd-r2.0.5.log"
+grep -q 'in the range this sample is validated on' "$WORK/cd-u2.2.1.log"; check "the ACCEPT verdict says why (in the range this sample is validated on)" 0 $? "$WORK/cd-u2.2.1.log"
+grep -q 'newer than this sample is validated on' "$WORK/cd-r2.4.0.log"; check "the 2.4 REJECT verdict says why (newer than validated)" 0 $? "$WORK/cd-r2.4.0.log"
+grep -q 'older than this sample is validated on' "$WORK/cd-r2.0.5.log"; check "the 2.0 REJECT verdict says why (older than validated)" 0 $? "$WORK/cd-r2.0.5.log"
 
 echo
 echo "== 2/5 kernel config assertion: scripts/10-kernel.sh --assert-config =================="
@@ -206,8 +209,9 @@ echo
 echo "== 5/5 enclave hardware, enforced only after the reboot: scripts/00-preflight.sh --after-reboot"
 # The real 00-preflight.sh with SYSROOT fixtures for /dev/nitro_enclaves (a symlink to /dev/null,
 # which is a character device) and pcie_slots_total, and stubs for uname -r, dmesg, sudo and curl.
-# Off a build host its other sections fail (no bootstrap.sh, no snap) and the runtime archive is
-# absent (exit 3), so each case reads the enclave section's own lines: its FAIL lines, and its ok
+# Off a build host its other sections fail (no bootstrap.sh, no snap) and its runtime input check
+# fails too (the stub curl downloads nothing), so each case reads the enclave section's own lines:
+# its FAIL lines, and its ok
 # lines when every check holds. The base-kernel fixture is what a live build host on Canonical's
 # serial 20261027 showed before the kernel build: kernel 7.0.0-1014-aws, CONFIG_NITRO_ENCLAVES=m
 # loaded, the device present, no pcie_slots_total, no BAR4 line.

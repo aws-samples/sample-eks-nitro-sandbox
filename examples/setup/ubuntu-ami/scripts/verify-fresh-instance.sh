@@ -35,6 +35,20 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${SUBNET_ID:?set SUBNET_ID to a private build subnet}"
 require_run_id   # names (INSTANCE_PROFILE, VERIFY_NAME) and both run tags come from the run id
 
+# The GA build-metadata tags, read from packages/sources.lock now, before anything is launched, so
+# a lock that lacks one stops the run here rather than after the verification. Each is a
+# `Key=...,Value=...` argument for btf_tag_ami_if_verified (below): the runtime release, the guest
+# image release, the Firecracker version, the host-kernel patch commit and the guest kernel release.
+GA_TAGS=()
+for spec in "RuntimeRelease runtime-release ref" "GuestImageRelease guest-image-eif ref" \
+            "FirecrackerVersion firecracker-release ref" "HostKernelPatch host-kernel-patch ref" \
+            "GuestKernelRelease guest-image-eif guest_kernel"; do
+  read -r tag_key lock_id lock_key <<<"$spec"
+  tag_value=$(lock_field "$lock_id" "$lock_key") || die "packages/sources.lock has no $lock_key= for $lock_id (the $tag_key tag)"
+  [[ "$tag_value" =~ ^[A-Za-z0-9._:/@+=-]+$ ]] || die "packages/sources.lock $lock_id $lock_key= '$tag_value' is not a value the $tag_key tag can carry"
+  GA_TAGS+=("Key=$tag_key,Value=$tag_value")
+done
+
 NAME="$VERIFY_NAME"
 log "launching fresh verification instance $NAME from $AMI_ID"
 # The launch spec is rendered to a file, checked (IMDSv2 required with hop limit 1, enclaves on,
@@ -100,7 +114,7 @@ cat "$EVIDENCE/fresh-instance-verify-image.txt"
 status_line=$(head -n 1 "$EVIDENCE/fresh-instance-verify-image.txt")
 [[ "$status_line" == Success* ]] || die "verify-image.py failed on the fresh instance"
 # The containerd version the fresh instance booted with, for the run's private evidence.
-fresh_containerd=$(grep -o 'containerd [0-9][^"]*supported by the GA shim[^"]*' "$EVIDENCE/fresh-instance-verify-image.txt" | head -n 1 || true)
+fresh_containerd=$(grep -o 'containerd [0-9][^"]*in the range this sample is validated on[^"]*' "$EVIDENCE/fresh-instance-verify-image.txt" | head -n 1 || true)
 printf 'FRESH_INSTANCE_CONTAINERD=%q\n' "${fresh_containerd:-<not read>}" >> "$EVIDENCE/run-evidence.env"
 
 run_remote "40-smoke.sh" "sudo bash /usr/local/share/ubuntu-ami-sample/scripts/40-smoke.sh" \
@@ -120,10 +134,17 @@ log "fresh-instance verification PASS"
 # ManagedBy ownership tag, whatever VERIFY_STATUS says, and never tags when VERIFY_STATUS is
 # not the literal string "pass". Safe immutable build metadata recorded alongside the tag:
 # the kernel and erofs-utils versions this run pinned (from config.env / common.sh
-# defaults, never invented), and a build-id timestamp matching this verification run's own
-# instance name, so a reader can tell which verification run earned the tag.
+# defaults, never invented), the GA inputs packages/sources.lock pins (the Amazon EKS User Guide
+# suggests tagging an AMI with what it was built from, and the cilium-ubuntu sample reads these to
+# tell a GA-built AMI from an older one): the runtime release, the guest image release, the
+# Firecracker version, the host-kernel patch commit and the guest kernel release (the value
+# verify-image.py just read out of the staged EIF and found equal to the pin), and a build-id
+# timestamp matching this verification run's own instance name, so a reader can tell which
+# verification run earned the tag. Every value is read from sources.lock (GA_TAGS, above), never
+# typed twice.
 btf_tag_ami_if_verified "$AMI_ID" "$VERIFY_STATUS" \
   "Key=KernelVersion,Value=${KERNEL_VERSION}" \
   "Key=ErofsUtilsVersion,Value=${EROFS_UTILS_VERSION}" \
+  "${GA_TAGS[@]}" \
   "Key=BtfValidatedBuildId,Value=${NAME}" \
   || die "BtfValidated=true was not applied to $AMI_ID; see the warning above"
