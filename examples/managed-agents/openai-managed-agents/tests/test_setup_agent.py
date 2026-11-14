@@ -1,218 +1,173 @@
-"""Tests for scripts/setup_agent.py keeping an AGENT_ID, with the OpenAI client faked.
+"""Tests for scripts/setup_agent.py keeping an AGENT_ID, run as a program.
 
-A kept AGENT_ID is looked up before it is kept. Both ways, per AGENTS.md: an
-agent the lookup returns is kept and nothing is created; a 404 stops with a
-message that lists what to check before removing AGENT_ID, without claiming the
-agent is gone; a lookup that fails for any other reason (network, auth, 5xx),
-or succeeds without this agent's id, stops and is not read as "agent gone"; and
-a failure is named by its SDK exception class and, when it has one, its HTTP
-status, printing neither the response body nor the request-id header, either of
-which a proxy can fill with a key. A stopping path emits nothing besides its
-exit message: no stdout, stderr, file-descriptor write, log record or warning.
-In every stopping case no agent is created.
+Each case starts tests/_setup_agent_driver.py in a child process, which runs
+setup_agent.py as __main__ against one faked agents API outcome, and compares
+the child's ENTIRE stdout and stderr, and its exit status, with exact text this
+file owns. So the tests do not list the ways output can escape: anything a
+reader running the script would see beyond the expected text fails, whether it
+is a print, a log record, a warning, a write to a file descriptor, a traceback,
+output at import time or from the __main__ block. And an unexpected API call
+(a lookup without AGENT_ID, a lookup of another id, a create while a kept agent
+is checked) raises in the child and fails the same way.
+
+Both ways, per AGENTS.md: an agent the lookup returns is kept and nothing is
+created; with no AGENT_ID an agent is created and nothing is looked up; a 404
+stops with a message that lists what to check before removing AGENT_ID, without
+claiming the agent is gone; a lookup that fails for any other reason (network,
+auth, 5xx) stops and names the error by its SDK exception class and, when it has
+one, its HTTP status; a lookup that succeeds without this agent's id stops; and
+neither the response body nor the request-id header, either of which a proxy
+behind OPENAI_BASE_URL can fill with a key, is ever shown.
+
+What this does not cover: anything the script writes somewhere other than its
+own stdout and stderr, such as a file or the network.
 
 Run with: python -m pytest
 """
 
 from __future__ import annotations
 
-import importlib.util
-import logging
-import pathlib
+import os
+import subprocess
 import sys
-from types import SimpleNamespace
-from unittest.mock import MagicMock
+from pathlib import Path
 
 import pytest
 
 openai = pytest.importorskip("openai")
-httpx = pytest.importorskip("httpx2")
+pytest.importorskip("httpx2")
 
+TESTS = Path(__file__).resolve().parent
+DRIVER = TESTS / "_setup_agent_driver.py"
 
-def _load_setup_agent():
-    scripts_dir = pathlib.Path(__file__).resolve().parent.parent / "scripts"
-    sys.path.insert(0, str(scripts_dir))  # so setup_agent.py's `from _client import ...` resolves
-    try:
-        spec = importlib.util.spec_from_file_location("setup_agent_under_test", scripts_dir / "setup_agent.py")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    finally:
-        sys.path.remove(str(scripts_dir))
+sys.path.insert(0, str(TESTS))
+try:
+    import _setup_agent_driver as driver
+finally:
+    sys.path.remove(str(TESTS))
 
-
-setup_agent = _load_setup_agent()
-
-_REQUEST = httpx.Request("GET", "https://api.openai.example/v1/agents/agent_kept")
-
-
-def _status_error(cls, status):
-    return cls("error", response=httpx.Response(status, request=_REQUEST), body=None)
-
-
-def _client(retrieve):
-    client = MagicMock()
-    client.beta.agents.retrieve.side_effect = retrieve
-    client.beta.agents.create.return_value = SimpleNamespace(id="agent_new")
-    return client
-
-
-@pytest.fixture
-def run(monkeypatch):
-    def _run(client):
-        monkeypatch.setenv("AGENT_ID", "agent_kept")
-        monkeypatch.delenv("AGENT_MODEL", raising=False)
-        monkeypatch.setattr(setup_agent, "make_client", lambda: client)
-        setup_agent.main()
-
-    return _run
-
-
-def test_an_existing_agent_is_kept(run, capsys):
-    client = _client(lambda agent_id: SimpleNamespace(id=agent_id))
-
-    run(client)
-
-    client.beta.agents.retrieve.assert_called_once_with("agent_kept")
-    client.beta.agents.create.assert_not_called()
-    assert "AGENT_ID=agent_kept" in capsys.readouterr().out
-
-
-@pytest.fixture
-def side_output(capfd, caplog, recwarn):
-    """Everything a stopping run emitted besides its exit message.
-
-    capfd sees writes to file descriptors 1 and 2 as well as sys.stdout and
-    sys.stderr; caplog and recwarn see logging and warnings, which pytest would
-    otherwise capture separately. A stopping path emits nothing but its exit
-    message, so each test asserts this is empty.
-    """
-    caplog.set_level(logging.DEBUG)
-
-    def _collect() -> str:
-        captured = capfd.readouterr()
-        return "".join(
-            [captured.out, captured.err]
-            + [record.getMessage() for record in caplog.records]
-            + [str(warning.message) for warning in recwarn]
-        )
-
-    return _collect
-
-
-def test_a_404_lists_what_to_check_before_saying_to_remove_agent_id(run, side_output):
-    client = _client(_status_error(openai.NotFoundError, 404))
-
-    with pytest.raises(SystemExit) as stopped:
-        run(client)
-
-    assert side_output() == ""
-    # The whole message, owned by the test, so an added or changed claim (such as
-    # that the agent was deleted, which a 404 does not show) fails here.
-    assert str(stopped.value.code) == (
-        "The lookup of agent agent_kept from AGENT_ID returned HTTP 404, so it was not kept.\n"
-        "A 404 does not show that the agent was deleted. The same answer comes from a mistyped\n"
-        "AGENT_ID, from OPENAI_API_KEY, OPENAI_PROJECT_ID or OPENAI_ORG_ID selecting a different\n"
-        "project or organization from the one the agent was created in, or from OPENAI_BASE_URL\n"
-        "pointing somewhere else. Check those first.\n"
-        "Only once you have confirmed the agent is gone, for example in the OpenAI dashboard of the\n"
-        "project it was created in, remove AGENT_ID from .env (or unset it in this shell) and run\n"
-        "this step again to create a new agent."
-    )
-    client.beta.agents.create.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    ("failure", "described"),
-    [
-        (openai.APIConnectionError(request=_REQUEST), "APIConnectionError"),
-        (_status_error(openai.AuthenticationError, 401), "AuthenticationError, HTTP 401"),
-        (_status_error(openai.PermissionDeniedError, 403), "PermissionDeniedError, HTTP 403"),
-        (_status_error(openai.InternalServerError, 500), "InternalServerError, HTTP 500"),
-    ],
-    ids=["network", "401", "403", "500"],
+NOT_FOUND = (
+    "The lookup of agent agent_kept from AGENT_ID returned HTTP 404, so it was not kept.\n"
+    "A 404 does not show that the agent was deleted. The same answer comes from a mistyped\n"
+    "AGENT_ID, from OPENAI_API_KEY, OPENAI_PROJECT_ID or OPENAI_ORG_ID selecting a different\n"
+    "project or organization from the one the agent was created in, or from OPENAI_BASE_URL\n"
+    "pointing somewhere else. Check those first.\n"
+    "Only once you have confirmed the agent is gone, for example in the OpenAI dashboard of the\n"
+    "project it was created in, remove AGENT_ID from .env (or unset it in this shell) and run\n"
+    "this step again to create a new agent.\n"
 )
-def test_a_failed_lookup_stops_and_is_not_read_as_gone(run, side_output, failure, described):
-    client = _client(failure)
 
-    with pytest.raises(SystemExit) as stopped:
-        run(client)
 
-    assert side_output() == ""
+def _not_confirmed(why: str) -> str:
+    return f"Could not confirm that agent agent_kept exists, so it was not kept{why}\n"
+
+
+def _run(scenario: str, agent_id: str | None) -> subprocess.CompletedProcess:
+    # A clean environment, so neither the caller's OpenAI settings nor Python
+    # options such as PYTHONWARNINGS change what the child shows.
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith(("OPENAI_", "PYTHON", "AGENT_"))
+    }
+    env.update(PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8", AGENT_MODEL="test-model")
+    if agent_id is not None:
+        env["AGENT_ID"] = agent_id
+    return subprocess.run(
+        [sys.executable, str(DRIVER), scenario],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+# scenario -> (exit status, entire stdout, entire stderr)
+EXPECTED = {
+    "kept": (
+        0,
+        "AGENT_ID is set and the agent exists; keeping agent agent_kept\n"
+        "\n"
+        "Add this to .env:\n"
+        "  AGENT_ID=agent_kept\n",
+        "",
+    ),
+    "404": (1, "", NOT_FOUND),
+    "planted-404": (1, "", NOT_FOUND),
     # A network error has no HTTP status, so it is named by its class alone.
-    assert str(stopped.value.code) == (
-        f"Could not confirm that agent agent_kept exists, so it was not kept ({described})."
+    "network": (1, "", _not_confirmed(" (APIConnectionError).")),
+    "401": (1, "", _not_confirmed(" (AuthenticationError, HTTP 401).")),
+    "planted-401": (1, "", _not_confirmed(" (AuthenticationError, HTTP 401).")),
+    "403": (1, "", _not_confirmed(" (PermissionDeniedError, HTTP 403).")),
+    "500": (1, "", _not_confirmed(" (InternalServerError, HTTP 500).")),
+    "planted-500": (1, "", _not_confirmed(" (InternalServerError, HTTP 500).")),
+    "no-id-attribute": (
+        1, "", _not_confirmed(": the lookup succeeded but returned no agent id."),
+    ),
+    "id-none": (1, "", _not_confirmed(": the lookup succeeded but returned no agent id.")),
+    "different-id": (
+        1, "", _not_confirmed(": the lookup succeeded but returned a different agent id."),
+    ),
+}
+
+
+def test_every_driver_scenario_is_tested():
+    assert sorted([*EXPECTED, "create"]) == driver.SCENARIOS
+
+
+@pytest.mark.parametrize("scenario", sorted(EXPECTED))
+def test_with_agent_id_set_the_program_shows_exactly_this(scenario):
+    status, stdout, stderr = EXPECTED[scenario]
+
+    result = _run(scenario, agent_id="agent_kept")
+
+    assert (result.returncode, result.stdout, result.stderr) == (status, stdout, stderr)
+
+
+def test_without_agent_id_an_agent_is_created_and_nothing_is_looked_up():
+    result = _run("create", agent_id=None)
+
+    assert (result.returncode, result.stdout, result.stderr) == (
+        0,
+        "Created agent agent_new (test-model)\n"
+        "\n"
+        "Add this to .env:\n"
+        "  AGENT_ID=agent_new\n",
+        "",
     )
-    client.beta.agents.create.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "returned",
-    [SimpleNamespace(), SimpleNamespace(id=None), SimpleNamespace(id="agent_other")],
-    ids=["no-id-attribute", "id-none", "different-id"],
-)
-def test_a_successful_lookup_without_this_agents_id_is_not_kept(run, capsys, returned):
-    client = _client(lambda agent_id: returned)
-
-    with pytest.raises(SystemExit) as stopped:
-        run(client)
-
-    message = str(stopped.value.code)
-    assert message.startswith("Could not confirm that agent agent_kept exists")
-    assert "remove AGENT_ID" not in message
-    assert "keeping agent" not in capsys.readouterr().out
-    client.beta.agents.create.assert_not_called()
+@pytest.mark.parametrize("scenario", ["planted-404", "planted-401", "planted-500"])
+def test_the_planted_errors_carry_both_values(scenario):
+    # The premise of the planted scenarios: the SDK's own error exposes both, so
+    # their exact expected output above proves the script shows neither.
+    error = driver.LOOKUPS[scenario]
+    assert driver.IN_BODY in str(error)
+    assert error.request_id == driver.IN_HEADER
 
 
-# Planted where a proxy behind OPENAI_BASE_URL could put a key: the response body
-# and the x-request-id header, which the SDK exposes as exc.request_id.
-_IN_BODY = "planted-value-in-the-response-body"
-_IN_HEADER = "planted-value-in-the-request-id-header"
-
-
-def _planted_error(cls, status):
-    error = cls(
-        f"Error code: {status} - {{'error': '{_IN_BODY}'}}",
-        response=httpx.Response(status, request=_REQUEST, headers={"x-request-id": _IN_HEADER}),
-        body={"error": _IN_BODY},
+def test_the_driver_fails_a_case_whose_script_emits_anything_extra(tmp_path):
+    # The harness itself, both ways: the real script matches its expected output
+    # (above), and a copy of it that logs one extra line does not.
+    scripts = tmp_path / "scripts"
+    tests = tmp_path / "tests"
+    scripts.mkdir()
+    tests.mkdir()
+    source = (TESTS.parent / "scripts" / "setup_agent.py").read_text()
+    marker = "    except NotFoundError:\n"
+    assert source.count(marker) == 1
+    (scripts / "setup_agent.py").write_text(
+        source.replace(marker, marker + "        import logging; logging.warning('extra')\n")
     )
-    # The premise of these tests: the SDK's own error carries both values.
-    assert _IN_BODY in str(error)
-    assert error.request_id == _IN_HEADER
-    return error
+    (tests / DRIVER.name).write_text(DRIVER.read_text())
 
+    env = {n: v for n, v in os.environ.items() if not n.startswith(("OPENAI_", "PYTHON", "AGENT_"))}
+    env.update(PYTHONDONTWRITEBYTECODE="1", AGENT_ID="agent_kept")
+    result = subprocess.run(
+        [sys.executable, str(tests / DRIVER.name), "404"],
+        env=env, capture_output=True, text=True, timeout=60,
+    )
 
-@pytest.mark.parametrize(
-    ("cls", "status", "message_start"),
-    [
-        (openai.NotFoundError, 404, "The lookup of agent agent_kept from AGENT_ID returned HTTP 404"),
-        (openai.AuthenticationError, 401, "Could not confirm that agent agent_kept exists"),
-        (openai.InternalServerError, 500, "Could not confirm that agent agent_kept exists"),
-    ],
-    ids=["404", "401", "500"],
-)
-def test_a_failed_lookup_prints_neither_the_body_nor_the_request_id(
-    run, side_output, cls, status, message_start
-):
-    client = _client(_planted_error(cls, status))
-
-    with pytest.raises(SystemExit) as stopped:
-        run(client)
-
-    message = str(stopped.value.code)
-    assert message.startswith(message_start)
-    emitted = message + side_output()
-    assert _IN_BODY not in emitted
-    assert _IN_HEADER not in emitted
-
-
-def test_without_agent_id_an_agent_is_created_and_nothing_is_looked_up(monkeypatch, capsys):
-    client = _client(AssertionError("retrieve must not be called"))
-    monkeypatch.delenv("AGENT_ID", raising=False)
-    monkeypatch.setattr(setup_agent, "make_client", lambda: client)
-
-    setup_agent.main()
-
-    client.beta.agents.retrieve.assert_not_called()
-    client.beta.agents.create.assert_called_once()
-    assert "AGENT_ID=agent_new" in capsys.readouterr().out
+    assert result.returncode == 1
+    assert result.stderr != NOT_FOUND
+    assert "extra" in result.stderr
