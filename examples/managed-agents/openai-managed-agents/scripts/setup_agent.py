@@ -26,17 +26,25 @@ Creating an agent is reported the same way: a create that raises an SDK APIError
 stops, naming the error by its exception class and, when it has one, its HTTP
 status, and nothing the server sent.
 
-Every agent id is checked against a plain-token grammar before this program does
-anything with it, because the line it prints is a shell assignment you paste into
-.env and load with `set -a; . ./.env; set +a`: an id that is not a plain token is
-not a cosmetic problem, since loading the file would run it rather than assign
-it. That applies to both sources. The endpoint OPENAI_BASE_URL selects controls
-what a create returns, so a create that returns no id, a non-string one, or one
-that is not a plain token stops without printing it, and says to check the
-dashboard before running the step again, because the agent may exist. An AGENT_ID
-you supply is checked where it is read, before the lookup, because quoting makes
-a value inert in .env while the line printed here is unquoted -- so printing one
-back would hand you a line that does run when you paste it.
+Everything this step prints back to you is checked first, because the line it
+prints is a shell assignment you paste into .env and load with
+`set -a; . ./.env; set +a`, and that runs what it finds rather than assigning it.
+Quoting hides this: a value can sit inertly in .env and still be dangerous once
+printed back unquoted, or inject lines into this step's own output.
+
+- An agent id, from either source, must be a plain token this step is willing to
+  emit (see SAFE_AGENT_ID, which is an emission allowlist and not a claim about
+  what the API issues). A create that returns no id, a non-string one, or one
+  outside that is refused without printing it, and says to check the dashboard
+  before running the step again, because the agent may exist. An AGENT_ID you
+  supply is checked where it is read, before the lookup, since the 404 and
+  could-not-confirm messages repeat it too.
+- AGENT_MODEL must be printable ASCII, because every one of those messages shows
+  it back to you, and a newline or an escape sequence in it would add lines to
+  this step's output -- including one that looks like this step's own.
+
+A refusal never repeats the offending value, since that would put the same string
+on your terminal.
 
 Choosing the model
 ------------------
@@ -98,15 +106,45 @@ project it was created in, change the line in .env to a blank AGENT_ID=, load th
 again with `set -a; . ./.env; set +a`, and run this step again to create a new agent."""
 
 
-# The printed line is a shell assignment the reader pastes into .env and loads with
-# `set -a; . ./.env; set +a`, so an id carrying shell syntax, a space or a newline
-# would be run rather than assigned, and the endpoint OPENAI_BASE_URL selects is
-# what controls it. Accept only a plain token, and refuse without printing the
-# value: a refusal that echoed it back would put the same string on the terminal,
-# escape sequences and all. Checked against the ids the Agents API is documented to
-# issue ("agent_" and a token); a legitimate id this rejects stops the step with the
-# message below rather than being printed, which is the safe direction to fail in.
+# A conservative allowlist for what this program is willing to EMIT as an agent
+# id, not a description of what the Agents API issues: the pinned SDK types that
+# field as a plain `str` and documents no prefix, alphabet or length, so nothing
+# here can be a claim about the service. It is drawn tightly because the line this
+# program prints is a shell assignment the reader pastes into .env and loads with
+# `set -a; . ./.env; set +a`, which runs what it finds; the endpoint OPENAI_BASE_URL
+# selects is what controls a returned id, and a .env can carry a quoted value that
+# is inert until printed back unquoted. A refusal never echoes the value, because
+# that would put the same string on the terminal, escape sequences and all.
+#
+# So a value this rejects is not necessarily dangerous -- an over-length id is
+# perfectly shell-safe -- only outside what this program will emit unquoted. A
+# legitimate id it rejects stops the step rather than being printed, which is the
+# safe direction to fail in.
 SAFE_AGENT_ID = re.compile(r"\A[A-Za-z0-9._-]{1,128}\Z")
+
+# '.' and '..' match that grammar and are shell-safe, but they are URI dot-segments:
+# the pinned SDK raises ValueError while building the request path, before any
+# request is sent. ValueError is not an APIError, so it would escape the handlers
+# below and reach the reader as a traceback.
+_DOT_SEGMENTS = frozenset({".", ".."})
+
+
+def is_emittable_agent_id(value: object) -> bool:
+    """Whether this program may use and print `value` as an agent id."""
+    return (
+        isinstance(value, str)
+        and SAFE_AGENT_ID.match(value) is not None
+        and value not in _DOT_SEGMENTS
+    )
+
+
+# AGENT_MODEL is read from .env and interpolated into the messages below, so it
+# reaches the terminal. Quoting makes a newline or an escape sequence inert in
+# .env, so a value that loads harmlessly can still inject lines into this
+# program's output once printed -- including a forged "Add this to .env:" line a
+# reader might paste. Printable ASCII is the constraint: no real model id needs
+# anything else, and nothing outside it can move the cursor or start a new line.
+PRINTABLE_MODEL = re.compile(r"\A[\x20-\x7e]{1,256}\Z")
 
 NO_CREATED_ID_MESSAGE = """\
 The create call for model {model} succeeded but returned no usable agent id, so
@@ -115,18 +153,26 @@ may have been created: check the OpenAI dashboard of the project this key select
 before running this step again, so that you do not leave a second agent behind."""
 
 UNSAFE_ENV_AGENT_ID_MESSAGE = """\
-The AGENT_ID that is set is not a plain token, so it was not used and is not
-repeated here: this step prints an AGENT_ID= line to paste into .env, and .env is
-loaded with `set -a; . ./.env; set +a`, which would run shell syntax, a space or
-a newline in it rather than assign it. Check the AGENT_ID line in .env, and the
-environment if you set it there, then load the file again."""
+The AGENT_ID that is set is not one this step will print, so it was not used and
+is not repeated here. The line this step prints is pasted into .env and loaded
+with `set -a; . ./.env; set +a`, which runs what it finds, so only a plain token
+of letters, digits, dot, underscore and hyphen, up to 128 of them and not "." or
+"..", is emitted. Check the AGENT_ID line in .env, and the environment if you set
+it there, then load the file again and rerun this step."""
+
+UNSAFE_MODEL_MESSAGE = """\
+The AGENT_MODEL that is set holds a character this step will not print, so it was
+not used and is not repeated here. Its value is shown back to you in this step's
+messages, and a newline or an escape sequence in it would add lines to that
+output -- including a line that looks like one of this step's own. Quoting hides
+that in .env, so a value that loads without complaint can still do it. Check the
+AGENT_MODEL line in .env, then load the file again and rerun this step."""
 
 UNSAFE_CREATED_ID_MESSAGE = """\
-The create call for model {model} returned an agent id that is not a plain token,
-so it was not printed: this step's output is pasted into .env and loaded with
-`set -a; . ./.env; set +a`, and an id carrying shell syntax, a space or a newline
-would be run by that rather than assigned. Check OPENAI_BASE_URL first, since the
-endpoint it selects is what sent this. An agent named "{name}"
+The create call for model {model} returned an agent id this step will not print,
+so it was not printed: the line this step prints is pasted into .env and loaded
+with `set -a; . ./.env; set +a`, which runs what it finds. Check OPENAI_BASE_URL
+first, since the endpoint it selects is what sent this. An agent named "{name}"
 may have been created: check the OpenAI dashboard of the project this key selects
 before running this step again, so that you do not leave a second agent behind."""
 
@@ -163,15 +209,18 @@ def main() -> None:
     # `set -a; . ./.env` exports the template's blank AGENT_MODEL= as "", which
     # must mean "not set", not a model id of "".
     model = os.environ.get("AGENT_MODEL") or DEFAULT_MODEL
+    # Before anything prints it. Every message below interpolates the model.
+    if not PRINTABLE_MODEL.match(model):
+        sys.exit(UNSAFE_MODEL_MESSAGE)
     agent_id = os.environ.get("AGENT_ID")
     if agent_id:
         # Checked here rather than beside the print, so that every id this program
-        # goes on to handle is a plain token: the line printed at the end, the 404
-        # message and the could-not-confirm messages all repeat this value, and
-        # the printed one is pasted into .env and loaded by a command that runs
-        # what it finds. A reader's own value can carry shell syntax too, by being
-        # copied from somewhere or exported by another tool.
-        if not SAFE_AGENT_ID.match(agent_id):
+        # goes on to handle is one it may emit: the line printed at the end, the
+        # 404 message and the could-not-confirm messages all repeat this value,
+        # and the printed one is pasted into .env and loaded by a command that
+        # runs what it finds. A reader's own value can carry shell syntax too, by
+        # being copied from somewhere or exported by another tool.
+        if not is_emittable_agent_id(agent_id):
             sys.exit(UNSAFE_ENV_AGENT_ID_MESSAGE)
         confirm_agent_exists(client, agent_id)
         print(f"AGENT_ID is set and the agent exists; keeping agent {agent_id}")
@@ -196,7 +245,7 @@ def main() -> None:
         # inviting a second create or printing something a reader would paste.
         if not isinstance(agent_id, str) or not agent_id:
             sys.exit(NO_CREATED_ID_MESSAGE.format(model=model, name=AGENT_NAME))
-        if not SAFE_AGENT_ID.match(agent_id):
+        if not is_emittable_agent_id(agent_id):
             sys.exit(UNSAFE_CREATED_ID_MESSAGE.format(model=model, name=AGENT_NAME))
         print(f"Created agent {agent_id} ({model})")
 

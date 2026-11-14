@@ -241,8 +241,9 @@ set -a; . ./.env; set +a
 ```
 
 With `AGENT_MODEL` set in `.env` (see "Pick a model id" below), `setup_agent.py` creates the
-agent with that model and prints the new agent's id and model. If `AGENT_ID` is already set, it
-looks that agent up first and keeps it only if the lookup returns that agent, creating none. If
+agent with that model and prints the new agent's id and model. If `AGENT_ID` is already set, the
+script checks it is one it is willing to print (see below) and then looks that agent up, keeping
+it only if the lookup returns that agent, creating none. If
 the lookup answers 404, the script stops without claiming the agent is gone, because a mistyped
 `AGENT_ID`, a key or `OPENAI_PROJECT_ID`/`OPENAI_ORG_ID` for a different project or organization,
 or a different `OPENAI_BASE_URL` gives the same answer. It lists those to check. Only once you
@@ -269,10 +270,14 @@ Add this to .env:
 When it creates an agent with `AGENT_MODEL` unset or blank, as `.env.example` ships it,
 `setup_agent.py` prints a `[note]` that it is falling back to a placeholder id and continues;
 set a real id to avoid that. Keeping an existing agent uses no model, so it prints no note. Put `AGENT_ID` in `.env` and load
-the file again with `set -a; . ./.env; set +a`. Because that command *runs* what it finds
-rather than just assigning it, `setup_agent.py` checks the returned id against a plain-token
-grammar before printing it, and stops without printing anything pasteable if the endpoint
-`OPENAI_BASE_URL` selects returns something else. The agent is created without hosted tools: the
+the file again with `set -a; . ./.env; set +a`. Because that command *runs* what it finds rather
+than just assigning it, `setup_agent.py` checks what it is about to show you first: an agent id,
+whether you supplied it or the API returned it, must be a plain token the script is willing to
+emit, and `AGENT_MODEL` must be printable ASCII, since every one of the script's messages shows
+the model back to you and a newline in it could add a line of its own to that output. Each check
+refuses without repeating the value. Quoting is what makes this worth doing: a value in `.env`
+can sit there inertly and still be unsafe once the script prints it back unquoted.
+The agent is created without hosted tools: the
 executor provides the Bash and apply-patch tools. The self-hosted environment is created per
 session by `submit.py`, not here, because a self-hosted environment is the live connection to
 one running executor.

@@ -79,9 +79,27 @@ proves the absence of a leak as well as the message.
 A create that succeeds without an id this step may print also stops, saying the
 agent may exist: no attribute, None, blank, or not a string, and -- since the
 printed line is a shell assignment the reader loads with
-`set -a; . ./.env; set +a` -- any string that is not a plain token. Round 9
-demonstrated that last one end to end: an id of `$(touch ...)` was printed,
-pasted and run.
+`set -a; . ./.env; set +a` -- any string outside the emission allowlist. Round 9
+demonstrated that end to end: an id of `$(touch ...)` was printed, pasted and run.
+
+Three things about that allowlist, so these tests are not read as claiming more
+than they show. It is a limit on what this program will emit, not a description
+of what the API issues: the pinned SDK types that field as a plain `str`, so
+nothing here establishes a prefix, an alphabet or a length, and a case asserting
+a rejection is not asserting that the value was dangerous. "." and ".." are
+refused for a different reason from the rest, which is pinned by its own test
+against the real SDK rather than the fake: they are shell-safe, but the SDK
+raises ValueError on them while building the request path, and ValueError is not
+an APIError, so they would surface as a traceback. And an over-length id is
+refused while being perfectly shell-safe.
+
+The same reasoning covers AGENT_MODEL, by a route round 10 found rather than one
+anticipated here: the model is interpolated into every refusal message and the
+success line, so a .env value holding a newline or an escape sequence adds lines
+to this step's own output, including one that reads exactly like the line the
+page tells the reader to paste. It must be printable ASCII, checked before
+anything prints it, and the cases below forge such a line against the script with
+that check cut out.
 
 Run with: python -m pytest
 """
@@ -278,11 +296,10 @@ def _no_created_id(model: str = SET_MODEL) -> str:
 
 def _unsafe_created_id(model: str = SET_MODEL) -> str:
     return (
-        f"The create call for model {model} returned an agent id that is not a plain token,\n"
-        "so it was not printed: this step's output is pasted into .env and loaded with\n"
-        "`set -a; . ./.env; set +a`, and an id carrying shell syntax, a space or a newline\n"
-        "would be run by that rather than assigned. Check OPENAI_BASE_URL first, since the\n"
-        f'endpoint it selects is what sent this. An agent named "{AGENT_NAME}"\n'
+        f"The create call for model {model} returned an agent id this step will not print,\n"
+        "so it was not printed: the line this step prints is pasted into .env and loaded\n"
+        "with `set -a; . ./.env; set +a`, which runs what it finds. Check OPENAI_BASE_URL\n"
+        f'first, since the endpoint it selects is what sent this. An agent named "{AGENT_NAME}"\n'
         "may have been created: check the OpenAI dashboard of the project this key selects\n"
         "before running this step again, so that you do not leave a second agent behind.\n"
     )
@@ -311,6 +328,8 @@ WITHOUT_AGENT_ID = {
     "create-id-quote": (1, "", _unsafe_created_id()),
     "create-id-semicolon": (1, "", _unsafe_created_id()),
     "create-id-too-long": (1, "", _unsafe_created_id()),
+    "create-id-dot": (1, "", _unsafe_created_id()),
+    "create-id-dot-dot": (1, "", _unsafe_created_id()),
     # One per error class the SDK loads, every one of them planted wherever there
     # is a response to plant in.
     "create-api-error": (1, "", _create_failed("APIError")),
@@ -508,29 +527,30 @@ def test_the_planted_errors_carry_both_values(scenario):
 
 # The premise behind every create-error expectation: the SDK's own exception hands
 # out the values a proxy behind OPENAI_BASE_URL controls, so the exact expected
-# output of each case is what shows the script prints neither. Asserted per channel
-# and per class, because round 9's first fix asserted both channels for all of them
-# and the SDK disagreed. It also found a mutation printing these fields only for
-# RateLimitError surviving the whole suite, because the one 429 case was unplanted.
-@pytest.mark.parametrize("scenario", outcomes.PLANTED_CREATE_HEADER_SCENARIOS)
-def test_the_planted_create_errors_expose_the_request_id_header(scenario):
-    assert outcomes.create(scenario).request_id == outcomes.IN_HEADER
+# output of each case is what shows the script prints none of them.
+#
+# Asserted as an exact set per class, which is the shape round 10 asked for. The
+# previous shape derived three lists from the same table it was checking, so a
+# wrong entry only moved a class between lists and everything still passed -- and
+# one entry was wrong: OAuthError was declared request-id-only, while the SDK
+# builds its message from body["error_description"]. Round 9 had already found the
+# other half of this, a mutation printing these fields for RateLimitError alone
+# surviving because the single 429 case was unplanted. Equality catches both: a
+# class exposing more than declared fails, and so does one exposing less.
+@pytest.mark.parametrize("scenario", outcomes.ERROR_SCENARIOS)
+def test_each_error_class_exposes_exactly_what_the_table_declares(scenario):
+    assert outcomes.observed_channels(scenario) == outcomes.declared_channels(scenario)
 
 
-@pytest.mark.parametrize("scenario", outcomes.PLANTED_CREATE_BODY_SCENARIOS)
-def test_the_planted_create_errors_expose_the_response_body(scenario):
-    assert outcomes.IN_BODY in str(outcomes.create(scenario))
-
-
-@pytest.mark.parametrize("scenario", outcomes.EXPOSING_NEITHER_CREATE_SCENARIOS)
-def test_the_classes_that_expose_neither_really_expose_neither(scenario):
-    # The other side of the split, so "nothing to leak here" is a pinned fact and
-    # not an excuse for a missing assertion. If a later SDK starts putting the body
-    # in the message, or gives one of these a request_id, this fails and the class
-    # moves to a list above.
-    error = outcomes.create(scenario)
-    assert outcomes.IN_BODY not in str(error)
-    assert getattr(error, "request_id", None) != outcomes.IN_HEADER
+def test_the_planted_values_are_exposed_somewhere_at_all():
+    # Guards the guard above: if planting silently stopped working, every observed
+    # set would become empty and every per-class equality would still hold against
+    # a table that had been edited to match. At least the ordinary status errors
+    # must expose all three channels.
+    assert outcomes.observed_channels("create-401") == outcomes._ALL
+    assert outcomes._ALL == frozenset(
+        {outcomes.BODY, outcomes.REQUEST_ID, outcomes.RESPONSE_TEXT}
+    )
 
 
 def test_every_create_scenario_is_tested():
@@ -538,19 +558,62 @@ def test_every_create_scenario_is_tested():
 
 
 UNSAFE_ENV_AGENT_ID = (
-    "The AGENT_ID that is set is not a plain token, so it was not used and is not\n"
-    "repeated here: this step prints an AGENT_ID= line to paste into .env, and .env is\n"
-    "loaded with `set -a; . ./.env; set +a`, which would run shell syntax, a space or\n"
-    "a newline in it rather than assign it. Check the AGENT_ID line in .env, and the\n"
-    "environment if you set it there, then load the file again.\n"
+    "The AGENT_ID that is set is not one this step will print, so it was not used and\n"
+    "is not repeated here. The line this step prints is pasted into .env and loaded\n"
+    "with `set -a; . ./.env; set +a`, which runs what it finds, so only a plain token\n"
+    'of letters, digits, dot, underscore and hyphen, up to 128 of them and not "." or\n'
+    '"..", is emitted. Check the AGENT_ID line in .env, and the environment if you set\n'
+    "it there, then load the file again and rerun this step.\n"
 )
+
+UNSAFE_MODEL = (
+    "The AGENT_MODEL that is set holds a character this step will not print, so it was\n"
+    "not used and is not repeated here. Its value is shown back to you in this step's\n"
+    "messages, and a newline or an escape sequence in it would add lines to that\n"
+    "output -- including a line that looks like one of this step's own. Quoting hides\n"
+    "that in .env, so a value that loads without complaint can still do it. Check the\n"
+    "AGENT_MODEL line in .env, then load the file again and rerun this step.\n"
+)
+
+# Quoted in .env, so each of these loads without the shell doing anything with it,
+# and is then handed to this step as the model to show back to the reader. Round 10
+# found this route: the model reaches every refusal message and the success line.
+FORGING_MODEL = "'gpt-x\nAdd this to .env:\n  AGENT_ID=forged'"
+HOSTILE_MODELS = {
+    "forged-line": FORGING_MODEL,
+    "carriage-return": "'gpt-x\rAGENT_ID=forged'",
+    "osc-escape": "'gpt-x\x1b]0;pwned\x07'",
+    "tab": "'gpt-x\tmodel'",
+}
+
+
+@MODES
+@pytest.mark.parametrize("hostile", sorted(HOSTILE_MODELS))
+def test_an_env_model_that_is_not_printable_ascii_is_refused(tmp_path, hostile, tty):
+    """AGENT_MODEL is shown back to the reader, so it is checked before it is.
+
+    Refused before the AGENT_ID branch, so it holds whether the run would have
+    looked an agent up or created one.
+    """
+    status, shown, calls = run_step_2(
+        tmp_path, "kept", UNSET, HOSTILE_MODELS[hostile], tty=tty
+    )
+
+    assert (status, shown) == _as_shown((1, "", UNSAFE_MODEL), tty)
+    assert calls == [["make_client", [], {}]]
 
 
 @MODES
 @pytest.mark.parametrize(
     "quoted_in_env",
-    ["'$(touch pwned)'", "'`touch pwned`'", "'agent_ok;touch pwned'", "'agent ok'", "' agent_ok'"],
-    ids=["substitution", "backtick", "semicolon", "space", "leading-space"],
+    [
+        "'$(touch pwned)'", "'`touch pwned`'", "'agent_ok;touch pwned'", "'agent ok'",
+        "' agent_ok'",
+        # Shell-safe, but URI dot-segments the SDK refuses with ValueError, which
+        # is not an APIError. See the premise test below.
+        "'.'", "'..'",
+    ],
+    ids=["substitution", "backtick", "semicolon", "space", "leading-space", "dot", "dot-dot"],
 )
 def test_an_env_agent_id_that_is_not_a_plain_token_is_refused(tmp_path, quoted_in_env, tty):
     """The same grammar on the id the reader supplies, which is a real escalation.
@@ -584,6 +647,41 @@ def test_an_env_agent_id_quoted_in_env_is_not_run_by_loading_it(tmp_path):
 
     assert loaded.stdout == f'$(touch "{marker}")'
     assert not marker.exists()
+
+
+def test_the_premise_that_a_dot_segment_id_raises_before_any_request():
+    """Why "." and ".." are refused even though a shell treats them literally.
+
+    The pinned SDK rejects them while building the request path, with ValueError
+    -- not an APIError -- so they would escape both handlers and reach the reader
+    as a traceback. Asserted against the real client over a mock transport, so it
+    is the SDK's behaviour being recorded and not the fake's: the fake never
+    builds a URL, which is exactly why no scenario here could have caught this.
+    """
+    import httpx2 as real_httpx
+    import openai as real_openai
+
+    reached = []
+
+    def handler(request):
+        reached.append(request.url.path)
+        return real_httpx.Response(200, json={"id": "agent_ok"})
+
+    client = real_openai.OpenAI(
+        api_key="unused-in-this-test",  # pragma: allowlist secret
+        base_url="https://api.openai.example/v1",
+        http_client=real_httpx.Client(transport=real_httpx.MockTransport(handler)),
+    )
+
+    for dot_segment in (".", ".."):
+        with pytest.raises(ValueError):
+            client.beta.agents.retrieve(dot_segment)
+    assert reached == [], "no request should have been attempted"
+
+    # And the discriminating half: an ordinary id does reach the transport, so the
+    # two above are refused for being dot-segments and not for some other reason.
+    client.beta.agents.retrieve("agent_ok")
+    assert reached == ["/v1/agents/agent_ok"]
 
 
 def test_the_premise_that_loading_env_runs_what_it_finds(tmp_path):
@@ -727,7 +825,7 @@ def test_without_the_id_grammar_check_the_hostile_id_is_printed(tmp_path):
     """
     source = SCRIPT.read_text()
     marker = (
-        "        if not SAFE_AGENT_ID.match(agent_id):\n"
+        "        if not is_emittable_agent_id(agent_id):\n"
         "            sys.exit(UNSAFE_CREATED_ID_MESSAGE.format(model=model, name=AGENT_NAME))\n"
     )
     assert source.count(marker) == 1
@@ -755,7 +853,7 @@ def test_without_the_env_id_check_the_unquoted_line_is_printed_back(tmp_path):
     """
     source = SCRIPT.read_text()
     marker = (
-        "        if not SAFE_AGENT_ID.match(agent_id):\n"
+        "        if not is_emittable_agent_id(agent_id):\n"
         "            sys.exit(UNSAFE_ENV_AGENT_ID_MESSAGE)\n"
     )
     assert source.count(marker) == 1
@@ -773,6 +871,33 @@ def test_without_the_env_id_check_the_unquoted_line_is_printed_back(tmp_path):
 
     assert status == 0
     assert "  AGENT_ID=agent_ok;touch pwned\n" in stdout
+
+
+def test_without_the_model_check_the_output_can_be_forged(tmp_path):
+    """The other half of the model check: cut it out and a .env forges a line.
+
+    The model is interpolated into the no-usable-id refusal, so a value holding a
+    newline puts text of the reader's .env's choosing on its own line in this
+    step's output -- here a line that reads exactly like the one the page tells
+    the reader to paste.
+    """
+    source = SCRIPT.read_text()
+    marker = (
+        "    if not PRINTABLE_MODEL.match(model):\n"
+        "        sys.exit(UNSAFE_MODEL_MESSAGE)\n"
+    )
+    assert source.count(marker) == 1
+    without = source.replace(marker, "")
+    compile(without, "setup_agent.py", "exec")
+
+    status, shown, _ = run_step_2(
+        tmp_path, "kept", UNSET, FORGING_MODEL, tty=False,
+        source=without, create_scenario="create-id-none",
+    )
+    _, stderr = shown
+
+    assert status == 1
+    assert "\n  AGENT_ID=forged" in stderr
 
 
 def test_a_repeated_api_call_is_caught_by_the_call_list(tmp_path):

@@ -36,8 +36,22 @@ _REQUEST = httpx.Request("GET", f"https://api.openai.example/v1/agents/{KEPT_ID}
 
 
 def _response(status: int, planted: bool) -> httpx.Response:
-    headers = {"x-request-id": IN_HEADER} if planted else {}
-    return httpx.Response(status, request=_REQUEST, headers=headers)
+    """The httpx response an SDK error carries.
+
+    Planted, the body goes in the response *content* as well as the headers.
+    Round 10 found that it previously went only in the headers and in the error's
+    `body` attribute, so `exc.response.text` was empty: a mutation writing
+    exc.response.text to stderr passed all 299 tests, because there was nothing
+    there to print. A real SDK error keeps the body in both places.
+    """
+    if not planted:
+        return httpx.Response(status, request=_REQUEST)
+    return httpx.Response(
+        status,
+        request=_REQUEST,
+        headers={"x-request-id": IN_HEADER},
+        json=_body(True),
+    )
 
 
 def _message(status: int | None, planted: bool) -> str:
@@ -47,7 +61,13 @@ def _message(status: int | None, planted: bool) -> str:
 
 
 def _body(planted: bool):
-    return {"error": IN_BODY} if planted else None
+    # error_description as well as error: round 10 found that OpenAI 3.31.0 builds
+    # OAuthError's message from body["error_description"], so a body carrying only
+    # "error" left that class looking as though it withheld the body when in fact
+    # the sample had simply not planted the field it reads.
+    if not planted:
+        return None
+    return {"error": IN_BODY, "error_description": IN_BODY}
 
 
 def _status_error(cls, status: int):
@@ -67,7 +87,8 @@ def _status_error(cls, status: int):
 # fact about the SDK and is pinned by its own test rather than left implied.
 BODY = "body"
 REQUEST_ID = "request_id"
-_BOTH = frozenset({BODY, REQUEST_ID})
+RESPONSE_TEXT = "response_text"
+_ALL = frozenset({BODY, REQUEST_ID, RESPONSE_TEXT})
 _NEITHER = frozenset()
 
 
@@ -99,29 +120,29 @@ _ERROR_BUILDERS = {
     "response-invalid": (
         openai.APIResponseValidationError,
         lambda planted: openai.APIResponseValidationError(_response(200, planted), _body(planted)),
-        _NEITHER,
+        frozenset({RESPONSE_TEXT}),
     ),
     # Fixed message ("OAuth authentication error.") so the body never reaches
     # str(exc), but it is an APIStatusError, so the header does reach request_id.
     "oauth": (
         openai.OAuthError,
         lambda planted: openai.OAuthError(response=_response(401, planted), body=_body(planted)),
-        frozenset({REQUEST_ID}),
+        _ALL,
     ),
     # The ordinary APIStatusError subclasses expose both.
-    "api-status": (openai.APIStatusError, _status_error(openai.APIStatusError, 418), _BOTH),
-    "400": (openai.BadRequestError, _status_error(openai.BadRequestError, 400), _BOTH),
-    "401": (openai.AuthenticationError, _status_error(openai.AuthenticationError, 401), _BOTH),
-    "403": (openai.PermissionDeniedError, _status_error(openai.PermissionDeniedError, 403), _BOTH),
-    "404": (openai.NotFoundError, _status_error(openai.NotFoundError, 404), _BOTH),
-    "409": (openai.ConflictError, _status_error(openai.ConflictError, 409), _BOTH),
+    "api-status": (openai.APIStatusError, _status_error(openai.APIStatusError, 418), _ALL),
+    "400": (openai.BadRequestError, _status_error(openai.BadRequestError, 400), _ALL),
+    "401": (openai.AuthenticationError, _status_error(openai.AuthenticationError, 401), _ALL),
+    "403": (openai.PermissionDeniedError, _status_error(openai.PermissionDeniedError, 403), _ALL),
+    "404": (openai.NotFoundError, _status_error(openai.NotFoundError, 404), _ALL),
+    "409": (openai.ConflictError, _status_error(openai.ConflictError, 409), _ALL),
     "422": (
         openai.UnprocessableEntityError,
         _status_error(openai.UnprocessableEntityError, 422),
-        _BOTH,
+        _ALL,
     ),
-    "429": (openai.RateLimitError, _status_error(openai.RateLimitError, 429), _BOTH),
-    "500": (openai.InternalServerError, _status_error(openai.InternalServerError, 500), _BOTH),
+    "429": (openai.RateLimitError, _status_error(openai.RateLimitError, 429), _ALL),
+    "500": (openai.InternalServerError, _status_error(openai.InternalServerError, 500), _ALL),
 }
 
 # The lookup keeps the shape the earlier rounds cleared: a plain error per class,
@@ -165,6 +186,11 @@ _CREATES = {
     "create-id-quote": lambda: SimpleNamespace(id="agent_'ok"),
     "create-id-semicolon": lambda: SimpleNamespace(id="agent_ok;touch pwned"),
     "create-id-too-long": lambda: SimpleNamespace(id="a" * 129),
+    # Shell-safe, and inside the grammar, but URI dot-segments: the pinned SDK
+    # raises ValueError while building the request path, which is not an APIError
+    # and would escape the handlers as a traceback. Round 10 found these.
+    "create-id-dot": lambda: SimpleNamespace(id="."),
+    "create-id-dot-dot": lambda: SimpleNamespace(id=".."),
 }
 # Every create error is planted: the builder puts both values wherever its own
 # constructor accepts them, so each create case proves the absence of a leak as
@@ -174,29 +200,34 @@ for _name, (_cls, _build, _exposes) in _ERROR_BUILDERS.items():
 CREATE_SCENARIOS = sorted(_CREATES)
 
 
-def _create_scenarios_exposing(channel: str) -> list[str]:
-    return sorted(
-        f"create-{name}"
-        for name, (_c, _b, exposes) in _ERROR_BUILDERS.items()
-        if channel in exposes
-    )
+ERROR_SCENARIOS = sorted(f"create-{name}" for name in _ERROR_BUILDERS)
 
 
-# Which premise each create error supports, taken from the table above rather than
-# from "does it carry a response". Round 9's fix asserted both channels for every
-# class at once; the SDK then showed that OAuthError writes its own message (so the
-# body never reaches str(exc)) and that APIResponseValidationError does that *and*
-# is an APIError rather than an APIStatusError, so it has no request_id attribute
-# at all. Those are facts about the SDK, not gaps in the planting, and the test for
-# the third list pins them so that an SDK which starts exposing either one fails
-# here instead of passing quietly.
-PLANTED_CREATE_BODY_SCENARIOS = _create_scenarios_exposing(BODY)
-PLANTED_CREATE_HEADER_SCENARIOS = _create_scenarios_exposing(REQUEST_ID)
-EXPOSING_NEITHER_CREATE_SCENARIOS = sorted(
-    f"create-{name}"
-    for name, (_c, _b, exposes) in _ERROR_BUILDERS.items()
-    if not exposes
-)
+def declared_channels(scenario: str) -> frozenset[str]:
+    """What the table above says this class exposes of the planted values."""
+    return _ERROR_BUILDERS[scenario[len("create-"):]][2]
+
+
+def observed_channels(scenario: str) -> frozenset[str]:
+    """What the class built for this scenario actually exposes, by looking.
+
+    Compared for equality with declared_channels(), per class, rather than each
+    channel being asserted over a list the table itself produced. Round 10 is why:
+    the previous shape had three lists derived from the table, so a wrong entry
+    simply moved a class to a different list and every test still passed. It found
+    OAuthError declared request-id-only while OpenAI 3.31.0 builds its message
+    from body["error_description"], which the sample had not been planting.
+    """
+    error = create(scenario)
+    channels = set()
+    if IN_BODY in str(error):
+        channels.add(BODY)
+    if getattr(error, "request_id", None) == IN_HEADER:
+        channels.add(REQUEST_ID)
+    response = getattr(error, "response", None)
+    if response is not None and IN_BODY in getattr(response, "text", ""):
+        channels.add(RESPONSE_TEXT)
+    return frozenset(channels)
 
 
 def lookup(scenario: str, requested: str | None = None):
