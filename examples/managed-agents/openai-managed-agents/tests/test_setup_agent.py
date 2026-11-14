@@ -30,10 +30,22 @@ It then compares, exactly, against text this file owns:
 - the ordered list of every call the program made on the fake client, with
   every argument, so a missing, extra, repeated or changed API call fails.
 
-What this does not cover: the real scripts/_client.py, which is replaced (it
-prints nothing, and exits only when OPENAI_API_KEY is unset); an interactive
-shell's own behaviour, since the commands run under `sh -c`; and anything the
-program writes somewhere other than its stdout and stderr, such as a file.
+So the claim is about this copy of step 2 as described above, and its scope
+ends where that description does. A program written to detect where it runs
+can always tell this from a reader's machine, by anything that differs between
+the two: the folder path, the user, the time, which terminal it is, or any
+file or variable a reader has that the copy does not. Such a program can
+change what it shows on that difference, and these tests cannot see it; no
+test can, because a reader's machine is not available to it. What the tests
+do show is that setup_agent.py shows exactly the expected text, and makes
+exactly the expected calls, in every situation step 2 can produce from the
+template, piped and on a terminal.
+
+What this does not cover beyond that: the real scripts/_client.py, which is
+replaced (it prints nothing, and exits only when OPENAI_API_KEY is unset); an
+interactive shell's own behaviour, since the commands run under `sh -c`; and
+anything the program writes somewhere other than its stdout and stderr, such
+as a file.
 
 Both ways, per AGENTS.md, for every combination of AGENT_ID and AGENT_MODEL
 being unset, blank and set: an agent the lookup returns is kept and nothing is
