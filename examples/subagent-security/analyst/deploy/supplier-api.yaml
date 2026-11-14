@@ -1,9 +1,9 @@
 # The synthetic supplier API, shared by every Subagent security sample.
 #
 # An ordinary pod, not a sandbox: it stands in for a supplier's system, which in a real
-# deployment would be outside the cluster altogether. It is reached only inside the
-# cluster, on a ClusterIP Service, and there is no Ingress, LoadBalancer or NodePort
-# anywhere in this sample.
+# deployment would be outside the cluster altogether. Its Services are ClusterIP only,
+# with no Ingress, LoadBalancer or NodePort; no network policy restricts it, so what can
+# reach the pod is whatever the cluster and VPC routing allow.
 #
 # <NAMESPACE>, <MANAGED_BY> and <SUPPLIER_API_IMAGE> are replaced at apply time by the
 # sample's setup script.
@@ -61,12 +61,14 @@ spec:
     spec:
       automountServiceAccountToken: false
       # The container runs as nobody, and a Secret volume is owned by root, so fsGroup is
-      # what lets it read its own key and certificate at mode 0440.
+      # what lets it read its own key and certificate at mode 0440. RuntimeDefault is set
+      # here explicitly rather than left to the kubelet's seccompDefault setting.
       securityContext:
         runAsNonRoot: true
         runAsUser: 65534
         runAsGroup: 65534
         fsGroup: 65534
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: api
           image: <SUPPLIER_API_IMAGE>
@@ -77,7 +79,12 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          # /healthz needs no key and touches no state; liveness uses the default budget
+          # (about 30s of failures) before a restart. A restart keeps the request log, on
+          # the emptyDir below, which lives as long as the pod, not the container.
           readinessProbe:
+            httpGet: { scheme: HTTPS, path: /healthz, port: 8443 }
+          livenessProbe:
             httpGet: { scheme: HTTPS, path: /healthz, port: 8443 }
           volumeMounts:
             - { name: supplier-key, mountPath: /opt/supplier-key, readOnly: true }
