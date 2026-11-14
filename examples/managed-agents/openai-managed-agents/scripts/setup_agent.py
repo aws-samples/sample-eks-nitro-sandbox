@@ -26,14 +26,17 @@ Creating an agent is reported the same way: a create that raises an SDK APIError
 stops, naming the error by its exception class and, when it has one, its HTTP
 status, and nothing the server sent.
 
-The id a create returns is checked before it is printed, because the line this
-prints is a shell assignment you paste into .env and load with
-`set -a; . ./.env; set +a`: a returned id that is not a plain token is not a
-cosmetic problem, since loading the file would run it. The endpoint that
-OPENAI_BASE_URL selects controls that string. So a create that returns no id, a
-non-string one, or one that is not a plain token stops without printing it, and
-says to check the dashboard before running the step again, because the agent may
-exist.
+Every agent id is checked against a plain-token grammar before this program does
+anything with it, because the line it prints is a shell assignment you paste into
+.env and load with `set -a; . ./.env; set +a`: an id that is not a plain token is
+not a cosmetic problem, since loading the file would run it rather than assign
+it. That applies to both sources. The endpoint OPENAI_BASE_URL selects controls
+what a create returns, so a create that returns no id, a non-string one, or one
+that is not a plain token stops without printing it, and says to check the
+dashboard before running the step again, because the agent may exist. An AGENT_ID
+you supply is checked where it is read, before the lookup, because quoting makes
+a value inert in .env while the line printed here is unquoted -- so printing one
+back would hand you a line that does run when you paste it.
 
 Choosing the model
 ------------------
@@ -111,6 +114,13 @@ there is nothing to add to .env. An agent named "{name}"
 may have been created: check the OpenAI dashboard of the project this key selects
 before running this step again, so that you do not leave a second agent behind."""
 
+UNSAFE_ENV_AGENT_ID_MESSAGE = """\
+The AGENT_ID that is set is not a plain token, so it was not used and is not
+repeated here: this step prints an AGENT_ID= line to paste into .env, and .env is
+loaded with `set -a; . ./.env; set +a`, which would run shell syntax, a space or
+a newline in it rather than assign it. Check the AGENT_ID line in .env, and the
+environment if you set it there, then load the file again."""
+
 UNSAFE_CREATED_ID_MESSAGE = """\
 The create call for model {model} returned an agent id that is not a plain token,
 so it was not printed: this step's output is pasted into .env and loaded with
@@ -155,6 +165,14 @@ def main() -> None:
     model = os.environ.get("AGENT_MODEL") or DEFAULT_MODEL
     agent_id = os.environ.get("AGENT_ID")
     if agent_id:
+        # Checked here rather than beside the print, so that every id this program
+        # goes on to handle is a plain token: the line printed at the end, the 404
+        # message and the could-not-confirm messages all repeat this value, and
+        # the printed one is pasted into .env and loaded by a command that runs
+        # what it finds. A reader's own value can carry shell syntax too, by being
+        # copied from somewhere or exported by another tool.
+        if not SAFE_AGENT_ID.match(agent_id):
+            sys.exit(UNSAFE_ENV_AGENT_ID_MESSAGE)
         confirm_agent_exists(client, agent_id)
         print(f"AGENT_ID is set and the agent exists; keeping agent {agent_id}")
     else:

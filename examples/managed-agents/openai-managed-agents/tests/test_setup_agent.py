@@ -137,7 +137,7 @@ def _record(method, args, kwargs):
 class _Agents:
     def retrieve(self, *args, **kwargs):
         _record("retrieve", args, kwargs)
-        outcome = lookup(SCENARIO)
+        outcome = lookup(SCENARIO, args[0] if args else None)
         if isinstance(outcome, BaseException):
             raise outcome
         return outcome
@@ -184,15 +184,20 @@ def _not_confirmed(why: str) -> str:
 
 
 # lookup scenario -> (exit status, entire stdout, entire stderr), with AGENT_ID=agent_kept
+_KEPT = (
+    0,
+    "AGENT_ID is set and the agent exists; keeping agent agent_kept\n"
+    "\n"
+    "Add this to .env:\n"
+    "  AGENT_ID=agent_kept\n",
+    "",
+)
+
 WITH_AGENT_ID = {
-    "kept": (
-        0,
-        "AGENT_ID is set and the agent exists; keeping agent agent_kept\n"
-        "\n"
-        "Add this to .env:\n"
-        "  AGENT_ID=agent_kept\n",
-        "",
-    ),
+    "kept": _KEPT,
+    # Asked for agent_kept and answered with agent_kept, so identical to "kept"
+    # here; the scenario exists for a case that supplies an id of its own.
+    "echoes-what-was-asked": _KEPT,
     "404": (1, "", NOT_FOUND),
     "planted-404": (1, "", NOT_FOUND),
     # The errors with no HTTP status of their own are named by their class alone.
@@ -532,6 +537,55 @@ def test_every_create_scenario_is_tested():
     assert sorted(WITHOUT_AGENT_ID) == outcomes.CREATE_SCENARIOS
 
 
+UNSAFE_ENV_AGENT_ID = (
+    "The AGENT_ID that is set is not a plain token, so it was not used and is not\n"
+    "repeated here: this step prints an AGENT_ID= line to paste into .env, and .env is\n"
+    "loaded with `set -a; . ./.env; set +a`, which would run shell syntax, a space or\n"
+    "a newline in it rather than assign it. Check the AGENT_ID line in .env, and the\n"
+    "environment if you set it there, then load the file again.\n"
+)
+
+
+@MODES
+@pytest.mark.parametrize(
+    "quoted_in_env",
+    ["'$(touch pwned)'", "'`touch pwned`'", "'agent_ok;touch pwned'", "'agent ok'", "' agent_ok'"],
+    ids=["substitution", "backtick", "semicolon", "space", "leading-space"],
+)
+def test_an_env_agent_id_that_is_not_a_plain_token_is_refused(tmp_path, quoted_in_env, tty):
+    """The same grammar on the id the reader supplies, which is a real escalation.
+
+    Quoted in .env, these load as literal text and run nothing. But the line this
+    step prints is *unquoted*, so printing one back would hand the reader a line
+    that does run when they paste it and load .env again. So the check is at the
+    point the id is read, which also covers the 404 and could-not-confirm
+    messages, each of which repeats the value.
+    """
+    status, shown, calls = run_step_2(tmp_path, "kept", quoted_in_env, SET_MODEL, tty=tty)
+
+    assert (status, shown) == _as_shown((1, "", UNSAFE_ENV_AGENT_ID), tty)
+    # Refused before the lookup, so no retrieve was attempted with it.
+    assert calls == [["make_client", [], {}]]
+
+
+def test_an_env_agent_id_quoted_in_env_is_not_run_by_loading_it(tmp_path):
+    # The premise of the test above: these values are safe *as .env ships them*,
+    # so the danger is only in printing them back unquoted. If loading them were
+    # already unsafe, the check could not be what protects the reader.
+    work = tmp_path / "quoted"
+    work.mkdir()
+    marker = work / "EXECUTED"
+    (work / ".env").write_text(f"AGENT_ID='$(touch \"{marker}\")'\n")
+
+    loaded = subprocess.run(
+        ["/bin/sh", "-c", 'set -a; . ./.env; set +a; printf %s "$AGENT_ID"'],
+        cwd=work, capture_output=True, text=True, timeout=60, check=True,
+    )
+
+    assert loaded.stdout == f'$(touch "{marker}")'
+    assert not marker.exists()
+
+
 def test_the_premise_that_loading_env_runs_what_it_finds(tmp_path):
     # Why the script checks the id's own grammar before printing it. The page has
     # the reader paste this step's output into .env and load it with
@@ -690,6 +744,35 @@ def test_without_the_id_grammar_check_the_hostile_id_is_printed(tmp_path):
 
     assert status == 0
     assert "  AGENT_ID=$(touch pwned)\n" in stdout
+
+
+def test_without_the_env_id_check_the_unquoted_line_is_printed_back(tmp_path):
+    """The other half of the env-side check, in the real script.
+
+    Cut out the two refusal lines and the program hands the reader back an
+    unquoted AGENT_ID= line built from a value that was quoted, and therefore
+    inert, in their .env. Pasting that line is what makes it live.
+    """
+    source = SCRIPT.read_text()
+    marker = (
+        "        if not SAFE_AGENT_ID.match(agent_id):\n"
+        "            sys.exit(UNSAFE_ENV_AGENT_ID_MESSAGE)\n"
+    )
+    assert source.count(marker) == 1
+    without = source.replace(marker, "")
+    compile(without, "setup_agent.py", "exec")
+
+    # "echoes-what-was-asked", not "kept": with a fixed agent_kept coming back the
+    # run would stop at "a different agent id" and never reach the print, so the
+    # case would pass without showing anything about the check it is named for.
+    status, shown, _ = run_step_2(
+        tmp_path, "echoes-what-was-asked", "'agent_ok;touch pwned'", SET_MODEL,
+        tty=False, source=without,
+    )
+    stdout, _ = shown
+
+    assert status == 0
+    assert "  AGENT_ID=agent_ok;touch pwned\n" in stdout
 
 
 def test_a_repeated_api_call_is_caught_by_the_call_list(tmp_path):

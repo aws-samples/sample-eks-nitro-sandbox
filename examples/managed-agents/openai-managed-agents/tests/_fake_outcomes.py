@@ -128,6 +128,10 @@ _ERROR_BUILDERS = {
 # plus the three planted ones whose expected output proves nothing leaks.
 _LOOKUPS = {
     "kept": lambda: SimpleNamespace(id=KEPT_ID),
+    # The same, but echoing whatever id was asked for rather than a fixed one, so
+    # a case can use an id of its own and still reach the keeping path. With the
+    # usual agent_kept this is indistinguishable from "kept"; see lookup() below.
+    "echoes-what-was-asked": lambda: SimpleNamespace(id=KEPT_ID),
     # Succeeded, but not with this agent's id. Three of them, not four.
     "no-id-attribute": lambda: SimpleNamespace(),
     "id-none": lambda: SimpleNamespace(id=None),
@@ -195,8 +199,16 @@ EXPOSING_NEITHER_CREATE_SCENARIOS = sorted(
 )
 
 
-def lookup(scenario: str):
-    """The object retrieve() returns, or the exception it raises, in this scenario."""
+def lookup(scenario: str, requested: str | None = None):
+    """The object retrieve() returns, or the exception it raises, in this scenario.
+
+    `requested` is the id retrieve() was called with. Only one scenario uses it,
+    to answer with that same id: a case that needs the keeping path reached with
+    an id of its own cannot use "kept", because the fixed agent_kept would come
+    back as "a different agent id" and stop the run before the path it is testing.
+    """
+    if scenario == "echoes-what-was-asked" and requested is not None:
+        return SimpleNamespace(id=requested)
     return _LOOKUPS[scenario]()
 
 
