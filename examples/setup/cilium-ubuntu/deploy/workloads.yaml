@@ -21,7 +21,11 @@
 #               layer 7 portions of the latter rule will have no effect").
 #
 # Every pod but node-probe serves one or more pages on port 8080 with busybox httpd, so any of
-# them can be both the client and the server of a connection.
+# them can be both the client and the server of a connection, and kubelet's readiness and
+# liveness probes ask each one for "/". Every pod runs as nobody (65534) with the runtime's
+# default seccomp filter, no privilege escalation, no capabilities and a read-only root
+# filesystem; httpd writes its pages to a small emptyDir at /www. Nothing test.sh runs in a
+# pod (wget, nslookup, uname, cat, ls) needs root, a writable root or a capability.
 #
 # The namespace carries the sample's part-of label so the scripts can confirm the namespace is
 # the sample's before they touch anything in it. The sandbox pod tolerates the dedicated taint
@@ -60,19 +64,35 @@ spec:
   # profile, the runtime passes that request into the pod's guest microVM, and runc there fails
   # with "apparmor failed to apply profile". The microVM, not a host AppArmor profile, is this
   # pod's isolation boundary. The ordinary pods below keep their default profile, and
-  # `cilium_ubuntu.py check-workloads` refuses Unconfined on any of them.
+  # `cilium_ubuntu.py check-workloads` refuses Unconfined on any of them. The seccomp and user
+  # settings beside it are the same as every other pod's.
   securityContext:
     appArmorProfile:
       type: Unconfined
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile: { type: RuntimeDefault }
   automountServiceAccountToken: false
   enableServiceLinks: false
   terminationGracePeriodSeconds: 0
   containers:
     - name: main
       image: public.ecr.aws/docker/library/busybox:1.37.0
-      command: ["sh", "-c", "mkdir -p /www && echo nitro > /www/index.html && exec httpd -f -p 8080 -h /www"]
+      command: ["sh", "-c", "echo nitro > /www/index.html && exec httpd -f -p 8080 -h /www"]
       ports:
         - containerPort: 8080
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      readinessProbe:
+        httpGet: { path: /, port: 8080 }
+      livenessProbe:
+        httpGet: { path: /, port: 8080 }
+      volumeMounts:
+        - { name: www, mountPath: /www }
       resources:
         # The guest VM is sized from the pod's resources plus the RuntimeClass memory
         # overhead, and the scheduler counts that overhead too, so the node gives up more
@@ -80,6 +100,9 @@ spec:
         requests:
           cpu: "1"
           memory: 768Mi
+  volumes:
+    - name: www
+      emptyDir: { sizeLimit: 1Mi }
 ---
 apiVersion: v1
 kind: Pod
@@ -102,16 +125,35 @@ spec:
   automountServiceAccountToken: false
   enableServiceLinks: false
   terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile: { type: RuntimeDefault }
   containers:
     - name: main
       image: public.ecr.aws/docker/library/busybox:1.37.0
-      command: ["sh", "-c", "mkdir -p /www && echo neighbor > /www/index.html && exec httpd -f -p 8080 -h /www"]
+      command: ["sh", "-c", "echo neighbor > /www/index.html && exec httpd -f -p 8080 -h /www"]
       ports:
         - containerPort: 8080
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      readinessProbe:
+        httpGet: { path: /, port: 8080 }
+      livenessProbe:
+        httpGet: { path: /, port: 8080 }
+      volumeMounts:
+        - { name: www, mountPath: /www }
       resources:
         requests:
           cpu: 10m
           memory: 16Mi
+  volumes:
+    - name: www
+      emptyDir: { sizeLimit: 1Mi }
 ---
 apiVersion: v1
 kind: Pod
@@ -124,7 +166,8 @@ metadata:
     app: node-probe
 spec:
   # The node's network namespace, so its connections take the path a host process's do. It
-  # listens on nothing, runs as nobody and holds no capabilities.
+  # listens on nothing, runs as nobody and holds no capabilities. It has no probes: it only
+  # sleeps, and test.sh drives it with kubectl exec, so a probe would gate nothing.
   hostNetwork: true
   nodeSelector:
     eks.amazonaws.com/nodegroup: sandbox
@@ -140,6 +183,7 @@ spec:
     runAsNonRoot: true
     runAsUser: 65534
     runAsGroup: 65534
+    seccompProfile: { type: RuntimeDefault }
   containers:
     - name: main
       image: public.ecr.aws/docker/library/busybox:1.37.0
@@ -170,16 +214,35 @@ spec:
   automountServiceAccountToken: false
   enableServiceLinks: false
   terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile: { type: RuntimeDefault }
   containers:
     - name: main
       image: public.ecr.aws/docker/library/busybox:1.37.0
-      command: ["sh", "-c", "mkdir -p /www && echo control > /www/index.html && exec httpd -f -p 8080 -h /www"]
+      command: ["sh", "-c", "echo control > /www/index.html && exec httpd -f -p 8080 -h /www"]
       ports:
         - containerPort: 8080
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      readinessProbe:
+        httpGet: { path: /, port: 8080 }
+      livenessProbe:
+        httpGet: { path: /, port: 8080 }
+      volumeMounts:
+        - { name: www, mountPath: /www }
       resources:
         requests:
           cpu: 10m
           memory: 16Mi
+  volumes:
+    - name: www
+      emptyDir: { sizeLimit: 1Mi }
 ---
 apiVersion: v1
 kind: Pod
@@ -196,16 +259,35 @@ spec:
   automountServiceAccountToken: false
   enableServiceLinks: false
   terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile: { type: RuntimeDefault }
   containers:
     - name: main
       image: public.ecr.aws/docker/library/busybox:1.37.0
-      command: ["sh", "-c", "mkdir -p /www && echo server > /www/index.html && exec httpd -f -p 8080 -h /www"]
+      command: ["sh", "-c", "echo server > /www/index.html && exec httpd -f -p 8080 -h /www"]
       ports:
         - containerPort: 8080
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      readinessProbe:
+        httpGet: { path: /, port: 8080 }
+      livenessProbe:
+        httpGet: { path: /, port: 8080 }
+      volumeMounts:
+        - { name: www, mountPath: /www }
       resources:
         requests:
           cpu: 10m
           memory: 16Mi
+  volumes:
+    - name: www
+      emptyDir: { sizeLimit: 1Mi }
 ---
 apiVersion: v1
 kind: Pod
@@ -222,16 +304,35 @@ spec:
   automountServiceAccountToken: false
   enableServiceLinks: false
   terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile: { type: RuntimeDefault }
   containers:
     - name: main
       image: public.ecr.aws/docker/library/busybox:1.37.0
-      command: ["sh", "-c", "mkdir -p /www && echo other > /www/index.html && exec httpd -f -p 8080 -h /www"]
+      command: ["sh", "-c", "echo other > /www/index.html && exec httpd -f -p 8080 -h /www"]
       ports:
         - containerPort: 8080
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      readinessProbe:
+        httpGet: { path: /, port: 8080 }
+      livenessProbe:
+        httpGet: { path: /, port: 8080 }
+      volumeMounts:
+        - { name: www, mountPath: /www }
       resources:
         requests:
           cpu: 10m
           memory: 16Mi
+  volumes:
+    - name: www
+      emptyDir: { sizeLimit: 1Mi }
 ---
 apiVersion: v1
 kind: Pod
@@ -250,16 +351,35 @@ spec:
   automountServiceAccountToken: false
   enableServiceLinks: false
   terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile: { type: RuntimeDefault }
   containers:
     - name: main
       image: public.ecr.aws/docker/library/busybox:1.37.0
-      command: ["sh", "-c", "mkdir -p /www && echo allowed > /www/index.html && echo denied > /www/admin && exec httpd -f -p 8080 -h /www"]
+      command: ["sh", "-c", "echo allowed > /www/index.html && echo denied > /www/admin && exec httpd -f -p 8080 -h /www"]
       ports:
         - containerPort: 8080
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      readinessProbe:
+        httpGet: { path: /, port: 8080 }
+      livenessProbe:
+        httpGet: { path: /, port: 8080 }
+      volumeMounts:
+        - { name: www, mountPath: /www }
       resources:
         requests:
           cpu: 10m
           memory: 16Mi
+  volumes:
+    - name: www
+      emptyDir: { sizeLimit: 1Mi }
 ---
 apiVersion: v1
 kind: Service

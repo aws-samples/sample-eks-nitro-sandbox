@@ -216,8 +216,10 @@ nitro_guest="$(kubectl "${ns[@]}" exec nitro -- uname -r 2>/dev/null)"
 nitro_host="$(jget '{.status.nodeInfo.kernelVersion}' node "$nitro_node")"
 [[ -n "$nitro_guest" && -n "$nitro_host" && "$nitro_guest" != "$nitro_host" ]]
 assert "sandbox pod guest kernel ($nitro_guest) differs from its Ubuntu node's kernel ($nitro_host)" $?
-out="$(python3 "$PY" kernel-release "$GUEST_KERNEL_RELEASE" "$nitro_guest" 2>&1)"; rc=$?
-assert "sandbox pod runs the pinned guest kernel from the bundle's guest image ($out)" "$rc"
+# --exact: the guest pin (6.18.56) is a prefix of the host's release (6.18.56-nitro-ga), so a
+# suffix-tolerant match would accept the host kernel's string as the guest's.
+out="$(python3 "$PY" kernel-release --exact "$GUEST_KERNEL_RELEASE" "$nitro_guest" 2>&1)"; rc=$?
+assert "sandbox pod runs the pinned guest kernel from the pinned guest image ($out)" "$rc"
 control_guest="$(kubectl "${ns[@]}" exec control -- uname -r 2>/dev/null)"
 control_host="$(jget '{.status.nodeInfo.kernelVersion}' node "$control_node")"
 [[ -n "$control_guest" && "$control_guest" == "$control_host" ]]
