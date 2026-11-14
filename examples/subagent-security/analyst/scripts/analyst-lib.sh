@@ -125,6 +125,8 @@ analyst_preflight() {
   echo "  account:  $ACCOUNT_ID"
   echo "  region:   $AWS_REGION"
   # kubectl config current-context ignores --context, so name KUBE_CONTEXT when it is set.
+  # When it is empty or unset -- which is what .env.example ships -- kc leaves every call
+  # unpinned, so the kubeconfig's own context is the one they use and the one to print.
   echo "  context:  ${KUBE_CONTEXT:-$(kubectl config current-context)}"
 
   kc get runtimeclass isolated-sandbox -o name >/dev/null 2>&1 ||
