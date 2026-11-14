@@ -263,7 +263,7 @@ Add this to .env:
   AGENT_ID=agent_...
 ```
 
-If you leave `AGENT_MODEL` unset, `setup_agent.py` prints a `[note]` that it is falling back to
+If you leave `AGENT_MODEL` unset or blank, as `.env.example` ships it, `setup_agent.py` prints a `[note]` that it is falling back to
 a placeholder id and continues; set a real id to avoid that. Put `AGENT_ID` in `.env` and load
 the file again with `set -a; . ./.env; set +a`. The agent is created without hosted tools: the
 executor provides the Bash and apply-patch tools. The self-hosted environment is created per

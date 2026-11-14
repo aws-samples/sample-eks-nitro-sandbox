@@ -108,13 +108,15 @@ def confirm_agent_exists(client, agent_id: str) -> None:
 def main() -> None:
     client = make_client()
 
-    model = os.environ.get("AGENT_MODEL", DEFAULT_MODEL)
+    # `set -a; . ./.env` exports the template's blank AGENT_MODEL= as "", which
+    # must mean "not set", not a model id of "".
+    model = os.environ.get("AGENT_MODEL") or DEFAULT_MODEL
     agent_id = os.environ.get("AGENT_ID")
     if agent_id:
         confirm_agent_exists(client, agent_id)
         print(f"AGENT_ID is set and the agent exists; keeping agent {agent_id}")
     else:
-        if model == DEFAULT_MODEL and not os.environ.get("AGENT_MODEL"):
+        if not os.environ.get("AGENT_MODEL"):
             print(f"[note] Using the PLACEHOLDER model id '{model}'. Set AGENT_MODEL in .env to a")
             print("       model id your project can use; confirm it against https://platform.openai.com/docs/models")
         agent = client.beta.agents.create(
