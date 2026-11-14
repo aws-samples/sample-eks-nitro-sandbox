@@ -229,6 +229,28 @@ RS="$WORK/runstale"; mkdir -p "$RS/metadata"; printf 'sentinel\n' > "$RS/metadat
 rc=0; rf "$WORK/d-rs.log" "$RS" --check || rc=$?
 check "REJECT --check when the run folder holds a metadata/ this script did not make" 1 "$rc" "$WORK/d-rs.log" "$RS/metadata exists and this helper did not make it"
 [ "$(tree_sum "$RS")" = "$before" ]; check "  ... byte-unchanged" 0 $? "$WORK/d-rs.log"
+# An upgrade: the run folder as an earlier version of this script left it, with markers that hold
+# no token (plain), or with no markers at all (none). Each is refused, changing nothing, by a
+# message that names the folder and what to remove there; removing exactly that is enough.
+up_old() { # up_old <dir> <plain|none>
+  local d; mkdir -p "$1"; printf 'kernel tarball stand-in\n' > "$1/linux-fixture.tar.xz"
+  [ "$2" = plain ] && printf 'packages/fetch-runtime-artifacts.sh keeps its metadata, downloads, node-files and signed-manifest\nfolders here, and removes only those folders, each when it carries its own marker.\n' > "$1/.fetch-runtime-artifacts"
+  for d in metadata downloads node-files signed-manifest; do mkdir -p "$1/$d"; printf 'earlier %s\n' "$d" > "$1/$d/keep.txt"
+    [ "$2" = plain ] && printf 'made by packages/fetch-runtime-artifacts.sh, which replaces this folder on its next run\n' > "$1/$d/.made-by-fetch-runtime-artifacts"
+  done; return 0; }
+for kind in plain none; do
+  UP="$WORK/upgrade-$kind"; up_old "$UP" "$kind"; before="$(tree_sum "$UP")"
+  if [ "$kind" = plain ]; then what="$UP/.fetch-runtime-artifacts is not this helper's marker file"; how="markers with no token"
+  else what="$UP/metadata exists and this helper did not make it"; how="no markers"; fi
+  rc=0; rf "$WORK/d-up-$kind.log" "$UP" --check || rc=$?
+  check "REJECT --check on a run folder an earlier version left ($how), saying what to remove there" 1 "$rc" "$WORK/d-up-$kind.log" \
+    "$what.*If an earlier version of this helper wrote what is in $UP .*remove any of \.fetch-runtime-artifacts, metadata, downloads, node-files and signed-manifest there, then run it again"
+  [ "$(tree_sum "$UP")" = "$before" ]; check "  ... byte-unchanged" 0 $? "$WORK/d-up-$kind.log"
+  for d in .fetch-runtime-artifacts metadata downloads node-files signed-manifest; do rm -rf -- "${UP:?}/$d"; done
+  rc=0; rf "$WORK/d-up-$kind-2.log" "$UP" --check && rf "$WORK/d-up-$kind-2.log" "$UP" || rc=$?
+  check "  ... ACCEPT --check and the full fetch once exactly those are removed" 0 "$rc" "$WORK/d-up-$kind-2.log" "5 node files in $UP/node-files"
+  cmp -s "$UP/linux-fixture.tar.xz" <(printf 'kernel tarball stand-in\n'); check "  ... and the other fetcher's file is left as it was" 0 $? "$WORK/d-up-$kind-2.log"
+done
 
 echo
 echo "== 3/4 the real pins: packages/sources.lock against real copies of the runtime inputs ======"

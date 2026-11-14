@@ -1,12 +1,12 @@
 # Build an Ubuntu AMI for EKS Pod Isolation
 
-!!! warning "Status: rebuilt on the public GA releases, fresh run pending"
+!!! note "Status: rebuilt on the public GA releases, proven by a fresh run"
 
     This version builds the AMI from the public Nitro Sandbox releases that the Amazon EKS User
     Guide names: the signed runtime release `0.1.4274.0`, the guest image `1.36.5/2026-11-06` and
-    Firecracker `v1.18.0`. Its fresh run on a live cluster has not happened yet, so every output
-    block on this page reads `TODO: output from the fresh run` until that run fills it. Every
-    clusterless check is proven both ways (see [Clusterless checks](#clusterless-checks)).
+    Firecracker `v1.18.0`. Every output block on this page is from one fresh run on a live
+    cluster, `20261113t205002z698a` (see [Evidence](#evidence)), and every clusterless check is
+    proven both ways (see [Clusterless checks](#clusterless-checks)).
 
 Build a custom Ubuntu 24.04 node AMI for Amazon EKS Pod Isolation, add one dedicated,
 tainted managed node group to an **existing cluster**, and run an isolated pod on that
@@ -341,7 +341,7 @@ $EDITOR config.env
 #   ./setup.sh --ami-only              # build, verify and tag the AMI; no cluster needed
 #   RUN_ID=<id> ./setup.sh --join      # later: join that run's AMI and run the pods
 ./test.sh              # read live node and guest evidence again
-./clean.sh --dry-run   # preview what a full clean up would remove
+./clean.sh --dry-run   # list this run's AWS resources; nothing is removed
 ```
 
 The blueprint uses its own namespace, `ubuntu-ami-sample` (`NAMESPACE` in `config.env`), not the
@@ -411,9 +411,12 @@ next stage runs, and the run's evidence records both boot IDs. A read that keeps
 in "could not determine", which stops the run.
 
 **1. Check the inputs and the cluster.** `./setup.sh --prepare` verifies, on your workstation, every
-pinned input it can reach without the large runtime downloads (the kernel, the patch, erofs-utils,
-the runtime release's signed manifest and the guest image and Firecracker sidecars), and creates
-nothing. A full `./setup.sh` then
+pinned input it can reach without the large runtime downloads, and creates nothing. It prints one
+`ok:` line for each of the four runtime inputs it checks: the runtime release's signed manifest,
+and the sidecars of the guest image's two files and of Firecracker. The kernel, the patch and
+erofs-utils are downloaded (or reused when a copy already matches its pin) and checked against
+their pins without a line of their own; a mismatch stops the run on a `FATAL` line. The closing
+`all pinned public inputs verified` line covers all seven. A full `./setup.sh` then
 reads two cluster-wide prerequisites before it creates anything: the `vpc-cni` add-on is
 `ACTIVE`, and the shared `isolated-sandbox` RuntimeClass selects only labels the blueprint's
 node will carry. It stops with the command to run if either is not so.
@@ -478,23 +481,140 @@ value. SSM Run Command returns only the first 24,000 characters of a command's o
 the kernel stage prints far more than that, so those `ok:` lines do not reach the run's
 evidence. A build that passes the gate goes on to compile the kernel and reboots the build host
 onto `6.18.56-nitro-ga`. Once the runtime is installed, `verify-image.py` checks on the build
-host, running that kernel, what those symbols provide (the end of its result, from `./setup.sh`
-step 7):
+host, running that kernel, what those symbols provide (its result, from `./setup.sh` step 7):
 
 ```text
-TODO: output from the fresh run
+  [build] {
+  [build]   "image_configuration": "PASS",
+  [build]   "failed": [],
+  [build]   "checks": {
+  [build]     "host_kernel": {
+  [build]       "ok": true,
+  [build]       "detail": "6.18.56-nitro-ga"
+  [build]     },
+  [build]     "nitro_enclaves_device": {
+  [build]       "ok": true,
+  [build]       "detail": "/dev/nitro_enclaves"
+  [build]     },
+  [build]     "btf": {
+  [build]       "ok": true,
+  [build]       "detail": "/sys/kernel/btf/vmlinux 6818090 bytes"
+  [build]     },
+  [build]     "cma": {
+  [build]       "ok": true,
+  [build]       "detail": "CmaTotal 61526016 kB"
+  [build]     },
+  [build]     "vsock": {
+  [build]       "ok": true,
+  [build]       "detail": "/dev/vhost-vsock"
+  [build]     },
+  [build]     "tun": {
+  [build]       "ok": true,
+  [build]       "detail": "/dev/net/tun"
+  [build]     },
+  [build]     "erofs": {
+  [build]       "ok": true,
+  [build]       "detail": "erofs in /proc/filesystems"
+  [build]     },
+  [build]     "apparmor": {
+  [build]       "ok": true,
+  [build]       "detail": "enabled; ubuntu-ami-sample-profile loaded in enforce mode"
+  [build]     },
+  [build]     "containerd_version": {
+  [build]       "ok": true,
+  [build]       "detail": "containerd 2.2.1 (2.2.1): in the range this sample is validated on (2.1.x to 2.3.x)"
+  [build]     },
+  [build]     "runtime_wiring": {
+  [build]       "ok": true,
+  [build]       "detail": "template, dump, bootstrap endpoint, shim config, drop-in and cri-proxy unit parsed and correct"
+  [build]     },
+  [build]     "guest_image": {
+  [build]       "ok": true,
+  [build]       "detail": "/var/lib/nitro-sandbox-images: latest.eif, latest-disk.img, rootfs.ext4 -> latest-disk.img"
+  [build]     },
+  [build]     "guest_kernel": {
+  [build]       "ok": true,
+  [build]       "detail": "latest.eif boots guest kernel 6.18.56, the pinned guest_kernel"
+  [build]     },
+  [build]     "mkfs_erofs": {
+  [build]       "ok": true,
+  [build]       "detail": "mkfs.erofs (erofs-utils) 1.8.10; zstd ok as a systemd service"
+  [build]     },
+  [build]     "runtime_files": {
+  [build]       "ok": true,
+  [build]       "detail": "5 installed files match their sources.lock pins, with their modes"
+  [build]     },
+  [build]     "runtime_signature": {
+  [build]       "ok": true,
+  [build]       "detail": "runtime-release 0.1.4274.0: signed manifest Verified OK, and it lists the archive and the shim with their pins"
+  [build]     },
+  [build]     "package_holds": {
+  [build]       "ok": true,
+  [build]       "detail": "held and blacklisted for unattended upgrades: containerd linux-aws linux-headers-aws linux-image-aws"
+  [build]     }
+  [build]   }
+  [build] }
+  [build] image_configuration: PASS (16 checks)
 ```
 
-Step 9 repeats the same checks on a second, fresh instance before `BtfValidated=true` is tagged
-(that block is under [Evidence](#evidence)).
+*`./setup.sh` step 7, the build host's `verify-image.py` result from run
+`20261113t205002z698a`, whole: its JSON and its summary line. Each line keeps the `[build]`
+prefix `./setup.sh` puts on the build host's output; no value was replaced.* Step 9 repeats the
+same 16 checks on a second, fresh instance before `BtfValidated=true` is tagged (that block is
+under [Evidence](#evidence)).
 
 On the node that joined from the AMI, `./test.sh` section 2/7 reads the same host requirements
 again, each device and feature probe next to the same probe of something that does not exist
 (the `_bogus` lines):
 
 ```text
-TODO: output from the fresh run
+== 2/7 host requirements: ACCEPT and REJECT controls, read on the node itself ==========
+  node> KERNEL=6.18.56-nitro-ga
+  node> btf=present
+  node> btf_bogus=absent
+  node> ne=present
+  node> ne_bogus=absent
+  node> vsock=present
+  node> vsock_bogus=absent
+  node> tun=present
+  node> tun_bogus=absent
+  node> cma=14456832
+  node> cma_bogus=
+  node> erofs=present
+  node> erofs_bogus=absent
+  node> handler=present
+  node> handler_bogus=absent
+  node> containerd_gate=ok
+  node> containerd_version=containerd github.com/containerd/containerd/v2 2.2.1
+  node> apparmor_enabled=Y
+  node> apparmor_profile=loaded
+  node> apparmor_profile_bogus=absent
+  node> apparmor_profile_mode=enforce
+  node> apparmor_profile_sha256=b285f498d97bdc427d0303b96d6c68eb86a8caf83a8d9d2b0570e3ba6381548f
+  node> apparmor_shadow_denials=3
+  node> apparmor_bogus_denials=0
+  node> apparmor_signal_denials=0
+  node> apparmor_bogus_signal_denials=0
+  PASS  the node runs the host kernel 6.18.56-nitro-ga (6.18.56-nitro-ga)
+  PASS  ACCEPT btf: present on the node
+  PASS  REJECT btf: the same probe reads absent for a bogus input
+  PASS  ACCEPT ne: present on the node
+  PASS  REJECT ne: the same probe reads absent for a bogus input
+  PASS  ACCEPT vsock: present on the node
+  PASS  REJECT vsock: the same probe reads absent for a bogus input
+  PASS  ACCEPT tun: present on the node
+  PASS  REJECT tun: the same probe reads absent for a bogus input
+  PASS  ACCEPT erofs: present on the node
+  PASS  REJECT erofs: the same probe reads absent for a bogus input
+  PASS  ACCEPT handler: present on the node
+  PASS  REJECT handler: the same probe reads absent for a bogus input
+  PASS  ACCEPT cma: a non-zero CMA pool is reserved (CmaTotal=14456832 kB)
+  PASS  REJECT cma: the same probe reads nothing for a bogus meminfo key
+  PASS  containerd on the node passes the 2.1.x to 2.3.x gate this sample is validated on (containerd github.com/containerd/containerd/v2 2.2.1)
 ```
+
+*`./test.sh` section 2/7 of run `20261113t205002z698a`, whole. The `apparmor_` readings are
+the ones section 3/7 checks, shown under [Evidence](#evidence). No value was replaced.*
 
 **5. Build erofs-utils with zstd.** The containerd shim builds each container's EROFS
 filesystem with zstd and has no fallback, and Ubuntu 24.04's erofs-utils 1.7.1 has no zstd.
@@ -617,30 +737,52 @@ resource the RuntimeClass's overhead requests), and stops with a clear message i
 
 ## Evidence
 
-> **Every output block on this page will come from one fresh run** of this version: a full
-> `./setup.sh` (with the fresh-instance verification), then `./test.sh`. Until that run, each
-> block reads `TODO: output from the fresh run`. Lines will be copied whole and in order, values
-> from the test account shown as placeholders, and the note under each block will say which
-> ones, and whether lines were left out.
+> **Every output block on this page is from one fresh run**, `20261113t205002z698a`, on
+> 2026-11-13: an independent walk of this page from a fresh clone, which ran a full `./setup.sh`
+> (with the fresh-instance verification) and then `./test.sh` (53 passed, 0 failed). The walk
+> ran an earlier commit of this version; the commits since change nothing a stage prints when it
+> succeeds (compared offline, byte for byte apart from timestamps). Lines are copied whole and
+> in order. Values from the test account are shown as placeholders, and the note under each
+> block says which ones.
 
 **Node vs guest kernel, and host vs guest block devices.** The same shape Getting started
 uses: the ordinary pod shares the node's kernel, `6.18.56-nitro-ga`, and sees the
 instance's `nvme*` disks; the isolated-sandbox pod reports its own guest kernel, `6.18.56`
 (the kernel inside `latest.eif`, compared whole, since it shares its base release with the
-host's), and sees only virtio `vd*` disks, no `nvme*`. `./test.sh` also reads the AMI's
-`GuestKernelRelease` tag, from the AMI the run recorded, and checks that the sandbox pod reports
-exactly that release.
+host's), and sees virtio `vd*` disks and a device-mapper device (`dm-0`), and no `nvme*`.
+`./test.sh` also reads the AMI's `GuestKernelRelease` tag, from the AMI the run recorded, and
+checks that the sandbox pod reports exactly that release.
 
 ```text
-TODO: output from the fresh run
+== 5/7 guest boundary: kernel and block devices, ordinary pod vs isolated-sandbox pod =====
+  ordinary pod kernel:         6.18.56-nitro-ga
+  ordinary pod /sys/block:     loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 loop8 nvme0n1
+  isolated-sandbox kernel:     6.18.56
+  isolated-sandbox /sys/block: dm-0 vda vdb vdc
+  PASS  the ordinary pod shares the host kernel 6.18.56-nitro-ga
+  PASS  the sandbox pod runs the guest kernel 6.18.56, not the host's
+  the AMI's GuestKernelRelease tag: 6.18.56
+  PASS  the sandbox pod's kernel is the AMI's GuestKernelRelease tag (6.18.56)
+  PASS  the ordinary pod sees the host's nvme* devices
+  PASS  the sandbox pod sees virtio vd* devices and no nvme*
 ```
+
+*`./test.sh` section 5/7, whole. No value was replaced; the trailing space at the end of the
+two `/sys/block` lines was removed.*
 
 **Boot uptime matches the pod's age**, because the VM boots with the pod, while the ordinary
 pod reads the host's much longer uptime:
 
 ```text
-TODO: output from the fresh run
+== 6/7 guest boundary: boot uptime matches the sandbox pod's age, not the host's =========
+  host uptime (ordinary pod): 223 s
+  sandbox guest uptime:       65 s
+  sandbox pod age:            72 s (started 2026-11-13T22:31:24Z)
+  PASS  the sandbox guest booted with its pod (uptime <= pod age + 120 s)
+  PASS  the sandbox guest booted after the host (guest uptime < host uptime)
 ```
+
+*`./test.sh` section 6/7, whole. No value was replaced.*
 
 **Host-requirement accept/reject controls.** Each control below is proven both ways: one
 input that has the requirement and passes, one that is missing it and is refused, per this
@@ -683,8 +825,113 @@ blueprint. Written by `scripts/verify-fresh-instance.sh` via `scripts/lib/btf-ta
 (`ManagedBy=<RESOURCE_PREFIX>` and `RunId=<RUN_ID>` checked first).
 
 ```text
-TODO: output from the fresh run
+[2026-11-13T22:18:34Z] Step 9/10: fresh-instance verification on a SECOND instance, then tag BtfValidated=true on success (scripts/verify-fresh-instance.sh)
+[2026-11-13T22:18:34Z] launching fresh verification instance ubuntu-ami-sample-20261113t205002z698a-verify from <AMI_ID>
+LAUNCH SPEC OK: <repository>/tmp/issue10/run/out/runs/20261113t205002z698a/verify-instance-launch.json
+[2026-11-13T22:18:36Z] instance: <INSTANCE_ID>
+[2026-11-13T22:21:41Z] running: verify-image.py
+Success
+{
+  "image_configuration": "PASS",
+  "failed": [],
+  "checks": {
+    "host_kernel": {
+      "ok": true,
+      "detail": "6.18.56-nitro-ga"
+    },
+    "nitro_enclaves_device": {
+      "ok": true,
+      "detail": "/dev/nitro_enclaves"
+    },
+    "btf": {
+      "ok": true,
+      "detail": "/sys/kernel/btf/vmlinux 6818090 bytes"
+    },
+    "cma": {
+      "ok": true,
+      "detail": "CmaTotal 14456832 kB"
+    },
+    "vsock": {
+      "ok": true,
+      "detail": "/dev/vhost-vsock"
+    },
+    "tun": {
+      "ok": true,
+      "detail": "/dev/net/tun"
+    },
+    "erofs": {
+      "ok": true,
+      "detail": "erofs in /proc/filesystems"
+    },
+    "apparmor": {
+      "ok": true,
+      "detail": "enabled; ubuntu-ami-sample-profile loaded in enforce mode"
+    },
+    "containerd_version": {
+      "ok": true,
+      "detail": "containerd 2.2.1 (2.2.1): in the range this sample is validated on (2.1.x to 2.3.x)"
+    },
+    "runtime_wiring": {
+      "ok": true,
+      "detail": "template, dump, bootstrap endpoint, shim config, drop-in and cri-proxy unit parsed and correct"
+    },
+    "guest_image": {
+      "ok": true,
+      "detail": "/var/lib/nitro-sandbox-images: latest.eif, latest-disk.img, rootfs.ext4 -> latest-disk.img"
+    },
+    "guest_kernel": {
+      "ok": true,
+      "detail": "latest.eif boots guest kernel 6.18.56, the pinned guest_kernel"
+    },
+    "mkfs_erofs": {
+      "ok": true,
+      "detail": "mkfs.erofs (erofs-utils) 1.8.10; zstd ok as a systemd service"
+    },
+    "runtime_files": {
+      "ok": true,
+      "detail": "5 installed files match their sources.lock pins, with their modes"
+    },
+    "runtime_signature": {
+      "ok": true,
+      "detail": "runtime-release 0.1.4274.0: signed manifest Verified OK, and it lists the archive and the shim with their pins"
+    },
+    "package_holds": {
+      "ok": true,
+      "detail": "held and blacklisted for unattended upgrades: containerd linux-aws linux-headers-aws linux-image-aws"
+    }
+  }
+}
+image_configuration: PASS (16 checks)
+
+[2026-11-13T22:26:45Z] running: 40-smoke.sh
+Success
+crw-rw---- 1 root root  10, 260 Nov 13 22:19 /dev/nitro_enclaves
+-rwxr-xr-x 1 root root  3921872 Nov 13 21:19 /usr/bin/firecracker
+-rw-r--r-- 1 root root 13008970 Nov 13 21:19 /var/lib/nitro-sandbox-images/latest.eif
+lrwxrwxrwx 1 root root       15 Nov 13 21:19 /var/lib/nitro-sandbox-images/rootfs.ext4 -> latest-disk.img
+PUT /machine-config -> 204
+PUT /boot-source -> 204
+PUT /drives/rootfs -> 204
+PUT /drives/overlay -> 204
+PUT /vsock -> 204
+PUT /network-interfaces/eth0 -> 204
+PUT /enclave -> 204
+PUT /actions -> 204
+vsock handshake reply: 'OK 1073741824'
+--- process alive: yes; agent reachable: 1 after 3s
+smoke 2026-11-13T22:26:52Z: PASS; debug_mode=false
+
+[2026-11-13T22:27:03Z] terminating verification instance <INSTANCE_ID>
+[2026-11-13T22:27:36Z] fresh-instance verification PASS
+[2026-11-13T22:27:38Z] tagged <AMI_ID> BtfValidated=true (fresh-instance verification passed; ManagedBy=ubuntu-ami-sample preserved)
 ```
+
+*`./setup.sh` step 9, from the step line to the `BtfValidated=true` tag line, whole. This run
+was a full `./setup.sh`, which goes on to step 10 and joins the node group; a
+`./setup.sh --ami-only` run stops after this tag instead. The AMI id, the verification
+instance's id and the repository's absolute path are shown as `<AMI_ID>`, `<INSTANCE_ID>`
+and `<repository>`; the trailing space at the end of the eight `PUT` lines was removed. The
+tag is written 2 s after the `PASS` line, never before it.*
 
 **AppArmor.** AppArmor stays enabled on the host, and the node loads one scoped profile,
 [`manifests/ubuntu-ami-sample-profile`](manifests/ubuntu-ami-sample-profile), installed onto
@@ -702,8 +949,15 @@ scoped profile is loaded in enforce mode, and the node's copy of the profile is 
 file (same sha256). The same probe reads absent for a profile the node never loaded.
 
 ```text
-TODO: output from the fresh run
+  -- 8a: AppArmor is on and enforcing on the host
+  PASS  AppArmor is enabled host-wide on the node (enabled=Y)
+  PASS  ACCEPT: the scoped profile ubuntu-ami-sample-profile is loaded on the node in enforce mode (mode=enforce)
+  PASS  REJECT: the same probe reads absent for a profile the node never loaded
+  PASS  the profile on the node is this sample's manifests/ubuntu-ami-sample-profile (sha256 b285f498d97bdc427d0303b96d6c68eb86a8caf83a8d9d2b0570e3ba6381548f)
 ```
+
+*`./test.sh` section 3/7, the 8a lines, whole. They check the node's `apparmor_` readings, shown
+with section 2/7 under [Build](#build) step 4. No value was replaced.*
 
 **2. The scoped profile working, on an ordinary pod.**
 [`deploy/pod-apparmor-scoped.yaml`](deploy/pod-apparmor-scoped.yaml) is an ordinary (runc)
@@ -718,8 +972,26 @@ within its 15 s grace period, with no `DENIED` signal logged under the profile. 
 the node never loaded has no `DENIED` lines, as the control for both counts.
 
 ```text
-TODO: output from the fresh run
+  -- 8b: the scoped profile works on an ordinary pod on the same node (apparmor-scoped-pod)
+  scoped pod: node=<NODE_NAME> type=Localhost profile=ubuntu-ami-sample-profile phase=Running
+  PASS  the scoped pod requests Localhost ubuntu-ami-sample-profile and runs on the sandbox node (phase=Running)
+  scoped attr/current: 'ubuntu-ami-sample-profile (enforce)'  ordinary attr/current: 'cri-containerd.apparmor.d (enforce)'
+  PASS  ACCEPT: the scoped pod's process is confined by 'ubuntu-ami-sample-profile (enforce)' (attr/current)
+  PASS  REJECT: the same label read on the ordinary pod, which requests no profile, does not name ubuntu-ami-sample-profile
+  scoped pod: write to /etc/shadow: sh: line 1: /etc/shadow: Permission denied WRITE-FAILED
+  scoped pod: write to /etc/ubuntu-ami-sample-write-control: WRITTEN
+  PASS  ACCEPT: the scoped pod's write to /etc/shadow is refused with EACCES (Permission denied)
+  PASS  REJECT: the same pod's write to a path the profile does not deny succeeds (so the refusal is the profile's)
+  node DENIED lines since T0=1794609122 for that write: ubuntu-ami-sample-profile 3, profile-that-does-not-exist 0
+  PASS  ACCEPT: the node's kernel logged the profile's DENIED line for that write since T0
+  PASS  REJECT: the same count for a profile the node never loaded is 0
+  scoped pod deleted by its exact name: gone=yes after 1 s (grace 15 s); signal DENIED lines since T0: ubuntu-ami-sample-profile 0, profile-that-does-not-exist 0
+  PASS  ACCEPT: deleted by its exact name, the scoped pod is gone within its grace period (1 s <= 15 s)
+  PASS  ACCEPT: the node logged no DENIED signal under ubuntu-ami-sample-profile since T0 (the profile lets runc stop the pod)
+  PASS  REJECT: the same signal count for a profile the node never loaded is 0
 ```
+
+*`./test.sh` section 3/7, the 8b lines, whole. The node's host name is shown as `<NODE_NAME>`.*
 
 **Why the profile has `signal` rules and `audit deny`.** The first version of the profile had
 neither, and a validation run of this blueprint on its own AMI showed what that costs. On Ubuntu
@@ -741,8 +1013,12 @@ and containerd's message for a missing profile, matched whole:
 `failed to get container spec opts: failed to generate apparmor spec opts: apparmor profile not found profile-that-does-not-exist`.
 
 ```text
-TODO: output from the fresh run
+  -- 8c: a pod naming a profile the node never loaded is refused
+  reject control: node=<NODE_NAME> phase=Pending reason=CreateContainerError message: failed to get container spec opts: failed to generate apparmor spec opts: apparmor profile not found profile-that-does-not-exist
+  PASS  REJECT: a pod naming an unloaded AppArmor profile is refused on the sandbox node: CreateContainerError 'failed to get container spec opts: failed to generate apparmor spec opts: apparmor profile not found profile-that-does-not-exist'
 ```
+
+*`./test.sh` section 3/7, the 8c lines, whole. The node's host name is shown as `<NODE_NAME>`.*
 
 **4. Why the sandbox pod runs `Unconfined`.** The isolated-sandbox pod,
 [`deploy/pod-isolated-sandbox.yaml`](deploy/pod-isolated-sandbox.yaml), sets
@@ -754,12 +1030,17 @@ run of this blueprint on its own AMI showed exactly that. With `type: Localhost`
 profile, the sandbox pod stopped in `StartError` with
 `apparmor failed to apply profile: write fsmount:fscontext:proc/thread-self/attr/exec: invalid argument`
 (the end of the message), because the guest runs SELinux and has no AppArmor: its process
-label is `system_u:system_r:runtime_t:s0:c0.c1023`. The microVM is the sandbox pod's boundary.
-`./test.sh` prints the sandbox's own label and checks that the pod runs with `Unconfined`.
+label, printed in the block below, is `system_u:system_r:container_t:s0:c0,c1`. The microVM is
+the sandbox pod's boundary. `./test.sh` prints the sandbox's own label and checks that the pod
+runs with `Unconfined`.
 
 ```text
-TODO: output from the fresh run
+  -- why the sandbox pod runs Unconfined
+  sandbox pod: appArmorProfile type=Unconfined phase=Running attr/current (the guest's own label): 'system_u:system_r:container_t:s0:c0,c1'
+  PASS  the sandbox pod runs with appArmorProfile Unconfined, as an AppArmor host requires (phase=Running)
 ```
+
+*`./test.sh` section 3/7, its last three lines, whole. No value was replaced.*
 
 ### The validation sandbox has no network
 
@@ -785,8 +1066,26 @@ reports a `podIP` for the sandbox pod: the host side allocates it, and no interf
 guest carries it.
 
 ```text
-TODO: output from the fresh run
+== 7/7 the validation sandbox has no network ============================================
+  sandbox pod annotation sandbox.amazonaws.com/network-isolated: true
+  PASS  the sandbox pod carries sandbox.amazonaws.com/network-isolated="true" (read back from the API)
+  sandbox interfaces (/sys/class/net, operstate): dummy0 down, lo unknown
+  sandbox IPv4 local addresses (/proc/net/fib_trie): 127.0.0.1
+  sandbox IPv6 addresses (/proc/net/if_inet6): ::1 on lo
+  sandbox IPv4 routes (/proc/net/route): none (header line only)
+  PASS  only loopback has an address in the sandbox (IPv4: 127.0.0.1; IPv6: ::1 on lo)
+  PASS  the sandbox has no route (/proc/net/route: none (header line only))
+  PASS  every sandbox interface other than lo is down (dummy0 down, lo unknown)
+  kubernetes Service ClusterIP (read from the API): <API_SERVICE_IP>
+  sandbox TCP connect to that ClusterIP on 443: errno=ENETUNREACH (Network is unreachable)
+  PASS  the sandbox's TCP connect to the API Service fails with Network is unreachable (ENETUNREACH)
+  ordinary pod TCP connect to that ClusterIP on 443: connected
+  PASS  the same connect from the ordinary pod succeeds (control for the previous check)
 ```
+
+*`./test.sh` section 7/7, whole. The cluster's `kubernetes` Service ClusterIP, which test.sh
+prints once on its own line, is shown as `<API_SERVICE_IP>`; no other value was replaced.
+test.sh prints each interface's name and state, not its MAC address.*
 
 The blueprint ships no network policy, and creates no Ingress, LoadBalancer or NodePort. For
 how a network policy restricts where a sandboxed pod can connect, see the
@@ -843,7 +1142,7 @@ nothing keeps billing unattended.
 Run clean up right after you finish validating, before moving on:
 
 ```bash
-./clean.sh --dry-run                           # list this run's resources; nothing is removed
+./clean.sh --dry-run                           # list this run's AWS resources; nothing is removed
 ./clean.sh                                     # remove this run's Kubernetes workload
 ./clean.sh --delete-aws-resources              # also remove this run's AWS resources and AMI
 ./clean.sh --delete-aws-resources --keep-ami   # the same, but keep the AMI and its snapshot
@@ -855,7 +1154,11 @@ deletes nothing. It lists and deletes only resources that carry both `ManagedBy=
 and that run's `RunId`, and re-reads both tags of each resource right before deleting it, so
 another run of this blueprint in the same account is never touched. The IAM roles and the
 instance profile are found by their per-run names through IAM itself (the Resource Groups
-Tagging API does not list IAM roles). `--dry-run` changes nothing.
+Tagging API does not list IAM roles). `--dry-run` changes nothing. It lists the run's tagged
+EC2 instances, EBS volumes, AMIs, snapshots, security group, launch template and S3 staging
+bucket, its IAM roles and instance profile by name, its managed node group, the node role's
+access entry, and the shared installs it leaves in place. It does not list the Kubernetes
+workload: the namespace and the pods in it, which a bare `./clean.sh` removes.
 
 A bare `./clean.sh` removes only the Kubernetes validation workload (after confirming the
 blueprint's namespace carries both of the run's labels: the scoped AppArmor pod by its exact

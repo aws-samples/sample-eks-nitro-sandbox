@@ -298,12 +298,21 @@ def write_mark(mark, text, token, dir_fd=None):
         f.write(f"{text}token={token}\n")
 
 
+def earlier_version(dest):
+    """The remedy when an earlier version of this helper wrote <dest>'s contents: that version wrote
+    markers with no token, or no markers at all, and this one refuses both."""
+    return (f"If an earlier version of this helper wrote what is in {dest} (it wrote markers with no token, or "
+            f"none), remove any of {DEST_MARK}, metadata, downloads, node-files and signed-manifest there, then run "
+            f"it again.")
+
+
 def own_folder(dest, name, token, outcome):
     """Open the folder <name> in the working directory (the claimed destination) without following a
     link, and check that this helper made it there: its marker holds this destination's <token>, and
     it holds only files (this helper never makes a folder inside one). Returns the open descriptor."""
     refused = Refused(f"{os.path.join(dest, name)} exists and this helper did not make it (it is not a real folder "
-                      f"holding {MADE_MARK} with this destination's token, and only files); move it away. {outcome}")
+                      f"holding {MADE_MARK} with this destination's token, and only files); move it away. "
+                      f"{earlier_version(dest)} {outcome}")
     if token is None:
         raise refused
     try:
@@ -358,7 +367,8 @@ def claim_dest(dest, run_folder, owned):
     if DEST_MARK in entries:
         token = mark_token(DEST_MARK, DEST_TEXT)
         if token is None:
-            raise Refused(f"{os.path.join(dest, DEST_MARK)} is not this helper's marker file. Nothing was changed.")
+            raise Refused(f"{os.path.join(dest, DEST_MARK)} is not this helper's marker file. {earlier_version(dest)} "
+                          f"Nothing was changed.")
     elif not run_folder and entries:
         raise Refused(f"the destination {dest} is not empty and has no {DEST_MARK} marker, so this helper did not "
                       f"make it; give a new or empty folder. Nothing was changed.")

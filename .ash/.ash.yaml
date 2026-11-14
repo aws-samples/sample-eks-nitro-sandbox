@@ -1420,8 +1420,8 @@ global_settings:
     # Pinned lines: test fixtures (a fake commit SHA, env-record strings with placeholder values).
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/packages/test-inputs.sh'
-      line_start: 286
-      line_end: 286
+      line_start: 308
+      line_end: 308
       reason: 'Fake commit SHA in a test fixture, not a secret'
       expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
