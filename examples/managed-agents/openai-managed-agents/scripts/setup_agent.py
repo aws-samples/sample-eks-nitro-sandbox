@@ -17,8 +17,8 @@ it looks that agent up and keeps it only if the lookup returns that agent. On a
 organization, OPENAI_BASE_URL), and says to unset AGENT_ID and run it again only
 once the agent is confirmed gone; it never creates a replacement on its own. A
 lookup that fails for any other reason (network, auth, a response without that
-agent's id) also stops, naming the error by type and HTTP status only, rather
-than being read as "agent gone".
+agent's id) also stops, naming the error by its SDK exception class and, when
+it has one, its HTTP status, rather than being read as "agent gone".
 
 Choosing the model
 ------------------
@@ -57,11 +57,11 @@ INSTRUCTIONS = (
 
 
 def _describe(exc: APIError) -> str:
-    """Name an API error by class and HTTP status only.
+    """Name an API error by its SDK exception class and, when it has one, its HTTP status.
 
-    Nothing the server sent is printed: str(exc) carries the response body, and
-    the request id comes from a response header, and a proxy behind
-    OPENAI_BASE_URL controls both, so either could carry a key.
+    No free-form text the server sent is printed: str(exc) carries the response
+    body and the request id comes from a response header, a proxy behind
+    OPENAI_BASE_URL controls both, and either could carry a key.
     """
     status = getattr(exc, "status_code", None)
     name = type(exc).__name__

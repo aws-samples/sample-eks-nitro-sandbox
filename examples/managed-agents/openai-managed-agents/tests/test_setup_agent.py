@@ -5,8 +5,8 @@ agent the lookup returns is kept and nothing is created; a 404 stops with a
 message that lists what to check before removing AGENT_ID, without claiming the
 agent is gone; a lookup that fails for any other reason (network, auth, 5xx),
 or succeeds without this agent's id, stops and is not read as "agent gone"; and
-a failure is named by type and HTTP status only, printing neither the response
-body nor the request-id header, either of which a proxy can fill with a secret.
+a failure is named by its SDK exception class and, when it has one, its HTTP
+status, printing neither the response body nor the request-id header, either of which a proxy can fill with a secret.
 In every stopping case no agent is created.
 
 Run with: python -m pytest
@@ -81,17 +81,18 @@ def test_a_404_lists_what_to_check_before_saying_to_remove_agent_id(run):
     with pytest.raises(SystemExit) as stopped:
         run(client)
 
-    message = str(stopped.value.code)
-    assert "agent_kept" in message
-    assert "HTTP 404" in message
-    # A 404 is not proof of deletion, so the message must not claim it.
-    assert "no longer exists" not in message
-    assert "does not show that the agent was deleted" in message
-    # Every cause the SDK cannot tell apart is named, before the removal step.
-    removal = message.index("remove AGENT_ID")
-    for cause in ("mistyped", "OPENAI_API_KEY", "OPENAI_PROJECT_ID", "OPENAI_ORG_ID", "OPENAI_BASE_URL"):
-        assert cause in message[:removal], cause
-    assert "confirmed the agent is gone" in message[:removal]
+    # The whole message, owned by the test, so an added or changed claim (such as
+    # that the agent was deleted, which a 404 does not show) fails here.
+    assert str(stopped.value.code) == (
+        "The lookup of agent agent_kept from AGENT_ID returned HTTP 404, so it was not kept.\n"
+        "A 404 does not show that the agent was deleted. The same answer comes from a mistyped\n"
+        "AGENT_ID, from OPENAI_API_KEY, OPENAI_PROJECT_ID or OPENAI_ORG_ID selecting a different\n"
+        "project or organization from the one the agent was created in, or from OPENAI_BASE_URL\n"
+        "pointing somewhere else. Check those first.\n"
+        "Only once you have confirmed the agent is gone, for example in the OpenAI dashboard of the\n"
+        "project it was created in, remove AGENT_ID from .env (or unset it in this shell) and run\n"
+        "this step again to create a new agent."
+    )
     client.beta.agents.create.assert_not_called()
 
 
@@ -135,11 +136,17 @@ def test_a_successful_lookup_without_this_agents_id_is_not_kept(run, capsys, ret
     client.beta.agents.create.assert_not_called()
 
 
-def test_a_failed_lookup_names_the_error_but_never_prints_its_body(run):
+def _everything_printed(stopped, capsys) -> str:
+    """The exit message plus all of stdout and stderr, so a leak anywhere is seen."""
+    captured = capsys.readouterr()
+    return "\n".join([str(stopped.value.code), captured.out, captured.err])
+
+
+def test_a_failed_lookup_never_prints_the_response_body(run, capsys):
     secret = "sk-proj-SECRET-ECHOED-BY-A-PROXY"
     failure = openai.AuthenticationError(
         f"Error code: 401 - {{'error': 'bad key {secret}'}}",
-        response=httpx.Response(401, request=_REQUEST, headers={"x-request-id": "req_123"}),
+        response=httpx.Response(401, request=_REQUEST),
         body={"error": f"bad key {secret}"},
     )
     assert secret in str(failure)  # the SDK's own message carries the body
@@ -148,12 +155,11 @@ def test_a_failed_lookup_names_the_error_but_never_prints_its_body(run):
     with pytest.raises(SystemExit) as stopped:
         run(client)
 
-    message = str(stopped.value.code)
-    assert secret not in message
-    assert message.endswith("(AuthenticationError, HTTP 401).")
+    assert secret not in _everything_printed(stopped, capsys)
+    assert str(stopped.value.code).endswith("(AuthenticationError, HTTP 401).")
 
 
-def test_a_failed_lookup_never_prints_the_request_id_header(run):
+def test_a_failed_lookup_never_prints_the_request_id_header(run, capsys):
     # The SDK takes request_id straight from the x-request-id response header,
     # which a proxy behind OPENAI_BASE_URL controls.
     secret = "sk-proj-SECRET-IN-A-HEADER"
@@ -168,8 +174,8 @@ def test_a_failed_lookup_never_prints_the_request_id_header(run):
     with pytest.raises(SystemExit) as stopped:
         run(client)
 
+    assert secret not in _everything_printed(stopped, capsys)
     message = str(stopped.value.code)
-    assert secret not in message
     assert message.endswith("(InternalServerError, HTTP 500).")
 
 

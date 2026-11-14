@@ -249,8 +249,8 @@ or a different `OPENAI_BASE_URL` gives the same answer. It lists those to check,
 remove `AGENT_ID` from `.env` and run this step again only once you have confirmed the agent is
 gone, for example in the OpenAI dashboard. It never creates a replacement on its own, so `.env`
 never silently points at a different agent. If the lookup fails for any other reason, such as a
-network or authentication error, the script stops and names the error by type and HTTP status
-rather than treating the agent as gone. The run captured for this page
+network or authentication error, the script stops and names the error by its SDK exception class and, when it has
+one, its HTTP status, rather than treating the agent as gone. The run captured for this page
 used `gpt-6-luna`, before the script made that check: its first pass at this step kept an
 `AGENT_ID` left in `.env` from an agent that no longer existed, so step 8 then failed with a 404.
 The block below is from running this step again with `AGENT_ID` unset, when `setup_agent.py`
