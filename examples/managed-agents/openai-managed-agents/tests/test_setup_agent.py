@@ -42,20 +42,32 @@ exactly the expected calls, in every situation step 2 can produce from the
 template, piped and on a terminal.
 
 What this does not cover beyond that: the real scripts/_client.py, which is
-replaced (it prints nothing, and exits only when OPENAI_API_KEY is unset); an
-interactive shell's own behaviour, since the commands run under `sh -c`; and
-anything the program writes somewhere other than its stdout and stderr, such
-as a file.
+replaced (it prints nothing, and exits with a message when OPENAI_API_KEY is
+unset or blank); an interactive shell's own behaviour, since the commands run
+under `sh -c`; and anything the program writes somewhere other than its stdout
+and stderr, such as a file.
 
 Both ways, per AGENTS.md, for every combination of AGENT_ID and AGENT_MODEL
 being unset, blank and set: an agent the lookup returns is kept and nothing is
 created; with AGENT_ID blank or unset an agent is created and nothing is looked
-up, with the placeholder note exactly when no model is given; a 404 stops with a
-message that lists what to check before saying how to clear AGENT_ID, without
-claiming the agent is gone; any other lookup failure stops and names the error
-by its SDK exception class and, when it has one, its HTTP status; a lookup that
-succeeds without this agent's id stops; and neither the response body nor the
-request-id header is ever shown.
+up, with the placeholder note exactly when no model is given, including when the
+model given is the placeholder id itself; a 404 stops with a message that lists
+what to check before saying how to clear AGENT_ID, without claiming the agent is
+gone; a lookup that succeeds without this agent's id stops; and neither the
+response body nor the request-id header is ever shown.
+
+Every other way a lookup can fail stops the run and names the error by its SDK
+exception class and, when it has one, its HTTP status. "Every other way" is a
+claim about a known set, not about the handful of classes that came to mind:
+_fake_outcomes.py raises one of every openai.APIError subclass the installed SDK
+defines, and test_every_sdk_error_class_is_covered fails if the SDK gains one
+that no scenario raises.
+
+Creating an agent is covered the same way, because it reports failures the same
+way: a create that raises any of those classes stops with the error named and
+nothing the server sent, and a create that succeeds while returning no usable id
+(no attribute, None, blank, or not a string) stops and says the agent may exist,
+rather than printing an id a reader would paste into .env.
 
 Run with: python -m pytest
 """
@@ -96,10 +108,11 @@ FAKE_CLIENT = '''\
 """Fake _client for one test case: records every call, answers as the case says."""
 import json
 
-from _fake_outcomes import NEW_ID, lookup
+from _fake_outcomes import create, lookup
 
 LEDGER = {ledger!r}
 SCENARIO = {scenario!r}
+CREATE_SCENARIO = {create_scenario!r}
 
 
 def _record(method, args, kwargs):
@@ -117,8 +130,10 @@ class _Agents:
 
     def create(self, *args, **kwargs):
         _record("create", args, kwargs)
-        from types import SimpleNamespace
-        return SimpleNamespace(id=NEW_ID)
+        outcome = create(CREATE_SCENARIO)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
 
 class _Beta:
@@ -166,13 +181,23 @@ WITH_AGENT_ID = {
     ),
     "404": (1, "", NOT_FOUND),
     "planted-404": (1, "", NOT_FOUND),
-    # A network error has no HTTP status, so it is named by its class alone.
+    # The errors with no HTTP status of their own are named by their class alone.
+    "api-error": (1, "", _not_confirmed(" (APIError).")),
     "network": (1, "", _not_confirmed(" (APIConnectionError).")),
+    "timeout": (1, "", _not_confirmed(" (APITimeoutError).")),
+    # The rest carry the status of the response they were built from.
+    "api-status": (1, "", _not_confirmed(" (APIStatusError, HTTP 418).")),
+    "response-invalid": (1, "", _not_confirmed(" (APIResponseValidationError, HTTP 200).")),
+    "400": (1, "", _not_confirmed(" (BadRequestError, HTTP 400).")),
     "401": (1, "", _not_confirmed(" (AuthenticationError, HTTP 401).")),
     "planted-401": (1, "", _not_confirmed(" (AuthenticationError, HTTP 401).")),
     "403": (1, "", _not_confirmed(" (PermissionDeniedError, HTTP 403).")),
+    "409": (1, "", _not_confirmed(" (ConflictError, HTTP 409).")),
+    "422": (1, "", _not_confirmed(" (UnprocessableEntityError, HTTP 422).")),
+    "429": (1, "", _not_confirmed(" (RateLimitError, HTTP 429).")),
     "500": (1, "", _not_confirmed(" (InternalServerError, HTTP 500).")),
     "planted-500": (1, "", _not_confirmed(" (InternalServerError, HTTP 500).")),
+    "oauth": (1, "", _not_confirmed(" (OAuthError, HTTP 401).")),
     "no-id-attribute": (1, "", _not_confirmed(": the lookup succeeded but returned no agent id.")),
     "id-none": (1, "", _not_confirmed(": the lookup succeeded but returned no agent id.")),
     "different-id": (
@@ -196,11 +221,20 @@ INSTRUCTIONS = (
 UNSET = None  # the line is removed from .env
 BLANK = ""  # the line is left as the template ships it
 SET_MODEL = "gpt-test-model"
-MODELS = {"model-unset": UNSET, "model-blank": BLANK, "model-set": SET_MODEL}
+# The script's own default. Choosing it explicitly is a model the reader gave, so
+# the note must not appear: that tells "no model given" apart from "this model
+# given", which a check on the resolved model alone cannot do.
+PLACEHOLDER_MODEL = "gpt-6-astra"
+MODELS = {
+    "model-unset": UNSET,
+    "model-blank": BLANK,
+    "model-set": SET_MODEL,
+    "model-set-to-the-placeholder": PLACEHOLDER_MODEL,
+}
 
 
 def _created(model_setting) -> tuple[tuple[int, str, str], list]:
-    model = model_setting or "gpt-6-astra"
+    model = model_setting or PLACEHOLDER_MODEL
     note = "" if model_setting else PLACEHOLDER_NOTE
     shown = (0, f"{note}Created agent agent_new ({model})\n\nAdd this to .env:\n  AGENT_ID=agent_new\n", "")
     calls = [
@@ -208,6 +242,42 @@ def _created(model_setting) -> tuple[tuple[int, str, str], list]:
         ["create", [], {"name": AGENT_NAME, "model": model, "instructions": INSTRUCTIONS}],
     ]
     return shown, calls
+
+
+def _create_failed(why: str, model: str = SET_MODEL) -> str:
+    return f"Could not create an agent with model {model} ({why}).\n"
+
+
+def _no_created_id(model: str = SET_MODEL) -> str:
+    return (
+        f"The create call for model {model} succeeded but returned no agent id, so there is\n"
+        f'nothing to add to .env. An agent named "{AGENT_NAME}" may have\n'
+        "been created: check the OpenAI dashboard of the project this key selects before\n"
+        "running this step again, so that you do not leave a second agent behind.\n"
+    )
+
+
+# create scenario -> (exit status, entire stdout, entire stderr), with AGENT_ID
+# absent and AGENT_MODEL set, so no placeholder note and no lookup is involved.
+# A failure must name the class and status and nothing the server sent, and a
+# success that carries no usable id must not print one.
+WITHOUT_AGENT_ID = {
+    "created": _created(SET_MODEL)[0],
+    "create-network": (1, "", _create_failed("APIConnectionError")),
+    "create-401": (1, "", _create_failed("AuthenticationError, HTTP 401")),
+    "create-planted-401": (1, "", _create_failed("AuthenticationError, HTTP 401")),
+    "create-429": (1, "", _create_failed("RateLimitError, HTTP 429")),
+    "create-500": (1, "", _create_failed("InternalServerError, HTTP 500")),
+    "create-planted-500": (1, "", _create_failed("InternalServerError, HTTP 500")),
+    "create-no-id-attribute": (1, "", _no_created_id()),
+    "create-id-none": (1, "", _no_created_id()),
+    "create-id-blank": (1, "", _no_created_id()),
+    "create-id-not-a-string": (1, "", _no_created_id()),
+}
+CREATE_CALLS = [
+    ["make_client", [], {}],
+    ["create", [], {"name": AGENT_NAME, "model": SET_MODEL, "instructions": INSTRUCTIONS}],
+]
 
 
 # ---------------------------------------------------------------------------
@@ -218,9 +288,11 @@ def _created(model_setting) -> tuple[tuple[int, str, str], list]:
 def _write_env(sample: Path, agent_id, agent_model) -> None:
     lines = (SAMPLE / ".env.example").read_text().splitlines(keepends=True)
     values = {
-        # The two keys step 2 tells the reader to fill in; a sentinel shows if one leaks.
-        "OPENAI_API_KEY": "sentinel-application-value",
-        "OPENAI_EXECUTOR_API_KEY": "sentinel-environment-value",
+        # The two keys step 2 tells the reader to fill in; a sentinel shows if one
+        # leaks. The pragmas are for detect-secrets, which reads the key names and
+        # not the values: these are fixed test sentinels, never real credentials.
+        "OPENAI_API_KEY": "sentinel-application-value",  # pragma: allowlist secret
+        "OPENAI_EXECUTOR_API_KEY": "sentinel-environment-value",  # pragma: allowlist secret
         "AGENT_ID": agent_id,
         "AGENT_MODEL": agent_model,
     }
@@ -251,7 +323,7 @@ def _environment() -> dict[str, str]:
     }
 
 
-def _prepare(sample: Path, scenario: str, agent_id, agent_model, source) -> Path:
+def _prepare(sample: Path, scenario: str, agent_id, agent_model, source, create_scenario: str) -> Path:
     shutil.copytree(
         SAMPLE, sample,
         ignore=shutil.ignore_patterns(".env", ".venv", "__pycache__", ".pytest_cache"),
@@ -259,7 +331,9 @@ def _prepare(sample: Path, scenario: str, agent_id, agent_model, source) -> Path
     if source is not None:
         (sample / "scripts" / "setup_agent.py").write_text(source)
     ledger = sample / "calls.jsonl"
-    (sample / "scripts" / "_client.py").write_text(FAKE_CLIENT.format(ledger=str(ledger), scenario=scenario))
+    (sample / "scripts" / "_client.py").write_text(
+        FAKE_CLIENT.format(ledger=str(ledger), scenario=scenario, create_scenario=create_scenario)
+    )
     (sample / "scripts" / "_fake_outcomes.py").write_text(OUTCOMES.read_text())
     python = sample / ".venv" / "bin" / "python"
     python.parent.mkdir(parents=True)
@@ -307,14 +381,14 @@ def _in_a_terminal(command, cwd, env, timeout=60):
     return proc.returncode, received.decode()
 
 
-def run_step_2(tmp_path, scenario, agent_id, agent_model, *, tty, source=None):
+def run_step_2(tmp_path, scenario, agent_id, agent_model, *, tty, source=None, create_scenario="created"):
     """Do step 2 in a fresh copy; return (status, shown) and the calls made.
 
     shown is (stdout, stderr) when piped, and every byte the terminal received
     when on a terminal.
     """
     sample = tmp_path / "sample"
-    ledger = _prepare(sample, scenario, agent_id, agent_model, source)
+    ledger = _prepare(sample, scenario, agent_id, agent_model, source, create_scenario)
     command = ["/bin/sh", "-c", PAGE_COMMANDS]
     env = _environment()
     if tty:
@@ -376,6 +450,57 @@ def test_the_planted_errors_carry_both_values(scenario):
     error = outcomes.lookup(scenario)
     assert outcomes.IN_BODY in str(error)
     assert error.request_id == outcomes.IN_HEADER
+
+
+@pytest.mark.parametrize("scenario", ["create-planted-401", "create-planted-500"])
+def test_the_planted_create_errors_carry_both_values(scenario):
+    # The same premise on the create path, which an unhandled exception would
+    # have printed in a traceback.
+    error = outcomes.create(scenario)
+    assert outcomes.IN_BODY in str(error)
+    assert error.request_id == outcomes.IN_HEADER
+
+
+def test_every_create_scenario_is_tested():
+    assert sorted(WITHOUT_AGENT_ID) == outcomes.CREATE_SCENARIOS
+
+
+def test_every_sdk_error_class_is_covered():
+    # The scenarios raise one of every openai.APIError subclass the installed SDK
+    # defines, so "every other way it can fail" is a claim about a known set. An
+    # SDK that gains a class fails here instead of leaving it silently untested.
+    assert outcomes.sdk_error_classes() - outcomes.error_classes_covered() == set()
+
+
+@MODES
+@pytest.mark.parametrize("scenario", sorted(WITHOUT_AGENT_ID))
+def test_what_a_create_shows_is_exactly_this(tmp_path, scenario, tty):
+    status, shown, calls = run_step_2(
+        tmp_path, "kept", UNSET, SET_MODEL, tty=tty, create_scenario=scenario
+    )
+
+    assert (status, shown) == _as_shown(WITHOUT_AGENT_ID[scenario], tty)
+    assert calls == CREATE_CALLS
+
+
+@MODES
+def test_a_failed_create_shows_the_placeholder_note_and_then_the_error(tmp_path, tty):
+    # With no model given the note is printed before the call is made, so a reader
+    # sees the note and then the failure; the error path must not swallow it.
+    expected = (1, PLACEHOLDER_NOTE, _create_failed("RateLimitError, HTTP 429", PLACEHOLDER_MODEL))
+
+    status, shown, calls = run_step_2(
+        tmp_path, "kept", UNSET, UNSET, tty=tty, create_scenario="create-429"
+    )
+
+    assert (status, shown) == _as_shown(expected, tty)
+    assert calls == [
+        ["make_client", [], {}],
+        [
+            "create", [],
+            {"name": AGENT_NAME, "model": PLACEHOLDER_MODEL, "instructions": INSTRUCTIONS},
+        ],
+    ]
 
 
 def test_output_only_on_a_terminal_is_caught_by_the_terminal_run(tmp_path):

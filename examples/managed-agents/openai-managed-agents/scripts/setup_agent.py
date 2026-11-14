@@ -22,6 +22,11 @@ the error by its SDK exception class and, when it has one, its HTTP status,
 rather than being read as "agent gone". A lookup that succeeds but returns no
 id, or a different agent's id, stops too, saying which.
 
+Creating an agent is reported the same way: a create that fails stops, naming
+the error by its SDK exception class and its HTTP status and nothing the server
+sent, and a create that succeeds but returns no usable id stops and says to
+check the dashboard before running the step again, because the agent may exist.
+
 Choosing the model
 ------------------
 Set AGENT_MODEL in .env to the model id you want. The default below is a
@@ -81,16 +86,24 @@ project it was created in, change the line in .env to a blank AGENT_ID=, load th
 again with `set -a; . ./.env; set +a`, and run this step again to create a new agent."""
 
 
+NO_CREATED_ID_MESSAGE = """\
+The create call for model {model} succeeded but returned no agent id, so there is
+nothing to add to .env. An agent named "{name}" may have
+been created: check the OpenAI dashboard of the project this key selects before
+running this step again, so that you do not leave a second agent behind."""
+
+
 def confirm_agent_exists(client, agent_id: str) -> None:
     """Return if the lookup returns this agent; otherwise exit with a message.
 
     A 404 is not read as "gone": the SDK raises NotFoundError for any 404,
     including one caused by a mistyped id, a different project or organization,
     or a different endpoint, so the message lists those to check and says to
-    remove AGENT_ID only after confirming the agent is gone. Any other failure (a
-    network error, a 401 or 403, a 5xx) means "could not tell", and so does a
-    successful response that does not carry this agent's id: either way the
-    agent is not kept, and AGENT_ID is not suggested for removal.
+    blank AGENT_ID in .env and load the file again only after confirming the
+    agent is gone. Any other failure (a network error, a 401 or 403, a 429, a
+    5xx) means "could not tell", and so does a successful response that does not
+    carry this agent's id: either way the agent is not kept, and clearing
+    AGENT_ID is not suggested.
     """
     try:
         agent = client.beta.agents.retrieve(agent_id)
@@ -120,13 +133,23 @@ def main() -> None:
         if not os.environ.get("AGENT_MODEL"):
             print(f"[note] Using the PLACEHOLDER model id '{model}'. Set AGENT_MODEL in .env to a")
             print("       model id your project can use; confirm it against https://platform.openai.com/docs/models")
-        agent = client.beta.agents.create(
-            name=AGENT_NAME,
-            model=model,
-            instructions=INSTRUCTIONS,
-        )
-        agent_id = agent.id
-        print(f"Created agent {agent.id} ({model})")
+        try:
+            agent = client.beta.agents.create(
+                name=AGENT_NAME,
+                model=model,
+                instructions=INSTRUCTIONS,
+            )
+        except APIError as exc:
+            # Named by class and status only, for the reason _describe gives: a
+            # creation failure's body and request-id header are server-controlled
+            # too, and an unhandled exception would print the body in a traceback.
+            sys.exit(f"Could not create an agent with model {model} ({_describe(exc)}).")
+        agent_id = getattr(agent, "id", None)
+        if not isinstance(agent_id, str) or not agent_id:
+            # The call succeeded, so an agent may well exist: say so rather than
+            # inviting a second create, and print no id a reader could paste.
+            sys.exit(NO_CREATED_ID_MESSAGE.format(model=model, name=AGENT_NAME))
+        print(f"Created agent {agent_id} ({model})")
 
     print()
     print("Add this to .env:")

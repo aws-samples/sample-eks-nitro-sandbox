@@ -278,9 +278,10 @@ one running executor.
 on this page used `gpt-6-luna`; that is the id this blueprint was exercised with, not a
 guaranteed-current default, so confirm a model id for your own project against the official
 [model list](https://platform.openai.com/docs/models) before you rely on it. It must be a
-public OpenAI Agents API model id, not an internal or runtime identifier. If `AGENT_MODEL` is
-unset, `setup_agent.py` falls back to a clearly-labeled placeholder and tells you to set a real
-one. Model ids change; re-check before each release.
+public OpenAI Agents API model id, not an internal or runtime identifier. When it creates an
+agent, if `AGENT_MODEL` is unset or blank, `setup_agent.py` falls back to a clearly-labeled
+placeholder and tells you to set a real one; keeping an existing agent uses no model, so no
+note appears. Model ids change; re-check before each release.
 
 **The two keys, and where each is created.** This blueprint uses two OpenAI credentials of
 *different classes*, created on different dashboard surfaces:
