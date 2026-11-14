@@ -8,8 +8,8 @@
 # ClusterIP Service below. There is no Ingress, LoadBalancer or NodePort. Two
 # layers guard the intake: a deny-by-default ingress NetworkPolicy
 # (launcher-ingress.yaml) so no in-cluster pod may reach the Service, and a
-# bearer token on every request (launcher-auth Secret) so a caller that did
-# reach it still cannot drive it.
+# bearer token on every claim and release POST (launcher-auth Secret) so a
+# caller that did reach it still cannot drive it; GET / is the token-free probe.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,21 +22,29 @@ spec:
   template:
     metadata:
       labels:
-        app: openai-launcher
+        app: openai-launcher   # selected by the ingress policy in launcher-ingress.yaml
       annotations:
         # It holds open hand-offs in memory; consolidation evicted it mid-hand-off on EKS Auto Mode.
         karpenter.sh/do-not-disrupt: "true"
     spec:
       serviceAccountName: openai-launcher
+      # No automatic token mount. The launcher does call the API (it creates and
+      # watches SandboxClaims), so the token it needs is mounted explicitly by the
+      # kube-api-access volume below, at the path the automatic mount would use,
+      # with a lifetime this file states.
+      automountServiceAccountToken: false
       enableServiceLinks: false   # keeps injected <SERVICE>_* names out of the guard's way
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
+        # The image's own user (Dockerfile, useradd --uid 10001). The sandbox
+        # template runs as the same UID, because both roles share the image.
+        runAsUser: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: launcher
-          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/openai-sandbox-executor:latest
+          image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/openai-sandbox-executor:v1
+          imagePullPolicy: IfNotPresent
           args: ["launch"]
           ports:
             - name: intake
@@ -46,23 +54,19 @@ spec:
               path: /
               port: intake
             periodSeconds: 5
+          # Restarts a launcher that stopped answering. GET / needs no token and
+          # returns no data, and ThreadingHTTPServer answers it on its own thread,
+          # so a hand-off in progress (a claim being watched until Ready) does not
+          # hold it up. A restart loses the hand-offs held in memory, as an
+          # eviction would, so it takes six missed probes in a row, a minute.
+          livenessProbe:
+            httpGet:
+              path: /
+              port: intake
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
           env:
-            # The environment key: the launcher's only credential, held here and
-            # given to each claimed sandbox through the claim env. Never the
-            # application key (guard.py refuses a pod that holds it).
-            - name: OPENAI_EXECUTOR_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: openai-env-key
-                  key: OPENAI_EXECUTOR_API_KEY
-            # The intake's bearer token. The launcher refuses to start without
-            # it (fail closed) and rejects any request whose token does not
-            # match. submit.py/cleanup.py send it from the operator's .env.
-            - name: LAUNCHER_AUTH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: launcher-auth
-                  key: LAUNCHER_AUTH_TOKEN
             - name: SANDBOX_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -74,6 +78,61 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          volumeMounts:
+            # The launcher's two credentials, as files rather than environment
+            # variables. config.py reads them from this directory.
+            - name: launcher-credentials
+              mountPath: /var/run/secrets/openai-managed-agents
+              readOnly: true
+            - name: kube-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+      volumes:
+        # One file per credential, named after the key:
+        #   OPENAI_EXECUTOR_API_KEY  the environment key: the launcher's only
+        #     OpenAI credential, held here and given to each claimed sandbox
+        #     through the claim env. Never the application key: guard.py refuses
+        #     a pod with it set in its env or an entry named for it here (by name).
+        #   LAUNCHER_AUTH_TOKEN  the intake's bearer token. The launcher refuses
+        #     to start without it (fail closed) and rejects any claim or release
+        #     POST whose token does not match. submit.py/cleanup.py send it from
+        #     the operator's .env.
+        - name: launcher-credentials
+          projected:
+            sources:
+              - secret:
+                  name: openai-env-key
+                  items:
+                    - key: OPENAI_EXECUTOR_API_KEY
+                      path: OPENAI_EXECUTOR_API_KEY
+              - secret:
+                  name: launcher-auth
+                  items:
+                    - key: LAUNCHER_AUTH_TOKEN
+                      path: LAUNCHER_AUTH_TOKEN
+        # The ServiceAccount token, mounted by hand in place of the automatic
+        # mount. expirationSeconds is 3600, not the automatic mount's 3607: the
+        # API server extends only a 3607-second token past its stated lifetime,
+        # so this token is valid for one hour. The kubelet rotates the file
+        # before it expires, and the Kubernetes Python client re-reads it: its
+        # in-cluster loader has refreshed the token from the file by default
+        # since client 12.0.0 (try_refresh_token).
+        - name: kube-api-access
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        fieldPath: metadata.namespace
 ---
 # ClusterIP (the default): reachable only inside the cluster. The operator
 # connects with `kubectl port-forward svc/openai-launcher 8080:8080`. No

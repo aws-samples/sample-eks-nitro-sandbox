@@ -9,9 +9,9 @@
 # Ingress the launcher accepts no connection from any pod.
 #
 # This is the reachability layer. It is NOT authentication: the launcher also
-# requires a bearer token on every request (the launcher-auth Secret), because a
-# NetworkPolicy cannot tell one authorized caller from another. The two together
-# are deny-by-default reachability plus per-request authentication.
+# requires a bearer token on every claim and release POST (the launcher-auth
+# Secret), because a NetworkPolicy cannot tell one authorized caller from
+# another. GET / answers without the token and returns only a health status.
 apiVersion: networking.k8s.aws/v1alpha1
 kind: ApplicationNetworkPolicy
 metadata:
