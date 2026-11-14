@@ -274,10 +274,13 @@ one. Model ids change; re-check before each release.
 
 - **The application key** (`OPENAI_API_KEY`) creates the agent, creates and reads sessions, and
   deletes them. Create it on the ordinary **API keys** page. It stays on your machine; no pod
-  holds it. To keep it off your terminal as well, the scripts hold the OpenAI SDK's own
-  logging, and its transport's, at `WARNING`: at debug level those write response headers out
-  verbatim, and an endpoint can choose what is in them. If you had `OPENAI_LOG` set, the
-  scripts say on stderr that they have done this.
+  holds it. The scripts also hold the OpenAI SDK's own logging, and its transport's, at
+  `WARNING`, because below that they copy parts of the response — the request id, the reason
+  phrase, whole header tuples — into their output, and the endpoint `OPENAI_BASE_URL` selects
+  chooses what is in those. If you had `OPENAI_LOG=debug` or `=info` set, the scripts say on
+  stderr that they have done this. That closes those logging routes; it is not a promise that
+  nothing else can ever put the key on your terminal — an endpoint that echoes it back in an
+  error message can still reach an exception message, for instance.
 - **The environment key** (`OPENAI_EXECUTOR_API_KEY`, read in the sandbox as `CODEX_API_KEY`)
   lets `codex exec-server` connect its self-hosted environment. Create it on the project's
   **Agents tab**, not the general API keys page, and set every other permission on it to

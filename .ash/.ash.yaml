@@ -1138,6 +1138,19 @@ global_settings:
       path: 'examples/managed-agents/openai-managed-agents/tests/*.py'
       reason: 'pytest asserts by design; nothing under tests/ ships in the image (Dockerfile:38-39 copies pyproject.toml and src/ only)'
       expiration: '2027-12-31'
+    # Scoped to the folder, not pinned to lines, as the B101 entry above is: these
+    # test files are edited every round and a line pin breaks on each edit. Added
+    # for #230, whose tests have to run the interpreter in a child process because
+    # what they test is import-time and logger state, which a test inside the
+    # pytest process cannot observe.
+    - rule_id: B404
+      path: 'examples/managed-agents/openai-managed-agents/tests/*.py'
+      reason: 'Subprocess import is required to run this interpreter on a driver the test writes itself; the import executes no command, and nothing under tests/ ships in the image (Dockerfile:38-39 copies pyproject.toml and src/ only)'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/managed-agents/openai-managed-agents/tests/*.py'
+      reason: 'Fixed argument list and no shell: [sys.executable, <driver the test wrote into its own pytest tmp_path>], with the environment built by the test. No value from a reader, a network response or the repository reaches the argument list'
+      expiration: '2027-12-31'
     - rule_id: B404
       path: 'examples/managed-agents/openai-managed-agents/src/launcher/serve.py'
       line_start: 45

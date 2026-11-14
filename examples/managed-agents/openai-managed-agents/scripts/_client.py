@@ -29,40 +29,72 @@ from openai import OpenAI
 # nothing redacts a response header. Its own comment says transport loggers are
 # left to the application, which is why httpcore2 is a separate route.
 #
-# Raising the level on these three parents is what stops it, rather than unsetting
-# OPENAI_LOG: a logger's level is checked before a record is made, children with
-# no level of their own inherit it, and -- the part that matters -- this works
-# whichever order the importing script happens to use. Unsetting OPENAI_LOG only
-# works if it runs before `import openai`, and two of this sample's three scripts
-# import openai first. WARNING rather than CRITICAL, so a genuine warning still
-# reaches the reader; propagate is left alone for the same reason.
-SILENCED_SDK_LOGGERS = ("openai", "httpx2", "httpcore2")
+# Raising these loggers' own level is what stops it, rather than unsetting
+# OPENAI_LOG: a logger's level is checked before a record is made, and this holds
+# whichever order the importing script happens to use. Unsetting OPENAI_LOG works
+# only when it runs before `import openai`, and submit.py imports openai first.
+#
+# Each name is pinned, parents and the children that do the logging, and the level
+# is always set rather than only when it is currently too low. Both matter, and an
+# earlier version of this got both wrong:
+#   - `if getEffectiveLevel() < WARNING: setLevel(WARNING)` sets nothing at all in
+#     the ordinary case, because the inherited root level is already WARNING. The
+#     logger keeps NOTSET, and a later logging.basicConfig(level=DEBUG) -- a
+#     framework, a wrapper, a notebook -- makes it inherit DEBUG again.
+#   - pinning only the parents leaves a child that is given an explicit level of
+#     its own, which is checked instead of the parent's.
+# `max(getEffectiveLevel(), WARNING)` keeps a stricter setting a reader chose.
+#
+# WARNING rather than CRITICAL, and propagate left alone, so a genuine warning
+# still reaches the reader. The boundary that remains: logging configured *after*
+# make_client() returns can lower these again, and openai.lib.parsing logs
+# response-supplied values at WARNING, which this floor does not suppress. These
+# scripts do not use that parsing path; the claim here is about their own routes,
+# not about the SDK as a whole.
+PROTECTED_LOGGERS = (
+    "openai",
+    "openai._base_client",          # DEBUG: the response's x-request-id, verbatim
+    "httpx2",                       # INFO: the response's reason phrase, verbatim
+    "httpcore2",
+    "httpcore2.connection",
+    "httpcore2.http11",             # DEBUG: whole response-header tuples
+    "httpcore2.http2",
+    "httpcore2.proxy",
+    "httpcore2.socks",
+)
 
 
 def silence_sdk_logging() -> None:
-    """Stop the SDK and its transport logging response data to the terminal."""
-    for name in SILENCED_SDK_LOGGERS:
+    """Hold the SDK's and its transport's own loggers at WARNING or stricter."""
+    for name in PROTECTED_LOGGERS:
         logger = logging.getLogger(name)
-        if logger.getEffectiveLevel() < logging.WARNING:
-            logger.setLevel(logging.WARNING)
+        logger.setLevel(max(logger.getEffectiveLevel(), logging.WARNING))
 
 
-# At import, so that it has happened before any script here can make a request,
-# and so a script that imports openai first is covered too.
+# At import, so it has happened before an importing script can make a request,
+# and again in make_client() below, which is after any logging a surrounding
+# framework sets up on its way to calling it.
 silence_sdk_logging()
 
 
 def make_client() -> OpenAI:
     """Return the client, or exit naming what is missing."""
-    if os.environ.get("OPENAI_LOG") is not None:
-        # Said rather than done silently: a reader who asked for debug logging
-        # should know why they are not getting the SDK's. Only this variable is
-        # mentioned, because it is the one a reader sets on purpose; logging
-        # configured by a surrounding process is silenced the same way without a
-        # note, since there is nobody to tell.
+    # Again here, not only at import: whatever calls this may have configured
+    # logging in between, and the last word on these loggers should be ours.
+    silence_sdk_logging()
+    if os.environ.get("OPENAI_LOG") in ("debug", "info"):
+        # Said rather than done silently: a reader who asked for debug or info
+        # logging should know why they are not getting the SDK's. Only those two
+        # values, because they are the only ones this changes anything for -- the
+        # SDK recognises debug, info, warning, error and critical, and the last
+        # three are at or stricter than the floor below. An empty or unrecognised
+        # value turns nothing on, so there is nothing to explain. Logging that a
+        # surrounding process configured is held the same way without a note,
+        # since there is nobody to tell.
         print(
-            "[note] OPENAI_LOG is set. These scripts hold the SDK's own logging at WARNING,"
-            " because at debug level it writes response headers out verbatim.",
+            f"[note] OPENAI_LOG={os.environ['OPENAI_LOG']}: these scripts hold the SDK's own"
+            " logging, and its transport's, at WARNING, because below that they copy parts of"
+            " the response -- which the endpoint chooses -- into their output.",
             file=sys.stderr,
         )
     if not os.environ.get("OPENAI_API_KEY"):
