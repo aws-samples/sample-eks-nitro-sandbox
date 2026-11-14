@@ -1,4 +1,4 @@
-"""Tests for scripts/_client.py: the SDK must not copy response data to output.
+"""Tests for scripts/_client.py: the SDK's own logs must not carry the response.
 
 Below WARNING, the SDK and its transport write parts of the response into their
 own logs, and the endpoint OPENAI_BASE_URL selects chooses what is in those. The
@@ -88,7 +88,7 @@ def transport():
     """A real httpx2 transport over a canned response, so httpcore2 runs for real."""
     body = json.dumps({{"id": AGENT_ID}}).encode()
     raw = (
-        b"HTTP/1.1 200 " + ESC.encode() + b" OK\\r\\n"
+        b"HTTP/1.1 200 " + KEY.encode() + b" " + ESC.encode() + b" OK\\r\\n"
         b"Content-Type: application/json\\r\\n"
         b"x-request-id: " + KEY.encode() + b" " + ESC.encode() + b"\\r\\n"
         b"Content-Length: " + str(len(body)).encode() + b"\\r\\n\\r\\n" + body
@@ -106,6 +106,8 @@ if os.environ["WITH_THE_SHARED_CLIENT"] == "1":
 
     if os.environ["LOGGING_ON"] == "root-debug-after-import":
         logging.basicConfig(level=logging.DEBUG)
+    elif os.environ["LOGGING_ON"] == "root-info-after-import":
+        logging.basicConfig(level=logging.INFO)
     elif os.environ["LOGGING_ON"] == "child-debug-after-import":
         logging.basicConfig()
         logging.getLogger("openai._base_client").setLevel(logging.DEBUG)
@@ -126,6 +128,8 @@ else:
 
     if os.environ["LOGGING_ON"] == "root-debug-after-import":
         logging.basicConfig(level=logging.DEBUG)
+    elif os.environ["LOGGING_ON"] == "root-info-after-import":
+        logging.basicConfig(level=logging.INFO)
     elif os.environ["LOGGING_ON"] == "child-debug-after-import":
         logging.basicConfig()
         logging.getLogger("openai._base_client").setLevel(logging.DEBUG)
@@ -170,6 +174,10 @@ IMPORT_ORDERS = pytest.mark.parametrize(
 LOGGING_ROUTES = pytest.mark.parametrize(
     "logging_on",
     ["openai-log", "root-debug-before", "root-debug-after-import",
+     # INFO, not DEBUG: httpx2 logs the response's reason phrase at INFO, so a
+     # version of this fix that only looked for DEBUG left httpx2 at NOTSET and
+     # leaked through it while passing every other case here.
+     "root-info-after-import",
      # A logger given its own level is checked instead of its parent's, so a fix
      # that pinned only the parents would leave this one open.
      "child-debug-after-import"],
@@ -213,51 +221,98 @@ def test_without_the_shared_client_the_response_reaches_the_output(
     assert ESC_SENTINEL in result.stderr
 
 
+# The nine names, owned by this file. The probe below used to loop over
+# _client.PROTECTED_LOGGERS itself, so deleting four of them from the module
+# passed every case.
+EXPECTED_PROTECTED_LOGGERS = (
+    "openai",
+    "openai._base_client",
+    "httpx2",
+    "httpcore2",
+    "httpcore2.connection",
+    "httpcore2.http11",
+    "httpcore2.http2",
+    "httpcore2.proxy",
+    "httpcore2.socks",
+)
+
+# The versions the nine names were audited against. The sample pins only openai,
+# so the transport and parser float; if one of them moves, the audit has to be
+# redone rather than assumed, and this says so by failing.
+EXPECTED_STACK = {"openai": "3.31.0", "httpx2": "2.16.0", "httpcore2": "2.16.0", "h11": "0.16.0"}
+
 LEVEL_PROBE = '''\
+import importlib.metadata as metadata
+import json
 import logging
 import sys
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level={start_level})
 sys.path.insert(0, {scripts!r})
 import _client
+_client.make_client()
 
-logging.basicConfig(level=logging.DEBUG)   # again, after the import
-_client.silence_sdk_logging()
-
-for name in _client.PROTECTED_LOGGERS:
-    # The logger's OWN level, not the effective one: an effective level can come
-    # from an ancestor that something else raised, which would make this pass
-    # while these loggers were never pinned at all.
-    print(name, logging.getLogger(name).level)
+print(json.dumps({{
+    "names": list(_client.PROTECTED_LOGGERS),
+    "levels": {{n: logging.getLogger(n).level for n in _client.PROTECTED_LOGGERS}},
+    "versions": {{p: metadata.version(p) for p in ("openai", "httpx2", "httpcore2", "h11")}},
+}}))
 '''
 
 
-def test_every_protected_logger_has_its_own_level_at_or_above_warning(tmp_path):
-    """The mechanism, asserted on each logger's own level.
+def _probe(tmp_path, start_level):
+    import json
 
-    Kept as a mechanism check beside the request cases above, not as a substitute
-    for them: an earlier version of this file had only this, comparing effective
-    levels, and a version of the fix that never pinned httpx2 or httpcore2 passed
-    it because they inherited a root level something else had raised.
-    """
     probe = tmp_path / "probe.py"
-    probe.write_text(LEVEL_PROBE.format(scripts=str(SCRIPTS)))
-
-    result = subprocess.run(
-        [sys.executable, str(probe)], cwd=tmp_path, capture_output=True, text=True, timeout=120,
-    )
-
-    assert result.returncode == 0, result.stderr[-2000:]
-    levels = {
-        name: int(level)
-        for name, level in (line.split() for line in result.stdout.strip().splitlines())
+    probe.write_text(LEVEL_PROBE.format(scripts=str(SCRIPTS), start_level=start_level))
+    environment = {
+        name: value for name, value in os.environ.items()
+        if not name.startswith(("OPENAI_", "PYTEST_"))
     }
-    assert levels, result.stdout
-    for name, level in levels.items():
-        assert level >= logging.WARNING, f"{name} has its own level at {level}"
-    # And the set is the one the module says it protects, including the children
-    # that do the logging rather than only their parents.
-    assert {"openai._base_client", "httpx2", "httpcore2.http11"} <= set(levels)
+    environment["OPENAI_API_KEY"] = KEY_SENTINEL
+    result = subprocess.run(
+        [sys.executable, str(probe)], cwd=tmp_path, env=environment,
+        capture_output=True, text=True, timeout=120,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    return json.loads(result.stdout)
+
+
+def test_the_module_protects_exactly_the_audited_logger_names(tmp_path):
+    assert tuple(_probe(tmp_path, "logging.DEBUG")["names"]) == EXPECTED_PROTECTED_LOGGERS
+
+
+def test_the_audited_stack_is_the_installed_one(tmp_path):
+    """If the transport or the parser moves, the logger audit is out of date.
+
+    The sample pins openai and not its transport, so this is the thing that says
+    "redo the audit" rather than letting a new version's logging go unexamined.
+    """
+    assert _probe(tmp_path, "logging.DEBUG")["versions"] == EXPECTED_STACK
+
+
+def test_each_protected_logger_is_set_to_warning_from_a_lower_level(tmp_path):
+    """Exactly WARNING, not merely at or above it.
+
+    An earlier assertion of ">= WARNING" would have accepted a fix that set
+    everything to CRITICAL, which would hide warnings a reader should see.
+    """
+    levels = _probe(tmp_path, "logging.DEBUG")["levels"]
+    assert set(levels) == set(EXPECTED_PROTECTED_LOGGERS)
+    assert all(level == logging.WARNING for level in levels.values()), levels
+
+
+def test_a_stricter_level_already_in_force_is_kept(tmp_path):
+    """The other direction, and a regression test.
+
+    An earlier version ran the same call when the module was imported, which froze
+    every logger at the default WARNING. A framework that then configured ERROR got
+    WARNING records anyway, because the assignment reads the effective level and by
+    then each logger had one of its own. With the call made only from
+    make_client(), a stricter setting in force by then survives.
+    """
+    levels = _probe(tmp_path, "logging.ERROR")["levels"]
+    assert all(level == logging.ERROR for level in levels.values()), levels
 
 
 NOTE_DRIVER = '''\
@@ -271,7 +326,7 @@ _client.make_client()
 @pytest.mark.parametrize(
     "openai_log,expect_note",
     [(None, False), ("debug", True), ("info", True), ("warning", False),
-     ("error", False), ("", False), ("nonsense", False)],
+     ("error", False), ("critical", False), ("", False), ("nonsense", False)],
 )
 def test_the_note_appears_exactly_for_the_values_it_changes_something_for(
     tmp_path, openai_log, expect_note
