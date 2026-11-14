@@ -39,8 +39,9 @@ def _response(status: int, planted: bool) -> httpx.Response:
     """The httpx response an SDK error carries.
 
     Planted, the body goes in the response *content* as well as the headers.
-    Round 10 found that it previously went only in the headers and in the error's
-    `body` attribute, so `exc.response.text` was empty: a mutation writing
+    Round 10 found that it previously went only in the x-request-id header and in
+    the error's `body` attribute, with the response body itself empty, so
+    `exc.response.text` held nothing: a mutation writing
     exc.response.text to stderr passed all 299 tests, because there was nothing
     there to print. A real SDK error keeps the body in both places.
     """
@@ -114,9 +115,12 @@ _ERROR_BUILDERS = {
         lambda planted: openai.APITimeoutError(_REQUEST),
         _NEITHER,
     ),
-    # Carries a response and a body, but writes its own fixed message ("Data
-    # returned by API invalid for expected schema.") and is an APIError rather
-    # than an APIStatusError, so it has no request_id attribute at all.
+    # Carries a response and a body, but builds its own message ("Data returned by
+    # API invalid for expected schema.") rather than using the body, and is an
+    # APIError rather than an APIStatusError, so it has no request_id attribute at
+    # all. Not a property of the class in every configuration: under strict
+    # response validation the SDK can build that message from a server-controlled
+    # Content-Type. This sample does not enable strict validation.
     "response-invalid": (
         openai.APIResponseValidationError,
         lambda planted: openai.APIResponseValidationError(_response(200, planted), _body(planted)),

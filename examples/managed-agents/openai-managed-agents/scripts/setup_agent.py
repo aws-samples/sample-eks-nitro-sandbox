@@ -26,25 +26,34 @@ Creating an agent is reported the same way: a create that raises an SDK APIError
 stops, naming the error by its exception class and, when it has one, its HTTP
 status, and nothing the server sent.
 
-Everything this step prints back to you is checked first, because the line it
-prints is a shell assignment you paste into .env and load with
-`set -a; . ./.env; set +a`, and that runs what it finds rather than assigning it.
-Quoting hides this: a value can sit inertly in .env and still be dangerous once
-printed back unquoted, or inject lines into this step's own output.
+Every value this step interpolates into what it prints is checked before it is
+printed. The line it prints is pasted into .env and loaded with
+`set -a; . ./.env; set +a`, which parses the file as shell code, so an expansion
+or a command in a value may run rather than being assigned. Quoting hides this: a
+value can sit inertly in .env and still run once printed back unquoted, or add a
+line to this step's own output.
 
-- An agent id, from either source, must be a plain token this step is willing to
-  emit (see SAFE_AGENT_ID, which is an emission allowlist and not a claim about
-  what the API issues). A create that returns no id, a non-string one, or one
-  outside that is refused without printing it, and says to check the dashboard
-  before running the step again, because the agent may exist. An AGENT_ID you
-  supply is checked where it is read, before the lookup, since the 404 and
-  could-not-confirm messages repeat it too.
-- AGENT_MODEL must be printable ASCII, because every one of those messages shows
-  it back to you, and a newline or an escape sequence in it would add lines to
-  this step's output -- including one that looks like this step's own.
+- An agent id, from either source, must be one this step is willing to emit (see
+  SAFE_AGENT_ID, which is an emission allowlist and not a claim about what the
+  API issues; not every value it refuses would have run). A create that returns
+  no id, a non-string one, or one outside the allowlist is refused without
+  printing it, and says to check the dashboard before running the step again,
+  because the agent may exist. An AGENT_ID you supply is checked where it is
+  read, before the lookup, since the 404 and could-not-confirm messages repeat it
+  too.
+- AGENT_MODEL is echoed on one line, the one reporting a new agent, and must be a
+  short token with no whitespace (see DISPLAYABLE_MODEL). A refusal that mentioned
+  the model would be a second place it was echoed, so none of them does.
 
 A refusal never repeats the offending value, since that would put the same string
 on your terminal.
+
+Two things that reach your terminal are not interpolated values and are handled
+their own way: a failure inside a dependency, whose traceback could carry text
+from .env or from whatever OPENAI_BASE_URL points at, so main() is wrapped below
+and shows only an exception class name; and the SDK's own debug logging, which
+scripts/_client.py turns off before importing it, because at debug level it
+writes response headers out verbatim.
 
 Choosing the model
 ------------------
@@ -138,17 +147,35 @@ def is_emittable_agent_id(value: object) -> bool:
     )
 
 
-# AGENT_MODEL is read from .env and interpolated into the messages below, so it
-# reaches the terminal. Quoting makes a newline or an escape sequence inert in
-# .env, so a value that loads harmlessly can still inject lines into this
-# program's output once printed -- including a forged "Add this to .env:" line a
-# reader might paste. Printable ASCII is the constraint: no real model id needs
-# anything else, and nothing outside it can move the cursor or start a new line.
-PRINTABLE_MODEL = re.compile(r"\A[\x20-\x7e]{1,256}\Z")
+# AGENT_MODEL comes from .env and is echoed on the success line, so it reaches the
+# terminal. Quoting makes a newline or an escape sequence inert in .env while
+# leaving it live in this program's output, so a value that loads without
+# complaint can still add lines of its own.
+#
+# A byte-level check is not enough on its own. Round 11 of the second review
+# forged a line with no control character at all, using a value of ordinary
+# letters and spaces long enough that the terminal's own wrapping put
+# "  AGENT_ID=forged" at the start of a row. So whitespace is excluded too: that
+# is what the indented forgery needed, and no model id has any. The length cap is
+# a local display policy, not something the API documents -- the SDK types this
+# field as a plain str.
+#
+# Stated plainly rather than claimed as closed: this reduces display forgery, it
+# does not eliminate it. On a narrow enough terminal a wrapped row can still begin
+# with text from this value, unindented. Closing it completely means not echoing
+# the model at all, which changes the success line the page's output block was
+# recorded from; see the pull request.
+DISPLAYABLE_MODEL = re.compile(r"\A[A-Za-z0-9._:/-]{1,64}\Z")
+
+UNEXPECTED_FAILURE_MESSAGE = """\
+This step stopped on an unexpected {kind}, and the details are not shown: a
+failure deep in a dependency can carry text from .env or from whatever
+OPENAI_BASE_URL points at, and this step will not put either on your terminal.
+Check OPENAI_BASE_URL, OPENAI_API_KEY and the rest of .env, then run it again."""
 
 NO_CREATED_ID_MESSAGE = """\
-The create call for model {model} succeeded but returned no usable agent id, so
-there is nothing to add to .env. An agent named "{name}"
+The create call succeeded but returned no usable agent id, so there is nothing
+to add to .env. An agent named "{name}"
 may have been created: check the OpenAI dashboard of the project this key selects
 before running this step again, so that you do not leave a second agent behind."""
 
@@ -161,16 +188,19 @@ of letters, digits, dot, underscore and hyphen, up to 128 of them and not "." or
 it there, then load the file again and rerun this step."""
 
 UNSAFE_MODEL_MESSAGE = """\
-The AGENT_MODEL that is set holds a character this step will not print, so it was
-not used and is not repeated here. Its value is shown back to you in this step's
-messages, and a newline or an escape sequence in it would add lines to that
-output -- including a line that looks like one of this step's own. Quoting hides
-that in .env, so a value that loads without complaint can still do it. Check the
-AGENT_MODEL line in .env, then load the file again and rerun this step."""
+The AGENT_MODEL that is set is not one this step will print, so no agent was
+created and the value is not repeated here. It is shown back to you on the line
+reporting the new agent, so this step prints only a model of letters, digits,
+dot, underscore, hyphen, colon or slash, up to 64 of them: no whitespace and
+nothing longer. That is a limit on what this step will display, not on what the
+API accepts. Quoting is why it matters -- a value can sit in .env without the
+shell doing anything with it and still add a line to this step's output once
+printed. Check the AGENT_MODEL line in .env, then load the file again and rerun
+this step."""
 
 UNSAFE_CREATED_ID_MESSAGE = """\
-The create call for model {model} returned an agent id this step will not print,
-so it was not printed: the line this step prints is pasted into .env and loaded
+The create call returned an agent id this step will not print, so it was not
+printed: the line this step prints is pasted into .env and loaded
 with `set -a; . ./.env; set +a`, which runs what it finds. Check OPENAI_BASE_URL
 first, since the endpoint it selects is what sent this. An agent named "{name}"
 may have been created: check the OpenAI dashboard of the project this key selects
@@ -209,9 +239,6 @@ def main() -> None:
     # `set -a; . ./.env` exports the template's blank AGENT_MODEL= as "", which
     # must mean "not set", not a model id of "".
     model = os.environ.get("AGENT_MODEL") or DEFAULT_MODEL
-    # Before anything prints it. Every message below interpolates the model.
-    if not PRINTABLE_MODEL.match(model):
-        sys.exit(UNSAFE_MODEL_MESSAGE)
     agent_id = os.environ.get("AGENT_ID")
     if agent_id:
         # Checked here rather than beside the print, so that every id this program
@@ -225,6 +252,11 @@ def main() -> None:
         confirm_agent_exists(client, agent_id)
         print(f"AGENT_ID is set and the agent exists; keeping agent {agent_id}")
     else:
+        # Only this branch echoes the model, on the success line below, so the
+        # check belongs here: a model this step would not print must not stop a
+        # run that keeps an existing agent and never shows it.
+        if not DISPLAYABLE_MODEL.match(model):
+            sys.exit(UNSAFE_MODEL_MESSAGE)
         if not os.environ.get("AGENT_MODEL"):
             print(f"[note] Using the PLACEHOLDER model id '{model}'. Set AGENT_MODEL in .env to a")
             print("       model id your project can use; confirm it against https://platform.openai.com/docs/models")
@@ -238,15 +270,15 @@ def main() -> None:
             # Named by class and status only, for the reason _describe gives: a
             # creation failure's body and request-id header are server-controlled
             # too, and an unhandled exception would print the body in a traceback.
-            sys.exit(f"Could not create an agent with model {model} ({_describe(exc)}).")
+            sys.exit(f"Could not create an agent ({_describe(exc)}).")
         agent_id = getattr(agent, "id", None)
         # Both refusals come before any print of the id, including the line below:
         # the call succeeded, so an agent may well exist, and saying so beats
         # inviting a second create or printing something a reader would paste.
         if not isinstance(agent_id, str) or not agent_id:
-            sys.exit(NO_CREATED_ID_MESSAGE.format(model=model, name=AGENT_NAME))
+            sys.exit(NO_CREATED_ID_MESSAGE.format(name=AGENT_NAME))
         if not is_emittable_agent_id(agent_id):
-            sys.exit(UNSAFE_CREATED_ID_MESSAGE.format(model=model, name=AGENT_NAME))
+            sys.exit(UNSAFE_CREATED_ID_MESSAGE.format(name=AGENT_NAME))
         print(f"Created agent {agent_id} ({model})")
 
     print()
@@ -255,4 +287,17 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:  # noqa: BLE001 -- deliberate; see below
+        # A traceback is an output channel like any other, and not one this
+        # program controls: a dependency's exception message can carry text from
+        # .env or from the endpoint OPENAI_BASE_URL selects. Round 11 of the
+        # second review reached three that way -- httpx2.InvalidURL carrying a
+        # port from a hostile OPENAI_BASE_URL, UnicodeEncodeError carrying a
+        # non-ASCII key or header value, and JSONDecodeError on a malformed 2xx.
+        # So nothing the exception carries is printed, only the class's own name,
+        # which comes from installed code rather than from either of those.
+        # SystemExit and KeyboardInterrupt are not Exception, so a refusal above
+        # and a reader's Ctrl-C both still behave as they did.
+        sys.exit(UNEXPECTED_FAILURE_MESSAGE.format(kind=type(exc).__name__))

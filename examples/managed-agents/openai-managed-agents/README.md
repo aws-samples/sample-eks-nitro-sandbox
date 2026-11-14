@@ -270,13 +270,15 @@ Add this to .env:
 When it creates an agent with `AGENT_MODEL` unset or blank, as `.env.example` ships it,
 `setup_agent.py` prints a `[note]` that it is falling back to a placeholder id and continues;
 set a real id to avoid that. Keeping an existing agent uses no model, so it prints no note. Put `AGENT_ID` in `.env` and load
-the file again with `set -a; . ./.env; set +a`. Because that command *runs* what it finds rather
-than just assigning it, `setup_agent.py` checks what it is about to show you first: an agent id,
-whether you supplied it or the API returned it, must be a plain token the script is willing to
-emit, and `AGENT_MODEL` must be printable ASCII, since every one of the script's messages shows
-the model back to you and a newline in it could add a line of its own to that output. Each check
-refuses without repeating the value. Quoting is what makes this worth doing: a value in `.env`
-can sit there inertly and still be unsafe once the script prints it back unquoted.
+the file again with `set -a; . ./.env; set +a`. That command parses `.env` as shell code, so an
+expansion or a command inside a value can run rather than be assigned — which is why
+`setup_agent.py` checks each value it is about to print back to you. An agent id, whether you
+supplied it or the API returned it, must be one the script is willing to emit; `AGENT_MODEL`,
+which is echoed on the line reporting a new agent, must be a short token with no whitespace.
+Each check refuses without repeating the value. Quoting is what makes this worth doing: a value
+in `.env` can sit there inertly and still be unsafe once the script prints it back unquoted.
+The script also runs with the SDK's own debug logging off, because at debug level it writes
+response headers out verbatim, and shows no detail from an unexpected dependency failure.
 The agent is created without hosted tools: the
 executor provides the Bash and apply-patch tools. The self-hosted environment is created per
 session by `submit.py`, not here, because a self-hosted environment is the live connection to
