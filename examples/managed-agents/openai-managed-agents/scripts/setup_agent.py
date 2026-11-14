@@ -16,9 +16,10 @@ it looks that agent up and keeps it only if the lookup returns that agent. On a
 404 it stops and lists what to check (the id, the key's project and
 organization, OPENAI_BASE_URL), and says to unset AGENT_ID and run it again only
 once the agent is confirmed gone; it never creates a replacement on its own. A
-lookup that fails for any other reason (network, auth, a response without that
-agent's id) also stops, naming the error by its SDK exception class and, when
-it has one, its HTTP status, rather than being read as "agent gone".
+lookup that fails for any other reason (network, auth, 5xx) also stops, naming
+the error by its SDK exception class and, when it has one, its HTTP status,
+rather than being read as "agent gone". A lookup that succeeds but returns no
+id, or a different agent's id, stops too, saying which.
 
 Choosing the model
 ------------------
