@@ -245,9 +245,12 @@ agent with that model and prints the new agent's id and model. If `AGENT_ID` is 
 looks that agent up first and keeps it only if the lookup returns that agent, creating none. If
 the lookup answers 404, the script stops without claiming the agent is gone, because a mistyped
 `AGENT_ID`, a key or `OPENAI_PROJECT_ID`/`OPENAI_ORG_ID` for a different project or organization,
-or a different `OPENAI_BASE_URL` gives the same answer. It lists those to check, and says to
-remove `AGENT_ID` from `.env` and run this step again only once you have confirmed the agent is
-gone, for example in the OpenAI dashboard. It never creates a replacement on its own, so `.env`
+or a different `OPENAI_BASE_URL` gives the same answer. It lists those to check. Only once you
+have confirmed the agent is gone, for example in the OpenAI dashboard, change the line in `.env`
+to a blank `AGENT_ID=`, load the file again with `set -a; . ./.env; set +a`, and run this step
+again: a blank `AGENT_ID`, like an unset one, creates a new agent. Removing the line from `.env`
+is not enough, because the old value stays exported in your shell, and unsetting it in the shell
+alone is undone the next time you load `.env`. It never creates a replacement on its own, so `.env`
 never silently points at a different agent. If the lookup fails for any other reason, such as a
 network or authentication error, the script stops and names the error by its SDK exception class and, when it has
 one, its HTTP status, rather than treating the agent as gone. The run captured for this page
@@ -263,8 +266,9 @@ Add this to .env:
   AGENT_ID=agent_...
 ```
 
-If you leave `AGENT_MODEL` unset or blank, as `.env.example` ships it, `setup_agent.py` prints a `[note]` that it is falling back to
-a placeholder id and continues; set a real id to avoid that. Put `AGENT_ID` in `.env` and load
+When it creates an agent with `AGENT_MODEL` unset or blank, as `.env.example` ships it,
+`setup_agent.py` prints a `[note]` that it is falling back to a placeholder id and continues;
+set a real id to avoid that. Keeping an existing agent uses no model, so it prints no note. Put `AGENT_ID` in `.env` and load
 the file again with `set -a; . ./.env; set +a`. The agent is created without hosted tools: the
 executor provides the Bash and apply-patch tools. The self-hosted environment is created per
 session by `submit.py`, not here, because a self-hosted environment is the live connection to

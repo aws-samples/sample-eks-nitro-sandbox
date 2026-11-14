@@ -1,46 +1,62 @@
 """Tests for scripts/setup_agent.py, run the way step 2 of the page runs it.
 
-Each case copies setup_agent.py, unchanged, into a temporary sample folder beside
-a fake `_client.py`, and runs the page's own command there,
-`<python> scripts/setup_agent.py`, from that folder, with only the variables a
-sourced `.env.example` exports (every template variable present; the blank ones
-the reader is told to fill set to sentinel values; AGENT_ID and AGENT_MODEL
-blank, set or unset as the case says) plus PATH and HOME. It runs every case
-twice: with stdout and stderr piped, and with stdin, stdout and stderr on
-pseudo-terminals, as when a reader runs it in a terminal.
+Each case copies this sample folder (without any .env, .venv or caches) to a
+temporary folder and does step 2 there, literally:
+
+- writes `.env` from `.env.example`, filling in only the two keys step 2 tells
+  the reader to fill (OPENAI_API_KEY and OPENAI_EXECUTOR_API_KEY, with sentinel
+  values), and with the AGENT_ID= and AGENT_MODEL= lines blank, set or removed
+  as the case says;
+- replaces scripts/_client.py with a fake that records every call and answers as
+  the case says (the one deliberate difference from a reader's run);
+- puts a `.venv/bin/python` in the copy that runs this interpreter; and
+- runs `set -a; . ./.env; set +a; .venv/bin/python scripts/setup_agent.py` with
+  /bin/sh in that folder, in the caller's environment minus anything the .env
+  sets and any OPENAI_*, AGENT_*, PYTHON* or PYTEST_* variable (and COLUMNS and
+  LINES, which a shell does not export).
+
+Every case runs twice: with stdout and stderr piped, so each stream can be
+compared on its own, and on one pseudo-terminal of 24 rows by 80 columns, in its
+default configuration, as the controlling terminal of a new session with the
+program in the foreground, carrying stdin, stdout and stderr, as when a reader
+runs it in a terminal.
 
 It then compares, exactly, against text this file owns:
 
-- the program's ENTIRE stdout, its ENTIRE stderr and its exit status, so
+- everything the program shows (piped: the entire stdout and the entire
+  stderr; terminal: every byte the terminal received) and its exit status, so
   anything a reader would see beyond the expected text fails, whatever channel
-  it came by (a print, a visible log record or warning, a write to a file
-  descriptor, a traceback, output at import time or from the __main__ block,
-  output only on a terminal); and
+  it came by; and
 - the ordered list of every call the program made on the fake client, with
   every argument, so a missing, extra, repeated or changed API call fails.
 
-What the program is given in place of the real thing, and so what this does not
-cover: the fake `_client` module, in place of scripts/_client.py (which prints
-nothing and exits only when OPENAI_API_KEY is unset); and anything the program
-writes somewhere other than its stdout and stderr, such as a file.
+What this does not cover: the real scripts/_client.py, which is replaced (it
+prints nothing, and exits only when OPENAI_API_KEY is unset); an interactive
+shell's own behaviour, since the commands run under `sh -c`; and anything the
+program writes somewhere other than its stdout and stderr, such as a file.
 
-Both ways, per AGENTS.md: an agent the lookup returns is kept and nothing is
+Both ways, per AGENTS.md, for every combination of AGENT_ID and AGENT_MODEL
+being unset, blank and set: an agent the lookup returns is kept and nothing is
 created; with AGENT_ID blank or unset an agent is created and nothing is looked
-up; a 404 stops with a message that lists what to check before removing
-AGENT_ID, without claiming the agent is gone; any other lookup failure stops and
-names the error by its SDK exception class and, when it has one, its HTTP
-status; a lookup that succeeds without this agent's id stops; and neither the
-response body nor the request-id header is ever shown.
+up, with the placeholder note exactly when no model is given; a 404 stops with a
+message that lists what to check before saying how to clear AGENT_ID, without
+claiming the agent is gone; any other lookup failure stops and names the error
+by its SDK exception class and, when it has one, its HTTP status; a lookup that
+succeeds without this agent's id stops; and neither the response body nor the
+request-id header is ever shown.
 
 Run with: python -m pytest
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import pty
 import select
+import shutil
+import struct
 import subprocess
 import sys
 import termios
@@ -56,6 +72,7 @@ TESTS = Path(__file__).resolve().parent
 SAMPLE = TESTS.parent
 SCRIPT = SAMPLE / "scripts" / "setup_agent.py"
 OUTCOMES = TESTS / "_fake_outcomes.py"
+PAGE_COMMANDS = "set -a; . ./.env; set +a; .venv/bin/python scripts/setup_agent.py"
 
 sys.path.insert(0, str(TESTS))
 try:
@@ -116,8 +133,8 @@ NOT_FOUND = (
     "project or organization from the one the agent was created in, or from OPENAI_BASE_URL\n"
     "pointing somewhere else. Check those first.\n"
     "Only once you have confirmed the agent is gone, for example in the OpenAI dashboard of the\n"
-    "project it was created in, remove AGENT_ID from .env (or unset it in this shell) and run\n"
-    "this step again to create a new agent.\n"
+    "project it was created in, change the line in .env to a blank AGENT_ID=, load the file\n"
+    "again with `set -a; . ./.env; set +a`, and run this step again to create a new agent.\n"
 )
 
 
@@ -164,119 +181,145 @@ INSTRUCTIONS = (
     "cite concrete details."
 )
 
-
-def _created(model: str, note: str = "") -> tuple[int, str, str]:
-    return (
-        0,
-        f"{note}Created agent agent_new ({model})\n\nAdd this to .env:\n  AGENT_ID=agent_new\n",
-        "",
-    )
+UNSET = None  # the line is removed from .env
+BLANK = ""  # the line is left as the template ships it
+SET_MODEL = "gpt-test-model"
+MODELS = {"model-unset": UNSET, "model-blank": BLANK, "model-set": SET_MODEL}
 
 
-def _create_calls(model: str) -> list:
-    return [
+def _created(model_setting) -> tuple[tuple[int, str, str], list]:
+    model = model_setting or "gpt-6-astra"
+    note = "" if model_setting else PLACEHOLDER_NOTE
+    shown = (0, f"{note}Created agent agent_new ({model})\n\nAdd this to .env:\n  AGENT_ID=agent_new\n", "")
+    calls = [
         ["make_client", [], {}],
         ["create", [], {"name": AGENT_NAME, "model": model, "instructions": INSTRUCTIONS}],
     ]
+    return shown, calls
 
-
-UNSET = object()
-
-# (AGENT_ID, AGENT_MODEL) -> expected (status, stdout, stderr) and calls, with no lookup
-WITHOUT_AGENT_ID = {
-    "id-blank-model-blank": ("", "", _created("gpt-6-astra", PLACEHOLDER_NOTE), _create_calls("gpt-6-astra")),
-    "id-unset-model-unset": (UNSET, UNSET, _created("gpt-6-astra", PLACEHOLDER_NOTE), _create_calls("gpt-6-astra")),
-    "id-blank-model-set": ("", "gpt-test-model", _created("gpt-test-model"), _create_calls("gpt-test-model")),
-    "id-unset-model-set": (UNSET, "gpt-test-model", _created("gpt-test-model"), _create_calls("gpt-test-model")),
-}
 
 # ---------------------------------------------------------------------------
-# Running the page's command
+# Doing step 2
 # ---------------------------------------------------------------------------
 
 
-def _template_names() -> list[str]:
-    """The variables `set -a; . ./.env` exports from an unedited .env.example."""
-    names = []
-    for line in (SAMPLE / ".env.example").read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            names.append(line.split("=", 1)[0])
-    return names
+def _write_env(sample: Path, agent_id, agent_model) -> None:
+    lines = (SAMPLE / ".env.example").read_text().splitlines(keepends=True)
+    values = {
+        # The two keys step 2 tells the reader to fill in; a sentinel shows if one leaks.
+        "OPENAI_API_KEY": "sentinel-application-value",
+        "OPENAI_EXECUTOR_API_KEY": "sentinel-environment-value",
+        "AGENT_ID": agent_id,
+        "AGENT_MODEL": agent_model,
+    }
+    out = []
+    for name, value in values.items():
+        matches = [i for i, line in enumerate(lines) if line == f"{name}=\n"]
+        assert len(matches) == 1, f".env.example has no single blank {name}= line"
+    for line in lines:
+        name = line.split("=", 1)[0] if line.endswith("=\n") else None
+        if name in values:
+            if values[name] is UNSET:
+                continue
+            line = f"{name}={values[name]}\n"
+        out.append(line)
+    (sample / ".env").write_text("".join(out))
 
 
-def _environment(agent_id, agent_model) -> dict[str, str]:
-    env = {name: os.environ[name] for name in ("PATH", "HOME") if name in os.environ}
-    for name in _template_names():
-        if name in ("AGENT_ID", "AGENT_MODEL"):
-            continue
-        # Step 2 has the reader fill these in; a sentinel shows if one leaks.
-        env[name] = f"sentinel-for-{name.lower()}"
-    for name, value in (("AGENT_ID", agent_id), ("AGENT_MODEL", agent_model)):
-        if value is not UNSET:
-            env[name] = value
-    return env
+def _environment() -> dict[str, str]:
+    template = {line.split("=", 1)[0] for line in (SAMPLE / ".env.example").read_text().splitlines()
+                if line and not line.startswith("#") and "=" in line}
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name not in template
+        and not name.startswith(("OPENAI_", "AGENT_", "PYTHON", "PYTEST_"))
+        # A shell does not export these, and they would override the terminal's own size.
+        and name not in ("COLUMNS", "LINES")
+    }
 
 
-def _read_ttys(proc, masters, timeout=60):
-    chunks = {fd: b"" for fd in masters}
-    open_fds = set(masters)
-    deadline = time.monotonic() + timeout
-    while open_fds:
-        if time.monotonic() > deadline:
-            proc.kill()
-            raise AssertionError("the program did not finish")
-        ready, _, _ = select.select(list(open_fds), [], [], 0.5)
-        for fd in ready:
-            try:
-                data = os.read(fd, 65536)
-            except OSError:  # EIO once the slave side is closed
-                data = b""
-            if data:
-                chunks[fd] += data
-            else:
-                open_fds.discard(fd)
-    proc.wait(timeout=timeout)
-    return [chunks[fd].decode() for fd in masters]
-
-
-def run_page_command(tmp_path, scenario, agent_id, agent_model, *, tty, source=None):
-    """Run `<python> scripts/setup_agent.py` in a fresh copy; return status, out, err, calls."""
-    sample = tmp_path / ("tty" if tty else "pipe")
-    scripts = sample / "scripts"
-    scripts.mkdir(parents=True)
-    (scripts / "setup_agent.py").write_text(SCRIPT.read_text() if source is None else source)
-    (scripts / "_fake_outcomes.py").write_text(OUTCOMES.read_text())
+def _prepare(sample: Path, scenario: str, agent_id, agent_model, source) -> Path:
+    shutil.copytree(
+        SAMPLE, sample,
+        ignore=shutil.ignore_patterns(".env", ".venv", "__pycache__", ".pytest_cache"),
+    )
+    if source is not None:
+        (sample / "scripts" / "setup_agent.py").write_text(source)
     ledger = sample / "calls.jsonl"
-    (scripts / "_client.py").write_text(FAKE_CLIENT.format(ledger=str(ledger), scenario=scenario))
-    command = [sys.executable, "scripts/setup_agent.py"]
-    env = _environment(agent_id, agent_model)
+    (sample / "scripts" / "_client.py").write_text(FAKE_CLIENT.format(ledger=str(ledger), scenario=scenario))
+    (sample / "scripts" / "_fake_outcomes.py").write_text(OUTCOMES.read_text())
+    python = sample / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+    python.chmod(0o755)
+    _write_env(sample, agent_id, agent_model)
+    return ledger
 
-    if not tty:
-        result = subprocess.run(command, cwd=sample, env=env, capture_output=True, text=True, timeout=60)
-        status, out, err = result.returncode, result.stdout, result.stderr
+
+def _in_a_terminal(command, cwd, env, timeout=60):
+    """Run on one default-configured 24x80 PTY that is the controlling terminal."""
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+
+    def _take_terminal():
+        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+    proc = subprocess.Popen(
+        command, cwd=cwd, env=env, stdin=slave, stdout=slave, stderr=slave,
+        start_new_session=True, preexec_fn=_take_terminal,
+    )
+    os.close(slave)
+    received = b""
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            if time.monotonic() > deadline:
+                proc.kill()
+                raise AssertionError("the program did not finish")
+            ready, _, _ = select.select([master], [], [], 0.5)
+            if not ready:
+                if proc.poll() is not None:
+                    break
+                continue
+            try:
+                data = os.read(master, 65536)
+            except OSError:  # EIO once every holder of the terminal has exited
+                break
+            if not data:
+                break
+            received += data
+    finally:
+        os.close(master)
+    proc.wait(timeout=timeout)
+    return proc.returncode, received.decode()
+
+
+def run_step_2(tmp_path, scenario, agent_id, agent_model, *, tty, source=None):
+    """Do step 2 in a fresh copy; return (status, shown) and the calls made.
+
+    shown is (stdout, stderr) when piped, and every byte the terminal received
+    when on a terminal.
+    """
+    sample = tmp_path / "sample"
+    ledger = _prepare(sample, scenario, agent_id, agent_model, source)
+    command = ["/bin/sh", "-c", PAGE_COMMANDS]
+    env = _environment()
+    if tty:
+        status, shown = _in_a_terminal(command, sample, env)
     else:
-        out_master, out_slave = pty.openpty()
-        err_master, err_slave = pty.openpty()
-        for fd in (out_slave, err_slave):
-            # No output translation (\n stays \n), so the comparison stays exact.
-            attrs = termios.tcgetattr(fd)
-            attrs[1] &= ~termios.OPOST
-            termios.tcsetattr(fd, termios.TCSANOW, attrs)
-        proc = subprocess.Popen(
-            command, cwd=sample, env=env, stdin=out_slave, stdout=out_slave, stderr=err_slave
-        )
-        os.close(out_slave)
-        os.close(err_slave)
-        try:
-            out, err = _read_ttys(proc, [out_master, err_master])
-        finally:
-            os.close(out_master)
-            os.close(err_master)
-        status = proc.returncode
-
+        result = subprocess.run(command, cwd=sample, env=env, capture_output=True, text=True, timeout=60)
+        status, shown = result.returncode, (result.stdout, result.stderr)
     calls = [json.loads(line) for line in ledger.read_text().splitlines()] if ledger.exists() else []
-    return status, out, err, calls
+    return status, shown, calls
+
+
+def _as_shown(expected: tuple[int, str, str], tty: bool):
+    status, stdout, stderr = expected
+    if tty:
+        # One terminal carries both streams, and it shows each newline as CR LF.
+        return status, (stdout + stderr).replace("\n", "\r\n")
+    return status, (stdout, stderr)
 
 
 MODES = pytest.mark.parametrize("tty", [False, True], ids=["piped", "terminal"])
@@ -291,22 +334,26 @@ def test_every_lookup_scenario_is_tested():
 
 
 @MODES
+@pytest.mark.parametrize("model", sorted(MODELS))
 @pytest.mark.parametrize("scenario", sorted(WITH_AGENT_ID))
-def test_with_agent_id_set_the_reader_sees_exactly_this(tmp_path, scenario, tty):
-    status, out, err, calls = run_page_command(tmp_path, scenario, "agent_kept", "gpt-test-model", tty=tty)
+def test_with_agent_id_set_the_reader_sees_exactly_this(tmp_path, scenario, model, tty):
+    status, shown, calls = run_step_2(tmp_path, scenario, "agent_kept", MODELS[model], tty=tty)
 
-    assert (status, out, err) == WITH_AGENT_ID[scenario]
+    assert (status, shown) == _as_shown(WITH_AGENT_ID[scenario], tty)
     assert calls == LOOKUP_CALLS
 
 
 @MODES
-@pytest.mark.parametrize("case", sorted(WITHOUT_AGENT_ID))
-def test_without_agent_id_an_agent_is_created_and_nothing_is_looked_up(tmp_path, case, tty):
-    agent_id, agent_model, expected, expected_calls = WITHOUT_AGENT_ID[case]
+@pytest.mark.parametrize("model", sorted(MODELS))
+@pytest.mark.parametrize("agent_id", ["id-unset", "id-blank"])
+def test_without_agent_id_an_agent_is_created_and_nothing_is_looked_up(tmp_path, agent_id, model, tty):
+    expected, expected_calls = _created(MODELS[model])
 
-    status, out, err, calls = run_page_command(tmp_path, "kept", agent_id, agent_model, tty=tty)
+    status, shown, calls = run_step_2(
+        tmp_path, "kept", UNSET if agent_id == "id-unset" else BLANK, MODELS[model], tty=tty
+    )
 
-    assert (status, out, err) == expected
+    assert (status, shown) == _as_shown(expected, tty)
     assert calls == expected_calls
 
 
@@ -320,34 +367,36 @@ def test_the_planted_errors_carry_both_values(scenario):
 
 
 def test_output_only_on_a_terminal_is_caught_by_the_terminal_run(tmp_path):
-    # The harness itself, both ways: a copy of the program that prints one extra
-    # line only when stdout is a terminal matches when piped, and fails on a terminal.
+    # The harness itself, both ways: a copy that prints one extra line only when
+    # stdout is a terminal of 80 columns matches piped, and fails on the terminal.
     source = SCRIPT.read_text()
     marker = 'if __name__ == "__main__":\n'
     assert source.count(marker) == 1
-    mutant = source.replace(marker, "import sys\nif sys.stdout.isatty():\n    print('extra')\n" + marker)
+    mutant = source.replace(
+        marker,
+        "import shutil, sys\n"
+        "if sys.stdout.isatty() and shutil.get_terminal_size().columns == 80:\n"
+        "    print('extra')\n" + marker,
+    )
     expected = WITH_AGENT_ID["kept"]
 
-    piped = run_page_command(tmp_path / "a", "kept", "agent_kept", "gpt-test-model", tty=False, source=mutant)
-    terminal = run_page_command(tmp_path / "b", "kept", "agent_kept", "gpt-test-model", tty=True, source=mutant)
+    piped = run_step_2(tmp_path / "a", "kept", "agent_kept", SET_MODEL, tty=False, source=mutant)
+    terminal = run_step_2(tmp_path / "b", "kept", "agent_kept", SET_MODEL, tty=True, source=mutant)
 
-    assert piped[:3] == expected
-    assert terminal[:3] != expected
-    assert terminal[1] == "extra\n" + expected[1]
+    assert piped[:2] == _as_shown(expected, tty=False)
+    assert terminal[:2] != _as_shown(expected, tty=True)
+    assert terminal[1] == ("extra\n" + expected[1]).replace("\n", "\r\n")
 
 
 def test_a_repeated_api_call_is_caught_by_the_call_list(tmp_path):
-    # The harness itself: a copy that looks the agent up twice prints exactly the
+    # The harness itself: a copy that looks the agent up twice shows exactly the
     # expected text, so only the call list can catch it, and it does.
     source = SCRIPT.read_text()
     marker = "        agent = client.beta.agents.retrieve(agent_id)\n"
     assert source.count(marker) == 1
     mutant = source.replace(marker, marker + "        client.beta.agents.retrieve(agent_id)\n")
 
-    status, out, err, calls = run_page_command(
-        tmp_path, "kept", "agent_kept", "gpt-test-model", tty=False, source=mutant
-    )
+    status, shown, calls = run_step_2(tmp_path, "kept", "agent_kept", SET_MODEL, tty=False, source=mutant)
 
-    assert (status, out, err) == WITH_AGENT_ID["kept"]
-    assert calls != LOOKUP_CALLS
+    assert (status, shown) == _as_shown(WITH_AGENT_ID["kept"], tty=False)
     assert calls == LOOKUP_CALLS + [["retrieve", ["agent_kept"], {}]]

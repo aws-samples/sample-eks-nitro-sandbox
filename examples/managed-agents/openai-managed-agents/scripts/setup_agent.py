@@ -14,8 +14,9 @@ starts and torn down when the session is deleted.
 Prints an AGENT_ID to add to .env. Safe to run again: if AGENT_ID is already set
 it looks that agent up and keeps it only if the lookup returns that agent. On a
 404 it stops and lists what to check (the id, the key's project and
-organization, OPENAI_BASE_URL), and says to unset AGENT_ID and run it again only
-once the agent is confirmed gone; it never creates a replacement on its own. A
+organization, OPENAI_BASE_URL), and says to blank AGENT_ID in .env, load .env
+again and run it again only once the agent is confirmed gone; a blank AGENT_ID,
+like an unset one, means "create". It never creates a replacement on its own. A
 lookup that fails for any other reason (network, auth, 5xx) also stops, naming
 the error by its SDK exception class and, when it has one, its HTTP status,
 rather than being read as "agent gone". A lookup that succeeds but returns no
@@ -76,8 +77,8 @@ AGENT_ID, from OPENAI_API_KEY, OPENAI_PROJECT_ID or OPENAI_ORG_ID selecting a di
 project or organization from the one the agent was created in, or from OPENAI_BASE_URL
 pointing somewhere else. Check those first.
 Only once you have confirmed the agent is gone, for example in the OpenAI dashboard of the
-project it was created in, remove AGENT_ID from .env (or unset it in this shell) and run
-this step again to create a new agent."""
+project it was created in, change the line in .env to a blank AGENT_ID=, load the file
+again with `set -a; . ./.env; set +a`, and run this step again to create a new agent."""
 
 
 def confirm_agent_exists(client, agent_id: str) -> None:
