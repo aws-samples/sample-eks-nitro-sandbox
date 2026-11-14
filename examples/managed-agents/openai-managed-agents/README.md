@@ -242,10 +242,15 @@ set -a; . ./.env; set +a
 
 With `AGENT_MODEL` set in `.env` (see "Pick a model id" below), `setup_agent.py` creates the
 agent with that model and prints the new agent's id and model. If `AGENT_ID` is already set, it
-keeps that agent and creates none. The run captured for this page used `gpt-6-luna`. Its first
-pass at this step kept an `AGENT_ID` left in `.env` from an agent that no longer existed, so
-step 8 then failed with a 404. The block below is from running this step again with `AGENT_ID`
-unset, when `setup_agent.py` created the agent and printed its id:
+looks that agent up first and keeps it only if it still exists, creating none. If the agent is
+gone, the script stops and tells you to remove `AGENT_ID` from `.env` and run this step again; it
+does not create a replacement on its own, so `.env` never silently points at a different agent.
+If the lookup fails for any other reason, such as a network or authentication error, the script
+stops with that error rather than treating the agent as gone. The run captured for this page
+used `gpt-6-luna`, before the script made that check: its first pass at this step kept an
+`AGENT_ID` left in `.env` from an agent that no longer existed, so step 8 then failed with a 404.
+The block below is from running this step again with `AGENT_ID` unset, when `setup_agent.py`
+created the agent and printed its id:
 
 ```text
 Created agent agent_... (gpt-6-luna)

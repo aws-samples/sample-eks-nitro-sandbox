@@ -12,7 +12,10 @@ starts and torn down when the session is deleted.
   python scripts/setup_agent.py
 
 Prints an AGENT_ID to add to .env. Safe to run again: if AGENT_ID is already set
-it keeps that agent.
+it looks that agent up and keeps it. If the agent no longer exists, it stops and
+says to unset AGENT_ID and run it again; it never creates a replacement on its
+own. A lookup that fails for any other reason (network, auth) also stops, with
+that error, rather than being read as "agent gone".
 
 Choosing the model
 ------------------
@@ -29,6 +32,9 @@ Agents API model, not any internal/runtime identifier.)
 from __future__ import annotations
 
 import os
+import sys
+
+from openai import APIError, NotFoundError
 
 from _client import make_client
 
@@ -47,13 +53,34 @@ INSTRUCTIONS = (
 )
 
 
+def confirm_agent_exists(client, agent_id: str) -> None:
+    """Return if the agent exists; exit with a message if it is gone or the lookup fails.
+
+    Only a 404 from the lookup means "gone". Anything else (a network error, a
+    401 or 403, a 5xx) means "could not tell", so it stops with that error
+    instead: deleting AGENT_ID on the strength of a failed lookup would leave
+    the reader's working agent behind.
+    """
+    try:
+        client.beta.agents.retrieve(agent_id)
+    except NotFoundError:
+        sys.exit(
+            f"Agent {agent_id} from AGENT_ID was not found in this OpenAI project.\n"
+            "Remove AGENT_ID from .env (or unset it in this shell) and run this step again\n"
+            "to create a new agent."
+        )
+    except APIError as exc:
+        sys.exit(f"Could not confirm that agent {agent_id} exists, so it was not kept: {exc}")
+
+
 def main() -> None:
     client = make_client()
 
     model = os.environ.get("AGENT_MODEL", DEFAULT_MODEL)
     agent_id = os.environ.get("AGENT_ID")
     if agent_id:
-        print(f"AGENT_ID is set; keeping agent {agent_id}")
+        confirm_agent_exists(client, agent_id)
+        print(f"AGENT_ID is set and the agent exists; keeping agent {agent_id}")
     else:
         if model == DEFAULT_MODEL and not os.environ.get("AGENT_MODEL"):
             print(f"[note] Using the PLACEHOLDER model id '{model}'. Set AGENT_MODEL in .env to a")
