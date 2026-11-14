@@ -12,10 +12,13 @@ starts and torn down when the session is deleted.
   python scripts/setup_agent.py
 
 Prints an AGENT_ID to add to .env. Safe to run again: if AGENT_ID is already set
-it looks that agent up and keeps it. If the agent no longer exists, it stops and
-says to unset AGENT_ID and run it again; it never creates a replacement on its
-own. A lookup that fails for any other reason (network, auth) also stops, with
-that error, rather than being read as "agent gone".
+it looks that agent up and keeps it only if the lookup returns that agent. On a
+404 it stops and says to check the key's project and OPENAI_BASE_URL, and if
+those are right to unset AGENT_ID and run it again; it never creates a
+replacement on its own. A lookup that fails for any other reason (network,
+auth, a response without that agent's id) also stops, naming the error by type,
+HTTP status and request id but not its body, rather than being read as "agent
+gone".
 
 Choosing the model
 ------------------
@@ -53,24 +56,51 @@ INSTRUCTIONS = (
 )
 
 
-def confirm_agent_exists(client, agent_id: str) -> None:
-    """Return if the agent exists; exit with a message if it is gone or the lookup fails.
+def _describe(exc: APIError) -> str:
+    """Name an API error by class, HTTP status and request id, never by its body.
 
-    Only a 404 from the lookup means "gone". Anything else (a network error, a
-    401 or 403, a 5xx) means "could not tell", so it stops with that error
-    instead: deleting AGENT_ID on the strength of a failed lookup would leave
-    the reader's working agent behind.
+    str(exc) includes the response body, and a proxy behind OPENAI_BASE_URL can
+    echo anything into it, a key included, so the body is not printed.
+    """
+    parts = [type(exc).__name__]
+    status = getattr(exc, "status_code", None)
+    if status is not None:
+        parts.append(f"HTTP {status}")
+    request_id = getattr(exc, "request_id", None)
+    if request_id:
+        parts.append(f"request id {request_id}")
+    return ", ".join(parts)
+
+
+def confirm_agent_exists(client, agent_id: str) -> None:
+    """Return if the lookup returns this agent; otherwise exit with a message.
+
+    A 404 is reported as "not found here", not as "gone": the SDK raises
+    NotFoundError for any 404, including one from a wrong project or a wrong
+    OPENAI_BASE_URL, so the message asks the reader to check those before
+    removing AGENT_ID. Any other failure (a network error, a 401 or 403, a 5xx)
+    means "could not tell", and so does a successful response that does not
+    carry this agent's id: either way the agent is not kept, and AGENT_ID is
+    not suggested for removal.
     """
     try:
-        client.beta.agents.retrieve(agent_id)
+        agent = client.beta.agents.retrieve(agent_id)
     except NotFoundError:
         sys.exit(
-            f"Agent {agent_id} from AGENT_ID was not found in this OpenAI project.\n"
-            "Remove AGENT_ID from .env (or unset it in this shell) and run this step again\n"
-            "to create a new agent."
+            f"Agent {agent_id} from AGENT_ID was not found (HTTP 404) in the OpenAI project\n"
+            "this key belongs to, at the API endpoint configured here. Check that\n"
+            "OPENAI_API_KEY is for the project the agent was created in and that OPENAI_BASE_URL\n"
+            "is unset or correct. If both are right, the agent no longer exists: remove AGENT_ID\n"
+            "from .env (or unset it in this shell) and run this step again to create a new agent."
         )
     except APIError as exc:
-        sys.exit(f"Could not confirm that agent {agent_id} exists, so it was not kept: {exc}")
+        sys.exit(f"Could not confirm that agent {agent_id} exists, so it was not kept ({_describe(exc)}).")
+    returned_id = getattr(agent, "id", None)
+    if returned_id != agent_id:
+        sys.exit(
+            f"Could not confirm that agent {agent_id} exists, so it was not kept: the lookup "
+            f"succeeded but returned {'no agent id' if returned_id is None else 'a different agent id'}."
+        )
 
 
 def main() -> None:
