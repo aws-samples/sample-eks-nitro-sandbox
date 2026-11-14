@@ -243,13 +243,14 @@ set -a; . ./.env; set +a
 With `AGENT_MODEL` set in `.env` (see "Pick a model id" below), `setup_agent.py` creates the
 agent with that model and prints the new agent's id and model. If `AGENT_ID` is already set, it
 looks that agent up first and keeps it only if the lookup returns that agent, creating none. If
-the lookup answers 404, the script stops and tells you to check that `OPENAI_API_KEY` is for the
-project the agent was created in and that `OPENAI_BASE_URL` is unset or correct, and, if both
-are, to remove `AGENT_ID` from `.env` and run this step again. A 404 cannot tell a deleted agent
-from a wrong project or endpoint, so it does not claim the agent is gone, and it never creates a
-replacement on its own, so `.env` never silently points at a different agent. If the lookup
-fails for any other reason, such as a network or authentication error, the script stops and
-names the error by type and HTTP status rather than treating the agent as gone. The run captured for this page
+the lookup answers 404, the script stops without claiming the agent is gone, because a mistyped
+`AGENT_ID`, a key or `OPENAI_PROJECT_ID`/`OPENAI_ORG_ID` for a different project or organization,
+or a different `OPENAI_BASE_URL` gives the same answer. It lists those to check, and says to
+remove `AGENT_ID` from `.env` and run this step again only once you have confirmed the agent is
+gone, for example in the OpenAI dashboard. It never creates a replacement on its own, so `.env`
+never silently points at a different agent. If the lookup fails for any other reason, such as a
+network or authentication error, the script stops and names the error by type and HTTP status
+rather than treating the agent as gone. The run captured for this page
 used `gpt-6-luna`, before the script made that check: its first pass at this step kept an
 `AGENT_ID` left in `.env` from an agent that no longer existed, so step 8 then failed with a 404.
 The block below is from running this step again with `AGENT_ID` unset, when `setup_agent.py`

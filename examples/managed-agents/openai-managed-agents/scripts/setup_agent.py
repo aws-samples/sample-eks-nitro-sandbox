@@ -13,12 +13,12 @@ starts and torn down when the session is deleted.
 
 Prints an AGENT_ID to add to .env. Safe to run again: if AGENT_ID is already set
 it looks that agent up and keeps it only if the lookup returns that agent. On a
-404 it stops and says to check the key's project and OPENAI_BASE_URL, and if
-those are right to unset AGENT_ID and run it again; it never creates a
-replacement on its own. A lookup that fails for any other reason (network,
-auth, a response without that agent's id) also stops, naming the error by type,
-HTTP status and request id but not its body, rather than being read as "agent
-gone".
+404 it stops and lists what to check (the id, the key's project and
+organization, OPENAI_BASE_URL), and says to unset AGENT_ID and run it again only
+once the agent is confirmed gone; it never creates a replacement on its own. A
+lookup that fails for any other reason (network, auth, a response without that
+agent's id) also stops, naming the error by type and HTTP status only, rather
+than being read as "agent gone".
 
 Choosing the model
 ------------------
@@ -57,42 +57,43 @@ INSTRUCTIONS = (
 
 
 def _describe(exc: APIError) -> str:
-    """Name an API error by class, HTTP status and request id, never by its body.
+    """Name an API error by class and HTTP status only.
 
-    str(exc) includes the response body, and a proxy behind OPENAI_BASE_URL can
-    echo anything into it, a key included, so the body is not printed.
+    Nothing the server sent is printed: str(exc) carries the response body, and
+    the request id comes from a response header, and a proxy behind
+    OPENAI_BASE_URL controls both, so either could carry a key.
     """
-    parts = [type(exc).__name__]
     status = getattr(exc, "status_code", None)
-    if status is not None:
-        parts.append(f"HTTP {status}")
-    request_id = getattr(exc, "request_id", None)
-    if request_id:
-        parts.append(f"request id {request_id}")
-    return ", ".join(parts)
+    name = type(exc).__name__
+    return name if status is None else f"{name}, HTTP {status}"
+
+
+NOT_FOUND_MESSAGE = """\
+The lookup of agent {agent_id} from AGENT_ID returned HTTP 404, so it was not kept.
+A 404 does not show that the agent was deleted. The same answer comes from a mistyped
+AGENT_ID, from OPENAI_API_KEY, OPENAI_PROJECT_ID or OPENAI_ORG_ID selecting a different
+project or organization from the one the agent was created in, or from OPENAI_BASE_URL
+pointing somewhere else. Check those first.
+Only once you have confirmed the agent is gone, for example in the OpenAI dashboard of the
+project it was created in, remove AGENT_ID from .env (or unset it in this shell) and run
+this step again to create a new agent."""
 
 
 def confirm_agent_exists(client, agent_id: str) -> None:
     """Return if the lookup returns this agent; otherwise exit with a message.
 
-    A 404 is reported as "not found here", not as "gone": the SDK raises
-    NotFoundError for any 404, including one from a wrong project or a wrong
-    OPENAI_BASE_URL, so the message asks the reader to check those before
-    removing AGENT_ID. Any other failure (a network error, a 401 or 403, a 5xx)
-    means "could not tell", and so does a successful response that does not
-    carry this agent's id: either way the agent is not kept, and AGENT_ID is
-    not suggested for removal.
+    A 404 is not read as "gone": the SDK raises NotFoundError for any 404,
+    including one caused by a mistyped id, a different project or organization,
+    or a different endpoint, so the message lists those to check and says to
+    remove AGENT_ID only after confirming the agent is gone. Any other failure (a
+    network error, a 401 or 403, a 5xx) means "could not tell", and so does a
+    successful response that does not carry this agent's id: either way the
+    agent is not kept, and AGENT_ID is not suggested for removal.
     """
     try:
         agent = client.beta.agents.retrieve(agent_id)
     except NotFoundError:
-        sys.exit(
-            f"Agent {agent_id} from AGENT_ID was not found (HTTP 404) in the OpenAI project\n"
-            "this key belongs to, at the API endpoint configured here. Check that\n"
-            "OPENAI_API_KEY is for the project the agent was created in and that OPENAI_BASE_URL\n"
-            "is unset or correct. If both are right, the agent no longer exists: remove AGENT_ID\n"
-            "from .env (or unset it in this shell) and run this step again to create a new agent."
-        )
+        sys.exit(NOT_FOUND_MESSAGE.format(agent_id=agent_id))
     except APIError as exc:
         sys.exit(f"Could not confirm that agent {agent_id} exists, so it was not kept ({_describe(exc)}).")
     returned_id = getattr(agent, "id", None)

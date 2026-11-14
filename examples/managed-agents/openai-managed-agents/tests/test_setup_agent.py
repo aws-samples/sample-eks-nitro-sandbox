@@ -1,12 +1,13 @@
 """Tests for scripts/setup_agent.py keeping an AGENT_ID, with the OpenAI client faked.
 
 A kept AGENT_ID is looked up before it is kept. Both ways, per AGENTS.md: an
-agent the lookup returns is kept and nothing is created; a 404 stops with the
-message to check the project and OPENAI_BASE_URL before removing AGENT_ID; a
-lookup that fails for any other reason (network, auth, 5xx), or succeeds without
-this agent's id, stops and is not read as "agent gone"; and a failure is named
-by type, status and request id without printing the response body, which can
-carry a secret. In every stopping case no agent is created.
+agent the lookup returns is kept and nothing is created; a 404 stops with a
+message that lists what to check before removing AGENT_ID, without claiming the
+agent is gone; a lookup that fails for any other reason (network, auth, 5xx),
+or succeeds without this agent's id, stops and is not read as "agent gone"; and
+a failure is named by type and HTTP status only, printing neither the response
+body nor the request-id header, either of which a proxy can fill with a secret.
+In every stopping case no agent is created.
 
 Run with: python -m pytest
 """
@@ -74,7 +75,7 @@ def test_an_existing_agent_is_kept(run, capsys):
     assert "AGENT_ID=agent_kept" in capsys.readouterr().out
 
 
-def test_a_missing_agent_stops_with_the_unset_message(run):
+def test_a_404_lists_what_to_check_before_saying_to_remove_agent_id(run):
     client = _client(_status_error(openai.NotFoundError, 404))
 
     with pytest.raises(SystemExit) as stopped:
@@ -82,9 +83,15 @@ def test_a_missing_agent_stops_with_the_unset_message(run):
 
     message = str(stopped.value.code)
     assert "agent_kept" in message
-    assert "not found (HTTP 404)" in message
-    assert "OPENAI_BASE_URL" in message
-    assert "remove AGENT_ID" in message
+    assert "HTTP 404" in message
+    # A 404 is not proof of deletion, so the message must not claim it.
+    assert "no longer exists" not in message
+    assert "does not show that the agent was deleted" in message
+    # Every cause the SDK cannot tell apart is named, before the removal step.
+    removal = message.index("remove AGENT_ID")
+    for cause in ("mistyped", "OPENAI_API_KEY", "OPENAI_PROJECT_ID", "OPENAI_ORG_ID", "OPENAI_BASE_URL"):
+        assert cause in message[:removal], cause
+    assert "confirmed the agent is gone" in message[:removal]
     client.beta.agents.create.assert_not_called()
 
 
@@ -143,7 +150,27 @@ def test_a_failed_lookup_names_the_error_but_never_prints_its_body(run):
 
     message = str(stopped.value.code)
     assert secret not in message
-    assert "AuthenticationError, HTTP 401, request id req_123" in message
+    assert message.endswith("(AuthenticationError, HTTP 401).")
+
+
+def test_a_failed_lookup_never_prints_the_request_id_header(run):
+    # The SDK takes request_id straight from the x-request-id response header,
+    # which a proxy behind OPENAI_BASE_URL controls.
+    secret = "sk-proj-SECRET-IN-A-HEADER"
+    failure = openai.InternalServerError(
+        "error",
+        response=httpx.Response(500, request=_REQUEST, headers={"x-request-id": secret}),
+        body=None,
+    )
+    assert failure.request_id == secret
+
+    client = _client(failure)
+    with pytest.raises(SystemExit) as stopped:
+        run(client)
+
+    message = str(stopped.value.code)
+    assert secret not in message
+    assert message.endswith("(InternalServerError, HTTP 500).")
 
 
 def test_without_agent_id_an_agent_is_created_and_nothing_is_looked_up(monkeypatch, capsys):
