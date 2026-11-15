@@ -11,7 +11,8 @@
 # Capacity rule (public EC2 docs, Nitro Sandboxes considerations): up to 5 sandboxes per vCPU,
 # capped at 896 per instance, HALVED on CPU-overcommit instance types. The values below are the
 # conservative floor the NodePool's instances report; a node that reports MORE is fine (the pod
-# requests only 1 slot). Enable with: Karpenter Helm `--set settings.featureGates.nodeOverlay=true`.
+# requests only 1 slot). Requires Karpenter v1.15.2 or later (NodeOverlay v1alpha1 + the
+# nodeOverlay feature gate). Enable with: Karpenter Helm `--set settings.featureGates.nodeOverlay=true`.
 #
 # This overlay applies only to nodes in this blueprint's NodePool (matched by the NodePool's
 # sandbox.blueprint/al2023-ami label), so it does not affect other workloads on the cluster.
