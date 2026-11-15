@@ -61,10 +61,11 @@ it:
   `runtime-temporary` mount at `/tmp`, requires a read-only root filesystem,
   and sets `TMPDIR=/dev/shm`. It rejects other mounts that overlap `/tmp` or
   `/dev/shm`.
-- Starts the gateway through a minimal wrapper that takes ownership of the
-  Nitro-provided `/home/node` mount, changes it to mode `0700`, then immediately
-  switches to UID and GID 1000 and clears its capability sets before
-  running OCE's original command.
+- Starts the gateway through a minimal wrapper as UID and GID 0. The wrapper
+  removes group and world access from `/home/node` and each mapped persistent
+  state directory, assigns their mount points to `1000:1000`, then runs OCE's
+  original command as UID and GID 1000 with no supplementary groups or
+  capabilities.
 
 Nitro presents OCE's `/tmp` `subPath` mount as group- and world-writable without
 the sticky bit, which OpenClaw's secure temporary-directory check rejects. The
@@ -75,15 +76,20 @@ this workaround suits OpenClaw's small temporary control files, not large
 scratch data.
 
 Nitro also presents OCE's `/home/node` `subPath` mount as root-owned and
-group- and world-writable. The main-container wrapper needs only `CHOWN`,
-`SETUID`, `SETGID`, and `SETPCAP` while it repairs that mount and clears its
-capability bounding set. These capabilities are
-allowed by the Kubernetes baseline Pod Security Standard but not the restricted
-standard. The tenant setup script therefore enforces baseline and keeps
-restricted in audit and warning mode. The OCE process itself runs as UID 1000
-with no effective, permitted, inheritable, ambient, or bounding capabilities.
-Treat this temporary bootstrap privilege as an explicit compatibility trade-off
-until OCE and Nitro Pods expose a native storage contract.
+group- and world-writable. The wrapper starts with `allowPrivilegeEscalation:
+false`, drops all capabilities, then adds only `CHOWN`, `SETUID`, `SETGID`, and
+`SETPCAP` for the handoff. Kubernetes baseline permits those capabilities;
+restricted permits only `NET_BIND_SERVICE` to be added and also requires
+non-root execution. The tenant setup script therefore enforces baseline and
+keeps restricted in audit and warning mode.
+
+The wrapper uses `setpriv` to change to UID and GID 1000, clear supplementary
+groups, and empty the bounding, inheritable, and ambient capability sets. The
+UID transition also clears the effective and permitted sets before OCE starts.
+The ownership changes apply only to the mapped directory mount points; they do
+not recursively rewrite persisted files. Treat this short root bootstrap as an
+explicit compatibility trade-off until OCE and Nitro Pods expose a native
+storage contract.
 
 The tenant script renders the current AgentGateway ClusterIP as a `/32` alongside
 the namespace-and-pod selector. In the live EKS Auto Mode test, the generated

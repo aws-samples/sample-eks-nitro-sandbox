@@ -11,7 +11,6 @@ from adapter import (
     AdmissionError,
     HOME_MOUNT_PATH,
     HOME_WRAPPER_NAME,
-    HOME_WRAPPER_SCRIPT,
     LINK_INIT_NAME,
     NODE_CA_ENV,
     SHM_MOUNT_PATH,
@@ -250,15 +249,11 @@ class BuildPatchTests(unittest.TestCase):
         gateway = rendered["spec"]["containers"][-1]
 
         self.assertEqual(
-            gateway["command"],
-            [
-                "/bin/sh",
-                "-c",
-                HOME_WRAPPER_SCRIPT,
-                HOME_WRAPPER_NAME,
-                *original_gateway["command"],
-            ],
+            gateway["command"][:2],
+            ["/bin/sh", "-c"],
         )
+        self.assertEqual(gateway["command"][3], HOME_WRAPPER_NAME)
+        self.assertEqual(gateway["command"][4:], original_gateway["command"])
         self.assertEqual(gateway["args"], original_gateway["args"])
         self.assertEqual(gateway["securityContext"]["runAsUser"], 0)
         self.assertEqual(gateway["securityContext"]["runAsGroup"], 0)
@@ -270,9 +265,13 @@ class BuildPatchTests(unittest.TestCase):
                 "add": ["CHOWN", "SETUID", "SETGID", "SETPCAP"],
             },
         )
-        self.assertIn(f"chown 1000:1000 {HOME_MOUNT_PATH}", HOME_WRAPPER_SCRIPT)
-        self.assertIn(f"chmod 0700 {HOME_MOUNT_PATH}", HOME_WRAPPER_SCRIPT)
-        self.assertIn("--bounding-set=-all", HOME_WRAPPER_SCRIPT)
+        wrapper_script = gateway["command"][2]
+        self.assertIn('chown 1000:1000 "$path"', wrapper_script)
+        self.assertIn('chmod 0700 "$path"', wrapper_script)
+        self.assertIn(HOME_MOUNT_PATH, wrapper_script)
+        self.assertIn("/home/node/.openclaw/agents", wrapper_script)
+        self.assertIn("/home/node/.openclaw/sessions", wrapper_script)
+        self.assertIn("--bounding-set=-all", wrapper_script)
 
     def test_rejects_runtime_without_safe_drop_privilege_contract(self) -> None:
         for change in (

@@ -49,11 +49,16 @@ The script:
    immutable `agentgateway-ca` ConfigMap.
 5. Applies default-deny egress plus explicit DNS and AgentGateway egress.
 
-Baseline is required because the Nitro compatibility wrapper briefly starts as
-root with only `CHOWN`, `SETUID`, `SETGID`, and `SETPCAP`. It locks
-`/home/node` to UID 1000 and mode `0700`, changes to UID and GID 1000, and
-clears its capability sets before OCE starts. Review this bootstrap trade-off
-against your workload policy.
+Baseline is required because the Nitro compatibility wrapper starts as UID and
+GID 0 with `allowPrivilegeEscalation: false` and only `CHOWN`, `SETUID`,
+`SETGID`, and `SETPCAP`. Restricted requires non-root execution and permits
+only `NET_BIND_SERVICE` to be added after dropping all capabilities.
+
+The wrapper removes group and world access from `/home/node` and each mapped
+persistent state directory, changes those mount points to ownership `1000:1000`,
+then uses `setpriv` to run OCE as UID and GID 1000 with no supplementary groups
+or capabilities. It does not recursively change persisted files. Review this
+short root bootstrap against your workload policy.
 
 If an immutable CA ConfigMap already exists, the script stops when its
 certificate differs. Recreate that ConfigMap only as a deliberate CA rotation.

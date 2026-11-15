@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import posixpath
+import shlex
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -31,13 +32,6 @@ RUNTIME_UID = 1000
 RUNTIME_GID = 1000
 HOME_MOUNT_PATH = "/home/node"
 HOME_WRAPPER_NAME = "nitro-home-setup"
-HOME_WRAPPER_SCRIPT = (
-    f"chmod 0700 {HOME_MOUNT_PATH} && "
-    f"chown {RUNTIME_UID}:{RUNTIME_GID} {HOME_MOUNT_PATH} && "
-    f'exec /usr/bin/setpriv --reuid={RUNTIME_UID} --regid={RUNTIME_GID} '
-    '--clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all '
-    '-- "$@"'
-)
 
 LINK_SCRIPT = r"""
 const fs = require("node:fs");
@@ -132,7 +126,7 @@ def _runtime_environment(container: dict[str, Any], location: str) -> list[Any]:
 
 
 def _runtime_wrapper(
-    container: dict[str, Any], location: str
+    container: dict[str, Any], location: str, private_paths: list[str]
 ) -> tuple[list[str], list[str], dict[str, Any]]:
     command = container.get("command")
     arguments = container.get("args", [])
@@ -178,10 +172,19 @@ def _runtime_wrapper(
             },
         }
     )
+    quoted_paths = " ".join(shlex.quote(path) for path in private_paths)
+    wrapper_script = (
+        f"for path in {quoted_paths}; do "
+        f'chmod 0700 "$path" && chown {RUNTIME_UID}:{RUNTIME_GID} "$path"; '
+        "done && "
+        f'exec /usr/bin/setpriv --reuid={RUNTIME_UID} --regid={RUNTIME_GID} '
+        "--clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all "
+        '-- "$@"'
+    )
     wrapped_command = [
         "/bin/sh",
         "-c",
-        HOME_WRAPPER_SCRIPT,
+        wrapper_script,
         HOME_WRAPPER_NAME,
         *copy.deepcopy(command),
     ]
@@ -531,7 +534,17 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                         )
                     location = f"spec.{group_name}[{index}]"
                     wrapped_command, wrapped_arguments, wrapped_security = (
-                        _runtime_wrapper(container, location)
+                        _runtime_wrapper(
+                            container,
+                            location,
+                            [
+                                HOME_MOUNT_PATH,
+                                *[
+                                    f"{HOME_MOUNT_PATH}/{link}"
+                                    for link in sorted(links)
+                                ],
+                            ],
+                        )
                     )
                     runtime_patches.extend(
                         [
