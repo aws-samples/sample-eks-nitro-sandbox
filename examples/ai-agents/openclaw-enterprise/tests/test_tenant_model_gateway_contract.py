@@ -115,6 +115,9 @@ def test_configure_script_copies_only_public_ca_and_applies_policy() -> None:
 
     assert "set -euo pipefail" in script
     assert "app\\.kubernetes\\.io/managed-by" in script
+    assert "pod-security.kubernetes.io/enforce=baseline" in script
+    assert "pod-security.kubernetes.io/audit=restricted" in script
+    assert "pod-security.kubernetes.io/warn=restricted" in script
     assert "tls\\.crt" in script
     assert "tls\\.key" not in script
     assert "--dry-run=client" in script

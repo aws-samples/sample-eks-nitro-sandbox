@@ -1,9 +1,9 @@
 # Configure a tenant model gateway
 
 Use `configure-tenant-model-gateway.sh` after AgentGateway is ready and OCE has
-created the tenant namespace. This procedure configures trust and network
-isolation. The live validation completed one OCE-created Agent flow; repeat the
-procedure for each tenant namespace.
+created the tenant namespace. This procedure configures the Pod Security
+profile, trust, and network isolation. The live validation completed one
+OCE-created Agent flow; repeat the procedure for each tenant namespace.
 
 The separate admission adapter consumes the CA ConfigMap created here when it
 adapts compatible OCE Agent and gateway pods. Treat that adapter as a
@@ -42,10 +42,18 @@ tenant_namespace="replace-with-oce-tenant-namespace"
 The script:
 
 1. Verifies that OCE manages the tenant namespace.
-2. Reads the stable AgentGateway ClusterIP.
-3. Copies the AgentGateway root certificate into the tenant namespace as the
+2. Enforces the Kubernetes baseline Pod Security Standard and keeps restricted
+   policy checks in audit and warning mode.
+3. Reads the stable AgentGateway ClusterIP.
+4. Copies the AgentGateway root certificate into the tenant namespace as the
    immutable `agentgateway-ca` ConfigMap.
-4. Applies default-deny egress plus explicit DNS and AgentGateway egress.
+5. Applies default-deny egress plus explicit DNS and AgentGateway egress.
+
+Baseline is required because the Nitro compatibility wrapper briefly starts as
+root with only `CHOWN`, `SETUID`, `SETGID`, and `SETPCAP`. It locks
+`/home/node` to UID 1000 and mode `0700`, changes to UID and GID 1000, and
+clears its capability sets before OCE starts. Review this bootstrap trade-off
+against your workload policy.
 
 If an immutable CA ConfigMap already exists, the script stops when its
 certificate differs. Recreate that ConfigMap only as a deliberate CA rotation.

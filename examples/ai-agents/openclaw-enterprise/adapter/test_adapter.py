@@ -9,6 +9,9 @@ from adapter import (
     AGW_CA_MOUNT_PATH,
     AGW_CA_VOLUME,
     AdmissionError,
+    HOME_MOUNT_PATH,
+    HOME_WRAPPER_NAME,
+    HOME_WRAPPER_SCRIPT,
     LINK_INIT_NAME,
     NODE_CA_ENV,
     SHM_MOUNT_PATH,
@@ -63,7 +66,16 @@ def target_pod() -> dict:
                 {
                     "name": "gateway",
                     "image": "example.invalid/oce@sha256:abc",
-                    "securityContext": {"readOnlyRootFilesystem": True},
+                    "command": ["/usr/bin/tini", "--", "node", "-e"],
+                    "args": ["console.log('gateway')"],
+                    "securityContext": {
+                        "allowPrivilegeEscalation": False,
+                        "capabilities": {"drop": ["ALL"]},
+                        "readOnlyRootFilesystem": True,
+                        "runAsNonRoot": True,
+                        "runAsUser": 1000,
+                        "runAsGroup": 1000,
+                    },
                     "volumeMounts": [
                         {
                             "name": "runtime-state",
@@ -231,6 +243,58 @@ def apply_patch(document: dict, patch: list[dict]) -> dict:
 
 
 class BuildPatchTests(unittest.TestCase):
+    def test_wraps_runtime_to_secure_nitro_home_then_drop_privileges(self) -> None:
+        pod = target_pod()
+        original_gateway = pod["spec"]["containers"][-1]
+        rendered = apply_patch(pod, build_patch(pod))
+        gateway = rendered["spec"]["containers"][-1]
+
+        self.assertEqual(
+            gateway["command"],
+            [
+                "/bin/sh",
+                "-c",
+                HOME_WRAPPER_SCRIPT,
+                HOME_WRAPPER_NAME,
+                *original_gateway["command"],
+            ],
+        )
+        self.assertEqual(gateway["args"], original_gateway["args"])
+        self.assertEqual(gateway["securityContext"]["runAsUser"], 0)
+        self.assertEqual(gateway["securityContext"]["runAsGroup"], 0)
+        self.assertFalse(gateway["securityContext"]["runAsNonRoot"])
+        self.assertEqual(
+            gateway["securityContext"]["capabilities"],
+            {
+                "drop": ["ALL"],
+                "add": ["CHOWN", "SETUID", "SETGID", "SETPCAP"],
+            },
+        )
+        self.assertIn(f"chown 1000:1000 {HOME_MOUNT_PATH}", HOME_WRAPPER_SCRIPT)
+        self.assertIn(f"chmod 0700 {HOME_MOUNT_PATH}", HOME_WRAPPER_SCRIPT)
+        self.assertIn("--bounding-set=-all", HOME_WRAPPER_SCRIPT)
+
+    def test_rejects_runtime_without_safe_drop_privilege_contract(self) -> None:
+        for change in (
+            {"command": None},
+            {"securityContext": {"readOnlyRootFilesystem": True}},
+            {
+                "securityContext": {
+                    "allowPrivilegeEscalation": False,
+                    "capabilities": {
+                        "drop": ["ALL"],
+                        "add": ["SYS_ADMIN"],
+                    },
+                    "readOnlyRootFilesystem": True,
+                }
+            },
+        ):
+            with self.subTest(change=change):
+                pod = target_pod()
+                pod["spec"]["containers"][-1].update(change)
+                with self.assertRaises(AdmissionError):
+                    build_patch(pod)
+
     def test_configures_private_runtime_tmp_directory(self) -> None:
         rendered = apply_patch(target_pod(), build_patch(target_pod()))
         gateway = next(

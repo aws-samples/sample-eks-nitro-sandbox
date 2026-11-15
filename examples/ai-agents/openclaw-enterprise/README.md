@@ -61,15 +61,29 @@ it:
   `runtime-temporary` mount at `/tmp`, requires a read-only root filesystem,
   and sets `TMPDIR=/dev/shm`. It rejects other mounts that overlap `/tmp` or
   `/dev/shm`.
+- Starts the gateway through a minimal wrapper that takes ownership of the
+  Nitro-provided `/home/node` mount, changes it to mode `0700`, then immediately
+  switches to UID and GID 1000 and clears its capability sets before
+  running OCE's original command.
 
 Nitro presents OCE's `/tmp` `subPath` mount as group- and world-writable without
 the sticky bit, which OpenClaw's secure temporary-directory check rejects. The
 Nitro runtime already provides pod-local, writable, sticky `/dev/shm`, so
 OpenClaw can create its user-owned `0700` temporary directory there without a
-root init container. This keeps the workload compatible with the Kubernetes
-restricted Pod Security Standard. Because `/dev/shm` is memory-backed and
-capacity-limited, this workaround suits OpenClaw's small temporary control
-files, not large scratch data.
+root init container. Because `/dev/shm` is memory-backed and capacity-limited,
+this workaround suits OpenClaw's small temporary control files, not large
+scratch data.
+
+Nitro also presents OCE's `/home/node` `subPath` mount as root-owned and
+group- and world-writable. The main-container wrapper needs only `CHOWN`,
+`SETUID`, `SETGID`, and `SETPCAP` while it repairs that mount and clears its
+capability bounding set. These capabilities are
+allowed by the Kubernetes baseline Pod Security Standard but not the restricted
+standard. The tenant setup script therefore enforces baseline and keeps
+restricted in audit and warning mode. The OCE process itself runs as UID 1000
+with no effective, permitted, inheritable, ambient, or bounding capabilities.
+Treat this temporary bootstrap privilege as an explicit compatibility trade-off
+until OCE and Nitro Pods expose a native storage contract.
 
 The tenant script renders the current AgentGateway ClusterIP as a `/32` alongside
 the namespace-and-pod selector. In the live EKS Auto Mode test, the generated

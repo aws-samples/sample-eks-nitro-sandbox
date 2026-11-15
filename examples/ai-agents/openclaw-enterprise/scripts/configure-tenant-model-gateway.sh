@@ -29,6 +29,12 @@ if [[ "${managed_by}" != "openclaw-enterprise" ]]; then
   exit 1
 fi
 
+kubectl label namespace "${TENANT_NAMESPACE}" \
+  pod-security.kubernetes.io/enforce=baseline \
+  pod-security.kubernetes.io/audit=restricted \
+  pod-security.kubernetes.io/warn=restricted \
+  --overwrite
+
 agentgateway_ip="$(
   kubectl get service agentgateway \
     --namespace "${AGW_NAMESPACE}" \
@@ -81,4 +87,4 @@ sed \
   "${TENANT_TEMPLATE}" |
   kubectl apply --filename -
 
-echo "Configured the private AgentGateway trust and egress path for ${TENANT_NAMESPACE}."
+echo "Configured the Nitro Pod Security profile, private AgentGateway trust, and egress path for ${TENANT_NAMESPACE}."

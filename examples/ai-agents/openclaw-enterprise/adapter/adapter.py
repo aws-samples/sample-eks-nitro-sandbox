@@ -27,6 +27,17 @@ TMPDIR_PATH = "/dev/shm"  # nosec B108
 TMP_MOUNT_PATH = "/tmp"  # nosec B108
 SHM_MOUNT_PATH = "/dev/shm"  # nosec B108
 SERVICE_ACCOUNT_MOUNT_PATH = "/var/run/secrets/kubernetes.io/serviceaccount"
+RUNTIME_UID = 1000
+RUNTIME_GID = 1000
+HOME_MOUNT_PATH = "/home/node"
+HOME_WRAPPER_NAME = "nitro-home-setup"
+HOME_WRAPPER_SCRIPT = (
+    f"chmod 0700 {HOME_MOUNT_PATH} && "
+    f"chown {RUNTIME_UID}:{RUNTIME_GID} {HOME_MOUNT_PATH} && "
+    f'exec /usr/bin/setpriv --reuid={RUNTIME_UID} --regid={RUNTIME_GID} '
+    '--clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all '
+    '-- "$@"'
+)
 
 LINK_SCRIPT = r"""
 const fs = require("node:fs");
@@ -118,6 +129,63 @@ def _runtime_environment(container: dict[str, Any], location: str) -> list[Any]:
         if matches and matches[0] != {"name": name, "value": value}:
             raise AdmissionError(f"{location} already configures {name}")
     return environment
+
+
+def _runtime_wrapper(
+    container: dict[str, Any], location: str
+) -> tuple[list[str], list[str], dict[str, Any]]:
+    command = container.get("command")
+    arguments = container.get("args", [])
+    if (
+        not isinstance(command, list)
+        or not command
+        or not all(_is_nonempty_string(item) for item in command)
+    ):
+        raise AdmissionError(f"{location}.command must be a non-empty string list")
+    if not isinstance(arguments, list) or not all(
+        isinstance(item, str) for item in arguments
+    ):
+        raise AdmissionError(f"{location}.args must be a string list")
+
+    security = container.get("securityContext")
+    if not isinstance(security, dict):
+        raise AdmissionError(f"{location} must declare securityContext")
+    capabilities = security.get("capabilities")
+    if (
+        security.get("allowPrivilegeEscalation") is not False
+        or security.get("readOnlyRootFilesystem") is not True
+        or not isinstance(capabilities, dict)
+        or capabilities.get("drop") != ["ALL"]
+        or capabilities.get("add") not in (None, [])
+        or security.get("runAsUser") not in (None, RUNTIME_UID)
+        or security.get("runAsGroup") not in (None, RUNTIME_GID)
+        or security.get("runAsNonRoot") not in (None, True)
+    ):
+        raise AdmissionError(
+            f"{location} must start as the non-root runtime user with a "
+            "read-only root filesystem and all capabilities dropped"
+        )
+
+    wrapped_security = copy.deepcopy(security)
+    wrapped_security.update(
+        {
+            "runAsUser": 0,
+            "runAsGroup": 0,
+            "runAsNonRoot": False,
+            "capabilities": {
+                "drop": ["ALL"],
+                "add": ["CHOWN", "SETUID", "SETGID", "SETPCAP"],
+            },
+        }
+    )
+    wrapped_command = [
+        "/bin/sh",
+        "-c",
+        HOME_WRAPPER_SCRIPT,
+        HOME_WRAPPER_NAME,
+        *copy.deepcopy(command),
+    ]
+    return wrapped_command, copy.deepcopy(arguments), wrapped_security
 
 
 def _mount_paths_overlap(left: Any, right: str) -> bool:
@@ -329,6 +397,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     links: dict[str, str] = {}
     mount_patches: list[dict[str, Any]] = []
     environment_patches: list[dict[str, Any]] = []
+    runtime_patches: list[dict[str, Any]] = []
     groups = (
         ("initContainers", init_containers),
         ("containers", containers),
@@ -460,14 +529,35 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                         raise AdmissionError(
                             f"spec.{group_name}[{index}] has a mount that overlaps {SHM_MOUNT_PATH}"
                         )
-                    security = container.get("securityContext")
-                    if (
-                        not isinstance(security, dict)
-                        or security.get("readOnlyRootFilesystem") is not True
-                    ):
-                        raise AdmissionError(
-                            f"spec.{group_name}[{index}] must use a read-only root filesystem"
-                        )
+                    location = f"spec.{group_name}[{index}]"
+                    wrapped_command, wrapped_arguments, wrapped_security = (
+                        _runtime_wrapper(container, location)
+                    )
+                    runtime_patches.extend(
+                        [
+                            {
+                                "op": "replace",
+                                "path": f"/spec/{group_name}/{index}/command",
+                                "value": wrapped_command,
+                            },
+                            {
+                                "op": (
+                                    "replace"
+                                    if "args" in container
+                                    else "add"
+                                ),
+                                "path": f"/spec/{group_name}/{index}/args",
+                                "value": wrapped_arguments,
+                            },
+                            {
+                                "op": "replace",
+                                "path": (
+                                    f"/spec/{group_name}/{index}/securityContext"
+                                ),
+                                "value": wrapped_security,
+                            },
+                        ]
+                    )
                     rewritten.append(
                         {
                             "name": AGW_CA_VOLUME,
@@ -583,6 +673,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
 
     patch.extend(mount_patches)
     patch.extend(environment_patches)
+    patch.extend(runtime_patches)
     patch.append(
         {
             "op": "replace",
