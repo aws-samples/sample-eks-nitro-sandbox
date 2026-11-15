@@ -16,8 +16,9 @@ the guest image layout, the guest kernel release inside the staged EIF (read fro
 header, equal to the pinned guest_kernel the AMI is tagged with), mkfs.erofs 1.8.10 with zstd as
 a systemd service sees it, every file
 packages/sources.lock installs on the node at its path, mode and pinned SHA-256, the runtime
-release's signed manifest kept on the image (its signature verified again with the committed
-public key, and its shim line), and the package holds 36-hold-packages.sh set (containerd and the
+release's signed manifest kept on the image (the manifest and its signature each a regular file at
+mode 0644, the signature verified again with the committed public key, and the shim line), and
+the package holds 36-hold-packages.sh set (containerd and the
 kernel meta-packages).
 
 Every condition is checked with require() (scripts/lib/image_checks.py), which raises whatever
@@ -47,8 +48,10 @@ DATA_DIR = os.environ.get("NITRO_SANDBOX_DATA_DIR", ic.DATA_DIR)
 LOCALVERSION = os.environ.get("KERNEL_LOCALVERSION", "-nitro-ga")
 SHIM_DEBUG = os.environ.get("SHIM_DEBUG", "false") == "true"
 PROFILE_NAME = "ubuntu-ami-sample-profile"
-# Where 30-runtime-install.sh keeps the runtime release's signed manifest and its signature.
+# Where 30-runtime-install.sh keeps the runtime release's signed manifest and its signature, and the
+# mode it installs both at (its `install -D -m 0644` lines).
 SIGNED_DIR = "/usr/local/share/ubuntu-ami-sample/runtime"
+SIGNED_MODE = 0o644
 
 
 def P(path):
@@ -216,7 +219,17 @@ def checks(lock):
                     f"the public key {b['public_key']} beside sources.lock is missing or not its pinned SHA-256")
             man = P(f"{SIGNED_DIR}/{bid}.SHA256SUM")
             sig = P(f"{SIGNED_DIR}/{bid}.SHA256SUM.sig")
-            require(man.is_file() and sig.is_file(), f"{SIGNED_DIR}/{bid}.SHA256SUM or its .sig is missing")
+            require(os.path.lexists(man) and os.path.lexists(sig), f"{SIGNED_DIR}/{bid}.SHA256SUM or its .sig is missing")
+            # Each is a regular file at the mode 30-runtime-install.sh installs it at, as runtime_files requires
+            # of every installed file. lstat, not is_file(), which follows a symlink: the hash and the signature
+            # below are read through whatever the path points at. This refuses a symlink in the final path
+            # component, as of the lstat. A symlinked parent directory, a hard link, or a swap between the lstat
+            # and the reads is not caught, the same as in runtime_files.
+            for name in (f"{bid}.SHA256SUM", f"{bid}.SHA256SUM.sig"):
+                st = os.lstat(P(f"{SIGNED_DIR}/{name}"))
+                require(stat.S_ISREG(st.st_mode), f"{SIGNED_DIR}/{name} is not a regular file")
+                require(stat.S_IMODE(st.st_mode) == SIGNED_MODE,
+                        f"{SIGNED_DIR}/{name} has mode {oct(stat.S_IMODE(st.st_mode))}, expected {SIGNED_MODE:04o}")
             require(sha256(man) == b["manifest_sha256"], f"{bid}.SHA256SUM is not the manifest sources.lock pins")
             v = run(["openssl", "dgst", "-sha384", "-verify", str(key), "-signature", str(sig), str(man)])
             require(v.returncode == 0 and v.stdout.strip() == "Verified OK",

@@ -695,7 +695,8 @@ endpoint, the shim config (only the keys the shim reads), the guest image layout
 kernel release inside `latest.eif` (read from its kernel's header and compared whole with the pin,
 `6.18.56`, so the host's `6.18.56-nitro-ga` is refused), `mkfs.erofs` 1.8.10 with zstd as a
 service sees it, every installed runtime file against its pin, the runtime release's signed
-manifest (its signature verified again with the committed key), and the package holds: 16 checks.
+manifest and its signature (each a regular file at mode 0644, the signature verified again with
+the committed key), and the package holds: 16 checks.
 Each check raises its own failure (no Python `assert`, which `python3 -O` would
 remove). Only once both checks pass does the script tag the AMI
 `BtfValidated=true` ([`scripts/lib/btf-tag.sh`](scripts/lib/btf-tag.sh)), alongside the
