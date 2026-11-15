@@ -744,6 +744,31 @@ cannot leave the blueprint without its autoscaler.
   idle pods for the latency win, and autoscaling trades a slower response to a burst for not
   holding those pods when demand falls. `maxReplicaCount` is the bound on how much of that
   trade you are willing to make.
+- **A burst can land on one node, and the node bounds it.** The pod spec sets no requests,
+  but the `isolated-sandbox` RuntimeClass adds a fixed overhead to every sandbox pod: 256
+  MiB of memory and one `eks.amazonaws.com/nitro-sandbox` unit. The node this run used, an
+  `m5a.xlarge`, advertised 20 of those units, so it holds at most 20 sandbox pods. At this
+  blueprint's cap, three claims and a pool of three, six sandbox pods ran at peak, all on
+  one node, in five bursts with no sandbox start errors. Setting the pool straight to 10
+  packed all ten onto that node in three runs, also with none. Setting it to 20 filled the
+  node in about 70 seconds. In one of two runs the kubelet logged four
+  `FailedCreatePodSandBox` events, three from the CNI failing to assign an IP address and
+  one a refused connection to the VM's socket, and every pod still reached Ready. A pool of
+  24 put 20 pods on that node and 4 on a second one. An earlier run, during the
+  agent-sandbox v1.0.10 bump, logged one `NE_ADD_DEVICE` start failure with the pool packed
+  on one node. It did not recur in any of these runs, so packing is not established as its
+  cause.
+- **Spreading the pool takes `minDomains`, and it costs nodes.** A
+  `topologySpreadConstraints` entry on `kubernetes.io/hostname` with `maxSkew: 1` and
+  `whenUnsatisfiable: DoNotSchedule` does nothing while only one node can run sandboxes:
+  there is one domain, so the skew is always zero and every pod still lands on it. Adding
+  `minDomains: 3` makes the cluster launch nodes for each burst. A three-claim burst brought
+  up three more nodes and spread six pods over four, and the extra nodes were gone after the
+  clean up. One start failed while the new nodes were coming up, with the CNI unable to set
+  up network policy. This blueprint leaves the pool unconstrained, because adding nodes and
+  cost would hide what it shows about how many warm pods the pool holds. If you need the
+  spread, put the constraint in the template's `spec.podTemplate.spec`, with a label
+  selector on `app.kubernetes.io/part-of`.
 - **Running setup again resets the pool to the floor.** `setup.sh` re-applies
   `deploy/warm-pool.yaml`, which carries `replicas: 1`, over the field the HPA owns. KEDA
   writes it back on its next sync, about 15 seconds, so this is a brief dip rather than a
