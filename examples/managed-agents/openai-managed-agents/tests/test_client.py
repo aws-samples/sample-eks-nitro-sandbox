@@ -241,15 +241,20 @@ EXPECTED_PROTECTED_LOGGERS = (
 # redone rather than assumed, and this says so by failing.
 EXPECTED_STACK = {"openai": "3.31.0", "httpx2": "2.16.0", "httpcore2": "2.16.0", "h11": "0.16.0"}
 
+# {configure} is logging.basicConfig(level=...) placed either before `import _client`
+# or after it (but before make_client()). The "after" ordering is the one that catches an
+# import-time silence call: a framework that configures a stricter level only after the SDK
+# and the shared client are imported. See test_a_stricter_level_already_in_force_is_kept.
 LEVEL_PROBE = '''\
 import importlib.metadata as metadata
 import json
 import logging
 import sys
 
-logging.basicConfig(level={start_level})
+{configure_before}
 sys.path.insert(0, {scripts!r})
 import _client
+{configure_after}
 _client.make_client()
 
 print(json.dumps({{
@@ -260,11 +265,26 @@ print(json.dumps({{
 '''
 
 
-def _probe(tmp_path, start_level):
+def _probe(tmp_path, start_level, configure="before"):
+    """Run the level probe in a child process.
+
+    configure says WHEN logging.basicConfig(level=start_level) runs relative to
+    `import _client`: "before" (the SDK is imported into an already-configured root)
+    or "after" (a framework configures the level only once the shared client is
+    imported). "after" is what exercises an import-time silence call: with the level
+    set before import, max(effectiveLevel, WARNING) sees the stricter level already,
+    so an import-time freeze would be hidden.
+    """
+    assert configure in ("before", "after"), configure
     import json
 
+    call = f"logging.basicConfig(level={start_level})"
     probe = tmp_path / "probe.py"
-    probe.write_text(LEVEL_PROBE.format(scripts=str(SCRIPTS), start_level=start_level))
+    probe.write_text(LEVEL_PROBE.format(
+        scripts=str(SCRIPTS),
+        configure_before=call if configure == "before" else "",
+        configure_after=call if configure == "after" else "",
+    ))
     environment = {
         name: value for name, value in os.environ.items()
         if not name.startswith(("OPENAI_", "PYTEST_"))
@@ -303,15 +323,22 @@ def test_each_protected_logger_is_set_to_warning_from_a_lower_level(tmp_path):
 
 
 def test_a_stricter_level_already_in_force_is_kept(tmp_path):
-    """The other direction, and a regression test.
+    """The other direction, and the regression test for an import-time silence call.
 
     An earlier version ran the same call when the module was imported, which froze
     every logger at the default WARNING. A framework that then configured ERROR got
     WARNING records anyway, because the assignment reads the effective level and by
-    then each logger had one of its own. With the call made only from
-    make_client(), a stricter setting in force by then survives.
+    then each logger had one of its own. With the call made only from make_client(),
+    a stricter setting in force by then survives.
+
+    The ordering is what makes this a regression test: the ERROR is configured AFTER
+    _client is imported. Set before the import, max(getEffectiveLevel(), WARNING)
+    would already see ERROR at import, so an import-time silence call would do no harm
+    and this test would pass while blind to it. Configured after the import, an
+    import-time call freezes the nine loggers at WARNING first, and this then reads
+    WARNING rather than ERROR and fails -- which it must.
     """
-    levels = _probe(tmp_path, "logging.ERROR")["levels"]
+    levels = _probe(tmp_path, "logging.ERROR", configure="after")["levels"]
     assert all(level == logging.ERROR for level in levels.values()), levels
 
 
