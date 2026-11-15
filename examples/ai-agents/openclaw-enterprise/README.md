@@ -60,9 +60,16 @@ it:
   `NODE_EXTRA_CA_CERTS=/etc/agentgateway-ca/ca.crt`, creates the private runtime
   temporary directory with mode `0700`, and sets
   `TMPDIR=/home/node/.openclaw/tmp`.
-- Reuses OCE's existing `/tmp` `emptyDir`, mounts its single-component subpath
-  into the init container, and sets that directory to sticky `03777` so
-  OpenClaw startup probes can write temporary files safely.
+- Replaces OCE's existing `/tmp` mount with a dedicated 64 MiB
+  `oce-nitro-secure-tmp` `emptyDir`, mounted at the volume root on `/tmp`
+  without `subPath`. The init container mounts the same volume root at
+  `/runtime-temporary` and sets mode `03777` so OpenClaw startup probes can
+  write temporary files safely.
+
+Nitro `subPath` mounts strip the sticky bit from the mounted directory. As a
+result, setting mode `03777` on the source subdirectory does not leave `/tmp`
+sticky inside the workload container. Mounting the dedicated `emptyDir` at its
+root preserves the mode set by the init container.
 
 The tenant script renders the current AgentGateway ClusterIP as a `/32` alongside
 the namespace-and-pod selector. In the live EKS Auto Mode test, the generated
