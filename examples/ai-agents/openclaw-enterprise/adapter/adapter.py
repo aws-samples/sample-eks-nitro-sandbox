@@ -25,7 +25,7 @@ TMPDIR_ENV = "TMPDIR"
 TMPDIR_PATH = "/home/node/.openclaw/tmp"
 # The adapter replaces this path with a pod-local sticky emptyDir.
 SECURE_TMP_MOUNT_PATH = "/tmp"  # nosec B108
-SECURE_TMP_SUBPATH = "secure-tmp"
+SECURE_TMP_VOLUME = "oce-nitro-secure-tmp"
 SECURE_TMP_INIT_MOUNT_PATH = "/runtime-temporary"
 SERVICE_ACCOUNT_MOUNT_PATH = "/var/run/secrets/kubernetes.io/serviceaccount"
 
@@ -239,13 +239,16 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         raise AdmissionError("spec.volumes must be a list")
     init_containers, containers = _container_groups(spec)
 
-    reserved_ca_volumes = [
+    reserved_volumes = [
         volume
         for volume in volumes
-        if isinstance(volume, dict) and volume.get("name") == AGW_CA_VOLUME
+        if isinstance(volume, dict)
+        and volume.get("name") in {AGW_CA_VOLUME, SECURE_TMP_VOLUME}
     ]
-    if reserved_ca_volumes:
-        raise AdmissionError(f"volume name {AGW_CA_VOLUME} is reserved")
+    if reserved_volumes:
+        raise AdmissionError(
+            f"volume names {AGW_CA_VOLUME} and {SECURE_TMP_VOLUME} are reserved"
+        )
 
     all_mounts = [
         mount
@@ -454,53 +457,14 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                             raise AdmissionError(
                                 f"spec.{group_name}[{index}] mounts {SECURE_TMP_MOUNT_PATH} read-only"
                             )
-                        if "subPathExpr" in existing_tmp_mount:
-                            raise AdmissionError(
-                                f"spec.{group_name}[{index}] uses subPathExpr for {SECURE_TMP_MOUNT_PATH}"
-                            )
-                        if "subPath" in existing_tmp_mount:
-                            secure_tmp_subpath = _safe_relative_path(
-                                existing_tmp_mount["subPath"],
-                                f"spec.{group_name}[{index}] temporary subPath",
-                            )
-                            if len(PurePosixPath(secure_tmp_subpath).parts) != 1:
-                                raise AdmissionError(
-                                    f"spec.{group_name}[{index}] temporary subPath "
-                                    "must be a single component"
-                                )
-                        else:
-                            secure_tmp_subpath = SECURE_TMP_SUBPATH
-                            existing_tmp_mount["subPath"] = secure_tmp_subpath
-                        candidate = {
-                            "name": existing_tmp_mount["name"],
-                            "subPath": secure_tmp_subpath,
-                            "mountRootInInit": True,
+                        rewritten.remove(existing_tmp_mount)
+                    rewritten.append(
+                        {
+                            "name": SECURE_TMP_VOLUME,
+                            "mountPath": SECURE_TMP_MOUNT_PATH,
                         }
-                        if secure_tmp_source is None:
-                            secure_tmp_source = candidate
-                        elif secure_tmp_source != candidate:
-                            raise AdmissionError(
-                                "adapted containers must use the same temporary volume"
-                            )
-                    else:
-                        rewritten.append(
-                            {
-                                "name": RUNTIME_VOLUME,
-                                "mountPath": SECURE_TMP_MOUNT_PATH,
-                                "subPath": SECURE_TMP_SUBPATH,
-                            }
-                        )
-                        candidate = {
-                            "name": RUNTIME_VOLUME,
-                            "subPath": SECURE_TMP_SUBPATH,
-                            "mountRootInInit": False,
-                        }
-                        if secure_tmp_source is None:
-                            secure_tmp_source = candidate
-                        elif secure_tmp_source != candidate:
-                            raise AdmissionError(
-                                "adapted containers must use the same temporary volume"
-                            )
+                    )
+                    secure_tmp_source = {"name": SECURE_TMP_VOLUME}
                     rewritten.append(
                         {
                             "name": AGW_CA_VOLUME,
@@ -570,14 +534,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
             },
             {
                 "name": "OCE_SECURE_TMP_PATH",
-                "value": (
-                    f"{RUNTIME_ROOT}/{SECURE_TMP_SUBPATH}"
-                    if not secure_tmp_source["mountRootInInit"]
-                    else (
-                        f"{SECURE_TMP_INIT_MOUNT_PATH}/"
-                        f"{secure_tmp_source['subPath']}"
-                    )
-                ),
+                "value": SECURE_TMP_INIT_MOUNT_PATH,
             },
         ],
         "securityContext": {
@@ -592,12 +549,11 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
             {"name": STATE_VOLUME, "mountPath": STATE_ROOT},
         ],
     }
-    if secure_tmp_source["mountRootInInit"]:
-        secure_tmp_init_mount = {
-            "name": secure_tmp_source["name"],
-            "mountPath": SECURE_TMP_INIT_MOUNT_PATH,
-        }
-        link_init["volumeMounts"].append(secure_tmp_init_mount)
+    secure_tmp_init_mount = {
+        "name": secure_tmp_source["name"],
+        "mountPath": SECURE_TMP_INIT_MOUNT_PATH,
+    }
+    link_init["volumeMounts"].append(secure_tmp_init_mount)
     if "imagePullPolicy" in prep:
         link_init["imagePullPolicy"] = prep["imagePullPolicy"]
 
@@ -654,6 +610,10 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                         "name": AGW_CA_CONFIG_MAP,
                         "items": [{"key": "ca.crt", "path": "ca.crt"}],
                     },
+                },
+                {
+                    "name": SECURE_TMP_VOLUME,
+                    "emptyDir": {"sizeLimit": "64Mi"},
                 },
             ],
         }

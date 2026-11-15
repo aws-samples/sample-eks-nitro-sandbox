@@ -13,7 +13,7 @@ from adapter import (
     NODE_CA_ENV,
     SECURE_TMP_INIT_MOUNT_PATH,
     SECURE_TMP_MOUNT_PATH,
-    SECURE_TMP_SUBPATH,
+    SECURE_TMP_VOLUME,
     TMPDIR_ENV,
     TMPDIR_PATH,
     build_patch,
@@ -279,11 +279,16 @@ class BuildPatchTests(unittest.TestCase):
             for container in rendered["spec"]["containers"]
             if container["name"] == "gateway"
         )
+        source_tmp = next(
+            mount
+            for mount in target_pod()["spec"]["containers"][-1]["volumeMounts"]
+            if mount["mountPath"] == SECURE_TMP_MOUNT_PATH
+        )
+        self.assertEqual(source_tmp["subPath"], "tmp")
         self.assertIn(
             {
-                "name": "runtime-temporary",
+                "name": SECURE_TMP_VOLUME,
                 "mountPath": SECURE_TMP_MOUNT_PATH,
-                "subPath": "tmp",
             },
             gateway["volumeMounts"],
         )
@@ -294,7 +299,7 @@ class BuildPatchTests(unittest.TestCase):
         )
         self.assertIn(
             {
-                "name": "runtime-temporary",
+                "name": SECURE_TMP_VOLUME,
                 "mountPath": SECURE_TMP_INIT_MOUNT_PATH,
             },
             preparer["volumeMounts"],
@@ -302,7 +307,7 @@ class BuildPatchTests(unittest.TestCase):
         self.assertIn(
             {
                 "name": "OCE_SECURE_TMP_PATH",
-                "value": f"{SECURE_TMP_INIT_MOUNT_PATH}/tmp",
+                "value": SECURE_TMP_INIT_MOUNT_PATH,
             },
             preparer["env"],
         )
@@ -318,9 +323,8 @@ class BuildPatchTests(unittest.TestCase):
         gateway = rendered["spec"]["containers"][-1]
         self.assertIn(
             {
-                "name": "runtime-state",
+                "name": SECURE_TMP_VOLUME,
                 "mountPath": SECURE_TMP_MOUNT_PATH,
-                "subPath": SECURE_TMP_SUBPATH,
             },
             gateway["volumeMounts"],
         )
@@ -330,14 +334,11 @@ class BuildPatchTests(unittest.TestCase):
         del pod["spec"]["containers"][-1]["volumeMounts"][2]["subPath"]
         rendered = apply_patch(pod, build_patch(pod))
         gateway = rendered["spec"]["containers"][-1]
-        self.assertIn(
-            {
-                "name": "runtime-temporary",
-                "mountPath": SECURE_TMP_MOUNT_PATH,
-                "subPath": SECURE_TMP_SUBPATH,
-            },
-            gateway["volumeMounts"],
-        )
+        self.assertNotIn("subPath", next(
+            mount
+            for mount in gateway["volumeMounts"]
+            if mount["mountPath"] == SECURE_TMP_MOUNT_PATH
+        ))
 
     def test_rejects_mounts_that_overlap_secure_tmp(self) -> None:
         for mount_path in ("/", "/tmp/cache", "//tmp", "//tmp/cache"):
@@ -354,18 +355,11 @@ class BuildPatchTests(unittest.TestCase):
                 ):
                     build_patch(pod)
 
-    def test_rejects_unsafe_existing_tmp_mount(self) -> None:
-        for field, value, message in (
-            ("readOnly", True, "read-only"),
-            ("subPath", "../tenant-tmp", "temporary subPath"),
-            ("subPath", "redirect/victim", "single component"),
-            ("subPathExpr", "$(TENANT)", "subPathExpr"),
-        ):
-            with self.subTest(field=field):
-                pod = target_pod()
-                pod["spec"]["containers"][-1]["volumeMounts"][2][field] = value
-                with self.assertRaisesRegex(AdmissionError, message):
-                    build_patch(pod)
+    def test_rejects_read_only_existing_tmp_mount(self) -> None:
+        pod = target_pod()
+        pod["spec"]["containers"][-1]["volumeMounts"][2]["readOnly"] = True
+        with self.assertRaisesRegex(AdmissionError, "read-only"):
+            build_patch(pod)
 
     def test_removes_preinjected_service_account_volume_only(self) -> None:
         pod = admitted_target_pod()
@@ -463,13 +457,20 @@ class BuildPatchTests(unittest.TestCase):
             spec["containers"][-1]["env"],
         )
         self.assertEqual(
-            spec["volumes"][-1],
+            spec["volumes"][-2],
             {
                 "name": AGW_CA_VOLUME,
                 "configMap": {
                     "name": AGW_CA_VOLUME,
                     "items": [{"key": "ca.crt", "path": "ca.crt"}],
                 },
+            },
+        )
+        self.assertEqual(
+            spec["volumes"][-1],
+            {
+                "name": SECURE_TMP_VOLUME,
+                "emptyDir": {"sizeLimit": "64Mi"},
             },
         )
 
@@ -485,7 +486,7 @@ class BuildPatchTests(unittest.TestCase):
             [
                 "runtime-state",
                 "openclaw-gateway-state",
-                "runtime-temporary",
+                SECURE_TMP_VOLUME,
             ],
         )
         self.assertEqual(
