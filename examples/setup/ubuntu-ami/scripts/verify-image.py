@@ -220,9 +220,11 @@ def checks(lock):
             man = P(f"{SIGNED_DIR}/{bid}.SHA256SUM")
             sig = P(f"{SIGNED_DIR}/{bid}.SHA256SUM.sig")
             require(os.path.lexists(man) and os.path.lexists(sig), f"{SIGNED_DIR}/{bid}.SHA256SUM or its .sig is missing")
-            # Each is the file itself and at the mode 30-runtime-install.sh installs it at, as runtime_files
-            # requires of every installed file. lstat, not is_file(), which follows a symlink: the hash and
-            # the signature below are read through whatever the path points at.
+            # Each is a regular file at the mode 30-runtime-install.sh installs it at, as runtime_files requires
+            # of every installed file. lstat, not is_file(), which follows a symlink: the hash and the signature
+            # below are read through whatever the path points at. This refuses a symlink in the final path
+            # component, as of the lstat. A symlinked parent directory, a hard link, or a swap between the lstat
+            # and the reads is not caught, the same as in runtime_files.
             for name in (f"{bid}.SHA256SUM", f"{bid}.SHA256SUM.sig"):
                 st = os.lstat(P(f"{SIGNED_DIR}/{name}"))
                 require(stat.S_ISREG(st.st_mode), f"{SIGNED_DIR}/{name} is not a regular file")
