@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import posixpath
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -22,6 +23,10 @@ AGW_CA_PATH = f"{AGW_CA_MOUNT_PATH}/ca.crt"
 NODE_CA_ENV = "NODE_EXTRA_CA_CERTS"
 TMPDIR_ENV = "TMPDIR"
 TMPDIR_PATH = "/home/node/.openclaw/tmp"
+# The adapter replaces this path with a pod-local sticky emptyDir.
+SECURE_TMP_MOUNT_PATH = "/tmp"  # nosec B108
+SECURE_TMP_SUBPATH = "secure-tmp"
+SECURE_TMP_INIT_MOUNT_PATH = "/runtime-temporary"
 SERVICE_ACCOUNT_MOUNT_PATH = "/var/run/secrets/kubernetes.io/serviceaccount"
 
 LINK_SCRIPT = r"""
@@ -31,6 +36,28 @@ const links = JSON.parse(process.env.OCE_STATE_LINKS || "[]");
 const temporary = "/runtime-state/home/.openclaw/tmp";
 fs.mkdirSync(temporary, {recursive: true, mode: 0o700});
 fs.chmodSync(temporary, 0o700);
+const secureTemporary = process.env.OCE_SECURE_TMP_PATH;
+if (!secureTemporary || !path.posix.isAbsolute(secureTemporary)) {
+  throw new Error("OCE_SECURE_TMP_PATH must be an absolute path");
+}
+try {
+  fs.mkdirSync(secureTemporary, {mode: 0o1777});
+} catch (error) {
+  if (error.code !== "EEXIST") throw error;
+}
+const secureTemporaryFd = fs.openSync(
+  secureTemporary,
+  fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW
+);
+try {
+  const secureTemporaryStat = fs.fstatSync(secureTemporaryFd);
+  if (!secureTemporaryStat.isDirectory()) {
+    throw new Error("secure temporary path is not a directory");
+  }
+  fs.fchmodSync(secureTemporaryFd, 0o1777);
+} finally {
+  fs.closeSync(secureTemporaryFd);
+}
 for (const item of links) {
   const link = path.posix.join("/runtime-state/home", item.link);
   const target = path.posix.join("/gateway-state", item.target);
@@ -117,6 +144,18 @@ def _runtime_environment(container: dict[str, Any], location: str) -> list[Any]:
         if matches and matches[0] != {"name": name, "value": value}:
             raise AdmissionError(f"{location} already configures {name}")
     return environment
+
+
+def _mount_paths_overlap(left: Any, right: str) -> bool:
+    if not _is_nonempty_string(left) or not left.startswith("/"):
+        return False
+    normalized = posixpath.normpath(f"/{left.lstrip('/')}")
+    return (
+        normalized == "/"
+        or normalized == right
+        or normalized.startswith(f"{right}/")
+        or right.startswith(f"{normalized}/")
+    )
 
 
 def _default_service_account_volumes(
@@ -299,6 +338,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     links: dict[str, str] = {}
     mount_patches: list[dict[str, Any]] = []
     environment_patches: list[dict[str, Any]] = []
+    secure_tmp_source: dict[str, Any] | None = None
     groups = (
         ("initContainers", init_containers),
         ("containers", containers),
@@ -385,6 +425,82 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                         raise AdmissionError(
                             f"spec.{group_name}[{index}] already uses the AgentGateway CA mount"
                         )
+                    existing_tmp_mounts = [
+                        mount
+                        for mount in rewritten
+                        if _is_nonempty_string(mount.get("mountPath"))
+                        and posixpath.normpath(mount["mountPath"])
+                        == SECURE_TMP_MOUNT_PATH
+                    ]
+                    conflicting_tmp_mounts = [
+                        mount
+                        for mount in rewritten
+                        if _mount_paths_overlap(
+                            mount.get("mountPath"), SECURE_TMP_MOUNT_PATH
+                        )
+                        and mount not in existing_tmp_mounts
+                    ]
+                    if conflicting_tmp_mounts:
+                        raise AdmissionError(
+                            f"spec.{group_name}[{index}] has a mount that overlaps {SECURE_TMP_MOUNT_PATH}"
+                        )
+                    if len(existing_tmp_mounts) > 1:
+                        raise AdmissionError(
+                            f"spec.{group_name}[{index}] has duplicate {SECURE_TMP_MOUNT_PATH} mounts"
+                        )
+                    if existing_tmp_mounts:
+                        existing_tmp_mount = existing_tmp_mounts[0]
+                        if existing_tmp_mount.get("readOnly") is True:
+                            raise AdmissionError(
+                                f"spec.{group_name}[{index}] mounts {SECURE_TMP_MOUNT_PATH} read-only"
+                            )
+                        if "subPathExpr" in existing_tmp_mount:
+                            raise AdmissionError(
+                                f"spec.{group_name}[{index}] uses subPathExpr for {SECURE_TMP_MOUNT_PATH}"
+                            )
+                        if "subPath" in existing_tmp_mount:
+                            secure_tmp_subpath = _safe_relative_path(
+                                existing_tmp_mount["subPath"],
+                                f"spec.{group_name}[{index}] temporary subPath",
+                            )
+                            if len(PurePosixPath(secure_tmp_subpath).parts) != 1:
+                                raise AdmissionError(
+                                    f"spec.{group_name}[{index}] temporary subPath "
+                                    "must be a single component"
+                                )
+                        else:
+                            secure_tmp_subpath = SECURE_TMP_SUBPATH
+                            existing_tmp_mount["subPath"] = secure_tmp_subpath
+                        candidate = {
+                            "name": existing_tmp_mount["name"],
+                            "subPath": secure_tmp_subpath,
+                            "mountRootInInit": True,
+                        }
+                        if secure_tmp_source is None:
+                            secure_tmp_source = candidate
+                        elif secure_tmp_source != candidate:
+                            raise AdmissionError(
+                                "adapted containers must use the same temporary volume"
+                            )
+                    else:
+                        rewritten.append(
+                            {
+                                "name": RUNTIME_VOLUME,
+                                "mountPath": SECURE_TMP_MOUNT_PATH,
+                                "subPath": SECURE_TMP_SUBPATH,
+                            }
+                        )
+                        candidate = {
+                            "name": RUNTIME_VOLUME,
+                            "subPath": SECURE_TMP_SUBPATH,
+                            "mountRootInInit": False,
+                        }
+                        if secure_tmp_source is None:
+                            secure_tmp_source = candidate
+                        elif secure_tmp_source != candidate:
+                            raise AdmissionError(
+                                "adapted containers must use the same temporary volume"
+                            )
                     rewritten.append(
                         {
                             "name": AGW_CA_VOLUME,
@@ -435,6 +551,8 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
             f"{STATE_VOLUME} has no supported subPath mounts to adapt"
         )
     _validate_link_paths(links)
+    if secure_tmp_source is None:
+        raise AdmissionError("no adapted container provides a temporary volume")
 
     link_data = [
         {"link": link, "target": target}
@@ -449,19 +567,37 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
             {
                 "name": "OCE_STATE_LINKS",
                 "value": json.dumps(link_data, separators=(",", ":"), sort_keys=True),
-            }
+            },
+            {
+                "name": "OCE_SECURE_TMP_PATH",
+                "value": (
+                    f"{RUNTIME_ROOT}/{SECURE_TMP_SUBPATH}"
+                    if not secure_tmp_source["mountRootInInit"]
+                    else (
+                        f"{SECURE_TMP_INIT_MOUNT_PATH}/"
+                        f"{secure_tmp_source['subPath']}"
+                    )
+                ),
+            },
         ],
         "securityContext": {
             "allowPrivilegeEscalation": False,
             "readOnlyRootFilesystem": True,
             "runAsNonRoot": True,
             "capabilities": {"drop": ["ALL"]},
+            "seccompProfile": {"type": "RuntimeDefault"},
         },
         "volumeMounts": [
             {"name": RUNTIME_VOLUME, "mountPath": RUNTIME_ROOT},
             {"name": STATE_VOLUME, "mountPath": STATE_ROOT},
         ],
     }
+    if secure_tmp_source["mountRootInInit"]:
+        secure_tmp_init_mount = {
+            "name": secure_tmp_source["name"],
+            "mountPath": SECURE_TMP_INIT_MOUNT_PATH,
+        }
+        link_init["volumeMounts"].append(secure_tmp_init_mount)
     if "imagePullPolicy" in prep:
         link_init["imagePullPolicy"] = prep["imagePullPolicy"]
 
