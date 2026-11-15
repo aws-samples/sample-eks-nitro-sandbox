@@ -20,6 +20,9 @@
 # Each stub answers only the calls the script under test makes for that check, with the case the
 # test sets; any other call fails loudly (exit 97), so an untested call cannot pass silently.
 set -uo pipefail
+# A reader's own config.env (in the sample folder or ~/ubuntu-ami/) must not change what this suite
+# tests: scripts/lib/common.sh skips it while this test hook is set.
+export UBUNTU_AMI_TESTS_IGNORE_CONFIG_ENV=1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAMPLE_DIR_REAL="$(cd "$HERE/.." && pwd)"
 REPO_ROOT_REAL="$(cd "$SAMPLE_DIR_REAL/../../.." && pwd)"
@@ -47,6 +50,23 @@ STUB="$WORK/bin"; mkdir -p "$STUB"
 cat > "$STUB/addon.py" <<'PY'
 import json, os, re, sys
 a = sys.argv[1:]
+# The add-on name under test selects which case variable drives the answer: vpc-cni from
+# STUB_ADDON, kube-proxy from STUB_KP (default active, so a vpc-cni case leaves it ACTIVE).
+name = a[a.index("--addon-name") + 1] if "--addon-name" in a else "vpc-cni"
+if name == "kube-proxy":
+    kp = os.environ.get("STUB_KP", "active")
+    if kp == "absent":
+        sys.stderr.write("An error occurred (ResourceNotFoundException) when calling the DescribeAddon operation: No addon: kube-proxy found in cluster: example-cluster\n"); sys.exit(254)
+    if kp == "denied":
+        sys.stderr.write("An error occurred (AccessDeniedException) when calling the DescribeAddon operation: not authorized\n"); sys.exit(254)
+    addon = {"addonName": "kube-proxy", "status": "DEGRADED" if kp == "degraded" else "ACTIVE", "addonVersion": "v1.36.0-eksbuild.1"}
+    doc = {"addon": addon}
+    if "--query" in a:
+        m = re.fullmatch(r"addon\.\[([A-Za-z,]+)\]", a[a.index("--query") + 1])
+        if not m:
+            sys.exit(f"STUB aws: describe-addon query not modelled: {a}")
+        doc = [addon.get(k) for k in m.group(1).split(",")]
+    print(json.dumps(doc)); sys.exit(0)
 case = os.environ.get("STUB_ADDON", "on")
 if case == "absent":
     sys.stderr.write("An error occurred (ResourceNotFoundException) when calling the DescribeAddon operation: No addon: vpc-cni found in cluster: example-cluster\n"); sys.exit(254)
@@ -199,8 +219,9 @@ done
 echo
 
 echo "== 1/5 cluster prerequisites: scripts/00c-check-cluster.sh =============================="
-cc() { env STUB_ADDON="$2" STUB_RC="$3" bash "$HERE/00c-check-cluster.sh" > "$WORK/cc-$1.log" 2>&1; }
-OK_RX='CLUSTER PREREQUISITES OK: vpc-cni v1\.0\.0-eksbuild\.1 ACTIVE; RuntimeClass isolated-sandbox reused as it is'
+# cc <name> <STUB_ADDON vpc-cni case> <STUB_RC> [<STUB_KP kube-proxy case>] (kube-proxy defaults active)
+cc() { env STUB_ADDON="$2" STUB_RC="$3" STUB_KP="${4:-active}" bash "$HERE/00c-check-cluster.sh" > "$WORK/cc-$1.log" 2>&1; }
+OK_RX='CLUSTER PREREQUISITES OK: vpc-cni v1\.0\.0-eksbuild\.1 ACTIVE; kube-proxy v1\.36\.0-eksbuild\.1 ACTIVE; RuntimeClass isolated-sandbox reused as it is'
 rc=0; cc ok on one || rc=$?
 check "ACCEPT vpc-cni ACTIVE (network policy on) and a RuntimeClass selecting eks.amazonaws.com/nitro-sandbox=true" 0 "$rc" "$WORK/cc-ok.log" "$OK_RX"
 rc=0; cc yaml yaml-on two || rc=$?
@@ -226,6 +247,15 @@ rc=0; cc degraded degraded one || rc=$?
 check "REJECT a vpc-cni add-on that is not ACTIVE" 1 "$rc" "$WORK/cc-degraded.log" 'is DEGRADED, not ACTIVE'
 rc=0; cc denied denied one || rc=$?
 check "REJECT (could not determine) when the add-on lookup fails for another reason" 1 "$rc" "$WORK/cc-denied.log" 'could not determine'
+# kube-proxy: a managed node needs it for Service (ClusterIP) routing, which test.sh section 7 uses.
+rc=0; cc kp-absent on one absent || rc=$?
+check "REJECT a cluster with no kube-proxy add-on, printing the create-addon command" 1 "$rc" "$WORK/cc-kp-absent.log" 'aws eks create-addon .*--addon-name kube-proxy'
+grep -q -- '--resolve-conflicts NONE' "$WORK/cc-kp-absent.log"; check "  ... the suggested kube-proxy create-addon uses --resolve-conflicts NONE" 0 $? "$WORK/cc-kp-absent.log"
+grep -q 'no Service (ClusterIP) routing' "$WORK/cc-kp-absent.log"; check "  ... and says why it matters (no Service routing for the node)" 0 $? "$WORK/cc-kp-absent.log"
+rc=0; cc kp-degraded on one degraded || rc=$?
+check "REJECT a kube-proxy add-on that is not ACTIVE" 1 "$rc" "$WORK/cc-kp-degraded.log" 'kube-proxy add-on of cluster .* is DEGRADED, not ACTIVE'
+rc=0; cc kp-denied on one denied || rc=$?
+check "REJECT (could not determine) when the kube-proxy lookup fails for another reason" 1 "$rc" "$WORK/cc-kp-denied.log" 'could not read the kube-proxy add-on'
 rc=0; cc rc-absent on absent || rc=$?
 check "REJECT a cluster with no isolated-sandbox RuntimeClass (Getting started first; never created here)" 1 "$rc" "$WORK/cc-rc-absent.log" 'no isolated-sandbox RuntimeClass'
 rc=0; cc rc-foreign on foreign || rc=$?

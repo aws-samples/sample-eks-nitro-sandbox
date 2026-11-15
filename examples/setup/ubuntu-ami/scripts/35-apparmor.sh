@@ -13,8 +13,8 @@
 #
 # The isolated-sandbox pod (deploy/pod-isolated-sandbox.yaml) runs Unconfined: the shim
 # forwards a sandbox pod's profile into the guest, where runc applies it, and the guest has no
-# AppArmor, so runc there fails with "apparmor failed to apply profile". The GA bundle says so,
-# and the sample's first live node run showed it (the README's AppArmor section).
+# AppArmor, so runc there fails with "apparmor failed to apply profile". The sample's first live
+# node run showed it (the README's AppArmor section).
 #
 # The profile text lives at manifests/ubuntu-ami-sample-profile in this sample; on the build
 # host the sample directory is copied under /usr/local/share/ubuntu-ami-sample, so look for
