@@ -1,0 +1,48 @@
+# Karpenter EC2NodeClass that launches nodes from the AL2023 Nitro Sandbox AMI this
+# blueprint built. The one field that makes a node enclave-capable is
+# spec.enclaveOptions.enabled: true, which Karpenter turns into EnclaveOptions.Enabled=true
+# on the launch template it generates, and which also makes Karpenter filter instance-type
+# candidates to those whose EC2 NitroEnclavesSupport is supported (so there is no static
+# enclave-capable instance list to maintain).
+#
+# This blueprint does NOT use the Nitro Enclaves device plugin, NodeOverlay or hugepages from
+# Karpenter's "Using Nitro Enclaves" task: that setup is for running enclave *applications*.
+# A pod-isolation node needs only this AMI plus enclaveOptions.enabled; the baked
+# nitro_enclaves.mempool reservation is what the sandbox runtime uses.
+#
+# setup.sh renders @AMI_ID@, @CLUSTER_NAME@ and @NODE_ROLE@ from the run before applying.
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: al2023-nitro-sandbox
+spec:
+  # Enables AWS Nitro Enclaves on every instance Karpenter launches for this node class.
+  enclaveOptions:
+    enabled: true
+
+  amiFamily: AL2023
+  # Pin the exact AMI this blueprint baked (the -pod-isolation image). Do not use an alias
+  # such as al2023@latest here: that resolves to the stock EKS AMI, which has no sandbox
+  # runtime. amiSelectorTerms by id is how the custom AMI is selected.
+  amiSelectorTerms:
+    - id: "@AMI_ID@"
+
+  role: "@NODE_ROLE@"
+
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "@CLUSTER_NAME@"
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "@CLUSTER_NAME@"
+
+  # IMDSv2 only, hop limit 1: an ordinary pod (not on the host network) cannot read the
+  # node role's credentials from the metadata service.
+  metadataOptions:
+    httpEndpoint: enabled
+    httpTokens: required
+    httpPutResponseHopLimit: 1
+
+  tags:
+    ManagedBy: al2023-ami
+    RunId: "@RUN_ID@"
