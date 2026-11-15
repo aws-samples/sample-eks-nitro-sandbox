@@ -258,7 +258,7 @@ class BuildPatchTests(unittest.TestCase):
         self.assertIn("/runtime-state/home/.openclaw/tmp", startup)
         self.assertIn("0o700", startup)
         self.assertIn("OCE_SECURE_TMP_PATH", startup)
-        self.assertIn("0o1777", startup)
+        self.assertIn("0o3777", startup)
         self.assertIn("O_NOFOLLOW", startup)
         self.assertIn("fchmodSync", startup)
         self.assertEqual(

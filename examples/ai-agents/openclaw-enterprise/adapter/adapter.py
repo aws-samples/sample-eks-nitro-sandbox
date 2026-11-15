@@ -41,7 +41,7 @@ if (!secureTemporary || !path.posix.isAbsolute(secureTemporary)) {
   throw new Error("OCE_SECURE_TMP_PATH must be an absolute path");
 }
 try {
-  fs.mkdirSync(secureTemporary, {mode: 0o1777});
+  fs.mkdirSync(secureTemporary, {mode: 0o3777});
 } catch (error) {
   if (error.code !== "EEXIST") throw error;
 }
@@ -54,7 +54,7 @@ try {
   if (!secureTemporaryStat.isDirectory()) {
     throw new Error("secure temporary path is not a directory");
   }
-  fs.fchmodSync(secureTemporaryFd, 0o1777);
+  fs.fchmodSync(secureTemporaryFd, 0o3777);
 } finally {
   fs.closeSync(secureTemporaryFd);
 }

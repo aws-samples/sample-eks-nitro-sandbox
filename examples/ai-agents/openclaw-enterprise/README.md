@@ -61,7 +61,7 @@ it:
   temporary directory with mode `0700`, and sets
   `TMPDIR=/home/node/.openclaw/tmp`.
 - Reuses OCE's existing `/tmp` `emptyDir`, mounts its single-component subpath
-  into the init container, and sets that directory to sticky `01777` so
+  into the init container, and sets that directory to sticky `03777` so
   OpenClaw startup probes can write temporary files safely.
 
 The tenant script renders the current AgentGateway ClusterIP as a `/32` alongside
