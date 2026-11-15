@@ -140,6 +140,22 @@ it.
   }
   ```
 
+- **The managed `kube-proxy` add-on.** The managed node group node reaches Services
+  (ClusterIP) through `kube-proxy`. EKS Auto Mode does this in the node, so a cluster that only
+  ran Getting started on Auto Mode can lack the add-on; then the node has no Service routing and
+  `test.sh` section 7's control, an ordinary pod reaching the `kubernetes` Service (which shows
+  the sandbox's own lack of network rather than the cluster's), cannot run. Like `vpc-cni`, it is
+  a cluster-wide install, so you install it yourself at a version you pin;
+  [`scripts/00c-check-cluster.sh`](scripts/00c-check-cluster.sh) only checks it is `ACTIVE` and
+  stops with this command when it is missing:
+  ```bash
+  aws eks describe-addon-versions --region <AWS_REGION> --addon-name kube-proxy \
+    --kubernetes-version 1.36 --query 'addons[0].addonVersions[].addonVersion'
+  aws eks create-addon --region <AWS_REGION> --cluster-name <CLUSTER_NAME> \
+    --addon-name kube-proxy --addon-version <KUBE_PROXY_ADDON_VERSION> \
+    --resolve-conflicts NONE
+  ```
+  Record the version you chose as `KUBE_PROXY_ADDON_VERSION` in `config.env`.
 - **A kubectl context for the same cluster, named in `KUBE_CONTEXT`.** Every `kubectl` call
   the scripts make passes `--context "$KUBE_CONTEXT"`; there is no fallback to the current
   context, and nothing runs `kubectl config use-context`. Before the first change,

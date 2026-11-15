@@ -304,7 +304,8 @@ join_state() {
 import json, sys
 s = json.load(open(sys.argv[1]))
 s["eks"]["addons"] = {"example-cluster/vpc-cni": {"status": "ACTIVE", "addonVersion": "v1.0.0-eksbuild.1",
-                                                  "configurationValues": "{\"enableNetworkPolicy\":\"true\"}"}}
+                                                  "configurationValues": "{\"enableNetworkPolicy\":\"true\"}"},
+                      "example-cluster/kube-proxy": {"status": "ACTIVE", "addonVersion": "v1.36.0-eksbuild.1"}}
 img = [i for i in s["ec2"]["images"] if i["ImageId"] == "ami-0fa002"][0]
 exec(sys.argv[3], {"s": s, "img": img})
 json.dump(s, open(sys.argv[2], "w"))
@@ -326,6 +327,8 @@ join_state j-foreign '[t.update(Value="otherrun1") for t in img["Tags"] if t["Ke
 join_reject j-foreign "REJECT --join with an AMI tagged for another run" "does not carry ManagedBy=ubuntu-ami-sample and RunId=$RUNID"
 join_state j-nocni 'del s["eks"]["addons"]'
 join_reject j-nocni "REJECT --join on a cluster with no vpc-cni" 'PREREQUISITE NOT MET: cluster example-cluster has no managed vpc-cni add-on'
+join_state j-nokubeproxy 'del s["eks"]["addons"]["example-cluster/kube-proxy"]'
+join_reject j-nokubeproxy "REJECT --join on a cluster with no kube-proxy" 'PREREQUISITE NOT MET: cluster example-cluster has no managed kube-proxy add-on'
 join_state j-noami
 sed -i '/^AMI_ID=/d' "$ISSUE10_RUN_DIR/out/runs/$RUNID/run-state.env"
 join_reject j-noami "REJECT --join for a run with no AMI recorded" 'has no AMI_ID'
