@@ -11,10 +11,8 @@ from adapter import (
     AdmissionError,
     LINK_INIT_NAME,
     NODE_CA_ENV,
-    SECURE_TMP_INIT_MOUNT_PATH,
-    SECURE_TMP_INIT_NAME,
-    SECURE_TMP_MOUNT_PATH,
-    SECURE_TMP_VOLUME,
+    SHM_MOUNT_PATH,
+    TMP_MOUNT_PATH,
     TMPDIR_ENV,
     TMPDIR_PATH,
     build_patch,
@@ -64,6 +62,7 @@ def target_pod() -> dict:
                 {
                     "name": "gateway",
                     "image": "example.invalid/oce@sha256:abc",
+                    "securityContext": {"readOnlyRootFilesystem": True},
                     "volumeMounts": [
                         {
                             "name": "runtime-state",
@@ -80,7 +79,7 @@ def target_pod() -> dict:
                         },
                         {
                             "name": "runtime-temporary",
-                            "mountPath": SECURE_TMP_MOUNT_PATH,
+                            "mountPath": TMP_MOUNT_PATH,
                             "subPath": "tmp",
                         },
                         {
@@ -243,33 +242,7 @@ class BuildPatchTests(unittest.TestCase):
             gateway["env"],
         )
 
-    def test_prepares_private_runtime_tmp_with_owner_only_permissions(self) -> None:
-        rendered = apply_patch(target_pod(), build_patch(target_pod()))
-        preparer = next(
-            container
-            for container in rendered["spec"]["initContainers"]
-            if container["name"] == LINK_INIT_NAME
-        )
-        startup = " ".join(
-            [
-                *preparer.get("command", []),
-                *preparer.get("args", []),
-            ]
-        )
-        self.assertIn("/runtime-state/home/.openclaw/tmp", startup)
-        self.assertIn("0o700", startup)
-        self.assertEqual(
-            preparer.get("securityContext"),
-            {
-                "allowPrivilegeEscalation": False,
-                "readOnlyRootFilesystem": True,
-                "runAsNonRoot": True,
-                "capabilities": {"drop": ["ALL"]},
-                "seccompProfile": {"type": "RuntimeDefault"},
-            },
-        )
-
-    def test_hardens_existing_tmp_mount_for_openclaw_probe(self) -> None:
+    def test_uses_runtime_shm_for_openclaw_temporary_files(self) -> None:
         rendered = apply_patch(target_pod(), build_patch(target_pod()))
         gateway = next(
             container
@@ -279,73 +252,37 @@ class BuildPatchTests(unittest.TestCase):
         source_tmp = next(
             mount
             for mount in target_pod()["spec"]["containers"][-1]["volumeMounts"]
-            if mount["mountPath"] == SECURE_TMP_MOUNT_PATH
+            if mount["mountPath"] == TMP_MOUNT_PATH
         )
         self.assertEqual(source_tmp["subPath"], "tmp")
-        self.assertIn(
-            {
-                "name": SECURE_TMP_VOLUME,
-                "mountPath": SECURE_TMP_MOUNT_PATH,
-            },
-            gateway["volumeMounts"],
-        )
-        preparer = next(
-            container
-            for container in rendered["spec"]["initContainers"]
-            if container["name"] == SECURE_TMP_INIT_NAME
+        self.assertFalse(
+            any(
+                mount["mountPath"] == TMP_MOUNT_PATH
+                for mount in gateway["volumeMounts"]
+            )
         )
         self.assertIn(
-            {
-                "name": SECURE_TMP_VOLUME,
-                "mountPath": SECURE_TMP_INIT_MOUNT_PATH,
-            },
-            preparer["volumeMounts"],
-        )
-        startup = " ".join([*preparer["command"], *preparer["args"]])
-        self.assertIn("0o1777", startup)
-        self.assertIn("O_NOFOLLOW", startup)
-        self.assertIn("fchmodSync", startup)
-        self.assertEqual(
-            preparer["securityContext"],
-            {
-                "allowPrivilegeEscalation": False,
-                "readOnlyRootFilesystem": True,
-                "runAsUser": 0,
-                "runAsNonRoot": False,
-                "capabilities": {"drop": ["ALL"]},
-                "seccompProfile": {"type": "RuntimeDefault"},
-            },
+            {"name": TMPDIR_ENV, "value": SHM_MOUNT_PATH},
+            gateway["env"],
         )
 
-    def test_adds_sticky_tmp_mount_when_source_has_none(self) -> None:
+    def test_accepts_missing_tmp_mount(self) -> None:
         pod = target_pod()
         pod["spec"]["containers"][-1]["volumeMounts"] = [
             mount
             for mount in pod["spec"]["containers"][-1]["volumeMounts"]
-            if mount["mountPath"] != SECURE_TMP_MOUNT_PATH
+            if mount["mountPath"] != TMP_MOUNT_PATH
         ]
         rendered = apply_patch(pod, build_patch(pod))
         gateway = rendered["spec"]["containers"][-1]
-        self.assertIn(
-            {
-                "name": SECURE_TMP_VOLUME,
-                "mountPath": SECURE_TMP_MOUNT_PATH,
-            },
-            gateway["volumeMounts"],
+        self.assertFalse(
+            any(
+                mount["mountPath"] == TMP_MOUNT_PATH
+                for mount in gateway["volumeMounts"]
+            )
         )
 
-    def test_rewrites_tmp_volume_root_to_sticky_subpath(self) -> None:
-        pod = target_pod()
-        del pod["spec"]["containers"][-1]["volumeMounts"][2]["subPath"]
-        rendered = apply_patch(pod, build_patch(pod))
-        gateway = rendered["spec"]["containers"][-1]
-        self.assertNotIn("subPath", next(
-            mount
-            for mount in gateway["volumeMounts"]
-            if mount["mountPath"] == SECURE_TMP_MOUNT_PATH
-        ))
-
-    def test_rejects_mounts_that_overlap_secure_tmp(self) -> None:
+    def test_rejects_mounts_that_overlap_runtime_tmp(self) -> None:
         for mount_path in ("/", "/tmp/cache", "//tmp", "//tmp/cache"):
             with self.subTest(mount_path=mount_path):
                 pod = target_pod()
@@ -360,10 +297,30 @@ class BuildPatchTests(unittest.TestCase):
                 ):
                     build_patch(pod)
 
-    def test_rejects_read_only_existing_tmp_mount(self) -> None:
+    def test_removes_read_only_existing_tmp_mount(self) -> None:
         pod = target_pod()
         pod["spec"]["containers"][-1]["volumeMounts"][2]["readOnly"] = True
-        with self.assertRaisesRegex(AdmissionError, "read-only"):
+        rendered = apply_patch(pod, build_patch(pod))
+        gateway = rendered["spec"]["containers"][-1]
+        self.assertFalse(
+            any(
+                mount["mountPath"] == TMP_MOUNT_PATH
+                for mount in gateway["volumeMounts"]
+            )
+        )
+
+    def test_rejects_mount_that_overlaps_runtime_shm(self) -> None:
+        pod = target_pod()
+        pod["spec"]["containers"][-1]["volumeMounts"].append(
+            {"name": "workspace", "mountPath": SHM_MOUNT_PATH}
+        )
+        with self.assertRaisesRegex(AdmissionError, "/dev/shm"):
+            build_patch(pod)
+
+    def test_requires_read_only_root_filesystem(self) -> None:
+        pod = target_pod()
+        pod["spec"]["containers"][-1]["securityContext"] = {}
+        with self.assertRaisesRegex(AdmissionError, "read-only root filesystem"):
             build_patch(pod)
 
     def test_removes_preinjected_service_account_volume_only(self) -> None:
@@ -462,20 +419,13 @@ class BuildPatchTests(unittest.TestCase):
             spec["containers"][-1]["env"],
         )
         self.assertEqual(
-            spec["volumes"][-2],
+            spec["volumes"][-1],
             {
                 "name": AGW_CA_VOLUME,
                 "configMap": {
                     "name": AGW_CA_VOLUME,
                     "items": [{"key": "ca.crt", "path": "ca.crt"}],
                 },
-            },
-        )
-        self.assertEqual(
-            spec["volumes"][-1],
-            {
-                "name": SECURE_TMP_VOLUME,
-                "emptyDir": {"sizeLimit": "64Mi"},
             },
         )
 
@@ -485,12 +435,6 @@ class BuildPatchTests(unittest.TestCase):
             if container["name"] == "prepare-private-state"
         )
         link_init = spec["initContainers"][prep_index + 1]
-        self.assertEqual(link_init["name"], SECURE_TMP_INIT_NAME)
-        self.assertEqual(
-            [mount["name"] for mount in link_init["volumeMounts"]],
-            [SECURE_TMP_VOLUME],
-        )
-        link_init = spec["initContainers"][prep_index + 2]
         self.assertEqual(link_init["name"], LINK_INIT_NAME)
         self.assertEqual(
             [mount["name"] for mount in link_init["volumeMounts"]],

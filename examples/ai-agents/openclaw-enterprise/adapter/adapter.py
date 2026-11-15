@@ -22,39 +22,15 @@ AGW_CA_MOUNT_PATH = "/etc/agentgateway-ca"
 AGW_CA_PATH = f"{AGW_CA_MOUNT_PATH}/ca.crt"
 NODE_CA_ENV = "NODE_EXTRA_CA_CERTS"
 TMPDIR_ENV = "TMPDIR"
-TMPDIR_PATH = "/home/node/.openclaw/tmp"
-# The adapter replaces this path with a pod-local sticky emptyDir.
-SECURE_TMP_MOUNT_PATH = "/tmp"  # nosec B108
-SECURE_TMP_VOLUME = "oce-nitro-secure-tmp"
-SECURE_TMP_INIT_MOUNT_PATH = "/runtime-temporary"
-SECURE_TMP_INIT_NAME = "nitro-prepare-secure-tmp"
+TMPDIR_PATH = "/dev/shm"  # nosec B108
+TMP_MOUNT_PATH = "/tmp"  # nosec B108
+SHM_MOUNT_PATH = "/dev/shm"  # nosec B108
 SERVICE_ACCOUNT_MOUNT_PATH = "/var/run/secrets/kubernetes.io/serviceaccount"
-
-SECURE_TMP_SCRIPT = r"""
-const fs = require("node:fs");
-const temporary = "/runtime-temporary";
-const descriptor = fs.openSync(
-  temporary,
-  fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW
-);
-try {
-  const status = fs.fstatSync(descriptor);
-  if (!status.isDirectory()) {
-    throw new Error("secure temporary path is not a directory");
-  }
-  fs.fchmodSync(descriptor, 0o1777);
-} finally {
-  fs.closeSync(descriptor);
-}
-""".strip()
 
 LINK_SCRIPT = r"""
 const fs = require("node:fs");
 const path = require("node:path");
 const links = JSON.parse(process.env.OCE_STATE_LINKS || "[]");
-const temporary = "/runtime-state/home/.openclaw/tmp";
-fs.mkdirSync(temporary, {recursive: true, mode: 0o700});
-fs.chmodSync(temporary, 0o700);
 for (const item of links) {
   const link = path.posix.join("/runtime-state/home", item.link);
   const target = path.posix.join("/gateway-state", item.target);
@@ -240,12 +216,10 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         volume
         for volume in volumes
         if isinstance(volume, dict)
-        and volume.get("name") in {AGW_CA_VOLUME, SECURE_TMP_VOLUME}
+        and volume.get("name") == AGW_CA_VOLUME
     ]
     if reserved_volumes:
-        raise AdmissionError(
-            f"volume names {AGW_CA_VOLUME} and {SECURE_TMP_VOLUME} are reserved"
-        )
+        raise AdmissionError(f"volume name {AGW_CA_VOLUME} is reserved")
 
     all_mounts = [
         mount
@@ -258,12 +232,10 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     ]
     if any(
         isinstance(mount, dict)
-        and mount.get("name") in {AGW_CA_VOLUME, SECURE_TMP_VOLUME}
+        and mount.get("name") == AGW_CA_VOLUME
         for mount in all_mounts
     ):
-        raise AdmissionError(
-            f"volume mount names {AGW_CA_VOLUME} and {SECURE_TMP_VOLUME} are reserved"
-        )
+        raise AdmissionError(f"volume mount name {AGW_CA_VOLUME} is reserved")
     default_service_account_volumes = _default_service_account_volumes(
         volumes, all_mounts
     )
@@ -315,12 +287,10 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         raise AdmissionError("prepare-private-state must declare an image")
     if any(
         isinstance(container, dict)
-        and container.get("name") in {LINK_INIT_NAME, SECURE_TMP_INIT_NAME}
+        and container.get("name") == LINK_INIT_NAME
         for container in [*init_containers, *containers]
     ):
-        raise AdmissionError(
-            f"container names {LINK_INIT_NAME} and {SECURE_TMP_INIT_NAME} are reserved"
-        )
+        raise AdmissionError(f"container name {LINK_INIT_NAME} is reserved")
 
     prep_mounts = _mounts(prep, f"spec.initContainers[{prep_index}]")
     prep_runtime = [
@@ -349,7 +319,6 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     links: dict[str, str] = {}
     mount_patches: list[dict[str, Any]] = []
     environment_patches: list[dict[str, Any]] = []
-    secure_tmp_source: dict[str, Any] | None = None
     groups = (
         ("initContainers", init_containers),
         ("containers", containers),
@@ -441,38 +410,43 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                         for mount in rewritten
                         if _is_nonempty_string(mount.get("mountPath"))
                         and posixpath.normpath(mount["mountPath"])
-                        == SECURE_TMP_MOUNT_PATH
+                        == TMP_MOUNT_PATH
                     ]
                     conflicting_tmp_mounts = [
                         mount
                         for mount in rewritten
                         if _mount_paths_overlap(
-                            mount.get("mountPath"), SECURE_TMP_MOUNT_PATH
+                            mount.get("mountPath"), TMP_MOUNT_PATH
                         )
                         and mount not in existing_tmp_mounts
                     ]
                     if conflicting_tmp_mounts:
                         raise AdmissionError(
-                            f"spec.{group_name}[{index}] has a mount that overlaps {SECURE_TMP_MOUNT_PATH}"
+                            f"spec.{group_name}[{index}] has a mount that overlaps {TMP_MOUNT_PATH}"
                         )
                     if len(existing_tmp_mounts) > 1:
                         raise AdmissionError(
-                            f"spec.{group_name}[{index}] has duplicate {SECURE_TMP_MOUNT_PATH} mounts"
+                            f"spec.{group_name}[{index}] has duplicate {TMP_MOUNT_PATH} mounts"
                         )
                     if existing_tmp_mounts:
-                        existing_tmp_mount = existing_tmp_mounts[0]
-                        if existing_tmp_mount.get("readOnly") is True:
-                            raise AdmissionError(
-                                f"spec.{group_name}[{index}] mounts {SECURE_TMP_MOUNT_PATH} read-only"
-                            )
-                        rewritten.remove(existing_tmp_mount)
-                    rewritten.append(
-                        {
-                            "name": SECURE_TMP_VOLUME,
-                            "mountPath": SECURE_TMP_MOUNT_PATH,
-                        }
-                    )
-                    secure_tmp_source = {"name": SECURE_TMP_VOLUME}
+                        rewritten.remove(existing_tmp_mounts[0])
+                    if any(
+                        _mount_paths_overlap(
+                            mount.get("mountPath"), SHM_MOUNT_PATH
+                        )
+                        for mount in rewritten
+                    ):
+                        raise AdmissionError(
+                            f"spec.{group_name}[{index}] has a mount that overlaps {SHM_MOUNT_PATH}"
+                        )
+                    security = container.get("securityContext")
+                    if (
+                        not isinstance(security, dict)
+                        or security.get("readOnlyRootFilesystem") is not True
+                    ):
+                        raise AdmissionError(
+                            f"spec.{group_name}[{index}] must use a read-only root filesystem"
+                        )
                     rewritten.append(
                         {
                             "name": AGW_CA_VOLUME,
@@ -523,33 +497,11 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
             f"{STATE_VOLUME} has no supported subPath mounts to adapt"
         )
     _validate_link_paths(links)
-    if secure_tmp_source is None:
-        raise AdmissionError("no adapted container provides a temporary volume")
 
     link_data = [
         {"link": link, "target": target}
         for link, target in sorted(links.items())
     ]
-    secure_tmp_init: dict[str, Any] = {
-        "name": SECURE_TMP_INIT_NAME,
-        "image": prep["image"],
-        "command": ["node", "-e"],
-        "args": [SECURE_TMP_SCRIPT],
-        "securityContext": {
-            "allowPrivilegeEscalation": False,
-            "readOnlyRootFilesystem": True,
-            "runAsUser": 0,
-            "runAsNonRoot": False,
-            "capabilities": {"drop": ["ALL"]},
-            "seccompProfile": {"type": "RuntimeDefault"},
-        },
-        "volumeMounts": [
-            {
-                "name": secure_tmp_source["name"],
-                "mountPath": SECURE_TMP_INIT_MOUNT_PATH,
-            }
-        ],
-    }
     link_init: dict[str, Any] = {
         "name": LINK_INIT_NAME,
         "image": prep["image"],
@@ -574,7 +526,6 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         ],
     }
     if "imagePullPolicy" in prep:
-        secure_tmp_init["imagePullPolicy"] = prep["imagePullPolicy"]
         link_init["imagePullPolicy"] = prep["imagePullPolicy"]
 
     patch: list[dict[str, Any]] = []
@@ -631,10 +582,6 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                         "items": [{"key": "ca.crt", "path": "ca.crt"}],
                     },
                 },
-                {
-                    "name": SECURE_TMP_VOLUME,
-                    "emptyDir": {"sizeLimit": "64Mi"},
-                },
             ],
         }
     )
@@ -642,13 +589,6 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "op": "add",
             "path": f"/spec/initContainers/{prep_index + 1}",
-            "value": secure_tmp_init,
-        }
-    )
-    patch.append(
-        {
-            "op": "add",
-            "path": f"/spec/initContainers/{prep_index + 2}",
             "value": link_init,
         }
     )

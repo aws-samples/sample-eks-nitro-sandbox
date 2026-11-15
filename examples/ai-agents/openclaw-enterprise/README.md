@@ -57,21 +57,19 @@ it:
   auto-injected `kube-api-access-*` volumes and mounts. It preserves unrelated
   projected volumes and custom token mounts.
 - Mounts the tenant `agentgateway-ca` ConfigMap at `/etc/agentgateway-ca`, sets
-  `NODE_EXTRA_CA_CERTS=/etc/agentgateway-ca/ca.crt`, creates the private runtime
-  temporary directory with mode `0700`, and sets
-  `TMPDIR=/home/node/.openclaw/tmp`.
-- Replaces OCE's existing `/tmp` mount with a dedicated 64 MiB
-  `oce-nitro-secure-tmp` `emptyDir`, mounted at the volume root on `/tmp`
-  without `subPath`. A dedicated init container runs as root with all Linux
-  capabilities dropped, mounts only this temporary volume at
-  `/runtime-temporary`, and sets mode `01777` so OpenClaw startup probes can
-  write temporary files safely. The state-linking init container remains
-  non-root and retains access to the state volumes.
+  `NODE_EXTRA_CA_CERTS=/etc/agentgateway-ca/ca.crt`, removes OCE's
+  `runtime-temporary` mount at `/tmp`, requires a read-only root filesystem,
+  and sets `TMPDIR=/dev/shm`. It rejects other mounts that overlap `/tmp` or
+  `/dev/shm`.
 
-Nitro `subPath` mounts strip the sticky bit from the mounted directory. As a
-result, setting sticky mode on the source subdirectory does not leave `/tmp`
-sticky inside the workload container. Mounting the dedicated `emptyDir` at its
-root preserves the mode set by the init container.
+Nitro presents OCE's `/tmp` `subPath` mount as group- and world-writable without
+the sticky bit, which OpenClaw's secure temporary-directory check rejects. The
+Nitro runtime already provides pod-local, writable, sticky `/dev/shm`, so
+OpenClaw can create its user-owned `0700` temporary directory there without a
+root init container. This keeps the workload compatible with the Kubernetes
+restricted Pod Security Standard. Because `/dev/shm` is memory-backed and
+capacity-limited, this workaround suits OpenClaw's small temporary control
+files, not large scratch data.
 
 The tenant script renders the current AgentGateway ClusterIP as a `/32` alongside
 the namespace-and-pod selector. In the live EKS Auto Mode test, the generated
