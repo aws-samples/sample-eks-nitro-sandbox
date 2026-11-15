@@ -408,6 +408,10 @@ d = root + "/usr/local/share/ubuntu-ami-sample/runtime"
 os.makedirs(d, exist_ok=True)
 open(f"{d}/{sid}.SHA256SUM", "w").write(man)
 subprocess.run(["openssl", "dgst", "-sha384", "-sign", f"{work}/sign.key", "-out", f"{d}/{sid}.SHA256SUM.sig", f"{d}/{sid}.SHA256SUM"], check=True)
+# 30-runtime-install.sh installs both at 0644. Set it here rather than leave it to the umask, or the
+# good image would be at whatever mode the runner's umask gives and the mode check would be flaky.
+for n in (f"{sid}.SHA256SUM", f"{sid}.SHA256SUM.sig"):
+    os.chmod(f"{d}/{n}", 0o644)
 pub = open(f"{work}/fixture-runtime-v1.pub", "rb").read()
 for k, v in (("sha256", archive_sha), ("manifest_sha256", sha(man.encode())), ("public_key", "fixture-runtime-v1.pub"),
              ("public_key_sha256", sha(pub))):
@@ -455,6 +459,14 @@ for mode in plain optimized; do
                     "$b/usr/local/share/ubuntu-ami-sample/runtime/runtime-release.SHA256SUM" ;;
       mantamper)  echo "$(printf '%064d' 0)  extra" >> "$b/usr/local/share/ubuntu-ami-sample/runtime/runtime-release.SHA256SUM" ;;
       noman)      rm "$b/usr/local/share/ubuntu-ami-sample/runtime/runtime-release.SHA256SUM" ;;
+      # Only the mode or the file type changes in these four; the bytes stay the pinned manifest and its
+      # valid signature, so the hash and the signature checks pass and only the new check can reject.
+      manmode)    chmod 0666 "$b/usr/local/share/ubuntu-ami-sample/runtime/runtime-release.SHA256SUM" ;;
+      sigmode)    chmod 0666 "$b/usr/local/share/ubuntu-ami-sample/runtime/runtime-release.SHA256SUM.sig" ;;
+      mansym)     s="$b/usr/local/share/ubuntu-ami-sample"; mv "$s/runtime/runtime-release.SHA256SUM" "$s/manifest.real" \
+                    && ln -s ../manifest.real "$s/runtime/runtime-release.SHA256SUM" ;;
+      sigsym)     s="$b/usr/local/share/ubuntu-ami-sample"; mv "$s/runtime/runtime-release.SHA256SUM.sig" "$s/manifest.sig.real" \
+                    && ln -s ../manifest.sig.real "$s/runtime/runtime-release.SHA256SUM.sig" ;;
       hold)       grep -vx containerd-app "$b/.held" > "$b/.held.new"; mv "$b/.held.new" "$b/.held" ;;
       containerd) env=(STUB_CONTAINERD_LINE="containerd github.com/containerd/containerd/v2 2.4.0 ") ;;
       erofs)      env=(STUB_EROFS_VERSION=1.7.1) ;;
@@ -487,6 +499,10 @@ nodisk|runtime_files|/var/lib/nitro-sandbox-images/latest-disk.img is not a regu
 sigbad|runtime_signature|the signature over runtime-release.SHA256SUM does not verify
 mantamper|runtime_signature|runtime-release.SHA256SUM is not the manifest sources.lock pins
 noman|runtime_signature|runtime-release.SHA256SUM or its .sig is missing
+manmode|runtime_signature|/usr/local/share/ubuntu-ami-sample/runtime/runtime-release.SHA256SUM has mode 0o666, expected 0644
+sigmode|runtime_signature|/usr/local/share/ubuntu-ami-sample/runtime/runtime-release.SHA256SUM.sig has mode 0o666, expected 0644
+mansym|runtime_signature|/usr/local/share/ubuntu-ami-sample/runtime/runtime-release.SHA256SUM is not a regular file
+sigsym|runtime_signature|/usr/local/share/ubuntu-ami-sample/runtime/runtime-release.SHA256SUM.sig is not a regular file
 hold|package_holds
 containerd|containerd_version
 erofs|mkfs_erofs
