@@ -62,12 +62,14 @@ it:
   `TMPDIR=/home/node/.openclaw/tmp`.
 - Replaces OCE's existing `/tmp` mount with a dedicated 64 MiB
   `oce-nitro-secure-tmp` `emptyDir`, mounted at the volume root on `/tmp`
-  without `subPath`. The init container mounts the same volume root at
-  `/runtime-temporary` and sets mode `03777` so OpenClaw startup probes can
-  write temporary files safely.
+  without `subPath`. A dedicated init container runs as root with all Linux
+  capabilities dropped, mounts only this temporary volume at
+  `/runtime-temporary`, and sets mode `01777` so OpenClaw startup probes can
+  write temporary files safely. The state-linking init container remains
+  non-root and retains access to the state volumes.
 
 Nitro `subPath` mounts strip the sticky bit from the mounted directory. As a
-result, setting mode `03777` on the source subdirectory does not leave `/tmp`
+result, setting sticky mode on the source subdirectory does not leave `/tmp`
 sticky inside the workload container. Mounting the dedicated `emptyDir` at its
 root preserves the mode set by the init container.
 

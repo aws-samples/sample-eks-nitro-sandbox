@@ -27,7 +27,26 @@ TMPDIR_PATH = "/home/node/.openclaw/tmp"
 SECURE_TMP_MOUNT_PATH = "/tmp"  # nosec B108
 SECURE_TMP_VOLUME = "oce-nitro-secure-tmp"
 SECURE_TMP_INIT_MOUNT_PATH = "/runtime-temporary"
+SECURE_TMP_INIT_NAME = "nitro-prepare-secure-tmp"
 SERVICE_ACCOUNT_MOUNT_PATH = "/var/run/secrets/kubernetes.io/serviceaccount"
+
+SECURE_TMP_SCRIPT = r"""
+const fs = require("node:fs");
+const temporary = "/runtime-temporary";
+const descriptor = fs.openSync(
+  temporary,
+  fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW
+);
+try {
+  const status = fs.fstatSync(descriptor);
+  if (!status.isDirectory()) {
+    throw new Error("secure temporary path is not a directory");
+  }
+  fs.fchmodSync(descriptor, 0o1777);
+} finally {
+  fs.closeSync(descriptor);
+}
+""".strip()
 
 LINK_SCRIPT = r"""
 const fs = require("node:fs");
@@ -36,28 +55,6 @@ const links = JSON.parse(process.env.OCE_STATE_LINKS || "[]");
 const temporary = "/runtime-state/home/.openclaw/tmp";
 fs.mkdirSync(temporary, {recursive: true, mode: 0o700});
 fs.chmodSync(temporary, 0o700);
-const secureTemporary = process.env.OCE_SECURE_TMP_PATH;
-if (!secureTemporary || !path.posix.isAbsolute(secureTemporary)) {
-  throw new Error("OCE_SECURE_TMP_PATH must be an absolute path");
-}
-try {
-  fs.mkdirSync(secureTemporary, {mode: 0o3777});
-} catch (error) {
-  if (error.code !== "EEXIST") throw error;
-}
-const secureTemporaryFd = fs.openSync(
-  secureTemporary,
-  fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW
-);
-try {
-  const secureTemporaryStat = fs.fstatSync(secureTemporaryFd);
-  if (!secureTemporaryStat.isDirectory()) {
-    throw new Error("secure temporary path is not a directory");
-  }
-  fs.fchmodSync(secureTemporaryFd, 0o3777);
-} finally {
-  fs.closeSync(secureTemporaryFd);
-}
 for (const item of links) {
   const link = path.posix.join("/runtime-state/home", item.link);
   const target = path.posix.join("/gateway-state", item.target);
@@ -259,6 +256,14 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         for index, container in enumerate(group)
         for mount in _mounts(container, f"{group_name}[{index}]")
     ]
+    if any(
+        isinstance(mount, dict)
+        and mount.get("name") in {AGW_CA_VOLUME, SECURE_TMP_VOLUME}
+        for mount in all_mounts
+    ):
+        raise AdmissionError(
+            f"volume mount names {AGW_CA_VOLUME} and {SECURE_TMP_VOLUME} are reserved"
+        )
     default_service_account_volumes = _default_service_account_volumes(
         volumes, all_mounts
     )
@@ -309,10 +314,13 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     if not _is_nonempty_string(prep.get("image")):
         raise AdmissionError("prepare-private-state must declare an image")
     if any(
-        isinstance(container, dict) and container.get("name") == LINK_INIT_NAME
+        isinstance(container, dict)
+        and container.get("name") in {LINK_INIT_NAME, SECURE_TMP_INIT_NAME}
         for container in [*init_containers, *containers]
     ):
-        raise AdmissionError(f"container name {LINK_INIT_NAME} is reserved")
+        raise AdmissionError(
+            f"container names {LINK_INIT_NAME} and {SECURE_TMP_INIT_NAME} are reserved"
+        )
 
     prep_mounts = _mounts(prep, f"spec.initContainers[{prep_index}]")
     prep_runtime = [
@@ -522,6 +530,26 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         {"link": link, "target": target}
         for link, target in sorted(links.items())
     ]
+    secure_tmp_init: dict[str, Any] = {
+        "name": SECURE_TMP_INIT_NAME,
+        "image": prep["image"],
+        "command": ["node", "-e"],
+        "args": [SECURE_TMP_SCRIPT],
+        "securityContext": {
+            "allowPrivilegeEscalation": False,
+            "readOnlyRootFilesystem": True,
+            "runAsUser": 0,
+            "runAsNonRoot": False,
+            "capabilities": {"drop": ["ALL"]},
+            "seccompProfile": {"type": "RuntimeDefault"},
+        },
+        "volumeMounts": [
+            {
+                "name": secure_tmp_source["name"],
+                "mountPath": SECURE_TMP_INIT_MOUNT_PATH,
+            }
+        ],
+    }
     link_init: dict[str, Any] = {
         "name": LINK_INIT_NAME,
         "image": prep["image"],
@@ -531,10 +559,6 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
             {
                 "name": "OCE_STATE_LINKS",
                 "value": json.dumps(link_data, separators=(",", ":"), sort_keys=True),
-            },
-            {
-                "name": "OCE_SECURE_TMP_PATH",
-                "value": SECURE_TMP_INIT_MOUNT_PATH,
             },
         ],
         "securityContext": {
@@ -549,12 +573,8 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
             {"name": STATE_VOLUME, "mountPath": STATE_ROOT},
         ],
     }
-    secure_tmp_init_mount = {
-        "name": secure_tmp_source["name"],
-        "mountPath": SECURE_TMP_INIT_MOUNT_PATH,
-    }
-    link_init["volumeMounts"].append(secure_tmp_init_mount)
     if "imagePullPolicy" in prep:
+        secure_tmp_init["imagePullPolicy"] = prep["imagePullPolicy"]
         link_init["imagePullPolicy"] = prep["imagePullPolicy"]
 
     patch: list[dict[str, Any]] = []
@@ -622,6 +642,13 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "op": "add",
             "path": f"/spec/initContainers/{prep_index + 1}",
+            "value": secure_tmp_init,
+        }
+    )
+    patch.append(
+        {
+            "op": "add",
+            "path": f"/spec/initContainers/{prep_index + 2}",
             "value": link_init,
         }
     )

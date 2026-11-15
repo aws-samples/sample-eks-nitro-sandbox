@@ -12,6 +12,7 @@ from adapter import (
     LINK_INIT_NAME,
     NODE_CA_ENV,
     SECURE_TMP_INIT_MOUNT_PATH,
+    SECURE_TMP_INIT_NAME,
     SECURE_TMP_MOUNT_PATH,
     SECURE_TMP_VOLUME,
     TMPDIR_ENV,
@@ -257,10 +258,6 @@ class BuildPatchTests(unittest.TestCase):
         )
         self.assertIn("/runtime-state/home/.openclaw/tmp", startup)
         self.assertIn("0o700", startup)
-        self.assertIn("OCE_SECURE_TMP_PATH", startup)
-        self.assertIn("0o3777", startup)
-        self.assertIn("O_NOFOLLOW", startup)
-        self.assertIn("fchmodSync", startup)
         self.assertEqual(
             preparer.get("securityContext"),
             {
@@ -295,7 +292,7 @@ class BuildPatchTests(unittest.TestCase):
         preparer = next(
             container
             for container in rendered["spec"]["initContainers"]
-            if container["name"] == LINK_INIT_NAME
+            if container["name"] == SECURE_TMP_INIT_NAME
         )
         self.assertIn(
             {
@@ -304,12 +301,20 @@ class BuildPatchTests(unittest.TestCase):
             },
             preparer["volumeMounts"],
         )
-        self.assertIn(
+        startup = " ".join([*preparer["command"], *preparer["args"]])
+        self.assertIn("0o1777", startup)
+        self.assertIn("O_NOFOLLOW", startup)
+        self.assertIn("fchmodSync", startup)
+        self.assertEqual(
+            preparer["securityContext"],
             {
-                "name": "OCE_SECURE_TMP_PATH",
-                "value": SECURE_TMP_INIT_MOUNT_PATH,
+                "allowPrivilegeEscalation": False,
+                "readOnlyRootFilesystem": True,
+                "runAsUser": 0,
+                "runAsNonRoot": False,
+                "capabilities": {"drop": ["ALL"]},
+                "seccompProfile": {"type": "RuntimeDefault"},
             },
-            preparer["env"],
         )
 
     def test_adds_sticky_tmp_mount_when_source_has_none(self) -> None:
@@ -480,14 +485,16 @@ class BuildPatchTests(unittest.TestCase):
             if container["name"] == "prepare-private-state"
         )
         link_init = spec["initContainers"][prep_index + 1]
+        self.assertEqual(link_init["name"], SECURE_TMP_INIT_NAME)
+        self.assertEqual(
+            [mount["name"] for mount in link_init["volumeMounts"]],
+            [SECURE_TMP_VOLUME],
+        )
+        link_init = spec["initContainers"][prep_index + 2]
         self.assertEqual(link_init["name"], LINK_INIT_NAME)
         self.assertEqual(
             [mount["name"] for mount in link_init["volumeMounts"]],
-            [
-                "runtime-state",
-                "openclaw-gateway-state",
-                SECURE_TMP_VOLUME,
-            ],
+            ["runtime-state", "openclaw-gateway-state"],
         )
         self.assertEqual(
             json.loads(link_init["env"][0]["value"]),
