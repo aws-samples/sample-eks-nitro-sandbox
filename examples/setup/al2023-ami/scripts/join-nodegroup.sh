@@ -32,9 +32,33 @@ grep -q '@[A-Z_]*@' "$USER_DATA_FILE" && die "unrendered placeholder left in $US
 
 if [ "${1:-}" = --render-user-data ]; then cat "$USER_DATA_FILE"; exit 0; fi
 : "${NODE_ROLE_ARN:?set NODE_ROLE_ARN to the EKS node IAM role (EKS worker, ECR pull, VPC CNI, SSM)}"
-: "${NODE_SUBNET_IDS:?set NODE_SUBNET_IDS (space-separated) in config.env}"
+: "${NODE_SUBNET_IDS:?set NODE_SUBNET_IDS (space-separated PRIVATE subnets) in config.env}"
 read -r -a NODE_SUBNET_ARR <<< "$NODE_SUBNET_IDS"
 [ "${#NODE_SUBNET_ARR[@]}" -gt 0 ] || die "NODE_SUBNET_IDS is empty"
+
+# Fail fast on a known trap: an EKS node gets no public IP by default, so a node group in a
+# PUBLIC subnet (one whose route table has a 0.0.0.0/0 route to an internet gateway, not a NAT)
+# never registers and the node group hangs in CREATING with no instances. Check each subnet's
+# default route points at a NAT gateway, and stop with a clear message otherwise.
+for sn in "${NODE_SUBNET_ARR[@]}"; do
+  rt=$(aws ec2 describe-route-tables --region "$AWS_REGION" \
+        --filters "Name=association.subnet-id,Values=$sn" \
+        --query 'RouteTables[0].Routes[?DestinationCidrBlock==`0.0.0.0/0`].[GatewayId,NatGatewayId]' \
+        --output text 2>/dev/null)
+  # If the subnet has no explicit association, AWS uses the VPC main route table; check that too.
+  if [ -z "$rt" ]; then
+    vpc=$(aws ec2 describe-subnets --region "$AWS_REGION" --subnet-ids "$sn" --query 'Subnets[0].VpcId' --output text 2>/dev/null)
+    rt=$(aws ec2 describe-route-tables --region "$AWS_REGION" \
+          --filters "Name=vpc-id,Values=$vpc" "Name=association.main,Values=true" \
+          --query 'RouteTables[0].Routes[?DestinationCidrBlock==`0.0.0.0/0`].[GatewayId,NatGatewayId]' \
+          --output text 2>/dev/null)
+  fi
+  case "$rt" in
+    *nat-*) : ;;  # default route via a NAT gateway: a private subnet, good
+    *igw-*) die "NODE_SUBNET_IDS contains a PUBLIC subnet ($sn): its default route goes to an internet gateway, not a NAT. EKS nodes get no public IP by default, so a node group here hangs in CREATING forever. Use private subnets with a NAT route (see config.env)." ;;
+    *) warn "could not determine the default route of subnet $sn; if the node group hangs in CREATING with no instances, it is probably a public subnet without a NAT route (see NODEGROUP-DIAGNOSIS)." ;;
+  esac
+done
 
 # --- Render + check the launch template data, then create it exactly as checked --------------
 LT_DATA="$RUN_STATE_DIR/nodegroup-launch-template.json"
