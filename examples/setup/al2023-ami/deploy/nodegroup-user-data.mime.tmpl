@@ -1,0 +1,23 @@
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="//"
+
+--//
+Content-Type: application/node.eks.aws
+
+# AL2023 nodes join EKS through a NodeConfig MIME part, not an Ubuntu bootstrap.sh script.
+# A managed node group backed by a custom AMI does NOT get EKS's own merged user data, so this
+# supplies the cluster wiring itself. nodeadm (baked into the EKS-optimized AL2023 AMI) reads it.
+# The pod-isolation NodeConfig drop-in baked into the AMI already registers the runtime handlers,
+# points kubelet at the CRI proxy and labels the node eks.amazonaws.com/nitro-sandbox=true, so
+# this part only carries cluster identity. setup.sh renders @CLUSTER_NAME@, @API_SERVER@,
+# @CLUSTER_CA@ and @SERVICE_CIDR@ from `aws eks describe-cluster`.
+apiVersion: node.eks.aws/v1alpha1
+kind: NodeConfig
+spec:
+  cluster:
+    name: "@CLUSTER_NAME@"
+    apiServerEndpoint: "@API_SERVER@"
+    certificateAuthority: "@CLUSTER_CA@"
+    cidr: "@SERVICE_CIDR@"
+
+--//--
