@@ -11,6 +11,7 @@ from typing import Any
 OCE_ROLES = frozenset({"agent", "gateway"})
 STATE_VOLUME = "openclaw-gateway-state"
 RUNTIME_VOLUME = "runtime-state"
+RUNTIME_TMP_VOLUME = "runtime-temporary"
 DEDICATED_WORKSPACE_VOLUME = "openclaw-workspace"
 STATE_ROOT = "/gateway-state"
 RUNTIME_ROOT = "/runtime-state"
@@ -272,6 +273,15 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     ]
     if len(runtime_volumes) != 1 or "emptyDir" not in runtime_volumes[0]:
         raise AdmissionError(f"{RUNTIME_VOLUME} must be exactly one emptyDir volume")
+    runtime_tmp_volumes = [
+        volume
+        for volume in volumes
+        if isinstance(volume, dict) and volume.get("name") == RUNTIME_TMP_VOLUME
+    ]
+    if len(runtime_tmp_volumes) != 1 or "emptyDir" not in runtime_tmp_volumes[0]:
+        raise AdmissionError(
+            f"{RUNTIME_TMP_VOLUME} must be exactly one emptyDir volume"
+        )
 
     prep_indexes = [
         index
@@ -429,7 +439,18 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                             f"spec.{group_name}[{index}] has duplicate {TMP_MOUNT_PATH} mounts"
                         )
                     if existing_tmp_mounts:
-                        rewritten.remove(existing_tmp_mounts[0])
+                        existing_tmp_mount = existing_tmp_mounts[0]
+                        if (
+                            existing_tmp_mount.get("name") != RUNTIME_TMP_VOLUME
+                            or existing_tmp_mount.get("subPath") != "tmp"
+                            or "subPathExpr" in existing_tmp_mount
+                            or existing_tmp_mount.get("readOnly") is True
+                        ):
+                            raise AdmissionError(
+                                f"spec.{group_name}[{index}] must mount "
+                                f"{RUNTIME_TMP_VOLUME} subPath tmp at {TMP_MOUNT_PATH}"
+                            )
+                        rewritten.remove(existing_tmp_mount)
                     if any(
                         _mount_paths_overlap(
                             mount.get("mountPath"), SHM_MOUNT_PATH

@@ -13,6 +13,7 @@ from adapter import (
     NODE_CA_ENV,
     SHM_MOUNT_PATH,
     TMP_MOUNT_PATH,
+    RUNTIME_TMP_VOLUME,
     TMPDIR_ENV,
     TMPDIR_PATH,
     build_patch,
@@ -297,17 +298,34 @@ class BuildPatchTests(unittest.TestCase):
                 ):
                     build_patch(pod)
 
-    def test_removes_read_only_existing_tmp_mount(self) -> None:
+    def test_rejects_unexpected_existing_tmp_mount(self) -> None:
         pod = target_pod()
-        pod["spec"]["containers"][-1]["volumeMounts"][2]["readOnly"] = True
-        rendered = apply_patch(pod, build_patch(pod))
-        gateway = rendered["spec"]["containers"][-1]
-        self.assertFalse(
-            any(
-                mount["mountPath"] == TMP_MOUNT_PATH
-                for mount in gateway["volumeMounts"]
-            )
+        for field, value in (
+            ("name", "workspace"),
+            ("subPath", "cache"),
+            ("subPathExpr", "$(TMP_SUBPATH)"),
+            ("readOnly", True),
+        ):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(pod)
+                changed_mount = changed["spec"]["containers"][-1]["volumeMounts"][2]
+                changed_mount[field] = value
+                with self.assertRaisesRegex(
+                    AdmissionError, f"{RUNTIME_TMP_VOLUME} subPath tmp"
+                ):
+                    build_patch(changed)
+
+    def test_requires_runtime_temporary_empty_dir(self) -> None:
+        pod = target_pod()
+        temporary_volume = next(
+            volume
+            for volume in pod["spec"]["volumes"]
+            if volume["name"] == RUNTIME_TMP_VOLUME
         )
+        del temporary_volume["emptyDir"]
+        temporary_volume["persistentVolumeClaim"] = {"claimName": "unexpected"}
+        with self.assertRaisesRegex(AdmissionError, "exactly one emptyDir"):
+            build_patch(pod)
 
     def test_rejects_mount_that_overlaps_runtime_shm(self) -> None:
         pod = target_pod()
