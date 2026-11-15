@@ -1,83 +1,109 @@
-# OpenClaw Enterprise on EKS, with each Agent in a Nitro sandbox
+# OpenClaw Enterprise on EKS with Nitro sandboxes
 
-**Status: draft.** This page is not yet a walkthrough. The pieces below are proven
-in isolation, and every output block marked `TODO` comes from a fresh run that has
-not happened yet. Nothing on this page is a real run of OpenClaw Enterprise (OCE)
-installed by this sample.
+**Status: draft.** A live OpenClaw Enterprise (OCE) installation created an
+Agent whose gateway ran in a Nitro sandbox and completed a model turn through
+AgentGateway to Amazon Bedrock. Multi-tenant isolation, replacement recovery
+and fleet scale still require validation.
 
-## What is proven
+## Proven live today
 
-- **OCE's Embedded gateway pod layout, rebuilt from its Kubernetes Compute driver**
-  at commit `998a59e`, with the published runtime image by digest, runs in a Nitro
-  sandbox (guest kernel 6.18.54) once the admission policy in
-  [`deploy/nitro-adapter.yaml`](deploy/nitro-adapter.yaml) is applied. The policy sets
-  `runtimeClassName` and rewrites the gateway-state `subPath` mounts into one PVC mount
-  plus symlinks. SQLite in WAL mode works through the links, and a second pod on the
-  same PVC reads the first pod's rows.
-- **The model path, outside OCE:** OCE's runtime image (OpenClaw 2026.10.8) in a
-  sandbox completed a turn with a tool call through
-  [agentgateway](deploy/agentgateway.yaml) v1.7.0 to Amazon Bedrock. agentgateway
-  answered 401 to a missing or wrong key and 200 to its own key, in `mode: strict`.
-  The sandbox had no `AWS_*` variables.
+- OCE was installed from its Helm chart, and its API and worker became ready
+  against PostgreSQL.
+- An OCE-created Agent gateway was mutated by the adapter, scheduled with
+  `runtimeClassName: isolated-sandbox`, and ran on a Nitro sandbox node. Its
+  guest kernel confirmed that execution occurred inside the sandbox.
+- From that OCE-created gateway, AgentGateway called the Amazon Bedrock
+  Responses-compatible API through EKS Pod Identity and returned `completed`.
+- AgentGateway returned `401` for an invalid tenant key.
+- The tenant network policy blocked an unlabelled pod.
 
-## What is not proven yet
+## Not yet proven
 
-1. OCE installed from its chart and images, and an Agent created through the Console
-   or the `occ` CLI. The proven pod is a reconstruction, not a pod OCE created.
-2. The admission policy against a pod OCE created: OCE's real init scripts, its
-   readiness probe through the symlinked state, and its own checks.
-3. Database CIDRs for an in-cluster PostgreSQL, and an install with
-   `gatewayRouting.enabled: false`, `agentNativeAdmin.enabled: false` and a loopback
-   `auth.baseUrl`.
-4. OCC accepting `models.providers.openai.baseUrl` for an Embedded Agent, and the
-   Harness binding delivering the gateway key as `OPENAI_API_KEY`.
-5. The Bedrock invoke policy in [`iam/bedrock-invoke.json`](iam/bedrock-invoke.json)
-   has not been applied to a role yet; its ARNs contain `<ACCOUNT_ID>`.
+- A second tenant and Agent, including positive same-tenant access and negative
+  cross-tenant access.
+- Agent readiness, persistent state and recovery after pod and node
+  replacement with the latest adapter image.
+- High availability, load, quota and failure-mode behaviour.
+- An upstream OCE contract for private model gateways and VM-isolated runtime
+  storage. The adapter remains sample-specific.
+
+Do not present this sample as a completed OCE deployment until those checks pass.
+
+## Current design
+
+- The [admission adapter](adapter/) runs as the fail-closed webhook defined in
+  [`deploy/adapter-webhook.yaml`](deploy/adapter-webhook.yaml). The webhook
+  receives every Pod creation request in OCE-managed namespaces. The adapter
+  mutates `agent` and `gateway` workload roles and rejects unsupported pod
+  shapes.
+- The [CodeBuild source-build path](build/) builds the adapter and pinned OCE
+  controller and runtime source into private ECR repositories. It uses immutable
+  tags, image scanning and digest-qualified deployment references.
+- [`deploy/agentgateway.yaml`](deploy/agentgateway.yaml) exposes AgentGateway only
+  as an HTTPS ClusterIP Service. AgentGateway validates tenant keys and obtains
+  Amazon Bedrock credentials through EKS Pod Identity.
+- [`scripts/configure-tenant-model-gateway.sh`](scripts/configure-tenant-model-gateway.sh)
+  installs the AgentGateway CA as an immutable tenant ConfigMap and applies
+  default-deny, DNS and AgentGateway-only egress policies.
+
+The adapter is a compatibility layer for the pinned OCE pod shape, not an
+upstream OCE compatibility guarantee. For each compatible Agent or gateway pod,
+it:
+
+- Selects the `isolated-sandbox` runtime class.
+- Replaces OCE `openclaw-gateway-state` PVC `subPath` mounts below
+  `/home/node` with one `/gateway-state` mount and init-created symlinks.
+- Sets `automountServiceAccountToken: false` and removes standard
+  auto-injected `kube-api-access-*` volumes and mounts. It preserves unrelated
+  projected volumes and custom token mounts.
+- Mounts the tenant `agentgateway-ca` ConfigMap at `/etc/agentgateway-ca`, sets
+  `NODE_EXTRA_CA_CERTS=/etc/agentgateway-ca/ca.crt`, creates the private runtime
+  temporary directory with mode `0700`, and sets
+  `TMPDIR=/home/node/.openclaw/tmp`.
+- Reuses OCE's existing `/tmp` `emptyDir`, mounts its single-component subpath
+  into the init container, and sets that directory to sticky `01777` so
+  OpenClaw startup probes can write temporary files safely.
+
+The tenant script renders the current AgentGateway ClusterIP as a `/32` alongside
+the namespace-and-pod selector. In the live EKS Auto Mode test, the generated
+`PolicyEndpoint` did not add that Service IP for selector-based policy, so the
+explicit `/32` was required for traffic to the stable ClusterIP.
+
+## One-time EKS Auto Mode prerequisite
+
+Enable the VPC CNI network policy controller once per cluster before testing
+tenant isolation:
+
+```bash
+kubectl --namespace kube-system patch configmap amazon-vpc-cni \
+  --type merge \
+  --patch '{"data":{"enable-network-policy":"true","enable-network-policy-controller":"true"}}'
+```
+
+Schedule validation workloads on nodes created after this change. Existing
+nodes do not gain network-policy enforcement in place.
+
+See [`scripts/README.md`](scripts/README.md) for tenant configuration and
+verification boundaries.
 
 ## Pinned versions
 
 | Component | Pin |
 |---|---|
-| OCE source and chart | commit `998a59e` of [openclaw-enterprise](https://github.com/openclaw/openclaw-enterprise); chart `deploy/helm/openclaw-enterprise` (version `0.1.0`) |
-| OCE controller image | `ghcr.io/openclaw/openclaw-enterprise-controller@sha256:968ef69a70c0f2ac927e0e7515ba8c07c9887e7b23211351f58bbf706662ffed` (resolved 2026-10-30) |
-| OCE runtime image | `ghcr.io/openclaw/openclaw-enterprise-runtime@sha256:6d0af87f6b2b803975cba47305bf69cd59aef69427290f0490da31f488855cb9` (resolved 2026-10-30) |
-| agentgateway | v1.7.0, `cr.agentgateway.dev/agentgateway@sha256:60216aafb03d37f94e952ff3d51d2f630a65b10ecaebdc0a864882f92610c45b` |
+| OCE source | `c6541831756ae40d0485d16d8f0ffeab9851372d` |
+| AgentGateway | v1.7.0, `cr.agentgateway.dev/agentgateway@sha256:60216aafb03d37f94e952ff3d51d2f630a65b10ecaebdc0a864882f92610c45b` |
 | Amazon Bedrock model | `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
-
-## Stages (to be written from the fresh run)
-
-### 1. Install OCE
-
-TODO: output from the fresh run
-
-### 2. Create the Agent and check its pod
-
-The admission policy applies only to pods in namespaces labelled
-`app.kubernetes.io/managed-by: openclaw-enterprise` and to pods labelled
-`openclaw.dev/workload-role`. It is shown in full in
-[`deploy/nitro-adapter.yaml`](deploy/nitro-adapter.yaml).
-
-TODO: output from the fresh run
-
-### 3. The model path
-
-TODO: output from the fresh run
-
-### 4. A real turn
-
-TODO: output from the fresh run
-
-## Clean up
-
-TODO: list what the clean-up removes, including the admission policy, the Helm
-release, the tenant namespaces OCE created, PostgreSQL and its volume, agentgateway,
-the Pod Identity association and the IAM role.
 
 ## Files
 
-| File | What it is |
+| Path | Purpose |
 |---|---|
-| [`deploy/nitro-adapter.yaml`](deploy/nitro-adapter.yaml) | The `MutatingAdmissionPolicy` that puts the Agent pod in a sandbox and fixes its state mounts. |
-| [`deploy/agentgateway.yaml`](deploy/agentgateway.yaml) | The model gateway: config, Deployment and ClusterIP Service. |
-| [`iam/pod-identity-trust.json`](iam/pod-identity-trust.json) | The Pod Identity trust policy for agentgateway's ServiceAccount. |
-| [`iam/bedrock-invoke.json`](iam/bedrock-invoke.json) | The permission policy: one model, invoke only. |
+| [`adapter/`](adapter/) | Admission mutation logic, webhook server and unit tests. |
+| [`build/`](build/) | CodeBuild, ECR and source-build resources. |
+| [`deploy/adapter-webhook.yaml`](deploy/adapter-webhook.yaml) | Admission adapter deployment and `MutatingWebhookConfiguration`. |
+| [`deploy/agentgateway.yaml`](deploy/agentgateway.yaml) | Private AgentGateway, TLS, Service and ingress policy. |
+| [`deploy/tenant-model-gateway.yaml.tpl`](deploy/tenant-model-gateway.yaml.tpl) | Tenant default-deny and allowed egress policy template. |
+| [`scripts/configure-tenant-model-gateway.sh`](scripts/configure-tenant-model-gateway.sh) | Tenant CA and network-policy configuration. |
+| [`iam/pod-identity-trust.json`](iam/pod-identity-trust.json) | Pod Identity trust policy for the AgentGateway ServiceAccount. |
+| [`iam/bedrock-invoke.json`](iam/bedrock-invoke.json) | Restricted Amazon Bedrock invoke policy template. |
+| [`tests/`](tests/) | Static deployment and integration contracts. |
