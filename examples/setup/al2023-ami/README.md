@@ -95,10 +95,34 @@ and build the AMI on the Graviton builder. The managed node group follows `NODE_
 the Karpenter `NodePool`'s `kubernetes.io/arch` requirement is rendered from `NODE_ARCH`, and its
 `amiSelectorTerms` must point at the arm64 AMI. Everything else is identical.
 
-The arm64 path was run end to end on a Graviton (`m8g`) builder and node: the build produced an
-`arm64` AMI, the node joined with `eks.amazonaws.com/nitro-sandbox: 20`, and an `isolated-sandbox`
-pod reached `Running` with a guest kernel (`6.18.56`, `aarch64`) distinct from the host's
-(`6.18.62-127.179.amzn2023.aarch64`) — the same evidence the x86_64 walkthrough below shows.
+### arm64 run
+
+The arm64 path was run end to end on a Graviton builder (`m8g.4xlarge`) and node (`m8g.xlarge`).
+The build produced an `arm64` AMI, the node joined with the sandbox capacity, and an
+`isolated-sandbox` pod reached `Running` with its own guest kernel — the same evidence the x86_64
+walkthrough below shows, on `aarch64`:
+
+```text
+$ kubectl get nodes -o wide
+NAME                       STATUS   VERSION               OS-IMAGE                        KERNEL-VERSION                             ARCH
+ip-10-0-0-1.ec2.internal   Ready    v1.37.1-eks-9adbfea   Amazon Linux 2023.12.20261112   6.18.62-127.179.amzn2023.aarch64           arm64
+
+$ kubectl get node ip-10-0-0-1.ec2.internal \
+    -o jsonpath='{.status.allocatable.eks\.amazonaws\.com/nitro-sandbox}'
+20
+
+# isolated-sandbox pod (guest VM)             # ordinary pod (host)
+$ uname -r && uname -m                         $ uname -r && uname -m
+6.18.56                                        6.18.62-127.179.amzn2023.aarch64
+aarch64                                        aarch64
+
+$ ls /sys/block                                $ ls /sys/block
+vda  vdb  vdc   (virtio)                        nvme0n1  loop0..  (host NVMe)
+```
+
+As on x86_64, the isolated pod boots its own guest kernel (`6.18.56`) distinct from the host
+(`6.18.62-127.179.amzn2023.aarch64`) and gets virtio disks rather than the node's NVMe. (Captured
+from a live arm64 run on a standard EKS 1.37 cluster; those arm64 resources were then torn down.)
 
 ## Files
 
