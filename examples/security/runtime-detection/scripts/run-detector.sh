@@ -24,7 +24,9 @@ mark="$(kubectl --context "$KUBE_CONTEXT" get namespace "$NAMESPACE" --ignore-no
 
 kc create configmap guest-detector --from-file="$SAMPLE_DIR/deploy/guest-detector.py" \
   --dry-run=client -o yaml | kc apply -f -
-kc apply -f "$SAMPLE_DIR/deploy/app-sandboxed-detector.yaml"
+# The manifest names the namespace runtime-detection; render it with $NAMESPACE instead.
+sed "s|^  namespace: runtime-detection |  namespace: $NAMESPACE |" \
+  "$SAMPLE_DIR/deploy/app-sandboxed-detector.yaml" | kc apply -f -
 kc wait pod/app-sandboxed-detector --for=condition=Ready --timeout=600s
 
 start="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

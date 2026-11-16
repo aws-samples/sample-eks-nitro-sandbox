@@ -5,6 +5,7 @@ apiVersion: cilium.io/v1alpha1
 kind: TracingPolicyNamespaced
 metadata:
   name: runtime-detection
+  namespace: runtime-detection   # the scripts change it when NAMESPACE is set
 spec:
   kprobes:
     # Called on each read or write of a file; the selector keeps only /etc/shadow.

@@ -12,6 +12,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: app-sandboxed-detector
+  namespace: runtime-detection   # the scripts change it when NAMESPACE is set
   labels:
     app: runtime-detection-app
   annotations:
@@ -30,6 +31,22 @@ spec:
       image: public.ecr.aws/docker/library/python:3.12-slim
       imagePullPolicy: IfNotPresent
       command: ["python3", "-u", "/detector/guest-detector.py"]
+      env:
+        - name: HEARTBEAT_FILE   # touched with every heartbeat, for the probes below
+          value: /run/detector/heartbeat
+      # Both probes fail when the detector has not written a heartbeat (every 60 s) for
+      # 180 s, so a stalled detector is restarted. The app container is not affected.
+      readinessProbe:
+        exec:
+          command: ["python3", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/run/detector/heartbeat') > 180)"]
+        initialDelaySeconds: 5
+        periodSeconds: 30
+      livenessProbe:
+        exec:
+          command: ["python3", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/run/detector/heartbeat') > 180)"]
+        initialDelaySeconds: 30
+        periodSeconds: 60
+        failureThreshold: 3
       securityContext:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true
@@ -40,6 +57,8 @@ spec:
         - name: detector
           mountPath: /detector
           readOnly: true
+        - name: detector-state
+          mountPath: /run/detector
       resources:
         requests:
           cpu: 100m
@@ -51,11 +70,24 @@ spec:
     - name: app
       image: public.ecr.aws/docker/library/python:3.12-slim
       imagePullPolicy: IfNotPresent
-      command: ["sleep", "infinity"]
+      # The shell records its pid, then becomes `sleep`, so the probes can check that process.
+      # A pod spec writes the shell's $$ as $$$$, because Kubernetes turns $$ into $.
+      command: ["sh", "-c", "echo $$$$ > /tmp/app.pid && exec sleep infinity"]
       securityContext:
         allowPrivilegeEscalation: false
         capabilities:
           drop: ["ALL"]
+      # Both probes check the app process is alive. Only that process dying fails them, so
+      # neither can restart the app in the middle of a test.
+      readinessProbe:
+        exec:
+          command: ["sh", "-c", "kill -0 \"$(cat /tmp/app.pid)\""]
+        periodSeconds: 30
+      livenessProbe:
+        exec:
+          command: ["sh", "-c", "kill -0 \"$(cat /tmp/app.pid)\""]
+        periodSeconds: 30
+        failureThreshold: 3
       resources:
         requests:
           cpu: 250m
@@ -67,3 +99,5 @@ spec:
     - name: detector
       configMap:
         name: guest-detector
+    - name: detector-state
+      emptyDir: {}

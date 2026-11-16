@@ -2093,34 +2093,54 @@ global_settings:
       line_end: 17
       reason: 'The synthetic HTTP fixture must accept requests through its ClusterIP service. It has no real supplier data, API key, or purchasing integration. This sample provides no pod-wide network restriction'
       expiration: '2027-01-31'
-    # Runtime detection (#250): idle app pods for the side-by-side test events, and the in-guest detector.
-    - rule_id: CKV_K8S_21
-      path: 'examples/security/runtime-detection/deploy/app-*.yaml'
-      reason: 'No namespace in the manifest; the scripts apply every manifest with -n "$NAMESPACE" into the labelled namespace they create (run-comparison.sh)'
-      expiration: '2027-12-31'
+    # Runtime detection (#250): the side-by-side app pods and the in-guest detector, one entry per file.
     - rule_id: CKV2_K8S_6
-      path: 'examples/security/runtime-detection/deploy/app-*.yaml'
+      path: 'examples/security/runtime-detection/deploy/app-standard.yaml'
       reason: 'A new blueprint ships no network policy (AGENTS.md, Security rules); the page links isolation/network-policy and claims no egress limit'
       expiration: '2027-12-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/security/runtime-detection/deploy/app-*.yaml'
-      reason: 'Idle app pods (sleep infinity) driven by kubectl exec; a probe gates nothing. The detector sidecar is a native sidecar whose crash restarts it'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/security/runtime-detection/deploy/app-sandboxed.yaml'
+      reason: 'A new blueprint ships no network policy (AGENTS.md, Security rules); the page links isolation/network-policy and claims no egress limit'
       expiration: '2027-12-31'
-    - rule_id: CKV_K8S_9
-      path: 'examples/security/runtime-detection/deploy/app-*.yaml'
-      reason: 'Idle app pods (sleep infinity) driven by kubectl exec; a probe gates nothing. The detector sidecar is a native sidecar whose crash restarts it'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/security/runtime-detection/deploy/app-sandboxed-detector.yaml'
+      reason: 'A new blueprint ships no network policy (AGENTS.md, Security rules); the page links isolation/network-policy and claims no egress limit'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_22
-      path: 'examples/security/runtime-detection/deploy/app-*.yaml'
-      reason: 'The benign test events read /etc/shadow (root-only) and run a new binary from the container writable layer, which is what Falco "Drop and execute new binary" matches; all capabilities dropped, no privilege escalation. The detector container runs as root because its added AUDIT_CONTROL takes effect only for root'
+      path: 'examples/security/runtime-detection/deploy/app-standard.yaml'
+      reason: 'The app container needs a writable root filesystem: one benign test event runs a new binary from the container writable layer, which Falco "Drop and execute new binary in container" matches (a volume would not)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/security/runtime-detection/deploy/app-sandboxed.yaml'
+      reason: 'The app container needs a writable root filesystem: one benign test event runs a new binary from the container writable layer, which Falco "Drop and execute new binary in container" matches (a volume would not)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/security/runtime-detection/deploy/app-sandboxed-detector.yaml'
+      reason: 'Only the app container trips this (the detector container is readOnlyRootFilesystem): it runs the same test event from its writable layer as the other two app pods'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_23
-      path: 'examples/security/runtime-detection/deploy/app-*.yaml'
-      reason: 'The benign test events read /etc/shadow (root-only) and run a new binary from the container writable layer, which is what Falco "Drop and execute new binary" matches; all capabilities dropped, no privilege escalation. The detector container runs as root because its added AUDIT_CONTROL takes effect only for root'
+      path: 'examples/security/runtime-detection/deploy/app-standard.yaml'
+      reason: 'The app container runs as root because one benign test event reads /etc/shadow, readable only by root; all capabilities dropped, no privilege escalation'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_40
-      path: 'examples/security/runtime-detection/deploy/app-*.yaml'
-      reason: 'The benign test events read /etc/shadow (root-only) and run a new binary from the container writable layer, which is what Falco "Drop and execute new binary" matches; all capabilities dropped, no privilege escalation. The detector container runs as root because its added AUDIT_CONTROL takes effect only for root'
+      path: 'examples/security/runtime-detection/deploy/app-standard.yaml'
+      reason: 'The app container runs as root because one benign test event reads /etc/shadow, readable only by root; all capabilities dropped, no privilege escalation'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/security/runtime-detection/deploy/app-sandboxed.yaml'
+      reason: 'The app container runs as root because one benign test event reads /etc/shadow, readable only by root; all capabilities dropped, no privilege escalation'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/security/runtime-detection/deploy/app-sandboxed.yaml'
+      reason: 'The app container runs as root because one benign test event reads /etc/shadow, readable only by root; all capabilities dropped, no privilege escalation'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/security/runtime-detection/deploy/app-sandboxed-detector.yaml'
+      reason: 'The app container runs as root for the /etc/shadow test event, and the detector runs as root because its added AUDIT_CONTROL takes effect only for root; no privilege escalation'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/security/runtime-detection/deploy/app-sandboxed-detector.yaml'
+      reason: 'The app container runs as root for the /etc/shadow test event, and the detector runs as root because its added AUDIT_CONTROL takes effect only for root; no privilege escalation'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_17
       path: 'examples/security/runtime-detection/deploy/app-sandboxed-detector.yaml'

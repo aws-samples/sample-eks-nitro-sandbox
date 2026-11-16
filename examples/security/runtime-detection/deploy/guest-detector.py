@@ -34,6 +34,7 @@ SYSCALLS = {"execve": 59, "execveat": 322, "open": 2, "openat": 257, "creat": 85
             "connect": 42}
 KEY = "runtime-detection"
 HEARTBEAT_SECONDS = int(os.environ.get("HEARTBEAT_SECONDS", "60"))
+HEARTBEAT_FILE = os.environ.get("HEARTBEAT_FILE")  # touched with every heartbeat, for probes
 
 SHELLS = {"sh", "bash", "dash", "zsh", "ash", "ksh"}
 SENSITIVE_FILES = {"/etc/shadow", "/etc/sudoers", "/etc/pam.conf"}
@@ -222,6 +223,8 @@ def main():
         if time.time() - last_beat >= HEARTBEAT_SECONDS:
             emit({"detector": "guest-audit", "heartbeat": True,
                   "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+            if HEARTBEAT_FILE:
+                open(HEARTBEAT_FILE, "w").close()
             last_beat = time.time()
         try:
             data = sock.recv(65536)

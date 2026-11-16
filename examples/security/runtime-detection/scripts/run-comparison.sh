@@ -25,6 +25,8 @@ export NAMESPACE KUBE_CONTEXT
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 kc() { kubectl --context "$KUBE_CONTEXT" "$@"; }
+# Each manifest names the namespace runtime-detection; render it with $NAMESPACE instead.
+render() { sed "s|^  namespace: runtime-detection |  namespace: $NAMESPACE |" "$SAMPLE_DIR/deploy/$1"; }
 
 # Read the sample label of the namespace: empty when the namespace is absent; a failed read
 # stops the script.
@@ -55,15 +57,15 @@ kc -n "$TETRAGON_NAMESPACE" get daemonset -l app.kubernetes.io/name=tetragon -o 
 
 mark="$(ns_mark)"
 if [[ -z "$mark" ]]; then
-  sed "s|<NAMESPACE>|$NAMESPACE|" "$SAMPLE_DIR/deploy/namespace.yaml" | kc create -f -
+  sed "s|^  name: runtime-detection\$|  name: $NAMESPACE|" "$SAMPLE_DIR/deploy/namespace.yaml" | kc create -f -
 elif [[ "$mark" != "runtime-detection" ]]; then
   die "namespace '$NAMESPACE' exists and is not labelled sample=runtime-detection, so this
 blueprint did not create it. Set NAMESPACE to a name of your own and run this again."
 fi
-kc -n "$NAMESPACE" apply -f "$SAMPLE_DIR/deploy/tetragon-policy.yaml"
+render tetragon-policy.yaml | kc apply -f -
 # The sandboxed pod goes first: the ordinary pod's affinity places it on the same node.
 for pod in app-sandboxed app-standard; do
-  kc -n "$NAMESPACE" apply -f "$SAMPLE_DIR/deploy/$pod.yaml"
+  render "$pod.yaml" | kc apply -f -
   kc -n "$NAMESPACE" wait "pod/$pod" --for=condition=Ready --timeout=600s
 done
 node="$(kc -n "$NAMESPACE" get pod app-sandboxed -o 'jsonpath={.spec.nodeName}')"
@@ -99,6 +101,8 @@ for alert in lines("FALCO_LOG"):
 for event in lines("TETRAGON_LOG"):
     kind, body = next(iter(event.items()))
     pod = body.get("process", {}).get("pod", {})
+    if "app.pid" in body.get("process", {}).get("arguments", ""):
+        continue  # the pods' own liveness and readiness probes, not a test event
     if pod.get("namespace") == ns and pod.get("name") in seen:
         what = body.get("function_name") or os.path.basename(body["process"].get("binary", ""))
         seen[pod["name"]].append(("tetragon", f"{kind} {what}"))

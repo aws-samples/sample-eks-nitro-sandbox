@@ -1,9 +1,10 @@
-# The namespace this blueprint owns. The scripts render <NAMESPACE>, create it only when it
-# is absent, and delete it only when it carries the sample label.
+# The namespace this blueprint owns. Every namespaced manifest in deploy/ names it. The
+# scripts change the name when NAMESPACE is set, create it only when it is absent, and
+# delete it only when it carries the sample label.
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: <NAMESPACE>
+  name: runtime-detection
   labels:
     app.kubernetes.io/part-of: eks-nitro-sandbox-demos
     sample: runtime-detection
