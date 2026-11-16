@@ -170,7 +170,9 @@ webhooks:
     sideEffects: None
     failurePolicy: Fail
     matchPolicy: Equivalent
-    reinvocationPolicy: IfNeeded
+    # The adapter rewrites the complete OCE gateway Pod contract in one pass.
+    # The validating webhook checks the final object after all mutators run.
+    reinvocationPolicy: Never
     timeoutSeconds: 5
     clientConfig:
       service:

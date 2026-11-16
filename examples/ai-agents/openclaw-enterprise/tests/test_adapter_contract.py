@@ -41,6 +41,7 @@ def test_webhook_matches_all_pods_in_oce_namespaces_and_fails_closed() -> None:
 
     assert webhook["failurePolicy"] == "Fail"
     assert webhook["sideEffects"] == "None"
+    assert webhook["reinvocationPolicy"] == "Never"
     assert webhook["namespaceSelector"] == {
         "matchLabels": {"app.kubernetes.io/managed-by": "openclaw-enterprise"}
     }
