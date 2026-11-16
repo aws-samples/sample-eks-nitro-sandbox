@@ -35,14 +35,16 @@ sleep 5
 echo
 echo "=== app-sandboxed-detector: the detector's output since the events started ==="
 kc logs app-sandboxed-detector -c detector --since-time="$start"
-alerts="$(kc logs app-sandboxed-detector -c detector --since-time="$start" | grep -c '"rule"' || true)"
+log="$(kc logs app-sandboxed-detector -c detector --since-time="$start")"
+alerts="$(printf '%s\n' "$log" | grep -c '"rule"' || true)"
+rules="$(printf '%s\n' "$log" | grep -oE '"rule": "[^"]*"' | sort -u | wc -l | tr -d ' ')"
 echo
 echo "=== Verdict ==="
-if [[ "$alerts" -eq 4 ]]; then
+if [[ "$alerts" -eq 4 && "$rules" -eq 4 ]]; then
   echo "RESULT: the in-guest detector raised 4 alerts, one for each test event in its own pod,"
   echo "and none for the same events in app-sandboxed or app-standard."
 else
-  echo "UNEXPECTED: the detector raised $alerts alerts for 12 test events in 3 pods; 4 were"
-  echo "expected, one for each test event in its own pod."
+  echo "UNEXPECTED: the detector raised $alerts alerts ($rules distinct rules) for 12 test events"
+  echo "in 3 pods; 4 were expected, one for each test event in its own pod."
   exit 1
 fi

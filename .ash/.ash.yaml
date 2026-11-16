@@ -2112,15 +2112,15 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_22
       path: 'examples/security/runtime-detection/deploy/app-*.yaml'
-      reason: 'The benign test events read /etc/shadow (root-only) and run a new binary from the container writable layer, which is what Falco "Drop and execute new binary" matches; all capabilities dropped, no privilege escalation'
+      reason: 'The benign test events read /etc/shadow (root-only) and run a new binary from the container writable layer, which is what Falco "Drop and execute new binary" matches; all capabilities dropped, no privilege escalation. The detector container runs as root because its added AUDIT_CONTROL takes effect only for root'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_23
       path: 'examples/security/runtime-detection/deploy/app-*.yaml'
-      reason: 'The benign test events read /etc/shadow (root-only) and run a new binary from the container writable layer, which is what Falco "Drop and execute new binary" matches; all capabilities dropped, no privilege escalation'
+      reason: 'The benign test events read /etc/shadow (root-only) and run a new binary from the container writable layer, which is what Falco "Drop and execute new binary" matches; all capabilities dropped, no privilege escalation. The detector container runs as root because its added AUDIT_CONTROL takes effect only for root'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_40
       path: 'examples/security/runtime-detection/deploy/app-*.yaml'
-      reason: 'The benign test events read /etc/shadow (root-only) and run a new binary from the container writable layer, which is what Falco "Drop and execute new binary" matches; all capabilities dropped, no privilege escalation'
+      reason: 'The benign test events read /etc/shadow (root-only) and run a new binary from the container writable layer, which is what Falco "Drop and execute new binary" matches; all capabilities dropped, no privilege escalation. The detector container runs as root because its added AUDIT_CONTROL takes effect only for root'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_17
       path: 'examples/security/runtime-detection/deploy/app-sandboxed-detector.yaml'
@@ -2128,7 +2128,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_25
       path: 'examples/security/runtime-detection/deploy/app-sandboxed-detector.yaml'
-      reason: 'The detector adds only AUDIT_CONTROL and AUDIT_READ, which it needs to drive the guest kernel audit subsystem; they reach only this pod guest'
+      reason: 'The detector adds only AUDIT_CONTROL, which it needs to act as the guest audit daemon; it reaches only this pod guest'
       expiration: '2027-12-31'
 scanners:
   cdk-nag:

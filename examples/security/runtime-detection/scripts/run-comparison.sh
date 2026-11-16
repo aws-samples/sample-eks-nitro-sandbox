@@ -5,8 +5,9 @@
 #   scripts/run-comparison.sh            # deploy (when absent), trigger, report
 #   scripts/run-comparison.sh --cleanup  # delete this blueprint's namespace
 #
-# It changes nothing cluster-wide. Falco and Tetragon are installs the reader makes as steps
-# on the page; this script checks for them and stops with the command when one is missing.
+# Cluster-wide, it creates only its namespace. Falco and Tetragon are installs the reader makes
+# as steps on the page; this script checks for them and stops with the command when one is
+# missing.
 #
 # Overridable (the defaults match the page):
 #   NAMESPACE           this blueprint's namespace         (default runtime-detection)
@@ -106,16 +107,19 @@ for pod, hits in seen.items():
           f"{len([h for h in hits if h[0] == 'tetragon'])} Tetragon events ===")
     for tool, what in hits:
         print(f"  {tool:9} {what}")
-tools = ("falco", "tetragon")
-std = {t for t, _ in seen["app-standard"]}
-sbx = {t for t, _ in seen["app-sandboxed"]}
+# What each tool must report for the four test events in the ordinary pod.
+expected = {("falco", r) for r in ("Terminal shell in container", "Read sensitive file untrusted",
+                                  "Drop and execute new binary in container",
+                                  "Contact K8S API Server From Container")}
+expected |= {("tetragon", "process_exec sh"), ("tetragon", "process_kprobe security_file_permission"),
+             ("tetragon", "process_exec runtime-detection-test"), ("tetragon", "process_kprobe tcp_connect")}
+missing = sorted(expected - set(seen["app-standard"]))
 print("\n=== Verdict ===")
-if std == set(tools) and not sbx:
+if not missing and not seen["app-sandboxed"]:
     print("RESULT: the node's Falco and Tetragon each saw the ordinary pod's test events and\n"
           "none of the sandboxed pod's, which ran the same events on the same node.")
 else:
-    missing = ", ".join(t for t in tools if t not in std) or "none"
-    print(f"NO RESULT: tools that missed the ordinary pod: {missing}; "
-          f"tools that saw the sandboxed pod: {', '.join(sorted(sbx)) or 'none'}.")
+    print(f"NO RESULT: missing from the ordinary pod: {missing or 'nothing'}; "
+          f"seen from the sandboxed pod: {len(seen['app-sandboxed'])} events.")
     raise SystemExit(1)
 EOF

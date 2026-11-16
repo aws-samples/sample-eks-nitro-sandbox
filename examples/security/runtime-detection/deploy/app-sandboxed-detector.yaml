@@ -4,8 +4,10 @@
 # log agent ships them like any other container log.
 #
 # hostPID: true joins the sandbox's own PID namespace, the guest's, not the node's: it is how
-# the detector can register as the guest's audit daemon. The detector holds two
-# capabilities, both for audit, and they reach only this pod's guest.
+# the detector can register as the guest's audit daemon. WITHOUT runtimeClassName:
+# isolated-sandbox THE SAME FIELD JOINS THE NODE'S PID NAMESPACE, so never copy it into an
+# ordinary pod. The detector holds one capability, for audit, and it reaches only this pod's
+# guest.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -33,7 +35,7 @@ spec:
         readOnlyRootFilesystem: true
         capabilities:
           drop: ["ALL"]
-          add: ["AUDIT_CONTROL", "AUDIT_READ"]
+          add: ["AUDIT_CONTROL"]
       volumeMounts:
         - name: detector
           mountPath: /detector

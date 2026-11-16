@@ -76,5 +76,13 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(gd.classify(ev, API, set()), [])
 
 
+class OwnRuleTest(unittest.TestCase):
+    def test_own_rule_and_a_foreign_rule_with_a_similar_key(self):
+        own = gd.rule([59], 1)
+        self.assertTrue(gd.is_own_rule(own))
+        foreign = own[:1036] + gd.struct.pack("=I", 20) + b"my-runtime-detection"
+        self.assertFalse(gd.is_own_rule(foreign))
+
+
 if __name__ == "__main__":
     unittest.main()

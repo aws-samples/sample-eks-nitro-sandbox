@@ -5,10 +5,10 @@ Falco (modern_ebpf) and Tetragon cannot load there. It does have the audit subsy
 this detector drives over netlink: it registers itself as the guest's audit daemon, adds
 syscall rules for exec, open and connect, and prints one JSON alert to stdout for each event
 that matches one of the rules below. It also prints a heartbeat every HEARTBEAT_SECONDS, so
-a detector that goes silent can raise an alarm of its own.
+a detector that was killed or stalled can be noticed by its silence.
 
 It needs the guest's PID namespace (hostPID: true, which in a sandbox is the guest's, not the
-node's) and CAP_AUDIT_CONTROL and CAP_AUDIT_READ. Standard library only.
+node's) and CAP_AUDIT_CONTROL. Standard library only.
 """
 import json
 import os
@@ -28,8 +28,10 @@ AUDIT_PID, AUDIT_ARCH, AUDIT_MSGTYPE, AUDIT_FILTERKEY = 0, 11, 12, 210
 AUDIT_EQUAL, AUDIT_NOT_EQUAL, AUDIT_LESS_THAN = 0x40000000, 0x30000000, 0x10000000
 AUDIT_ARCH_X86_64 = 0xC000003E
 # x86_64 syscall numbers: the rules below audit only these.
-SYSCALLS = {"execve": 59, "execveat": 322, "open": 2, "openat": 257, "openat2": 437,
-            "creat": 85, "connect": 42}
+# shortcut: openat2 is left out, because its flags sit behind a pointer (struct open_how);
+# add it with the AUDIT_OPENAT2 record (type 1337) if a workload uses it.
+SYSCALLS = {"execve": 59, "execveat": 322, "open": 2, "openat": 257, "creat": 85,
+            "connect": 42}
 KEY = "runtime-detection"
 HEARTBEAT_SECONDS = int(os.environ.get("HEARTBEAT_SECONDS", "60"))
 
@@ -85,8 +87,14 @@ def blocks_syscall_records(body):
     ops = struct.unpack("=64I", body[780:1036])[:count]
     if flags == AUDIT_FILTER_TASK and action == AUDIT_NEVER and count == 0:
         return True
-    return (flags == AUDIT_FILTER_EXCLUDE and action == AUDIT_ALWAYS
+    # The exclude filter drops a matching record whatever the rule's action.
+    return (flags == AUDIT_FILTER_EXCLUDE
             and list(zip(fields, ops, values)) == [(AUDIT_MSGTYPE, AUDIT_LESS_THAN, 1400)])
+
+
+def is_own_rule(body):
+    """This detector's rule: its key is the rule's whole string buffer."""
+    return body[1036:1040] == struct.pack("=I", len(KEY)) and body[1040:] == KEY.encode()
 
 
 def rule(syscalls, self_pid):
@@ -155,7 +163,7 @@ def classify(event, api_server, written):
         if exe in written:
             alerts.append(("Drop and execute new binary in container",
                            f"executed a file written after the container started {who}"))
-    if nr in (SYSCALLS["open"], SYSCALLS["openat"], SYSCALLS["openat2"], SYSCALLS["creat"]):
+    if nr in (SYSCALLS["open"], SYSCALLS["openat"], SYSCALLS["creat"]):
         flags = int(sc.get("a1" if nr == SYSCALLS["open"] else "a2", "0"), 16)
         writing = nr == SYSCALLS["creat"] or flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC)
         for name in names:
@@ -189,7 +197,7 @@ def main():
     # detector's own rule from an earlier start of the container, then add this rule.
     removed = []
     for body in list_rules(sock):
-        ours = body.endswith(KEY.encode())
+        ours = is_own_rule(body)
         if ours or blocks_syscall_records(body):
             nl_send(sock, AUDIT_DEL_RULE, body, 4)
             nl_ack(sock)
@@ -201,9 +209,11 @@ def main():
     emit({"detector": "guest-audit", "status": "started", "rules": sorted(SYSCALLS),
           "removed_guest_rules": removed, "kernel": os.uname().release})
     sock.settimeout(HEARTBEAT_SECONDS)
-    event, serial, last_beat, written = {}, None, 0.0, set()
+    # Records of one syscall share a serial and end with AUDIT_EOE; records of two tasks can
+    # interleave, so each event is collected under its serial until its EOE arrives.
+    events, last_beat, written = {}, 0.0, set()
 
-    def flush():
+    def flush(event):
         for name, output in classify(event, api_server, written):
             emit({"detector": "guest-audit", "rule": name, "output": output,
                   "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
@@ -217,19 +227,21 @@ def main():
             data = sock.recv(65536)
         except socket.timeout:
             continue
+        if len(data) < 16:
+            continue
         _, msg_type, _, _, _ = struct.unpack("=IHHII", data[:16])
-        text = data[16:].split(b"\0", 1)[0].decode("utf-8", "replace")
         if msg_type < AUDIT_SYSCALL or msg_type > 1399:
             continue
-        rec_serial, fields = parse(text)
-        if rec_serial != serial:
-            flush()
-            event, serial = {}, rec_serial
-        if msg_type == AUDIT_EOE:
-            flush()
-            event, serial = {}, None
-        else:
-            event.setdefault(msg_type, []).append(fields)
+        try:
+            serial, fields = parse(data[16:].split(b"\0", 1)[0].decode("utf-8", "replace"))
+            if msg_type == AUDIT_EOE:
+                flush(events.pop(serial, {}))
+            else:
+                events.setdefault(serial, {}).setdefault(msg_type, []).append(fields)
+                if len(events) > 1024:  # shortcut: bounded memory; drops the oldest open event
+                    events.pop(next(iter(events)))
+        except (ValueError, struct.error) as err:  # a malformed record: skip it, keep watching
+            emit({"detector": "guest-audit", "status": "skipped record", "error": str(err)})
 
 
 if __name__ == "__main__":

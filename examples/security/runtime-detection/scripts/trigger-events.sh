@@ -19,7 +19,7 @@ k() { kubectl --context "$CTX" -n "$NS" exec "$POD" -c app "$@"; }
 
 echo "[$POD] 1/4 shell with a terminal"
 # kubectl allocates a terminal only when its own input is one, so `script` provides it.
-shell="kubectl --context '$CTX' -n '$NS' exec -it '$POD' -c app -- sh -c 'exit 0'"
+shell="$(printf 'kubectl --context %q -n %q exec -it %q -c app -- sh -c %q' "$CTX" "$NS" "$POD" 'exit 0')"
 if script -V > /dev/null 2>&1; then
   script -qec "$shell" /dev/null > /dev/null       # util-linux (Linux)
 else

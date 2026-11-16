@@ -203,7 +203,7 @@ creates, the node both pods share and the four events it runs in each pod.
 Here is one of Falco's alerts for the ordinary pod, from its log on that node:
 
 ```text
-19:50:46.639457132: Warning Sensitive file opened for reading by non-trusted program | file=/etc/shadow gparent=systemd ggparent=<NA> gggparent=<NA> evt_type=openat user=root user_uid=0 user_loginuid=-1 process=cat proc_exepath=/usr/bin/cat parent=containerd-shim command=cat /etc/shadow terminal=0 container_id=2d1ff63d6caa container_name=app container_image_repository=public.ecr.aws/docker/library/python container_image_tag=3.12-slim k8s_pod_name=app-standard k8s_ns_name=runtime-detection-i250
+20:22:46.158157826: Warning Sensitive file opened for reading by non-trusted program | file=/etc/shadow gparent=systemd ggparent=<NA> gggparent=<NA> evt_type=openat user=root user_uid=0 user_loginuid=-1 process=cat proc_exepath=/usr/bin/cat parent=containerd-shim command=cat /etc/shadow terminal=0 container_id=46ed94b3e6d9 container_name=app container_image_repository=public.ecr.aws/docker/library/python container_image_tag=3.12-slim k8s_pod_name=app-standard k8s_ns_name=runtime-detection-i250
 ```
 
 The same pods, the same events and the same Falco and Tetragon pods: the only difference is
@@ -218,12 +218,12 @@ pods:
 ```text
 === app-sandboxed: runtimeClassName 'isolated-sandbox' ===
 6.18.62 #1 SMP PREEMPT_DYNAMIC Thu Nov 12 22:44:15 UTC 2026
-uptime(s): 73.56
+uptime(s): 76.48
 disks:     dm-0 vda vdb vdc
 
 === app-standard: runtimeClassName '' ===
 6.18.62 #2 SMP PREEMPT_DYNAMIC Thu Nov 12 22:49:16 UTC 2026
-uptime(s): 1092.56
+uptime(s): 3015.78
 disks:     dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0
 ```
 
@@ -266,8 +266,9 @@ The guest kernel does have the Linux audit subsystem. That is what the in-guest 
 1. registers itself as the guest's audit daemon over the audit netlink socket,
 2. removes two rules the guest image loads that stop syscall records from being made
    (`-a never,task`, and an exclude rule for every record type below 1400),
-3. adds one rule that audits `execve`, `open`, `openat`, `openat2`, `creat` and `connect` for
-   every process but itself,
+3. adds one rule that audits `execve`, `execveat`, `open`, `openat`, `creat` and `connect` for
+   every process but itself (`openat2` is left out, because its flags sit behind a pointer the
+   audit record does not carry),
 4. turns each matching record into a JSON alert on stdout, using the Falco rule names above,
 5. prints a heartbeat line every 60 seconds.
 
@@ -286,13 +287,19 @@ spec:
         readOnlyRootFilesystem: true
         capabilities:
           drop: ["ALL"]
-          add: ["AUDIT_CONTROL", "AUDIT_READ"]
+          add: ["AUDIT_CONTROL"]
 ```
 
 `hostPID: true` in a sandbox joins the guest's PID namespace, where the audit daemon must live.
-In an ordinary pod the same field would join the node's PID namespace, so this manifest is only
-safe with the runtime class. `AUDIT_CONTROL` lets it change audit settings and rules, and
-`AUDIT_READ` lets it read records. Both reach only this pod's guest.
+
+!!! warning "Never copy `hostPID: true` into an ordinary pod"
+    Without `runtimeClassName: isolated-sandbox`, the same field joins the node's PID namespace,
+    so the pod could see and signal every process on the node. This manifest is only safe with
+    the runtime class.
+
+`AUDIT_CONTROL` lets the detector change audit settings and rules and receive the records as the
+guest's audit daemon; it reaches only this pod's guest. The run on this page had no other
+capability: `AUDIT_READ`, which only gates the multicast log feed, is not needed.
 
 **Step 4: Catch the events inside the guest.** [`scripts/run-detector.sh`](scripts/run-detector.sh)
 stores the detector in a ConfigMap, starts the detector pod, and runs the four events in it and
@@ -304,12 +311,12 @@ scripts/run-detector.sh
 
 ```text
 === app-sandboxed-detector: the detector's output since the events started ===
-{"detector": "guest-audit", "kernel": "6.18.62", "removed_guest_rules": ["never,task", "exclude msgtype<1400"], "rules": ["connect", "creat", "execve", "execveat", "open", "openat", "openat2"], "status": "started"}
-{"detector": "guest-audit", "heartbeat": true, "time": "2026-11-16T19:51:25Z"}
-{"detector": "guest-audit", "output": "shell with a terminal tty=pts0 pid=1693 ppid=1642 uid=0 comm=sh exe=/usr/bin/dash", "rule": "Terminal shell in container", "time": "2026-11-16T19:51:26Z"}
-{"detector": "guest-audit", "output": "file=/etc/shadow pid=1711 ppid=1642 uid=0 comm=cat exe=/usr/bin/cat", "rule": "Read sensitive file untrusted", "time": "2026-11-16T19:51:27Z"}
-{"detector": "guest-audit", "output": "executed a file written after the container started pid=1735 ppid=1728 uid=0 comm=runtime-detecti exe=/tmp/runtime-detection-test", "rule": "Drop and execute new binary in container", "time": "2026-11-16T19:51:28Z"}
-{"detector": "guest-audit", "output": "connection=10.100.0.1:443 pid=1749 ppid=1642 uid=0 comm=python3 exe=/usr/local/bin/python3.12", "rule": "Contact K8S API Server From Container", "time": "2026-11-16T19:51:29Z"}
+{"detector": "guest-audit", "kernel": "6.18.62", "removed_guest_rules": ["never,task", "exclude msgtype<1400"], "rules": ["connect", "creat", "execve", "execveat", "open", "openat"], "status": "started"}
+{"detector": "guest-audit", "heartbeat": true, "time": "2026-11-16T20:23:22Z"}
+{"detector": "guest-audit", "output": "shell with a terminal tty=pts0 pid=1692 ppid=1644 uid=0 comm=sh exe=/usr/bin/dash", "rule": "Terminal shell in container", "time": "2026-11-16T20:23:23Z"}
+{"detector": "guest-audit", "output": "file=/etc/shadow pid=1710 ppid=1644 uid=0 comm=cat exe=/usr/bin/cat", "rule": "Read sensitive file untrusted", "time": "2026-11-16T20:23:24Z"}
+{"detector": "guest-audit", "output": "executed a file written after the container started pid=1735 ppid=1728 uid=0 comm=runtime-detecti exe=/tmp/runtime-detection-test", "rule": "Drop and execute new binary in container", "time": "2026-11-16T20:23:25Z"}
+{"detector": "guest-audit", "output": "connection=10.100.0.1:443 pid=1752 ppid=1644 uid=0 comm=python3 exe=/usr/local/bin/python3.12", "rule": "Contact K8S API Server From Container", "time": "2026-11-16T20:23:27Z"}
 
 === Verdict ===
 RESULT: the in-guest detector raised 4 alerts, one for each test event in its own pod,
@@ -338,9 +345,11 @@ for m in json.load(sys.stdin):
     print(k["namespace_name"], k["pod_name"], k["container_name"], "|", d["log"].strip()[:200])'
 ```
 
-This block is from an earlier run of the same detector and the same events, at 19:45 UTC; the
-add-on was removed from the test cluster before the walkthrough above reached this step. It is
-abridged to that run's lines:
+This block is from an earlier run at 19:45 UTC, with the same pods, the same events and an earlier
+version of the detector (it still audited `openat2`, so its `rules` list is one longer; the
+fixes since then change how records are grouped, not what reaches stdout). The add-on was removed
+from the test cluster before the walkthrough above was run. The block is abridged to that run's
+lines:
 
 ```text
 runtime-detection-i250 app-sandboxed-detector detector | {"detector": "guest-audit", "kernel": "6.18.62", "removed_guest_rules": ["never,task", "exclude msgtype<1400"], "rules": ["connect", "creat", "execve", "execveat", "open", "openat", "openat2"], "statu
@@ -361,27 +370,27 @@ applies to them like any log.
 Step 4 already showed one side of this: the same events in `app-sandboxed` and `app-standard`
 raised nothing in the detector, because they never reach its guest kernel. The other side is what
 the detector can list. [`scripts/show-guest-view.sh`](scripts/show-guest-view.sh), from the same
-run, abridged to the detector container:
+run, abridged to the detector container, with the guest's random D-Bus machine ID cut:
 
 ```text
 === app-sandboxed-detector, detector container ===
 runtimeClassName: isolated-sandbox  hostPID: true
 kernel:    6.18.62 #1 SMP PREEMPT_DYNAMIC Thu Nov 12 22:44:15 UTC 2026
-uptime(s): 23.85
+uptime(s): 30.14
 disks:     dm-0 vda vdb vdc
 processes with a command line: 12
        1  /sbin/init
-     878  /x86_64-bottlerocket-linux-gnu/sys-root/usr/lib/systemd/systemd-journald
-    1359  /usr/bin/whippet
-    1385  /x86_64-bottlerocket-linux-gnu/sys-root/usr/lib/systemd/systemd-udevd
-    1387  /usr/bin/dbus-broker --log 12 --controller 11 --machine-id 61b802525662435da878e5b94876e13
+     877  /x86_64-bottlerocket-linux-gnu/sys-root/usr/lib/systemd/systemd-journald
+     902  /usr/bin/whippet
+     905  /x86_64-bottlerocket-linux-gnu/sys-root/usr/lib/systemd/systemd-udevd
+    1364  /usr/bin/dbus-broker --log 12 --controller 11 --machine-id ...
     1494  /usr/sbin/nitro-sandbox-agent
-    1513  /x86_64-bottlerocket-linux-gnu/sys-root/usr/sbin/nitro-sandbox-agent pause
-    1515  /x86_64-bottlerocket-linux-gnu/sys-root/usr/sbin/nitro-sandbox-agent pause
-    1557  /x86_64-bottlerocket-linux-gnu/sys-root/usr/lib/systemd/systemd-logind
-    1619  python3 -u /detector/guest-detector.py
-    1664  sleep infinity
-    1768  python3 -
+    1516  /x86_64-bottlerocket-linux-gnu/sys-root/usr/sbin/nitro-sandbox-agent pause
+    1518  /x86_64-bottlerocket-linux-gnu/sys-root/usr/sbin/nitro-sandbox-agent pause
+    1556  /x86_64-bottlerocket-linux-gnu/sys-root/usr/lib/systemd/systemd-logind
+    1621  python3 -u /detector/guest-detector.py
+    1667  sleep infinity
+    1770  python3 -
 sees kubelet: no
 sees containerd: no
 sleep infinity processes: 1
@@ -392,11 +401,11 @@ the guest's: its init, the sandbox agent, the detector itself and the one `sleep
 this pod's app. There is no kubelet, no containerd and no other pod. It sees the guest's virtio
 disks, not the node's.
 
-The same holds with the most privilege a pod can ask for. In a separate run the detector's
-`securityContext` was replaced with `privileged: true`, and the script printed the same picture:
-22 processes, all of them the guest's (the extra ten were `udev-worker` processes from the boot),
-`sees kubelet: no`, `sees containerd: no`, one `sleep infinity`, and the disks
-`dm-0 vda vdb vdc`. `privileged: true` in a sandbox reaches only that pod's guest.
+The same holds with the most privilege a pod can ask for. Later in the same run the detector pod
+was re-created with its detector's `securityContext` replaced by `privileged: true`, and the
+script printed the same picture: 22 processes, all of them the guest's (the extra ten were
+`udev-worker` processes still running five seconds after boot), `sees kubelet: no`,
+`sees containerd: no`, one `sleep infinity`, and the disks `dm-0 vda vdb vdc`. `privileged: true` in a sandbox reaches only that pod's guest.
 
 ## The catch: the detector shares the guest it watches
 
@@ -404,7 +413,8 @@ A node agent watching an ordinary pod sits outside that pod: code in the pod can
 in-guest detector sits inside the same VM as the workload. A workload that gains root in the guest
 can stop the detector, change its audit rules, or flood it. In this pod the app container already
 shares the guest's PID namespace and runs as root, so it can kill the detector without any
-capability. From the same run:
+capability. From the same run, on the same detector pod as the block above (its detector was
+pid 1621):
 
 ```bash
 kubectl -n "$NAMESPACE" exec app-sandboxed-detector -c app -- python3 -c '
@@ -420,47 +430,56 @@ for pid in filter(str.isdigit, os.listdir("/proc")):
 sleep 15
 kubectl -n "$NAMESPACE" get pod app-sandboxed-detector \
   -o 'jsonpath=detector restarts: {.status.initContainerStatuses[0].restartCount}{"\n"}'
+kubectl -n "$NAMESPACE" logs app-sandboxed-detector -c detector | head -1
 ```
 
 ```text
-app container, uid 0, kills the detector, pid 1625
+app container, uid 0, kills the detector, pid 1621
 detector restarts: 1
+{"detector": "guest-audit", "kernel": "6.18.62", "removed_guest_rules": ["own rule from an earlier start"], "rules": ["connect", "creat", "execve", "execveat", "open", "openat"], "status": "started"}
 ```
 
-The kubelet restarted the sidecar, but between the kill and the restart nothing was watched, and a
-workload with `CAP_AUDIT_CONTROL` could remove the rule instead and leave the detector running
-blind. So treat in-guest alerts as evidence from inside a boundary you do not fully trust:
+The kubelet restarted the sidecar, which started again and replaced its own rule from before. But
+between the kill and the restart nothing was watched, and a workload with `CAP_AUDIT_CONTROL`
+could remove the rule instead and leave the detector running blind. So treat in-guest alerts as evidence from inside a boundary you do not fully trust:
 
 - **The sandbox still protects the node and the other pods.** Whatever the workload does to the
   detector, it stays inside its own VM, as the previous section shows. Losing the detector loses
   visibility into one pod, not control of the node.
 - **It is weaker than a node agent on an ordinary pod.** There, the agent sits in a kernel the pod
   cannot reach. Here, it does not. The node-level controls that keep working are listed below.
-- **Silence must be an alert.** A detector that is killed, blinded or starved stops writing
-  heartbeats. Alarm on their absence, not only on the alerts.
+- **Silence must be an alert.** A detector that is killed or stalled stops writing heartbeats.
+  Alarm on their absence, not only on the alerts. A heartbeat does not prove the detector can
+  still see: one whose audit rule was removed keeps writing heartbeats, which is the limit of
+  any detector that shares the guest with its workload.
 
 **Step 6: Check the heartbeat.** [`scripts/check-heartbeat.sh`](scripts/check-heartbeat.sh) looks
-for the pod's latest heartbeat in CloudWatch Logs and exits non-zero when there is none in the last
-180 seconds. Both blocks are from the earlier run in step 5, while the add-on was installed; the
-second names `app-sandboxed`, a pod with no detector:
+for the latest heartbeat line from the pod's `detector` container in CloudWatch Logs, and exits
+non-zero when there is none in the last 180 seconds (`MAX_AGE`, three heartbeats):
 
 ```bash
 scripts/check-heartbeat.sh app-sandboxed-detector
-scripts/check-heartbeat.sh app-sandboxed
+scripts/check-heartbeat.sh app-sandboxed    # a pod with no detector: must fail
+```
+
+These blocks are from a run after the add-on had been removed, against the heartbeats the
+earlier run in step 5 had stored, so it used `MAX_AGE=7200` to reach back that far:
+
+```text
+OK: last heartbeat from runtime-detection-i250/app-sandboxed-detector was 1909s ago (limit 7200s)
 ```
 
 ```text
-OK: last heartbeat from runtime-detection-i250/app-sandboxed-detector was 32s ago (limit 180s)
-```
-
-```text
-ALERT: no heartbeat from runtime-detection-i250/app-sandboxed in the last 180s
+ALERT: no heartbeat from runtime-detection-i250/app-sandboxed in the last 7200s
 ```
 
 For a check that runs without you, turn the same idea into a CloudWatch Logs
 [metric filter](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/MonitoringLogData.html)
 that counts heartbeat lines, and a CloudWatch alarm on it that treats missing data as breaching.
 This blueprint does not create them.
+
+The check reads only the detector container's lines on purpose: the app container shares the
+guest and runs as root, so it could print a fake heartbeat of its own.
 
 ## What keeps working for a sandboxed pod
 
@@ -513,6 +532,8 @@ helm uninstall tetragon --namespace tetragon && kubectl delete namespace tetrago
 kubectl delete crd tracingpolicies.cilium.io tracingpoliciesnamespaced.cilium.io
 ```
 
-This blueprint changes no GuardDuty setting, so there is nothing to turn back off. Deleting the
+If you installed the Amazon CloudWatch Observability add-on only for this blueprint, remove it as
+its guide says. This blueprint changes no GuardDuty setting, so there is nothing to turn back
+off. Deleting the
 cluster removes everything; see the
 [hello sandbox](../../getting-started/hello-sandbox/README.md) clean up.

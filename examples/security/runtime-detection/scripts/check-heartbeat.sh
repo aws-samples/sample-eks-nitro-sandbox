@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Check that a pod's in-guest detector is alive: find its latest heartbeat in CloudWatch Logs
 # and fail when there is none in the last MAX_AGE seconds. A detector that was killed or
-# blinded stops writing heartbeats, so silence is itself the alert.
+# stalled stops writing heartbeats, so silence is itself the alert. It does not catch a
+# detector whose audit rule was removed: that one keeps writing heartbeats.
 #
 #   scripts/check-heartbeat.sh <pod>   # e.g. app-sandboxed-detector
 #
@@ -20,7 +21,8 @@ MAX_AGE="${MAX_AGE:-180}"
 GROUP="/aws/containerinsights/$CLUSTER_NAME/application"
 
 now="$(date +%s)"
-pattern="{ (\$.kubernetes.namespace_name = \"$NAMESPACE\") && (\$.kubernetes.pod_name = \"$POD\") && (\$.log = \"*heartbeat*\") }"
+# Only the detector container's own heartbeat lines count, not a line any container prints.
+pattern="{ (\$.kubernetes.namespace_name = \"$NAMESPACE\") && (\$.kubernetes.pod_name = \"$POD\") && (\$.kubernetes.container_name = \"detector\") && (\$.log = \"*\\\"heartbeat\\\": true*\") }"
 # The CLI pages through the results, so take the latest timestamp across every page.
 stamps="$(aws logs filter-log-events --region "$REGION" --log-group-name "$GROUP" \
   --start-time "$(( (now - MAX_AGE) * 1000 ))" --filter-pattern "$pattern" \
