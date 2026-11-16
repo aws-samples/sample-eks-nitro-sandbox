@@ -14,29 +14,41 @@ require_commands kubectl sed grep
 show_context
 
 step "1/3 prerequisites, reused as they are"
-kc get runtimeclass isolated-sandbox >/dev/null 2>&1 \
+rtc="$(kc_read get runtimeclass isolated-sandbox --ignore-not-found -o name)" \
+  || die "could not read RuntimeClass isolated-sandbox, so it is not known whether Nitro sandboxes are set up"
+[[ -n "$rtc" ]] \
   || die "RuntimeClass isolated-sandbox not found. Finish Getting started first (see the home page prerequisites)."
+[[ "$rtc" == "runtimeclass.node.k8s.io/isolated-sandbox" ]] \
+  || die "unexpected answer for RuntimeClass isolated-sandbox: $rtc"
 
 # Istio itself: istiod must be running. The Istio CNI node agent and ambient mesh
 # would change how pods are injected for every workload on the cluster, and neither
 # works on Nitro sandboxes, so a cluster that has them is stopped on, not changed.
-istiod_ready=""; rc=0
-istiod_ready="$(kc -n "$ISTIO_NAMESPACE" get deployment istiod -o jsonpath='{.status.readyReplicas}' 2>&1)" || rc=$?
-if ((rc != 0)) && [[ "$istiod_ready" != *"(NotFound)"* || "$istiod_ready" != *"deployments.apps \"istiod\" not found"* ]]; then
-  die "could not read istiod in $ISTIO_NAMESPACE, so it is not known whether Istio is installed: $istiod_ready"
-fi
-((rc == 0)) || istiod_ready=""
-if [[ -z "$istiod_ready" || "$istiod_ready" == "0" ]]; then
-  die "Istio is not installed (no ready istiod in $ISTIO_NAMESPACE). Install it as the page's step 1 says:
+istiod="$(kc_read -n "$ISTIO_NAMESPACE" get deployment istiod --ignore-not-found \
+  -o 'jsonpath={.metadata.name}{"|"}{.status.readyReplicas}')" \
+  || die "could not read istiod in $ISTIO_NAMESPACE, so it is not known whether Istio is installed"
+if [[ -z "$istiod" ]]; then
+  die "Istio is not installed (no istiod in $ISTIO_NAMESPACE). Install it as the page's step 1 says:
   helm repo add istio https://istio-release.storage.googleapis.com/charts && helm repo update istio
   helm install istio-base istio/base -n $ISTIO_NAMESPACE --create-namespace --version 1.30.8 --wait
   helm install istiod istio/istiod -n $ISTIO_NAMESPACE --version 1.30.8 --wait"
 fi
-ds_list="$(kc -n "$ISTIO_NAMESPACE" get daemonset -o name 2>&1)" \
-  || die "could not list DaemonSets in $ISTIO_NAMESPACE, so it is not known whether Istio CNI or ztunnel is installed: $ds_list"
-daemonsets="$(printf '%s\n' "$ds_list" | grep -E 'istio-cni|ztunnel' || true)"
-[[ -z "$daemonsets" ]] \
-  || die "found $(echo "$daemonsets" | tr '\n' ' ')in $ISTIO_NAMESPACE. The Istio CNI plugin and ambient mesh do not work on Nitro sandboxes, and this blueprint uses the istio-init sidecar. Run it on a cluster whose Istio has neither; it will not change this one."
+[[ "$istiod" == "istiod|"* ]] || die "unexpected answer for deployment istiod: $istiod"
+ready="${istiod#istiod|}"
+[[ "$ready" =~ ^[1-9][0-9]*$ ]] \
+  || die "istiod is installed in $ISTIO_NAMESPACE but has no ready replicas (readyReplicas='$ready'). Fix the existing install; this blueprint does not change it."
+
+# The Istio CNI node agent and ztunnel, in any namespace, found by the labels their
+# Helm charts set (cni: k8s-app=istio-cni-node, ztunnel: app.kubernetes.io/name=ztunnel).
+found=""
+for sel in k8s-app=istio-cni-node app.kubernetes.io/name=ztunnel; do
+  ds="$(kc_read get daemonset -A -l "$sel" \
+    -o 'jsonpath={range .items[*]}{.metadata.namespace}/{.metadata.name} {end}')" \
+    || die "could not list DaemonSets with label $sel, so it is not known whether Istio CNI or ztunnel is installed"
+  found+="$ds"
+done
+[[ -z "$found" ]] \
+  || die "found DaemonSet ${found}on this cluster. The Istio CNI plugin and ambient mesh do not work on Nitro sandboxes, and this blueprint uses the istio-init sidecar. Run it on a cluster whose Istio has neither; it will not change this one."
 echo "istiod ready, no Istio CNI or ztunnel DaemonSet"
 
 step "2/3 namespace $NAMESPACE"

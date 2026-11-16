@@ -49,18 +49,24 @@ show_context() {
   echo "namespace:    $NAMESPACE"
 }
 
-# Prints the namespace's mark, or nothing when it has none. Returns 2 when the
-# namespace is absent and 1 when the lookup itself failed, so a failed lookup is
-# never read as "absent".
-namespace_mark() {
+# Runs kubectl and prints its stdout only. Its stderr goes to the terminal, never
+# into the value, so a warning cannot be read as data. Returns 1 when kubectl
+# fails. Lookups pass --ignore-not-found, so "absent" is a successful call with
+# empty output, and no error text is ever parsed to decide it.
+kc_read() {
   local out rc=0
-  out="$(kc get namespace "$NAMESPACE" -o "jsonpath={.metadata.labels.app\.kubernetes\.io/managed-by}" 2>&1)" || rc=$?
-  if ((rc != 0)); then
-    # Absent only when the server says this namespace is not found, not for any
-    # other error that happens to contain the word (a bad context, a missing API).
-    [[ "$out" == *"(NotFound)"* && "$out" == *"namespaces \"$NAMESPACE\" not found"* ]] && return 2
-    echo "$out" >&2
-    return 1
-  fi
+  out="$(kc "$@")" || rc=$?
+  ((rc == 0)) || return 1
   printf '%s' "$out"
+}
+
+# Prints the namespace's mark, or nothing when it has none. Returns 2 when the
+# namespace is absent and 1 when the lookup failed or answered for something else.
+namespace_mark() {
+  local out
+  out="$(kc_read get namespace "$NAMESPACE" --ignore-not-found \
+    -o "jsonpath={.metadata.name}{\"|\"}{.metadata.labels.app\.kubernetes\.io/managed-by}")" || return 1
+  [[ -n "$out" ]] || return 2
+  [[ "$out" == "$NAMESPACE|"* ]] || { echo "unexpected answer for namespace $NAMESPACE: $out" >&2; return 1; }
+  printf '%s' "${out#"$NAMESPACE|"}"
 }

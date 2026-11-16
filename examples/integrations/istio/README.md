@@ -93,8 +93,9 @@ DESCRIPTION: Install complete
 Abridged: the same lines print for `istiod`. Your timestamps will differ.
 
 If you run `./scripts/setup.sh` before this step, it stops and prints these commands. It
-also stops when it finds the Istio CNI plugin or `ztunnel` already installed, because those
-do not work with Nitro sandboxes and this blueprint does not change a shared install.
+also stops when it finds the Istio CNI plugin or `ztunnel` already installed in any
+namespace, by the labels their Helm charts set, because those do not work with Nitro
+sandboxes and this blueprint does not change a shared install.
 
 **Step 2: Create the namespace and the workloads.** The namespace carries
 `istio-injection: enabled`, which is the only thing that turns on Istio for the pods in it.
@@ -328,8 +329,10 @@ Both clients are in sandboxes and both have a valid mesh identity. The sidecar i
   states that and does not run them, so it shows no output for either. Ambient mesh support
   is on the roadmap for Nitro sandboxes, with no date. Install Istio as step 1 does, with
   `base` and `istiod` and nothing else, and use sidecars.
-- **`setup.sh` stops when it finds the Istio CNI plugin or `ztunnel` installed.** Those do
-  not work with Nitro sandboxes, and the script does not change a shared install.
+- **`setup.sh` stops when it finds the Istio CNI plugin or `ztunnel` installed.** It looks
+  in every namespace for the labels the Istio Helm charts set (`k8s-app=istio-cni-node` and
+  `app.kubernetes.io/name=ztunnel`), so an install made another way may not be found. Those
+  do not work with Nitro sandboxes, and the script does not change a shared install.
 - **Check traffic, not readiness.** A meshed pod shows `2/2` once its sidecar is up. Step 5
   and step 6 check the traffic itself.
 - **This blueprint tested HTTP on one port,** with one replica of each workload and IPv4
