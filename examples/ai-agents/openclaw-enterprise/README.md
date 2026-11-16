@@ -59,8 +59,9 @@ it:
   `/home/node/.openclaw` with one PVC-root mount at `/home/node/.openclaw`, so
   `client` remains a real directory. A follow-up init container creates
   relative aliases inside `/gateway-state` only when a mount path and target
-  differ. It rejects non-canonical mount paths below `/home/node`, including
-  paths with traversal segments.
+  differ. Before applying mount-specific checks, it rejects every volume mount
+  path that is not a canonical absolute path, including paths with repeated
+  separators or traversal segments.
 - Sets `automountServiceAccountToken: false` and removes standard
   auto-injected `kube-api-access-*` volumes and mounts. It preserves unrelated
   projected volumes and custom token mounts.

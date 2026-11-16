@@ -80,11 +80,12 @@ blocks matching pod creation and ephemeral-container updates. That is the
 intended sample posture, but it raises adapter availability from a convenience
 to a tenant scheduling dependency.
 
-The adapter also requires digest-pinned workload images, rejects non-empty
-`envFrom` and explicit unsafe loader or shell-bootstrap variables, and rejects
-mounts over trusted bootstrap paths. These controls narrow the reviewed
-compatibility boundary; they do not turn this sample into a general OCE
-security profile.
+The adapter also rejects every volume mount path that is not a canonical
+absolute path, including paths with repeated separators or traversal segments.
+It requires digest-pinned workload images, rejects non-empty `envFrom` and
+explicit unsafe loader or shell-bootstrap variables, and rejects mounts over
+trusted bootstrap paths. These controls narrow the reviewed compatibility
+boundary; they do not turn this sample into a general OCE security profile.
 
 If an immutable CA ConfigMap already exists, the script stops when its
 certificate differs. Recreate that ConfigMap only as a deliberate CA rotation.

@@ -446,13 +446,23 @@ class BuildPatchTests(unittest.TestCase):
         ):
             build_patch(pod)
 
-    def test_rejects_home_mount_path_traversal(self) -> None:
-        pod = target_pod()
-        pod["spec"]["containers"][-1]["volumeMounts"][1]["mountPath"] = (
-            "/home/node/../../gateway-state/arbitrary/leaf"
-        )
-        with self.assertRaisesRegex(AdmissionError, "unsafe home mount path"):
-            build_patch(pod)
+    def test_rejects_noncanonical_mount_paths(self) -> None:
+        for mount_path in (
+            "/home/node/../../gateway-state/arbitrary/leaf",
+            "/home//node/.openclaw/sessions",
+            "//home/node/.openclaw/sessions",
+            "home/node/.openclaw/sessions",
+        ):
+            with self.subTest(mount_path=mount_path):
+                pod = target_pod()
+                pod["spec"]["containers"][-1]["volumeMounts"][1]["mountPath"] = (
+                    mount_path
+                )
+                with self.assertRaisesRegex(
+                    AdmissionError,
+                    "(normalized absolute|absolute) path",
+                ):
+                    build_patch(pod)
 
     def test_rejects_prepare_private_state_mount_contract_drift(self) -> None:
         mutations = (
@@ -673,7 +683,8 @@ class BuildPatchTests(unittest.TestCase):
                     }
                 )
                 with self.assertRaisesRegex(
-                    AdmissionError, "(overlaps|duplicate) /tmp"
+                    AdmissionError,
+                    "((overlaps|duplicate) /tmp|normalized absolute path)",
                 ):
                     build_patch(pod)
 

@@ -167,6 +167,15 @@ def _safe_relative_path(value: Any, field: str) -> str:
     return value
 
 
+def _safe_absolute_mount_path(value: Any, field: str) -> str:
+    if not _is_nonempty_string(value) or not value.startswith("/"):
+        raise AdmissionError(f"{field} must be an absolute path")
+    canonical = "/" + posixpath.normpath("/" + value.lstrip("/")).lstrip("/")
+    if canonical != value:
+        raise AdmissionError(f"{field} must be a normalized absolute path")
+    return value
+
+
 def _container_groups(spec: dict[str, Any]) -> tuple[list[Any], list[Any]]:
     init_containers = spec.get("initContainers", [])
     containers = spec.get("containers")
@@ -626,15 +635,23 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     if reserved_volumes:
         raise AdmissionError(f"volume name {AGW_CA_VOLUME} is reserved")
 
-    all_mounts = [
-        mount
-        for group_name, group in (
-            ("spec.initContainers", init_containers),
-            ("spec.containers", containers),
-        )
-        for index, container in enumerate(group)
-        for mount in _mounts(container, f"{group_name}[{index}]")
-    ]
+    all_mounts: list[Any] = []
+    for group_name, group in (
+        ("spec.initContainers", init_containers),
+        ("spec.containers", containers),
+    ):
+        for index, container in enumerate(group):
+            location = f"{group_name}[{index}]"
+            for mount_index, mount in enumerate(_mounts(container, location)):
+                if not isinstance(mount, dict):
+                    raise AdmissionError(
+                        f"{location}.volumeMounts[{mount_index}] must be an object"
+                    )
+                _safe_absolute_mount_path(
+                    mount.get("mountPath"),
+                    f"{location}.volumeMounts[{mount_index}].mountPath",
+                )
+                all_mounts.append(mount)
     if any(
         isinstance(mount, dict) and mount.get("name") == AGW_CA_VOLUME
         for mount in all_mounts
