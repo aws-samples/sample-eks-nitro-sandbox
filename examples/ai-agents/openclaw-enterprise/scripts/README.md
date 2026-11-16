@@ -15,6 +15,8 @@ guarantee.
 - Install `kubectl`, `jq`, `sed`, `base64` and `cmp`.
 - Configure `kubectl` access to the target EKS Auto Mode cluster.
 - Deploy AgentGateway in `openclaw-enterprise-agw`.
+- Deploy the admission adapter with both digest-pinned images as described in
+  [`build/README.md`](../build/README.md#deploy-the-adapter).
 - Use an OCE tenant namespace labelled
   `app.kubernetes.io/managed-by=openclaw-enterprise`.
 
@@ -49,33 +51,40 @@ The script:
    immutable `agentgateway-ca` ConfigMap.
 5. Applies default-deny egress plus explicit DNS and AgentGateway egress.
 
-Baseline is required because the Nitro compatibility wrapper starts as UID and
-GID 0 with `allowPrivilegeEscalation: false` and only `CHOWN`, `SETUID`,
-`SETGID`, `SETPCAP`, `DAC_OVERRIDE`, and `FOWNER`. The latter two allow the
-wrapper to traverse and change the mapped state mount points. Restricted
-requires non-root execution and permits only `NET_BIND_SERVICE` to be added
-after dropping all capabilities.
+Baseline is required because the adapter-generated ownership init container
+starts as UID and GID 0 with `allowPrivilegeEscalation: false` and only `CHOWN`,
+`DAC_OVERRIDE`, and `FOWNER`. Restricted requires non-root execution and
+permits only `NET_BIND_SERVICE` to be added after dropping all capabilities.
 
 At runtime, the PVC root is mounted at `/home/node/.openclaw`, so `client` and
 the mapped target paths are real directories. The link init container creates
 a relative symlink inside `/gateway-state` only when a mount path differs from
 its target.
 
-The wrapper invokes `/bin/sh`, `/usr/bin/chmod`, `/usr/bin/chown` and
-`/usr/bin/setpriv` by absolute path. The adapter rejects mounts that overlap
-those trusted executables and requires the wrapped runtime image to use an
-exact `sha256` digest. It rejects non-empty `envFrom` and explicit `LD_*`,
-`GCONV_PATH`, or `GLIBC_TUNABLES` settings, then overrides known image-defined
-glibc loader variables with empty values before bootstrap. These controls keep
-the reviewed image stable and stop loader settings from changing what runs
-while the wrapper is root; they narrow the trust boundary rather than provide
-complete isolation. Permission repair fails closed: every `chmod` and `chown`
-must succeed before OCE starts. The wrapper repairs `/home/node`,
-`/home/node/.openclaw`, and each direct `/home/node/.openclaw/<target>` path
-rather than an alias symlink, then uses `setpriv` to run OCE as UID and GID
-1000 with no supplementary groups or capabilities. It does not recursively
-change persisted files. Review this short root bootstrap against your workload
-policy.
+The separately built ownership helper contains only BusyBox entry points for
+`/bin/sh`, `/bin/chown`, and `/bin/chmod`. The adapter takes its image from the
+mandatory `OCE_OWNERSHIP_INIT_IMAGE` setting and requires an exact digest that
+differs from the workload image. Permission repair fails closed: every
+directory check, `chmod`, and `chown` must succeed before OCE starts. The helper
+repairs `/home/node`, `/home/node/.openclaw`, and each direct
+`/home/node/.openclaw/<target>` path rather than an alias symlink. It does not
+recursively change persisted files. The unwrapped OCE command then starts as
+UID and GID 1000 with all capabilities dropped.
+
+The mutating webhook rejects ordinary runtime and sidecar containers that mount
+the `openclaw-gateway-state` PVC root at `/gateway-state`; only the expected
+init-container path and adapter-generated helpers receive that root. A separate
+validating webhook denies every ephemeral-container update in OCE-managed
+namespaces. Both webhooks use `failurePolicy: Fail`, so an unavailable adapter
+blocks matching pod creation and ephemeral-container updates. That is the
+intended sample posture, but it raises adapter availability from a convenience
+to a tenant scheduling dependency.
+
+The adapter also requires digest-pinned workload images, rejects non-empty
+`envFrom` and explicit unsafe loader or shell-bootstrap variables, and rejects
+mounts over trusted bootstrap paths. These controls narrow the reviewed
+compatibility boundary; they do not turn this sample into a general OCE
+security profile.
 
 If an immutable CA ConfigMap already exists, the script stops when its
 certificate differs. Recreate that ConfigMap only as a deliberate CA rotation.

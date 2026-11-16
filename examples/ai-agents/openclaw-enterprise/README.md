@@ -33,14 +33,16 @@ Do not present this sample as a completed OCE deployment until those checks pass
 
 ## Current design
 
-- The [admission adapter](adapter/) runs as the fail-closed webhook defined in
-  [`deploy/adapter-webhook.yaml`](deploy/adapter-webhook.yaml). The webhook
-  receives every Pod creation request in OCE-managed namespaces. The adapter
-  mutates `agent` and `gateway` workload roles and rejects unsupported pod
-  shapes.
-- The [CodeBuild source-build path](build/) builds the adapter and pinned OCE
-  controller and runtime source into private ECR repositories. It uses immutable
-  tags, image scanning and digest-qualified deployment references.
+- The [admission adapter](adapter/) runs as the two fail-closed webhooks defined
+  in [`deploy/adapter-webhook.yaml`](deploy/adapter-webhook.yaml). The mutating
+  webhook receives every Pod creation request in OCE-managed namespaces,
+  adapts `agent` and `gateway` workload roles, and rejects unsupported pod
+  shapes. The validating webhook denies every ephemeral-container update in
+  those namespaces.
+- The [CodeBuild source-build path](build/) builds the adapter, a separate
+  ownership helper, and pinned OCE controller and runtime source into four
+  private ECR repositories. It waits for image scans and exports
+  digest-qualified deployment references.
 - [`deploy/agentgateway.yaml`](deploy/agentgateway.yaml) exposes AgentGateway only
   as an HTTPS ClusterIP Service. AgentGateway validates tenant keys and obtains
   Amazon Bedrock credentials through EKS Pod Identity.
@@ -66,13 +68,22 @@ it:
   `runtime-temporary` mount at `/tmp`, requires a read-only root filesystem,
   and sets `TMPDIR=/dev/shm`. It rejects other mounts that overlap `/tmp` or
   `/dev/shm`.
-- Adds a dedicated privileged init container that repairs ownership and modes
-  before OpenClaw starts. Permission repair fails closed and is limited to
+- Adds a dedicated privileged init container from the separately configured
+  `OCE_OWNERSHIP_INIT_IMAGE`. The adapter requires an exact digest, rejects the
+  workload runtime image as the helper, and denies the pod when the setting is
+  absent or invalid. Permission repair fails closed and is limited to
   `/home/node`, `/home/node/.openclaw`, each direct mapped target below it, and
   `client/credentials.sqlite`.
 - Keeps the OpenClaw runtime at UID and GID 1000 with no privilege escalation
   and all Linux capabilities dropped. The runtime command never performs the
   privileged repair.
+- Rejects an ordinary runtime or sidecar container that mounts
+  `openclaw-gateway-state` at `/gateway-state`. Only the expected init-container
+  path and the adapter-generated helpers receive the PVC root.
+- Denies ephemeral containers through a separate validating webhook with
+  `failurePolicy: Fail`. This prevents a debug container from bypassing the
+  creation-time mutation; it also means an unavailable adapter blocks
+  ephemeral-container updates.
 - Requires exact `repository@sha256:<digest>` image references. The adapter
   rejects `envFrom` and explicit unsafe loader or shell-bootstrap variables on
   adapted runtime containers.
@@ -86,13 +97,17 @@ this workaround suits OpenClaw's small temporary control files, not large
 scratch data.
 
 Nitro also presents OCE's `/home/node` `subPath` mount as root-owned and
-group- and world-writable. The dedicated init container owns this narrow
-privileged trust boundary and exits before the OpenClaw runtime starts. It does
-not recursively rewrite persisted files. For
+group- and world-writable. The dedicated helper image contains only BusyBox
+entry points for `sh`, `chown`, and `chmod`. Its init container owns this narrow
+privileged trust boundary, runs with `CHOWN`, `DAC_OVERRIDE`, and `FOWNER`, and
+exits before the OpenClaw runtime starts. It does not recursively rewrite
+persisted files. For
 `/home/node/.openclaw/client/credentials.sqlite`, it refuses a symlink and
 restores UID and GID 1000 with mode `0600`, which OpenClaw requires after an
 `fsGroup` mount. Treat this init phase as an explicit compatibility trade-off,
-not complete process or tenant isolation.
+not complete process or tenant isolation. Keeping the helper separate avoids
+running ownership repair from the much larger workload image, but adds another
+image that operators must build, scan, pin, and deploy correctly.
 
 The tenant script renders the current AgentGateway ClusterIP as a `/32` alongside
 the namespace-and-pod selector. In the live EKS Auto Mode test, the generated
@@ -130,7 +145,7 @@ verification boundaries.
 |---|---|
 | [`adapter/`](adapter/) | Admission mutation logic, webhook server and unit tests. |
 | [`build/`](build/) | CodeBuild, ECR and source-build resources. |
-| [`deploy/adapter-webhook.yaml`](deploy/adapter-webhook.yaml) | Admission adapter deployment and `MutatingWebhookConfiguration`. |
+| [`deploy/adapter-webhook.yaml`](deploy/adapter-webhook.yaml) | Admission adapter deployment plus mutating and validating webhook configurations. |
 | [`deploy/agentgateway.yaml`](deploy/agentgateway.yaml) | Private AgentGateway, TLS, Service and ingress policy. |
 | [`deploy/tenant-model-gateway.yaml.tpl`](deploy/tenant-model-gateway.yaml.tpl) | Tenant default-deny and allowed egress policy template. |
 | [`scripts/configure-tenant-model-gateway.sh`](scripts/configure-tenant-model-gateway.sh) | Tenant CA and network-policy configuration. |
