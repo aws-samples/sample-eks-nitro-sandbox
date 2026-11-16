@@ -15,6 +15,7 @@ examples/
 │   └── warm-pool/
 ├── setup/
 │   ├── ubuntu-ami/
+│   ├── al2023-ami/
 │   └── cilium-ubuntu/
 ├── isolation/
 │   ├── network-policy/
@@ -88,6 +89,14 @@ for an existing cluster, not creating or managing the cluster itself.
   checksum-pinned, with no public download. Validated end to end on a live cluster; whether
   that archive meets the spec's public-input criterion is waiting on the maintainers. Spec:
   [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10).
+- [al2023-ami](../examples/setup/al2023-ami/README.md): build a custom Amazon Linux 2023 node
+  AMI for EKS Pod Isolation with the upstream `amazon-eks-ami` Packer flow
+  (`enable_pod_isolation=true`), and add it to an existing standard (non-Auto-Mode) cluster two
+  ways: a Karpenter `EC2NodeClass` and a managed node group, each enabling Nitro via the enclave
+  option on the launch template. The node-group path and the AMI build are proved live; the
+  Karpenter path provisions the enclave node but cannot yet schedule a sandbox pod on self-managed
+  Karpenter ([aws/karpenter-provider-aws#9904](https://github.com/aws/karpenter-provider-aws/issues/9904)).
+  Spec: [#231](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/231).
 - [cilium-ubuntu](../examples/setup/cilium-ubuntu/README.md) (available now): a dedicated
   disposable cluster with Cilium as the only CNI, in ENI mode with kube-proxy replacement, and
   the two Ubuntu node groups (system and sandbox) from `ubuntu-ami` above joining it. Spec: [#11](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/11).
