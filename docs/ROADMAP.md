@@ -101,7 +101,7 @@ for an existing cluster, not creating or managing the cluster itself.
 
 ### Security (`security`)
 
-- [runtime-detection](../examples/security/runtime-detection/README.md) (available now): which runtime security tools go blind to a sandboxed pod (Falco and Tetragon on the node, GuardDuty Runtime Monitoring), the first two shown side by side with an ordinary pod and GuardDuty cited from the User Guide, and an audit-based detector inside the guest whose alerts reach CloudWatch Logs through stdout. Spec: [#250](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/250).
+- [runtime-detection](../examples/security/runtime-detection/README.md) (available now): which runtime security tools go blind to a sandboxed pod (Falco and Tetragon on the node, GuardDuty Runtime Monitoring), the first two shown side by side with an ordinary pod and GuardDuty in an optional stage, and an audit-based detector inside the guest whose alerts reach CloudWatch Logs through stdout. Spec: [#250](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/250).
 
 ### Policy (`policy`)
 

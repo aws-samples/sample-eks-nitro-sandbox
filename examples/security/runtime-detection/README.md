@@ -76,9 +76,9 @@ Tetragon has no alert rules of its own: it logs every process start, and
 [`deploy/tetragon-policy.yaml`](deploy/tetragon-policy.yaml) adds a kernel probe event for a read
 of `/etc/shadow` and one for each outbound TCP connection, so every test event leaves a record.
 
-GuardDuty Runtime Monitoring has finding types for the same kinds of behaviour. This blueprint
-did not run GuardDuty (see [GuardDuty](#guardduty-optional-not-run-here)), so it names no
-finding type it did not see raised.
+The optional [GuardDuty stage](#optional-guardduty-runtime-monitoring) adds a fifth event: a DNS
+lookup of `guarddutyc2activityb.com`, the domain GuardDuty documents for testing its
+`C&CActivity.B!DNS` findings. The lookup sends a DNS query and connects to nothing.
 
 ## Versions
 
@@ -88,7 +88,7 @@ finding type it did not see raised.
 | Falco rules | `falco-rules:5.0.0`, installed once by the chart's `falcoctl` (set in `falco-values.yaml`) | 5.0.0 |
 | [Tetragon Helm chart](https://github.com/cilium/tetragon/tree/main/install/kubernetes/tetragon) | `cilium/tetragon` chart `1.8.0` (Tetragon `v1.8.0`) | 1.8.0 |
 | App and detector image ([`python`](https://gallery.ecr.aws/docker/library/python)) | `public.ecr.aws/docker/library/python:3.12-slim` | 3.12-slim |
-| GuardDuty EKS runtime monitoring add-on | Not used: see [GuardDuty](#guardduty-optional-not-run-here) | |
+| GuardDuty EKS runtime monitoring add-on (`aws-guardduty-agent`), optional stage only | `v1.17.3-eksbuild.2` | v1.17.3-eksbuild.2 (the default for Kubernetes 1.36) |
 
 The in-guest detector is a single Python file using the standard library only.
 
@@ -496,14 +496,109 @@ from them. This blueprint did not test them; each is described by its own docume
 - **VPC Flow Logs**, recorded outside the instance.
 - **Amazon Inspector** image scans in Amazon ECR, which look at the image before it runs.
 
-## GuardDuty (optional, not run here)
+## Optional: GuardDuty Runtime Monitoring
 
-GuardDuty Runtime Monitoring and EKS Protection are billed per account, so this blueprint does not
-turn them on, and Falco and Tetragon above run at no extra AWS cost. The User Guide states the gap
-for GuardDuty Runtime Monitoring: its agent "cannot monitor activity inside isolated or
-confidential pods", because it inspects host processes and cgroups
-([GuardDuty integration](https://docs.aws.amazon.com/eks/latest/userguide/integration-guardduty.html)).
-This page reports no GuardDuty result of its own.
+GuardDuty Runtime Monitoring is billed per account, so this stage is optional: every stage above
+runs without it at no extra AWS cost. The User Guide states the gap: the GuardDuty agent "cannot
+monitor activity inside isolated or confidential pods", because it inspects host processes and
+cgroups ([GuardDuty integration](https://docs.aws.amazon.com/eks/latest/userguide/integration-guardduty.html)).
+This stage shows it with the same control as above. It needs only the two app pods from step 2,
+not Falco, Tetragon or the detector.
+
+Runtime Monitoring is an account-wide setting in a Region, so agree it with whoever owns the
+account. Before you start, record how the detector is set, so you can put it back exactly:
+
+```bash
+DETECTOR_ID=$(aws guardduty list-detectors --region "$AWS_REGION" --query 'DetectorIds[0]' --output text)
+aws guardduty get-detector --region "$AWS_REGION" --detector-id "$DETECTOR_ID" \
+  --query "Features[?Name=='RUNTIME_MONITORING']"
+```
+
+**Step G1: Turn on Runtime Monitoring for this cluster only.** Keep automated agent management
+off, so GuardDuty installs nothing on other clusters, and install the agent add-on on this cluster
+yourself. With management off, the agent needs an interface VPC endpoint for
+`com.amazonaws.<region>.guardduty-data` in the cluster's VPC, with private DNS and a security
+group that allows TCP 443 from the VPC; create both, tagged `ManagedBy=runtime-detection`, as the
+GuardDuty User Guide's *Managing the security agent manually for Amazon EKS* says.
+
+```bash
+aws guardduty update-detector --region "$AWS_REGION" --detector-id "$DETECTOR_ID" --features \
+  '[{"Name":"RUNTIME_MONITORING","Status":"ENABLED","AdditionalConfiguration":[
+     {"Name":"EKS_ADDON_MANAGEMENT","Status":"DISABLED"},
+     {"Name":"ECS_FARGATE_AGENT_MANAGEMENT","Status":"DISABLED"},
+     {"Name":"EC2_AGENT_MANAGEMENT","Status":"DISABLED"}]}]'
+aws eks create-addon --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" \
+  --addon-name aws-guardduty-agent --addon-version v1.17.3-eksbuild.2 \
+  --tags ManagedBy=runtime-detection
+```
+
+On the test cluster the agent pods were running within a minute, and GuardDuty's coverage report
+(`aws guardduty list-coverage`) showed the cluster `HEALTHY`, 3 nodes covered, management type
+`MANUAL`.
+
+**Step G2: Run the events and the test domain lookup in both pods.**
+
+```bash
+for p in app-standard app-sandboxed; do
+  scripts/trigger-events.sh "$p"
+  for i in 1 2 3; do
+    kubectl -n "$NAMESPACE" exec "$p" -c app -- python3 -c 'import socket
+try: socket.gethostbyname("guarddutyc2activityb.com")
+except OSError: pass'
+  done
+done
+```
+
+**Step G3: Read the findings for this cluster.**
+
+```bash
+ids=$(aws guardduty list-findings --region "$AWS_REGION" --detector-id "$DETECTOR_ID" \
+  --finding-criteria '{"Criterion":{"resource.eksClusterDetails.name":{"Equals":["'"$CLUSTER_NAME"'"]}}}' \
+  --query FindingIds --output text)
+aws guardduty get-findings --region "$AWS_REGION" --detector-id "$DETECTOR_ID" --finding-ids $ids \
+  --query 'Findings[].[CreatedAt,Type,Resource.KubernetesDetails.KubernetesWorkloadDetails.Name,Service.RuntimeDetails.Process.Name]' \
+  --output text
+```
+
+The run's findings, one line each: time, type, severity, the workload the finding names, the
+process (printed by a helper in `tmp/` with the same fields):
+
+```text
+2026-11-16T21:52:49.242Z Backdoor:Runtime/C&CActivity.B!DNS sev=8.0 workload=runtime-detection-i250/app-standard process=python3 count=6
+2026-11-16T21:52:49.242Z Backdoor:Runtime/C&CActivity.B!DNS sev=8.0 workload=None/None process=coredns count=2
+2026-11-16T21:52:49.243Z Backdoor:Runtime/C&CActivity.B!DNS sev=8.0 workload=None/None process=systemd-resolve count=2
+```
+
+These appeared about three minutes after a second round of events, run at 21:50 UTC, 17 minutes
+after the agent started. A first round, one minute after the agent started, had raised no runtime
+finding by then.
+
+- **The ordinary pod is named.** The agent saw `python3` in `app-standard` query the test domain.
+- **The sandboxed pod is not.** No finding names `app-sandboxed`. Its query left the sandbox to the
+  node's own DNS resolvers, `coredns` and `systemd-resolved`, which the agent sees as processes on
+  the node, outside any pod; those two findings name the node instance and do not say which pod
+  sent the query.
+- **The other four test events raised no GuardDuty runtime finding in this run**, from either pod.
+
+GuardDuty's DNS logs, which do not use the agent, also raised `Backdoor:EC2/C&CActivity.B!DNS` for
+the domain, on the node instance both pods ran on. It names the instance, not a pod.
+
+**Step G4: Turn it off again.** Delete the add-on, set `RUNTIME_MONITORING` back to what you
+recorded (here, off), and delete the endpoint and its security group in the console or with the
+AWS CLI:
+
+```bash
+aws eks delete-addon --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --addon-name aws-guardduty-agent
+aws guardduty update-detector --region "$AWS_REGION" --detector-id "$DETECTOR_ID" --features \
+  '[{"Name":"RUNTIME_MONITORING","Status":"DISABLED","AdditionalConfiguration":[
+     {"Name":"EKS_ADDON_MANAGEMENT","Status":"DISABLED"},
+     {"Name":"ECS_FARGATE_AGENT_MANAGEMENT","Status":"DISABLED"},
+     {"Name":"EC2_AGENT_MANAGEMENT","Status":"DISABLED"}]}]'
+```
+
+The add-on leaves an empty `amazon-guardduty` namespace; delete it too. Then read the detector
+again and compare it with what you recorded. On the test account Runtime Monitoring was on for 28
+minutes, and afterwards every detector feature read back as before, with EKS Protection left on.
 
 ## Confidential pods
 
@@ -533,7 +628,6 @@ kubectl delete crd tracingpolicies.cilium.io tracingpoliciesnamespaced.cilium.io
 ```
 
 If you installed the Amazon CloudWatch Observability add-on only for this blueprint, remove it as
-its guide says. This blueprint changes no GuardDuty setting, so there is nothing to turn back
-off. Deleting the
+its guide says. If you ran the optional GuardDuty stage, its step G4 turns it off. Deleting the
 cluster removes everything; see the
 [hello sandbox](../../getting-started/hello-sandbox/README.md) clean up.
