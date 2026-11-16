@@ -445,8 +445,8 @@ The first and last lines are the accept cases: without them a profile that denie
 everything would read the same as one that confines correctly.
 
 Two things make the refusals attributable rather than incidental. The supplier key file is
-mode 0440 and group-owned by the group the pod runs as, so the controller — running as
-that same uid 1000 — reads it in this very run, which is how the run compares the role's
+mode 0440 and group-owned by the group the pod runs as, so the controller, running as
+that same uid 10001, reads it in this very run, which is how the run compares the role's
 placeholder against the real key. And the worker reports only `EACCES` or `EPERM` as a
 refusal; any other failure leaves no result line and fails the run.
 
@@ -763,7 +763,7 @@ pattern to copy.
   for the online roles, the request goes through nono's proxy, which decides on the host and
   then on the method and path. The run shows a role refused a direct connection to the
   supplier API's own address, so that probe did not get out of the process by dialling the
-  IP. What the run shows is that one refusal, for a role at uid 1000 making an IPv4 TCP
+  IP. What the run shows is that one refusal, for a role at uid 10001 making an IPv4 TCP
   connection to the resolved Service address. It is not a demonstration that the proxy
   cannot be routed around by any process or any other means.
 - **It does not bound the pod.** The analyst pod has no network policy in this blueprint, so the
@@ -795,7 +795,7 @@ pattern to copy.
 - **The negative controls are what make the refusals mean something.** The supplier API
   accepts an authenticated purchase order, and the alias Service reaches the same pod the
   approved one does. Without those, a refusal could be the server's doing or a broken route.
-- **The pod is hardened, and nono still works under it.** The pod runs as uid 1000 with
+- **The pod is hardened, and nono still works under it.** The pod runs as uid 10001 with
   `runAsNonRoot`, `seccompProfile: RuntimeDefault`, every capability dropped,
   `allowPrivilegeEscalation: false`, a read-only root filesystem and
   `automountServiceAccountToken: false`. nono's controls are Landlock and seccomp, which
