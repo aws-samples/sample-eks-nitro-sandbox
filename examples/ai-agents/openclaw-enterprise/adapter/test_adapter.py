@@ -13,6 +13,7 @@ from adapter import (
     HOME_WRAPPER_NAME,
     LINK_INIT_NAME,
     NODE_CA_ENV,
+    OPENCLAW_HOME_PATH,
     SHM_MOUNT_PATH,
     TMP_MOUNT_PATH,
     RUNTIME_TMP_VOLUME,
@@ -273,11 +274,11 @@ class BuildPatchTests(unittest.TestCase):
             },
         )
         wrapper_script = gateway["command"][2]
-        self.assertIn('chown 1000:1000 "$path"', wrapper_script)
-        self.assertIn('chmod 0700 "$path"', wrapper_script)
+        self.assertIn('/usr/bin/chown 1000:1000 -- "$path" || exit 1', wrapper_script)
+        self.assertIn('/usr/bin/chmod 0700 -- "$path" || exit 1', wrapper_script)
         self.assertIn(HOME_MOUNT_PATH, wrapper_script)
-        self.assertIn("/home/node/.openclaw/agents", wrapper_script)
-        self.assertIn("/home/node/.openclaw/sessions", wrapper_script)
+        self.assertIn(f"{OPENCLAW_HOME_PATH}/agents", wrapper_script)
+        self.assertIn(f"{OPENCLAW_HOME_PATH}/sessions", wrapper_script)
         self.assertIn("--bounding-set=-all", wrapper_script)
 
     def test_rejects_runtime_without_safe_drop_privilege_contract(self) -> None:
@@ -405,6 +406,26 @@ class BuildPatchTests(unittest.TestCase):
         with self.assertRaisesRegex(AdmissionError, "/dev/shm"):
             build_patch(pod)
 
+    def test_rejects_mounts_over_trusted_bootstrap_executables(self) -> None:
+        for mount_path in (
+            "/bin",
+            "/bin/sh",
+            "/usr",
+            "/usr/bin",
+            "/usr/bin/chmod",
+            "/usr/bin/chown",
+            "/usr/bin/setpriv",
+        ):
+            with self.subTest(mount_path=mount_path):
+                pod = target_pod()
+                pod["spec"]["containers"][-1]["volumeMounts"].append(
+                    {"name": "workspace", "mountPath": mount_path}
+                )
+                with self.assertRaisesRegex(
+                    AdmissionError, "trusted bootstrap path"
+                ):
+                    build_patch(pod)
+
     def test_requires_read_only_root_filesystem(self) -> None:
         pod = target_pod()
         pod["spec"]["containers"][-1]["securityContext"] = {}
@@ -490,7 +511,7 @@ class BuildPatchTests(unittest.TestCase):
             [
                 {
                     "name": "openclaw-gateway-state",
-                    "mountPath": "/gateway-state",
+                    "mountPath": OPENCLAW_HOME_PATH,
                 }
             ],
         )
@@ -524,6 +545,8 @@ class BuildPatchTests(unittest.TestCase):
         )
         link_init = spec["initContainers"][prep_index + 1]
         self.assertEqual(link_init["name"], LINK_INIT_NAME)
+        self.assertIn("if (item.link === item.target) continue", link_init["args"][0])
+        self.assertIn("path.posix.relative", link_init["args"][0])
         self.assertEqual(
             [mount["name"] for mount in link_init["volumeMounts"]],
             ["runtime-state", "openclaw-gateway-state"],
@@ -531,8 +554,8 @@ class BuildPatchTests(unittest.TestCase):
         self.assertEqual(
             json.loads(link_init["env"][0]["value"]),
             [
-                {"link": ".openclaw/agents", "target": "agents"},
-                {"link": ".openclaw/sessions", "target": "sessions"},
+                {"link": "agents", "target": "agents"},
+                {"link": "sessions", "target": "sessions"},
             ],
         )
 
@@ -577,6 +600,24 @@ class BuildPatchTests(unittest.TestCase):
         mount.pop("subPath")
         mount["subPathExpr"] = "$(TENANT)/sessions"
         with self.assertRaisesRegex(AdmissionError, "subPathExpr"):
+            build_patch(pod)
+
+    def test_rejects_state_subpath_on_init_container(self) -> None:
+        pod = target_pod()
+        pod["spec"]["initContainers"].append(
+            {
+                "name": "later-state-user",
+                "image": "example.invalid/init:latest",
+                "volumeMounts": [
+                    {
+                        "name": "openclaw-gateway-state",
+                        "mountPath": "/home/node/.openclaw/client",
+                        "subPath": "client",
+                    }
+                ],
+            }
+        )
+        with self.assertRaisesRegex(AdmissionError, "init mounts are not supported"):
             build_patch(pod)
 
     def test_rejects_unsafe_or_conflicting_target_shapes(self) -> None:

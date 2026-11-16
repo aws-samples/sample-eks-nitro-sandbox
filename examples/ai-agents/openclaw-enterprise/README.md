@@ -52,7 +52,10 @@ it:
 
 - Selects the `isolated-sandbox` runtime class.
 - Replaces OCE `openclaw-gateway-state` PVC `subPath` mounts below
-  `/home/node` with one `/gateway-state` mount and init-created symlinks.
+  `/home/node/.openclaw` with one PVC-root mount at `/home/node/.openclaw`, so
+  `client` remains a real directory. A follow-up init container creates
+  relative aliases inside `/gateway-state` only when a mount path and target
+  differ.
 - Sets `automountServiceAccountToken: false` and removes standard
   auto-injected `kube-api-access-*` volumes and mounts. It preserves unrelated
   projected volumes and custom token mounts.
@@ -62,10 +65,13 @@ it:
   and sets `TMPDIR=/dev/shm`. It rejects other mounts that overlap `/tmp` or
   `/dev/shm`.
 - Starts the gateway through a minimal wrapper as UID and GID 0. The wrapper
-  removes group and world access from `/home/node` and each mapped persistent
-  state directory, assigns their mount points to `1000:1000`, then runs OCE's
-  original command as UID and GID 1000 with no supplementary groups or
-  capabilities.
+  invokes `/bin/sh`, `/usr/bin/chmod`, `/usr/bin/chown` and `/usr/bin/setpriv`
+  by absolute path, and the adapter rejects mounts that overlap those trusted
+  executables. Permission repair fails closed: every `chmod` and `chown` must
+  succeed before OCE starts. The wrapper repairs `/home/node`,
+  `/home/node/.openclaw`, and each direct
+  `/home/node/.openclaw/<target>` path, then runs OCE's original command as UID
+  and GID 1000 with no supplementary groups or capabilities.
 
 Nitro presents OCE's `/tmp` `subPath` mount as group- and world-writable without
 the sticky bit, which OpenClaw's secure temporary-directory check rejects. The
@@ -87,8 +93,10 @@ baseline and keeps restricted in audit and warning mode.
 The wrapper uses `setpriv` to change to UID and GID 1000, clear supplementary
 groups, and empty the bounding, inheritable, and ambient capability sets. The
 UID transition also clears the effective and permitted sets before OCE starts.
-The ownership changes apply only to the mapped directory mount points; they do
-not recursively rewrite persisted files. Treat this short root bootstrap as an
+The ownership changes apply only to `/home/node`, `/home/node/.openclaw`, and
+the mapped target directories below it. Repairs address each direct
+`/home/node/.openclaw/<target>` path rather than an alias symlink, and do not
+recursively rewrite persisted files. Treat this short root bootstrap as an
 explicit compatibility trade-off until OCE and Nitro Pods expose a native
 storage contract.
 

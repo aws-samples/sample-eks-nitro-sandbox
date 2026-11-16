@@ -16,7 +16,7 @@ RUNTIME_TMP_VOLUME = "runtime-temporary"
 DEDICATED_WORKSPACE_VOLUME = "openclaw-workspace"
 STATE_ROOT = "/gateway-state"
 RUNTIME_ROOT = "/runtime-state"
-HOME_ROOT = "/home/node/"
+OPENCLAW_HOME_PATH = "/home/node/.openclaw"
 LINK_INIT_NAME = "nitro-link-gateway-state"
 AGW_CA_VOLUME = "agentgateway-ca"
 AGW_CA_CONFIG_MAP = "agentgateway-ca"
@@ -32,13 +32,20 @@ RUNTIME_UID = 1000
 RUNTIME_GID = 1000
 HOME_MOUNT_PATH = "/home/node"
 HOME_WRAPPER_NAME = "nitro-home-setup"
+TRUSTED_BOOTSTRAP_PATHS = (
+    "/bin/sh",
+    "/usr/bin/chmod",
+    "/usr/bin/chown",
+    "/usr/bin/setpriv",
+)
 
 LINK_SCRIPT = r"""
 const fs = require("node:fs");
 const path = require("node:path");
 const links = JSON.parse(process.env.OCE_STATE_LINKS || "[]");
 for (const item of links) {
-  const link = path.posix.join("/runtime-state/home", item.link);
+  if (item.link === item.target) continue;
+  const link = path.posix.join("/gateway-state", item.link);
   const target = path.posix.join("/gateway-state", item.target);
   fs.mkdirSync(path.posix.dirname(link), {recursive: true});
   let current;
@@ -48,8 +55,11 @@ for (const item of links) {
     if (error.code !== "ENOENT") throw error;
   }
   if (current === undefined) {
-    fs.symlinkSync(target, link);
-  } else if (!current.isSymbolicLink() || fs.readlinkSync(link) !== target) {
+    fs.symlinkSync(path.posix.relative(path.posix.dirname(link), target), link);
+  } else if (
+    !current.isSymbolicLink() ||
+    path.posix.resolve(path.posix.dirname(link), fs.readlinkSync(link)) !== target
+  ) {
     throw new Error(`refusing to replace ${link}`);
   }
 }
@@ -182,8 +192,9 @@ def _runtime_wrapper(
     quoted_paths = " ".join(shlex.quote(path) for path in private_paths)
     wrapper_script = (
         f"for path in {quoted_paths}; do "
-        f'chmod 0700 "$path" && chown {RUNTIME_UID}:{RUNTIME_GID} "$path"; '
-        "done && "
+        f'/usr/bin/chmod 0700 -- "$path" || exit 1; '
+        f'/usr/bin/chown {RUNTIME_UID}:{RUNTIME_GID} -- "$path" || exit 1; '
+        "done; "
         f'exec /usr/bin/setpriv --reuid={RUNTIME_UID} --regid={RUNTIME_GID} '
         "--clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all "
         '-- "$@"'
@@ -452,19 +463,21 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                     rewritten.append(copy.deepcopy(mount))
                     continue
 
-                if group_name == "initContainers" and index <= prep_index:
+                if group_name == "initContainers":
                     raise AdmissionError(
-                        f"{STATE_VOLUME} subPath init mounts must run after prepare-private-state"
+                        f"{STATE_VOLUME} subPath init mounts are not supported"
                     )
                 mount_path = mount.get("mountPath")
+                state_home_root = f"{OPENCLAW_HOME_PATH}/"
                 if not _is_nonempty_string(mount_path) or not mount_path.startswith(
-                    HOME_ROOT
+                    state_home_root
                 ):
                     raise AdmissionError(
-                        f"{STATE_VOLUME} subPath mounts must be below {HOME_ROOT}"
+                        f"{STATE_VOLUME} subPath mounts must be below {state_home_root}"
                     )
                 link = _safe_relative_path(
-                    mount_path.removeprefix(HOME_ROOT), "gateway-state mountPath"
+                    mount_path.removeprefix(state_home_root),
+                    "gateway-state mountPath",
                 )
                 target = _safe_relative_path(
                     mount.get("subPath"), "gateway-state subPath"
@@ -483,7 +496,10 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
             if state_affected:
                 if state_root_count == 0:
                     rewritten.append(
-                        {"name": STATE_VOLUME, "mountPath": STATE_ROOT}
+                        {
+                            "name": STATE_VOLUME,
+                            "mountPath": OPENCLAW_HOME_PATH,
+                        }
                     )
                 if group_name == "containers":
                     if any(
@@ -539,6 +555,17 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                         raise AdmissionError(
                             f"spec.{group_name}[{index}] has a mount that overlaps {SHM_MOUNT_PATH}"
                         )
+                    for trusted_path in TRUSTED_BOOTSTRAP_PATHS:
+                        if any(
+                            _mount_paths_overlap(
+                                mount.get("mountPath"), trusted_path
+                            )
+                            for mount in rewritten
+                        ):
+                            raise AdmissionError(
+                                f"spec.{group_name}[{index}] has a mount that "
+                                f"overlaps trusted bootstrap path {trusted_path}"
+                            )
                     location = f"spec.{group_name}[{index}]"
                     wrapped_command, wrapped_arguments, wrapped_security = (
                         _runtime_wrapper(
@@ -546,9 +573,10 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                             location,
                             [
                                 HOME_MOUNT_PATH,
+                                OPENCLAW_HOME_PATH,
                                 *[
-                                    f"{HOME_MOUNT_PATH}/{link}"
-                                    for link in sorted(links)
+                                    f"{OPENCLAW_HOME_PATH}/{target}"
+                                    for target in sorted(set(links.values()))
                                 ],
                             ],
                         )

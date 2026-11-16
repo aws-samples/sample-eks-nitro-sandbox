@@ -56,11 +56,20 @@ wrapper to traverse and change the mapped state mount points. Restricted
 requires non-root execution and permits only `NET_BIND_SERVICE` to be added
 after dropping all capabilities.
 
-The wrapper removes group and world access from `/home/node` and each mapped
-persistent state directory, changes those mount points to ownership `1000:1000`,
-then uses `setpriv` to run OCE as UID and GID 1000 with no supplementary groups
-or capabilities. It does not recursively change persisted files. Review this
-short root bootstrap against your workload policy.
+At runtime, the PVC root is mounted at `/home/node/.openclaw`, so `client` and
+the mapped target paths are real directories. The link init container creates
+a relative symlink inside `/gateway-state` only when a mount path differs from
+its target.
+
+The wrapper invokes `/bin/sh`, `/usr/bin/chmod`, `/usr/bin/chown` and
+`/usr/bin/setpriv` by absolute path. The adapter rejects mounts that overlap
+those trusted executables. Permission repair fails closed: every `chmod` and
+`chown` must succeed before OCE starts. The wrapper repairs `/home/node`,
+`/home/node/.openclaw`, and each direct `/home/node/.openclaw/<target>` path
+rather than an alias symlink, then uses `setpriv` to run OCE as UID and GID
+1000 with no supplementary groups or capabilities. It does not recursively
+change persisted files. Review this short root bootstrap against your workload
+policy.
 
 If an immutable CA ConfigMap already exists, the script stops when its
 certificate differs. Recreate that ConfigMap only as a deliberate CA rotation.
