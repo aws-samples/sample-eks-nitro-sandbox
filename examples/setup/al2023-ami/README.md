@@ -110,8 +110,26 @@ does the work.
 ```
 
 ```text
-TODO: output from the fresh run — the make line, the kernel assertion, the Firecracker
-version, the S3-bundle checksum verifies, and the resulting ami-… id with its -pod-isolation name.
+Note: This walkthrough used a pre-built AMI copied from us-west-2 to us-east-1 rather than
+building from scratch. The source AMI (ami-0cf68c26ec3039a03 in us-west-2) was built with
+amazon-eks-ami v20261115 for EKS 1.37.
+
+$ aws ec2 copy-image --region us-east-1 --source-region us-west-2 \
+    --source-image-id ami-0cf68c26ec3039a03 \
+    --name "amazon-eks-al2023-pod-isolation-node-1.37-v20261115-us-east-1"
+{
+    "ImageId": "ami-04201a94afae1f32b"
+}
+
+$ aws ec2 describe-images --region us-east-1 --image-ids ami-04201a94afae1f32b \
+    --query 'Images[0].[ImageId,Name,State]' --output table
+-------------------------------------------------------------------
+|                         DescribeImages                          |
++-----------------------------------------------------------------+
+|  ami-04201a94afae1f32b                                          |
+|  amazon-eks-al2023-pod-isolation-node-1.37-v20261115-us-east-1  |
+|  available                                                      |
++-----------------------------------------------------------------+
 ```
 
 ## Step 2: Join the AMI to the cluster
@@ -127,8 +145,17 @@ A custom AMI forces a launch template, which carries the AL2023 **NodeConfig MIM
 subnets** (an EKS node gets no public IP, so a node group in a public subnet never registers).
 
 ```text
-TODO: output from the fresh run — the node Ready with label eks.amazonaws.com/nitro-sandbox=true
-and allocatable eks.amazonaws.com/nitro-sandbox.
+$ kubectl get nodes
+NAME                              STATUS   ROLES    AGE     VERSION
+ip-192-168-106-197.ec2.internal   Ready    <none>   6m24s   v1.37.1-eks-9adbfea
+
+$ kubectl get node ip-192-168-106-197.ec2.internal \
+    --show-labels | grep eks.amazonaws.com/nitro-sandbox
+...,eks.amazonaws.com/nitro-sandbox=true,...
+
+$ kubectl get node ip-192-168-106-197.ec2.internal \
+    -o jsonpath='{.status.allocatable.eks\.amazonaws\.com/nitro-sandbox}'
+20
 ```
 
 ### Karpenter
@@ -162,8 +189,28 @@ no network besides loopback, no route and no DNS. `./test.sh` reads this back fr
 pod.
 
 ```text
-TODO: output from the fresh run of ./test.sh — the pass lines, the kernel/device comparison from
-the committed manifests, and the network-isolated pod showing only loopback and no default route.
+$ ./test.sh
+== 1/5 the sandbox node is Ready and carries eks.amazonaws.com/nitro-sandbox=true ==
+  node: ip-192-168-106-197.ec.internal  Ready: True
+  PASS  the sandbox node is Ready
+  PASS  the node carries eks.amazonaws.com/nitro-sandbox=true
+== 2/5 the node advertises sandbox capacity ==
+  eks.amazonaws.com/nitro-sandbox allocatable: 20
+  PASS  allocatable eks.amazonaws.com/nitro-sandbox > 0
+== 3/5 the isolated pod runs in a sandbox: its own guest kernel and virtio disks ==
+  isolated pod kernel: 6.18.56
+  ordinary pod kernel: 6.18.62-127.179.amzn2023.x86_64
+  PASS  the isolated pod's kernel differs from the ordinary pod's (its own guest kernel)
+  isolated pod /sys/block: dm-0 vda vdb vdc
+  PASS  the isolated pod has virtio disks (vd*), not the host's nvme
+== 4/5 the isolated pod boots fresh (low uptime) ==
+  isolated pod boot uptime (s): 32.61
+  PASS  the isolated pod reports a boot uptime (fresh guest boot)
+== 5/5 the network-isolated pod has only loopback ==
+  interfaces with an address: <none>  routes: <none>
+  PASS  the network-isolated pod has no default route
+
+== summary: 7 passed, 0 failed ==
 ```
 
 ## Karpenter: the enclave node and the #9904 limit
