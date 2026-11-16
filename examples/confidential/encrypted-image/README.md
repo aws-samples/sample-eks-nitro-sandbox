@@ -272,7 +272,7 @@ this for every layer, which is the "wrapped with this key" line in its output.
 pull, confirm the bytes are the ones the descriptor names, and then try to treat them as
 the gzipped tar the media type claims. The download URL works for anyone who holds it, so
 the block keeps it out of `curl`'s command line, where other processes on your machine can
-read it, and deletes it when the block ends, whether the download worked or failed. The
+read it, and an EXIT trap deletes it when the block finishes or a command in it fails. The
 download goes to the repository's `tmp/`, beside the run files `setup.sh` writes:
 
 ```bash
@@ -286,8 +286,8 @@ download goes to the repository's `tmp/`, beside the run files `setup.sh` writes
   aws ecr get-download-url-for-layer --repository-name encrypted-image-sample \
     --layer-digest sha256:6dea5028fecd0a8be466ff4de0c85e239532c1046e5521ac116267001bf6ebdf \
     --query downloadUrl --output text > "$private/url"
-  IFS= read -r url < "$private/url"
-  case "$url" in *$'\r'*) echo "the download URL has a line break in it" >&2; false ;; esac
+  url="$(cat "$private/url")"
+  case "$url" in *[![:graph:]]*) echo "the download URL has a space or line break in it" >&2; false ;; esac
   url="${url//\\/\\\\}"; url="${url//\"/\\\"}"   # escape \ and " for curl's config syntax
   printf 'url = "%s"\n' "$url" > "$private/curl.conf"   # printf is a shell builtin
   curl -sS --config "$private/curl.conf" -o layer.blob
@@ -743,8 +743,8 @@ handled as in step 5:
   aws ecr get-download-url-for-layer --repository-name encrypted-image-sample \
     --layer-digest sha256:acbf110d8a44591c61483aabb846d7f5de398d7f01d7362166e3e1d7184bb07b \
     --query downloadUrl --output text > "$private/url"
-  IFS= read -r url < "$private/url"
-  case "$url" in *$'\r'*) echo "the download URL has a line break in it" >&2; false ;; esac
+  url="$(cat "$private/url")"
+  case "$url" in *[![:graph:]]*) echo "the download URL has a space or line break in it" >&2; false ;; esac
   url="${url//\\/\\\\}"; url="${url//\"/\\\"}"   # escape \ and " for curl's config syntax
   printf 'url = "%s"\n' "$url" > "$private/curl.conf"   # printf is a shell builtin
   curl -sS --config "$private/curl.conf" -o image-config.json
