@@ -33,6 +33,13 @@ require_value BUILD_OUTPUT_ENV
 require_sha SAMPLE_GIT_REVISION
 require_sha OCE_GIT_REVISION
 
+require_digest_image() {
+  local name="$1"
+  local value="${!name:-}"
+  [[ "$value" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]] ||
+    die "$name must be an immutable image reference ending in @sha256:<64 lowercase hex characters>"
+}
+
 [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || die "AWS_ACCOUNT_ID must be 12 digits"
 [[ "${TARGET_PLATFORM:-linux/amd64}" =~ ^linux/(amd64|arm64)$ ]] ||
   die "TARGET_PLATFORM must be linux/amd64 or linux/arm64"
@@ -77,7 +84,7 @@ adapter_tagged="${REGISTRY}/${ADAPTER_REPOSITORY}:${sample_tag}"
 controller_tagged="${REGISTRY}/${CONTROLLER_REPOSITORY}:${oce_tag}"
 ownership_helper_tagged="${REGISTRY}/${OWNERSHIP_HELPER_REPOSITORY}:${sample_tag}"
 runtime_tagged="${REGISTRY}/${RUNTIME_REPOSITORY}:${oce_tag}"
-OWNERSHIP_HELPER_BUILDER_IMAGE="docker.io/library/golang:1.25.4-alpine3.22@sha256:d3f0cf7723f3429e3f9ed846243970b20a2de7bae6a5b66fc5914e228d831bbb"
+OWNERSHIP_HELPER_BUILDER_IMAGE="public.ecr.aws/docker/library/golang:1.26.9-alpine3.23@sha256:6750308561953d451210ed1a8086d36c8c8bdcbf672d38d9d0d424b8a7a0216c"
 
 docker buildx build \
   --pull \
@@ -109,6 +116,8 @@ node_base_image="$(
     process.stdout.write(value);
   ' "$OCE_SOURCE_DIR/scripts/ci/test-suites/images-packaging.json"
 )" || die "could not resolve OCE's pinned NODE_BASE_IMAGE"
+CONTROLLER_RUNTIME_BASE_IMAGE="${CONTROLLER_RUNTIME_BASE_IMAGE:-docker.io/library/node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205}"
+require_digest_image CONTROLLER_RUNTIME_BASE_IMAGE
 
 docker buildx build \
   --pull \
@@ -116,9 +125,11 @@ docker buildx build \
   --platform "${TARGET_PLATFORM:-linux/amd64}" \
   --target runtime \
   --metadata-file "$metadata_dir/controller.json" \
-  --build-arg "NODE_BASE_IMAGE=$node_base_image" \
+  --build-arg "NODE_BUILD_BASE_IMAGE=$node_base_image" \
+  --build-arg "NODE_RUNTIME_BASE_IMAGE=$CONTROLLER_RUNTIME_BASE_IMAGE" \
   --build-arg "OCC_BUILD_REVISION=$OCE_SOURCE_REVISION" \
   --label "org.opencontainers.image.revision=$OCE_SOURCE_REVISION" \
+  --file "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/controller-runtime.Dockerfile" \
   --tag "$controller_tagged" \
   "$OCE_SOURCE_DIR"
 

@@ -1,4 +1,4 @@
-ARG OWNERSHIP_HELPER_BUILDER_IMAGE=docker.io/library/golang:1.25.4-alpine3.22@sha256:d3f0cf7723f3429e3f9ed846243970b20a2de7bae6a5b66fc5914e228d831bbb
+ARG OWNERSHIP_HELPER_BUILDER_IMAGE=public.ecr.aws/docker/library/golang:1.26.9-alpine3.23@sha256:6750308561953d451210ed1a8086d36c8c8bdcbf672d38d9d0d424b8a7a0216c
 FROM ${OWNERSHIP_HELPER_BUILDER_IMAGE} AS builder
 WORKDIR /src
 COPY go.mod main.go main_test.go ./
