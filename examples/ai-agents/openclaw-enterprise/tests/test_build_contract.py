@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import subprocess
+import sys
 from typing import Any
 
 import yaml
@@ -13,6 +15,8 @@ SAMPLE = pathlib.Path(__file__).resolve().parent.parent
 BUILD = SAMPLE / "build"
 TEMPLATE = BUILD / "template.yaml"
 SCRIPT = BUILD / "build-images.sh"
+SCAN_CHECK = BUILD / "check-image-scan.py"
+OCE_LOCK_CHECK = BUILD / "check-oce-lock.py"
 OWNERSHIP_HELPER = SAMPLE / "ownership-helper" / "Dockerfile"
 
 
@@ -108,7 +112,7 @@ def test_source_revisions_are_full_commit_shas() -> None:
     for name in ("SampleGitRevision", "OceGitRevision"):
         assert parameters[name]["AllowedPattern"] == "^[0-9a-f]{40}$"
     assert parameters["OceGitRevision"]["Default"] == (
-        "c6541831756ae40d0485d16d8f0ffeab9851372d"
+        "86c8c12310f691bb21651118ffffd6bfd460e9ff"
     )
 
 
@@ -202,6 +206,8 @@ def test_build_script_builds_each_image_from_the_expected_source() -> None:
     assert "--target runtime" in script
     assert '--file "$OCE_SOURCE_DIR/deploy/runtime/Dockerfile"' in script
     assert "node scripts/lib/openclaw-source.mjs build-args" in script
+    assert "OCE_MSAL_NODE_VERSION=\"7.2.0\"" in script
+    assert "check-oce-lock.py" in script
     assert script.count("docker buildx build") == 4
     assert "docker pull" not in script
     assert "skopeo copy" not in script
@@ -213,7 +219,7 @@ def test_build_outputs_are_verified_digest_references() -> None:
     assert 'digest = json.load(handle).get("containerimage.digest", "")' in script
     assert 'aws ecr describe-images \\' in script
     assert "aws ecr describe-image-scan-findings" in script
-    assert "COMPLETE" in script
+    assert "check-image-scan.py" in script
     assert script.count('verify_scan "$') == 4
     for name in (
         "ADAPTER_IMAGE",
@@ -229,6 +235,113 @@ def test_build_outputs_are_verified_digest_references() -> None:
     assert "printf 'export OWNERSHIP_INIT_IMAGE=%q\\n'" in script
     assert '"ownershipHelper": {' in script
     assert '"image": os.environ["OWNERSHIP_INIT_IMAGE"]' in script
+
+
+def _scan_result(payload: object) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-I", str(SCAN_CHECK)],
+        check=False,
+        input=json.dumps(payload),
+        text=True,
+        capture_output=True,
+    )
+
+
+def _scan_payload(
+    status: str,
+    counts: dict[str, int],
+    completed_at: str | None = "2026-11-16T00:00:00Z",
+) -> dict[str, object]:
+    return {
+        "imageScanStatus": {"status": status},
+        "imageScanFindings": {
+            "imageScanCompletedAt": completed_at,
+            "findingSeverityCounts": counts,
+        },
+    }
+
+
+def test_scan_gate_accepts_clean_basic_and_enhanced_results() -> None:
+    for status in ("COMPLETE", "ACTIVE"):
+        result = _scan_result(_scan_payload(status, {"MEDIUM": 2}))
+
+        assert result.returncode == 0, result.stderr
+        assert f"image scan: {status} with CRITICAL=0, HIGH=0" in result.stdout
+
+
+def test_scan_gate_rejects_any_critical_or_high_finding() -> None:
+    for counts in ({"CRITICAL": 1}, {"HIGH": 1}, {"CRITICAL": 2, "HIGH": 3}):
+        result = _scan_result(_scan_payload("ACTIVE", counts))
+
+        assert result.returncode == 1
+        assert "image scan: scan found" in result.stderr
+
+
+def test_scan_gate_waits_for_pending_or_unfinished_enhanced_scan() -> None:
+    for payload in (
+        _scan_payload("PENDING", {}),
+        _scan_payload("IN_PROGRESS", {}),
+        _scan_payload("ACTIVE", {}, completed_at=None),
+    ):
+        result = _scan_result(payload)
+
+        assert result.returncode == 10
+
+
+def test_scan_gate_fails_closed_on_unknown_or_incomplete_results() -> None:
+    for payload in (
+        _scan_payload("FAILED", {}),
+        {"imageScanStatus": {"status": "COMPLETE"}},
+        {
+            "imageScanStatus": {"status": "COMPLETE"},
+            "imageScanFindings": {"imageScanCompletedAt": "now"},
+        },
+        _scan_payload("COMPLETE", {"HIGH": "0"}),  # type: ignore[dict-item]
+    ):
+        result = _scan_result(payload)
+
+        assert result.returncode == 1
+
+
+def _oce_lock_result(tmp_path: pathlib.Path, content: str) -> subprocess.CompletedProcess[str]:
+    lockfile = tmp_path / "pnpm-lock.yaml"
+    lockfile.write_text(content, encoding="utf-8")
+    return subprocess.run(
+        [sys.executable, "-I", str(OCE_LOCK_CHECK), str(lockfile), "7.2.0"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+
+def test_oce_lock_gate_accepts_only_the_exact_remediated_version(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = _oce_lock_result(
+        tmp_path,
+        "packages:\n  '@azure/msal-node@7.2.0':\n"
+        "snapshots:\n  '@azure/msal-node@7.2.0':\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "exact-pinned to remediated 7.2.0" in result.stdout
+
+
+def test_oce_lock_gate_rejects_vulnerable_mixed_and_missing_entries(
+    tmp_path: pathlib.Path,
+) -> None:
+    for content in (
+        "packages:\n  '@azure/msal-node@6.0.1':\n",
+        (
+            "packages:\n  '@azure/msal-node@7.2.0':\n"
+            "snapshots:\n  '@azure/msal-node@6.0.1':\n"
+        ),
+        "packages: {}\n",
+    ):
+        result = _oce_lock_result(tmp_path, content)
+
+        assert result.returncode == 1
+        assert "OCE lock:" in result.stderr
 
 
 def test_ownership_helper_has_a_pinned_minimal_runtime() -> None:

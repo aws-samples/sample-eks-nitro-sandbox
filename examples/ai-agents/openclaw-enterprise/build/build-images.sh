@@ -56,6 +56,12 @@ OCE_SOURCE_REVISION="$(git -C "$OCE_SOURCE_DIR" rev-parse FETCH_HEAD)"
   die "OCE checkout resolved to $OCE_SOURCE_REVISION, expected $OCE_GIT_REVISION"
 git -C "$OCE_SOURCE_DIR" checkout --detach "$OCE_GIT_REVISION"
 
+OCE_MSAL_NODE_VERSION="7.2.0"
+python3 -I \
+  "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/check-oce-lock.py" \
+  "$OCE_SOURCE_DIR/pnpm-lock.yaml" \
+  "$OCE_MSAL_NODE_VERSION"
+
 REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
 aws ecr get-login-password --region "$AWS_DEFAULT_REGION" |
   docker login --username AWS --password-stdin "$REGISTRY"
@@ -187,30 +193,30 @@ verify_digest "$RUNTIME_REPOSITORY" "$runtime_digest"
 verify_scan() {
   local repository="$1"
   local digest="$2"
-  local status
+  local response="$metadata_dir/scan-${repository//\//-}.json"
+  local scan_result
   local _
-  for _ in {1..60}; do
-    status="$(
-      aws ecr describe-image-scan-findings \
+  for _ in {1..120}; do
+    if ! aws ecr describe-image-scan-findings \
         --region "$AWS_DEFAULT_REGION" \
         --repository-name "$repository" \
         --image-id "imageDigest=$digest" \
-        --query 'imageScanStatus.status' \
-        --output text 2>/dev/null || true
-    )"
-    case "$status" in
-      COMPLETE)
-        return 0
-        ;;
-      FAILED | FINDINGS_UNAVAILABLE | LIMIT_EXCEEDED | SCAN_ELIGIBILITY_EXPIRED | UNSUPPORTED_IMAGE)
-        die "ECR scan for $repository@$digest ended with status $status"
-        ;;
-      *)
-        sleep 5
-        ;;
-    esac
+        --output json >"$response"; then
+      sleep 5
+      continue
+    fi
+    if python3 -I \
+      "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/check-image-scan.py" \
+      <"$response"; then
+      return 0
+    else
+      scan_result=$?
+    fi
+    [[ "$scan_result" -eq 10 ]] ||
+      die "ECR scan gate rejected $repository@$digest"
+    sleep 5
   done
-  die "ECR scan for $repository@$digest did not reach COMPLETE"
+  die "ECR scan for $repository@$digest did not produce completed findings"
 }
 
 verify_scan "$ADAPTER_REPOSITORY" "$adapter_digest"

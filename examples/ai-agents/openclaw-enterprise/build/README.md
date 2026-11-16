@@ -7,8 +7,17 @@ commit SHAs, builds all four images from source, waits for their ECR scans, and
 exports digest-qualified image references.
 
 The default OCE revision is
-`c6541831756ae40d0485d16d8f0ffeab9851372d`. Set `SampleGitRevision` to the full
-commit SHA containing the adapter and this build directory.
+`86c8c12310f691bb21651118ffffd6bfd460e9ff`. It exact-pins
+`@azure/msal-node` 7.2.0, after the 7.1.0 fix for CVE-2026-109461. The build
+checks that lock entry before building, so changing the revision to one with a
+different or missing MSAL version fails closed. Set `SampleGitRevision` to the
+full commit SHA containing the adapter and this build directory.
+
+The image gate supports ECR basic scanning and account-level enhanced scanning.
+It accepts only a completed scan (`COMPLETE` for basic or `ACTIVE` with a
+completion timestamp for enhanced) and fails the build if the severity summary
+contains any Critical or High finding. A missing summary, unknown scan state, or
+scan error also fails the build.
 
 ## Build the images
 

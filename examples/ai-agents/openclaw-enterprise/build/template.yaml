@@ -19,7 +19,7 @@ Parameters:
     Description: Public OpenClaw Enterprise source repository.
   OceGitRevision:
     Type: String
-    Default: c6541831756ae40d0485d16d8f0ffeab9851372d
+    Default: 86c8c12310f691bb21651118ffffd6bfd460e9ff
     AllowedPattern: ^[0-9a-f]{40}$
     ConstraintDescription: Use the full 40-character lowercase Git commit SHA.
     Description: Exact OpenClaw Enterprise commit for controller and runtime images.
