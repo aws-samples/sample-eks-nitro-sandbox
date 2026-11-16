@@ -16,6 +16,7 @@ BUILD = SAMPLE / "build"
 TEMPLATE = BUILD / "template.yaml"
 SCRIPT = BUILD / "build-images.sh"
 SCAN_CHECK = BUILD / "check-image-scan.py"
+INSPECTOR_SCAN_CHECK = BUILD / "check-inspector-scan.py"
 OCE_LOCK_CHECK = BUILD / "check-oce-lock.py"
 OWNERSHIP_HELPER = SAMPLE / "ownership-helper" / "Dockerfile"
 
@@ -150,6 +151,8 @@ def test_codebuild_role_is_scoped_to_logs_and_the_four_repositories() -> None:
         "ecr:InitiateLayerUpload",
         "ecr:PutImage",
         "ecr:UploadLayerPart",
+        "inspector2:ListCoverage",
+        "inspector2:ListFindings",
     }
     logs_statement = next(
         statement for statement in statements if statement["Sid"] == "WriteBuildLogs"
@@ -179,6 +182,12 @@ def test_codebuild_role_is_scoped_to_logs_and_the_four_repositories() -> None:
         if statement["Sid"] == "GetEcrAuthorizationToken"
     )
     assert token_statement["Resource"] == "*"
+    inspector_statement = next(
+        statement
+        for statement in statements
+        if statement["Sid"] == "VerifyEnhancedImageScans"
+    )
+    assert inspector_statement["Resource"] == "*"
 
 
 def test_build_script_builds_each_image_from_the_expected_source() -> None:
@@ -219,7 +228,15 @@ def test_build_outputs_are_verified_digest_references() -> None:
     assert 'digest = json.load(handle).get("containerimage.digest", "")' in script
     assert 'aws ecr describe-images \\' in script
     assert "aws ecr describe-image-scan-findings" in script
+    assert 'grep -Fq "ScanNotFoundException"' in script
+    assert "aws inspector2 list-coverage" in script
+    assert "aws inspector2 list-findings" in script
+    assert script.count("--no-paginate") == 2
+    assert '"resourceId": equals(resource_id)' in script
+    assert '"ecrImageHash": equals(digest)' in script
+    assert '"findingStatus": equals("ACTIVE")' in script
     assert "check-image-scan.py" in script
+    assert "check-inspector-scan.py" in script
     assert script.count('verify_scan "$') == 4
     for name in (
         "ADAPTER_IMAGE",
@@ -299,6 +316,144 @@ def test_scan_gate_fails_closed_on_unknown_or_incomplete_results() -> None:
         _scan_payload("COMPLETE", {"HIGH": "0"}),  # type: ignore[dict-item]
     ):
         result = _scan_result(payload)
+
+        assert result.returncode == 1
+
+
+def _inspector_scan_result(
+    tmp_path: pathlib.Path,
+    coverage: object,
+    findings: object,
+) -> subprocess.CompletedProcess[str]:
+    coverage_path = tmp_path / "coverage.json"
+    findings_path = tmp_path / "findings.json"
+    coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
+    findings_path.write_text(json.dumps(findings), encoding="utf-8")
+    return subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(INSPECTOR_SCAN_CHECK),
+            str(coverage_path),
+            str(findings_path),
+            INSPECTOR_RESOURCE_ID,
+            INSPECTOR_ACCOUNT,
+            INSPECTOR_REPOSITORY,
+            INSPECTOR_DIGEST,
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+
+INSPECTOR_ACCOUNT = "123456789012"
+INSPECTOR_REPOSITORY = "sample/ownership-helper"
+INSPECTOR_DIGEST = f"sha256:{'a' * 64}"
+INSPECTOR_RESOURCE_ID = (
+    f"arn:aws:ecr:us-west-2:{INSPECTOR_ACCOUNT}:"
+    f"repository/{INSPECTOR_REPOSITORY}/{INSPECTOR_DIGEST}"
+)
+
+
+def _inspector_coverage(reason: str = "SUCCESSFUL") -> dict[str, object]:
+    return {
+        "coveredResources": [
+            {
+                "resourceType": "AWS_ECR_CONTAINER_IMAGE",
+                "resourceId": INSPECTOR_RESOURCE_ID,
+                "accountId": INSPECTOR_ACCOUNT,
+                "scanType": "PACKAGE",
+                "scanStatus": {"statusCode": "ACTIVE", "reason": reason},
+                "resourceMetadata": {
+                    "ecrRepository": {
+                        "name": INSPECTOR_REPOSITORY,
+                        "scanFrequency": "CONTINUOUS_SCAN",
+                    }
+                },
+                "lastScannedAt": "2026-11-16T00:00:00Z",
+            }
+        ]
+    }
+
+
+def _inspector_finding(severity: str = "HIGH") -> dict[str, object]:
+    return {
+        "findingArn": "arn:aws:inspector2:us-west-2:123456789012:finding/example",
+        "awsAccountId": INSPECTOR_ACCOUNT,
+        "status": "ACTIVE",
+        "severity": severity,
+        "resources": [
+            {
+                "type": "AWS_ECR_CONTAINER_IMAGE",
+                "id": INSPECTOR_RESOURCE_ID,
+                "details": {
+                    "awsEcrContainerImage": {
+                        "repositoryName": INSPECTOR_REPOSITORY,
+                        "imageHash": INSPECTOR_DIGEST,
+                        "registry": INSPECTOR_ACCOUNT,
+                    }
+                },
+            }
+        ],
+    }
+
+
+def test_inspector_gate_accepts_successful_coverage_with_no_severe_findings(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = _inspector_scan_result(
+        tmp_path,
+        _inspector_coverage(),
+        {"findings": []},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "ACTIVE with CRITICAL=0, HIGH=0" in result.stdout
+
+
+def test_inspector_gate_rejects_critical_or_high_finding(
+    tmp_path: pathlib.Path,
+) -> None:
+    for severity in ("CRITICAL", "HIGH"):
+        result = _inspector_scan_result(
+            tmp_path,
+            _inspector_coverage(),
+            {"findings": [_inspector_finding(severity)]},
+        )
+
+        assert result.returncode == 1
+        assert f"scan found {severity} finding" in result.stderr
+
+
+def test_inspector_gate_retries_pending_or_missing_coverage(
+    tmp_path: pathlib.Path,
+) -> None:
+    for coverage in (
+        {"coveredResources": []},
+        _inspector_coverage("PENDING_INITIAL_SCAN"),
+        _inspector_coverage("SCAN_IN_PROGRESS"),
+    ):
+        result = _inspector_scan_result(tmp_path, coverage, {"findings": []})
+
+        assert result.returncode == 10
+
+
+def test_inspector_gate_fails_closed_on_mismatched_or_failed_responses(
+    tmp_path: pathlib.Path,
+) -> None:
+    wrong_resource = _inspector_coverage()
+    wrong_resource["coveredResources"][0]["resourceId"] = (  # type: ignore[index]
+        f"arn:aws:ecr:us-west-2:{INSPECTOR_ACCOUNT}:"
+        f"repository/{INSPECTOR_REPOSITORY}/sha256:{'b' * 64}"
+    )
+    for coverage, findings in (
+        (_inspector_coverage("UNSUPPORTED_OS"), {"findings": []}),
+        (wrong_resource, {"findings": []}),
+        (_inspector_coverage(), {}),
+        (_inspector_coverage(), {"findings": [{"severity": "MEDIUM"}]}),
+    ):
+        result = _inspector_scan_result(tmp_path, coverage, findings)
 
         assert result.returncode == 1
 

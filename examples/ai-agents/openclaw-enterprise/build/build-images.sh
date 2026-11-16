@@ -194,29 +194,109 @@ verify_scan() {
   local repository="$1"
   local digest="$2"
   local response="$metadata_dir/scan-${repository//\//-}.json"
+  local error_response="$metadata_dir/scan-${repository//\//-}.stderr"
+  local coverage_response="$metadata_dir/coverage-${repository//\//-}.json"
+  local findings_response="$metadata_dir/findings-${repository//\//-}.json"
+  local filter_dir="$metadata_dir/filters-${repository//\//-}"
+  local partition
+  local resource_id
   local scan_result
   local _
+  partition="$(cut -d: -f2 <<<"$CODEBUILD_BUILD_ARN")"
+  [[ -n "$partition" ]] || die "could not derive AWS partition"
+  resource_id="arn:${partition}:ecr:${AWS_DEFAULT_REGION}:${AWS_ACCOUNT_ID}:repository/${repository}/${digest}"
+
+  mkdir -p "$filter_dir"
+  python3 - "$filter_dir" "$AWS_ACCOUNT_ID" "$repository" "$digest" "$resource_id" <<'PY'
+import json
+import pathlib
+import sys
+
+directory = pathlib.Path(sys.argv[1])
+account_id, repository, digest, resource_id = sys.argv[2:]
+equals = lambda value: [{"comparison": "EQUALS", "value": value}]
+coverage = {
+    "accountId": equals(account_id),
+    "resourceId": equals(resource_id),
+    "resourceType": equals("AWS_ECR_CONTAINER_IMAGE"),
+    "scanType": equals("PACKAGE"),
+    "ecrRepositoryName": equals(repository),
+}
+findings = {
+    "awsAccountId": equals(account_id),
+    "resourceType": equals("AWS_ECR_CONTAINER_IMAGE"),
+    "resourceId": equals(resource_id),
+    "ecrImageRegistry": equals(account_id),
+    "ecrImageRepositoryName": equals(repository),
+    "ecrImageHash": equals(digest),
+    "findingStatus": equals("ACTIVE"),
+    "severity": [
+        {"comparison": "EQUALS", "value": "CRITICAL"},
+        {"comparison": "EQUALS", "value": "HIGH"},
+    ],
+}
+(directory / "coverage.json").write_text(json.dumps(coverage), encoding="utf-8")
+(directory / "findings.json").write_text(json.dumps(findings), encoding="utf-8")
+PY
+
   for _ in {1..120}; do
-    if ! aws ecr describe-image-scan-findings \
+    if aws ecr describe-image-scan-findings \
         --region "$AWS_DEFAULT_REGION" \
         --repository-name "$repository" \
         --image-id "imageDigest=$digest" \
-        --output json >"$response"; then
+        --output json >"$response" 2>"$error_response"; then
+      if python3 -I \
+        "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/check-image-scan.py" \
+        <"$response"; then
+        return 0
+      else
+        scan_result=$?
+      fi
+      [[ "$scan_result" -eq 10 ]] ||
+        die "ECR scan gate rejected $repository@$digest"
       sleep 5
       continue
     fi
+
+    if ! grep -Fq "ScanNotFoundException" "$error_response"; then
+      cat "$error_response" >&2
+      die "ECR scan lookup failed for $repository@$digest"
+    fi
+
+    if ! aws inspector2 list-coverage \
+      --region "$AWS_DEFAULT_REGION" \
+      --filter-criteria "file://$filter_dir/coverage.json" \
+      --max-results 2 \
+      --no-paginate \
+      --output json >"$coverage_response"; then
+      die "Inspector coverage lookup failed for $repository@$digest"
+    fi
+    if ! aws inspector2 list-findings \
+      --region "$AWS_DEFAULT_REGION" \
+      --filter-criteria "file://$filter_dir/findings.json" \
+      --max-results 1 \
+      --no-paginate \
+      --output json >"$findings_response"; then
+      die "Inspector findings lookup failed for $repository@$digest"
+    fi
+
     if python3 -I \
-      "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/check-image-scan.py" \
-      <"$response"; then
+      "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/check-inspector-scan.py" \
+      "$coverage_response" \
+      "$findings_response" \
+      "$resource_id" \
+      "$AWS_ACCOUNT_ID" \
+      "$repository" \
+      "$digest"; then
       return 0
     else
       scan_result=$?
     fi
     [[ "$scan_result" -eq 10 ]] ||
-      die "ECR scan gate rejected $repository@$digest"
+      die "Inspector scan gate rejected $repository@$digest"
     sleep 5
   done
-  die "ECR scan for $repository@$digest did not produce completed findings"
+  die "image scan for $repository@$digest did not produce completed findings"
 }
 
 verify_scan "$ADAPTER_REPOSITORY" "$adapter_digest"

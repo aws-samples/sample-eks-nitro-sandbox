@@ -13,11 +13,14 @@ checks that lock entry before building, so changing the revision to one with a
 different or missing MSAL version fails closed. Set `SampleGitRevision` to the
 full commit SHA containing the adapter and this build directory.
 
-The image gate supports ECR basic scanning and account-level enhanced scanning.
-It accepts only a completed scan (`COMPLETE` for basic or `ACTIVE` with a
-completion timestamp for enhanced) and fails the build if the severity summary
-contains any Critical or High finding. A missing summary, unknown scan state, or
-scan error also fails the build.
+The image gate supports ECR basic scanning and account-level enhanced continuous
+scanning. It first checks the ECR scan result. Enhanced scanning can return
+`ScanNotFoundException` indefinitely even when Inspector covers the image; in
+that case the gate queries Inspector2 for the exact account, repository, and
+digest. Inspector coverage must be `ACTIVE` and `SUCCESSFUL`, with a completed
+scan timestamp, and there must be no active Critical or High finding for that
+same image. Pending coverage is retried. Missing, ambiguous, failed, or malformed
+coverage and findings fail the build closed.
 
 ## Build the images
 

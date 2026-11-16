@@ -138,6 +138,12 @@ Resources:
                 Effect: Allow
                 Action: ecr:GetAuthorizationToken
                 Resource: "*"
+              - Sid: VerifyEnhancedImageScans
+                Effect: Allow
+                Action:
+                  - inspector2:ListCoverage
+                  - inspector2:ListFindings
+                Resource: "*"
               - Sid: PushAndVerifyImages
                 Effect: Allow
                 Action:
