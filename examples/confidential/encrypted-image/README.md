@@ -288,13 +288,14 @@ download goes to the repository's `tmp/`, beside the run files `setup.sh` writes
     --query downloadUrl --output json > "$private/url.json"
   # jq reads the exact string, and writes the config only for one plain https URL of
   # printable ASCII with no space, quote or backslash, so nothing in it is curl config
-  # syntax; --globoff stops curl reading [ ] { } in it as a URL pattern.
+  # syntax. curl then fetches it as written: -q skips your ~/.curlrc, --globoff reads
+  # [ ] { } literally, and --path-as-is keeps any /../ in the path.
   jq -ers 'if length == 1 and (.[0] | type == "string" and length <= 65536
              and test("\\Ahttps://[!-~]+\\z") and (test("[\"\\\\]") | not))
            then "url = \"\(.[0])\""
            else error("the download URL is not a plain https URL") end' \
     "$private/url.json" > "$private/curl.conf"
-  curl -sS --globoff --config "$private/curl.conf" -o layer.blob
+  curl -q -sS --globoff --path-as-is --config "$private/curl.conf" -o layer.blob
   sha256sum layer.blob
   gzip -t layer.blob || true
   file -b layer.blob
@@ -749,13 +750,14 @@ handled as in step 5:
     --query downloadUrl --output json > "$private/url.json"
   # jq reads the exact string, and writes the config only for one plain https URL of
   # printable ASCII with no space, quote or backslash, so nothing in it is curl config
-  # syntax; --globoff stops curl reading [ ] { } in it as a URL pattern.
+  # syntax. curl then fetches it as written: -q skips your ~/.curlrc, --globoff reads
+  # [ ] { } literally, and --path-as-is keeps any /../ in the path.
   jq -ers 'if length == 1 and (.[0] | type == "string" and length <= 65536
              and test("\\Ahttps://[!-~]+\\z") and (test("[\"\\\\]") | not))
            then "url = \"\(.[0])\""
            else error("the download URL is not a plain https URL") end' \
     "$private/url.json" > "$private/curl.conf"
-  curl -sS --globoff --config "$private/curl.conf" -o image-config.json
+  curl -q -sS --globoff --path-as-is --config "$private/curl.conf" -o image-config.json
   jq '{os, architecture, config: {User: .config.User, Entrypoint: .config.Entrypoint,
        Cmd: .config.Cmd, Env: .config.Env}, layers: (.rootfs.diff_ids | length)}' image-config.json
 )
