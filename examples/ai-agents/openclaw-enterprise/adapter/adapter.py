@@ -797,6 +797,34 @@ def _mount_paths_overlap(left: Any, right: str) -> bool:
     )
 
 
+def _is_agentgateway_ca_volume(volume: Any) -> bool:
+    """Accept only the canonical AgentGateway CA projection."""
+    if not isinstance(volume, dict) or set(volume) != {"name", "configMap"}:
+        return False
+    config_map = volume.get("configMap")
+    if not isinstance(config_map, dict):
+        return False
+    allowed_keys = {"name", "items", "defaultMode", "optional"}
+    if not set(config_map).issubset(allowed_keys):
+        return False
+    if config_map.get("name") != AGW_CA_CONFIG_MAP or config_map.get("items") != [
+        {"key": "ca.crt", "path": "ca.crt"}
+    ]:
+        return False
+    if config_map.get("defaultMode", 420) != 420:
+        return False
+    return config_map.get("optional", False) is False
+
+
+def _is_agentgateway_ca_mount(mount: Any) -> bool:
+    """Accept only the read-only canonical AgentGateway CA mount."""
+    return mount == {
+        "name": AGW_CA_VOLUME,
+        "mountPath": AGW_CA_MOUNT_PATH,
+        "readOnly": True,
+    }
+
+
 def _default_service_account_volumes(volumes: list[Any], mounts: list[Any]) -> set[str]:
     """Find only Kubernetes' standard auto-injected service-account projections."""
     removable: set[str] = set()
@@ -886,12 +914,14 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                 f"spec.initContainers[{index}] native sidecars are not supported"
             )
 
-    reserved_volumes = [
+    ca_volumes = [
         volume
         for volume in volumes
         if isinstance(volume, dict) and volume.get("name") == AGW_CA_VOLUME
     ]
-    if reserved_volumes:
+    if len(ca_volumes) > 1:
+        raise AdmissionError(f"expected at most one {AGW_CA_VOLUME} volume")
+    if ca_volumes and not _is_agentgateway_ca_volume(ca_volumes[0]):
         raise AdmissionError(f"volume name {AGW_CA_VOLUME} is reserved")
 
     all_mounts: list[Any] = []
@@ -911,11 +941,27 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                     f"{location}.volumeMounts[{mount_index}].mountPath",
                 )
                 all_mounts.append(mount)
-    if any(
-        isinstance(mount, dict) and mount.get("name") == AGW_CA_VOLUME
-        for mount in all_mounts
+    ca_mounts: list[tuple[str, int, dict[str, Any]]] = []
+    for group_name, group in (
+        ("initContainers", init_containers),
+        ("containers", containers),
     ):
-        raise AdmissionError(f"volume mount name {AGW_CA_VOLUME} is reserved")
+        for index, container in enumerate(group):
+            for mount in _mounts(container, f"spec.{group_name}[{index}]"):
+                if not isinstance(mount, dict):
+                    continue
+                uses_ca_name = mount.get("name") == AGW_CA_VOLUME
+                mount_path = mount.get("mountPath")
+                overlaps_ca_path = mount_path != "/" and _mount_paths_overlap(
+                    mount_path, AGW_CA_MOUNT_PATH
+                )
+                if uses_ca_name or overlaps_ca_path:
+                    if not _is_agentgateway_ca_mount(mount):
+                        raise AdmissionError(
+                            f"spec.{group_name}[{index}] uses the reserved "
+                            "AgentGateway CA mount"
+                        )
+                    ca_mounts.append((group_name, index, mount))
     default_service_account_volumes = _default_service_account_volumes(
         volumes, all_mounts
     )
@@ -1002,6 +1048,16 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
             f"expected exactly one designated {OCE_ROLE} runtime container"
         )
     designated_index = designated_indexes[0]
+    if len(ca_mounts) > 1:
+        raise AdmissionError("expected at most one AgentGateway CA mount")
+    if ca_mounts and ca_mounts[0][:2] != ("containers", designated_index):
+        raise AdmissionError(
+            "only the designated gateway container may mount the AgentGateway CA"
+        )
+    if bool(ca_volumes) != bool(ca_mounts):
+        raise AdmissionError(
+            "AgentGateway CA volume and designated gateway mount must be configured together"
+        )
 
     links: dict[str, str] = {}
     mount_patches: list[dict[str, Any]] = []
@@ -1218,14 +1274,9 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                         }
                     )
                 if group_name == "containers":
-                    if any(
-                        mount.get("name") == AGW_CA_VOLUME
-                        or mount.get("mountPath") == AGW_CA_MOUNT_PATH
-                        for mount in rewritten
-                    ):
-                        raise AdmissionError(
-                            f"spec.{group_name}[{index}] already uses the AgentGateway CA mount"
-                        )
+                    has_ca_mount = any(
+                        _is_agentgateway_ca_mount(mount) for mount in rewritten
+                    )
                     existing_tmp_mounts = [
                         mount
                         for mount in rewritten
@@ -1275,13 +1326,14 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                                 f"spec.{group_name}[{index}] has a mount that "
                                 f"overlaps trusted bootstrap path {trusted_path}"
                             )
-                    rewritten.append(
-                        {
-                            "name": AGW_CA_VOLUME,
-                            "mountPath": AGW_CA_MOUNT_PATH,
-                            "readOnly": True,
-                        }
-                    )
+                    if not has_ca_mount:
+                        rewritten.append(
+                            {
+                                "name": AGW_CA_VOLUME,
+                                "mountPath": AGW_CA_MOUNT_PATH,
+                                "readOnly": True,
+                            }
+                        )
                     environment = _runtime_environment(
                         container, f"spec.{group_name}[{index}]"
                     )
@@ -1437,7 +1489,10 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                     for volume in volumes
                     if not (
                         isinstance(volume, dict)
-                        and volume.get("name") in default_service_account_volumes
+                        and (
+                            volume.get("name") in default_service_account_volumes
+                            or volume.get("name") == AGW_CA_VOLUME
+                        )
                     )
                 ],
                 {
@@ -1713,13 +1768,7 @@ def validate_pod(pod: dict[str, Any]) -> None:
         for volume in volumes
         if isinstance(volume, dict) and volume.get("name") == AGW_CA_VOLUME
     )
-    if ca_volume != {
-        "name": AGW_CA_VOLUME,
-        "configMap": {
-            "name": AGW_CA_CONFIG_MAP,
-            "items": [{"key": "ca.crt", "path": "ca.crt"}],
-        },
-    }:
+    if not _is_agentgateway_ca_volume(ca_volume):
         raise AdmissionError("final AgentGateway CA volume contract is invalid")
     if any(
         name.startswith("kube-api-access-")

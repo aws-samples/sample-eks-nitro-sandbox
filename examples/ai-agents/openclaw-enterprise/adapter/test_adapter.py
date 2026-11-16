@@ -27,6 +27,7 @@ from adapter import (
     TMPDIR_PATH,
     AdmissionError,
     build_patch,
+    validate_pod,
 )
 
 RUNTIME_IMAGE = f"example.invalid/oce@sha256:{'a' * 64}"
@@ -350,6 +351,108 @@ def apply_patch(document: dict, patch: list[dict]) -> dict:
     },
 )
 class BuildPatchTests(unittest.TestCase):
+    def test_preinjected_agentgateway_ca_contract_is_idempotent(self) -> None:
+        pod = target_pod()
+        gateway = pod["spec"]["containers"][0]
+        pod["spec"]["volumes"].append(
+            {
+                "name": AGW_CA_VOLUME,
+                "configMap": {
+                    "name": AGW_CA_VOLUME,
+                    "items": [{"key": "ca.crt", "path": "ca.crt"}],
+                    "defaultMode": 420,
+                },
+            }
+        )
+        gateway["volumeMounts"].append(
+            {
+                "name": AGW_CA_VOLUME,
+                "mountPath": AGW_CA_MOUNT_PATH,
+                "readOnly": True,
+            }
+        )
+        gateway.setdefault("env", []).append(
+            {"name": NODE_CA_ENV, "value": f"{AGW_CA_MOUNT_PATH}/ca.crt"}
+        )
+
+        rendered = apply_patch(pod, build_patch(pod))
+
+        self.assertEqual(
+            sum(
+                volume.get("name") == AGW_CA_VOLUME
+                for volume in rendered["spec"]["volumes"]
+            ),
+            1,
+        )
+        rendered_gateway = rendered["spec"]["containers"][0]
+        self.assertEqual(
+            sum(
+                mount.get("name") == AGW_CA_VOLUME
+                for mount in rendered_gateway["volumeMounts"]
+            ),
+            1,
+        )
+        self.assertEqual(
+            sum(entry.get("name") == NODE_CA_ENV for entry in rendered_gateway["env"]),
+            1,
+        )
+        validate_pod(rendered)
+
+    def test_rejects_noncanonical_preinjected_agentgateway_ca_contract(self) -> None:
+        base = target_pod()
+        canonical_volume = {
+            "name": AGW_CA_VOLUME,
+            "configMap": {
+                "name": AGW_CA_VOLUME,
+                "items": [{"key": "ca.crt", "path": "ca.crt"}],
+            },
+        }
+        canonical_mount = {
+            "name": AGW_CA_VOLUME,
+            "mountPath": AGW_CA_MOUNT_PATH,
+            "readOnly": True,
+        }
+        cases = []
+
+        wrong_volume = copy.deepcopy(base)
+        wrong_volume["spec"]["volumes"].append(
+            {
+                "name": AGW_CA_VOLUME,
+                "configMap": {
+                    "name": "attacker-controlled",
+                    "items": [{"key": "ca.crt", "path": "ca.crt"}],
+                },
+            }
+        )
+        cases.append(wrong_volume)
+
+        wrong_mount = copy.deepcopy(base)
+        wrong_mount["spec"]["volumes"].append(copy.deepcopy(canonical_volume))
+        wrong_mount["spec"]["containers"][0]["volumeMounts"].append(
+            {
+                "name": AGW_CA_VOLUME,
+                "mountPath": AGW_CA_MOUNT_PATH,
+                "readOnly": False,
+            }
+        )
+        cases.append(wrong_mount)
+
+        init_mount = copy.deepcopy(base)
+        init_mount["spec"]["volumes"].append(copy.deepcopy(canonical_volume))
+        init_mount["spec"]["initContainers"][0]["volumeMounts"].append(
+            copy.deepcopy(canonical_mount)
+        )
+        cases.append(init_mount)
+
+        missing_mount = copy.deepcopy(base)
+        missing_mount["spec"]["volumes"].append(copy.deepcopy(canonical_volume))
+        cases.append(missing_mount)
+
+        for pod in cases:
+            with self.subTest(pod=pod):
+                with self.assertRaises(AdmissionError):
+                    build_patch(pod)
+
     def test_published_admission_fixture_is_accepted_and_hardened(self) -> None:
         fixture = (
             pathlib.Path(__file__).resolve().parent.parent
