@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# ib-prereqs.sh: the AWS resources the EC2 Image Builder path needs, for one run and architecture.
+#
+#   RUN_ID=<id> BUILD_SUBNET_ID=<private subnet> scripts/ib-prereqs.sh up
+#   RUN_ID=<id> scripts/ib-prereqs.sh down
+#
+# Image Builder can only build on an enclave-enabled instance by taking one from an Auto Scaling
+# group (parentInstance). The build instance keeps everything the group launched it with: AMI,
+# instance type, instance profile, subnet, security group and metadata options. So `up` creates:
+#   - a launch template: the EKS-optimized AL2023 AMI for NODE_ARCH, an enclave-capable instance
+#     type, EnclaveOptions.Enabled=true, IMDSv2 with hop limit 1, no public IP;
+#   - an Auto Scaling group of one instance from it, in a private subnet with a NAT route;
+#   - the instance role and profile (Systems Manager, Image Builder, read of the public EKS bundle);
+#   - a security group (outbound only) and the pipeline's execution role, scoped to the one group.
+# Each is named <RESOURCE_PREFIX>-ib-<RUN_ID> and tagged ManagedBy and RunId when it is created.
+# `up` waits until the group's instance is online in Systems Manager, which Image Builder needs.
+#
+# `down` removes them, and the Image Builder resources the build driver recorded, only when they
+# carry this run's tags. The output AMI is clean.sh's. EC2 deletes the host may block are written
+# to an ordered script for you to run, as clean.sh does. Exits non-zero when anything is left.
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HERE/lib/common.sh"
+require_run_id
+mode="${1:-}"; case "$mode" in up|down) ;; *) die "usage: ib-prereqs.sh up|down" ;; esac
+
+NAME="${RESOURCE_PREFIX}-ib-${RUN_ID}"
+require_name "Image Builder prerequisite" "$NAME" 52 '^[a-z0-9-]+$'
+STATE="$RUN_STATE_DIR/run-state.env"
+mkdir -p "$RUN_STATE_DIR"
+TAGS_CLI="Key=$TAGS_OWNER_KEY,Value=$TAGS_OWNER_VALUE Key=$TAGS_RUN_KEY,Value=$RUN_ID Key=auto-delete,Value=no"
+rec()    { sed -n "s/^$1=//p" "$STATE" 2>/dev/null | tail -n 1; }
+record() { printf '%s=%s\n' "$1" "$2" >> "$STATE"; }
+aw()     { aws --region "$AWS_REGION" "$@"; }
+jtags()  { python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("Tags") or []))'; }
+
+# probe <not-found-regex> <command...>: 0 found (PROBE_OUT), 1 the API said not found or the
+# answer was empty, 2 could not determine. Only 1 may be treated as absent.
+probe() {
+  local nf="$1" err; shift; err=$(mktemp)
+  if PROBE_OUT=$("$@" 2>"$err"); then
+    rm -f "$err"
+    case "$PROBE_OUT" in ""|None|null|"[]"|"{}") return 1 ;; esac
+    return 0
+  fi
+  if grep -Eq "$nf" "$err"; then rm -f "$err"; return 1; fi
+  warn "could not determine state ($*): $(head -n 2 "$err")"; rm -f "$err"; return 2
+}
+
+# Same account the run was created in (recorded at the first `up`).
+account=$(aw sts get-caller-identity --query Account --output text) || die "could not read the current AWS account"
+recorded=$(rec ACCOUNT_ID)
+if [ -z "$recorded" ]; then
+  [ "$mode" = up ] || die "run $RUN_ID recorded no ACCOUNT_ID; refusing to delete anything"
+  record ACCOUNT_ID "$account"; record AWS_REGION "$AWS_REGION"; record RESOURCE_PREFIX "$RESOURCE_PREFIX"
+elif [ "$recorded" != "$account" ]; then
+  die "credentials are for a different account than run $RUN_ID was created in; refusing"
+fi
+[ "$(rec AWS_REGION)" = "$AWS_REGION" ] || die "AWS_REGION is '$AWS_REGION' but run $RUN_ID recorded '$(rec AWS_REGION)'"
+
+# --------------------------------------------------------------------------------------------
+if [ "$mode" = up ]; then
+  : "${BUILD_SUBNET_ID:?set BUILD_SUBNET_ID to a private subnet with a NAT route, in an AZ with enclave-capable capacity}"
+  case "$NODE_ARCH" in amd64) ssm_arch=x86_64; : "${BUILD_INSTANCE_TYPE:=m8i.4xlarge}" ;;
+                       arm64) ssm_arch=arm64;  : "${BUILD_INSTANCE_TYPE:=m8g.4xlarge}" ;; esac
+  arch_matches_type "$BUILD_INSTANCE_TYPE" || die "BUILD_INSTANCE_TYPE '$BUILD_INSTANCE_TYPE' is not a $NODE_ARCH instance type"
+
+  probe 'InvalidSubnetID' aw ec2 describe-subnets --subnet-ids "$BUILD_SUBNET_ID" \
+    --query 'Subnets[0].[VpcId,MapPublicIpOnLaunch]' --output text || die "could not read subnet $BUILD_SUBNET_ID"
+  read -r vpc public <<<"$PROBE_OUT"
+  [ "$public" = False ] || die "subnet $BUILD_SUBNET_ID gives instances a public IP; use a private subnet with a NAT route"
+
+  # An existing resource of the same name is reused only if it carries this run's tags.
+  # Security group: outbound only (no inbound rule).
+  probe 'InvalidGroup' aw ec2 describe-security-groups --filters "Name=group-name,Values=$NAME" "Name=vpc-id,Values=$vpc" \
+    --query 'SecurityGroups[0]' --output json; rc=$?
+  case $rc in
+    0) printf '%s' "$PROBE_OUT" | jtags | tags_match || die "security group $NAME exists and is not run $RUN_ID's"
+       sg=$(printf '%s' "$PROBE_OUT" | json_get 'd["GroupId"]') ;;
+    1) sg=$(aw ec2 create-security-group --group-name "$NAME" --vpc-id "$vpc" \
+         --description "Image Builder build instance for $NAME (outbound only)" \
+         --tag-specifications "ResourceType=security-group,Tags=[$(run_tags_cli),{Key=auto-delete,Value=no}]" \
+         --query GroupId --output text) || die "could not create security group $NAME" ;;
+    *) die "could not determine whether security group $NAME exists" ;;
+  esac
+  record IB_SECURITY_GROUP_ID "$sg"; log "security group $sg"
+
+  # Instance role + profile. The build instance runs the component through Systems Manager.
+  role_owned_or_absent() { # role_owned_or_absent <role name>
+    probe 'NoSuchEntity' aws iam list-role-tags --role-name "$1" --query Tags --output json; local rc=$?
+    case $rc in 1) return 1 ;;
+      0) printf '%s' "$PROBE_OUT" | tags_match || die "IAM role $1 exists and is not run $RUN_ID's"; return 0 ;;
+      *) die "could not determine whether IAM role $1 exists" ;; esac
+  }
+  role="$NAME-instance"
+  if ! role_owned_or_absent "$role"; then
+    aws iam create-role --role-name "$role" --tags $TAGS_CLI \
+      --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}' \
+      >/dev/null || die "could not create IAM role $role"
+  fi
+  for p in AmazonSSMManagedInstanceCore EC2InstanceProfileForImageBuilder; do
+    aws iam attach-role-policy --role-name "$role" --policy-arn "arn:aws:iam::aws:policy/$p" || die "could not attach $p to $role"
+  done
+  aws iam put-role-policy --role-name "$role" --policy-name read-eks-bundle --policy-document \
+    '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::amazon-eks/*"}]}' \
+    || die "could not set the bundle read policy on $role"
+  probe 'NoSuchEntity' aws iam get-instance-profile --instance-profile-name "$role" --query 'InstanceProfile.Tags' --output json; rc=$?
+  case $rc in
+    1) aws iam create-instance-profile --instance-profile-name "$role" --tags $TAGS_CLI >/dev/null \
+         || die "could not create instance profile $role"
+       aws iam add-role-to-instance-profile --instance-profile-name "$role" --role-name "$role" || die "could not add $role to its profile" ;;
+    0) printf '%s' "$PROBE_OUT" | tags_match || die "instance profile $role exists and is not run $RUN_ID's" ;;
+    *) die "could not determine whether instance profile $role exists" ;;
+  esac
+  record IB_INSTANCE_PROFILE "$role"; log "instance profile $role"
+
+  # Execution role: Image Builder takes the instance with it (the service-linked role cannot).
+  exec_role="$NAME-exec"
+  if ! role_owned_or_absent "$exec_role"; then
+    aws iam create-role --role-name "$exec_role" --tags $TAGS_CLI \
+      --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"imagebuilder.amazonaws.com"},"Action":"sts:AssumeRole"}]}' \
+      >/dev/null || die "could not create IAM role $exec_role"
+  fi
+  aws iam attach-role-policy --role-name "$exec_role" --policy-arn arn:aws:iam::aws:policy/EC2ImageBuilderExecutionPolicy \
+    || die "could not attach EC2ImageBuilderExecutionPolicy to $exec_role"
+  aws iam put-role-policy --role-name "$exec_role" --policy-name take-from-group --policy-document "$(cat <<EOF
+{"Version":"2012-10-17","Statement":[
+ {"Effect":"Allow","Action":["ec2:CreateTags","ec2:DeleteTags"],"Resource":"arn:aws:ec2:*:*:instance/*",
+  "Condition":{"StringEquals":{"ec2:ResourceTag/aws:autoscaling:groupName":"$NAME"}}},
+ {"Effect":"Allow","Action":"autoscaling:DescribeAutoScalingGroups","Resource":"*"},
+ {"Effect":"Allow","Action":"autoscaling:DetachInstances",
+  "Resource":"arn:aws:autoscaling:$AWS_REGION:$account:autoScalingGroup:*:autoScalingGroupName/$NAME"}]}
+EOF
+)" || die "could not set the group policy on $exec_role"
+  record IB_EXECUTION_ROLE "arn:aws:iam::$account:role/$exec_role"; log "execution role $exec_role"
+
+  # Launch template for the group.
+  ami=$(aw ssm get-parameter --name "/aws/service/eks/optimized-ami/$KUBERNETES_VERSION/amazon-linux-2023/$ssm_arch/standard/recommended/image_id" \
+    --query Parameter.Value --output text) || die "could not resolve the EKS-optimized AL2023 $ssm_arch AMI for $KUBERNETES_VERSION"
+  [[ "$ami" =~ ^ami-[0-9a-f]+$ ]] || die "the parent AMI lookup returned '$ami'"
+  probe 'NotFound' aw ec2 describe-launch-templates --launch-template-names "$NAME" --query 'LaunchTemplates[0].Tags' --output json; rc=$?
+  case $rc in
+    0) printf '%s' "$PROBE_OUT" | tags_match || die "launch template $NAME exists and is not run $RUN_ID's" ;;
+    1) tag_spec() { printf '{"ResourceType":"%s","Tags":[{"Key":"%s","Value":"%s"},{"Key":"%s","Value":"%s"},{"Key":"auto-delete","Value":"no"}]}' \
+         "$1" "$TAGS_OWNER_KEY" "$TAGS_OWNER_VALUE" "$TAGS_RUN_KEY" "$RUN_ID"; }
+       data=$(cat <<EOF
+{"ImageId":"$ami","InstanceType":"$BUILD_INSTANCE_TYPE","IamInstanceProfile":{"Name":"$role"},
+ "SecurityGroupIds":["$sg"],"EnclaveOptions":{"Enabled":true},
+ "MetadataOptions":{"HttpTokens":"required","HttpPutResponseHopLimit":1},
+ "BlockDeviceMappings":[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":40,"VolumeType":"gp3","DeleteOnTermination":true}}],
+ "TagSpecifications":[$(tag_spec instance),$(tag_spec volume)]}
+EOF
+)
+       sleep "${IB_PROFILE_SETTLE:-10}"  # a new instance profile takes a few seconds to be usable in a launch template
+       aw ec2 create-launch-template --launch-template-name "$NAME" --launch-template-data "$data" \
+         --tag-specifications "ResourceType=launch-template,Tags=[$(run_tags_cli),{Key=auto-delete,Value=no}]" >/dev/null \
+         || die "could not create launch template $NAME" ;;
+    *) die "could not determine whether launch template $NAME exists" ;;
+  esac
+  log "launch template $NAME ($ami, $BUILD_INSTANCE_TYPE, enclaves on)"
+
+  # Auto Scaling group of one. Image Builder detaches its instance; the group launches another.
+  probe 'xxx-never' aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$NAME" \
+    --query 'AutoScalingGroups[0].Tags[].{Key:Key,Value:Value}' --output json; rc=$?
+  case $rc in
+    0) printf '%s' "$PROBE_OUT" | tags_match || die "Auto Scaling group $NAME exists and is not run $RUN_ID's" ;;
+    1) aw autoscaling create-auto-scaling-group --auto-scaling-group-name "$NAME" \
+         --launch-template "LaunchTemplateName=$NAME,Version=\$Latest" --min-size 1 --max-size 1 --desired-capacity 1 \
+         --vpc-zone-identifier "$BUILD_SUBNET_ID" \
+         --tags "ResourceId=$NAME,ResourceType=auto-scaling-group,Key=$TAGS_OWNER_KEY,Value=$TAGS_OWNER_VALUE,PropagateAtLaunch=false" \
+                "ResourceId=$NAME,ResourceType=auto-scaling-group,Key=$TAGS_RUN_KEY,Value=$RUN_ID,PropagateAtLaunch=false" \
+                "ResourceId=$NAME,ResourceType=auto-scaling-group,Key=auto-delete,Value=no,PropagateAtLaunch=false" \
+         || die "could not create Auto Scaling group $NAME" ;;
+    *) die "could not determine whether Auto Scaling group $NAME exists" ;;
+  esac
+  record IB_ASG_NAME "$NAME"; record BUILD_SUBNET_ID "$BUILD_SUBNET_ID"; record NODE_ARCH "$NODE_ARCH"
+
+  log "waiting for the group's instance to be online in Systems Manager (up to 15 min)"
+  for _ in $(seq 1 90); do
+    iid=$(aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$NAME" \
+      --query "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].InstanceId | [0]" --output text 2>/dev/null)
+    if [[ "$iid" =~ ^i- ]]; then
+      ping=$(aw ssm describe-instance-information --filters "Key=InstanceIds,Values=$iid" \
+        --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null)
+      [ "$ping" = Online ] && { log "instance $iid is InService and online in Systems Manager"; break; }
+    fi
+    sleep 10
+  done
+  [ "${ping:-}" = Online ] || die "no instance of $NAME came online in Systems Manager; check the subnet's NAT route"
+  log "prerequisites ready for run $RUN_ID; run scripts/10-build-ami-imagebuilder.sh next"
+  exit 0
+fi
+
+# --------------------------------------------------------------------------------------------
+# down
+incomplete=0
+REMAINING="$RUN_STATE_DIR/ib-teardown-remaining.sh"; : > "$REMAINING"
+blocked() { printf '%s\n' "$1" >> "$REMAINING"; incomplete=1; warn "not deleted here; recorded in $REMAINING: $1"; }
+leave()   { warn "$1"; incomplete=1; }
+
+# Image Builder resources the driver recorded, dependents first. Each must carry this run's tags.
+for key in IB_IMAGE_ARN IB_PIPELINE_ARN IB_DISTRIBUTION_ARN IB_INFRA_ARN IB_RECIPE_ARN IB_COMPONENT_ARN; do
+  arn=$(rec "$key"); [ -n "$arn" ] || continue
+  probe 'ResourceNotFound' aw imagebuilder list-tags-for-resource --resource-arn "$arn" --query tags --output json; rc=$?
+  case $rc in
+    0) if printf '%s' "$PROBE_OUT" | tags_match; then
+         case $key in
+           IB_IMAGE_ARN)        aw imagebuilder delete-image --image-build-version-arn "$arn" >/dev/null ;;
+           IB_PIPELINE_ARN)     aw imagebuilder delete-image-pipeline --image-pipeline-arn "$arn" >/dev/null ;;
+           IB_DISTRIBUTION_ARN) aw imagebuilder delete-distribution-configuration --distribution-configuration-arn "$arn" >/dev/null ;;
+           IB_INFRA_ARN)        aw imagebuilder delete-infrastructure-configuration --infrastructure-configuration-arn "$arn" >/dev/null ;;
+           IB_RECIPE_ARN)       aw imagebuilder delete-image-recipe --image-recipe-arn "$arn" >/dev/null ;;
+           IB_COMPONENT_ARN)    aw imagebuilder delete-component --component-build-version-arn "$arn" >/dev/null ;;
+         esac && log "deleted $arn" || leave "could not delete $arn"
+       else leave "$arn is not tagged for run $RUN_ID; leaving it"; fi ;;
+    1) log "$arn not present" ;;
+    *) incomplete=1 ;;
+  esac
+done
+
+# Auto Scaling group: empty it, then delete it with its instances.
+probe 'xxx-never' aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$NAME" \
+  --query 'AutoScalingGroups[0].Tags[].{Key:Key,Value:Value}' --output json; rc=$?
+case $rc in
+  0) if printf '%s' "$PROBE_OUT" | tags_match; then
+       aw autoscaling delete-auto-scaling-group --auto-scaling-group-name "$NAME" --force-delete \
+         && log "deleting Auto Scaling group $NAME and its instances" || leave "could not delete Auto Scaling group $NAME"
+       for _ in $(seq 1 60); do
+         left=$(aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$NAME" --query 'length(AutoScalingGroups)' --output text 2>/dev/null)
+         [ "$left" = 0 ] && break; sleep 10
+       done
+       [ "$left" = 0 ] || leave "Auto Scaling group $NAME is still being deleted"
+     else leave "Auto Scaling group $NAME is not tagged for run $RUN_ID; leaving it"; fi ;;
+  1) log "Auto Scaling group $NAME not present" ;;
+  *) incomplete=1 ;;
+esac
+
+# IAM: the two roles and the instance profile.
+for r in "$NAME-exec" "$NAME-instance"; do
+  probe 'NoSuchEntity' aws iam list-role-tags --role-name "$r" --query Tags --output json; rc=$?
+  case $rc in
+    0) printf '%s' "$PROBE_OUT" | tags_match || { leave "IAM role $r is not tagged for run $RUN_ID; leaving it"; continue; }
+       if [ "$r" = "$NAME-instance" ]; then
+         aws iam remove-role-from-instance-profile --instance-profile-name "$r" --role-name "$r" 2>/dev/null
+         aws iam delete-instance-profile --instance-profile-name "$r" || leave "could not delete instance profile $r"
+       fi
+       for p in $(aws iam list-role-policies --role-name "$r" --query 'PolicyNames[]' --output text); do
+         aws iam delete-role-policy --role-name "$r" --policy-name "$p" || leave "could not delete policy $p of $r"; done
+       for a in $(aws iam list-attached-role-policies --role-name "$r" --query 'AttachedPolicies[].PolicyArn' --output text); do
+         aws iam detach-role-policy --role-name "$r" --policy-arn "$a" || leave "could not detach $a from $r"; done
+       aws iam delete-role --role-name "$r" && log "deleted IAM role $r" || leave "could not delete IAM role $r" ;;
+    1) log "IAM role $r not present" ;;
+    *) incomplete=1 ;;
+  esac
+done
+
+# EC2: launch template and security group (after the instances are gone).
+probe 'NotFound' aw ec2 describe-launch-templates --launch-template-names "$NAME" --query 'LaunchTemplates[0]' --output json; rc=$?
+case $rc in
+  0) if printf '%s' "$PROBE_OUT" | jtags | tags_match; then
+       blocked "aws ec2 delete-launch-template --region $AWS_REGION --launch-template-id $(printf '%s' "$PROBE_OUT" | json_get 'd["LaunchTemplateId"]')"
+     else leave "launch template $NAME is not tagged for run $RUN_ID; leaving it"; fi ;;
+  1) log "launch template $NAME not present" ;;
+  *) incomplete=1 ;;
+esac
+sg=$(rec IB_SECURITY_GROUP_ID)
+if [ -n "$sg" ]; then
+  probe 'InvalidGroup.NotFound' aw ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].Tags' --output json; rc=$?
+  case $rc in
+    0) printf '%s' "$PROBE_OUT" | tags_match && blocked "aws ec2 delete-security-group --region $AWS_REGION --group-id $sg" \
+         || leave "security group $sg is not tagged for run $RUN_ID; leaving it" ;;
+    1) log "security group $sg not present" ;;
+    *) incomplete=1 ;;
+  esac
+fi
+
+[ -s "$REMAINING" ] && { echo "Deletes the host may block are listed in order; run them yourself:"; echo "  $REMAINING"; }
+[ "$incomplete" = 0 ] || { echo "IMAGE BUILDER CLEAN UP INCOMPLETE: see the warnings above."; exit 1; }
+echo "Image Builder prerequisites removed for run $RUN_ID."

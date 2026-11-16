@@ -9,7 +9,8 @@
         "description": "EKS-optimized AL2023 with Nitro Sandbox runtime (pod isolation)",
         "amiTags": {
           "Name": "eks-al2023-pod-isolation",
-          "ManagedBy": "ImageBuilder",
+          "ManagedBy": "al2023-ami",
+          "RunId": "RUN_ID",
           "KubernetesVersion": "KUBERNETES_VERSION",
           "BuildDate": "{{ imagebuilder:buildDate }}",
           "auto-delete": "no"

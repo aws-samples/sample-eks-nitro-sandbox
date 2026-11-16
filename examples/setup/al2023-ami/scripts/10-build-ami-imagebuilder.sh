@@ -1,179 +1,147 @@
 #!/usr/bin/env bash
 # 10-build-ami-imagebuilder.sh: build the AL2023 Nitro Sandbox node AMI with EC2 Image Builder.
 #
-# This is an OPTIONAL alternative to the Packer build (10-build-ami-packer.sh). It drives the EC2
-# Image Builder pipeline via the aws imagebuilder CLI to produce the same AL2023 -pod-isolation
-# AMI. The install steps are defined in the AWSTOE component (deploy/imagebuilder/component.yaml),
-# which mirrors the upstream amazon-eks-ami install-pod-isolation.sh provisioner.
+# An optional alternative to the Packer build (10-build-ami-packer.sh) that produces the same
+# AL2023 -pod-isolation AMI. The install steps are the AWSTOE component in
+# deploy/imagebuilder/component.yaml, which mirrors the upstream amazon-eks-ami
+# install-pod-isolation.sh provisioner.
 #
-#   RUN_ID=<id> scripts/10-build-ami-imagebuilder.sh
+#   RUN_ID=<id> BUILD_SUBNET_ID=<private subnet> scripts/ib-prereqs.sh up
+#   RUN_ID=<id> KUBERNETES_BUILD_DATE=<date> scripts/10-build-ami-imagebuilder.sh
 #
-# NOT RUN LIVE: unlike the Packer path, this script has not been run end to end. The page says so.
+# The build instance must have Nitro Enclaves enabled, and an infrastructure configuration has no
+# enclave setting. Image Builder therefore takes the build instance from the Auto Scaling group
+# ib-prereqs.sh creates (parentInstance), whose launch template enables enclaves. That instance
+# keeps the group's AMI, instance type, profile, subnet and security group; this script checks
+# the template before it starts. See "Build on an instance from an Auto Scaling group":
+# https://docs.aws.amazon.com/imagebuilder/latest/userguide/infra-config-parent-instance.html
 #
-# CAVEAT: EC2 Image Builder's CreateInfrastructureConfiguration and InstanceConfiguration APIs
-# have NO enclave field (verified against the API docs). The ONLY way to get an enclave-enabled
-# build instance is the parentInstance-from-ASG path: an Auto Scaling group whose launch template
-# sets EnclaveOptions.Enabled=true. This applies to the BUILD phase only. The resulting AMI is
-# enclave-capable when consumed by a node group or Karpenter EC2NodeClass that sets
-# EnclaveOptions.Enabled=true on its own launch template.
-#
-# See:
-# - https://docs.aws.amazon.com/imagebuilder/latest/userguide/manage-infra-config.html
-# - https://docs.aws.amazon.com/imagebuilder/latest/APIReference/API_CreateInfrastructureConfiguration.html
-#
+# Each Image Builder resource is tagged ManagedBy and RunId and its ARN is recorded in the run
+# state as soon as it exists, so `ib-prereqs.sh down` can remove it. The output AMI and its
+# snapshots carry the same tags and the AMI id is recorded, so clean.sh can remove them.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/common.sh"
 require_run_id
+STATE="$RUN_STATE_DIR/run-state.env"
+rec()    { sed -n "s/^$1=//p" "$STATE" 2>/dev/null | tail -n 1; }
+record() { printf '%s=%s\n' "$1" "$2" >> "$STATE"; }
+aw()     { aws --region "$AWS_REGION" "$@"; }
 
-: "${BUILD_SUBNET_ID:?set BUILD_SUBNET_ID to a PRIVATE subnet in an AZ with enclave-capable capacity}"
-: "${BUILD_INSTANCE_PROFILE:?set BUILD_INSTANCE_PROFILE to an IAM instance profile (SSM + S3 read access)}"
-: "${BUILD_SECURITY_GROUP_ID:?set BUILD_SECURITY_GROUP_ID to a security group for the build instance}"
-: "${BUILD_ASG_NAME:?set BUILD_ASG_NAME to an Auto Scaling group with EnclaveOptions.Enabled=true on its launch template}"
-: "${BUILD_S3_BUCKET:?set BUILD_S3_BUCKET to an S3 bucket for Image Builder logs}"
+: "${BUILD_ASG_NAME:=$(rec IB_ASG_NAME)}"
+: "${BUILD_SECURITY_GROUP_ID:=$(rec IB_SECURITY_GROUP_ID)}"
+: "${BUILD_INSTANCE_PROFILE:=$(rec IB_INSTANCE_PROFILE)}"
+: "${BUILD_EXECUTION_ROLE:=$(rec IB_EXECUTION_ROLE)}"
+: "${BUILD_SUBNET_ID:=$(rec BUILD_SUBNET_ID)}"
+: "${BUILD_S3_BUCKET:=}"            # optional: also write the build logs to this bucket
 : "${POD_ISOLATION_FIRECRACKER_VERSION:=latest}"
-: "${BUILD_SNS_TOPIC_ARN:=}"  # Optional
-
+: "${BUILD_WAIT_MINUTES:=120}"
 : "${KUBERNETES_BUILD_DATE:?set KUBERNETES_BUILD_DATE to the amazon-eks bundle build date for KUBERNETES_VERSION (the s3://amazon-eks/<version>/<build date> folder)}"
+for v in BUILD_ASG_NAME BUILD_SECURITY_GROUP_ID BUILD_INSTANCE_PROFILE BUILD_EXECUTION_ROLE BUILD_SUBNET_ID; do
+  [ -n "${!v}" ] || die "$v is not set and run $RUN_ID has no value for it; run scripts/ib-prereqs.sh up first"
+done
 
 # These values are substituted into the component's shell commands, so accept only plain values.
 [[ "$KUBERNETES_VERSION" =~ ^1\.[0-9]{2}$ ]] || die "KUBERNETES_VERSION '$KUBERNETES_VERSION' must look like 1.36"
 [[ "$KUBERNETES_BUILD_DATE" =~ ^[0-9A-Za-z._-]{1,32}$ ]] || die "KUBERNETES_BUILD_DATE '$KUBERNETES_BUILD_DATE' has characters outside [0-9A-Za-z._-]"
 [[ "$POD_ISOLATION_FIRECRACKER_VERSION" =~ ^(latest|v[0-9]+\.[0-9]+\.[0-9]+)$ ]] || die "POD_ISOLATION_FIRECRACKER_VERSION '$POD_ISOLATION_FIRECRACKER_VERSION' must be 'latest' or look like v1.18.0"
-
+[[ "$BUILD_EXECUTION_ROLE" =~ ^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$ ]] || die "BUILD_EXECUTION_ROLE '$BUILD_EXECUTION_ROLE' must be an IAM role ARN"
 mkdir -p "$EVIDENCE_DIR" "$LOG_DIR"
 
-# The architecture follows NODE_ARCH. Parent image: the EKS-optimized AL2023 AMI for that
-# architecture, resolved from the public SSM parameter (an AMI id is a valid Image Builder parent).
-case "$NODE_ARCH" in
-  amd64) SSM_ARCH=x86_64; : "${BUILD_INSTANCE_TYPE:=m8i.4xlarge}" ;;
-  arm64) SSM_ARCH=arm64;  : "${BUILD_INSTANCE_TYPE:=m8g.4xlarge}" ;;
-esac
-arch_matches_type "$BUILD_INSTANCE_TYPE" || die "BUILD_INSTANCE_TYPE '$BUILD_INSTANCE_TYPE' is not a $NODE_ARCH instance type; the parent image follows NODE_ARCH"
-PARENT_IMAGE_ARN=$(aws ssm get-parameter --region "$AWS_REGION" \
-  --name "/aws/service/eks/optimized-ami/${KUBERNETES_VERSION}/amazon-linux-2023/${SSM_ARCH}/standard/recommended/image_id" \
-  --query Parameter.Value --output text) || die "could not resolve the EKS-optimized AL2023 $SSM_ARCH parent image for Kubernetes $KUBERNETES_VERSION"
-[[ "$PARENT_IMAGE_ARN" =~ ^ami-[0-9a-f]+$ ]] || die "the parent image lookup returned '$PARENT_IMAGE_ARN', not an AMI id"
-log "parent image $PARENT_IMAGE_ARN ($SSM_ARCH), build instance type $BUILD_INSTANCE_TYPE"
+# The group's launch template decides the build instance: check it has enclaves on and the
+# architecture NODE_ARCH asks for.
+lt=$(aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$BUILD_ASG_NAME" \
+  --query 'AutoScalingGroups[0].LaunchTemplate.LaunchTemplateName' --output text) || die "could not read Auto Scaling group $BUILD_ASG_NAME"
+[ -n "$lt" ] && [ "$lt" != None ] || die "Auto Scaling group $BUILD_ASG_NAME has no launch template"
+read -r itype enclave < <(aw ec2 describe-launch-template-versions --launch-template-name "$lt" --versions '$Latest' \
+  --query 'LaunchTemplateVersions[0].LaunchTemplateData.[InstanceType,EnclaveOptions.Enabled]' --output text) \
+  || die "could not read launch template $lt"
+[ "$enclave" = True ] || die "launch template $lt does not enable Nitro Enclaves; the build needs them"
+arch_matches_type "$itype" || die "launch template $lt uses $itype, which is not a $NODE_ARCH instance type"
+case "$NODE_ARCH" in amd64) ssm_arch=x86_64 ;; arm64) ssm_arch=arm64 ;; esac
+parent=$(aw ssm get-parameter \
+  --name "/aws/service/eks/optimized-ami/${KUBERNETES_VERSION}/amazon-linux-2023/${ssm_arch}/standard/recommended/image_id" \
+  --query Parameter.Value --output text) || die "could not resolve the EKS-optimized AL2023 $ssm_arch image for Kubernetes $KUBERNETES_VERSION"
+[[ "$parent" =~ ^ami-[0-9a-f]+$ ]] || die "the parent image lookup returned '$parent', not an AMI id"
+log "group $BUILD_ASG_NAME: $itype from $lt, enclaves on; parent image $parent ($ssm_arch)"
 
-# Component, recipe, and pipeline names
-COMPONENT_NAME="EKSNitroSandboxAL2023-${RUN_ID}"
-RECIPE_NAME="eks-nitro-sandbox-al2023-${RUN_ID}"
-INFRA_CONFIG_NAME="eks-nitro-sandbox-build-config-${RUN_ID}"
-DISTRO_CONFIG_NAME="eks-nitro-sandbox-distribution-${RUN_ID}"
-PIPELINE_NAME="eks-nitro-sandbox-pipeline-${RUN_ID}"
+name="${RESOURCE_PREFIX}-ib-${RUN_ID}"
+tags="$TAGS_OWNER_KEY=$TAGS_OWNER_VALUE,$TAGS_RUN_KEY=$RUN_ID,auto-delete=no"
+D="$SAMPLE_DIR/deploy/imagebuilder"
+tmpd=$(mktemp -d); trap 'rm -rf "$tmpd"' EXIT
 
-log "Creating EC2 Image Builder component from deploy/imagebuilder/component.yaml"
-# Substitute the component variables (KUBERNETES_VERSION, KUBERNETES_BUILD_DATE, FIRECRACKER_VERSION)
-# Image Builder expects these as component parameters, but the AWSTOE YAML uses {{ VAR }} syntax.
-# For simplicity, we pre-substitute them here before uploading.
-COMPONENT_DOC=$(mktemp)
 sed -e "s|{{ KUBERNETES_VERSION }}|${KUBERNETES_VERSION}|g" \
     -e "s|{{ KUBERNETES_BUILD_DATE }}|${KUBERNETES_BUILD_DATE}|g" \
-    -e "s|{{ FIRECRACKER_VERSION }}|${POD_ISOLATION_FIRECRACKER_VERSION}|g" \
-    "$HERE/../deploy/imagebuilder/component.yaml" > "$COMPONENT_DOC"
+    -e "s|{{ FIRECRACKER_VERSION }}|${POD_ISOLATION_FIRECRACKER_VERSION}|g" "$D/component.yaml" > "$tmpd/component.yaml"
+arn=$(aw imagebuilder create-component --name "$name" --semantic-version 1.0.0 --platform Linux \
+  --description "EKS Nitro Sandbox runtime for AL2023 (run $RUN_ID)" --data "file://$tmpd/component.yaml" \
+  --tags "$tags" --query componentBuildVersionArn --output text)
+record IB_COMPONENT_ARN "$arn"; log "component $arn"
 
-COMPONENT_ARN=$(aws imagebuilder create-component \
-  --name "$COMPONENT_NAME" \
-  --semantic-version "1.0.0" \
-  --description "EKS Nitro Sandbox runtime for AL2023 (run ${RUN_ID})" \
-  --platform Linux \
-  --data "file://${COMPONENT_DOC}" \
-  --region "$AWS_REGION" \
-  --tags "ManagedBy=${TAGS_OWNER_VALUE}" "RunId=${RUN_ID}" "auto-delete=no" \
-  --query 'componentBuildVersionArn' \
-  --output text)
-log "Component created: $COMPONENT_ARN"
-printf 'COMPONENT_ARN=%s\n' "$COMPONENT_ARN" >> "$EVIDENCE_DIR/run-evidence.env"
+jq --arg name "$name" --arg parent "$parent" --arg comp "$arn" \
+  '.name = $name | .parentImage = $parent | .components[0].componentArn = $comp' "$D/image-recipe.json" > "$tmpd/recipe.json"
+arn=$(aw imagebuilder create-image-recipe --cli-input-json "file://$tmpd/recipe.json" --tags "$tags" \
+  --query imageRecipeArn --output text)
+record IB_RECIPE_ARN "$arn"; recipe=$arn; log "recipe $arn"
 
-log "Creating image recipe"
-RECIPE_DOC=$(mktemp)
-jq --arg parent "$PARENT_IMAGE_ARN" \
-   --arg comp "$COMPONENT_ARN" \
-   --arg name "$RECIPE_NAME" \
-   '.name = $name | .parentImage = $parent | .components[0].componentArn = $comp' \
-   "$HERE/../deploy/imagebuilder/image-recipe.json" > "$RECIPE_DOC"
+jq --arg name "$name" --arg profile "$BUILD_INSTANCE_PROFILE" --arg sg "$BUILD_SECURITY_GROUP_ID" \
+   --arg subnet "$BUILD_SUBNET_ID" --arg asg "$BUILD_ASG_NAME" --arg itype "$itype" --arg bucket "$BUILD_S3_BUCKET" \
+   --arg owner "$TAGS_OWNER_VALUE" --arg run "$RUN_ID" \
+   '.name = $name | .instanceTypes = [$itype] | .instanceProfileName = $profile | .securityGroupIds = [$sg]
+    | .subnetId = $subnet | .parentInstance.autoScalingGroup.name = $asg
+    | .resourceTags = {"ManagedBy": $owner, "RunId": $run, "auto-delete": "no"}
+    | if $bucket == "" then del(.logging) else .logging.s3Logs.s3BucketName = $bucket end' \
+   "$D/infrastructure-config.json" > "$tmpd/infra.json"
+arn=$(aw imagebuilder create-infrastructure-configuration --cli-input-json "file://$tmpd/infra.json" --tags "$tags" \
+  --query infrastructureConfigurationArn --output text)
+record IB_INFRA_ARN "$arn"; infra=$arn; log "infrastructure configuration $arn"
 
-RECIPE_ARN=$(aws imagebuilder create-image-recipe \
-  --cli-input-json "file://${RECIPE_DOC}" \
-  --region "$AWS_REGION" \
-  --tags "ManagedBy=${TAGS_OWNER_VALUE}" "RunId=${RUN_ID}" "auto-delete=no" \
-  --query 'imageRecipeArn' \
-  --output text)
-log "Recipe created: $RECIPE_ARN"
-printf 'RECIPE_ARN=%s\n' "$RECIPE_ARN" >> "$EVIDENCE_DIR/run-evidence.env"
+jq --arg name "$name" --arg region "$AWS_REGION" --arg k8s "$KUBERNETES_VERSION" \
+   --arg owner "$TAGS_OWNER_VALUE" --arg run "$RUN_ID" \
+   '.name = $name | .distributions[0].region = $region
+    | .distributions[0].amiDistributionConfiguration.amiTags += {"KubernetesVersion": $k8s, "ManagedBy": $owner, "RunId": $run}' \
+   "$D/distribution-config.json" > "$tmpd/distribution.json"
+arn=$(aw imagebuilder create-distribution-configuration --cli-input-json "file://$tmpd/distribution.json" --tags "$tags" \
+  --query distributionConfigurationArn --output text)
+record IB_DISTRIBUTION_ARN "$arn"; dist=$arn; log "distribution configuration $arn"
 
-log "Creating infrastructure configuration (parentInstance: ASG $BUILD_ASG_NAME)"
-INFRA_DOC=$(mktemp)
-jq --arg name "$INFRA_CONFIG_NAME" \
-   --arg profile "$BUILD_INSTANCE_PROFILE" \
-   --arg sg "$BUILD_SECURITY_GROUP_ID" \
-   --arg subnet "$BUILD_SUBNET_ID" \
-   --arg bucket "$BUILD_S3_BUCKET" \
-   --arg asg "$BUILD_ASG_NAME" \
-   --arg sns "$BUILD_SNS_TOPIC_ARN" \
-   --arg itype "$BUILD_INSTANCE_TYPE" \
-   '.name = $name | .instanceTypes = [$itype] | .instanceProfileName = $profile | .securityGroupIds = [$sg] | .subnetId = $subnet | .logging.s3Logs.s3BucketName = $bucket | .parentInstance.autoScalingGroup.name = $asg | if $sns != "" then .snsTopicArn = $sns else . end' \
-   "$HERE/../deploy/imagebuilder/infrastructure-config.json" > "$INFRA_DOC"
+# Image tests would launch a separate test instance from the infrastructure configuration, which
+# cannot enable enclaves; the component's own build phase checks what it installs.
+arn=$(aw imagebuilder create-image-pipeline --name "$name" --image-recipe-arn "$recipe" \
+  --infrastructure-configuration-arn "$infra" --distribution-configuration-arn "$dist" \
+  --execution-role "$BUILD_EXECUTION_ROLE" --image-tests-configuration imageTestsEnabled=false \
+  --tags "$tags" --query imagePipelineArn --output text)
+record IB_PIPELINE_ARN "$arn"; pipeline=$arn; log "pipeline $arn"
 
-INFRA_ARN=$(aws imagebuilder create-infrastructure-configuration \
-  --cli-input-json "file://${INFRA_DOC}" \
-  --region "$AWS_REGION" \
-  --tags "ManagedBy=${TAGS_OWNER_VALUE}" "RunId=${RUN_ID}" "auto-delete=no" \
-  --query 'infrastructureConfigurationArn' \
-  --output text)
-log "Infrastructure config created: $INFRA_ARN"
-printf 'INFRA_ARN=%s\n' "$INFRA_ARN" >> "$EVIDENCE_DIR/run-evidence.env"
+image=$(aw imagebuilder start-image-pipeline-execution --image-pipeline-arn "$pipeline" \
+  --query imageBuildVersionArn --output text)
+record IB_IMAGE_ARN "$image"; log "build started: $image"
 
-log "Creating distribution configuration"
-DISTRO_DOC=$(mktemp)
-jq --arg name "$DISTRO_CONFIG_NAME" \
-   --arg region "$AWS_REGION" \
-   --arg k8s "$KUBERNETES_VERSION" \
-   '.name = $name | .distributions[0].region = $region | .distributions[0].amiDistributionConfiguration.amiTags.KubernetesVersion = $k8s' \
-   "$HERE/../deploy/imagebuilder/distribution-config.json" > "$DISTRO_DOC"
+log "waiting for the build (up to $BUILD_WAIT_MINUTES min)"
+status=""
+for _ in $(seq 1 "$BUILD_WAIT_MINUTES"); do
+  status=$(aw imagebuilder get-image --image-build-version-arn "$image" --query image.state.status --output text 2>/dev/null || echo UNKNOWN)
+  case "$status" in AVAILABLE|FAILED|CANCELLED|DELETED) break ;; esac
+  sleep 60
+done
+log "build status: $status"
+if [ "$status" != AVAILABLE ]; then
+  reason=$(aw imagebuilder get-image --image-build-version-arn "$image" --query image.state.reason --output text 2>/dev/null || true)
+  die "the Image Builder build ended $status: ${reason:-no reason given}. Logs: CloudWatch log group /aws/imagebuilder/$name"
+fi
 
-DISTRO_ARN=$(aws imagebuilder create-distribution-configuration \
-  --cli-input-json "file://${DISTRO_DOC}" \
-  --region "$AWS_REGION" \
-  --tags "ManagedBy=${TAGS_OWNER_VALUE}" "RunId=${RUN_ID}" "auto-delete=no" \
-  --query 'distributionConfigurationArn' \
-  --output text)
-log "Distribution config created: $DISTRO_ARN"
-printf 'DISTRO_ARN=%s\n' "$DISTRO_ARN" >> "$EVIDENCE_DIR/run-evidence.env"
-
-log "Creating image pipeline"
-PIPELINE_ARN=$(aws imagebuilder create-image-pipeline \
-  --name "$PIPELINE_NAME" \
-  --image-recipe-arn "$RECIPE_ARN" \
-  --infrastructure-configuration-arn "$INFRA_ARN" \
-  --distribution-configuration-arn "$DISTRO_ARN" \
-  --region "$AWS_REGION" \
-  --tags "ManagedBy=${TAGS_OWNER_VALUE}" "RunId=${RUN_ID}" "auto-delete=no" \
-  --query 'imagePipelineArn' \
-  --output text)
-log "Pipeline created: $PIPELINE_ARN"
-printf 'PIPELINE_ARN=%s\n' "$PIPELINE_ARN" >> "$EVIDENCE_DIR/run-evidence.env"
-
-log "Starting image pipeline execution (this takes ~30-40 min)"
-EXECUTION_ARN=$(aws imagebuilder start-image-pipeline-execution \
-  --image-pipeline-arn "$PIPELINE_ARN" \
-  --region "$AWS_REGION" \
-  --query 'imageBuildVersionArn' \
-  --output text)
-log "Execution started: $EXECUTION_ARN"
-printf 'EXECUTION_ARN=%s\n' "$EXECUTION_ARN" >> "$EVIDENCE_DIR/run-evidence.env"
-
-log "Pipeline execution $EXECUTION_ARN is running."
-log "Monitor progress in the EC2 Image Builder console or via:"
-log "  aws imagebuilder get-image --image-build-version-arn $EXECUTION_ARN --region $AWS_REGION"
-log ""
-log "To wait for completion and retrieve the AMI ID:"
-log "  aws imagebuilder wait image-build-complete --image-build-version-arn $EXECUTION_ARN --region $AWS_REGION"
-log "  aws imagebuilder get-image --image-build-version-arn $EXECUTION_ARN --region $AWS_REGION --query 'image.outputResources.amis[0].image' --output text"
-log ""
-log "NOTE: This script does not block on pipeline completion. The AMI ID will be available after the build finishes."
-
-# Cleanup temp files
-rm -f "$COMPONENT_DOC" "$RECIPE_DOC" "$INFRA_DOC" "$DISTRO_DOC"
-printf '%s\n' "$EXECUTION_ARN"
+ami=$(aw imagebuilder get-image --image-build-version-arn "$image" \
+  --query "image.outputResources.amis[?region=='$AWS_REGION'].image | [0]" --output text)
+[[ "$ami" =~ ^ami-[0-9a-f]+$ ]] || die "the build reported '$ami', which is not an AMI id"
+record AMI_ID "$ami"   # before tagging, so clean.sh can find it even if a later step fails
+read -r ami_name ami_arch < <(aw ec2 describe-images --image-ids "$ami" --query 'Images[0].[Name,Architecture]' --output text)
+aw ec2 create-tags --resources "$ami" \
+  --tags "Key=$TAGS_OWNER_KEY,Value=$TAGS_OWNER_VALUE" "Key=$TAGS_RUN_KEY,Value=$RUN_ID" "Key=auto-delete,Value=no"
+for snap in $(aw ec2 describe-images --image-ids "$ami" --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' --output text); do
+  [ "$snap" = None ] && continue
+  aw ec2 create-tags --resources "$snap" \
+    --tags "Key=$TAGS_OWNER_KEY,Value=$TAGS_OWNER_VALUE" "Key=$TAGS_RUN_KEY,Value=$RUN_ID" "Key=auto-delete,Value=no"
+done
+printf 'AMI_ID=%s\nAMI_NAME=%s\nAMI_ARCH=%s\nAMI_BUILDER=imagebuilder\n' "$ami" "$ami_name" "$ami_arch" >> "$EVIDENCE_DIR/run-evidence.env"
+log "built AMI: $ami ($ami_name, $ami_arch)"
+printf '%s\n' "$ami"
