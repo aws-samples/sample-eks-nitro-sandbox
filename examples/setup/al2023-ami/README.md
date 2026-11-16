@@ -207,7 +207,7 @@ pod.
 ```text
 $ ./test.sh
 == 1/5 the sandbox node is Ready and carries eks.amazonaws.com/nitro-sandbox=true ==
-  node: ip-192-168-106-197.ec.internal  Ready: True
+  node: ip-10-0-0-1.ec2.internal  Ready: True
   PASS  the sandbox node is Ready
   PASS  the node carries eks.amazonaws.com/nitro-sandbox=true
 == 2/5 the node advertises sandbox capacity ==
