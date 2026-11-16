@@ -138,7 +138,7 @@ Cedar policy, sets the gate to the policy's measurement, and starts the pods.
   network policy enforcement: on
 == 2/8 create the ECR repository and the KMS key ==
   created ECR repository encrypted-image-sample
-  created KMS key arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/1734bb73-1b98-4176-9894-4851172cf7c7
+  created KMS key arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/15445d9a-807c-4325-974a-bbf0e1975f03
   it denies every decrypt already: created with a policy, not the default one
 == 3/8 create the pod's IAM role and the born-denied key policy ==
   created IAM role arn:aws:iam::<ACCOUNT_ID>:role/encrypted-image-sample-pod
@@ -146,15 +146,15 @@ Cedar policy, sets the gate to the policy's measurement, and starts the pods.
   waiting for the new IAM role to be visible to KMS...
   the key policy allows no decrypt yet (gated on an all-zero measurement)
 == 4/8 create the namespace, the service account, the association and the egress policy ==
-  created Pod Identity association a-wvityzeszzb7kf12b
+  created Pod Identity association a-dkahwgmn2rynnjowk
   egress policy applied and handed to the nodes (1 PolicyEndpoint)
 == 5/8 encrypt every layer and push to ECR ==
-  published <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample:v1-1734bb73
+  published <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample:v1-15445d9a
 == 6/8 check every published layer is ciphertext wrapped with this key ==
   all 1 layer(s) encrypted and wrapped with this key
 == 7/8 generate the Cedar policy and set the gate to its measurement ==
-  predicted PCR17: 39d27a343980e05d6eab151889f9cda9e1a7320b847286bc2caf30ca65b897aed1d801a12f12fa3e1a7faa44ee0f2e5b
-  image digest pinned under both permits: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:690b253fb55d8234cc2158ab18d4e6c8e4c85f2b3c6800eeaee0db0fb7e377e8
+  predicted PCR17: 2c6d4181c980591b12f0fce5ea7d9d59f7f8af311f0aa6fff3cce045c4a7d37162310473faae3464756a250ad3cb78fd
+  image digest pinned under both permits: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:9fe633adc51efb90218dcbdfee79220fffbfb7e2dd45014389b090687302a9a8
   the gate now releases the layer key only to this measurement
 == 8/8 start the pods ==
   the egress policy is programmed for encrypted-image-demo on its node
@@ -219,7 +219,7 @@ media type gains an `+encrypted` suffix, and each layer carries two annotations.
 
 ```bash
 aws ecr batch-get-image --repository-name encrypted-image-sample \
-  --image-ids imageTag=v1-1734bb73 \
+  --image-ids imageTag=v1-15445d9a \
   --accepted-media-types application/vnd.oci.image.manifest.v1+json \
   --query 'images[0].imageManifest' --output text \
   | jq '{config: .config.digest,
@@ -228,12 +228,12 @@ aws ecr batch-get-image --repository-name encrypted-image-sample \
 
 ```text
 {
-  "config": "sha256:acbf110d8a44591c61483aabb846d7f5de398d7f01d7362166e3e1d7184bb07b",
+  "config": "sha256:343159311c5e3500b7ca389067d95a9b78d94bcf93294759074cec76bb8461e9",
   "layers": [
     {
       "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip+encrypted",
-      "digest": "sha256:6dea5028fecd0a8be466ff4de0c85e239532c1046e5521ac116267001bf6ebdf",
-      "size": 37483317,
+      "digest": "sha256:5e1520e18ad34e446c4ccd7062c1b8c1ceb0d2d00118ff235b9b092391808b1f",
+      "size": 37423695,
       "annotations": [
         "org.opencontainers.image.enc.keys.provider.awskms",
         "org.opencontainers.image.enc.pubopts"
@@ -258,7 +258,7 @@ gated, and holds the wrapped layer key itself.
 ```text
 {
   "v": 1,
-  "key_arn": "arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/1734bb73-1b98-4176-9894-4851172cf7c7",
+  "key_arn": "arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/15445d9a-807c-4325-974a-bbf0e1975f03",
   "ciphertext_bytes": 472
 }
 ```
@@ -284,7 +284,7 @@ download goes to the repository's `tmp/`, beside the run files `setup.sh` writes
   private="$(mktemp -d signed-url.XXXXXX)"
   trap 'rm -rf "$private"' EXIT
   aws ecr get-download-url-for-layer --repository-name encrypted-image-sample \
-    --layer-digest sha256:6dea5028fecd0a8be466ff4de0c85e239532c1046e5521ac116267001bf6ebdf \
+    --layer-digest sha256:5e1520e18ad34e446c4ccd7062c1b8c1ceb0d2d00118ff235b9b092391808b1f \
     --query downloadUrl --output json > "$private/url.json"
   # jq reads the exact string, and writes the config only for one plain https URL of
   # printable ASCII with no space, quote or backslash, so nothing in it is curl config
@@ -303,15 +303,15 @@ download goes to the repository's `tmp/`, beside the run files `setup.sh` writes
 ```
 
 ```text
-6dea5028fecd0a8be466ff4de0c85e239532c1046e5521ac116267001bf6ebdf  layer.blob
+5e1520e18ad34e446c4ccd7062c1b8c1ceb0d2d00118ff235b9b092391808b1f  layer.blob
 
 gzip: layer.blob: not in gzip format
-DOS executable (COM)
+data
 ```
 
-`file` reporting "DOS executable (COM)" is worth a word: it is not one. `file` guesses from
-the first few bytes, and on ciphertext that guess is arbitrary, which is the point. On an
-earlier run of this blueprint the same command said `data`.
+`file` reports `data`, its answer for bytes in no format it recognizes. It guesses from the
+first few bytes, so on another run it can name some format instead, such as "DOS executable
+(COM)"; on ciphertext any such guess is arbitrary.
 
 The digest matching the descriptor is what makes the failed `gzip -t` mean something: these
 are exactly the bytes the parent instance pulls, not a truncated download. `file` has
@@ -353,10 +353,9 @@ numerically, and `supplementalGroupsPolicy: Strict`, lets it pin the identity ex
 group set:
 
 ```text
-warning: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample:v1-1734bb73: image
+warning: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample:v1-15445d9a: image
 has encrypted layers, cannot read /etc/group from encrypted layers. Image-derived
-supplemental groups are unknown, so the policy will permit additional groups beyond the
-ones it pins.
+supplemental groups are unknown, so the policy does not pin them.
 ```
 
 `imagePullPolicy: Always` is deliberate, and differs from the other blueprints here: the guest
@@ -404,7 +403,7 @@ permit(
     resource == Workload::Container::"main"
 )
 when {
-    context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:690b253fb55d8234cc2158ab18d4e6c8e4c85f2b3c6800eeaee0db0fb7e377e8" &&
+    context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:9fe633adc51efb90218dcbdfee79220fffbfb7e2dd45014389b090687302a9a8" &&
     context.working_dir == "/" &&
     context.run_as_user == 65534 &&
     context.run_as_group == 65534 &&
@@ -419,8 +418,8 @@ moves:
 ```text
     context.env_names == ["PATH", "AWS_REGION", "AWS_DEFAULT_REGION",
                       "AWS_STS_REGIONAL_ENDPOINTS",
-                      "AWS_CONTAINER_CREDENTIALS_FULL_URI",
                       "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+                      "KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT",
 ```
 
 The same digest is pinned again under the permit that prepares the image, which is the
@@ -433,7 +432,7 @@ permit(
     resource
 )
 when {
-    context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:690b253fb55d8234cc2158ab18d4e6c8e4c85f2b3c6800eeaee0db0fb7e377e8"
+    context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:9fe633adc51efb90218dcbdfee79220fffbfb7e2dd45014389b090687302a9a8"
 };
 ```
 
@@ -451,11 +450,11 @@ and the raw value changes with it (Amazon EKS User Guide, *Cedar policies*).
 
 ```text
 --- Predicted PCR17 ---
-39d27a343980e05d6eab151889f9cda9e1a7320b847286bc2caf30ca65b897aed1d801a12f12fa3e1a7faa44ee0f2e5b
+2c6d4181c980591b12f0fce5ea7d9d59f7f8af311f0aa6fff3cce045c4a7d37162310473faae3464756a250ad3cb78fd
 --- KMS Key Policy Condition ---
 "Condition": {
   "StringEqualsIgnoreCase": {
-    "kms:RecipientAttestation:PCR17": "39d27a343980e05d6eab151889f9cda9e1a7320b847286bc2caf30ca65b897aed1d801a12f12fa3e1a7faa44ee0f2e5b",
+    "kms:RecipientAttestation:PCR17": "2c6d4181c980591b12f0fce5ea7d9d59f7f8af311f0aa6fff3cce045c4a7d37162310473faae3464756a250ad3cb78fd",
     "kms:RecipientAttestation:PCR8:ServiceName": "eks.amazonaws.com"
   }
 }
@@ -484,8 +483,8 @@ aws kms get-key-policy --key-id "$KMS_KEY_ARN" --policy-name default \
     "Resource": "*",
     "Condition": {
       "StringEqualsIgnoreCase": {
-        "kms:RecipientAttestation:PCR8:ServiceName": "eks.amazonaws.com",
-        "kms:RecipientAttestation:PCR17": "39d27a343980e05d6eab151889f9cda9e1a7320b847286bc2caf30ca65b897aed1d801a12f12fa3e1a7faa44ee0f2e5b"
+        "kms:RecipientAttestation:PCR17": "2c6d4181c980591b12f0fce5ea7d9d59f7f8af311f0aa6fff3cce045c4a7d37162310473faae3464756a250ad3cb78fd",
+        "kms:RecipientAttestation:PCR8:ServiceName": "eks.amazonaws.com"
       }
     }
   },
@@ -500,7 +499,7 @@ aws kms get-key-policy --key-id "$KMS_KEY_ARN" --policy-name default \
     "Resource": "*",
     "Condition": {
       "StringNotEqualsIgnoreCase": {
-        "kms:RecipientAttestation:PCR17": "39d27a343980e05d6eab151889f9cda9e1a7320b847286bc2caf30ca65b897aed1d801a12f12fa3e1a7faa44ee0f2e5b"
+        "kms:RecipientAttestation:PCR17": "2c6d4181c980591b12f0fce5ea7d9d59f7f8af311f0aa6fff3cce045c4a7d37162310473faae3464756a250ad3cb78fd"
       }
     }
   }
@@ -550,10 +549,10 @@ kubectl -n encrypted-image-sample logs encrypted-image-demo -c main
 ```
 
 ```text
-kernel:  6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-uptime:  4.65s
+kernel:  6.18.62 #1 SMP PREEMPT_DYNAMIC Thu Nov 12 22:44:15 UTC 2026
+uptime:  10.87s
 disks:   dm-0 dm-1 dm-2 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 vda vdb vdc
-product: m8i.enclave
+product: c6i.enclave
 encrypted-image-ready
 kms:     HTTP 404 (curl exit 0)
 blocked: HTTP 000 (curl exit 28)
@@ -567,20 +566,22 @@ kubectl -n encrypted-image-sample logs encrypted-image-plain -c main
 ```
 
 ```text
-kernel:  6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
-uptime:  2482.62s
+kernel:  6.18.62 #2 SMP PREEMPT_DYNAMIC Thu Nov 12 22:49:16 UTC 2026
+uptime:  36.46s
 disks:   dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0
-product: m8i.xlarge
+product: c6i.xlarge
 encrypted-image-plain-ready
 ```
 
-The kernel version is the same in both, `6.18.54`, and the build is not: `#1 ... Oct 22
-17:38` against `#2 ... Oct 22 00:16`. The guest runs its own kernel. The uptime is under
-five seconds against about 41 minutes, because the VM booted with the pod while the
-ordinary pod reads the node's uptime. The disks are `vda vdb vdc`, the guest's virtio
-devices, where the ordinary pod sees the instance's `nvme`; confidential mode's encrypted
-overlay adds the `dm-` devices. And `product_name` reads `m8i.enclave` against the
-`m8i.xlarge` instance type. Same machine, same image contents, two different places to be
+The kernel version is the same in both, `6.18.62`, and the build is not: `#1 ... Nov 12
+22:44` against `#2 ... Nov 12 22:49`. The guest runs its own kernel. The uptime is about
+11 seconds against about 36 seconds, because the VM booted with the pod while the
+ordinary pod reads the node's uptime. The node itself had started less than a minute
+before the pods, so the two numbers are close; the time anchors below show which boot each
+one counts from. The disks are `vda vdb vdc`, the guest's virtio devices, where the
+ordinary pod sees the instance's `nvme`; confidential mode's encrypted overlay adds the
+`dm-` devices. And `product_name` reads `c6i.enclave` against the
+`c6i.xlarge` instance type. Same machine, same image contents, two different places to be
 running.
 
 The uptimes are worth pinning down, because what they point at is the whole claim. The
@@ -596,17 +597,17 @@ kubectl -n encrypted-image-sample get pod encrypted-image-plain \
 ```
 
 ```text
-2026-10-25T14:05:48+00:00
-2026-10-25T14:47:10Z
-2026-10-25T14:47:15Z
+2026-11-16T22:03:06+00:00
+2026-11-16T22:03:41Z
+2026-11-16T22:03:46Z
 ```
 
-The ordinary pod's container started at 14:47:15 and read 2482.62 seconds, which puts the
-boot it is reporting at 14:05:52, four seconds after the node was launched at 14:05:48: it
+The ordinary pod's container started at 22:03:46 and read 36.46 seconds, which puts the
+boot it is reporting at 22:03:09, three seconds after the node was launched at 22:03:06: it
 is reading the machine's own boot. The sandbox pod's container started five seconds earlier,
-at 14:47:10, and read 4.65 seconds, which puts its boot at 14:47:05, about 41 minutes after
-the node. By the time the sandbox read that number the machine had been up for over forty
-minutes, so the 4.65 seconds cannot be the machine's: it is a boot of its own, which
+at 22:03:41, and read 10.87 seconds, which puts its boot at 22:03:30, about 21 seconds after
+the node's own boot. By the time the sandbox read that number the machine had been up for
+about 31 seconds, so the 10.87 seconds cannot be the machine's: it is a boot of its own, which
 happened when the pod started. (Both figures are really lower bounds, since each uptime is
 read a moment after the container starts rather than exactly at `startedAt`.)
 
@@ -621,7 +622,7 @@ kubectl -n encrypted-image-sample get pod encrypted-image-demo \
 
 ```text
 confidential-sandbox
-3544
+3588
 ```
 
 The policy denies exec, and the caller is allowed by Kubernetes to request one, so the
@@ -635,7 +636,7 @@ kubectl -n encrypted-image-sample exec encrypted-image-demo -c main -- /bin/true
 ```text
 yes
 error: Internal error occurred: Internal error occurred: error executing command in
-container: failed to exec in container: failed to create exec "b5e88030004e...": policy
+container: failed to exec in container: failed to create exec "0d2fda59ce77...": policy
 denied Agent::Action::"Exec" on container "main" reasons=[] errors=[]
 ```
 
@@ -660,7 +661,7 @@ exit:    254
 An error occurred (AccessDeniedException) when calling the Decrypt operation: User:
 arn:aws:sts::<ACCOUNT_ID>:assumed-role/encrypted-image-sample-pod/<session> is not
 authorized to perform: kms:Decrypt on resource:
-arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/1734bb73-1b98-4176-9894-4851172cf7c7 with an
+arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/15445d9a-807c-4325-974a-bbf0e1975f03 with an
 explicit deny in a resource-based policy
 encrypted-image-credentials-done
 ```
@@ -693,25 +694,27 @@ the key policy, so this pod cannot succeed however long it retries.
 == 1/4 render the same pod with one pinned value changed ==
   added env DEMO_VARIANT=changed; the rest of the spec is unchanged
 == 2/4 generate the policy for the changed pod ==
-  approved PCR17: 39d27a343980e05d6eab151889f9cda9e1a7320b847286bc2caf30ca65b897aed1d801a12f12fa3e1a7faa44ee0f2e5b
-  changed  PCR17: 72e112138a430cef12f0870dd514dee566014c47c83007d6acc6c73a247ee919f64d5fde2ca29f8bdb369e9d6baa2c91
+  approved PCR17: 2c6d4181c980591b12f0fce5ea7d9d59f7f8af311f0aa6fff3cce045c4a7d37162310473faae3464756a250ad3cb78fd
+  changed  PCR17: 871eff1ff2e723b2a5ad0c9890bdc33c5286eb26a82abd008fbfd7eb827610cd4f37534b5dcda3dc4aa28a1906fa9eef
 == 3/4 confirm the gate still expects the approved measurement ==
   the gate is bound to the approved measurement, unchanged
 == 4/4 start the changed pod and wait for the refusal ==
 pod/encrypted-image-changed created
 NAME                      READY   STATUS             RESTARTS     AGE
-encrypted-image-changed   0/1     CrashLoopBackOff   1 (6s ago)   36s
+encrypted-image-changed   0/1     CrashLoopBackOff   1 (3s ago)   36s
 
+back-off 10s restarting failed container=main pod=encrypted-image-changed_encrypted-image-sample(1afce400-de6a-4bf2-9234-547dee3aedf3)
 failed to create containerd task: failed to create shim task: Others("Other:
 prepare_image: rpc status: Status { code: UNKNOWN, message: \"prepare_image: KMS Decrypt
 failed: service error: unhandled error (AccessDeniedException): Error { code:
 \\\"AccessDeniedException\\\", message: \\\"User:
 arn:aws:sts::<ACCOUNT_ID>:assumed-role/encrypted-image-sample-pod/<session> is not
 authorized to perform: kms:Decrypt on resource:
-arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/1734bb73-1b98-4176-9894-4851172cf7c7 with an
+arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/15445d9a-807c-4325-974a-bbf0e1975f03 with an
 explicit deny in a resource-based policy\\\" }\" }")
 
 The changed pod was refused the layer key by KMS and cannot start.
+Delete it before you finish with the sample:  ./scripts/changed-pod.sh --delete
 ```
 
 Abridged: the generator's policy output and some of the error's inner fields are left out,
@@ -746,7 +749,7 @@ handled as in step 5:
   private="$(mktemp -d signed-url.XXXXXX)"
   trap 'rm -rf "$private"' EXIT
   aws ecr get-download-url-for-layer --repository-name encrypted-image-sample \
-    --layer-digest sha256:acbf110d8a44591c61483aabb846d7f5de398d7f01d7362166e3e1d7184bb07b \
+    --layer-digest sha256:343159311c5e3500b7ca389067d95a9b78d94bcf93294759074cec76bb8461e9 \
     --query downloadUrl --output json > "$private/url.json"
   # jq reads the exact string, and writes the config only for one plain https URL of
   # printable ASCII with no space, quote or backslash, so nothing in it is curl config
@@ -970,21 +973,21 @@ cd sample-eks-nitro-sandbox/examples/confidential/encrypted-image
 Cleaning up in context <your-context>, Region us-west-2, namespace encrypted-image-sample.
 Deleting pod encrypted-image-sample/encrypted-image-changed...
 Deleting pod encrypted-image-sample/encrypted-image-credentials...
-pod "encrypted-image-credentials" deleted from encrypted-image-sample namespace
+pod "encrypted-image-credentials" deleted
 Deleting pod encrypted-image-sample/encrypted-image-plain...
-pod "encrypted-image-plain" deleted from encrypted-image-sample namespace
+pod "encrypted-image-plain" deleted
 Deleting pod encrypted-image-sample/encrypted-image-demo...
-pod "encrypted-image-demo" deleted from encrypted-image-sample namespace
-applicationnetworkpolicy.networking.k8s.aws "encrypted-image-egress" deleted from encrypted-image-sample namespace
-serviceaccount "encrypted-image-pod" deleted from encrypted-image-sample namespace
+pod "encrypted-image-demo" deleted
+applicationnetworkpolicy.networking.k8s.aws "encrypted-image-egress" deleted
+serviceaccount "encrypted-image-pod" deleted
 Deleting namespace encrypted-image-sample (carries app.kubernetes.io/managed-by=encrypted-image)...
 namespace "encrypted-image-sample" deleted
-Deleting Pod Identity association a-wvityzeszzb7kf12b...
+Deleting Pod Identity association a-dkahwgmn2rynnjowk...
 Deleting IAM role encrypted-image-sample-pod...
 Deleting ECR repository encrypted-image-sample and the encrypted image in it...
 Deleting the alias alias/encrypted-image-sample...
-Scheduling the KMS key 1734bb73-1b98-4176-9894-4851172cf7c7 for deletion in 7 days (the shortest AWS allows)...
-arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/1734bb73-1b98-4176-9894-4851172cf7c7	2026-11-01T14:59:23.663000+00:00
+Scheduling the KMS key 15445d9a-807c-4325-974a-bbf0e1975f03 for deletion in 7 days (the shortest AWS allows)...
+arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/15445d9a-807c-4325-974a-bbf0e1975f03	2026-11-23T22:15:31.047000+00:00
 Deleting the run files under .../tmp/encrypted-image...
 
 Clean up complete. The KMS key is scheduled, not yet destroyed; AWS removes it after its waiting period.
