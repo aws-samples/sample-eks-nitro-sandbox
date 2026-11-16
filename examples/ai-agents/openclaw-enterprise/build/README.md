@@ -41,8 +41,14 @@ aws codebuild batch-get-builds \
 
 Wait for `status` to become `SUCCEEDED`. The exported `ADAPTER_IMAGE`,
 `CONTROLLER_IMAGE`, and `RUNTIME_IMAGE` values use
-`repository@sha256:<digest>` form. Use those immutable values in deployments,
-not the temporary build tags.
+`repository@sha256:<digest>` form. Deploy all three exported images by digest,
+not by their temporary build tags. The adapter rejects an unpinned OpenClaw
+runtime image and reuses that digest for the ownership-repair init container.
+
+The ownership-repair init container runs as UID and GID 0 with only `CHOWN`,
+`DAC_OVERRIDE`, and `FOWNER` added. The OpenClaw runtime remains non-root with
+all Linux capabilities dropped. Admission also rejects `envFrom` and explicit
+unsafe loader or shell-bootstrap variables on adapted runtime containers.
 
 The CodeBuild role can write only its logs and the three repositories. The
 project accepts only public GitHub repository URLs and exact lowercase commit

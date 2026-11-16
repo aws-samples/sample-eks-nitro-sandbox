@@ -9,9 +9,6 @@ from adapter import (
     AGW_CA_MOUNT_PATH,
     AGW_CA_VOLUME,
     AdmissionError,
-    CLIENT_CREDENTIAL_PATH,
-    HOME_MOUNT_PATH,
-    HOME_WRAPPER_NAME,
     LINK_INIT_NAME,
     NODE_CA_ENV,
     OPENCLAW_HOME_PATH,
@@ -47,6 +44,14 @@ UNSAFE_GLIBC_ENV_NAMES = (
     "LD_USE_LOAD_BIAS",
     "LD_VERBOSE",
     "LD_WARN",
+)
+UNSAFE_SHELL_ENV_NAMES = (
+    "BASHOPTS",
+    "BASH_ENV",
+    "ENV",
+    "PS4",
+    "SHELLOPTS",
+    "ZDOTDIR",
 )
 
 
@@ -188,9 +193,7 @@ def admitted_target_pod() -> dict:
             },
             {
                 "name": "projected-settings",
-                "projected": {
-                    "sources": [{"configMap": {"name": "runtime-settings"}}]
-                },
+                "projected": {"sources": [{"configMap": {"name": "runtime-settings"}}]},
             },
             {
                 "name": "custom-api-token",
@@ -270,52 +273,63 @@ def apply_patch(document: dict, patch: list[dict]) -> dict:
 
 
 class BuildPatchTests(unittest.TestCase):
-    def test_wraps_runtime_to_secure_nitro_home_then_drop_privileges(self) -> None:
+    def test_moves_ownership_repair_to_dedicated_init_container(self) -> None:
         pod = target_pod()
-        original_gateway = pod["spec"]["containers"][-1]
+        rendered = apply_patch(pod, build_patch(pod))
+        original_init_names = {
+            container["name"] for container in pod["spec"]["initContainers"]
+        }
+        ownership_init_containers = [
+            container
+            for container in rendered["spec"]["initContainers"]
+            if container["name"] not in original_init_names
+            and container["name"] != LINK_INIT_NAME
+        ]
+
+        self.assertEqual(len(ownership_init_containers), 1)
+        ownership_init = ownership_init_containers[0]
+        ownership_command = " ".join(
+            [
+                *ownership_init.get("command", []),
+                *ownership_init.get("args", []),
+            ]
+        )
+        self.assertIn("/usr/bin/chown", ownership_command)
+        self.assertIn("1000:1000", ownership_command)
+        self.assertIn("/usr/bin/chmod", ownership_command)
+        self.assertEqual(
+            {mount["name"] for mount in ownership_init["volumeMounts"]},
+            {"runtime-state", "openclaw-gateway-state"},
+        )
+
+        ownership_index = rendered["spec"]["initContainers"].index(ownership_init)
+        link_index = next(
+            index
+            for index, container in enumerate(rendered["spec"]["initContainers"])
+            if container["name"] == LINK_INIT_NAME
+        )
+        self.assertLess(ownership_index, link_index)
+
+    def test_runtime_container_remains_non_root_and_unwrapped(self) -> None:
+        pod = target_pod()
+        original_gateway = copy.deepcopy(pod["spec"]["containers"][-1])
         rendered = apply_patch(pod, build_patch(pod))
         gateway = rendered["spec"]["containers"][-1]
 
-        self.assertEqual(
-            gateway["command"][:2],
-            ["/bin/sh", "-c"],
-        )
-        self.assertEqual(gateway["command"][3], HOME_WRAPPER_NAME)
-        self.assertEqual(gateway["command"][4:], original_gateway["command"])
+        self.assertEqual(gateway["command"], original_gateway["command"])
         self.assertEqual(gateway["args"], original_gateway["args"])
-        self.assertEqual(gateway["securityContext"]["runAsUser"], 0)
-        self.assertEqual(gateway["securityContext"]["runAsGroup"], 0)
-        self.assertFalse(gateway["securityContext"]["runAsNonRoot"])
+        self.assertEqual(gateway["securityContext"]["runAsUser"], 1000)
+        self.assertEqual(gateway["securityContext"]["runAsGroup"], 1000)
+        self.assertTrue(gateway["securityContext"]["runAsNonRoot"])
+        self.assertFalse(gateway["securityContext"]["allowPrivilegeEscalation"])
+        self.assertTrue(gateway["securityContext"]["readOnlyRootFilesystem"])
         self.assertEqual(
             gateway["securityContext"]["capabilities"],
-            {
-                "drop": ["ALL"],
-                "add": [
-                    "CHOWN",
-                    "DAC_OVERRIDE",
-                    "FOWNER",
-                    "SETUID",
-                    "SETGID",
-                    "SETPCAP",
-                ],
-            },
+            {"drop": ["ALL"]},
         )
-        wrapper_script = gateway["command"][2]
-        self.assertIn('/usr/bin/chown 1000:1000 -- "$path" || exit 1', wrapper_script)
-        self.assertIn('/usr/bin/chmod 0700 -- "$path" || exit 1', wrapper_script)
-        self.assertIn(HOME_MOUNT_PATH, wrapper_script)
-        self.assertIn(f"{OPENCLAW_HOME_PATH}/agents", wrapper_script)
-        self.assertIn(f"{OPENCLAW_HOME_PATH}/sessions", wrapper_script)
-        self.assertIn(f"[ -L {CLIENT_CREDENTIAL_PATH} ]", wrapper_script)
-        self.assertIn(
-            f"/usr/bin/chmod 0600 -- {CLIENT_CREDENTIAL_PATH} || exit 1",
-            wrapper_script,
-        )
-        self.assertIn("--bounding-set=-all", wrapper_script)
 
-    def test_rejects_runtime_without_safe_drop_privilege_contract(self) -> None:
+    def test_rejects_runtime_without_hardened_security_context(self) -> None:
         for change in (
-            {"command": None},
             {"securityContext": {"readOnlyRootFilesystem": True}},
             {
                 "securityContext": {
@@ -459,9 +473,7 @@ class BuildPatchTests(unittest.TestCase):
                 pod["spec"]["containers"][-1]["volumeMounts"].append(
                     {"name": "workspace", "mountPath": mount_path}
                 )
-                with self.assertRaisesRegex(
-                    AdmissionError, "trusted bootstrap path"
-                ):
+                with self.assertRaisesRegex(AdmissionError, "trusted bootstrap path"):
                     build_patch(pod)
 
     def test_rejects_nonempty_env_from_on_wrapped_runtime(self) -> None:
@@ -487,21 +499,44 @@ class BuildPatchTests(unittest.TestCase):
                 ):
                     build_patch(pod)
 
+    def test_rejects_explicit_shell_control_environment(self) -> None:
+        for name in UNSAFE_SHELL_ENV_NAMES:
+            with self.subTest(name=name):
+                pod = target_pod()
+                pod["spec"]["containers"][-1].setdefault("env", []).append(
+                    {"name": name, "value": "attacker-controlled"}
+                )
+                with self.assertRaisesRegex(
+                    AdmissionError, f"unsafe bootstrap environment {name}"
+                ):
+                    build_patch(pod)
+
+    def test_rejects_exec_lifecycle_hooks_and_probes(self) -> None:
+        exec_action = {"exec": {"command": ["/bin/sh", "-c", "id"]}}
+        cases = (
+            ("postStart", "lifecycle", {"postStart": exec_action}),
+            ("preStop", "lifecycle", {"preStop": exec_action}),
+            ("livenessProbe", "livenessProbe", exec_action),
+            ("readinessProbe", "readinessProbe", exec_action),
+            ("startupProbe", "startupProbe", exec_action),
+        )
+        for name, field, value in cases:
+            with self.subTest(name=name):
+                pod = target_pod()
+                pod["spec"]["containers"][-1][field] = copy.deepcopy(value)
+                with self.assertRaises(AdmissionError):
+                    build_patch(pod)
+
     def test_overrides_image_defined_glibc_loader_environment(self) -> None:
         rendered = apply_patch(target_pod(), build_patch(target_pod()))
         gateway = rendered["spec"]["containers"][-1]
         unsafe_environment = [
-            entry
-            for entry in gateway["env"]
-            if entry["name"] in UNSAFE_GLIBC_ENV_NAMES
+            entry for entry in gateway["env"] if entry["name"] in UNSAFE_GLIBC_ENV_NAMES
         ]
 
         self.assertCountEqual(
             unsafe_environment,
-            [
-                {"name": name, "value": ""}
-                for name in UNSAFE_GLIBC_ENV_NAMES
-            ],
+            [{"name": name, "value": ""} for name in UNSAFE_GLIBC_ENV_NAMES],
         )
 
     def test_requires_digest_pinned_image_for_wrapped_runtime(self) -> None:
@@ -576,9 +611,7 @@ class BuildPatchTests(unittest.TestCase):
 
     def test_rewrites_structurally_and_preserves_unrelated_mounts(self) -> None:
         pod = target_pod()
-        workspace = copy.deepcopy(
-            pod["spec"]["containers"][-1]["volumeMounts"][1]
-        )
+        workspace = copy.deepcopy(pod["spec"]["containers"][-1]["volumeMounts"][1])
 
         rendered = apply_patch(pod, build_patch(pod))
         spec = rendered["spec"]
@@ -628,7 +661,7 @@ class BuildPatchTests(unittest.TestCase):
             for index, container in enumerate(spec["initContainers"])
             if container["name"] == "prepare-private-state"
         )
-        link_init = spec["initContainers"][prep_index + 1]
+        link_init = spec["initContainers"][prep_index + 2]
         self.assertEqual(link_init["name"], LINK_INIT_NAME)
         self.assertIn("if (item.link === item.target) continue", link_init["args"][0])
         self.assertIn("path.posix.relative", link_init["args"][0])

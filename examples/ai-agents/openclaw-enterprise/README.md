@@ -24,6 +24,8 @@ and fleet scale still require validation.
 - Agent readiness, persistent state and recovery after pod and node
   replacement with the latest adapter image.
 - High availability, load, quota and failure-mode behaviour.
+- Nested OpenClaw exec isolation. It is unavailable in this deployment, so do
+  not claim a second sandbox boundary inside the Nitro sandbox.
 - An upstream OCE contract for private model gateways and VM-isolated runtime
   storage. The adapter remains sample-specific.
 
@@ -64,54 +66,33 @@ it:
   `runtime-temporary` mount at `/tmp`, requires a read-only root filesystem,
   and sets `TMPDIR=/dev/shm`. It rejects other mounts that overlap `/tmp` or
   `/dev/shm`.
-- Starts the gateway through a minimal wrapper as UID and GID 0. The wrapper
-  invokes `/bin/sh`, `/usr/bin/chmod`, `/usr/bin/chown` and `/usr/bin/setpriv`
-  by absolute path, and the adapter rejects mounts that overlap those trusted
-  executables. Wrapped runtime images must use an exact `sha256` digest.
-  The adapter rejects non-empty `envFrom` and explicit `LD_*`, `GCONV_PATH`,
-  or `GLIBC_TUNABLES` settings, then overrides known image-defined glibc loader
-  variables with empty values. Permission repair fails closed: every `chmod`
-  and `chown` must succeed before OCE starts. The wrapper repairs `/home/node`,
-  `/home/node/.openclaw`, and each direct
-  `/home/node/.openclaw/<target>` path. It also restores a persisted
-  `client/credentials.sqlite` file to UID and GID 1000 with mode `0600`, then
-  runs OCE's original command as UID and GID 1000 with no supplementary groups
-  or capabilities.
+- Adds a dedicated privileged init container that repairs ownership and modes
+  before OpenClaw starts. Permission repair fails closed and is limited to
+  `/home/node`, `/home/node/.openclaw`, each direct mapped target below it, and
+  `client/credentials.sqlite`.
+- Keeps the OpenClaw runtime at UID and GID 1000 with no privilege escalation
+  and all Linux capabilities dropped. The runtime command never performs the
+  privileged repair.
+- Requires exact `repository@sha256:<digest>` image references. The adapter
+  rejects `envFrom` and explicit unsafe loader or shell-bootstrap variables on
+  adapted runtime containers.
 
 Nitro presents OCE's `/tmp` `subPath` mount as group- and world-writable without
 the sticky bit, which OpenClaw's secure temporary-directory check rejects. The
 Nitro runtime already provides pod-local, writable, sticky `/dev/shm`, so
 OpenClaw can create its user-owned `0700` temporary directory there without a
-root init container. Because `/dev/shm` is memory-backed and capacity-limited,
+separate repair step. Because `/dev/shm` is memory-backed and capacity-limited,
 this workaround suits OpenClaw's small temporary control files, not large
 scratch data.
 
 Nitro also presents OCE's `/home/node` `subPath` mount as root-owned and
-group- and world-writable. The wrapper starts with `allowPrivilegeEscalation:
-false`, drops all capabilities, then adds only `CHOWN`, `DAC_OVERRIDE`,
-`FOWNER`, `SETUID`, `SETGID`, and `SETPCAP` to traverse and repair the mapped
-directory mount points before the handoff. Kubernetes baseline permits those
-capabilities; restricted permits only `NET_BIND_SERVICE` to be added and also
-requires non-root execution. The tenant setup script therefore enforces
-baseline and keeps restricted in audit and warning mode.
-
-The wrapper uses `setpriv` to change to UID and GID 1000, clear supplementary
-groups, and empty the bounding, inheritable, and ambient capability sets. The
-UID transition also clears the effective and permitted sets before OCE starts.
-The digest and environment checks make the image-supplied bootstrap executables
-stable for review and prevent pod- or image-defined glibc loader controls from
-changing what runs before privilege drop. They narrow the compatibility layer's
-root trust boundary; they do not provide complete process or tenant isolation.
-The ownership changes apply only to `/home/node`, `/home/node/.openclaw`, and
-the mapped target directories below it. Repairs address each direct
-`/home/node/.openclaw/<target>` path rather than an alias symlink, and do not
-recursively rewrite persisted files. The persisted
-`/home/node/.openclaw/client/credentials.sqlite` file is the exception: an
-`fsGroup` mount can widen it to `0660`, which OpenClaw rejects on restart. The
-wrapper fails closed if that path is a symlink; otherwise, it restores ownership
-to UID and GID 1000 and mode `0600` before dropping privileges. Treat this
-short root bootstrap as an explicit compatibility trade-off until OCE and Nitro
-Pods expose a native storage contract.
+group- and world-writable. The dedicated init container owns this narrow
+privileged trust boundary and exits before the OpenClaw runtime starts. It does
+not recursively rewrite persisted files. For
+`/home/node/.openclaw/client/credentials.sqlite`, it refuses a symlink and
+restores UID and GID 1000 with mode `0600`, which OpenClaw requires after an
+`fsGroup` mount. Treat this init phase as an explicit compatibility trade-off,
+not complete process or tenant isolation.
 
 The tenant script renders the current AgentGateway ClusterIP as a `/32` alongside
 the namespace-and-pod selector. In the live EKS Auto Mode test, the generated

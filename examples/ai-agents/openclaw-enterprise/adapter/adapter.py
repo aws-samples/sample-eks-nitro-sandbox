@@ -20,6 +20,7 @@ RUNTIME_ROOT = "/runtime-state"
 OPENCLAW_HOME_PATH = "/home/node/.openclaw"
 CLIENT_CREDENTIAL_PATH = f"{OPENCLAW_HOME_PATH}/client/credentials.sqlite"
 LINK_INIT_NAME = "nitro-link-gateway-state"
+OWNERSHIP_INIT_NAME = "nitro-prepare-runtime-ownership"
 AGW_CA_VOLUME = "agentgateway-ca"
 AGW_CA_CONFIG_MAP = "agentgateway-ca"
 AGW_CA_MOUNT_PATH = "/etc/agentgateway-ca"
@@ -33,7 +34,6 @@ SERVICE_ACCOUNT_MOUNT_PATH = "/var/run/secrets/kubernetes.io/serviceaccount"
 RUNTIME_UID = 1000
 RUNTIME_GID = 1000
 HOME_MOUNT_PATH = "/home/node"
-HOME_WRAPPER_NAME = "nitro-home-setup"
 TRUSTED_BOOTSTRAP_PATHS = (
     "/bin",
     "/usr/bin",
@@ -45,6 +45,9 @@ TRUSTED_BOOTSTRAP_PATHS = (
     "/etc/ld.so.preload",
 )
 UNSAFE_BOOTSTRAP_ENV_NAMES = (
+    "BASHOPTS",
+    "BASH_ENV",
+    "ENV",
     "GCONV_PATH",
     "GLIBC_TUNABLES",
     "LD_ASSUME_KERNEL",
@@ -67,6 +70,9 @@ UNSAFE_BOOTSTRAP_ENV_NAMES = (
     "LD_USE_LOAD_BIAS",
     "LD_VERBOSE",
     "LD_WARN",
+    "PS4",
+    "SHELLOPTS",
+    "ZDOTDIR",
 )
 IMAGE_DIGEST_PATTERN = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 
@@ -151,7 +157,7 @@ def _runtime_environment(container: dict[str, Any], location: str) -> list[Any]:
         raise AdmissionError(f"{location}.envFrom must be a list")
     if env_from:
         raise AdmissionError(
-            f"{location}.envFrom is not supported by the privileged bootstrap"
+            f"{location}.envFrom is not supported by the adapter contract"
         )
     environment = container.get("env", [])
     if not isinstance(environment, list):
@@ -183,24 +189,12 @@ def _runtime_environment(container: dict[str, Any], location: str) -> list[Any]:
     return environment
 
 
-def _runtime_wrapper(
-    container: dict[str, Any], location: str, private_paths: list[str]
-) -> tuple[list[str], list[str], dict[str, Any]]:
+def _runtime_contract(
+    container: dict[str, Any], location: str
+) -> tuple[str, dict[str, Any]]:
     image = container.get("image")
     if not _is_nonempty_string(image) or not IMAGE_DIGEST_PATTERN.fullmatch(image):
         raise AdmissionError(f"{location}.image must use an exact sha256 digest")
-    command = container.get("command")
-    arguments = container.get("args", [])
-    if (
-        not isinstance(command, list)
-        or not command
-        or not all(_is_nonempty_string(item) for item in command)
-    ):
-        raise AdmissionError(f"{location}.command must be a non-empty string list")
-    if not isinstance(arguments, list) or not all(
-        isinstance(item, str) for item in arguments
-    ):
-        raise AdmissionError(f"{location}.args must be a string list")
 
     security = container.get("securityContext")
     if not isinstance(security, dict):
@@ -221,28 +215,42 @@ def _runtime_wrapper(
             "read-only root filesystem and all capabilities dropped"
         )
 
-    wrapped_security = copy.deepcopy(security)
-    wrapped_security.update(
+    for field in ("lifecycle", "livenessProbe", "readinessProbe", "startupProbe"):
+        value = container.get(field)
+        if isinstance(value, dict):
+            handlers = [value]
+            if field == "lifecycle":
+                handlers = [
+                    handler
+                    for handler in (value.get("postStart"), value.get("preStop"))
+                    if isinstance(handler, dict)
+                ]
+            if any("exec" in handler for handler in handlers):
+                raise AdmissionError(
+                    f"{location}.{field} exec handlers are not supported"
+                )
+
+    runtime_security = copy.deepcopy(security)
+    runtime_security.update(
         {
-            "runAsUser": 0,
-            "runAsGroup": 0,
-            "runAsNonRoot": False,
-            "capabilities": {
-                "drop": ["ALL"],
-                "add": [
-                    "CHOWN",
-                    "DAC_OVERRIDE",
-                    "FOWNER",
-                    "SETUID",
-                    "SETGID",
-                    "SETPCAP",
-                ],
-            },
+            "runAsUser": RUNTIME_UID,
+            "runAsGroup": RUNTIME_GID,
+            "runAsNonRoot": True,
+            "capabilities": {"drop": ["ALL"]},
         }
     )
+    return image, runtime_security
+
+
+def _ownership_init(
+    runtime_container: dict[str, Any],
+    image: str,
+    private_paths: list[str],
+) -> dict[str, Any]:
     quoted_paths = " ".join(shlex.quote(path) for path in private_paths)
-    wrapper_script = (
+    ownership_script = (
         f"for path in {quoted_paths}; do "
+        f'if [ -L "$path" ] || [ ! -d "$path" ]; then exit 1; fi; '
         f'/usr/bin/chmod 0700 -- "$path" || exit 1; '
         f'/usr/bin/chown {RUNTIME_UID}:{RUNTIME_GID} -- "$path" || exit 1; '
         "done; "
@@ -251,19 +259,40 @@ def _runtime_wrapper(
         f"/usr/bin/chown {RUNTIME_UID}:{RUNTIME_GID} -- "
         f"{shlex.quote(CLIENT_CREDENTIAL_PATH)} || exit 1; "
         f"/usr/bin/chmod 0600 -- {shlex.quote(CLIENT_CREDENTIAL_PATH)} "
-        "|| exit 1; fi; "
-        f'exec /usr/bin/setpriv --reuid={RUNTIME_UID} --regid={RUNTIME_GID} '
-        "--clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all "
-        '-- "$@"'
+        "|| exit 1; fi"
     )
-    wrapped_command = [
-        "/bin/sh",
-        "-c",
-        wrapper_script,
-        HOME_WRAPPER_NAME,
-        *copy.deepcopy(command),
-    ]
-    return wrapped_command, copy.deepcopy(arguments), wrapped_security
+    ownership: dict[str, Any] = {
+        "name": OWNERSHIP_INIT_NAME,
+        "image": image,
+        "command": ["/bin/sh", "-c"],
+        "args": [ownership_script],
+        "securityContext": {
+            "allowPrivilegeEscalation": False,
+            "readOnlyRootFilesystem": True,
+            "runAsUser": 0,
+            "runAsGroup": 0,
+            "runAsNonRoot": False,
+            "capabilities": {
+                "drop": ["ALL"],
+                "add": ["CHOWN", "DAC_OVERRIDE", "FOWNER"],
+            },
+            "seccompProfile": {"type": "RuntimeDefault"},
+        },
+        "volumeMounts": [
+            {
+                "name": RUNTIME_VOLUME,
+                "mountPath": HOME_MOUNT_PATH,
+                "subPath": "home",
+            },
+            {
+                "name": STATE_VOLUME,
+                "mountPath": OPENCLAW_HOME_PATH,
+            },
+        ],
+    }
+    if "imagePullPolicy" in runtime_container:
+        ownership["imagePullPolicy"] = runtime_container["imagePullPolicy"]
+    return ownership
 
 
 def _mount_paths_overlap(left: Any, right: str) -> bool:
@@ -278,9 +307,7 @@ def _mount_paths_overlap(left: Any, right: str) -> bool:
     )
 
 
-def _default_service_account_volumes(
-    volumes: list[Any], mounts: list[Any]
-) -> set[str]:
+def _default_service_account_volumes(volumes: list[Any], mounts: list[Any]) -> set[str]:
     """Find only Kubernetes' standard auto-injected service-account projections."""
     removable: set[str] = set()
     for volume in volumes:
@@ -347,7 +374,9 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
 
     metadata = pod.get("metadata")
     labels = metadata.get("labels", {}) if isinstance(metadata, dict) else {}
-    role = labels.get("openclaw.dev/workload-role") if isinstance(labels, dict) else None
+    role = (
+        labels.get("openclaw.dev/workload-role") if isinstance(labels, dict) else None
+    )
     if role not in OCE_ROLES:
         raise AdmissionError("OCE workload role must be agent or gateway")
 
@@ -362,8 +391,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     reserved_volumes = [
         volume
         for volume in volumes
-        if isinstance(volume, dict)
-        and volume.get("name") == AGW_CA_VOLUME
+        if isinstance(volume, dict) and volume.get("name") == AGW_CA_VOLUME
     ]
     if reserved_volumes:
         raise AdmissionError(f"volume name {AGW_CA_VOLUME} is reserved")
@@ -378,8 +406,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         for mount in _mounts(container, f"{group_name}[{index}]")
     ]
     if any(
-        isinstance(mount, dict)
-        and mount.get("name") == AGW_CA_VOLUME
+        isinstance(mount, dict) and mount.get("name") == AGW_CA_VOLUME
         for mount in all_mounts
     ):
         raise AdmissionError(f"volume mount name {AGW_CA_VOLUME} is reserved")
@@ -387,12 +414,10 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         volumes, all_mounts
     )
     if any(
-        isinstance(volume, dict)
-        and volume.get("name") == DEDICATED_WORKSPACE_VOLUME
+        isinstance(volume, dict) and volume.get("name") == DEDICATED_WORKSPACE_VOLUME
         for volume in volumes
     ) or any(
-        isinstance(mount, dict)
-        and mount.get("name") == DEDICATED_WORKSPACE_VOLUME
+        isinstance(mount, dict) and mount.get("name") == DEDICATED_WORKSPACE_VOLUME
         for mount in all_mounts
     ):
         raise AdmissionError(
@@ -436,17 +461,20 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         and container.get("name") == "prepare-private-state"
     ]
     if len(prep_indexes) != 1:
-        raise AdmissionError("expected exactly one prepare-private-state init container")
+        raise AdmissionError(
+            "expected exactly one prepare-private-state init container"
+        )
     prep_index = prep_indexes[0]
     prep = init_containers[prep_index]
     if not _is_nonempty_string(prep.get("image")):
         raise AdmissionError("prepare-private-state must declare an image")
-    if any(
-        isinstance(container, dict)
-        and container.get("name") == LINK_INIT_NAME
-        for container in [*init_containers, *containers]
-    ):
-        raise AdmissionError(f"container name {LINK_INIT_NAME} is reserved")
+    reserved_container_names = {LINK_INIT_NAME, OWNERSHIP_INIT_NAME}
+    for container in [*init_containers, *containers]:
+        if (
+            isinstance(container, dict)
+            and container.get("name") in reserved_container_names
+        ):
+            raise AdmissionError(f"container name {container['name']} is reserved")
 
     prep_mounts = _mounts(prep, f"spec.initContainers[{prep_index}]")
     prep_runtime = [
@@ -476,6 +504,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     mount_patches: list[dict[str, Any]] = []
     environment_patches: list[dict[str, Any]] = []
     runtime_patches: list[dict[str, Any]] = []
+    ownership_source: tuple[dict[str, Any], str] | None = None
     groups = (
         ("initContainers", init_containers),
         ("containers", containers),
@@ -571,15 +600,12 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                         mount
                         for mount in rewritten
                         if _is_nonempty_string(mount.get("mountPath"))
-                        and posixpath.normpath(mount["mountPath"])
-                        == TMP_MOUNT_PATH
+                        and posixpath.normpath(mount["mountPath"]) == TMP_MOUNT_PATH
                     ]
                     conflicting_tmp_mounts = [
                         mount
                         for mount in rewritten
-                        if _mount_paths_overlap(
-                            mount.get("mountPath"), TMP_MOUNT_PATH
-                        )
+                        if _mount_paths_overlap(mount.get("mountPath"), TMP_MOUNT_PATH)
                         and mount not in existing_tmp_mounts
                     ]
                     if conflicting_tmp_mounts:
@@ -604,9 +630,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                             )
                         rewritten.remove(existing_tmp_mount)
                     if any(
-                        _mount_paths_overlap(
-                            mount.get("mountPath"), SHM_MOUNT_PATH
-                        )
+                        _mount_paths_overlap(mount.get("mountPath"), SHM_MOUNT_PATH)
                         for mount in rewritten
                     ):
                         raise AdmissionError(
@@ -614,9 +638,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                         )
                     for trusted_path in TRUSTED_BOOTSTRAP_PATHS:
                         if any(
-                            _mount_paths_overlap(
-                                mount.get("mountPath"), trusted_path
-                            )
+                            _mount_paths_overlap(mount.get("mountPath"), trusted_path)
                             for mount in rewritten
                         ):
                             raise AdmissionError(
@@ -624,44 +646,23 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                                 f"overlaps trusted bootstrap path {trusted_path}"
                             )
                     location = f"spec.{group_name}[{index}]"
-                    wrapped_command, wrapped_arguments, wrapped_security = (
-                        _runtime_wrapper(
-                            container,
-                            location,
-                            [
-                                HOME_MOUNT_PATH,
-                                OPENCLAW_HOME_PATH,
-                                *[
-                                    f"{OPENCLAW_HOME_PATH}/{target}"
-                                    for target in sorted(set(links.values()))
-                                ],
-                            ],
-                        )
+                    runtime_image, runtime_security = _runtime_contract(
+                        container, location
                     )
-                    runtime_patches.extend(
-                        [
-                            {
-                                "op": "replace",
-                                "path": f"/spec/{group_name}/{index}/command",
-                                "value": wrapped_command,
-                            },
-                            {
-                                "op": (
-                                    "replace"
-                                    if "args" in container
-                                    else "add"
-                                ),
-                                "path": f"/spec/{group_name}/{index}/args",
-                                "value": wrapped_arguments,
-                            },
-                            {
-                                "op": "replace",
-                                "path": (
-                                    f"/spec/{group_name}/{index}/securityContext"
-                                ),
-                                "value": wrapped_security,
-                            },
-                        ]
+                    if (
+                        ownership_source is not None
+                        and ownership_source[1] != runtime_image
+                    ):
+                        raise AdmissionError(
+                            "adapted runtime containers must use the same image"
+                        )
+                    ownership_source = (container, runtime_image)
+                    runtime_patches.append(
+                        {
+                            "op": "replace",
+                            "path": f"/spec/{group_name}/{index}/securityContext",
+                            "value": runtime_security,
+                        }
                     )
                     rewritten.append(
                         {
@@ -693,9 +694,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                     if missing_environment:
                         environment_patches.append(
                             {
-                                "op": "add"
-                                if "env" not in container
-                                else "replace",
+                                "op": "add" if "env" not in container else "replace",
                                 "path": f"/spec/{group_name}/{index}/env",
                                 "value": [
                                     *copy.deepcopy(environment),
@@ -713,14 +712,13 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                 )
 
     if not links:
-        raise AdmissionError(
-            f"{STATE_VOLUME} has no supported subPath mounts to adapt"
-        )
+        raise AdmissionError(f"{STATE_VOLUME} has no supported subPath mounts to adapt")
+    if ownership_source is None:
+        raise AdmissionError("target OCE Pod has no adaptable runtime container")
     _validate_link_paths(links)
 
     link_data = [
-        {"link": link, "target": target}
-        for link, target in sorted(links.items())
+        {"link": link, "target": target} for link, target in sorted(links.items())
     ]
     link_init: dict[str, Any] = {
         "name": LINK_INIT_NAME,
@@ -747,6 +745,18 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     }
     if "imagePullPolicy" in prep:
         link_init["imagePullPolicy"] = prep["imagePullPolicy"]
+    ownership_init = _ownership_init(
+        ownership_source[0],
+        ownership_source[1],
+        [
+            HOME_MOUNT_PATH,
+            OPENCLAW_HOME_PATH,
+            *[
+                f"{OPENCLAW_HOME_PATH}/{target}"
+                for target in sorted(set(links.values()))
+            ],
+        ],
+    )
 
     patch: list[dict[str, Any]] = []
     runtime_class = spec.get("runtimeClassName")
@@ -759,9 +769,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     elif runtime_class != "isolated-sandbox":
-        raise AdmissionError(
-            f"refusing to replace runtimeClassName {runtime_class!r}"
-        )
+        raise AdmissionError(f"refusing to replace runtimeClassName {runtime_class!r}")
 
     if "automountServiceAccountToken" not in spec:
         patch.append(
@@ -810,6 +818,13 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "op": "add",
             "path": f"/spec/initContainers/{prep_index + 1}",
+            "value": ownership_init,
+        }
+    )
+    patch.append(
+        {
+            "op": "add",
+            "path": f"/spec/initContainers/{prep_index + 2}",
             "value": link_init,
         }
     )
