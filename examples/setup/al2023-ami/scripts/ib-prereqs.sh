@@ -3,6 +3,7 @@
 #
 #   RUN_ID=<id> BUILD_SUBNET_ID=<private subnet> scripts/ib-prereqs.sh up
 #   RUN_ID=<id> scripts/ib-prereqs.sh down
+#   RUN_ID=<id> scripts/ib-prereqs.sh reset   # only the Image Builder resources, to build again
 #
 # Image Builder can only build on an enclave-enabled instance by taking one from an Auto Scaling
 # group (parentInstance). The build instance keeps everything the group launched it with: AMI,
@@ -22,7 +23,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/common.sh"
 require_run_id
-mode="${1:-}"; case "$mode" in up|down) ;; *) die "usage: ib-prereqs.sh up|down" ;; esac
+mode="${1:-}"; case "$mode" in up|down|reset) ;; *) die "usage: ib-prereqs.sh up|down|reset" ;; esac
 
 NAME="${RESOURCE_PREFIX}-ib-${RUN_ID}"
 require_name "Image Builder prerequisite" "$NAME" 52 '^[a-z0-9-]+$'
@@ -34,12 +35,16 @@ record() { printf '%s=%s\n' "$1" "$2" >> "$STATE"; }
 aw()     { aws --region "$AWS_REGION" "$@"; }
 jtags()  { python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("Tags") or []))'; }
 
-# probe <not-found-regex> <command...>: 0 found (PROBE_OUT), 1 the API said not found or the
-# answer was empty, 2 could not determine. Only 1 may be treated as absent.
+# probe [--tags] <not-found-regex> <command...>: 0 found (PROBE_OUT), 1 the API said not found
+# (or, for a describe, gave an empty answer), 2 could not determine. Only 1 may be treated as
+# absent. With --tags the command lists a resource's tags, and an empty list means a resource
+# without tags, not an absent one.
 probe() {
-  local nf="$1" err; shift; err=$(mktemp)
+  local tags=0 nf err; [ "$1" = --tags ] && { tags=1; shift; }
+  nf="$1"; shift; err=$(mktemp)
   if PROBE_OUT=$("$@" 2>"$err"); then
     rm -f "$err"
+    [ "$tags" = 1 ] && { [ -n "$PROBE_OUT" ] && [ "$PROBE_OUT" != None ] || PROBE_OUT='{}'; return 0; }
     case "$PROBE_OUT" in ""|None|null|"[]"|"{}") return 1 ;; esac
     return 0
   fi
@@ -87,7 +92,7 @@ if [ "$mode" = up ]; then
 
   # Instance role + profile. The build instance runs the component through Systems Manager.
   role_owned_or_absent() { # role_owned_or_absent <role name>
-    probe 'NoSuchEntity' aws iam list-role-tags --role-name "$1" --query Tags --output json; local rc=$?
+    probe --tags 'NoSuchEntity' aws iam list-role-tags --role-name "$1" --query Tags --output json; local rc=$?
     case $rc in 1) return 1 ;;
       0) printf '%s' "$PROBE_OUT" | tags_match || die "IAM role $1 exists and is not run $RUN_ID's"; return 0 ;;
       *) die "could not determine whether IAM role $1 exists" ;; esac
@@ -192,16 +197,18 @@ EOF
 fi
 
 # --------------------------------------------------------------------------------------------
-# down
+# down, reset
 incomplete=0
 REMAINING="$RUN_STATE_DIR/ib-teardown-remaining.sh"; : > "$REMAINING"
 blocked() { printf '%s\n' "$1" >> "$REMAINING"; incomplete=1; warn "not deleted here; recorded in $REMAINING: $1"; }
 leave()   { warn "$1"; incomplete=1; }
 
 # Image Builder resources the driver recorded, dependents first. Each must carry this run's tags.
-for key in IB_IMAGE_ARN IB_PIPELINE_ARN IB_DISTRIBUTION_ARN IB_INFRA_ARN IB_RECIPE_ARN IB_COMPONENT_ARN; do
-  arn=$(rec "$key"); [ -n "$arn" ] || continue
-  probe 'ResourceNotFound' aw imagebuilder list-tags-for-resource --resource-arn "$arn" --query tags --output json; rc=$?
+# Every ARN ever recorded for the run is checked, so a retried build leaves nothing behind.
+for arn in $(for key in IB_IMAGE_ARN IB_PIPELINE_ARN IB_DISTRIBUTION_ARN IB_INFRA_ARN IB_RECIPE_ARN IB_COMPONENT_ARN; do
+               sed -n "s/^$key=//p" "$STATE" 2>/dev/null | awk -v k="$key" '{print k"|"$0}'; done | awk '!seen[$0]++'); do
+  key=${arn%%|*}; arn=${arn#*|}
+  probe --tags 'NotFoundException|ResourceNotFound' aw imagebuilder list-tags-for-resource --resource-arn "$arn" --query tags --output json; rc=$?
   case $rc in
     0) if printf '%s' "$PROBE_OUT" | tags_match; then
          case $key in
@@ -218,11 +225,26 @@ for key in IB_IMAGE_ARN IB_PIPELINE_ARN IB_DISTRIBUTION_ARN IB_INFRA_ARN IB_RECI
   esac
 done
 
+if [ "$mode" = reset ]; then
+  [ "$incomplete" = 0 ] || { echo "IMAGE BUILDER RESET INCOMPLETE: see the warnings above."; exit 1; }
+  echo "Image Builder resources of run $RUN_ID removed; the group and roles are kept."; exit 0
+fi
+
+# The build's log group, which Image Builder names after this run's own image (it has no tags).
+probe 'xxx-never' aw logs describe-log-groups --log-group-name-prefix "/aws/imagebuilder/$NAME" \
+  --query "logGroups[?logGroupName=='/aws/imagebuilder/$NAME'].logGroupName | [0]" --output text; rc=$?
+case $rc in
+  0) aw logs delete-log-group --log-group-name "/aws/imagebuilder/$NAME" \
+       && log "deleted log group /aws/imagebuilder/$NAME" || leave "could not delete log group /aws/imagebuilder/$NAME" ;;
+  1) log "log group /aws/imagebuilder/$NAME not present" ;;
+  *) incomplete=1 ;;
+esac
+
 # Auto Scaling group: empty it, then delete it with its instances.
 probe 'xxx-never' aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$NAME" \
-  --query 'AutoScalingGroups[0].Tags[].{Key:Key,Value:Value}' --output json; rc=$?
+  --query 'AutoScalingGroups[0]' --output json; rc=$?
 case $rc in
-  0) if printf '%s' "$PROBE_OUT" | tags_match; then
+  0) if printf '%s' "$PROBE_OUT" | jtags | tags_match; then
        aw autoscaling delete-auto-scaling-group --auto-scaling-group-name "$NAME" --force-delete \
          && log "deleting Auto Scaling group $NAME and its instances" || leave "could not delete Auto Scaling group $NAME"
        for _ in $(seq 1 60); do
@@ -237,7 +259,7 @@ esac
 
 # IAM: the two roles and the instance profile.
 for r in "$NAME-exec" "$NAME-instance"; do
-  probe 'NoSuchEntity' aws iam list-role-tags --role-name "$r" --query Tags --output json; rc=$?
+  probe --tags 'NoSuchEntity' aws iam list-role-tags --role-name "$r" --query Tags --output json; rc=$?
   case $rc in
     0) printf '%s' "$PROBE_OUT" | tags_match || { leave "IAM role $r is not tagged for run $RUN_ID; leaving it"; continue; }
        if [ "$r" = "$NAME-instance" ]; then
@@ -265,9 +287,9 @@ case $rc in
 esac
 sg=$(rec IB_SECURITY_GROUP_ID)
 if [ -n "$sg" ]; then
-  probe 'InvalidGroup.NotFound' aw ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].Tags' --output json; rc=$?
+  probe 'InvalidGroup.NotFound' aw ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0]' --output json; rc=$?
   case $rc in
-    0) printf '%s' "$PROBE_OUT" | tags_match && blocked "aws ec2 delete-security-group --region $AWS_REGION --group-id $sg" \
+    0) printf '%s' "$PROBE_OUT" | jtags | tags_match && blocked "aws ec2 delete-security-group --region $AWS_REGION --group-id $sg" \
          || leave "security group $sg is not tagged for run $RUN_ID; leaving it" ;;
     1) log "security group $sg not present" ;;
     *) incomplete=1 ;;

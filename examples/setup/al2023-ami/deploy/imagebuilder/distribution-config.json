@@ -14,9 +14,6 @@
           "KubernetesVersion": "KUBERNETES_VERSION",
           "BuildDate": "{{ imagebuilder:buildDate }}",
           "auto-delete": "no"
-        },
-        "launchPermission": {
-          "userIds": []
         }
       }
     }

@@ -135,6 +135,8 @@ from a live arm64 run on a standard EKS 1.37 cluster; those arm64 resources were
 | [`scripts/10-build-ami-packer.sh`](scripts/10-build-ami-packer.sh) | Drive the upstream Packer build |
 | [`scripts/join-nodegroup.sh`](scripts/join-nodegroup.sh) | Launch template + managed node group |
 | [`scripts/join-karpenter.sh`](scripts/join-karpenter.sh) | Apply the EC2NodeClass / NodePool |
+| [`scripts/ib-prereqs.sh`](scripts/ib-prereqs.sh) | Optional Image Builder path: the enclave-enabled build group, roles and security group (`up`, `down`) |
+| [`scripts/10-build-ami-imagebuilder.sh`](scripts/10-build-ami-imagebuilder.sh) | Optional Image Builder path: create the pipeline, build, record and tag the AMI |
 | `deploy/` | The launch-template MIME user data, Karpenter manifests, and the two pods |
 
 ## Versions
@@ -284,75 +286,129 @@ node to run on).
 
 ## Optional: build with EC2 Image Builder
 
-**Packer is the primary proven path.** This section describes an optional EC2 Image Builder
-alternative, which was **authored but not run live** because Image Builder requires the
-**parentInstance-from-ASG workaround** to enable Nitro Enclaves on the build instance.
+You can build the same AMI with EC2 Image Builder instead of Packer, for x86_64 and arm64. The
+Image Builder component runs the upstream `amazon-eks-ami` provisioner that the Packer build runs
+(`templates/al2023/provisioners/install-pod-isolation.sh`, from the pinned release `v20261112`,
+whose archive hash the component checks), so the runtime, guest image, Firecracker, kernel
+arguments, CRI proxy and NodeConfig drop-in are the same. This path needs AWS CLI 2.40.4 or later:
+2.38.0 refuses the `parentInstance` setting it uses.
 
-EC2 Image Builder's `CreateInfrastructureConfiguration` and `InstanceConfiguration` APIs have
-**no enclave field** (verified against the [EC2 Image Builder API
-Reference](https://docs.aws.amazon.com/imagebuilder/latest/APIReference/Welcome.html)). The
-**only way** to get an enclave-enabled build instance is the **parentInstance-from-ASG path**: an
-Auto Scaling group whose launch template sets `EnclaveOptions.Enabled=true`. This applies to the
-**build phase only**; the resulting AMI is enclave-capable when consumed by a node group or
-Karpenter `EC2NodeClass` that sets `EnclaveOptions.Enabled=true` on its own launch template.
+**How the build instance gets Nitro Enclaves.** An Image Builder infrastructure configuration has
+no enclave setting. Instead, Image Builder takes the build instance from an Auto Scaling group
+(`parentInstance`), and that instance keeps everything the group launched it with: the AMI,
+instance type, instance profile, subnet, security group and metadata options. So the group's
+launch template enables enclaves, and it also decides the base image and instance type; the
+recipe's parent image only has to match the architecture. Image Builder detaches the instance from
+the group before it builds, and the group launches a replacement. See the EC2 Image Builder User
+Guide, [Build on an instance from an Auto Scaling
+group](https://docs.aws.amazon.com/imagebuilder/latest/userguide/infra-config-parent-instance.html).
 
-`parentInstance` is accepted by AWS CLI 2.40.4 and refused by 2.38.0 (`Unknown parameter in input`),
-so this path needs a current AWS CLI. The Auto Scaling group is named in
-`parentInstance.autoScalingGroup.name`.
+[`scripts/ib-prereqs.sh`](scripts/ib-prereqs.sh) `up` creates what the build needs, each named
+`al2023-ami-ib-<RUN_ID>` and tagged for the run:
 
-See:
-- [EC2 Image Builder User Guide: Infrastructure
-  configuration](https://docs.aws.amazon.com/imagebuilder/latest/userguide/manage-infra-config.html)
-- [AWS CLI Command Reference: aws imagebuilder
-  create-infrastructure-configuration](https://awscli.amazonaws.com/v2/documentation/api/latest/reference/imagebuilder/create-infrastructure-configuration.html)
+- a launch template with the EKS-optimized AL2023 AMI for `NODE_ARCH`, `m8i.4xlarge` or
+  `m8g.4xlarge`, `EnclaveOptions.Enabled=true` and IMDSv2 with a hop limit of 1;
+- an Auto Scaling group of one instance from it, in a private subnet with a NAT route;
+- the instance role and profile: Systems Manager, `EC2InstanceProfileForImageBuilder`, and
+  `s3:GetObject` on the public `amazon-eks` bundle;
+- a security group with outbound rules only;
+- the pipeline's execution role: `EC2ImageBuilderExecutionPolicy`, plus describing the group,
+  tagging its instances and detaching them from that one group.
 
-The Image Builder configurations are in `deploy/imagebuilder/`:
-
-- **[`component.yaml`](deploy/imagebuilder/component.yaml)**: AWSTOE component that performs the
-  same install as the upstream `amazon-eks-ami` `install-pod-isolation.sh` provisioner (fetch and
-  verify the runtime and guest image from the public EKS S3 bundle, Firecracker ≥ v1.18.0, assert
-  kernel ≥ 1:6.18.51, `nitro_enclaves.mempool`, containerd handlers, CRI proxy, the
-  `eks.amazonaws.com/nitro-sandbox` NodeConfig label).
-- **[`image-recipe.json`](deploy/imagebuilder/image-recipe.json)**: the EKS-optimized AL2023
-  parent image (the driver looks up its AMI id for `NODE_ARCH` in the public SSM parameter) + the
-  component.
-- **[`infrastructure-config.json`](deploy/imagebuilder/infrastructure-config.json)**:
-  `parentInstance.autoScalingGroup` pointing at an enclave-enabled ASG (build phase only), with
-  placeholders.
-- **[`distribution-config.json`](deploy/imagebuilder/distribution-config.json)**: AMI distribution
-  and tagging.
-
-A reference driver script is at
-[`scripts/10-build-ami-imagebuilder.sh`](scripts/10-build-ami-imagebuilder.sh). It checks its
-inputs, picks the parent image and build instance type for `NODE_ARCH`, substitutes the
-placeholders and drives the pipeline via the `aws imagebuilder` CLI. Like the rest of this
-section it has **not been run live**:
+It waits until the group's instance is online in Systems Manager, which Image Builder needs.
+[`scripts/10-build-ami-imagebuilder.sh`](scripts/10-build-ami-imagebuilder.sh) then checks the
+group's launch template, creates the component, recipe, infrastructure and distribution
+configurations and pipeline, runs the build, and records and tags the AMI and its snapshots for
+the run. Image tests are off, because a test instance is launched from the infrastructure
+configuration and cannot have enclaves; the component checks what it installed. The
+configurations are in `deploy/imagebuilder/`.
 
 ```bash
-# Prerequisites:
-# - An Auto Scaling group with EnclaveOptions.Enabled=true on its launch template
-# - IAM instance profile, security group, private subnet
-# - S3 bucket for build logs
+export NODE_ARCH=amd64                      # or arm64
+export BUILD_SUBNET_ID=<private-subnet-id>  # a NAT route, in an AZ with the instance type
+export KUBERNETES_VERSION=1.37 KUBERNETES_BUNDLE_VERSION=1.37.1 KUBERNETES_BUILD_DATE=2026-11-12
+export RUN_ID=<id>
 
-export BUILD_ASG_NAME=<asg-with-enclave-enabled>
-export BUILD_INSTANCE_PROFILE=<instance-profile-name>
-export BUILD_SECURITY_GROUP_ID=<sg-id>
-export BUILD_SUBNET_ID=<private-subnet-id>
-export BUILD_S3_BUCKET=<log-bucket>
-export KUBERNETES_BUILD_DATE=<build date folder under s3://amazon-eks/<version>/>
-
-RUN_ID=<id> ./scripts/10-build-ami-imagebuilder.sh
+./scripts/ib-prereqs.sh up
+./scripts/10-build-ami-imagebuilder.sh
 ```
 
-The script creates the component, recipe, infrastructure configuration, distribution configuration,
-and pipeline, then starts an execution. Monitor progress in the EC2 Image Builder console or via:
+`KUBERNETES_BUNDLE_VERSION` and `KUBERNETES_BUILD_DATE` name the bundle folder
+`s3://amazon-eks/<version>/<build date>`, the same values the Packer build takes.
 
-```bash
-aws imagebuilder get-image --image-build-version-arn <execution-arn> --region <region>
+This is the x86_64 run, abridged; IDs from the account are replaced by placeholders:
+
+```text
+$ ./scripts/ib-prereqs.sh up
+[2026-11-16T22:38:56Z] security group <SG_ID>
+[2026-11-16T22:39:04Z] instance profile al2023-ami-ib-ib1116x86-instance
+[2026-11-16T22:39:07Z] execution role al2023-ami-ib-ib1116x86-exec
+[2026-11-16T22:39:21Z] launch template al2023-ami-ib-ib1116x86 (<EKS_AMI_ID>, m8i.4xlarge, enclaves on)
+[2026-11-16T22:39:23Z] waiting for the group's instance to be online in Systems Manager (up to 15 min)
+[2026-11-16T22:39:48Z] instance <INSTANCE_ID> is InService and online in Systems Manager
+[2026-11-16T22:39:48Z] prerequisites ready for run ib1116x86; run scripts/10-build-ami-imagebuilder.sh next
+
+$ ./scripts/10-build-ami-imagebuilder.sh
+[2026-11-16T22:45:35Z] group al2023-ami-ib-ib1116x86: m8i.4xlarge from al2023-ami-ib-ib1116x86, enclaves on; parent image <EKS_AMI_ID> (x86_64)
+...
+[2026-11-16T22:45:45Z] build started: arn:aws:imagebuilder:us-east-1:<ACCOUNT_ID>:image/al2023-ami-ib-ib1116x86/1.0.0/1
+[2026-11-16T22:45:45Z] waiting for the build (up to 120 min)
+[2026-11-16T22:56:57Z] build status: AVAILABLE
+[2026-11-16T22:57:02Z] built AMI: <AMI_ID> (eks-al2023-pod-isolation-2026-11-16T22-45-44.869Z, x86_64)
 ```
 
-The resulting AMI is named with a `-pod-isolation` suffix by the distribution configuration, the
-same as the Packer path.
+The build log in CloudWatch Logs (`/aws/imagebuilder/al2023-ami-ib-<RUN_ID>`) shows the instance
+taken from the group and the upstream provisioner's output, abridged:
+
+```text
+Step LaunchBuildInstance: acquired instance <INSTANCE_ID> from the Auto Scaling group
+Stdout: /tmp/eks-ami-src.Uv5QSz/eks-ami.tar.gz: OK
+Stdout: Installing the pod isolation runtime for x86_64 from s3://amazon-eks/1.37.1/2026-11-12
+Stdout:   -> /usr/bin/firecracker
+Stdout:   -> /usr/bin/jailer
+Stdout:   -> /usr/bin/containerd-shim-nitro-sandbox-v2
+Stdout:   -> /var/lib/nitro-sandbox-images/latest.eif
+Stdout:   -> /var/lib/nitro-sandbox-images/latest-disk.img
+Stdout: Pod isolation runtime installed
+[summary] Execution finished: status=success executed=2 failed=0 ignoredFailures=0 skipped=0 duration=40.339s
+```
+
+The arm64 run built on `m8g.4xlarge` the same way:
+
+```text
+[2026-11-16T22:45:34Z] group al2023-ami-ib-ib1116arm: m8g.4xlarge from al2023-ami-ib-ib1116arm, enclaves on; parent image <EKS_AMI_ID> (arm64)
+[2026-11-16T22:55:56Z] build status: AVAILABLE
+[2026-11-16T22:56:01Z] built AMI: <AMI_ID> (eks-al2023-pod-isolation-2026-11-16T22-45-44.429Z, arm64)
+```
+
+Join the AMI exactly as in Step 2 (`RUN_ID=<id> ./setup.sh --join`); the build recorded its id for
+the run. Each Image Builder AMI ran the isolated pod in its own guest, abridged, with the node name
+replaced:
+
+```text
+$ ./test.sh                                  # x86_64 Image Builder AMI
+  node: ip-10-0-0-1.ec2.internal  Ready: True
+  eks.amazonaws.com/nitro-sandbox allocatable: 20
+  isolated pod kernel: 6.18.56
+  ordinary pod kernel: 6.18.62-127.179.amzn2023.x86_64
+  isolated pod /sys/block: dm-0 vda vdb vdc
+  interfaces with an address: <none>  routes: <none>
+== summary: 7 passed, 0 failed ==
+
+$ ./test.sh                                  # arm64 Image Builder AMI
+  node: ip-10-0-0-1.ec2.internal  Ready: True
+  eks.amazonaws.com/nitro-sandbox allocatable: 20
+  isolated pod kernel: 6.18.56
+  ordinary pod kernel: 6.18.62-127.179.amzn2023.aarch64
+  isolated pod /sys/block: dm-0 vda vdb vdc
+  interfaces with an address: <none>  routes: <none>
+== summary: 7 passed, 0 failed ==
+```
+
+To build again with the same prerequisites, `RUN_ID=<id> ./scripts/ib-prereqs.sh reset` removes
+only the run's Image Builder resources. `RUN_ID=<id> ./scripts/ib-prereqs.sh down` removes the
+group, roles, Image Builder resources and build log group of the run, and lists the launch template and security group deletes for you to run, as `clean.sh`
+does. `./clean.sh` removes the AMI and its snapshots with the rest of the run.
 
 ## Good to know
 

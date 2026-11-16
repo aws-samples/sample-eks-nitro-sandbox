@@ -7,7 +7,7 @@
 # install-pod-isolation.sh provisioner.
 #
 #   RUN_ID=<id> BUILD_SUBNET_ID=<private subnet> scripts/ib-prereqs.sh up
-#   RUN_ID=<id> KUBERNETES_BUILD_DATE=<date> scripts/10-build-ami-imagebuilder.sh
+#   RUN_ID=<id> KUBERNETES_BUNDLE_VERSION=1.37.1 KUBERNETES_BUILD_DATE=<date> scripts/10-build-ami-imagebuilder.sh
 #
 # The build instance must have Nitro Enclaves enabled, and an infrastructure configuration has no
 # enclave setting. Image Builder therefore takes the build instance from the Auto Scaling group
@@ -36,13 +36,16 @@ aw()     { aws --region "$AWS_REGION" "$@"; }
 : "${BUILD_S3_BUCKET:=}"            # optional: also write the build logs to this bucket
 : "${POD_ISOLATION_FIRECRACKER_VERSION:=latest}"
 : "${BUILD_WAIT_MINUTES:=120}"
-: "${KUBERNETES_BUILD_DATE:?set KUBERNETES_BUILD_DATE to the amazon-eks bundle build date for KUBERNETES_VERSION (the s3://amazon-eks/<version>/<build date> folder)}"
+: "${KUBERNETES_BUNDLE_VERSION:?set KUBERNETES_BUNDLE_VERSION to the full Kubernetes version of the amazon-eks bundle, e.g. 1.37.1 (the s3://amazon-eks/<version>/<build date> folder)}"
+: "${KUBERNETES_BUILD_DATE:?set KUBERNETES_BUILD_DATE to the build date of the bundle (the s3://amazon-eks/<version>/<build date> folder)}"
 for v in BUILD_ASG_NAME BUILD_SECURITY_GROUP_ID BUILD_INSTANCE_PROFILE BUILD_EXECUTION_ROLE BUILD_SUBNET_ID; do
   [ -n "${!v}" ] || die "$v is not set and run $RUN_ID has no value for it; run scripts/ib-prereqs.sh up first"
 done
 
 # These values are substituted into the component's shell commands, so accept only plain values.
 [[ "$KUBERNETES_VERSION" =~ ^1\.[0-9]{2}$ ]] || die "KUBERNETES_VERSION '$KUBERNETES_VERSION' must look like 1.36"
+[[ "$KUBERNETES_BUNDLE_VERSION" =~ ^1\.[0-9]{2}\.[0-9]{1,3}$ ]] && [ "${KUBERNETES_BUNDLE_VERSION%.*}" = "$KUBERNETES_VERSION" ] \
+  || die "KUBERNETES_BUNDLE_VERSION '$KUBERNETES_BUNDLE_VERSION' must be a full version of $KUBERNETES_VERSION, like $KUBERNETES_VERSION.1"
 [[ "$KUBERNETES_BUILD_DATE" =~ ^[0-9A-Za-z._-]{1,32}$ ]] || die "KUBERNETES_BUILD_DATE '$KUBERNETES_BUILD_DATE' has characters outside [0-9A-Za-z._-]"
 [[ "$POD_ISOLATION_FIRECRACKER_VERSION" =~ ^(latest|v[0-9]+\.[0-9]+\.[0-9]+)$ ]] || die "POD_ISOLATION_FIRECRACKER_VERSION '$POD_ISOLATION_FIRECRACKER_VERSION' must be 'latest' or look like v1.18.0"
 [[ "$BUILD_EXECUTION_ROLE" =~ ^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$ ]] || die "BUILD_EXECUTION_ROLE '$BUILD_EXECUTION_ROLE' must be an IAM role ARN"
@@ -71,6 +74,7 @@ D="$SAMPLE_DIR/deploy/imagebuilder"
 tmpd=$(mktemp -d); trap 'rm -rf "$tmpd"' EXIT
 
 sed -e "s|{{ KUBERNETES_VERSION }}|${KUBERNETES_VERSION}|g" \
+    -e "s|{{ KUBERNETES_BUNDLE_VERSION }}|${KUBERNETES_BUNDLE_VERSION}|g" \
     -e "s|{{ KUBERNETES_BUILD_DATE }}|${KUBERNETES_BUILD_DATE}|g" \
     -e "s|{{ FIRECRACKER_VERSION }}|${POD_ISOLATION_FIRECRACKER_VERSION}|g" "$D/component.yaml" > "$tmpd/component.yaml"
 arn=$(aw imagebuilder create-component --name "$name" --semantic-version 1.0.0 --platform Linux \
@@ -116,6 +120,8 @@ record IB_PIPELINE_ARN "$arn"; pipeline=$arn; log "pipeline $arn"
 image=$(aw imagebuilder start-image-pipeline-execution --image-pipeline-arn "$pipeline" \
   --query imageBuildVersionArn --output text)
 record IB_IMAGE_ARN "$image"; log "build started: $image"
+# The image resource does not inherit the pipeline's tags; tag it, as clean up checks it.
+aw imagebuilder tag-resource --resource-arn "$image" --tags "$tags" || die "could not tag $image"
 
 log "waiting for the build (up to $BUILD_WAIT_MINUTES min)"
 status=""
