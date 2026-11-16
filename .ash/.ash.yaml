@@ -790,10 +790,10 @@ global_settings:
       path: 'examples/ci-cd/docker-builds/deploy/hello-docker.yaml'
       reason: 'Pods carry app.kubernetes.io/part-of: docker-builds (hello-docker.yaml:16), selected by the ApplicationNetworkPolicy in deploy/egress-policy.yaml (egress-policy.yaml:26-28)'
       expiration: '2027-12-31'
-    # Base image comes from a build argument that build-images.sh sets with a fixed tag (build-images.sh:29).
+    # Base image comes from a build argument that build-images.sh sets with a fixed tag (build-images.sh:52).
     - rule_id: CKV_DOCKER_7
       path: 'examples/ai-agents/coding-agents-for-developers/images/*/Dockerfile'
-      reason: 'FROM ${BASE_IMAGE}: build-images.sh passes $REGISTRY/$SAMPLE-base:$IMAGE_TAG (build-images.sh:29,37)'
+      reason: 'FROM ${BASE_IMAGE}: build-images.sh passes $REGISTRY/$SAMPLE-base:$IMAGE_TAG (build-images.sh:52,58)'
       expiration: '2027-12-31'
     # Pinned lines: references, measurements and ciphertext, not secret values.
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING

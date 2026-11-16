@@ -35,7 +35,7 @@ NAMESPACE="${NAMESPACE:-coding-agents-for-developers}"
 S3_PREFIX="${S3_PREFIX:-coding-agents}"
 POOL_REPLICAS="${POOL_REPLICAS:-1}"
 AGENT_CLIS="${AGENT_CLIS:-claude-code,codex,kiro-cli,opencode,pi,oh-my-pi}"
-IMAGE_TAG="${IMAGE_TAG:-v1}"   # must match build-images.sh; bump it after changing an image
+IMAGE_TAG="${IMAGE_TAG:-v2}"   # must match build-images.sh; bump it after changing an image
 KCTL=(kubectl --context "$CLUSTER_NAME")
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
