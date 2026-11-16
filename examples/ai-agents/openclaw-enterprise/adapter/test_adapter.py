@@ -398,6 +398,21 @@ class BuildPatchTests(unittest.TestCase):
         )
         validate_pod(rendered)
 
+    def test_final_validator_accepts_canonical_prepare_mounts_in_any_order(
+        self,
+    ) -> None:
+        pod = target_pod()
+        prep = prepare_private_state_container(pod)
+        prep["volumeMounts"] = [
+            prep["volumeMounts"][0],
+            prep["volumeMounts"][2],
+            prep["volumeMounts"][1],
+        ]
+
+        rendered = apply_patch(pod, build_patch(pod))
+
+        validate_pod(rendered)
+
     def test_rejects_noncanonical_preinjected_agentgateway_ca_contract(self) -> None:
         base = target_pod()
         canonical_volume = {

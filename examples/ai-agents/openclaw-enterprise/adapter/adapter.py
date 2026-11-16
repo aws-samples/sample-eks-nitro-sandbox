@@ -1594,21 +1594,36 @@ def validate_pod(pod: dict[str, Any]) -> None:
         ["/usr/bin/tini", "-s", "--", "node", "-e"],
     ):
         raise AdmissionError("final prepare-private-state command is invalid")
-    if prep.get("volumeMounts") not in (
-        [
-            {
-                "name": RUNTIME_VOLUME,
-                "mountPath": RUNTIME_ROOT,
-                "mountPropagation": "HostToContainer",
-            },
-            {"name": STATE_VOLUME, "mountPath": STATE_ROOT},
-            {"name": RUNTIME_TMP_VOLUME, "mountPath": RUNTIME_TMP_ROOT},
-        ],
-        [
-            {"name": RUNTIME_VOLUME, "mountPath": RUNTIME_ROOT},
-            {"name": STATE_VOLUME, "mountPath": STATE_ROOT},
-            {"name": RUNTIME_TMP_VOLUME, "mountPath": RUNTIME_TMP_ROOT},
-        ],
+    prep_mounts = prep.get("volumeMounts")
+    allowed_runtime_mounts = (
+        {"name": RUNTIME_VOLUME, "mountPath": RUNTIME_ROOT},
+        {
+            "name": RUNTIME_VOLUME,
+            "mountPath": RUNTIME_ROOT,
+            "mountPropagation": "HostToContainer",
+        },
+    )
+    expected_prep_mounts = {
+        STATE_VOLUME: {"name": STATE_VOLUME, "mountPath": STATE_ROOT},
+        RUNTIME_TMP_VOLUME: {
+            "name": RUNTIME_TMP_VOLUME,
+            "mountPath": RUNTIME_TMP_ROOT,
+        },
+    }
+    if not (
+        isinstance(prep_mounts, list)
+        and len(prep_mounts) == 3
+        and len({mount.get("name") for mount in prep_mounts if isinstance(mount, dict)})
+        == 3
+        and all(
+            isinstance(mount, dict)
+            and (
+                mount in allowed_runtime_mounts
+                if mount.get("name") == RUNTIME_VOLUME
+                else mount == expected_prep_mounts.get(mount.get("name"))
+            )
+            for mount in prep_mounts
+        )
     ):
         raise AdmissionError("final prepare-private-state mounts are invalid")
 
