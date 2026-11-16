@@ -164,9 +164,12 @@ Cedar policy, sets the gate to the policy's measurement, and starts the pods.
 encrypted-image-demo is Ready: its layers were decrypted inside the sandbox.
 ```
 
-Abridged: `kubectl`'s own `created` and `condition met` lines, skopeo's copy progress, the
-whole Cedar policy the generator prints, and the closing list of commands are all left out,
-and the account ID is replaced with `<ACCOUNT_ID>`. Two lines are worth reading twice.
+Abridged: `kubectl`'s own `created` and `condition met` lines, the container runtime's
+credential-storage warning and image pull, skopeo's copy progress, everything else the
+policy generator prints (the whole Cedar policy, its warning, the measurement and the
+condition, which steps 7 and 8 show), and the closing list of commands are all left out.
+The account ID is replaced with `<ACCOUNT_ID>` and the kube context with `<your-context>`.
+Two lines are worth reading twice.
 
 The key is created with a policy of its own, not the default one, and that policy denies
 every decrypt: `kms:CreateKey` with no policy attaches the AWS default key policy, whose
@@ -350,7 +353,7 @@ image with a non-numeric `USER` and no `runAsUser` in the pod spec would fail ge
 and the image's own group list is unknowable. Setting `runAsUser` and `runAsGroup`
 numerically, and `supplementalGroupsPolicy: Strict`, lets it pin the identity exactly
 (Amazon EKS User Guide, *Encrypted container images*). It still prints a warning about the
-group set:
+group set, wrapped here to fit the page:
 
 ```text
 warning: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample:v1-15445d9a: image
@@ -392,7 +395,8 @@ eks-nitro-sandbox-genpolicy \
 ```
 
 The admission policy permits creating the `main` container only on an exact match. Here is
-the start of it, from [`policy/policy.generated.yaml`](policy/policy.generated.yaml):
+the start of it, from [`policy/policy.generated.yaml`](policy/policy.generated.yaml), without
+the two-space indent the YAML file adds:
 
 ```text
 // Container: main
@@ -412,8 +416,8 @@ when {
     context.capabilities_effective.isEmpty() &&
 ```
 
-The environment is pinned by name and by value, which is what the changed pod in step 10
-moves:
+The environment is pinned by name and by value, which is what the changed pod in step 11
+moves. This is the start of the list of names:
 
 ```text
     context.env_names == ["PATH", "AWS_REGION", "AWS_DEFAULT_REGION",
@@ -603,7 +607,7 @@ kubectl -n encrypted-image-sample get pod encrypted-image-plain \
 ```
 
 The ordinary pod's container started at 22:03:46 and read 36.46 seconds, which puts the
-boot it is reporting at 22:03:09, three seconds after the node was launched at 22:03:06: it
+boot it is reporting at 22:03:09, about three and a half seconds after the node was launched at 22:03:06: it
 is reading the machine's own boot. The sandbox pod's container started five seconds earlier,
 at 22:03:41, and read 10.87 seconds, which puts its boot at 22:03:30, about 21 seconds after
 the node's own boot. By the time the sandbox read that number the machine had been up for
@@ -640,7 +644,7 @@ container: failed to exec in container: failed to create exec "0d2fda59ce77...":
 denied Agent::Action::"Exec" on container "main" reasons=[] errors=[]
 ```
 
-Abridged: the exec id is shortened.
+Abridged: the exec id is shortened, and the error is wrapped to fit the page.
 
 **Step 10: The same credentials, with no attestation, get nothing.** The credentials pod is
 an ordinary pod using the same service account, so EKS Pod Identity gives it the same IAM
@@ -717,8 +721,9 @@ The changed pod was refused the layer key by KMS and cannot start.
 Delete it before you finish with the sample:  ./scripts/changed-pod.sh --delete
 ```
 
-Abridged: the generator's policy output and some of the error's inner fields are left out,
-and the script replaces the account ID and the role session. `STATUS` depends on where in
+Abridged: the generator's output and some of the error's inner fields are left out, the
+error is wrapped to fit the page, and the script replaces the account ID and the role
+session. `STATUS` depends on where in
 the pod's retry cycle you catch it, so it reads `CrashLoopBackOff` here and
 `RunContainerError` on another run; both are the same refusal. One added environment
 variable moved the measurement completely, and the failure is at `prepare_image`, the
@@ -809,6 +814,8 @@ etc/cloud/cloud.cfg.d/10_aws_dnfvars.cfg
 etc/dnf/vars/awsdomain
 etc/dnf/vars/awsregion
 ```
+
+Abridged: the image pull progress `docker create` prints the first time is left out.
 
 The decryption happened before the container's first instruction, in the guest's image
 runtime, using the key KMS released to the attestation. The workload never sees it. The
@@ -995,7 +1002,8 @@ Network policy enforcement stays on for the cluster: it is shared, and other wor
 ```
 
 The first `changed-pod` line has no "deleted" line under it because that pod was already
-gone. The account ID is replaced with `<ACCOUNT_ID>` and the local path is shortened.
+gone. The account ID is replaced with `<ACCOUNT_ID>`, the kube context with
+`<your-context>`, and the local path is shortened.
 
 `clean.sh` removes all four AWS resources, each only after reading that resource's own tags
 and finding `ManagedBy=encrypted-image` on it; a resource without the tag is left alone and
