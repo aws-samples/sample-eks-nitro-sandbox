@@ -409,12 +409,22 @@ def _validate_prepare_private_state(
                         f"spec.containers[{index}].volumeMounts contains an "
                         "unsafe home mount path"
                     )
-                parent = posixpath.dirname(mount_path)
-                if parent != HOME_MOUNT_PATH:
+                if mount.get("name") != RUNTIME_VOLUME:
+                    parent = posixpath.dirname(mount_path)
+                    if parent != HOME_MOUNT_PATH:
+                        expected_directories.add(
+                            parent.replace(
+                                HOME_MOUNT_PATH, f"{RUNTIME_ROOT}/home", 1
+                            )
+                        )
+            if mount.get("name") == RUNTIME_VOLUME:
+                sub_path = mount.get("subPath")
+                if isinstance(sub_path, str) and sub_path != "home":
                     expected_directories.add(
-                        parent.replace(HOME_MOUNT_PATH, f"{RUNTIME_ROOT}/home", 1)
+                        f"{RUNTIME_ROOT}/"
+                        f"{_safe_relative_path(sub_path, 'runtime-state subPath')}"
                     )
-            if mount.get("name") == STATE_VOLUME:
+            elif mount.get("name") == STATE_VOLUME:
                 sub_path = mount.get("subPath")
                 if (
                     isinstance(sub_path, str)

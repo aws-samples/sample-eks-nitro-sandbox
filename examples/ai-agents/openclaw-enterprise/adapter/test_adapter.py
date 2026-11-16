@@ -446,6 +446,25 @@ class BuildPatchTests(unittest.TestCase):
         ):
             build_patch(pod)
 
+    def test_accepts_pinned_oce_gateway_codex_home_source_directory(self) -> None:
+        pod = target_pod()
+        gateway = pod["spec"]["containers"][-1]
+        gateway["volumeMounts"].append(
+            {
+                "name": "runtime-state",
+                "mountPath": (
+                    "/home/node/.openclaw/agents/main/agent/codex-home"
+                ),
+                "subPath": "home/gateway-codex-home",
+            }
+        )
+        rendered = apply_patch(pod, build_patch(pod))
+
+        self.assertEqual(
+            rendered["spec"]["containers"][-1]["securityContext"]["runAsUser"],
+            1000,
+        )
+
     def test_rejects_noncanonical_mount_paths(self) -> None:
         for mount_path in (
             "/home/node/../../gateway-state/arbitrary/leaf",
