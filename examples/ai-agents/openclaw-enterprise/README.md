@@ -77,11 +77,12 @@ scratch data.
 
 Nitro also presents OCE's `/home/node` `subPath` mount as root-owned and
 group- and world-writable. The wrapper starts with `allowPrivilegeEscalation:
-false`, drops all capabilities, then adds only `CHOWN`, `SETUID`, `SETGID`, and
-`SETPCAP` for the handoff. Kubernetes baseline permits those capabilities;
-restricted permits only `NET_BIND_SERVICE` to be added and also requires
-non-root execution. The tenant setup script therefore enforces baseline and
-keeps restricted in audit and warning mode.
+false`, drops all capabilities, then adds only `CHOWN`, `DAC_OVERRIDE`,
+`FOWNER`, `SETUID`, `SETGID`, and `SETPCAP` to traverse and repair the mapped
+directory mount points before the handoff. Kubernetes baseline permits those
+capabilities; restricted permits only `NET_BIND_SERVICE` to be added and also
+requires non-root execution. The tenant setup script therefore enforces
+baseline and keeps restricted in audit and warning mode.
 
 The wrapper uses `setpriv` to change to UID and GID 1000, clear supplementary
 groups, and empty the bounding, inheritable, and ambient capability sets. The

@@ -51,8 +51,10 @@ The script:
 
 Baseline is required because the Nitro compatibility wrapper starts as UID and
 GID 0 with `allowPrivilegeEscalation: false` and only `CHOWN`, `SETUID`,
-`SETGID`, and `SETPCAP`. Restricted requires non-root execution and permits
-only `NET_BIND_SERVICE` to be added after dropping all capabilities.
+`SETGID`, `SETPCAP`, `DAC_OVERRIDE`, and `FOWNER`. The latter two allow the
+wrapper to traverse and change the mapped state mount points. Restricted
+requires non-root execution and permits only `NET_BIND_SERVICE` to be added
+after dropping all capabilities.
 
 The wrapper removes group and world access from `/home/node` and each mapped
 persistent state directory, changes those mount points to ownership `1000:1000`,

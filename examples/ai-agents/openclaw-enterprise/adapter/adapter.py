@@ -168,7 +168,14 @@ def _runtime_wrapper(
             "runAsNonRoot": False,
             "capabilities": {
                 "drop": ["ALL"],
-                "add": ["CHOWN", "SETUID", "SETGID", "SETPCAP"],
+                "add": [
+                    "CHOWN",
+                    "DAC_OVERRIDE",
+                    "FOWNER",
+                    "SETUID",
+                    "SETGID",
+                    "SETPCAP",
+                ],
             },
         }
     )

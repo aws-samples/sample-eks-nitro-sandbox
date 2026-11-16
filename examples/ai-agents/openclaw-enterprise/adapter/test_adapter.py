@@ -262,7 +262,14 @@ class BuildPatchTests(unittest.TestCase):
             gateway["securityContext"]["capabilities"],
             {
                 "drop": ["ALL"],
-                "add": ["CHOWN", "SETUID", "SETGID", "SETPCAP"],
+                "add": [
+                    "CHOWN",
+                    "DAC_OVERRIDE",
+                    "FOWNER",
+                    "SETUID",
+                    "SETGID",
+                    "SETPCAP",
+                ],
             },
         )
         wrapper_script = gateway["command"][2]
