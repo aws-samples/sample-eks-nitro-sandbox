@@ -86,7 +86,7 @@ COMPONENT_ARN=$(aws imagebuilder create-component \
   --query 'componentBuildVersionArn' \
   --output text)
 log "Component created: $COMPONENT_ARN"
-printf 'COMPONENT_ARN=%s\n' "$COMPONENT_ARN" >> "$EVIDENCE_DIR/run-evidence.env"
+printf 'IB_COMPONENT_ARN=%s\n' "$COMPONENT_ARN" >> "$RUN_STATE_DIR/run-state.env"
 
 log "Creating image recipe"
 RECIPE_DOC=$(mktemp)
@@ -103,7 +103,7 @@ RECIPE_ARN=$(aws imagebuilder create-image-recipe \
   --query 'imageRecipeArn' \
   --output text)
 log "Recipe created: $RECIPE_ARN"
-printf 'RECIPE_ARN=%s\n' "$RECIPE_ARN" >> "$EVIDENCE_DIR/run-evidence.env"
+printf 'IB_RECIPE_ARN=%s\n' "$RECIPE_ARN" >> "$RUN_STATE_DIR/run-state.env"
 
 log "Creating infrastructure configuration (parentInstance: ASG $BUILD_ASG_NAME)"
 INFRA_DOC=$(mktemp)
@@ -125,7 +125,7 @@ INFRA_ARN=$(aws imagebuilder create-infrastructure-configuration \
   --query 'infrastructureConfigurationArn' \
   --output text)
 log "Infrastructure config created: $INFRA_ARN"
-printf 'INFRA_ARN=%s\n' "$INFRA_ARN" >> "$EVIDENCE_DIR/run-evidence.env"
+printf 'IB_INFRA_ARN=%s\n' "$INFRA_ARN" >> "$RUN_STATE_DIR/run-state.env"
 
 log "Creating distribution configuration"
 DISTRO_DOC=$(mktemp)
@@ -143,7 +143,7 @@ DISTRO_ARN=$(aws imagebuilder create-distribution-configuration \
   --query 'distributionConfigurationArn' \
   --output text)
 log "Distribution config created: $DISTRO_ARN"
-printf 'DISTRO_ARN=%s\n' "$DISTRO_ARN" >> "$EVIDENCE_DIR/run-evidence.env"
+printf 'IB_DISTRO_ARN=%s\n' "$DISTRO_ARN" >> "$RUN_STATE_DIR/run-state.env"
 
 log "Creating image pipeline"
 PIPELINE_ARN=$(aws imagebuilder create-image-pipeline \
@@ -157,7 +157,7 @@ PIPELINE_ARN=$(aws imagebuilder create-image-pipeline \
   --query 'imagePipelineArn' \
   --output text)
 log "Pipeline created: $PIPELINE_ARN"
-printf 'PIPELINE_ARN=%s\n' "$PIPELINE_ARN" >> "$EVIDENCE_DIR/run-evidence.env"
+printf 'IB_PIPELINE_ARN=%s\n' "$PIPELINE_ARN" >> "$RUN_STATE_DIR/run-state.env"
 
 log "Starting image pipeline execution (this takes ~30-40 min)"
 EXECUTION_ARN=$(aws imagebuilder start-image-pipeline-execution \
@@ -166,18 +166,45 @@ EXECUTION_ARN=$(aws imagebuilder start-image-pipeline-execution \
   --query 'imageBuildVersionArn' \
   --output text)
 log "Execution started: $EXECUTION_ARN"
-printf 'EXECUTION_ARN=%s\n' "$EXECUTION_ARN" >> "$EVIDENCE_DIR/run-evidence.env"
+printf 'IB_EXECUTION_ARN=%s\n' "$EXECUTION_ARN" >> "$RUN_STATE_DIR/run-state.env"
 
-log "Pipeline execution $EXECUTION_ARN is running."
-log "Monitor progress in the EC2 Image Builder console or via:"
-log "  aws imagebuilder get-image --image-build-version-arn $EXECUTION_ARN --region $AWS_REGION"
+log "Waiting for Image Builder pipeline to complete (polling every 2 minutes)..."
+while true; do
+  STATUS=$(aws imagebuilder get-image --image-build-version-arn "$EXECUTION_ARN" --region "$AWS_REGION" \
+    --query 'image.state.status' --output text 2>/dev/null || echo "UNKNOWN")
+  case "$STATUS" in
+    AVAILABLE) log "Build complete"; break ;;
+    FAILED|CANCELLED|DEPRECATED|DISABLED) die "Build failed with status: $STATUS" ;;
+    UNKNOWN) warn "Could not determine build status, retrying..." ;;
+    *) log "Build status: $STATUS" ;;
+  esac
+  sleep 120
+done
+
+log "Retrieving AMI ID from build output"
+AMI_ID=$(aws imagebuilder get-image --image-build-version-arn "$EXECUTION_ARN" --region "$AWS_REGION" \
+  --query 'image.outputResources.amis[0].image' --output text)
+[ -n "$AMI_ID" ] && [[ "$AMI_ID" =~ ^ami-[0-9a-f]+$ ]] || die "Could not retrieve AMI ID from build"
+log "AMI created: $AMI_ID"
+printf 'AMI_ID=%s\n' "$AMI_ID" >> "$RUN_STATE_DIR/run-state.env"
+
+log "Tagging AMI snapshots with ManagedBy and RunId"
+SNAPS=$(aws ec2 describe-images --region "$AWS_REGION" --image-ids "$AMI_ID" \
+  --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' --output text)
+for snap in $SNAPS; do
+  aws ec2 create-tags --region "$AWS_REGION" --resources "$snap" \
+    --tags "Key=${TAGS_OWNER_KEY},Value=${TAGS_OWNER_VALUE}" "Key=${TAGS_RUN_KEY},Value=${RUN_ID}" "Key=auto-delete,Value=no" \
+    || warn "Could not tag snapshot $snap"
+  log "Tagged snapshot: $snap"
+done
+
 log ""
-log "To wait for completion and retrieve the AMI ID:"
-log "  aws imagebuilder wait image-build-complete --image-build-version-arn $EXECUTION_ARN --region $AWS_REGION"
-log "  aws imagebuilder get-image --image-build-version-arn $EXECUTION_ARN --region $AWS_REGION --query 'image.outputResources.amis[0].image' --output text"
-log ""
-log "NOTE: This script does not block on pipeline completion. The AMI ID will be available after the build finishes."
+log "Image Builder build complete for ${NODE_ARCH} (run $RUN_ID)"
+log "  AMI: $AMI_ID"
+log "  Component: $COMPONENT_NAME"
+log "  Pipeline: $PIPELINE_NAME"
+log "  Execution: $EXECUTION_ARN"
 
 # Cleanup temp files
 rm -f "$COMPONENT_DOC" "$RECIPE_DOC" "$INFRA_DOC" "$DISTRO_DOC"
-printf '%s\n' "$EXECUTION_ARN"
+printf '%s\n' "$AMI_ID"

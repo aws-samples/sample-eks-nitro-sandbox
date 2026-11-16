@@ -21,10 +21,11 @@ REMAINING="$RUN_STATE_DIR/ib-teardown-remaining.sh"; incomplete=0
 
 act() { log "$1"; shift; "$@" || { warn "step failed: $*"; incomplete=1; return 1; }; }
 note_blocked() { printf '%s\n' "$1" >> "$REMAINING"; incomplete=1; warn "not deleted; in $REMAINING: $1"; }
-probe() { local nf="$1" err; shift; err=$(mktemp); if PROBE_OUT=$("$@" 2>"$err"); then rm -f "$err"; return 0; fi
+probe() { local nf="$1" err; shift; err=$(mktemp); if PROBE_OUT=$("$@" 2>"$err"); then
+  case "$PROBE_OUT" in null|""|"[]") rm -f "$err"; return 1 ;; esac; rm -f "$err"; return 0; fi
   if grep -Eq "$nf" "$err"; then rm -f "$err"; return 1; fi
   warn "could not determine ($*): $(head -n 2 "$err")"; rm -f "$err"; incomplete=1; return 2; }
-jfield() { python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps(eval(sys.argv[1], {"d": d})))' "$1"; }
+jfield() { python3 -c 'import json,sys; d=json.load(sys.stdin); r=eval(sys.argv[1], {"d": d}); print(json.dumps(r) if r is not None else "")' "$1"; }
 
 case "$NODE_ARCH" in amd64) SSM_ARCH=x86_64; BUILD_INSTANCE_TYPE=m8i.4xlarge ;;
   arm64) SSM_ARCH=arm64; BUILD_INSTANCE_TYPE=m8g.4xlarge ;; *) die "NODE_ARCH=$NODE_ARCH invalid" ;; esac
