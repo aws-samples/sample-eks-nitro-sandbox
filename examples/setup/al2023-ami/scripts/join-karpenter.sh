@@ -27,6 +27,7 @@ render() { # render <template> -> stdout, filling the run's placeholders
   sed -e "s|@AMI_ID@|$AMI_ID|g" \
       -e "s|@CLUSTER_NAME@|$CLUSTER_NAME|g" \
       -e "s|@NODE_ROLE@|$NODE_ROLE|g" \
+      -e "s|@NODE_ARCH@|$NODE_ARCH|g" \
       -e "s|@RUN_ID@|$RUN_ID|g" "$1"
 }
 out="$RUN_STATE_DIR/karpenter"

@@ -77,6 +77,24 @@ tokens or API credit.
   [network policy](../../isolation/network-policy/README.md) blueprint. It gives the pod no AWS
   permissions and creates no Pod Identity association.
 
+## Architecture: x86_64 and arm64
+
+The upstream build supports both **x86_64** and **arm64 (Graviton)**. The pod-isolation
+provisioner keys on `uname -m` and fetches the matching runtime and guest image from the EKS S3
+bundle (`.../linux/amd64/...` or `.../linux/arm64/...`), so **the AMI's architecture follows the
+instance the Packer build runs on**: build on an x86_64 enclave instance for an x86_64 AMI, on a
+Graviton enclave instance for an arm64 AMI. There is no separate build flag.
+
+This blueprint defaults to **x86_64** (`NODE_ARCH=amd64`, `m8i` instance types), and the
+walkthrough output below is from an x86_64 run. To run **arm64**, set in `config.env`:
+
+- `NODE_ARCH=arm64`,
+- `BUILD_INSTANCE_TYPE` and `NODE_INSTANCE_TYPE` to enclave-capable Graviton types,
+
+and build the AMI on the Graviton builder. The managed node group follows `NODE_INSTANCE_TYPE`;
+the Karpenter `NodePool`'s `kubernetes.io/arch` requirement is rendered from `NODE_ARCH`, and its
+`amiSelectorTerms` must point at the arm64 AMI. Everything else is identical.
+
 ## Files
 
 | File | What it is |

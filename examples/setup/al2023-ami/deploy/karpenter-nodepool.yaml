@@ -29,9 +29,12 @@ spec:
         - key: karpenter.sh/capacity-type
           operator: In
           values: ["on-demand"]
+        # @NODE_ARCH@ is amd64 by default; set NODE_ARCH=arm64 in config.env to run the arm64
+        # (Graviton) AMI. It must match the architecture of the AMI in amiSelectorTerms above:
+        # the AMI's architecture follows the instance the build ran on.
         - key: kubernetes.io/arch
           operator: In
-          values: ["amd64"]
+          values: ["@NODE_ARCH@"]
   limits:
     cpu: "16"
   disruption:

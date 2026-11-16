@@ -29,6 +29,12 @@ have() { command -v "$1" >/dev/null 2>&1; }
 : "${RESOURCE_PREFIX:=al2023-ami}"
 : "${NAMESPACE:=al2023-ami-sample}"
 : "${JOIN_MODE:=both}"                      # nodegroup | karpenter | both
+# Architecture: amd64 (x86_64) by default, or arm64 (Graviton). NODE_ARCH must match the AMI's
+# architecture, which follows the instance the Packer build ran on, and the node instance type.
+: "${NODE_ARCH:=amd64}"
+case "$NODE_ARCH" in amd64|arm64) ;; *) die "NODE_ARCH must be amd64 or arm64, got '$NODE_ARCH'" ;; esac
+# Enclave-capable instance types. The defaults are x86_64 (m8i); for NODE_ARCH=arm64 set these to
+# an enclave-capable Graviton type and build the AMI on an arm64 enclave instance.
 : "${NODE_INSTANCE_TYPE:=m8i.xlarge}"
 : "${NODE_COUNT:=1}"
 : "${TAGS_OWNER_KEY:=ManagedBy}"
