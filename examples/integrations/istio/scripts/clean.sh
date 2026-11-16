@@ -27,6 +27,10 @@ kc delete namespace "$NAMESPACE" --wait=true --timeout=300s
 
 rc=0
 namespace_mark >/dev/null || rc=$?
-((rc == 2)) || die "namespace $NAMESPACE may still exist; check it with: kubectl get namespace $NAMESPACE"
+case "$rc" in
+  2) ;;
+  0) die "namespace $NAMESPACE still exists after the delete; check it with: kubectl get namespace $NAMESPACE" ;;
+  *) die "could not determine whether namespace $NAMESPACE was removed; check it with: kubectl get namespace $NAMESPACE" ;;
+esac
 echo "removed namespace $NAMESPACE"
 echo "Istio in $ISTIO_NAMESPACE was left as it is. To remove it, see Clean up on the page."
