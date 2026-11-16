@@ -95,6 +95,11 @@ and build the AMI on the Graviton builder. The managed node group follows `NODE_
 the Karpenter `NodePool`'s `kubernetes.io/arch` requirement is rendered from `NODE_ARCH`, and its
 `amiSelectorTerms` must point at the arm64 AMI. Everything else is identical.
 
+The arm64 path was run end to end on a Graviton (`m8g`) builder and node: the build produced an
+`arm64` AMI, the node joined with `eks.amazonaws.com/nitro-sandbox: 20`, and an `isolated-sandbox`
+pod reached `Running` with a guest kernel (`6.18.56`, `aarch64`) distinct from the host's
+(`6.18.62-127.179.amzn2023.aarch64`) — the same evidence the x86_64 walkthrough below shows.
+
 ## Files
 
 | File | What it is |
