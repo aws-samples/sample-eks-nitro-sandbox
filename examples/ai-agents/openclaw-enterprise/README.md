@@ -135,7 +135,7 @@ verification boundaries.
 
 | Component | Pin |
 |---|---|
-| OCE source | `c6541831756ae40d0485d16d8f0ffeab9851372d` |
+| OCE source | `86c8c12310f691bb21651118ffffd6bfd460e9ff` |
 | AgentGateway | v1.7.0, `cr.agentgateway.dev/agentgateway@sha256:60216aafb03d37f94e952ff3d51d2f630a65b10ecaebdc0a864882f92610c45b` |
 | Amazon Bedrock model | `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
 
