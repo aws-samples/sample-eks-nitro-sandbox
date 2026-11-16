@@ -21,6 +21,10 @@ flowchart TB
   E --> F
 ```
 
+*Figure 1: The same AL2023 Nitro Sandbox AMI feeds two node consumers. The upstream amazon-eks-ami Packer build produces an AL2023 -pod-isolation AMI with kernel 6.18.51+. Both a managed node group (via launch template with EnclaveOptions.Enabled=true) and a Karpenter EC2NodeClass (via enclaveOptions.enabled: true) consume this AMI to provision EKS nodes labelled eks.amazonaws.com/nitro-sandbox=true. The resulting node runs an isolated-sandbox pod inside a Nitro sandbox, which is a lightweight VM with its own guest kernel and virtio disks nested within the EKS node.*
+
+![Architecture diagram showing the upstream amazon-eks-ami Packer build on the left producing an AL2023 -pod-isolation AMI with kernel 6.18.51+. The AMI feeds two consumers inside the AWS Cloud frame: a managed node group with launch template at the top, and a Karpenter EC2NodeClass at the bottom. Both enable Nitro via the enclave option and produce an EKS node labelled eks.amazonaws.com/nitro-sandbox=true. Inside the EKS cluster frame, the EKS node (EC2 instance) contains a Nitro sandbox frame, which contains a Nitro sandbox pod box with runtimeClassName: isolated-sandbox and two container icons inside.](images/architecture.png)
+
 ## Prerequisites and clone
 
 The [shared prerequisites](../../README.md#prerequisites) (an AWS account, the AWS CLI,
