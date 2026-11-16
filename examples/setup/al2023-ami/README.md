@@ -110,24 +110,17 @@ does the work.
 ```
 
 ```text
-Note: This walkthrough used a pre-built AMI copied from us-west-2 to us-east-1 rather than
-building from scratch. The source AMI (ami-0cf68c26ec3039a03 in us-west-2) was built with
-amazon-eks-ami v20261115 for EKS 1.37.
+Note: this walkthrough reused a pre-built AMI (built earlier with `./setup.sh --ami-only`
+from amazon-eks-ami v20261115 for EKS 1.37) rather than rebuilding. `<AMI_ID>` is the
+`-pod-isolation` image `./setup.sh --ami-only` produced; your build prints its own id.
 
-$ aws ec2 copy-image --region us-east-1 --source-region us-west-2 \
-    --source-image-id ami-0cf68c26ec3039a03 \
-    --name "amazon-eks-al2023-pod-isolation-node-1.37-v20261115-us-east-1"
-{
-    "ImageId": "ami-04201a94afae1f32b"
-}
-
-$ aws ec2 describe-images --region us-east-1 --image-ids ami-04201a94afae1f32b \
+$ aws ec2 describe-images --region <AWS_REGION> --image-ids <AMI_ID> \
     --query 'Images[0].[ImageId,Name,State]' --output table
 -------------------------------------------------------------------
 |                         DescribeImages                          |
 +-----------------------------------------------------------------+
-|  ami-04201a94afae1f32b                                          |
-|  amazon-eks-al2023-pod-isolation-node-1.37-v20261115-us-east-1  |
+|  <AMI_ID>                                                       |
+|  amazon-eks-al2023-pod-isolation-node-1.37-v20261115            |
 |  available                                                      |
 +-----------------------------------------------------------------+
 ```
@@ -147,13 +140,13 @@ subnets** (an EKS node gets no public IP, so a node group in a public subnet nev
 ```text
 $ kubectl get nodes
 NAME                              STATUS   ROLES    AGE     VERSION
-ip-192-168-106-197.ec2.internal   Ready    <none>   6m24s   v1.37.1-eks-9adbfea
+ip-10-0-0-1.ec2.internal          Ready    <none>   6m24s   v1.37.1-eks-9adbfea
 
-$ kubectl get node ip-192-168-106-197.ec2.internal \
+$ kubectl get node ip-10-0-0-1.ec2.internal \
     --show-labels | grep eks.amazonaws.com/nitro-sandbox
 ...,eks.amazonaws.com/nitro-sandbox=true,...
 
-$ kubectl get node ip-192-168-106-197.ec2.internal \
+$ kubectl get node ip-10-0-0-1.ec2.internal \
     -o jsonpath='{.status.allocatable.eks\.amazonaws\.com/nitro-sandbox}'
 20
 ```
