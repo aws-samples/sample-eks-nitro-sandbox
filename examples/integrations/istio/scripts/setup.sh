@@ -29,9 +29,9 @@ istiod="$(kc_read -n "$ISTIO_NAMESPACE" get deployment istiod --ignore-not-found
   || die "could not read istiod in $ISTIO_NAMESPACE, so it is not known whether Istio is installed"
 if [[ -z "$istiod" ]]; then
   die "Istio is not installed (no istiod in $ISTIO_NAMESPACE). Install it as the page's step 1 says:
-  helm repo add istio https://istio-release.storage.googleapis.com/charts && helm repo update istio
-  helm install istio-base istio/base -n $ISTIO_NAMESPACE --create-namespace --version 1.30.8 --wait
-  helm install istiod istio/istiod -n $ISTIO_NAMESPACE --version 1.30.8 --wait"
+  helm repo add istio https://blob.istio.io/istio-release/charts && helm repo update istio
+  helm install istio-base istio/base -n $ISTIO_NAMESPACE --create-namespace --version 1.31.4 --wait
+  helm install istiod istio/istiod -n $ISTIO_NAMESPACE --version 1.31.4 --wait"
 fi
 [[ "$istiod" == "istiod|"* ]] || die "unexpected answer for deployment istiod: $istiod"
 ready="${istiod#istiod|}"

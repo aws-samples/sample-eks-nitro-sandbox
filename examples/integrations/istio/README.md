@@ -54,7 +54,7 @@ This folder was built against these releases:
 
 | Component | Version |
 |---|---|
-| Istio ([istio/istio](https://github.com/istio/istio/releases)), installed from the [`base` and `istiod` Helm charts](https://istio.io/latest/docs/setup/install/helm/) | 1.30.8, the newest chart in Istio's Helm repository on 2026-11-16 |
+| Istio ([istio/istio](https://github.com/istio/istio/releases)), installed from the [`base` and `istiod` Helm charts](https://istio.io/latest/docs/setup/install/helm/) | 1.31.4, the newest patch release of Istio 1.31, from the Helm repository the Istio install guide names |
 | go-httpbin ([mccutchen/go-httpbin](https://github.com/mccutchen/go-httpbin)) | 2.25.0 |
 | curl ([curl/curl-container](https://hub.docker.com/r/curlimages/curl)) | 8.10.1 |
 
@@ -75,15 +75,15 @@ you want here. If `istiod` is already running in `istio-system`, skip this step:
 blueprint reuses it as it is.
 
 ```bash
-helm repo add istio https://istio-release.storage.googleapis.com/charts
+helm repo add istio https://blob.istio.io/istio-release/charts
 helm repo update istio
-helm install istio-base istio/base -n istio-system --create-namespace --version 1.30.8 --wait
-helm install istiod istio/istiod -n istio-system --version 1.30.8 --wait
+helm install istio-base istio/base -n istio-system --create-namespace --version 1.31.4 --wait
+helm install istiod istio/istiod -n istio-system --version 1.31.4 --wait
 ```
 
 ```text
 NAME: istio-base
-LAST DEPLOYED: Mon Nov 16 16:19:57 2026
+LAST DEPLOYED: Mon Nov 16 21:15:24 2026
 NAMESPACE: istio-system
 STATUS: deployed
 REVISION: 1
@@ -132,10 +132,10 @@ istiod ready, no Istio CNI or ztunnel DaemonSet
 namespace/istio-sandbox-demo created
 ...
 NAME                        READY   STATUS    RESTARTS   AGE
-client-a-55b48f4cf5-7x94w   2/2     Running   0          11s
-client-b-5c7f9444dd-cp9ps   2/2     Running   0          11s
-client-plain                1/1     Running   0          11s
-echo-bf7b955b-ld2mr         2/2     Running   0          11s
+client-a-55b48f4cf5-hp2q8   2/2     Running   0          51s
+client-b-5c7f9444dd-52r2d   2/2     Running   0          51s
+client-plain                1/1     Running   0          50s
+echo-bf7b955b-zskxj         2/2     Running   0          51s
 ```
 
 Abridged. The first pod on a new sandbox node takes longer while Auto Mode adds the node.
@@ -195,7 +195,7 @@ kubectl -n $NAMESPACE exec client-plain -- sh -c 'uname -rv; cat /proc/uptime; l
 ```text
 # client-a, in a sandbox
 6.18.62 #1 SMP PREEMPT_DYNAMIC Thu Nov 12 22:44:15 UTC 2026
-12.31 8.59
+37.25 33.75
 dm-0
 vda
 vdb
@@ -205,7 +205,7 @@ c8a.enclave
 
 # client-plain, an ordinary pod on a node
 6.18.62 #2 SMP PREEMPT_DYNAMIC Thu Nov 12 22:49:16 UTC 2026
-387.69 713.11
+18328.36 36261.79
 dm-0
 loop0
 ...
@@ -217,7 +217,7 @@ c8a.large
 
 Abridged: the ordinary pod lists eight `loop` devices. The two kernels print the same
 version, so compare the build (`#1` and `#2`), the uptime (the sandbox pod's guest had been up
-about as long as the pod had existed), the `vda` to `vdd` virtio disks against the node's `nvme`
+for seconds, since the pod started, and the node for hours), the `vda` to `vdd` virtio disks against the node's `nvme`
 disks, and the product name.
 
 **Step 5: Send a request through the mesh.** `client-a` calls `echo` by its Service name. The
@@ -238,7 +238,7 @@ server: envoy
   "headers": {
     ...
     "X-Forwarded-Client-Cert": [
-      "By=spiffe://cluster.local/ns/istio-sandbox-demo/sa/echo;Hash=7723652e...;Subject=\"\";URI=spiffe://cluster.local/ns/istio-sandbox-demo/sa/client-a"
+      "By=spiffe://cluster.local/ns/istio-sandbox-demo/sa/echo;Hash=2a53b511...;Subject=\"\";URI=spiffe://cluster.local/ns/istio-sandbox-demo/sa/client-a"
     ],
     ...
   }
@@ -371,6 +371,9 @@ step 1 and nothing else uses it, remove it:
 helm uninstall istiod -n istio-system
 helm uninstall istio-base -n istio-system
 ```
+
+Helm keeps the Istio CustomResourceDefinitions when it uninstalls `istio-base`, and prints
+the list it kept. They stay on the cluster until you delete them.
 
 If this is the last blueprint you ran, follow the
 [hello sandbox](../../getting-started/hello-sandbox/README.md#clean-up) clean up to remove
