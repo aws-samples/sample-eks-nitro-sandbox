@@ -189,11 +189,9 @@ because the sandbox pod has its own kernel and its own virtual hardware.
 
 ```bash
 kubectl -n $NAMESPACE exec deploy/client-a -c curl -- sh -c 'uname -rv; cat /proc/uptime; ls /sys/block; cat /sys/class/dmi/id/product_name'
-kubectl -n $NAMESPACE exec client-plain -- sh -c 'uname -rv; cat /proc/uptime; ls /sys/block; cat /sys/class/dmi/id/product_name'
 ```
 
 ```text
-# client-a, in a sandbox
 6.18.62 #1 SMP PREEMPT_DYNAMIC Thu Nov 12 22:44:15 UTC 2026
 37.25 33.75
 dm-0
@@ -202,8 +200,15 @@ vdb
 vdc
 vdd
 c8a.enclave
+```
 
-# client-plain, an ordinary pod on a node
+The same four readings from `client-plain`, the ordinary pod on a node:
+
+```bash
+kubectl -n $NAMESPACE exec client-plain -- sh -c 'uname -rv; cat /proc/uptime; ls /sys/block; cat /sys/class/dmi/id/product_name'
+```
+
+```text
 6.18.62 #2 SMP PREEMPT_DYNAMIC Thu Nov 12 22:49:16 UTC 2026
 18328.36 36261.79
 dm-0
@@ -337,9 +342,11 @@ Both clients are in sandboxes and both have a valid mesh identity. The sidecar i
   and step 6 check the traffic itself.
 - **This blueprint tested HTTP on one port,** with one replica of each workload and IPv4
   only.
-- **The pods set no CPU or memory requests,** so each sandbox's guest gets a small default
-  size, and the run above worked at that size. A production workload sizes its pods for its
-  own needs.
+- **The workload containers set no CPU or memory requests, but Istio's do.** The injected
+  `istio-init` and `istio-proxy` containers carry Istio's chart defaults: requests of 100m
+  CPU and 128Mi memory, and limits of 2 CPU and 1Gi. In the run above, a meshed sandbox's
+  guest reported about 245 MiB of memory and one CPU. A production workload sizes its pods,
+  and tunes the sidecar's resources, for its own needs.
 - **This blueprint creates no Pod Identity association** and gives the pods no AWS
   permissions.
 - **This blueprint does not restrict where the pods can connect.** They have a network, so
@@ -373,7 +380,10 @@ helm uninstall istio-base -n istio-system
 ```
 
 Helm keeps the Istio CustomResourceDefinitions when it uninstalls `istio-base`, and prints
-the list it kept. They stay on the cluster until you delete them.
+the list it kept. It also leaves the `istio-system` namespace, which `--create-namespace`
+made in step 1 and the uninstall leaves empty. Neither is removed by this blueprint. Delete
+them yourself only after you confirm nothing else on the cluster uses Istio and that you
+created `istio-system` for this walkthrough.
 
 If this is the last blueprint you ran, follow the
 [hello sandbox](../../getting-started/hello-sandbox/README.md#clean-up) clean up to remove
