@@ -18,6 +18,7 @@ SCRIPT = BUILD / "build-images.sh"
 SCAN_CHECK = BUILD / "check-image-scan.py"
 INSPECTOR_SCAN_CHECK = BUILD / "check-inspector-scan.py"
 OCE_LOCK_CHECK = BUILD / "check-oce-lock.py"
+CONTROLLER_DOCKERFILE = BUILD / "controller-runtime.Dockerfile"
 OWNERSHIP_HELPER = SAMPLE / "ownership-helper"
 OWNERSHIP_HELPER_DOCKERFILE = OWNERSHIP_HELPER / "Dockerfile"
 
@@ -214,6 +215,20 @@ def test_build_script_builds_each_image_from_the_expected_source() -> None:
     )
     assert "--build-arg \"OWNERSHIP_HELPER_BUILDER_IMAGE=" in script
     assert "--target runtime" in script
+    assert "require_digest_image CONTROLLER_RUNTIME_BASE_IMAGE" in script
+    assert (
+        '--build-arg "NODE_BUILD_BASE_IMAGE=$node_base_image"'
+        in script
+    )
+    assert (
+        '--build-arg "NODE_RUNTIME_BASE_IMAGE=$CONTROLLER_RUNTIME_BASE_IMAGE"'
+        in script
+    )
+    assert (
+        '--file "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/'
+        'build/controller-runtime.Dockerfile"'
+        in script
+    )
     assert '--file "$OCE_SOURCE_DIR/deploy/runtime/Dockerfile"' in script
     assert "node scripts/lib/openclaw-source.mjs build-args" in script
     assert "OCE_MSAL_NODE_VERSION=\"7.2.0\"" in script
@@ -221,6 +236,73 @@ def test_build_script_builds_each_image_from_the_expected_source() -> None:
     assert script.count("docker buildx build") == 4
     assert "docker pull" not in script
     assert "skopeo copy" not in script
+
+
+def test_controller_runtime_uses_a_separate_pinned_base_and_drops_build_tools() -> None:
+    dockerfile = CONTROLLER_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "ARG NODE_BUILD_BASE_IMAGE" in dockerfile
+    assert "ARG NODE_RUNTIME_BASE_IMAGE" in dockerfile
+    assert "FROM ${NODE_BUILD_BASE_IMAGE} AS dependencies" in dockerfile
+    assert dockerfile.count("FROM ${NODE_RUNTIME_BASE_IMAGE}") == 2
+    runtime = dockerfile.split(
+        "FROM ${NODE_RUNTIME_BASE_IMAGE} AS runtime", maxsplit=1
+    )[1]
+    assert "FROM ${NODE_BUILD_BASE_IMAGE}" not in runtime
+    assert (
+        "COPY --from=runtime-dependencies --chown=node:node "
+        "/app/node_modules node_modules"
+        in runtime
+    )
+    for workspace in (
+        "apps/controller",
+        "packages/audit",
+        "packages/contracts",
+        "packages/iam",
+        "packages/occ",
+    ):
+        assert (
+            "COPY --from=runtime-dependencies --chown=node:node "
+            f"/app/{workspace}/node_modules {workspace}/node_modules"
+            in runtime
+        )
+    assert "COPY --from=dependencies" not in runtime
+    assert (
+        "RUN --mount=type=bind,source=pnpm-lock.yaml,"
+        "target=/app/pnpm-lock.yaml,readonly"
+        in runtime
+    )
+    assert "COPY --chown=node:node pnpm-lock.yaml" not in runtime
+    assert "delete packageJson.devDependencies" in runtime
+    assert "delete packageJson.scripts" in runtime
+    assert "delete packageJson.packageManager" in runtime
+    assert "/usr/local/lib/node_modules/npm" in runtime
+    assert "/usr/local/lib/node_modules/corepack" in runtime
+    for package in (
+        "esbuild@*",
+        "@esbuild+*",
+        "@esbuild-kit+*",
+        "tsx@*",
+        "drizzle-kit@*",
+    ):
+        assert package in dockerfile
+    assert 'ENTRYPOINT ["node"]' in runtime
+    assert 'CMD ["apps/controller/src/server.mjs"]' in runtime
+
+
+def test_default_controller_runtime_base_is_digest_pinned() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+    assignment = re.search(
+        r"CONTROLLER_RUNTIME_BASE_IMAGE=\""
+        r"\$\{CONTROLLER_RUNTIME_BASE_IMAGE:-([^}]+)\}\"",
+        script,
+    )
+
+    assert assignment is not None
+    assert re.fullmatch(
+        r"public\.ecr\.aws/docker/library/node:24-bookworm-slim@sha256:[0-9a-f]{64}",
+        assignment.group(1),
+    )
 
 
 def test_build_outputs_are_verified_digest_references() -> None:

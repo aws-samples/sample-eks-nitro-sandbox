@@ -22,6 +22,15 @@ scan timestamp, and there must be no active Critical or High finding for that
 same image. Pending coverage is retried. Missing, ambiguous, failed, or malformed
 coverage and findings fail the build closed.
 
+The controller uses the sample-owned `controller-runtime.Dockerfile`. Its build
+stage installs OCE's production dependencies, while its final stage starts from
+a separately pinned Node 24 runtime image and removes package-manager and
+build-only `esbuild`, `tsx`, and `drizzle-kit` files. To use a newer patched Node
+24 base, set `CONTROLLER_RUNTIME_BASE_IMAGE` to an immutable
+`repository:tag@sha256:<digest>` reference in the CodeBuild environment. The
+build rejects mutable or malformed overrides and still requires the resulting
+image to pass the Critical/High scan gate.
+
 ## Build the images
 
 Create or update the build resources:
@@ -103,12 +112,14 @@ can fail until the adapter Deployment becomes Ready.
 the value is missing, is not digest-pinned, contains whitespace, or matches a
 workload runtime image.
 
-The ownership helper has a scratch runtime containing only BusyBox entry points
-for `/bin/sh`, `/bin/chown`, and `/bin/chmod`, copied from a digest-pinned base.
-The init container runs as UID and GID 0 with only `CHOWN`, `DAC_OVERRIDE`, and
-`FOWNER` added. The OpenClaw runtime remains non-root with all Linux
-capabilities dropped. Admission also rejects `envFrom` and explicit unsafe
-loader or shell-bootstrap variables on adapted runtime containers.
+The ownership helper is a statically linked Go binary in a scratch image. It
+opens only an explicit relative-path allowlist with Linux `openat2` constraints,
+rejects symbolic links and multiply linked files, and changes metadata through
+the checked file descriptor. The init container runs as UID and GID 0 with only
+`CHOWN`, `DAC_OVERRIDE`, and `FOWNER` added. The OpenClaw runtime remains
+non-root with all Linux capabilities dropped. Admission also rejects `envFrom`
+and explicit unsafe loader or shell-bootstrap variables on adapted runtime
+containers.
 
 Deploy `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` through the matching image
 settings in the pinned OCE Helm chart. This sample does not provide a stable

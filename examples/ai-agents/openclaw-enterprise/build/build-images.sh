@@ -116,7 +116,7 @@ node_base_image="$(
     process.stdout.write(value);
   ' "$OCE_SOURCE_DIR/scripts/ci/test-suites/images-packaging.json"
 )" || die "could not resolve OCE's pinned NODE_BASE_IMAGE"
-CONTROLLER_RUNTIME_BASE_IMAGE="${CONTROLLER_RUNTIME_BASE_IMAGE:-docker.io/library/node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205}"
+CONTROLLER_RUNTIME_BASE_IMAGE="${CONTROLLER_RUNTIME_BASE_IMAGE:-public.ecr.aws/docker/library/node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54}"
 require_digest_image CONTROLLER_RUNTIME_BASE_IMAGE
 
 docker buildx build \
