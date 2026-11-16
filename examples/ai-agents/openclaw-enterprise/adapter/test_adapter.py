@@ -13,6 +13,7 @@ from adapter import (
     LINK_INIT_NAME,
     NODE_CA_ENV,
     OPENCLAW_HOME_PATH,
+    OWNERSHIP_SCRIPT,
     RUNTIME_TMP_VOLUME,
     SHM_MOUNT_PATH,
     TMP_MOUNT_PATH,
@@ -57,6 +58,13 @@ UNSAFE_SHELL_ENV_NAMES = (
     "SHELLOPTS",
     "ZDOTDIR",
 )
+
+
+def test_ownership_script_uses_only_helper_image_paths() -> None:
+    assert "/bin/chown" in OWNERSHIP_SCRIPT
+    assert "/bin/chmod" in OWNERSHIP_SCRIPT
+    assert "/usr/bin/chown" not in OWNERSHIP_SCRIPT
+    assert "/usr/bin/chmod" not in OWNERSHIP_SCRIPT
 
 
 def target_pod() -> dict:
@@ -305,9 +313,9 @@ class BuildPatchTests(unittest.TestCase):
                 *ownership_init.get("args", []),
             ]
         )
-        self.assertIn("/usr/bin/chown", ownership_command)
+        self.assertIn("/bin/chown", ownership_command)
         self.assertIn("1000:1000", ownership_command)
-        self.assertIn("/usr/bin/chmod", ownership_command)
+        self.assertIn("/bin/chmod", ownership_command)
         self.assertEqual(
             {mount["name"] for mount in ownership_init["volumeMounts"]},
             {"runtime-state", "openclaw-gateway-state"},

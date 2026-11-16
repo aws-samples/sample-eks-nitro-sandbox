@@ -83,16 +83,16 @@ do
   if [ -L "$path" ] || [ ! -d "$path" ]; then
     exit 1
   fi
-  /usr/bin/chmod 0700 -- "$path"
-  /usr/bin/chown {RUNTIME_UID}:{RUNTIME_GID} -- "$path"
+  /bin/chmod 0700 -- "$path"
+  /bin/chown {RUNTIME_UID}:{RUNTIME_GID} -- "$path"
 done
 credentials={CLIENT_CREDENTIAL_PATH}
 if [ -L "$credentials" ]; then
   exit 1
 fi
 if [ -e "$credentials" ]; then
-  /usr/bin/chown {RUNTIME_UID}:{RUNTIME_GID} -- "$credentials"
-  /usr/bin/chmod 0600 -- "$credentials"
+  /bin/chown {RUNTIME_UID}:{RUNTIME_GID} -- "$credentials"
+  /bin/chmod 0600 -- "$credentials"
 fi
 """.strip()
 

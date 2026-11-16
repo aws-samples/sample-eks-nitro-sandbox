@@ -257,3 +257,16 @@ def test_ownership_helper_has_a_pinned_minimal_runtime() -> None:
     assert "/bin/chown" in dockerfile
     assert "/bin/chmod" in dockerfile
     assert "RUN " not in dockerfile
+
+
+def test_ownership_script_paths_exist_in_helper_image() -> None:
+    adapter = (SAMPLE / "adapter" / "adapter.py").read_text(encoding="utf-8")
+    dockerfile = OWNERSHIP_HELPER.read_text(encoding="utf-8")
+
+    helper_paths = set(
+        re.findall(r"COPY --from=source /bin/busybox (?P<path>/bin/\w+)", dockerfile)
+    )
+    invoked_paths = set(re.findall(r"^  (?P<path>/bin/(?:chown|chmod)) ", adapter, re.MULTILINE))
+
+    assert invoked_paths == {"/bin/chown", "/bin/chmod"}
+    assert invoked_paths <= helper_paths

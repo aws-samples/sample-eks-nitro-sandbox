@@ -57,6 +57,34 @@ def test_webhook_matches_all_pods_in_oce_namespaces_and_fails_closed() -> None:
     ]
 
 
+def test_ephemeral_container_updates_are_denied_fail_closed() -> None:
+    documents = _yaml_documents(DEPLOY / "adapter-webhook.yaml")
+    webhook_configuration = _one(
+        documents,
+        "ValidatingWebhookConfiguration",
+        "openclaw-enterprise-nitro-ephemeral-containers",
+    )
+    webhook = webhook_configuration["webhooks"][0]
+
+    assert webhook["failurePolicy"] == "Fail"
+    assert webhook["sideEffects"] == "None"
+    assert webhook["clientConfig"]["service"]["path"] == "/validate"
+    assert webhook["namespaceSelector"] == {
+        "matchLabels": {
+            "app.kubernetes.io/managed-by": "openclaw-enterprise"
+        }
+    }
+    assert webhook["rules"] == [
+        {
+            "apiGroups": [""],
+            "apiVersions": ["v1"],
+            "operations": ["UPDATE"],
+            "resources": ["pods/ephemeralcontainers"],
+            "scope": "Namespaced",
+        }
+    ]
+
+
 def test_webhook_pod_has_restricted_security_and_no_service_account_token() -> None:
     documents = _yaml_documents(DEPLOY / "adapter-webhook.yaml")
     deployment = _one(
