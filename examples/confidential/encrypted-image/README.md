@@ -285,11 +285,12 @@ download goes to the repository's `tmp/`, beside the run files `setup.sh` writes
   trap 'rm -rf "$private"' EXIT
   aws ecr get-download-url-for-layer --repository-name encrypted-image-sample \
     --layer-digest sha256:6dea5028fecd0a8be466ff4de0c85e239532c1046e5521ac116267001bf6ebdf \
-    --query downloadUrl --output text > "$private/url"
-  url="$(cat "$private/url")"
-  case "$url" in *[![:graph:]]*) echo "the download URL has a space or line break in it" >&2; false ;; esac
-  url="${url//\\/\\\\}"; url="${url//\"/\\\"}"   # escape \ and " for curl's config syntax
-  printf 'url = "%s"\n' "$url" > "$private/curl.conf"   # printf is a shell builtin
+    --query downloadUrl --output json > "$private/url.json"
+  # jq reads the exact string, and writes the config only for a plain https URL: printable
+  # ASCII with no space, quote or backslash, so nothing in it is curl config syntax.
+  jq -r 'if test("\\Ahttps://[!-~]+\\z") and (test("[\"\\\\]") | not) then "url = \"\(.)\""
+         else error("the download URL is not a plain https URL") end' \
+    "$private/url.json" > "$private/curl.conf"
   curl -sS --config "$private/curl.conf" -o layer.blob
   sha256sum layer.blob
   gzip -t layer.blob || true
@@ -742,11 +743,12 @@ handled as in step 5:
   trap 'rm -rf "$private"' EXIT
   aws ecr get-download-url-for-layer --repository-name encrypted-image-sample \
     --layer-digest sha256:acbf110d8a44591c61483aabb846d7f5de398d7f01d7362166e3e1d7184bb07b \
-    --query downloadUrl --output text > "$private/url"
-  url="$(cat "$private/url")"
-  case "$url" in *[![:graph:]]*) echo "the download URL has a space or line break in it" >&2; false ;; esac
-  url="${url//\\/\\\\}"; url="${url//\"/\\\"}"   # escape \ and " for curl's config syntax
-  printf 'url = "%s"\n' "$url" > "$private/curl.conf"   # printf is a shell builtin
+    --query downloadUrl --output json > "$private/url.json"
+  # jq reads the exact string, and writes the config only for a plain https URL: printable
+  # ASCII with no space, quote or backslash, so nothing in it is curl config syntax.
+  jq -r 'if test("\\Ahttps://[!-~]+\\z") and (test("[\"\\\\]") | not) then "url = \"\(.)\""
+         else error("the download URL is not a plain https URL") end' \
+    "$private/url.json" > "$private/curl.conf"
   curl -sS --config "$private/curl.conf" -o image-config.json
   jq '{os, architecture, config: {User: .config.User, Entrypoint: .config.Entrypoint,
        Cmd: .config.Cmd, Env: .config.Env}, layers: (.rootfs.diff_ids | length)}' image-config.json
