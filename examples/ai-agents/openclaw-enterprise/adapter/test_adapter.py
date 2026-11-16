@@ -438,6 +438,29 @@ class BuildPatchTests(unittest.TestCase):
 
         validate_pod(rendered)
 
+    def test_final_validator_accepts_nested_state_link_parent_directory(
+        self,
+    ) -> None:
+        pod = target_pod()
+        nested_mount = next(
+            mount
+            for mount in pod["spec"]["containers"][0]["volumeMounts"]
+            if mount.get("mountPath") == "/home/node/.openclaw/agents"
+        )
+        nested_mount["mountPath"] = "/home/node/.openclaw/agents/main/agent"
+        nested_mount["subPath"] = "agent"
+        prep = prepare_private_state_container(pod)
+        prep["args"] = [
+            PREP_SCRIPT.replace(
+                '"/gateway-state/agents"]',
+                '"/runtime-state/home/.openclaw/agents/main","/gateway-state/agent"]',
+            )
+        ]
+
+        rendered = apply_patch(pod, build_patch(pod))
+
+        validate_pod(rendered)
+
     def test_final_validator_rejects_nondefault_init_container_fields(
         self,
     ) -> None:

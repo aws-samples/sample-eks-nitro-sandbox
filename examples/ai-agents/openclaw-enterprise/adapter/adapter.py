@@ -1774,6 +1774,11 @@ def validate_pod(pod: dict[str, Any]) -> None:
         f"{RUNTIME_ROOT}/gateway-codex-home",
         f"{RUNTIME_ROOT}/.openclaw",
         *[f"{STATE_ROOT}/{target}" for target in links.values()],
+        *[
+            f"{RUNTIME_ROOT}/.openclaw/{parent}"
+            for link_path in links
+            if (parent := posixpath.dirname(link_path)) not in ("", ".")
+        ],
     }
     if (
         not isinstance(prep_directories, list)
