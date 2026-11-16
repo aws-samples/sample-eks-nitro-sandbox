@@ -174,7 +174,7 @@ The [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) resources,
 Other platforms that create and manage sandboxes.
 
 - [temporal](../examples/integrations/temporal/README.md) (available now): Temporal workflows that create, drive, suspend, resume and remove sandboxes. Spec: [#26](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/26).
-- [istio](../examples/integrations/istio/README.md) (available now): Istio sidecars with the `istio-init` init container on Nitro sandboxes, with strict mutual TLS and an authorization policy, and what does not work today: the Istio CNI plugin and ambient mesh, which is on the roadmap. Spec: [#239](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/239).
+- [istio](../examples/integrations/istio/README.md) (available now): Istio sidecars with the `istio-init` init container on Nitro sandboxes, with strict mutual TLS and an authorization policy, and what does not work today: the Istio CNI plugin (not on the roadmap for now) and ambient mesh (on the roadmap). Spec: [#239](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/239).
 - opensandbox (blocked until GA): Nitro sandboxes as a secure runtime for OpenSandbox. Waits for Nitro sandboxes to be generally available and the runtime to be added upstream in OpenSandbox. Spec: [#22](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/22).
 
 ### Confidential (`confidential`)
