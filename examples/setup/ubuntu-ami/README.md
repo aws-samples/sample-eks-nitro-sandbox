@@ -988,6 +988,12 @@ from the node's clock just before the write, while the same pod's write to anoth
 within its 15 s grace period, with no `DENIED` signal logged under the profile. A profile
 the node never loaded has no `DENIED` lines, as the control for both counts.
 
+The pod runs as root with a writable root filesystem, because the test writes to `/etc` as
+root, and otherwise with the runtime's default seccomp filter, no privilege escalation and
+one capability, `DAC_OVERRIDE`. `/etc/shadow` has mode `0000` in the image, so without that
+capability the kernel would refuse the write on the file's mode before AppArmor is asked,
+and the profile's `DENIED` line would never be logged.
+
 ```text
   -- 8b: the scoped profile works on an ordinary pod on the same node (apparmor-scoped-pod)
   scoped pod: node=<NODE_NAME> type=Localhost profile=ubuntu-ami-sample-profile phase=Running
@@ -1049,7 +1055,10 @@ profile, the sandbox pod stopped in `StartError` with
 (the end of the message), because the guest runs SELinux and has no AppArmor: its process
 label, printed in the block below, is `system_u:system_r:container_t:s0:c0,c1`. The microVM is
 the sandbox pod's boundary. `./test.sh` prints the sandbox's own label and checks that the pod
-runs with `Unconfined`.
+runs with `Unconfined`. Beside that AppArmor setting, its container runs as `nobody`
+(UID 65534) with the runtime's default seccomp filter, no privilege escalation, no
+capabilities and a read-only root filesystem, because nothing `./test.sh` runs in it needs
+more.
 
 ```text
   -- why the sandbox pod runs Unconfined
