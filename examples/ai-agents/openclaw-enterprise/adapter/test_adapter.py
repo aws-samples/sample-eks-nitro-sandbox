@@ -819,16 +819,15 @@ class BuildPatchTests(unittest.TestCase):
                 with self.assertRaises(AdmissionError):
                     build_patch(pod)
 
-    def test_overrides_image_defined_glibc_loader_environment(self) -> None:
+    def test_does_not_inject_glibc_loader_environment(self) -> None:
         rendered = apply_patch(target_pod(), build_patch(target_pod()))
         gateway = rendered["spec"]["containers"][-1]
-        unsafe_environment = [
-            entry for entry in gateway["env"] if entry["name"] in UNSAFE_GLIBC_ENV_NAMES
-        ]
-
-        self.assertCountEqual(
-            unsafe_environment,
-            [{"name": name, "value": ""} for name in UNSAFE_GLIBC_ENV_NAMES],
+        self.assertFalse(
+            {
+                entry["name"]
+                for entry in gateway["env"]
+                if entry["name"] in UNSAFE_GLIBC_ENV_NAMES
+            }
         )
 
     def test_requires_digest_pinned_image_for_wrapped_runtime(self) -> None:

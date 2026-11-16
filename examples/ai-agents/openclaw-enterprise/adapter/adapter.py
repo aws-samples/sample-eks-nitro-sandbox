@@ -937,10 +937,6 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                     required_environment = [
                         {"name": NODE_CA_ENV, "value": AGW_CA_PATH},
                         {"name": TMPDIR_ENV, "value": TMPDIR_PATH},
-                        *[
-                            {"name": name, "value": ""}
-                            for name in UNSAFE_BOOTSTRAP_ENV_NAMES
-                        ],
                     ]
                     missing_environment = [
                         entry
