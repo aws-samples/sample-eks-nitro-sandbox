@@ -64,10 +64,12 @@ def runtime_security_context() -> dict:
     return {
         "allowPrivilegeEscalation": False,
         "capabilities": {"drop": ["ALL"]},
+        "privileged": False,
         "readOnlyRootFilesystem": True,
         "runAsNonRoot": True,
         "runAsUser": 1000,
         "runAsGroup": 1000,
+        "seccompProfile": {"type": "RuntimeDefault"},
     }
 
 
@@ -444,6 +446,14 @@ class BuildPatchTests(unittest.TestCase):
         ):
             build_patch(pod)
 
+    def test_rejects_home_mount_path_traversal(self) -> None:
+        pod = target_pod()
+        pod["spec"]["containers"][-1]["volumeMounts"][1]["mountPath"] = (
+            "/home/node/../../gateway-state/arbitrary/leaf"
+        )
+        with self.assertRaisesRegex(AdmissionError, "unsafe home mount path"):
+            build_patch(pod)
+
     def test_rejects_prepare_private_state_mount_contract_drift(self) -> None:
         mutations = (
             {"readOnly": True},
@@ -506,6 +516,18 @@ class BuildPatchTests(unittest.TestCase):
                 pod = target_pod()
                 pod["spec"]["containers"][-1].update(change)
                 with self.assertRaises(AdmissionError):
+                    build_patch(pod)
+
+    def test_rejects_privileged_runtime_security_overrides(self) -> None:
+        for field, value in (
+            ("privileged", True),
+            ("procMount", "Unmasked"),
+            ("seccompProfile", {"type": "Unconfined"}),
+        ):
+            with self.subTest(field=field):
+                pod = target_pod()
+                pod["spec"]["containers"][-1]["securityContext"][field] = value
+                with self.assertRaisesRegex(AdmissionError, "must start as"):
                     build_patch(pod)
 
     def test_applies_runtime_contract_to_every_regular_container(self) -> None:

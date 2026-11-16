@@ -248,6 +248,12 @@ def _runtime_contract(
     if (
         security.get("allowPrivilegeEscalation") is not False
         or security.get("readOnlyRootFilesystem") is not True
+        or security.get("privileged") not in (None, False)
+        or security.get("procMount") not in (None, "Default")
+        or (
+            security.get("seccompProfile") is not None
+            and security.get("seccompProfile") != {"type": "RuntimeDefault"}
+        )
         or not isinstance(capabilities, dict)
         or capabilities.get("drop") != ["ALL"]
         or capabilities.get("add") not in (None, [])
@@ -275,15 +281,16 @@ def _runtime_contract(
                     f"{location}.{field} exec handlers are not supported"
                 )
 
-    runtime_security = copy.deepcopy(security)
-    runtime_security.update(
-        {
-            "runAsUser": RUNTIME_UID,
-            "runAsGroup": RUNTIME_GID,
-            "runAsNonRoot": True,
-            "capabilities": {"drop": ["ALL"]},
-        }
-    )
+    runtime_security = {
+        "allowPrivilegeEscalation": False,
+        "capabilities": {"drop": ["ALL"]},
+        "privileged": False,
+        "readOnlyRootFilesystem": True,
+        "runAsGroup": RUNTIME_GID,
+        "runAsNonRoot": True,
+        "runAsUser": RUNTIME_UID,
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
     return image, runtime_security
 
 
@@ -384,6 +391,15 @@ def _validate_prepare_private_state(
             if isinstance(mount_path, str) and mount_path.startswith(
                 f"{HOME_MOUNT_PATH}/"
             ):
+                if (
+                    posixpath.normpath(mount_path) != mount_path
+                    or posixpath.commonpath((HOME_MOUNT_PATH, mount_path))
+                    != HOME_MOUNT_PATH
+                ):
+                    raise AdmissionError(
+                        f"spec.containers[{index}].volumeMounts contains an "
+                        "unsafe home mount path"
+                    )
                 parent = posixpath.dirname(mount_path)
                 if parent != HOME_MOUNT_PATH:
                     expected_directories.add(

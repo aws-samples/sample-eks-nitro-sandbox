@@ -59,7 +59,8 @@ it:
   `/home/node/.openclaw` with one PVC-root mount at `/home/node/.openclaw`, so
   `client` remains a real directory. A follow-up init container creates
   relative aliases inside `/gateway-state` only when a mount path and target
-  differ.
+  differ. It rejects non-canonical mount paths below `/home/node`, including
+  paths with traversal segments.
 - Sets `automountServiceAccountToken: false` and removes standard
   auto-injected `kube-api-access-*` volumes and mounts. It preserves unrelated
   projected volumes and custom token mounts.
@@ -74,9 +75,12 @@ it:
   absent or invalid. Permission repair fails closed and is limited to
   `/home/node`, `/home/node/.openclaw`, each direct mapped target below it, and
   `client/credentials.sqlite`.
-- Keeps the OpenClaw runtime at UID and GID 1000 with no privilege escalation
-  and all Linux capabilities dropped. The runtime command never performs the
-  privileged repair.
+- Replaces each runtime container's security context with a fixed allowlist:
+  UID and GID 1000, non-root execution, `privileged: false`, no privilege
+  escalation, a read-only root filesystem, all Linux capabilities dropped, and
+  the `RuntimeDefault` seccomp profile. It rejects privileged, unmasked
+  `/proc`, and unconfined seccomp overrides. The runtime command never performs
+  the privileged repair.
 - Rejects an ordinary runtime or sidecar container that mounts
   `openclaw-gateway-state` at `/gateway-state`. Only the expected init-container
   path and the adapter-generated helpers receive the PVC root.
