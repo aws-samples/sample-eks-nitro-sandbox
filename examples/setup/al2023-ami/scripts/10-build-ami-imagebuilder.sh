@@ -51,6 +51,7 @@ case "$NODE_ARCH" in
   amd64) SSM_ARCH=x86_64; : "${BUILD_INSTANCE_TYPE:=m8i.4xlarge}" ;;
   arm64) SSM_ARCH=arm64;  : "${BUILD_INSTANCE_TYPE:=m8g.4xlarge}" ;;
 esac
+arch_matches_type "$BUILD_INSTANCE_TYPE" || die "BUILD_INSTANCE_TYPE '$BUILD_INSTANCE_TYPE' is not a $NODE_ARCH instance type; the parent image follows NODE_ARCH"
 PARENT_IMAGE_ARN=$(aws ssm get-parameter --region "$AWS_REGION" \
   --name "/aws/service/eks/optimized-ami/${KUBERNETES_VERSION}/amazon-linux-2023/${SSM_ARCH}/standard/recommended/image_id" \
   --query Parameter.Value --output text) || die "could not resolve the EKS-optimized AL2023 $SSM_ARCH parent image for Kubernetes $KUBERNETES_VERSION"

@@ -40,10 +40,15 @@ done
 
 # Both objects have fixed names. Applying over one that is not this blueprint's would take it
 # over, so stop if either exists without this blueprint's label.
+# Only an explicit NotFound means absent; any other failed lookup stops the run.
 for kind in nodepool ec2nodeclass; do
-  if existing=$(kc get "$kind" al2023-nitro-sandbox -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}/{.metadata.labels.app\.kubernetes\.io/instance}' 2>/dev/null); then
+  err=$(mktemp)
+  if existing=$(kc get "$kind" al2023-nitro-sandbox -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}/{.metadata.labels.app\.kubernetes\.io/instance}' 2>"$err"); then
     [ "$existing" = "$RESOURCE_PREFIX/$RUN_ID" ] || die "$kind al2023-nitro-sandbox already exists and is not run $RUN_ID's (labels '$existing'); not applying over it"
+  elif ! grep -Eq 'NotFound|not found' "$err"; then
+    msg=$(head -n 2 "$err"); rm -f "$err"; die "could not determine whether $kind al2023-nitro-sandbox exists: $msg"
   fi
+  rm -f "$err"
 done
 
 log "applying Karpenter EC2NodeClass and NodePool (AMI $AMI_ID)"

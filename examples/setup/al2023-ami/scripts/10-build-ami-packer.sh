@@ -72,6 +72,9 @@ if [ -f "$checkout/manifest.json" ]; then
 fi
 [ -n "$ami_id" ] || ami_id=$(grep -oE 'ami-[0-9a-f]{8,}' "$build_log" | tail -n 1 || true)
 [ -n "$ami_id" ] || die "build finished but no AMI id found in manifest.json or $build_log"
+[[ "$ami_id" =~ ^ami-[0-9a-f]+$ ]] || die "the build reported '$ami_id', which is not an AMI id"
+# Record the AMI now, before any tagging, so clean.sh can find it even if a later step fails.
+printf 'AMI_ID=%s\n' "$ami_id" >> "$RUN_STATE_DIR/run-state.env"
 
 # Confirm the name carries -pod-isolation and tag the AMI for this blueprint.
 ami_name=$(aws ec2 describe-images --region "$AWS_REGION" --image-ids "$ami_id" --query 'Images[0].Name' --output text)
@@ -93,7 +96,5 @@ done
 printf 'AMI_ID=%s\n' "$ami_id" >> "$EVIDENCE_DIR/run-evidence.env"
 printf 'AMI_NAME=%s\n' "$ami_name" >> "$EVIDENCE_DIR/run-evidence.env"
 printf 'AMI_SOURCE_REF=%s (%s)\n' "$EKS_AMI_REF" "$built_ref" >> "$EVIDENCE_DIR/run-evidence.env"
-# Persist AMI_ID into the run record for the join scripts.
-printf 'AMI_ID=%s\n' "$ami_id" >> "$RUN_STATE_DIR/run-state.env"
 log "built AMI: $ami_id ($ami_name)"
 printf '%s\n' "$ami_id"

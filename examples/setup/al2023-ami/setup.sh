@@ -45,7 +45,10 @@ log "run id: $RUN_ID (mode: $mode, JOIN_MODE: $JOIN_MODE)"
 # --- Build the AMI (full, ami-only) ----------------------------------------------------------
 if [ "$mode" = full ] || [ "$mode" = ami-only ]; then
   log "=== building the AL2023 Nitro Sandbox AMI (upstream packer) ==="
-  AMI_ID="$(RUN_ID="$RUN_ID" "$HERE/scripts/10-build-ami-packer.sh")"
+  RUN_ID="$RUN_ID" "$HERE/scripts/10-build-ami-packer.sh" > /dev/null || die "the AMI build failed"
+  # The builder records the AMI in the run state; read it back from there and check it.
+  AMI_ID="$(sed -n 's/^AMI_ID=//p' "$RUN_STATE_DIR/run-state.env" | tail -n 1)"
+  [[ "$AMI_ID" =~ ^ami-[0-9a-f]+$ ]] || die "the build recorded no valid AMI id in $RUN_STATE_DIR/run-state.env (got '$AMI_ID')"
   export AMI_ID
   log "AMI built: $AMI_ID"
   if [ "$mode" = ami-only ]; then

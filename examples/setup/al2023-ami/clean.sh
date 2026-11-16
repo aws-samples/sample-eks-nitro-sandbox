@@ -16,6 +16,14 @@ set -uo pipefail
 SAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SAMPLE_DIR/scripts/lib/common.sh"
 require_run_id
+# --- Identity: clean up only the run that setup recorded -------------------------------------
+rec() { sed -n "s/^$1=//p" "$RUN_STATE_DIR/run-state.env" 2>/dev/null | head -n 1; }
+for v in RESOURCE_PREFIX CLUSTER_NAME AWS_REGION NAMESPACE; do
+  r=$(rec "$v"); c=${!v}
+  [ -n "$r" ] || die "run state has no $v, so run $RUN_ID's target cannot be confirmed; refusing to delete anything"
+  [ "$r" = "$c" ] || die "$v is '$c' but run $RUN_ID recorded '$r'; set it to the recorded value. Refusing to delete anything"
+done
+
 require_kube_context
 
 DRY=0; [ "${1:-}" = --dry-run ] && DRY=1
