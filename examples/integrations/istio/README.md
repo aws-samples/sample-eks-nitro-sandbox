@@ -26,7 +26,7 @@ Istio modes work with them today.
 | Istio mode | On a Nitro sandbox | On this page |
 |---|---|---|
 | Sidecar, with the `istio-init` init container setting up the traffic redirect | Works | Shown with output from a run |
-| Sidecar, with the Istio CNI plugin setting up the traffic redirect | Does not work today | Stated only |
+| Sidecar, with the Istio CNI plugin setting up the traffic redirect | Does not work today. Not on the roadmap for now. | Stated only |
 | Ambient mesh (`ztunnel` and the `istio-cni` node agent) | Does not work today. Support is on the roadmap. | Stated only |
 
 - **Use sidecar mode with `istio-init`.** The Istio injection webhook adds an `istio-init`
@@ -34,7 +34,8 @@ Istio modes work with them today.
   sidecar, which carries the traffic. This is Istio's default, and it needs no change to Istio
   or to the sandbox.
 - **Do not use the Istio CNI plugin.** The CNI plugin cannot set up the traffic redirect for a
-  pod that runs in a Nitro sandbox. Install Istio without it.
+  pod that runs in a Nitro sandbox. Install Istio without it. Support for the CNI plugin is
+  not on the Nitro sandbox roadmap for now, so plan on `istio-init`.
 - **Do not use ambient mesh yet.** Ambient mesh does not work with Nitro sandboxes today.
   Ambient mesh support is on the roadmap for Nitro sandboxes. This page gives no date.
 
@@ -332,8 +333,9 @@ Both clients are in sandboxes and both have a valid mesh identity. The sidecar i
 
 - **The Istio CNI plugin and ambient mesh do not work on Nitro sandboxes today.** This page
   states that and does not run them, so it shows no output for either. Ambient mesh support
-  is on the roadmap for Nitro sandboxes, with no date. Install Istio as step 1 does, with
-  `base` and `istiod` and nothing else, and use sidecars.
+  is on the roadmap for Nitro sandboxes, with no date. Support for the CNI plugin is not on
+  the roadmap for now. Install Istio as step 1 does, with `base` and `istiod` and nothing
+  else, and use sidecars.
 - **`setup.sh` stops when it finds the Istio CNI plugin or `ztunnel` installed.** It looks
   in every namespace for the labels the Istio Helm charts set (`k8s-app=istio-cni-node` and
   `app.kubernetes.io/name=ztunnel`), so an install made another way may not be found. Those
