@@ -88,10 +88,11 @@ Graviton enclave instance for an arm64 AMI. There is no separate build flag.
 This blueprint defaults to **x86_64** (`NODE_ARCH=amd64`, `m8i` instance types), and the
 walkthrough output below is from an x86_64 run. To run **arm64**, set in `config.env`:
 
-- `NODE_ARCH=arm64`,
-- `BUILD_INSTANCE_TYPE` and `NODE_INSTANCE_TYPE` to enclave-capable Graviton types,
+- `NODE_ARCH=arm64`.
 
-and build the AMI on the Graviton builder. The managed node group follows `NODE_INSTANCE_TYPE`;
+The build and node instance types then default to `m8g` (Graviton, enclave-capable), and a type
+of the other architecture is refused. The AMI is built on the Graviton builder. The managed node
+group follows `NODE_INSTANCE_TYPE`;
 the Karpenter `NodePool`'s `kubernetes.io/arch` requirement is rendered from `NODE_ARCH`, and its
 `amiSelectorTerms` must point at the arm64 AMI. Everything else is identical.
 
@@ -370,7 +371,8 @@ RUN_ID=<id> ./clean.sh             # remove everything this run created
 was created in. It deletes a resource only when it carries this run's mark: the
 `app.kubernetes.io/part-of=al2023-ami` and `app.kubernetes.io/instance=<id>` labels on the
 namespace, `NodePool` and `EC2NodeClass`, and the `ManagedBy=al2023-ami` and `RunId=<id>` tags on
-the node group, launch template and AMI (the AMI's snapshots go with it). A resource without the
+the node group, launch template, AMI and each of the AMI's snapshots (the build tags the
+snapshots too). A resource without the
 mark is left alone, and a lookup that fails is reported as "could not determine", never as gone.
 Either leaves the clean up incomplete and the script exits non-zero.
 

@@ -115,7 +115,19 @@ if [ -n "$ami_id" ]; then
     0) if printf '%s' "$PROBE_OUT" | jfield 'd.get("Tags") or []' | tags_match; then
          snaps=$(printf '%s' "$PROBE_OUT" | json_get '[b["Ebs"]["SnapshotId"] for b in d.get("BlockDeviceMappings", []) if b.get("Ebs", {}).get("SnapshotId")]')
          note_blocked "aws ec2 deregister-image --region $AWS_REGION --image-id $ami_id"
-         for s in $snaps; do note_blocked "aws ec2 delete-snapshot --region $AWS_REGION --snapshot-id $s"; done
+         # A snapshot is deleted only if it carries this run's own tags, checked one by one.
+         for s in $snaps; do
+           probe 'InvalidSnapshot' aws ec2 describe-snapshots --region "$AWS_REGION" --snapshot-ids "$s" --query 'Snapshots[0]' --output json; src=$?
+           case $src in
+             0) if printf '%s' "$PROBE_OUT" | jfield 'd.get("Tags") or []' | tags_match; then
+                  note_blocked "aws ec2 delete-snapshot --region $AWS_REGION --snapshot-id $s"
+                else
+                  warn "snapshot $s is not tagged for run $RUN_ID; leaving it. Clean up incomplete."; incomplete=1
+                fi ;;
+             1) log "snapshot $s not present" ;;
+             *) incomplete=1 ;;
+           esac
+         done
        else
          warn "AMI $ami_id is not tagged for run $RUN_ID; leaving it. Clean up incomplete."; incomplete=1
        fi ;;

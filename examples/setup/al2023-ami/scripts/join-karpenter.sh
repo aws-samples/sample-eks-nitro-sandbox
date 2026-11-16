@@ -41,8 +41,8 @@ done
 # Both objects have fixed names. Applying over one that is not this blueprint's would take it
 # over, so stop if either exists without this blueprint's label.
 for kind in nodepool ec2nodeclass; do
-  if existing=$(kc get "$kind" al2023-nitro-sandbox -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}' 2>/dev/null); then
-    [ "$existing" = "$RESOURCE_PREFIX" ] || die "$kind al2023-nitro-sandbox already exists and is not this blueprint's; not applying over it"
+  if existing=$(kc get "$kind" al2023-nitro-sandbox -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}/{.metadata.labels.app\.kubernetes\.io/instance}' 2>/dev/null); then
+    [ "$existing" = "$RESOURCE_PREFIX/$RUN_ID" ] || die "$kind al2023-nitro-sandbox already exists and is not run $RUN_ID's (labels '$existing'); not applying over it"
   fi
 done
 

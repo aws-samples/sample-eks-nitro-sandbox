@@ -33,9 +33,14 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # architecture, which follows the instance the Packer build ran on, and the node instance type.
 : "${NODE_ARCH:=amd64}"
 case "$NODE_ARCH" in amd64|arm64) ;; *) die "NODE_ARCH must be amd64 or arm64, got '$NODE_ARCH'" ;; esac
-# Enclave-capable instance types. The defaults are x86_64 (m8i); for NODE_ARCH=arm64 set these to
-# an enclave-capable Graviton type and build the AMI on an arm64 enclave instance.
-: "${NODE_INSTANCE_TYPE:=m8i.xlarge}"
+# Enclave-capable instance types. The defaults are m8i for amd64 and m8g for arm64.
+# The defaults follow NODE_ARCH; an instance type of the other architecture is refused.
+case "$NODE_ARCH" in amd64) : "${NODE_INSTANCE_TYPE:=m8i.xlarge}" ;; arm64) : "${NODE_INSTANCE_TYPE:=m8g.xlarge}" ;; esac
+arch_matches_type() { # arch_matches_type <instance type>: Graviton families have a 'g' after the generation (m8g, c7gn)
+  local graviton=0; [[ "$1" =~ ^[a-z]+[0-9]+g[a-z]*\.[a-z0-9]+$ ]] && graviton=1
+  { [ "$NODE_ARCH" = arm64 ] && [ "$graviton" = 1 ]; } || { [ "$NODE_ARCH" = amd64 ] && [ "$graviton" = 0 ]; }
+}
+arch_matches_type "$NODE_INSTANCE_TYPE" || die "NODE_INSTANCE_TYPE '$NODE_INSTANCE_TYPE' is not a $NODE_ARCH instance type; set NODE_ARCH to match, or pick a matching type"
 : "${NODE_COUNT:=1}"
 : "${TAGS_OWNER_KEY:=ManagedBy}"
 : "${TAGS_OWNER_VALUE:=$RESOURCE_PREFIX}"

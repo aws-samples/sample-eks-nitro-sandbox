@@ -24,7 +24,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 require_run_id
 : "${EKS_AMI_REF:?set EKS_AMI_REF to the amazon-eks-ami tag/commit to build from (>= v20261112 for pod isolation)}"
 : "${BUILD_SUBNET_ID:?set BUILD_SUBNET_ID to a subnet in an AZ with enclave-capable capacity}"
-: "${BUILD_INSTANCE_TYPE:=m8i.4xlarge}"
+case "$NODE_ARCH" in amd64) : "${BUILD_INSTANCE_TYPE:=m8i.4xlarge}" ;; arm64) : "${BUILD_INSTANCE_TYPE:=m8g.4xlarge}" ;; esac
+arch_matches_type "$BUILD_INSTANCE_TYPE" || die "BUILD_INSTANCE_TYPE '$BUILD_INSTANCE_TYPE' is not a $NODE_ARCH instance type; the AMI's architecture follows the builder"
 : "${BUILD_IAM_INSTANCE_PROFILE:?set BUILD_IAM_INSTANCE_PROFILE to an instance profile the builder can assume (SSM plus the build S3 reads)}"
 : "${POD_ISOLATION_FIRECRACKER_VERSION:=latest}"
 
@@ -80,6 +81,14 @@ case "$ami_name" in
 esac
 aws ec2 create-tags --region "$AWS_REGION" --resources "$ami_id" \
   --tags "Key=$TAGS_OWNER_KEY,Value=$TAGS_OWNER_VALUE" "Key=$TAGS_RUN_KEY,Value=$RUN_ID" "Key=auto-delete,Value=no"
+# The AMI's snapshots carry the same mark, because clean.sh checks each snapshot's own tags.
+snap_ids=$(aws ec2 describe-images --region "$AWS_REGION" --image-ids "$ami_id" \
+  --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' --output text) || die "could not read the snapshots of $ami_id"
+for snap in $snap_ids; do
+  [ "$snap" = None ] && continue
+  aws ec2 create-tags --region "$AWS_REGION" --resources "$snap" \
+    --tags "Key=$TAGS_OWNER_KEY,Value=$TAGS_OWNER_VALUE" "Key=$TAGS_RUN_KEY,Value=$RUN_ID" "Key=auto-delete,Value=no"
+done
 
 printf 'AMI_ID=%s\n' "$ami_id" >> "$EVIDENCE_DIR/run-evidence.env"
 printf 'AMI_NAME=%s\n' "$ami_name" >> "$EVIDENCE_DIR/run-evidence.env"
