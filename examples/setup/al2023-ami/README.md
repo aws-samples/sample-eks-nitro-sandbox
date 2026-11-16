@@ -296,6 +296,10 @@ Auto Scaling group whose launch template sets `EnclaveOptions.Enabled=true`. Thi
 **build phase only**; the resulting AMI is enclave-capable when consumed by a node group or
 Karpenter `EC2NodeClass` that sets `EnclaveOptions.Enabled=true` on its own launch template.
 
+`parentInstance` is accepted by AWS CLI 2.40.4 and refused by 2.38.0 (`Unknown parameter in input`),
+so this path needs a current AWS CLI. The Auto Scaling group is named in
+`parentInstance.autoScalingGroup.name`.
+
 See:
 - [EC2 Image Builder User Guide: Infrastructure
   configuration](https://docs.aws.amazon.com/imagebuilder/latest/userguide/manage-infra-config.html)

@@ -112,7 +112,7 @@ jq --arg name "$INFRA_CONFIG_NAME" \
    --arg asg "$BUILD_ASG_NAME" \
    --arg sns "$BUILD_SNS_TOPIC_ARN" \
    --arg itype "$BUILD_INSTANCE_TYPE" \
-   '.name = $name | .instanceTypes = [$itype] | .instanceProfileName = $profile | .securityGroupIds = [$sg] | .subnetId = $subnet | .logging.s3Logs.s3BucketName = $bucket | .parentInstance.autoScalingGroup.autoScalingGroupName = $asg | if $sns != "" then .snsTopicArn = $sns else . end' \
+   '.name = $name | .instanceTypes = [$itype] | .instanceProfileName = $profile | .securityGroupIds = [$sg] | .subnetId = $subnet | .logging.s3Logs.s3BucketName = $bucket | .parentInstance.autoScalingGroup.name = $asg | if $sns != "" then .snsTopicArn = $sns else . end' \
    "$HERE/../deploy/imagebuilder/infrastructure-config.json" > "$INFRA_DOC"
 
 INFRA_ARN=$(aws imagebuilder create-infrastructure-configuration \
