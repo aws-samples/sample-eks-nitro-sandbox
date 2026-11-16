@@ -56,7 +56,9 @@ namespace_mark() {
   local out rc=0
   out="$(kc get namespace "$NAMESPACE" -o "jsonpath={.metadata.labels.app\.kubernetes\.io/managed-by}" 2>&1)" || rc=$?
   if ((rc != 0)); then
-    [[ "$out" == *NotFound* ]] && return 2
+    # Absent only when the server says this namespace is not found, not for any
+    # other error that happens to contain the word (a bad context, a missing API).
+    [[ "$out" == *"(NotFound)"* && "$out" == *"namespaces \"$NAMESPACE\" not found"* ]] && return 2
     echo "$out" >&2
     return 1
   fi

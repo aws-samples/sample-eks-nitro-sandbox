@@ -20,14 +20,21 @@ kc get runtimeclass isolated-sandbox >/dev/null 2>&1 \
 # Istio itself: istiod must be running. The Istio CNI node agent and ambient mesh
 # would change how pods are injected for every workload on the cluster, and neither
 # works on Nitro sandboxes, so a cluster that has them is stopped on, not changed.
-istiod_ready="$(kc -n "$ISTIO_NAMESPACE" get deployment istiod -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
+istiod_ready=""; rc=0
+istiod_ready="$(kc -n "$ISTIO_NAMESPACE" get deployment istiod -o jsonpath='{.status.readyReplicas}' 2>&1)" || rc=$?
+if ((rc != 0)) && [[ "$istiod_ready" != *"(NotFound)"* || "$istiod_ready" != *"deployments.apps \"istiod\" not found"* ]]; then
+  die "could not read istiod in $ISTIO_NAMESPACE, so it is not known whether Istio is installed: $istiod_ready"
+fi
+((rc == 0)) || istiod_ready=""
 if [[ -z "$istiod_ready" || "$istiod_ready" == "0" ]]; then
   die "Istio is not installed (no ready istiod in $ISTIO_NAMESPACE). Install it as the page's step 1 says:
   helm repo add istio https://istio-release.storage.googleapis.com/charts && helm repo update istio
   helm install istio-base istio/base -n $ISTIO_NAMESPACE --create-namespace --version 1.30.8 --wait
   helm install istiod istio/istiod -n $ISTIO_NAMESPACE --version 1.30.8 --wait"
 fi
-daemonsets="$(kc -n "$ISTIO_NAMESPACE" get daemonset -o name 2>/dev/null | grep -E 'istio-cni|ztunnel' || true)"
+ds_list="$(kc -n "$ISTIO_NAMESPACE" get daemonset -o name 2>&1)" \
+  || die "could not list DaemonSets in $ISTIO_NAMESPACE, so it is not known whether Istio CNI or ztunnel is installed: $ds_list"
+daemonsets="$(printf '%s\n' "$ds_list" | grep -E 'istio-cni|ztunnel' || true)"
 [[ -z "$daemonsets" ]] \
   || die "found $(echo "$daemonsets" | tr '\n' ' ')in $ISTIO_NAMESPACE. The Istio CNI plugin and ambient mesh do not work on Nitro sandboxes, and this blueprint uses the istio-init sidecar. Run it on a cluster whose Istio has neither; it will not change this one."
 echo "istiod ready, no Istio CNI or ztunnel DaemonSet"

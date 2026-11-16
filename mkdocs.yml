@@ -121,9 +121,8 @@ nav:
   - Integrations:
       - OpenShell:
           - OpenShell on Amazon EKS: openshell/kubernetes/README.md
-      - Temporal:
+      - Integrations on Amazon EKS:
           - Temporal workflows: integrations/temporal/README.md
-      - Istio:
           - Istio sidecars: integrations/istio/README.md
   - CI/CD:
       - Docker builds: ci-cd/docker-builds/README.md
