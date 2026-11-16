@@ -261,7 +261,7 @@ See:
 - [AWS CLI Command Reference: aws imagebuilder
   create-infrastructure-configuration](https://awscli.amazonaws.com/v2/documentation/api/latest/reference/imagebuilder/create-infrastructure-configuration.html)
 
-The Image Builder configurations are in `deploy/imagebuilder/` ([README](deploy/imagebuilder/README.md)):
+The Image Builder configurations are in `deploy/imagebuilder/`:
 
 - **[`component.yaml`](deploy/imagebuilder/component.yaml)**: AWSTOE component that performs the
   same install as the upstream `amazon-eks-ami` `install-pod-isolation.sh` provisioner (fetch and
