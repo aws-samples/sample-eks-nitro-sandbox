@@ -55,6 +55,11 @@ upstream OCE compatibility guarantee. For each compatible Agent or gateway pod,
 it:
 
 - Selects the `isolated-sandbox` runtime class.
+- Rewrites the designated runtime's `runtime-state` layout for Nitro Pods. It
+  replaces the `/home/node` `subPath: home` mount with a whole-volume mount,
+  rebases nested `subPath` values from `home/<path>` to `<path>`, and patches
+  the validated `prepare-private-state` script to create those descendants at
+  the volume root.
 - Replaces OCE `openclaw-gateway-state` PVC `subPath` mounts below
   `/home/node/.openclaw` with one PVC-root mount at `/home/node/.openclaw`, so
   `client` remains a real directory. A follow-up init container creates
@@ -70,12 +75,13 @@ it:
   `runtime-temporary` mount at `/tmp`, requires a read-only root filesystem,
   and sets `TMPDIR=/dev/shm`. It rejects other mounts that overlap `/tmp` or
   `/dev/shm`.
-- Adds a dedicated privileged init container from the separately configured
+- Adds a dedicated root init container from the separately configured
   `OCE_OWNERSHIP_INIT_IMAGE`. The adapter requires an exact digest, rejects the
   workload runtime image as the helper, and denies the pod when the setting is
-  absent or invalid. Permission repair fails closed and is limited to
-  `/home/node`, `/home/node/.openclaw`, each direct mapped target below it, and
-  `client/credentials.sqlite`.
+  absent or invalid. The init mounts the `runtime-state` volume root at
+  `/home/node` and sets it to mode `0700`, UID 1000 and GID 1000. Permission
+  repair fails closed and is limited to `/home/node`, `/home/node/.openclaw`,
+  each direct mapped target below it, and `client/credentials.sqlite`.
 - Replaces each runtime container's security context with a fixed allowlist:
   UID and GID 1000, non-root execution, `privileged: false`, no privilege
   escalation, a read-only root filesystem, all Linux capabilities dropped, and
@@ -101,18 +107,20 @@ separate repair step. Because `/dev/shm` is memory-backed and capacity-limited,
 this workaround suits OpenClaw's small temporary control files, not large
 scratch data.
 
-Nitro also presents OCE's `/home/node` `subPath` mount as root-owned and
-group- and world-writable. The dedicated helper image contains only BusyBox
-entry points for `sh`, `chown`, and `chmod`. Its init container owns this narrow
-privileged trust boundary, runs with `CHOWN`, `DAC_OVERRIDE`, and `FOWNER`, and
-exits before the OpenClaw runtime starts. It does not recursively rewrite
-persisted files. For
+Nitro presents OCE's `/home/node` `subPath` mount root as mode `2777`, owned by
+root with GID 1000. The whole-volume rewrite avoids exposing that mount root to
+the runtime. The dedicated helper image contains only BusyBox entry points for
+`sh`, `chown`, and `chmod`. Its init container owns this narrow
+ownership-repair trust boundary, runs with `CHOWN`, `DAC_OVERRIDE`, and
+`FOWNER`, and exits before the OpenClaw runtime starts. It does not recursively
+rewrite persisted files. For
 `/home/node/.openclaw/client/credentials.sqlite`, it refuses a symlink and
 restores UID and GID 1000 with mode `0600`, which OpenClaw requires after an
 `fsGroup` mount. Treat this init phase as an explicit compatibility trade-off,
 not complete process or tenant isolation. Keeping the helper separate avoids
-running ownership repair from the much larger workload image, but adds another
-image that operators must build, scan, pin, and deploy correctly.
+running ownership repair from the much larger workload image. The runtime still
+runs as non-root without Linux capabilities, but operators must build, scan,
+pin, and deploy the additional helper image correctly.
 
 The tenant script renders the current AgentGateway ClusterIP as a `/32` alongside
 the namespace-and-pod selector. In the live EKS Auto Mode test, the generated

@@ -319,7 +319,7 @@ def _validate_prepare_private_state(
     default_service_account_volumes: set[str],
     containers: list[dict[str, Any]],
     role: str,
-) -> None:
+) -> str:
     unexpected_fields = sorted(set(prep) - PREP_ALLOWED_FIELDS)
     if unexpected_fields:
         raise AdmissionError(
@@ -503,6 +503,24 @@ def _validate_prepare_private_state(
             "at their roots"
         )
 
+    runtime_home = f"{RUNTIME_ROOT}/home"
+    relocated_directories = [
+        (
+            RUNTIME_ROOT + directory.removeprefix(runtime_home)
+            if directory.startswith(f"{runtime_home}/")
+            else directory
+        )
+        for directory in directories
+        if directory != runtime_home
+    ]
+    relocated_lines = copy.deepcopy(lines)
+    relocated_lines[1] = (
+        f"{prefix}"
+        f"{json.dumps(relocated_directories, separators=(',', ':'))}"
+        f"{suffix}"
+    )
+    return "\n".join(relocated_lines)
+
 
 def _ownership_init(
     image: str,
@@ -529,7 +547,6 @@ def _ownership_init(
             {
                 "name": RUNTIME_VOLUME,
                 "mountPath": HOME_MOUNT_PATH,
-                "subPath": "home",
             },
             {
                 "name": STATE_VOLUME,
@@ -776,6 +793,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
             rewritten: list[dict[str, Any]] = []
             state_root_count = 0
             state_affected = False
+            runtime_home_count = 0
             mounts_changed = False
 
             for mount in mounts:
@@ -797,10 +815,69 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                         f"spec.{group_name}[{index}] is not a designated state "
                         f"consumer and cannot mount {mount.get('name')}"
                     )
+                if mount.get("name") == RUNTIME_VOLUME:
+                    if group_name == "initContainers":
+                        rewritten.append(copy.deepcopy(mount))
+                        continue
+
+                    if "subPathExpr" in mount:
+                        raise AdmissionError(
+                            f"{RUNTIME_VOLUME} subPathExpr mounts are not supported"
+                        )
+                    if mount.get("readOnly") is True or "recursiveReadOnly" in mount:
+                        raise AdmissionError(
+                            f"{RUNTIME_VOLUME} mounts must be writable"
+                        )
+                    mount_path = _safe_absolute_mount_path(
+                        mount.get("mountPath"),
+                        f"spec.{group_name}[{index}] runtime-state mountPath",
+                    )
+                    sub_path = _safe_relative_path(
+                        mount.get("subPath"),
+                        f"spec.{group_name}[{index}] runtime-state subPath",
+                    )
+                    relocated_mount = copy.deepcopy(mount)
+                    if mount_path == HOME_MOUNT_PATH:
+                        if sub_path != "home":
+                            raise AdmissionError(
+                                f"{RUNTIME_VOLUME} must mount subPath home at "
+                                f"{HOME_MOUNT_PATH}"
+                            )
+                        runtime_home_count += 1
+                        relocated_mount.pop("subPath")
+                    else:
+                        if not mount_path.startswith(f"{HOME_MOUNT_PATH}/"):
+                            raise AdmissionError(
+                                f"{RUNTIME_VOLUME} subPath mounts must be below "
+                                f"{HOME_MOUNT_PATH}/"
+                            )
+                        if not sub_path.startswith("home/"):
+                            raise AdmissionError(
+                                f"{RUNTIME_VOLUME} nested subPath mounts must start "
+                                "with home/"
+                            )
+                        relocated_mount["subPath"] = sub_path.removeprefix("home/")
+                    rewritten.append(relocated_mount)
+                    mounts_changed = True
+                    continue
+
                 if mount.get("name") != STATE_VOLUME:
                     if mount.get("mountPath") == STATE_ROOT:
                         raise AdmissionError(
                             f"{STATE_ROOT} is already used by another volume"
+                        )
+                    mount_path = mount.get("mountPath")
+                    if (
+                        group_name == "containers"
+                        and index == designated_index
+                        and _is_nonempty_string(mount_path)
+                        and (
+                            mount_path == HOME_MOUNT_PATH
+                            or HOME_MOUNT_PATH.startswith(f"{mount_path}/")
+                        )
+                    ):
+                        raise AdmissionError(
+                            f"{mount_path} would mask the designated runtime home"
                         )
                     rewritten.append(copy.deepcopy(mount))
                     continue
@@ -858,6 +935,12 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                 raise AdmissionError(
                     f"spec.{group_name}[{index}] has duplicate {STATE_ROOT} mounts"
                 )
+            if group_name == "containers" and index == designated_index:
+                if runtime_home_count != 1:
+                    raise AdmissionError(
+                        f"spec.{group_name}[{index}] must have exactly one "
+                        f"{RUNTIME_VOLUME} subPath home mount at {HOME_MOUNT_PATH}"
+                    )
             if state_affected:
                 if state_root_count == 0:
                     rewritten.append(
@@ -967,7 +1050,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                     }
                 )
 
-    _validate_prepare_private_state(
+    relocated_prep_script = _validate_prepare_private_state(
         prep,
         f"spec.initContainers[{prep_index}]",
         designated_runtime_image,
@@ -1053,6 +1136,13 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     patch.extend(mount_patches)
     patch.extend(environment_patches)
     patch.extend(runtime_patches)
+    patch.append(
+        {
+            "op": "replace",
+            "path": f"/spec/initContainers/{prep_index}/args",
+            "value": [relocated_prep_script],
+        }
+    )
     patch.append(
         {
             "op": "replace",

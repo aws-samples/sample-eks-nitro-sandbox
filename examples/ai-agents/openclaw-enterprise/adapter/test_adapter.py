@@ -465,6 +465,163 @@ class BuildPatchTests(unittest.TestCase):
             1000,
         )
 
+    def test_relocates_designated_runtime_home_to_runtime_state_root(self) -> None:
+        pod = target_pod()
+
+        rendered = apply_patch(pod, build_patch(pod))
+
+        gateway = rendered["spec"]["containers"][-1]
+        home_mounts = [
+            mount
+            for mount in gateway["volumeMounts"]
+            if mount.get("mountPath") == "/home/node"
+        ]
+        self.assertEqual(
+            home_mounts,
+            [
+                {
+                    "name": "runtime-state",
+                    "mountPath": "/home/node",
+                    "mountPropagation": "HostToContainer",
+                }
+            ],
+        )
+
+    def test_rebases_nested_runtime_state_subpaths_from_relocated_home(self) -> None:
+        pod = target_pod()
+        gateway = pod["spec"]["containers"][-1]
+        gateway["volumeMounts"].append(
+            {
+                "name": "runtime-state",
+                "mountPath": (
+                    "/home/node/.openclaw/agents/main/agent/codex-home"
+                ),
+                "subPath": "home/gateway-codex-home",
+            }
+        )
+
+        rendered = apply_patch(pod, build_patch(pod))
+
+        gateway = rendered["spec"]["containers"][-1]
+        codex_home_mount = next(
+            mount
+            for mount in gateway["volumeMounts"]
+            if mount.get("mountPath")
+            == "/home/node/.openclaw/agents/main/agent/codex-home"
+        )
+        self.assertEqual(codex_home_mount["subPath"], "gateway-codex-home")
+
+    def test_mounts_runtime_state_root_in_ownership_init_container(self) -> None:
+        pod = target_pod()
+
+        rendered = apply_patch(pod, build_patch(pod))
+
+        ownership_init = next(
+            container
+            for container in rendered["spec"]["initContainers"]
+            if container["name"] not in {
+                *{
+                    original["name"]
+                    for original in pod["spec"]["initContainers"]
+                },
+                LINK_INIT_NAME,
+            }
+        )
+        runtime_mount = next(
+            mount
+            for mount in ownership_init["volumeMounts"]
+            if mount["name"] == "runtime-state"
+        )
+        self.assertEqual(
+            runtime_mount,
+            {
+                "name": "runtime-state",
+                "mountPath": "/home/node",
+            },
+        )
+
+    def test_patches_prepare_private_state_for_relocated_runtime_root(self) -> None:
+        pod = target_pod()
+
+        rendered = apply_patch(pod, build_patch(pod))
+
+        prep = next(
+            container
+            for container in rendered["spec"]["initContainers"]
+            if container["name"] == "prepare-private-state"
+        )
+        directories_line = prep["args"][0].splitlines()[1]
+        prefix = "for (const path of "
+        suffix = ") {"
+        directories = json.loads(
+            directories_line[len(prefix) : -len(suffix)]
+        )
+        self.assertEqual(
+            set(directories),
+            {
+                "/runtime-temporary/tmp",
+                "/runtime-state/gateway-codex-home",
+                "/gateway-state/sessions",
+                "/runtime-state/.openclaw",
+                "/gateway-state/agents",
+            },
+        )
+        self.assertFalse(
+            any(
+                directory.startswith("/runtime-state/home")
+                for directory in directories
+            )
+        )
+
+    def test_rejects_malformed_missing_or_duplicate_runtime_home_mounts(
+        self,
+    ) -> None:
+        malformed = target_pod()
+        malformed_home = malformed["spec"]["containers"][-1]["volumeMounts"][0]
+        malformed_home.pop("subPath")
+        malformed_home["subPathExpr"] = "$(RUNTIME_HOME)"
+
+        missing = target_pod()
+        missing["spec"]["containers"][-1]["volumeMounts"] = [
+            mount
+            for mount in missing["spec"]["containers"][-1]["volumeMounts"]
+            if mount.get("mountPath") != "/home/node"
+        ]
+
+        duplicate = target_pod()
+        duplicate["spec"]["containers"][-1]["volumeMounts"].append(
+            copy.deepcopy(
+                duplicate["spec"]["containers"][-1]["volumeMounts"][0]
+            )
+        )
+
+        for name, pod in (
+            ("malformed", malformed),
+            ("missing", missing),
+            ("duplicate", duplicate),
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                AdmissionError,
+                "runtime-state|/home/node",
+            ):
+                build_patch(pod)
+
+    def test_rejects_another_volume_masking_runtime_home(self) -> None:
+        for mount_path in ("/home/node", "/home"):
+            with self.subTest(mount_path=mount_path):
+                pod = target_pod()
+                pod["spec"]["containers"][-1]["volumeMounts"].append(
+                    {
+                        "name": "workspace",
+                        "mountPath": mount_path,
+                    }
+                )
+                with self.assertRaisesRegex(
+                    AdmissionError,
+                    "runtime home",
+                ):
+                    build_patch(pod)
+
     def test_rejects_noncanonical_mount_paths(self) -> None:
         for mount_path in (
             "/home/node/../../gateway-state/arbitrary/leaf",
