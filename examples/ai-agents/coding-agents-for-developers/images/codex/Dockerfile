@@ -27,3 +27,7 @@ COPY --chmod=0755 codex-session.sh /usr/local/bin/codex-session.sh
 
 ENV CLI_CMD="/usr/local/bin/codex-session.sh" \
     CLI_RESUME_CMD="/usr/local/bin/codex-session.sh --resume"
+
+# Back to the base image's unprivileged user. The session pods override it with
+# runAsUser: 0 (deploy/sandbox-template.yaml), because the mount needs root.
+USER dev

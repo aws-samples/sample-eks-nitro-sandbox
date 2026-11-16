@@ -25,3 +25,7 @@ ENV CLAUDE_CODE_USE_BEDROCK=1 \
     DISABLE_AUTOUPDATER=1 \
     CLI_CMD="claude" \
     CLI_RESUME_CMD="claude --continue"
+
+# Back to the base image's unprivileged user. The session pods override it with
+# runAsUser: 0 (deploy/sandbox-template.yaml), because the mount needs root.
+USER dev
