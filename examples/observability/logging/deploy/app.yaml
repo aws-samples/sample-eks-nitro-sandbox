@@ -1,0 +1,79 @@
+# The app every pod in this blueprint runs. Each tick it writes one line to each of
+# the five places an app commonly logs to:
+#
+#   stdout and stderr           -> the container runtime's log stream
+#   /var/log/app/app.log        -> a file on an emptyDir volume
+#   the syslog socket           -> SYSLOG_SOCKET, /dev/log unless the pod sets it
+#   the kernel log              -> a child process that segfaults, so the kernel
+#                                  prints "<comm>[pid]: segfault at 0 ..." to its
+#                                  own ring buffer. The child names itself after
+#                                  the pod, so each pod's crash is easy to find.
+#
+# Every line carries the pod name and a sequence number.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logging-app
+  namespace: sandbox-logging
+data:
+  app.py: |
+    import ctypes, os, socket, sys, time
+
+    POD = os.environ["POD_NAME"]
+    SYSLOG = os.environ.get("SYSLOG_SOCKET", "/dev/log")
+    LOGFILE = "/var/log/app/app.log"
+    TICK = float(os.environ.get("TICK_SECONDS", "10"))
+
+    def segfault():
+        # Name the process after the pod (the kernel prints the first 15 bytes),
+        # then read address 0. The kernel logs the fault, the child dies, the app
+        # carries on.
+        if os.fork() == 0:
+            libc = ctypes.CDLL(None)
+            libc.prctl(15, POD.encode()[:15], 0, 0, 0)  # 15 = PR_SET_NAME
+            ctypes.string_at(0)
+            os._exit(1)
+        os.wait()
+
+    def syslog(msg):
+        # The datagram syslog(3) sends: <priority>timestamp ident[pid]: message
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            s.connect(SYSLOG)
+            stamp = time.strftime("%b %e %H:%M:%S")
+            s.send(f"<14>{stamp} logging-app[{os.getpid()}]: {msg}".encode())
+            return "sent"
+        except OSError as e:
+            return f"{type(e).__name__}: {e.strerror}"
+        finally:
+            s.close()
+
+    seq = 0
+    while True:
+        seq += 1
+        tag = f"{POD} seq={seq}"
+        print(f"stdout {tag}", flush=True)
+        print(f"stderr {tag}", file=sys.stderr, flush=True)
+        with open(LOGFILE, "a") as f:
+            f.write(f"file {tag}\n")
+        result = syslog(f"syslog {tag}")
+        if result != "sent":
+            print(f"syslog to {SYSLOG} failed: {result}", file=sys.stderr, flush=True)
+        segfault()
+        time.sleep(TICK)
+
+  # The kernel-log sidecar: copies the kernel log of the kernel it runs on to
+  # /var/log/kernel/kernel.log. It uses syslog(2) action 2, SYSLOG_ACTION_READ,
+  # which waits for new kernel messages and returns each one once. That call needs
+  # CAP_SYSLOG. In a sandboxed pod the kernel is the guest's own.
+  kernel-log.py: |
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    buf = ctypes.create_string_buffer(65536)
+    with open("/var/log/kernel/kernel.log", "ab", buffering=0) as out:
+        while True:
+            n = libc.klogctl(2, buf, len(buf))  # 2 = SYSLOG_ACTION_READ
+            if n < 0:
+                raise OSError(ctypes.get_errno(), "klogctl(SYSLOG_ACTION_READ)")
+            out.write(buf.raw[:n])

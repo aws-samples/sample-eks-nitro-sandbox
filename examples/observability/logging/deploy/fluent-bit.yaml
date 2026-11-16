@@ -1,0 +1,99 @@
+# The log sidecar's configuration. The sidecar runs in the same pod as the app, so
+# in the same sandbox: it reads the app's log files and the guest kernel log from
+# shared emptyDir volumes and owns the syslog socket the app writes to.
+#
+# inputs.conf holds the three inputs. Each output file includes it and adds one or
+# both outputs:
+#
+#   stdout.conf      -> the sidecar's own stdout, which leaves the sandbox the same
+#                       way the app's stdout does, so the node agent ships it
+#   cloudwatch.conf  -> CloudWatch Logs directly, with the pod's Pod Identity role
+#   both.conf        -> both, for the network-isolated pod
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logging-fluent-bit
+  namespace: sandbox-logging
+data:
+  inputs.conf: |
+    [SERVICE]
+        Flush        1
+        Log_Level    info
+        Parsers_File /fluent-bit/etc/parsers.conf
+
+    # Files the app writes on the shared emptyDir.
+    [INPUT]
+        Name           tail
+        Tag            file
+        Path           /var/log/app/*.log
+        Read_from_Head true
+
+    # The syslog socket the app sends to. It lives on a shared emptyDir, so the
+    # app and the sidecar both see it; 0666 lets the app's UID write to it.
+    [INPUT]
+        Name      syslog
+        Tag       syslog
+        Mode      unix_udp
+        Path      /run/syslog/log
+        Unix_Perm 0666
+        Parser    syslog-rfc3164-local
+
+    # The guest kernel log, which the kernel-log container copies to a file.
+    [INPUT]
+        Name           tail
+        Tag            kernel
+        Path           /var/log/kernel/kernel.log
+        Read_from_Head true
+
+    # Say which source and which pod each record came from.
+    [FILTER]
+        Name   modify
+        Match  *
+        Add    pod ${POD_NAME}
+    [FILTER]
+        Name   modify
+        Match  file
+        Add    source file
+    [FILTER]
+        Name   modify
+        Match  syslog
+        Add    source syslog
+    [FILTER]
+        Name   modify
+        Match  kernel
+        Add    source kernel
+
+  stdout.conf: |
+    @INCLUDE inputs.conf
+
+    [OUTPUT]
+        Name   stdout
+        Match  *
+        Format json_lines
+
+  cloudwatch.conf: |
+    @INCLUDE inputs.conf
+
+    [OUTPUT]
+        Name              cloudwatch_logs
+        Match             *
+        region            ${AWS_REGION}
+        log_group_name    ${LOG_GROUP}
+        log_stream_prefix ${POD_NAME}.
+        auto_create_group true
+
+  both.conf: |
+    @INCLUDE inputs.conf
+
+    [OUTPUT]
+        Name   stdout
+        Match  *
+        Format json_lines
+
+    [OUTPUT]
+        Name              cloudwatch_logs
+        Match             *
+        region            ${AWS_REGION}
+        log_group_name    ${LOG_GROUP}
+        log_stream_prefix ${POD_NAME}.
+        auto_create_group true
