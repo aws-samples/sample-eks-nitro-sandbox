@@ -1,0 +1,20 @@
+# Values for the falcosecurity/falco Helm chart (version pinned on the page): Falco as a
+# node DaemonSet with the modern eBPF probe, the usual way to run it on EKS. It watches the
+# node's kernel, so it sees every ordinary pod on the node and none of a sandboxed pod's
+# syscalls, which run on the sandbox's own guest kernel.
+driver:
+  kind: modern_ebpf
+# Line-buffered output, so `kubectl logs` shows each alert as it fires.
+tty: true
+falco:
+  json_output: true
+  json_include_output_property: true
+falcoctl:
+  artifact:
+    # Install the pinned rules and container plugin once; do not follow newer rules.
+    follow:
+      enabled: false
+  config:
+    artifact:
+      install:
+        refs: [falco-rules:5.0.0]

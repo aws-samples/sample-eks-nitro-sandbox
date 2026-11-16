@@ -1,0 +1,28 @@
+# A Tetragon policy that applies only to pods in this blueprint's namespace. Tetragon logs
+# every process exec by default; this adds a kprobe event for a read of /etc/shadow and for
+# each outbound TCP connection, so all four test events leave a Tetragon event.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicyNamespaced
+metadata:
+  name: runtime-detection
+spec:
+  kprobes:
+    # Called on each read or write of a file; the selector keeps only /etc/shadow.
+    - call: security_file_permission
+      syscall: false
+      args:
+        - index: 0
+          type: file
+        - index: 1
+          type: int
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: Equal
+              values: ["/etc/shadow"]
+    # Called for each outbound TCP connection the pod opens.
+    - call: tcp_connect
+      syscall: false
+      args:
+        - index: 0
+          type: sock

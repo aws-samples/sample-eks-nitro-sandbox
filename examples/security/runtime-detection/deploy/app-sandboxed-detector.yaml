@@ -1,0 +1,67 @@
+# app-sandboxed-detector: the sandboxed app pod again, with a runtime detector inside its
+# sandbox. The app container is the same as in app-sandboxed. The detector is a sidecar
+# that drives the guest kernel's audit subsystem and prints alerts to stdout, so the node's
+# log agent ships them like any other container log.
+#
+# hostPID: true joins the sandbox's own PID namespace, the guest's, not the node's: it is how
+# the detector can register as the guest's audit daemon. The detector holds two
+# capabilities, both for audit, and they reach only this pod's guest.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-sandboxed-detector
+  labels:
+    app: runtime-detection-app
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"   # keep consolidation from evicting this bare pod mid-run
+spec:
+  runtimeClassName: isolated-sandbox
+  hostPID: true
+  automountServiceAccountToken: false
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
+  initContainers:
+    # A native sidecar: it starts, and is running, before the app container starts.
+    - name: detector
+      restartPolicy: Always
+      image: public.ecr.aws/docker/library/python:3.12-slim
+      imagePullPolicy: IfNotPresent
+      command: ["python3", "-u", "/detector/guest-detector.py"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+          add: ["AUDIT_CONTROL", "AUDIT_READ"]
+      volumeMounts:
+        - name: detector
+          mountPath: /detector
+          readOnly: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 64Mi
+        limits:
+          cpu: 250m
+          memory: 128Mi
+  containers:
+    - name: app
+      image: public.ecr.aws/docker/library/python:3.12-slim
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 250m
+          memory: 256Mi
+        limits:
+          cpu: 250m
+          memory: 256Mi
+  volumes:
+    - name: detector
+      configMap:
+        name: guest-detector

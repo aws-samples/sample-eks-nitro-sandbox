@@ -1,0 +1,42 @@
+# app-sandboxed: the sandboxed copy of the app pod. Identical to app-standard but for the
+# one line below, so any difference in what a node-level tool sees comes from the sandbox.
+#
+#   runtimeClassName: isolated-sandbox
+#
+# The pod's containers run in a Nitro sandbox: a lightweight VM with its own kernel, so
+# their syscalls never reach the node's kernel, where Falco and Tetragon attach.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-sandboxed
+  labels:
+    app: runtime-detection-app
+    copy: sandboxed
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"   # keep consolidation from evicting this bare pod mid-run
+spec:
+  runtimeClassName: isolated-sandbox   # <-- the only field that differs from app-standard
+  automountServiceAccountToken: false
+  # The test events read /etc/shadow and write a new binary into the container's own
+  # filesystem, so it runs as root with a writable root filesystem: Falco's "Drop and execute
+  # new binary" rule looks for a file in the container's writable layer, not in a volume.
+  # Every capability is dropped: root owns /etc/shadow, so the owner's bits are enough.
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: app
+      image: public.ecr.aws/docker/library/python:3.12-slim
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 250m
+          memory: 256Mi
+        limits:
+          cpu: 250m
+          memory: 256Mi

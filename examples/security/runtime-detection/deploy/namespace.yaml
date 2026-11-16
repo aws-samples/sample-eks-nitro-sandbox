@@ -1,0 +1,9 @@
+# The namespace this blueprint owns. The scripts render <NAMESPACE>, create it only when it
+# is absent, and delete it only when it carries the sample label.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: eks-nitro-sandbox-demos
+    sample: runtime-detection

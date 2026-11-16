@@ -1,0 +1,8 @@
+# Values for the cilium/tetragon Helm chart (version pinned on the page): Tetragon as a node
+# DaemonSet, the usual way to run it. It loads eBPF programs into the node's kernel, so it
+# sees every ordinary pod on the node and none of a sandboxed pod's syscalls, which run on the
+# sandbox's own guest kernel. Events go to the export-stdout container's log.
+tetragon:
+  # Export only process and kprobe events from pods; drop the node's own processes.
+  exportAllowList: |-
+    {"event_set":["PROCESS_EXEC", "PROCESS_KPROBE"]}
