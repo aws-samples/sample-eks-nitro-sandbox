@@ -123,4 +123,6 @@ for finding_resource in resources:
 if not matches_image:
     fail("finding does not match the requested image")
 
-fail(f"scan found {finding['severity']} finding {finding.get('findingArn', '<unknown>')}")
+fail(
+    f"scan found {finding['severity']} finding {finding.get('findingArn', '<unknown>')}"
+)

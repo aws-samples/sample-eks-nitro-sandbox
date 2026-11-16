@@ -40,9 +40,7 @@ findings = require_mapping(root.get("imageScanFindings"), "imageScanFindings")
 if findings.get("imageScanCompletedAt") is None:
     fail(f"{status} scan has no completion timestamp", PENDING)
 
-counts = require_mapping(
-    findings.get("findingSeverityCounts"), "findingSeverityCounts"
-)
+counts = require_mapping(findings.get("findingSeverityCounts"), "findingSeverityCounts")
 severe_counts: dict[str, int] = {}
 for severity in ("CRITICAL", "HIGH"):
     count = counts.get(severity, 0)
@@ -54,8 +52,7 @@ if any(severe_counts.values()):
     fail(
         "scan found "
         + ", ".join(
-            f"{severity}={severe_counts[severity]}"
-            for severity in ("CRITICAL", "HIGH")
+            f"{severity}={severe_counts[severity]}" for severity in ("CRITICAL", "HIGH")
         )
     )
 

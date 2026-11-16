@@ -83,6 +83,12 @@ spec:
               value: /tls/tls.crt
             - name: TLS_KEY_FILE
               value: /tls/tls.key
+            - name: OCE_ALLOWED_ADMISSION_USERS
+              value: system:serviceaccount:kube-system:replicaset-controller,system:kube-controller-manager
+            - name: OCE_ALLOWED_DEPLOYMENT_USERS
+              value: system:serviceaccount:openclaw-system:openclaw-enterprise-worker
+            - name: OCE_ALLOWED_REPLICASET_USERS
+              value: system:kube-controller-manager
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -164,7 +170,7 @@ webhooks:
     sideEffects: None
     failurePolicy: Fail
     matchPolicy: Equivalent
-    reinvocationPolicy: Never
+    reinvocationPolicy: IfNeeded
     timeoutSeconds: 5
     clientConfig:
       service:
@@ -189,10 +195,38 @@ webhooks:
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
-  name: openclaw-enterprise-nitro-ephemeral-containers
+  name: openclaw-enterprise-nitro-policy
   annotations:
     cert-manager.io/inject-ca-from: openclaw-enterprise-adapter/openclaw-enterprise-nitro-adapter-serving
 webhooks:
+  - name: validate-controller-chain.openclaw-enterprise.sandbox.eks.amazonaws.com
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    timeoutSeconds: 5
+    clientConfig:
+      service:
+        namespace: openclaw-enterprise-adapter
+        name: openclaw-enterprise-nitro-adapter
+        path: /validate
+        port: 443
+    namespaceSelector:
+      matchLabels:
+        app.kubernetes.io/managed-by: openclaw-enterprise
+    rules:
+      - apiGroups:
+          - apps
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - deployments
+          - replicasets
+        scope: Namespaced
   - name: deny-ephemeral-containers.openclaw-enterprise.sandbox.eks.amazonaws.com
     admissionReviewVersions:
       - v1
@@ -210,6 +244,15 @@ webhooks:
       matchLabels:
         app.kubernetes.io/managed-by: openclaw-enterprise
     rules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+        resources:
+          - pods
+        scope: Namespaced
       - apiGroups:
           - ""
         apiVersions:

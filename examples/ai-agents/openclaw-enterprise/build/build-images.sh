@@ -19,12 +19,22 @@ require_sha() {
     die "$name must be a full 40-character lowercase Git commit SHA"
 }
 
+require_digest() {
+  local name="$1"
+  local value="${!name:-}"
+  [[ "$value" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+    die "$name must be sha256 followed by exactly 64 lowercase hex characters"
+}
+
+readonly OCE_REPOSITORY_URL="https://github.com/openclaw/openclaw-enterprise.git"
+readonly CONTROLLER_RUNTIME_BASE_IMAGE_REPOSITORY="public.ecr.aws/docker/library/node"
+readonly CONTROLLER_RUNTIME_BASE_IMAGE_TAG="24-bookworm-slim"
+
 require_value CODEBUILD_BUILD_ARN
 require_value CODEBUILD_SRC_DIR
 require_value AWS_ACCOUNT_ID
 require_value AWS_DEFAULT_REGION
 require_value SAMPLE_SOURCE_DIR
-require_value OCE_REPOSITORY_URL
 require_value ADAPTER_REPOSITORY
 require_value CONTROLLER_REPOSITORY
 require_value OWNERSHIP_HELPER_REPOSITORY
@@ -32,13 +42,7 @@ require_value RUNTIME_REPOSITORY
 require_value BUILD_OUTPUT_ENV
 require_sha SAMPLE_GIT_REVISION
 require_sha OCE_GIT_REVISION
-
-require_digest_image() {
-  local name="$1"
-  local value="${!name:-}"
-  [[ "$value" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]] ||
-    die "$name must be an immutable image reference ending in @sha256:<64 lowercase hex characters>"
-}
+require_digest CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST
 
 [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || die "AWS_ACCOUNT_ID must be 12 digits"
 [[ "${TARGET_PLATFORM:-linux/amd64}" =~ ^linux/(amd64|arm64)$ ]] ||
@@ -57,6 +61,8 @@ SAMPLE_SOURCE_REVISION="$(git -C "$SAMPLE_SOURCE_DIR" rev-parse HEAD)"
 OCE_SOURCE_DIR="$CODEBUILD_SRC_DIR/oce-source"
 git init "$OCE_SOURCE_DIR"
 git -C "$OCE_SOURCE_DIR" remote add origin "$OCE_REPOSITORY_URL"
+[[ "$(git -C "$OCE_SOURCE_DIR" remote get-url origin)" == "$OCE_REPOSITORY_URL" ]] ||
+  die "OCE origin does not match the canonical repository"
 git -C "$OCE_SOURCE_DIR" fetch --depth 1 origin "$OCE_GIT_REVISION"
 OCE_SOURCE_REVISION="$(git -C "$OCE_SOURCE_DIR" rev-parse FETCH_HEAD)"
 [[ "$OCE_SOURCE_REVISION" == "$OCE_GIT_REVISION" ]] ||
@@ -116,8 +122,7 @@ node_base_image="$(
     process.stdout.write(value);
   ' "$OCE_SOURCE_DIR/scripts/ci/test-suites/images-packaging.json"
 )" || die "could not resolve OCE's pinned NODE_BASE_IMAGE"
-CONTROLLER_RUNTIME_BASE_IMAGE="${CONTROLLER_RUNTIME_BASE_IMAGE:-public.ecr.aws/docker/library/node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54}"
-require_digest_image CONTROLLER_RUNTIME_BASE_IMAGE
+readonly CONTROLLER_RUNTIME_BASE_IMAGE="${CONTROLLER_RUNTIME_BASE_IMAGE_REPOSITORY}:${CONTROLLER_RUNTIME_BASE_IMAGE_TAG}@${CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST}"
 
 docker buildx build \
   --pull \

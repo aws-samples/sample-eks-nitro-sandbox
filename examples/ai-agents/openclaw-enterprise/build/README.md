@@ -1,10 +1,11 @@
 # CodeBuild image path
 
-This stack creates four private ECR repositories and one CodeBuild project. The
-repositories use immutable tags, a customer managed KMS key, and scan every
-pushed image. CodeBuild clones this sample and OpenClaw Enterprise (OCE) at full
-commit SHAs, builds all four images from source, waits for their ECR scans, and
-exports digest-qualified image references.
+This stack creates four private ECR repositories, one CodeBuild project, and a
+fixed Step Functions invocation path. The repositories use immutable tags, a
+customer managed KMS key, and scan every pushed image. CodeBuild clones this
+sample and OpenClaw Enterprise (OCE) at full commit SHAs, builds all four images
+from source, waits for their ECR scans, and exports digest-qualified image
+references.
 
 The default OCE revision is
 `86c8c12310f691bb21651118ffffd6bfd460e9ff`. It exact-pins
@@ -25,13 +26,20 @@ coverage and findings fail the build closed.
 The controller uses the sample-owned `controller-runtime.Dockerfile`. Its build
 stage installs OCE's production dependencies, while its final stage starts from
 a separately pinned Node 24 runtime image and removes package-manager and
-build-only `esbuild`, `tsx`, and `drizzle-kit` files. To use a newer patched Node
-24 base, set `CONTROLLER_RUNTIME_BASE_IMAGE` to an immutable
-`repository:tag@sha256:<digest>` reference in the CodeBuild environment. The
-build rejects mutable or malformed overrides and still requires the resulting
-image to pass the Critical/High scan gate.
+build-only `esbuild`, `tsx`, and `drizzle-kit` files. To use a newer patched
+Node 24 base, update `ControllerRuntimeBaseImageDigest` when deploying the
+stack. The repository and tag are fixed in the build script, and the parameter
+accepts only an exact digest. The resulting image must still pass the
+Critical/High scan gate.
 
 ## Build the images
+
+First mirror a reviewed CodeBuild builder image into a private ECR repository in
+the account and Region where this stack runs. Record the digest returned by ECR.
+Do not use a tag here: this builder runs privileged Docker and can write release
+images. The stack requires the repository name and digest separately, constructs
+an account-local digest reference, and grants the build role pull access only to
+that repository.
 
 Create or update the build resources:
 
@@ -40,27 +48,64 @@ aws cloudformation deploy \
   --stack-name openclaw-enterprise-images \
   --template-file examples/ai-agents/openclaw-enterprise/build/template.yaml \
   --capabilities CAPABILITY_IAM \
-  --parameter-overrides SampleGitRevision="$(git rev-parse HEAD)"
+  --parameter-overrides \
+    SampleGitRevision="$(git rev-parse HEAD)" \
+    BuilderImageRepositoryName="replace-with-reviewed-builder-repository" \
+    BuilderImageDigest="sha256:replace-with-64-lowercase-hex-characters" \
+    TrustedBuildInvokerArn="arn:aws:iam::123456789012:role/replace-with-release-role"
 ```
 
-Start the source build:
+Assume the generated invocation role and start the fixed workflow. Its definition
+passes only `ProjectName` to CodeBuild and ignores execution input, so callers
+cannot supply `buildspecOverride`, `imageOverride`, source overrides, or
+environment overrides such as `BASH_ENV` and `GIT_CONFIG_*`.
 
 ```bash
-project_name="$(
+invocation_role_arn="$(
   aws cloudformation describe-stacks \
     --stack-name openclaw-enterprise-images \
-    --query 'Stacks[0].Outputs[?OutputKey==`ProjectName`].OutputValue' \
+    --query 'Stacks[0].Outputs[?OutputKey==`BuildInvocationRoleArn`].OutputValue' \
     --output text
 )"
-build_id="$(
-  aws codebuild start-build \
-    --project-name "$project_name" \
-    --query 'build.id' \
+state_machine_arn="$(
+  aws cloudformation describe-stacks \
+    --stack-name openclaw-enterprise-images \
+    --query 'Stacks[0].Outputs[?OutputKey==`BuildStateMachineArn`].OutputValue' \
     --output text
 )"
-aws codebuild batch-get-builds \
-  --ids "$build_id" \
-  --query 'builds[0].{status:buildStatus,images:exportedEnvironmentVariables}'
+credentials="$(
+  aws sts assume-role \
+    --role-arn "$invocation_role_arn" \
+    --role-session-name openclaw-enterprise-image-build
+)"
+export AWS_ACCESS_KEY_ID="$(jq -er '.Credentials.AccessKeyId' <<<"$credentials)"
+export AWS_SECRET_ACCESS_KEY="$(jq -er '.Credentials.SecretAccessKey' <<<"$credentials)"
+export AWS_SESSION_TOKEN="$(jq -er '.Credentials.SessionToken' <<<"$credentials)"
+execution_arn="$(
+  aws stepfunctions start-execution \
+    --state-machine-arn "$state_machine_arn" \
+    --input '{}' \
+    --query executionArn \
+    --output text
+)"
+while :; do
+  execution_json="$(aws stepfunctions describe-execution --execution-arn "$execution_arn")"
+  status="$(jq -r '.status' <<<"$execution_json")"
+  case "$status" in
+    SUCCEEDED)
+      build_id="$(jq -er '.output | fromjson | .Build.Id' <<<"$execution_json")"
+      break
+      ;;
+    FAILED|ABORTED|TIMED_OUT)
+      jq '{status, error, cause}' <<<"$execution_json" >&2
+      exit 1
+      ;;
+  esac
+  sleep 20
+done
+build_json="$(aws codebuild batch-get-builds --ids "$build_id")"
+printf '%s\n' "$build_json" |
+  jq '.builds[0] | {buildStatus, exportedEnvironmentVariables}'
 ```
 
 Wait for `status` to become `SUCCEEDED`. The build exports `ADAPTER_IMAGE`,
@@ -71,7 +116,8 @@ tags.
 ## Deploy the adapter
 
 Install `kubectl`, `jq`, `yq` 4, and cert-manager before running these commands.
-Retrieve the two sample-owned image references from the successful build:
+Retrieve the three adapter deployment image references from the successful
+build:
 
 ```bash
 set -euo pipefail
@@ -86,31 +132,41 @@ OWNERSHIP_INIT_IMAGE="$(
   jq -er '.builds[0].exportedEnvironmentVariables[]
     | select(.name == "OWNERSHIP_INIT_IMAGE").value' <<<"$build_json"
 )"
-export ADAPTER_IMAGE OWNERSHIP_INIT_IMAGE
+RUNTIME_IMAGE="$(
+  jq -er '.builds[0].exportedEnvironmentVariables[]
+    | select(.name == "RUNTIME_IMAGE").value' <<<"$build_json"
+)"
+export ADAPTER_IMAGE OWNERSHIP_INIT_IMAGE RUNTIME_IMAGE
 ```
 
-Render both digest references into the adapter Deployment before applying the
-manifest:
+Render all three digest references into the adapter Deployment before applying
+the manifest:
 
 ```bash
 adapter_manifest="examples/ai-agents/openclaw-enterprise/deploy/adapter-webhook.yaml"
+KUBE_CONTEXT="replace-with-explicit-eks-context"
 ./examples/ai-agents/openclaw-enterprise/scripts/render-adapter-manifest.sh \
-  "$adapter_manifest" "$ADAPTER_IMAGE" "$OWNERSHIP_INIT_IMAGE" \
-  | kubectl apply --filename -
+  "$adapter_manifest" "$ADAPTER_IMAGE" "$OWNERSHIP_INIT_IMAGE" "$RUNTIME_IMAGE" \
+  | kubectl --context "$KUBE_CONTEXT" apply --filename -
 
-kubectl --namespace openclaw-enterprise-adapter rollout status \
+kubectl --context "$KUBE_CONTEXT" \
+  --namespace openclaw-enterprise-adapter rollout status \
   deployment/openclaw-enterprise-nitro-adapter
 ```
 
 Do not apply the raw manifest: its adapter image is a placeholder and it omits
-`OCE_OWNERSHIP_INIT_IMAGE`. The rendered stream gives the Deployment both
-digest references in the same apply as the fail-closed webhook configurations.
+the helper and runtime allowlists. The rendered stream gives the Deployment all
+three digest references in the same apply as the fail-closed webhook
+configurations.
 During a first install, matching pod creation and ephemeral-container updates
 can fail until the adapter Deployment becomes Ready.
 
 `OCE_OWNERSHIP_INIT_IMAGE` is mandatory. The adapter denies OCE pod creation if
 the value is missing, is not digest-pinned, contains whitespace, or matches a
 workload runtime image.
+
+`OCE_RUNTIME_IMAGES` is also mandatory. It is the exact digest allowlist for
+the pinned OCE runtime used by the gateway and both OCE init containers.
 
 The ownership helper is a statically linked Go binary in a scratch image. It
 opens only an explicit relative-path allowlist with Linux `openat2` constraints,
@@ -126,9 +182,21 @@ settings in the pinned OCE Helm chart. This sample does not provide a stable
 upstream values contract, so copying guessed `--set` keys here would be
 misleading.
 
-The CodeBuild role can write only its logs and the four repositories. The
-project accepts only the canonical sample and OpenClaw Enterprise repository
-URLs plus exact lowercase commit SHAs; it has no source credential or local
-Docker path. Validate contributor forks with a separate build role and
-repository namespace rather than granting fork code access to trusted release
-repositories.
+The CodeBuild role can pull the pinned builder, write only its logs and the four
+release repositories, and query image scan results. The project accepts only
+the canonical sample and OpenClaw Enterprise repository URLs plus exact
+lowercase commit SHAs; it has no source credential or local Docker path.
+Validate contributor forks with a separate build role and repository namespace
+rather than granting fork code access to trusted release repositories.
+
+CodeBuild has no project setting or resource policy that rejects every
+`StartBuild` override. The workflow boundary is safe only when human and CI
+principals cannot call `codebuild:StartBuild`, `codebuild:StartBuildBatch`, or
+`codebuild:RetryBuild` on this project directly. Grant release operators only
+`sts:AssumeRole` on `BuildInvocationRoleArn`. Remove direct CodeBuild grants and
+enforce an explicit deny for the project in the account's permissions boundary
+or SCP; the deny must exempt only `ImageBuildWorkflowRole`. Existing broad
+administrator permissions can bypass this sample boundary unless the
+organisation-level deny covers them. That limitation is an AWS IAM deployment
+contract, not something the CodeBuild project can repair after malicious
+override code has already started.

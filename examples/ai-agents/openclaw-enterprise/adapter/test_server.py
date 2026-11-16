@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import io
 import json
 import os
@@ -8,9 +9,12 @@ import unittest
 from unittest import mock
 
 from server import AdmissionHandler, admit, validate
-from test_adapter import target_pod
+from test_adapter import RUNTIME_IMAGE, apply_patch, target_pod
 
 OWNERSHIP_INIT_IMAGE = f"example.invalid/ownership-helper@sha256:{'b' * 64}"
+ADMISSION_USER = "system:serviceaccount:kube-system:replicaset-controller"
+DEPLOYMENT_USER = "system:serviceaccount:openclaw-system:openclaw-enterprise-worker"
+REPLICASET_USER = "system:kube-controller-manager"
 
 
 def review(
@@ -18,12 +22,15 @@ def review(
     *,
     operation: str = "CREATE",
     subresource: str | None = None,
+    resource: dict | None = None,
+    username: str = ADMISSION_USER,
 ) -> dict:
     request = {
         "uid": "test-uid",
         "operation": operation,
         "namespace": "oce-tenant-test",
-        "resource": {"group": "", "version": "v1", "resource": "pods"},
+        "resource": resource or {"group": "", "version": "v1", "resource": "pods"},
+        "userInfo": {"username": username},
         "object": pod,
     }
     if subresource is not None:
@@ -37,9 +44,75 @@ def review(
 
 @mock.patch.dict(
     os.environ,
-    {"OCE_OWNERSHIP_INIT_IMAGE": OWNERSHIP_INIT_IMAGE},
+    {
+        "OCE_OWNERSHIP_INIT_IMAGE": OWNERSHIP_INIT_IMAGE,
+        "OCE_RUNTIME_IMAGES": RUNTIME_IMAGE,
+        "OCE_ALLOWED_ADMISSION_USERS": ADMISSION_USER,
+        "OCE_ALLOWED_DEPLOYMENT_USERS": DEPLOYMENT_USER,
+        "OCE_ALLOWED_REPLICASET_USERS": REPLICASET_USER,
+    },
 )
 class AdmitTests(unittest.TestCase):
+    def test_validation_accepts_only_the_trusted_gateway_controller_chain(self) -> None:
+        pod = target_pod()
+        labels = pod["metadata"]["labels"]
+        deployment = {
+            "metadata": {
+                "name": labels["app.kubernetes.io/name"],
+                "labels": {
+                    "app.kubernetes.io/managed-by": labels[
+                        "app.kubernetes.io/managed-by"
+                    ],
+                    "openclaw.dev/agent": labels["openclaw.dev/agent"],
+                    "openclaw.dev/namespace": labels["openclaw.dev/namespace"],
+                },
+            },
+            "spec": {
+                "selector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/name": labels["app.kubernetes.io/name"]
+                    }
+                },
+                "template": {"metadata": {"labels": labels}},
+            },
+        }
+        deployment_review = review(
+            deployment,
+            resource={"group": "apps", "version": "v1", "resource": "deployments"},
+            username=DEPLOYMENT_USER,
+        )
+        self.assertTrue(validate(deployment_review)["response"]["allowed"])
+
+        replicaset = {
+            "metadata": {
+                "name": f"{labels['app.kubernetes.io/name']}-abc123def",
+                "labels": labels,
+                "ownerReferences": [
+                    {
+                        "apiVersion": "apps/v1",
+                        "kind": "Deployment",
+                        "name": labels["app.kubernetes.io/name"],
+                        "uid": "11111111-2222-3333-4444-555555555555",
+                        "controller": True,
+                    }
+                ],
+            },
+            "spec": {"template": {"metadata": {"labels": labels}}},
+        }
+        replicaset_review = review(
+            replicaset,
+            resource={"group": "apps", "version": "v1", "resource": "replicasets"},
+            username=REPLICASET_USER,
+        )
+        self.assertTrue(validate(replicaset_review)["response"]["allowed"])
+
+        for request in (deployment_review, replicaset_review):
+            forged = copy.deepcopy(request)
+            forged["request"]["userInfo"]["username"] = "tenant-user"
+            response = validate(forged)["response"]
+            self.assertFalse(response["allowed"])
+            self.assertIn("controller identity", response["status"]["message"])
+
     def test_returns_an_encoded_json_patch(self) -> None:
         response = admit(review(target_pod()))["response"]
         self.assertTrue(response["allowed"])
@@ -56,7 +129,7 @@ class AdmitTests(unittest.TestCase):
         response = admit(review(pod))["response"]
         self.assertFalse(response["allowed"])
         self.assertEqual(response["status"]["code"], 400)
-        self.assertIn("workload role", response["status"]["message"])
+        self.assertIn("embedded gateway workload", response["status"]["message"])
 
     def test_denies_an_unsafe_target_pod(self) -> None:
         pod = target_pod()
@@ -81,6 +154,67 @@ class AdmitTests(unittest.TestCase):
         self.assertEqual(response["status"]["reason"], "Forbidden")
         self.assertIn("ephemeral containers", response["status"]["message"])
         self.assertNotIn("patch", response)
+
+    def test_validation_accepts_only_the_final_mutated_contract(self) -> None:
+        pod = target_pod()
+        final_pod = apply_patch(
+            pod, json.loads(base64.b64decode(admit(review(pod))["response"]["patch"]))
+        )
+        response = validate(review(final_pod))["response"]
+        self.assertTrue(response["allowed"])
+
+        final_pod["spec"]["containers"].append(
+            {
+                "name": "sidecar",
+                "image": RUNTIME_IMAGE,
+                "securityContext": {},
+            }
+        )
+        response = validate(review(final_pod))["response"]
+        self.assertFalse(response["allowed"])
+
+    def test_validation_rejects_post_mutation_contract_changes(self) -> None:
+        pod = target_pod()
+        final_pod = apply_patch(
+            pod,
+            json.loads(base64.b64decode(admit(review(pod))["response"]["patch"])),
+        )
+        cases = []
+
+        changed = copy.deepcopy(final_pod)
+        changed["spec"]["initContainers"][1]["args"].append("--dir")
+        cases.append(changed)
+
+        changed = copy.deepcopy(final_pod)
+        changed["spec"]["initContainers"][2]["command"] = ["/bin/sh"]
+        cases.append(changed)
+
+        changed = copy.deepcopy(final_pod)
+        changed["spec"]["initContainers"][0]["args"][0] += "\nprocess.exit(0);"
+        cases.append(changed)
+
+        changed = copy.deepcopy(final_pod)
+        ca_volume = next(
+            volume
+            for volume in changed["spec"]["volumes"]
+            if volume["name"] == "agentgateway-ca"
+        )
+        ca_volume["configMap"]["name"] = "attacker-ca"
+        cases.append(changed)
+
+        for changed in cases:
+            with self.subTest(pod=changed):
+                response = validate(review(changed))["response"]
+                self.assertFalse(response["allowed"])
+
+    def test_rejects_spoofed_admission_identity(self) -> None:
+        request = review(target_pod())
+        request["request"]["userInfo"]["username"] = (
+            "system:serviceaccount:tenant:attacker"
+        )
+        response = admit(request)["response"]
+        self.assertFalse(response["allowed"])
+        self.assertIn("controller identity", response["status"]["message"])
 
 
 class AdmissionHandlerTests(unittest.TestCase):

@@ -10,8 +10,9 @@ import re
 from pathlib import PurePosixPath
 from typing import Any
 
-OCE_ROLES = frozenset({"agent", "gateway"})
+OCE_ROLE = "gateway"
 PREP_INIT_NAME = "prepare-private-state"
+OWNER_INIT_NAME = "prepare-embedded-gateway-owner"
 STATE_VOLUME = "openclaw-gateway-state"
 RUNTIME_VOLUME = "runtime-state"
 RUNTIME_TMP_VOLUME = "runtime-temporary"
@@ -25,6 +26,7 @@ RUNTIME_PIN_PATH = f"{RUNTIME_PIN_DIRECTORY}/services.sqlite"
 LINK_INIT_NAME = "nitro-link-gateway-state"
 OWNERSHIP_INIT_NAME = "nitro-prepare-runtime-ownership"
 OWNERSHIP_INIT_IMAGE_ENV = "OCE_OWNERSHIP_INIT_IMAGE"
+RUNTIME_IMAGES_ENV = "OCE_RUNTIME_IMAGES"
 AGW_CA_VOLUME = "agentgateway-ca"
 AGW_CA_CONFIG_MAP = "agentgateway-ca"
 AGW_CA_MOUNT_PATH = "/etc/agentgateway-ca"
@@ -75,11 +77,17 @@ UNSAFE_BOOTSTRAP_ENV_NAMES = (
     "LD_USE_LOAD_BIAS",
     "LD_VERBOSE",
     "LD_WARN",
+    "NODE_OPTIONS",
     "PS4",
     "SHELLOPTS",
     "ZDOTDIR",
 )
 IMAGE_DIGEST_PATTERN = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
+GATEWAY_ID_PATTERN = re.compile(r"^[0-9a-f]{12}$")
+OCE_RESOURCE_ID_PATTERN = re.compile(
+    r"^(?:agt|ns|rev)_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 PREP_ALLOWED_FIELDS = frozenset(
     {
         "args",
@@ -94,6 +102,21 @@ PREP_ALLOWED_FIELDS = frozenset(
         "volumeMounts",
     }
 )
+OWNER_ALLOWED_FIELDS = PREP_ALLOWED_FIELDS
+
+OWNER_SCRIPT = r"""
+const fs = require("node:fs");
+const crypto = require("node:crypto");
+const verifier = "/run/oce-gateway-owner-key/public.pem";
+if (!fs.existsSync(verifier)) {
+  const keys = crypto.generateKeyPairSync("ed25519", {
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  fs.writeFileSync(verifier, keys.publicKey, { flag: "wx", mode: 0o444 });
+  fs.writeFileSync("/run/oce-gateway-owner-start/private.pem", keys.privateKey, { flag: "wx", mode: 0o400 });
+}
+""".strip()
 
 LINK_SCRIPT = r"""
 const fs = require("node:fs");
@@ -139,6 +162,122 @@ def _is_digest_pinned_image(value: Any) -> bool:
     )
 
 
+def _runtime_images() -> frozenset[str]:
+    raw = os.environ.get(RUNTIME_IMAGES_ENV, "")
+    images = frozenset(image.strip() for image in raw.split(",") if image.strip())
+    if not images or any(not _is_digest_pinned_image(image) for image in images):
+        raise AdmissionError(
+            f"{RUNTIME_IMAGES_ENV} must contain comma-separated exact sha256 images"
+        )
+    return images
+
+
+def _gateway_id(metadata: dict[str, Any]) -> str:
+    labels = metadata.get("labels")
+    if not isinstance(labels, dict):
+        raise AdmissionError("target OCE Pod must declare labels")
+    if labels.get("app.kubernetes.io/managed-by") != "openclaw-enterprise":
+        raise AdmissionError("target Pod is not managed by OpenClaw Enterprise")
+    if labels.get("openclaw.dev/workload-role") != OCE_ROLE:
+        raise AdmissionError("only the embedded gateway workload is supported")
+
+    application_name = labels.get("app.kubernetes.io/name")
+    if not _is_nonempty_string(application_name) or not application_name.startswith(
+        "gateway-"
+    ):
+        raise AdmissionError("target OCE Pod has an invalid application name")
+    gateway_id = application_name.removeprefix("gateway-")
+    if GATEWAY_ID_PATTERN.fullmatch(gateway_id) is None:
+        raise AdmissionError("target OCE Pod has an invalid gateway identifier")
+
+    for label in (
+        "openclaw.dev/agent",
+        "openclaw.dev/namespace",
+        "openclaw.dev/revision",
+    ):
+        if OCE_RESOURCE_ID_PATTERN.fullmatch(str(labels.get(label, ""))) is None:
+            raise AdmissionError(f"target OCE Pod has an invalid {label} label")
+    expected_principal = f"service-agent-{labels['openclaw.dev/agent']}"
+    if labels.get("openclaw.dev/service-principal") != expected_principal:
+        raise AdmissionError("target OCE Pod has an inconsistent service principal")
+
+    owners = metadata.get("ownerReferences")
+    expected_owner_prefix = f"gateway-{gateway_id}-"
+    controllers = [
+        owner
+        for owner in owners or []
+        if isinstance(owner, dict) and owner.get("controller") is True
+    ]
+    if (
+        len(controllers) != 1
+        or controllers[0].get("apiVersion") != "apps/v1"
+        or controllers[0].get("kind") != "ReplicaSet"
+        or not str(controllers[0].get("name", "")).startswith(expected_owner_prefix)
+    ):
+        raise AdmissionError("target OCE Pod must be owned by its gateway ReplicaSet")
+
+    pod_name = metadata.get("name")
+    generate_name = metadata.get("generateName")
+    if _is_nonempty_string(pod_name) and not pod_name.startswith(expected_owner_prefix):
+        raise AdmissionError("target OCE Pod name does not match its gateway")
+    if _is_nonempty_string(generate_name) and not generate_name.startswith(
+        expected_owner_prefix
+    ):
+        raise AdmissionError("target OCE Pod generateName does not match its gateway")
+    return gateway_id
+
+
+def _validate_service_account_tokens(volumes: list[Any]) -> None:
+    for volume in volumes:
+        if not isinstance(volume, dict):
+            continue
+        projected = volume.get("projected")
+        if not isinstance(projected, dict):
+            continue
+        token_sources = [
+            source.get("serviceAccountToken")
+            for source in projected.get("sources", [])
+            if isinstance(source, dict) and "serviceAccountToken" in source
+        ]
+        if not token_sources:
+            continue
+        name = volume.get("name")
+        if _is_nonempty_string(name) and name.startswith("kube-api-access-"):
+            # Kubernetes injects this projection before admission webhooks run.
+            # Its full shape and mounts are validated before mutation removes it.
+            continue
+        if name != "openclaw-service-principal" or token_sources != [
+            {
+                "audience": "openclaw-enterprise",
+                "expirationSeconds": 900,
+                "path": "token",
+            }
+        ]:
+            raise AdmissionError("unsupported service-account token projection")
+
+
+def _validate_provenance(
+    pod: dict[str, Any],
+    spec: dict[str, Any],
+    volumes: list[Any],
+) -> str:
+    metadata = pod.get("metadata")
+    if not isinstance(metadata, dict):
+        raise AdmissionError("target OCE Pod must declare metadata")
+    gateway_id = _gateway_id(metadata)
+    if spec.get("serviceAccountName") != f"agent-{gateway_id}":
+        raise AdmissionError("target OCE Pod has an inconsistent service account")
+    claims = [
+        volume.get("persistentVolumeClaim", {}).get("claimName")
+        for volume in volumes
+        if isinstance(volume, dict) and volume.get("name") == STATE_VOLUME
+    ]
+    if claims != [f"gateway-state-{gateway_id}"]:
+        raise AdmissionError("target OCE Pod has an inconsistent gateway state claim")
+    _validate_service_account_tokens(volumes)
+    return gateway_id
+
+
 def _safe_relative_path(value: Any, field: str) -> str:
     if not _is_nonempty_string(value):
         raise AdmissionError(f"{field} must be a non-empty relative path")
@@ -176,6 +315,21 @@ def _mounts(container: Any, location: str) -> list[Any]:
     if not isinstance(mounts, list):
         raise AdmissionError(f"{location}.volumeMounts must be a list")
     return mounts
+
+
+def _validate_trusted_mounts(container: dict[str, Any], location: str) -> None:
+    for mount in _mounts(container, location):
+        if not isinstance(mount, dict):
+            raise AdmissionError(f"{location}.volumeMounts entries must be objects")
+        mount_path = _safe_absolute_mount_path(
+            mount.get("mountPath"), f"{location}.volumeMounts.mountPath"
+        )
+        for trusted_path in TRUSTED_BOOTSTRAP_PATHS:
+            if _mount_paths_overlap(mount_path, trusted_path):
+                raise AdmissionError(
+                    f"{location} has a mount that overlaps trusted bootstrap path "
+                    f"{trusted_path}"
+                )
 
 
 def _validate_link_paths(links: dict[str, str]) -> None:
@@ -396,9 +550,7 @@ def _validate_prepare_private_state(
                     parent = posixpath.dirname(mount_path)
                     if parent != HOME_MOUNT_PATH:
                         expected_directories.add(
-                            parent.replace(
-                                HOME_MOUNT_PATH, f"{RUNTIME_ROOT}/home", 1
-                            )
+                            parent.replace(HOME_MOUNT_PATH, f"{RUNTIME_ROOT}/home", 1)
                         )
             if mount.get("name") == RUNTIME_VOLUME:
                 sub_path = mount.get("subPath")
@@ -498,11 +650,86 @@ def _validate_prepare_private_state(
     ]
     relocated_lines = copy.deepcopy(lines)
     relocated_lines[1] = (
-        f"{prefix}"
-        f"{json.dumps(relocated_directories, separators=(',', ':'))}"
-        f"{suffix}"
+        f"{prefix}{json.dumps(relocated_directories, separators=(',', ':'))}{suffix}"
     )
     return "\n".join(relocated_lines)
+
+
+def _validate_owner_init(
+    owner: dict[str, Any],
+    location: str,
+    runtime_image: str,
+) -> None:
+    unexpected_fields = sorted(set(owner) - OWNER_ALLOWED_FIELDS)
+    if unexpected_fields:
+        raise AdmissionError(
+            f"{location} does not match the fixed embedded-owner contract: "
+            f"unexpected fields {unexpected_fields}"
+        )
+    if owner.get("image") != runtime_image:
+        raise AdmissionError(
+            f"{location}.image must match the designated runtime image"
+        )
+    owner_args = owner.get("args")
+    owner_script_matches = (
+        isinstance(owner_args, list)
+        and len(owner_args) == 1
+        and isinstance(owner_args[0], str)
+        and owner_args[0].strip() == OWNER_SCRIPT
+    )
+    if (
+        owner.get("command")
+        not in (
+            ["node", "-e"],
+            ["/usr/bin/tini", "-s", "--", "node", "-e"],
+        )
+        or not owner_script_matches
+    ):
+        raise AdmissionError(
+            f"{location} does not match the fixed embedded-owner command contract"
+        )
+    expected_security = {
+        "allowPrivilegeEscalation": False,
+        "readOnlyRootFilesystem": True,
+        "capabilities": {"drop": ["ALL"]},
+    }
+    if owner.get("securityContext") != expected_security:
+        raise AdmissionError(
+            f"{location}.securityContext does not match the fixed embedded-owner "
+            "contract"
+        )
+    mounts = owner.get("volumeMounts")
+    if not isinstance(mounts, list):
+        raise AdmissionError(
+            f"{location}.volumeMounts do not match the fixed embedded-owner contract"
+        )
+    owner_mounts = [
+        mount
+        for mount in mounts
+        if not (
+            isinstance(mount, dict)
+            and str(mount.get("name", "")).startswith("kube-api-access-")
+            and mount
+            == {
+                "name": mount["name"],
+                "mountPath": SERVICE_ACCOUNT_MOUNT_PATH,
+                "readOnly": True,
+            }
+        )
+    ]
+    if owner_mounts != [
+        {
+            "name": "gateway-owner-key",
+            "mountPath": "/run/oce-gateway-owner-key",
+        },
+        {
+            "name": "gateway-owner-start",
+            "mountPath": "/run/oce-gateway-owner-start",
+        },
+    ]:
+        raise AdmissionError(
+            f"{location}.volumeMounts do not match the fixed embedded-owner contract"
+        )
 
 
 def _ownership_init(
@@ -645,20 +872,13 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(pod, dict):
         raise AdmissionError("Pod must be an object")
 
-    metadata = pod.get("metadata")
-    labels = metadata.get("labels", {}) if isinstance(metadata, dict) else {}
-    role = (
-        labels.get("openclaw.dev/workload-role") if isinstance(labels, dict) else None
-    )
-    if role not in OCE_ROLES:
-        raise AdmissionError("OCE workload role must be agent or gateway")
-
     spec = pod.get("spec")
     if not isinstance(spec, dict):
         raise AdmissionError("target OCE Pod must have a spec")
     volumes = spec.get("volumes", [])
     if not isinstance(volumes, list):
         raise AdmissionError("spec.volumes must be a list")
+    _validate_provenance(pod, spec, volumes)
     init_containers, containers = _container_groups(spec)
     for index, container in enumerate(init_containers):
         if isinstance(container, dict) and container.get("restartPolicy") == "Always":
@@ -751,6 +971,17 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         )
     prep_index = prep_indexes[0]
     prep = init_containers[prep_index]
+    initial_init_names = [
+        container.get("name") if isinstance(container, dict) else None
+        for container in init_containers
+    ]
+    if len(initial_init_names) != 2 or set(initial_init_names) != {
+        PREP_INIT_NAME,
+        OWNER_INIT_NAME,
+    }:
+        raise AdmissionError(
+            "the embedded gateway contract permits only its two OCE init containers"
+        )
     reserved_container_names = {LINK_INIT_NAME, OWNERSHIP_INIT_NAME}
     for container in [*init_containers, *containers]:
         if (
@@ -759,14 +990,16 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         ):
             raise AdmissionError(f"container name {container['name']} is reserved")
 
+    if len(containers) != 1:
+        raise AdmissionError("the embedded gateway contract permits no sidecars")
     designated_indexes = [
         index
         for index, container in enumerate(containers)
-        if isinstance(container, dict) and container.get("name") == role
+        if isinstance(container, dict) and container.get("name") == OCE_ROLE
     ]
     if len(designated_indexes) != 1:
         raise AdmissionError(
-            f"expected exactly one designated {role} runtime container"
+            f"expected exactly one designated {OCE_ROLE} runtime container"
         )
     designated_index = designated_indexes[0]
 
@@ -775,16 +1008,36 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     environment_patches: list[dict[str, Any]] = []
     runtime_patches: list[dict[str, Any]] = []
     ownership_image = _ownership_init_image()
+    allowed_runtime_images = _runtime_images()
+    for index, container in enumerate(init_containers):
+        location = f"spec.initContainers[{index}]"
+        if not isinstance(container, dict):
+            raise AdmissionError(f"{location} must be an object")
+        if container.get("image") not in allowed_runtime_images:
+            raise AdmissionError(
+                f"{location}.image is not in the configured OCE runtime allowlist"
+            )
+        _runtime_environment(container, location)
+        if container.get("name") == OWNER_INIT_NAME:
+            _validate_owner_init(container, location, container["image"])
+            _runtime_contract(container, location)
+            _validate_trusted_mounts(container, location)
     designated_runtime_image: str | None = None
     for index, container in enumerate(containers):
         location = f"spec.containers[{index}]"
         runtime_image, runtime_security = _runtime_contract(container, location)
+        if runtime_image not in allowed_runtime_images:
+            raise AdmissionError(
+                f"{location}.image is not in the configured OCE runtime allowlist"
+            )
         if runtime_image == ownership_image:
             raise AdmissionError(
                 f"{OWNERSHIP_INIT_IMAGE_ENV} must not match a workload runtime image"
             )
         if index == designated_index:
             designated_runtime_image = runtime_image
+        _runtime_environment(container, location)
+        _validate_trusted_mounts(container, location)
         runtime_patches.append(
             {
                 "op": "replace",
@@ -1071,7 +1324,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         designated_runtime_image,
         default_service_account_volumes,
         containers,
-        role,
+        OCE_ROLE,
     )
 
     if not links:
@@ -1212,3 +1465,265 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         }
     )
     return patch
+
+
+def validate_pod(pod: dict[str, Any]) -> None:
+    """Validate the complete post-mutation embedded-gateway Pod contract."""
+    if not isinstance(pod, dict):
+        raise AdmissionError("Pod must be an object")
+    spec = pod.get("spec")
+    if not isinstance(spec, dict):
+        raise AdmissionError("target OCE Pod must have a spec")
+    volumes = spec.get("volumes")
+    if not isinstance(volumes, list):
+        raise AdmissionError("spec.volumes must be a list")
+    _validate_provenance(pod, spec, volumes)
+    if spec.get("runtimeClassName") != "isolated-sandbox":
+        raise AdmissionError("final OCE Pod must use runtimeClassName isolated-sandbox")
+    if spec.get("automountServiceAccountToken") is not False:
+        raise AdmissionError(
+            "final OCE Pod must disable automatic service-account tokens"
+        )
+
+    init_containers, containers = _container_groups(spec)
+    if [
+        container.get("name") for container in containers if isinstance(container, dict)
+    ] != [OCE_ROLE]:
+        raise AdmissionError("final OCE Pod must contain only the gateway container")
+    expected_init_names = [
+        PREP_INIT_NAME,
+        OWNERSHIP_INIT_NAME,
+        LINK_INIT_NAME,
+        OWNER_INIT_NAME,
+    ]
+    if [
+        container.get("name")
+        for container in init_containers
+        if isinstance(container, dict)
+    ] != expected_init_names:
+        raise AdmissionError("final OCE Pod init-container contract is invalid")
+
+    allowed_runtime_images = _runtime_images()
+    ownership_image = _ownership_init_image()
+    gateway = containers[0]
+    gateway_image, _ = _runtime_contract(gateway, "spec.containers[0]")
+    if gateway_image not in allowed_runtime_images:
+        raise AdmissionError(
+            "gateway image is not in the configured OCE runtime allowlist"
+        )
+    _runtime_environment(gateway, "spec.containers[0]")
+    _validate_trusted_mounts(gateway, "spec.containers[0]")
+
+    prep, ownership, link, owner = init_containers
+    unexpected_prep_fields = sorted(set(prep) - PREP_ALLOWED_FIELDS)
+    if unexpected_prep_fields:
+        raise AdmissionError(
+            "final prepare-private-state contract contains unexpected fields "
+            f"{unexpected_prep_fields}"
+        )
+    _runtime_environment(prep, "spec.initContainers[0]")
+    if prep.get("image") != gateway_image:
+        raise AdmissionError("prepare-private-state image does not match the gateway")
+    if prep.get("securityContext") != {
+        "allowPrivilegeEscalation": False,
+        "readOnlyRootFilesystem": True,
+        "runAsUser": RUNTIME_UID,
+        "runAsGroup": RUNTIME_GID,
+        "runAsNonRoot": True,
+        "capabilities": {"drop": ["ALL"]},
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }:
+        raise AdmissionError("final prepare-private-state security contract is invalid")
+    if prep.get("command") not in (
+        ["node", "-e"],
+        ["/usr/bin/tini", "-s", "--", "node", "-e"],
+    ):
+        raise AdmissionError("final prepare-private-state command is invalid")
+    if prep.get("volumeMounts") not in (
+        [
+            {
+                "name": RUNTIME_VOLUME,
+                "mountPath": RUNTIME_ROOT,
+                "mountPropagation": "HostToContainer",
+            },
+            {"name": STATE_VOLUME, "mountPath": STATE_ROOT},
+            {"name": RUNTIME_TMP_VOLUME, "mountPath": RUNTIME_TMP_ROOT},
+        ],
+        [
+            {"name": RUNTIME_VOLUME, "mountPath": RUNTIME_ROOT},
+            {"name": STATE_VOLUME, "mountPath": STATE_ROOT},
+            {"name": RUNTIME_TMP_VOLUME, "mountPath": RUNTIME_TMP_ROOT},
+        ],
+    ):
+        raise AdmissionError("final prepare-private-state mounts are invalid")
+
+    link_environment = link.get("env")
+    if not (
+        isinstance(link_environment, list)
+        and len(link_environment) == 1
+        and isinstance(link_environment[0], dict)
+        and link_environment[0].get("name") == "OCE_STATE_LINKS"
+        and set(link_environment[0]) == {"name", "value"}
+    ):
+        raise AdmissionError("final state-link environment contract is invalid")
+    try:
+        link_data = json.loads(link_environment[0]["value"])
+    except (json.JSONDecodeError, TypeError) as error:
+        raise AdmissionError("final state-link data is invalid") from error
+    if not (
+        isinstance(link_data, list)
+        and link_data
+        and all(
+            isinstance(item, dict)
+            and set(item) == {"link", "target"}
+            and _is_nonempty_string(item["link"])
+            and _is_nonempty_string(item["target"])
+            for item in link_data
+        )
+    ):
+        raise AdmissionError("final state-link data is invalid")
+    links = {item["link"]: item["target"] for item in link_data}
+    if len(links) != len(link_data):
+        raise AdmissionError("final state-link data contains duplicates")
+    for link_path, target_path in links.items():
+        _safe_relative_path(link_path, "state link")
+        _safe_relative_path(target_path, "state target")
+    _validate_link_paths(links)
+    canonical_link_data = [
+        {"link": link_path, "target": target_path}
+        for link_path, target_path in sorted(links.items())
+    ]
+    if link_data != canonical_link_data:
+        raise AdmissionError("final state-link data is not canonical")
+
+    expected_link = {
+        "name": LINK_INIT_NAME,
+        "image": gateway_image,
+        "command": ["node", "-e"],
+        "args": [LINK_SCRIPT],
+        "env": [
+            {
+                "name": "OCE_STATE_LINKS",
+                "value": json.dumps(
+                    canonical_link_data,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            }
+        ],
+        "securityContext": {
+            "allowPrivilegeEscalation": False,
+            "readOnlyRootFilesystem": True,
+            "runAsNonRoot": True,
+            "capabilities": {"drop": ["ALL"]},
+            "seccompProfile": {"type": "RuntimeDefault"},
+        },
+        "volumeMounts": [
+            {"name": RUNTIME_VOLUME, "mountPath": RUNTIME_ROOT},
+            {"name": STATE_VOLUME, "mountPath": STATE_ROOT},
+        ],
+    }
+    if "imagePullPolicy" in prep:
+        expected_link["imagePullPolicy"] = prep["imagePullPolicy"]
+    if link != expected_link:
+        raise AdmissionError("final state-link init-container contract is invalid")
+
+    expected_ownership = _ownership_init(
+        ownership_image,
+        [
+            HOME_MOUNT_PATH,
+            OPENCLAW_HOME_PATH,
+            RUNTIME_PIN_DIRECTORY,
+            *[
+                f"{OPENCLAW_HOME_PATH}/{target}"
+                for target in sorted(set(links.values()))
+            ],
+        ],
+    )
+    if ownership != expected_ownership:
+        raise AdmissionError("final ownership init-container contract is invalid")
+
+    prep_args = prep.get("args")
+    if not (
+        isinstance(prep_args, list)
+        and len(prep_args) == 1
+        and isinstance(prep_args[0], str)
+    ):
+        raise AdmissionError("final prepare-private-state arguments are invalid")
+    prep_lines = prep_args[0].splitlines()
+    prefix = "for (const path of "
+    suffix = ") {"
+    if (
+        len(prep_lines) != 6
+        or prep_lines[0] != 'const { chmodSync, mkdirSync } = require("node:fs");'
+        or not prep_lines[1].startswith(prefix)
+        or not prep_lines[1].endswith(suffix)
+        or prep_lines[2:]
+        != [
+            "  mkdirSync(path, { recursive: true });",
+            "  chmodSync(path, 0o700);",
+            "}",
+            'mkdirSync("/runtime-temporary/tmp", { recursive: true, mode: 0o700 });',
+        ]
+    ):
+        raise AdmissionError("final prepare-private-state script is invalid")
+    try:
+        prep_directories = json.loads(prep_lines[1][len(prefix) : -len(suffix)])
+    except json.JSONDecodeError as error:
+        raise AdmissionError("final prepare-private-state script is invalid") from error
+    expected_prep_directories = {
+        f"{RUNTIME_TMP_ROOT}/tmp",
+        f"{RUNTIME_ROOT}/gateway-codex-home",
+        f"{RUNTIME_ROOT}/.openclaw",
+        *[f"{STATE_ROOT}/{target}" for target in links.values()],
+    }
+    if (
+        not isinstance(prep_directories, list)
+        or len(prep_directories) != len(set(prep_directories))
+        or set(prep_directories) != expected_prep_directories
+    ):
+        raise AdmissionError("final prepare-private-state directories are invalid")
+
+    for index, container in enumerate(init_containers):
+        location = f"spec.initContainers[{index}]"
+        if not isinstance(container, dict):
+            raise AdmissionError(f"{location} must be an object")
+        expected_image = (
+            ownership_image
+            if container.get("name") == OWNERSHIP_INIT_NAME
+            else gateway_image
+        )
+        if container.get("image") != expected_image:
+            raise AdmissionError(f"{location}.image does not match the final contract")
+        if container is owner:
+            _validate_owner_init(container, location, gateway_image)
+            _runtime_environment(container, location)
+            _runtime_contract(container, location)
+            _validate_trusted_mounts(container, location)
+
+    volume_names = [
+        volume.get("name") for volume in volumes if isinstance(volume, dict)
+    ]
+    if len(volume_names) != len(set(volume_names)):
+        raise AdmissionError("final OCE Pod contains duplicate volume names")
+    if AGW_CA_VOLUME not in volume_names:
+        raise AdmissionError("final OCE Pod is missing the AgentGateway CA volume")
+    ca_volume = next(
+        volume
+        for volume in volumes
+        if isinstance(volume, dict) and volume.get("name") == AGW_CA_VOLUME
+    )
+    if ca_volume != {
+        "name": AGW_CA_VOLUME,
+        "configMap": {
+            "name": AGW_CA_CONFIG_MAP,
+            "items": [{"key": "ca.crt", "path": "ca.crt"}],
+        },
+    }:
+        raise AdmissionError("final AgentGateway CA volume contract is invalid")
+    if any(
+        name.startswith("kube-api-access-")
+        for name in volume_names
+        if isinstance(name, str)
+    ):
+        raise AdmissionError("final OCE Pod retains an automatic API token volume")

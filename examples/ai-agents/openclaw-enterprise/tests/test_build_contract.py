@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -42,9 +43,7 @@ _CloudFormationLoader.add_multi_constructor("!", _construct_tagged)
 
 
 def _template() -> dict[str, Any]:
-    return yaml.load(
-        TEMPLATE.read_text(encoding="utf-8"), Loader=_CloudFormationLoader
-    )
+    return yaml.load(TEMPLATE.read_text(encoding="utf-8"), Loader=_CloudFormationLoader)
 
 
 def _resources(resource_type: str) -> list[dict[str, Any]]:
@@ -90,10 +89,8 @@ def test_codebuild_has_no_local_source_and_exports_digest_outputs() -> None:
     assert project["Source"]["Type"] == "NO_SOURCE"
     assert project["Artifacts"]["Type"] == "NO_ARTIFACTS"
     assert project["Environment"]["PrivilegedMode"] is True
-    assert project["Environment"]["ImagePullCredentialsType"] == "CODEBUILD"
-    assert set(
-        yaml.safe_load(buildspec)["env"]["exported-variables"]
-    ) == {
+    assert project["Environment"]["ImagePullCredentialsType"] == "SERVICE_ROLE"
+    assert set(yaml.safe_load(buildspec)["env"]["exported-variables"]) == {
         "ADAPTER_IMAGE",
         "CONTROLLER_IMAGE",
         "OWNERSHIP_INIT_IMAGE",
@@ -101,15 +98,19 @@ def test_codebuild_has_no_local_source_and_exports_digest_outputs() -> None:
         "SAMPLE_SOURCE_REVISION",
         "OCE_SOURCE_REVISION",
     }
-    assert "git -C \"$SAMPLE_SOURCE_DIR\" fetch --depth 1 origin" in buildspec
+    assert 'git -C "$SAMPLE_SOURCE_DIR" fetch --depth 1 origin' in buildspec
     assert (
         'test "$(git -C "$SAMPLE_SOURCE_DIR" rev-parse FETCH_HEAD)" '
         '= "$SAMPLE_GIT_REVISION"' in buildspec
     )
+    assert (
+        'test "$(git -C "$SAMPLE_SOURCE_DIR" remote get-url origin)" '
+        '= "$SAMPLE_REPOSITORY_URL"' in buildspec
+    )
     assert "build/build-images.sh" in buildspec
 
 
-def test_source_revisions_are_full_commit_shas() -> None:
+def test_stack_inputs_are_exact_revisions_and_a_controller_digest() -> None:
     parameters = _template()["Parameters"]
 
     for name in ("SampleGitRevision", "OceGitRevision"):
@@ -117,17 +118,122 @@ def test_source_revisions_are_full_commit_shas() -> None:
     assert parameters["OceGitRevision"]["Default"] == (
         "86c8c12310f691bb21651118ffffd6bfd460e9ff"
     )
+    controller_digest = parameters["ControllerRuntimeBaseImageDigest"]
+    assert controller_digest["AllowedPattern"] == "^sha256:[0-9a-f]{64}$"
+    assert re.fullmatch(
+        r"sha256:[0-9a-f]{64}",
+        controller_digest["Default"],
+    )
 
 
-def test_privileged_build_sources_are_restricted_to_canonical_repositories() -> None:
-    parameters = _template()["Parameters"]
+def test_buildspec_defensively_rebinds_environment_input_overrides() -> None:
+    project = _resources("AWS::CodeBuild::Project")[0]["Properties"]
+    buildspec = project["Source"]["BuildSpec"]
 
-    assert parameters["SampleRepositoryUrl"]["AllowedValues"] == [
-        "https://github.com/aws-samples/sample-eks-nitro-sandbox.git"
+    assert "EnvironmentVariables" not in project["Environment"]
+    assert "SampleRepositoryUrl" not in _template()["Parameters"]
+    assert "OceRepositoryUrl" not in _template()["Parameters"]
+    for binding in (
+        "export AWS_ACCOUNT_ID='${AWS::AccountId}'; readonly AWS_ACCOUNT_ID",
+        "export AWS_DEFAULT_REGION='${AWS::Region}'; readonly AWS_DEFAULT_REGION",
+        (
+            "export SAMPLE_REPOSITORY_URL="
+            "'https://github.com/aws-samples/sample-eks-nitro-sandbox.git'; "
+            "readonly SAMPLE_REPOSITORY_URL"
+        ),
+        (
+            "export SAMPLE_GIT_REVISION='${SampleGitRevision}'; "
+            "readonly SAMPLE_GIT_REVISION"
+        ),
+        "export OCE_GIT_REVISION='${OceGitRevision}'; readonly OCE_GIT_REVISION",
+        (
+            "export CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST="
+            "'${ControllerRuntimeBaseImageDigest}'; "
+            "readonly CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST"
+        ),
+        (
+            "export ADAPTER_REPOSITORY='${AdapterRepository}'; "
+            "readonly ADAPTER_REPOSITORY"
+        ),
+        (
+            "export CONTROLLER_REPOSITORY='${ControllerRepository}'; "
+            "readonly CONTROLLER_REPOSITORY"
+        ),
+        (
+            "export OWNERSHIP_HELPER_REPOSITORY='${OwnershipHelperRepository}'; "
+            "readonly OWNERSHIP_HELPER_REPOSITORY"
+        ),
+        (
+            "export RUNTIME_REPOSITORY='${RuntimeRepository}'; "
+            "readonly RUNTIME_REPOSITORY"
+        ),
+        ("export TARGET_PLATFORM='${TargetPlatform}'; readonly TARGET_PLATFORM"),
+    ):
+        assert binding in buildspec
+
+
+def test_buildspec_replaces_and_locks_environment_overrides_after_start() -> None:
+    commands = yaml.safe_load(_buildspec())["phases"]["build"]["commands"]
+    bindings = [command for command in commands if "; readonly " in command]
+    replacements = {
+        "${AWS::AccountId}": "123456789012",
+        "${AWS::Region}": "us-west-2",
+        "${SampleGitRevision}": "a" * 40,
+        "${OceGitRevision}": "b" * 40,
+        "${ControllerRuntimeBaseImageDigest}": f"sha256:{'c' * 64}",
+        "${AdapterRepository}": "openclaw-enterprise/adapter",
+        "${ControllerRepository}": "openclaw-enterprise/controller",
+        "${OwnershipHelperRepository}": "openclaw-enterprise/ownership-helper",
+        "${RuntimeRepository}": "openclaw-enterprise/runtime",
+        "${TargetPlatform}": "linux/amd64",
+    }
+    expected = {
+        "AWS_ACCOUNT_ID": "123456789012",
+        "AWS_DEFAULT_REGION": "us-west-2",
+        "SAMPLE_REPOSITORY_URL": (
+            "https://github.com/aws-samples/sample-eks-nitro-sandbox.git"
+        ),
+        "SAMPLE_GIT_REVISION": "a" * 40,
+        "OCE_GIT_REVISION": "b" * 40,
+        "CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST": f"sha256:{'c' * 64}",
+        "ADAPTER_REPOSITORY": "openclaw-enterprise/adapter",
+        "CONTROLLER_REPOSITORY": "openclaw-enterprise/controller",
+        "OWNERSHIP_HELPER_REPOSITORY": "openclaw-enterprise/ownership-helper",
+        "RUNTIME_REPOSITORY": "openclaw-enterprise/runtime",
+        "TARGET_PLATFORM": "linux/amd64",
+        "SAMPLE_SOURCE_DIR": "/codebuild/output/src/sample-source",
+        "BUILD_OUTPUT_ENV": "/codebuild/output/src/image-build.env",
+    }
+    resolved = []
+    for command in bindings:
+        for placeholder, value in replacements.items():
+            command = command.replace(placeholder, value)
+        resolved.append(command)
+    assertions = [
+        f'test "${{{name}}}" = {json.dumps(value)}' for name, value in expected.items()
     ]
-    assert parameters["OceRepositoryUrl"]["AllowedValues"] == [
-        "https://github.com/openclaw/openclaw-enterprise.git"
-    ]
+    assertions.extend(
+        f"declare -p {name} | grep -Eq '^declare -[^ ]*r[^ ]*x|^declare -[^ ]*x[^ ]*r'"
+        for name in expected
+    )
+    assertions.append(
+        'bash -c \'test "$SAMPLE_GIT_REVISION" = '
+        f'"{"a" * 40}" && test "$CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST" = '
+        f'"sha256:{"c" * 64}"\''
+    )
+    environment = os.environ.copy()
+    environment["CODEBUILD_SRC_DIR"] = "/codebuild/output/src"
+    environment.update({name: "attacker-controlled" for name in expected})
+
+    result = subprocess.run(
+        ["bash", "-c", "\n".join([*resolved, *assertions])],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=environment,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_repository_encryption_key_rotates() -> None:
@@ -137,8 +243,17 @@ def test_repository_encryption_key_rotates() -> None:
     assert keys[0]["Properties"]["EnableKeyRotation"] is True
 
 
-def test_codebuild_role_is_scoped_to_logs_and_the_four_repositories() -> None:
-    role = _resources("AWS::IAM::Role")[0]
+def test_codebuild_role_is_scoped_to_builder_logs_scans_and_release_repositories() -> (
+    None
+):
+    role = next(
+        resource
+        for resource in _resources("AWS::IAM::Role")
+        if resource["Properties"]["AssumeRolePolicyDocument"]["Statement"][0][
+            "Principal"
+        ]
+        == {"Service": "codebuild.amazonaws.com"}
+    )
     statements = role["Properties"]["Policies"][0]["PolicyDocument"]["Statement"]
     actions = {
         action
@@ -181,7 +296,9 @@ def test_codebuild_role_is_scoped_to_logs_and_the_four_repositories() -> None:
         ),
     }
     push_statement = next(
-        statement for statement in statements if statement["Sid"] == "PushAndVerifyImages"
+        statement
+        for statement in statements
+        if statement["Sid"] == "PushAndVerifyImages"
     )
     assert set(push_statement["Resource"]) == {
         "AdapterRepository.Arn",
@@ -189,6 +306,20 @@ def test_codebuild_role_is_scoped_to_logs_and_the_four_repositories() -> None:
         "OwnershipHelperRepository.Arn",
         "RuntimeRepository.Arn",
     }
+    builder_statement = next(
+        statement
+        for statement in statements
+        if statement["Sid"] == "PullPinnedBuilderImage"
+    )
+    assert set(builder_statement["Action"]) == {
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer",
+    }
+    assert builder_statement["Resource"] == (
+        "arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:"
+        "repository/${BuilderImageRepositoryName}"
+    )
     token_statement = next(
         statement
         for statement in statements
@@ -203,6 +334,148 @@ def test_codebuild_role_is_scoped_to_logs_and_the_four_repositories() -> None:
     assert inspector_statement["Resource"] == "*"
 
 
+def test_privileged_builder_image_is_account_local_and_digest_pinned() -> None:
+    template = _template()
+    project = _resources("AWS::CodeBuild::Project")[0]["Properties"]
+
+    assert template["Parameters"]["BuilderImageDigest"]["AllowedPattern"] == (
+        "^sha256:[0-9a-f]{64}$"
+    )
+    assert "Default" not in template["Parameters"]["BuilderImageDigest"]
+    assert project["Environment"]["Image"] == (
+        "${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/"
+        "${BuilderImageRepositoryName}@${BuilderImageDigest}"
+    )
+    assert project["Environment"]["ImagePullCredentialsType"] == "SERVICE_ROLE"
+    assert "aws/codebuild/standard:" not in TEMPLATE.read_text(encoding="utf-8")
+
+
+def test_only_fixed_workflow_role_can_start_the_privileged_build() -> None:
+    template = _template()
+    roles = _resources("AWS::IAM::Role")
+    workflow_role = next(
+        role
+        for role in roles
+        if role["Properties"]["AssumeRolePolicyDocument"]["Statement"][0]["Principal"]
+        == {"Service": "states.amazonaws.com"}
+    )
+    workflow_statements = workflow_role["Properties"]["Policies"][0]["PolicyDocument"][
+        "Statement"
+    ]
+    run_statement = next(
+        statement
+        for statement in workflow_statements
+        if statement["Sid"] == "RunFixedBuild"
+    )
+
+    assert run_statement["Effect"] == "Allow"
+    assert set(run_statement["Action"]) == {
+        "codebuild:BatchGetBuilds",
+        "codebuild:StartBuild",
+        "codebuild:StopBuild",
+    }
+    assert run_statement["Resource"] == "ImageBuildProject.Arn"
+
+    other_codebuild_allows = []
+    for role in roles:
+        if role is workflow_role:
+            continue
+        for policy in role["Properties"].get("Policies", []):
+            for statement in policy["PolicyDocument"]["Statement"]:
+                actions = statement["Action"]
+                if isinstance(actions, str):
+                    actions = [actions]
+                if statement["Effect"] == "Allow" and "codebuild:StartBuild" in actions:
+                    other_codebuild_allows.append(statement)
+    assert other_codebuild_allows == []
+
+    invocation_role = template["Resources"]["ImageBuildInvocationRole"]
+    invocation_statements = invocation_role["Properties"]["Policies"][0][
+        "PolicyDocument"
+    ]["Statement"]
+    deny = next(
+        statement
+        for statement in invocation_statements
+        if statement["Sid"] == "DenyDirectCodeBuildExecution"
+    )
+    assert deny["Effect"] == "Deny"
+    assert set(deny["Action"]) == {
+        "codebuild:RetryBuild",
+        "codebuild:StartBuild",
+        "codebuild:StartBuildBatch",
+    }
+    assert deny["Resource"] == "ImageBuildProject.Arn"
+    allows = {
+        statement["Sid"]: statement
+        for statement in invocation_statements
+        if statement["Effect"] == "Allow"
+    }
+    assert allows["StartFixedBuildWorkflow"] == {
+        "Sid": "StartFixedBuildWorkflow",
+        "Effect": "Allow",
+        "Action": "states:StartExecution",
+        "Resource": "ImageBuildStateMachine",
+    }
+    assert allows["ReadFixedBuildWorkflowResult"] == {
+        "Sid": "ReadFixedBuildWorkflowResult",
+        "Effect": "Allow",
+        "Action": "states:DescribeExecution",
+        "Resource": (
+            "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:"
+            "execution:openclaw-enterprise-image-build:*"
+        ),
+    }
+    assert allows["ReadFixedCodeBuildResult"] == {
+        "Sid": "ReadFixedCodeBuildResult",
+        "Effect": "Allow",
+        "Action": "codebuild:BatchGetBuilds",
+        "Resource": "ImageBuildProject.Arn",
+    }
+
+
+def test_fixed_workflow_cannot_forward_adversarial_start_build_overrides() -> None:
+    template = _template()
+    state_machine = template["Resources"]["ImageBuildStateMachine"]["Properties"]
+    definition = state_machine["Definition"]
+    task = definition["States"]["RunTrustedImageBuild"]
+
+    assert task["Resource"] == (
+        "arn:${AWS::Partition}:states:::codebuild:startBuild.sync"
+    )
+    assert task["Parameters"] == {"ProjectName": "ImageBuildProject"}
+    serialized = json.dumps(definition)
+    for override in (
+        "BuildspecOverride",
+        "EnvironmentVariablesOverride",
+        "ImageOverride",
+        "PrivilegedModeOverride",
+        "SourceLocationOverride",
+        "SourceTypeOverride",
+    ):
+        assert override not in serialized
+    for bootstrap_variable in (
+        "BASH_ENV",
+        "ENV",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
+    ):
+        assert bootstrap_variable not in serialized
+
+
+def test_readme_states_direct_start_build_is_a_fail_closed_deployment_contract() -> (
+    None
+):
+    readme = (BUILD / "README.md").read_text(encoding="utf-8")
+
+    assert "no project setting or resource policy" in readme
+    assert "`codebuild:StartBuild`" in readme
+    assert "`codebuild:StartBuildBatch`" in readme
+    assert "`codebuild:RetryBuild`" in readme
+    assert re.search(r"permissions boundary\s+or SCP", readme)
+    assert "exempt only `ImageBuildWorkflowRole`" in readme
+
+
 def test_build_script_builds_each_image_from_the_expected_source() -> None:
     script = SCRIPT.read_text(encoding="utf-8")
 
@@ -210,39 +483,39 @@ def test_build_script_builds_each_image_from_the_expected_source() -> None:
     assert "require_value CODEBUILD_BUILD_ARN" in script
     assert "require_sha SAMPLE_GIT_REVISION" in script
     assert "require_sha OCE_GIT_REVISION" in script
-    assert 'git -C "$OCE_SOURCE_DIR" fetch --depth 1 origin "$OCE_GIT_REVISION"' in script
+    assert "require_digest CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST" in script
     assert (
-        '[[ "$OCE_SOURCE_REVISION" == "$OCE_GIT_REVISION" ]]'
-        in script
+        'readonly OCE_REPOSITORY_URL="'
+        'https://github.com/openclaw/openclaw-enterprise.git"' in script
     )
     assert (
-        '"$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/adapter"'
-        in script
+        '[[ "$(git -C "$OCE_SOURCE_DIR" remote get-url origin)" '
+        '== "$OCE_REPOSITORY_URL" ]]' in script
+    )
+    assert (
+        'git -C "$OCE_SOURCE_DIR" fetch --depth 1 origin "$OCE_GIT_REVISION"' in script
+    )
+    assert '[[ "$OCE_SOURCE_REVISION" == "$OCE_GIT_REVISION" ]]' in script
+    assert (
+        '"$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/adapter"' in script
     )
     assert (
         '"$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/'
-        'ownership-helper"'
-        in script
+        'ownership-helper"' in script
     )
-    assert "--build-arg \"OWNERSHIP_HELPER_BUILDER_IMAGE=" in script
+    assert '--build-arg "OWNERSHIP_HELPER_BUILDER_IMAGE=' in script
     assert "--target runtime" in script
-    assert "require_digest_image CONTROLLER_RUNTIME_BASE_IMAGE" in script
+    assert '--build-arg "NODE_BUILD_BASE_IMAGE=$node_base_image"' in script
     assert (
-        '--build-arg "NODE_BUILD_BASE_IMAGE=$node_base_image"'
-        in script
-    )
-    assert (
-        '--build-arg "NODE_RUNTIME_BASE_IMAGE=$CONTROLLER_RUNTIME_BASE_IMAGE"'
-        in script
+        '--build-arg "NODE_RUNTIME_BASE_IMAGE=$CONTROLLER_RUNTIME_BASE_IMAGE"' in script
     )
     assert (
         '--file "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/'
-        'build/controller-runtime.Dockerfile"'
-        in script
+        'build/controller-runtime.Dockerfile"' in script
     )
     assert '--file "$OCE_SOURCE_DIR/deploy/runtime/Dockerfile"' in script
     assert "node scripts/lib/openclaw-source.mjs build-args" in script
-    assert "OCE_MSAL_NODE_VERSION=\"7.2.0\"" in script
+    assert 'OCE_MSAL_NODE_VERSION="7.2.0"' in script
     assert "check-oce-lock.py" in script
     assert script.count("docker buildx build") == 4
     assert "docker pull" not in script
@@ -262,8 +535,7 @@ def test_controller_runtime_uses_a_separate_pinned_base_and_drops_build_tools() 
     assert "FROM ${NODE_BUILD_BASE_IMAGE}" not in runtime
     assert (
         "COPY --from=runtime-dependencies --chown=node:node "
-        "/app/node_modules node_modules"
-        in runtime
+        "/app/node_modules node_modules" in runtime
     )
     for workspace in (
         "apps/controller",
@@ -274,14 +546,12 @@ def test_controller_runtime_uses_a_separate_pinned_base_and_drops_build_tools() 
     ):
         assert (
             "COPY --from=runtime-dependencies --chown=node:node "
-            f"/app/{workspace}/node_modules {workspace}/node_modules"
-            in runtime
+            f"/app/{workspace}/node_modules {workspace}/node_modules" in runtime
         )
     assert "COPY --from=dependencies" not in runtime
     assert (
         "RUN --mount=type=bind,source=pnpm-lock.yaml,"
-        "target=/app/pnpm-lock.yaml,readonly"
-        in runtime
+        "target=/app/pnpm-lock.yaml,readonly" in runtime
     )
     assert "COPY --chown=node:node pnpm-lock.yaml" not in runtime
     assert "delete packageJson.devDependencies" in runtime
@@ -301,26 +571,28 @@ def test_controller_runtime_uses_a_separate_pinned_base_and_drops_build_tools() 
     assert 'CMD ["apps/controller/src/server.mjs"]' in runtime
 
 
-def test_default_controller_runtime_base_is_digest_pinned() -> None:
+def test_controller_runtime_base_has_an_allowlisted_repository_and_exact_digest() -> (
+    None
+):
     script = SCRIPT.read_text(encoding="utf-8")
-    assignment = re.search(
-        r"CONTROLLER_RUNTIME_BASE_IMAGE=\""
-        r"\$\{CONTROLLER_RUNTIME_BASE_IMAGE:-([^}]+)\}\"",
-        script,
+    assert (
+        'readonly CONTROLLER_RUNTIME_BASE_IMAGE_REPOSITORY="'
+        'public.ecr.aws/docker/library/node"' in script
     )
-
-    assert assignment is not None
-    assert re.fullmatch(
-        r"public\.ecr\.aws/docker/library/node:24-bookworm-slim@sha256:[0-9a-f]{64}",
-        assignment.group(1),
+    assert 'readonly CONTROLLER_RUNTIME_BASE_IMAGE_TAG="24-bookworm-slim"' in script
+    assert (
+        'readonly CONTROLLER_RUNTIME_BASE_IMAGE="${CONTROLLER_RUNTIME_BASE_IMAGE_REPOSITORY}:'
+        "${CONTROLLER_RUNTIME_BASE_IMAGE_TAG}@"
+        '${CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST}"' in script
     )
+    assert "${CONTROLLER_RUNTIME_BASE_IMAGE:-" not in script
 
 
 def test_build_outputs_are_verified_digest_references() -> None:
     script = SCRIPT.read_text(encoding="utf-8")
 
     assert 'digest = json.load(handle).get("containerimage.digest", "")' in script
-    assert 'aws ecr describe-images \\' in script
+    assert "aws ecr describe-images \\" in script
     assert "aws ecr describe-image-scan-findings" in script
     assert 'grep -Fq "ScanNotFoundException"' in script
     assert "aws inspector2 list-coverage" in script
@@ -552,7 +824,9 @@ def test_inspector_gate_fails_closed_on_mismatched_or_failed_responses(
         assert result.returncode == 1
 
 
-def _oce_lock_result(tmp_path: pathlib.Path, content: str) -> subprocess.CompletedProcess[str]:
+def _oce_lock_result(
+    tmp_path: pathlib.Path, content: str
+) -> subprocess.CompletedProcess[str]:
     lockfile = tmp_path / "pnpm-lock.yaml"
     lockfile.write_text(content, encoding="utf-8")
     return subprocess.run(

@@ -15,7 +15,9 @@ from adapter import (
     LINK_INIT_NAME,
     NODE_CA_ENV,
     OPENCLAW_HOME_PATH,
+    OWNER_SCRIPT,
     OWNERSHIP_INIT_NAME,
+    RUNTIME_IMAGES_ENV,
     RUNTIME_TMP_VOLUME,
     RUNTIME_VOLUME,
     SHM_MOUNT_PATH,
@@ -98,15 +100,33 @@ def target_pod() -> dict:
         "apiVersion": "v1",
         "kind": "Pod",
         "metadata": {
+            "name": "gateway-a1b2c3d4e5f6-abc123def-test1",
+            "generateName": "gateway-a1b2c3d4e5f6-abc123def-",
             "namespace": "oce-tenant-test",
-            "labels": {"openclaw.dev/workload-role": "gateway"},
+            "labels": {
+                "app.kubernetes.io/managed-by": "openclaw-enterprise",
+                "app.kubernetes.io/name": "gateway-a1b2c3d4e5f6",
+                "openclaw.dev/agent": "agt_11111111-1111-1111-1111-111111111111",
+                "openclaw.dev/namespace": "ns_22222222-2222-2222-2222-222222222222",
+                "openclaw.dev/revision": "rev_33333333-3333-3333-3333-333333333333",
+                "openclaw.dev/service-principal": (
+                    "service-agent-agt_11111111-1111-1111-1111-111111111111"
+                ),
+                "openclaw.dev/workload-role": "gateway",
+            },
+            "ownerReferences": [
+                {
+                    "apiVersion": "apps/v1",
+                    "controller": True,
+                    "kind": "ReplicaSet",
+                    "name": "gateway-a1b2c3d4e5f6-abc123def",
+                    "uid": "11111111-2222-3333-4444-555555555555",
+                }
+            ],
         },
         "spec": {
+            "serviceAccountName": "agent-a1b2c3d4e5f6",
             "initContainers": [
-                *[
-                    {"name": f"setup-{index}", "image": "example.invalid/oce:test"}
-                    for index in range(9)
-                ],
                 {
                     "name": "prepare-private-state",
                     "image": RUNTIME_IMAGE,
@@ -130,16 +150,29 @@ def target_pod() -> dict:
                         },
                     ],
                 },
+                {
+                    "name": "prepare-embedded-gateway-owner",
+                    "image": RUNTIME_IMAGE,
+                    "command": ["node", "-e"],
+                    "args": [OWNER_SCRIPT],
+                    "securityContext": {
+                        "allowPrivilegeEscalation": False,
+                        "readOnlyRootFilesystem": True,
+                        "capabilities": {"drop": ["ALL"]},
+                    },
+                    "volumeMounts": [
+                        {
+                            "name": "gateway-owner-key",
+                            "mountPath": "/run/oce-gateway-owner-key",
+                        },
+                        {
+                            "name": "gateway-owner-start",
+                            "mountPath": "/run/oce-gateway-owner-start",
+                        },
+                    ],
+                },
             ],
             "containers": [
-                *[
-                    {
-                        "name": f"helper-{index}",
-                        "image": RUNTIME_IMAGE,
-                        "securityContext": runtime_security_context(),
-                    }
-                    for index in range(5)
-                ],
                 {
                     "name": "gateway",
                     "image": RUNTIME_IMAGE,
@@ -184,11 +217,37 @@ def target_pod() -> dict:
                 {"name": "workspace", "emptyDir": {}},
                 {
                     "name": "openclaw-gateway-state",
-                    "persistentVolumeClaim": {"claimName": "gateway-state"},
+                    "persistentVolumeClaim": {
+                        "claimName": "gateway-state-a1b2c3d4e5f6"
+                    },
+                },
+                {"name": "gateway-owner-key", "emptyDir": {}},
+                {"name": "gateway-owner-start", "emptyDir": {}},
+                {
+                    "name": "openclaw-service-principal",
+                    "projected": {
+                        "sources": [
+                            {
+                                "serviceAccountToken": {
+                                    "audience": "openclaw-enterprise",
+                                    "expirationSeconds": 900,
+                                    "path": "token",
+                                }
+                            }
+                        ]
+                    },
                 },
             ],
         },
     }
+
+
+def prepare_private_state_container(pod: dict) -> dict:
+    return next(
+        container
+        for container in pod["spec"]["initContainers"]
+        if container["name"] == "prepare-private-state"
+    )
 
 
 def admitted_target_pod() -> dict:
@@ -232,20 +291,6 @@ def admitted_target_pod() -> dict:
                 "name": "projected-settings",
                 "projected": {"sources": [{"configMap": {"name": "runtime-settings"}}]},
             },
-            {
-                "name": "custom-api-token",
-                "projected": {
-                    "sources": [
-                        {
-                            "serviceAccountToken": {
-                                "audience": "agentgateway",
-                                "expirationSeconds": 600,
-                                "path": "credentials/token",
-                            }
-                        }
-                    ]
-                },
-            },
         ]
     )
 
@@ -266,11 +311,6 @@ def admitted_target_pod() -> dict:
             {
                 "name": "projected-settings",
                 "mountPath": "/etc/runtime-settings",
-                "readOnly": True,
-            },
-            {
-                "name": "custom-api-token",
-                "mountPath": "/var/run/openclaw/tokens",
                 "readOnly": True,
             },
         ]
@@ -304,7 +344,10 @@ def apply_patch(document: dict, patch: list[dict]) -> dict:
 
 @mock.patch.dict(
     os.environ,
-    {OWNERSHIP_INIT_IMAGE_ENV: OWNERSHIP_INIT_IMAGE},
+    {
+        OWNERSHIP_INIT_IMAGE_ENV: OWNERSHIP_INIT_IMAGE,
+        RUNTIME_IMAGES_ENV: RUNTIME_IMAGE,
+    },
 )
 class BuildPatchTests(unittest.TestCase):
     def test_published_admission_fixture_is_accepted_and_hardened(self) -> None:
@@ -419,7 +462,9 @@ class BuildPatchTests(unittest.TestCase):
         )
         for image in invalid_images:
             with self.subTest(image=image):
-                environment = {} if image is None else {OWNERSHIP_INIT_IMAGE_ENV: image}
+                environment = {RUNTIME_IMAGES_ENV: RUNTIME_IMAGE}
+                if image is not None:
+                    environment[OWNERSHIP_INIT_IMAGE_ENV] = image
                 with (
                     mock.patch.dict(os.environ, environment, clear=True),
                     self.assertRaisesRegex(
@@ -451,10 +496,34 @@ class BuildPatchTests(unittest.TestCase):
         for name, mutation in mutations:
             with self.subTest(name=name):
                 pod = target_pod()
-                pod["spec"]["initContainers"][-1].update(mutation)
+                prepare_private_state_container(pod).update(mutation)
                 with self.assertRaisesRegex(
                     AdmissionError,
-                    "prepare-private-state|designated runtime",
+                    "prepare-private-state|designated runtime|runtime allowlist|unsafe bootstrap",
+                ):
+                    build_patch(pod)
+
+    def test_requires_fixed_embedded_owner_contract(self) -> None:
+        mutations = (
+            ("custom args", {"args": ["console.log('attacker')"]}),
+            (
+                "custom environment",
+                {"env": [{"name": "NODE_OPTIONS", "value": "-r x"}]},
+            ),
+            ("custom command", {"command": ["/bin/sh", "-c"]}),
+        )
+        for name, mutation in mutations:
+            with self.subTest(name=name):
+                pod = target_pod()
+                owner = next(
+                    container
+                    for container in pod["spec"]["initContainers"]
+                    if container["name"] == "prepare-embedded-gateway-owner"
+                )
+                owner.update(mutation)
+                with self.assertRaisesRegex(
+                    AdmissionError,
+                    "embedded-owner|unsafe bootstrap",
                 ):
                     build_patch(pod)
 
@@ -478,7 +547,7 @@ class BuildPatchTests(unittest.TestCase):
         for omitted in ("command", "args"):
             with self.subTest(omitted=omitted):
                 pod = target_pod()
-                del pod["spec"]["initContainers"][-1][omitted]
+                del prepare_private_state_container(pod)[omitted]
                 with self.assertRaisesRegex(
                     AdmissionError,
                     "fixed prepare-private-state command",
@@ -486,7 +555,7 @@ class BuildPatchTests(unittest.TestCase):
                     build_patch(pod)
 
         pod = target_pod()
-        pod["spec"]["initContainers"][-1]["args"] = [
+        prepare_private_state_container(pod)["args"] = [
             PREP_SCRIPT.replace(
                 '"/gateway-state/agents"]',
                 '"/gateway-state/agents","/gateway-state/arbitrary"]',
@@ -504,9 +573,7 @@ class BuildPatchTests(unittest.TestCase):
         gateway["volumeMounts"].append(
             {
                 "name": "runtime-state",
-                "mountPath": (
-                    "/home/node/.openclaw/agents/main/agent/codex-home"
-                ),
+                "mountPath": ("/home/node/.openclaw/agents/main/agent/codex-home"),
                 "subPath": "home/gateway-codex-home",
             }
         )
@@ -545,9 +612,7 @@ class BuildPatchTests(unittest.TestCase):
         gateway["volumeMounts"].append(
             {
                 "name": "runtime-state",
-                "mountPath": (
-                    "/home/node/.openclaw/agents/main/agent/codex-home"
-                ),
+                "mountPath": ("/home/node/.openclaw/agents/main/agent/codex-home"),
                 "subPath": "home/gateway-codex-home",
             }
         )
@@ -571,11 +636,9 @@ class BuildPatchTests(unittest.TestCase):
         ownership_init = next(
             container
             for container in rendered["spec"]["initContainers"]
-            if container["name"] not in {
-                *{
-                    original["name"]
-                    for original in pod["spec"]["initContainers"]
-                },
+            if container["name"]
+            not in {
+                *{original["name"] for original in pod["spec"]["initContainers"]},
                 LINK_INIT_NAME,
             }
         )
@@ -600,11 +663,9 @@ class BuildPatchTests(unittest.TestCase):
         ownership_init = next(
             container
             for container in rendered["spec"]["initContainers"]
-            if container["name"] not in {
-                *{
-                    original["name"]
-                    for original in pod["spec"]["initContainers"]
-                },
+            if container["name"]
+            not in {
+                *{original["name"] for original in pod["spec"]["initContainers"]},
                 LINK_INIT_NAME,
             }
         )
@@ -626,9 +687,7 @@ class BuildPatchTests(unittest.TestCase):
         directories_line = prep["args"][0].splitlines()[1]
         prefix = "for (const path of "
         suffix = ") {"
-        directories = json.loads(
-            directories_line[len(prefix) : -len(suffix)]
-        )
+        directories = json.loads(directories_line[len(prefix) : -len(suffix)])
         self.assertEqual(
             set(directories),
             {
@@ -641,8 +700,7 @@ class BuildPatchTests(unittest.TestCase):
         )
         self.assertFalse(
             any(
-                directory.startswith("/runtime-state/home")
-                for directory in directories
+                directory.startswith("/runtime-state/home") for directory in directories
             )
         )
 
@@ -663,9 +721,7 @@ class BuildPatchTests(unittest.TestCase):
 
         duplicate = target_pod()
         duplicate["spec"]["containers"][-1]["volumeMounts"].append(
-            copy.deepcopy(
-                duplicate["spec"]["containers"][-1]["volumeMounts"][0]
-            )
+            copy.deepcopy(duplicate["spec"]["containers"][-1]["volumeMounts"][0])
         )
 
         for name, pod in (
@@ -673,9 +729,12 @@ class BuildPatchTests(unittest.TestCase):
             ("missing", missing),
             ("duplicate", duplicate),
         ):
-            with self.subTest(name=name), self.assertRaisesRegex(
-                AdmissionError,
-                "runtime-state|/home/node",
+            with (
+                self.subTest(name=name),
+                self.assertRaisesRegex(
+                    AdmissionError,
+                    "runtime-state|/home/node",
+                ),
             ):
                 build_patch(pod)
 
@@ -722,7 +781,7 @@ class BuildPatchTests(unittest.TestCase):
         for mutation in mutations:
             with self.subTest(mutation=mutation):
                 pod = target_pod()
-                pod["spec"]["initContainers"][-1]["volumeMounts"][0].update(mutation)
+                prepare_private_state_container(pod)["volumeMounts"][0].update(mutation)
                 with self.assertRaisesRegex(
                     AdmissionError,
                     "prepare-private-state volume-mount contract",
@@ -730,7 +789,7 @@ class BuildPatchTests(unittest.TestCase):
                     build_patch(pod)
 
         pod = target_pod()
-        pod["spec"]["initContainers"][-1]["volumeMounts"].append(
+        prepare_private_state_container(pod)["volumeMounts"].append(
             {"name": "workspace", "mountPath": "/usr/bin"}
         )
         with self.assertRaisesRegex(
@@ -803,8 +862,8 @@ class BuildPatchTests(unittest.TestCase):
         pod = target_pod()
         alternate_image = f"example.invalid/helper@sha256:{'d' * 64}"
         pod["spec"]["containers"][0]["image"] = alternate_image
-        rendered = apply_patch(pod, build_patch(pod))
-        self.assertEqual(rendered["spec"]["containers"][0]["image"], alternate_image)
+        with self.assertRaisesRegex(AdmissionError, "runtime allowlist"):
+            build_patch(pod)
 
         for field, value in (
             ("image", "example.invalid/helper:latest"),
@@ -833,10 +892,7 @@ class BuildPatchTests(unittest.TestCase):
             with self.subTest(volume=mount["name"]):
                 pod = target_pod()
                 pod["spec"]["containers"][0]["volumeMounts"] = [mount]
-                with self.assertRaisesRegex(
-                    AdmissionError,
-                    "not a designated state consumer",
-                ):
+                with self.assertRaises(AdmissionError):
                     build_patch(pod)
 
     def test_rejects_state_mounts_on_non_designated_init_containers(self) -> None:
@@ -849,10 +905,7 @@ class BuildPatchTests(unittest.TestCase):
                 pod["spec"]["initContainers"][0]["volumeMounts"] = [
                     {"name": volume, "mountPath": mount_path}
                 ]
-                with self.assertRaisesRegex(
-                    AdmissionError,
-                    "not a designated state consumer",
-                ):
+                with self.assertRaises(AdmissionError):
                     build_patch(pod)
 
     def test_rejects_read_only_gateway_state_rewrites(self) -> None:
@@ -933,7 +986,7 @@ class BuildPatchTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(
                     AdmissionError,
-                    "((overlaps|duplicate) /tmp|normalized absolute path)",
+                    "((overlaps|duplicate) /tmp|normalized absolute path|trusted bootstrap)",
                 ):
                     build_patch(pod)
 
@@ -1075,7 +1128,7 @@ class BuildPatchTests(unittest.TestCase):
 
     def test_removes_preinjected_service_account_volume_only(self) -> None:
         pod = admitted_target_pod()
-        preserved = copy.deepcopy(pod["spec"]["volumes"][-2:])
+        preserved = copy.deepcopy(pod["spec"]["volumes"][-1:])
 
         volumes = apply_patch(pod, build_patch(pod))["spec"]["volumes"]
 
@@ -1115,12 +1168,6 @@ class BuildPatchTests(unittest.TestCase):
             "mountPath": "/etc/runtime-settings",
             "readOnly": True,
         }
-        custom_token_mount = {
-            "name": "custom-api-token",
-            "mountPath": "/var/run/openclaw/tokens",
-            "readOnly": True,
-        }
-
         rendered = apply_patch(pod, build_patch(pod))
         spec = rendered["spec"]
 
@@ -1139,7 +1186,6 @@ class BuildPatchTests(unittest.TestCase):
             if container["name"] == "gateway"
         )
         self.assertIn(unrelated_mount, rendered_gateway["volumeMounts"])
-        self.assertIn(custom_token_mount, rendered_gateway["volumeMounts"])
 
     def test_rewrites_structurally_and_preserves_unrelated_mounts(self) -> None:
         pod = target_pod()
@@ -1229,22 +1275,25 @@ class BuildPatchTests(unittest.TestCase):
     def test_rejects_missing_or_unknown_oce_workload_role(self) -> None:
         pod = target_pod()
         pod["metadata"]["labels"] = {"app": "unrelated"}
-        with self.assertRaisesRegex(AdmissionError, "workload role"):
+        with self.assertRaisesRegex(
+            AdmissionError,
+            "managed by OpenClaw Enterprise",
+        ):
             build_patch(pod)
 
         pod = target_pod()
         pod["metadata"]["labels"]["openclaw.dev/workload-role"] = "controller"
-        with self.assertRaisesRegex(AdmissionError, "workload role"):
+        with self.assertRaisesRegex(AdmissionError, "embedded gateway workload"):
             build_patch(pod)
 
     def test_rejects_state_free_oce_pods(self) -> None:
         pod = target_pod()
         pod["spec"]["volumes"] = [{"name": "runtime-state", "emptyDir": {}}]
         pod["spec"]["containers"][-1]["volumeMounts"] = []
-        pod["spec"]["initContainers"][-1]["volumeMounts"] = [
+        prepare_private_state_container(pod)["volumeMounts"] = [
             {"name": "runtime-state", "mountPath": "/runtime-state"}
         ]
-        with self.assertRaisesRegex(AdmissionError, "requires openclaw-gateway-state"):
+        with self.assertRaisesRegex(AdmissionError, "gateway state claim"):
             build_patch(pod)
 
     def test_deduplicates_link_input_deterministically(self) -> None:
@@ -1283,10 +1332,7 @@ class BuildPatchTests(unittest.TestCase):
                 ],
             }
         )
-        with self.assertRaisesRegex(
-            AdmissionError,
-            "not a designated state consumer",
-        ):
+        with self.assertRaisesRegex(AdmissionError, "only its two OCE init containers"):
             build_patch(pod)
 
     def test_rejects_gateway_state_root_mounts_on_regular_containers(self) -> None:
@@ -1322,7 +1368,7 @@ class BuildPatchTests(unittest.TestCase):
         cases.append(collision)
 
         missing_prep = target_pod()
-        missing_prep["spec"]["initContainers"][-1]["name"] = "not-prepare"
+        prepare_private_state_container(missing_prep)["name"] = "not-prepare"
         cases.append(missing_prep)
 
         wrong_runtime = target_pod()

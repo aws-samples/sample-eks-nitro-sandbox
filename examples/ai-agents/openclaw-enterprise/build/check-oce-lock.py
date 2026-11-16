@@ -30,6 +30,4 @@ if set(versions) != {expected_version}:
         f"expected only {expected_version}"
     )
 
-print(
-    f"OCE lock: @azure/msal-node is exact-pinned to remediated {expected_version}"
-)
+print(f"OCE lock: @azure/msal-node is exact-pinned to remediated {expected_version}")

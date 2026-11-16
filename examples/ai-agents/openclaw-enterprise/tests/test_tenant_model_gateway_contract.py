@@ -18,17 +18,13 @@ def _network_policies() -> list[dict]:
         .replace("OCE_AGENTGATEWAY_SERVICE_CIDR", "10.100.0.42/32")
     )
     return [
-        document
-        for document in yaml.safe_load_all(rendered)
-        if document is not None
+        document for document in yaml.safe_load_all(rendered) if document is not None
     ]
 
 
 def _named(name: str) -> dict:
     matches = [
-        policy
-        for policy in _network_policies()
-        if policy["metadata"]["name"] == name
+        policy for policy in _network_policies() if policy["metadata"]["name"] == name
     ]
     assert len(matches) == 1
     return matches[0]
@@ -52,13 +48,9 @@ def test_dns_egress_is_explicitly_allowed() -> None:
             "to": [
                 {
                     "namespaceSelector": {
-                        "matchLabels": {
-                            "kubernetes.io/metadata.name": "kube-system"
-                        }
+                        "matchLabels": {"kubernetes.io/metadata.name": "kube-system"}
                     },
-                    "podSelector": {
-                        "matchLabels": {"k8s-app": "kube-dns"}
-                    },
+                    "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
                 }
             ],
             "ports": [
@@ -87,25 +79,8 @@ def test_network_policy_limits_egress_to_private_agentgateway() -> None:
     assert policy["spec"]["policyTypes"] == ["Egress"]
     assert policy["spec"]["egress"] == [
         {
-            "to": [
-                {"ipBlock": {"cidr": "10.100.0.42/32"}},
-                {
-                    "namespaceSelector": {
-                        "matchLabels": {
-                            "kubernetes.io/metadata.name": "openclaw-enterprise-agw"
-                        }
-                    },
-                    "podSelector": {
-                        "matchLabels": {
-                            "app.kubernetes.io/name": "agentgateway"
-                        }
-                    },
-                }
-            ],
-            "ports": [
-                {"protocol": "TCP", "port": 443},
-                {"protocol": "TCP", "port": 4000},
-            ],
+            "to": [{"ipBlock": {"cidr": "10.100.0.42/32"}}],
+            "ports": [{"protocol": "TCP", "port": 443}],
         }
     ]
 
@@ -114,6 +89,8 @@ def test_configure_script_copies_only_public_ca_and_applies_policy() -> None:
     script = SCRIPT.read_text(encoding="utf-8")
 
     assert "set -euo pipefail" in script
+    assert 'readonly -a KUBECTL=(kubectl --context "${KUBE_CONTEXT}")' in script
+    assert 'kubectl config get-contexts "${KUBE_CONTEXT}"' in script
     assert "app\\.kubernetes\\.io/managed-by" in script
     assert "pod-security.kubernetes.io/enforce=baseline" in script
     assert "pod-security.kubernetes.io/audit=restricted" in script

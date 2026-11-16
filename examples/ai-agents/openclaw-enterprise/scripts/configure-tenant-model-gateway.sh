@@ -8,12 +8,16 @@ readonly SAMPLE_DIR
 readonly AGW_NAMESPACE="openclaw-enterprise-agw"
 readonly TENANT_TEMPLATE="${SAMPLE_DIR}/deploy/tenant-model-gateway.yaml.tpl"
 
-if [[ $# -ne 1 ]]; then
-  echo "Usage: $0 <oce-tenant-namespace>" >&2
+if [[ $# -ne 2 ]]; then
+  echo "Usage: $0 <kube-context> <oce-tenant-namespace>" >&2
   exit 2
 fi
 
-readonly TENANT_NAMESPACE="$1"
+readonly KUBE_CONTEXT="$1"
+readonly TENANT_NAMESPACE="$2"
+readonly -a KUBECTL=(kubectl --context "${KUBE_CONTEXT}")
+kubectl config get-contexts "${KUBE_CONTEXT}" >/dev/null
+
 if [[ ! "${TENANT_NAMESPACE}" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] ||
    (( ${#TENANT_NAMESPACE} > 63 )); then
   echo "The tenant namespace must be a valid Kubernetes DNS label." >&2
@@ -21,7 +25,7 @@ if [[ ! "${TENANT_NAMESPACE}" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] ||
 fi
 
 managed_by="$(
-  kubectl get namespace "${TENANT_NAMESPACE}" \
+  "${KUBECTL[@]}" get namespace "${TENANT_NAMESPACE}" \
     -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}'
 )"
 if [[ "${managed_by}" != "openclaw-enterprise" ]]; then
@@ -29,14 +33,14 @@ if [[ "${managed_by}" != "openclaw-enterprise" ]]; then
   exit 1
 fi
 
-kubectl label namespace "${TENANT_NAMESPACE}" \
+"${KUBECTL[@]}" label namespace "${TENANT_NAMESPACE}" \
   pod-security.kubernetes.io/enforce=baseline \
   pod-security.kubernetes.io/audit=restricted \
   pod-security.kubernetes.io/warn=restricted \
   --overwrite
 
 agentgateway_ip="$(
-  kubectl get service agentgateway \
+  "${KUBECTL[@]}" get service agentgateway \
     --namespace "${AGW_NAMESPACE}" \
     --output jsonpath='{.spec.clusterIP}'
 )"
@@ -50,21 +54,21 @@ work_dir="$(mktemp -d)"
 trap 'rm -rf -- "${work_dir}"' EXIT
 readonly ca_file="${work_dir}/ca.crt"
 
-kubectl wait \
+"${KUBECTL[@]}" wait \
   --namespace "${AGW_NAMESPACE}" \
   --for=condition=Ready \
   certificate/agentgateway-root \
   --timeout=120s
 
-kubectl get secret agentgateway-ca \
+"${KUBECTL[@]}" get secret agentgateway-ca \
   --namespace "${AGW_NAMESPACE}" \
   --output jsonpath='{.data.tls\.crt}' |
   base64 --decode >"${ca_file}"
 
-if kubectl get configmap agentgateway-ca \
+if "${KUBECTL[@]}" get configmap agentgateway-ca \
   --namespace "${TENANT_NAMESPACE}" >/dev/null 2>&1; then
   existing_ca="${work_dir}/existing-ca.crt"
-  kubectl get configmap agentgateway-ca \
+  "${KUBECTL[@]}" get configmap agentgateway-ca \
     --namespace "${TENANT_NAMESPACE}" \
     --output jsonpath='{.data.ca\.crt}' >"${existing_ca}"
   if ! cmp --silent "${ca_file}" "${existing_ca}"; then
@@ -72,19 +76,19 @@ if kubectl get configmap agentgateway-ca \
     exit 1
   fi
 else
-  kubectl create configmap agentgateway-ca \
+  "${KUBECTL[@]}" create configmap agentgateway-ca \
     --namespace "${TENANT_NAMESPACE}" \
     --from-file=ca.crt="${ca_file}" \
     --dry-run=client \
     --output json |
     jq '.immutable = true' |
-    kubectl create --filename -
+    "${KUBECTL[@]}" create --filename -
 fi
 
 sed \
   -e "s/OCE_TENANT_NAMESPACE/${TENANT_NAMESPACE}/g" \
   -e "s#OCE_AGENTGATEWAY_SERVICE_CIDR#${agentgateway_cidr}#g" \
   "${TENANT_TEMPLATE}" |
-  kubectl apply --filename -
+  "${KUBECTL[@]}" apply --filename -
 
 echo "Configured the Nitro Pod Security profile, private AgentGateway trust, and egress path for ${TENANT_NAMESPACE}."

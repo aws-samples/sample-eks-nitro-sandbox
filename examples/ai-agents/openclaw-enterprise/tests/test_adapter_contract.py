@@ -19,9 +19,7 @@ def _yaml_documents(path: pathlib.Path) -> list[dict[str, Any]]:
     return [document for document in documents if document]
 
 
-def _one(
-    documents: list[dict[str, Any]], kind: str, name: str
-) -> dict[str, Any]:
+def _one(documents: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
     matches = [
         document
         for document in documents
@@ -44,9 +42,7 @@ def test_webhook_matches_all_pods_in_oce_namespaces_and_fails_closed() -> None:
     assert webhook["failurePolicy"] == "Fail"
     assert webhook["sideEffects"] == "None"
     assert webhook["namespaceSelector"] == {
-        "matchLabels": {
-            "app.kubernetes.io/managed-by": "openclaw-enterprise"
-        }
+        "matchLabels": {"app.kubernetes.io/managed-by": "openclaw-enterprise"}
     }
     assert "objectSelector" not in webhook
     assert webhook["rules"] == [
@@ -65,20 +61,26 @@ def test_supported_admission_fixture_matches_current_adapter_input() -> None:
     spec = pod["spec"]
 
     assert pod["metadata"]["labels"]["openclaw.dev/workload-role"] == "gateway"
-    assert len(
-        [
-            container
-            for container in spec["containers"]
-            if container["name"] == "gateway"
-        ]
-    ) == 1
-    assert len(
-        [
-            container
-            for container in spec["initContainers"]
-            if container["name"] == "prepare-private-state"
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                container
+                for container in spec["containers"]
+                if container["name"] == "gateway"
+            ]
+        )
+        == 1
+    )
+    assert (
+        len(
+            [
+                container
+                for container in spec["initContainers"]
+                if container["name"] == "prepare-private-state"
+            ]
+        )
+        == 1
+    )
 
     volumes = {volume["name"]: volume for volume in spec["volumes"]}
     assert "persistentVolumeClaim" in volumes["openclaw-gateway-state"]
@@ -86,31 +88,49 @@ def test_supported_admission_fixture_matches_current_adapter_input() -> None:
     assert "emptyDir" in volumes["runtime-temporary"]
 
 
-def test_ephemeral_container_updates_are_denied_fail_closed() -> None:
+def test_controller_chain_and_ephemeral_updates_are_validated_fail_closed() -> None:
     documents = _yaml_documents(DEPLOY / "adapter-webhook.yaml")
     webhook_configuration = _one(
         documents,
         "ValidatingWebhookConfiguration",
-        "openclaw-enterprise-nitro-ephemeral-containers",
+        "openclaw-enterprise-nitro-policy",
     )
-    webhook = webhook_configuration["webhooks"][0]
+    controller_webhook, pod_webhook = webhook_configuration["webhooks"]
 
-    assert webhook["failurePolicy"] == "Fail"
-    assert webhook["sideEffects"] == "None"
-    assert webhook["clientConfig"]["service"]["path"] == "/validate"
-    assert webhook["namespaceSelector"] == {
-        "matchLabels": {
-            "app.kubernetes.io/managed-by": "openclaw-enterprise"
+    for webhook in (controller_webhook, pod_webhook):
+        assert webhook["failurePolicy"] == "Fail"
+        assert webhook["sideEffects"] == "None"
+        assert webhook["clientConfig"]["service"]["path"] == "/validate"
+        assert webhook["namespaceSelector"] == {
+            "matchLabels": {"app.kubernetes.io/managed-by": "openclaw-enterprise"}
         }
+    assert controller_webhook["rules"] == [
+        {
+            "apiGroups": ["apps"],
+            "apiVersions": ["v1"],
+            "operations": ["CREATE", "UPDATE"],
+            "resources": ["deployments", "replicasets"],
+            "scope": "Namespaced",
+        }
+    ]
+    assert pod_webhook["namespaceSelector"] == {
+        "matchLabels": {"app.kubernetes.io/managed-by": "openclaw-enterprise"}
     }
-    assert webhook["rules"] == [
+    assert pod_webhook["rules"] == [
+        {
+            "apiGroups": [""],
+            "apiVersions": ["v1"],
+            "operations": ["CREATE"],
+            "resources": ["pods"],
+            "scope": "Namespaced",
+        },
         {
             "apiGroups": [""],
             "apiVersions": ["v1"],
             "operations": ["UPDATE"],
             "resources": ["pods/ephemeralcontainers"],
             "scope": "Namespaced",
-        }
+        },
     ]
 
 
@@ -175,22 +195,20 @@ def test_webhook_certificate_and_service_names_match() -> None:
 def test_rendered_deployment_uses_exact_distinct_images() -> None:
     adapter_image = f"example.invalid/adapter@sha256:{'a' * 64}"
     ownership_image = f"example.invalid/ownership@sha256:{'b' * 64}"
+    runtime_image = f"example.invalid/runtime@sha256:{'c' * 64}"
     result = subprocess.run(
         [
             str(RENDER_SCRIPT),
             str(DEPLOY / "adapter-webhook.yaml"),
             adapter_image,
             ownership_image,
+            runtime_image,
         ],
         check=True,
         capture_output=True,
         text=True,
     )
-    documents = [
-        document
-        for document in yaml.safe_load_all(result.stdout)
-        if document
-    ]
+    documents = [document for document in yaml.safe_load_all(result.stdout) if document]
     deployment = _one(
         documents,
         "Deployment",
@@ -199,14 +217,18 @@ def test_rendered_deployment_uses_exact_distinct_images() -> None:
     container = deployment["spec"]["template"]["spec"]["containers"][0]
 
     assert container["image"] == adapter_image
-    assert {
-        entry["name"]: entry["value"] for entry in container["env"]
-    }["OCE_OWNERSHIP_INIT_IMAGE"] == ownership_image
+    assert {entry["name"]: entry["value"] for entry in container["env"]}[
+        "OCE_OWNERSHIP_INIT_IMAGE"
+    ] == ownership_image
+    assert {entry["name"]: entry["value"] for entry in container["env"]}[
+        "OCE_RUNTIME_IMAGES"
+    ] == runtime_image
 
 
 def test_render_script_rejects_unpinned_or_shared_images() -> None:
     manifest = str(DEPLOY / "adapter-webhook.yaml")
     adapter_image = f"example.invalid/adapter@sha256:{'a' * 64}"
+    runtime_image = f"example.invalid/runtime@sha256:{'c' * 64}"
 
     for ownership_image in ("example.invalid/ownership:latest", adapter_image):
         result = subprocess.run(
@@ -215,6 +237,7 @@ def test_render_script_rejects_unpinned_or_shared_images() -> None:
                 manifest,
                 adapter_image,
                 ownership_image,
+                runtime_image,
             ],
             check=False,
             capture_output=True,
@@ -226,12 +249,14 @@ def test_render_script_rejects_unpinned_or_shared_images() -> None:
 def test_render_script_rejects_manifest_without_target_deployment() -> None:
     adapter_image = f"example.invalid/adapter@sha256:{'a' * 64}"
     ownership_image = f"example.invalid/ownership@sha256:{'b' * 64}"
+    runtime_image = f"example.invalid/runtime@sha256:{'c' * 64}"
     result = subprocess.run(
         [
             str(RENDER_SCRIPT),
             str(DEPLOY / "agentgateway.yaml"),
             adapter_image,
             ownership_image,
+            runtime_image,
         ],
         check=False,
         capture_output=True,

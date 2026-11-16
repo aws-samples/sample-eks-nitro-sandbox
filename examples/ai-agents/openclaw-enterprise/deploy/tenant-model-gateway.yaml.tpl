@@ -50,14 +50,6 @@ spec:
     - to:
         - ipBlock:
             cidr: OCE_AGENTGATEWAY_SERVICE_CIDR
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: openclaw-enterprise-agw
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: agentgateway
       ports:
         - protocol: TCP
           port: 443
-        - protocol: TCP
-          port: 4000

@@ -92,7 +92,9 @@ def test_cert_manager_certificate_matches_service_dns_and_gateway_tls():
     }
     assert config["llm"]["gateways"] == ["llm"]
 
-    tls_volume = next(volume for volume in pod_spec["volumes"] if volume["name"] == "tls")
+    tls_volume = next(
+        volume for volume in pod_spec["volumes"] if volume["name"] == "tls"
+    )
     assert tls_volume["secret"]["secretName"] == certificate["spec"]["secretName"]
     assert tls_volume["secret"]["defaultMode"] == 0o440
     tls_mount = next(
@@ -245,9 +247,7 @@ def test_agentgateway_ingress_is_limited_to_managed_oce_workloads():
 
 def test_bedrock_policy_covers_only_the_profile_and_its_destination_models():
     account_id = "111122223333"
-    profile_arn = (
-        f"arn:aws:bedrock:us-west-2:{account_id}:inference-profile/{PROFILE}"
-    )
+    profile_arn = f"arn:aws:bedrock:us-west-2:{account_id}:inference-profile/{PROFILE}"
     policy = json.loads(
         (IAM / "bedrock-invoke.json")
         .read_text(encoding="utf-8")
@@ -262,9 +262,7 @@ def test_bedrock_policy_covers_only_the_profile_and_its_destination_models():
     }
     assert set(profile["Action"]) == expected_actions
     assert profile["Resource"] == profile_arn
-    assert profile["Condition"]["StringEquals"] == {
-        "aws:RequestedRegion": "us-west-2"
-    }
+    assert profile["Condition"]["StringEquals"] == {"aws:RequestedRegion": "us-west-2"}
 
     assert set(models["Action"]) == expected_actions
     assert set(models["Resource"]) == {
@@ -290,7 +288,5 @@ def test_pod_identity_trust_is_bound_to_agentgateway_service_account():
         "aws:RequestTag/kubernetes-service-account": "agentgateway",
     }
     assert statement["Condition"]["ArnEquals"] == {
-        "aws:SourceArn": (
-            "arn:aws:eks:<REGION>:<ACCOUNT_ID>:cluster/<CLUSTER_NAME>"
-        )
+        "aws:SourceArn": ("arn:aws:eks:<REGION>:<ACCOUNT_ID>:cluster/<CLUSTER_NAME>")
     }

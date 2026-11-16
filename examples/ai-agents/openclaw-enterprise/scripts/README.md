@@ -2,20 +2,21 @@
 
 Use `configure-tenant-model-gateway.sh` after AgentGateway is ready and OCE has
 created the tenant namespace. This procedure configures the Pod Security
-profile, trust, and network isolation. The live validation completed one
-OCE-created Agent flow; repeat the procedure for each tenant namespace.
+profile, trust, and network isolation. Fresh validation is pending; repeat the
+procedure for each tenant namespace.
 
 The separate admission adapter consumes the CA ConfigMap created here when it
-adapts compatible OCE Agent and gateway pods. Treat that adapter as a
+adapts the compatible OCE embedded-gateway pod. Treat that adapter as a
 sample-specific compatibility layer, not an upstream OCE compatibility
 guarantee.
 
 ## Prerequisites
 
 - Install `kubectl`, `jq`, `sed`, `base64` and `cmp`.
-- Configure `kubectl` access to the target EKS Auto Mode cluster.
+- Configure `kubectl` access to the target EKS Auto Mode cluster and choose an
+  explicit context.
 - Deploy AgentGateway in `openclaw-enterprise-agw`.
-- Deploy the admission adapter with both digest-pinned images as described in
+- Deploy the admission adapter with all required digest-pinned images as described in
   [`build/README.md`](../build/README.md#deploy-the-adapter).
 - Use an OCE tenant namespace labelled
   `app.kubernetes.io/managed-by=openclaw-enterprise`.
@@ -23,7 +24,10 @@ guarantee.
 Enable the VPC CNI network policy controller once per cluster:
 
 ```bash
-kubectl --namespace kube-system patch configmap amazon-vpc-cni \
+kube_context="replace-with-explicit-eks-context"
+kubectl config get-contexts "$kube_context"
+kubectl --context "$kube_context" --namespace kube-system \
+  patch configmap amazon-vpc-cni \
   --type merge \
   --patch '{"data":{"enable-network-policy":"true","enable-network-policy-controller":"true"}}'
 ```
@@ -36,9 +40,11 @@ nodes do not gain network-policy enforcement in place.
 From the repository root, run:
 
 ```bash
+kube_context="replace-with-explicit-eks-context"
 tenant_namespace="replace-with-oce-tenant-namespace"
+kubectl config get-contexts "$kube_context"
 ./examples/ai-agents/openclaw-enterprise/scripts/configure-tenant-model-gateway.sh \
-  "$tenant_namespace"
+  "$kube_context" "$tenant_namespace"
 ```
 
 The script:
@@ -49,7 +55,9 @@ The script:
 3. Reads the stable AgentGateway ClusterIP.
 4. Copies the AgentGateway root certificate into the tenant namespace as the
    immutable `agentgateway-ca` ConfigMap.
-5. Applies default-deny egress plus explicit DNS and AgentGateway egress.
+5. Applies default-deny egress plus explicit DNS and HTTPS egress to the
+   AgentGateway ClusterIP. Direct traffic to AgentGateway Pod IPs is not
+   allowed.
 
 Baseline is required because the adapter-generated ownership init container
 starts as UID and GID 0 with `allowPrivilegeEscalation: false` and only `CHOWN`,
@@ -61,12 +69,14 @@ the mapped target paths are real directories. The link init container creates
 a relative symlink inside `/gateway-state` only when a mount path differs from
 its target.
 
-The separately built ownership helper contains only BusyBox entry points for
-`/bin/sh`, `/bin/chown`, and `/bin/chmod`. The adapter takes its image from the
-mandatory `OCE_OWNERSHIP_INIT_IMAGE` setting and requires an exact digest that
-differs from the workload image. Permission repair fails closed: every
-directory check, `chmod`, and `chown` must succeed before OCE starts. The helper
-repairs `/home/node`, `/home/node/.openclaw`, and each direct
+The separately built ownership helper is a statically linked binary in a
+scratch image. The adapter takes its image from the mandatory
+`OCE_OWNERSHIP_INIT_IMAGE` setting and requires an exact digest that differs
+from the workload image. Permission repair fails closed: the helper opens only
+the explicit relative-path allowlist with Linux `openat2` constraints, rejects
+symbolic links and multiply linked files, and changes ownership and mode
+through the checked file descriptor. The helper repairs `/home/node`,
+`/home/node/.openclaw`, and each direct
 `/home/node/.openclaw/<target>` path rather than an alias symlink. It does not
 recursively change persisted files. Kubernetes `fsGroup` metadata on a retained
 PVC can leave the existing OpenClaw runtime pin store with incompatible
@@ -77,14 +87,22 @@ the known `-wal`, `-shm`, and `-journal` sidecars to UID and GID 1000 with mode
 files. The unwrapped OCE command then starts as UID and GID 1000 with all
 capabilities dropped.
 
-The mutating webhook rejects ordinary runtime and sidecar containers that mount
-the `openclaw-gateway-state` PVC root at `/gateway-state`; only the expected
-init-container path and adapter-generated helpers receive that root. A separate
-validating webhook denies every ephemeral-container update in OCE-managed
-namespaces. Both webhooks use `failurePolicy: Fail`, so an unavailable adapter
-blocks matching pod creation and ephemeral-container updates. That is the
-intended sample posture, but it raises adapter availability from a convenience
-to a tenant scheduling dependency.
+The mutating webhook rejects sidecars and extra init containers. It also
+rejects ordinary runtime containers that mount the `openclaw-gateway-state`
+PVC root at `/gateway-state`; only the expected init-container path and
+adapter-generated helpers receive that root. A separate validating webhook
+rechecks the complete final Pod on creation and denies every
+ephemeral-container update in OCE-managed namespaces. Both webhooks use
+`failurePolicy: Fail`, so an unavailable adapter blocks matching Pod creation
+and ephemeral-container updates. That is the intended sample posture, but it
+raises adapter availability from a convenience to a tenant scheduling
+dependency.
+
+The controller trust chain is narrower than the namespace label. The OCE worker
+may create or update gateway Deployments, the Kubernetes Deployment controller
+may create or update their ReplicaSets, and only configured ReplicaSet-controller
+identities may create Pods. The adapter verifies that provenance. A tenant's
+direct Pod request is denied even if it copies the trusted labels.
 
 The adapter also rejects every volume mount path that is not a canonical
 absolute path, including paths with repeated separators or traversal segments.
@@ -97,17 +115,12 @@ If an immutable CA ConfigMap already exists, the script stops when its
 certificate differs. Recreate that ConfigMap only as a deliberate CA rotation.
 
 The generated AgentGateway rule includes the Service ClusterIP as an explicit
-`/32`. In the live EKS Auto Mode test, the `PolicyEndpoint` did not add that
-Service IP for the selector-based policy. Without the `/32`, traffic to the
-stable ClusterIP was blocked before reaching the selected AgentGateway pods.
+`/32` and permits HTTPS on TCP port 443 to that address. It does not permit
+direct traffic to AgentGateway Pod IPs.
 
-## Evidence boundary
+## Validation status
 
-The live test proved that an OCE-created Agent gateway ran in a Nitro sandbox,
-reached AgentGateway, used EKS Pod Identity for Amazon Bedrock credentials, and
-received a `completed` Responses-compatible API result. An invalid key returned
-`401`, and an unlabelled pod was blocked.
-
-The test did not prove a second tenant, cross-tenant denial through OCE,
-replacement recovery with the latest adapter image, high availability or
-fleet-scale behaviour.
+Fresh evidence against `<VALIDATED_SAMPLE_COMMIT>` and
+`<VALIDATED_OCE_COMMIT>` is pending. Do not claim live tenant isolation,
+replacement recovery, model turns, or image-scan results until
+[`VALIDATION.md`](../VALIDATION.md) is complete.
