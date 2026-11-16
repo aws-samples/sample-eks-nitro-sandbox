@@ -31,13 +31,14 @@ type openHow struct {
 }
 
 type targets struct {
-	root        string
-	directories []string
-	files       []string
+	root                string
+	directories         []string
+	optionalDirectories []string
+	files               []string
 }
 
 func usageError(message string) error {
-	return fmt.Errorf("%s; usage: ownership-helper --root /absolute/path [--dir relative/path] [--file relative/path]", message)
+	return fmt.Errorf("%s; usage: ownership-helper --root /absolute/path [--dir relative/path] [--optional-dir relative/path] [--file relative/path]", message)
 }
 
 func validateRelativePath(path string, allowDot bool) error {
@@ -75,8 +76,8 @@ func parseArgs(args []string) (targets, error) {
 				return targets{}, usageError("--root must be a canonical absolute path below /")
 			}
 			result.root = value
-		case "--dir", "--file":
-			if err := validateRelativePath(value, option == "--dir"); err != nil {
+		case "--dir", "--optional-dir", "--file":
+			if err := validateRelativePath(value, option != "--file"); err != nil {
 				return targets{}, err
 			}
 			key := option + "\x00" + value
@@ -86,6 +87,8 @@ func parseArgs(args []string) (targets, error) {
 			seen[key] = struct{}{}
 			if option == "--dir" {
 				result.directories = append(result.directories, value)
+			} else if option == "--optional-dir" {
+				result.optionalDirectories = append(result.optionalDirectories, value)
 			} else {
 				result.files = append(result.files, value)
 			}
@@ -182,6 +185,25 @@ func run(targets targets) error {
 		syscall.Close(fd)
 		if err != nil {
 			return fmt.Errorf("repair directory %q: %w", path, err)
+		}
+	}
+
+	for _, path := range targets.optionalDirectories {
+		fd, err := openAt2(
+			rootFD,
+			path,
+			syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW,
+		)
+		if errors.Is(err, syscall.ENOENT) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("open optional directory %q: %w", path, err)
+		}
+		err = repairFD(fd, syscall.S_IFDIR, 0o700, false)
+		syscall.Close(fd)
+		if err != nil {
+			return fmt.Errorf("repair optional directory %q: %w", path, err)
 		}
 	}
 

@@ -612,8 +612,8 @@ class BuildPatchTests(unittest.TestCase):
                 ("--dir", "."),
                 ("--dir", ".openclaw"),
                 ("--dir", ".openclaw/agents"),
-                ("--dir", ".openclaw/control"),
                 ("--dir", ".openclaw/sessions"),
+                ("--optional-dir", ".openclaw/control"),
                 ("--file", ".openclaw/client/credentials.sqlite"),
                 ("--file", ".openclaw/control/services.sqlite"),
                 ("--file", ".openclaw/control/services.sqlite-wal"),
@@ -622,7 +622,7 @@ class BuildPatchTests(unittest.TestCase):
             },
         )
         for flag, path in allowlists:
-            self.assertIn(flag, {"--dir", "--file"})
+            self.assertIn(flag, {"--dir", "--optional-dir", "--file"})
             self.assertFalse(path.startswith("/"))
         self.assertEqual(ownership_init.get("env", []), [])
 
@@ -838,7 +838,7 @@ class BuildPatchTests(unittest.TestCase):
             },
         )
 
-    def test_includes_control_directory_in_0700_ownership_paths(self) -> None:
+    def test_marks_only_migration_control_directory_as_optional(self) -> None:
         pod = target_pod()
 
         rendered = apply_patch(pod, build_patch(pod))
@@ -852,9 +852,30 @@ class BuildPatchTests(unittest.TestCase):
                 LINK_INIT_NAME,
             }
         )
-        self.assertIn(
-            ("--dir", ".openclaw/control"),
-            set(zip(ownership_init["args"][2::2], ownership_init["args"][3::2])),
+        allowlists = set(
+            zip(ownership_init["args"][2::2], ownership_init["args"][3::2])
+        )
+        self.assertEqual(
+            {
+                path
+                for flag, path in allowlists
+                if flag == "--optional-dir"
+            },
+            {".openclaw/control"},
+        )
+        self.assertTrue(
+            {
+                ".",
+                ".openclaw",
+                ".openclaw/agents",
+                ".openclaw/sessions",
+            }.issubset(
+                {
+                    path
+                    for flag, path in allowlists
+                    if flag == "--dir"
+                }
+            )
         )
 
     def test_patches_prepare_private_state_for_relocated_runtime_root(self) -> None:

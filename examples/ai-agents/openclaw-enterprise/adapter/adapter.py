@@ -752,7 +752,12 @@ def _ownership_init(
     ]
     arguments = ["--root", HOME_MOUNT_PATH]
     for path in relative_directories:
-        arguments.extend(["--dir", path])
+        option = (
+            "--optional-dir"
+            if path == RUNTIME_PIN_DIRECTORY.removeprefix(f"{HOME_MOUNT_PATH}/")
+            else "--dir"
+        )
+        arguments.extend([option, path])
     for path in relative_files:
         arguments.extend(["--file", path])
     return {

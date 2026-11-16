@@ -23,6 +23,8 @@ validate the replacement.
   following the [sample README](README.md) and [build instructions](build/README.md).
 - Configure two retained OCE tenants by following the
   [tenant model gateway procedure](scripts/README.md).
+- Back one runtime with a clean PVC where `.openclaw/control` is absent, and
+  retain one migrated PVC where that directory exists.
 - Install `git`, `kubectl`, `jq`, `yq` 4, Python 3, and the AWS CLI.
 - Choose one explicit kube context and pass it to every cluster command.
 - Keep exact image references and credentials in your deployment environment,
@@ -253,8 +255,10 @@ exact-resource authorization and cannot replace these checks.
    `openai-responses`, AgentGateway, and Amazon Bedrock.
 
 The expected result is a persisted `.openclaw` marker, no generic `/home/node`
-marker, and a completed post-replacement turn. Record it as
-`<POD_REPLACEMENT_RESULT>`.
+marker, and a completed post-replacement turn. The ownership helper must skip
+an absent migration-only `.openclaw/control` directory on the clean PVC and
+repair it when present on the migrated PVC. Missing core runtime directories
+must still fail closed. Record the result as `<POD_REPLACEMENT_RESULT>`.
 
 ## Validate negative admission controls
 

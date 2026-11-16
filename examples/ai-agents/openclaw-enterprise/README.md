@@ -90,9 +90,11 @@ gateway pod, the adapter:
   `OCE_OWNERSHIP_INIT_IMAGE`. The adapter requires an exact digest, rejects the
   workload runtime image as the helper, and denies the pod when the setting is
   absent or invalid. The init mounts the `runtime-state` volume root at
-  `/home/node` and sets it to mode `0700`, UID 1000 and GID 1000. Permission
-  repair fails closed and is limited to `/home/node`, `/home/node/.openclaw`,
-  `/home/node/.openclaw/control`, each direct mapped target below it,
+  `/home/node` and sets it to mode `0700`, UID 1000 and GID 1000. It treats
+  `.openclaw/control` as a migration-only optional directory: the helper repairs
+  it when present and skips it when absent on a clean PVC. Core runtime
+  directories remain mandatory and fail closed. Permission repair stays
+  limited to `/home/node`, `/home/node/.openclaw`, each direct mapped target,
   `client/credentials.sqlite`, and the runtime pin database with its known
   SQLite sidecars.
 - Replaces each runtime container's security context with a fixed allowlist:
@@ -132,12 +134,13 @@ ownership-repair boundary and exits before OpenClaw starts. It opens only an
 explicit relative-path allowlist beneath `/home/node` with Linux `openat2`
 constraints, rejects symbolic links and multiply linked regular files, and
 changes ownership and mode through the checked file descriptor. It repairs the
-required directories plus the known OpenClaw SQLite files and sidecars without
-walking the PVC recursively. This is an exact-path compatibility repair, not a
-general PVC repair. Keeping the helper in a separate scratch image avoids
-running the much larger workload image with ownership capabilities. The
-runtime still runs as non-root without Linux capabilities, but operators must
-build, scan, pin, and deploy the additional helper image correctly.
+required directories plus existing migration-only control state and known
+OpenClaw SQLite files and sidecars without walking the PVC recursively. This is
+an exact-path compatibility repair, not a general PVC repair. Keeping the
+helper in a separate scratch image avoids running the much larger workload
+image with ownership capabilities. The runtime still runs as non-root without
+Linux capabilities, but operators must build, scan, pin, and deploy the
+additional helper image correctly.
 
 The tenant script renders the current AgentGateway ClusterIP as an explicit
 `/32`. The generated policy permits HTTPS on TCP port 443 to that stable
@@ -171,12 +174,16 @@ Carlos opened OCE issues
 [#4254](https://github.com/openclaw/openclaw-enterprise/issues/4254).
 [PR #3893](https://github.com/openclaw/openclaw-enterprise/pull/3893) is closed
 without merge and covers only dedicated Harnesses.
-[PR #4528](https://github.com/openclaw/openclaw-enterprise/pull/4528) and
-[PR #4975](https://github.com/openclaw/openclaw-enterprise/pull/4975) are merged
-and narrow #4254, but they do not provide cluster-local HTTP or private-endpoint
-routing. Issues #4252 and #4253 do not yet have complete implementation PRs.
-This sample therefore remains a compatibility adapter, not evidence of
-upstream support.
+[PR #4528](https://github.com/openclaw/openclaw-enterprise/pull/4528) directly
+addresses the model-provider work tracked by #4254, and
+[PR #4866](https://github.com/openclaw/openclaw-enterprise/pull/4866) adds
+follow-on per-deployment overrides. Merged
+[PR #5346](https://github.com/openclaw/openclaw-enterprise/pull/5346),
+[PR #5333](https://github.com/openclaw/openclaw-enterprise/pull/5333), and open
+[PR #4432](https://github.com/openclaw/openclaw-enterprise/pull/4432) are
+adjacent potential native paths, not formal fixes for #4252 or #4253. This
+sample therefore remains a compatibility adapter, not evidence of upstream
+support.
 
 ## Validation baseline
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -51,6 +52,135 @@ func TestParseArgsRejectsDuplicatesAndMissingRoot(t *testing.T) {
 		"--dir", ".openclaw",
 	}); err == nil {
 		t.Fatal("expected duplicate directory to fail")
+	}
+}
+
+func TestParseArgsAcceptsOptionalDirectory(t *testing.T) {
+	t.Parallel()
+	if _, err := parseArgs([]string{
+		"--root", "/home/node",
+		"--dir", ".",
+		"--optional-dir", ".openclaw/control",
+	}); err != nil {
+		t.Fatalf("expected optional directory to parse: %v", err)
+	}
+}
+
+func TestRunSkipsMissingOptionalDirectory(t *testing.T) {
+	requireRoot(t)
+	requireOpenat2(t)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".openclaw"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runArgs(
+		"--root", root,
+		"--dir", ".",
+		"--dir", ".openclaw",
+		"--optional-dir", ".openclaw/control",
+	); err != nil {
+		t.Fatalf("missing optional directory should be skipped: %v", err)
+	}
+}
+
+func TestRunStillRejectsMissingMandatoryDirectory(t *testing.T) {
+	requireRoot(t)
+	requireOpenat2(t)
+	root := t.TempDir()
+
+	err := runArgs(
+		"--root", root,
+		"--dir", ".",
+		"--dir", ".openclaw/control",
+	)
+	if !errors.Is(err, syscall.ENOENT) {
+		t.Fatalf("expected missing mandatory directory to fail with ENOENT, got %v", err)
+	}
+}
+
+func TestRunRepairsExistingOptionalDirectory(t *testing.T) {
+	requireRoot(t)
+	requireOpenat2(t)
+	root := t.TempDir()
+	control := filepath.Join(root, ".openclaw", "control")
+	if err := os.MkdirAll(control, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runArgs(
+		"--root", root,
+		"--dir", ".",
+		"--dir", ".openclaw",
+		"--optional-dir", ".openclaw/control",
+	); err != nil {
+		t.Fatalf("existing optional directory should be repaired: %v", err)
+	}
+
+	assertMetadata(t, control, syscall.S_IFDIR, 0o700, runtimeUID, runtimeGID)
+}
+
+func TestRunRejectsSymlinkedOptionalDirectory(t *testing.T) {
+	requireRoot(t)
+	requireOpenat2(t)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".openclaw"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		t.TempDir(),
+		filepath.Join(root, ".openclaw", "control"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runArgs(
+		"--root", root,
+		"--dir", ".",
+		"--dir", ".openclaw",
+		"--optional-dir", ".openclaw/control",
+	)
+	if !errors.Is(err, syscall.ELOOP) {
+		t.Fatalf("expected symlinked optional directory to fail with ELOOP, got %v", err)
+	}
+}
+
+func TestRunRejectsNonDirectoryOptionalTarget(t *testing.T) {
+	requireRoot(t)
+	requireOpenat2(t)
+	root := t.TempDir()
+	control := filepath.Join(root, ".openclaw", "control")
+	if err := os.Mkdir(filepath.Dir(control), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(control, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runArgs(
+		"--root", root,
+		"--dir", ".",
+		"--dir", ".openclaw",
+		"--optional-dir", ".openclaw/control",
+	)
+	if !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("expected non-directory optional target to fail with ENOTDIR, got %v", err)
+	}
+}
+
+func TestRunRejectsOptionalDirectoryLookupErrors(t *testing.T) {
+	requireRoot(t)
+	requireOpenat2(t)
+	root := t.TempDir()
+	tooLong := strings.Repeat("x", 256)
+
+	err := runArgs(
+		"--root", root,
+		"--dir", ".",
+		"--optional-dir", tooLong,
+	)
+	if !errors.Is(err, syscall.ENAMETOOLONG) {
+		t.Fatalf("expected optional directory lookup error to be preserved, got %v", err)
 	}
 }
 
@@ -163,6 +293,14 @@ func TestRunRejectsNonRegularFile(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected non-regular file to fail")
 	}
+}
+
+func runArgs(args ...string) error {
+	parsed, err := parseArgs(args)
+	if err != nil {
+		return err
+	}
+	return run(parsed)
 }
 
 func requireRoot(t *testing.T) {
