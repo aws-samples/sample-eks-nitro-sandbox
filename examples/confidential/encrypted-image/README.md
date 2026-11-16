@@ -167,7 +167,8 @@ encrypted-image-demo is Ready: its layers were decrypted inside the sandbox.
 Abridged: `kubectl`'s own `created` and `condition met` lines, the container runtime's
 credential-storage warning and image pull, skopeo's copy progress, everything else the
 policy generator prints (the whole Cedar policy, its warning, the measurement and the
-condition, which steps 7 and 8 show), and the closing list of commands are all left out.
+condition, which steps 7 and 8 show), and the closing list of commands and the note about
+the network readings after it are all left out.
 The account ID is replaced with `<ACCOUNT_ID>` and the kube context with `<your-context>`.
 Two lines are worth reading twice.
 
@@ -394,9 +395,9 @@ eks-nitro-sandbox-genpolicy \
   rendered-pod.yaml
 ```
 
-The admission policy permits creating the `main` container only on an exact match. Here is
-the start of it, from [`policy/policy.generated.yaml`](policy/policy.generated.yaml), without
-the two-space indent the YAML file adds:
+The admission policy permits creating the `main` container only on an exact match. The
+three excerpts below come from [`policy/policy.generated.yaml`](policy/policy.generated.yaml),
+without the two-space indent the YAML file adds. Here is the start of it:
 
 ```text
 // Container: main
