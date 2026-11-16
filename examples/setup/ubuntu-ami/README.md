@@ -5,7 +5,7 @@
     This version builds the AMI from the public Nitro Sandbox releases that the Amazon EKS User
     Guide names: the signed runtime release `0.1.4274.0`, the guest image `1.36.5/2026-11-06` and
     Firecracker `v1.18.0`. Every output block on this page is from one fresh run on a live
-    cluster, `20261113t205002z698a` (see [Evidence](#evidence)), and every clusterless check is
+    cluster, `20261116t161643zc58b` (see [Evidence](#evidence)), and every clusterless check is
     proven both ways (see [Clusterless checks](#clusterless-checks)).
 
 Build a custom Ubuntu 24.04 node AMI for Amazon EKS Pod Isolation, add one dedicated,
@@ -514,7 +514,7 @@ host, running that kernel, what those symbols provide (its result, from `./setup
   [build]     },
   [build]     "btf": {
   [build]       "ok": true,
-  [build]       "detail": "/sys/kernel/btf/vmlinux 6818090 bytes"
+  [build]       "detail": "/sys/kernel/btf/vmlinux 6818209 bytes"
   [build]     },
   [build]     "cma": {
   [build]       "ok": true,
@@ -574,7 +574,7 @@ host, running that kernel, what those symbols provide (its result, from `./setup
 ```
 
 *`./setup.sh` step 7, the build host's `verify-image.py` result from run
-`20261113t205002z698a`, whole: its JSON and its summary line. Each line keeps the `[build]`
+`20261116t161643zc58b`, whole: its JSON and its summary line. Each line keeps the `[build]`
 prefix `./setup.sh` puts on the build host's output; no value was replaced.* Step 9 repeats the
 same 16 checks on a second, fresh instance before `BtfValidated=true` is tagged (that block is
 under [Evidence](#evidence)).
@@ -629,7 +629,7 @@ again, each device and feature probe next to the same probe of something that do
   PASS  containerd on the node passes the 2.1.x to 2.3.x gate this sample is validated on (containerd github.com/containerd/containerd/v2 2.2.1)
 ```
 
-*`./test.sh` section 2/7 of run `20261113t205002z698a`, whole. The `apparmor_` readings are
+*`./test.sh` section 2/7 of run `20261116t161643zc58b`, whole. The `apparmor_` readings are
 the ones section 3/7 checks, shown under [Evidence](#evidence). No value was replaced.*
 
 **5. Build erofs-utils with zstd.** The containerd shim builds each container's EROFS
@@ -754,13 +754,12 @@ resource the RuntimeClass's overhead requests), and stops with a clear message i
 
 ## Evidence
 
-> **Every output block on this page is from one fresh run**, `20261113t205002z698a`, on
-> 2026-11-13: an independent walk of this page from a fresh clone, which ran a full `./setup.sh`
-> (with the fresh-instance verification) and then `./test.sh` (53 passed, 0 failed). The walk
-> ran an earlier commit of this version; the commits since change nothing a stage prints when it
-> succeeds (compared offline, byte for byte apart from timestamps). Lines are copied whole and
-> in order. Values from the test account are shown as placeholders, and the note under each
-> block says which ones.
+> **Every output block on this page is from one fresh run**, `20261116t161643zc58b`, on
+> 2026-11-16: an independent walk of this page from a fresh clone, at the commit that hardened
+> the two test pods (#154), which ran a full `./setup.sh` (with the fresh-instance verification)
+> and then `./test.sh` (53 passed, 0 failed). The only later change is this page's own text,
+> which copied the blocks in. Lines are copied whole and in order. Values from the test account
+> are shown as placeholders, and the note under each block says which ones.
 
 **Node vs guest kernel, and host vs guest block devices.** The same shape Getting started
 uses: the ordinary pod shares the node's kernel, `6.18.56-nitro-ga`, and sees the
@@ -792,9 +791,9 @@ pod reads the host's much longer uptime:
 
 ```text
 == 6/7 guest boundary: boot uptime matches the sandbox pod's age, not the host's =========
-  host uptime (ordinary pod): 223 s
-  sandbox guest uptime:       65 s
-  sandbox pod age:            72 s (started 2026-11-13T22:31:24Z)
+  host uptime (ordinary pod): 291 s
+  sandbox guest uptime:       77 s
+  sandbox pod age:            86 s (started 2026-11-16T18:05:14Z)
   PASS  the sandbox guest booted with its pod (uptime <= pod age + 120 s)
   PASS  the sandbox guest booted after the host (guest uptime < host uptime)
 ```
@@ -842,11 +841,11 @@ blueprint. Written by `scripts/verify-fresh-instance.sh` via `scripts/lib/btf-ta
 (`ManagedBy=<RESOURCE_PREFIX>` and `RunId=<RUN_ID>` checked first).
 
 ```text
-[2026-11-13T22:18:34Z] Step 9/10: fresh-instance verification on a SECOND instance, then tag BtfValidated=true on success (scripts/verify-fresh-instance.sh)
-[2026-11-13T22:18:34Z] launching fresh verification instance ubuntu-ami-sample-20261113t205002z698a-verify from <AMI_ID>
-LAUNCH SPEC OK: <repository>/tmp/issue10/run/out/runs/20261113t205002z698a/verify-instance-launch.json
-[2026-11-13T22:18:36Z] instance: <INSTANCE_ID>
-[2026-11-13T22:21:41Z] running: verify-image.py
+[2026-11-16T17:46:26Z] Step 9/10: fresh-instance verification on a SECOND instance, then tag BtfValidated=true on success (scripts/verify-fresh-instance.sh)
+[2026-11-16T17:46:26Z] launching fresh verification instance ubuntu-ami-sample-20261116t161643zc58b-verify from <AMI_ID>
+LAUNCH SPEC OK: <repository>/tmp/issue10/run/out/runs/20261116t161643zc58b/verify-instance-launch.json
+[2026-11-16T17:46:28Z] instance: <INSTANCE_ID>
+[2026-11-16T17:50:33Z] running: verify-image.py
 Success
 {
   "image_configuration": "PASS",
@@ -862,7 +861,7 @@ Success
     },
     "btf": {
       "ok": true,
-      "detail": "/sys/kernel/btf/vmlinux 6818090 bytes"
+      "detail": "/sys/kernel/btf/vmlinux 6818209 bytes"
     },
     "cma": {
       "ok": true,
@@ -920,12 +919,12 @@ Success
 }
 image_configuration: PASS (16 checks)
 
-[2026-11-13T22:26:45Z] running: 40-smoke.sh
+[2026-11-16T17:59:35Z] running: 40-smoke.sh
 Success
-crw-rw---- 1 root root  10, 260 Nov 13 22:19 /dev/nitro_enclaves
--rwxr-xr-x 1 root root  3921872 Nov 13 21:19 /usr/bin/firecracker
--rw-r--r-- 1 root root 13008970 Nov 13 21:19 /var/lib/nitro-sandbox-images/latest.eif
-lrwxrwxrwx 1 root root       15 Nov 13 21:19 /var/lib/nitro-sandbox-images/rootfs.ext4 -> latest-disk.img
+crw-rw---- 1 root root  10, 260 Nov 16 17:47 /dev/nitro_enclaves
+-rwxr-xr-x 1 root root  3921872 Nov 16 16:49 /usr/bin/firecracker
+-rw-r--r-- 1 root root 13008970 Nov 16 16:49 /var/lib/nitro-sandbox-images/latest.eif
+lrwxrwxrwx 1 root root       15 Nov 16 16:49 /var/lib/nitro-sandbox-images/rootfs.ext4 -> latest-disk.img
 PUT /machine-config -> 204
 PUT /boot-source -> 204
 PUT /drives/rootfs -> 204
@@ -936,11 +935,11 @@ PUT /enclave -> 204
 PUT /actions -> 204
 vsock handshake reply: 'OK 1073741824'
 --- process alive: yes; agent reachable: 1 after 3s
-smoke 2026-11-13T22:26:52Z: PASS; debug_mode=false
+smoke 2026-11-16T17:59:41Z: PASS; debug_mode=false
 
-[2026-11-13T22:27:03Z] terminating verification instance <INSTANCE_ID>
-[2026-11-13T22:27:36Z] fresh-instance verification PASS
-[2026-11-13T22:27:38Z] tagged <AMI_ID> BtfValidated=true (fresh-instance verification passed; ManagedBy=ubuntu-ami-sample preserved)
+[2026-11-16T17:59:52Z] terminating verification instance <INSTANCE_ID>
+[2026-11-16T18:00:25Z] fresh-instance verification PASS
+[2026-11-16T18:00:27Z] tagged <AMI_ID> BtfValidated=true (fresh-instance verification passed; ManagedBy=ubuntu-ami-sample preserved)
 ```
 
 *`./setup.sh` step 9, from the step line to the `BtfValidated=true` tag line, whole. This run
@@ -1005,11 +1004,11 @@ and the profile's `DENIED` line would never be logged.
   scoped pod: write to /etc/ubuntu-ami-sample-write-control: WRITTEN
   PASS  ACCEPT: the scoped pod's write to /etc/shadow is refused with EACCES (Permission denied)
   PASS  REJECT: the same pod's write to a path the profile does not deny succeeds (so the refusal is the profile's)
-  node DENIED lines since T0=1794609122 for that write: ubuntu-ami-sample-profile 3, profile-that-does-not-exist 0
+  node DENIED lines since T0=1794852367 for that write: ubuntu-ami-sample-profile 3, profile-that-does-not-exist 0
   PASS  ACCEPT: the node's kernel logged the profile's DENIED line for that write since T0
   PASS  REJECT: the same count for a profile the node never loaded is 0
-  scoped pod deleted by its exact name: gone=yes after 1 s (grace 15 s); signal DENIED lines since T0: ubuntu-ami-sample-profile 0, profile-that-does-not-exist 0
-  PASS  ACCEPT: deleted by its exact name, the scoped pod is gone within its grace period (1 s <= 15 s)
+  scoped pod deleted by its exact name: gone=yes after 2 s (grace 15 s); signal DENIED lines since T0: ubuntu-ami-sample-profile 0, profile-that-does-not-exist 0
+  PASS  ACCEPT: deleted by its exact name, the scoped pod is gone within its grace period (2 s <= 15 s)
   PASS  ACCEPT: the node logged no DENIED signal under ubuntu-ami-sample-profile since T0 (the profile lets runc stop the pod)
   PASS  REJECT: the same signal count for a profile the node never loaded is 0
 ```
