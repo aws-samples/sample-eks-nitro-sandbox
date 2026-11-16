@@ -7,18 +7,18 @@ import unittest
 from unittest import mock
 
 from adapter import (
-    AGW_CA_PATH,
     AGW_CA_MOUNT_PATH,
+    AGW_CA_PATH,
     AGW_CA_VOLUME,
-    AdmissionError,
     LINK_INIT_NAME,
     NODE_CA_ENV,
     OPENCLAW_HOME_PATH,
+    RUNTIME_TMP_VOLUME,
     SHM_MOUNT_PATH,
     TMP_MOUNT_PATH,
-    RUNTIME_TMP_VOLUME,
     TMPDIR_ENV,
     TMPDIR_PATH,
+    AdmissionError,
     build_patch,
 )
 
@@ -343,12 +343,14 @@ class BuildPatchTests(unittest.TestCase):
         for image in invalid_images:
             with self.subTest(image=image):
                 environment = {} if image is None else {OWNERSHIP_INIT_IMAGE_ENV: image}
-                with mock.patch.dict(os.environ, environment, clear=True):
-                    with self.assertRaisesRegex(
+                with (
+                    mock.patch.dict(os.environ, environment, clear=True),
+                    self.assertRaisesRegex(
                         AdmissionError,
                         OWNERSHIP_INIT_IMAGE_ENV,
-                    ):
-                        build_patch(target_pod())
+                    ),
+                ):
+                    build_patch(target_pod())
 
     def test_runtime_container_remains_non_root_and_unwrapped(self) -> None:
         pod = target_pod()
@@ -818,9 +820,8 @@ class BuildPatchTests(unittest.TestCase):
         cases.append(wrong_runtime)
 
         for pod in cases:
-            with self.subTest(pod=pod):
-                with self.assertRaises(AdmissionError):
-                    build_patch(pod)
+            with self.subTest(pod=pod), self.assertRaises(AdmissionError):
+                build_patch(pod)
 
     def test_refuses_dedicated_workspace(self) -> None:
         pod = target_pod()

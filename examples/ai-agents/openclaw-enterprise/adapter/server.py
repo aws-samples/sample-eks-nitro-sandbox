@@ -138,13 +138,13 @@ class AdmissionHandler(BaseHTTPRequestHandler):
     server_version = "oce-nitro-adapter"
     sys_version = ""
 
-    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+    def do_GET(self) -> None:
         if urlsplit(self.path).path not in {"/healthz", "/readyz"}:
             self.send_error(404)
             return
         self._write_json(200, {"status": "ok"})
 
-    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+    def do_POST(self) -> None:
         path = urlsplit(self.path).path
         if path not in {"/mutate", "/validate"}:
             self.send_error(404)
