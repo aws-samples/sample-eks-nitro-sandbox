@@ -1,0 +1,62 @@
+# app-standard: the control. An ordinary pod running the app from app.yaml. It is
+# identical to app-sandboxed except that it has no runtimeClassName, so its
+# containers share the node's kernel and write straight onto the node:
+#
+#   - the emptyDir that holds /var/log/app is a folder on the node, under
+#     /var/lib/kubelet/pods/<pod uid>/volumes/kubernetes.io~empty-dir/app-logs/;
+#   - /dev/log is the node's own syslog socket (a hostPath), so a syslog line
+#     lands in the node's journal;
+#   - the segfault is printed by the node's kernel, into the node's journal.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-standard
+  namespace: sandbox-logging
+  labels:
+    app: logging-app
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"   # keep consolidation from evicting this bare pod mid-run
+spec:
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: app
+      image: public.ecr.aws/docker/library/python:3.12-slim
+      imagePullPolicy: IfNotPresent
+      command: ["python3", "-u", "/app/app.py"]
+      env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: app
+          mountPath: /app
+          readOnly: true
+        - name: app-logs
+          mountPath: /var/log/app
+        - name: dev-log
+          mountPath: /dev/log
+  volumes:
+    - name: app
+      configMap:
+        name: logging-app
+    - name: app-logs
+      emptyDir: {}
+    # The node's syslog socket. Apps that log with syslog(3) are often given it
+    # this way so their lines reach the node's journal.
+    - name: dev-log
+      hostPath:
+        path: /dev/log
+        type: Socket

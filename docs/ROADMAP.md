@@ -19,6 +19,8 @@ examples/
 ├── isolation/
 │   ├── network-policy/
 │   └── sandbox-limits/
+├── observability/
+│   └── logging/
 ├── policy/
 │   └── cedar-policy/
 ├── ai-agents/
@@ -96,6 +98,10 @@ for an existing cluster, not creating or managing the cluster itself.
 
 - [network-policy](../examples/isolation/network-policy/README.md) (available now): a standard egress NetworkPolicy enforced on a sandboxed pod, side by side with an ordinary pod. Spec: [#15](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/15).
 - [sandbox-limits](../examples/isolation/sandbox-limits/README.md) (available now): the per-sandbox DNS query-rate limit and the per-pod outbound connection limit, and how to recognise each one when a workload reaches it. Spec: [#16](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/16).
+
+### Observability (`observability`)
+
+- [logging](../examples/observability/logging/README.md) (available now): which logs leave a sandboxed pod on their own (stdout and stderr) and which do not (files, syslog and the guest kernel log), side by side with an ordinary pod, and a log sidecar in the same pod that ships all three. Spec: [#244](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/244).
 
 ### Policy (`policy`)
 

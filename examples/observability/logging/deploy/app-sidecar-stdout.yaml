@@ -1,0 +1,112 @@
+# app-sidecar-stdout: app-sandboxed with the fix. The app is unchanged except that
+# it sends syslog to a socket on a shared emptyDir instead of the node's /dev/log.
+# Two containers join it in the same sandbox:
+#
+#   kernel-log  copies the guest kernel log to a shared file. Reading it needs
+#               CAP_SYSLOG and nothing more: the container runs as UID 0 with
+#               every other capability dropped. It reads the guest's kernel,
+#               not the node's.
+#   fluent-bit  reads the app's files, the syslog socket and the kernel log file,
+#               and writes every record to its own stdout as one JSON line, which
+#               leaves the sandbox like any container's stdout.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-sidecar-stdout
+  namespace: sandbox-logging
+  labels:
+    app: logging-app
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"   # keep consolidation from evicting this bare pod mid-run
+spec:
+  runtimeClassName: isolated-sandbox
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: app
+      image: public.ecr.aws/docker/library/python:3.12-slim
+      imagePullPolicy: IfNotPresent
+      command: ["python3", "-u", "/app/app.py"]
+      env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: SYSLOG_SOCKET
+          value: /run/syslog/log
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: app
+          mountPath: /app
+          readOnly: true
+        - name: app-logs
+          mountPath: /var/log/app
+        - name: syslog
+          mountPath: /run/syslog
+    - name: kernel-log
+      image: public.ecr.aws/docker/library/python:3.12-slim
+      imagePullPolicy: IfNotPresent
+      command: ["python3", "-u", "/app/kernel-log.py"]
+      securityContext:
+        runAsUser: 0
+        runAsNonRoot: false
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+          add: ["SYSLOG"]
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: app
+          mountPath: /app
+          readOnly: true
+        - name: kernel-logs
+          mountPath: /var/log/kernel
+    - name: fluent-bit
+      image: public.ecr.aws/aws-observability/aws-for-fluent-bit:3.5.8
+      imagePullPolicy: IfNotPresent
+      command: ["/fluent-bit/bin/fluent-bit", "-c", "/fluent-bit/config/stdout.conf"]
+      env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: fluent-bit-config
+          mountPath: /fluent-bit/config
+          readOnly: true
+        - name: app-logs
+          mountPath: /var/log/app
+          readOnly: true
+        - name: kernel-logs
+          mountPath: /var/log/kernel
+          readOnly: true
+        - name: syslog
+          mountPath: /run/syslog
+  volumes:
+    - name: app
+      configMap:
+        name: logging-app
+    - name: fluent-bit-config
+      configMap:
+        name: logging-fluent-bit
+    - name: app-logs
+      emptyDir: {}
+    - name: kernel-logs
+      emptyDir: {}
+    - name: syslog
+      emptyDir: {}
