@@ -659,6 +659,31 @@ global_settings:
       path: 'examples/confidential/s3-encrypted-file/deploy/plain-pod.yaml'
       reason: 'Ordinary control pod: same image and code as the sandboxed pod, readings only; plain on purpose (plain-pod.yaml:11)'
       expiration: '2027-12-31'
+    # s3-encrypted-file run-to-completion pods (#144): no probe to gate and no network policy, by design.
+    - rule_id: CKV2_K8S_6
+      path: 'examples/confidential/s3-encrypted-file/deploy/credentials-pod.yaml'
+      reason: 'Ordinary one-shot control pod that must reach S3, STS and KMS for the refusal it shows (credentials-pod.yaml:13-27,97-124); the sample ships no network policy (AGENTS.md, Security rules)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/confidential/s3-encrypted-file/deploy/credentials-pod.yaml'
+      reason: 'One-shot pod (restartPolicy: Never, credentials-pod.yaml:27) with a bounded retry loop ending in the marker setup.sh waits for (credentials-pod.yaml:112-124); a liveness kill would end it Failed and lose that answer'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/confidential/s3-encrypted-file/deploy/credentials-pod.yaml'
+      reason: 'One-shot pod with no port and no Service (credentials-pod.yaml:27,97-124); setup.sh reads its log marker, not Ready (setup.sh:907), so a readiness probe gates nothing'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/confidential/s3-encrypted-file/deploy/pod.yaml'
+      reason: 'Confidential pod that must reach S3 and KMS to decrypt (pod.yaml:21,28-31,62-69); the sample ships no network policy (AGENTS.md, Security rules)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/confidential/s3-encrypted-file/deploy/pod.yaml'
+      reason: 'Decrypts and exits (restartPolicy: Never, pod.yaml:28-31): its terminal phase is the result, and a liveness kill would end it Failed like a refused key'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/confidential/s3-encrypted-file/deploy/pod.yaml'
+      reason: 'Decrypts and exits with no port and no Service (pod.yaml:28-31); setup.sh waits for a terminal phase, not Ready (setup.sh:841), so a readiness probe gates nothing'
+      expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/confidential/secrets-manager-secret/deploy/plain-pod.yaml'
       reason: 'Ordinary control pod: same image and readings as the sandboxed pod; plain on purpose (plain-pod.yaml:12)'
@@ -1606,31 +1631,6 @@ global_settings:
     - rule_id: CKV_K8S_9
       path: 'examples/confidential/encrypted-image/deploy/pod.yaml'
       reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in #142'
-      expiration: '2027-01-31'
-    # Baseline: confidential/s3-encrypted-file
-    - rule_id: CKV2_K8S_6
-      path: 'examples/confidential/s3-encrypted-file/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in #144'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/confidential/s3-encrypted-file/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in #144'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_9
-      path: 'examples/confidential/s3-encrypted-file/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in #144'
-      expiration: '2027-01-31'
-    - rule_id: CKV2_K8S_6
-      path: 'examples/confidential/s3-encrypted-file/deploy/pod.yaml'
-      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in #144'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/confidential/s3-encrypted-file/deploy/pod.yaml'
-      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in #144'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_9
-      path: 'examples/confidential/s3-encrypted-file/deploy/pod.yaml'
-      reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in #144'
       expiration: '2027-01-31'
     # Baseline: confidential/secrets-manager-secret
     - rule_id: CKV2_K8S_6
