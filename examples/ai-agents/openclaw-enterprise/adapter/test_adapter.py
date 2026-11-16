@@ -9,6 +9,7 @@ from adapter import (
     AGW_CA_MOUNT_PATH,
     AGW_CA_VOLUME,
     AdmissionError,
+    CLIENT_CREDENTIAL_PATH,
     HOME_MOUNT_PATH,
     HOME_WRAPPER_NAME,
     LINK_INIT_NAME,
@@ -279,6 +280,11 @@ class BuildPatchTests(unittest.TestCase):
         self.assertIn(HOME_MOUNT_PATH, wrapper_script)
         self.assertIn(f"{OPENCLAW_HOME_PATH}/agents", wrapper_script)
         self.assertIn(f"{OPENCLAW_HOME_PATH}/sessions", wrapper_script)
+        self.assertIn(f"[ -L {CLIENT_CREDENTIAL_PATH} ]", wrapper_script)
+        self.assertIn(
+            f"/usr/bin/chmod 0600 -- {CLIENT_CREDENTIAL_PATH} || exit 1",
+            wrapper_script,
+        )
         self.assertIn("--bounding-set=-all", wrapper_script)
 
     def test_rejects_runtime_without_safe_drop_privilege_contract(self) -> None:
@@ -415,6 +421,12 @@ class BuildPatchTests(unittest.TestCase):
             "/usr/bin/chmod",
             "/usr/bin/chown",
             "/usr/bin/setpriv",
+            "/lib",
+            "/lib64",
+            "/usr/lib",
+            "/usr/lib64",
+            "/etc/ld.so.cache",
+            "/etc/ld.so.preload",
         ):
             with self.subTest(mount_path=mount_path):
                 pod = target_pod()
@@ -423,6 +435,23 @@ class BuildPatchTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(
                     AdmissionError, "trusted bootstrap path"
+                ):
+                    build_patch(pod)
+
+    def test_rejects_unsafe_bootstrap_environment(self) -> None:
+        for name in (
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "GCONV_PATH",
+            "GLIBC_TUNABLES",
+        ):
+            with self.subTest(name=name):
+                pod = target_pod()
+                pod["spec"]["containers"][-1].setdefault("env", []).append(
+                    {"name": name, "value": "attacker-controlled"}
+                )
+                with self.assertRaisesRegex(
+                    AdmissionError, f"unsafe bootstrap environment {name}"
                 ):
                     build_patch(pod)
 

@@ -17,6 +17,7 @@ DEDICATED_WORKSPACE_VOLUME = "openclaw-workspace"
 STATE_ROOT = "/gateway-state"
 RUNTIME_ROOT = "/runtime-state"
 OPENCLAW_HOME_PATH = "/home/node/.openclaw"
+CLIENT_CREDENTIAL_PATH = f"{OPENCLAW_HOME_PATH}/client/credentials.sqlite"
 LINK_INIT_NAME = "nitro-link-gateway-state"
 AGW_CA_VOLUME = "agentgateway-ca"
 AGW_CA_CONFIG_MAP = "agentgateway-ca"
@@ -33,10 +34,17 @@ RUNTIME_GID = 1000
 HOME_MOUNT_PATH = "/home/node"
 HOME_WRAPPER_NAME = "nitro-home-setup"
 TRUSTED_BOOTSTRAP_PATHS = (
-    "/bin/sh",
-    "/usr/bin/chmod",
-    "/usr/bin/chown",
-    "/usr/bin/setpriv",
+    "/bin",
+    "/usr/bin",
+    "/lib",
+    "/lib64",
+    "/usr/lib",
+    "/usr/lib64",
+    "/etc/ld.so.cache",
+    "/etc/ld.so.preload",
+)
+UNSAFE_BOOTSTRAP_ENV_NAMES = frozenset(
+    {"GCONV_PATH", "GLIBC_TUNABLES"}
 )
 
 LINK_SCRIPT = r"""
@@ -118,6 +126,16 @@ def _runtime_environment(container: dict[str, Any], location: str) -> list[Any]:
     environment = container.get("env", [])
     if not isinstance(environment, list):
         raise AdmissionError(f"{location}.env must be a list")
+    for entry in environment:
+        if not isinstance(entry, dict):
+            raise AdmissionError(f"{location}.env entries must be objects")
+        name = entry.get("name")
+        if not _is_nonempty_string(name):
+            raise AdmissionError(f"{location}.env entries must have a name")
+        if name.startswith("LD_") or name in UNSAFE_BOOTSTRAP_ENV_NAMES:
+            raise AdmissionError(
+                f"{location} configures unsafe bootstrap environment {name}"
+            )
     required = {
         NODE_CA_ENV: AGW_CA_PATH,
         TMPDIR_ENV: TMPDIR_PATH,
@@ -195,6 +213,12 @@ def _runtime_wrapper(
         f'/usr/bin/chmod 0700 -- "$path" || exit 1; '
         f'/usr/bin/chown {RUNTIME_UID}:{RUNTIME_GID} -- "$path" || exit 1; '
         "done; "
+        f"if [ -L {shlex.quote(CLIENT_CREDENTIAL_PATH)} ]; then exit 1; "
+        f"elif [ -e {shlex.quote(CLIENT_CREDENTIAL_PATH)} ]; then "
+        f"/usr/bin/chown {RUNTIME_UID}:{RUNTIME_GID} -- "
+        f"{shlex.quote(CLIENT_CREDENTIAL_PATH)} || exit 1; "
+        f"/usr/bin/chmod 0600 -- {shlex.quote(CLIENT_CREDENTIAL_PATH)} "
+        "|| exit 1; fi; "
         f'exec /usr/bin/setpriv --reuid={RUNTIME_UID} --regid={RUNTIME_GID} '
         "--clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all "
         '-- "$@"'

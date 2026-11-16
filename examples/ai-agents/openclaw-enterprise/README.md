@@ -70,8 +70,10 @@ it:
   executables. Permission repair fails closed: every `chmod` and `chown` must
   succeed before OCE starts. The wrapper repairs `/home/node`,
   `/home/node/.openclaw`, and each direct
-  `/home/node/.openclaw/<target>` path, then runs OCE's original command as UID
-  and GID 1000 with no supplementary groups or capabilities.
+  `/home/node/.openclaw/<target>` path. It also restores a persisted
+  `client/credentials.sqlite` file to UID and GID 1000 with mode `0600`, then
+  runs OCE's original command as UID and GID 1000 with no supplementary groups
+  or capabilities.
 
 Nitro presents OCE's `/tmp` `subPath` mount as group- and world-writable without
 the sticky bit, which OpenClaw's secure temporary-directory check rejects. The
@@ -96,9 +98,13 @@ UID transition also clears the effective and permitted sets before OCE starts.
 The ownership changes apply only to `/home/node`, `/home/node/.openclaw`, and
 the mapped target directories below it. Repairs address each direct
 `/home/node/.openclaw/<target>` path rather than an alias symlink, and do not
-recursively rewrite persisted files. Treat this short root bootstrap as an
-explicit compatibility trade-off until OCE and Nitro Pods expose a native
-storage contract.
+recursively rewrite persisted files. The persisted
+`/home/node/.openclaw/client/credentials.sqlite` file is the exception: an
+`fsGroup` mount can widen it to `0660`, which OpenClaw rejects on restart. The
+wrapper fails closed if that path is a symlink; otherwise, it restores ownership
+to UID and GID 1000 and mode `0600` before dropping privileges. Treat this
+short root bootstrap as an explicit compatibility trade-off until OCE and Nitro
+Pods expose a native storage contract.
 
 The tenant script renders the current AgentGateway ClusterIP as a `/32` alongside
 the namespace-and-pod selector. In the live EKS Auto Mode test, the generated
