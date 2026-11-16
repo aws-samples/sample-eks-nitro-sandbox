@@ -4,49 +4,91 @@ metadata:
   name: oce-agent-contract
   namespace: oce-tenant-contract
   labels:
-    openclaw.dev/workload-role: agent
+    openclaw.dev/workload-role: gateway
 spec:
   serviceAccountName: default
   initContainers:
     - name: setup-0
       image: example.invalid/oce-runtime:test
+      securityContext: &runtime-security
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: true
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
     - name: setup-1
       image: example.invalid/oce-runtime:test
+      securityContext: *runtime-security
     - name: setup-2
       image: example.invalid/oce-runtime:test
+      securityContext: *runtime-security
     - name: setup-3
       image: example.invalid/oce-runtime:test
+      securityContext: *runtime-security
     - name: setup-4
       image: example.invalid/oce-runtime:test
+      securityContext: *runtime-security
     - name: setup-5
       image: example.invalid/oce-runtime:test
+      securityContext: *runtime-security
     - name: setup-6
       image: example.invalid/oce-runtime:test
+      securityContext: *runtime-security
     - name: setup-7
       image: example.invalid/oce-runtime:test
+      securityContext: *runtime-security
     - name: prepare-private-state
       image: example.invalid/oce-runtime:test
+      imagePullPolicy: IfNotPresent
+      command:
+        - /usr/bin/tini
+        - -s
+        - --
+        - node
+        - -e
+      args:
+        - |
+          const { chmodSync, mkdirSync } = require("node:fs");
+          for (const path of ["/runtime-state/home","/runtime-temporary/tmp","/runtime-state/home/gateway-codex-home","/gateway-state/sessions","/runtime-state/home/.openclaw","/gateway-state/agents"]) {
+            mkdirSync(path, { recursive: true });
+            chmodSync(path, 0o700);
+          }
+          mkdirSync("/runtime-temporary/tmp", { recursive: true, mode: 0o700 });
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
       volumeMounts:
         - name: runtime-state
           mountPath: /runtime-state
           mountPropagation: HostToContainer
         - name: openclaw-gateway-state
           mountPath: /gateway-state
+        - name: runtime-temporary
+          mountPath: /runtime-temporary
   containers:
     - name: helper-0
       image: example.invalid/oce-runtime:test
+      securityContext: *runtime-security
     - name: helper-1
       image: example.invalid/oce-runtime:test
+      securityContext: *runtime-security
     - name: helper-2
       image: example.invalid/oce-runtime:test
-      volumeMounts:
-        - name: openclaw-gateway-state
-          mountPath: /home/node/.openclaw/agents
-          subPath: agents
+      securityContext: *runtime-security
     - name: helper-3
       image: example.invalid/oce-runtime:test
-    - name: agent
+      securityContext: *runtime-security
+    - name: gateway
       image: example.invalid/oce-runtime:test
+      securityContext: *runtime-security
       env:
         - name: OPENAI_API_KEY
           valueFrom:
@@ -63,16 +105,19 @@ spec:
           subPathExpr: $(TENANT)/workspace
           readOnly: true
           recursiveReadOnly: Enabled
+        - name: runtime-temporary
+          mountPath: /tmp
+          subPath: tmp
         - name: openclaw-gateway-state
           mountPath: /home/node/.openclaw/agents
           subPath: agents
-          readOnly: true
-          recursiveReadOnly: Enabled
         - name: openclaw-gateway-state
           mountPath: /home/node/.openclaw/sessions
           subPath: sessions
   volumes:
     - name: runtime-state
+      emptyDir: {}
+    - name: runtime-temporary
       emptyDir: {}
     - name: workspace
       emptyDir: {}

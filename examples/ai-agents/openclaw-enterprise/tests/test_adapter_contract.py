@@ -11,6 +11,7 @@ import yaml
 SAMPLE = pathlib.Path(__file__).resolve().parent.parent
 DEPLOY = SAMPLE / "deploy"
 RENDER_SCRIPT = SAMPLE / "scripts" / "render-adapter-manifest.sh"
+ADMISSION_FIXTURE = SAMPLE / "tests" / "fixtures" / "oce-agent-pod.yaml"
 
 
 def _yaml_documents(path: pathlib.Path) -> list[dict[str, Any]]:
@@ -57,6 +58,32 @@ def test_webhook_matches_all_pods_in_oce_namespaces_and_fails_closed() -> None:
             "scope": "Namespaced",
         }
     ]
+
+
+def test_supported_admission_fixture_matches_current_adapter_input() -> None:
+    pod = _yaml_documents(ADMISSION_FIXTURE)[0]
+    spec = pod["spec"]
+
+    assert pod["metadata"]["labels"]["openclaw.dev/workload-role"] == "gateway"
+    assert len(
+        [
+            container
+            for container in spec["containers"]
+            if container["name"] == "gateway"
+        ]
+    ) == 1
+    assert len(
+        [
+            container
+            for container in spec["initContainers"]
+            if container["name"] == "prepare-private-state"
+        ]
+    ) == 1
+
+    volumes = {volume["name"]: volume for volume in spec["volumes"]}
+    assert "persistentVolumeClaim" in volumes["openclaw-gateway-state"]
+    assert "emptyDir" in volumes["runtime-state"]
+    assert "emptyDir" in volumes["runtime-temporary"]
 
 
 def test_ephemeral_container_updates_are_denied_fail_closed() -> None:
