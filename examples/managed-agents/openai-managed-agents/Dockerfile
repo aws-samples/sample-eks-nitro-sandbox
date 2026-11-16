@@ -39,10 +39,12 @@ COPY pyproject.toml ./
 COPY src ./src
 RUN pip install .
 
-# Run as a non-root user. /workspace is the executor's working directory; the
-# pod mounts an emptyDir over it, so it is fresh for every claimed session.
-RUN useradd --uid 1000 --create-home --home-dir /workspace agent
-USER 1000
+# Run as a non-root user with a high UID, 10001, so it does not share the low
+# IDs a node's own accounts typically use; both manifests run the pod as this
+# UID. /workspace is the executor's working directory; the pod mounts an
+# emptyDir over it, so it is fresh for every claimed session.
+RUN useradd --uid 10001 --create-home --home-dir /workspace agent
+USER 10001
 WORKDIR /workspace
 # Library and codex caches land in the writable workspace, not on the read-only
 # root filesystem the pod runs with.

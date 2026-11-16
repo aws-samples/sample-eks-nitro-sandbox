@@ -33,6 +33,9 @@
 #
 #   scripts/test-apparmor-checks.sh
 set -uo pipefail
+# A reader's own config.env (in the sample folder or ~/ubuntu-ami/) must not change what this suite
+# tests: scripts/lib/common.sh skips it while this test hook is set.
+export UBUNTU_AMI_TESTS_IGNORE_CONFIG_ENV=1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAMPLE="$(cd "$HERE/.." && pwd)"
 REPO_ROOT_REAL="$(cd "$SAMPLE/../../.." && pwd)"
@@ -62,6 +65,10 @@ cat > "$STUB/aws" <<'SH'
 printf 'aws %s\n' "$*" >> "$STUB_LOG"
 case "$1 $2" in
   "eks describe-cluster") printf '%s\n' '{"cluster": {"endpoint": "https://EXAMPLE0123.gr7.us-west-2.eks.amazonaws.com"}}' ;;
+  "ec2 describe-images")
+    [ "${STUB_AMI_DESCRIBE:-ok}" = ok ] || { echo "An error occurred (UnauthorizedOperation) when calling the DescribeImages operation" >&2; exit 254; }
+    case "$*" in *"--image-ids ami-0aa1b2c3d4e5f6789"*) ;; *) echo "STUB aws: describe-images for another AMI: $*" >&2; exit 97 ;; esac
+    printf '{"Images": [{"ImageId": "ami-0aa1b2c3d4e5f6789", "Tags": [{"Key": "ManagedBy", "Value": "ubuntu-ami-sample"}, {"Key": "GuestKernelRelease", "Value": "%s"}]}]}\n' "${STUB_AMI_GUEST_KERNEL-6.18.56}" ;;
   *) echo "STUB aws: unexpected call: $*" >&2; exit 97 ;;
 esac
 SH
@@ -215,7 +222,7 @@ if a[:1] == ["exec"]:
         out(E("STUB_SCOPED_SHADOW", "sh: line 1: /etc/shadow: Permission denied\nWRITE-FAILED") + "\n")
     if pod == "apparmor-scoped-pod" and "write-control" in cmd:
         out(E("STUB_SCOPED_CONTROL", "WRITTEN") + "\n")
-    if cmd == "uname -r": out("6.18.56-nitro-ga\n" if pod == "ordinary-pod" else "6.18.54\n")
+    if cmd == "uname -r": out("6.18.56-nitro-ga\n" if pod == "ordinary-pod" else E("STUB_SBX_UNAME", "6.18.56") + "\n")
     if "/sys/block" in cmd: out("nvme0n1 " if pod == "ordinary-pod" else "vda vdb vdc ")
     if cmd == "cat /proc/uptime": out("50000.00 1.00\n" if pod == "ordinary-pod" else "100.00 1.00\n")
 if a[:1] == ["debug"]:
@@ -326,7 +333,7 @@ t() {
 }
 # The run's record, as setup.sh writes it: test.sh acts only on a run this checkout set up.
 RUN_DIR="$ISSUE10_RUN_DIR/out/runs/testrun1"; mkdir -p "$RUN_DIR"
-GOOD_RECORD=$'RUN_ID=testrun1\nRESOURCE_PREFIX=ubuntu-ami-sample\nNODEGROUP_NAME=ubuntu-ami-sample-testrun1-ng\nNAMESPACE=ubuntu-ami-sample\nCLUSTER_NAME=example-cluster\nAWS_REGION=us-west-2'
+GOOD_RECORD=$'RUN_ID=testrun1\nRESOURCE_PREFIX=ubuntu-ami-sample\nNODEGROUP_NAME=ubuntu-ami-sample-testrun1-ng\nNAMESPACE=ubuntu-ami-sample\nCLUSTER_NAME=example-cluster\nAWS_REGION=us-west-2\nAMI_ID=ami-0aa1b2c3d4e5f6789'
 printf '%s\n' "$GOOD_RECORD" > "$RUN_DIR/run-state.env"
 # line <case> <assertion text, a fixed string>: PASS or FAIL, as test.sh printed it for that assertion
 line() { grep -F -- "$2" "$WORK/$1.log" | grep -E '^  (PASS|FAIL)  ' | head -n 1 | awk '{print $1}'; }
@@ -344,7 +351,9 @@ A_GONE="ACCEPT: deleted by its exact name, the scoped pod is gone within its gra
 A_SIGNAL="ACCEPT: the node logged no DENIED signal under ubuntu-ami-sample-profile since T0"
 A_BOGUS_SIGNAL="REJECT: the same signal count for a profile the node never loaded is 0"
 A_REJ="REJECT: a pod naming an unloaded AppArmor profile is refused on the sandbox node: CreateContainerError"
-A_SBX="the sandbox pod runs with appArmorProfile Unconfined, as the GA build notes require"
+A_SBX="the sandbox pod runs with appArmorProfile Unconfined, as an AppArmor host requires"
+A_GUEST="the sandbox pod runs the guest kernel 6.18.56, not the host's"
+A_AMIGUEST="the sandbox pod's kernel is the AMI's GuestKernelRelease tag"
 A_ANNOT='the sandbox pod carries sandbox.amazonaws.com/network-isolated="true" (read back from the API)'
 A_ADDR="only loopback has an address in the sandbox"
 A_ROUTE="the sandbox has no route"
@@ -356,7 +365,7 @@ echo "== 1/3 ACCEPT: the scoped profile on an ordinary pod, the sandbox Unconfin
 rc=0; t good || rc=$?
 check "ACCEPT the good node: the real test.sh passes every check" 0 "$rc" "$WORK/good.log" '^passed [0-9]+, failed 0$'
 for a in "$A_LOADED" "$A_SHA" "$A_RUNS" "$A_ATTR" "$A_ORD" "$A_EACCES" "$A_CONTROL" "$A_DENIED" "$A_BOGUS" "$A_GONE" \
-         "$A_SIGNAL" "$A_BOGUS_SIGNAL" "$A_REJ" "$A_SBX" "$A_ANNOT" "$A_ADDR" "$A_ROUTE" "$A_IFDOWN" "$A_NOCONN" "$A_CONNCTL"; do
+         "$A_SIGNAL" "$A_BOGUS_SIGNAL" "$A_REJ" "$A_SBX" "$A_GUEST" "$A_AMIGUEST" "$A_ANNOT" "$A_ADDR" "$A_ROUTE" "$A_IFDOWN" "$A_NOCONN" "$A_CONNCTL"; do
   [ "$(line good "$a")" = PASS ]; check "  ... PASS: $a" 0 $? "$WORK/good.log"
 done
 grep -qx '  kubernetes Service ClusterIP (read from the API): 192.0.2.20' "$WORK/good.log" \
@@ -433,6 +442,9 @@ rejunanchored|STUB_REJ=unanchored|$A_REJ
 rejimagepull|STUB_REJ=imagepull|$A_REJ
 sbxlocalhost|STUB_SBX_TYPE=Localhost|$A_SBX
 sbxfailed|STUB_SBX_PHASE=Failed|$A_SBX
+amitaghost|STUB_AMI_GUEST_KERNEL=6.18.56-nitro-ga|$A_AMIGUEST
+amitagempty|STUB_AMI_GUEST_KERNEL=|$A_AMIGUEST
+amidescribefail|STUB_AMI_DESCRIBE=fail|$A_AMIGUEST
 annotfalse|STUB_SBX_ANNOT=false|$A_ANNOT
 annotabsent|STUB_SBX_ANNOT=|$A_ANNOT
 addr4extra|STUB_SBX_ADDR4=127.0.0.1 192.0.2.10|$A_ADDR
@@ -477,6 +489,25 @@ for c in netexecerr:error netnoend:noend netextra:extra; do
     && grep -q "the sandbox's network read did not complete" "$WORK/${c%%:*}.log"
   check "REJECT ${c%%:*} (STUB_SBX_NET_EXEC=${c#*:}): the address, route and interface checks fail, and they are the only failing checks" 0 $? "$WORK/${c%%:*}.log"
 done
+# The guest kernel, against its pin (exact: the host's own 6.18.56-nitro-ga, a suffixed release and
+# the preview-era release are each refused) and against the AMI's GuestKernelRelease tag (6.18.56):
+# each wrong uname -r fails both checks, and nothing else.
+for c in guesthost:6.18.56-nitro-ga guestprefix:6.18.56-other guestold:6.18.54; do
+  rc=0; t "${c%%:*}" "STUB_SBX_UNAME=${c#*:}" || rc=$?
+  [ "$rc" = 1 ] && [ "$(line "${c%%:*}" "$A_GUEST")" = FAIL ] && [ "$(line "${c%%:*}" "$A_AMIGUEST")" = FAIL ] \
+    && [ "$(grep -c '^  FAIL  ' "$WORK/${c%%:*}.log")" = 2 ]
+  check "REJECT ${c%%:*} (the sandbox reports uname -r ${c#*:}): the pinned and the AMI-tag guest kernel checks fail, and only they" 0 $? "$WORK/${c%%:*}.log"
+done
+grep -qx '  isolated-sandbox kernel:     6.18.56' "$WORK/good.log" && grep -qx "  the AMI's GuestKernelRelease tag: 6.18.56" "$WORK/good.log" \
+  && grep -qx 'aws ec2 describe-images --region us-west-2 --image-ids ami-0aa1b2c3d4e5f6789 --output json' "$WORK/good.calls"
+check "  ... and on the good node test.sh read the tag from the run's own AMI (its record's AMI_ID) and printed both" 0 $? "$WORK/good.calls"
+# A record with no AMI_ID: the tag cannot be read, so that check fails ("could not determine"), alone.
+printf '%s\n' "$GOOD_RECORD" | grep -v '^AMI_ID=' > "$RUN_DIR/run-state.env"
+rc=0; t noamiid || rc=$?
+printf '%s\n' "$GOOD_RECORD" > "$RUN_DIR/run-state.env"
+[ "$rc" = 1 ] && [ "$(line noamiid "$A_AMIGUEST")" = FAIL ] && [ "$(grep -c '^  FAIL  ' "$WORK/noamiid.log")" = 1 ] \
+  && ! grep -q 'describe-images' "$WORK/noamiid.calls"
+check "REJECT noamiid (the run's record has no AMI_ID): the AMI-tag check fails without a describe-images call, and only it" 0 $? "$WORK/noamiid.log"
 
 echo "== 2b/3 the run's record and lock: test.sh reads only its own run, and not while another process acts on it =="
 # Each refusal comes before any kubectl or aws call (the stubs log every call they get).

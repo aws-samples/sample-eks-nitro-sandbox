@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 00b-stage-bucket.sh: the per-run S3 staging bucket that carries this run's files to the build
-# host (the sample's scripts and the ~150 MB runtime archive, whose guest disk unpacks to
-# 2 GiB), so nothing large is pushed through an SSM shell. Runs on the operator's workstation
-# with the operator's credentials; setup.sh calls it with RUN_ID set.
+# host (the sample's scripts), so nothing is pushed through an SSM shell. The build host downloads
+# the runtime release, the guest image and Firecracker from their public locations itself. Runs on
+# the operator's workstation with the operator's credentials; setup.sh calls it with RUN_ID set.
 #
 #   RUN_ID=<id> scripts/00b-stage-bucket.sh create <file>...
 #       create the bucket, harden it, upload each file under <run-id>/, and give this run's

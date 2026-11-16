@@ -568,3 +568,41 @@ def test_duplicate_events_cannot_extend_the_absolute_connection_deadline():
     finally:
         pump.close()
     assert time.monotonic() - started < 0.2
+
+
+# --- the launcher URL must be http or https before urlopen sees it -----------
+class _Response:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8080/sessions", "https://launcher.example/sessions"])
+def test_post_accepts_an_http_or_https_launcher_url(url, monkeypatch):
+    opened = []
+
+    def fake_urlopen(req, timeout):
+        opened.append(req.full_url)
+        return _Response(b'{"sandbox": "sandbox-claim-x"}')
+
+    monkeypatch.setattr(submit.urllib.request, "urlopen", fake_urlopen)
+    assert submit._post(url, {"session_id": SESSION}, "intake", 5) == {"sandbox": "sandbox-claim-x"}
+    assert opened == [url]
+
+
+@pytest.mark.parametrize("url", ["file:///etc/hostname", "ftp://127.0.0.1/sessions", "127.0.0.1:8080/sessions"])
+def test_post_refuses_any_other_scheme_before_opening_it(url, monkeypatch):
+    def fake_urlopen(req, timeout):
+        raise AssertionError(f"urlopen was called for {req.full_url}")
+
+    monkeypatch.setattr(submit.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(SystemExit, match="must start with http:// or https://"):
+        submit._post(url, {"session_id": SESSION}, "intake", 5)

@@ -4,14 +4,14 @@
 # Runs on the build host, in this order:
 #   1. The base image: Canonical's EKS AMI (bootstrap.sh, the containerd template, the
 #      kubelet-eks snap), Secure Boot off, disk space.
-#   2. containerd, read from the BOOTED base: the GA shim runs on 2.1.x, 2.2.x and 2.3.x only
-#      (scripts/30-runtime-install.sh --check-containerd). Canonical republishes the base AMI
+#   2. containerd, read from the BOOTED base: this sample is validated on 2.1.x, 2.2.x and 2.3.x
+#      only (scripts/30-runtime-install.sh --check-containerd). Canonical republishes the base AMI
 #      under new serials, and a new serial can ship a newer containerd, so this is checked on
 #      every build, before the kernel compile, and fails closed outside that range.
 #   3. Enclave hardware, enforced only after the reboot onto the host kernel (--after-reboot).
-#   4. The one prerequisite this sample documents rather than works around: the operator-
-#      supplied runtime archive. packages/fetch-runtime-artifacts.sh verifies it against
-#      packages/sources.lock; when it is absent THIS SCRIPT STOPS (exit 3).
+#   4. The public runtime inputs: packages/fetch-runtime-artifacts.sh --check verifies the runtime
+#      release's signed manifest and the guest image and Firecracker sidecars against
+#      packages/sources.lock, so a moved pin stops the build before the kernel compile.
 #
 # The build toolchain is not checked here: 10-kernel.sh and 20-erofs-utils.sh install their
 # own packages from Ubuntu's signed apt repositories and assert the tools they need.
@@ -87,9 +87,9 @@ log "/boot free: ${bavail:-?} MiB"
 # Before the reboot the host runs the base image's own kernel. Canonical's (7.0.0-1014-aws on
 # serial 20261027) has CONFIG_NITRO_ENCLAVES=m: the module is loaded and /dev/nitro_enclaves
 # exists on an instance with enclaves on, but pcie_slots_total and the "BAR4 notify mapped" line
-# come only from the driver in AWS's kernel commit 1e66c960. So the first run reports what it
-# sees and fails on none of it; the --after-reboot run requires the host kernel 10-kernel.sh
-# built, the device, pcie_slots_total and the BAR4 line.
+# come only from the driver in the Amazon Linux sandbox patch (amazonlinux/linux 4ae89f6e). So
+# the first run reports what it sees and fails on none of it; the --after-reboot run requires the
+# host kernel 10-kernel.sh built, the device, pcie_slots_total and the BAR4 line.
 KREL="${KERNEL_VERSION}${KERNEL_LOCALVERSION}"
 NE_DEV="$SYSROOT/dev/nitro_enclaves"
 NE_SLOTS="$SYSROOT/sys/class/misc/nitro_enclaves/pcie_slots_total"
@@ -115,17 +115,14 @@ else
   log "enclave checks not enforced on this run: 00-preflight.sh --after-reboot enforces them on $KREL, after 10-kernel.sh and the reboot"
 fi
 
-# --- 7. THE documented prerequisite: the operator-supplied runtime archive -----------------
-# The one check allowed to STOP the whole build (exit 3) rather than fail a line.
-bash "$HERE/../packages/fetch-runtime-artifacts.sh"
-fra_rc=$?
-if [ "$fra_rc" = 3 ]; then
-  log "PREFLIGHT STOPPED: the runtime archive prerequisite is not met (documented stop, not a build failure)."
-  exit 3
-elif [ "$fra_rc" != 0 ]; then
-  fail "the runtime archive did not verify against packages/sources.lock (see the FATAL line above)"
+# --- 7. The public runtime inputs, checked before the kernel build --------------------------
+# The small published files only (the signed manifest and its signature, the guest image and
+# Firecracker sidecars), against packages/sources.lock; 30-runtime-install.sh downloads and
+# verifies the files themselves.
+if bash "$HERE/../packages/fetch-runtime-artifacts.sh" --check; then
+  echo "ok: the runtime release's signed manifest and the guest image and Firecracker sidecars match packages/sources.lock"
 else
-  echo "ok: runtime archive verified against packages/sources.lock"
+  fail "the published runtime inputs did not verify against packages/sources.lock (see the FATAL line above)"
 fi
 
 [ "$rc" = 0 ] && log "PREFLIGHT OK" || log "PREFLIGHT FAILED: fix the FAIL lines above before building"

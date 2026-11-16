@@ -18,6 +18,9 @@
 # called, in what order, and what the AMI's tags became. The account id is the AWS
 # documentation's example id.
 set -uo pipefail
+# A reader's own config.env (in the sample folder or ~/ubuntu-ami/) must not change what this suite
+# tests: scripts/lib/common.sh skips it while this test hook is set.
+export UBUNTU_AMI_TESTS_IGNORE_CONFIG_ENV=1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAMPLE="$(cd "$HERE/.." && pwd)"
 REPO_ROOT_REAL="$(cd "$SAMPLE/../../.." && pwd)"
@@ -100,7 +103,7 @@ unset FAKE_AWS_FAIL
 echo
 echo "== 2/2 the real caller: scripts/verify-fresh-instance.sh (M11) =========================="
 ssm() { # ssm <verify-image status> <smoke status> [online]
-  printf '{"online": %s, "results": [{"match": "verify-image.py", "Status": "%s", "stdout": "image_configuration: %s\\ncontainerd 2.2.1 supported by the GA shim"}, {"match": "40-smoke.sh", "Status": "%s", "stdout": "smoke %s"}]}' \
+  printf '{"online": %s, "results": [{"match": "verify-image.py", "Status": "%s", "stdout": "image_configuration: %s\\n      \\"detail\\": \\"containerd 2.2.1 (2.2.1): in the range this sample is validated on (2.1.x to 2.3.x)\\""}, {"match": "40-smoke.sh", "Status": "%s", "stdout": "smoke %s"}]}' \
     "${3:-true}" "$1" "$1" "$2" "$2"
 }
 vf() { env AMI_ID="$AMI" SECURITY_GROUP_ID=sg-0example SUBNET_ID=subnet-0example1 SSM_ONLINE_TRIES=2 SSM_POLL_SECONDS=0 \
@@ -123,8 +126,32 @@ check "ACCEPT both remote checks Success: the AMI is tagged BtfValidated=true" 0
 rc=0; order c-pass > "$WORK/c-pass.order" 2>&1 || rc=$?
 check "  ... and create-tags came after both get-command-invocation calls, the instance already terminated" 0 "$rc" "$WORK/c-pass.order"
 [[ "$(ami_tag BtfValidated)" == true ]]; ok "  ... and the AMI's state shows it" $?
+lockv() { sed -n "/^id=$1\$/,/^\$/s/^$2=//p" "$HERE/../packages/sources.lock"; }
+[[ "$(ami_tag RuntimeRelease)" == "$(lockv runtime-release ref)" && "$(ami_tag GuestImageRelease)" == "$(lockv guest-image-eif ref)" \
+   && "$(ami_tag FirecrackerVersion)" == "$(lockv firecracker-release ref)" && "$(ami_tag HostKernelPatch)" == "$(lockv host-kernel-patch ref)" \
+   && "$(ami_tag GuestKernelRelease)" == "$(lockv guest-image-eif guest_kernel)" \
+   && -n "$(ami_tag RuntimeRelease)" && -n "$(ami_tag GuestImageRelease)" && -n "$(ami_tag FirecrackerVersion)" \
+   && -n "$(ami_tag HostKernelPatch)" && -n "$(ami_tag GuestKernelRelease)" ]]
+ok "  ... with RuntimeRelease=$(ami_tag RuntimeRelease), GuestImageRelease=$(ami_tag GuestImageRelease), FirecrackerVersion=$(ami_tag FirecrackerVersion), HostKernelPatch=$(ami_tag HostKernelPatch), GuestKernelRelease=$(ami_tag GuestKernelRelease), each the value sources.lock pins" $?
+grep -qx "FRESH_INSTANCE_CONTAINERD=containerd\\\\ 2.2.1\\\\ \\\\(2.2.1\\\\):\\\\ in\\\\ the\\\\ range\\\\ this\\\\ sample\\\\ is\\\\ validated\\\\ on\\\\ \\\\(2.1.x\\\\ to\\\\ 2.3.x\\\\)" "$WORK/run/out/runs/testrun1/evidence/run-evidence.env"
+ok "  ... and the run's evidence records the containerd verdict verify-image.py printed" $?
 head -n 1 "$WORK/run/out/runs/testrun1/evidence/fresh-instance-verify-image.txt" | grep -qx Success
 ok "  ... and the evidence file starts with the invocation's Status (no log line ahead of it)" $?
+# The GA tags are read from sources.lock before anything is launched: a lock without one of them,
+# or with a value an AMI tag cannot carry, stops the script before run-instances.
+grep -v '^guest_kernel=' "$HERE/../packages/sources.lock" > "$WORK/lock-noguest"
+sed 's#^ref=v1\.18\.0$#ref=v1.18.0 with a space#' "$HERE/../packages/sources.lock" > "$WORK/lock-badvalue"
+while IFS='|' read -r name lock rx why; do
+  [ -n "$name" ] || continue
+  st "$name" "$OWN" "$(ssm Success Success)"
+  rc=0; LOCK_FILE="$WORK/$lock" vf "$name" || rc=$?
+  check "$why" 1 "$rc" "$WORK/$name.log" "$rx"
+  [ "$(calls "$name" '^ec2 run-instances$')" = 0 ] && [ "$(calls "$name" '^ec2 create-tags$')" = 0 ]
+  ok "  ... before any instance was launched, and nothing is tagged" $?
+done <<'CASES'
+c-noguest|lock-noguest|packages/sources.lock has no guest_kernel= for guest-image-eif \(the GuestKernelRelease tag\)|REJECT a lock with no guest_kernel: the GuestKernelRelease tag has no value
+c-badvalue|lock-badvalue|firecracker-release ref= 'v1.18.0 with a space' is not a value the FirecrackerVersion tag can carry|REJECT a lock value an AMI tag cannot carry
+CASES
 while IFS='|' read -r name img smoke online want rx sends why; do
   [ -n "$name" ] || continue
   st "$name" "$OWN" "$(ssm "$img" "$smoke" "$online")"
