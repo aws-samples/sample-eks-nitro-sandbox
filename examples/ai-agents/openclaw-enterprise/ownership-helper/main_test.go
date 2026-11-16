@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -55,6 +56,7 @@ func TestParseArgsRejectsDuplicatesAndMissingRoot(t *testing.T) {
 
 func TestRunRepairsOnlyAllowlistedObjects(t *testing.T) {
 	requireRoot(t)
+	requireOpenat2(t)
 	root := t.TempDir()
 	control := filepath.Join(root, ".openclaw", "control")
 	if err := os.MkdirAll(control, 0o755); err != nil {
@@ -79,6 +81,7 @@ func TestRunRepairsOnlyAllowlistedObjects(t *testing.T) {
 
 func TestRunRejectsSymlinkedParent(t *testing.T) {
 	requireRoot(t)
+	requireOpenat2(t)
 	root := t.TempDir()
 	outside := t.TempDir()
 	if err := os.Symlink(outside, filepath.Join(root, ".openclaw")); err != nil {
@@ -95,6 +98,7 @@ func TestRunRejectsSymlinkedParent(t *testing.T) {
 
 func TestRunRejectsSymlinkedFile(t *testing.T) {
 	requireRoot(t)
+	requireOpenat2(t)
 	root := t.TempDir()
 	control := filepath.Join(root, ".openclaw", "control")
 	if err := os.MkdirAll(control, 0o700); err != nil {
@@ -119,6 +123,7 @@ func TestRunRejectsSymlinkedFile(t *testing.T) {
 
 func TestRunRejectsMultiplyLinkedFile(t *testing.T) {
 	requireRoot(t)
+	requireOpenat2(t)
 	root := t.TempDir()
 	control := filepath.Join(root, ".openclaw", "control")
 	if err := os.MkdirAll(control, 0o700); err != nil {
@@ -143,6 +148,7 @@ func TestRunRejectsMultiplyLinkedFile(t *testing.T) {
 
 func TestRunRejectsNonRegularFile(t *testing.T) {
 	requireRoot(t)
+	requireOpenat2(t)
 	root := t.TempDir()
 	control := filepath.Join(root, ".openclaw", "control")
 	database := filepath.Join(control, "services.sqlite")
@@ -163,6 +169,21 @@ func requireRoot(t *testing.T) {
 	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Skip("requires root to verify ownership repair")
+	}
+}
+
+func requireOpenat2(t *testing.T) {
+	t.Helper()
+	root := t.TempDir()
+	fd, err := openRoot(root)
+	if errors.Is(err, syscall.ENOSYS) {
+		t.Skip("openat2 is blocked by the container runtime")
+	}
+	if err != nil {
+		t.Fatalf("probe openat2: %v", err)
+	}
+	if err := syscall.Close(fd); err != nil {
+		t.Fatalf("close openat2 probe: %v", err)
 	}
 }
 
