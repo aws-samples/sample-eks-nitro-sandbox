@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 
 import yaml
+
 from adapter import (
     AGW_CA_MOUNT_PATH,
     AGW_CA_PATH,
@@ -413,6 +414,48 @@ class BuildPatchTests(unittest.TestCase):
 
         validate_pod(rendered)
 
+    def test_final_validator_accepts_kubernetes_init_container_defaults(
+        self,
+    ) -> None:
+        pod = target_pod()
+        rendered = apply_patch(pod, build_patch(pod))
+        init_containers = rendered["spec"]["initContainers"]
+        for name in (OWNERSHIP_INIT_NAME, LINK_INIT_NAME):
+            container = next(
+                item for item in init_containers if item.get("name") == name
+            )
+            container.update(
+                {
+                    "imagePullPolicy": "IfNotPresent",
+                    "resources": {
+                        "limits": {"cpu": "4", "memory": "2Gi"},
+                        "requests": {"cpu": "100m", "memory": "128Mi"},
+                    },
+                    "terminationMessagePath": "/dev/termination-log",
+                    "terminationMessagePolicy": "File",
+                }
+            )
+
+        validate_pod(rendered)
+
+    def test_final_validator_rejects_nondefault_init_container_fields(
+        self,
+    ) -> None:
+        pod = target_pod()
+        rendered = apply_patch(pod, build_patch(pod))
+        ownership = next(
+            item
+            for item in rendered["spec"]["initContainers"]
+            if item.get("name") == OWNERSHIP_INIT_NAME
+        )
+        ownership["terminationMessagePath"] = "/attacker-controlled"
+
+        with self.assertRaisesRegex(
+            AdmissionError,
+            "terminationMessagePath does not match the Kubernetes default",
+        ):
+            validate_pod(rendered)
+
     def test_rejects_noncanonical_preinjected_agentgateway_ca_contract(self) -> None:
         base = target_pod()
         canonical_volume = {
@@ -464,9 +507,8 @@ class BuildPatchTests(unittest.TestCase):
         cases.append(missing_mount)
 
         for pod in cases:
-            with self.subTest(pod=pod):
-                with self.assertRaises(AdmissionError):
-                    build_patch(pod)
+            with self.subTest(pod=pod), self.assertRaises(AdmissionError):
+                build_patch(pod)
 
     def test_published_admission_fixture_is_accepted_and_hardened(self) -> None:
         fixture = (

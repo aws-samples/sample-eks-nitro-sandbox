@@ -785,6 +785,34 @@ def _ownership_init(
     }
 
 
+def _without_admission_defaults(
+    container: dict[str, Any],
+    expected: dict[str, Any],
+) -> dict[str, Any]:
+    """Remove only API-server defaults absent from the generated contract."""
+    normalized = copy.deepcopy(container)
+    for field, default in (
+        ("imagePullPolicy", "IfNotPresent"),
+        ("terminationMessagePath", "/dev/termination-log"),
+        ("terminationMessagePolicy", "File"),
+    ):
+        if field in expected:
+            continue
+        value = normalized.pop(field, None)
+        if value not in (None, default):
+            raise AdmissionError(
+                f"final init-container {field} does not match the Kubernetes default"
+            )
+
+    if "resources" not in expected:
+        resources = normalized.pop("resources", None)
+        if resources is not None and not isinstance(resources, dict):
+            raise AdmissionError(
+                "final init-container resources must be an object when defaulted"
+            )
+    return normalized
+
+
 def _mount_paths_overlap(left: Any, right: str) -> bool:
     if not _is_nonempty_string(left) or not left.startswith("/"):
         return False
@@ -1695,7 +1723,7 @@ def validate_pod(pod: dict[str, Any]) -> None:
     }
     if "imagePullPolicy" in prep:
         expected_link["imagePullPolicy"] = prep["imagePullPolicy"]
-    if link != expected_link:
+    if _without_admission_defaults(link, expected_link) != expected_link:
         raise AdmissionError("final state-link init-container contract is invalid")
 
     expected_ownership = _ownership_init(
@@ -1710,7 +1738,7 @@ def validate_pod(pod: dict[str, Any]) -> None:
             ],
         ],
     )
-    if ownership != expected_ownership:
+    if _without_admission_defaults(ownership, expected_ownership) != expected_ownership:
         raise AdmissionError("final ownership init-container contract is invalid")
 
     prep_args = prep.get("args")
