@@ -565,7 +565,8 @@ evidence. What is, in this run:
 
 The job also prints `id`, and the UID that prints is worth being exact about. It is the UID of
 the **job script's own process, in the build container of the job pod**, which is UID 0
-because this blueprint sets no `securityContext` and the job's image runs as root. That says
+because nothing sets a user for the job pod or its build container (the runner's
+configuration sets no `run_as_user` for either), and the job's image runs as root. That says
 nothing about any other container of the pod, each of which has its own image and its own
 `USER`. The job pod is scheduled on a shared EC2 node, and that root is root inside the pod's
 own guest kernel.
@@ -789,10 +790,15 @@ kubectl --context <CLUSTER_NAME> -n gitlab-ci-demo get pod -l app=gitlab-runner 
 ```
 
 ```text
-gitlab-runner-5b694d4d85-k6x7n
-  volumes: config-secret config kube-api-access-2q895
-  vol secrets: gitlab-runner-config
+TODO: output from the fresh run
 ```
+
+`config-secret` is that Secret, mounted read-only. `config` is the writable copy of
+`config.toml` the manager starts from, and `work` and `tmp` are its working directories: its
+root filesystem is read-only. `kube-api-access` is its ServiceAccount token, which it needs to
+create its job pods through the Kubernetes API;
+[`deploy/runner.yaml`](deploy/runner.yaml) mounts it by hand, with a one-hour lifetime, in
+place of the automatic mount.
 
 ## Good to know
 
@@ -879,38 +885,7 @@ gitlab-runner-5b694d4d85-k6x7n
 ```
 
 ```text
-
-==> 1/6 context and namespace
-  context '<CLUSTER_NAME>', namespace 'gitlab-ci-demo' is labelled ManagedBy=gitlab-ci.
-
-==> 2/6 the EBS volume behind GitLab's claim
-  claim gitlab-data is EBS volume <VOLUME_ID>, reclaim policy Delete.
-
-==> 3/6 the runner manager
-deployment.apps "gitlab-runner" deleted from gitlab-ci-demo namespace
-  the runner manager is gone, so no new job pod will be created.
-
-==> 4/6 the ordinary comparison pod
-
-==> 5/6 the namespace
-  deleting namespace 'gitlab-ci-demo'. The volume is detached as GitLab's pod goes, so
-  this takes a minute or two.
-namespace "gitlab-ci-demo" deleted
-
-==> 6/6 confirming
-  namespace 'gitlab-ci-demo' is gone.
-  no pod labelled app=gitlab-ci-job is left anywhere on the cluster.
-  waiting for EBS volume <VOLUME_ID> to go, in us-west-2.
-  EBS volume <VOLUME_ID> is gone.
-
-clean up complete. Removed: namespace gitlab-ci-demo and whatever was in it, which for a full run
-of this sample is GitLab, its claim and its EBS volume, the runner manager with its
-ServiceAccount, Role and RoleBinding, the root-password and runner-config Secrets, and any
-job pod; plus the ordinary comparison pod, by its exact name.
-
-Nothing is left behind: this sample installs nothing shared, changes no cluster-wide setting,
-and creates no IAM role, Pod Identity association or ECR repository. To remove the sandbox
-runtime class and the cluster itself, see the Hello sandbox clean up.
+TODO: output from the fresh run
 ```
 
 It deletes the runner manager first, so no new job pod is created while the rest goes, then
@@ -929,7 +904,9 @@ already exist before the claim names it.
 Anything it could not confirm is reported and the script exits non-zero, because a lookup
 that failed means "could not determine" and never "gone".
 
-Nothing is left behind. This blueprint installs nothing shared, changes no cluster-wide setting,
-and creates no IAM role, Pod Identity association or ECR repository. To remove the sandbox
-runtime class and the cluster itself, see the
+That is everything this blueprint owns. It installs nothing shared, changes no cluster-wide
+setting, and creates no IAM role, Pod Identity association or ECR repository. Nodes are outside
+it: a node the cluster added for GitLab or a job pod is the cluster's to manage, not this
+blueprint's, and may remain after the clean up. To remove the sandbox runtime class and the
+cluster itself, see the
 [Hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up).
