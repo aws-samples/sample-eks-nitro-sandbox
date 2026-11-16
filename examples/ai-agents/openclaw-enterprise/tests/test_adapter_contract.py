@@ -194,3 +194,22 @@ def test_render_script_rejects_unpinned_or_shared_images() -> None:
             text=True,
         )
         assert result.returncode == 65
+
+
+def test_render_script_rejects_manifest_without_target_deployment() -> None:
+    adapter_image = f"example.invalid/adapter@sha256:{'a' * 64}"
+    ownership_image = f"example.invalid/ownership@sha256:{'b' * 64}"
+    result = subprocess.run(
+        [
+            str(RENDER_SCRIPT),
+            str(DEPLOY / "agentgateway.yaml"),
+            adapter_image,
+            ownership_image,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert result.stdout == ""

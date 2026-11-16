@@ -80,7 +80,7 @@ def prep_security_context() -> dict:
 
 
 PREP_SCRIPT = """const { chmodSync, mkdirSync } = require("node:fs");
-for (const path of ["/runtime-state/home","/runtime-temporary/tmp","/gateway-state/sessions"]) {
+for (const path of ["/runtime-state/home","/runtime-temporary/tmp","/runtime-state/home/gateway-codex-home","/gateway-state/sessions","/runtime-state/home/.openclaw","/gateway-state/agents"]) {
   mkdirSync(path, { recursive: true });
   chmodSync(path, 0o700);
 }
@@ -310,9 +310,6 @@ def apply_patch(document: dict, patch: list[dict]) -> dict:
 class BuildPatchTests(unittest.TestCase):
     def test_moves_ownership_repair_to_dedicated_init_container(self) -> None:
         pod = target_pod()
-        pod["spec"]["containers"][-1]["volumeMounts"][-1]["subPath"] = (
-            "sessions;exit 42"
-        )
         rendered = apply_patch(pod, build_patch(pod))
         original_init_names = {
             container["name"] for container in pod["spec"]["initContainers"]
@@ -344,10 +341,9 @@ class BuildPatchTests(unittest.TestCase):
         self.assertEqual(ownership_init["command"], ["/bin/sh", "-eu", "-c"])
         self.assertEqual(ownership_init["args"][1], "--")
         self.assertIn(
-            f"{OPENCLAW_HOME_PATH}/sessions;exit 42",
+            f"{OPENCLAW_HOME_PATH}/sessions",
             ownership_init["args"][2:],
         )
-        self.assertNotIn("sessions;exit 42", ownership_init["args"][0])
         self.assertEqual(ownership_init.get("env", []), [])
 
         ownership_index = rendered["spec"]["initContainers"].index(ownership_init)
@@ -407,6 +403,46 @@ class BuildPatchTests(unittest.TestCase):
                     "prepare-private-state|designated runtime",
                 ):
                     build_patch(pod)
+
+    def test_rejects_native_sidecars(self) -> None:
+        pod = target_pod()
+        pod["spec"]["initContainers"].insert(
+            0,
+            {
+                "name": "native-sidecar",
+                "image": RUNTIME_IMAGE,
+                "restartPolicy": "Always",
+                "securityContext": {"runAsUser": 0},
+            },
+        )
+        with self.assertRaisesRegex(AdmissionError, "native sidecars"):
+            build_patch(pod)
+
+    def test_requires_prepare_private_state_command_and_exact_directories(
+        self,
+    ) -> None:
+        for omitted in ("command", "args"):
+            with self.subTest(omitted=omitted):
+                pod = target_pod()
+                del pod["spec"]["initContainers"][-1][omitted]
+                with self.assertRaisesRegex(
+                    AdmissionError,
+                    "fixed prepare-private-state command",
+                ):
+                    build_patch(pod)
+
+        pod = target_pod()
+        pod["spec"]["initContainers"][-1]["args"] = [
+            PREP_SCRIPT.replace(
+                '"/gateway-state/agents"]',
+                '"/gateway-state/agents","/gateway-state/arbitrary"]',
+            )
+        ]
+        with self.assertRaisesRegex(
+            AdmissionError,
+            "directories do not match the mount contract",
+        ):
+            build_patch(pod)
 
     def test_rejects_prepare_private_state_mount_contract_drift(self) -> None:
         mutations = (

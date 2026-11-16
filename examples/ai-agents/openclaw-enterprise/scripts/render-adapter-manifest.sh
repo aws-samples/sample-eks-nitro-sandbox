@@ -31,6 +31,9 @@ digest_pattern='^.+@sha256:[0-9a-f]{64}$'
 export ADAPTER_IMAGE="$adapter_image"
 export OWNERSHIP_INIT_IMAGE="$ownership_init_image"
 
+rendered="$(mktemp)"
+trap 'rm -f "$rendered"' EXIT
+
 yq eval '
   (select(.kind == "Deployment" and
     .metadata.name == "openclaw-enterprise-nitro-adapter") |
@@ -43,4 +46,26 @@ yq eval '
       "name": "OCE_OWNERSHIP_INIT_IMAGE",
       "value": strenv(OWNERSHIP_INIT_IMAGE)
     }]
-' "$manifest"
+' "$manifest" >"$rendered"
+
+yq eval-all -e '
+  [.] | map(select(
+    .kind == "Deployment" and
+    .metadata.name == "openclaw-enterprise-nitro-adapter"
+  )) as $deployments |
+  [
+    ($deployments | length) == 1,
+    ($deployments[0].spec.template.spec.containers |
+      map(select(.name == "webhook")) | length) == 1,
+    ($deployments[0].spec.template.spec.containers[] |
+      select(.name == "webhook") | .image) == strenv(ADAPTER_IMAGE),
+    ($deployments[0].spec.template.spec.containers[] |
+      select(.name == "webhook") |
+      [.env[] | select(
+        .name == "OCE_OWNERSHIP_INIT_IMAGE" and
+        .value == strenv(OWNERSHIP_INIT_IMAGE)
+      )] | length) == 1
+  ] | all
+' "$rendered" >/dev/null
+
+cat "$rendered"

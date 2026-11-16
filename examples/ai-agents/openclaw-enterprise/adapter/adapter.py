@@ -301,6 +301,8 @@ def _validate_prepare_private_state(
     location: str,
     runtime_image: str,
     default_service_account_volumes: set[str],
+    containers: list[dict[str, Any]],
+    role: str,
 ) -> None:
     unexpected_fields = sorted(set(prep) - PREP_ALLOWED_FIELDS)
     if unexpected_fields:
@@ -332,66 +334,88 @@ def _validate_prepare_private_state(
 
     command = prep.get("command")
     args = prep.get("args")
-    if command is not None or args is not None:
-        allowed_commands = (
-            ["node", "-e"],
-            ["/usr/bin/tini", "-s", "--", "node", "-e"],
+    if command is None or args is None:
+        raise AdmissionError(
+            f"{location} must define the fixed prepare-private-state command"
         )
-        if command not in allowed_commands or not (
-            isinstance(args, list) and len(args) == 1 and isinstance(args[0], str)
-        ):
-            raise AdmissionError(
-                f"{location} does not match the fixed prepare-private-state "
-                "command contract"
-            )
-        lines = args[0].splitlines()
-        prefix = "for (const path of "
-        suffix = ") {"
-        if (
-            len(lines) != 6
-            or lines[0] != 'const { chmodSync, mkdirSync } = require("node:fs");'
-            or not lines[1].startswith(prefix)
-            or not lines[1].endswith(suffix)
-        ):
-            raise AdmissionError(
-                f"{location} does not match the fixed prepare-private-state "
-                "command contract"
-            )
-        try:
-            directories = json.loads(lines[1][len(prefix) : -len(suffix)])
-        except json.JSONDecodeError as error:
-            raise AdmissionError(
-                f"{location} does not match the fixed prepare-private-state "
-                "command contract"
-            ) from error
-        required_directories = {
-            f"{RUNTIME_ROOT}/home",
-            f"{RUNTIME_TMP_ROOT}/tmp",
-        }
-        if (
-            not isinstance(directories, list)
-            or not all(
-                isinstance(directory, str)
-                and directory.startswith(
-                    (f"{RUNTIME_ROOT}/", f"{RUNTIME_TMP_ROOT}/", f"{STATE_ROOT}/")
-                )
-                and posixpath.normpath(directory) == directory
-                for directory in directories
-            )
-            or len(directories) != len(set(directories))
-            or not required_directories.issubset(directories)
-            or lines[2:]
-            != [
-                "  mkdirSync(path, { recursive: true });",
-                "  chmodSync(path, 0o700);",
-                "}",
-                'mkdirSync("/runtime-temporary/tmp", { recursive: true, mode: 0o700 });',
-            ]
-        ):
-            raise AdmissionError(
-                f"{location} does not match the fixed prepare-private-state "
-                "command contract"
-            )
+    allowed_commands = (
+        ["node", "-e"],
+        ["/usr/bin/tini", "-s", "--", "node", "-e"],
+    )
+    if command not in allowed_commands or not (
+        isinstance(args, list) and len(args) == 1 and isinstance(args[0], str)
+    ):
+        raise AdmissionError(
+            f"{location} does not match the fixed prepare-private-state "
+            "command contract"
+        )
+    lines = args[0].splitlines()
+    prefix = "for (const path of "
+    suffix = ") {"
+    if (
+        len(lines) != 6
+        or lines[0] != 'const { chmodSync, mkdirSync } = require("node:fs");'
+        or not lines[1].startswith(prefix)
+        or not lines[1].endswith(suffix)
+    ):
+        raise AdmissionError(
+            f"{location} does not match the fixed prepare-private-state "
+            "command contract"
+        )
+    try:
+        directories = json.loads(lines[1][len(prefix) : -len(suffix)])
+    except json.JSONDecodeError as error:
+        raise AdmissionError(
+            f"{location} does not match the fixed prepare-private-state "
+            "command contract"
+        ) from error
+
+    expected_directories = {
+        f"{RUNTIME_ROOT}/home",
+        f"{RUNTIME_TMP_ROOT}/tmp",
+    }
+    if role == "gateway":
+        expected_directories.add(f"{RUNTIME_ROOT}/home/gateway-codex-home")
+    for index, container in enumerate(containers):
+        for mount in _mounts(container, f"spec.containers[{index}]"):
+            if not isinstance(mount, dict):
+                continue
+            mount_path = mount.get("mountPath")
+            if isinstance(mount_path, str) and mount_path.startswith(
+                f"{HOME_MOUNT_PATH}/"
+            ):
+                parent = posixpath.dirname(mount_path)
+                if parent != HOME_MOUNT_PATH:
+                    expected_directories.add(
+                        parent.replace(HOME_MOUNT_PATH, f"{RUNTIME_ROOT}/home", 1)
+                    )
+            if mount.get("name") == STATE_VOLUME:
+                sub_path = mount.get("subPath")
+                if (
+                    isinstance(sub_path, str)
+                    and sub_path
+                    and not sub_path.startswith("/")
+                    and posixpath.normpath(sub_path) == sub_path
+                    and not sub_path.startswith("../")
+                ):
+                    expected_directories.add(f"{STATE_ROOT}/{sub_path}")
+
+    if (
+        not isinstance(directories, list)
+        or not all(isinstance(directory, str) for directory in directories)
+        or len(directories) != len(set(directories))
+        or set(directories) != expected_directories
+        or lines[2:]
+        != [
+            "  mkdirSync(path, { recursive: true });",
+            "  chmodSync(path, 0o700);",
+            "}",
+            'mkdirSync("/runtime-temporary/tmp", { recursive: true, mode: 0o700 });',
+        ]
+    ):
+        raise AdmissionError(
+            f"{location} preparation directories do not match the mount contract"
+        )
 
     expected_mounts = {
         RUNTIME_VOLUME: (
@@ -572,6 +596,11 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(volumes, list):
         raise AdmissionError("spec.volumes must be a list")
     init_containers, containers = _container_groups(spec)
+    for index, container in enumerate(init_containers):
+        if isinstance(container, dict) and container.get("restartPolicy") == "Always":
+            raise AdmissionError(
+                f"spec.initContainers[{index}] native sidecars are not supported"
+            )
 
     reserved_volumes = [
         volume
@@ -694,13 +723,6 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
 
     if designated_runtime_image is None:
         raise AdmissionError("target OCE Pod has no regular runtime container")
-    _validate_prepare_private_state(
-        prep,
-        f"spec.initContainers[{prep_index}]",
-        designated_runtime_image,
-        default_service_account_volumes,
-    )
-
     groups = (
         ("initContainers", init_containers),
         ("containers", containers),
@@ -905,6 +927,15 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                         "value": rewritten,
                     }
                 )
+
+    _validate_prepare_private_state(
+        prep,
+        f"spec.initContainers[{prep_index}]",
+        designated_runtime_image,
+        default_service_account_volumes,
+        containers,
+        role,
+    )
 
     if not links:
         raise AdmissionError(f"{STATE_VOLUME} has no supported subPath mounts to adapt")
