@@ -119,7 +119,8 @@ add any that is missing. It never installs a cluster-wide thing for you. If you 
 Getting started and the storage blueprints, they are already there.
 
 **Step 2: The AWS resources.** `setup.sh` creates the blueprint's own S3 bucket, its S3 Files
-file system and mount targets, the four IAM roles below, each with only what it needs, and
+file system and mount targets (one in each Availability Zone of the cluster's subnets), the
+four IAM roles below, each with only what it needs, and
 the role S3 Files itself assumes to sync the file system with the bucket. The bucket
 has S3 Versioning turned on because S3 Files requires it to sync the file system with the
 bucket ([S3 Files prerequisites](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-files-prereq-policies.html)).

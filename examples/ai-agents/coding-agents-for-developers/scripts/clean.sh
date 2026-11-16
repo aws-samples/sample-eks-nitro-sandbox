@@ -23,6 +23,18 @@ FAIL=0
 say() { printf '\n==> %s\n' "$*"; }
 note_fail() { echo "INCOMPLETE: $*" >&2; FAIL=1; }
 
+# setup.sh names the bucket $SAMPLE-<account>-<Region> unless S3_BUCKET_NAME is set, and
+# writes the name to .env only when it finishes, so after a setup that stopped early it is
+# blank here. Use the same name then. An account that could not be read leaves the name
+# unknown, which is reported rather than taken for "no bucket".
+if [[ -z "${S3_BUCKET_NAME:-}" ]]; then
+  if [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+    S3_BUCKET_NAME="$SAMPLE-$ACCOUNT_ID-$AWS_REGION"
+  else
+    note_fail "S3_BUCKET_NAME is blank and the account could not be read, so the bucket was not looked for"
+  fi
+fi
+
 # Confirm the namespace is the sample's before deleting anything inside it. Only an explicit
 # NotFound means it is absent; any other lookup failure (auth, connectivity, wrong context)
 # means ownership cannot be established, so stop before deleting anything at all.

@@ -23,7 +23,8 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 # Push only to a repository that is the sample's. Absent: create it, tagged
 # ManagedBy=$SAMPLE. Present: reuse it only if it carries that tag. Anything else, including
 # a lookup that fails, stops the script. Every repository is checked before anything is
-# logged in to, built or pushed, so a refusal leaves nothing half done.
+# logged in to, built or pushed, so a refusal stops before any Docker login, build or push.
+# A repository it created before the refusal carries the tag, so clean.sh removes it.
 ensure_repo() {
   local repo="$1" arn owner
   if arn="$(aws ecr describe-repositories --repository-names "$repo" --region "$AWS_REGION" \
