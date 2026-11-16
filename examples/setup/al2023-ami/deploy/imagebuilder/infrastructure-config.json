@@ -1,0 +1,30 @@
+{
+  "name": "eks-nitro-sandbox-build-config",
+  "description": "Infrastructure configuration for building EKS Nitro Sandbox AMIs (enclave-enabled via ASG)",
+  "instanceTypes": ["m8i.4xlarge"],
+  "instanceProfileName": "INSTANCE_PROFILE_NAME",
+  "securityGroupIds": ["SECURITY_GROUP_ID"],
+  "subnetId": "SUBNET_ID",
+  "terminateInstanceOnFailure": true,
+  "snsTopicArn": "SNS_TOPIC_ARN",
+  "resourceTags": {
+    "ManagedBy": "ImageBuilder",
+    "Project": "eks-nitro-sandbox",
+    "auto-delete": "no"
+  },
+  "instanceMetadataOptions": {
+    "httpTokens": "required",
+    "httpPutResponseHopLimit": 1
+  },
+  "logging": {
+    "s3Logs": {
+      "s3BucketName": "S3_BUCKET_NAME",
+      "s3KeyPrefix": "imagebuilder-logs/"
+    }
+  },
+  "parentInstance": {
+    "autoScalingGroup": {
+      "autoScalingGroupName": "ASG_NAME_WITH_ENCLAVE_ENABLED"
+    }
+  }
+}

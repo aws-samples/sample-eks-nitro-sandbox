@@ -1,0 +1,23 @@
+{
+  "name": "eks-nitro-sandbox-distribution",
+  "description": "Distribution settings for EKS Nitro Sandbox AMI",
+  "distributions": [
+    {
+      "region": "REGION",
+      "amiDistributionConfiguration": {
+        "name": "eks-al2023-pod-isolation-{{ imagebuilder:buildDate }}",
+        "description": "EKS-optimized AL2023 with Nitro Sandbox runtime (pod isolation)",
+        "amiTags": {
+          "Name": "eks-al2023-pod-isolation",
+          "ManagedBy": "ImageBuilder",
+          "KubernetesVersion": "KUBERNETES_VERSION",
+          "BuildDate": "{{ imagebuilder:buildDate }}",
+          "auto-delete": "no"
+        },
+        "launchPermission": {
+          "userIds": []
+        }
+      }
+    }
+  ]
+}

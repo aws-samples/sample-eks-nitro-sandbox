@@ -1,0 +1,371 @@
+# AWSTOE component: install EKS Nitro Sandbox runtime for AL2023
+#
+# Installs the Nitro Sandbox runtime (shim, Firecracker, guest image), CRI proxy, containerd
+# handlers, and NodeConfig labels onto an EKS-optimized AL2023 base image. This component
+# performs the same install as amazon-eks-ami's install-pod-isolation.sh provisioner.
+#
+# See the EC2 Image Builder User Guide, "Use AWSTOE components to configure your image":
+# https://docs.aws.amazon.com/imagebuilder/latest/userguide/toe-use-documents.html
+
+name: EKSNitroSandboxAL2023
+description: Install the EKS Nitro Sandbox runtime onto an EKS-optimized AL2023 base image
+schemaVersion: 1.0
+
+constants:
+  # The first stock AL2023 kernel with Nitro sandbox extensions.
+  - MinKernelVersion:
+      type: string
+      value: '1:6.18.51'
+  # Enclave memory pool kernel argument.
+  - EnclaveMempool:
+      type: string
+      value: '95%-1G'
+  # The first Firecracker release that can drive a Nitro Sandbox.
+  - MinFirecrackerVersion:
+      type: string
+      value: 'v1.18.0'
+  # The EKS S3 bundle base URI (templated with Kubernetes version and build date).
+  - BundleS3BaseUri:
+      type: string
+      value: 's3://amazon-eks/{{ KUBERNETES_VERSION }}/{{ KUBERNETES_BUILD_DATE }}'
+  - ImagesDir:
+      type: string
+      value: '/var/lib/nitro-sandbox-images'
+  - StateDir:
+      type: string
+      value: '/var/lib/nitro-sandbox'
+  - ShimBinary:
+      type: string
+      value: 'containerd-shim-nitro-sandbox-v2'
+
+phases:
+  - name: build
+    steps:
+      # =========================================================================
+      # Step 1: Validate prerequisites (Kubernetes version)
+      # =========================================================================
+      - name: ValidateKubernetesVersion
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              echo "Validating Kubernetes version: {{ KUBERNETES_VERSION }}"
+              K8S_MINOR=$(echo "{{ KUBERNETES_VERSION }}" | cut -d. -f1,2)
+              case "$K8S_MINOR" in
+                1.36 | 1.37)
+                  echo "Kubernetes $K8S_MINOR is supported"
+                  ;;
+                *)
+                  echo "ERROR: pod isolation supports Kubernetes 1.36 and 1.37, not {{ KUBERNETES_VERSION }}" >&2
+                  exit 1
+                  ;;
+              esac
+
+      # =========================================================================
+      # Step 2: Determine architecture
+      # =========================================================================
+      - name: DetectArchitecture
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              ARCH="$(uname -m)"
+              case "$ARCH" in
+                x86_64) GUEST_ARCH=amd64 ;;
+                aarch64) GUEST_ARCH=arm64 ;;
+                *)
+                  echo "ERROR: unsupported architecture $ARCH" >&2
+                  exit 1
+                  ;;
+              esac
+              echo "Architecture: $ARCH (guest: $GUEST_ARCH)"
+              # Export for subsequent steps
+              echo "ARCH=$ARCH" >> /tmp/pod-isolation-build.env
+              echo "GUEST_ARCH=$GUEST_ARCH" >> /tmp/pod-isolation-build.env
+
+      # =========================================================================
+      # Step 3: Install packages
+      # =========================================================================
+      - name: InstallPackages
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              echo "Installing erofs-utils"
+              dnf install -y erofs-utils
+
+      # =========================================================================
+      # Step 4: Assert host kernel version
+      # =========================================================================
+      - name: AssertKernelVersion
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              echo "Asserting kernel >= {{ MinKernelVersion }}"
+              dnf install -y "kernel6.18 >= {{ MinKernelVersion }}"
+
+      # =========================================================================
+      # Step 5: Set boot arguments (nitro_enclaves.mempool)
+      # =========================================================================
+      - name: SetBootArguments
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              echo "Setting nitro_enclaves.mempool={{ EnclaveMempool }}"
+              # Use the set-kernel-arg helper from amazon-eks-ami if available;
+              # otherwise directly edit /etc/default/grub and regenerate.
+              if command -v set-kernel-arg >/dev/null 2>&1; then
+                set-kernel-arg "nitro_enclaves.mempool={{ EnclaveMempool }}"
+              else
+                # Fallback: append to GRUB_CMDLINE_LINUX
+                if ! grep -q "nitro_enclaves.mempool=" /etc/default/grub; then
+                  sed -i 's/GRUB_CMDLINE_LINUX="\(.*\)"/GRUB_CMDLINE_LINUX="\1 nitro_enclaves.mempool={{ EnclaveMempool }}"/' /etc/default/grub
+                  grub2-mkconfig -o /boot/grub2/grub.cfg
+                fi
+              fi
+
+      # =========================================================================
+      # Step 6: Install Firecracker and jailer
+      # =========================================================================
+      - name: InstallFirecracker
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              source /tmp/pod-isolation-build.env
+
+              # Resolve Firecracker version (use {{ FIRECRACKER_VERSION }} or latest)
+              VERSION="{{ FIRECRACKER_VERSION }}"
+              if [ "$VERSION" = "latest" ] || [ -z "$VERSION" ]; then
+                echo "Resolving latest Firecracker version"
+                VERSION=$(curl --fail --silent --show-error --location --retry 3 --output /dev/null \
+                  --write-out '%{url_effective}' https://github.com/firecracker-microvm/firecracker/releases/latest)
+                VERSION="${VERSION##*/}"
+              fi
+
+              # Verify version >= {{ MinFirecrackerVersion }}
+              MIN_VERSION="{{ MinFirecrackerVersion }}"
+              if [ "$(printf '%s\n%s\n' "$MIN_VERSION" "$VERSION" | sort -V | head -n 1)" != "$MIN_VERSION" ]; then
+                echo "ERROR: Firecracker $VERSION is older than $MIN_VERSION" >&2
+                exit 1
+              fi
+
+              echo "Installing Firecracker $VERSION for $ARCH"
+              TARBALL="firecracker-${VERSION}-${ARCH}.tgz"
+              URL="https://github.com/firecracker-microvm/firecracker/releases/download/${VERSION}/${TARBALL}"
+
+              # Download and verify checksum
+              curl --fail --silent --show-error --location --retry 3 --output "/tmp/${TARBALL}" "$URL"
+              EXPECTED=$(curl --fail --silent --show-error --location --retry 3 "${URL}.sha256.txt" | awk '{print $1}')
+              ACTUAL=$(sha256sum "/tmp/${TARBALL}" | awk '{print $1}')
+              if [ "$EXPECTED" != "$ACTUAL" ]; then
+                echo "ERROR: checksum mismatch for $TARBALL" >&2
+                echo "       expected $EXPECTED" >&2
+                echo "       actual   $ACTUAL" >&2
+                exit 1
+              fi
+
+              # Extract and install
+              tar -xzf "/tmp/${TARBALL}" -C /tmp
+              install -m 0755 "/tmp/release-${VERSION}-${ARCH}/firecracker-${VERSION}-${ARCH}" /usr/bin/firecracker
+              install -m 0755 "/tmp/release-${VERSION}-${ARCH}/jailer-${VERSION}-${ARCH}" /usr/bin/jailer
+              echo "  -> /usr/bin/firecracker"
+              echo "  -> /usr/bin/jailer"
+
+      # =========================================================================
+      # Step 7: Fetch and install the runtime archive (shim)
+      # =========================================================================
+      - name: InstallRuntimeArchive
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              source /tmp/pod-isolation-build.env
+
+              BUNDLE="{{ BundleS3BaseUri }}"
+              RUNTIME_KEY="nitro-sandboxes-runtime/linux/${GUEST_ARCH}/nitro-sandboxes-runtime.tar.gz"
+
+              echo "Fetching ${BUNDLE}/${RUNTIME_KEY}"
+              aws s3 cp --quiet --region us-west-2 "${BUNDLE}/${RUNTIME_KEY}" /tmp/nitro-sandboxes-runtime.tar.gz
+
+              # Verify checksum
+              EXPECTED=$(aws s3 cp --quiet --region us-west-2 "${BUNDLE}/${RUNTIME_KEY}.sha256" - | awk '{print $1}')
+              ACTUAL=$(sha256sum /tmp/nitro-sandboxes-runtime.tar.gz | awk '{print $1}')
+              if [ "$EXPECTED" != "$ACTUAL" ]; then
+                echo "ERROR: checksum mismatch for nitro-sandboxes-runtime.tar.gz" >&2
+                echo "       expected $EXPECTED" >&2
+                echo "       actual   $ACTUAL" >&2
+                exit 1
+              fi
+
+              # Extract shim
+              tar -xzf /tmp/nitro-sandboxes-runtime.tar.gz -C /tmp {{ ShimBinary }}
+              install -m 0755 "/tmp/{{ ShimBinary }}" "/usr/bin/{{ ShimBinary }}"
+              echo "  -> /usr/bin/{{ ShimBinary }}"
+
+      # =========================================================================
+      # Step 8: Fetch guest image artifacts (EIF + disk)
+      # =========================================================================
+      - name: InstallGuestImages
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              source /tmp/pod-isolation-build.env
+
+              mkdir -p {{ ImagesDir }} {{ StateDir }}
+              BUNDLE="{{ BundleS3BaseUri }}"
+              GUEST_BASE="${BUNDLE}/nitro-sandbox-guest/linux/${GUEST_ARCH}"
+
+              # Fetch guest EIF
+              echo "Fetching ${GUEST_BASE}/nitro-sandbox-guest.eif"
+              aws s3 cp --quiet --region us-west-2 "${GUEST_BASE}/nitro-sandbox-guest.eif" {{ ImagesDir }}/latest.eif
+              EXPECTED=$(aws s3 cp --quiet --region us-west-2 "${GUEST_BASE}/nitro-sandbox-guest.eif.sha256" - | awk '{print $1}')
+              ACTUAL=$(sha256sum {{ ImagesDir }}/latest.eif | awk '{print $1}')
+              if [ "$EXPECTED" != "$ACTUAL" ]; then
+                echo "ERROR: checksum mismatch for nitro-sandbox-guest.eif" >&2
+                exit 1
+              fi
+              echo "  -> {{ ImagesDir }}/latest.eif"
+
+              # Fetch guest disk
+              echo "Fetching ${GUEST_BASE}/nitro-sandbox-guest-disk.img"
+              aws s3 cp --quiet --region us-west-2 "${GUEST_BASE}/nitro-sandbox-guest-disk.img" {{ ImagesDir }}/latest-disk.img
+              EXPECTED=$(aws s3 cp --quiet --region us-west-2 "${GUEST_BASE}/nitro-sandbox-guest-disk.img.sha256" - | awk '{print $1}')
+              ACTUAL=$(sha256sum {{ ImagesDir }}/latest-disk.img | awk '{print $1}')
+              if [ "$EXPECTED" != "$ACTUAL" ]; then
+                echo "ERROR: checksum mismatch for nitro-sandbox-guest-disk.img" >&2
+                exit 1
+              fi
+              echo "  -> {{ ImagesDir }}/latest-disk.img"
+
+              # Symlink as rootfs.ext4
+              ln -sf latest-disk.img {{ ImagesDir }}/rootfs.ext4
+
+      # =========================================================================
+      # Step 9: Install runtime configuration files
+      # =========================================================================
+      - name: InstallRuntimeConfig
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+
+              # nitro-sandbox.toml (shim configuration)
+              cat > /etc/containerd/nitro-sandbox.toml << 'NITRO_TOML'
+              # Nitro Sandbox runtime configuration
+              # The shim reads this to locate guest boot artifacts.
+
+              [nitro_sandbox]
+                images_dir = "{{ ImagesDir }}"
+                state_dir = "{{ StateDir }}"
+              NITRO_TOML
+
+              # Load tun kernel module
+              cat > /etc/modules-load.d/nitro-sandbox.conf << 'MODULES_CONF'
+              # Nitro Sandbox needs tun for TAP devices
+              tun
+              MODULES_CONF
+
+      # =========================================================================
+      # Step 10: Install CRI proxy systemd service
+      # =========================================================================
+      - name: InstallCRIProxy
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+
+              # CRI proxy service
+              cat > /etc/systemd/system/cri-proxy.service << 'CRI_SERVICE'
+              [Unit]
+              Description=CRI proxy for Nitro Sandbox
+              Documentation=https://github.com/awslabs/amazon-eks-ami
+              After=containerd.service
+              Requires=containerd.service
+
+              [Service]
+              Type=simple
+              ExecStart=/usr/bin/{{ ShimBinary }} cri-proxy
+              Restart=on-failure
+              RestartSec=5
+
+              [Install]
+              WantedBy=multi-user.target
+              CRI_SERVICE
+
+              # Kubelet restart dependency
+              mkdir -p /etc/systemd/system/kubelet.service.d
+              cat > /etc/systemd/system/kubelet.service.d/restart-with-cri-proxy.conf << 'KUBELET_DROP_IN'
+              [Unit]
+              Requires=cri-proxy.service
+              After=cri-proxy.service
+              KUBELET_DROP_IN
+
+              systemctl daemon-reload
+              systemctl enable cri-proxy.service
+
+      # =========================================================================
+      # Step 11: Install NodeConfig drop-in (containerd handlers + kubelet CRI endpoint)
+      # =========================================================================
+      - name: InstallNodeConfigDropIn
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+
+              mkdir -p /etc/eks/nodeadm.d
+              cat > /etc/eks/nodeadm.d/10-pod-isolation.yaml << 'NODECONFIG'
+              ---
+              apiVersion: node.eks.aws/v1alpha1
+              kind: NodeConfig
+              spec:
+                cluster:
+                  name: placeholder  # Overridden by user data at boot
+                kubelet:
+                  config:
+                    containerRuntimeEndpoint: unix:///run/cri-proxy.sock
+                containerd:
+                  config: |
+                    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.isolated-sandbox]
+                      runtime_type = "io.containerd.nitro-sandbox.v2"
+                      pod_annotations = ["sandbox.amazonaws.com/network-isolated"]
+                    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.confidential-sandbox]
+                      runtime_type = "io.containerd.nitro-sandbox.v2"
+                      pod_annotations = ["sandbox.amazonaws.com/network-isolated", "sandbox.amazonaws.com/confidential"]
+                    [plugins."io.containerd.grpc.v1.cri".registry]
+                      discard_unpacked_layers = true
+                instance:
+                  labels:
+                    eks.amazonaws.com/nitro-sandbox: "true"
+              NODECONFIG
+
+      # =========================================================================
+      # Step 12: Cleanup
+      # =========================================================================
+      - name: Cleanup
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              echo "Cleaning up build artifacts"
+              rm -f /tmp/nitro-sandboxes-runtime.tar.gz
+              rm -f /tmp/firecracker-*.tgz
+              rm -rf /tmp/release-*
+              rm -f /tmp/pod-isolation-build.env
+              rm -f "/tmp/{{ ShimBinary }}"
+              echo "Pod isolation runtime installed"

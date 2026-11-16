@@ -194,6 +194,70 @@ node to run on).
     EKS Auto Mode, which models this natively. Use Karpenter here to provision the enclave-capable
     nodes; schedule the sandbox pods through the node group until #9904 ships.
 
+## Optional: build with EC2 Image Builder
+
+**Packer is the primary proven path.** This section describes an optional EC2 Image Builder
+alternative, which was **authored but not run live** because Image Builder requires the
+**parentInstance-from-ASG workaround** to enable Nitro Enclaves on the build instance.
+
+EC2 Image Builder's `CreateInfrastructureConfiguration` and `InstanceConfiguration` APIs have
+**no enclave field** (verified against the [EC2 Image Builder API
+Reference](https://docs.aws.amazon.com/imagebuilder/latest/APIReference/Welcome.html)). The
+**only way** to get an enclave-enabled build instance is the **parentInstance-from-ASG path**: an
+Auto Scaling group whose launch template sets `EnclaveOptions.Enabled=true`. This applies to the
+**build phase only**; the resulting AMI is enclave-capable when consumed by a node group or
+Karpenter `EC2NodeClass` that sets `EnclaveOptions.Enabled=true` on its own launch template.
+
+See:
+- [EC2 Image Builder User Guide: Infrastructure
+  configuration](https://docs.aws.amazon.com/imagebuilder/latest/userguide/manage-infra-config.html)
+- [AWS CLI Command Reference: aws imagebuilder
+  create-infrastructure-configuration](https://awscli.amazonaws.com/v2/documentation/api/latest/reference/imagebuilder/create-infrastructure-configuration.html)
+
+The Image Builder configurations are in [`deploy/imagebuilder/`](deploy/imagebuilder/):
+
+- **[`component.yaml`](deploy/imagebuilder/component.yaml)**: AWSTOE component that performs the
+  same install as the upstream `amazon-eks-ami` `install-pod-isolation.sh` provisioner (fetch and
+  verify the runtime and guest image from the public EKS S3 bundle, Firecracker ≥ v1.18.0, assert
+  kernel ≥ 1:6.18.51, `nitro_enclaves.mempool`, containerd handlers, CRI proxy, the
+  `eks.amazonaws.com/nitro-sandbox` NodeConfig label).
+- **[`image-recipe.json`](deploy/imagebuilder/image-recipe.json)**: AL2023 parent image + the
+  component.
+- **[`infrastructure-config.json`](deploy/imagebuilder/infrastructure-config.json)**:
+  `parentInstance.autoScalingGroup` pointing at an enclave-enabled ASG (build phase only), with
+  placeholders.
+- **[`distribution-config.json`](deploy/imagebuilder/distribution-config.json)**: AMI distribution
+  and tagging.
+
+A reference driver script is at
+[`scripts/10-build-ami-imagebuilder.sh`](scripts/10-build-ami-imagebuilder.sh). It substitutes
+the placeholders and drives the pipeline via the `aws imagebuilder` CLI:
+
+```bash
+# Prerequisites:
+# - An Auto Scaling group with EnclaveOptions.Enabled=true on its launch template
+# - IAM instance profile, security group, private subnet
+# - S3 bucket for build logs
+
+export BUILD_ASG_NAME=<asg-with-enclave-enabled>
+export BUILD_INSTANCE_PROFILE=<instance-profile-name>
+export BUILD_SECURITY_GROUP_ID=<sg-id>
+export BUILD_SUBNET_ID=<private-subnet-id>
+export BUILD_S3_BUCKET=<log-bucket>
+
+RUN_ID=<id> scripts/10-build-ami-imagebuilder.sh
+```
+
+The script creates the component, recipe, infrastructure configuration, distribution configuration,
+and pipeline, then starts an execution. Monitor progress in the EC2 Image Builder console or via:
+
+```bash
+aws imagebuilder get-image --image-build-version-arn <execution-arn> --region <region>
+```
+
+The resulting AMI is named with a `-pod-isolation` suffix by the distribution configuration, the
+same as the Packer path.
+
 ## Good to know
 
 - **The build does not enable enclaves on the builder on older refs.** On `amazon-eks-ami`
