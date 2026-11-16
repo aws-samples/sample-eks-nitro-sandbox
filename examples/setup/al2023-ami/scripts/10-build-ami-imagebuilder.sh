@@ -8,6 +8,8 @@
 #
 #   RUN_ID=<id> scripts/10-build-ami-imagebuilder.sh
 #
+# NOT RUN LIVE: unlike the Packer path, this script has not been run end to end. The page says so.
+#
 # CAVEAT: EC2 Image Builder's CreateInfrastructureConfiguration and InstanceConfiguration APIs
 # have NO enclave field (verified against the API docs). The ONLY way to get an enclave-enabled
 # build instance is the parentInstance-from-ASG path: an Auto Scaling group whose launch template
@@ -24,7 +26,6 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/common.sh"
 require_run_id
 
-: "${EKS_AMI_REF:?set EKS_AMI_REF to the amazon-eks-ami tag/commit to build from (>= v20261112 for pod isolation)}"
 : "${BUILD_SUBNET_ID:?set BUILD_SUBNET_ID to a PRIVATE subnet in an AZ with enclave-capable capacity}"
 : "${BUILD_INSTANCE_PROFILE:?set BUILD_INSTANCE_PROFILE to an IAM instance profile (SSM + S3 read access)}"
 : "${BUILD_SECURITY_GROUP_ID:?set BUILD_SECURITY_GROUP_ID to a security group for the build instance}"
@@ -33,12 +34,26 @@ require_run_id
 : "${POD_ISOLATION_FIRECRACKER_VERSION:=latest}"
 : "${BUILD_SNS_TOPIC_ARN:=}"  # Optional
 
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+: "${KUBERNETES_BUILD_DATE:?set KUBERNETES_BUILD_DATE to the amazon-eks bundle build date for KUBERNETES_VERSION (the s3://amazon-eks/<version>/<build date> folder)}"
+
+# These values are substituted into the component's shell commands, so accept only plain values.
+[[ "$KUBERNETES_VERSION" =~ ^1\.[0-9]{2}$ ]] || die "KUBERNETES_VERSION '$KUBERNETES_VERSION' must look like 1.36"
+[[ "$KUBERNETES_BUILD_DATE" =~ ^[0-9A-Za-z._-]{1,32}$ ]] || die "KUBERNETES_BUILD_DATE '$KUBERNETES_BUILD_DATE' has characters outside [0-9A-Za-z._-]"
+[[ "$POD_ISOLATION_FIRECRACKER_VERSION" =~ ^(latest|v[0-9]+\.[0-9]+\.[0-9]+)$ ]] || die "POD_ISOLATION_FIRECRACKER_VERSION '$POD_ISOLATION_FIRECRACKER_VERSION' must be 'latest' or look like v1.18.0"
+
 mkdir -p "$EVIDENCE_DIR" "$LOG_DIR"
 
-# Resolve parent image ARN (latest EKS-optimized AL2023 kernel 6.1 x86_64)
-# In production, pin a specific parent image ARN or use a name filter.
-PARENT_IMAGE_ARN="arn:aws:imagebuilder:${AWS_REGION}:amazon:image/amazon-linux-2023-ecs-optimized-ami-kernel-6.1-x86/x.x.x"
+# The architecture follows NODE_ARCH. Parent image: the EKS-optimized AL2023 AMI for that
+# architecture, resolved from the public SSM parameter (an AMI id is a valid Image Builder parent).
+case "$NODE_ARCH" in
+  amd64) SSM_ARCH=x86_64; : "${BUILD_INSTANCE_TYPE:=m8i.4xlarge}" ;;
+  arm64) SSM_ARCH=arm64;  : "${BUILD_INSTANCE_TYPE:=m8g.4xlarge}" ;;
+esac
+PARENT_IMAGE_ARN=$(aws ssm get-parameter --region "$AWS_REGION" \
+  --name "/aws/service/eks/optimized-ami/${KUBERNETES_VERSION}/amazon-linux-2023/${SSM_ARCH}/standard/recommended/image_id" \
+  --query Parameter.Value --output text) || die "could not resolve the EKS-optimized AL2023 $SSM_ARCH parent image for Kubernetes $KUBERNETES_VERSION"
+[[ "$PARENT_IMAGE_ARN" =~ ^ami-[0-9a-f]+$ ]] || die "the parent image lookup returned '$PARENT_IMAGE_ARN', not an AMI id"
+log "parent image $PARENT_IMAGE_ARN ($SSM_ARCH), build instance type $BUILD_INSTANCE_TYPE"
 
 # Component, recipe, and pipeline names
 COMPONENT_NAME="EKSNitroSandboxAL2023-${RUN_ID}"
@@ -96,7 +111,8 @@ jq --arg name "$INFRA_CONFIG_NAME" \
    --arg bucket "$BUILD_S3_BUCKET" \
    --arg asg "$BUILD_ASG_NAME" \
    --arg sns "$BUILD_SNS_TOPIC_ARN" \
-   '.name = $name | .instanceProfileName = $profile | .securityGroupIds = [$sg] | .subnetId = $subnet | .logging.s3Logs.s3BucketName = $bucket | .parentInstance.autoScalingGroup.autoScalingGroupName = $asg | if $sns != "" then .snsTopicArn = $sns else . end' \
+   --arg itype "$BUILD_INSTANCE_TYPE" \
+   '.name = $name | .instanceTypes = [$itype] | .instanceProfileName = $profile | .securityGroupIds = [$sg] | .subnetId = $subnet | .logging.s3Logs.s3BucketName = $bucket | .parentInstance.autoScalingGroup.autoScalingGroupName = $asg | if $sns != "" then .snsTopicArn = $sns else . end' \
    "$HERE/../deploy/imagebuilder/infrastructure-config.json" > "$INFRA_DOC"
 
 INFRA_ARN=$(aws imagebuilder create-infrastructure-configuration \

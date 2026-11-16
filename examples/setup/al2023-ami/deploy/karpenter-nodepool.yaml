@@ -6,11 +6,15 @@
 # A NoSchedule taint keeps ordinary pods off these nodes; the hello-world sandbox pod tolerates
 # it. You do not need to list enclave-capable instance families here: the EC2NodeClass's
 # enclaveOptions filter already removes unsupported instance types. The requirements below only
-# keep nodes to on-demand amd64; adjust to your needs.
+# keep nodes to on-demand and to the architecture NODE_ARCH selects; adjust to your needs.
 apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
   name: al2023-nitro-sandbox
+  # The ownership mark clean.sh checks before it deletes this object.
+  labels:
+    app.kubernetes.io/part-of: al2023-ami
+    app.kubernetes.io/instance: "@RUN_ID@"
 spec:
   template:
     metadata:

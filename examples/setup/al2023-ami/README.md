@@ -308,7 +308,8 @@ The Image Builder configurations are in `deploy/imagebuilder/`:
   verify the runtime and guest image from the public EKS S3 bundle, Firecracker ≥ v1.18.0, assert
   kernel ≥ 1:6.18.51, `nitro_enclaves.mempool`, containerd handlers, CRI proxy, the
   `eks.amazonaws.com/nitro-sandbox` NodeConfig label).
-- **[`image-recipe.json`](deploy/imagebuilder/image-recipe.json)**: AL2023 parent image + the
+- **[`image-recipe.json`](deploy/imagebuilder/image-recipe.json)**: the EKS-optimized AL2023
+  parent image (the driver looks up its AMI id for `NODE_ARCH` in the public SSM parameter) + the
   component.
 - **[`infrastructure-config.json`](deploy/imagebuilder/infrastructure-config.json)**:
   `parentInstance.autoScalingGroup` pointing at an enclave-enabled ASG (build phase only), with
@@ -317,8 +318,10 @@ The Image Builder configurations are in `deploy/imagebuilder/`:
   and tagging.
 
 A reference driver script is at
-`scripts/10-build-ami-imagebuilder.sh` (at the repository root). It substitutes
-the placeholders and drives the pipeline via the `aws imagebuilder` CLI:
+[`scripts/10-build-ami-imagebuilder.sh`](scripts/10-build-ami-imagebuilder.sh). It checks its
+inputs, picks the parent image and build instance type for `NODE_ARCH`, substitutes the
+placeholders and drives the pipeline via the `aws imagebuilder` CLI. Like the rest of this
+section it has **not been run live**:
 
 ```bash
 # Prerequisites:
@@ -331,8 +334,9 @@ export BUILD_INSTANCE_PROFILE=<instance-profile-name>
 export BUILD_SECURITY_GROUP_ID=<sg-id>
 export BUILD_SUBNET_ID=<private-subnet-id>
 export BUILD_S3_BUCKET=<log-bucket>
+export KUBERNETES_BUILD_DATE=<build date folder under s3://amazon-eks/<version>/>
 
-RUN_ID=<id> ../../scripts/10-build-ami-imagebuilder.sh
+RUN_ID=<id> ./scripts/10-build-ami-imagebuilder.sh
 ```
 
 The script creates the component, recipe, infrastructure configuration, distribution configuration,
@@ -362,9 +366,16 @@ RUN_ID=<id> ./clean.sh --dry-run   # preview
 RUN_ID=<id> ./clean.sh             # remove everything this run created
 ```
 
-`clean.sh` deletes only resources tagged `ManagedBy=al2023-ami` and `RunId=<id>` (the node group,
-launch template, Karpenter `NodePool`/`EC2NodeClass`, the pods and the namespace, after checking
-the namespace is this run's), and records any host-blocked `ec2 delete-*` steps as a script for
-you to run. It never removes the shared `vpc-cni` add-on, the RuntimeClasses, or Karpenter
-itself. See the [hello-sandbox](../../getting-started/hello-sandbox/README.md) clean up for
+`clean.sh` needs `KUBE_CONTEXT` set, like setup. It stops if the AWS account is not the one the run
+was created in. It deletes a resource only when it carries this run's mark: the
+`app.kubernetes.io/part-of=al2023-ami` and `app.kubernetes.io/instance=<id>` labels on the
+namespace, `NodePool` and `EC2NodeClass`, and the `ManagedBy=al2023-ami` and `RunId=<id>` tags on
+the node group, launch template and AMI (the AMI's snapshots go with it). A resource without the
+mark is left alone, and a lookup that fails is reported as "could not determine", never as gone.
+Either leaves the clean up incomplete and the script exits non-zero.
+
+The launch template, AMI and snapshot deletes (`ec2 delete-*`, `deregister-image`) are written to
+`tmp/al2023-ami/run/out/runs/<id>/teardown-remaining.sh` for you to run, and the script exits
+non-zero until you have. It never removes the shared `vpc-cni` add-on, the RuntimeClasses, or
+Karpenter itself. See the [hello-sandbox](../../getting-started/hello-sandbox/README.md) clean up for
 removing the namespace and the cluster.

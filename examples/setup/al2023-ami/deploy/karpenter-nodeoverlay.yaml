@@ -31,7 +31,7 @@ spec:
       operator: Gt
       values: ["1"]
   capacity:
-    # 4 vCPU -> 20 (5/vCPU), matching an observed c6i.xlarge; the NodePool pins amd64 on-demand.
+    # 4 vCPU -> 20 (5/vCPU), matching an observed c6i.xlarge; the NodePool pins on-demand and one architecture.
     # If you widen the NodePool to larger instances, raise this (5 x vCPU, max 896; half on
     # CPU-overcommit types) or split into per-size overlays.
     eks.amazonaws.com/nitro-sandbox: "20"

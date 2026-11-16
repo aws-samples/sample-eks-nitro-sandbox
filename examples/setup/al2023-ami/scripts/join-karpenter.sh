@@ -38,6 +38,14 @@ for f in "$out/ec2nodeclass.yaml" "$out/nodepool.yaml"; do
   grep -q '@[A-Z_]*@' "$f" && die "unrendered placeholder left in $f"
 done
 
+# Both objects have fixed names. Applying over one that is not this blueprint's would take it
+# over, so stop if either exists without this blueprint's label.
+for kind in nodepool ec2nodeclass; do
+  if existing=$(kc get "$kind" al2023-nitro-sandbox -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}' 2>/dev/null); then
+    [ "$existing" = "$RESOURCE_PREFIX" ] || die "$kind al2023-nitro-sandbox already exists and is not this blueprint's; not applying over it"
+  fi
+done
+
 log "applying Karpenter EC2NodeClass and NodePool (AMI $AMI_ID)"
 kc apply -f "$out/ec2nodeclass.yaml"
 kc apply -f "$out/nodepool.yaml"

@@ -36,6 +36,8 @@ mkdir -p "$RUN_STATE_DIR" "$EVIDENCE_DIR"
   printf 'AWS_REGION=%s\n' "$AWS_REGION"
   printf 'NAMESPACE=%s\n' "$NAMESPACE"
   printf 'JOIN_MODE=%s\n' "$JOIN_MODE"
+  # The account the run is created in; clean.sh refuses to delete from any other.
+  printf 'ACCOUNT_ID=%s\n' "$(aws sts get-caller-identity --query Account --output text)"
 } >> "$RUN_STATE_DIR/run-state.env"
 printf 'RUN_ID=%s\n' "$RUN_ID" > "$RUN_STATE_FILE"
 log "run id: $RUN_ID (mode: $mode, JOIN_MODE: $JOIN_MODE)"

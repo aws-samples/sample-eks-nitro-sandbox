@@ -28,6 +28,10 @@ constants:
   - BundleS3BaseUri:
       type: string
       value: 's3://amazon-eks/{{ KUBERNETES_VERSION }}/{{ KUBERNETES_BUILD_DATE }}'
+  - BundleRegion:
+      type: string
+      # The Region of the public amazon-eks bucket that holds the bundle, not the Region you build in.
+      value: 'us-west-2'
   - ImagesDir:
       type: string
       value: '/var/lib/nitro-sandbox-images'
@@ -195,10 +199,10 @@ phases:
               RUNTIME_KEY="nitro-sandboxes-runtime/linux/${GUEST_ARCH}/nitro-sandboxes-runtime.tar.gz"
 
               echo "Fetching ${BUNDLE}/${RUNTIME_KEY}"
-              aws s3 cp --quiet --region us-west-2 "${BUNDLE}/${RUNTIME_KEY}" /tmp/nitro-sandboxes-runtime.tar.gz
+              aws s3 cp --quiet --region {{ BundleRegion }} "${BUNDLE}/${RUNTIME_KEY}" /tmp/nitro-sandboxes-runtime.tar.gz
 
               # Verify checksum
-              EXPECTED=$(aws s3 cp --quiet --region us-west-2 "${BUNDLE}/${RUNTIME_KEY}.sha256" - | awk '{print $1}')
+              EXPECTED=$(aws s3 cp --quiet --region {{ BundleRegion }} "${BUNDLE}/${RUNTIME_KEY}.sha256" - | awk '{print $1}')
               ACTUAL=$(sha256sum /tmp/nitro-sandboxes-runtime.tar.gz | awk '{print $1}')
               if [ "$EXPECTED" != "$ACTUAL" ]; then
                 echo "ERROR: checksum mismatch for nitro-sandboxes-runtime.tar.gz" >&2
@@ -229,8 +233,8 @@ phases:
 
               # Fetch guest EIF
               echo "Fetching ${GUEST_BASE}/nitro-sandbox-guest.eif"
-              aws s3 cp --quiet --region us-west-2 "${GUEST_BASE}/nitro-sandbox-guest.eif" {{ ImagesDir }}/latest.eif
-              EXPECTED=$(aws s3 cp --quiet --region us-west-2 "${GUEST_BASE}/nitro-sandbox-guest.eif.sha256" - | awk '{print $1}')
+              aws s3 cp --quiet --region {{ BundleRegion }} "${GUEST_BASE}/nitro-sandbox-guest.eif" {{ ImagesDir }}/latest.eif
+              EXPECTED=$(aws s3 cp --quiet --region {{ BundleRegion }} "${GUEST_BASE}/nitro-sandbox-guest.eif.sha256" - | awk '{print $1}')
               ACTUAL=$(sha256sum {{ ImagesDir }}/latest.eif | awk '{print $1}')
               if [ "$EXPECTED" != "$ACTUAL" ]; then
                 echo "ERROR: checksum mismatch for nitro-sandbox-guest.eif" >&2
@@ -240,8 +244,8 @@ phases:
 
               # Fetch guest disk
               echo "Fetching ${GUEST_BASE}/nitro-sandbox-guest-disk.img"
-              aws s3 cp --quiet --region us-west-2 "${GUEST_BASE}/nitro-sandbox-guest-disk.img" {{ ImagesDir }}/latest-disk.img
-              EXPECTED=$(aws s3 cp --quiet --region us-west-2 "${GUEST_BASE}/nitro-sandbox-guest-disk.img.sha256" - | awk '{print $1}')
+              aws s3 cp --quiet --region {{ BundleRegion }} "${GUEST_BASE}/nitro-sandbox-guest-disk.img" {{ ImagesDir }}/latest-disk.img
+              EXPECTED=$(aws s3 cp --quiet --region {{ BundleRegion }} "${GUEST_BASE}/nitro-sandbox-guest-disk.img.sha256" - | awk '{print $1}')
               ACTUAL=$(sha256sum {{ ImagesDir }}/latest-disk.img | awk '{print $1}')
               if [ "$EXPECTED" != "$ACTUAL" ]; then
                 echo "ERROR: checksum mismatch for nitro-sandbox-guest-disk.img" >&2
