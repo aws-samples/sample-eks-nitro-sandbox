@@ -19,6 +19,7 @@ SCRIPT = BUILD / "build-images.sh"
 SCAN_CHECK = BUILD / "check-image-scan.py"
 INSPECTOR_SCAN_CHECK = BUILD / "check-inspector-scan.py"
 OCE_LOCK_CHECK = BUILD / "check-oce-lock.py"
+ADAPTER_DOCKERFILE = SAMPLE / "adapter" / "Dockerfile"
 CONTROLLER_DOCKERFILE = BUILD / "controller-runtime.Dockerfile"
 OWNERSHIP_HELPER = SAMPLE / "ownership-helper"
 OWNERSHIP_HELPER_DOCKERFILE = OWNERSHIP_HELPER / "Dockerfile"
@@ -520,6 +521,21 @@ def test_build_script_builds_each_image_from_the_expected_source() -> None:
     assert script.count("docker buildx build") == 4
     assert "docker pull" not in script
     assert "skopeo copy" not in script
+
+
+def test_adapter_base_image_is_allowlisted_and_digest_pinned() -> None:
+    dockerfile = ADAPTER_DOCKERFILE.read_text(encoding="utf-8")
+    base_images = re.findall(r"^FROM\s+(\S+)", dockerfile, re.MULTILINE)
+
+    assert len(base_images) == 1
+    base_image = re.fullmatch(
+        r"(?P<repository>[a-z0-9.-]+(?:/[a-z0-9._-]+)+)"
+        r":(?P<tag>[A-Za-z0-9][A-Za-z0-9._-]*)"
+        r"@(?P<digest>sha256:[0-9a-f]{64})",
+        base_images[0],
+    )
+    assert base_image
+    assert base_image.group("repository") == "cgr.dev/chainguard/python"
 
 
 def test_controller_runtime_uses_a_separate_pinned_base_and_drops_build_tools() -> None:

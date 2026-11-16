@@ -23,6 +23,24 @@ scan timestamp, and there must be no active Critical or High finding for that
 same image. Pending coverage is retried. Missing, ambiguous, failed, or malformed
 coverage and findings fail the build closed.
 
+The adapter Dockerfile pins its Chainguard Python base with
+`latest@sha256:<digest>`. The digest, not the mutable `latest` tag, selects the
+base image bytes. When Inspector reports a fixable vulnerability in that base
+image:
+
+1. Select the reviewed replacement digest that contains the vendor fix.
+2. Replace the digest in `adapter/Dockerfile` while retaining the
+   `@sha256:<digest>` pin.
+3. Build the candidate commit through this workflow.
+4. Accept the new `ADAPTER_IMAGE` only after Inspector completes the scan for
+   its exact repository and digest and the Critical/High gate passes.
+5. Deploy the new adapter digest and repeat the
+   [scoped validation procedure](../VALIDATION.md).
+
+The replacement digest creates a new adapter image and invalidates scan and
+validation evidence for the previous digest. Do not treat a Dockerfile update
+or a scan of the superseded image as proof that the fix reached the deployment.
+
 The controller uses the sample-owned `controller-runtime.Dockerfile`. Its build
 stage installs OCE's production dependencies, while its final stage starts from
 a separately pinned Node 24 runtime image and removes package-manager and
@@ -64,13 +82,15 @@ environment overrides such as `BASH_ENV` and `GIT_CONFIG_*`.
 invocation_role_arn="$(
   aws cloudformation describe-stacks \
     --stack-name openclaw-enterprise-images \
-    --query 'Stacks[0].Outputs[?OutputKey==`BuildInvocationRoleArn`].OutputValue' \
+    --query \
+    'Stacks[0].Outputs[?OutputKey==`BuildInvocationRoleArn`].OutputValue' \
     --output text
 )"
 state_machine_arn="$(
   aws cloudformation describe-stacks \
     --stack-name openclaw-enterprise-images \
-    --query 'Stacks[0].Outputs[?OutputKey==`BuildStateMachineArn`].OutputValue' \
+    --query \
+    'Stacks[0].Outputs[?OutputKey==`BuildStateMachineArn`].OutputValue' \
     --output text
 )"
 credentials="$(
@@ -78,9 +98,9 @@ credentials="$(
     --role-arn "$invocation_role_arn" \
     --role-session-name openclaw-enterprise-image-build
 )"
-export AWS_ACCESS_KEY_ID="$(jq -er '.Credentials.AccessKeyId' <<<"$credentials)"
-export AWS_SECRET_ACCESS_KEY="$(jq -er '.Credentials.SecretAccessKey' <<<"$credentials)"
-export AWS_SESSION_TOKEN="$(jq -er '.Credentials.SessionToken' <<<"$credentials)"
+export AWS_ACCESS_KEY_ID="$(jq -er '.Credentials.AccessKeyId' <<<"$credentials")"
+export AWS_SECRET_ACCESS_KEY="$(jq -er '.Credentials.SecretAccessKey' <<<"$credentials")"
+export AWS_SESSION_TOKEN="$(jq -er '.Credentials.SessionToken' <<<"$credentials")"
 execution_arn="$(
   aws stepfunctions start-execution \
     --state-machine-arn "$state_machine_arn" \
@@ -146,7 +166,10 @@ the manifest:
 adapter_manifest="examples/ai-agents/openclaw-enterprise/deploy/adapter-webhook.yaml"
 KUBE_CONTEXT="replace-with-explicit-eks-context"
 ./examples/ai-agents/openclaw-enterprise/scripts/render-adapter-manifest.sh \
-  "$adapter_manifest" "$ADAPTER_IMAGE" "$OWNERSHIP_INIT_IMAGE" "$RUNTIME_IMAGE" \
+  "$adapter_manifest" \
+  "$ADAPTER_IMAGE" \
+  "$OWNERSHIP_INIT_IMAGE" \
+  "$RUNTIME_IMAGE" \
   | kubectl --context "$KUBE_CONTEXT" apply --filename -
 
 kubectl --context "$KUBE_CONTEXT" \

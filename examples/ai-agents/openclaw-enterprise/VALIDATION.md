@@ -11,6 +11,11 @@ The commands use placeholders for account, cluster, namespace, Agent, endpoint,
 credential, and image digest values. Do not publish substituted values or
 command output without sanitizing it.
 
+Treat an adapter base-image refresh as a new validation candidate. Rebuild and
+rescan the adapter, deploy the new digest-qualified `ADAPTER_IMAGE`, then repeat
+this complete procedure. Evidence from the superseded adapter digest does not
+validate the replacement.
+
 ## Prerequisites
 
 - Use an EKS cluster with the `isolated-sandbox` runtime class.
@@ -257,11 +262,13 @@ marker, and a completed post-replacement turn. Record it as
    complete expected denial message; any other failure is not a pass.
 
    ```bash
-   expected_controller_denial='admission caller is not an allowed controller identity for this resource'
+   expected_controller_denial='admission caller is not an allowed controller '
+   expected_controller_denial+='identity for this resource'
+   fixture='examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
    controller_error="$(
      yq eval \
        ".metadata.namespace = \"$TENANT_A_NAMESPACE\"" \
-       examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml |
+       "$fixture" |
        kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_A_NAMESPACE" \
          create --dry-run=server --filename - \
          2>&1 >/dev/null || true
@@ -286,15 +293,16 @@ marker, and a completed post-replacement turn. Record it as
      examples/ai-agents/openclaw-enterprise/tests/test_adapter_contract.py
    ```
 
-These tests exercise the same `build_patch`, `validate_pod`, `admit`, and
-`validate` functions packaged in the adapter image. They complement, but do
-not replace, the controller-created live replacement check.
+   These tests exercise the same `build_patch`, `validate_pod`, `admit`, and
+   `validate` functions packaged in the adapter image. They complement, but do
+   not replace, the controller-created live replacement check.
 
 3. Attempt to add an ephemeral debugger to one managed runtime. Assert the
    complete expected denial message.
 
    ```bash
-   expected_debug_denial='ephemeral containers are not permitted in OpenClaw Enterprise managed namespaces'
+   expected_debug_denial='ephemeral containers are not permitted in '
+   expected_debug_denial+='OpenClaw Enterprise managed namespaces'
    debug_error="$(
      kubectl --context "$KUBE_CONTEXT" \
        --namespace "$TENANT_A_NAMESPACE" \
@@ -315,12 +323,17 @@ the exact expected message. Record all negative checks as
 
 ## Validate image findings
 
-1. Build the adapter, controller, ownership-helper, and runtime images from the
+1. Confirm that `adapter/Dockerfile` selects its base image with an exact
+   `@sha256:<digest>` reference.
+2. Build the adapter, controller, ownership-helper, and runtime images from the
    candidate source commits by following the
    [source-build procedure](build/README.md).
-2. Confirm that the build's exact-digest Inspector gate reports
+3. If the candidate refreshes a vulnerable adapter base, confirm that
+   `ADAPTER_IMAGE` has a new digest and that Inspector no longer reports the
+   fixable finding against that replacement digest.
+4. Confirm that the build's exact-digest Inspector gate reports
    `CRITICAL=0, HIGH=0` for all four images.
-3. Confirm that Inspector coverage is active and successful for each exact
+5. Confirm that Inspector coverage is active and successful for each exact
    repository and digest before accepting the result.
 
 Record the exact digests, scan time, and result as `<INSPECTOR_RESULT>`. A scan
