@@ -31,6 +31,7 @@ require_run_id
 : "${BUILD_SECURITY_GROUP_ID:?set BUILD_SECURITY_GROUP_ID to a security group for the build instance}"
 : "${BUILD_ASG_NAME:?set BUILD_ASG_NAME to an Auto Scaling group with EnclaveOptions.Enabled=true on its launch template}"
 : "${BUILD_S3_BUCKET:?set BUILD_S3_BUCKET to an S3 bucket for Image Builder logs}"
+: "${BUILD_EXECUTION_ROLE:?set BUILD_EXECUTION_ROLE to the execution role ARN for ASG management (imagebuilder.amazonaws.com trust + EC2ImageBuilderExecutionPolicy + ASG permissions)}"
 : "${POD_ISOLATION_FIRECRACKER_VERSION:=latest}"
 : "${BUILD_SNS_TOPIC_ARN:=}"  # Optional
 
@@ -40,6 +41,7 @@ require_run_id
 [[ "$KUBERNETES_VERSION" =~ ^1\.[0-9]{2}$ ]] || die "KUBERNETES_VERSION '$KUBERNETES_VERSION' must look like 1.36"
 [[ "$KUBERNETES_BUILD_DATE" =~ ^[0-9A-Za-z._-]{1,32}$ ]] || die "KUBERNETES_BUILD_DATE '$KUBERNETES_BUILD_DATE' has characters outside [0-9A-Za-z._-]"
 [[ "$POD_ISOLATION_FIRECRACKER_VERSION" =~ ^(latest|v[0-9]+\.[0-9]+\.[0-9]+)$ ]] || die "POD_ISOLATION_FIRECRACKER_VERSION '$POD_ISOLATION_FIRECRACKER_VERSION' must be 'latest' or look like v1.18.0"
+[[ "$BUILD_EXECUTION_ROLE" =~ ^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]+$ ]] || die "BUILD_EXECUTION_ROLE '$BUILD_EXECUTION_ROLE' must be an IAM role ARN"
 
 mkdir -p "$EVIDENCE_DIR" "$LOG_DIR"
 
@@ -129,7 +131,8 @@ DISTRO_DOC=$(mktemp)
 jq --arg name "$DISTRO_CONFIG_NAME" \
    --arg region "$AWS_REGION" \
    --arg k8s "$KUBERNETES_VERSION" \
-   '.name = $name | .distributions[0].region = $region | .distributions[0].amiDistributionConfiguration.amiTags.KubernetesVersion = $k8s' \
+   --arg runid "$RUN_ID" \
+   '.name = $name | .distributions[0].region = $region | .distributions[0].amiDistributionConfiguration.amiTags.KubernetesVersion = $k8s | .distributions[0].amiDistributionConfiguration.amiTags.RunId = $runid' \
    "$HERE/../deploy/imagebuilder/distribution-config.json" > "$DISTRO_DOC"
 
 DISTRO_ARN=$(aws imagebuilder create-distribution-configuration \
@@ -147,6 +150,7 @@ PIPELINE_ARN=$(aws imagebuilder create-image-pipeline \
   --image-recipe-arn "$RECIPE_ARN" \
   --infrastructure-configuration-arn "$INFRA_ARN" \
   --distribution-configuration-arn "$DISTRO_ARN" \
+  --execution-role "$BUILD_EXECUTION_ROLE" \
   --region "$AWS_REGION" \
   --tags "ManagedBy=${TAGS_OWNER_VALUE}" "RunId=${RUN_ID}" "auto-delete=no" \
   --query 'imagePipelineArn' \
