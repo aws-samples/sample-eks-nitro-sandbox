@@ -182,9 +182,39 @@ else
     aws s3api create-bucket --bucket "$S3_BUCKET" \
       --create-bucket-configuration "LocationConstraint=$AWS_REGION" >/dev/null
   fi
-  # S3 creates a bucket without tags, so the mark goes on in the next call.
+  # S3 creates a bucket without tags, so the mark goes on in the next call, and the whole tag
+  # set is read back before anything else is written to the bucket. Until it reads back, the
+  # only proof the bucket is this sample's is that this run has just created it: so on any
+  # failure the script deletes that still-empty bucket, confirms it is gone, and stops.
+  bucket_marked=true
   aws s3api put-bucket-tagging --bucket "$S3_BUCKET" \
-    --tagging "TagSet=[{Key=ManagedBy,Value=$MANAGED_BY}]"
+    --tagging "TagSet=[{Key=ManagedBy,Value=$MANAGED_BY}]" || bucket_marked=false
+  if [[ "$bucket_marked" == true ]]; then
+    bucket_marked=false
+    # Read only, a few times: a tag set just written can take a moment to read back.
+    for _ in 1 2 3; do
+      new_tags="$(aws s3api get-bucket-tagging --bucket "$S3_BUCKET" --query 'TagSet' --output json)" &&
+        jq -e --arg v "$MANAGED_BY" '. == [{"Key": "ManagedBy", "Value": $v}]' <<<"$new_tags" >/dev/null &&
+        { bucket_marked=true; break; }
+      sleep 2
+    done
+  fi
+  if [[ "$bucket_marked" != true ]]; then
+    gone_rc=0
+    aws s3api delete-bucket --bucket "$S3_BUCKET" || gone_rc=2
+    if [[ "$gone_rc" == 0 ]]; then
+      # Gone means S3's own not-found, read a few times while the delete settles.
+      for _ in 1 2 3; do
+        gone_rc=0
+        lookup "(404)" s3api head-bucket --bucket "$S3_BUCKET" >/dev/null || gone_rc=$?
+        [[ "$gone_rc" != 1 ]] || break
+        sleep 2
+      done
+    fi
+    [[ "$gone_rc" == 1 ]] ||
+      die "created the S3 bucket $S3_BUCKET but could not confirm its ManagedBy tag, and could not confirm the empty bucket is gone either. Delete it: aws s3api delete-bucket --bucket $S3_BUCKET --region $AWS_REGION"
+    die "created the S3 bucket $S3_BUCKET but could not confirm its ManagedBy tag, so it deleted that empty bucket again and stopped before writing anything else. Re-run with a new S3_BUCKET."
+  fi
   echo "  created S3 bucket $S3_BUCKET"
   state_put BUCKET_CREATED true
 fi
