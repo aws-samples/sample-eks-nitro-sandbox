@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import posixpath
 import re
-import shlex
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -21,6 +21,7 @@ OPENCLAW_HOME_PATH = "/home/node/.openclaw"
 CLIENT_CREDENTIAL_PATH = f"{OPENCLAW_HOME_PATH}/client/credentials.sqlite"
 LINK_INIT_NAME = "nitro-link-gateway-state"
 OWNERSHIP_INIT_NAME = "nitro-prepare-runtime-ownership"
+OWNERSHIP_INIT_IMAGE_ENV = "OCE_OWNERSHIP_INIT_IMAGE"
 AGW_CA_VOLUME = "agentgateway-ca"
 AGW_CA_CONFIG_MAP = "agentgateway-ca"
 AGW_CA_MOUNT_PATH = "/etc/agentgateway-ca"
@@ -75,6 +76,25 @@ UNSAFE_BOOTSTRAP_ENV_NAMES = (
     "ZDOTDIR",
 )
 IMAGE_DIGEST_PATTERN = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
+
+OWNERSHIP_SCRIPT = f"""
+for path
+do
+  if [ -L "$path" ] || [ ! -d "$path" ]; then
+    exit 1
+  fi
+  /usr/bin/chmod 0700 -- "$path"
+  /usr/bin/chown {RUNTIME_UID}:{RUNTIME_GID} -- "$path"
+done
+credentials={CLIENT_CREDENTIAL_PATH}
+if [ -L "$credentials" ]; then
+  exit 1
+fi
+if [ -e "$credentials" ]; then
+  /usr/bin/chown {RUNTIME_UID}:{RUNTIME_GID} -- "$credentials"
+  /usr/bin/chmod 0600 -- "$credentials"
+fi
+""".strip()
 
 LINK_SCRIPT = r"""
 const fs = require("node:fs");
@@ -242,30 +262,29 @@ def _runtime_contract(
     return image, runtime_security
 
 
+def _ownership_init_image() -> str:
+    image = os.environ.get(OWNERSHIP_INIT_IMAGE_ENV)
+    if (
+        not _is_nonempty_string(image)
+        or image.strip() != image
+        or any(character.isspace() for character in image)
+        or not IMAGE_DIGEST_PATTERN.fullmatch(image)
+    ):
+        raise AdmissionError(
+            f"{OWNERSHIP_INIT_IMAGE_ENV} must use an exact sha256 digest"
+        )
+    return image
+
+
 def _ownership_init(
-    runtime_container: dict[str, Any],
     image: str,
     private_paths: list[str],
 ) -> dict[str, Any]:
-    quoted_paths = " ".join(shlex.quote(path) for path in private_paths)
-    ownership_script = (
-        f"for path in {quoted_paths}; do "
-        f'if [ -L "$path" ] || [ ! -d "$path" ]; then exit 1; fi; '
-        f'/usr/bin/chmod 0700 -- "$path" || exit 1; '
-        f'/usr/bin/chown {RUNTIME_UID}:{RUNTIME_GID} -- "$path" || exit 1; '
-        "done; "
-        f"if [ -L {shlex.quote(CLIENT_CREDENTIAL_PATH)} ]; then exit 1; "
-        f"elif [ -e {shlex.quote(CLIENT_CREDENTIAL_PATH)} ]; then "
-        f"/usr/bin/chown {RUNTIME_UID}:{RUNTIME_GID} -- "
-        f"{shlex.quote(CLIENT_CREDENTIAL_PATH)} || exit 1; "
-        f"/usr/bin/chmod 0600 -- {shlex.quote(CLIENT_CREDENTIAL_PATH)} "
-        "|| exit 1; fi"
-    )
-    ownership: dict[str, Any] = {
+    return {
         "name": OWNERSHIP_INIT_NAME,
         "image": image,
-        "command": ["/bin/sh", "-c"],
-        "args": [ownership_script],
+        "command": ["/bin/sh", "-eu", "-c"],
+        "args": [OWNERSHIP_SCRIPT, "--", *private_paths],
         "securityContext": {
             "allowPrivilegeEscalation": False,
             "readOnlyRootFilesystem": True,
@@ -290,9 +309,6 @@ def _ownership_init(
             },
         ],
     }
-    if "imagePullPolicy" in runtime_container:
-        ownership["imagePullPolicy"] = runtime_container["imagePullPolicy"]
-    return ownership
 
 
 def _mount_paths_overlap(left: Any, right: str) -> bool:
@@ -504,7 +520,8 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     mount_patches: list[dict[str, Any]] = []
     environment_patches: list[dict[str, Any]] = []
     runtime_patches: list[dict[str, Any]] = []
-    ownership_source: tuple[dict[str, Any], str] | None = None
+    ownership_image = _ownership_init_image()
+    runtime_image_source: str | None = None
     groups = (
         ("initContainers", init_containers),
         ("containers", containers),
@@ -544,6 +561,11 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                     if mount.get("mountPath") != STATE_ROOT:
                         raise AdmissionError(
                             f"{STATE_VOLUME} root mounts must use {STATE_ROOT}"
+                        )
+                    if group_name == "containers":
+                        raise AdmissionError(
+                            "regular containers cannot mount "
+                            f"{STATE_VOLUME} at its root"
                         )
                     state_root_count += 1
                     rewritten.append(copy.deepcopy(mount))
@@ -649,14 +671,19 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                     runtime_image, runtime_security = _runtime_contract(
                         container, location
                     )
+                    if runtime_image == ownership_image:
+                        raise AdmissionError(
+                            f"{OWNERSHIP_INIT_IMAGE_ENV} must not match a "
+                            "workload runtime image"
+                        )
                     if (
-                        ownership_source is not None
-                        and ownership_source[1] != runtime_image
+                        runtime_image_source is not None
+                        and runtime_image_source != runtime_image
                     ):
                         raise AdmissionError(
                             "adapted runtime containers must use the same image"
                         )
-                    ownership_source = (container, runtime_image)
+                    runtime_image_source = runtime_image
                     runtime_patches.append(
                         {
                             "op": "replace",
@@ -713,7 +740,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
 
     if not links:
         raise AdmissionError(f"{STATE_VOLUME} has no supported subPath mounts to adapt")
-    if ownership_source is None:
+    if runtime_image_source is None:
         raise AdmissionError("target OCE Pod has no adaptable runtime container")
     _validate_link_paths(links)
 
@@ -746,8 +773,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     if "imagePullPolicy" in prep:
         link_init["imagePullPolicy"] = prep["imagePullPolicy"]
     ownership_init = _ownership_init(
-        ownership_source[0],
-        ownership_source[1],
+        ownership_image,
         [
             HOME_MOUNT_PATH,
             OPENCLAW_HOME_PATH,

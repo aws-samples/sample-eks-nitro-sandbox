@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import unittest
+from unittest import mock
 
 from adapter import (
     AGW_CA_PATH,
@@ -21,6 +23,8 @@ from adapter import (
 )
 
 RUNTIME_IMAGE = f"example.invalid/oce@sha256:{'a' * 64}"
+OWNERSHIP_INIT_IMAGE_ENV = "OCE_OWNERSHIP_INIT_IMAGE"
+OWNERSHIP_INIT_IMAGE = f"example.invalid/ownership-helper@sha256:{'b' * 64}"
 UNSAFE_GLIBC_ENV_NAMES = (
     "GCONV_PATH",
     "GLIBC_TUNABLES",
@@ -272,9 +276,16 @@ def apply_patch(document: dict, patch: list[dict]) -> dict:
     return result
 
 
+@mock.patch.dict(
+    os.environ,
+    {OWNERSHIP_INIT_IMAGE_ENV: OWNERSHIP_INIT_IMAGE},
+)
 class BuildPatchTests(unittest.TestCase):
     def test_moves_ownership_repair_to_dedicated_init_container(self) -> None:
         pod = target_pod()
+        pod["spec"]["containers"][-1]["volumeMounts"][-1]["subPath"] = (
+            "sessions;exit 42"
+        )
         rendered = apply_patch(pod, build_patch(pod))
         original_init_names = {
             container["name"] for container in pod["spec"]["initContainers"]
@@ -301,6 +312,16 @@ class BuildPatchTests(unittest.TestCase):
             {mount["name"] for mount in ownership_init["volumeMounts"]},
             {"runtime-state", "openclaw-gateway-state"},
         )
+        self.assertEqual(ownership_init["image"], OWNERSHIP_INIT_IMAGE)
+        self.assertNotEqual(ownership_init["image"], RUNTIME_IMAGE)
+        self.assertEqual(ownership_init["command"], ["/bin/sh", "-eu", "-c"])
+        self.assertEqual(ownership_init["args"][1], "--")
+        self.assertIn(
+            f"{OPENCLAW_HOME_PATH}/sessions;exit 42",
+            ownership_init["args"][2:],
+        )
+        self.assertNotIn("sessions;exit 42", ownership_init["args"][0])
+        self.assertEqual(ownership_init.get("env", []), [])
 
         ownership_index = rendered["spec"]["initContainers"].index(ownership_init)
         link_index = next(
@@ -309,6 +330,25 @@ class BuildPatchTests(unittest.TestCase):
             if container["name"] == LINK_INIT_NAME
         )
         self.assertLess(ownership_index, link_index)
+
+    def test_requires_separately_configured_digest_pinned_ownership_image(
+        self,
+    ) -> None:
+        invalid_images = (
+            None,
+            "example.invalid/ownership-helper:latest",
+            f"example.invalid/ownership helper@sha256:{'b' * 64}",
+            RUNTIME_IMAGE,
+        )
+        for image in invalid_images:
+            with self.subTest(image=image):
+                environment = {} if image is None else {OWNERSHIP_INIT_IMAGE_ENV: image}
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    with self.assertRaisesRegex(
+                        AdmissionError,
+                        OWNERSHIP_INIT_IMAGE_ENV,
+                    ):
+                        build_patch(target_pod())
 
     def test_runtime_container_remains_non_root_and_unwrapped(self) -> None:
         pod = target_pod()
@@ -737,6 +777,24 @@ class BuildPatchTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(AdmissionError, "init mounts are not supported"):
             build_patch(pod)
+
+    def test_rejects_gateway_state_root_mounts_on_regular_containers(self) -> None:
+        for container_index in (0, -1):
+            with self.subTest(container_index=container_index):
+                pod = target_pod()
+                pod["spec"]["containers"][container_index].setdefault(
+                    "volumeMounts", []
+                ).append(
+                    {
+                        "name": "openclaw-gateway-state",
+                        "mountPath": "/gateway-state",
+                    }
+                )
+                with self.assertRaisesRegex(
+                    AdmissionError,
+                    "regular containers cannot mount openclaw-gateway-state at its root",
+                ):
+                    build_patch(pod)
 
     def test_rejects_unsafe_or_conflicting_target_shapes(self) -> None:
         cases = []
