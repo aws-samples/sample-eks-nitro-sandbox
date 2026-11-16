@@ -344,8 +344,7 @@ Both clients are in sandboxes and both have a valid mesh identity. The sidecar i
   only.
 - **The workload containers set no CPU or memory requests, but Istio's do.** The injected
   `istio-init` and `istio-proxy` containers carry Istio's chart defaults: requests of 100m
-  CPU and 128Mi memory, and limits of 2 CPU and 1Gi. In the run above, a meshed sandbox's
-  guest reported about 245 MiB of memory and one CPU. A production workload sizes its pods,
+  CPU and 128Mi memory, and limits of 2 CPU and 1Gi. A production workload sizes its pods,
   and tunes the sidecar's resources, for its own needs.
 - **This blueprint creates no Pod Identity association** and gives the pods no AWS
   permissions.
