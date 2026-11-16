@@ -63,8 +63,14 @@ its target.
 
 The wrapper invokes `/bin/sh`, `/usr/bin/chmod`, `/usr/bin/chown` and
 `/usr/bin/setpriv` by absolute path. The adapter rejects mounts that overlap
-those trusted executables. Permission repair fails closed: every `chmod` and
-`chown` must succeed before OCE starts. The wrapper repairs `/home/node`,
+those trusted executables and requires the wrapped runtime image to use an
+exact `sha256` digest. It rejects non-empty `envFrom` and explicit `LD_*`,
+`GCONV_PATH`, or `GLIBC_TUNABLES` settings, then overrides known image-defined
+glibc loader variables with empty values before bootstrap. These controls keep
+the reviewed image stable and stop loader settings from changing what runs
+while the wrapper is root; they narrow the trust boundary rather than provide
+complete isolation. Permission repair fails closed: every `chmod` and `chown`
+must succeed before OCE starts. The wrapper repairs `/home/node`,
 `/home/node/.openclaw`, and each direct `/home/node/.openclaw/<target>` path
 rather than an alias symlink, then uses `setpriv` to run OCE as UID and GID
 1000 with no supplementary groups or capabilities. It does not recursively

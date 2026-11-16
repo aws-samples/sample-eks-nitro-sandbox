@@ -67,8 +67,11 @@ it:
 - Starts the gateway through a minimal wrapper as UID and GID 0. The wrapper
   invokes `/bin/sh`, `/usr/bin/chmod`, `/usr/bin/chown` and `/usr/bin/setpriv`
   by absolute path, and the adapter rejects mounts that overlap those trusted
-  executables. Permission repair fails closed: every `chmod` and `chown` must
-  succeed before OCE starts. The wrapper repairs `/home/node`,
+  executables. Wrapped runtime images must use an exact `sha256` digest.
+  The adapter rejects non-empty `envFrom` and explicit `LD_*`, `GCONV_PATH`,
+  or `GLIBC_TUNABLES` settings, then overrides known image-defined glibc loader
+  variables with empty values. Permission repair fails closed: every `chmod`
+  and `chown` must succeed before OCE starts. The wrapper repairs `/home/node`,
   `/home/node/.openclaw`, and each direct
   `/home/node/.openclaw/<target>` path. It also restores a persisted
   `client/credentials.sqlite` file to UID and GID 1000 with mode `0600`, then
@@ -95,6 +98,10 @@ baseline and keeps restricted in audit and warning mode.
 The wrapper uses `setpriv` to change to UID and GID 1000, clear supplementary
 groups, and empty the bounding, inheritable, and ambient capability sets. The
 UID transition also clears the effective and permitted sets before OCE starts.
+The digest and environment checks make the image-supplied bootstrap executables
+stable for review and prevent pod- or image-defined glibc loader controls from
+changing what runs before privilege drop. They narrow the compatibility layer's
+root trust boundary; they do not provide complete process or tenant isolation.
 The ownership changes apply only to `/home/node`, `/home/node/.openclaw`, and
 the mapped target directories below it. Repairs address each direct
 `/home/node/.openclaw/<target>` path rather than an alias symlink, and do not

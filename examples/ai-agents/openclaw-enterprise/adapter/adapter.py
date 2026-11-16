@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import posixpath
+import re
 import shlex
 from pathlib import PurePosixPath
 from typing import Any
@@ -43,9 +44,31 @@ TRUSTED_BOOTSTRAP_PATHS = (
     "/etc/ld.so.cache",
     "/etc/ld.so.preload",
 )
-UNSAFE_BOOTSTRAP_ENV_NAMES = frozenset(
-    {"GCONV_PATH", "GLIBC_TUNABLES"}
+UNSAFE_BOOTSTRAP_ENV_NAMES = (
+    "GCONV_PATH",
+    "GLIBC_TUNABLES",
+    "LD_ASSUME_KERNEL",
+    "LD_AUDIT",
+    "LD_BIND_NOT",
+    "LD_BIND_NOW",
+    "LD_DEBUG",
+    "LD_DEBUG_OUTPUT",
+    "LD_DYNAMIC_WEAK",
+    "LD_HWCAP_MASK",
+    "LD_LIBRARY_PATH",
+    "LD_ORIGIN_PATH",
+    "LD_POINTER_GUARD",
+    "LD_PREFER_MAP_32BIT_EXEC",
+    "LD_PRELOAD",
+    "LD_PROFILE",
+    "LD_PROFILE_OUTPUT",
+    "LD_SHOW_AUXV",
+    "LD_TRACE_LOADED_OBJECTS",
+    "LD_USE_LOAD_BIAS",
+    "LD_VERBOSE",
+    "LD_WARN",
 )
+IMAGE_DIGEST_PATTERN = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 
 LINK_SCRIPT = r"""
 const fs = require("node:fs");
@@ -123,6 +146,13 @@ def _validate_link_paths(links: dict[str, str]) -> None:
 
 
 def _runtime_environment(container: dict[str, Any], location: str) -> list[Any]:
+    env_from = container.get("envFrom", [])
+    if not isinstance(env_from, list):
+        raise AdmissionError(f"{location}.envFrom must be a list")
+    if env_from:
+        raise AdmissionError(
+            f"{location}.envFrom is not supported by the privileged bootstrap"
+        )
     environment = container.get("env", [])
     if not isinstance(environment, list):
         raise AdmissionError(f"{location}.env must be a list")
@@ -156,6 +186,9 @@ def _runtime_environment(container: dict[str, Any], location: str) -> list[Any]:
 def _runtime_wrapper(
     container: dict[str, Any], location: str, private_paths: list[str]
 ) -> tuple[list[str], list[str], dict[str, Any]]:
+    image = container.get("image")
+    if not _is_nonempty_string(image) or not IMAGE_DIGEST_PATTERN.fullmatch(image):
+        raise AdmissionError(f"{location}.image must use an exact sha256 digest")
     command = container.get("command")
     arguments = container.get("args", [])
     if (
@@ -643,6 +676,10 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                     required_environment = [
                         {"name": NODE_CA_ENV, "value": AGW_CA_PATH},
                         {"name": TMPDIR_ENV, "value": TMPDIR_PATH},
+                        *[
+                            {"name": name, "value": ""}
+                            for name in UNSAFE_BOOTSTRAP_ENV_NAMES
+                        ],
                     ]
                     missing_environment = [
                         entry

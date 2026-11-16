@@ -23,6 +23,32 @@ from adapter import (
     build_patch,
 )
 
+RUNTIME_IMAGE = f"example.invalid/oce@sha256:{'a' * 64}"
+UNSAFE_GLIBC_ENV_NAMES = (
+    "GCONV_PATH",
+    "GLIBC_TUNABLES",
+    "LD_ASSUME_KERNEL",
+    "LD_AUDIT",
+    "LD_BIND_NOT",
+    "LD_BIND_NOW",
+    "LD_DEBUG",
+    "LD_DEBUG_OUTPUT",
+    "LD_DYNAMIC_WEAK",
+    "LD_HWCAP_MASK",
+    "LD_LIBRARY_PATH",
+    "LD_ORIGIN_PATH",
+    "LD_POINTER_GUARD",
+    "LD_PREFER_MAP_32BIT_EXEC",
+    "LD_PRELOAD",
+    "LD_PROFILE",
+    "LD_PROFILE_OUTPUT",
+    "LD_SHOW_AUXV",
+    "LD_TRACE_LOADED_OBJECTS",
+    "LD_USE_LOAD_BIAS",
+    "LD_VERBOSE",
+    "LD_WARN",
+)
+
 
 def target_pod() -> dict:
     return {
@@ -40,7 +66,7 @@ def target_pod() -> dict:
                 ],
                 {
                     "name": "prepare-private-state",
-                    "image": "example.invalid/oce@sha256:abc",
+                    "image": RUNTIME_IMAGE,
                     "imagePullPolicy": "IfNotPresent",
                     "volumeMounts": [
                         {
@@ -66,7 +92,7 @@ def target_pod() -> dict:
                 ],
                 {
                     "name": "gateway",
-                    "image": "example.invalid/oce@sha256:abc",
+                    "image": RUNTIME_IMAGE,
                     "command": ["/usr/bin/tini", "--", "node", "-e"],
                     "args": ["console.log('gateway')"],
                     "securityContext": {
@@ -438,13 +464,19 @@ class BuildPatchTests(unittest.TestCase):
                 ):
                     build_patch(pod)
 
-    def test_rejects_unsafe_bootstrap_environment(self) -> None:
-        for name in (
-            "LD_PRELOAD",
-            "LD_LIBRARY_PATH",
-            "GCONV_PATH",
-            "GLIBC_TUNABLES",
+    def test_rejects_nonempty_env_from_on_wrapped_runtime(self) -> None:
+        for source in (
+            {"configMapRef": {"name": "runtime-environment"}},
+            {"secretRef": {"name": "runtime-secrets"}},
         ):
+            with self.subTest(source=source):
+                pod = target_pod()
+                pod["spec"]["containers"][-1]["envFrom"] = [source]
+                with self.assertRaisesRegex(AdmissionError, "envFrom"):
+                    build_patch(pod)
+
+    def test_rejects_explicit_unsafe_bootstrap_environment(self) -> None:
+        for name in UNSAFE_GLIBC_ENV_NAMES:
             with self.subTest(name=name):
                 pod = target_pod()
                 pod["spec"]["containers"][-1].setdefault("env", []).append(
@@ -454,6 +486,30 @@ class BuildPatchTests(unittest.TestCase):
                     AdmissionError, f"unsafe bootstrap environment {name}"
                 ):
                     build_patch(pod)
+
+    def test_overrides_image_defined_glibc_loader_environment(self) -> None:
+        rendered = apply_patch(target_pod(), build_patch(target_pod()))
+        gateway = rendered["spec"]["containers"][-1]
+        unsafe_environment = [
+            entry
+            for entry in gateway["env"]
+            if entry["name"] in UNSAFE_GLIBC_ENV_NAMES
+        ]
+
+        self.assertCountEqual(
+            unsafe_environment,
+            [
+                {"name": name, "value": ""}
+                for name in UNSAFE_GLIBC_ENV_NAMES
+            ],
+        )
+
+    def test_requires_digest_pinned_image_for_wrapped_runtime(self) -> None:
+        pod = target_pod()
+        pod["spec"]["containers"][-1]["image"] = "example.invalid/oce:latest"
+
+        with self.assertRaisesRegex(AdmissionError, "exact sha256 digest"):
+            build_patch(pod)
 
     def test_requires_read_only_root_filesystem(self) -> None:
         pod = target_pod()
