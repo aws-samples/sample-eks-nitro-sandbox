@@ -87,7 +87,7 @@ tokens or API credit.
 | [`scripts/10-build-ami-packer.sh`](scripts/10-build-ami-packer.sh) | Drive the upstream Packer build |
 | [`scripts/join-nodegroup.sh`](scripts/join-nodegroup.sh) | Launch template + managed node group |
 | [`scripts/join-karpenter.sh`](scripts/join-karpenter.sh) | Apply the EC2NodeClass / NodePool |
-| [`deploy/`](deploy/) | The launch-template MIME user data, Karpenter manifests, and the two pods |
+| `deploy/` | The launch-template MIME user data, Karpenter manifests, and the two pods |
 
 ## Versions
 
@@ -261,7 +261,7 @@ See:
 - [AWS CLI Command Reference: aws imagebuilder
   create-infrastructure-configuration](https://awscli.amazonaws.com/v2/documentation/api/latest/reference/imagebuilder/create-infrastructure-configuration.html)
 
-The Image Builder configurations are in [`deploy/imagebuilder/`](deploy/imagebuilder/):
+The Image Builder configurations are in `deploy/imagebuilder/` ([README](deploy/imagebuilder/README.md)):
 
 - **[`component.yaml`](deploy/imagebuilder/component.yaml)**: AWSTOE component that performs the
   same install as the upstream `amazon-eks-ami` `install-pod-isolation.sh` provisioner (fetch and
@@ -277,7 +277,7 @@ The Image Builder configurations are in [`deploy/imagebuilder/`](deploy/imagebui
   and tagging.
 
 A reference driver script is at
-[`scripts/10-build-ami-imagebuilder.sh`](scripts/10-build-ami-imagebuilder.sh). It substitutes
+`scripts/10-build-ami-imagebuilder.sh` (at the repository root). It substitutes
 the placeholders and drives the pipeline via the `aws imagebuilder` CLI:
 
 ```bash
@@ -292,7 +292,7 @@ export BUILD_SECURITY_GROUP_ID=<sg-id>
 export BUILD_SUBNET_ID=<private-subnet-id>
 export BUILD_S3_BUCKET=<log-bucket>
 
-RUN_ID=<id> scripts/10-build-ami-imagebuilder.sh
+RUN_ID=<id> ../../scripts/10-build-ami-imagebuilder.sh
 ```
 
 The script creates the component, recipe, infrastructure configuration, distribution configuration,

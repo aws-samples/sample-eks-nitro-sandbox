@@ -50,7 +50,7 @@ The ASG path is configured in [`infrastructure-config.json`](infrastructure-conf
 ## Using these configurations
 
 The configurations use placeholders for account-specific values. See
-[`scripts/10-build-ami-imagebuilder.sh`](../../scripts/10-build-ami-imagebuilder.sh) for a
+`../../scripts/10-build-ami-imagebuilder.sh` (at the repository root) for a
 reference driver that substitutes them and runs the pipeline via the `aws imagebuilder` CLI.
 
 ### Required placeholders
@@ -80,7 +80,7 @@ These are substituted by Image Builder at build time from the component paramete
 
 ## Building the AMI
 
-See [`scripts/10-build-ami-imagebuilder.sh`](../../scripts/10-build-ami-imagebuilder.sh) for a
+See `../../scripts/10-build-ami-imagebuilder.sh` (at the repository root) for a
 reference implementation that creates the component, recipe, infrastructure configuration,
 distribution configuration, and pipeline, then starts an execution.
 
