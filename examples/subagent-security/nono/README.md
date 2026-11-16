@@ -449,8 +449,8 @@ The first and last lines are the accept cases: without them a profile that denie
 everything would read the same as one that confines correctly.
 
 Two things make the refusals attributable rather than incidental. The supplier key file is
-mode 0440 and group-owned by the group the pod runs as, so the controller, running as
-that same uid 10001, reads it in this very run, which is how the run compares the role's
+mode 0440 and owned by group 10001, the pod's `fsGroup`, so the controller, which runs with
+gid 10001, reads it in this very run, which is how the run compares the role's
 placeholder against the real key. And the worker reports only `EACCES` or `EPERM` as a
 refusal; any other failure leaves no result line and fails the run.
 
@@ -624,7 +624,7 @@ headers = {"X-Api-Key": os.environ.get("SUPPLIER_API_KEY", ""),
 ```
 
 The run shows the role holds a credential, that it is not the real one, and that it cannot
-open the key file. Nothing prints a value: the comparison is by length and by digest.
+open the key file. Nothing prints a value: the comparison is by digest.
 
 ```text
 PASS the reader holds a supplier credential
