@@ -1523,6 +1523,62 @@ global_settings:
       line_end: 54
       reason: 'Test fixture: openssl is taken from PATH on purpose, as the tests'' other tools are'
       expiration: '2027-12-31'
+    # ---- integrations/istio: pods are plain on purpose ----
+    # The lesson is Istio sidecar injection in a Nitro sandbox, so the four pods set no securityContext or probes:
+    # the page's output comes from exactly these manifests. Istio's injected istio-init and istio-proxy containers
+    # are added at admission and are not in this file.
+    - rule_id: CKV_K8S_8
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Idle curl clients (sleep infinity) driven by kubectl exec, and a small echo server the page reaches through the Service; a probe gates nothing the page shows (workloads.yaml)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Idle curl clients (sleep infinity) driven by kubectl exec, and a small echo server the page reaches through the Service; a probe gates nothing the page shows (workloads.yaml)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose: the sample shows Istio injection, so the pods carry no hardening and match the page output exactly; the sandbox is the boundary (workloads.yaml:1-10)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose: the sample shows Istio injection, so the pods carry no hardening and match the page output exactly; the sandbox is the boundary (workloads.yaml:1-10)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose: the sample shows Istio injection, so the pods carry no hardening and match the page output exactly; the sandbox is the boundary (workloads.yaml:1-10)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose: the sample shows Istio injection, so the pods carry no hardening and match the page output exactly; the sandbox is the boundary (workloads.yaml:1-10)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose: the sample shows Istio injection, so the pods carry no hardening and match the page output exactly; the sandbox is the boundary (workloads.yaml:1-10)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose: the sample shows Istio injection, so the pods carry no hardening and match the page output exactly; the sandbox is the boundary (workloads.yaml:1-10)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose: the sample shows Istio injection, so the pods carry no hardening and match the page output exactly; the sandbox is the boundary (workloads.yaml:1-10)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose: the sample shows Istio injection, so the pods carry no hardening and match the page output exactly; the sandbox is the boundary (workloads.yaml:1-10)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_38
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose: the sample shows Istio injection, so the pods carry no hardening and match the page output exactly; the sandbox is the boundary (workloads.yaml:1-10)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose: the sample shows Istio injection, so the pods carry no hardening and match the page output exactly; the sandbox is the boundary (workloads.yaml:1-10)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'A sample ships no network policy (AGENTS.md, Security rules); the page links the network policy blueprint (README.md:345)'
+      expiration: '2027-12-31'
     # ---- Baseline: hardening not done yet. Each expires 2027-01-31, so CI fails again ----
     # ---- unless the sample follow-up PR fixes the finding and deletes its entry. ----
     # Baseline: ai-agents/coding-agents-for-developers
