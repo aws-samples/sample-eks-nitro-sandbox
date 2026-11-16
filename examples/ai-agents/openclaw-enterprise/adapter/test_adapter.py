@@ -96,6 +96,39 @@ def test_ownership_script_uses_only_helper_image_paths() -> None:
     assert "/usr/bin/chmod" not in OWNERSHIP_SCRIPT
 
 
+def test_ownership_script_safely_repairs_runtime_pin_store_files() -> None:
+    lines = OWNERSHIP_SCRIPT.splitlines()
+    loop_start = "for pin_store in \\"
+    assert loop_start in lines
+
+    start_index = lines.index(loop_start)
+    do_index = lines.index("do", start_index)
+    pin_store_paths = tuple(
+        line.removesuffix("\\").strip()
+        for line in lines[start_index + 1 : do_index]
+    )
+    assert pin_store_paths == (
+        "/home/node/.openclaw/control/services.sqlite",
+        "/home/node/.openclaw/control/services.sqlite-wal",
+        "/home/node/.openclaw/control/services.sqlite-shm",
+        "/home/node/.openclaw/control/services.sqlite-journal",
+    )
+    assert lines[do_index:] == [
+        "do",
+        '  if [ -L "$pin_store" ]; then',
+        "    exit 1",
+        "  fi",
+        '  if [ -e "$pin_store" ]; then',
+        '    if [ ! -f "$pin_store" ]; then',
+        "      exit 1",
+        "    fi",
+        '    /bin/chown 1000:1000 -- "$pin_store"',
+        '    /bin/chmod 0600 -- "$pin_store"',
+        "  fi",
+        "done",
+    ]
+
+
 def target_pod() -> dict:
     return {
         "apiVersion": "v1",
@@ -538,6 +571,27 @@ class BuildPatchTests(unittest.TestCase):
                 "name": "runtime-state",
                 "mountPath": "/home/node",
             },
+        )
+
+    def test_includes_control_directory_in_0700_ownership_paths(self) -> None:
+        pod = target_pod()
+
+        rendered = apply_patch(pod, build_patch(pod))
+
+        ownership_init = next(
+            container
+            for container in rendered["spec"]["initContainers"]
+            if container["name"] not in {
+                *{
+                    original["name"]
+                    for original in pod["spec"]["initContainers"]
+                },
+                LINK_INIT_NAME,
+            }
+        )
+        self.assertIn(
+            "/home/node/.openclaw/control",
+            ownership_init["args"][2:],
         )
 
     def test_patches_prepare_private_state_for_relocated_runtime_root(self) -> None:

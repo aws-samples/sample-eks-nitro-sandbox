@@ -68,8 +68,14 @@ differs from the workload image. Permission repair fails closed: every
 directory check, `chmod`, and `chown` must succeed before OCE starts. The helper
 repairs `/home/node`, `/home/node/.openclaw`, and each direct
 `/home/node/.openclaw/<target>` path rather than an alias symlink. It does not
-recursively change persisted files. The unwrapped OCE command then starts as
-UID and GID 1000 with all capabilities dropped.
+recursively change persisted files. Kubernetes `fsGroup` metadata on a retained
+PVC can leave the existing OpenClaw runtime pin store with incompatible
+ownership or modes. The helper restores `/home/node/.openclaw/control` to UID
+and GID 1000 with mode `0700`, and repairs an existing `services.sqlite` and
+the known `-wal`, `-shm`, and `-journal` sidecars to UID and GID 1000 with mode
+`0600`. It refuses those file paths when they are symlinks or non-regular
+files. The unwrapped OCE command then starts as UID and GID 1000 with all
+capabilities dropped.
 
 The mutating webhook rejects ordinary runtime and sidecar containers that mount
 the `openclaw-gateway-state` PVC root at `/gateway-state`; only the expected

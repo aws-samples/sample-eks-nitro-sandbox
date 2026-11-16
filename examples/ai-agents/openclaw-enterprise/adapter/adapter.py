@@ -20,6 +20,8 @@ STATE_ROOT = "/gateway-state"
 RUNTIME_ROOT = "/runtime-state"
 OPENCLAW_HOME_PATH = "/home/node/.openclaw"
 CLIENT_CREDENTIAL_PATH = f"{OPENCLAW_HOME_PATH}/client/credentials.sqlite"
+RUNTIME_PIN_DIRECTORY = f"{OPENCLAW_HOME_PATH}/control"
+RUNTIME_PIN_PATH = f"{RUNTIME_PIN_DIRECTORY}/services.sqlite"
 LINK_INIT_NAME = "nitro-link-gateway-state"
 OWNERSHIP_INIT_NAME = "nitro-prepare-runtime-ownership"
 OWNERSHIP_INIT_IMAGE_ENV = "OCE_OWNERSHIP_INIT_IMAGE"
@@ -110,6 +112,23 @@ if [ -e "$credentials" ]; then
   /bin/chown {RUNTIME_UID}:{RUNTIME_GID} -- "$credentials"
   /bin/chmod 0600 -- "$credentials"
 fi
+for pin_store in \\
+  {RUNTIME_PIN_PATH} \\
+  {RUNTIME_PIN_PATH}-wal \\
+  {RUNTIME_PIN_PATH}-shm \\
+  {RUNTIME_PIN_PATH}-journal
+do
+  if [ -L "$pin_store" ]; then
+    exit 1
+  fi
+  if [ -e "$pin_store" ]; then
+    if [ ! -f "$pin_store" ]; then
+      exit 1
+    fi
+    /bin/chown {RUNTIME_UID}:{RUNTIME_GID} -- "$pin_store"
+    /bin/chmod 0600 -- "$pin_store"
+  fi
+done
 """.strip()
 
 LINK_SCRIPT = r"""
@@ -1096,6 +1115,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         [
             HOME_MOUNT_PATH,
             OPENCLAW_HOME_PATH,
+            RUNTIME_PIN_DIRECTORY,
             *[
                 f"{OPENCLAW_HOME_PATH}/{target}"
                 for target in sorted(set(links.values()))

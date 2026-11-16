@@ -81,7 +81,9 @@ it:
   absent or invalid. The init mounts the `runtime-state` volume root at
   `/home/node` and sets it to mode `0700`, UID 1000 and GID 1000. Permission
   repair fails closed and is limited to `/home/node`, `/home/node/.openclaw`,
-  each direct mapped target below it, and `client/credentials.sqlite`.
+  `/home/node/.openclaw/control`, each direct mapped target below it,
+  `client/credentials.sqlite`, and the runtime pin database with its known
+  SQLite sidecars.
 - Replaces each runtime container's security context with a fixed allowlist:
   UID and GID 1000, non-root execution, `privileged: false`, no privilege
   escalation, a read-only root filesystem, all Linux capabilities dropped, and
@@ -116,11 +118,18 @@ ownership-repair trust boundary, runs with `CHOWN`, `DAC_OVERRIDE`, and
 rewrite persisted files. For
 `/home/node/.openclaw/client/credentials.sqlite`, it refuses a symlink and
 restores UID and GID 1000 with mode `0600`, which OpenClaw requires after an
-`fsGroup` mount. Treat this init phase as an explicit compatibility trade-off,
-not complete process or tenant isolation. Keeping the helper separate avoids
-running ownership repair from the much larger workload image. The runtime still
-runs as non-root without Linux capabilities, but operators must build, scan,
-pin, and deploy the additional helper image correctly.
+`fsGroup` mount. Kubernetes `fsGroup` metadata can also leave incompatible
+ownership or modes on a retained PVC's existing runtime pin store. The helper
+therefore restores `/home/node/.openclaw/control` to UID and GID 1000 with mode
+`0700`, and repairs an existing `services.sqlite`, `services.sqlite-wal`,
+`services.sqlite-shm`, or `services.sqlite-journal` to UID and GID 1000 with
+mode `0600`. It refuses any of those file paths when it is a symlink or not a
+regular file. This is an exact-path compatibility repair, not a recursive PVC
+repair. Treat this init phase as an explicit compatibility trade-off, not
+complete process or tenant isolation. Keeping the helper separate avoids
+running ownership repair from the much larger workload image. The runtime
+still runs as non-root without Linux capabilities, but operators must build,
+scan, pin, and deploy the additional helper image correctly.
 
 The tenant script renders the current AgentGateway ClusterIP as a `/32` alongside
 the namespace-and-pod selector. In the live EKS Auto Mode test, the generated
