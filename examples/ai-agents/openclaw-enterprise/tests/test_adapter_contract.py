@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import pathlib
+import subprocess
 from typing import Any
 
 import yaml
 
 SAMPLE = pathlib.Path(__file__).resolve().parent.parent
 DEPLOY = SAMPLE / "deploy"
+RENDER_SCRIPT = SAMPLE / "scripts" / "render-adapter-manifest.sh"
 
 
 def _yaml_documents(path: pathlib.Path) -> list[dict[str, Any]]:
@@ -141,3 +143,54 @@ def test_webhook_certificate_and_service_names_match() -> None:
             "protocol": "TCP",
         }
     ]
+
+
+def test_rendered_deployment_uses_exact_distinct_images() -> None:
+    adapter_image = f"example.invalid/adapter@sha256:{'a' * 64}"
+    ownership_image = f"example.invalid/ownership@sha256:{'b' * 64}"
+    result = subprocess.run(
+        [
+            str(RENDER_SCRIPT),
+            str(DEPLOY / "adapter-webhook.yaml"),
+            adapter_image,
+            ownership_image,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    documents = [
+        document
+        for document in yaml.safe_load_all(result.stdout)
+        if document
+    ]
+    deployment = _one(
+        documents,
+        "Deployment",
+        "openclaw-enterprise-nitro-adapter",
+    )
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+
+    assert container["image"] == adapter_image
+    assert {
+        entry["name"]: entry["value"] for entry in container["env"]
+    }["OCE_OWNERSHIP_INIT_IMAGE"] == ownership_image
+
+
+def test_render_script_rejects_unpinned_or_shared_images() -> None:
+    manifest = str(DEPLOY / "adapter-webhook.yaml")
+    adapter_image = f"example.invalid/adapter@sha256:{'a' * 64}"
+
+    for ownership_image in ("example.invalid/ownership:latest", adapter_image):
+        result = subprocess.run(
+            [
+                str(RENDER_SCRIPT),
+                manifest,
+                adapter_image,
+                ownership_image,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 65

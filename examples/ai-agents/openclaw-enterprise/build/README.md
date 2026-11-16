@@ -73,19 +73,9 @@ manifest:
 
 ```bash
 adapter_manifest="examples/ai-agents/openclaw-enterprise/deploy/adapter-webhook.yaml"
-yq eval '
-  (select(.kind == "Deployment" and
-    .metadata.name == "openclaw-enterprise-nitro-adapter") |
-    .spec.template.spec.containers[] | select(.name == "webhook") |
-    .image) = strenv(ADAPTER_IMAGE) |
-  (select(.kind == "Deployment" and
-    .metadata.name == "openclaw-enterprise-nitro-adapter") |
-    .spec.template.spec.containers[] | select(.name == "webhook") |
-    .env) += [{
-      "name": "OCE_OWNERSHIP_INIT_IMAGE",
-      "value": strenv(OWNERSHIP_INIT_IMAGE)
-    }]
-' "$adapter_manifest" | kubectl apply --filename -
+./examples/ai-agents/openclaw-enterprise/scripts/render-adapter-manifest.sh \
+  "$adapter_manifest" "$ADAPTER_IMAGE" "$OWNERSHIP_INIT_IMAGE" \
+  | kubectl apply --filename -
 
 kubectl --namespace openclaw-enterprise-adapter rollout status \
   deployment/openclaw-enterprise-nitro-adapter
