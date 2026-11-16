@@ -39,8 +39,8 @@ pod plus one small ordinary pod kept running until you clean up.
 Every output block on this page is from one real run of this blueprint, run id
 `eaad8911ad9e47b28307bfb607ff3d17`. Values from the account and cluster it ran on are
 replaced by the same placeholders the commands use, because this repository is public:
-`<ACCOUNT_ID>` and `<CLUSTER_NAME>`, and the path to the clone is shown as
-`/path/to/sample-eks-nitro-sandbox`. The Region is left as
+`<ACCOUNT_ID>`, `<CLUSTER_NAME>` and the Pod Identity association's id, `<ASSOCIATION_ID>`,
+and the path to the clone is shown as `/path/to/sample-eks-nitro-sandbox`. The Region is left as
 `us-west-2`, the default this repository's blueprints share. Run ids, pod names, kernel
 builds, uptimes, device lists, token counts and the model's own prose are exactly as the
 run printed them. Where a block shows a file from this folder rather than a run's output,
@@ -228,7 +228,7 @@ deployment "supplier-api" successfully rolled out
 
 ==> 6/7 the IAM role and its EKS Pod Identity association
   created the IAM role subagent-analyst-nono
-  created the Pod Identity association a-egehbno7lzfqkzjon
+  created the Pod Identity association <ASSOCIATION_ID>
 
 ==> 7/7 the nono analyst image and its sandboxed pod
 the committed profiles match the generator for: reader, evaluator, writer
@@ -734,16 +734,16 @@ The readings differ, and each says something:
 | Reading | Sandboxed analyst | Ordinary pod on the same node |
 |---|---|---|
 | `uname -rv` | `6.18.62 #1`, built Nov 12 22:44 | `6.18.62 #2`, built Nov 12 22:49 |
-| `/proc/uptime` | `89.65`, against a pod age of 2m50s | `138.89`, the node's, read about 16 seconds later |
+| `/proc/uptime` | `89.65`, against a pod age of 2m50s | `138.89`, the node's |
 | `/sys/block` | `vda vdb vdc`, virtio | `nvme0n1 nvme1n1`, the instance's own |
 | `product_name` | `c6i.enclave` | `c6i.xlarge` |
 
 The analyst pod runs its **own kernel build**, sees virtio disks where the ordinary pod sees the
-instance's `nvme` devices, and names the enclave rather than the instance type. Its uptime
-shows its own boot. In this run EKS Auto Mode launched the node for the analyst pod, so the
-pod waited for the node and its age is longer than its uptime. The ordinary pod reports the
-node's uptime, and the two readings put the sandbox's boot about half a minute after the
-node's, when the pod was started on it.
+instance's `nvme` devices, and names the enclave rather than the instance type. Its uptime is
+its own boot's, not the node's: the ordinary pod on the same node reports the node's uptime,
+138.89 seconds, against the sandbox's 89.65. A pod's age counts from when the pod was created,
+including any time before it was scheduled and started, so it can be longer than the
+sandbox's uptime, as it is here.
 
 Note that the kernel **version** is the same in both here, `6.18.62`. It is the build
 number and the boot that differ, so compare `uname -rv` and not `uname -r`. And the runtime
@@ -843,7 +843,7 @@ deployment.apps "supplier-api" deleted
 namespace "subagent-security-nono" deleted
 
 ==> 2/4 the EKS Pod Identity association
-  deleted the association a-egehbno7lzfqkzjon.
+  deleted the association <ASSOCIATION_ID>.
 
 ==> 3/4 the AWS resources
   deleted the bucket subagent-analyst-nono-<ACCOUNT_ID>.
