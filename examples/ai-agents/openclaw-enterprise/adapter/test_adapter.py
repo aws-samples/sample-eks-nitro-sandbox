@@ -3,9 +3,11 @@ from __future__ import annotations
 import copy
 import json
 import os
+import pathlib
 import unittest
 from unittest import mock
 
+import yaml
 from adapter import (
     AGW_CA_MOUNT_PATH,
     AGW_CA_PATH,
@@ -13,8 +15,11 @@ from adapter import (
     LINK_INIT_NAME,
     NODE_CA_ENV,
     OPENCLAW_HOME_PATH,
+    OWNERSHIP_INIT_NAME,
     RUNTIME_TMP_VOLUME,
+    RUNTIME_VOLUME,
     SHM_MOUNT_PATH,
+    STATE_VOLUME,
     TMP_MOUNT_PATH,
     TMPDIR_ENV,
     TMPDIR_PATH,
@@ -302,6 +307,48 @@ def apply_patch(document: dict, patch: list[dict]) -> dict:
     {OWNERSHIP_INIT_IMAGE_ENV: OWNERSHIP_INIT_IMAGE},
 )
 class BuildPatchTests(unittest.TestCase):
+    def test_published_admission_fixture_is_accepted_and_hardened(self) -> None:
+        fixture = (
+            pathlib.Path(__file__).resolve().parent.parent
+            / "tests"
+            / "fixtures"
+            / "oce-agent-pod.yaml"
+        )
+        pod = yaml.safe_load(fixture.read_text(encoding="utf-8"))
+        for group in ("initContainers", "containers"):
+            for container in pod["spec"][group]:
+                container["image"] = RUNTIME_IMAGE
+
+        rendered = apply_patch(pod, build_patch(pod))
+        self.assertEqual(rendered["spec"]["runtimeClassName"], "isolated-sandbox")
+        self.assertFalse(rendered["spec"]["automountServiceAccountToken"])
+
+        gateway = next(
+            container
+            for container in rendered["spec"]["containers"]
+            if container["name"] == "gateway"
+        )
+        self.assertEqual(
+            gateway["securityContext"],
+            runtime_security_context(),
+        )
+        self.assertEqual(
+            {entry["name"] for entry in gateway["env"]},
+            {"OPENAI_API_KEY", NODE_CA_ENV, TMPDIR_ENV},
+        )
+        self.assertEqual(
+            {mount["name"] for mount in gateway["volumeMounts"]},
+            {RUNTIME_VOLUME, "workspace", STATE_VOLUME, AGW_CA_VOLUME},
+        )
+
+        ownership = next(
+            container
+            for container in rendered["spec"]["initContainers"]
+            if container["name"] == OWNERSHIP_INIT_NAME
+        )
+        self.assertEqual(ownership["image"], OWNERSHIP_INIT_IMAGE)
+        self.assertEqual(ownership["command"], ["/ownership-helper"])
+
     def test_runs_path_safe_ownership_helper_with_explicit_allowlists(self) -> None:
         pod = target_pod()
         rendered = apply_patch(pod, build_patch(pod))
