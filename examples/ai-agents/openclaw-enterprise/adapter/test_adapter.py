@@ -79,17 +79,12 @@ def prep_security_context() -> dict:
     }
 
 
-PREP_SCRIPT = "\n".join(
-    [
-        'const { chmodSync, mkdirSync } = require("node:fs");',
-        'for (const path of ["/runtime-state/home","/runtime-temporary/tmp",'
-        '"/gateway-state/sessions"]) {',
-        "  mkdirSync(path, { recursive: true });",
-        "  chmodSync(path, 0o700);",
-        "}",
-        'mkdirSync("/runtime-temporary/tmp", { recursive: true, mode: 0o700 });',
-    ]
-)
+PREP_SCRIPT = """const { chmodSync, mkdirSync } = require("node:fs");
+for (const path of ["/runtime-state/home","/runtime-temporary/tmp","/gateway-state/sessions"]) {
+  mkdirSync(path, { recursive: true });
+  chmodSync(path, 0o700);
+}
+mkdirSync("/runtime-temporary/tmp", { recursive: true, mode: 0o700 });"""
 
 
 def test_ownership_script_uses_only_helper_image_paths() -> None:
