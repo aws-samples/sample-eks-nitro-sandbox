@@ -13,6 +13,7 @@ SAMPLE = pathlib.Path(__file__).resolve().parent.parent
 BUILD = SAMPLE / "build"
 TEMPLATE = BUILD / "template.yaml"
 SCRIPT = BUILD / "build-images.sh"
+OWNERSHIP_HELPER = SAMPLE / "ownership-helper" / "Dockerfile"
 
 
 class _CloudFormationLoader(yaml.SafeLoader):
@@ -53,15 +54,16 @@ def _buildspec() -> str:
     return project[0]["Properties"]["Source"]["BuildSpec"]
 
 
-def test_template_creates_three_immutable_scan_on_push_repositories() -> None:
+def test_template_creates_four_immutable_scan_on_push_repositories() -> None:
     repositories = _resources("AWS::ECR::Repository")
 
-    assert len(repositories) == 3
+    assert len(repositories) == 4
     assert {
         repository["Properties"]["RepositoryName"] for repository in repositories
     } == {
         "${RepositoryPrefix}/adapter",
         "${RepositoryPrefix}/controller",
+        "${RepositoryPrefix}/ownership-helper",
         "${RepositoryPrefix}/runtime",
     }
     for repository in repositories:
@@ -87,6 +89,7 @@ def test_codebuild_has_no_local_source_and_exports_digest_outputs() -> None:
     ) == {
         "ADAPTER_IMAGE",
         "CONTROLLER_IMAGE",
+        "OWNERSHIP_INIT_IMAGE",
         "RUNTIME_IMAGE",
         "SAMPLE_SOURCE_REVISION",
         "OCE_SOURCE_REVISION",
@@ -116,7 +119,7 @@ def test_repository_encryption_key_rotates() -> None:
     assert keys[0]["Properties"]["EnableKeyRotation"] is True
 
 
-def test_codebuild_role_is_scoped_to_logs_and_the_three_repositories() -> None:
+def test_codebuild_role_is_scoped_to_logs_and_the_four_repositories() -> None:
     role = _resources("AWS::IAM::Role")[0]
     statements = role["Properties"]["Policies"][0]["PolicyDocument"]["Statement"]
     actions = {
@@ -137,6 +140,7 @@ def test_codebuild_role_is_scoped_to_logs_and_the_three_repositories() -> None:
         "ecr:BatchCheckLayerAvailability",
         "ecr:BatchGetImage",
         "ecr:CompleteLayerUpload",
+        "ecr:DescribeImageScanFindings",
         "ecr:DescribeImages",
         "ecr:GetDownloadUrlForLayer",
         "ecr:InitiateLayerUpload",
@@ -162,6 +166,7 @@ def test_codebuild_role_is_scoped_to_logs_and_the_three_repositories() -> None:
     assert set(push_statement["Resource"]) == {
         "AdapterRepository.Arn",
         "ControllerRepository.Arn",
+        "OwnershipHelperRepository.Arn",
         "RuntimeRepository.Arn",
     }
     token_statement = next(
@@ -188,10 +193,16 @@ def test_build_script_builds_each_image_from_the_expected_source() -> None:
         '"$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/adapter"'
         in script
     )
+    assert (
+        '"$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/'
+        'ownership-helper"'
+        in script
+    )
+    assert "--build-arg \"OWNERSHIP_HELPER_BASE_IMAGE=" in script
     assert "--target runtime" in script
     assert '--file "$OCE_SOURCE_DIR/deploy/runtime/Dockerfile"' in script
     assert "node scripts/lib/openclaw-source.mjs build-args" in script
-    assert script.count("docker buildx build") == 3
+    assert script.count("docker buildx build") == 4
     assert "docker pull" not in script
     assert "skopeo copy" not in script
 
@@ -201,9 +212,48 @@ def test_build_outputs_are_verified_digest_references() -> None:
 
     assert 'digest = json.load(handle).get("containerimage.digest", "")' in script
     assert 'aws ecr describe-images \\' in script
-    for name in ("ADAPTER_IMAGE", "CONTROLLER_IMAGE", "RUNTIME_IMAGE"):
+    assert "aws ecr describe-image-scan-findings" in script
+    assert "COMPLETE" in script
+    assert script.count('verify_scan "$') == 4
+    for name in (
+        "ADAPTER_IMAGE",
+        "CONTROLLER_IMAGE",
+        "OWNERSHIP_INIT_IMAGE",
+        "RUNTIME_IMAGE",
+    ):
         assert re.search(
             rf'{name}="\$\{{REGISTRY\}}/\$\{{[A-Z_]+REPOSITORY\}}'
             r'@\$\{[a-z_]+digest\}"',
             script,
         )
+    assert "printf 'export OWNERSHIP_INIT_IMAGE=%q\\n'" in script
+    assert '"ownershipHelper": {' in script
+    assert '"image": os.environ["OWNERSHIP_INIT_IMAGE"]' in script
+
+
+def test_ownership_helper_has_a_pinned_minimal_runtime() -> None:
+    dockerfile = OWNERSHIP_HELPER.read_text(encoding="utf-8")
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    dockerfile_base = re.search(
+        r"^ARG OWNERSHIP_HELPER_BASE_IMAGE="
+        r"(?P<image>[^@\s]+@sha256:[0-9a-f]{64})$",
+        dockerfile,
+        re.MULTILINE,
+    )
+    script_base = re.search(
+        r'^OWNERSHIP_HELPER_BASE_IMAGE="'
+        r'(?P<image>[^@\s]+@sha256:[0-9a-f]{64})"$',
+        script,
+        re.MULTILINE,
+    )
+    assert dockerfile_base
+    assert script_base
+    assert dockerfile_base.group("image") == script_base.group("image")
+    assert "FROM ${OWNERSHIP_HELPER_BASE_IMAGE} AS source" in dockerfile
+    assert "FROM scratch" in dockerfile
+    assert dockerfile.count("COPY --from=source /bin/busybox ") == 3
+    assert "/bin/sh" in dockerfile
+    assert "/bin/chown" in dockerfile
+    assert "/bin/chmod" in dockerfile
+    assert "RUN " not in dockerfile

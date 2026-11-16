@@ -27,7 +27,7 @@ Parameters:
     Type: String
     Default: openclaw-enterprise
     AllowedPattern: ^[a-z0-9]+(?:[._/-][a-z0-9]+)*$
-    Description: Prefix for the three ECR repository names.
+    Description: Prefix for the four ECR repository names.
   TargetPlatform:
     Type: String
     Default: linux/amd64
@@ -72,6 +72,20 @@ Resources:
     Type: AWS::ECR::Repository
     Properties:
       RepositoryName: !Sub ${RepositoryPrefix}/controller
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: KMS
+        KmsKey: !GetAtt ImageEncryptionKey.Arn
+      Tags:
+        - Key: ManagedBy
+          Value: openclaw-enterprise-sample
+
+  OwnershipHelperRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub ${RepositoryPrefix}/ownership-helper
       ImageTagMutability: IMMUTABLE
       ImageScanningConfiguration:
         ScanOnPush: true
@@ -130,6 +144,7 @@ Resources:
                   - ecr:BatchCheckLayerAvailability
                   - ecr:BatchGetImage
                   - ecr:CompleteLayerUpload
+                  - ecr:DescribeImageScanFindings
                   - ecr:DescribeImages
                   - ecr:GetDownloadUrlForLayer
                   - ecr:InitiateLayerUpload
@@ -138,13 +153,14 @@ Resources:
                 Resource:
                   - !GetAtt AdapterRepository.Arn
                   - !GetAtt ControllerRepository.Arn
+                  - !GetAtt OwnershipHelperRepository.Arn
                   - !GetAtt RuntimeRepository.Arn
 
   ImageBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
       Name: openclaw-enterprise-images
-      Description: Builds the sample adapter and pinned OCE images from source.
+      Description: Builds the sample adapter, ownership helper, and pinned OCE images.
       ServiceRole: !GetAtt ImageBuildRole.Arn
       QueuedTimeoutInMinutes: 60
       TimeoutInMinutes: 120
@@ -159,6 +175,7 @@ Resources:
             exported-variables:
               - ADAPTER_IMAGE
               - CONTROLLER_IMAGE
+              - OWNERSHIP_INIT_IMAGE
               - RUNTIME_IMAGE
               - SAMPLE_SOURCE_REVISION
               - OCE_SOURCE_REVISION
@@ -204,6 +221,9 @@ Resources:
           - Name: CONTROLLER_REPOSITORY
             Type: PLAINTEXT
             Value: !Ref ControllerRepository
+          - Name: OWNERSHIP_HELPER_REPOSITORY
+            Type: PLAINTEXT
+            Value: !Ref OwnershipHelperRepository
           - Name: RUNTIME_REPOSITORY
             Type: PLAINTEXT
             Value: !Ref RuntimeRepository
@@ -223,6 +243,8 @@ Outputs:
     Value: !GetAtt AdapterRepository.RepositoryUri
   ControllerRepositoryUri:
     Value: !GetAtt ControllerRepository.RepositoryUri
+  OwnershipHelperRepositoryUri:
+    Value: !GetAtt OwnershipHelperRepository.RepositoryUri
   RuntimeRepositoryUri:
     Value: !GetAtt RuntimeRepository.RepositoryUri
   OceGitRevision:

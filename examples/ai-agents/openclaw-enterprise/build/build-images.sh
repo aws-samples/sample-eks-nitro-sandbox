@@ -27,6 +27,7 @@ require_value SAMPLE_SOURCE_DIR
 require_value OCE_REPOSITORY_URL
 require_value ADAPTER_REPOSITORY
 require_value CONTROLLER_REPOSITORY
+require_value OWNERSHIP_HELPER_REPOSITORY
 require_value RUNTIME_REPOSITORY
 require_value BUILD_OUTPUT_ENV
 require_sha SAMPLE_GIT_REVISION
@@ -68,7 +69,9 @@ mkdir -p "$metadata_dir"
 
 adapter_tagged="${REGISTRY}/${ADAPTER_REPOSITORY}:${sample_tag}"
 controller_tagged="${REGISTRY}/${CONTROLLER_REPOSITORY}:${oce_tag}"
+ownership_helper_tagged="${REGISTRY}/${OWNERSHIP_HELPER_REPOSITORY}:${sample_tag}"
 runtime_tagged="${REGISTRY}/${RUNTIME_REPOSITORY}:${oce_tag}"
+OWNERSHIP_HELPER_BASE_IMAGE="docker.io/library/busybox:1.37.0-musl@sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478"
 
 docker buildx build \
   --pull \
@@ -78,6 +81,16 @@ docker buildx build \
   --label "org.opencontainers.image.revision=$SAMPLE_SOURCE_REVISION" \
   --tag "$adapter_tagged" \
   "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/adapter"
+
+docker buildx build \
+  --pull \
+  --push \
+  --platform "${TARGET_PLATFORM:-linux/amd64}" \
+  --metadata-file "$metadata_dir/ownership-helper.json" \
+  --build-arg "OWNERSHIP_HELPER_BASE_IMAGE=$OWNERSHIP_HELPER_BASE_IMAGE" \
+  --label "org.opencontainers.image.revision=$SAMPLE_SOURCE_REVISION" \
+  --tag "$ownership_helper_tagged" \
+  "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/ownership-helper"
 
 node_base_image="$(
   node -e '
@@ -145,6 +158,7 @@ PY
 
 adapter_digest="$(read_digest "$metadata_dir/adapter.json")"
 controller_digest="$(read_digest "$metadata_dir/controller.json")"
+ownership_helper_digest="$(read_digest "$metadata_dir/ownership-helper.json")"
 runtime_digest="$(read_digest "$metadata_dir/runtime.json")"
 
 verify_digest() {
@@ -167,17 +181,55 @@ verify_digest() {
 
 verify_digest "$ADAPTER_REPOSITORY" "$adapter_digest"
 verify_digest "$CONTROLLER_REPOSITORY" "$controller_digest"
+verify_digest "$OWNERSHIP_HELPER_REPOSITORY" "$ownership_helper_digest"
 verify_digest "$RUNTIME_REPOSITORY" "$runtime_digest"
+
+verify_scan() {
+  local repository="$1"
+  local digest="$2"
+  local status
+  local _
+  for _ in {1..60}; do
+    status="$(
+      aws ecr describe-image-scan-findings \
+        --region "$AWS_DEFAULT_REGION" \
+        --repository-name "$repository" \
+        --image-id "imageDigest=$digest" \
+        --query 'imageScanStatus.status' \
+        --output text 2>/dev/null || true
+    )"
+    case "$status" in
+      COMPLETE)
+        return 0
+        ;;
+      FAILED | FINDINGS_UNAVAILABLE | LIMIT_EXCEEDED | SCAN_ELIGIBILITY_EXPIRED | UNSUPPORTED_IMAGE)
+        die "ECR scan for $repository@$digest ended with status $status"
+        ;;
+      *)
+        sleep 5
+        ;;
+    esac
+  done
+  die "ECR scan for $repository@$digest did not reach COMPLETE"
+}
+
+verify_scan "$ADAPTER_REPOSITORY" "$adapter_digest"
+verify_scan "$CONTROLLER_REPOSITORY" "$controller_digest"
+verify_scan "$OWNERSHIP_HELPER_REPOSITORY" "$ownership_helper_digest"
+verify_scan "$RUNTIME_REPOSITORY" "$runtime_digest"
 
 ADAPTER_IMAGE="${REGISTRY}/${ADAPTER_REPOSITORY}@${adapter_digest}"
 CONTROLLER_IMAGE="${REGISTRY}/${CONTROLLER_REPOSITORY}@${controller_digest}"
+OWNERSHIP_INIT_IMAGE="${REGISTRY}/${OWNERSHIP_HELPER_REPOSITORY}@${ownership_helper_digest}"
 RUNTIME_IMAGE="${REGISTRY}/${RUNTIME_REPOSITORY}@${runtime_digest}"
-export ADAPTER_IMAGE CONTROLLER_IMAGE RUNTIME_IMAGE
+export ADAPTER_IMAGE CONTROLLER_IMAGE OWNERSHIP_INIT_IMAGE RUNTIME_IMAGE
+export OWNERSHIP_HELPER_BASE_IMAGE
 export SAMPLE_SOURCE_REVISION OCE_SOURCE_REVISION
 
 {
   printf 'export ADAPTER_IMAGE=%q\n' "$ADAPTER_IMAGE"
   printf 'export CONTROLLER_IMAGE=%q\n' "$CONTROLLER_IMAGE"
+  printf 'export OWNERSHIP_INIT_IMAGE=%q\n' "$OWNERSHIP_INIT_IMAGE"
   printf 'export RUNTIME_IMAGE=%q\n' "$RUNTIME_IMAGE"
   printf 'export SAMPLE_SOURCE_REVISION=%q\n' "$SAMPLE_SOURCE_REVISION"
   printf 'export OCE_SOURCE_REVISION=%q\n' "$OCE_SOURCE_REVISION"
@@ -196,6 +248,11 @@ result = {
     "controller": {
         "image": os.environ["CONTROLLER_IMAGE"],
         "sourceRevision": os.environ["OCE_SOURCE_REVISION"],
+    },
+    "ownershipHelper": {
+        "baseImage": os.environ["OWNERSHIP_HELPER_BASE_IMAGE"],
+        "image": os.environ["OWNERSHIP_INIT_IMAGE"],
+        "sourceRevision": os.environ["SAMPLE_SOURCE_REVISION"],
     },
     "runtime": {
         "image": os.environ["RUNTIME_IMAGE"],
