@@ -88,7 +88,7 @@ spec:
             - name: OCE_ALLOWED_DEPLOYMENT_USERS
               value: system:serviceaccount:openclaw-system:openclaw-enterprise-worker
             - name: OCE_ALLOWED_REPLICASET_USERS
-              value: system:kube-controller-manager
+              value: system:serviceaccount:kube-system:deployment-controller,system:kube-controller-manager
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
