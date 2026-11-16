@@ -18,7 +18,8 @@ SCRIPT = BUILD / "build-images.sh"
 SCAN_CHECK = BUILD / "check-image-scan.py"
 INSPECTOR_SCAN_CHECK = BUILD / "check-inspector-scan.py"
 OCE_LOCK_CHECK = BUILD / "check-oce-lock.py"
-OWNERSHIP_HELPER = SAMPLE / "ownership-helper" / "Dockerfile"
+OWNERSHIP_HELPER = SAMPLE / "ownership-helper"
+OWNERSHIP_HELPER_DOCKERFILE = OWNERSHIP_HELPER / "Dockerfile"
 
 
 class _CloudFormationLoader(yaml.SafeLoader):
@@ -211,7 +212,7 @@ def test_build_script_builds_each_image_from_the_expected_source() -> None:
         'ownership-helper"'
         in script
     )
-    assert "--build-arg \"OWNERSHIP_HELPER_BASE_IMAGE=" in script
+    assert "--build-arg \"OWNERSHIP_HELPER_BUILDER_IMAGE=" in script
     assert "--target runtime" in script
     assert '--file "$OCE_SOURCE_DIR/deploy/runtime/Dockerfile"' in script
     assert "node scripts/lib/openclaw-source.mjs build-args" in script
@@ -499,42 +500,46 @@ def test_oce_lock_gate_rejects_vulnerable_mixed_and_missing_entries(
         assert "OCE lock:" in result.stderr
 
 
-def test_ownership_helper_has_a_pinned_minimal_runtime() -> None:
-    dockerfile = OWNERSHIP_HELPER.read_text(encoding="utf-8")
+def test_ownership_helper_builds_a_compiled_binary() -> None:
+    dockerfile = OWNERSHIP_HELPER_DOCKERFILE.read_text(encoding="utf-8")
     script = SCRIPT.read_text(encoding="utf-8")
 
-    dockerfile_base = re.search(
-        r"^ARG OWNERSHIP_HELPER_BASE_IMAGE="
+    dockerfile_builder = re.search(
+        r"^ARG OWNERSHIP_HELPER_BUILDER_IMAGE="
         r"(?P<image>[^@\s]+@sha256:[0-9a-f]{64})$",
         dockerfile,
         re.MULTILINE,
     )
-    script_base = re.search(
-        r'^OWNERSHIP_HELPER_BASE_IMAGE="'
+    script_builder = re.search(
+        r'^OWNERSHIP_HELPER_BUILDER_IMAGE="'
         r'(?P<image>[^@\s]+@sha256:[0-9a-f]{64})"$',
         script,
         re.MULTILINE,
     )
-    assert dockerfile_base
-    assert script_base
-    assert dockerfile_base.group("image") == script_base.group("image")
-    assert "FROM ${OWNERSHIP_HELPER_BASE_IMAGE} AS source" in dockerfile
-    assert "FROM scratch" in dockerfile
-    assert dockerfile.count("COPY --from=source /bin/busybox ") == 3
-    assert "/bin/sh" in dockerfile
-    assert "/bin/chown" in dockerfile
-    assert "/bin/chmod" in dockerfile
-    assert "RUN " not in dockerfile
-
-
-def test_ownership_script_paths_exist_in_helper_image() -> None:
-    adapter = (SAMPLE / "adapter" / "adapter.py").read_text(encoding="utf-8")
-    dockerfile = OWNERSHIP_HELPER.read_text(encoding="utf-8")
-
-    helper_paths = set(
-        re.findall(r"COPY --from=source /bin/busybox (?P<path>/bin/\w+)", dockerfile)
+    assert dockerfile_builder
+    assert script_builder
+    assert dockerfile_builder.group("image") == script_builder.group("image")
+    assert "RUN go test ./..." in dockerfile
+    assert "go build -buildvcs=false -trimpath" in dockerfile
+    assert any(
+        path.suffix in {".c", ".cc", ".cpp", ".go", ".rs"}
+        for path in OWNERSHIP_HELPER.rglob("*")
+        if path.is_file()
     )
-    invoked_paths = set(re.findall(r"^  (?P<path>/bin/(?:chown|chmod)) ", adapter, re.MULTILINE))
 
-    assert invoked_paths == {"/bin/chown", "/bin/chmod"}
-    assert invoked_paths <= helper_paths
+
+def test_ownership_helper_final_image_contains_only_the_compiled_helper() -> None:
+    dockerfile = OWNERSHIP_HELPER_DOCKERFILE.read_text(encoding="utf-8")
+    stages = re.split(r"(?=^FROM\s)", dockerfile, flags=re.MULTILINE)
+    final_stage = stages[-1]
+
+    assert final_stage.startswith("FROM scratch")
+    copy_destinations = re.findall(
+        r"^COPY(?:\s+--from=\S+)?\s+\S+\s+(?P<destination>\S+)$",
+        final_stage,
+        re.MULTILINE,
+    )
+    assert copy_destinations == ["/ownership-helper"]
+    assert "/bin/sh" not in final_stage
+    assert "/bin/chown" not in final_stage
+    assert "/bin/chmod" not in final_stage

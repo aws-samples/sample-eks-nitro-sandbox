@@ -77,7 +77,7 @@ adapter_tagged="${REGISTRY}/${ADAPTER_REPOSITORY}:${sample_tag}"
 controller_tagged="${REGISTRY}/${CONTROLLER_REPOSITORY}:${oce_tag}"
 ownership_helper_tagged="${REGISTRY}/${OWNERSHIP_HELPER_REPOSITORY}:${sample_tag}"
 runtime_tagged="${REGISTRY}/${RUNTIME_REPOSITORY}:${oce_tag}"
-OWNERSHIP_HELPER_BASE_IMAGE="docker.io/library/busybox:1.37.0-musl@sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478"
+OWNERSHIP_HELPER_BUILDER_IMAGE="docker.io/library/golang:1.25.4-alpine3.22@sha256:d3f0cf7723f3429e3f9ed846243970b20a2de7bae6a5b66fc5914e228d831bbb"
 
 docker buildx build \
   --pull \
@@ -93,7 +93,7 @@ docker buildx build \
   --push \
   --platform "${TARGET_PLATFORM:-linux/amd64}" \
   --metadata-file "$metadata_dir/ownership-helper.json" \
-  --build-arg "OWNERSHIP_HELPER_BASE_IMAGE=$OWNERSHIP_HELPER_BASE_IMAGE" \
+  --build-arg "OWNERSHIP_HELPER_BUILDER_IMAGE=$OWNERSHIP_HELPER_BUILDER_IMAGE" \
   --label "org.opencontainers.image.revision=$SAMPLE_SOURCE_REVISION" \
   --tag "$ownership_helper_tagged" \
   "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/ownership-helper"
@@ -309,7 +309,7 @@ CONTROLLER_IMAGE="${REGISTRY}/${CONTROLLER_REPOSITORY}@${controller_digest}"
 OWNERSHIP_INIT_IMAGE="${REGISTRY}/${OWNERSHIP_HELPER_REPOSITORY}@${ownership_helper_digest}"
 RUNTIME_IMAGE="${REGISTRY}/${RUNTIME_REPOSITORY}@${runtime_digest}"
 export ADAPTER_IMAGE CONTROLLER_IMAGE OWNERSHIP_INIT_IMAGE RUNTIME_IMAGE
-export OWNERSHIP_HELPER_BASE_IMAGE
+export OWNERSHIP_HELPER_BUILDER_IMAGE
 export SAMPLE_SOURCE_REVISION OCE_SOURCE_REVISION
 
 {
@@ -336,7 +336,7 @@ result = {
         "sourceRevision": os.environ["OCE_SOURCE_REVISION"],
     },
     "ownershipHelper": {
-        "baseImage": os.environ["OWNERSHIP_HELPER_BASE_IMAGE"],
+        "builderImage": os.environ["OWNERSHIP_HELPER_BUILDER_IMAGE"],
         "image": os.environ["OWNERSHIP_INIT_IMAGE"],
         "sourceRevision": os.environ["SAMPLE_SOURCE_REVISION"],
     },

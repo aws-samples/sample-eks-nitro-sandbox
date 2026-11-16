@@ -95,42 +95,6 @@ PREP_ALLOWED_FIELDS = frozenset(
     }
 )
 
-OWNERSHIP_SCRIPT = f"""
-for path
-do
-  if [ -L "$path" ] || [ ! -d "$path" ]; then
-    exit 1
-  fi
-  /bin/chmod 0700 -- "$path"
-  /bin/chown {RUNTIME_UID}:{RUNTIME_GID} -- "$path"
-done
-credentials={CLIENT_CREDENTIAL_PATH}
-if [ -L "$credentials" ]; then
-  exit 1
-fi
-if [ -e "$credentials" ]; then
-  /bin/chown {RUNTIME_UID}:{RUNTIME_GID} -- "$credentials"
-  /bin/chmod 0600 -- "$credentials"
-fi
-for pin_store in \\
-  {RUNTIME_PIN_PATH} \\
-  {RUNTIME_PIN_PATH}-wal \\
-  {RUNTIME_PIN_PATH}-shm \\
-  {RUNTIME_PIN_PATH}-journal
-do
-  if [ -L "$pin_store" ]; then
-    exit 1
-  fi
-  if [ -e "$pin_store" ]; then
-    if [ ! -f "$pin_store" ]; then
-      exit 1
-    fi
-    /bin/chown {RUNTIME_UID}:{RUNTIME_GID} -- "$pin_store"
-    /bin/chmod 0600 -- "$pin_store"
-  fi
-done
-""".strip()
-
 LINK_SCRIPT = r"""
 const fs = require("node:fs");
 const path = require("node:path");
@@ -545,11 +509,30 @@ def _ownership_init(
     image: str,
     private_paths: list[str],
 ) -> dict[str, Any]:
+    relative_directories = [
+        "." if path == HOME_MOUNT_PATH else path.removeprefix(f"{HOME_MOUNT_PATH}/")
+        for path in private_paths
+    ]
+    relative_files = [
+        path.removeprefix(f"{HOME_MOUNT_PATH}/")
+        for path in (
+            CLIENT_CREDENTIAL_PATH,
+            RUNTIME_PIN_PATH,
+            f"{RUNTIME_PIN_PATH}-wal",
+            f"{RUNTIME_PIN_PATH}-shm",
+            f"{RUNTIME_PIN_PATH}-journal",
+        )
+    ]
+    arguments = ["--root", HOME_MOUNT_PATH]
+    for path in relative_directories:
+        arguments.extend(["--dir", path])
+    for path in relative_files:
+        arguments.extend(["--file", path])
     return {
         "name": OWNERSHIP_INIT_NAME,
         "image": image,
-        "command": ["/bin/sh", "-eu", "-c"],
-        "args": [OWNERSHIP_SCRIPT, "--", *private_paths],
+        "command": ["/ownership-helper"],
+        "args": arguments,
         "securityContext": {
             "allowPrivilegeEscalation": False,
             "readOnlyRootFilesystem": True,
@@ -954,12 +937,15 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                 raise AdmissionError(
                     f"spec.{group_name}[{index}] has duplicate {STATE_ROOT} mounts"
                 )
-            if group_name == "containers" and index == designated_index:
-                if runtime_home_count != 1:
-                    raise AdmissionError(
-                        f"spec.{group_name}[{index}] must have exactly one "
-                        f"{RUNTIME_VOLUME} subPath home mount at {HOME_MOUNT_PATH}"
-                    )
+            if (
+                group_name == "containers"
+                and index == designated_index
+                and runtime_home_count != 1
+            ):
+                raise AdmissionError(
+                    f"spec.{group_name}[{index}] must have exactly one "
+                    f"{RUNTIME_VOLUME} subPath home mount at {HOME_MOUNT_PATH}"
+                )
             if state_affected:
                 if state_root_count == 0:
                     rewritten.append(

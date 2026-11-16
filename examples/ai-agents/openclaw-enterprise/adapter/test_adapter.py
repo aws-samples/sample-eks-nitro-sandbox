@@ -13,7 +13,6 @@ from adapter import (
     LINK_INIT_NAME,
     NODE_CA_ENV,
     OPENCLAW_HOME_PATH,
-    OWNERSHIP_SCRIPT,
     RUNTIME_TMP_VOLUME,
     SHM_MOUNT_PATH,
     TMP_MOUNT_PATH,
@@ -87,46 +86,6 @@ for (const path of ["/runtime-state/home","/runtime-temporary/tmp","/runtime-sta
   chmodSync(path, 0o700);
 }
 mkdirSync("/runtime-temporary/tmp", { recursive: true, mode: 0o700 });"""
-
-
-def test_ownership_script_uses_only_helper_image_paths() -> None:
-    assert "/bin/chown" in OWNERSHIP_SCRIPT
-    assert "/bin/chmod" in OWNERSHIP_SCRIPT
-    assert "/usr/bin/chown" not in OWNERSHIP_SCRIPT
-    assert "/usr/bin/chmod" not in OWNERSHIP_SCRIPT
-
-
-def test_ownership_script_safely_repairs_runtime_pin_store_files() -> None:
-    lines = OWNERSHIP_SCRIPT.splitlines()
-    loop_start = "for pin_store in \\"
-    assert loop_start in lines
-
-    start_index = lines.index(loop_start)
-    do_index = lines.index("do", start_index)
-    pin_store_paths = tuple(
-        line.removesuffix("\\").strip()
-        for line in lines[start_index + 1 : do_index]
-    )
-    assert pin_store_paths == (
-        "/home/node/.openclaw/control/services.sqlite",
-        "/home/node/.openclaw/control/services.sqlite-wal",
-        "/home/node/.openclaw/control/services.sqlite-shm",
-        "/home/node/.openclaw/control/services.sqlite-journal",
-    )
-    assert lines[do_index:] == [
-        "do",
-        '  if [ -L "$pin_store" ]; then',
-        "    exit 1",
-        "  fi",
-        '  if [ -e "$pin_store" ]; then',
-        '    if [ ! -f "$pin_store" ]; then',
-        "      exit 1",
-        "    fi",
-        '    /bin/chown 1000:1000 -- "$pin_store"',
-        '    /bin/chmod 0600 -- "$pin_store"',
-        "  fi",
-        "done",
-    ]
 
 
 def target_pod() -> dict:
@@ -343,7 +302,7 @@ def apply_patch(document: dict, patch: list[dict]) -> dict:
     {OWNERSHIP_INIT_IMAGE_ENV: OWNERSHIP_INIT_IMAGE},
 )
 class BuildPatchTests(unittest.TestCase):
-    def test_moves_ownership_repair_to_dedicated_init_container(self) -> None:
+    def test_runs_path_safe_ownership_helper_with_explicit_allowlists(self) -> None:
         pod = target_pod()
         rendered = apply_patch(pod, build_patch(pod))
         original_init_names = {
@@ -358,27 +317,40 @@ class BuildPatchTests(unittest.TestCase):
 
         self.assertEqual(len(ownership_init_containers), 1)
         ownership_init = ownership_init_containers[0]
-        ownership_command = " ".join(
-            [
-                *ownership_init.get("command", []),
-                *ownership_init.get("args", []),
-            ]
-        )
-        self.assertIn("/bin/chown", ownership_command)
-        self.assertIn("1000:1000", ownership_command)
-        self.assertIn("/bin/chmod", ownership_command)
         self.assertEqual(
             {mount["name"] for mount in ownership_init["volumeMounts"]},
             {"runtime-state", "openclaw-gateway-state"},
         )
         self.assertEqual(ownership_init["image"], OWNERSHIP_INIT_IMAGE)
         self.assertNotEqual(ownership_init["image"], RUNTIME_IMAGE)
-        self.assertEqual(ownership_init["command"], ["/bin/sh", "-eu", "-c"])
-        self.assertEqual(ownership_init["args"][1], "--")
-        self.assertIn(
-            f"{OPENCLAW_HOME_PATH}/sessions",
-            ownership_init["args"][2:],
+        self.assertEqual(ownership_init["command"], ["/ownership-helper"])
+
+        args = ownership_init["args"]
+        self.assertEqual(args[:2], ["--root", "/home/node"])
+        allowlist_args = args[2:]
+        self.assertEqual(len(allowlist_args) % 2, 0)
+        allowlists = {
+            (allowlist_args[index], allowlist_args[index + 1])
+            for index in range(0, len(allowlist_args), 2)
+        }
+        self.assertEqual(
+            allowlists,
+            {
+                ("--dir", "."),
+                ("--dir", ".openclaw"),
+                ("--dir", ".openclaw/agents"),
+                ("--dir", ".openclaw/control"),
+                ("--dir", ".openclaw/sessions"),
+                ("--file", ".openclaw/client/credentials.sqlite"),
+                ("--file", ".openclaw/control/services.sqlite"),
+                ("--file", ".openclaw/control/services.sqlite-wal"),
+                ("--file", ".openclaw/control/services.sqlite-shm"),
+                ("--file", ".openclaw/control/services.sqlite-journal"),
+            },
         )
+        for flag, path in allowlists:
+            self.assertIn(flag, {"--dir", "--file"})
+            self.assertFalse(path.startswith("/"))
         self.assertEqual(ownership_init.get("env", []), [])
 
         ownership_index = rendered["spec"]["initContainers"].index(ownership_init)
@@ -590,8 +562,8 @@ class BuildPatchTests(unittest.TestCase):
             }
         )
         self.assertIn(
-            "/home/node/.openclaw/control",
-            ownership_init["args"][2:],
+            ("--dir", ".openclaw/control"),
+            set(zip(ownership_init["args"][2::2], ownership_init["args"][3::2])),
         )
 
     def test_patches_prepare_private_state_for_relocated_runtime_root(self) -> None:
