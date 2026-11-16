@@ -24,8 +24,7 @@
   },
   "parentInstance": {
     "autoScalingGroup": {
-      "name": "ASG_NAME_WITH_ENCLAVE_ENABLED",
-      "capacityWaitTimeoutSeconds": 1800
+      "name": "ASG_NAME_WITH_ENCLAVE_ENABLED"
     }
   }
 }
