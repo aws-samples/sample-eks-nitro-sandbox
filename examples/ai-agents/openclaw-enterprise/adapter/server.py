@@ -19,6 +19,7 @@ MAX_BODY_BYTES = 1_048_576
 MAX_CONCURRENT_REQUESTS = 32
 SOCKET_TIMEOUT_SECONDS = 5.0
 LOG = logging.getLogger("oce-nitro-adapter")
+POD_RESOURCE = {"group": "", "version": "v1", "resource": "pods"}
 
 
 def admit(review: Any) -> dict[str, Any]:
@@ -38,7 +39,7 @@ def admit(review: Any) -> dict[str, Any]:
         if request.get("operation") != "CREATE":
             raise AdmissionError("only Pod CREATE admission is supported")
         resource = request.get("resource")
-        if resource != {"group": "", "version": "v1", "resource": "pods"}:
+        if resource != POD_RESOURCE:
             raise AdmissionError("only core/v1 Pods are supported")
         if not isinstance(request.get("namespace"), str) or not request["namespace"]:
             raise AdmissionError("Pod admission request must name a namespace")
@@ -46,15 +47,73 @@ def admit(review: Any) -> dict[str, Any]:
         patch = build_patch(pod)
         response: dict[str, Any] = {"uid": uid, "allowed": True}
         if patch:
-            encoded = json.dumps(
-                patch, separators=(",", ":"), sort_keys=True
-            ).encode("utf-8")
+            encoded = json.dumps(patch, separators=(",", ":"), sort_keys=True).encode(
+                "utf-8"
+            )
             response.update(
                 {
                     "patchType": "JSONPatch",
                     "patch": base64.b64encode(encoded).decode("ascii"),
                 }
             )
+    except AdmissionError as error:
+        response = {
+            "uid": uid,
+            "allowed": False,
+            "status": {"code": 400, "message": str(error)},
+        }
+    except Exception:
+        LOG.exception("unexpected admission failure")
+        response = {
+            "uid": uid,
+            "allowed": False,
+            "status": {"code": 500, "message": "internal admission error"},
+        }
+    return {
+        "apiVersion": "admission.k8s.io/v1",
+        "kind": "AdmissionReview",
+        "response": response,
+    }
+
+
+def validate(review: Any) -> dict[str, Any]:
+    """Deny attempts to add ephemeral containers to managed Pods."""
+    uid = ""
+    try:
+        if not isinstance(review, dict):
+            raise AdmissionError("AdmissionReview must be an object")
+        if review.get("apiVersion") != "admission.k8s.io/v1":
+            raise AdmissionError("only admission.k8s.io/v1 is supported")
+        request = review.get("request")
+        if not isinstance(request, dict):
+            raise AdmissionError("AdmissionReview.request must be an object")
+        uid = request.get("uid", "")
+        if not isinstance(uid, str) or not uid:
+            raise AdmissionError("AdmissionRequest.uid must be a non-empty string")
+        if request.get("operation") != "UPDATE":
+            raise AdmissionError(
+                "only Pod ephemeralcontainers UPDATE admission is supported"
+            )
+        if request.get("resource") != POD_RESOURCE:
+            raise AdmissionError("only core/v1 Pods are supported")
+        if request.get("subResource") != "ephemeralcontainers":
+            raise AdmissionError(
+                "only the Pod ephemeralcontainers subresource is supported"
+            )
+        if not isinstance(request.get("namespace"), str) or not request["namespace"]:
+            raise AdmissionError("Pod admission request must name a namespace")
+        response: dict[str, Any] = {
+            "uid": uid,
+            "allowed": False,
+            "status": {
+                "code": 403,
+                "reason": "Forbidden",
+                "message": (
+                    "ephemeral containers are not permitted in "
+                    "OpenClaw Enterprise managed namespaces"
+                ),
+            },
+        }
     except AdmissionError as error:
         response = {
             "uid": uid,
@@ -86,7 +145,8 @@ class AdmissionHandler(BaseHTTPRequestHandler):
         self._write_json(200, {"status": "ok"})
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        if urlsplit(self.path).path != "/mutate":
+        path = urlsplit(self.path).path
+        if path not in {"/mutate", "/validate"}:
             self.send_error(404)
             return
         try:
@@ -114,7 +174,8 @@ class AdmissionHandler(BaseHTTPRequestHandler):
                 },
             )
             return
-        self._write_json(200, admit(review))
+        admission = admit if path == "/mutate" else validate
+        self._write_json(200, admission(review))
 
     def log_message(self, format: str, *args: Any) -> None:
         LOG.info("%s - %s", self.client_address[0], format % args)
