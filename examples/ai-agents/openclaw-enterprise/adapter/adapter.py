@@ -11,6 +11,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 OCE_ROLES = frozenset({"agent", "gateway"})
+PREP_INIT_NAME = "prepare-private-state"
 STATE_VOLUME = "openclaw-gateway-state"
 RUNTIME_VOLUME = "runtime-state"
 RUNTIME_TMP_VOLUME = "runtime-temporary"
@@ -35,6 +36,7 @@ SERVICE_ACCOUNT_MOUNT_PATH = "/var/run/secrets/kubernetes.io/serviceaccount"
 RUNTIME_UID = 1000
 RUNTIME_GID = 1000
 HOME_MOUNT_PATH = "/home/node"
+RUNTIME_TMP_ROOT = "/runtime-temporary"
 TRUSTED_BOOTSTRAP_PATHS = (
     "/bin",
     "/usr/bin",
@@ -76,6 +78,20 @@ UNSAFE_BOOTSTRAP_ENV_NAMES = (
     "ZDOTDIR",
 )
 IMAGE_DIGEST_PATTERN = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
+PREP_ALLOWED_FIELDS = frozenset(
+    {
+        "args",
+        "command",
+        "image",
+        "imagePullPolicy",
+        "name",
+        "resources",
+        "securityContext",
+        "terminationMessagePath",
+        "terminationMessagePolicy",
+        "volumeMounts",
+    }
+)
 
 OWNERSHIP_SCRIPT = f"""
 for path
@@ -129,6 +145,15 @@ class AdmissionError(ValueError):
 
 def _is_nonempty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value)
+
+
+def _is_digest_pinned_image(value: Any) -> bool:
+    return (
+        _is_nonempty_string(value)
+        and value.strip() == value
+        and not any(character.isspace() for character in value)
+        and IMAGE_DIGEST_PATTERN.fullmatch(value) is not None
+    )
 
 
 def _safe_relative_path(value: Any, field: str) -> str:
@@ -213,7 +238,7 @@ def _runtime_contract(
     container: dict[str, Any], location: str
 ) -> tuple[str, dict[str, Any]]:
     image = container.get("image")
-    if not _is_nonempty_string(image) or not IMAGE_DIGEST_PATTERN.fullmatch(image):
+    if not _is_digest_pinned_image(image):
         raise AdmissionError(f"{location}.image must use an exact sha256 digest")
 
     security = container.get("securityContext")
@@ -264,16 +289,160 @@ def _runtime_contract(
 
 def _ownership_init_image() -> str:
     image = os.environ.get(OWNERSHIP_INIT_IMAGE_ENV)
-    if (
-        not _is_nonempty_string(image)
-        or image.strip() != image
-        or any(character.isspace() for character in image)
-        or not IMAGE_DIGEST_PATTERN.fullmatch(image)
-    ):
+    if not _is_digest_pinned_image(image):
         raise AdmissionError(
             f"{OWNERSHIP_INIT_IMAGE_ENV} must use an exact sha256 digest"
         )
     return image
+
+
+def _validate_prepare_private_state(
+    prep: dict[str, Any],
+    location: str,
+    runtime_image: str,
+    default_service_account_volumes: set[str],
+) -> None:
+    unexpected_fields = sorted(set(prep) - PREP_ALLOWED_FIELDS)
+    if unexpected_fields:
+        raise AdmissionError(
+            f"{location} does not match the fixed prepare-private-state contract: "
+            f"unexpected fields {unexpected_fields}"
+        )
+
+    image = prep.get("image")
+    if not _is_digest_pinned_image(image):
+        raise AdmissionError(
+            f"{location}.image must use the designated runtime's exact sha256 digest"
+        )
+    if image != runtime_image:
+        raise AdmissionError(
+            f"{location}.image must match the designated runtime image"
+        )
+
+    expected_security = {
+        "allowPrivilegeEscalation": False,
+        "readOnlyRootFilesystem": True,
+        "capabilities": {"drop": ["ALL"]},
+    }
+    if prep.get("securityContext") != expected_security:
+        raise AdmissionError(
+            f"{location}.securityContext does not match the fixed "
+            "prepare-private-state contract"
+        )
+
+    command = prep.get("command")
+    args = prep.get("args")
+    if command is not None or args is not None:
+        allowed_commands = (
+            ["node", "-e"],
+            ["/usr/bin/tini", "-s", "--", "node", "-e"],
+        )
+        if command not in allowed_commands or not (
+            isinstance(args, list) and len(args) == 1 and isinstance(args[0], str)
+        ):
+            raise AdmissionError(
+                f"{location} does not match the fixed prepare-private-state "
+                "command contract"
+            )
+        lines = args[0].splitlines()
+        prefix = "for (const path of "
+        suffix = ") {"
+        if (
+            len(lines) != 6
+            or lines[0] != 'const { chmodSync, mkdirSync } = require("node:fs");'
+            or not lines[1].startswith(prefix)
+            or not lines[1].endswith(suffix)
+        ):
+            raise AdmissionError(
+                f"{location} does not match the fixed prepare-private-state "
+                "command contract"
+            )
+        try:
+            directories = json.loads(lines[1][len(prefix) : -len(suffix)])
+        except json.JSONDecodeError as error:
+            raise AdmissionError(
+                f"{location} does not match the fixed prepare-private-state "
+                "command contract"
+            ) from error
+        required_directories = {
+            f"{RUNTIME_ROOT}/home",
+            f"{RUNTIME_TMP_ROOT}/tmp",
+        }
+        if (
+            not isinstance(directories, list)
+            or not all(
+                isinstance(directory, str)
+                and directory.startswith(
+                    (f"{RUNTIME_ROOT}/", f"{RUNTIME_TMP_ROOT}/", f"{STATE_ROOT}/")
+                )
+                and posixpath.normpath(directory) == directory
+                for directory in directories
+            )
+            or len(directories) != len(set(directories))
+            or not required_directories.issubset(directories)
+            or lines[2:]
+            != [
+                "  mkdirSync(path, { recursive: true });",
+                "  chmodSync(path, 0o700);",
+                "}",
+                'mkdirSync("/runtime-temporary/tmp", { recursive: true, mode: 0o700 });',
+            ]
+        ):
+            raise AdmissionError(
+                f"{location} does not match the fixed prepare-private-state "
+                "command contract"
+            )
+
+    expected_mounts = {
+        RUNTIME_VOLUME: (
+            {"name": RUNTIME_VOLUME, "mountPath": RUNTIME_ROOT},
+            {
+                "name": RUNTIME_VOLUME,
+                "mountPath": RUNTIME_ROOT,
+                "mountPropagation": "HostToContainer",
+            },
+        ),
+        STATE_VOLUME: {
+            "name": STATE_VOLUME,
+            "mountPath": STATE_ROOT,
+        },
+        RUNTIME_TMP_VOLUME: {
+            "name": RUNTIME_TMP_VOLUME,
+            "mountPath": RUNTIME_TMP_ROOT,
+        },
+    }
+    seen: set[str] = set()
+    for mount in _mounts(prep, location):
+        if not isinstance(mount, dict):
+            raise AdmissionError(f"{location}.volumeMounts entries must be objects")
+        name = mount.get("name")
+        if name in default_service_account_volumes:
+            if mount != {
+                "name": name,
+                "mountPath": SERVICE_ACCOUNT_MOUNT_PATH,
+                "readOnly": True,
+            }:
+                raise AdmissionError(
+                    f"{location} has an unsupported service-account mount"
+                )
+            continue
+        expected = expected_mounts.get(name)
+        if expected is None or (
+            mount not in expected if isinstance(expected, tuple) else mount != expected
+        ):
+            raise AdmissionError(
+                f"{location} does not match the fixed prepare-private-state "
+                "volume-mount contract"
+            )
+        if name in seen:
+            raise AdmissionError(f"{location} has duplicate {name} mounts")
+        seen.add(name)
+
+    if not {RUNTIME_VOLUME, STATE_VOLUME}.issubset(seen):
+        raise AdmissionError(
+            "prepare-private-state must mount runtime-state and gateway state "
+            "at their roots"
+        )
 
 
 def _ownership_init(
@@ -473,8 +642,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     prep_indexes = [
         index
         for index, container in enumerate(init_containers)
-        if isinstance(container, dict)
-        and container.get("name") == "prepare-private-state"
+        if isinstance(container, dict) and container.get("name") == PREP_INIT_NAME
     ]
     if len(prep_indexes) != 1:
         raise AdmissionError(
@@ -482,8 +650,6 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         )
     prep_index = prep_indexes[0]
     prep = init_containers[prep_index]
-    if not _is_nonempty_string(prep.get("image")):
-        raise AdmissionError("prepare-private-state must declare an image")
     reserved_container_names = {LINK_INIT_NAME, OWNERSHIP_INIT_NAME}
     for container in [*init_containers, *containers]:
         if (
@@ -492,36 +658,49 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
         ):
             raise AdmissionError(f"container name {container['name']} is reserved")
 
-    prep_mounts = _mounts(prep, f"spec.initContainers[{prep_index}]")
-    prep_runtime = [
-        mount
-        for mount in prep_mounts
-        if isinstance(mount, dict)
-        and mount.get("name") == RUNTIME_VOLUME
-        and mount.get("mountPath") == RUNTIME_ROOT
-        and "subPath" not in mount
-        and "subPathExpr" not in mount
+    designated_indexes = [
+        index
+        for index, container in enumerate(containers)
+        if isinstance(container, dict) and container.get("name") == role
     ]
-    prep_state = [
-        mount
-        for mount in prep_mounts
-        if isinstance(mount, dict)
-        and mount.get("name") == STATE_VOLUME
-        and mount.get("mountPath") == STATE_ROOT
-        and "subPath" not in mount
-        and "subPathExpr" not in mount
-    ]
-    if len(prep_runtime) != 1 or len(prep_state) != 1:
+    if len(designated_indexes) != 1:
         raise AdmissionError(
-            "prepare-private-state must mount runtime-state and gateway state at their roots"
+            f"expected exactly one designated {role} runtime container"
         )
+    designated_index = designated_indexes[0]
 
     links: dict[str, str] = {}
     mount_patches: list[dict[str, Any]] = []
     environment_patches: list[dict[str, Any]] = []
     runtime_patches: list[dict[str, Any]] = []
     ownership_image = _ownership_init_image()
-    runtime_image_source: str | None = None
+    designated_runtime_image: str | None = None
+    for index, container in enumerate(containers):
+        location = f"spec.containers[{index}]"
+        runtime_image, runtime_security = _runtime_contract(container, location)
+        if runtime_image == ownership_image:
+            raise AdmissionError(
+                f"{OWNERSHIP_INIT_IMAGE_ENV} must not match a workload runtime image"
+            )
+        if index == designated_index:
+            designated_runtime_image = runtime_image
+        runtime_patches.append(
+            {
+                "op": "replace",
+                "path": f"/spec/containers/{index}/securityContext",
+                "value": runtime_security,
+            }
+        )
+
+    if designated_runtime_image is None:
+        raise AdmissionError("target OCE Pod has no regular runtime container")
+    _validate_prepare_private_state(
+        prep,
+        f"spec.initContainers[{prep_index}]",
+        designated_runtime_image,
+        default_service_account_volumes,
+    )
+
     groups = (
         ("initContainers", init_containers),
         ("containers", containers),
@@ -545,6 +724,14 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                 ):
                     mounts_changed = True
                     continue
+                if mount.get("name") in {RUNTIME_VOLUME, STATE_VOLUME} and not (
+                    (group_name == "containers" and index == designated_index)
+                    or (group_name == "initContainers" and index == prep_index)
+                ):
+                    raise AdmissionError(
+                        f"spec.{group_name}[{index}] is not a designated state "
+                        f"consumer and cannot mount {mount.get('name')}"
+                    )
                 if mount.get("name") != STATE_VOLUME:
                     if mount.get("mountPath") == STATE_ROOT:
                         raise AdmissionError(
@@ -574,6 +761,11 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                 if group_name == "initContainers":
                     raise AdmissionError(
                         f"{STATE_VOLUME} subPath init mounts are not supported"
+                    )
+                if mount.get("readOnly") is True or "recursiveReadOnly" in mount:
+                    raise AdmissionError(
+                        f"{STATE_VOLUME} read-only subPath mounts cannot be "
+                        "safely rewritten to a writable PVC root"
                     )
                 mount_path = mount.get("mountPath")
                 state_home_root = f"{OPENCLAW_HOME_PATH}/"
@@ -667,30 +859,6 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                                 f"spec.{group_name}[{index}] has a mount that "
                                 f"overlaps trusted bootstrap path {trusted_path}"
                             )
-                    location = f"spec.{group_name}[{index}]"
-                    runtime_image, runtime_security = _runtime_contract(
-                        container, location
-                    )
-                    if runtime_image == ownership_image:
-                        raise AdmissionError(
-                            f"{OWNERSHIP_INIT_IMAGE_ENV} must not match a "
-                            "workload runtime image"
-                        )
-                    if (
-                        runtime_image_source is not None
-                        and runtime_image_source != runtime_image
-                    ):
-                        raise AdmissionError(
-                            "adapted runtime containers must use the same image"
-                        )
-                    runtime_image_source = runtime_image
-                    runtime_patches.append(
-                        {
-                            "op": "replace",
-                            "path": f"/spec/{group_name}/{index}/securityContext",
-                            "value": runtime_security,
-                        }
-                    )
                     rewritten.append(
                         {
                             "name": AGW_CA_VOLUME,
@@ -740,8 +908,6 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
 
     if not links:
         raise AdmissionError(f"{STATE_VOLUME} has no supported subPath mounts to adapt")
-    if runtime_image_source is None:
-        raise AdmissionError("target OCE Pod has no adaptable runtime container")
     _validate_link_paths(links)
 
     link_data = [

@@ -60,6 +60,38 @@ UNSAFE_SHELL_ENV_NAMES = (
 )
 
 
+def runtime_security_context() -> dict:
+    return {
+        "allowPrivilegeEscalation": False,
+        "capabilities": {"drop": ["ALL"]},
+        "readOnlyRootFilesystem": True,
+        "runAsNonRoot": True,
+        "runAsUser": 1000,
+        "runAsGroup": 1000,
+    }
+
+
+def prep_security_context() -> dict:
+    return {
+        "allowPrivilegeEscalation": False,
+        "readOnlyRootFilesystem": True,
+        "capabilities": {"drop": ["ALL"]},
+    }
+
+
+PREP_SCRIPT = "\n".join(
+    [
+        'const { chmodSync, mkdirSync } = require("node:fs");',
+        'for (const path of ["/runtime-state/home","/runtime-temporary/tmp",'
+        '"/gateway-state/sessions"]) {',
+        "  mkdirSync(path, { recursive: true });",
+        "  chmodSync(path, 0o700);",
+        "}",
+        'mkdirSync("/runtime-temporary/tmp", { recursive: true, mode: 0o700 });',
+    ]
+)
+
+
 def test_ownership_script_uses_only_helper_image_paths() -> None:
     assert "/bin/chown" in OWNERSHIP_SCRIPT
     assert "/bin/chmod" in OWNERSHIP_SCRIPT
@@ -85,6 +117,9 @@ def target_pod() -> dict:
                     "name": "prepare-private-state",
                     "image": RUNTIME_IMAGE,
                     "imagePullPolicy": "IfNotPresent",
+                    "command": ["/usr/bin/tini", "-s", "--", "node", "-e"],
+                    "args": [PREP_SCRIPT],
+                    "securityContext": prep_security_context(),
                     "volumeMounts": [
                         {
                             "name": "runtime-state",
@@ -104,7 +139,11 @@ def target_pod() -> dict:
             ],
             "containers": [
                 *[
-                    {"name": f"helper-{index}", "image": "example.invalid/oce:test"}
+                    {
+                        "name": f"helper-{index}",
+                        "image": RUNTIME_IMAGE,
+                        "securityContext": runtime_security_context(),
+                    }
                     for index in range(5)
                 ],
                 {
@@ -112,14 +151,7 @@ def target_pod() -> dict:
                     "image": RUNTIME_IMAGE,
                     "command": ["/usr/bin/tini", "--", "node", "-e"],
                     "args": ["console.log('gateway')"],
-                    "securityContext": {
-                        "allowPrivilegeEscalation": False,
-                        "capabilities": {"drop": ["ALL"]},
-                        "readOnlyRootFilesystem": True,
-                        "runAsNonRoot": True,
-                        "runAsUser": 1000,
-                        "runAsGroup": 1000,
-                    },
+                    "securityContext": runtime_security_context(),
                     "volumeMounts": [
                         {
                             "name": "runtime-state",
@@ -148,7 +180,6 @@ def target_pod() -> dict:
                             "name": "openclaw-gateway-state",
                             "mountPath": "/home/node/.openclaw/agents",
                             "subPath": "agents",
-                            "readOnly": True,
                         },
                     ],
                 },
@@ -236,13 +267,6 @@ def admitted_target_pod() -> dict:
             }
         )
 
-    pod["spec"]["initContainers"][-1]["volumeMounts"].append(
-        {
-            "name": "projected-settings",
-            "mountPath": "/etc/runtime-settings",
-            "readOnly": True,
-        }
-    )
     pod["spec"]["containers"][-1]["volumeMounts"].extend(
         [
             {
@@ -360,6 +384,61 @@ class BuildPatchTests(unittest.TestCase):
                 ):
                     build_patch(target_pod())
 
+    def test_requires_trustworthy_prepare_private_state_contract(self) -> None:
+        mutations = (
+            ("unpinned image", {"image": "example.invalid/oce:latest"}),
+            (
+                "whitespace image",
+                {"image": f"example.invalid/oce runtime@sha256:{'a' * 64}"},
+            ),
+            (
+                "different image",
+                {"image": f"example.invalid/other@sha256:{'c' * 64}"},
+            ),
+            ("custom command", {"command": ["/bin/sh", "-c", "id"]}),
+            ("custom args", {"args": [f"{PREP_SCRIPT}\nprocess.exit(0);"]}),
+            (
+                "custom environment",
+                {"env": [{"name": "NODE_OPTIONS", "value": "-r x"}]},
+            ),
+            ("custom security", {"securityContext": runtime_security_context()}),
+        )
+        for name, mutation in mutations:
+            with self.subTest(name=name):
+                pod = target_pod()
+                pod["spec"]["initContainers"][-1].update(mutation)
+                with self.assertRaisesRegex(
+                    AdmissionError,
+                    "prepare-private-state|designated runtime",
+                ):
+                    build_patch(pod)
+
+    def test_rejects_prepare_private_state_mount_contract_drift(self) -> None:
+        mutations = (
+            {"readOnly": True},
+            {"subPath": "home"},
+            {"mountPropagation": "Bidirectional"},
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                pod = target_pod()
+                pod["spec"]["initContainers"][-1]["volumeMounts"][0].update(mutation)
+                with self.assertRaisesRegex(
+                    AdmissionError,
+                    "prepare-private-state volume-mount contract",
+                ):
+                    build_patch(pod)
+
+        pod = target_pod()
+        pod["spec"]["initContainers"][-1]["volumeMounts"].append(
+            {"name": "workspace", "mountPath": "/usr/bin"}
+        )
+        with self.assertRaisesRegex(
+            AdmissionError,
+            "prepare-private-state volume-mount contract",
+        ):
+            build_patch(pod)
+
     def test_runtime_container_remains_non_root_and_unwrapped(self) -> None:
         pod = target_pod()
         original_gateway = copy.deepcopy(pod["spec"]["containers"][-1])
@@ -396,6 +475,86 @@ class BuildPatchTests(unittest.TestCase):
                 pod = target_pod()
                 pod["spec"]["containers"][-1].update(change)
                 with self.assertRaises(AdmissionError):
+                    build_patch(pod)
+
+    def test_applies_runtime_contract_to_every_regular_container(self) -> None:
+        rendered = apply_patch(target_pod(), build_patch(target_pod()))
+
+        for container in rendered["spec"]["containers"]:
+            self.assertEqual(container["image"], RUNTIME_IMAGE)
+            self.assertEqual(
+                container["securityContext"],
+                runtime_security_context(),
+                container["name"],
+            )
+
+        pod = target_pod()
+        alternate_image = f"example.invalid/helper@sha256:{'d' * 64}"
+        pod["spec"]["containers"][0]["image"] = alternate_image
+        rendered = apply_patch(pod, build_patch(pod))
+        self.assertEqual(rendered["spec"]["containers"][0]["image"], alternate_image)
+
+        for field, value in (
+            ("image", "example.invalid/helper:latest"),
+            ("securityContext", {}),
+        ):
+            with self.subTest(field=field):
+                pod = target_pod()
+                pod["spec"]["containers"][0][field] = value
+                with self.assertRaises(AdmissionError):
+                    build_patch(pod)
+
+    def test_rejects_state_mounts_on_non_designated_containers(self) -> None:
+        mounts = (
+            {
+                "name": "runtime-state",
+                "mountPath": "/home/node",
+                "subPath": "home",
+            },
+            {
+                "name": "openclaw-gateway-state",
+                "mountPath": "/home/node/.openclaw/sessions",
+                "subPath": "sessions",
+            },
+        )
+        for mount in mounts:
+            with self.subTest(volume=mount["name"]):
+                pod = target_pod()
+                pod["spec"]["containers"][0]["volumeMounts"] = [mount]
+                with self.assertRaisesRegex(
+                    AdmissionError,
+                    "not a designated state consumer",
+                ):
+                    build_patch(pod)
+
+    def test_rejects_state_mounts_on_non_designated_init_containers(self) -> None:
+        for volume, mount_path in (
+            ("runtime-state", "/runtime-state"),
+            ("openclaw-gateway-state", "/gateway-state"),
+        ):
+            with self.subTest(volume=volume):
+                pod = target_pod()
+                pod["spec"]["initContainers"][0]["volumeMounts"] = [
+                    {"name": volume, "mountPath": mount_path}
+                ]
+                with self.assertRaisesRegex(
+                    AdmissionError,
+                    "not a designated state consumer",
+                ):
+                    build_patch(pod)
+
+    def test_rejects_read_only_gateway_state_rewrites(self) -> None:
+        for field, value in (
+            ("readOnly", True),
+            ("recursiveReadOnly", "Enabled"),
+        ):
+            with self.subTest(field=field):
+                pod = target_pod()
+                pod["spec"]["containers"][-1]["volumeMounts"][-1][field] = value
+                with self.assertRaisesRegex(
+                    AdmissionError,
+                    "read-only subPath mounts cannot be safely rewritten",
+                ):
                     build_patch(pod)
 
     def test_configures_private_runtime_tmp_directory(self) -> None:
@@ -645,17 +804,11 @@ class BuildPatchTests(unittest.TestCase):
                 container.get("volumeMounts", []),
                 container["name"],
             )
-        rendered_prep = next(
-            container
-            for container in spec["initContainers"]
-            if container["name"] == "prepare-private-state"
-        )
         rendered_gateway = next(
             container
             for container in spec["containers"]
             if container["name"] == "gateway"
         )
-        self.assertIn(unrelated_mount, rendered_prep["volumeMounts"])
         self.assertIn(unrelated_mount, rendered_gateway["volumeMounts"])
         self.assertIn(custom_token_mount, rendered_gateway["volumeMounts"])
 
@@ -750,9 +903,8 @@ class BuildPatchTests(unittest.TestCase):
 
     def test_deduplicates_link_input_deterministically(self) -> None:
         pod = target_pod()
-        duplicate = copy.deepcopy(pod["spec"]["containers"][-1])
-        duplicate["name"] = "duplicate-consumer"
-        pod["spec"]["containers"].insert(0, duplicate)
+        duplicate = copy.deepcopy(pod["spec"]["containers"][-1]["volumeMounts"][-1])
+        pod["spec"]["containers"][-1]["volumeMounts"].append(duplicate)
 
         rendered = apply_patch(pod, build_patch(pod))
         link_init = next(
@@ -785,7 +937,10 @@ class BuildPatchTests(unittest.TestCase):
                 ],
             }
         )
-        with self.assertRaisesRegex(AdmissionError, "init mounts are not supported"):
+        with self.assertRaisesRegex(
+            AdmissionError,
+            "not a designated state consumer",
+        ):
             build_patch(pod)
 
     def test_rejects_gateway_state_root_mounts_on_regular_containers(self) -> None:
@@ -802,7 +957,8 @@ class BuildPatchTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(
                     AdmissionError,
-                    "regular containers cannot mount openclaw-gateway-state at its root",
+                    "(not a designated state consumer|regular containers "
+                    "cannot mount openclaw-gateway-state at its root)",
                 ):
                     build_patch(pod)
 
