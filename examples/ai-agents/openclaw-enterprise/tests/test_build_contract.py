@@ -119,6 +119,17 @@ def test_source_revisions_are_full_commit_shas() -> None:
     )
 
 
+def test_privileged_build_sources_are_restricted_to_canonical_repositories() -> None:
+    parameters = _template()["Parameters"]
+
+    assert parameters["SampleRepositoryUrl"]["AllowedValues"] == [
+        "https://github.com/aws-samples/sample-eks-nitro-sandbox.git"
+    ]
+    assert parameters["OceRepositoryUrl"]["AllowedValues"] == [
+        "https://github.com/openclaw/openclaw-enterprise.git"
+    ]
+
+
 def test_repository_encryption_key_rotates() -> None:
     keys = _resources("AWS::KMS::Key")
 

@@ -5,8 +5,9 @@ Parameters:
   SampleRepositoryUrl:
     Type: String
     Default: https://github.com/aws-samples/sample-eks-nitro-sandbox.git
-    AllowedPattern: ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$
-    Description: Public Git repository containing this sample.
+    AllowedValues:
+      - https://github.com/aws-samples/sample-eks-nitro-sandbox.git
+    Description: Canonical repository containing this sample.
   SampleGitRevision:
     Type: String
     AllowedPattern: ^[0-9a-f]{40}$
@@ -15,8 +16,9 @@ Parameters:
   OceRepositoryUrl:
     Type: String
     Default: https://github.com/openclaw/openclaw-enterprise.git
-    AllowedPattern: ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$
-    Description: Public OpenClaw Enterprise source repository.
+    AllowedValues:
+      - https://github.com/openclaw/openclaw-enterprise.git
+    Description: Canonical OpenClaw Enterprise source repository.
   OceGitRevision:
     Type: String
     Default: 86c8c12310f691bb21651118ffffd6bfd460e9ff

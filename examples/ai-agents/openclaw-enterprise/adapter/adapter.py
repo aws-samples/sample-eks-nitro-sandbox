@@ -589,18 +589,21 @@ def _default_service_account_volumes(volumes: list[Any], mounts: list[Any]) -> s
         sources = projected["sources"]
         has_default_token = any(
             isinstance(source, dict)
+            and set(source) == {"serviceAccountToken"}
             and isinstance(source.get("serviceAccountToken"), dict)
             and source["serviceAccountToken"].get("path") == "token"
             for source in sources
         )
         has_root_ca = any(
             isinstance(source, dict)
+            and set(source) == {"configMap"}
             and isinstance(source.get("configMap"), dict)
             and source["configMap"].get("name") == "kube-root-ca.crt"
             for source in sources
         )
         has_namespace = any(
             isinstance(source, dict)
+            and set(source) == {"downwardAPI"}
             and isinstance(source.get("downwardAPI"), dict)
             and any(
                 isinstance(item, dict)
@@ -616,8 +619,9 @@ def _default_service_account_volumes(volumes: list[Any], mounts: list[Any]) -> s
             for mount in mounts
             if isinstance(mount, dict) and mount.get("name") == name
         ]
-        if (
-            has_default_token
+        is_default_projection = (
+            len(sources) == 3
+            and has_default_token
             and has_root_ca
             and has_namespace
             and references
@@ -625,8 +629,14 @@ def _default_service_account_volumes(volumes: list[Any], mounts: list[Any]) -> s
                 mount.get("mountPath") == SERVICE_ACCOUNT_MOUNT_PATH
                 for mount in references
             )
-        ):
+        )
+        if is_default_projection:
             removable.add(name)
+        else:
+            raise AdmissionError(
+                f"volume {name} uses the reserved kube-api-access prefix but "
+                "does not match Kubernetes' default service-account projection"
+            )
     return removable
 
 
@@ -1147,6 +1157,21 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
             "op": "replace",
             "path": f"/spec/initContainers/{prep_index}/args",
             "value": [relocated_prep_script],
+        }
+    )
+    patch.append(
+        {
+            "op": "replace",
+            "path": f"/spec/initContainers/{prep_index}/securityContext",
+            "value": {
+                "allowPrivilegeEscalation": False,
+                "readOnlyRootFilesystem": True,
+                "runAsUser": RUNTIME_UID,
+                "runAsGroup": RUNTIME_GID,
+                "runAsNonRoot": True,
+                "capabilities": {"drop": ["ALL"]},
+                "seccompProfile": {"type": "RuntimeDefault"},
+            },
         }
     )
     patch.append(

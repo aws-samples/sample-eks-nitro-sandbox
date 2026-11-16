@@ -127,5 +127,8 @@ upstream values contract, so copying guessed `--set` keys here would be
 misleading.
 
 The CodeBuild role can write only its logs and the four repositories. The
-project accepts only public GitHub repository URLs and exact lowercase commit
-SHAs; it has no source credential or local Docker path.
+project accepts only the canonical sample and OpenClaw Enterprise repository
+URLs plus exact lowercase commit SHAs; it has no source credential or local
+Docker path. Validate contributor forks with a separate build role and
+repository namespace rather than granting fork code access to trusted release
+repositories.

@@ -1086,6 +1086,23 @@ class BuildPatchTests(unittest.TestCase):
         for volume in preserved:
             self.assertIn(volume, volumes)
 
+    def test_rejects_mixed_service_account_projection(self) -> None:
+        pod = admitted_target_pod()
+        default_projection = next(
+            volume
+            for volume in pod["spec"]["volumes"]
+            if volume["name"] == "kube-api-access-k82tq"
+        )
+        default_projection["projected"]["sources"].append(
+            {"secret": {"name": "tenant-bootstrap"}}
+        )
+
+        with self.assertRaisesRegex(
+            AdmissionError,
+            "does not match Kubernetes' default service-account projection",
+        ):
+            build_patch(pod)
+
     def test_removes_preinjected_service_account_mounts_only(self) -> None:
         pod = admitted_target_pod()
         service_account_mount = {
@@ -1133,6 +1150,23 @@ class BuildPatchTests(unittest.TestCase):
 
         self.assertEqual(spec["runtimeClassName"], "isolated-sandbox")
         self.assertIs(spec["automountServiceAccountToken"], False)
+        prep = next(
+            container
+            for container in spec["initContainers"]
+            if container["name"] == "prepare-private-state"
+        )
+        self.assertEqual(
+            prep["securityContext"],
+            {
+                "allowPrivilegeEscalation": False,
+                "readOnlyRootFilesystem": True,
+                "runAsUser": 1000,
+                "runAsGroup": 1000,
+                "runAsNonRoot": True,
+                "capabilities": {"drop": ["ALL"]},
+                "seccompProfile": {"type": "RuntimeDefault"},
+            },
+        )
         gateway_mounts = spec["containers"][-1]["volumeMounts"]
         self.assertEqual(gateway_mounts[1], workspace)
         self.assertEqual(
