@@ -270,15 +270,29 @@ this for every layer, which is the "wrapped with this key" line in its output.
 
 **Step 5: A layer blob pulled from ECR is not readable.** Download the layer the node would
 pull, confirm the bytes are the ones the descriptor names, and then try to treat them as
-the gzipped tar the media type claims:
+the gzipped tar the media type claims. The download URL works for anyone who holds it, so
+the block keeps it out of `curl`'s command line, where other processes on your machine can
+read it, and deletes it when the block ends. The download goes to the repository's `tmp/`,
+beside the run files `setup.sh` writes:
 
 ```bash
-aws ecr get-download-url-for-layer --repository-name encrypted-image-sample \
-  --layer-digest sha256:6dea5028fecd0a8be466ff4de0c85e239532c1046e5521ac116267001bf6ebdf \
-  --query downloadUrl --output text | xargs curl -sS -o layer.blob
-sha256sum layer.blob
-gzip -t layer.blob
-file -b layer.blob
+(
+  set -e
+  umask 077
+  mkdir -p ../../../tmp/encrypted-image
+  cd ../../../tmp/encrypted-image
+  private="$(mktemp -d signed-url.XXXXXX)"
+  trap 'rm -rf "$private"' EXIT
+  aws ecr get-download-url-for-layer --repository-name encrypted-image-sample \
+    --layer-digest sha256:6dea5028fecd0a8be466ff4de0c85e239532c1046e5521ac116267001bf6ebdf \
+    --query downloadUrl --output text > "$private/url"
+  IFS= read -r url < "$private/url"
+  printf 'url = "%s"\n' "$url" > "$private/curl.conf"   # printf is a shell builtin
+  curl -sS --config "$private/curl.conf" -o layer.blob
+  sha256sum layer.blob
+  gzip -t layer.blob || true
+  file -b layer.blob
+)
 ```
 
 ```text
@@ -713,14 +727,26 @@ exists:
 **Step 12: The image carries no decryption code.** The workload image is the stock
 `public.ecr.aws/amazonlinux/amazonlinux:minimal`, encrypted and nothing else. Its
 configuration is plaintext in the registry, so you can read it without decrypting anything.
-The config descriptor's digest comes from the manifest in step 4:
+The config descriptor's digest comes from the manifest in step 4, and the download URL is
+handled as in step 5:
 
 ```bash
-aws ecr get-download-url-for-layer --repository-name encrypted-image-sample \
-  --layer-digest sha256:acbf110d8a44591c61483aabb846d7f5de398d7f01d7362166e3e1d7184bb07b \
-  --query downloadUrl --output text | xargs curl -sS -o image-config.json
-jq '{os, architecture, config: {User: .config.User, Entrypoint: .config.Entrypoint,
-     Cmd: .config.Cmd, Env: .config.Env}, layers: (.rootfs.diff_ids | length)}' image-config.json
+(
+  set -e
+  umask 077
+  mkdir -p ../../../tmp/encrypted-image
+  cd ../../../tmp/encrypted-image
+  private="$(mktemp -d signed-url.XXXXXX)"
+  trap 'rm -rf "$private"' EXIT
+  aws ecr get-download-url-for-layer --repository-name encrypted-image-sample \
+    --layer-digest sha256:acbf110d8a44591c61483aabb846d7f5de398d7f01d7362166e3e1d7184bb07b \
+    --query downloadUrl --output text > "$private/url"
+  IFS= read -r url < "$private/url"
+  printf 'url = "%s"\n' "$url" > "$private/curl.conf"   # printf is a shell builtin
+  curl -sS --config "$private/curl.conf" -o image-config.json
+  jq '{os, architecture, config: {User: .config.User, Entrypoint: .config.Entrypoint,
+       Cmd: .config.Cmd, Env: .config.Env}, layers: (.rootfs.diff_ids | length)}' image-config.json
+)
 ```
 
 ```text
@@ -744,13 +770,21 @@ jq '{os, architecture, config: {User: .config.User, Entrypoint: .config.Entrypoi
 One layer, no entrypoint, and a default command of `/bin/bash`. Nothing was added to the
 base image. The base image itself ships no AWS or KMS code: searching its filesystem for
 anything matching `aws` or `kms`, with timezone names excluded, finds three DNF repository
-configuration files and no executable or library.
+configuration files and no executable or library. The helper container has a name of its
+own, so `docker create` refuses to start if one by that name already exists, and the block
+removes only the container it created:
 
 ```bash
-docker create --name probe public.ecr.aws/amazonlinux/amazonlinux:minimal /bin/true
-docker export probe | tar -t > minimal-fs.txt
-docker rm probe
-grep -iE "aws|kms" minimal-fs.txt | grep -vE "/$|zoneinfo"
+(
+  set -e -o pipefail
+  mkdir -p ../../../tmp/encrypted-image
+  cd ../../../tmp/encrypted-image
+  helper="$(docker create --name encrypted-image-fs-probe \
+    public.ecr.aws/amazonlinux/amazonlinux:minimal /bin/true)"
+  trap 'docker rm "$helper" > /dev/null' EXIT
+  docker export "$helper" | tar -t > minimal-fs.txt
+  grep -iE "aws|kms" minimal-fs.txt | grep -vE "/$|zoneinfo"
+)
 ```
 
 ```text
