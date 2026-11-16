@@ -26,7 +26,7 @@ pod spec:
   describes a watcher that starts one pod per issue labeled `agent`; here you start the
   pod yourself.)
 - **Everything else is off.** An `ApplicationNetworkPolicy` denies all ingress, and
-  allows egress only to DNS on any address for name lookups, to the Pod Identity credential address,
+  allows egress only to CoreDNS for name lookups, to the Pod Identity credential address,
   and to HTTPS on the Bedrock and GitHub hostnames. Other AWS APIs, other internet hosts and other pods are refused. (The
   policy allows the addresses those names resolve to, so another name served from the
   same addresses would also be reachable.) The VM is sized from the pod's requests (inside
@@ -126,7 +126,7 @@ unset GITHUB_TOKEN
 **Step 5: Apply the network policy.** [`egress-policy.yaml`](egress-policy.yaml)
 selects pods labeled `app: coding-agent`. Listing both `Ingress` and `Egress` under
 `policyTypes` denies the pod all traffic in both directions except what the rules allow:
-no ingress at all, and egress only to DNS on any address, to the Pod Identity credential address,
+no ingress at all, and egress only to CoreDNS, to the Pod Identity credential address,
 and to HTTPS on three hostnames. Here it is without its header comment:
 
 ```yaml
@@ -143,7 +143,7 @@ spec:
     - Egress
   egress:
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_IP>/32 }   # the cluster DNS address
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -166,16 +166,35 @@ and the policy applies to them: without the rule they time out, from a sandboxed
 from an ordinary one.
 
 A standard Kubernetes `NetworkPolicy` can only allow addresses; the Auto Mode
-`ApplicationNetworkPolicy` accepts the same fields plus `domainNames`. DNS (port 53) is
-allowed to any address rather than pinned to one CoreDNS Service IP: on EKS Auto Mode
-CoreDNS runs locally on each instance rather than behind a single ClusterIP, so a rule
-pinned to one looked-up address would not reliably reach the resolver a pod actually
-uses. The rule still opens only port 53; everything else stays denied.
+`ApplicationNetworkPolicy` accepts the same fields plus `domainNames`. DNS is allowed
+only to the cluster's DNS address, the `.10` address of the cluster's service CIDR, which
+the kubelet gives every pod as its nameserver. On EKS Auto Mode CoreDNS "runs locally on
+each EKS Auto Mode instance", as the Amazon EKS User Guide puts it in *Use Network
+Policies with EKS Auto Mode*
+(<https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html>): there is no
+`kube-dns` Service to look up, but the node answers that address. Allowing port 53 to
+any address instead would let the agent query any DNS server on the internet, which is
+enough to send data out through DNS or to reach a VPN that listens on port 53.
+
+The command below reads the service CIDR from the EKS API and takes its `.10` address,
+the method the guide gives. It applies the policy only if the CIDR is an IPv4 network
+EKS allows (a `/12` to `/24` ending in `.0`), because `ApplicationNetworkPolicy` does not
+validate `cidr` and would store a malformed rule that matches nothing (#104). On an IPv6
+cluster, use the `::a` address of `serviceIpv6Cidr` and fill in `<COREDNS_IP>` by hand.
 
 ```bash
-kubectl apply -f egress-policy.yaml
-until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/coding-agent-egress-'; do sleep 2; done
-kubectl get applicationnetworkpolicies,policyendpoints
+SERVICE_CIDR=$(aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION \
+  --query 'cluster.kubernetesNetworkConfig.serviceIpv4Cidr' --output text \
+  | grep -Ex '((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}0/(1[2-9]|2[0-4])')
+if [ -z "$SERVICE_CIDR" ]; then
+  echo "no IPv4 service CIDR read for $CLUSTER_NAME: nothing was applied" >&2
+else
+  COREDNS_IP="${SERVICE_CIDR%.0/*}.10"
+  echo "cluster DNS address: $COREDNS_IP"
+  sed "s|<COREDNS_IP>|$COREDNS_IP|" egress-policy.yaml | kubectl apply -f -
+  until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/coding-agent-egress-'; do sleep 2; done
+  kubectl get applicationnetworkpolicies,policyendpoints
+fi
 ```
 
 Wait for the `PolicyEndpoint` named after `coding-agent-egress` before you start the
