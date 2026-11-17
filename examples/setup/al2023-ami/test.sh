@@ -14,6 +14,7 @@ set -uo pipefail
 SAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SAMPLE_DIR/scripts/lib/common.sh"
 require_run_id
+require_identity RESOURCE_PREFIX CLUSTER_NAME AWS_REGION NAMESPACE
 
 ISO_POD=isolated-sandbox-hello
 ORD_POD=ordinary-hello

@@ -29,11 +29,18 @@ rec1()   { sed -n "s/^$1=//p" "$STATE" 2>/dev/null | head -n 1; }   # identity: 
 record() { printf '%s=%s\n' "$1" "$2" >> "$STATE"; }
 aw()     { aws --region "$AWS_REGION" "$@"; }
 
-: "${BUILD_ASG_NAME:=$(rec IB_ASG_NAME)}"
-: "${BUILD_SECURITY_GROUP_ID:=$(rec IB_SECURITY_GROUP_ID)}"
-: "${BUILD_INSTANCE_PROFILE:=$(rec IB_INSTANCE_PROFILE)}"
-: "${BUILD_EXECUTION_ROLE:=$(rec IB_EXECUTION_ROLE)}"
-: "${BUILD_SUBNET_ID:=$(rec BUILD_SUBNET_ID)}"
+# The prerequisites come from the run state ib-prereqs.sh wrote. A value given in the environment
+# must be the same, so a stale variable from another run cannot point this build at that run's
+# group or roles. NODE_ARCH must match the architecture the prerequisites were made for.
+for pair in BUILD_ASG_NAME:IB_ASG_NAME BUILD_SECURITY_GROUP_ID:IB_SECURITY_GROUP_ID \
+            BUILD_INSTANCE_PROFILE:IB_INSTANCE_PROFILE BUILD_EXECUTION_ROLE:IB_EXECUTION_ROLE \
+            BUILD_SUBNET_ID:BUILD_SUBNET_ID NODE_ARCH:NODE_ARCH; do
+  v=${pair%%:*}; k=${pair#*:}; r=$(rec "$k")
+  if [ -n "$r" ] && [ -n "${!v:-}" ] && [ "${!v}" != "$r" ]; then
+    die "$v is '${!v}' but run $RUN_ID's prerequisites recorded '$r'; unset it, or use the run it belongs to"
+  fi
+  [ -n "${!v:-}" ] || printf -v "$v" '%s' "$r"
+done
 : "${BUILD_S3_BUCKET:=}"            # optional: also write the build logs to this bucket
 : "${POD_ISOLATION_FIRECRACKER_VERSION:=latest}"
 : "${BUILD_WAIT_MINUTES:=120}"
@@ -67,13 +74,14 @@ info=$(aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$
 read -r lt ltver <<<"$info"
 [ -n "${lt:-}" ] && [ "$lt" != None ] || die "Auto Scaling group $BUILD_ASG_NAME has no launch template"
 [[ "${ltver:-}" =~ ^[0-9]+$ ]] || die "Auto Scaling group $BUILD_ASG_NAME launches from template version '${ltver:-}'; pin it to a version number, because \$Latest and \$Default can change"
-vers=$(aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$BUILD_ASG_NAME" \
-  --query "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].LaunchTemplate.Version" --output text) \
+insts=$(aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$BUILD_ASG_NAME" \
+  --query "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].[LaunchTemplate.LaunchTemplateName,LaunchTemplate.Version]" --output text) \
   || die "could not read the instances of Auto Scaling group $BUILD_ASG_NAME"
-[ -n "$vers" ] || die "Auto Scaling group $BUILD_ASG_NAME has no InService instance for Image Builder to take"
-for v in $vers; do
-  [ "$v" = "$ltver" ] || die "an InService instance of $BUILD_ASG_NAME was launched from template version '$v', not the pinned $ltver; wait for the group to replace it"
-done
+[ -n "$insts" ] || die "Auto Scaling group $BUILD_ASG_NAME has no InService instance for Image Builder to take"
+while read -r iname iver; do
+  [ "$iname" = "$lt" ] && [ "$iver" = "$ltver" ] \
+    || die "an InService instance of $BUILD_ASG_NAME was launched from template '$iname' version '$iver', not $lt version $ltver; wait for the group to replace it"
+done <<<"$insts"
 info=$(aw ec2 describe-launch-template-versions --launch-template-name "$lt" --versions "$ltver" \
   --query 'LaunchTemplateVersions[0].LaunchTemplateData.[InstanceType,EnclaveOptions.Enabled]' --output text) \
   || die "could not read launch template $lt version $ltver"

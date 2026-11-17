@@ -27,7 +27,8 @@ IDENTITY_MAY_BE_NEW="RESOURCE_PREFIX CLUSTER_NAME NAMESPACE" require_identity AW
 : "${BUILD_SUBNET_ID:?set BUILD_SUBNET_ID to a subnet in an AZ with enclave-capable capacity}"
 case "$NODE_ARCH" in amd64) : "${BUILD_INSTANCE_TYPE:=m8i.4xlarge}" ;; arm64) : "${BUILD_INSTANCE_TYPE:=m8g.4xlarge}" ;; esac
 arch_matches_type "$BUILD_INSTANCE_TYPE" || die "BUILD_INSTANCE_TYPE '$BUILD_INSTANCE_TYPE' is not a $NODE_ARCH instance type; the AMI's architecture follows the builder"
-: "${BUILD_IAM_INSTANCE_PROFILE:?set BUILD_IAM_INSTANCE_PROFILE to an instance profile the builder can assume (SSM plus the build S3 reads)}"
+# Optional: the upstream build reads the public bundle unsigned when the builder has no profile.
+: "${BUILD_IAM_INSTANCE_PROFILE:=}"
 : "${POD_ISOLATION_FIRECRACKER_VERSION:=latest}"
 
 mkdir -p "$EVIDENCE_DIR"
@@ -59,7 +60,7 @@ log "running packer build (log: $build_log); this takes ~20-30 min"
 set +e
 ( cd "$checkout" && make k8s="$KUBERNETES_VERSION" os_distro=al2023 enable_pod_isolation=true \
     aws_region="$AWS_REGION" instance_type="$BUILD_INSTANCE_TYPE" \
-    subnet_id="$BUILD_SUBNET_ID" iam_instance_profile="$BUILD_IAM_INSTANCE_PROFILE" \
+    subnet_id="$BUILD_SUBNET_ID" ${BUILD_IAM_INSTANCE_PROFILE:+iam_instance_profile="$BUILD_IAM_INSTANCE_PROFILE"} \
     pod_isolation_firecracker_version="$POD_ISOLATION_FIRECRACKER_VERSION" \
 ) > "$build_log" 2>&1
 rc=$?

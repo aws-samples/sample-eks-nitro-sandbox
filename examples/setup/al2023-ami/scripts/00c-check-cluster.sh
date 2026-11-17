@@ -19,6 +19,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/common.sh"
 require_run_id
+require_identity RESOURCE_PREFIX CLUSTER_NAME AWS_REGION NAMESPACE
 require_kube_context
 : "${VPC_CNI_ADDON_VERSION:=<VPC_CNI_ADDON_VERSION>}"
 evidence() { [ -n "${EVIDENCE_DIR:-}" ] && { mkdir -p "$EVIDENCE_DIR"; printf '%s=%q\n' "$1" "$2" >> "$EVIDENCE_DIR/run-evidence.env"; } || true; }

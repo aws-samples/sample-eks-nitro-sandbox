@@ -29,7 +29,8 @@ require_kube_context
 DRY=0; [ "${1:-}" = --dry-run ] && DRY=1
 incomplete=0
 REMAINING="$RUN_STATE_DIR/teardown-remaining.sh"
-: > "$REMAINING" 2>/dev/null || { warn "cannot write $REMAINING"; incomplete=1; }
+# A dry run only prints: it leaves the previous hand-off list and the run state as they are.
+[ "$DRY" = 1 ] || : > "$REMAINING" 2>/dev/null || { warn "cannot write $REMAINING"; incomplete=1; }
 
 act() { # act <description> <command...>; in dry-run only print
   if [ "$DRY" = 1 ]; then printf '  would: %s\n' "$2 ${*:3}"; return 0; fi
@@ -39,6 +40,7 @@ act() { # act <description> <command...>; in dry-run only print
 note_blocked() { # note_blocked <command...>: an ec2 delete the host may block, for the ordered
   # hand-off script. Each argument is shell-quoted, so no value can add a command to it.
   local line; line=$(printf '%q ' "$@"); line=${line% }
+  if [ "$DRY" = 1 ]; then printf '  would hand off: %s\n' "$line"; return 0; fi
   printf '%s\n' "$line" >> "$REMAINING"
   incomplete=1
   warn "not deleted here; recorded in $REMAINING: $line"

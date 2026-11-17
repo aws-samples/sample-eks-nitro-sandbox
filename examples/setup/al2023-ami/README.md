@@ -47,7 +47,8 @@ git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/setup/al2023-ami
 cp config.env.example config.env
 # Set CLUSTER_NAME, AWS_REGION, KUBE_CONTEXT, KUBERNETES_VERSION, EKS_AMI_REF,
-# BUILD_SUBNET_ID / NODE_SUBNET_IDS (PRIVATE subnets), and JOIN_MODE.
+# BUILD_SUBNET_ID / NODE_SUBNET_IDS (PRIVATE subnets), JOIN_MODE, and the node IAM role:
+# NODE_ROLE_ARN for the managed node group, NODE_ROLE (its name) for Karpenter.
 $EDITOR config.env
 ```
 
