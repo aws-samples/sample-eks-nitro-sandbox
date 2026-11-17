@@ -30,7 +30,7 @@ spec:
     - Egress
   egress:
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }   # the cluster DNS address
+        - ipBlock: { cidr: <COREDNS_IP>/32 }   # .10 of the service CIDR (README step 5)
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }

@@ -143,7 +143,7 @@ spec:
     - Egress
   egress:
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }   # the cluster DNS address
+        - ipBlock: { cidr: <COREDNS_IP>/32 }   # .10 of the service CIDR (README step 5)
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -175,6 +175,12 @@ Policies with EKS Auto Mode*
 `kube-dns` Service to look up, but the node answers that address. Allowing port 53 to
 any address instead would let the agent query any DNS server on the internet, which is
 enough to send data out through DNS or to reach a VPN that listens on port 53.
+
+The guide's section [Determining the CoreDNS IP address](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html#_determining_the_coredns_ip_address)
+gives the rule. The address comes from the service CIDR and stays the same for the life of
+the cluster. For IPv4, take the `.10` address, so `10.100.0.0/16` gives `10.100.0.10/32`. For
+IPv6, append `a` to the network address, so `fd12:3456:789a::/108` gives `fd12:3456:789a::a/128`.
+Read the CIDR with `aws eks describe-cluster --name <cluster> --query 'cluster.kubernetesNetworkConfig.serviceIpv4Cidr' --output text`.
 
 The command below reads the service CIDR from the EKS API and takes its `.10` address,
 the method the guide gives. It applies the policy only if the CIDR is an IPv4 network
