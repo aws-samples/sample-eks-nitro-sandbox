@@ -1597,6 +1597,63 @@ global_settings:
       line_end: 115
       reason: 'False positive: GitLab reads the initial root password from a Kubernetes Secret-mounted file; the quoted string is the mounted file path, not a credential value.'
       expiration: '2027-12-31'
+    # ---- integrations/istio: pods are plain on purpose ----
+    # workloads.yaml holds four pods: echo, client-a and client-b in Nitro sandboxes (runtimeClassName
+    # isolated-sandbox), and client-plain, an ordinary pod with no sandbox and no sidecar, the plaintext
+    # contrast. The lesson is Istio sidecar injection, so none of them carries hardening the page would
+    # have to explain. Istio adds istio-init and istio-proxy at admission; they are not in this file.
+    - rule_id: CKV_K8S_8
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Liveness: client-a, client-b and client-plain run sleep infinity and are driven by kubectl exec, and echo is a demo HTTP server; restarting one on a hang adds nothing the page shows (workloads.yaml:28-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Readiness: setup.sh waits for each rollout and for client-plain Ready (setup.sh step 3), which without a probe means the containers started; the page checks traffic itself rather than readiness (README.md, Good to know: Check traffic, not readiness)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_38
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'A sample ships no network policy (AGENTS.md, Security rules); the page says nothing restricts pod connectivity and links the network policy blueprint (README.md, Good to know)'
+      expiration: '2027-12-31'
     # ---- Baseline: hardening not done yet. Each expires 2027-01-31, so CI fails again ----
     # ---- unless the sample follow-up PR fixes the finding and deletes its entry. ----
     # Baseline: ai-agents/coding-agents-for-developers
