@@ -381,14 +381,30 @@ def test_main_binds_nothing_when_the_dispatcher_cannot_be_built(launcher_pod, mo
 FILE_MARKER = "synthetic-file-text-must-not-appear"
 
 
+def _fail_open(monkeypatch, path, error):
+    """Make config's open() of ``path``, and only of ``path``, raise ``error``."""
+    real_open = open
+
+    def failing_open(file, *args, **kwargs):
+        if os.fspath(file) == str(path):
+            raise error
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(config, "open", failing_open, raising=False)
+
+
 def _make_credential(state, credentials, name, monkeypatch):
     """Put the credential file ``name`` in ``state``; return the path read and the expected error."""
     path = credentials / name
     if state == "parent-not-directory":
-        # The first read, the environment key's, is the one that fails.
-        shutil.rmtree(credentials)
-        credentials.write_text(FILE_MARKER)
-        path = credentials / config.ENV_EXECUTOR_API_KEY
+        if name == config.ENV_EXECUTOR_API_KEY:
+            # The credentials directory is a file, so the first read fails.
+            shutil.rmtree(credentials)
+            credentials.write_text(FILE_MARKER)
+        else:
+            # The environment key's read succeeds; only the intake token's open
+            # finds a parent that is not a directory.
+            _fail_open(monkeypatch, path, NotADirectoryError(errno.ENOTDIR, FILE_MARKER, str(path)))
         return path, f"could not read {path} (NotADirectoryError)"
     path.unlink()
     if state == "missing":
@@ -414,14 +430,7 @@ def _make_credential(state, credentials, name, monkeypatch):
         return path, f"{path} is not UTF-8 text"
     assert state == "other-error"
     path.write_text(FILE_MARKER)
-    real_open = open
-
-    def failing_open(file, *args, **kwargs):
-        if os.fspath(file) == str(path):
-            raise OSError(errno.EIO, FILE_MARKER, str(path))
-        return real_open(file, *args, **kwargs)
-
-    monkeypatch.setattr(config, "open", failing_open, raising=False)
+    _fail_open(monkeypatch, path, OSError(errno.EIO, FILE_MARKER, str(path)))
     return path, f"could not read {path} (OSError)"
 
 
@@ -431,7 +440,7 @@ _FILE_STATES = ["missing", "dangling-link", "empty", "whitespace", "directory", 
 
 @pytest.mark.parametrize("state", _FILE_STATES)
 @pytest.mark.parametrize("name", [config.ENV_EXECUTOR_API_KEY, config.ENV_LAUNCHER_AUTH_TOKEN])
-def test_main_refuses_a_credential_file_it_cannot_use(launcher_pod, monkeypatch, caplog, capsys,
+def test_main_refuses_a_credential_file_it_cannot_use(launcher_pod, reads, monkeypatch, caplog, capsys,
                                                      name, state):
     if state == "unreadable" and os.geteuid() == 0:
         pytest.skip("root reads a mode-000 file")
@@ -444,6 +453,9 @@ def test_main_refuses_a_credential_file_it_cannot_use(launcher_pod, monkeypatch,
     assert str(exc.value) == expected
     assert exc.value.__cause__ is None
     assert exc.value.__context__ is None or exc.value.__suppress_context__
+    # It is the named file's read that refused: the token's case read the
+    # environment key first, and nothing after the refusing read ran.
+    assert reads == [config.ENV_EXECUTOR_API_KEY] + ([name] if name != config.ENV_EXECUTOR_API_KEY else [])
     assert _RecordingDispatcher.built_with == []
     assert _FakeServer.created == []
     printed = capsys.readouterr()

@@ -606,6 +606,43 @@ def test_each_sandbox_mutation_fails_exactly_its_own_predicates(mutation):
     assert _failing(_SANDBOX_PREDICATES, spec) == expected
 
 
+# Every container class a pod spec has, by every relation to the credentials path.
+_RELATIONS = {
+    "equal": CREDENTIALS,
+    "ancestor": "/var/run/secrets",
+    "descendant": f"{CREDENTIALS}/x",
+    "run-alias": "/run/secrets/openai-managed-agents",
+}
+
+
+def _mount_from(pod: dict, where: str, path: str, volume: str) -> None:
+    mount = {"name": volume, "mountPath": path}
+    if where == "primary":
+        pod["containers"][0]["volumeMounts"].append(mount)
+    else:
+        cls = "containers" if where == "sidecar" else where
+        pod.setdefault(cls, []).append({"name": "extra", "image": "x", "volumeMounts": [mount]})
+
+
+@pytest.mark.parametrize("relation", list(_RELATIONS))
+@pytest.mark.parametrize("where", ["primary", "sidecar", "initContainers", "ephemeralContainers"])
+@pytest.mark.parametrize("role", ["launcher", "sandbox"])
+def test_a_mount_on_the_credentials_path_fails_from_every_container_class(role, where, relation):
+    if role == "launcher":
+        pod = copy.deepcopy(_launcher_pod())
+        pod["volumes"].append({"name": "scratch", "emptyDir": {}})
+        _mount_from(pod, where, _RELATIONS[relation], "scratch")
+        failing = _failing(_LAUNCHER_PREDICATES, pod)
+        # A second mount at the exact path in the launcher container also breaks its one credential mount.
+        primary = {"overlap", "credential-mount"} if relation == "equal" else {"overlap"}
+    else:
+        spec = copy.deepcopy(_sandbox_spec())
+        _mount_from(spec["podTemplate"]["spec"], where, _RELATIONS[relation], "tmp")
+        failing = _failing(_SANDBOX_PREDICATES, spec)
+        primary = {"overlap", "mounts"}
+    assert failing == (primary if where == "primary" else {"overlap", "one-container"})
+
+
 # --- the image sets no credential or claim name and creates no credentials path
 _IMAGE_REFUSED_NAMES = {
     "OPENAI_API_KEY", "OPENAI_EXECUTOR_API_KEY", "LAUNCHER_AUTH_TOKEN",

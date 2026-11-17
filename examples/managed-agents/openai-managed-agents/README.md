@@ -48,8 +48,8 @@ Nitro sandbox:
   the key (and the session) into the `SandboxClaim`'s env, and the controller injects them
   into the pod it starts for that claim, so the key reaches the sandbox over the launcher's
   authenticated Kubernetes API connection, never over an in-cluster HTTP request, and never
-  onto a warm pod. The sandbox refuses to start if it finds the application key. All of this
-  is checked by variable name, without printing values.
+  onto a warm pod. The sandbox refuses to start if it finds the application key. The
+  environment checks compare variable names, without printing values.
 - **The operator's intake is reachability-gated and authenticated.** The launcher's intake
   Service is `ClusterIP`, a deny-by-default ingress `ApplicationNetworkPolicy` admits no
   in-cluster pod, and every request that claims or releases a sandbox (a `POST`) must carry a

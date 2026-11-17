@@ -1162,7 +1162,15 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: B108
       path: 'examples/managed-agents/openai-managed-agents/tests/test_manifests.py'
-      reason: 'The /tmp strings are mountPath values compared against the sandbox template (an emptyDir mounted at /tmp); the test creates no file there'
+      line_start: 413
+      line_end: 413
+      reason: 'The /tmp string is the mountPath the sandbox predicate expects for its tmp emptyDir (sandbox-template.yaml); the test creates no file there'
+      expiration: '2027-12-31'
+    - rule_id: B108
+      path: 'examples/managed-agents/openai-managed-agents/tests/test_manifests.py'
+      line_start: 438
+      line_end: 438
+      reason: 'The /tmp string is a mountPath the overlap check must find clear of the credentials path; the test creates no file there'
       expiration: '2027-12-31'
     - rule_id: B404
       path: 'examples/managed-agents/openai-managed-agents/src/launcher/serve.py'
