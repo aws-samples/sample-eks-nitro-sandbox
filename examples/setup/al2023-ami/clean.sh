@@ -98,7 +98,9 @@ delete_if_owned() { # delete_if_owned <kind> <name> [extra delete args]; 0 = gon
   esac
   return 0
 }
-delete_if_owned namespace "$NAMESPACE" --wait=false
+# Wait for the namespace to go: a finalizer can hold it, and a clean up that returned at once
+# would report "complete" while it is still there.
+delete_if_owned namespace "$NAMESPACE" --wait=true --timeout=5m
 probe 'Error from server \(NotFound\)' kc get crd ec2nodeclasses.karpenter.k8s.aws; rc=$?
 case $rc in
   0) delete_if_owned nodepool al2023-nitro-sandbox || consumers_ok=0

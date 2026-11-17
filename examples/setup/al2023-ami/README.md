@@ -287,9 +287,13 @@ node to run on).
 > ([`deploy/karpenter-nodeoverlay.yaml`](deploy/karpenter-nodeoverlay.yaml), behind the
 > `nodeOverlay` feature gate), which advertises the slot capacity to the scheduler. On the
 > versions available while this blueprint was written, applying it (Ready and validated) did not
-> yet make a sandbox pod schedulable, so **run sandbox pods via the managed node group**, or on
-> EKS Auto Mode, which models this natively. Use Karpenter here to provision the enclave-capable
-> nodes; schedule the sandbox pods through the node group until #9904 ships.
+> yet make a sandbox pod schedulable, so **do not rely on a sandbox pod alone to make Karpenter
+> provision a node**: it never does. A pod without the RuntimeClass has no such overhead, so it
+> can trigger the scale-from-zero. With `JOIN_MODE=karpenter` or `both`, `setup.sh` therefore
+> applies the ordinary contrast pod to the NodePool as well, and the isolated pod schedules once
+> the new node reports its sandbox capacity. That sequence has only been exercised against stubs
+> since it was added; the node-group path is the one proved live. For a sandbox-only workload,
+> use the managed node group, or EKS Auto Mode, which models this natively.
 
 ## Optional: build with EC2 Image Builder
 

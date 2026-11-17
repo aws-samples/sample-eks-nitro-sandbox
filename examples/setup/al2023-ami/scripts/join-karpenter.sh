@@ -57,9 +57,9 @@ log "applying Karpenter EC2NodeClass and NodePool (AMI $AMI_ID)"
 kc apply -f "$out/ec2nodeclass.yaml"
 kc apply -f "$out/nodepool.yaml"
 
-log "waiting for a Karpenter node with label $NODE_LABEL (provisioned on first sandbox pod demand)"
+log "waiting for a Karpenter node with label $NODE_LABEL (provisioned when a pod that selects the NodePool is pending)"
 {
   printf 'KARPENTER_EC2NODECLASS=%s\n' "al2023-nitro-sandbox"
   printf 'KARPENTER_NODEPOOL=%s\n'     "al2023-nitro-sandbox"
 } >> "$EVIDENCE_DIR/run-evidence.env"
-echo "Karpenter EC2NodeClass + NodePool applied. A node is provisioned when a sandbox pod that tolerates the NodePool taint is scheduled (setup.sh applies the pods next)."
+echo "Karpenter EC2NodeClass + NodePool applied. A node is provisioned when a pod that selects the NodePool and tolerates its taint is pending (setup.sh applies the proof pods next; the ordinary pod is what triggers it, because a sandbox pod alone does not)."
