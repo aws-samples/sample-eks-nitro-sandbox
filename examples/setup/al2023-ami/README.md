@@ -233,6 +233,7 @@ pod.
 
 ```text
 $ ./test.sh
+[2026-11-17T03:01:50Z] kube context <KUBE_CONTEXT> is cluster <CLUSTER_NAME> (<API_ENDPOINT>)
 == 1/5 the sandbox node is Ready and carries eks.amazonaws.com/nitro-sandbox=true ==
   node: ip-10-0-0-1.ec2.internal  Ready: True
   PASS  the sandbox node is Ready
@@ -245,16 +246,19 @@ $ ./test.sh
   ordinary pod kernel: 6.18.62-127.179.amzn2023.x86_64
   PASS  the isolated pod's kernel differs from the ordinary pod's (its own guest kernel)
   isolated pod /sys/block: dm-0 vda vdb vdc
-  PASS  the isolated pod has virtio disks (vd*), not the host's nvme
-== 4/5 the isolated pod boots fresh (low uptime) ==
-  isolated pod boot uptime (s): 32.61
-  PASS  the isolated pod reports a boot uptime (fresh guest boot)
+  PASS  the isolated pod has virtio disks (vda, vdb, ...), not the host's nvme
+== 4/5 the isolated pod has its own boot clock: a younger uptime than the ordinary pod's node ==
+  isolated pod boot uptime (s): 12.67   ordinary pod (its node's) uptime (s): 109.46
+  PASS  the isolated pod's uptime is shorter than the ordinary pod's (its own boot, after the node's)
 == 5/5 the network-isolated pod has only loopback ==
   interfaces with an address: <none>  routes: <none>
   PASS  the network-isolated pod has no default route
 
 == summary: 7 passed, 0 failed ==
 ```
+
+This run used the x86_64 AMI from the Image Builder section below, joined with `./setup.sh --join`
+on a new standard EKS 1.37 cluster; the node name, kube context and API endpoint are replaced.
 
 ## Karpenter: the enclave node and the #9904 limit
 

@@ -101,7 +101,8 @@ require_run_id() {
 require_identity() {
   local k have want
   for k in "$@"; do
-    have=$(sed -n "s/^$k=//p" "$RUN_STATE_DIR/run-state.env" 2>/dev/null | head -n 1)
+    have=""
+    [ -f "$RUN_STATE_DIR/run-state.env" ] && have=$(sed -n "s/^$k=//p" "$RUN_STATE_DIR/run-state.env" | head -n 1)
     want=${!k:-}
     if [ -z "$have" ]; then
       case " ${IDENTITY_MAY_BE_NEW:-} " in *" $k "*) continue ;; esac

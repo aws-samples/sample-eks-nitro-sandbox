@@ -36,7 +36,8 @@ account=$(aws sts get-caller-identity --query Account --output text) \
   || die "could not read the current AWS account (sts get-caller-identity failed); nothing was changed"
 [[ "$account" =~ ^[0-9]{12}$ ]] || die "sts get-caller-identity returned '$account', not an account id; nothing was changed"
 identity() { # identity <KEY> <VALUE>: record it if the run has none, otherwise it must match
-  local have; have=$(sed -n "s/^$1=//p" "$STATE_FILE" 2>/dev/null | head -n 1)
+  local have=""
+  [ -f "$STATE_FILE" ] && have=$(sed -n "s/^$1=//p" "$STATE_FILE" | head -n 1)
   if [ -z "$have" ]; then printf '%s=%s\n' "$1" "$2" >> "$STATE_FILE"
   elif [ "$have" != "$2" ]; then die "$1 is '$2' but run $RUN_ID recorded '$have'; refusing to continue. Use the recorded value, or start a new run."; fi
 }
@@ -44,7 +45,7 @@ for kv in "ACCOUNT_ID=$account" "RUN_ID=$RUN_ID" "RESOURCE_PREFIX=$RESOURCE_PREF
           "AWS_REGION=$AWS_REGION" "NAMESPACE=$NAMESPACE"; do
   identity "${kv%%=*}" "${kv#*=}"
 done
-grep -q '^JOIN_MODE=' "$STATE_FILE" || printf 'JOIN_MODE=%s\n' "$JOIN_MODE" >> "$STATE_FILE"
+grep -qs '^JOIN_MODE=' "$STATE_FILE" || printf 'JOIN_MODE=%s\n' "$JOIN_MODE" >> "$STATE_FILE"
 printf 'RUN_ID=%s\n' "$RUN_ID" > "$RUN_STATE_FILE"
 log "run id: $RUN_ID (mode: $mode, JOIN_MODE: $JOIN_MODE)"
 
