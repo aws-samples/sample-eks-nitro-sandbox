@@ -37,9 +37,10 @@ Amazon ECR. A run costs one Bedrock turn, a few small Amazon S3 objects, and one
 pod plus one small ordinary pod kept running until you clean up.
 
 Every output block on this page is from one real run of this blueprint, run id
-`13cc944b3984459e865976b73d319659`. Values from the account and cluster it ran on are
+`eaad8911ad9e47b28307bfb607ff3d17`. Values from the account and cluster it ran on are
 replaced by the same placeholders the commands use, because this repository is public:
-`<ACCOUNT_ID>`, `<CLUSTER_NAME>` and `<NODE_NAME>`. The Region is left as
+`<ACCOUNT_ID>`, `<CLUSTER_NAME>` and the Pod Identity association's id, `<ASSOCIATION_ID>`,
+and the path to the clone is shown as `/path/to/sample-eks-nitro-sandbox`. The Region is left as
 `us-west-2`, the default this repository's blueprints share. Run ids, pod names, kernel
 builds, uptimes, device lists, token counts and the model's own prose are exactly as the
 run printed them. Where a block shows a file from this folder rather than a run's output,
@@ -191,7 +192,8 @@ outside this blueprint's own namespace and changes no cluster-wide setting.
 ./scripts/setup.sh
 ```
 
-Abridged: the two image builds' own output is cut, and your names will differ.
+Abridged: the two image builds' own output, and Docker's warning about where it stores the
+registry login, are cut, and your names will differ.
 
 ```text
 ==> 1/7 tools, cluster and cluster-wide settings
@@ -226,12 +228,12 @@ deployment "supplier-api" successfully rolled out
 
 ==> 6/7 the IAM role and its EKS Pod Identity association
   created the IAM role subagent-analyst-nono
-  created the Pod Identity association a-8tfukbezevcahflrb
+  created the Pod Identity association <ASSOCIATION_ID>
 
 ==> 7/7 the nono analyst image and its sandboxed pod
 the committed profiles match the generator for: reader, evaluator, writer
   created the ECR repository pod-isolation/subagent-analyst-nono
-  built and pushed pod-isolation/subagent-analyst-nono:a1c6658d01e83a67a6cb
+  built and pushed pod-isolation/subagent-analyst-nono:ea1eaeb3ba2256482008
 pod/analyst created
 pod/analyst condition met
 
@@ -330,17 +332,17 @@ PASS the report object round-trips through S3: recommendation.md
 PASS the report object round-trips through S3: comparison.json
 PASS the evidence and the report were scanned for the supplier key before being written, and the run was stopped if it appeared
 
-ANALYST_COMPLETE=13cc944b3984459e865976b73d319659
+ANALYST_COMPLETE=eaad8911ad9e47b28307bfb607ff3d17
 67 checks passed
   66 checks passed in the sandbox
   12 requests correlated with the supplier API's own log (6 allowed arrived once each, 5 refused never arrived)
-  model usage: 2563 tokens on global.anthropic.claude-sonnet-4-5-20250929-v1:0
+  model usage: 2589 tokens on global.anthropic.claude-sonnet-4-5-20250929-v1:0
 
 ==> done
-  run id:         13cc944b3984459e865976b73d319659
-  recommendation: /path/to/sample-eks-nitro-sandbox/tmp/nono/runs/13cc944b3984459e865976b73d319659/recommendation.md
-  evidence:       /path/to/sample-eks-nitro-sandbox/tmp/nono/runs/13cc944b3984459e865976b73d319659/evidence.json
-  S3 report:      s3://subagent-analyst-nono-<ACCOUNT_ID>/reports/rfp-001/13cc944b3984459e865976b73d319659/
+  run id:         eaad8911ad9e47b28307bfb607ff3d17
+  recommendation: /path/to/sample-eks-nitro-sandbox/tmp/nono/runs/eaad8911ad9e47b28307bfb607ff3d17/recommendation.md
+  evidence:       /path/to/sample-eks-nitro-sandbox/tmp/nono/runs/eaad8911ad9e47b28307bfb607ff3d17/evidence.json
+  S3 report:      s3://subagent-analyst-nono-<ACCOUNT_ID>/reports/rfp-001/eaad8911ad9e47b28307bfb607ff3d17/
 ```
 
 The last three lines are the cross-check in [`scripts/correlate.py`](scripts/correlate.py),
@@ -365,34 +367,36 @@ cat ../../../tmp/nono/runs/<RUN_ID>/recommendation.md
 
 **Recommended supplier:** Northstar Office Systems (`northstar`)
 
-## Procurement Analysis: 100 Workstation Office Equipment
+## Procurement Analysis: 100 Workstations for Customer Service Office
 
 **Requirements:**
-- Budget: $125,000 maximum
-- Delivery: 30 days maximum
-- Warranty: 24 months minimum
+- Budget: $125,000
+- Delivery: ≤30 days
+- Warranty: ≥24 months
 
-**Supplier Comparison:**
+### Supplier Comparison
 
-### ✅ Northstar Office Systems (*proposals/rfp-001/northstar.json*)
-- **Price:** $120,000 (within budget)
-- **Delivery:** 28 days (meets requirement)
-- **Warranty:** 36 months (exceeds requirement)
-- **Status:** ELIGIBLE
+**Northstar Office Systems** (`proposals/rfp-001/northstar.json`)
+- Price: $120,000 ✓
+- Delivery: 28 days ✓
+- Warranty: 36 months ✓
+- **Status: ELIGIBLE** - Meets all requirements with $5,000 under budget and enhanced 36-month warranty
 
-### ❌ Harbor Supply Partners (*proposals/rfp-001/harbor.json*)
-- **Price:** $105,000 (within budget)
-- **Delivery:** 45 days (exceeds 30-day limit)
-- **Warranty:** 24 months (meets requirement)
-- **Status:** INELIGIBLE - Late delivery
+**Harbor Supply Partners** (`proposals/rfp-001/harbor.json`)
+- Price: $105,000 ✓
+- Delivery: 45 days ✗
+- Warranty: 24 months ✓
+- **Status: INELIGIBLE** - Delivery exceeds 30-day requirement by 15 days
 
-### ❌ Cedar Workplace Group (*proposals/rfp-001/cedar.json*)
-- **Price:** $130,000 (exceeds budget by $5,000)
-- **Delivery:** 21 days (meets requirement)
-- **Warranty:** 36 months (exceeds requirement)
-- **Status:** INELIGIBLE - Over budget
+**Cedar Workplace Group** (`proposals/rfp-001/cedar.json`)
+- Price: $130,000 ✗
+- Delivery: 21 days ✓
+- Warranty: 36 months ✓
+- **Status: INELIGIBLE** - Exceeds budget by $5,000
 
-**Recommendation:** Northstar Office Systems is the only eligible supplier, meeting all requirements with competitive pricing at $120,000, timely 28-day delivery, and superior 36-month warranty coverage.
+### Recommendation
+
+**Northstar Office Systems** is the only eligible supplier, offering excellent value at $120,000 (4% under budget) with timely 28-day delivery and superior 36-month warranty protection—50% longer than the minimum requirement.
 ```
 
 
@@ -445,8 +449,8 @@ The first and last lines are the accept cases: without them a profile that denie
 everything would read the same as one that confines correctly.
 
 Two things make the refusals attributable rather than incidental. The supplier key file is
-mode 0440 and group-owned by the group the pod runs as, so the controller — running as
-that same uid 1000 — reads it in this very run, which is how the run compares the role's
+mode 0440 and owned by group 10001, the pod's `fsGroup`, so the controller, which runs with
+gid 10001, reads it in this very run, which is how the run compares the role's
 placeholder against the real key. And the worker reports only `EACCES` or `EPERM` as a
 refusal; any other failure leaves no result line and fails the run.
 
@@ -620,7 +624,7 @@ headers = {"X-Api-Key": os.environ.get("SUPPLIER_API_KEY", ""),
 ```
 
 The run shows the role holds a credential, that it is not the real one, and that it cannot
-open the key file. Nothing prints a value: the comparison is by length and by digest.
+open the key file. Nothing prints a value: the comparison is by digest.
 
 ```text
 PASS the reader holds a supplier credential
@@ -697,11 +701,11 @@ kubectl exec analyst -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f1 /proc/upti
 
 ```text
 isolated-sandbox
-pod age: 41s
-6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-40.08
+pod age: 2m50s
+6.18.62 #1 SMP PREEMPT_DYNAMIC Thu Nov 12 22:44:15 UTC 2026
+89.65
 dm-0 vda vdb vdc
-m8i.enclave
+c6i.enclave
 ```
 
 Now the same readings from an ordinary pod on the same node. Pinning the node is the point:
@@ -717,27 +721,31 @@ kubectl exec ordinary-comparison -n $NAMESPACE -- sh -c 'uname -rv; cut -d" " -f
 ```
 
 ```text
-6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
-49659.02
+pod/ordinary-comparison created
+pod/ordinary-comparison condition met
+6.18.62 #2 SMP PREEMPT_DYNAMIC Thu Nov 12 22:49:16 UTC 2026
+138.89
 dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 zram0
-m8i.xlarge
+c6i.xlarge
 ```
 
-Three readings differ, and each says something:
+The readings differ, and each says something:
 
 | Reading | Sandboxed analyst | Ordinary pod on the same node |
 |---|---|---|
-| `uname -rv` | `6.18.54 #1`, built Oct 22 17:38 | `6.18.54 #2`, built Oct 22 00:16 |
-| `/proc/uptime` | `40.08`, against a pod age of 41s | `49659.02`, about 13.8 hours — the node's |
+| `uname -rv` | `6.18.62 #1`, built Nov 12 22:44 | `6.18.62 #2`, built Nov 12 22:49 |
+| `/proc/uptime` | `89.65`, against a pod age of 2m50s | `138.89`, the node's |
 | `/sys/block` | `vda vdb vdc`, virtio | `nvme0n1 nvme1n1`, the instance's own |
-| `product_name` | `m8i.enclave` | `m8i.xlarge` |
+| `product_name` | `c6i.enclave` | `c6i.xlarge` |
 
-The analyst pod runs its **own kernel build**, and the uptime is the giveaway: 40 seconds
-against a pod 41s old, because the sandbox booted when the pod did, while the ordinary pod
-reports the node's thirteen-hour uptime. It sees virtio disks where the ordinary pod sees the
-instance's `nvme` devices, and it names the enclave rather than the instance type.
+The analyst pod runs its **own kernel build**, sees virtio disks where the ordinary pod sees the
+instance's `nvme` devices, and names the enclave rather than the instance type. Its uptime is
+its own boot's, not the node's: the ordinary pod on the same node reports the node's uptime,
+138.89 seconds, against the sandbox's 89.65. A pod's age counts from when the pod was created,
+including any time before it was scheduled and started, so it can be longer than the
+sandbox's uptime, as it is here.
 
-Note that the kernel **version** is the same in both here — `6.18.54`. It is the build
+Note that the kernel **version** is the same in both here, `6.18.62`. It is the build
 number and the boot that differ, so compare `uname -rv` and not `uname -r`. And the runtime
 class on the pod shows what was *asked for*, not what ran, so it supports the claim without
 proving it; the readings inside the guest are what prove it.
@@ -763,7 +771,7 @@ pattern to copy.
   for the online roles, the request goes through nono's proxy, which decides on the host and
   then on the method and path. The run shows a role refused a direct connection to the
   supplier API's own address, so that probe did not get out of the process by dialling the
-  IP. What the run shows is that one refusal, for a role at uid 1000 making an IPv4 TCP
+  IP. What the run shows is that one refusal, for a role at uid 10001 making an IPv4 TCP
   connection to the resolved Service address. It is not a demonstration that the proxy
   cannot be routed around by any process or any other means.
 - **It does not bound the pod.** The analyst pod has no network policy in this blueprint, so the
@@ -795,7 +803,7 @@ pattern to copy.
 - **The negative controls are what make the refusals mean something.** The supplier API
   accepts an authenticated purchase order, and the alias Service reaches the same pod the
   approved one does. Without those, a refusal could be the server's doing or a broken route.
-- **The pod is hardened, and nono still works under it.** The pod runs as uid 1000 with
+- **The pod is hardened, and nono still works under it.** The pod runs as uid 10001 with
   `runAsNonRoot`, `seccompProfile: RuntimeDefault`, every capability dropped,
   `allowPrivilegeEscalation: false`, a read-only root filesystem and
   `automountServiceAccountToken: false`. nono's controls are Landlock and seccomp, which
@@ -830,12 +838,12 @@ cd sample-eks-nitro-sandbox/examples/subagent-security/nono
 
 ```text
 ==> 1/4 the namespace's own objects
-pod "analyst" deleted from subagent-security-nono namespace
-deployment.apps "supplier-api" deleted from subagent-security-nono namespace
+pod "analyst" deleted
+deployment.apps "supplier-api" deleted
 namespace "subagent-security-nono" deleted
 
 ==> 2/4 the EKS Pod Identity association
-  deleted the association a-8tfukbezevcahflrb.
+  deleted the association <ASSOCIATION_ID>.
 
 ==> 3/4 the AWS resources
   deleted the bucket subagent-analyst-nono-<ACCOUNT_ID>.
