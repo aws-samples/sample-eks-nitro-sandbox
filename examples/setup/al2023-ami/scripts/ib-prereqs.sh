@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ib-prereqs.sh: the AWS resources the EC2 Image Builder path needs, for one run and architecture.
 #
-#   RUN_ID=<id> BUILD_SUBNET_ID=<private subnet> scripts/ib-prereqs.sh up
+#   RUN_ID=<id> BUILD_SUBNET_ID="<private subnet> [<private subnet> ...]" scripts/ib-prereqs.sh up
 #   RUN_ID=<id> scripts/ib-prereqs.sh down
 #   RUN_ID=<id> scripts/ib-prereqs.sh reset   # only the Image Builder resources, to build again
 #
@@ -66,15 +66,18 @@ fi
 
 # --------------------------------------------------------------------------------------------
 if [ "$mode" = up ]; then
-  : "${BUILD_SUBNET_ID:?set BUILD_SUBNET_ID to a private subnet with a NAT route, in an AZ with enclave-capable capacity}"
+  : "${BUILD_SUBNET_ID:?set BUILD_SUBNET_ID to one or more private subnets (space separated) with a NAT route, in AZs with enclave-capable capacity}"
   case "$NODE_ARCH" in amd64) ssm_arch=x86_64; : "${BUILD_INSTANCE_TYPE:=m8i.4xlarge}" ;;
                        arm64) ssm_arch=arm64;  : "${BUILD_INSTANCE_TYPE:=m8g.4xlarge}" ;; esac
   arch_matches_type "$BUILD_INSTANCE_TYPE" || die "BUILD_INSTANCE_TYPE '$BUILD_INSTANCE_TYPE' is not a $NODE_ARCH instance type"
 
-  probe 'InvalidSubnetID' aw ec2 describe-subnets --subnet-ids "$BUILD_SUBNET_ID" \
-    --query 'Subnets[0].[VpcId,MapPublicIpOnLaunch]' --output text || die "could not read subnet $BUILD_SUBNET_ID"
-  read -r vpc public <<<"$PROBE_OUT"
-  [ "$public" = False ] || die "subnet $BUILD_SUBNET_ID gives instances a public IP; use a private subnet with a NAT route"
+  # Several subnets let Auto Scaling launch in whichever zone has capacity for the instance type.
+  [[ "$BUILD_SUBNET_ID" =~ ^subnet-[0-9a-f]+( subnet-[0-9a-f]+)*$ ]] || die "BUILD_SUBNET_ID '$BUILD_SUBNET_ID' must be subnet ids separated by spaces"
+  probe 'InvalidSubnetID' aw ec2 describe-subnets --subnet-ids $BUILD_SUBNET_ID \
+    --query 'Subnets[].[VpcId,MapPublicIpOnLaunch]' --output text || die "could not read the subnets $BUILD_SUBNET_ID"
+  [ "$(printf '%s\n' "$PROBE_OUT" | awk '{print $1}' | sort -u | wc -l)" = 1 ] || die "the subnets $BUILD_SUBNET_ID are not all in one VPC"
+  [ "$(printf '%s\n' "$PROBE_OUT" | awk '{print $2}' | sort -u)" = False ] || die "a subnet in $BUILD_SUBNET_ID gives instances a public IP; use private subnets with a NAT route"
+  vpc=$(printf '%s\n' "$PROBE_OUT" | awk 'NR==1{print $1}')
 
   # An existing resource of the same name is reused only if it carries this run's tags.
   # Security group: outbound only (no inbound rule).
@@ -177,7 +180,7 @@ EOF
     0) printf '%s' "$PROBE_OUT" | tags_match || die "Auto Scaling group $NAME exists and is not run $RUN_ID's" ;;
     1) aw autoscaling create-auto-scaling-group --auto-scaling-group-name "$NAME" \
          --launch-template "LaunchTemplateName=$NAME,Version=$ltver" --min-size 1 --max-size 1 --desired-capacity 1 \
-         --vpc-zone-identifier "$BUILD_SUBNET_ID" \
+         --vpc-zone-identifier "${BUILD_SUBNET_ID// /,}" \
          --tags "ResourceId=$NAME,ResourceType=auto-scaling-group,Key=$TAGS_OWNER_KEY,Value=$TAGS_OWNER_VALUE,PropagateAtLaunch=false" \
                 "ResourceId=$NAME,ResourceType=auto-scaling-group,Key=$TAGS_RUN_KEY,Value=$RUN_ID,PropagateAtLaunch=false" \
                 "ResourceId=$NAME,ResourceType=auto-scaling-group,Key=auto-delete,Value=no,PropagateAtLaunch=false" \
@@ -197,7 +200,11 @@ EOF
     fi
     sleep 10
   done
-  [ "${ping:-}" = Online ] || die "no instance of $NAME came online in Systems Manager; check the subnet's NAT route"
+  if [ "${ping:-}" != Online ]; then
+    why=$(aw autoscaling describe-scaling-activities --auto-scaling-group-name "$NAME" --max-items 1 \
+      --query 'Activities[0].[StatusCode,StatusMessage]' --output text 2>/dev/null | cut -c1-400)
+    die "no instance of $NAME came online in Systems Manager. The group's latest activity: ${why:-unknown}. If it launched, check the subnet's NAT route; if it could not launch, use a subnet in another Availability Zone."
+  fi
   log "prerequisites ready for run $RUN_ID; run scripts/10-build-ami-imagebuilder.sh next"
   exit 0
 fi

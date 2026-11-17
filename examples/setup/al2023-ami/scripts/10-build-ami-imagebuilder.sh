@@ -6,7 +6,7 @@
 # deploy/imagebuilder/component.yaml, which mirrors the upstream amazon-eks-ami
 # install-pod-isolation.sh provisioner.
 #
-#   RUN_ID=<id> BUILD_SUBNET_ID=<private subnet> scripts/ib-prereqs.sh up
+#   RUN_ID=<id> BUILD_SUBNET_ID="<private subnet> [<private subnet> ...]" scripts/ib-prereqs.sh up
 #   RUN_ID=<id> KUBERNETES_BUNDLE_VERSION=1.37.1 KUBERNETES_BUILD_DATE=<date> scripts/10-build-ami-imagebuilder.sh
 #
 # The build instance must have Nitro Enclaves enabled, and an infrastructure configuration has no
@@ -119,7 +119,7 @@ arn=$(aw imagebuilder create-image-recipe --cli-input-json "file://$tmpd/recipe.
 record IB_RECIPE_ARN "$arn"; recipe=$arn; log "recipe $arn"
 
 jq --arg name "$name" --arg profile "$BUILD_INSTANCE_PROFILE" --arg sg "$BUILD_SECURITY_GROUP_ID" \
-   --arg subnet "$BUILD_SUBNET_ID" --arg asg "$BUILD_ASG_NAME" --arg itype "$itype" --arg bucket "$BUILD_S3_BUCKET" \
+   --arg subnet "${BUILD_SUBNET_ID%% *}" --arg asg "$BUILD_ASG_NAME" --arg itype "$itype" --arg bucket "$BUILD_S3_BUCKET" \
    --arg owner "$TAGS_OWNER_VALUE" --arg run "$RUN_ID" \
    '.name = $name | .instanceTypes = [$itype] | .instanceProfileName = $profile | .securityGroupIds = [$sg]
     | .subnetId = $subnet | .parentInstance.autoScalingGroup.name = $asg
