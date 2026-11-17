@@ -8,7 +8,7 @@
 # The Role is namespaced, not cluster-wide: the manager creates job pods only in this
 # sample's own namespace, which is what `namespace` in config.toml names.
 #
-# scripts/register-runner.sh renders <NAMESPACE> and <RUNNER_SECRET> before applying.
+# scripts/bootstrap-runner.sh renders <NAMESPACE> and <RUNNER_SECRET> before applying.
 ---
 apiVersion: v1
 kind: ServiceAccount
