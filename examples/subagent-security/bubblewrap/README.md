@@ -41,15 +41,23 @@ objects, and one sandboxed pod plus one small ordinary pod kept running until yo
 The cluster must use EKS Auto Mode: the analyst pod asks for an xlarge node by the label EKS
 Auto Mode puts on its nodes, and the clean up finds the node through its NodeClaim. Before
 `setup.sh` creates anything, it checks the most one run can cost, through a clean up that
-deletes the run's node, against a cost snapshot you collect and name in `.env`
-(`COST_SNAPSHOT`). [`scripts/cost_gate.py`](scripts/cost_gate.py) describes the snapshot: the
-Region's on-demand and EKS Auto Mode prices for every C, M and R xlarge type it offers, the
-other rates a run pays, the cluster's NodePools, and where each came from, all from read-only
-calls. Setup refuses to start, and so does `run.sh`, when that worst case is USD 5 or more, or
-when the snapshot is missing, incomplete or more than a day old. `run.sh` also refuses more
-than an hour after setup started. The bound assumes you run
-`./scripts/clean.sh --delete-aws --delete-node` when the run ends: until the clean up deletes
-the node, it keeps billing.
+deletes the run's node, against a collection of read-only reads you make with
+[`scripts/cost_snapshot.py`](scripts/cost_snapshot.py) and name in `.env` (`COST_SNAPSHOT`):
+your account, cluster, RuntimeClass, NodePools and NodeClasses, every instance type the
+Region offers, the route tables of the node's subnets, and the AWS Price List records for
+each priced item. [`scripts/cost_gate.py`](scripts/cost_gate.py) rebuilds every price and
+offering from those raw reads each time. Setup refuses to start, and so does `run.sh`, when
+the worst case is USD 5 or more, when any read is missing, changed or more than an hour old,
+or when a node subnet routes through a NAT gateway, whose per-byte charge nothing here can
+bound. `run.sh` also refuses more than 40 minutes after setup started.
+
+The run removes itself: a `setup.sh` or `run.sh` that fails runs
+`./scripts/clean.sh --delete-aws --delete-node` at once, and an hour after setup started a
+background process ([`scripts/deadline.sh`](scripts/deadline.sh)) runs it too unless you
+already have. The analyst pod stops itself at that hour as well. The bound assumes that
+machine is awake at the deadline, and that if EKS does not remove the node within ten
+minutes of the clean up asking, you terminate it with `--allow-instance-termination` within
+the next twenty.
 
 Every output block on this page is from one real run of this blueprint, run id
 `0eb808c7a8244688b2ceb854d71ed07a`. Values from the account and cluster it ran on are
@@ -140,7 +148,9 @@ blueprints and listed on the [section page](../README.md#the-shared-files). This
 | [`scripts/setup.sh`](scripts/setup.sh) | Builds the images and creates everything the blueprint needs |
 | [`scripts/run.sh`](scripts/run.sh) | Runs one procurement case and copies its result out |
 | [`scripts/correlate.py`](scripts/correlate.py) | Checks the run's record against the supplier API's own request log |
-| [`scripts/cost_gate.py`](scripts/cost_gate.py) | The most one run can cost, from your cost snapshot; setup and run refuse at USD 5 or more |
+| [`scripts/cost_snapshot.py`](scripts/cost_snapshot.py) | Collects the read-only facts the cost check prices, and rebuilds them from the raw reads |
+| [`scripts/cost_gate.py`](scripts/cost_gate.py) | The most one run can cost, from that collection; setup and run refuse at USD 5 or more |
+| [`scripts/deadline.sh`](scripts/deadline.sh) | Started by setup: runs the clean up at the run's deadline unless you already have |
 | [`scripts/clean.sh`](scripts/clean.sh) | Removes what this blueprint created, and says what stays |
 | [`.env.example`](.env.example) | The local values the blueprint needs; copy to `.env`, which git ignores |
 
@@ -200,9 +210,9 @@ This is [`.env.example`](.env.example) as it is in the folder, not a run's outpu
 CLUSTER_NAME=
 AWS_REGION=us-west-2
 
-# The kube context to pin every kubectl call to. Leave it empty to use the current
-# context. Set it on a shared machine, where another session can change the current one
-# in the middle of a run.
+# Required. The kube context to pin every kubectl call to. The cost check binds its
+# snapshot to this context's cluster endpoint, so it cannot be left to whichever context
+# happens to be current.
 KUBE_CONTEXT=
 
 # The namespace this sample creates and owns. Change it to run this sample twice, or
@@ -210,14 +220,18 @@ KUBE_CONTEXT=
 NAMESPACE=subagent-security-bubblewrap
 
 # The Amazon Bedrock inference profile the analyst's model turn uses. The run on the page
-# used this one.
+# used this one, and it is the only one the cost check knows a context window for.
 BEDROCK_MODEL_ID=global.anthropic.claude-sonnet-4-5-20250929-v1:0
 
-# Required. The cost snapshot setup.sh checks before it creates anything: a JSON file you
-# collect with read-only calls and keep outside this repository, described at the top of
-# scripts/cost_gate.py. setup.sh and run.sh refuse to start if one run could cost USD 5 or
-# more, or if the snapshot is missing, incomplete or more than a day old.
+# Required. The folder python3 scripts/cost_snapshot.py collect wrote, with read-only
+# calls, at most an hour before setup.sh starts; keep it outside this repository's tracked
+# files. setup.sh and run.sh rebuild every price and offering from its raw reads and refuse
+# to start if one run could cost USD 5 or more, or if any read is missing, changed or stale.
 COST_SNAPSHOT=
+
+# Optional. S3 requests you make yourself during the run, outside the scripts, as
+# PUT=<n>,GET=<n>; the cost check counts them. The page's own steps make none.
+# COST_EXTRA_S3_REQUESTS=
 
 # Optional. Left empty, setup.sh names the bucket and the role for this sample and your
 # account id. Set them to run a second copy beside the first.
@@ -225,12 +239,23 @@ COST_SNAPSHOT=
 # ROLE_NAME=
 ```
 
+Then collect the cost snapshot, no more than an hour before setup, into a new folder under the
+repository's gitignored `tmp/`, and set `COST_SNAPSHOT` in `.env` to that folder. Every call it
+makes reads, and it prints the folder's name and how many reads it saved.
+
+```bash
+python3 scripts/cost_snapshot.py collect --out ../../../tmp/bubblewrap-cost-$(date -u +%H%M) \
+  --region us-west-2 --cluster-name <CLUSTER_NAME> --kube-context <KUBE_CONTEXT> \
+  --model-id global.anthropic.claude-sonnet-4-5-20250929-v1:0
+```
+
 **Step 2: Build the images and create everything the blueprint needs.** One script, seven
-stages. It checks the cluster before it creates anything, builds and pushes the supplier API
-image and the analyst image, seeds the proposals into a new S3 bucket, creates the IAM role
-and its Pod Identity association, starts the sandboxed pod, and then starts one real tool
-process in it. It creates nothing outside this blueprint's own namespace and changes no
-cluster-wide setting.
+stages. It checks the cluster and the most a run can cost before it creates anything, builds
+and pushes the supplier API image and the analyst image, seeds the proposals into a new S3
+bucket, creates the IAM role and its Pod Identity association, starts the sandboxed pod,
+starts the supplier API on that pod's own node, and then starts one real tool process in the
+sandboxed pod. It creates nothing outside this blueprint's own namespace and changes no
+cluster-wide setting. If it stops after creating anything, it removes what it created.
 
 ```bash
 ./scripts/setup.sh
@@ -315,7 +340,8 @@ neither needs anything set again.
 
 **Step 3: Run one procurement case.** The controller runs in the sandbox and prints every
 check as it reaches it. Each run gets a fresh id and its own directories inside the pod, so
-one run cannot read or resume another's.
+one run cannot read or resume another's. `run.sh` refuses more than 40 minutes after setup
+started, and a run that fails removes what setup created.
 
 ```bash
 ./scripts/run.sh
@@ -1143,17 +1169,22 @@ copy.
   all. Its limits are higher than its requests on purpose: the requests size the sandbox, and
   the two need not match (Amazon EKS User Guide, *Isolated and confidential pods
   limitations*).
-- **The node is an xlarge or nothing.** The pod selects `eks.amazonaws.com/instance-size:
-  xlarge`, so the node EKS Auto Mode launches for it is never larger, which is what lets the
-  cost check bound a run before it starts. If no xlarge node can be launched for it, the pod
-  stays Pending and `setup.sh` stops after its ten-minute wait; it never falls back to a
-  bigger size.
+- **The node is an xlarge or nothing, and it is the only one.** The pod selects
+  `eks.amazonaws.com/instance-size: xlarge`, so the node EKS Auto Mode launches for it is
+  never larger, which is what lets the cost check bound a run before it starts. If no xlarge
+  node can be launched for it, the pod stays Pending and `setup.sh` stops after its
+  ten-minute wait; it never falls back to a bigger size. The supplier API starts only after
+  that, bound to the same node, so it never makes EKS launch a node of its own, and setup
+  stops if any NodeClaim other than the analyst pod's appeared while it ran. On a busy
+  shared cluster that can be someone else's, and setup then stops and cleans up anyway.
 - **The model turn has fixed bounds.** [`src/run_envelope.json`](src/run_envelope.json) caps
   it at three model calls (the evidence tool call, the structured answer, and one forced
-  retry of that answer), two tries per call, 4,000 output and 24,000 total tokens, and
-  40,000 bytes per request. A turn that goes past any of them, or stops for any other
-  reason, fails the run rather than producing a recommendation. The cost check prices the
-  most those bounds allow.
+  retry of that answer), two tries per call and one HTTP send per try, 4,000 output and
+  24,000 total tokens, and 40,000 bytes per request. A turn that goes past any of them, or
+  stops for any other reason, fails the run rather than producing a recommendation. The cost
+  check prices each of those six sends at the model's whole 200,000-token context window,
+  which is the most any one request can bill, so the Bedrock term is far above what a run
+  uses.
 - **Everything about the supplier is synthetic.** The proposals are invented, the supplier
   API holds no real records, and a purchase order against it orders nothing. The proposals
   hold no customer data.
@@ -1167,7 +1198,7 @@ copy.
 
 ```bash
 cd sample-eks-nitro-sandbox/examples/subagent-security/bubblewrap
-./scripts/clean.sh --delete-aws
+./scripts/clean.sh --delete-aws --delete-node
 ```
 
 ```text
@@ -1221,7 +1252,17 @@ the NodeClaim delete does not finish in ten minutes, `--allow-instance-terminati
 terminate the instance directly, once a dry run shows the call is allowed, and after checking
 every one of those again and the instance's own tags. Without `--delete-node` the node is left
 to EKS Auto Mode, which removes it once nothing runs on it but gives no deadline for that, so
-the cost check's bound assumes `--delete-node`.
+the cost check's bound assumes `--delete-node`. Run without it, `--delete-aws` still removes
+the run record, and with it what the deadline process would have cleaned up, so the node is
+then EKS Auto Mode's to remove.
+
+You may not need to run it at all. A `setup.sh` or `run.sh` that fails runs
+`./scripts/clean.sh --delete-aws --delete-node` itself, after saving what the cluster said
+about the pods to `tmp/bubblewrap-setup-failure.log`, or the run's output to
+`tmp/bubblewrap-run-failure/`. And an hour after setup started,
+[`scripts/deadline.sh`](scripts/deadline.sh), which setup left running in the background on
+your machine, runs that same command unless the run record is already gone; it writes to
+`tmp/bubblewrap-deadline.log`. It never passes `--allow-instance-termination`.
 
 Without `--delete-aws` it removes the cluster objects and the Pod Identity association and
 keeps the S3 bucket, the IAM role and the images, so a second run skips the build. It keeps

@@ -1,35 +1,27 @@
-#!/usr/bin/env python3
 """cost_gate.py -- the most one bubblewrap run can cost, checked before it creates anything.
 
 setup.sh runs this before its first AWS or Kubernetes write, and run.sh before the model
-turn. It reads a cost snapshot (COST_SNAPSHOT in .env), the pod manifest, the run's
-envelope and the two image sizes, and exits 0 only when the worst case for one complete
-run, through its clean up, is strictly below the cap. On success it prints that worst case
-and its terms as JSON on standard output, which setup.sh keeps in the run record. On any
-refusal it prints why on standard error and exits non-zero.
+turn. It exits 0 only when the worst case for one complete run, through its clean up, is
+strictly below USD 5; exactly USD 5 is refused. On success it prints that worst case, its
+terms, the run's timeline and the snapshot's fingerprint as JSON on standard output, which
+setup.sh keeps in the run record. On any refusal it prints why on standard error and exits
+non-zero.
 
-The snapshot is a JSON file you collect with read-only calls and keep outside the
-repository, because its prices and offerings are your account's and Region's:
+Its inputs:
 
-  schema                   "bubblewrap-cost-snapshot/1"
-  captured_at              when it was collected, UTC, e.g. "2026-11-17T08:00:00Z"
-  region, bedrock_model_id the run's AWS_REGION and BEDROCK_MODEL_ID
-  provenance               where each part came from: "pricing", "offerings", "nodepools",
-                           "node_class" and "collected_by", each a non-empty string
-  nodepools                every NodePool on the cluster: [{"name", "taints",
-                           "requirements"}] as kubectl prints them
-  node_class_volume_gib    the size of the node volume the NodeClass gives each node
-  offered_instance_types   every instance type offered in the Region, each
-                           {"architectures": [...]} from DescribeInstanceTypes
-  prices                   for each instance type in the set this script derives, exactly
-                           {"ec2_usd_per_hour": on-demand Linux, shared tenancy,
-                            "auto_mode_usd_per_hour": the EKS Auto Mode fee}
-  unit_prices              the eight rates in UNIT_PRICES below
+  --snapshot   the folder scripts/cost_snapshot.py collect wrote (COST_SNAPSHOT in .env).
+               Every price, offering, NodePool and NodeClass is rebuilt from the raw reads
+               in it, for exactly this account, Region, cluster and kube context, and the
+               folder must have been collected within the hour before setup started.
+  --manifest   the analyst pod, which must pin the node to an xlarge.
+  --envelope   src/run_envelope.json, the model turn's and the reports' finite bounds.
+  --image      both images' sizes, measured by setup.sh before anything is pushed.
+  --extra-s3   S3 requests made outside the scripts during the run, such as an operator's
+               own reads of the bucket, as PUT=<n>,GET=<n>. The page's own steps make none.
 
-Every key is required and no other key is accepted. A price set that is missing a derived
-type, or has one more, is refused: the pod's nodeSelector limits the node to an xlarge, and
-the NodePools that can take the pod limit its family, so the set is every offered x86_64
-type of those families and generations at that size, whichever of them EKS may choose.
+Each term below names what bounds it. A term with nothing to bound it is not estimated: the
+check refuses instead. That is why a node subnet routing through a NAT gateway is refused
+(cost_snapshot.py says why) and why only a model with a known context window is accepted.
 """
 import argparse
 import json
@@ -40,16 +32,11 @@ from decimal import Decimal
 from pathlib import Path
 
 CAP_USD = Decimal("5")
-SCHEMA = "bubblewrap-cost-snapshot/1"
-SNAPSHOT_KEYS = {"schema", "captured_at", "region", "bedrock_model_id", "provenance", "nodepools",
-                 "node_class_volume_gib", "offered_instance_types", "prices", "unit_prices"}
-PROVENANCE_KEYS = {"pricing", "offerings", "nodepools", "node_class", "collected_by"}
 PRICE_KEYS = {"ec2_usd_per_hour", "auto_mode_usd_per_hour"}
 UNIT_PRICES = {"ebs_gp3_usd_per_gb_month", "bedrock_input_usd_per_million_tokens",
                "bedrock_output_usd_per_million_tokens", "ecr_usd_per_gb_month",
-               "s3_usd_per_gb_month", "s3_put_usd_per_1000", "s3_get_usd_per_10000",
-               "nat_usd_per_gb"}
-MAX_AGE = timedelta(hours=24)
+               "s3_usd_per_gb_month", "s3_put_usd_per_1000", "s3_get_usd_per_10000"}
+MAX_AGE = timedelta(hours=1)
 MAX_SKEW = timedelta(minutes=5)
 NODE_SIZE = "xlarge"
 SIZE_LABEL = "eks.amazonaws.com/instance-size"
@@ -57,40 +44,84 @@ ENVELOPE_KEYS = ("turns", "output_tokens", "total_tokens", "max_tokens", "model_
                  "sdk_attempts", "max_request_bytes", "evidence_tool_calls")
 IMAGES = ("supplier-api", "analyst")
 
-# The finite terms below are this blueprint's own, each with where its number comes from.
 # A gigabyte is counted as 10^9 bytes, which overstates every byte-priced charge.
 GB = Decimal(10) ** 9
 HOURS_PER_MONTH = Decimal(730)
-# One run from setup through a clean up that deletes the run's own node
-# (clean.sh --delete-aws --delete-node): the node bills for no longer than this.
-ATTEMPT_HOURS = Decimal(2)
-# run.sh starts the model turn only this soon after setup started (RUN_STARTED_AT), which
-# leaves the rest of ATTEMPT_HOURS for the turn and for a clean up whose own waits add up
-# to under half an hour. The clean up itself is yours to start: until it runs, the node
-# keeps billing, and this bound assumes you start it when the run ends.
-RUN_WINDOW = timedelta(hours=1)
+
+# The run's timeline, in seconds from RUN_STARTED_AT, and what enforces each part.
+#   RUN_WINDOW_S       run.sh refuses to start the model turn after this (this check, with
+#                      --started-at).
+#   CLEANUP_START_S    scripts/deadline.sh starts clean.sh --delete-aws --delete-node then,
+#                      and the analyst pod's activeDeadlineSeconds ends it then. A failed
+#                      setup.sh or run.sh starts that clean up at once, earlier.
+#   CLEAN_TO_TERMINAL_S  the longest clean.sh takes, from its start, to see the run's
+#                      instance terminated through its NodeClaim: its four namespace deletes
+#                      wait 5 minutes each, its node step's reads give up after 60 seconds,
+#                      and its two waits stop after 10 minutes each by the clock.
+#   FALLBACK_S         the direct termination (--allow-instance-termination) if EKS has not
+#                      removed the node by then: its dry run, every check again, and a
+#                      10-minute wait. A person starts it; nothing here can.
+RUN_WINDOW_S = 40 * 60
+CLEANUP_START_S = 60 * 60
+CLEAN_TO_TERMINAL_S = 50 * 60
+FALLBACK_S = 20 * 60
+# The node bills for no longer than this: the clean up's start, its managed path, and the
+# fallback. The analyst pod cannot start the model turn later than RUN_WINDOW_S.
+ATTEMPT_S = CLEANUP_START_S + CLEAN_TO_TERMINAL_S + FALLBACK_S
 # Storage is charged as if kept a whole month, although clean up deletes it within the run.
 STORAGE_MONTHS = Decimal(1)
 IMAGE_MAX_BYTES = 3 * 10 ** 9            # each image, uncompressed, as docker reports it
 SEED_GENERATED_MAX_BYTES = 4096          # the one object analyst-lib.sh writes itself
-# Every AWS CLI request is tried at most this often: setup.sh, run.sh and clean.sh set
-# AWS_MAX_ATTEMPTS=3 in standard retry mode.
+
+# Input tokens: no request can hold more than the model's context window, so that is the
+# most input any one request can bill. Bedrock rejects a longer request rather than bill
+# it. Claude Sonnet 4.5's window is 200,000 tokens (Anthropic, Models overview; Amazon
+# Bedrock's model card); the larger 1M window needs a beta header this blueprint never
+# sends. Output tokens: Bedrock stops each response at max_tokens.
+MODEL_CONTEXT_TOKENS = {"global.anthropic.claude-sonnet-4-5-20250929-v1:0": 200_000}
+
+# Retries. Every AWS CLI request is sent at most CLI_ATTEMPTS times: setup.sh and clean.sh
+# export AWS_MAX_ATTEMPTS=3 (which counts the first send) in standard mode, and run.sh makes
+# no AWS CLI call. The controller's S3 client sends at most SDK_S3_ATTEMPTS times
+# (total_max_attempts in controller.py).
 CLI_ATTEMPTS = 3
-# S3 requests by one run, before retries: five seed puts, the controller's two report puts
-# and its refused overwrite, plus its listing and deletes in clean up (counted at the put
-# rate); and the controller's case, three proposals, refused read and two read-backs.
-S3_PUT_REQUESTS = 5 + 2 + 1 + 4
-S3_GET_REQUESTS = 1 + 3 + 1 + 2
-# The kubelet pulls each image through the NAT gateway; this many attempts each is the
-# allowance for retried and partial pulls inside setup's ten-minute wait.
-PULL_ATTEMPTS = 6
-# Everything else the new node sends through the NAT gateway while it starts and runs:
-# its own system images and its control traffic.
-NAT_FIXED_BYTES = 2 * 10 ** 9
-# What Bedrock adds to each request beyond the JSON this turn sends: its tool-use prompt.
-REQUEST_OVERHEAD_TOKENS = 2000
-# A response token is never more than this many bytes on the wire.
-BYTES_PER_OUTPUT_TOKEN = 8
+SDK_S3_ATTEMPTS = 3
+
+# Every S3 request one run can make, from each call site, by S3's pricing class: "put" is
+# PUT, COPY, POST and LIST, "get" is GET and every other request except DELETE, and DELETE
+# is free. Each row is (file, the call as written there, how many times that text appears,
+# class, the most times the call can run in one run, how it is retried). Calls in branches
+# that exclude each other count once; calls in a loop count its length, which the tests
+# read from the same files. A test fails when the code has an S3 call this table lacks.
+SEED_PROPOSALS = 3                       # analyst/fixtures/proposals, one put each
+CASE_SUPPLIERS = 3                       # the suppliers in analyst/fixtures/case.json
+CLEAN_RUNS = 2                           # the automatic or deadline clean up, and yours
+S3_SITES = (
+    ("analyst/scripts/analyst-lib.sh", "lookup NoSuchBucket s3api get-bucket-tagging", 1, "get", 1, "cli"),
+    ("analyst/scripts/analyst-lib.sh", "aws s3api head-bucket", 1, "get", 1, "cli"),
+    ("analyst/scripts/analyst-lib.sh", "aws s3api create-bucket", 2, "put", 1, "cli"),
+    ("analyst/scripts/analyst-lib.sh", "aws s3api put-bucket-tagging", 1, "put", 1, "cli"),
+    ("analyst/scripts/analyst-lib.sh", "aws s3api put-public-access-block", 1, "put", 1, "cli"),
+    ("analyst/scripts/analyst-lib.sh", "aws s3api put-bucket-encryption", 1, "put", 1, "cli"),
+    ("analyst/scripts/analyst-lib.sh", "    s3api get-bucket-tagging --bucket", 1, "get", 1, "cli"),
+    ("analyst/scripts/analyst-lib.sh", "s3api get-public-access-block", 1, "get", 1, "cli"),
+    ("analyst/scripts/analyst-lib.sh", "s3api get-bucket-encryption", 1, "get", 1, "cli"),
+    ("analyst/scripts/analyst-lib.sh", "s3api get-bucket-acl", 1, "get", 1, "cli"),
+    ("analyst/scripts/analyst-lib.sh", "lookup NoSuchBucketPolicy s3api get-bucket-policy", 1, "get", 1, "cli"),
+    ("analyst/scripts/analyst-lib.sh", "aws s3api put-object", 3, "put", 2 + SEED_PROPOSALS, "cli"),
+    ("bubblewrap/src/controller.py", "s3.get_object(Bucket=BUCKET,\n", 2, "get", 1 + CASE_SUPPLIERS, "sdk"),
+    ("bubblewrap/src/controller.py", '("overwriting a source proposal", "put_object"', 1, "put", 1, "sdk"),
+    ("bubblewrap/src/controller.py", '("deleting a source proposal", "delete_object"', 1, "free", 1, "sdk"),
+    ("bubblewrap/src/controller.py", '("reading another case\'s object", "get_object"', 1, "get", 1, "sdk"),
+    ("bubblewrap/src/controller.py", "s3.put_object(Bucket=BUCKET, Key=f\"{prefix}/{name}\"", 1, "put", 2, "sdk"),
+    ("bubblewrap/src/controller.py", "s3.get_object(Bucket=BUCKET, Key=f\"{prefix}/{name}\")", 1, "get", 2, "sdk"),
+    # aws s3 rm --recursive lists the bucket (one page holds the at most 7 objects any run
+    # writes) and deletes each object; delete-bucket is a DELETE.
+    ("bubblewrap/scripts/clean.sh", "lookup NoSuchBucket s3api get-bucket-tagging", 2, "get", 2 * CLEAN_RUNS, "cli"),
+    ("bubblewrap/scripts/clean.sh", "aws s3 rm", 1, "put", CLEAN_RUNS, "cli"),
+    ("bubblewrap/scripts/clean.sh", "aws s3api delete-bucket", 1, "free", CLEAN_RUNS, "cli"),
+)
+ATTEMPTS = {"cli": CLI_ATTEMPTS, "sdk": SDK_S3_ATTEMPTS}
 
 
 class Refused(Exception):
@@ -101,7 +132,7 @@ def no_duplicates(pairs):
     seen = {}
     for key, value in pairs:
         if key in seen:
-            raise Refused(f"the snapshot has the key {key!r} twice")
+            raise Refused(f"the input has the key {key!r} twice")
         seen[key] = value
     return seen
 
@@ -122,42 +153,11 @@ def positive(what, value):
     return Decimal(value)
 
 
-def no_constants(name):
-    raise Refused(f"the snapshot holds {name}, which is not a price")
-
-
-def load_snapshot(path, region, model_id, now):
+def utc(text, what):
     try:
-        snapshot = json.loads(Path(path).read_text(), object_pairs_hook=no_duplicates,
-                              parse_float=Decimal, parse_constant=no_constants)
-    except (OSError, ValueError) as error:
-        raise Refused(f"could not read the cost snapshot {path}: {error}")
-    exact_keys("the snapshot", snapshot, SNAPSHOT_KEYS)
-    if snapshot["schema"] != SCHEMA:
-        raise Refused(f"the snapshot schema is {snapshot['schema']!r}, not {SCHEMA!r}")
-    try:
-        captured = datetime.strptime(snapshot["captured_at"], "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=timezone.utc)
+        return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):
-        raise Refused("captured_at must be a UTC time such as 2026-11-17T08:00:00Z")
-    if captured > now + MAX_SKEW:
-        raise Refused(f"the snapshot was captured at {snapshot['captured_at']}, in the future")
-    if now - captured > MAX_AGE:
-        raise Refused(f"the snapshot was captured at {snapshot['captured_at']}, more than "
-                      f"{MAX_AGE} ago; collect it again")
-    if snapshot["region"] != region:
-        raise Refused(f"the snapshot is for {snapshot['region']!r}, not {region!r}")
-    if snapshot["bedrock_model_id"] != model_id:
-        raise Refused(f"the snapshot prices {snapshot['bedrock_model_id']!r}, not {model_id!r}")
-    exact_keys("provenance", snapshot["provenance"], PROVENANCE_KEYS)
-    for key, value in snapshot["provenance"].items():
-        if not isinstance(value, str) or not value.strip():
-            raise Refused(f"provenance {key} must say where that part came from")
-    exact_keys("unit_prices", snapshot["unit_prices"], UNIT_PRICES)
-    for key, value in snapshot["unit_prices"].items():
-        positive(f"unit price {key}", value)
-    positive("node_class_volume_gib", snapshot["node_class_volume_gib"])
-    return snapshot
+        raise Refused(f"{what} {text!r} is not a UTC time such as 2026-11-17T08:00:00Z")
 
 
 def schedulable_pools(nodepools):
@@ -227,13 +227,8 @@ def derived_types(snapshot):
 
 
 def node_rate(snapshot, expected):
+    # cost_snapshot.build reads exactly one price per derived type, so the two sets match
     prices = snapshot["prices"]
-    if not isinstance(prices, dict):
-        raise Refused("prices must be an object")
-    missing, extra = sorted(expected - set(prices)), sorted(set(prices) - expected)
-    if missing or extra:
-        raise Refused(f"the price set does not match the derived set: missing {missing}, "
-                      f"extra {extra}")
     worst, worst_type = Decimal(0), None
     for name in sorted(expected):
         exact_keys(f"the price of {name}", prices[name], PRICE_KEYS)
@@ -257,6 +252,8 @@ def manifest_size(path):
         selector[key] = value
     if selector != {SIZE_LABEL: NODE_SIZE}:
         raise Refused(f"{path} must select exactly {SIZE_LABEL}: {NODE_SIZE}, not {selector}")
+    if "  activeDeadlineSeconds: <ACTIVE_DEADLINE_SECONDS>" not in lines:
+        raise Refused(f"{path} must end the pod at the run's clean-up deadline (activeDeadlineSeconds)")
 
 
 def envelope(path):
@@ -274,35 +271,59 @@ def envelope(path):
     return loaded
 
 
-def worst_case(snapshot, expected, run, image_bytes, seed_bytes):
+def extra_s3(text):
+    """PUT=<n>,GET=<n>, either part optional, both whole numbers."""
+    counts = {"put": 0, "get": 0}
+    for part in filter(None, (text or "").split(",")):
+        key, _, value = part.partition("=")
+        if key.lower() not in counts or not value.isdigit():
+            raise Refused(f"--extra-s3 {text!r} is not PUT=<n>,GET=<n>")
+        counts[key.lower()] = int(value)
+    return counts
+
+
+def s3_requests(extra):
+    """The most S3 requests of each class one run can send, retries included."""
+    totals = {"put": 0, "get": 0, "free": 0}
+    for _, _, _, kind, runs, retry in S3_SITES:
+        totals[kind] += runs * ATTEMPTS[retry]
+    totals["put"] += extra["put"] * CLI_ATTEMPTS
+    totals["get"] += extra["get"] * CLI_ATTEMPTS
+    return totals
+
+
+def worst_case(snapshot, expected, run, image_bytes, seed_bytes, model_id, extra):
     units = {key: Decimal(value) for key, value in snapshot["unit_prices"].items()}
     rate, rate_type = node_rate(snapshot, expected)
     volume_hour = Decimal(snapshot["node_class_volume_gib"]) * units["ebs_gp3_usd_per_gb_month"] \
         / HOURS_PER_MONTH
     model, reports = run["model"], run["reports"]
-    calls = model["turns"] * model["model_attempts"] * model["sdk_attempts"]
-    input_tokens = calls * (model["max_request_bytes"] + REQUEST_OVERHEAD_TOKENS)
-    output_tokens = calls * model["max_tokens"]
+    # every HTTP send to Bedrock: Strands turns, times its tries per call, times the SDK's
+    sends = model["turns"] * model["model_attempts"] * model["sdk_attempts"]
+    input_tokens = sends * MODEL_CONTEXT_TOKENS[model_id]
+    output_tokens = sends * model["max_tokens"]
     images = sum(image_bytes.values())
-    report_bytes = reports["objects"] * reports["object_max_bytes"]
-    objects = seed_bytes + report_bytes
-    nat_bytes = (PULL_ATTEMPTS * images + CLI_ATTEMPTS * objects + NAT_FIXED_BYTES
-                 + calls * (model["max_request_bytes"] + BYTES_PER_OUTPUT_TOKEN * model["max_tokens"]))
+    objects = seed_bytes + reports["objects"] * reports["object_max_bytes"]
+    requests = s3_requests(extra)
+    hours = Decimal(ATTEMPT_S) / 3600
     terms = {
-        "node": ATTEMPT_HOURS * (rate + volume_hour),
+        "node": hours * (rate + volume_hour),
         "bedrock": (input_tokens * units["bedrock_input_usd_per_million_tokens"]
                     + output_tokens * units["bedrock_output_usd_per_million_tokens"])
         / Decimal(10 ** 6),
         "ecr": images / GB * units["ecr_usd_per_gb_month"] * STORAGE_MONTHS,
         "s3": objects / GB * units["s3_usd_per_gb_month"] * STORAGE_MONTHS
-        + CLI_ATTEMPTS * S3_PUT_REQUESTS * units["s3_put_usd_per_1000"] / 1000
-        + CLI_ATTEMPTS * S3_GET_REQUESTS * units["s3_get_usd_per_10000"] / 10000,
-        "nat": nat_bytes / GB * units["nat_usd_per_gb"],
+        + requests["put"] * units["s3_put_usd_per_1000"] / 1000
+        + requests["get"] * units["s3_get_usd_per_10000"] / 10000,
+        # cost_snapshot.build refuses any node subnet that routes through a NAT gateway
+        "nat": Decimal(0),
     }
     total = sum(terms.values())
     return total, terms, {"worst_node_type": rate_type, "node_usd_per_hour": str(rate),
-                          "priced_types": len(expected), "model_requests": calls,
-                          "image_bytes": images, "object_bytes": objects, "nat_bytes": nat_bytes}
+                          "priced_types": len(expected), "bedrock_sends": sends,
+                          "input_tokens": input_tokens, "output_tokens": output_tokens,
+                          "image_bytes": images, "object_bytes": objects,
+                          "s3_requests": requests, "node_hours": str(hours)}
 
 
 def main(argv=None):
@@ -311,26 +332,34 @@ def main(argv=None):
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--envelope", required=True)
     parser.add_argument("--region", required=True)
+    parser.add_argument("--account", required=True)
+    parser.add_argument("--cluster-name", required=True)
+    parser.add_argument("--kube-context", required=True)
     parser.add_argument("--model-id", required=True)
+    parser.add_argument("--extra-s3", default="")
     parser.add_argument("--image", action="append", default=[], metavar="NAME=BYTES")
     parser.add_argument("--seed-object", action="append", default=[], metavar="PATH")
     parser.add_argument("--started-at", metavar="RUN_STARTED_AT",
                         help="when setup started; run.sh passes it from the run record")
     parser.add_argument("--now", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import cost_snapshot
     try:
-        now = (datetime.strptime(args.now, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-               if args.now else datetime.now(timezone.utc))
+        now = utc(args.now, "--now") if args.now else datetime.now(timezone.utc)
+        reference = now
         if args.started_at is not None:
-            try:
-                started = datetime.strptime(args.started_at, "%Y-%m-%dT%H:%M:%SZ").replace(
-                    tzinfo=timezone.utc)
-            except ValueError:
-                raise Refused(f"the run record's RUN_STARTED_AT {args.started_at!r} is not a UTC time")
-            if started > now + MAX_SKEW or now - started > RUN_WINDOW:
+            started = utc(args.started_at, "the run record's RUN_STARTED_AT")
+            if started > now + MAX_SKEW or now - started > timedelta(seconds=RUN_WINDOW_S):
                 raise Refused(f"setup started at {args.started_at}, and a run starts within "
-                              f"{RUN_WINDOW} of that so the node's hours stay inside the bound; "
-                              "run ./scripts/clean.sh --delete-aws --delete-node")
+                              f"{timedelta(seconds=RUN_WINDOW_S)} of that so the node's hours stay "
+                              "inside the bound; the run's own clean up removes it")
+            reference = started
+        if not re.fullmatch(r"\d{12}", args.account) or not args.cluster_name or not args.kube_context:
+            raise Refused("the account, cluster name and kube context must all be given")
+        if args.model_id not in MODEL_CONTEXT_TOKENS:
+            raise Refused(f"no context window is known for {args.model_id!r}, so its input tokens "
+                          "have no bound")
         image_bytes = {}
         for item in args.image:
             name, _, value = item.partition("=")
@@ -344,16 +373,34 @@ def main(argv=None):
         if len(args.seed_object) != 4 or len(set(args.seed_object)) != 4:
             raise Refused("the four seed fixture files are required")
         seed_bytes = sum(Path(p).stat().st_size for p in args.seed_object) + SEED_GENERATED_MAX_BYTES
+        extra = extra_s3(args.extra_s3)
         manifest_size(args.manifest)
         run = envelope(args.envelope)
-        snapshot = load_snapshot(args.snapshot, args.region, args.model_id, now)
+        try:
+            snapshot, fingerprint = cost_snapshot.build(
+                args.snapshot, args.account, args.region, args.cluster_name, args.kube_context,
+                args.model_id, lambda pools, types: derived_types(
+                    {"nodepools": pools, "offered_instance_types": types}))
+        except cost_snapshot.Bad as error:
+            raise Refused(f"the cost snapshot {args.snapshot}: {error}")
+        captured = utc(snapshot["captured_at"], "the snapshot's captured_at")
+        if captured > now + MAX_SKEW:
+            raise Refused(f"the snapshot was captured at {snapshot['captured_at']}, in the future")
+        if reference - captured > MAX_AGE:
+            raise Refused(f"the snapshot was captured at {snapshot['captured_at']}, more than "
+                          f"{MAX_AGE} before the run; collect it again")
+        exact_keys("unit_prices", snapshot["unit_prices"], UNIT_PRICES)
+        for key, value in snapshot["unit_prices"].items():
+            positive(f"unit price {key}", value)
+        positive("the node volume", snapshot["node_class_volume_gib"])
         expected = derived_types(snapshot)
-        total, terms, facts = worst_case(snapshot, expected, run, image_bytes, seed_bytes)
+        total, terms, facts = worst_case(snapshot, expected, run, image_bytes, seed_bytes,
+                                         args.model_id, extra)
     except (Refused, OSError) as error:
         print(f"cost check refused: {error}", file=sys.stderr)
         return 1
-    except (TypeError, AttributeError, KeyError, ArithmeticError) as error:
-        # A malformed snapshot that got past the shape checks: refuse rather than guess.
+    except (TypeError, AttributeError, KeyError, ValueError, ArithmeticError) as error:
+        # A malformed input that got past the shape checks: refuse rather than guess.
         print(f"cost check refused: malformed input ({type(error).__name__}: {error})",
               file=sys.stderr)
         return 1
@@ -363,7 +410,12 @@ def main(argv=None):
         return 1
     print(json.dumps({"worst_case_usd": str(total), "cap_usd": str(CAP_USD),
                       "terms_usd": {k: str(v) for k, v in terms.items()}, **facts,
-                      "snapshot_captured_at": snapshot["captured_at"]}, sort_keys=True))
+                      "snapshot_captured_at": snapshot["captured_at"],
+                      "snapshot_sha256": fingerprint,
+                      "timeline_s": {"run_window": RUN_WINDOW_S, "cleanup_start": CLEANUP_START_S,
+                                     "clean_to_terminal": CLEAN_TO_TERMINAL_S,
+                                     "fallback": FALLBACK_S, "attempt": ATTEMPT_S}},
+                     sort_keys=True))
     return 0
 
 

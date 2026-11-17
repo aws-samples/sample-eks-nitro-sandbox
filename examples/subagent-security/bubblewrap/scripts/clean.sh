@@ -11,7 +11,9 @@
 #                                           # and, if deleting it through EKS fails,
 #                                           # terminate its EC2 instance directly
 #
-# It reads the same run record setup.sh wrote, so there is nothing to set again.
+# It reads the same run record setup.sh wrote, so there is nothing to set again. setup.sh
+# and run.sh run it with --delete-aws --delete-node themselves when they fail, and so does
+# scripts/deadline.sh at the run's clean-up deadline.
 #
 # It does not stop at the first failure. A lookup that fails means "could not determine",
 # which is a failure and never "already gone": anything it could not delete or confirm is
@@ -37,7 +39,7 @@ for arg in "$@"; do
     --delete-aws) delete_aws=true ;;
     --delete-node) delete_node=true ;;
     --allow-instance-termination) allow_terminate=true ;;
-    --help|-h) sed -n '2,25p' "$0"; exit 0 ;;
+    --help|-h) sed -n '2,27p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -83,6 +85,10 @@ kc() {
   if [[ -n "$KUBE_CONTEXT" ]]; then kubectl --context "$KUBE_CONTEXT" "$@"
   else kubectl "$@"; fi
 }
+# A read that gives up after a minute, for the node step, so a clean up that cannot reach
+# the cluster still reaches its end, says what it could not do, and stays inside the run's
+# deadline. Deletes keep their own --timeout.
+kr() { kc --request-timeout=60s "$@"; }
 
 # See analyst-lib.sh for why this returns 2 rather than exiting.
 lookup() {
@@ -150,7 +156,7 @@ say "2/5 the run's own sandbox node"
 node_why=""
 node_matches() { # fresh reads of the Node, its NodeClaim and the pods on it
   local node claim pods foreign want
-  if node="$(kc get node "$NODE_NAME" --ignore-not-found -o json 2>/dev/null)"; then :
+  if node="$(kr get node "$NODE_NAME" --ignore-not-found -o json 2>/dev/null)"; then :
   else node_why="could not read node $NODE_NAME"; return 1; fi
   if [[ -n "$node" ]]; then
     want="$(jq -cn --arg a "$NODE_UID" --arg b "$NODE_PROVIDER_ID" --arg c "$NODE_CREATED_AT" \
@@ -159,7 +165,7 @@ node_matches() { # fresh reads of the Node, its NodeClaim and the pods on it
         .metadata.labels["karpenter.sh/nodepool"]]' <<<"$node" 2>/dev/null)" == "$want" ]] ||
       { node_why="node $NODE_NAME no longer matches the run record"; return 1; }
   fi
-  if claim="$(kc get nodeclaim "$NODECLAIM_NAME" --ignore-not-found -o json 2>/dev/null)"; then :
+  if claim="$(kr get nodeclaim "$NODECLAIM_NAME" --ignore-not-found -o json 2>/dev/null)"; then :
   else node_why="could not read NodeClaim $NODECLAIM_NAME"; return 1; fi
   if [[ -n "$claim" ]]; then
     want="$(jq -cn --arg a "$NODECLAIM_UID" --arg b "$NODE_PROVIDER_ID" \
@@ -168,7 +174,7 @@ node_matches() { # fresh reads of the Node, its NodeClaim and the pods on it
         .metadata.labels["karpenter.sh/nodepool"]]' <<<"$claim" 2>/dev/null)" == "$want" ]] ||
       { node_why="NodeClaim $NODECLAIM_NAME no longer matches the run record"; return 1; }
   fi
-  if pods="$(kc get pods -A --field-selector "spec.nodeName=$NODE_NAME" -o json 2>/dev/null)" &&
+  if pods="$(kr get pods -A --field-selector "spec.nodeName=$NODE_NAME" -o json 2>/dev/null)" &&
      foreign="$(jq -er '[.items[] | select(.status.phase != "Succeeded" and .status.phase != "Failed")
        | select(((.metadata.ownerReferences // []) | map(.kind) | index("DaemonSet")) == null)
        | select((.metadata.annotations // {})["kubernetes.io/config.mirror"] == null)
@@ -176,22 +182,25 @@ node_matches() { # fresh reads of the Node, its NodeClaim and the pods on it
   else node_why="could not list the pods on node $NODE_NAME"; return 1; fi
   [[ -z "$foreign" ]] || { node_why="other workloads run on node $NODE_NAME: $foreign"; return 1; }
 }
+# EC2 calls that give up after 10 seconds connecting and 30 reading, three tries at most.
+ec2() { aws ec2 --cli-connect-timeout 10 --cli-read-timeout 30 "$@"; }
 instance_state() { # prints the instance's state name, or nothing if it could not be read
-  aws ec2 describe-instances --instance-ids "$instance" \
+  ec2 describe-instances --instance-ids "$instance" \
     --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null
 }
 instance_matches() { # the instance's own tags name this cluster, the NodeClaim and its pool
   local tags
-  tags="$(aws ec2 describe-instances --instance-ids "$instance" --output json 2>/dev/null |
+  tags="$(ec2 describe-instances --instance-ids "$instance" --output json 2>/dev/null |
     jq -c '[.Reservations[0].Instances[0].Tags // [] | from_entries
       | .["eks:eks-cluster-name"], .["karpenter.sh/nodeclaim"], .["karpenter.sh/nodepool"]]')"
   [[ "$tags" == "$(jq -cn --arg a "$CLUSTER_NAME" --arg b "$NODECLAIM_NAME" \
       --arg c "$NODECLAIM_POOL" '[$a, $b, $c]')" ]] ||
     { node_why="instance $instance does not carry the tags of this cluster's NodeClaim $NODECLAIM_NAME"; return 1; }
 }
-wait_terminated() { # up to 60 checks, ten seconds apart
-  local _ state
+wait_terminated() { # up to 60 checks, ten seconds apart, and never past ten minutes
+  local _ state end=$((SECONDS + 600))
   for _ in $(seq 60); do
+    (( SECONDS < end )) || break
     state="$(instance_state)"
     [[ "$state" == terminated ]] && return 0
     sleep 10
@@ -214,11 +223,13 @@ delete_run_node() {
   instance="${BASH_REMATCH[1]}"
   node_matches || { note_fail "$node_why; left it in place"; return; }
 
-  kc delete nodeclaim "$NODECLAIM_NAME" --ignore-not-found --wait=false >/dev/null 2>&1 ||
+  kr delete nodeclaim "$NODECLAIM_NAME" --ignore-not-found --wait=false >/dev/null 2>&1 ||
     echo "  the NodeClaim delete was not accepted; waiting to see whether the node goes anyway"
+  local end=$((SECONDS + 600))
   for _ in $(seq 60); do
-    if [[ -z "$(kc get nodeclaim "$NODECLAIM_NAME" --ignore-not-found -o name 2>/dev/null || echo unknown)" &&
-          -z "$(kc get node "$NODE_NAME" --ignore-not-found -o name 2>/dev/null || echo unknown)" ]]; then
+    (( SECONDS < end )) || break
+    if [[ -z "$(kr get nodeclaim "$NODECLAIM_NAME" --ignore-not-found -o name 2>/dev/null || echo unknown)" &&
+          -z "$(kr get node "$NODE_NAME" --ignore-not-found -o name 2>/dev/null || echo unknown)" ]]; then
       gone=true; break
     fi
     sleep 10
@@ -232,14 +243,14 @@ delete_run_node() {
     note_fail "$node_why; pass --allow-instance-termination to terminate the instance directly"
     return
   fi
-  dry="$(aws ec2 terminate-instances --instance-ids "$instance" --dry-run 2>&1)"
+  dry="$(ec2 terminate-instances --instance-ids "$instance" --dry-run 2>&1)"
   grep -q 'DryRunOperation' <<<"$dry" ||
     { note_fail "$node_why, and terminating instance $instance directly is not permitted here; left it"; return; }
   if ! { node_matches && instance_matches; }; then
     note_fail "$node_why; left instance $instance in place"
     return
   fi
-  aws ec2 terminate-instances --instance-ids "$instance" >/dev/null 2>&1 ||
+  ec2 terminate-instances --instance-ids "$instance" >/dev/null 2>&1 ||
     { note_fail "could not terminate instance $instance"; return; }
   wait_terminated || { note_fail "$node_why"; return; }
   echo "  terminated instance $instance directly, after the NodeClaim delete did not finish."
@@ -250,6 +261,16 @@ elif [[ "$ns_gone" != true ]]; then
   note_fail "namespace $NAMESPACE is not confirmed gone, so no node was deleted"
 else
   delete_run_node
+fi
+# Any other NodeClaim that appeared after the run started is named, never touched: nothing
+# ties it to this run. setup.sh refuses a run that has one.
+if [[ -f "$TMP_DIR/nodeclaims-at-start.json" ]] &&
+   claims="$(kr get nodeclaims -o json 2>/dev/null)" &&
+   others="$(jq -r --slurpfile start "$TMP_DIR/nodeclaims-at-start.json" --arg mine "${NODECLAIM_UID:-}" \
+     '[.items[] | select((.metadata.uid as $u | $start[0] | index($u)) == null)
+       | select(.metadata.uid != $mine) | .metadata.name] | join(" ")' <<<"$claims")" &&
+   [[ -n "$others" ]]; then
+  echo "  NodeClaims that appeared after the run started and are not this run's record, left alone: $others"
 fi
 
 say "3/5 the EKS Pod Identity association"

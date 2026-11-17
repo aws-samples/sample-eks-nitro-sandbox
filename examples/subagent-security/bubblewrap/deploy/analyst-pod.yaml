@@ -12,7 +12,7 @@
 # processes find no Kubernetes token on disk.
 #
 # <NAMESPACE>, <MANAGED_BY>, <ANALYST_IMAGE>, <AWS_REGION>, <BUCKET>, <ROLE_NAME> and
-# <BEDROCK_MODEL_ID> are replaced at apply time by scripts/setup.sh.
+# <BEDROCK_MODEL_ID> and <ACTIVE_DEADLINE_SECONDS> are replaced at apply time by setup.sh.
 #
 # Two settings here are what bubblewrap needs from the guest, and neither of them reaches
 # the node. They are explained on the page under "What the guest has to allow":
@@ -64,6 +64,9 @@ spec:
   serviceAccountName: analyst
   automountServiceAccountToken: false
   restartPolicy: Never
+  # The pod stops itself when the run's clean up is due: setup sets the seconds left until
+  # then, so the controller, its model calls and any image pull end by then on their own.
+  activeDeadlineSeconds: <ACTIVE_DEADLINE_SECONDS>
   # The controller and every tool process run as an ordinary user. fsGroup is what lets
   # the controller read the supplier key at mode 0440, and that is deliberate: the key
   # file is readable by the very user the tool processes also run as, so a tool refused it

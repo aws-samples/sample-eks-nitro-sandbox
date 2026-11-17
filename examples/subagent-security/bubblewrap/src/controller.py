@@ -53,10 +53,11 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 # Path-style addressing, so every S3 request goes to the Region's own endpoint rather
-# than to <bucket>.s3.<Region>.amazonaws.com. Three tries per request at most, the number
-# setup's cost check counts on for every S3 request this run makes.
+# than to <bucket>.s3.<Region>.amazonaws.com. Three HTTP sends per request at most, the
+# number setup's cost check counts on for every S3 request this run makes: botocore's
+# total_max_attempts counts the first send, where its max_attempts would count retries only.
 S3_CONFIG = Config(s3={"addressing_style": "path"},
-                   retries={"max_attempts": 3, "mode": "standard"})
+                   retries={"total_max_attempts": 3, "mode": "standard"})
 
 sys.path.insert(0, "/opt/analyst")
 sys.path.insert(0, "/opt/bubblewrap")

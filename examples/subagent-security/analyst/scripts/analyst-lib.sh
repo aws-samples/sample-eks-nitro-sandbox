@@ -383,18 +383,47 @@ analyst_image() {
 
 analyst_supplier_api() {
   say "4/7 the synthetic supplier API"
+  analyst_supplier_image
+  analyst_supplier_deploy ""
+}
+
+# The supplier API image alone: builds and pushes it, and records it in the run record.
+# Sets SUPPLIER_API_IMAGE.
+analyst_supplier_image() {
   analyst_image "$SUPPLIER_API_REPOSITORY" analyst/supplier-api/Dockerfile \
     "${ANALYST_SUPPLIER_API_INPUTS[@]}"
   # shortcut: recorded after analyst_image returns, so a run that stops between the build
   # and this line leaves that local image unrecorded; upgrade if that case turns up.
-  state_put SUPPLIER_API_IMAGE "$ANALYST_IMAGE"
+  SUPPLIER_API_IMAGE="$ANALYST_IMAGE"
+  state_put SUPPLIER_API_IMAGE "$SUPPLIER_API_IMAGE"
   state_put SUPPLIER_API_REPOSITORY_CREATED "$IMAGE_REPOSITORY_CREATED"
   state_put SUPPLIER_API_LOCAL_IMAGE_ID "$IMAGE_LOCAL_ID"
+}
+
+# Starts the supplier API from the image analyst_supplier_image pushed.
+#   analyst_supplier_deploy [<node name>]
+# With a node name, its pod is bound to that node (nodeName), so the scheduler never places
+# it and nothing provisions a node for it; it must then be running on exactly that node.
+analyst_supplier_deploy() {
+  local node="${1:-}"
   analyst_render "$SECTION_DIR/analyst/deploy/supplier-api.yaml" "$TMP_DIR/supplier-api.yaml" \
-    "s|<SUPPLIER_API_IMAGE>|$ANALYST_IMAGE|g"
+    "s|<SUPPLIER_API_IMAGE>|$SUPPLIER_API_IMAGE|g"
+  if [[ -n "$node" ]]; then
+    [[ "$node" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || die "'$node' is not a node name"
+    awk -v node="$node" '{ print }
+      /^      automountServiceAccountToken: false$/ { print "      nodeName: " node; n++ }
+      END { exit n == 1 ? 0 : 1 }' "$TMP_DIR/supplier-api.yaml" > "$TMP_DIR/supplier-api.pinned.yaml" ||
+      die "could not bind the supplier API's pod to node $node in its manifest"
+    mv "$TMP_DIR/supplier-api.pinned.yaml" "$TMP_DIR/supplier-api.yaml"
+  fi
   kc apply -n "$NAMESPACE" -f "$TMP_DIR/supplier-api.yaml"
   kc rollout status deployment/supplier-api -n "$NAMESPACE" --timeout=5m ||
     die "the supplier API did not become ready"
+  if [[ -n "$node" ]]; then
+    [[ "$(kc get pods -n "$NAMESPACE" -l app=supplier-api -o json |
+      jq -c --arg n "$node" '[.items[].spec.nodeName] | (length > 0 and all(. == $n))')" == true ]] ||
+      die "the supplier API's pods are not all on node $node"
+  fi
 }
 
 # ---------------------------------------------------------------------------

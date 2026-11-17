@@ -47,7 +47,8 @@ class EnvelopeExceeded(RuntimeError):
 #   total_tokens          cumulative input plus output tokens Strands allows before it stops
 #   max_tokens            output tokens one model response may produce (Bedrock's own cap)
 #   model_attempts        tries per model call, counting Strands' throttling retries
-#   sdk_attempts          tries per Bedrock request inside the AWS SDK (1 turns its retries off)
+#   sdk_attempts          HTTP sends per Bedrock request inside the AWS SDK, counting the first
+#                         (1 turns its retries off)
 #   max_request_bytes     the largest request, as JSON, this turn will send to the model
 #   evidence_tool_calls   the exact number of evidence tool calls an accepted answer makes
 ENVELOPE_KEYS = ("turns", "output_tokens", "total_tokens", "max_tokens", "model_attempts",
@@ -66,13 +67,22 @@ def check_envelope(envelope: dict) -> dict:
     return envelope
 
 
-class _CountedModel(Model):
-    """Wraps the Bedrock model and counts every attempt, whoever retries it.
+def bedrock_client_config(envelope: dict) -> BotocoreConfig:
+    """The Bedrock client settings for an envelope: at most sdk_attempts HTTP sends per request.
 
-    Strands' limits are checked between turns, and its throttling retries and the SDK's own
-    retries happen inside one turn, so neither bounds the number of requests on its own.
-    This does: the request after the last one the envelope allows is refused before it is
-    sent, and so is any request larger than the envelope allows.
+    total_max_attempts counts the first send; botocore's max_attempts counts retries only, so
+    max_attempts=1 would allow two sends.
+    """
+    return BotocoreConfig(retries={"total_max_attempts": envelope["sdk_attempts"], "mode": "standard"})
+
+
+class _CountedModel(Model):
+    """Wraps the Bedrock model and counts every model call, Strands' retries included.
+
+    Strands' limits are checked between turns, and its throttling retries happen inside one
+    turn, so neither bounds the number of calls on its own. This does: the call after the last
+    one the envelope allows is refused before it is sent, and so is any request larger than
+    the envelope allows. Each call is at most sdk_attempts HTTP sends (bedrock_client_config).
     """
 
     def __init__(self, inner, turn):
@@ -170,8 +180,7 @@ class ModelTurn:
         envelope = self.envelope
         model = _CountedModel(BedrockModel(
             model_id=self.model_id, region_name=self.region, max_tokens=envelope["max_tokens"],
-            boto_client_config=BotocoreConfig(
-                retries={"max_attempts": envelope["sdk_attempts"], "mode": "standard"})), self)
+            boto_client_config=bedrock_client_config(envelope)), self)
         # Strands retries only throttling, which Bedrock does not bill; it is still counted
         # above. max_attempts=1 is how Strands spells "no retries".
         agent = Agent(

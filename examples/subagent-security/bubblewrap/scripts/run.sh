@@ -6,7 +6,10 @@
 #   ./scripts/run.sh
 #
 # Each run gets a fresh run id and its own directories inside the pod, so one run cannot
-# read or resume another's. It leaves both pods running; ./scripts/clean.sh removes them.
+# read or resume another's. When it succeeds it leaves both pods running for the page's
+# last step; ./scripts/clean.sh removes them, and so does the run's own deadline. When it
+# fails, it runs ./scripts/clean.sh --delete-aws --delete-node itself, keeping what the run
+# printed in tmp/bubblewrap-run-failure/.
 set -euo pipefail
 
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,7 +19,7 @@ STATE_FILE="$TMP_DIR/state.env"
 
 for arg in "$@"; do
   case "$arg" in
-    --help|-h) sed -n '2,11p' "$0"; exit 0 ;;
+    --help|-h) sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -30,33 +33,51 @@ kc() {
 }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+# A run that fails for any reason removes what setup created, so nothing it started keeps
+# running or billing. What it printed is kept first, outside the run directory.
+on_run_exit() {
+  local status=$?
+  [[ "$status" != 0 ]] || return 0
+  trap - EXIT
+  echo "the run stopped (exit $status); removing what setup created so nothing it started keeps billing" >&2
+  rm -rf "$REPO_ROOT/tmp/bubblewrap-run-failure"
+  mkdir -p "$REPO_ROOT/tmp/bubblewrap-run-failure"
+  cp -R "$TMP_DIR/controller.log" "$TMP_DIR/runs" "$REPO_ROOT/tmp/bubblewrap-run-failure/" 2>/dev/null || true
+  "$SAMPLE_DIR/scripts/clean.sh" --delete-aws --delete-node ||
+    echo "the clean up after the failed run is incomplete (see above); run ./scripts/clean.sh --delete-aws --delete-node again" >&2
+  exit "$status"
+}
+trap on_run_exit EXIT
+
 # The pod has to be the one setup created, with the image setup pushed: a pod left from an
 # earlier image would run yesterday's code and the page would show the wrong thing.
 live_image="$(kc get pod analyst -n "$NAMESPACE" -o jsonpath='{.spec.containers[0].image}' 2>/dev/null)" ||
-  die "could not read the analyst pod in $NAMESPACE; run ./scripts/setup.sh"
+  die "could not read the analyst pod in $NAMESPACE"
 [[ "$live_image" == "$ANALYST_IMAGE" ]] ||
-  die "the running analyst pod uses $live_image, not the $ANALYST_IMAGE setup pushed; run ./scripts/setup.sh again"
+  die "the running analyst pod uses $live_image, not the $ANALYST_IMAGE setup pushed"
 [[ "$(kc get pod analyst -n "$NAMESPACE" -o jsonpath='{.spec.runtimeClassName}')" == "isolated-sandbox" ]] ||
   die "the analyst pod is not using the isolated-sandbox runtime class"
 
-# The same cost bound setup checked, again before the model turn: the very snapshot setup
-# read, still fresh, with the image sizes setup measured, and no later than an hour after
-# setup started. Silent when it passes.
-[[ -n "${COST_SNAPSHOT:-}" && -f "$COST_SNAPSHOT" ]] ||
-  die "the run record names no cost snapshot, or its file is gone; run ./scripts/setup.sh"
-[[ "$(sha256sum "$COST_SNAPSHOT" | cut -d' ' -f1)" == "${COST_SNAPSHOT_SHA256:-}" ]] ||
-  die "the cost snapshot $COST_SNAPSHOT changed after setup checked it; nothing was run"
+# The same cost bound setup checked, again before the model turn: the very collection setup
+# read, rebuilt from its raw reads, with the image sizes setup measured, and only inside the
+# run window that starts when setup did. Silent when it passes.
+[[ -n "${COST_SNAPSHOT:-}" && -d "$COST_SNAPSHOT" ]] ||
+  die "the run record names no cost snapshot, or its folder is gone"
 SECTION_DIR="$SAMPLE_DIR/.."
-python3 "$SAMPLE_DIR/scripts/cost_gate.py" --snapshot "$COST_SNAPSHOT" \
+terms="$(python3 "$SAMPLE_DIR/scripts/cost_gate.py" --snapshot "$COST_SNAPSHOT" \
   --manifest "$SAMPLE_DIR/deploy/analyst-pod.yaml" \
   --envelope "$SAMPLE_DIR/src/run_envelope.json" --region "$AWS_REGION" \
+  --account "${ACCOUNT_ID:-}" --cluster-name "${CLUSTER_NAME:-}" --kube-context "${KUBE_CONTEXT:-}" \
+  --extra-s3 "${COST_EXTRA_S3_REQUESTS:-}" \
   --model-id "${BEDROCK_MODEL_ID:-}" --image "supplier-api=${SUPPLIER_API_IMAGE_BYTES:-}" \
   --image "analyst=${ANALYST_IMAGE_BYTES:-}" --started-at "${RUN_STARTED_AT:-}" \
   --seed-object "$SECTION_DIR/analyst/fixtures/case.json" \
   --seed-object "$SECTION_DIR/analyst/fixtures/proposals/northstar.json" \
   --seed-object "$SECTION_DIR/analyst/fixtures/proposals/harbor.json" \
-  --seed-object "$SECTION_DIR/analyst/fixtures/proposals/cedar.json" >/dev/null ||
+  --seed-object "$SECTION_DIR/analyst/fixtures/proposals/cedar.json")" ||
   die "the cost check refused this run, for the reason above; nothing was run"
+[[ "$(jq -r '.snapshot_sha256' <<<"$terms")" == "${COST_SNAPSHOT_SHA256:-}" ]] ||
+  die "the cost snapshot $COST_SNAPSHOT changed after setup checked it; nothing was run"
 
 mkdir -p "$TMP_DIR"
 printf '\n==> running one procurement case in the sandbox\n'
@@ -66,7 +87,7 @@ kc exec analyst -n "$NAMESPACE" -- python3 /opt/bubblewrap/controller.py 2>&1 |
 status="${PIPESTATUS[0]}"
 set -e
 [[ "$status" == 0 ]] ||
-  die "the run failed; the last check it printed above is the one that did not hold. The full output is in $TMP_DIR/controller.log"
+  die "the run failed; the last check it printed above is the one that did not hold. The full output is kept in $REPO_ROOT/tmp/bubblewrap-run-failure/controller.log"
 
 run_id="$(grep -oE '^ANALYST_COMPLETE=[0-9a-f]{32}$' "$TMP_DIR/controller.log" | tail -1 | cut -d= -f2)"
 [[ -n "$run_id" ]] || die "the run printed no completion marker, so it did not finish"
