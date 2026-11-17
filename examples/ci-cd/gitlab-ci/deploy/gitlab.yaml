@@ -76,7 +76,7 @@ spec:
           image: gitlab/gitlab-ce:19.5.0-ce.0
           # The GitLab single-container image has no non-root mode: at every start
           # gitlab-ctl reconfigure runs as root, rewrites its own install tree and the
-          # service accounts in /etc/passwd, chowns its data and then starts each service as
+          # service groups in /etc/group, chowns its data and then starts each service as
           # its own user. So it stays root, with a writable root filesystem and the runtime's
           # default capabilities, less NET_RAW, which nothing here uses: the probes and the
           # runner talk HTTP. It gains no privileges beyond those it starts with.
