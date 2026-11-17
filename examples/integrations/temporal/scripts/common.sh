@@ -90,7 +90,7 @@ CHOSEN_STORAGE_CLASS=""
 
 # The versions this sample was built against. The scripts never install any of
 # them: they are shared installs, and the page has the reader install them.
-AGENT_SANDBOX_VERSION=v1.0.6
+AGENT_SANDBOX_VERSION=v1.0.10
 TEMPORAL_CHART_VERSION=1.7.0
 
 # Each of these goes into `sed s/__X__/value/`, where a `/`, a `&` or a `\`

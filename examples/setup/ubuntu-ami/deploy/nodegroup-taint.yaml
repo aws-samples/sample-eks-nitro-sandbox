@@ -1,0 +1,13 @@
+# Reference copy of the dedicated managed node group's taint, as scripts/join-nodegroup.sh
+# passes it to `aws eks create-nodegroup --taints`. Kept here so the README can show the
+# taint definition next to the pods that tolerate it, without parsing it out of the script.
+#
+# This is documentation, not something kubectl applies: EKS manages the node group's
+# taints as part of the node group resource itself, not as a separate Kubernetes object.
+# With a custom AMI, EKS applies API taints only after the node registers, so the node also
+# registers with the same taint itself: join-nodegroup.sh passes
+# --register-with-taints=sandbox.preview/ubuntu-ami=true:NoSchedule to kubelet.
+taints:
+  - key: sandbox.preview/ubuntu-ami
+    value: "true"
+    effect: NO_SCHEDULE

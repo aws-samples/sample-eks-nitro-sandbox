@@ -13,6 +13,9 @@ examples/
 │   ├── hello-sandbox/
 │   ├── coding-agent/
 │   └── warm-pool/
+├── setup/
+│   ├── ubuntu-ami/
+│   └── cilium-ubuntu/
 ├── isolation/
 │   ├── network-policy/
 │   └── sandbox-limits/
@@ -52,6 +55,7 @@ examples/
 │   └── gitlab-ci/
 ├── integrations/
 │   ├── temporal/
+│   ├── istio/
 │   └── opensandbox/
 └── confidential/
     ├── encrypted-image/
@@ -69,6 +73,25 @@ Samples marked ★ are the next six to be added.
 - [hello-sandbox](../examples/getting-started/hello-sandbox/README.md): a plain pod that opts into a sandbox with one line, and a variant with no network.
 - [coding-agent](../examples/getting-started/coding-agent/README.md): Claude Code in a sandbox that reads a GitHub issue, fixes it and opens a pull request.
 - [warm-pool](../examples/getting-started/warm-pool/README.md): a pool of pre-booted sandboxes, ready for a claim to pick one up.
+
+### Setup (`setup`)
+
+Cluster node-OS setup for a reader who manages their own node AMI instead of relying on EKS
+Auto Mode's managed one. Cluster and node-group lifecycle were previously treated as out of
+scope here; this section is an intentional, narrow addition: it covers building a node AMI
+for an existing cluster, not creating or managing the cluster itself.
+
+- [ubuntu-ami](../examples/setup/ubuntu-ami/README.md) (available now): build a custom Ubuntu 24.04
+  node AMI for EKS Pod Isolation and add one dedicated, tainted managed node group to an
+  existing cluster. Every input is public, pinned and checksum-verified: the base AMI, kernel
+  6.18.56 plus the Amazon Linux sandbox patch (commit 4ae89f6e), erofs-utils 1.8.10, distro
+  packages, and the Nitro Sandbox runtime release 0.1.4274.0 (signature verified), the guest
+  image 1.36.5/2026-11-06 and Firecracker v1.18.0 from the locations the Amazon EKS User Guide
+  names. Spec: [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10); moved to
+  the public releases in [#218](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/218).
+- [cilium-ubuntu](../examples/setup/cilium-ubuntu/README.md) (available now): a dedicated
+  disposable cluster with Cilium as the only CNI, in ENI mode with kube-proxy replacement, and
+  the two Ubuntu node groups (system and sandbox) from `ubuntu-ami` above joining it. Spec: [#11](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/11).
 
 ### Isolation (`isolation`)
 
@@ -108,13 +131,14 @@ Agent services that run the agent loop for you and send its tool calls to comput
 
 ### Subagent security (`subagent-security`)
 
-The same procurement analyst agent three ways. Inside its sandbox, a second policy layer confines the tools and subagents it runs, each with only the files, processes and network it needs.
+The same procurement analyst agent, with four choices for confining its tools. Inside its sandbox, a second policy layer confines the tools and subagents it runs, each with only the files, processes and network it needs.
 
 The [Subagent security section page](../examples/subagent-security/README.md) holds what they share: the analyst, the case, the shared `analyst/` folder and what a confinement layer has to supply.
 
 - [nono](../examples/subagent-security/nono/README.md) (available now): the analyst confined by nono, doing useful work with bounded access. Spec: [#34](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/34).
 - [bubblewrap](../examples/subagent-security/bubblewrap/README.md) (available now): the analyst whose tool processes are confined by bubblewrap, with no network for the restricted tools. Spec: [#35](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/35).
 - [openshell](../examples/subagent-security/openshell/README.md) (available now): the analyst confined by OpenShell, whose supervisor holds the real credentials in its own pod outside the sandbox. Spec: [#36](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/36).
+- [strands-box](../examples/subagent-security/strands-box/README.md) (available now): a procurement analyst in a Nitro sandbox, with separate role Boxes and history-dependent HTTP policies. Spec: [#156](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/156).
 
 ### OpenShell (`openshell`)
 
@@ -131,7 +155,7 @@ The [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) resources,
 - [warm-pool-autoscaling-keda](../examples/agent-sandbox/warm-pool-autoscaling-keda/README.md) (available now): KEDA scales a warm pool up and down with claim demand, so warm capacity tracks demand instead of a fixed count. Spec: [#31](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/31).
 - [ide](../examples/agent-sandbox/ide/README.md) (available now): VS Code in the browser on a persistent EBS workspace. Spec: [#32](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/32).
 - [argo-rollouts](../examples/agent-sandbox/argo-rollouts/README.md) (available now): rolling a `SandboxTemplate` change through a warm pool with Argo Rollouts, replacing the warm sandboxes built from the old template. Spec: [#33](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/33).
-- [brain-and-hands](../examples/agent-sandbox/brain-and-hands/README.md) (available now): the agent (the brain) runs on an ordinary pod with model access and no local shell. Each command it runs goes to a warm, network-isolated sandbox (the hands) that it claims from a pool and drives with `kubectl exec`. Spec: [#38](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/38).
+- [brain-and-hands](../examples/agent-sandbox/brain-and-hands/README.md) (available now): the agent (the brain) runs on an ordinary pod with model access and no local shell. Each command it runs goes to a warm sandbox (the hands) that it claims from a pool through the agent-sandbox MCP server and drives through sandboxd, with a template network policy that admits only pods labelled `app=brain` and allows no egress. Spec: [#38](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/38), updated in [#168](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/168).
 
 ### Storage (`storage`)
 
@@ -150,6 +174,7 @@ The [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) resources,
 Other platforms that create and manage sandboxes.
 
 - [temporal](../examples/integrations/temporal/README.md) (available now): Temporal workflows that create, drive, suspend, resume and remove sandboxes. Spec: [#26](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/26).
+- [istio](../examples/integrations/istio/README.md) (available now): Istio sidecars with the `istio-init` init container on Nitro sandboxes, with strict mutual TLS and an authorization policy, and what does not work today: the Istio CNI plugin (not on the roadmap for now) and ambient mesh (on the roadmap). Spec: [#239](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/239).
 - opensandbox (blocked until GA): Nitro sandboxes as a secure runtime for OpenSandbox. Waits for Nitro sandboxes to be generally available and the runtime to be added upstream in OpenSandbox. Spec: [#22](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/22).
 
 ### Confidential (`confidential`)

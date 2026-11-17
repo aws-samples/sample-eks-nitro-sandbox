@@ -3,7 +3,9 @@
 # - agent-app     the web app. Its Pod Identity role (the App role) manages per-session
 #                 access points and assumes the Mount role. In the cluster it may only do
 #                 what app/server/k8s.js calls: create, get, list and delete SandboxClaims, get
-#                 pods, exec into them, and get nodes.
+#                 pods, exec into them, get, list, create, patch and delete ConfigMaps
+#                 (each session's record, and the record of a failed clean stop), and get
+#                 nodes.
 # - agent-session the session pods of claude-code, opencode, pi and oh-my-pi. Its Pod Identity role (the
 #                 Bedrock role) may only invoke models. It has no S3 Files access: the mount
 #                 credential arrives per session through exec, not from this role.
@@ -56,13 +58,21 @@ rules:
   - apiGroups: ["extensions.agents.x-k8s.io"]
     resources: ["sandboxclaims"]
     verbs: ["get", "list", "create", "delete"]
-  # Read the claimed pod (its node and Ready condition), and drive the terminal.
+  # Read the claimed pod (its node, IP and Ready condition). Exec is for starting and
+  # stopping a session and reading back session-bridge's token and certificate; the
+  # terminal itself goes to session-bridge over the pod network.
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get"]
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["create", "get"]
+  # Each session has a record, a ConfigMap (session-<session>), which the session list is
+  # read from. A failed clean stop records the pod in a ConfigMap (pending-stop-<session>)
+  # until the pod is confirmed gone, so the record outlives an app restart.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "create", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

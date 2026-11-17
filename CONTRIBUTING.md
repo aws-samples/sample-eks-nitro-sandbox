@@ -7,6 +7,32 @@ Please read through this document before submitting any issues or pull requests 
 information to effectively respond to your bug report or contribution.
 
 
+## Your first contribution
+
+New contributors are welcome here, and a first contribution does not have to be large. A typo fix, a
+clearer sentence on a sample's page, a small script fix, or a good bug report all help, and all are
+genuine contributions.
+
+A good place to start is an issue labeled [`good first issue`](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+or [`help wanted`](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22);
+see [Finding contributions to work on](#finding-contributions-to-work-on) below. If something in a
+blueprint is unclear or looks wrong, that is worth an issue even if you are not sure it is a bug.
+
+A few things make contributing here easier for everyone:
+
+* **Ask when unsure.** Prefer asking on the issue or pull request over guessing. There are no silly
+  questions, and asking early saves everyone time.
+* **Communicate in writing.** Keep the discussion on the issue and the pull request, so anyone can
+  follow why a change was made.
+* **Be kind and patient.** This is a worldwide community across many time zones, so a reply may not
+  come straight away. Be respectful and professional in every exchange.
+* **Keep a change focused.** A pull request that does one thing is easier to review and merge than one
+  that changes many unrelated things at once.
+
+If you used an AI tool to help prepare your contribution, you are still responsible for understanding
+every change in it and for engaging with reviewers yourself.
+
+
 ## Reporting Bugs/Feature Requests
 
 We welcome you to use the GitHub issue tracker to report bugs or suggest features.
@@ -57,6 +83,64 @@ Skip issues that are assigned or labeled `in progress` (someone is working on th
 This project has adopted the [Amazon Open Source Code of Conduct](https://aws.github.io/code-of-conduct).
 For more information see the [Code of Conduct FAQ](https://aws.github.io/code-of-conduct-faq) or contact
 opensource-codeofconduct@amazon.com with any additional questions or comments.
+
+
+## Security scanning
+Every commit and every pull request is scanned with the [Automated Security Helper](https://github.com/awslabs/automated-security-helper)
+(ASH) v3.7.1, configured in `.ash/.ash.yaml`. A finding of severity Critical or High that no suppression covers blocks
+the commit, and fails the **ASH Security Scan** workflow, which runs on every pull request to *main*.
+
+To set it up, install pre-commit and ASH in a virtual environment under `tmp/` (ASH v3.7.1 supports Python 3.10 to 3.12),
+then install the hooks:
+
+```bash
+python3.12 -m venv tmp/venv-ash
+tmp/venv-ash/bin/pip install pre-commit 'git+https://github.com/awslabs/automated-security-helper.git@v3.7.1'
+tmp/venv-ash/bin/pre-commit install
+```
+
+`pre-commit install` writes `.git/hooks/pre-commit`, which calls the Python in `tmp/venv-ash`, so `git commit` runs the
+hooks without activating the environment. If you delete `tmp/venv-ash`, set it up again. On each commit the hooks check
+for conflict markers, private keys and AWS credentials, and run a fast ASH scan. Two of them also fix trailing whitespace and missing final newlines; `.pre-commit-config.yaml` says what each hook does.
+
+ASH and pre-commit download scanners and hook environments into your home folder by default. On a shared machine, keep
+them under `tmp/` by setting these in the shell you commit and scan from:
+
+```bash
+export ASH_BIN_PATH="$PWD/tmp/ash/bin" UV_TOOL_DIR="$PWD/tmp/ash/uv-tools" \
+  UV_TOOL_BIN_DIR="$PWD/tmp/ash/uv-bin" PRE_COMMIT_HOME="$PWD/tmp/pre-commit"
+```
+
+To run the full scan that CI runs, from the repository root:
+
+```bash
+source tmp/venv-ash/bin/activate
+ash --mode local --config .ash/.ash.yaml
+```
+
+With uv you can skip the virtual environment for this scan:
+`uvx --python 3.12 --from 'git+https://github.com/awslabs/automated-security-helper.git@v3.7.1' ash --mode local --config .ash/.ash.yaml`.
+Reports go to `.ash/ash_output/`, which git ignores; start with `.ash/ash_output/reports/ash.summary.md`.
+
+`git commit --no-verify` skips the hooks. Use it only in an emergency: the workflow still scans the pull request and
+reports the finding.
+
+If a finding is a false positive or an accepted risk, add a suppression under `global_settings` in `.ash/.ash.yaml`, with
+the rule ID from the report, the narrowest path that covers it, a reason and an expiration date, and explain it in the
+pull request description:
+
+```yaml
+global_settings:
+  suppressions:
+    - rule_id: 'B602'
+      path: 'examples/<section>/<sample>/scripts/run.py'
+      line_start: 12
+      line_end: 14
+      reason: 'The command is a fixed list; no reader input reaches the shell'
+      expiration: '2027-06-30'
+```
+
+`line_start` and `line_end` are optional. After the expiration date the finding counts again.
 
 
 ## Security issue notifications

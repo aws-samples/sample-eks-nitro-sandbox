@@ -1,0 +1,74 @@
+# Synthetic HTTP fixture with no API key, TLS material, or customer data.
+# Both ClusterIP names reach the same ordinary pod, including the refused alias control.
+apiVersion: v1
+kind: Service
+metadata:
+  name: supplier-api
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+spec:
+  type: ClusterIP
+  selector:
+    app: supplier-api
+  ports:
+    - {name: http, port: 8080, targetPort: 8080, protocol: TCP}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: supplier-api-alias
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+spec:
+  type: ClusterIP
+  selector:
+    app: supplier-api
+  ports:
+    - {name: http, port: 8080, targetPort: 8080, protocol: TCP}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: supplier-api
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: supplier-api
+  template:
+    metadata:
+      labels:
+        app: supplier-api
+        app.kubernetes.io/managed-by: <MANAGED_BY>
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+      containers:
+        - name: api
+          image: <SUPPLIER_API_IMAGE>
+          ports:
+            - {containerPort: 8080, protocol: TCP}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile: {type: RuntimeDefault}
+            capabilities:
+              drop: [ALL]
+          readinessProbe:
+            httpGet: {scheme: HTTP, path: /healthz, port: 8080}
+          livenessProbe:
+            httpGet: {scheme: HTTP, path: /healthz, port: 8080}
+          volumeMounts:
+            - {name: state, mountPath: /var/lib/supplier}
+      volumes:
+        - name: state
+          emptyDir: {}

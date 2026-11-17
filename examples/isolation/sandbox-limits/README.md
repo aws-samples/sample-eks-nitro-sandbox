@@ -2,11 +2,11 @@
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
-sample first so you have a cluster with the runtime classes. This sample also uses the
+blueprint first so you have a cluster with the runtime classes. This blueprint also uses the
 once-per-cluster network policy enforcement that
 [Getting started > Coding agent](../../getting-started/coding-agent/README.md) turns on. The
 commands below use files from this repository, so clone it if you have not already, and run
-them from this sample's folder:
+them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
@@ -17,7 +17,7 @@ A Nitro sandbox applies per-pod limits so no single sandboxed pod can exhaust a 
 whole node shares. Two are easy to reach by accident: a limit on how many DNS queries a second
 the pod may send to the cluster resolver, and a limit on how many simultaneous outbound
 connections the pod may hold. Both are on by default and stay invisible until a workload crosses
-one, at which point the symptom looks like an application bug. This sample makes each limit
+one, at which point the symptom looks like an application bug. This blueprint makes each limit
 visible on your own cluster and teaches its symptom, so a team recognises it instead of debugging
 it blind.
 
@@ -27,7 +27,7 @@ reach the limit while the identical ordinary pod sails past it. The ordinary pod
 so the result cannot be read any other way: same image, same target, same offered load, and the
 only pod that reaches the limit is the sandboxed one.
 
-The table below lists every per-sandbox limit, so a reader who meets one this sample does not
+The table below lists every per-sandbox limit, so a reader who meets one this blueprint does not
 walk through still has its annotation, its default and how to change it. The walkthroughs then
 cover the [DNS query-rate limit](#the-dns-query-rate-limit) first, then the
 [outbound connection limit](#the-outbound-connection-limit).
@@ -89,9 +89,9 @@ the throttle where it was rather than failing the pod.
 connectivity toggle rather than a throttle: it is off unless you set it to `"true"`, and when
 you do the sandbox boots with no network interface at all, rather than a capped one, so it has
 no default to raise and nothing to turn off. The
-[hello sandbox](../../getting-started/hello-sandbox/README.md) sample shows that mode.
+[hello sandbox](../../getting-started/hello-sandbox/README.md) blueprint shows that mode.
 
-The two limits this sample walks through are the
+The two limits this blueprint walks through are the
 [DNS query rate](#the-dns-query-rate-limit) (`dns-packets-per-second`) and the
 [outbound connection count](#the-outbound-connection-limit) (`conntrack-limit`), each measured
 on your own cluster against an identical ordinary pod.
@@ -133,7 +133,7 @@ The files:
 
 | File | What it is |
 |---|---|
-| [`deploy/namespace.yaml`](deploy/namespace.yaml) | The `sandbox-limits` namespace this sample owns |
+| [`deploy/namespace.yaml`](deploy/namespace.yaml) | The `sandbox-limits` namespace this blueprint owns |
 | [`deploy/probe-standard.yaml`](deploy/probe-standard.yaml) | The ordinary probe pod: the control |
 | [`deploy/probe-sandboxed.yaml`](deploy/probe-sandboxed.yaml) | The sandboxed probe pod: identical but for `runtimeClassName: isolated-sandbox` |
 | [`deploy/probe-sandboxed-raised.yaml`](deploy/probe-sandboxed-raised.yaml) | The optional DNS variant: a sandboxed probe with the DNS limit raised by annotation |
@@ -159,18 +159,18 @@ section "Per-pod DNS query rate limit": each pod that uses the `isolated-sandbox
 has a DNS query-rate limit to the cluster resolver, with a short burst allowance, and excess
 queries are dropped. **The default is 100 queries per second per family.** It protects the
 per-ENI VPC resolver budget shared by pods on the same ENI. The guide names the same symptom
-this sample shows: workloads that resolve a large number of unique hostnames per second "hit the
+this blueprint shows: workloads that resolve a large number of unique hostnames per second "hit the
 limit and see intermittent DNS resolution failures."
 
 This page shows the measured plateau from a fresh run and that it sits near that documented 100
-queries per second; the number itself is the User Guide's, not this sample's. The short burst
+queries per second; the number itself is the User Guide's, not this blueprint's. The short burst
 allowance the guide notes is why the measured plateau reads a little above 100 over a short
 window.
 
 ## Versions
 
 Nothing is pinned beyond the image in the manifests: the probe pods use a stock image, pinned by
-tag, and the sample installs no controller, SDK, client library or chart of its own. Network
+tag, and the blueprint installs no controller, SDK, client library or chart of its own. Network
 policy enforcement is a cluster feature turned on with the `amazon-vpc-cni` ConfigMap (step 1).
 
 | Component | Pin | Latest (2026-10-18) |
@@ -181,7 +181,7 @@ policy enforcement is a cluster feature turned on with the `amazon-vpc-cni` Conf
 enforcing them until the Network Policy Controller is enabled, once per cluster, through the
 `amazon-vpc-cni` ConfigMap in `kube-system`. This affects the whole cluster; pods that no policy
 selects are unaffected. If you have run the
-[coding agent](../../getting-started/coding-agent/README.md) sample this is already on;
+[coding agent](../../getting-started/coding-agent/README.md) blueprint this is already on;
 otherwise:
 
 ```bash
@@ -206,7 +206,7 @@ address: it is a literal `0.0.0.0/0` in the file, so there is no cluster-specifi
 look up or substitute.
 
 `kubectl create` refuses a `sandbox-limits` namespace that already exists, so a namespace this
-sample did not make is never relabeled as its own:
+blueprint did not make is never relabeled as its own:
 
 ```bash
 kubectl create -f deploy/namespace.yaml &&
@@ -312,7 +312,7 @@ namespace, applies the policy and the two pods, and prints each probe's answered
 
 ## How the network policy works
 
-The probe pods have a network, so the sample restricts their egress with a standard
+The probe pods have a network, so the blueprint restricts their egress with a standard
 `networking.k8s.io/v1` `NetworkPolicy` and shows the whole policy here. It allows just two things,
 the DNS the DNS probe needs and the TCP egress to the sink the connection probe needs, and denies
 everything else. DNS (port 53) is allowed to any IP address: a literal `0.0.0.0/0` in the file,
@@ -400,7 +400,7 @@ refused: TimeoutError
 
 The query-rate limit sits on the sandbox network path, not in this policy: the policy only scopes
 which destinations the probe may reach. Keeping egress to the in-cluster resolver also means the
-sample needs no internet egress.
+blueprint needs no internet egress.
 
 ## Optional: raise the DNS limit and watch the plateau move
 
@@ -471,7 +471,7 @@ this page reads them this way:
 
 | ordinary pod | sandboxed pod | Meaning |
 |---|---|---|
-| answers the full rate | plateaus | The per-sandbox DNS limit bites on the sandbox path, as this sample claims. |
+| answers the full rate | plateaus | The per-sandbox DNS limit bites on the sandbox path, as this blueprint claims. |
 | answers the full rate | also answers the full rate | The limit did not show on this cluster under this load, so the build is not enforcing it here. That is a runtime fact, not a sandbox defect, and the page states no number in that case. |
 | plateaus | either | The cluster DNS or the offered load is the bottleneck, not the sandbox. The result cannot be attributed, so the comparison says so rather than blaming the sandbox. |
 
@@ -490,7 +490,7 @@ The Amazon EKS User Guide documents it in *Isolated and confidential pods limita
 are counted independently). An `iptables` rule on the parent instance enforces it by dropping
 connection-initiating packets when the pod is at its limit, which stops one pod from filling the
 node's connection-tracking table and denying network access to the other pods on the instance.
-The guide names the same symptom this sample shows: "new connections timing out during traffic
+The guide names the same symptom this blueprint shows: "new connections timing out during traffic
 spikes while existing connections continue to work."
 
 The probe opens concurrent outbound TCP connections to an in-cluster sink and holds each open,
@@ -534,7 +534,7 @@ and the guest connection-tracking count read 4097 at the plateau, near the docum
 ```
 
 The block is abridged: it starts at `sink pod IP:`. Before that the script reuses the
-sample's namespace, deletes the pods left from an earlier run, and applies the policy, the
+blueprint's namespace, deletes the pods left from an earlier run, and applies the policy, the
 sink and the two probe pods.
 
 The ordinary control opens all 6000 flows against the same sink with no drop, so neither the sink
@@ -607,7 +607,7 @@ way:
 
 | ordinary pod | sandboxed pod | Meaning |
 |---|---|---|
-| opens the full budget, no drop | plateaus near 4096, new connections time out | The per-pod connection limit bites on the sandbox path, as this sample claims. |
+| opens the full budget, no drop | plateaus near 4096, new connections time out | The per-pod connection limit bites on the sandbox path, as this blueprint claims. |
 | opens the full budget | also opens the full budget | The limit did not show on this cluster under this load, so the build is not enforcing it here. That is a runtime fact, not a sandbox defect, and the page states no number in that case. |
 | cannot clear the cap | either | The sink or the path is the bottleneck, not the sandbox. The result cannot be attributed, so the comparison says so rather than blaming the sandbox. |
 
@@ -649,11 +649,11 @@ for both, `6.18.51`; the build (`#1` versus `#2`, and the date) and the boot are
 
 ## Clean up
 
-Remove the pods, the sink, the policy and the namespace this sample created. Either cleanup flag
+Remove the pods, the sink, the policy and the namespace this blueprint created. Either cleanup flag
 deletes the whole namespace, so one is enough; each first confirms the namespace carries this
-sample's `sample: sandbox-limits` label and refuses to delete one that does not. This does not
+blueprint's `sample: sandbox-limits` label and refuses to delete one that does not. This does not
 touch the cluster-wide enforcement setting from step 1. If you ran an earlier version of this
-sample, its `sandbox-limits` namespace predates that label, so delete it once by hand
+blueprint, its `sandbox-limits` namespace predates that label, so delete it once by hand
 (`kubectl delete namespace sandbox-limits`) before running the scripts again.
 
 ```bash
@@ -661,8 +661,8 @@ scripts/run-comparison.sh --cleanup            # DNS walkthrough
 scripts/run-conntrack-comparison.sh --cleanup  # connection walkthrough
 ```
 
-Or by hand. First confirm the namespace is this sample's: the next command must print
-`sandbox-limits`. If it prints nothing, the namespace is not this sample's, so delete nothing.
+Or by hand. First confirm the namespace is this blueprint's: the next command must print
+`sandbox-limits`. If it prints nothing, the namespace is not this blueprint's, so delete nothing.
 
 ```bash
 kubectl get namespace sandbox-limits -o jsonpath='{.metadata.labels.sample}{"\n"}'
@@ -675,7 +675,7 @@ kubectl delete -f deploy/probe-sandboxed.yaml -f deploy/probe-standard.yaml -f d
 kubectl delete -f deploy/namespace.yaml --ignore-not-found
 ```
 
-The network policy enforcement is cluster-wide, and if you enabled it in step 1 this sample does
+The network policy enforcement is cluster-wide, and if you enabled it in step 1 this blueprint does
 not turn it back off. On a cluster you keep, leave it on (it only enforces policies that select a
 pod), or, if nothing else relies on it, turn it off by setting the `amazon-vpc-cni` ConfigMap's
 `enable-network-policy-controller` back to `"false"`. If it was already on before you started,

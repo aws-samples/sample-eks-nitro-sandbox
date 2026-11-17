@@ -18,6 +18,7 @@ Closes #
 - [ ] For a sample: the clean up ran after the last run, and anything it could not remove is listed in this description
 - [ ] For a sample: added to the `mkdocs.yml` nav (`--strict` does not catch a missing entry), and `docs/ROADMAP.md` (linked, `(available now)`) and the root `README.md` updated
 - [ ] `mkdocs build --strict`, `./scripts/check-agent-files.sh` and `./scripts/check-sample-index.sh` pass
+- [ ] ASH reports no Critical or High finding, or this description explains each suppression this pull request adds
 - [ ] The branch has the latest `main` merged in (no rebase or force-push), with conflicts resolved as AGENTS.md says, and the checks pass on its current head
 - [ ] Only the files this pull request means to change are changed; logs, captured output, stubs and hand-off scripts stay in `tmp/`
 - [ ] No values from your own account or environment (account IDs, keys, tokens, names of your clusters or hosts, user names, internal URLs) in the changed files

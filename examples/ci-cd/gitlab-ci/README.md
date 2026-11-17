@@ -5,7 +5,7 @@ that is your hardware, and the job that needs a Docker daemon is the hardest cas
 daemon is privileged on the node, where a `Dockerfile` or a test can reach the other jobs and
 the node's credentials, or it is not privileged and the build cannot be done at all.
 
-This sample takes that choice away for a whole GitLab, not for one hand-written pod. A
+This blueprint takes that choice away for a whole GitLab, not for one hand-written pod. A
 self-hosted GitLab runs in the cluster, a GitLab Runner with the Kubernetes executor runs
 beside it as an ordinary pod, and **one line in the runner's `config.toml` puts every job pod
 it creates in a Nitro sandbox**. A pipeline then runs the hard case: one privileged
@@ -14,7 +14,7 @@ It reads the evidence that it is in a sandbox of its own before it starts the da
 kernel the daemon is then privileged against is that sandbox's. No pipeline has to know.
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
-on the home page, and these samples, which this one builds on:
+on the home page, and these blueprints, which this one builds on:
 
 - [Getting started > Hello sandbox](../../getting-started/hello-sandbox/README.md): the
   one-line opt-in, and how a pod shows that it ran in a sandbox.
@@ -24,7 +24,7 @@ on the home page, and these samples, which this one builds on:
   forge, with the controller as an ordinary pod and one sandbox per queued job.
 
 The commands below use files from this repository, so clone it if you have not already, and
-run them from this sample's folder:
+run them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
@@ -39,10 +39,10 @@ GitLab's data went with its claim. They run on `bash`, version 4 or later, for t
 arrays `scripts/run-pipeline.sh` keeps the job pods in. The run on this page used `kubectl`
 v1.35.0, `jq` 1.8.1, AWS CLI 2.38.0, OpenSSL 3.5.8 and `bash` 5.2.15.
 
-You need no GitLab account and no GitLab.com project: the GitLab this sample talks to is the
+You need no GitLab account and no GitLab.com project: the GitLab this blueprint talks to is the
 one it installs, and the runner's authentication token is minted from it.
 
-Every output block on this page is from one run of this sample, which began with none of its
+Every output block on this page is from one run of this blueprint, which began with none of its
 resources present on the cluster: the namespace, GitLab, the runner manager and any job pod
 were all absent before it started. Local names in that output are replaced by the
 placeholders the commands use, because this repository is public: `<CLUSTER_NAME>` for the
@@ -50,7 +50,7 @@ kube context, `<NODE_NAME>` for an EC2 instance id and `<VOLUME_ID>` for the id 
 volume behind GitLab's claim. Pod names, pod UIDs, kernel builds, uptimes, device lists and
 timings are as the run printed them.
 
-There is no model or API cost. While the sample is up, one GitLab pod and its EBS volume run
+There is no model or API cost. While the blueprint is up, one GitLab pod and its EBS volume run
 on the general-purpose pool; each pipeline run holds sandbox capacity for the length of its
 job, and the build pulls its base images over the cluster's existing egress.
 
@@ -82,19 +82,19 @@ from it, that a privileged container in the guest is not a privileged container 
 is the runtime class's property rather than something this run measures: the Amazon EKS User
 Guide, *Isolated and confidential pods*, describes the boundary and what it protects.
 
-**The sample publishes no endpoint outside the cluster.** GitLab is a ClusterIP Service, and
+**The blueprint publishes no endpoint outside the cluster.** GitLab is a ClusterIP Service, and
 there is no Ingress, LoadBalancer or NodePort anywhere in this folder, so nothing it creates
 is reachable from outside your VPC. Inside the cluster it is an ordinary Service: the runner
 and the job pods reach it, which is how they clone and report status. The operator reaches it
 with `kubectl port-forward`.
 
-**What this sample does not limit.** It ships no network policy, so a job pod, which has a
+**What this blueprint does not limit.** It ships no network policy, so a job pod, which has a
 network, reaches what any pod on the cluster reaches, including the internet. The boundary
-this sample creates is the sandbox's: the job's containers run in a lightweight VM with a
+this blueprint creates is the sandbox's: the job's containers run in a lightweight VM with a
 kernel of their own, which is what Step 4 and Step 5 show, and what that boundary protects the
 node from is the runtime class's own property (Amazon EKS User Guide, *Isolated and
 confidential pods*). To restrict where a job pod can connect, see the
-[network policy](../../isolation/network-policy/README.md) sample. The sample creates no IAM
+[network policy](../../isolation/network-policy/README.md) blueprint. The blueprint creates no IAM
 role and no EKS Pod Identity association, so a job pod has no role to assume in your account
 and this page claims no limit from one.
 
@@ -102,7 +102,7 @@ and this page claims no limit from one.
 in `gitlab-ci-demo`, the manager creates one sandbox pod per CI job, and the runner
 authentication token stays with the manager.*
 
-![Outside AWS sits the operator's machine, which reaches the cluster with kubectl port-forward on 8080, and its arrow in is labelled operator's way in. Inside the AWS Cloud, an Amazon EKS cluster holds the namespace gitlab-ci-demo. Along the top of that namespace are the long-lived ordinary pods: a ClusterIP Service gitlab, which the operator's arrow reaches and which selects pod gitlab, GitLab CE in one container, and pod gitlab mounts an Amazon EBS volume holding 30Gi of GitLab data. To their right, a Kubernetes Secret holding the runner token has an arrow labelled mounted by the manager running to pod gitlab-runner, the runner manager, which has no runtime class. An arrow from the runner manager down and to the left is labelled one pod per CI job, and it ends at a Nitro sandbox pod framed in red, below the long-lived pods and in the middle of the namespace. That frame carries runtimeClassName isolated-sandbox and the note one per CI job, deleted when the job ends, and it holds one container, docker-build, which runs its own dockerd on a Unix socket. An arrow from the sandbox pod runs back up to the Service gitlab, labelled clone and report status, because a job pod uses the in-cluster Service address, and another runs out of the cluster to Amazon ECR Public for base images, labelled pull base images. Below the sandbox pod, inside the cluster and outside that frame, is the shared EC2 node, whose kernel is never the job pod's. A note under the figure says that the sandbox is the boundary: the Docker daemon the docker-build job starts is privileged against its own job pod's guest kernel, which is the kernel the daemon reports, while the boundary that protects the node is the runtime class's, citing the Amazon EKS User Guide, Isolated and confidential pods. It adds that the runner authentication token stays in the manager and no job pod mounts it, and that GitLab has no Ingress, LoadBalancer or NodePort, so the sample publishes no endpoint outside the cluster.](images/architecture.png)
+![Outside AWS sits the operator's machine, which reaches the cluster with kubectl port-forward on 8080, and its arrow in is labelled operator's way in. Inside the AWS Cloud, an Amazon EKS cluster holds the namespace gitlab-ci-demo. Along the top of that namespace are the long-lived ordinary pods: a ClusterIP Service gitlab, which the operator's arrow reaches and which selects pod gitlab, GitLab CE in one container, and pod gitlab mounts an Amazon EBS volume holding 30Gi of GitLab data. To their right, a Kubernetes Secret holding the runner token has an arrow labelled mounted by the manager running to pod gitlab-runner, the runner manager, which has no runtime class. An arrow from the runner manager down and to the left is labelled one pod per CI job, and it ends at a Nitro sandbox pod framed in red, below the long-lived pods and in the middle of the namespace. That frame carries runtimeClassName isolated-sandbox and the note one per CI job, deleted when the job ends, and it holds one container, docker-build, which runs its own dockerd on a Unix socket. An arrow from the sandbox pod runs back up to the Service gitlab, labelled clone and report status, because a job pod uses the in-cluster Service address, and another runs out of the cluster to Amazon ECR Public for base images, labelled pull base images. Below the sandbox pod, inside the cluster and outside that frame, is the shared EC2 node, whose kernel is never the job pod's. A note under the figure says that the sandbox is the boundary: the Docker daemon the docker-build job starts is privileged against its own job pod's guest kernel, which is the kernel the daemon reports, while the boundary that protects the node is the runtime class's, citing the Amazon EKS User Guide, Isolated and confidential pods. It adds that the runner authentication token stays in the manager and no job pod mounts it, and that GitLab has no Ingress, LoadBalancer or NodePort, so the blueprint publishes no endpoint outside the cluster.](images/architecture.png)
 
 One sandbox pod is drawn because this pipeline has one job. The frame's own note is the
 general rule the runner follows: one pod per CI job, deleted when the job ends. A pipeline
@@ -127,7 +127,7 @@ The runner's helper image is left at the runner's own default for its version, w
 matching `gitlab-runner-helper` tag. It is amd64, so `node_selector` keeps the job pods on
 amd64 nodes.
 
-This sample installs no agent-sandbox resources. The job pods are sandboxes because of one
+This blueprint installs no agent-sandbox resources. The job pods are sandboxes because of one
 line of runner configuration, not because of a `SandboxTemplate` or a warm pool.
 
 ## Files
@@ -137,15 +137,15 @@ line of runner configuration, not because of a `SandboxTemplate` or a warm pool.
 | [`deploy/gitlab.yaml`](deploy/gitlab.yaml) | GitLab: the Deployment, its ClusterIP Service and its volume |
 | [`deploy/runner.yaml`](deploy/runner.yaml) | The runner manager: ServiceAccount, namespaced Role and RoleBinding, Deployment |
 | [`deploy/ordinary-pod.yaml`](deploy/ordinary-pod.yaml) | An ordinary pod, for the comparison in Step 4 only |
-| [`runner/config.toml.template`](runner/config.toml.template) | The runner configuration, and where this sample happens |
+| [`runner/config.toml.template`](runner/config.toml.template) | The runner configuration, and where this blueprint happens |
 | [`pipeline/.gitlab-ci.yml`](pipeline/.gitlab-ci.yml) | The pipeline: one privileged `docker build` job, which reads the sandbox evidence before it builds |
 | [`pipeline/ci/Dockerfile`](pipeline/ci/Dockerfile), [`pipeline/ci/main.go`](pipeline/ci/main.go), [`pipeline/ci/go.mod`](pipeline/ci/go.mod) | The multi-stage build context the privileged job builds |
 | [`scripts/setup.sh`](scripts/setup.sh) | The namespace and the self-hosted GitLab |
 | [`scripts/bootstrap-runner.sh`](scripts/bootstrap-runner.sh) | The project, the runner authentication token, and the runner manager |
 | [`scripts/run-pipeline.sh`](scripts/run-pipeline.sh) | Starts a pipeline, records each job pod while it exists, prints the logs |
-| [`scripts/clean.sh`](scripts/clean.sh) | Removes everything the sample created, and confirms it is gone |
+| [`scripts/clean.sh`](scripts/clean.sh) | Removes everything the blueprint created, and confirms it is gone |
 | [`scripts/common.sh`](scripts/common.sh) | Shared by the four: `.env`, the pinned context, the namespace check |
-| [`.env.example`](.env.example) | The local values the sample needs; copy to `.env`, which git ignores |
+| [`.env.example`](.env.example) | The local values the blueprint needs; copy to `.env`, which git ignores |
 
 ## Quick start
 
@@ -170,7 +170,7 @@ belongs to the claim.
 GitLab's own container does set CPU and memory (1 CPU / 6Gi requested, 12Gi memory limit),
 unlike most pods on this site: it runs Puma, Sidekiq, Postgres, Redis, Gitaly and nginx
 together in one container, so with no request it would land on whatever node has room and be
-the first thing the kubelet evicts under pressure. These are this sample's own values, not a
+the first thing the kubelet evicts under pressure. These are this blueprint's own values, not a
 GitLab minimum; the GitLab documentation sizes a production install.
 
 The namespace is created only when it is absent, and is labelled `ManagedBy=gitlab-ci`. A
@@ -178,10 +178,10 @@ namespace of that name that exists without the label is refused, because on a sh
 it is someone else's. Every later script checks that one label before it writes anything, and
 the clean up checks it before it deletes anything.
 
-**This sample installs nothing shared, and needs no controller or operator.** Unlike the
-GitHub Actions sample, which needs one Actions Runner Controller for the whole cluster, GitLab
+**This blueprint installs nothing shared, and needs no controller or operator.** Unlike the
+GitHub Actions blueprint, which needs one Actions Runner Controller for the whole cluster, GitLab
 Runner with the Kubernetes executor is a plain Deployment with a namespaced `Role`: both
-GitLab and the runner manager are this sample's own objects, in this sample's own namespace.
+GitLab and the runner manager are this blueprint's own objects, in this blueprint's own namespace.
 The one shared thing it relies on is the cluster's EBS CSI driver, which EKS Auto Mode
 provides, and it is used exactly as it is: the script chooses a class, never creates or
 changes one.
@@ -238,7 +238,7 @@ single-container image migrates its database and starts Postgres, Redis, Gitaly,
 Puma and nginx on a first boot, and `kubectl get pods` shows `Running` for several minutes
 before any of that is usable.
 
-To look at it yourself, forward the Service to your own machine. The sample publishes nothing
+To look at it yourself, forward the Service to your own machine. The blueprint publishes nothing
 outside the cluster, so this is how an operator reaches it:
 
 ```bash
@@ -318,7 +318,7 @@ value it got does not start with `glrt-`.
 object, token and all, into a `kubectl.kubernetes.io/last-applied-configuration` annotation,
 and `kubectl describe secret` prints annotations even though it hides `data`.
 
-### The two lines that are the whole sample
+### The two lines that are the whole blueprint
 
 Here is the part of [`runner/config.toml.template`](runner/config.toml.template) that matters.
 The script renders `<GITLAB_URL>`, `<NAMESPACE>` and `<RUNNER_TOKEN>` into it before storing
@@ -374,7 +374,7 @@ A sandbox is sized when it boots and cannot be resized in place (Amazon EKS User
 *Isolated and confidential pods limitations*, In-place resource resize), so a job pod has to
 ask for what the job needs up front. With no request at all the VM gets the small default
 size, and a job that unpacks a toolchain is killed for running out of memory with no log line
-to say so. These are this sample's values for this pipeline, not a platform minimum.
+to say so. These are this blueprint's values for this pipeline, not a platform minimum.
 
 A job pod's VM is sized from the whole pod's requests, so each job pod's sandbox is the sum of
 its build and helper containers, 1.25 CPU and 2.5Gi, plus the RuntimeClass's own overhead. No
@@ -448,7 +448,7 @@ button leads. Forward the Service as Step 1 shows and open the project to see it
 page for the run above, from the same pipeline the block records. The account it shows is
 GitLab's own built-in `root` user, whose display name in a fresh GitLab is `Administrator`:
 that is the account Step 1 has you sign in as and the one the scripts work as, not a user this
-sample creates, so a reader's own screen says the same:
+blueprint creates, so a reader's own screen says the same:
 
 *Figure 2: The same pipeline in GitLab's own UI, reached through `kubectl port-forward`. One
 job, `docker-build`, which GitLab shows as passed. Nothing on this page mentions a sandbox or
@@ -565,7 +565,7 @@ evidence. What is, in this run:
 
 The job also prints `id`, and the UID that prints is worth being exact about. It is the UID of
 the **job script's own process, in the build container of the job pod**, which is UID 0
-because this sample sets no `securityContext` and the job's image runs as root. That says
+because this blueprint sets no `securityContext` and the job's image runs as root. That says
 nothing about any other container of the pod, each of which has its own image and its own
 `USER`. The job pod is scheduled on a shared EC2 node, and that root is root inside the pod's
 own guest kernel.
@@ -577,7 +577,7 @@ the script picks the node from a pod it actually saw rather than from the cluste
 
 ## Step 5: The privileged `docker build`, contained to the job's own sandbox
 
-The rest of the same job is the case that forces the choice this sample takes away. It starts
+The rest of the same job is the case that forces the choice this blueprint takes away. It starts
 a Docker daemon of its own, builds a two-stage image and runs it. Here is the part of it that
 matters, without the readings Step 4 shows and without the loop that waits for the daemon:
 
@@ -597,11 +597,11 @@ the pod, daemon and all, in a sandbox.
 **The daemon is on a Unix socket, and that is deliberate.** The usual GitLab shape for this is
 a `services:` entry with `DOCKER_HOST` on TCP, as the GitLab documentation shows. With TLS off,
 `docker:dind` listens on `0.0.0.0:2375`, and a job pod has an address on your VPC, so that
-would put an unauthenticated Docker daemon on the cluster network. This sample ships no network
+would put an unauthenticated Docker daemon on the cluster network. This blueprint ships no network
 policy, so nothing in it would restrict who could reach that port. A socket in the pod has no
 such reach and needs no certificates. The other way round is to keep the service container and
 turn TLS on (`DOCKER_TLS_CERTDIR: "/certs"`), which the GitLab documentation covers; the socket
-is simpler and is what the [Docker builds](../docker-builds/README.md) sample uses. The
+is simpler and is what the [Docker builds](../docker-builds/README.md) blueprint uses. The
 Kubernetes executor runs its own shell as the container's command, so the `docker:dind` image's
 entrypoint never runs and `dockerd` is started by the job.
 
@@ -614,7 +614,7 @@ its flag. A reader whose pipeline has jobs that need no daemon should know the s
 those too: to hand privilege only to the daemon, the Kubernetes executor has
 `allowed_privileged_images` and `allowed_privileged_services`, and a second runner with
 `privileged = false` and its own tag is the other way; check both against the GitLab Runner
-documentation for the version you pin. This sample keeps the single setting, because the
+documentation for the version you pin. This blueprint keeps the single setting, because the
 sandbox is what it is about, and each job pod's privilege is bounded by that pod's own sandbox,
 which is the runtime class's property rather than something a privileged job demonstrates.
 
@@ -748,8 +748,8 @@ gitlab-runner-5b694d4d85-k6x7n   <none>          gitlab-runner
 ```
 
 Its RBAC is a namespaced `Role`, not a `ClusterRole`: it creates job pods only in this
-sample's own namespace, which is the `namespace` its `config.toml` names. Nothing in this
-sample is cluster-scoped.
+blueprint's own namespace, which is the `namespace` its `config.toml` names. Nothing in this
+blueprint is cluster-scoped.
 
 It also carries its own small CPU and memory requests and limits (100m/256Mi requested, 512Mi
 memory limit): the manager only polls GitLab and talks to the API server, while the work
@@ -777,7 +777,7 @@ that Secret. These are the lines from that output:
 `volumes from a Secret: -` is the line that matters: the job pod mounted no Secret at all.
 `repo`, `scripts` and `logs` are the runner's own working volumes, and `kube-api-access-*` is
 the projected ServiceAccount token every pod gets by default, which is not a Secret volume and
-not this sample's. The `privileged flag` line above it is the one from Step 5: every container
+not this blueprint's. The `privileged flag` line above it is the one from Step 5: every container
 of the job pod carries it, because `privileged` is set once for the runner and not per job.
 
 The manager is the other side of that. Its own spec names the Secret, which is the one place
@@ -797,9 +797,9 @@ gitlab-runner-5b694d4d85-k6x7n
 ## Good to know
 
 - **A runner that does not know `runtime_class_name` fails quietly, so the run checks for
-  it.** `runtime_class_name` is the whole of this sample. A runner release that does not
+  it.** `runtime_class_name` is the whole of this blueprint. A runner release that does not
   support the setting does not refuse the configuration: it ignores the line and runs the job
-  as an ordinary pod on the node, which is exactly the outcome the sample exists to avoid.
+  as an ordinary pod on the node, which is exactly the outcome the blueprint exists to avoid.
   This was measured directly, by taking that line out of the runner's config, with
   `privileged` taken out beside it so that no privileged container ran on the node, and
   running the pipeline: the job pod came up with no runtime class, as an ordinary pod on the
@@ -813,9 +813,9 @@ gitlab-runner-5b694d4d85-k6x7n
 - **A job pod has a network, and nothing here restricts it.** It clones from the GitLab
   Service, pulls base images from Amazon ECR Public and reports status back, and with no
   network policy it can reach anything else the cluster can reach. The sandbox boundary is the VM,
-  not the network, and the Overview links the sample that shows how to limit the network.
+  not the network, and the Overview links the blueprint that shows how to limit the network.
 - **`CI_SERVER_URL` inside a job is the port-forward address, not a reachable one.** GitLab
-  builds it from `external_url`, which this sample sets to `http://localhost:8080` so its web
+  builds it from `external_url`, which this blueprint sets to `http://localhost:8080` so its web
   UI works through `kubectl port-forward`. Cloning is unaffected, because `clone_url` in the
   runner's configuration overrides it, but a job that calls the GitLab API itself would need
   the in-cluster address instead. A reader who does not want the web UI can set `external_url`
@@ -841,7 +841,7 @@ gitlab-runner-5b694d4d85-k6x7n
   your own, on a runner manager that can reach your instance, gives you the same sandboxed job
   pods. What does not transfer is the operator side.
   `scripts/bootstrap-runner.sh` and `scripts/run-pipeline.sh` drive GitLab by running Ruby on
-  the Rails console **inside this sample's own GitLab pod**, which is how they create the
+  the Rails console **inside this blueprint's own GitLab pod**, which is how they create the
   project, mint the token, start the pipeline and read the job logs. Against an instance you
   already run, do those four things in its web UI or through its REST API instead. Step 1 and
   the GitLab parts of the clean up do not apply either.
@@ -929,7 +929,7 @@ already exist before the claim names it.
 Anything it could not confirm is reported and the script exits non-zero, because a lookup
 that failed means "could not determine" and never "gone".
 
-Nothing is left behind. This sample installs nothing shared, changes no cluster-wide setting,
+Nothing is left behind. This blueprint installs nothing shared, changes no cluster-wide setting,
 and creates no IAM role, Pod Identity association or ECR repository. To remove the sandbox
 runtime class and the cluster itself, see the
 [Hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up).

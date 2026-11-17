@@ -1,0 +1,13 @@
+{
+  "Comment": "Trust policy for both IAM roles this sample creates (scripts/00a-iam.sh): the build-host instance role and the EKS node role are both assumed by the EC2 service. EKS managed node group worker nodes assume their role through the EC2 instance profile the managed node group attaches.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "ec2.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}

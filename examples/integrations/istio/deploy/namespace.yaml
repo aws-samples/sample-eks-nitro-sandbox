@@ -1,0 +1,11 @@
+# The blueprint's own namespace. `istio-injection: enabled` makes Istio's webhook
+# add the istio-init init container and the istio-proxy (Envoy) sidecar to every
+# pod created here, and only here. The managed-by label is what the clean up
+# checks before it deletes anything inside.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: <NAMESPACE>
+  labels:
+    istio-injection: enabled
+    app.kubernetes.io/managed-by: istio-sandbox

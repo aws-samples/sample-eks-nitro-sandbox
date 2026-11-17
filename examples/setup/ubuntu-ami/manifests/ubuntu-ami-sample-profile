@@ -1,0 +1,57 @@
+# AppArmor profile for the ubuntu-ami sample's scoped-profile validation pod.
+#
+# deploy/pod-apparmor-scoped.yaml, an ORDINARY (runc, not sandboxed) pod on the sample's node,
+# selects this profile by name (securityContext.appArmorProfile type Localhost,
+# localhostProfile ubuntu-ami-sample-profile). The isolated-sandbox pod does not: a sandbox pod's
+# profile is applied by runc inside the guest microVM, which runs SELinux and has no AppArmor, so
+# the sandbox pod runs Unconfined (deploy/pod-isolated-sandbox.yaml says why).
+# A pod can only request a profile the node has already loaded, so this file is installed
+# into /etc/apparmor.d/ and loaded on the baked AMI by scripts/35-apparmor.sh; without that
+# step the kubelet would refuse the pod and the "accept" control would be indistinguishable
+# from the reject control (deploy/pod-apparmor-reject.yaml). This is the SCOPED, working
+# profile the acceptance criterion asks for: AppArmor stays enabled host-wide, and this
+# profile constrains only the one container that opts into it by name.
+#
+# The profile is deliberately narrow: it allows ordinary container execution and reads, and
+# denies writes to a few sensitive host-shaped paths so test.sh can show one concrete action
+# accepted and one refused for the expected AppArmor reason. It is NOT a hardening baseline;
+# it exists to demonstrate a scoped profile that loads, enforces, and denies.
+
+abi <abi/3.0>,
+
+include <tunables/global>
+
+profile ubuntu-ami-sample-profile flags=(attach_disconnected,mediate_deleted) {
+  include <abstractions/base>
+
+  # Allow the workload to run normally: execute programs, read the filesystem, use the
+  # network and standard device nodes. The container image and the pod command still run.
+  network,
+  capability,
+  file,
+
+  # Signals, as containerd's own default container profile allows them (containerd
+  # contrib/apparmor/template.go, the profile containerd generates for a pod that asks for
+  # RuntimeDefault). Without these, AppArmor refuses runc's SIGTERM and SIGKILL to the
+  # container's init (on Ubuntu 24.04 runc runs under its own profile, `runc`), and kubelet can
+  # never stop the pod: "unable to signal init: permission denied".
+  # Host (privileged) processes may send signals to container processes.
+  signal (receive) peer=unconfined,
+  # runc may send signals to container processes.
+  signal (receive) peer=runc,
+  # crun may send signals to container processes.
+  signal (receive) peer=crun,
+  # Container processes may send signals amongst themselves.
+  signal (send,receive) peer=ubuntu-ami-sample-profile,
+
+  # ENFORCED DENY: writing these sensitive paths is refused under this profile, which is the
+  # "refused control" test.sh demonstrates (`echo test > /etc/shadow` -> Permission denied)
+  # while the same pod otherwise runs. `deny` wins over the broad `file` allow above. `audit`
+  # makes each refusal log a kernel line (apparmor="DENIED" ... name="/etc/shadow"), which test.sh
+  # reads as AppArmor's evidence; a plain `deny` rule is silent.
+  audit deny /etc/shadow* w,
+  audit deny /etc/gshadow* w,
+  audit deny /etc/sudoers* w,
+  audit deny /etc/sudoers.d/** w,
+  audit deny /boot/** w,
+}

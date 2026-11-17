@@ -1,9 +1,9 @@
 # A coding agent that fixes issues and opens pull requests
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
-on the home page, and run the [hello sandbox](../hello-sandbox/README.md) sample first so
+on the home page, and run the [hello sandbox](../hello-sandbox/README.md) blueprint first so
 you have a cluster with the runtime classes. The commands below use files from this
-repository, so clone it if you have not already, and run them from this sample's folder:
+repository, so clone it if you have not already, and run them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
@@ -92,7 +92,7 @@ aws eks create-pod-identity-association --cluster-name $CLUSTER_NAME --region $A
   --role-arn arn:aws:iam::${ACCOUNT_ID}:role/coding-agent-bedrock
 ```
 
-**Step 4: Create the repository, the issue and the token.** Push the sample app to a new
+**Step 4: Create the repository, the issue and the token.** Push the blueprint app to a new
 repository of your own and open the issue the agent will fix:
 
 ```bash
@@ -300,7 +300,7 @@ The last line says `pull request already open` when a pull request for the branc
 already open (normally the one the agent opened, as the prompt asks), and `opened pull
 request` when the entrypoint opened it.
 
-On the sample app the agent typically adds tests for the `+02:00` offset and the `Z`
+On the blueprint app the agent typically adds tests for the `+02:00` offset and the `Z`
 suffix, changes `parse_iso8601` to use `datetime.fromisoformat`, and reports all tests
 passing.
 
@@ -332,7 +332,7 @@ export GITHUB_OWNER=your-github-user GITHUB_REPO=example-app
 export REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com
 ```
 
-Remove the AWS resources, the local image, and the agent pod from this sample:
+Remove the AWS resources, the local image, and the agent pod from this blueprint:
 
 ```bash
 kubectl delete pod fix-issue-$ISSUE_NUMBER --ignore-not-found

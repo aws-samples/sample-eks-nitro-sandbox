@@ -33,6 +33,8 @@ but has no entry in the left menu, so add the `nav` line yourself.
 `docs/ROADMAP.md` or the root `README.md`, a section heading left twice, and a conflict
 marker left in any tracked file.
 
+Run ASH before a pull request too, as `CONTRIBUTING.md` (*Security scanning*) says.
+
 ## A sample starts as a spec in a GitHub issue
 
 - **No sample implementation starts before a GitHub issue holds its spec.** Write it with
@@ -99,30 +101,20 @@ repository, `git@ssh.gitlab.aws.dev:carrlos/eks-nitro-sandbox-testing.git`.
   sample with a fresh run here. Why: output copied from the internal demo did not come from
   this sample.
 
-### The Amazon EKS User Guide before general availability
+### The Amazon EKS User Guide
 
-Until Nitro sandboxes are generally available, the public Amazon EKS User Guide has no page
-for them. The pages that will be published are kept as AsciiDoc in the service team's
-package, `ssh://git.amazon.com/pkg/EKSPodIsolationRuntime`, under `docs/eks-user-guide/`.
-Clone only that folder, next to this repository:
+The public Amazon EKS User Guide documents Nitro sandboxes. Start at
+[Sandboxing on Amazon EKS with isolated and confidential pods](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html),
+which links the rest. Limits are in
+[Considerations](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-limitations.html).
 
-```bash
-git clone --depth 1 --filter=blob:none --sparse ssh://git.amazon.com/pkg/EKSPodIsolationRuntime
-git -C EKSPodIsolationRuntime sparse-checkout set docs/eks-user-guide
-```
-
-If ssh prints `no such identity` for a key file during either clone, it is skipping a key
-you do not have; the clone worked if git reports no error after it.
-
-- **Treat those pages as the Amazon EKS User Guide** wherever this file, a skill or a spec
-  asks whether the guide states something, such as a limit value. Start with
-  `isolated-confidential-pods.adoc`, which links the rest; limits are in
-  `isolated-confidential-pods-limitations.adoc`. Why: the public guide does not have them
-  yet, so a check against it finds nothing and reads as "not documented".
-- **On a page, cite the guide by page title** ("Amazon EKS User Guide, *Isolated and
-  confidential pods limitations*") with no link until the public page exists, and never the
-  package path. Why: the package is internal, and a link to a page that does not exist yet
-  is broken.
+- **Treat the published pages as the Amazon EKS User Guide** wherever this file, a skill or a spec
+  asks whether the guide states something, such as a limit value. Why: they are the source of
+  record, and anyone can open them.
+- **On a page, cite the guide by page title and link the published page**
+  ("Amazon EKS User Guide, [*Considerations*](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-limitations.html)").
+  Never cite an internal package path. Why: the reader can follow the link, and an internal
+  path is not reachable.
 
 ### The adversarial second reviewer
 

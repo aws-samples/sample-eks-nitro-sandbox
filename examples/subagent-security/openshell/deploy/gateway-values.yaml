@@ -6,7 +6,8 @@
 # the gateway exists so that there is something to apply a policy to.
 #
 # scripts/setup.sh adds the pinned image digests from versions.json and substitutes
-# <NAMESPACE> and <RELEASE>, so nothing here names a cluster, an account or a Region.
+# <NAMESPACE>, <RELEASE> and <STORAGE_CLASS>, so nothing here names a cluster, an account
+# or a Region.
 fullnameOverride: <RELEASE>
 
 # ClusterIP, reached only with kubectl port-forward bound to localhost. No Ingress,
@@ -36,6 +37,18 @@ server:
   # limitations), and the kubelet would refuse the pod. This is the chart default; it is
   # written out because turning it on is the kind of change that would look harmless.
   enableUserNamespaces: false
+
+  # The StorageClass setup.sh chose, for both claims the gateway makes: its own SQLite
+  # database (dataStorageClass) and each sandbox's workspace (workspaceStorageClass).
+  # Left empty, the chart names no class and both claims wait for a cluster default,
+  # which a cluster may not have. setup.sh uses STORAGE_CLASS from .env when it is set;
+  # otherwise the cluster's default class when exactly one fits
+  # (ebs.csi.eks.amazonaws.com, gp3, encrypted, reclaimPolicy Delete); otherwise the
+  # sample's own class from deploy/storage-class.yaml. dataStorageClass is immutable
+  # after install.
+  # Quoted, so a valid class name such as "null", "true" or "123" stays a string.
+  dataStorageClass: "<STORAGE_CLASS>"
+  workspaceStorageClass: "<STORAGE_CLASS>"
 
   auth:
     # Development user mode: this gateway does not authorize individual users, so

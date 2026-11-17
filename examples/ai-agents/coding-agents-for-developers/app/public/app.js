@@ -63,8 +63,7 @@ async function loadTiles() {
 
 // When the session started, as a relative string, from the base-36 millisecond timestamp
 // the session name carries as its first segment (see names.js). The list tracks no
-// server-side "last activity" -- that was dropped so the list can be built from access-point
-// paths alone at thousands of sessions -- so this is the start time, which is what the
+// server-side "last activity", so this is the start time, which is what the
 // "Started" column shows.
 function relativeTime(session) {
   const prefix = String(session).split("-")[0];
@@ -80,11 +79,44 @@ function relativeTime(session) {
   return `${days}d ago`;
 }
 
+// Sessions whose Delete request is on its way. The server marks the session and answers at
+// once; it finishes the Delete in the background (draining the folder until S3 Files has
+// nothing left to export, which takes a minute or two). Kept outside the table, because the
+// table is rebuilt whenever the list reloads.
+const deleting = new Set();
+// Sessions whose Restore is still running, for the same reason.
+const restoring = new Set();
+// Sessions whose window was closed and whose Close is still running on the server. Until it
+// finishes, the row's button would still say Open, and opening a terminal on a session
+// being stopped shows only [detached]; so the row says Closing... and takes no clicks.
+const closing = new Set();
+// Each session's row currently in the table, with its button renderer. A reload replaces
+// the rows, so an operation that finishes later acts on the row on the page through this,
+// never on the row it started from, which may no longer be there.
+const rowFor = new Map(); // session -> { tr, render }
+const redraw = (session) => rowFor.get(session)?.render();
+const removeRow = (session) => { rowFor.get(session)?.tr.remove(); rowFor.delete(session); };
+// What this page has just done to a session: its running state after Restore (true) or
+// Close (false), or that Delete removed it. Each is tagged with the list request number
+// current when the operation finished, and holds until a list request that started after
+// it succeeds. So neither a reload that fails nor an older list response arriving late can
+// undo it.
+let listSeq = 0;
+const runningNow = new Map(); // session -> { value, seq }
+const deletedNow = new Map(); // session -> seq
+const setRunning = (session, value) => runningNow.set(session, { value, seq: listSeq });
+
 async function loadSessions() {
+  const seq = ++listSeq;
   const { sessions } = await api("/api/sessions?developer=" + encodeURIComponent(developer));
+  if (seq !== listSeq) return; // a newer request is on its way; let it draw the list
+  for (const [k, v] of runningNow) if (v.seq < seq) runningNow.delete(k);
+  for (const [k, v] of deletedNow) if (v < seq) deletedNow.delete(k);
   const rows = $("#session-rows");
   rows.innerHTML = "";
+  rowFor.clear();
   for (const s of sessions) {
+    if (deletedNow.has(s.session)) continue;
     const tr = document.createElement("tr");
     const name = s.display || s.session;
     const status = s.running ? "running" : "idle";
@@ -96,18 +128,63 @@ async function loadSessions() {
     actions.className = "row-actions";
     const restore = document.createElement("button");
     restore.className = "btn-sm";
-    restore.textContent = s.running ? "Open" : "Restore";
-    restore.onclick = async () => {
-      if (!s.running) await api("/api/restore", { developer, session: s.session });
-      openTerminal(s.session, s.cli, name);
-    };
     const del = document.createElement("button");
     del.className = "btn-sm btn-ghost";
-    del.textContent = "Delete";
+    // Draw both buttons from the operation state, which lives outside the table, so a row
+    // rebuilt by a list reload mid-operation still shows it and still ignores clicks.
+    const isRunning = () => (runningNow.has(s.session) ? runningNow.get(s.session).value : s.running);
+    const render = () => {
+      const r = restoring.has(s.session), d = deleting.has(s.session);
+      const c = closing.has(s.session);
+      const st = tr.querySelector(".status"), state = isRunning() ? "running" : "idle";
+      if (st) { st.textContent = state; st.className = `status ${state}`; }
+      restore.textContent = c ? "Closing..." : r ? "Restoring..." : isRunning() ? "Open" : "Restore";
+      del.textContent = d ? "Deleting..." : "Delete";
+      restore.disabled = r || d || c;
+      del.disabled = r || d || c;
+      for (const [b, busy] of [[restore, r || c], [del, d]]) {
+        if (busy) b.setAttribute("aria-busy", "true");
+        else b.removeAttribute("aria-busy");
+      }
+    };
+    render();
+    rowFor.set(s.session, { tr, render });
+    // Restore claims a pod and mounts the folder, which takes a few seconds. Say so while it
+    // runs, then reload the list so the row shows the session as running.
+    restore.onclick = async () => {
+      if (restoring.has(s.session) || deleting.has(s.session) || closing.has(s.session)) return;
+      if (isRunning()) return openTerminal(s.session, s.cli, name);
+      restoring.add(s.session);
+      redraw(s.session);
+      try {
+        await api("/api/restore", { developer, session: s.session });
+        setRunning(s.session, true);
+        openTerminal(s.session, s.cli, name);
+      } catch (err) {
+        alert(`Could not restore ${name}: ${err.message}`);
+      } finally {
+        restoring.delete(s.session);
+        redraw(s.session); // the current row's buttons come back even if the reload fails
+        loadSessions().catch(() => {});
+      }
+    };
     del.onclick = async () => {
+      if (restoring.has(s.session) || deleting.has(s.session) || closing.has(s.session)) return;
       if (!confirm(`Delete session ${s.session}? This removes its folder.`)) return;
-      await api("/api/delete", { developer, session: s.session });
-      loadSessions();
+      deleting.add(s.session);
+      redraw(s.session);
+      try {
+        await api("/api/delete", { developer, session: s.session });
+        runningNow.delete(s.session);
+        deletedNow.set(s.session, listSeq);
+        removeRow(s.session); // gone now, even if the reload below fails
+      } catch (err) {
+        alert(`Could not delete ${name}: ${err.message}`);
+      } finally {
+        deleting.delete(s.session);
+        redraw(s.session);
+        loadSessions().catch(() => {});
+      }
     };
     actions.append(restore, del);
     tr.appendChild(actions);
@@ -200,7 +277,18 @@ function openTerminal(session, cli, display) {
   closeBtn.onclick = async (e) => {
     e.stopPropagation();
     ws.close(); win.remove(); windows.delete(session);
-    await api("/api/close", { session }); loadSessions();
+    closing.add(session);
+    redraw(session); // Closing..., at once
+    try {
+      await api("/api/close", { session });
+      setRunning(session, false);
+    } catch (err) {
+      alert(`Could not close ${label}: ${err.message}`);
+    } finally {
+      closing.delete(session);
+      redraw(session); // shows Restore now, even if the reload below fails
+      loadSessions().catch(() => {});
+    }
   };
   const minBtn = win.querySelector('[data-act="min"]');
   // stopPropagation so the window-level mousedown (z-raise) and titlebar drag do not also

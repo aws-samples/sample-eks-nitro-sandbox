@@ -1,7 +1,11 @@
-// Kubernetes operations: claim a warm pod, resolve its node AZ, deliver the mount
-// credential and start the session through exec, attach a terminal to tmux, and release
-// the claim. Everything the app does to a pod goes through the Kubernetes exec API, so
-// the sandbox pods accept no network ingress at all.
+// Kubernetes operations: claim a warm pod, resolve its node AZ, start and stop the session
+// through exec, and release the claim. Exec is used only at the edges of a session: to
+// start it (delivering the mount credential and the session-bridge token on stdin, then
+// reading back the bridge's token and certificate, and pinning the certificate), to stop it,
+// and once per running pod after
+// an app restart (readBridge). The terminal, the activity read and the credential refresh
+// in between go to session-bridge over the pod network (bridge.js), so the Kubernetes API
+// is not on the path between the app and a running session's pod.
 
 import * as k8s from "@kubernetes/client-node";
 import { Writable, Readable } from "node:stream";
@@ -56,8 +60,8 @@ export async function claimPod(cli, session) {
   // If the claim never resolves, delete it so it does not hold a pod nobody tracks. The
   // original error is the one the caller sees; a failed delete is logged with the claim.
   try {
-    const { podName, node } = await waitForClaimPod(claimName);
-    return { claimName, podName, node };
+    const { podName, node, podIP } = await waitForClaimPod(claimName);
+    return { claimName, podName, node, podIP };
   } catch (e) {
     await releaseClaim(claimName).catch((re) =>
       console.error(`claim ${claimName}: could not delete it after a failed start: ${re?.message || re}`));
@@ -97,7 +101,8 @@ async function waitForClaimPod(claimName, timeoutMs = 120000) {
       const ready = pod.status?.conditions?.some(
         (c) => c.type === "Ready" && c.status === "True"
       );
-      if (node && ready) return { podName, node };
+      const podIP = pod.status?.podIP;
+      if (node && ready && podIP) return { podName, node, podIP };
     }
     await sleep(250);
   }
@@ -106,21 +111,214 @@ async function waitForClaimPod(claimName, timeoutMs = 120000) {
 
 // Every session claim this sample made, with the pod each resolved to: [{ claimName,
 // podName }]. Used at app start to pick up sessions that kept running while the app
-// restarted. Claims without a pod yet are skipped.
+// restarted.
 export async function listSessionClaims() {
   const out = await custom.listNamespacedCustomObject({
     group: GROUP, version: VERSION, namespace: NAMESPACE, plural: "sandboxclaims",
     labelSelector: "app.kubernetes.io/part-of=coding-agents-for-developers",
   });
+  // A claim with no pod yet is returned too (podName undefined): the pick-up looks again
+  // once it has one.
   return (out?.items ?? [])
     .map((c) => ({ claimName: c.metadata?.name, podName: c.status?.sandbox?.name }))
-    .filter((c) => c.claimName && c.podName);
+    .filter((c) => c.claimName);
 }
 
-// The node a pod runs on.
-export async function podNode(podName) {
+// The names of every claim this sample made, whether or not it has a pod yet. The access-
+// point sweep treats any claim as "a pod may have the folder mounted".
+export async function listClaimNames() {
+  const out = await custom.listNamespacedCustomObject({
+    group: GROUP, version: VERSION, namespace: NAMESPACE, plural: "sandboxclaims",
+    labelSelector: "app.kubernetes.io/part-of=coding-agents-for-developers",
+  });
+  return new Set((out?.items ?? []).map((c) => c.metadata?.name).filter(Boolean));
+}
+
+// Whether a claim exists, with or without a pod. "Could not tell" is an error, not "no".
+export async function claimExists(claimName) {
+  try {
+    await custom.getNamespacedCustomObject({
+      group: GROUP, version: VERSION, namespace: NAMESPACE, plural: "sandboxclaims", name: claimName,
+    });
+    return true;
+  } catch (e) {
+    if (e?.code === 404) return false;
+    throw e;
+  }
+}
+
+// The node a pod runs on, and its IP, where session-bridge listens.
+export async function podInfo(podName) {
   const pod = await core.readNamespacedPod({ name: podName, namespace: NAMESPACE });
-  return pod.spec?.nodeName;
+  const labels = pod.metadata?.labels || {};
+  return { node: pod.spec?.nodeName, podIP: pod.status?.podIP, app: labels.app, cli: labels["agent-cli"] };
+}
+
+// A durable record that a Delete could not confirm a session's clean stop, kept as a
+// ConfigMap so it outlives the app process: until the pod it names is confirmed gone, every
+// Delete of that session waits for it before removing the folder.
+const pendingName = (session) => `pending-stop-${session}`;
+export async function recordPendingStop(session, podName) {
+  try {
+    await core.createNamespacedConfigMap({ namespace: NAMESPACE, body: {
+      metadata: { name: pendingName(session), labels: { "app.kubernetes.io/part-of": "coding-agents-for-developers" } },
+      data: { pod: podName },
+    } });
+  } catch (e) {
+    if (e?.code !== 409) throw e;
+    // Already recorded by an earlier attempt: fine only if it names this same pod.
+    const recorded = await pendingStopPod(session);
+    if (recorded !== podName) {
+      throw new Error(`an unconfirmed stop of pod ${recorded} is already recorded for this session`);
+    }
+  }
+}
+// The pod a pending-stop record names, or null when there is no record. A record without a
+// pod name is an error, not "no record".
+export async function pendingStopPod(session) {
+  let cm;
+  try {
+    cm = await core.readNamespacedConfigMap({ name: pendingName(session), namespace: NAMESPACE });
+  } catch (e) {
+    if (e?.code === 404) return null;
+    throw e;
+  }
+  if (!cm?.data?.pod) throw new Error(`the pending-stop record for this session names no pod`);
+  return cm.data.pod;
+}
+export async function clearPendingStop(session) {
+  try {
+    await core.deleteNamespacedConfigMap({ name: pendingName(session), namespace: NAMESPACE });
+  } catch (e) {
+    if (e?.code !== 404) throw e;
+  }
+}
+
+// The session record: one ConfigMap per session, the source of truth for the session list.
+// A session's folder needs an access point only while a pod has it mounted, so the list
+// cannot come from access points any more. Named for the session; labelled so the list for
+// one developer is one paginated, label-selected ConfigMap list.
+const PART_OF = "coding-agents-for-developers";
+const recordName = (session) => `session-${session}`;
+// The access point being deleted for this session, written to its record before the delete
+// is asked for, so it survives an app restart: a Restore never reuses it, and waits for it
+// to be gone before making a new one.
+const DELETING_AP = "coding-agents/deleting-access-point";
+const DELETING_AT = "coding-agents/deleting-since";
+// Set when the developer pressed Delete: the session is gone from their list at once, and the
+// app finishes the Delete in the background, again after an app restart if it has to.
+const DELETE_REQUESTED = "coding-agents/delete-requested";
+const recordOf = (cm) => cm?.data?.developer && cm.data.cli && cm.data.session
+  ? {
+      developer: cm.data.developer, cli: cm.data.cli, session: cm.data.session, created: cm.data.created,
+      deletingAp: cm.metadata?.annotations?.[DELETING_AP] || null,
+      deletingSince: Number(cm.metadata?.annotations?.[DELETING_AT]) || 0,
+      deleteRequested: Boolean(cm.metadata?.annotations?.[DELETE_REQUESTED]),
+    }
+  : null;
+const MERGE_PATCH = k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch);
+
+export async function markDeleteRequested(session) {
+  await core.patchNamespacedConfigMap({
+    name: recordName(session), namespace: NAMESPACE,
+    body: { metadata: { annotations: { [DELETE_REQUESTED]: new Date().toISOString() } } },
+  }, MERGE_PATCH);
+}
+
+export async function markAccessPointDeleting(session, apId) {
+  await core.patchNamespacedConfigMap({
+    name: recordName(session), namespace: NAMESPACE,
+    body: { metadata: { annotations: { [DELETING_AP]: apId, [DELETING_AT]: String(Date.now()) } } },
+  }, MERGE_PATCH);
+}
+
+// Clear the marker, only if it still names this access point.
+export async function clearAccessPointDeleting(session, apId) {
+  const rec = await readSessionRecord(session);
+  if (!rec || rec.deletingAp !== apId) return;
+  await core.patchNamespacedConfigMap({
+    name: recordName(session), namespace: NAMESPACE,
+    body: { metadata: { annotations: { [DELETING_AP]: null, [DELETING_AT]: null } } },
+  }, MERGE_PATCH);
+}
+
+export async function createSessionRecord(developer, cli, session) {
+  await core.createNamespacedConfigMap({ namespace: NAMESPACE, body: {
+    metadata: {
+      name: recordName(session),
+      labels: {
+        "app.kubernetes.io/part-of": PART_OF,
+        "coding-agents/record": "session",
+        "coding-agents/developer": developer,
+        "coding-agents/cli": cli,
+      },
+    },
+    data: { developer, cli, session, created: new Date().toISOString() },
+  } });
+}
+
+// One session's record, or null when it has none. A record that is missing a field is an
+// error, not "no session".
+export async function readSessionRecord(session) {
+  let cm;
+  try {
+    cm = await core.readNamespacedConfigMap({ name: recordName(session), namespace: NAMESPACE });
+  } catch (e) {
+    if (e?.code === 404) return null;
+    throw e;
+  }
+  const rec = recordOf(cm);
+  if (!rec || rec.session !== session) throw new Error(`the record for session ${session} is malformed`);
+  return rec;
+}
+
+// Every session record, or one developer's: [{ developer, cli, session, created }].
+export async function listSessionRecords(developer) {
+  const selector = ["app.kubernetes.io/part-of=" + PART_OF, "coding-agents/record=session"];
+  if (developer) selector.push(`coding-agents/developer=${developer}`);
+  const out = [];
+  let _continue;
+  do {
+    const page = await core.listNamespacedConfigMap({
+      namespace: NAMESPACE, labelSelector: selector.join(","), limit: 500, _continue,
+    });
+    for (const cm of page?.items ?? []) {
+      const rec = recordOf(cm);
+      if (rec && cm.metadata?.name === recordName(rec.session)) out.push(rec);
+    }
+    _continue = page?.metadata?._continue;
+  } while (_continue);
+  return out;
+}
+
+// A delete that failed counts as done if the record is gone anyway (a timeout after it
+// went through), so Delete does not report a failure for a session it did remove.
+export async function deleteSessionRecord(session) {
+  try {
+    await core.deleteNamespacedConfigMap({ name: recordName(session), namespace: NAMESPACE });
+  } catch (e) {
+    if (e?.code === 404) return;
+    let still;
+    try { still = await readSessionRecord(session); } catch { throw e; }
+    if (still) throw e;
+  }
+}
+
+// Wait until a pod no longer exists (the API answers 404). Resolves true when it is gone,
+// false when it is still there after timeoutMs. Any other error is thrown: "could not tell"
+// is not "gone".
+export async function waitPodGone(podName, timeoutMs = 120000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      await core.readNamespacedPod({ name: podName, namespace: NAMESPACE });
+    } catch (e) {
+      if (e?.code === 404) return true;
+      throw e;
+    }
+    if (Date.now() >= deadline) return false;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
 }
 
 // The pod a claim resolved to, or null when there is no such claim (or it has no pod yet).
@@ -166,101 +364,50 @@ const b64line = (credential) => Buffer.from(credential, "utf8").toString("base64
 // point and starts the CLI in tmux. Runs once; the long-lived process is the pod's own.
 // On Restore, SESSION_RESUME=1 tells the entrypoint to start the CLI with its own
 // continue-the-last-conversation option.
-export async function startSession(podName, { credential, fsId, apId, azId, resume = false }) {
+// The second stdin line is the session-bridge token (hex, never on a command line). The
+// entrypoint starts the bridge before it returns, so the bridge's certificate is read back
+// right after, and returned for the caller to pin.
+export async function startSession(podName, { credential, bridgeToken, fsId, apId, azId, resume = false }) {
   const script =
     `export S3_FILES_FS_ID=${fsId} S3_FILES_AP_ID=${apId} ` +
     `AWS_REGION=${REGION} POD_AZ_ID=${azId}` +
     (resume ? " SESSION_RESUME=1" : "") + "; " +
-    // The entrypoint reads the base64 credential line on stdin; re-exec it with env set.
+    // The entrypoint reads the credential and token lines on stdin; re-exec it with env set.
     `exec /usr/local/bin/session-entrypoint.sh`;
-  await execOnce(podName, ["/bin/sh", "-c", script], b64line(credential));
+  await execOnce(podName, ["/bin/sh", "-c", script], b64line(credential) + bridgeToken + "\n");
   console.log(`session started in ${podName}`);
+  return (await readBridge(podName)).cert;
 }
 
-// Refresh the mount credential before it expires: write the new body into the pod's
-// tmpfs credential file. Same one-line base64 delivery, decoded in the pod.
-//
-// Fail CLOSED: decode into a temporary file first, require a non-empty line, a successful
-// base64 decode AND a well-formed credential body, then chmod and atomically rename over
-// the live file. The live credential is never truncated until a valid replacement exists,
-// so empty stdin or a corrupt line leaves the running mount's credential intact and the
-// exec exits non-zero (which execOnce surfaces as a rejected promise) rather than
-// replacing a good credential with an empty file.
-export async function refreshCredential(podName, credential) {
-  const script = [
-    "set -eu",
-    "IFS= read -r b64",
-    '[ -n "${b64:-}" ] || { echo "refresh: empty credential on stdin" >&2; exit 1; }',
-    "tmp=/dev/shm/session/credentials.new",
-    'printf %s "$b64" | base64 -d > "$tmp" || { echo "refresh: base64 decode failed" >&2; rm -f "$tmp"; exit 1; }',
-    'grep -q "^aws_access_key_id" "$tmp" || { echo "refresh: credential malformed" >&2; rm -f "$tmp"; exit 1; }',
-    'chmod 600 "$tmp"',
-    'mv -f "$tmp" /dev/shm/session/credentials',
-  ].join("; ");
-  await execOnce(podName, ["/bin/sh", "-c", script], b64line(credential));
+// The bridge's certificate, and its token, from their root-only files in the pod. Used
+// right after start (for the certificate), and when the app picks up sessions that kept
+// running across its own restart (for both), since it keeps them only in memory.
+// Whether the session's folder is still mounted in its pod. After a clean stop it is not
+// (session-stop.sh unmounts it), even though the pod and its session-bridge are still there.
+export async function workspaceMounted(podName) {
+  const out = await execCapture(podName, ["/bin/sh", "-c", "mountpoint -q /workspace && echo mounted || echo unmounted"]);
+  if (/^mounted/m.test(out)) return true;
+  if (/^unmounted/m.test(out)) return false;
+  throw new Error(`could not tell whether /workspace is mounted in ${podName}`);
+}
+
+export async function readBridge(podName) {
+  const out = await execCapture(podName, ["/bin/sh", "-c",
+    "cat /dev/shm/session/bridge-token; echo; cat /dev/shm/session/bridge.crt"]);
+  const [token, ...rest] = out.split("\n");
+  const cert = rest.join("\n").trim();
+  if (!/^[0-9a-f]{64}$/.test(token) || !/^-----BEGIN CERTIFICATE-----[\s\S]+-----END CERTIFICATE-----$/.test(cert))
+    throw new Error(`session-bridge is not set up in ${podName}`);
+  return { token, cert: cert + "\n" };
 }
 
 // End the session's processes and unmount its folder, before the claim is released. The
 // CLIs' SQLite databases and lock files sit on the NFS mount, and a lock left by a pod that
 // was deleted mid-session is held by the server until its lease runs out; see
 // session-stop.sh in the base image.
-export async function stopSession(podName) {
-  await execOnce(podName, ["/usr/local/bin/session-stop.sh"]);
-}
-
-// The last time anything happened in the session's terminal, as an epoch, to find idle
-// sessions: the newest of tmux's session_activity, which moves only on key input, and each
-// window's window_activity, which moves when the pane prints output. Reading the first
-// alone released an agent that was still working on its own: with a pane printing every
-// 15 s and no keys, session_activity aged past ten minutes while window_activity stayed
-// under five seconds. A CLI waiting at its prompt prints nothing, so it still goes idle.
-export async function lastActivity(podName) {
-  const out = await execCapture(podName, [
-    "/usr/bin/setpriv", "--reuid=1000", "--regid=1000", "--init-groups", "--inh-caps=-all",
-    "env", "HOME=/workspace/home",
-    "/bin/sh", "-c",
-    // "none" when the pod has no tmux session: the CLI is gone, so nothing will ever be
-    // active again and the session counts as idle since it started.
-    "if tmux has-session -t agent 2>/dev/null; then " +
-      "{ tmux display-message -p -t agent '#{session_activity}'; " +
-      "tmux list-windows -t agent -F '#{window_activity}'; } | sort -n | tail -1; " +
-      "else echo none; fi",
-  ]);
-  // Accept only "none" or one epoch. Anything else (an exec that failed or printed nothing)
-  // throws: an unreadable activity time must never read as "idle" and release a live session.
-  const v = out.trim();
-  if (v === "none") return 0;
-  if (/^[0-9]{9,11}$/.test(v)) return parseInt(v, 10);
-  throw new Error(`could not read terminal activity in ${podName} (got ${JSON.stringify(v.slice(0, 40))})`);
-}
-
-// Attach a browser terminal to the pod's tmux session. Returns the exec's streams so the
-// caller can pipe them to a WebSocket.
-export async function attachTerminal(podName, { onData, cols, rows }) {
-  const stdout = new Writable({ write(chunk, _enc, cb) { onData(chunk); cb(); } });
-  const stdin = new Readable({ read() {} });
-  // Attach as the dev user (uid 1000), the identity that started the tmux server in the
-  // entrypoint. `kubectl exec` runs as the container's default user (root), whose tmux
-  // looks at a different socket and reports "no sessions", so drop to 1000 with the same
-  // HOME the session uses before attaching.
-  // Set a UTF-8 locale on the attach, and attach with `-u`. tmux decides whether the
-  // attaching client can take UTF-8 from its locale (LC_ALL/LANG/LC_CTYPE) at attach time;
-  // with none set it treats the client as non-UTF-8 and downgrades every multibyte glyph
-  // -- the box-drawing (▎ ─ │), status (● ✻ ⚠) and smart-quote characters the agent TUIs
-  // draw -- to `_` in the bytes it sends to the browser. That is what put the `_` streaks
-  // in the terminal. `-u` forces UTF-8 regardless, and the locale makes it stick.
-  const ws = await exec.exec(
-    NAMESPACE, podName, "agent",
-    ["/usr/bin/setpriv", "--reuid=1000", "--regid=1000", "--init-groups", "--inh-caps=-all",
-      "env", "HOME=/workspace/home", "TERM=xterm-256color", "LANG=C.UTF-8", "LC_ALL=C.UTF-8",
-      "/bin/sh", "-c", "exec tmux -u attach -t agent"],
-    stdout, stdout, stdin, true,
-  );
-  return {
-    write: (data) => stdin.push(data),
-    resize: (c, r) => ws?.send?.(JSON.stringify({ Width: c, Height: r })),
-    close: () => { try { ws?.close?.(); } catch {} },
-  };
+// With wipe (Delete), it also empties the folder through the mount first.
+export async function stopSession(podName, { wipe = false } = {}) {
+  await execOnce(podName, ["/usr/local/bin/session-stop.sh", ...(wipe ? ["--wipe"] : [])]);
 }
 
 // --- exec helpers ---

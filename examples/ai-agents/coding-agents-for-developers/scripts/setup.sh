@@ -73,7 +73,7 @@ done
 say "Checking shared installs (reused as they are, never changed)"
 "${KCTL[@]}" get crd sandboxtemplates.extensions.agents.x-k8s.io >/dev/null 2>&1 \
   || die "agent-sandbox is not installed. Install it (as the warm-pool sample does):
-  kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml"
+  kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml"
 aws eks describe-addon --cluster-name "$CLUSTER_NAME" --addon-name aws-efs-csi-driver \
   --region "$AWS_REGION" --query 'addon.status' --output text >/dev/null 2>&1 \
   || die "the EFS CSI driver add-on (>= 3.0.0, for S3 Files) is not installed. See the
@@ -89,6 +89,42 @@ npol="$("${KCTL[@]}" get configmap -n kube-system amazon-vpc-cni \
 # app's per-session credential mount: on this cluster the mount uses the credential the
 # pod supplies (see the README). We do not touch the shared CSI role here.
 
+# Start from a clean environment. Before changing anything, look for state this setup does
+# not run over: an access point on the sample's file system whose session has no record.
+# Read-only; a lookup that fails stops the run rather than being taken for an answer.
+fs_found="$(aws s3files list-file-systems --region "$AWS_REGION" \
+  --query "fileSystems[?name=='$SAMPLE'].fileSystemId | [0]" --output text)" \
+  || die "could not list S3 Files file systems in $AWS_REGION; retry setup"
+if [[ "$fs_found" != "None" && -n "$fs_found" ]]; then
+  ap_paths="$(aws s3files list-access-points --file-system-id "$fs_found" --region "$AWS_REGION" \
+    --query 'accessPoints[].rootDirectory.path' --output text)" \
+    || die "could not list the access points of $fs_found; retry setup"
+  if [[ -n "$ap_paths" && "$ap_paths" != "None" ]]; then
+    if ns_err="$("${KCTL[@]}" get namespace "$NAMESPACE" -o name 2>&1)"; then
+      recorded="$("${KCTL[@]}" get configmap -n "$NAMESPACE" -l coding-agents/record=session \
+        -o jsonpath='{range .items[*]}{.data.session}{"\n"}{end}')" \
+        || die "could not list the session records in $NAMESPACE; retry setup"
+    elif [[ "$ns_err" == *NotFound* ]]; then
+      recorded=""
+    else
+      die "could not read namespace $NAMESPACE: $ns_err; retry setup"
+    fi
+    for path in $ap_paths; do
+      s="${path##*/}"
+      grep -qxF "$s" <<<"$recorded" || die "file system $fs_found has an access point for session $s, which has no session record. Run ./scripts/clean.sh first, then ./scripts/setup.sh again on a clean environment."
+    done
+  fi
+fi
+
+# On a re-run over an existing install, put the app's network policy in place first, before
+# anything else changes, so an app from an earlier version is not reachable from the pod
+# network while setup runs. Only in the sample's own namespace; a fresh install applies it
+# right after creating the namespace, before the app.
+if [[ "$("${KCTL[@]}" get namespace "$NAMESPACE" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}' 2>/dev/null || true)" == "$SAMPLE" ]]; then
+  say "App network policy (existing install)"
+  "${KCTL[@]}" apply -n "$NAMESPACE" -f "$ROOT/deploy/app-policy.yaml"
+fi
+
 # --- 2. AWS resources the sample owns ---
 # Reuse only what this sample created. For a resource that already exists, confirm it
 # carries ManagedBy=$SAMPLE before adopting it, and stop otherwise, so a re-run never
@@ -99,8 +135,13 @@ if aws s3api head-bucket --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" >/dev
     --query "TagSet[?Key=='ManagedBy'].Value | [0]" --output text 2>/dev/null || true)"
   [[ "$owner" == "$SAMPLE" ]] || die "bucket $S3_BUCKET_NAME exists but is not tagged ManagedBy=$SAMPLE (found: ${owner:-none}); refusing to adopt it"
 else
-  aws s3api create-bucket --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" \
-    --create-bucket-configuration LocationConstraint="$AWS_REGION" >/dev/null
+  # us-east-1 is S3's default Region and refuses a LocationConstraint naming itself.
+  if [ "$AWS_REGION" = "us-east-1" ]; then
+    aws s3api create-bucket --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" >/dev/null
+  else
+    aws s3api create-bucket --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" \
+      --create-bucket-configuration LocationConstraint="$AWS_REGION" >/dev/null
+  fi
 fi
 aws s3api put-bucket-tagging --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" \
   --tagging "TagSet=[{Key=ManagedBy,Value=$SAMPLE},{Key=auto-delete,Value=no}]"
@@ -257,6 +298,8 @@ else
   "${KCTL[@]}" create namespace "$NAMESPACE"
 fi
 "${KCTL[@]}" label namespace "$NAMESPACE" app.kubernetes.io/part-of=$SAMPLE --overwrite >/dev/null
+# The app's network policy before anything that runs the app.
+"${KCTL[@]}" apply -n "$NAMESPACE" -f "$ROOT/deploy/app-policy.yaml"
 sed "s|<NAMESPACE>|$NAMESPACE|g" "$ROOT/deploy/rbac.yaml" | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
 
 assoc() { # service-account  role-arn
@@ -350,7 +393,7 @@ for cli in "${clis[@]}"; do
   "${KCTL[@]}" -n "$NAMESPACE" wait sandboxwarmpool/agent-$cli \
     --for=jsonpath='{.status.readyReplicas}'=$POOL_REPLICAS --timeout=600s || true
 done
-"${KCTL[@]}" -n "$NAMESPACE" rollout status deploy/agent-app
+"${KCTL[@]}" -n "$NAMESPACE" rollout status deploy/agent-app --timeout=10m
 cat <<EOF
 
 Done. Open the app on your machine:

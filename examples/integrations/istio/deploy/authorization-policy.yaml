@@ -1,0 +1,19 @@
+# Admit one caller to the echo workload. Once an ALLOW policy selects a workload,
+# every request that no rule matches is denied, so client-b gets a 403 and
+# client-a gets through. The caller is identified by the SPIFFE identity of its
+# ServiceAccount, which the sidecars exchange during mTLS.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: echo-allow-client-a
+  namespace: <NAMESPACE>
+spec:
+  selector:
+    matchLabels:
+      app: echo
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - cluster.local/ns/<NAMESPACE>/sa/client-a

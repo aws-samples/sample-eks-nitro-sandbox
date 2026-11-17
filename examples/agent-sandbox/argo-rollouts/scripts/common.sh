@@ -80,7 +80,7 @@ ARGO_NAMESPACE="${ARGO_NAMESPACE:-argo-rollouts}"
 # pinned version, and in the plugin's go.mod.
 ARGO_ROLLOUTS_VERSION=v1.10.1
 # The agent-sandbox release Getting started > Warm pool installs.
-AGENT_SANDBOX_VERSION=v1.0.6
+AGENT_SANDBOX_VERSION=v1.0.10
 
 # The step names registered in the controller's ConfigMap and named in
 # deploy/rollout.yaml. The prefix before the slash is required by Argo Rollouts
@@ -94,7 +94,7 @@ PLUGIN_PATH="/plugins/$PLUGIN_BIN"
 
 # The labels the agent-sandbox controller sets on pool sandboxes at run time.
 # LABEL_TEMPLATE_HASH is SandboxTemplateHashLabel in agent-sandbox
-# api/v1beta1/sandbox_types.go at v1.0.6; the controller computes it over the
+# api/v1beta1/sandbox_types.go at v1.0.10; the controller computes it over the
 # template's SandboxBlueprint, of which podTemplate is a field, so a change to a
 # container's env moves it. It is set by the controller, so it is not in the
 # release manifest.

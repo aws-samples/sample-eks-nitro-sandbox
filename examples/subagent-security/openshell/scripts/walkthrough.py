@@ -14,7 +14,7 @@ Each run is fresh: a new run id, a new sandbox, and the template recreated. It n
 resumes an earlier run's sandbox, because a resumed run can skip the very step whose
 output the page shows.
 
-What it leaves behind, under <repo>/tmp/openshell/runs/<run id>/:
+What it leaves behind, under <repo>/tmp/subagent-security-openshell/runs/<run id>/:
 
     checks.json                   every check and whether it passed
     calls.json                    every probe this run made and what came back
@@ -48,7 +48,7 @@ import time
 import uuid
 from pathlib import Path
 
-SAMPLE = "openshell"
+SAMPLE = "subagent-security-openshell"
 
 SCRIPT = Path(__file__).resolve()
 SAMPLE_DIR = SCRIPT.parents[1]
@@ -1431,8 +1431,38 @@ class Walkthrough:
     # The run
     # -----------------------------------------------------------------------
 
+    def check_namespace_is_ours(self):
+        """Act only in a namespace setup.sh labelled as this sample's.
+
+        The run record names the namespace, and a record copied from another run or
+        edited by hand can name one that is not this sample's. setup.sh labels the
+        namespace it creates; a namespace without that label is refused before any step
+        creates an object in it.
+        """
+        argv = ["kubectl"] + (["--context", self.context] if self.context else [])
+        argv += ["get", "namespace", self.namespace, "-o", "json"]
+        completed = self._run(argv, CLI_TIMEOUT)
+        if completed.returncode != 0:
+            raise Problem(
+                f"the run record names the namespace {self.namespace}, and it could not be "
+                f"read ({tail(completed.stderr)}). Re-run ./scripts/setup.sh.")
+        try:
+            namespace = json.loads(completed.stdout)
+        except json.JSONDecodeError as error:
+            raise Problem(
+                f"kubectl returned unreadable JSON for namespace {self.namespace} ({error}). "
+                "Nothing was created in it.")
+        labels = namespace.get("metadata", {}).get("labels", {}) or {}
+        owner = labels.get("app.kubernetes.io/managed-by", "")
+        if owner != SAMPLE:
+            raise Problem(
+                f"namespace {self.namespace} is not this sample's: its managed-by label is "
+                f"{owner!r}, not {SAMPLE!r}. The run record may be stale or copied from "
+                "elsewhere. Nothing was created in it; re-run ./scripts/setup.sh.")
+
     def run(self):
         print(f"\n==> run {self.run_id} in {self.run_dir}")
+        self.check_namespace_is_ours()
         self.render_policies()
         self.read_supplier_key()
         try:

@@ -1,4 +1,6 @@
-// The web app server: a small JSON API, a WebSocket terminal bridge, and the static UI.
+// The web app server: a small JSON API, a WebSocket terminal bridge to the browser, and the
+// static UI. The browser's terminal WebSocket is relayed to the pod's own session-bridge
+// over the pod network (see bridge.js), so the Kubernetes API is not on a session's data path.
 // Bound to 0.0.0.0:8080 behind a ClusterIP Service, reached only with kubectl
 // port-forward. The sign-in is a demo picker, not authentication: the page says so.
 
@@ -9,7 +11,7 @@ import { dirname, join, normalize } from "node:path";
 import { WebSocketServer } from "ws";
 
 import * as sessions from "./sessions.js";
-import * as k8s from "./k8s.js";
+import * as bridge from "./bridge.js";
 import { displayName, isSessionName } from "./names.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -133,8 +135,11 @@ const server = createServer(async (req, res) => {
   }
 });
 
-// WebSocket terminal: /ws?session=<name>. Pipes tmux attach both ways.
-const wss = new WebSocketServer({ server, path: "/ws" });
+// WebSocket terminal: /ws?session=<name>. Relays the browser to the pod's tmux, both ways.
+// maxPayload matches the bridge's own frame limit (1 MiB), well above a large paste.
+const wss = new WebSocketServer({ server, path: "/ws", maxPayload: 1 << 20 });
+const PENDING_MAX = 64 * 1024;
+const PENDING_MIN = 64; // at most PENDING_MAX / PENDING_MIN (1024) queued messages
 wss.on("connection", async (ws, req) => {
   const url = new URL(req.url, "http://localhost");
   const session = url.searchParams.get("session");
@@ -143,16 +148,12 @@ wss.on("connection", async (ws, req) => {
     ws.close(1008, "session not running");
     return;
   }
+  // The browser sends its size the moment its socket opens, before the bridge has accepted
+  // the terminal. Queue what arrives until then, so that first resize is not lost.
   let term;
-  try {
-    term = await k8s.attachTerminal(entry.podName, {
-      onData: (chunk) => ws.readyState === ws.OPEN && ws.send(chunk),
-    });
-  } catch (e) {
-    ws.close(1011, String(e?.message || e));
-    return;
-  }
-  ws.on("message", (data, isBinary) => {
+  const pending = [];
+  let browserClosed = false;
+  const handle = (data, isBinary) => {
     // Control frames carry {resize:[cols,rows]}; everything else is keystrokes.
     if (!isBinary) {
       try {
@@ -161,16 +162,61 @@ wss.on("connection", async (ws, req) => {
       } catch {}
     }
     term.write(data);
+  };
+  // Bounded by bytes and by count (each message is charged at least PENDING_MIN, so empty
+  // messages fill it too). Past the bound the browser is closed with 1009, the queue is
+  // dropped and nothing more is taken. If the attach then completes, the terminal is
+  // closed at once and receives no queued input.
+  let pendingBytes = 0;
+  ws.on("message", (data, isBinary) => {
+    if (browserClosed) return;
+    if (term) return handle(data, isBinary);
+    pendingBytes += Math.max(data.length, PENDING_MIN);
+    if (pendingBytes > PENDING_MAX) {
+      browserClosed = true;
+      pending.length = 0;
+      return ws.close(1009, "too much input before the terminal opened");
+    }
+    pending.push([data, isBinary]);
   });
-  ws.on("close", () => term.close());
+  ws.on("close", () => { browserClosed = true; term?.close(); });
+  try {
+    // To the pod's own session-bridge over the pod network, not the Kubernetes exec API.
+    term = await bridge.attachTerminal(entry, {
+      onData: (chunk) => ws.readyState === ws.OPEN && ws.send(chunk),
+      onClose: () => { try { ws.close(); } catch {} },
+    });
+  } catch (e) {
+    console.error(`terminal ${session}: ${e?.message || e}`);
+    ws.close(1011, "terminal unavailable");
+    return;
+  }
+  // The browser may have gone, or begun closing, while the bridge was connecting.
+  if (browserClosed || ws.readyState !== ws.OPEN) return term.close();
+  for (const [data, isBinary] of pending.splice(0)) handle(data, isBinary);
 });
 
 // Pick up sessions that kept running while the app was down, so the loop refreshes their
-// credentials and releases them when idle. A failure is logged; the app still starts.
-sessions.adoptRunningSessions()
-  .then((n) => console.log(`picked up ${n} running session(s) after start`))
-  .catch((e) => console.error(`could not pick up running sessions after start: ${e?.message || e}`));
-sessions.startBackgroundLoop();
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`coding-agents-for-developers app on :${PORT}, CLIs: ${CLIS.join(", ")}`);
+// credentials and releases them when idle, and only then start listening: until then a
+// running session would show as idle. The wait has a deadline, so a pick-up that hangs
+// cannot keep the app from serving; one that finishes later still lands, and does not
+// overwrite a session a Restore has started meanwhile (sessions.js). A failure is logged;
+// the app still starts. The Deployment's readiness probe holds traffic until the listener
+// is up.
+const ADOPT_DEADLINE_MS = 60 * 1000;
+let deadlineTimer;
+Promise.race([
+  sessions.adoptRunningSessions()
+    .then((n) => console.log(`picked up ${n} running session(s) after start`))
+    .catch((e) => console.error(`could not pick up running sessions after start: ${e?.message || e}`)),
+  new Promise((r) => { deadlineTimer = setTimeout(() => {
+    console.error(`picking up running sessions is taking over ${ADOPT_DEADLINE_MS / 1000} s; serving now, it continues`);
+    r();
+  }, ADOPT_DEADLINE_MS); }),
+]).finally(() => {
+  clearTimeout(deadlineTimer);
+  sessions.startBackgroundLoop();
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`coding-agents-for-developers app on :${PORT}, CLIs: ${CLIS.join(", ")}`);
+  });
 });

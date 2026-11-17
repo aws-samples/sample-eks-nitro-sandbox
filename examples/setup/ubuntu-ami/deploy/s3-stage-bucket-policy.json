@@ -1,0 +1,21 @@
+{
+  "Comment": "Bucket policy for the ubuntu-ami sample's per-run S3 staging bucket. setup.sh renders @STAGE_BUCKET@ and applies it right after it creates the bucket (Block Public Access on, default SSE-S3 encryption, tags ManagedBy and RunId). It refuses every request that does not use TLS. It grants nothing: the operator's credentials upload, and the build-host role reads only through its own per-run inline policy (deploy/iam-build-host-policy.json).",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyInsecureTransport",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::@STAGE_BUCKET@",
+        "arn:aws:s3:::@STAGE_BUCKET@/*"
+      ],
+      "Condition": {
+        "Bool": {
+          "aws:SecureTransport": "false"
+        }
+      }
+    }
+  ]
+}

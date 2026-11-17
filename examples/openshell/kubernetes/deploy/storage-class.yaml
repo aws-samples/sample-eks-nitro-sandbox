@@ -1,0 +1,31 @@
+# The sample's own EBS StorageClass, created by scripts/setup.sh only when the
+# cluster has no default class that fits (provisioner ebs.csi.eks.amazonaws.com,
+# type gp3, encrypted). It is NOT a default class, it is named for the sample, and
+# it carries the sample's mark so the clean up can tell it is the sample's.
+#
+# Setup creates it with `kubectl create` only when it is absent, and never applies
+# over or patches an existing class: a StorageClass is chosen, never changed.
+# Applying a manifest over a class that was created with `kubectl apply` would
+# strip its default annotation and change how every other claim on the cluster is
+# provisioned.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: openshell-kubernetes-gp3
+  labels:
+    app.kubernetes.io/managed-by: openshell-kubernetes
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: eks.amazonaws.com/compute-type
+        values:
+          - auto
+provisioner: ebs.csi.eks.amazonaws.com
+# Named rather than left to the API default, because the clean up deletes the
+# claim, waits for its PersistentVolume to be deleted and reports the EBS volume
+# gone, and that is only true for Delete. setup checks this field on whichever
+# class it ends up using, including this one.
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  type: gp3
+  encrypted: "true"

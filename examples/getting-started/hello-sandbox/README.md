@@ -2,7 +2,7 @@
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page. The commands below use files from this repository, so clone it and run
-them from this sample's folder:
+them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
@@ -158,7 +158,7 @@ MemTotal:         132568 kB
 ```
 
 That is enough for these pods. A real workload sets the CPU and memory requests it needs:
-the VM is sized from them, as the [coding agent](../coding-agent/README.md) sample shows.
+the VM is sized from them, as the [coding agent](../coding-agent/README.md) blueprint shows.
 
 **Optional: no network besides loopback.** [`hello-network-isolated.yaml`](hello-network-isolated.yaml)
 is the same pod with one annotation, and prints its IPv4 addresses and default route:
@@ -198,7 +198,7 @@ command terminated with exit code 6
 
 ## Clean up
 
-Delete the pods from this sample:
+Delete the pods from this blueprint:
 
 ```bash
 kubectl delete -f hello-default.yaml --ignore-not-found
@@ -206,7 +206,7 @@ kubectl delete -f hello-sandbox.yaml --ignore-not-found
 kubectl delete -f hello-network-isolated.yaml --ignore-not-found
 ```
 
-If this is the only sample you ran, remove the namespace and the cluster. Set the
+If this is the only blueprint you ran, remove the namespace and the cluster. Set the
 variables again first in a new shell, with the values you used:
 
 ```bash
@@ -216,5 +216,5 @@ kubectl delete namespace $NAMESPACE
 eksctl delete cluster --name $CLUSTER_NAME --region $AWS_REGION
 ```
 
-If you ran the coding agent sample, follow its clean up first: deleting the cluster also
-removes the network policy setting that sample enables.
+If you ran the coding agent blueprint, follow its clean up first: deleting the cluster also
+removes the network policy setting that blueprint enables.

@@ -124,8 +124,15 @@ SANDBOX="demo-$(date +%s)"
 sed "s|<SANDBOX_NAMESPACE>|$SANDBOX_NAMESPACE|g" "$SAMPLE_DIR/policy/sandbox-policy.json" \
   > "$TMP_DIR/sandbox-policy.rendered.json"
 
+# --memory 1Gi is load-bearing. OpenShell's Kubernetes driver writes it to the agent
+# container's memory limit and request, and the sandbox VM is sized from the request when it
+# boots and cannot grow afterwards. With no request the guest got the small default size
+# (about 114 MiB), which runs the agent but not layer 3's ephemeral debug container as well:
+# adding that container OOM-killed the agent (exit 137), the debug container never started
+# (StartError), and the pod failed, in 2 of 2 runs on c8a.large nodes with kernel 6.18.56.
+# With 1Gi on the same nodes the debug container ran and showed the refusal.
 os sandbox create --name "$SANDBOX" --policy "$TMP_DIR/sandbox-policy.rendered.json" \
-  --provider demo --no-auto-providers --detach -- sleep 3600
+  --provider demo --no-auto-providers --memory 1Gi --detach -- sleep 3600
 
 workload_pod="default--$SANDBOX"
 kc wait pod/"$workload_pod" -n "$SANDBOX_NAMESPACE" --for=condition=Ready --timeout=5m ||
@@ -155,8 +162,21 @@ for pod in json.load(sys.stdin)['items']:
 kc wait pod/"$supervisor_pod" -n "$SANDBOX_NAMESPACE" --for=condition=Ready --timeout=5m ||
   die "the supervisor pod $supervisor_pod did not reach Ready; 'kubectl describe pod/$supervisor_pod -n $SANDBOX_NAMESPACE' says why"
 
+# Asserted, not just printed: the --memory 1Gi above has to reach the agent container as
+# both its request (what the sandbox VM is sized from) and its limit.
+agent_memory_request="$(kc get pod "$workload_pod" -n "$SANDBOX_NAMESPACE" \
+  -o jsonpath='{.spec.containers[?(@.name=="agent")].resources.requests.memory}')" ||
+  die "could not read the agent container's memory request"
+agent_memory_limit="$(kc get pod "$workload_pod" -n "$SANDBOX_NAMESPACE" \
+  -o jsonpath='{.spec.containers[?(@.name=="agent")].resources.limits.memory}')" ||
+  die "could not read the agent container's memory limit"
+[[ "$agent_memory_request" == "1Gi" && "$agent_memory_limit" == "1Gi" ]] ||
+  die "the agent container in $workload_pod has memory request '$agent_memory_request' and limit '$agent_memory_limit', not the 1Gi this script asked for with --memory 1Gi"
+
 echo "  workload pod:   $workload_pod"
 kc get pod "$workload_pod" -n "$SANDBOX_NAMESPACE" -o jsonpath='    runtimeClassName: {.spec.runtimeClassName}{"\n"}'
+echo "    agent container memory request: $agent_memory_request"
+echo "    agent container memory limit:   $agent_memory_limit"
 echo "  supervisor pod: $supervisor_pod"
 kc get pod "$supervisor_pod" -n "$SANDBOX_NAMESPACE" -o jsonpath='    runtimeClassName: {.spec.runtimeClassName}{"\n"}'
 echo "    (empty means no RuntimeClass: an ordinary pod)"
@@ -292,33 +312,55 @@ kc get networkpolicy "os-control-$boundary_pair" -n "$SANDBOX_NAMESPACE" -o yaml
 
 echo "  a connection from the workload pod's own network namespace, outside OpenShell's control (an ephemeral debug container sharing it), to the policy-approved backend by IP -- bypassing OpenShell entirely does not bypass the NetworkPolicy:"
 ECHO_IP="$(kc get service echo-api -n "$SANDBOX_NAMESPACE" -o jsonpath='{.spec.clusterIP}')"
-# kubectl debug's own wait only covers container creation, not the command finishing, so
-# this polls the ephemeral container's own terminated state before reading its logs, and
-# reports plainly rather than reading silently on if it never terminates.
-wait_for_ephemeral_exit() { # <pod> <container>
-  local pod="$1" container="$2" i state
-  for i in $(seq 1 30); do
-    state="$(kc get pod "$pod" -n "$SANDBOX_NAMESPACE" \
-      -o jsonpath="{.status.ephemeralContainerStatuses[?(@.name==\"$container\")].state.terminated.reason}" 2>/dev/null)"
-    [[ -n "$state" ]] && return 0
+[[ -n "$ECHO_IP" ]] || die "could not read the echo-api Service's cluster IP"
+# debug_wget <pod> [kubectl debug flags] : add a busybox ephemeral container to <pod> that
+# fetches the echo API by IP, wait for it to finish, print its log and keep it in
+# DEBUG_LOG for the caller to assert on. kubectl debug returns once the container is
+# created, not once it has run, so this polls its terminated state. It dies unless the
+# container actually ran its command: one that never started (StartError) is terminated
+# too, with an empty log, and reading that as "no response" would show a refusal that
+# never happened. The container gets a name of its own, made here and passed to kubectl
+# debug, and its status and log are read by that name: on a shared cluster someone else
+# can add an ephemeral container to the same pod, so "the last one in the list" need not
+# be this one.
+debug_wget() {
+  local pod="$1" out container reason=""
+  shift
+  container="netpol-probe-$(openssl rand -hex 4)" ||
+    die "could not generate a name for the ephemeral container"
+  out="$(kc debug "$pod" -n "$SANDBOX_NAMESPACE" --image=public.ecr.aws/docker/library/busybox:1.36 \
+    --container="$container" "$@" \
+    -- sh -c "wget -T 5 -O- http://$ECHO_IP/headers; echo EXIT=\$?" 2>&1)" ||
+    die "kubectl debug could not add the ephemeral container $container to $pod: $out"
+  grep -v '^Defaulting\|^--profile\|^Targeting' <<<"$out" || true
+  for _ in $(seq 1 30); do
+    reason="$(kc get pod "$pod" -n "$SANDBOX_NAMESPACE" \
+      -o jsonpath="{.status.ephemeralContainerStatuses[?(@.name==\"$container\")].state.terminated.reason}")" ||
+      die "could not read the state of ephemeral container $container in $pod"
+    [[ -n "$reason" ]] && break
     sleep 2
   done
-  echo "  WARNING: ephemeral container $container in $pod did not terminate within 60s; its logs below may be partial"
-  return 1
+  [[ -n "$reason" ]] || die "ephemeral container $container in $pod did not finish within 60 s"
+  [[ "$reason" == "Completed" ]] ||
+    die "ephemeral container $container in $pod did not run its command: it terminated with reason '$reason'; 'kubectl describe pod/$pod -n $SANDBOX_NAMESPACE' says why"
+  DEBUG_LOG="$(kc logs "$pod" -n "$SANDBOX_NAMESPACE" -c "$container")" ||
+    die "could not read the log of ephemeral container $container in $pod"
+  printf '%s\n' "$DEBUG_LOG"
 }
 
-kc debug "$workload_pod" -n "$SANDBOX_NAMESPACE" --image=public.ecr.aws/docker/library/busybox:1.36 \
-  --target=agent -- sh -c "wget -T 5 -O- http://$ECHO_IP/headers; echo EXIT=\$?" 2>&1 | grep -v '^Defaulting\|^--profile\|^Targeting' || true
-debugger="$(kc get pod "$workload_pod" -n "$SANDBOX_NAMESPACE" -o jsonpath='{.spec.ephemeralContainers[-1:].name}')"
-wait_for_ephemeral_exit "$workload_pod" "$debugger" || true
-kc logs "$workload_pod" -n "$SANDBOX_NAMESPACE" -c "$debugger"
+# Asserted, not just printed: the refusal is this layer's claim, so a run that does not
+# show it stops here rather than finishing with exit 0.
+debug_wget "$workload_pod" --target=agent
+if ! grep -qx 'wget: download timed out' <<<"$DEBUG_LOG" || ! grep -qx 'EXIT=1' <<<"$DEBUG_LOG"; then
+  die "layer 3 did not show the refusal: the ephemeral container in $workload_pod did not print 'wget: download timed out' and 'EXIT=1'"
+fi
 
 echo "  control -- the same technique against the supervisor pod, which carries no such restriction:"
-kc debug "$supervisor_pod" -n "$SANDBOX_NAMESPACE" --image=public.ecr.aws/docker/library/busybox:1.36 \
-  -- sh -c "wget -T 5 -O- http://$ECHO_IP/headers; echo EXIT=\$?" 2>&1 | grep -v '^Defaulting\|^--profile\|^Targeting' || true
-debugger2="$(kc get pod "$supervisor_pod" -n "$SANDBOX_NAMESPACE" -o jsonpath='{.spec.ephemeralContainers[-1:].name}')"
-wait_for_ephemeral_exit "$supervisor_pod" "$debugger2" || true
-kc logs "$supervisor_pod" -n "$SANDBOX_NAMESPACE" -c "$debugger2"
+debug_wget "$supervisor_pod"
+# The control is what ties the refusal above to the workload pod's NetworkPolicy rather than
+# to the echo API or the cluster network being down, so it is asserted too.
+grep -qx 'EXIT=0' <<<"$DEBUG_LOG" ||
+  die "the control did not reach the echo API from $supervisor_pod (no 'EXIT=0'), so the refusal above is not shown to come from the workload pod's NetworkPolicy"
 
 kc delete pod node-probe -n "$SANDBOX_NAMESPACE" --wait=false >/dev/null 2>&1 || true
 

@@ -40,6 +40,6 @@
   "default_workload_image": "nvcr.io/nvidia/base/ubuntu:24.04",
   "cli_asset": "openshell-x86_64-unknown-linux-musl.tar.gz",
   "cli_sha256": "2951c67366f3e3584ed9cec8d49b9f0b0eefc8cacea8b0582ac164590492f136",
-  "agent_sandbox_controller": "v1.0.6",
+  "agent_sandbox_controller": "v1.0.10",
   "demo_echo_service_image": "docker.io/mccutchen/go-httpbin:v2.15.0"
 }

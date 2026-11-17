@@ -31,8 +31,11 @@ spec:
           # The node's containerd pulls it, like any pod image; the build's own pulls, which
           # the egress policy governs, go to public.ecr.aws.
           image: moby/buildkit:v0.34.1
+          # Privileged, so it has every capability and no seccomp filter; the read-only root
+          # means buildkitd and buildctl write only to the volumes below.
           securityContext:
             privileged: true       # reaches only this pod's own guest
+            readOnlyRootFilesystem: true
           env:
             - { name: IMAGE, value: "hello-nitro:v1" }
           command: ["/bin/sh", "/scripts/build.sh"]
@@ -43,6 +46,14 @@ spec:
               mountPath: /var/lib/buildkit
             - name: scripts
               mountPath: /scripts
+            - name: run              # buildkitd.sock and runc state
+              mountPath: /run
+            - name: tmp              # buildkitd's temporary mounts
+              mountPath: /tmp
+            - name: docker-config    # buildctl writes ~/.docker while it resolves images
+              mountPath: /root/.docker
+            - name: workspace        # build.sh writes the build context here
+              mountPath: /workspace
           resources:
             requests:
               cpu: "1"
@@ -57,3 +68,11 @@ spec:
         - name: scripts
           configMap:
             name: buildkit-build-script
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: docker-config
+          emptyDir: {}
+        - name: workspace
+          emptyDir: {}

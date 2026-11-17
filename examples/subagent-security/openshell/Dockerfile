@@ -13,9 +13,7 @@
 # the boundary, so a difference in behaviour cannot be a difference in build.
 #
 # OpenShell supplies its own in-pod runtime binary at sandbox start, so the image does
-# not carry it. What the image must carry is /bin/sh: the Nitro adapter in
-# deploy/nitro-adapter.yaml starts OpenShell's runtime through the image's shell, because
-# a binary on a pod volume cannot be a container's entrypoint inside the guest.
+# not carry it.
 FROM public.ecr.aws/docker/library/python:3.13-slim
 
 # procps so the page can read the running analyst process, and ca-certificates so the
@@ -61,8 +59,6 @@ RUN useradd --create-home --uid 1000 --user-group analyst
 RUN test -x /usr/local/bin/python3.13 || \
     (echo "the policy's binaries rule names /usr/local/bin/python3.13, which is missing" \
      && exit 1)
-# /bin/sh, which the Nitro adapter needs to start OpenShell's runtime.
-RUN test -x /bin/sh || (echo "the Nitro adapter needs /bin/sh in this image" && exit 1)
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     PYTHONPATH=/opt/analyst:/opt/openshell

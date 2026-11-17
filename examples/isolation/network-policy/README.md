@@ -2,8 +2,8 @@
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
-sample first so you have a cluster with the runtime classes. The commands below use files
-from this repository, so clone it if you have not already, and run them from this sample's
+blueprint first so you have a cluster with the runtime classes. The commands below use files
+from this repository, so clone it if you have not already, and run them from this blueprint's
 folder:
 
 ```bash
@@ -17,7 +17,7 @@ egress control it already uses, a plain Kubernetes
 still get enforced when the workload runs in a Nitro sandbox? A sandboxed pod's containers
 run in a lightweight VM of their own, which is what makes the question worth asking.
 
-This sample answers it by running the same egress client twice, side by side, differing only
+This blueprint answers it by running the same egress client twice, side by side, differing only
 in `runtimeClassName: isolated-sandbox` versus an ordinary pod, under one namespace-scoped
 egress `NetworkPolicy` that selects both. After the policy, both clients keep reaching the
 server it allows and both are refused the server it denies: the policy holds on the sandboxed
@@ -70,7 +70,7 @@ follow each one and read its output.
 ## Versions
 
 Nothing is pinned beyond the images in the manifests: the clients and the servers use stock
-images, pinned by tag, and the sample installs no controller, SDK, client library or chart of
+images, pinned by tag, and the blueprint installs no controller, SDK, client library or chart of
 its own. Network policy enforcement is a cluster feature turned on with the `amazon-vpc-cni`
 ConfigMap (step 1), and the `ApplicationNetworkPolicy` API in the optional variant is installed
 by EKS Auto Mode.
@@ -84,7 +84,7 @@ by EKS Auto Mode.
 enforcing them until the Network Policy Controller is enabled, once per cluster, through the
 `amazon-vpc-cni` ConfigMap in `kube-system`. This affects the whole cluster; pods that no policy
 selects are unaffected. If you have run the [coding agent](../../getting-started/coding-agent/README.md)
-sample this is already on; otherwise:
+blueprint this is already on; otherwise:
 
 ```bash
 kubectl get configmap -n kube-system amazon-vpc-cni \
@@ -270,7 +270,7 @@ run inside the sandbox cannot bypass it. Exec into the sandboxed client and make
 to `web-blocked`. The run below shows that for a command issued inside the guest *after* the pod
 is running, as UID 10001 (step 2). That it holds for any UID in the guest, root included, is the
 architectural point above — the filter is on the host side of the interface, which processes
-inside the guest cannot reconfigure or bypass — not something this sample runs:
+inside the guest cannot reconfigure or bypass — not something this blueprint runs:
 
 ```bash
 kubectl exec client-sandboxed -- wget -q -T 8 -O /dev/null "http://$BLOCKED_IP:8080/" \
@@ -302,7 +302,7 @@ client was refused, so the sandboxed client's refusal is a real enforcement resu
 
 **What a refused egress looks like here.** A refused egress to a pod IP is a connection that gets
 no reply and runs to the `wget -T 8` timeout — the `timed out (refused)` lines above. That is the
-shape this sample produces on a live cluster, so a timeout against `web-blocked` is the policy
+shape this blueprint produces on a live cluster, so a timeout against `web-blocked` is the policy
 working, not a broken cluster.
 
 ## The sandboxed client is really in a sandbox
@@ -401,15 +401,15 @@ the sandboxed pod exactly as address-based egress is.
     - a **sidecar egress proxy**, such as an Istio sidecar with a `ServiceEntry` and egress gateway,
       which resolves and allows traffic by hostname at the proxy;
     - a **per-process egress wrapper** around the workload's tools (the approach the
-      subagent-security samples use), which confines what hosts each process may reach;
+      subagent-security blueprints use), which confines what hosts each process may reach;
     - a **CNI with built-in FQDN policy**, such as [Cilium's `toFQDNs`](https://docs.cilium.io/en/stable/security/policy/language/#dns-based) egress rules.
 
-    This sample does not deploy those; the note is a pointer for implementing hostname-based egress
+    This blueprint does not deploy those; the note is a pointer for implementing hostname-based egress
     on standard EKS, where `domainNames` is not yet available.
 
 ## Clean up
 
-Remove the pods and the policy this sample created. These scripts and commands do not touch the
+Remove the pods and the policy this blueprint created. These scripts and commands do not touch the
 cluster-wide enforcement setting from step 1; if you turned it on, it stays on until you remove it
 (see the note below).
 
@@ -426,7 +426,7 @@ kubectl delete -f deploy/client-standard.yaml -f deploy/client-sandboxed.yaml --
 kubectl delete -f deploy/web-allowed.yaml -f deploy/web-blocked.yaml --ignore-not-found
 ```
 
-The network policy enforcement is cluster-wide, and if you enabled it in step 1 this sample does
+The network policy enforcement is cluster-wide, and if you enabled it in step 1 this blueprint does
 not turn it back off. Deleting the cluster removes it. On a cluster you keep, leave it on (it only
 enforces policies that select a pod), or, if nothing else relies on it, turn it off by setting the
 `amazon-vpc-cni` ConfigMap's `enable-network-policy-controller` back to `"false"` (or removing the

@@ -1,0 +1,21 @@
+// Native Python uses filesystem grants; these rules govern routed shell file operations.
+@id("analyst_shell")
+permit(principal == Box::Agent::"self", action == Box::Action::"shell:exec", resource);
+@id("analyst_input_read")
+permit(principal == Box::Agent::"self", action == Box::Action::"fs:read", resource)
+when { context.input.path == "__INPUT__" || context.input.path like "__INPUT__/*" };
+@id("analyst_output")
+permit(principal == Box::Agent::"self", action in [Box::Action::"fs:read", Box::Action::"fs:write"], resource)
+when { context.input.path == "__OUTPUT__" || context.input.path like "__OUTPUT__/*" };
+
+// Permit the configured synthetic HTTP supplier origin.
+@id("supplier_connect")
+permit(principal == Box::Agent::"self", action == Box::Action::"net:connect", resource)
+when { context.input.host == "__HOST__" && context.input.port == __PORT__ };
+
+@id("supplier_read_case")
+permit(principal == Box::Agent::"self", action == Box::Action::"http:request", resource)
+when {
+    context.input.host == "__HOST__" && context.input.port == __PORT__ &&
+    context.input.method == "GET" && context.input.path == "/cases/rfp-001/suppliers"
+};

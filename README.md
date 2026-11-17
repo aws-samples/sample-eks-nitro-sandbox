@@ -1,6 +1,6 @@
-# Amazon EKS Nitro sandbox samples
+# AWS Nitro Sandbox on Amazon EKS Blueprints
 
-Runnable samples for Nitro Sandboxes on Amazon EKS: hardware-enforced workload isolation where each pod runs its containers inside its own Nitro sandbox, a hardware-isolated environment with its own kernel. The samples are rendered as a documentation site, and a path on the site is the path in this repository.
+Runnable blueprints for AWS Nitro Sandbox on Amazon EKS: hardware-enforced workload isolation where each pod runs its containers inside its own Nitro sandbox, a hardware-isolated environment with its own kernel. The blueprints are rendered as a documentation site, and a path on the site is the path in this repository.
 
 ## Getting started
 
@@ -8,7 +8,14 @@ Runnable samples for Nitro Sandboxes on Amazon EKS: hardware-enforced workload i
 - [Coding agent](examples/getting-started/coding-agent/README.md): Claude Code in a sandbox that reads a GitHub issue, fixes it and opens a pull request.
 - [Warm pool](examples/getting-started/warm-pool/README.md): a pool of pre-booted sandboxes and a claim that adopts one in under 1 second.
 
-Start from the [site home page](examples/README.md) for what a Nitro sandbox is and the prerequisites the samples share.
+Start from the [site home page](examples/README.md) for what a Nitro sandbox is and the prerequisites the blueprints share.
+
+## Setup
+
+Node and cluster preparation the other blueprints treat as a prerequisite.
+
+- [Ubuntu AMI](examples/setup/ubuntu-ami/README.md): build a custom Ubuntu 24.04 node AMI for EKS Pod Isolation and add one dedicated, tainted managed node group to an existing cluster, for readers who manage their own node OS instead of EKS Auto Mode.
+- [Cilium on Ubuntu nodes](examples/setup/cilium-ubuntu/README.md): a dedicated disposable EKS cluster whose only CNI is Cilium, with two Ubuntu 24.04 node groups, and an `isolated-sandbox` pod that gets normal pod networking and the same enforced policy as an ordinary pod.
 
 ## Isolation
 
@@ -22,6 +29,7 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 ## AI agents
 
 - [Coding agents for developers](examples/ai-agents/coding-agents-for-developers/README.md): a web app where a developer picks a coding agent and gets a browser terminal, each session in its own sandbox claimed from a warm pool, with a per-session S3 Files workspace only that session's pod can mount.
+- [OpenClaw Enterprise on EKS](examples/ai-agents/openclaw-enterprise/README.md): OpenClaw Enterprise installed on EKS with two retained tenant runtimes in Nitro sandboxes. Both completed native gateway turns through AgentGateway to Amazon Bedrock, with cross-tenant access denied. See the [scoped validation record](examples/ai-agents/openclaw-enterprise/VALIDATION.md).
 
 ## Managed agents
 
@@ -30,12 +38,12 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 
 ## Subagent security
 
-The same procurement analyst three ways, with a second policy layer confining the tool processes it runs inside its sandbox. The [section page](examples/subagent-security/README.md) covers the analyst, the case and what the three samples share.
+The same procurement analyst, with four choices for confining its tool processes. The [section page](examples/subagent-security/README.md) covers the analyst, the case and what the blueprints share.
 
 - [Procurement analyst confined by nono](examples/subagent-security/nono/README.md): reader, evaluator and writer run as separate processes under per-role nono profiles inside one sandbox, with nono's proxy holding the supplier API key and allowing one hostname and a short list of HTTP operations, while the analyst still produces a cited recommendation checked against a deterministic comparison.
 - [Procurement analyst confined by bubblewrap](examples/subagent-security/bubblewrap/README.md): the same analyst with its reader, evaluator and writer started by `bwrap`, where the confinement policy is the argument list the trusted controller assembles: selected mounts, its own namespaces, no capabilities and an application-compiled seccomp filter, and no network at all for the tool processes.
 - [Procurement analyst confined by OpenShell](examples/subagent-security/openshell/README.md): an OpenShell gateway drives one sandbox, with the analyst's files, process identity, destinations and HTTP operations governed by an OpenShell policy inside the Nitro sandbox, while the supervisor that holds the real supplier key runs as an ordinary pod outside it, and one added rule lets the analyst submit its draft with no restart.
-- [OpenClaw Enterprise on EKS](examples/ai-agents/openclaw-enterprise/README.md): OpenClaw Enterprise installed on EKS with two retained tenant runtimes in Nitro sandboxes. Both completed native gateway turns through AgentGateway to Amazon Bedrock, with cross-tenant access denied. See the [scoped validation record](examples/ai-agents/openclaw-enterprise/VALIDATION.md).
+- [Procurement tools confined by Strands Box](examples/subagent-security/strands-box/README.md): separate role Boxes inside a Nitro sandbox, with method and path policies and a per-Box response limit.
 
 ## OpenShell
 
@@ -49,7 +57,7 @@ The same procurement analyst three ways, with a second policy layer confining th
 - [Warm pool autoscaling with KEDA](examples/agent-sandbox/warm-pool-autoscaling-keda/README.md): KEDA reads a count of `SandboxClaim` objects and drives a warm pool's `spec.replicas` up and back down with it, with a no-autoscaler control that stays flat under the same demand.
 - [IDE in the browser](examples/agent-sandbox/ide/README.md): code-server (VS Code in the browser) in a sandbox on a persistent EBS workspace, reached only by `kubectl port-forward`, with its password an argon2 hash from a Kubernetes Secret.
 - [Roll out a SandboxTemplate change with Argo Rollouts](examples/agent-sandbox/argo-rollouts/README.md): patching a `SandboxTemplate` leaves the warm pool serving pods built from the old one, so a claim can adopt a stale pod; an Argo Rollouts canary step plugin patches the template and then drains and re-warms the pool.
-- [Brain and hands](examples/agent-sandbox/brain-and-hands/README.md): an agent split in two, a brain that reasons with no tool that runs a command and hands that run every command in a network-isolated sandbox pod claimed from a warm pool, with the Kubernetes API the only wire between them.
+- [Brain and hands](examples/agent-sandbox/brain-and-hands/README.md): an agent split in two, a brain that reasons with no tool that runs a command and hands that run every command in a sandbox pod claimed from a warm pool, reached through the agent-sandbox MCP server and sandboxd on two ports that admit only pods labelled `app=brain`.
 
 ## Storage
 
@@ -66,10 +74,11 @@ The same procurement analyst three ways, with a second policy layer confining th
 ## Integrations
 
 - [Temporal workflows](examples/integrations/temporal/README.md): a self-hosted Temporal server where one durable workflow creates a sandbox, runs a step in it, suspends it, resumes it onto a new guest with its workspace intact and deletes it, retrying a failed activity and carrying on through its Worker pod being deleted mid-run.
+- [Istio sidecars](examples/integrations/istio/README.md): Istio with the `istio-init` init container and Envoy sidecar on Nitro sandboxes, with strict mutual TLS and an authorization policy, and a plain statement of what does not work today (the Istio CNI plugin, which is not on the roadmap for now, and ambient mesh, which is on the roadmap).
 
 ## Confidential
 
-Samples that use `runtimeClassName: confidential-sandbox`, where the node is untrusted and AWS KMS releases a key only to a sandbox whose attestation matches. The [section page](examples/confidential/README.md) covers what they share.
+Blueprints that use `runtimeClassName: confidential-sandbox`, where the node is untrusted and AWS KMS releases a key only to a sandbox whose attestation matches. The [section page](examples/confidential/README.md) covers what they share.
 
 - [Encrypted image](examples/confidential/encrypted-image/README.md): a container image whose every layer is ciphertext in Amazon ECR, decrypted inside the sandbox by the guest image runtime once KMS has checked the attested policy measurement, while the same credentials used from outside the sandbox are refused.
 - [Secrets Manager secret](examples/confidential/secrets-manager-secret/README.md): a secret stored as a KMS ciphertext envelope in AWS Secrets Manager, read and decrypted by the application inside the sandbox under an attestation KMS accepts, while an ordinary pod holding the same role can read the ciphertext and is refused the value.
@@ -83,7 +92,7 @@ pip install -r requirements.txt
 mkdocs serve
 ```
 
-See [ROADMAP.md](docs/ROADMAP.md) for the samples planned next. To add one, start with [CONTRIBUTING](CONTRIBUTING.md#adding-a-sample) and [AGENTS.md](AGENTS.md).
+See [ROADMAP.md](docs/ROADMAP.md) for the blueprints planned next. To add one, start with [CONTRIBUTING](CONTRIBUTING.md#adding-a-sample) and [AGENTS.md](AGENTS.md).
 
 ## Security
 

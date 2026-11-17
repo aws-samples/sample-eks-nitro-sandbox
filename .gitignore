@@ -7,3 +7,6 @@ __pycache__/
 
 # Local scratch: review notes, run captures, build logs
 tmp/
+
+# ASH scan reports (CONTRIBUTING.md, Security scanning)
+.ash/ash_output/

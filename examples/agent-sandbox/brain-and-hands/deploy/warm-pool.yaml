@@ -1,13 +1,22 @@
-# The hands: a SandboxTemplate with no network, and a pool that keeps one booted.
+# The hands: a SandboxTemplate that runs sandboxd, and a pool that keeps one
+# booted.
 #
 # Every command the brain decides to run happens in a pod stamped from this
-# template. The template is where the isolation is asked for, so these two lines
-# are the whole of it: the runtime class puts the pod's containers in a Nitro
-# sandbox, and the annotation boots that sandbox with no network device.
+# template, and reaches it through sandboxd, the agent-sandbox runtime daemon:
+# gRPC on 9090 for commands, REST on 8080 for files. The brain dials those two
+# ports on the pod's IP. No command, file or output travels through the
+# Kubernetes API, which carries only the claim and Sandbox lifecycle.
 #
-# <NAMESPACE> is filled in at apply time by ./scripts/setup.sh from the
-# NAMESPACE variable, so an overridden name reaches this object too. Never apply
-# this file with the placeholder in place.
+# Three things in this file are the isolation:
+#   runtimeClassName  puts the pod's containers in a Nitro sandbox
+#   networkPolicy     admits only pods labelled app=brain, on 8080 and 9090,
+#                     and opens no egress
+#   --auth-token-sha256  makes sandboxd refuse any request without the token
+#                     the brain holds
+#
+# ./scripts/setup.sh fills in <NAMESPACE> and <SANDBOXD_TOKEN_SHA256> at apply
+# time, so an overridden namespace reaches this object too. Never apply this
+# file with a placeholder in place.
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
@@ -16,28 +25,43 @@ metadata:
   labels:
     app.kubernetes.io/part-of: brain-and-hands
 spec:
-  # The hands boot with no network device, so there is no egress to restrict and
-  # this sample ships no network policy for them. Left at the default, Managed,
-  # the agent-sandbox controller would add one of its own, and with no rules
-  # from us that policy allows 0.0.0.0/0 less the private ranges: the public
-  # internet. It is inert against a pod that has no network, but it would be the
-  # standing permission the moment anyone dropped the annotation below. Say no
-  # instead, so the only reason the hands cannot reach the network is that they
-  # have no network.
-  networkPolicyManagement: Unmanaged
+  # The hands have a pod network, because that is how sandboxd is reached. So
+  # the template carries the policy the agent-sandbox controller applies to
+  # every pod made from it, and it is the only thing between those pods and the
+  # network. Supplying it replaces the controller's default (which admits the
+  # sandbox router and lets egress reach the public internet).
+  #
+  # The controller writes one NetworkPolicy for the template with both policy
+  # types, so:
+  #   ingress  only the rule below: pods labelled app=brain in this namespace,
+  #            on TCP 8080 and 9090. Other pods are refused. Kubernetes always
+  #            allows traffic from the pod's own node, which is how the
+  #            kubelet's readiness probe reaches /v1/health.
+  #   egress   no rules, so all egress is denied: a command in the hands can open
+  #            no connection on the pod network -- no DNS, no Pod Identity
+  #            endpoint, no other pod and no internet. Replies to the brain's
+  #            own connections are not egress and still flow. (The sandbox's
+  #            in-guest instance-metadata endpoint is not on the pod network,
+  #            so the policy does not reach it; it serves no role.)
+  #
+  # A network policy only holds if enforcement is on. EKS Auto Mode ships with
+  # it off; ./scripts/setup.sh checks it and stops with the command when it is.
+  networkPolicyManagement: Managed
+  networkPolicy:
+    ingress:
+      - from:
+          - podSelector:
+              matchLabels:
+                app: brain
+        ports:
+          - { protocol: TCP, port: 8080 }  # sandboxd REST: files and /v1/health
+          - { protocol: TCP, port: 9090 }  # sandboxd gRPC: ProcessService
   podTemplate:
     metadata:
       labels:
         app.kubernetes.io/part-of: brain-and-hands
         app: hands
       annotations:
-        # No network besides loopback: no route out, no DNS, no instance
-        # metadata and no Pod Identity credentials. So there is no egress to
-        # restrict and this sample ships no network policy for these pods; the
-        # page shows the absence instead. kubectl exec, cp and logs keep
-        # working, because they use the sandbox's internal control channel
-        # rather than a network device, and that is the brain's only way in.
-        sandbox.amazonaws.com/network-isolated: "true"
         # Pin the node while a warm pod sits Ready and idle in the pool.
         # Nothing would reschedule a pre-booted warm pod if voluntary
         # disruption (consolidation, drift, expiry) removed the node under it.
@@ -56,36 +80,71 @@ spec:
       automountServiceAccountToken: false
       # Leave out the <SERVICE>_HOST and <SERVICE>_PORT variables for the other
       # Services in this namespace, so a command the model runs finds nothing in
-      # the environment that names one. The KUBERNETES_* variables for the
-      # cluster's own API Service are injected whatever this says; they name an
-      # address these pods have no route to.
+      # the environment that names one.
       enableServiceLinks: false
-      containers:
-        - name: hands
-          image: public.ecr.aws/docker/library/python:3.12-slim
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        # The emptyDirs are writable by the user sandboxd runs as.
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # sandboxd is a static binary. This copies it out of the released image
+        # into a volume, and the hands container below runs it, so commands run
+        # in the hands image (python3 and a shell) without rebuilding it. This
+        # is topology B in the sandboxd guide.
+        - name: install-sandboxd
+          image: registry.k8s.io/agent-sandbox/sandboxd:v1.0.10
           imagePullPolicy: IfNotPresent
-          # Print one line at boot, then wait. The line is what `kubectl logs`
-          # returns, which is how the page shows that the log stream reaches a
-          # pod with no network: it rides the sandbox's control channel, the
-          # same as exec and cp.
-          command: ["sh", "-c"]
-          args:
-            - |
-              echo "hands ready in a sandbox: kernel $(uname -rv), disks $(ls /sys/block | tr '\n' ' ')"
-              sleep infinity
-          workingDir: /work
+          command: ["/bin/sh", "-c", "cp /usr/local/bin/sandboxd /sandboxd-bin/sandboxd"]
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
           volumeMounts:
-            - { name: work, mountPath: /work }
+            - { name: sandboxd-bin, mountPath: /sandboxd-bin }
+      containers:
+        - name: hands
+          image: public.ecr.aws/docker/library/python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          command:
+            - /sandboxd-bin/sandboxd
+            - --root-dir=/workspace
+            - --rest-port=8080
+            - --grpc-port=9090
+            # The SHA-256 digest of the token, not the token. Whatever is in a
+            # pod's command line is copied into the pod spec and into the
+            # environment of every process sandboxd starts, where a command
+            # could print it; a digest there reveals nothing. setup.sh mints the
+            # token, keeps it in a Secret only the brain mounts, and puts only
+            # this digest here.
+            - --auth-token-sha256=<SANDBOXD_TOKEN_SHA256>
+          ports:
+            - { name: rest, containerPort: 8080 }
+            - { name: grpc, containerPort: 9090 }
+          # /v1/health is the one request sandboxd answers without the token.
+          readinessProbe:
+            httpGet:
+              path: /v1/health
+              port: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # Read-only, so a command cannot replace the binary that would run
+            # on the next container restart.
+            - { name: sandboxd-bin, mountPath: /sandboxd-bin, readOnly: true }
+            - { name: workspace, mountPath: /workspace }
           # No CPU or memory requests or limits. The commands this sample runs
           # in the hands are small, so it leaves sizing to the reader and the
           # sandbox gets a small default size. A real workload sets the requests
           # it needs: the sandbox is sized from them.
       volumes:
-        - { name: work, emptyDir: {} }
+        - { name: sandboxd-bin, emptyDir: {} }
+        - { name: workspace, emptyDir: {} }
 ---
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxWarmPool

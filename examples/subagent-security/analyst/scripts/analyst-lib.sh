@@ -124,7 +124,10 @@ analyst_preflight() {
     die "could not read the AWS account; check your credentials"
   echo "  account:  $ACCOUNT_ID"
   echo "  region:   $AWS_REGION"
-  echo "  context:  $(kc config current-context)"
+  # kubectl config current-context ignores --context, so name KUBE_CONTEXT when it is set.
+  # When it is empty or unset -- which is what .env.example ships -- kc leaves every call
+  # unpinned, so the kubeconfig's own context is the one they use and the one to print.
+  echo "  context:  ${KUBE_CONTEXT:-$(kubectl config current-context)}"
 
   kc get runtimeclass isolated-sandbox -o name >/dev/null 2>&1 ||
     die "the isolated-sandbox runtime class is not on this cluster; run the Getting started samples first"
@@ -332,9 +335,16 @@ analyst_bucket() {
     if aws s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1; then
       die "the bucket $BUCKET already exists and carries no ManagedBy=$SAMPLE tag; created and changed nothing. Delete it, or set a new BUCKET in .env."
     fi
-    aws s3api create-bucket --bucket "$BUCKET" \
-      --create-bucket-configuration "LocationConstraint=$AWS_REGION" >/dev/null ||
-      die "could not create the bucket $BUCKET"
+    # us-east-1 refuses a LocationConstraint (InvalidLocationConstraint); every other
+    # Region needs one.
+    if [[ "$AWS_REGION" == "us-east-1" ]]; then
+      aws s3api create-bucket --bucket "$BUCKET" >/dev/null ||
+        die "could not create the bucket $BUCKET"
+    else
+      aws s3api create-bucket --bucket "$BUCKET" \
+        --create-bucket-configuration "LocationConstraint=$AWS_REGION" >/dev/null ||
+        die "could not create the bucket $BUCKET"
+    fi
     aws s3api put-bucket-tagging --bucket "$BUCKET" \
       --tagging "TagSet=[{Key=ManagedBy,Value=$SAMPLE}]"
     state_put BUCKET_CREATED true

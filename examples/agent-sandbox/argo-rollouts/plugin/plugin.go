@@ -38,7 +38,7 @@ const (
 // faithful to the script means reading the exact same witnesses.
 //
 // labelTemplateHash is defined in agent-sandbox api/v1beta1/sandbox_types.go at
-// v1.0.6 as SandboxTemplateHashLabel. The controller computes it over the
+// v1.0.10 as SandboxTemplateHashLabel. The controller computes it over the
 // template's SandboxBlueprint (computeSandboxBlueprintHash), not over the pod
 // template alone: the deprecated agents.x-k8s.io/sandbox-pod-template-hash is
 // the pod-template one. PodTemplate is a field of SandboxBlueprint, so a change

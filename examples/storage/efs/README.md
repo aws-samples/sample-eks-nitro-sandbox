@@ -2,17 +2,17 @@
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
-sample first so you have an EKS Auto Mode cluster with the runtime classes. This sample also
-builds on the [coding agent](../../getting-started/coding-agent/README.md) sample for turning
+blueprint first so you have an EKS Auto Mode cluster with the runtime classes. This blueprint also
+builds on the [coding agent](../../getting-started/coding-agent/README.md) blueprint for turning
 on network policy enforcement once per cluster. The commands below use files from this
-repository, so clone it if you have not already, and run them from this sample's folder:
+repository, so clone it if you have not already, and run them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/storage/efs
 ```
 
-This sample needs the AWS CLI, which the home page already lists, for the steps that create
+This blueprint needs the AWS CLI, which the home page already lists, for the steps that create
 the file system and read it back. It also needs the **Amazon EFS CSI driver** installed on
 the cluster as a shared prerequisite; [Install the EFS CSI driver](#install-the-efs-csi-driver)
 below has the one-time setup for a cluster that does not have it. What it costs beyond the
@@ -56,21 +56,21 @@ This folder was built against these releases:
 
 | Component | Version |
 |---|---|
-| Amazon EFS CSI driver add-on ([kubernetes-sigs/aws-efs-csi-driver](https://github.com/kubernetes-sigs/aws-efs-csi-driver)) | `v3.5.1-eksbuild.1` on the run below; the sample needs **3.5.1 or newer** |
+| Amazon EFS CSI driver add-on ([kubernetes-sigs/aws-efs-csi-driver](https://github.com/kubernetes-sigs/aws-efs-csi-driver)) | `v3.5.1-eksbuild.1` on the run below; the blueprint needs **3.5.1 or newer** |
 | `busybox` image ([public.ecr.aws/docker/library/busybox](https://gallery.ecr.aws/docker/library/busybox)) | `1.37` |
 
 The files:
 
 | File | What it is |
 |---|---|
-| [`deploy/efs.yaml`](deploy/efs.yaml) | The sample's non-default `nitro-sandbox-efs` StorageClass, a static access-point PV (mount options `tls,iam`), its `ReadWriteMany` PVC, a workload ServiceAccount with no identity, and the writer and reader `isolated-sandbox` pods. |
+| [`deploy/efs.yaml`](deploy/efs.yaml) | The blueprint's non-default `nitro-sandbox-efs` StorageClass, a static access-point PV (mount options `tls,iam`), its `ReadWriteMany` PVC, a workload ServiceAccount with no identity, and the writer and reader `isolated-sandbox` pods. |
 | [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The egress `ApplicationNetworkPolicy`: DNS on port 53 to any address and NFS (TCP 2049) to the mount targets, deny all ingress. |
 | [`iam/file-system-policy.json`](iam/file-system-policy.json) | The EFS file system policy template: TLS required, this access point only, `ClientMount`/`ClientWrite` only, the CSI node principal only. |
 | [`scripts/setup.sh`](scripts/setup.sh) | Checks the EFS CSI driver (shared, reused, never changed); creates the NFS security group, file system, mount targets and access point; applies the file system policy; then deploys the namespace, the egress policy, the StorageClass, the PV, the PVC and the two pods. |
 | [`scripts/clean.sh`](scripts/clean.sh) | Deletes the Kubernetes objects; `--delete-aws-resources` also releases the access point, mount targets, file system and security group. |
 
 The walkthrough uses the shared Region default from the home page, a cluster of your own, and
-a namespace of its own so the sample's objects are easy to find and remove on a shared
+a namespace of its own so the blueprint's objects are easy to find and remove on a shared
 cluster. Set them in your shell:
 
 ```bash
@@ -84,7 +84,7 @@ export NAMESPACE=nitro-efs-sample
 **Step 1: Run setup.** [`scripts/setup.sh`](scripts/setup.sh) does everything the walkthrough
 below needs. It first confirms the Amazon EFS CSI driver is installed at 3.5.1 or newer and
 reads, without changing it, which IAM role the driver's node service account uses. It creates
-the sample's own resources, each tagged `ManagedBy=storage-efs` and `auto-delete=no`: an NFS
+the blueprint's own resources, each tagged `ManagedBy=storage-efs` and `auto-delete=no`: an NFS
 security group that admits TCP 2049 from the cluster security group only, an encrypted EFS
 file system, one mount target per cluster Availability Zone, and an access point that pins
 UID/GID 1000 under `/storage-efs`. It applies a file system policy that requires TLS, confines
@@ -123,8 +123,8 @@ spec:
 ./scripts/setup.sh
 ```
 
-The run below started on a cluster with none of the sample's AWS resources present. The
-`nitro-efs-sample` namespace already existed, empty, from an earlier run (the sample never
+The run below started on a cluster with none of the blueprint's AWS resources present. The
+`nitro-efs-sample` namespace already existed, empty, from an earlier run (the blueprint never
 deletes the namespace, only what is inside it), so setup reused it rather than creating it.
 This block is exactly what that run printed, and it predates the correction of the minimum:
 the check then enforced 2.0.0, so its first line reads `(>= 2.0.0)` where the current check
@@ -321,7 +321,7 @@ cluster security group, the cluster's own nodes and pods, can reach the mount ta
 ## How the network policy works
 
 These pods have a network: they reach the mount targets to mount the file system. So the
-sample restricts their egress with an `ApplicationNetworkPolicy`, an EKS Auto Mode
+blueprint restricts their egress with an `ApplicationNetworkPolicy`, an EKS Auto Mode
 NetworkPolicy, and does not set `sandbox.amazonaws.com/network-isolated` on them, because that
 would remove the device used to reach the mount target.
 
@@ -403,10 +403,10 @@ policy denies it.
 
 ## Good to know
 
-- **The EFS CSI driver is a shared install.** The sample reads which role the driver's node
+- **The EFS CSI driver is a shared install.** The blueprint reads which role the driver's node
   service account uses and never changes the driver, its service accounts, their IAM roles or
   their Pod Identity associations. The least privilege for this file system lives in the
-  file system policy, which belongs to the sample's own file system, not on the shared node
+  file system policy, which belongs to the blueprint's own file system, not on the shared node
   role.
 - **The pods have no AWS identity of their own, but their mount uses a shared one.** The pods'
   ServiceAccount has no Pod Identity association and mounts no API token. The mount is signed
@@ -420,7 +420,7 @@ policy denies it.
   `AmazonElasticFileSystemClientReadWriteAccess` policy does), and a file system with no file
   system policy accepts any client that can reach its mount targets. To narrow it, scope the
   role's mount permissions to named file systems or to a resource tag, and give every file
-  system a policy. The sample does not change the role, because other workloads' mounts depend
+  system a policy. The blueprint does not change the role, because other workloads' mounts depend
   on it.
 - **The access point is the trust boundary.** Every mount through it runs as UID/GID 1000
   under one root directory and cannot see the rest of the file system. Give each trust
@@ -428,23 +428,23 @@ policy denies it.
   narrow as the network allows.
 - **`ReadWriteMany`, shared on purpose.** Unlike an EBS volume, which one pod holds at a time,
   this EFS access point is mounted by both pods at once. For a single pod that needs durable
-  block storage, use the [EBS](../ebs/README.md) sample; when the same data must also be
-  addressable as plain S3 objects, use the S3 Files sample.
+  block storage, use the [EBS](../ebs/README.md) blueprint; when the same data must also be
+  addressable as plain S3 objects, use the S3 Files blueprint.
 - **Do not set `network-isolated` on these pods.** They need a network to reach the mount
   target, so they take an egress network policy instead of the network-isolated annotation.
-- **The pods pin their node while the sample is up.** They are bare pods, and nothing recreates
+- **The pods pin their node while the blueprint is up.** They are bare pods, and nothing recreates
   a bare pod that EKS Auto Mode removes when it consolidates an underused node, so both carry
   `karpenter.sh/do-not-disrupt: "true"`. That also keeps their node from being consolidated
   until the clean up deletes them. A real workload runs under a controller instead.
 
 ## Install the EFS CSI driver
 
-This sample needs the Amazon EFS CSI driver on the cluster, at 3.5.1 or newer, with EKS Pod
+This blueprint needs the Amazon EFS CSI driver on the cluster, at 3.5.1 or newer, with EKS Pod
 Identity roles for its controller and node service accounts. On the maintainers' cluster it
 was already installed; on a cluster without it, install it once following the
 [Amazon EFS CSI driver guide](https://docs.aws.amazon.com/eks/latest/userguide/efs-csi.html),
 and `setup.sh` will find and reuse it. The driver's node service account must carry a Pod
-Identity association, because this sample mounts with IAM authorization, which needs the mount
+Identity association, because this blueprint mounts with IAM authorization, which needs the mount
 signed with the node role's identity. `setup.sh` looks for the driver in the two places it
 can recognise — the `aws-efs-csi-driver` EKS add-on, and failing that the `efs-csi-node`
 daemonset in `kube-system` — and compares every component of the version it finds against
@@ -466,8 +466,8 @@ export CLUSTER_NAME=<your-cluster> AWS_REGION=us-west-2 NAMESPACE=nitro-efs-samp
 ```
 
 [`scripts/clean.sh`](scripts/clean.sh) deletes the two pods, the PVC and workload
-ServiceAccount, the static PV, the egress policy, and the sample's own StorageClass. It checks
-the namespace carries the sample's label before deleting anything inside it, and exits
+ServiceAccount, the static PV, the egress policy, and the blueprint's own StorageClass. It checks
+the namespace carries the blueprint's label before deleting anything inside it, and exits
 non-zero if it skipped or could not confirm a delete.
 
 ```bash
@@ -499,6 +499,6 @@ Pod Identity associations. If a mount-target delete reports the interface is sti
 wait for the mount-target network interfaces to disappear and run it again; `clean.sh` is safe
 to re-run.
 
-If this is the last sample you ran, follow the
+If this is the last blueprint you ran, follow the
 [hello sandbox](../../getting-started/hello-sandbox/README.md#clean-up) clean up to remove the
 namespace and the cluster.

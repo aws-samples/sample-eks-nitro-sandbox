@@ -1,20 +1,20 @@
-# Nitro Sandboxes on Amazon EKS
+# AWS Nitro Sandbox on Amazon EKS
 
 This site holds the code from the blog post
 [Introducing Nitro Sandboxes: Hardware-Enforced Workload Isolation on Amazon EKS](<BLOG_URL>).
 
-The Getting started samples build on each other:
+The Getting started blueprints build on each other:
 
 - [Hello sandbox](getting-started/hello-sandbox/README.md): a plain pod that opts into a sandbox with one line, and a variant with no network.
 - [Coding agent](getting-started/coding-agent/README.md): Claude Code in a sandbox that reads a GitHub issue, fixes it and opens a pull request.
 - [Warm pool](getting-started/warm-pool/README.md): a pool of pre-booted sandboxes and a claim that adopts one in under 1 second.
 
-The hello sandbox sample is all you need to see the isolation boundary. The coding agent
-and warm pool samples each start from a cluster that has finished the hello sandbox sample,
-and do not depend on each other. The coding agent sample needs Amazon Bedrock, a container
-registry and a GitHub repository; the warm pool sample needs the agent-sandbox controller.
+The hello sandbox blueprint is all you need to see the isolation boundary. The coding agent
+and warm pool blueprints each start from a cluster that has finished the hello sandbox blueprint,
+and do not depend on each other. The coding agent blueprint needs Amazon Bedrock, a container
+registry and a GitHub repository; the warm pool blueprint needs the agent-sandbox controller.
 
-The other samples are in the left menu, grouped by section.
+The other blueprints are in the left menu, grouped by section.
 
 ## How it works
 
@@ -51,17 +51,17 @@ lightweight VM with its own kernel; the node's kubelet still sees an ordinary po
   configured for it.
 - [`eksctl`](https://eksctl.io/installation/) and
   [`kubectl`](https://kubernetes.io/docs/tasks/tools/).
-- [Git](https://git-scm.com/downloads), to clone this repository: each sample applies
+- [Git](https://git-scm.com/downloads), to clone this repository: each blueprint applies
   manifests and builds images from files in its folder.
-- For the coding agent sample: [Docker](https://docs.docker.com/get-docker/), Git
+- For the coding agent blueprint: [Docker](https://docs.docker.com/get-docker/), Git
   with `user.name` and `user.email` set, a GitHub account with the
   [GitHub CLI](https://cli.github.com/) (`gh`) signed in, and access to an Anthropic Claude
   model in [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html)
   in your Region. The pod uses `us.anthropic.claude-sonnet-5-5`; change
-  `ANTHROPIC_MODEL` in the coding agent sample's `fix-issue.yaml` to use another.
+  `ANTHROPIC_MODEL` in the coding agent blueprint's `fix-issue.yaml` to use another.
 
-Clone this repository and run each sample's commands from that sample's folder; each
-sample's page starts with the `git clone` and `cd` for its folder. They use these values;
+Clone this repository and run each blueprint's commands from that blueprint's folder; each
+blueprint's page starts with the `git clone` and `cd` for its folder. They use these values;
 change them if you like:
 
 ```bash
@@ -71,4 +71,4 @@ export NAMESPACE=nitro-sandboxes-demo
 ```
 
 The manifests name `us-west-2` where a Region is needed. If you use another Region, change
-it in the coding agent sample's `fix-issue.yaml` and `egress-policy.yaml`.
+it in the coding agent blueprint's `fix-issue.yaml` and `egress-policy.yaml`.

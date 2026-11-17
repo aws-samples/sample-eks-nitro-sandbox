@@ -13,6 +13,37 @@ set -eu
 DIR="$HOME/.codex"
 mkdir -p "$DIR"
 
+# On its first start, Codex copies its own binaries (about 411 MB) into ~/.codex/packages
+# to run its background app server from there. The home is the session's S3 Files folder,
+# so that copy went over the mount, took long enough that the first start failed with
+# "app server did not become ready" (losing the developer's first prompt), and was then
+# exported to the bucket for every Codex session. The binaries come with the image, so
+# keep them on the pod's own disk instead: a fresh copy per pod, nothing in the bucket.
+LOCAL_PACKAGES=/tmp/codex-packages
+mkdir -p "$LOCAL_PACKAGES"
+if [ ! -L "$DIR/packages" ]; then
+  rm -rf "$DIR/packages"
+  ln -s "$LOCAL_PACKAGES" "$DIR/packages"
+fi
+
+# The app server's run-time state (pid files, locks, sockets, logs) belongs to the pod that
+# wrote it. A Restore brought it back in the folder on a new pod, beside an empty packages
+# directory, and Codex took it for an installed daemon whose binary had gone: every start
+# failed with "daemon executable not found", and so did `codex app-server daemon start`.
+# The first time this runs on a pod, Codex has not run on it yet, so whatever is there is
+# another pod's: remove it, and Codex installs and starts its daemon as on a first start.
+# Once per pod: a marker on the pod's own disk records that it was done, and a lock makes a
+# second run on the same pod (the entrypoint run again) wait for the first and then leave
+# the directory alone, since this pod's daemon may be using it by then. (It cannot be a
+# symlink to the pod's disk, as packages is: Codex refuses one there.)
+(
+  flock 9
+  if [ ! -e /tmp/codex-daemon-state-cleared ]; then
+    rm -rf "$DIR/app-server-daemon"
+    : > /tmp/codex-daemon-state-cleared
+  fi
+) 9> /tmp/codex-daemon-state.lock
+
 # Preserve any non-managed lines Codex itself wrote (e.g. the tui screen-reader flag), then
 # write the managed model/provider block.
 # Codex's built-in amazon-bedrock provider only accepts overriding base_url, auth,
@@ -32,6 +63,9 @@ cat > "$DIR/config.toml" <<TOML
 model = "openai.gpt-5.6-terra"
 model_provider = "amazon-bedrock"
 sandbox_mode = "danger-full-access"
+# The image pins Codex's version; its update prompt on every start would only offer an
+# npm install the session user cannot do.
+check_for_update_on_startup = false
 
 # Codex's own client-side web search tool stays off. The GPT model on Mantle has a separate
 # server-side web search and fetch tool that Amazon Bedrock runs (not the pod), which the

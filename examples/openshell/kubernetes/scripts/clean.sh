@@ -33,6 +33,15 @@ incomplete=0
 kc() { if [[ -n "${KUBE_CONTEXT:-}" ]]; then kubectl --context "$KUBE_CONTEXT" "$@"; else kubectl "$@"; fi; }
 say() { printf '\n==> %s\n' "$*"; }
 
+# sc_field <class> <jsonpath> : read one field of a StorageClass. Returns non-zero only
+# when the read itself fails.
+sc_field() {
+  local class=$1 path=$2 out rc=0
+  out="$(kc get storageclass "$class" --ignore-not-found -o "jsonpath=$path" 2>/dev/null)" || rc=$?
+  printf '%s' "$out"
+  return $rc
+}
+
 # Prints one of: absent (nothing to do, not a failure), owned (this sample's),
 # foreign (exists, labelled as someone else's or not labelled at all), unknown (the
 # lookup itself failed, which is never read as "gone").
@@ -163,6 +172,48 @@ for ns in "$CREDENTIAL_NAMESPACE" "$GATEWAY_NAMESPACE"; do
     unknown) echo "  could not determine whether $ns exists; left it alone"; incomplete=1 ;;
   esac
 done
+
+SAMPLE_STORAGE_CLASS="openshell-kubernetes-gp3"
+
+say "the sample's own StorageClass, if the sample made it"
+# Delete openshell-kubernetes-gp3 only when it exists AND carries the sample's mark. Never
+# touch the cluster default (setup used it without creating anything), and never touch a
+# class with this name that something else owns.
+#
+# Skipped while anything above is unconfirmed, for the same reason the namespace
+# is: a claim of the sample's may still be bound to this class, and deleting a
+# class a pending claim names would leave that claim stuck.
+if [[ $incomplete -ne 0 ]]; then
+  skip_sc=1
+  echo "  SKIPPED: not deleting storageclass/$SAMPLE_STORAGE_CLASS while $incomplete item(s) above are unconfirmed; resolve them and re-run." >&2
+else
+  skip_sc=0
+  sc_prov="$(sc_field "$SAMPLE_STORAGE_CLASS" '{.provisioner}')" ; sc_rc=$?
+fi
+if [[ $skip_sc -eq 1 ]]; then
+  :
+elif [[ $sc_rc -ne 0 ]]; then
+  echo "  could not read storageclass/$SAMPLE_STORAGE_CLASS; not reporting it gone"
+  incomplete=1
+elif [[ -z "$sc_prov" ]]; then
+  echo "  storageclass/$SAMPLE_STORAGE_CLASS not present (setup used the cluster default, or it was already removed)"
+else
+  sc_mark="$(sc_field "$SAMPLE_STORAGE_CLASS" '{.metadata.labels.app\.kubernetes\.io/managed-by}')" ; scm_rc=$?
+  if [[ $scm_rc -ne 0 ]]; then
+    echo "  could not read the labels on storageclass/$SAMPLE_STORAGE_CLASS; not deleting something I cannot verify"
+    incomplete=1
+  elif [[ "$sc_mark" != "$SAMPLE" ]]; then
+    echo "  storageclass/$SAMPLE_STORAGE_CLASS exists without the sample's mark; leaving it (it is not the sample's)"
+    incomplete=1
+  else
+    if kc delete storageclass "$SAMPLE_STORAGE_CLASS" --ignore-not-found --wait=true --timeout=60s; then
+      echo "  storageclass/$SAMPLE_STORAGE_CLASS deleted"
+    else
+      echo "  storageclass/$SAMPLE_STORAGE_CLASS did not delete cleanly"
+      incomplete=1
+    fi
+  fi
+fi
 
 say "left in place on purpose"
 cat <<EOF

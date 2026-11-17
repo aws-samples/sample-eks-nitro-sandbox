@@ -9,11 +9,10 @@ USER root
 # Official Kiro CLI installer (from kiro.dev/downloads). It installs the `kiro-cli`
 # binary into the invoking user's ~/.local/bin; move it onto a system path so the
 # unprivileged dev user runs the same binary.
-# The installer drops three binaries in the invoking user's ~/.local/bin: `kiro-cli` (the
-# entrypoint), `kiro-cli-chat` (the chat runtime it launches as a sibling on PATH) and
-# `kiro-cli-term`. `kiro-cli chat` execs `kiro-cli-chat` by name, so all three must be on a
-# system path; copying only `kiro-cli` makes chat fail with "failed to launch
-# kiro-cli-chat: No such file or directory". Copy every kiro-cli* binary the installer made.
+# Releases before 3.0 dropped three binaries there (`kiro-cli`, `kiro-cli-chat`, which
+# `kiro-cli chat` execs by name, and `kiro-cli-term`); 3.0 is the single `kiro-cli`. Copy
+# every kiro-cli* binary the installer made, then check that `kiro-cli chat` itself starts,
+# which holds for both layouts.
 RUN set -eu; \
     curl -fsSL https://cli.kiro.dev/install | bash; \
     for b in /root/.local/bin/kiro-cli*; do \
@@ -21,7 +20,7 @@ RUN set -eu; \
       chmod 0755 "/usr/local/bin/$(basename "$b")"; \
     done; \
     /usr/local/bin/kiro-cli --version; \
-    test -x /usr/local/bin/kiro-cli-chat
+    /usr/local/bin/kiro-cli chat --help >/dev/null
 
 # cli-setup.sh prepares Kiro CLI's home for V3 (session locks on tmpfs). See the script.
 COPY --chmod=0755 cli-setup.sh /usr/local/bin/cli-setup.sh

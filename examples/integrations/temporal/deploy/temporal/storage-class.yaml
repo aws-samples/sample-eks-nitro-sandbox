@@ -1,0 +1,21 @@
+# The Temporal PostgreSQL datastore's StorageClass, created only when absent as
+# the first step of the Temporal install on a cluster with no default class. It
+# is not the default, it is named for the Temporal server, and it carries the
+# server's mark so a Temporal removal can tell it is the Temporal server's.
+#
+# A StorageClass is chosen, never changed: nothing in this sample patches a
+# class or applies a manifest over one. Applying over a class that was created
+# with `kubectl apply` can strip its default annotation, which changes how every
+# other claim on the cluster is provisioned.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: temporal-postgresql-gp3
+  labels:
+    app.kubernetes.io/managed-by: temporal
+provisioner: ebs.csi.eks.amazonaws.com
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  type: gp3
+  encrypted: "true"
+reclaimPolicy: Delete

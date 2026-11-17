@@ -1,0 +1,66 @@
+# The controller and three Box tool roles share one Nitro guest.
+# This sample uses a privileged container; UID 1000 does not mean unprivileged.
+# Minimum required capabilities remain unestablished.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: analyst
+  namespace: <NAMESPACE>
+  labels:
+    app: analyst
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+spec:
+  runtimeClassName: isolated-sandbox
+  nodeSelector:
+    kubernetes.io/arch: arm64
+  serviceAccountName: analyst
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+  initContainers:
+    - name: prepare-guest-user-namespaces
+      image: <ANALYST_IMAGE>
+      command: ["sh", "-c", "printf '1024\n' > /proc/sys/user/max_user_namespaces"]
+      securityContext:
+        privileged: true
+        runAsUser: 0
+        runAsNonRoot: false
+        readOnlyRootFilesystem: true
+  containers:
+    - name: analyst
+      image: <ANALYST_IMAGE>
+      command: ["sleep", "infinity"]
+      securityContext:
+        privileged: true
+        runAsNonRoot: true
+        readOnlyRootFilesystem: true
+      env:
+        - {name: AWS_REGION, value: "<AWS_REGION>"}
+        - {name: AWS_DEFAULT_REGION, value: "<AWS_REGION>"}
+        - {name: ANALYST_BUCKET, value: "<BUCKET>"}
+        - {name: ANALYST_ROLE_NAME, value: "<ROLE_NAME>"}
+        - {name: BEDROCK_MODEL_ID, value: "<BEDROCK_MODEL_ID>"}
+        - {name: EXPERIMENTAL_LINUX_SUPPORT, value: "TRUE"}
+        - {name: SUPPLIER_API_URL, value: "http://supplier-api.<NAMESPACE>.svc.cluster.local:8080"}
+        - {name: SUPPLIER_ALIAS_URL, value: "http://supplier-api-alias.<NAMESPACE>.svc.cluster.local:8080"}
+      # The Python controller, Box process, and role interpreters need more memory
+      # than the small default guest. This is sample sizing, not a platform minimum.
+      resources:
+        requests: {cpu: "1", memory: 1Gi}
+        limits: {cpu: "2", memory: 2Gi}
+      readinessProbe:
+        exec: {command: ["test", "-x", "/usr/local/bin/strands-box"]}
+      volumeMounts:
+        - {name: state, mountPath: /var/lib/analyst}
+        - {name: tmp, mountPath: /tmp}
+        - {name: short-state, mountPath: /var/tmp}
+  volumes:
+    - name: state
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: short-state
+      emptyDir: {}

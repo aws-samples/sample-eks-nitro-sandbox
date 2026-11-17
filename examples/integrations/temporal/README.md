@@ -2,12 +2,12 @@
 
 Before you start, review the [prerequisites and shared setup](../../README.md#prerequisites)
 on the home page, and run the [hello sandbox](../../getting-started/hello-sandbox/README.md)
-sample first so you have a cluster with the runtime classes. This sample uses the
+blueprint first so you have a cluster with the runtime classes. This blueprint uses the
 agent-sandbox `Sandbox` API, installed in
 [warm pool](../../getting-started/warm-pool/README.md) step 1, and the `operatingMode`
 suspend and resume that [pause and resume](../../agent-sandbox/pause-resume/README.md)
 establishes by hand. The commands below use files from this repository, so clone it if you
-have not already, and run them from this sample's folder:
+have not already, and run them from this blueprint's folder:
 
 ```bash
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
@@ -15,9 +15,9 @@ cd sample-eks-nitro-sandbox/examples/integrations/temporal
 ```
 
 It also needs a **Temporal server**, which is a shared install: step 2 has you install one
-in the cluster if there is not one already, and nothing in this sample's scripts installs,
+in the cluster if there is not one already, and nothing in this blueprint's scripts installs,
 upgrades or reconfigures it. On your own machine you need `kubectl`, the AWS CLI, `helm`
-(3.x or later; these runs used 4.2.4), `docker` for the one image this sample builds (these
+(3.x or later; these runs used 4.2.4), `docker` for the one image this blueprint builds (these
 runs used 25.0.18) and `openssl` to generate the datastore password. Beyond the cluster, a
 run costs you the Temporal server's few ordinary pods and its 20Gi PostgreSQL volume for as
 long as you keep it, one ECR repository for the Worker image, and one 10Gi EBS volume for
@@ -33,7 +33,7 @@ session goes idle, brings it back, and removes it. Writing that as a script is e
 the script's own process dies in the middle, and then you have a sandbox and an EBS volume
 with nobody left who knows what they were for.
 
-This sample makes a durable workflow engine the thing that holds the lifecycle.
+This blueprint makes a durable workflow engine the thing that holds the lifecycle.
 [Temporal](https://temporal.io) runs a self-hosted server in the cluster; one workflow
 drives one agent-sandbox [`Sandbox`](https://github.com/kubernetes-sigs/agent-sandbox)
 through five activities, each a single Kubernetes operation; and the state of that
@@ -54,7 +54,7 @@ Nitro sandbox one more provider behind it.
 - **Suspend keeps the workspace; resume brings it back on a new guest.** Step 8 shows the
   pod gone and the claim still `Bound` while the `Sandbox` reports `SandboxSuspended`, and
   step 9 shows a new pod UID with the file the step wrote still on the volume.
-- **A failed activity is retried, and the attempt count is in the history.** The sample
+- **A failed activity is retried, and the attempt count is in the history.** The blueprint
   makes the step fail on its first attempt on purpose, so step 10 can show it.
 - **The run survives its Worker being deleted mid-flight.** Step 12 deletes the Worker pod
   while the sandbox is suspended. Kubernetes starts another, it replays the history, and
@@ -68,41 +68,41 @@ Nitro sandbox one more provider behind it.
 
 *Figure 1: What runs in a sandbox and what does not. The Temporal server, its datastore, the Web UI and the Worker are all ordinary pods; the one thing in a Nitro sandbox is the Sandbox the workflow drives, and the Worker reaches it only through the Kubernetes API.*
 
-![On the left, outside the AWS Cloud frame, a Your machine glyph labelled kubectl port-forward connects right into the Amazon EKS cluster frame, whose sub line reads ClusterIP only: no Ingress, LoadBalancer or NodePort. The cluster holds two namespace boxes. The upper one, namespace temporal, marked a shared install, reused as it is, holds three ordinary pods in a row: the Temporal Web UI, labelled ClusterIP, no Ingress, which the port-forward arrow arrives at; the Temporal server, labelled frontend, history, matching, worker, reached from the Web UI by an arrow labelled reads the history; and PostgreSQL, labelled history and visibility, reached from the server by an arrow labelled TCP 5432, ClusterIP. The lower box, namespace temporal-sandboxes, marked the sample's own namespace, holds two pod frames. On the left, Temporal Worker pod, marked an ordinary pod, no runtimeClassName, holds a Worker labelled polls the task queue, the trusted orchestrator, and a two-way arrow runs up from it into the Temporal server labelled polls the task queue, gRPC 7233 over ClusterIP. On the right, a red Nitro sandbox pod frame marked isolated-sandbox plus network-isolated holds a Sandbox labelled agents.x-k8s.io/v1beta1, the only pod in a sandbox. Below the namespaces sit three more things. A red Role glyph, labelled namespace-scoped RBAC, sandboxes, pods, pods/exec, is joined by a plain line up to the Worker pod. A Kubernetes API gear, labelled the only wire to the sandbox, is joined to the Worker pod by a two-way arrow labelled create, patch operatingMode, delete, and sends two arrows up into the sandbox pod: one labelled the agent-sandbox controller makes the pod, and a two-way one labelled exec the step with no network: its internal control channel. From the sandbox pod an arrow labelled mounts /workspace runs down to a Workspace volume, Amazon EBS, 10Gi, from volumeClaimTemplates. A note below the figure reads that the sandbox has no network device, because sandbox.amazonaws.com/network-isolated boots it with only loopback, so no route out, no DNS and no instance metadata; that kubectl exec still reaches it because the exec channel rides the sandbox's own internal control channel rather than a network device; and that this sample ships no network policy, so nothing here limits where the Worker or the Temporal server can connect.](images/figure-1-temporal.png)
+![On the left, outside the AWS Cloud frame, a Your machine glyph labelled kubectl port-forward connects right into the Amazon EKS cluster frame, whose sub line reads ClusterIP only: no Ingress, LoadBalancer or NodePort. The cluster holds two namespace boxes. The upper one, namespace temporal, marked a shared install, reused as it is, holds three ordinary pods in a row: the Temporal Web UI, labelled ClusterIP, no Ingress, which the port-forward arrow arrives at; the Temporal server, labelled frontend, history, matching, worker, reached from the Web UI by an arrow labelled reads the history; and PostgreSQL, labelled history and visibility, reached from the server by an arrow labelled TCP 5432, ClusterIP. The lower box, namespace temporal-sandboxes, marked the blueprint's own namespace, holds two pod frames. On the left, Temporal Worker pod, marked an ordinary pod, no runtimeClassName, holds a Worker labelled polls the task queue, the trusted orchestrator, and a two-way arrow runs up from it into the Temporal server labelled polls the task queue, gRPC 7233 over ClusterIP. On the right, a red Nitro sandbox pod frame marked isolated-sandbox plus network-isolated holds a Sandbox labelled agents.x-k8s.io/v1beta1, the only pod in a sandbox. Below the namespaces sit three more things. A red Role glyph, labelled namespace-scoped RBAC, sandboxes, pods, pods/exec, is joined by a plain line up to the Worker pod. A Kubernetes API gear, labelled the only wire to the sandbox, is joined to the Worker pod by a two-way arrow labelled create, patch operatingMode, delete, and sends two arrows up into the sandbox pod: one labelled the agent-sandbox controller makes the pod, and a two-way one labelled exec the step with no network: its internal control channel. From the sandbox pod an arrow labelled mounts /workspace runs down to a Workspace volume, Amazon EBS, 10Gi, from volumeClaimTemplates. A note below the figure reads that the sandbox has no network device, because sandbox.amazonaws.com/network-isolated boots it with only loopback, so no route out, no DNS and no instance metadata; that kubectl exec still reaches it because the exec channel rides the sandbox's own internal control channel rather than a network device; and that this blueprint ships no network policy, so nothing here limits where the Worker or the Temporal server can connect.](images/figure-1-temporal.png)
 
-### What this sample does not limit
+### What this blueprint does not limit
 
 The sandbox the workflow creates boots with
 `sandbox.amazonaws.com/network-isolated: "true"`, so it has no network interface at all,
-which step 7 shows from inside the guest. That is a property of the sandbox the sample asks
+which step 7 shows from inside the guest. That is a property of the sandbox the blueprint asks
 for, not a claim about a policy.
 
 Everything else here has whatever reach any pod on your cluster has. The Worker reaches the
-Kubernetes API and the Temporal frontend, and nothing in this sample stops it reaching
+Kubernetes API and the Temporal frontend, and nothing in this blueprint stops it reaching
 anything else; the Temporal server and its PostgreSQL are likewise unrestricted on the
 wire, and are kept off the public internet only by being ClusterIP Services with no Ingress.
-This sample ships no network policy. To restrict where a pod can connect, see the
-[network policy](../../isolation/network-policy/README.md) sample.
+This blueprint ships no network policy. To restrict where a pod can connect, see the
+[network policy](../../isolation/network-policy/README.md) blueprint.
 
-The sample creates **no EKS Pod Identity association and no IAM role**: nothing it runs in
+The blueprint creates **no EKS Pod Identity association and no IAM role**: nothing it runs in
 the cluster calls an AWS API. The AWS CLI is used only on your own machine, to create the
 ECR repository for the Worker image and to push it.
 
 ## Prerequisites on the cluster
 
 Both are shared installs. The scripts read them, reuse them exactly as they stand, and stop
-with the command when one is missing or is set up differently from what this sample needs.
+with the command when one is missing or is set up differently from what this blueprint needs.
 
 | Prerequisite | What it is | Where |
 |---|---|---|
-| agent-sandbox v1.0.6 | The `Sandbox` CRD and the controller that reconciles it. The workflow's five verbs are all operations on `Sandbox` objects. | Step 1, and [warm pool](../../getting-started/warm-pool/README.md) step 1 |
+| agent-sandbox v1.0.10 | The `Sandbox` CRD and the controller that reconciles it. The workflow's five verbs are all operations on `Sandbox` objects. | Step 1, and [warm pool](../../getting-started/warm-pool/README.md) step 1 |
 | A Temporal server | The durable workflow engine, with a PostgreSQL datastore, an admin tools pod and the Web UI. | Step 2 |
 
 ## Versions
 
 | Component | Pin |
 |---|---|
-| agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.6, as in [warm pool](../../getting-started/warm-pool/README.md) |
+| agent-sandbox controller ([kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) | v1.0.10, as in [warm pool](../../getting-started/warm-pool/README.md) |
 | Temporal Helm chart ([temporalio/helm-charts](https://github.com/temporalio/helm-charts), chart `temporal`) | 1.7.0 |
 | Temporal Server image | 1.32.0, the chart's `appVersion`, left as the chart sets it |
 | Temporal Web UI image | 2.54.1, left as the chart sets it |
@@ -146,15 +146,15 @@ the chart's default, 512; do not change it on a datastore that already holds his
 | [`deploy/worker.yaml`](deploy/worker.yaml) | The Worker `Deployment`: an ordinary pod, on purpose. |
 | [`deploy/rbac.yaml`](deploy/rbac.yaml) | The Worker's `ServiceAccount`, namespace-scoped `Role` and `RoleBinding`. |
 | [`deploy/ordinary-pod.yaml`](deploy/ordinary-pod.yaml) | The control for step 11: the same container with `runtimeClassName` left out. |
-| [`deploy/storage-class.yaml`](deploy/storage-class.yaml) | The sample's own EBS `StorageClass`, created by setup only when no default class fits. |
+| [`deploy/storage-class.yaml`](deploy/storage-class.yaml) | The blueprint's own EBS `StorageClass`, created by setup only when no default class fits. |
 | [`deploy/temporal/postgresql.yaml`](deploy/temporal/postgresql.yaml) | The Temporal server's datastore, for step 2. |
 | [`deploy/temporal/values.yaml`](deploy/temporal/values.yaml) | The Temporal Helm values, for step 2. |
 | [`scripts/setup.sh`](scripts/setup.sh) | Check the prerequisites, build and push the Worker image, create the namespace, read the Temporal server, deploy the Worker. |
 | [`scripts/run-workflow.sh`](scripts/run-workflow.sh) | Start a run, or read its status, result or timeline. |
 | [`scripts/compare-sandbox.sh`](scripts/compare-sandbox.sh) | Create one ordinary pod on the same node, read the same signals, delete it by name. |
-| [`scripts/cleanup.sh`](scripts/cleanup.sh) | Remove everything the sample created, and only that. |
+| [`scripts/cleanup.sh`](scripts/cleanup.sh) | Remove everything the blueprint created, and only that. |
 | [`scripts/common.sh`](scripts/common.sh) | The shared settings and the guards. Sourced, not run. |
-| [`.env.example`](.env.example) | The local values the sample needs. There are no secrets in it. |
+| [`.env.example`](.env.example) | The local values the blueprint needs. There are no secrets in it. |
 
 The scripts read `.env` (copy it from `.env.example`), and a value already set in your
 environment wins over the file. `NAMESPACE` defaults to `temporal-sandboxes`, and every
@@ -171,15 +171,15 @@ the pod UIDs are from the run.
 
 ## Step 1: Install agent-sandbox
 
-If you have not already, from the warm pool sample. This folder was built against v1.0.6:
+If you have not already, from the warm pool blueprint. This folder was built against v1.0.10:
 
 ```bash
-kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.6/sandbox-with-extensions.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml
 kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller
 ```
 
-Nothing in this sample installs, upgrades or reconfigures it. It was already installed at
-v1.0.6 on the cluster these runs used, and was reused exactly as it stood;
+Nothing in this blueprint installs, upgrades or reconfigures it. It was already installed at
+v1.0.10 on the cluster these runs used, and was reused exactly as it stood;
 `scripts/setup.sh` reads the CRD and the controller's `Available` condition and stops with
 the command above when either is missing.
 
@@ -187,7 +187,7 @@ the command above when either is missing.
 
 A Temporal server is a shared install, and another workload on your cluster may already
 depend on the version and the settings it has. So this is a step you run, not something the
-sample's scripts do. Check first:
+blueprint's scripts do. Check first:
 
 ```bash
 kubectl get svc -n temporal
@@ -208,12 +208,13 @@ repository:
 kubectl create namespace temporal
 openssl rand -base64 24 | tr -d '\n' \
   | kubectl -n temporal create secret generic temporal-postgresql --from-file=password=/dev/stdin
+kubectl get storageclass temporal-postgresql-gp3 || kubectl create -f deploy/temporal/storage-class.yaml
 kubectl -n temporal apply -f deploy/temporal/postgresql.yaml
 kubectl -n temporal rollout status statefulset/temporal-postgresql
 ```
 
 PostgreSQL has to be running before `helm install`, because the chart's schema job is a
-`pre-install` hook. Then install the chart with this sample's values:
+`pre-install` hook. Then install the chart with this blueprint's values:
 
 ```bash
 helm repo add temporal https://go.temporal.io/helm-charts && helm repo update temporal
@@ -223,7 +224,7 @@ helm install temporal temporal/temporal --version 1.7.0 \
 
 ```text
 NAME: temporal
-LAST DEPLOYED: Wed Oct 28 12:08:29 2026
+LAST DEPLOYED: Sat Nov  7 04:56:30 2026
 NAMESPACE: temporal
 STATUS: deployed
 REVISION: 1
@@ -235,14 +236,14 @@ kubectl -n temporal get pods
 ```
 
 ```text
-NAME                                   READY   STATUS    RESTARTS      AGE
-temporal-admintools-574664c997-5nrj6   1/1     Running   0             50s
-temporal-frontend-f77fbd997-6btxc      1/1     Running   0             50s
-temporal-history-749b495c95-cprjp      1/1     Running   0             50s
-temporal-matching-755b9df856-5smkj     1/1     Running   1 (47s ago)   50s
-temporal-postgresql-0                  1/1     Running   0             85s
-temporal-web-74c5bb5c56-h2gcl          1/1     Running   0             50s
-temporal-worker-5dbf6496dc-5bmct       1/1     Running   1 (47s ago)   50s
+NAME                                  READY   STATUS    RESTARTS      AGE
+temporal-admintools-9f5f5bbc9-c44mz   1/1     Running   0             22m
+temporal-frontend-6f9745c6fc-b8sx5    1/1     Running   3 (21m ago)   22m
+temporal-history-5b6d8cd755-99lqf     1/1     Running   3 (21m ago)   22m
+temporal-matching-85cb854c94-tmksk    1/1     Running   3 (21m ago)   22m
+temporal-postgresql-0                 1/1     Running   0             22m
+temporal-web-55d5754cc9-wpztn         1/1     Running   0             22m
+temporal-worker-764bc4697f-7scph      1/1     Running   3 (21m ago)   22m
 ```
 
 The two restarts are the matching and worker roles waiting for the frontend to come up on
@@ -293,7 +294,7 @@ web:
 
 `manageSchema: true` is the one that is easy to miss: without it the chart's schema Job
 does nothing and the server starts against an empty database. `namespaces.create` is what
-registers the Temporal namespace the runs land in; the sample's scripts never create it,
+registers the Temporal namespace the runs land in; the blueprint's scripts never create it,
 because this server is shared, so `setup.sh` checks for it and stops with the command when
 it is absent.
 
@@ -307,7 +308,6 @@ kubectl -n temporal port-forward svc/temporal-web 8080:8080
 ```text
 Forwarding from 127.0.0.1:8080 -> 8080
 Forwarding from [::1]:8080 -> 8080
-Handling connection for 8080
 ```
 
 Then open `http://127.0.0.1:8080` and pick the `nitro-sandbox` namespace. Temporal's own
@@ -322,7 +322,7 @@ Run ID and start time, one near the top still shown as RUNNING and one as
 FAILED.](images/temporal-ui-workflows-list.png)
 
 *The Workflows list for the `nitro-sandbox` namespace, reached through the port-forward
-above. This capture is from a separate run of this sample on the same cluster, after the
+above. This capture is from a separate run of this blueprint on the same cluster, after the
 walkthrough below, so it could show a mix of statuses rather than only the one completed
 run the rest of this page follows; the RUNNING and FAILED entries are other runs of the
 same workflow, started the same way.*
@@ -331,7 +331,7 @@ same workflow, started the same way.*
 
 `scripts/setup.sh` checks the two shared installs, chooses the `StorageClass` the
 workflow's workspace claim will name, builds and pushes the Worker image, creates the
-sample's namespace, reads the Temporal server from a one-shot pod, and applies the Worker
+blueprint's namespace, reads the Temporal server from a one-shot pod, and applies the Worker
 with its RBAC. It creates no `Sandbox`: the workflow does that.
 
 ```bash
@@ -340,18 +340,20 @@ cp .env.example .env    # set KUBE_CONTEXT, and NAMESPACE if you want another na
 ```
 
 ```text
-context: sandbox-demo (pinned)   namespace: temporal-sandboxes   region: us-west-2
+context: sandbox-demo (pinned)   namespace: temporal-sandboxes   region: us-east-1
 
 == 1/6 prerequisites, reused as they are ==
-reusing the agent-sandbox install as it is (registry.k8s.io/agent-sandbox/agent-sandbox-controller:v1.0.6); this sample was built against v1.0.6
+reusing the agent-sandbox install as it is (registry.k8s.io/agent-sandbox/agent-sandbox-controller:v1.0.10); this sample was built against v1.0.10
 reusing the Temporal server in namespace temporal as it is (temporalio/server:1.32.0); this sample was built against chart 1.7.0
-using the cluster default storageclass auto-ebs-sc (it fits: ebs.csi.eks.amazonaws.com, gp3, encrypted); creating no class
+note: no default StorageClass fits (ebs.csi.eks.amazonaws.com, gp3, encrypted). Using the sample's own class temporal-sandboxes-gp3.
+creating storageclass/temporal-sandboxes-gp3 from deploy/storage-class.yaml
+storageclass.storage.k8s.io/temporal-sandboxes-gp3 created
 
 == 2/6 ECR repository temporal-sandbox-worker ==
 created ECR repository temporal-sandbox-worker, tagged ManagedBy=temporal
 
 == 3/6 build and push the Worker image ==
-  <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/temporal-sandbox-worker:98e15748f02e
+  <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/temporal-sandbox-worker:6432374d803f
 [the docker build and push output, abridged]
 
 == 4/6 namespace temporal-sandboxes ==
@@ -378,7 +380,7 @@ Waiting for deployment "temporal-sandbox-worker" rollout to finish: 0 of 1 updat
 deployment "temporal-sandbox-worker" successfully rolled out
 
 the Worker is polling task queue nitro-sandbox-lifecycle on temporal-frontend.temporal.svc:7233, namespace nitro-sandbox
-it will drive sandbox/lifecycle in namespace temporal-sandboxes, workspace on storageclass auto-ebs-sc
+it will drive sandbox/lifecycle in namespace temporal-sandboxes, workspace on storageclass temporal-sandboxes-gp3
 
 Start a run:        ./scripts/run-workflow.sh --wait
 Watch it:           kubectl -n temporal port-forward svc/temporal-web 8080:8080
@@ -389,7 +391,7 @@ The docker build and push are abridged above; the account id is a placeholder. T
 matters. Every prerequisite is read before anything is created, so a missing one
 stops the run with no leftovers. The namespace is created only when it is absent and is
 labelled `app.kubernetes.io/managed-by=temporal`, because applying over an existing
-namespace counts as reusing it, which would put the sample's mark on a namespace another
+namespace counts as reusing it, which would put the blueprint's mark on a namespace another
 workload owns. The image tag is the SHA-256 of every file under `worker/`, so a change to
 any of them produces a new tag and the push cannot serve a stale image; setup checks that
 every `COPY` in the Dockerfile reads from `worker/`, because a `COPY` from outside that
@@ -397,7 +399,7 @@ folder would leave the tag unchanged while the image content moved.
 
 The one-shot preflight pod in step 5/6 of that output is how the Temporal server itself is
 read. Whether the Temporal namespace exists is a question for the server, not for
-Kubernetes, and the answer decides whether this sample can run at all. It reads three
+Kubernetes, and the answer decides whether this blueprint can run at all. It reads three
 things and writes none of them. When the Temporal namespace is missing it exits 2 and setup
 stops rather than adding a namespace to somebody else's server. That refusal, from a
 separate run with `TEMPORAL_NAMESPACE` pointed at a namespace the server does not have:
@@ -586,7 +588,7 @@ the `Sandbox` and then waits for it to be Ready, so those are two things that ca
 separately: if the create succeeds and the readiness wait times out, the object exists and
 the activity failed. A flag set on success would be false there, the `finally` would skip
 the delete, and the `Sandbox` and its billed volume would be left behind by exactly the
-failure the sample warns about in "Good to know". Set before the call, the delete is always
+failure the blueprint warns about in "Good to know". Set before the call, the delete is always
 attempted, and attempting it when nothing was created costs nothing because the delete verb
 reads a 404 as "already gone".
 
@@ -603,10 +605,10 @@ neither runs any more workflow code.
 ```
 
 ```text
-context: sandbox-demo (pinned)   namespace: temporal-sandboxes   region: us-west-2
+context: sandbox-demo (pinned)   namespace: temporal-sandboxes   region: us-east-1
 
 == start the workflow ==
-started workflow id sandbox-lifecycle-lifecycle, run id 01a182bb-4f30-7e67-ad2f-113c77c2f752
+started workflow id sandbox-lifecycle-lifecycle, run id 01a1b482-0c63-7aab-9ec9-d2eed0fd697c
 task queue          nitro-sandbox-lifecycle
 sandbox             lifecycle in the Worker's own namespace
 suspended for       150s
@@ -634,24 +636,27 @@ kubectl --context "$KUBE_CONTEXT" -n temporal-sandboxes get pod lifecycle \
 ```
 
 ```text
-NAME                                READY   REASON              AGE
-sandbox.agents.x-k8s.io/lifecycle   True    DependenciesReady   12s
+NAME                                READY   REASON             AGE
+sandbox.agents.x-k8s.io/lifecycle   False   SandboxSuspended   42s
 
-NAME                                           READY   STATUS    RESTARTS   AGE
-pod/lifecycle                                  1/1     Running   0          12s
-pod/temporal-sandbox-worker-55c95d879c-b5mcq   1/1     Running   0          16s
+NAME                                           READY   STATUS        RESTARTS   AGE
+pod/lifecycle                                  1/1     Terminating   0          42s
+pod/temporal-sandbox-worker-766b45b67f-k4kjb   1/1     Running       0          48s
 
-NAME                  STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
-workspace-lifecycle   Bound    pvc-d25315f3-fedf-47d5-8085-67ddcd798c7b   10Gi       RWOP           auto-ebs-sc    <unset>                 13s
+NAME                  STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS             VOLUMEATTRIBUTESCLASS   AGE
+workspace-lifecycle   Bound    pvc-b6d42b2e-29e7-4239-a007-e47a98a2ada1   10Gi       RWOP           temporal-sandboxes-gp3   <unset>                 43s
 
 NAME        UID                                    RUNTIMECLASS       NODE                  START
-lifecycle   251e7c97-2116-4674-95e8-0244fd0a3ee1   isolated-sandbox   <NODE>                2026-10-28T13:37:59Z
+lifecycle   f164f8c8-484f-471d-876b-3b5d43f6a77d   isolated-sandbox   <NODE>   2026-11-07T05:36:48Z
 ```
 
-The `Sandbox` is `Ready`, its pod is Running on `isolated-sandbox`, and the workspace claim
-is `Bound` with access mode `RWOP` (`ReadWriteOncePod`) on the class setup chose. The Worker
-pod beside it has no runtime class at all: that column is `<none>` for it, which step 11's
-control reading shows. Keep that pod UID, `251e7c97`, for step 9.
+The run moves quickly. These reads ran 42 seconds after the pod started, and by then the step
+had already passed and the suspend had begun, so the `Sandbox` reads `SandboxSuspended` and
+its pod `Terminating`. Run them straight after the start command to catch the `Sandbox`
+`Ready` and the pod `Running`. Either way the pod is on `isolated-sandbox`, and the workspace
+claim is `Bound` with access mode `RWOP` (`ReadWriteOncePod`) on the class setup chose. The
+Worker pod beside it has no runtime class at all, which step 11's control reading shows.
+Keep that pod UID, `f164f8c8`, for step 9.
 
 It is network-isolated, so it has no network to restrict, and no network policy could give
 it one. Only loopback has an address and there is no default route, which the run reads from
@@ -752,10 +757,10 @@ account for:
   business holding a credential for the API that manages it. The sandbox pod's volumes
   below show the projection is absent.
 
-The self-hosted Temporal server this sample uses has no authentication of its own, which is
+The self-hosted Temporal server this blueprint uses has no authentication of its own, which is
 why there is no Temporal credential to hold, and why step 2 keeps it on ClusterIP and
 reaches it only with a port-forward. The PostgreSQL password is in a Secret that only the
-Temporal server's own pods read; nothing in this sample's namespace has it.
+Temporal server's own pods read; nothing in this blueprint's namespace has it.
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n temporal-sandboxes get pod lifecycle \
@@ -768,7 +773,7 @@ kubectl --context "$KUBE_CONTEXT" -n temporal-sandboxes get pod \
 ```text
 workspace
 
-kube-api-access-ndpvn
+kube-api-access-rbljc
 ```
 
 The sandbox pod has one volume, its workspace. The Worker has one too, and it is the
@@ -791,12 +796,13 @@ kubectl --context "$KUBE_CONTEXT" -n temporal-sandboxes get pvc workspace-lifecy
 
 ```text
 NAME        READY   REASON             AGE
-lifecycle   False   SandboxSuspended   47s
+lifecycle   False   SandboxSuspended   69s
 
-Error from server (NotFound): pods "lifecycle" not found
+NAME        READY   STATUS   RESTARTS   AGE
+lifecycle   0/1     Error    0          70s
 
-NAME                  STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
-workspace-lifecycle   Bound    pvc-d25315f3-fedf-47d5-8085-67ddcd798c7b   10Gi       RWOP           auto-ebs-sc    <unset>                 48s
+NAME                  STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS             VOLUMEATTRIBUTESCLASS   AGE
+workspace-lifecycle   Bound    pvc-b6d42b2e-29e7-4239-a007-e47a98a2ada1   10Gi       RWOP           temporal-sandboxes-gp3   <unset>                 70s
 ```
 
 The pod is `NotFound`, so you stop paying for the guest. The claim is still `Bound` on the
@@ -824,49 +830,49 @@ deleted:
 ```
 
 ```text
-context: sandbox-demo (pinned)   namespace: temporal-sandboxes   region: us-west-2
+context: sandbox-demo (pinned)   namespace: temporal-sandboxes   region: us-east-1
 
 == start the workflow ==
 
-  created sandbox/lifecycle: pod lifecycle uid 251e7c97-2116-4674-95e8-0244fd0a3ee1 on node <NODE>
-  ran the write step in sandbox/lifecycle on attempt 2: step ran on kernel 6.18.54, boot 5s old
+  created sandbox/lifecycle: pod lifecycle uid f164f8c8-484f-471d-876b-3b5d43f6a77d on node <NODE>
+  ran the write step in sandbox/lifecycle on attempt 2: step ran on kernel 6.18.54, boot 7s old
   sandbox/lifecycle is suspended; its pod is gone and its workspace volume is kept
   waiting 150s with sandbox/lifecycle suspended; no pod and no Worker state are needed to hold this
-  resumed sandbox/lifecycle: pod lifecycle uid 9841159c-8f4c-4278-ae64-33930d2c9f06 on node <NODE>
+  resumed sandbox/lifecycle: pod lifecycle uid be900948-8171-4ed7-932d-e081df798c2a on node <NODE>
   read /workspace/notes.log back from the resumed sandbox/lifecycle
   sandbox/lifecycle deleted
 
 {
   "deleted": "sandbox/lifecycle deleted",
-  "notes_after_resume": "step ran on kernel 6.18.54, boot 5s old",
-  "pod_uid_after_resume": "9841159c-8f4c-4278-ae64-33930d2c9f06",
-  "pod_uid_before_suspend": "251e7c97-2116-4674-95e8-0244fd0a3ee1",
+  "notes_after_resume": "step ran on kernel 6.18.54, boot 7s old",
+  "pod_uid_after_resume": "be900948-8171-4ed7-932d-e081df798c2a",
+  "pod_uid_before_suspend": "f164f8c8-484f-471d-876b-3b5d43f6a77d",
   "sandbox_name": "lifecycle",
-  "signals_after_resume": "pod startTime 2026-10-28T13:41:12Z\nread at 2026-10-28T13:41:22Z\n6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026\n4.19 2.12\ndm-0\nvda\nvdb\nvdc\nvdd\nm8i.enclave\n1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever",
-  "signals_before_suspend": "pod startTime 2026-10-28T13:37:59Z\nread at 2026-10-28T13:38:07Z\n6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026\n3.42 1.41\ndm-0\nvda\nvdb\nvdc\nvdd\nm8i.enclave\n1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever",
+  "signals_after_resume": "pod startTime 2026-11-07T05:40:05Z\nread at 2026-11-07T05:40:21Z\n6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026\n5.35 3.06\ndm-0\nvda\nvdb\nvdc\nvdd\nc8a.enclave\n1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever",
+  "signals_before_suspend": "pod startTime 2026-11-07T05:36:48Z\nread at 2026-11-07T05:37:00Z\n6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026\n5.28 2.52\ndm-0\nvda\nvdb\nvdc\nvdd\nc8a.enclave\n1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever",
   "timeline": [
-    "created sandbox/lifecycle: pod lifecycle uid 251e7c97-2116-4674-95e8-0244fd0a3ee1 on node <NODE>",
-    "ran the write step in sandbox/lifecycle on attempt 2: step ran on kernel 6.18.54, boot 5s old",
+    "created sandbox/lifecycle: pod lifecycle uid f164f8c8-484f-471d-876b-3b5d43f6a77d on node <NODE>",
+    "ran the write step in sandbox/lifecycle on attempt 2: step ran on kernel 6.18.54, boot 7s old",
     "sandbox/lifecycle is suspended; its pod is gone and its workspace volume is kept",
     "waiting 150s with sandbox/lifecycle suspended; no pod and no Worker state are needed to hold this",
-    "resumed sandbox/lifecycle: pod lifecycle uid 9841159c-8f4c-4278-ae64-33930d2c9f06 on node <NODE>",
+    "resumed sandbox/lifecycle: pod lifecycle uid be900948-8171-4ed7-932d-e081df798c2a on node <NODE>",
     "read /workspace/notes.log back from the resumed sandbox/lifecycle",
     "sandbox/lifecycle deleted"
   ],
-  "worker_after_resume": "temporal-sandbox-worker-55c95d879c-b5mcq",
-  "worker_at_start": "temporal-sandbox-worker-55c95d879c-b5mcq",
+  "worker_after_resume": "temporal-sandbox-worker-766b45b67f-k4kjb",
+  "worker_at_start": "temporal-sandbox-worker-766b45b67f-k4kjb",
   "write_step_attempts": 2
 }
 ```
 
 Read four things in that result.
 
-- **`pod_uid_before_suspend` and `pod_uid_after_resume` are different**, `251e7c97` and
-  `9841159c`, so the resume brought up a new pod rather than restarting the old one. The
+- **`pod_uid_before_suspend` and `pod_uid_after_resume` are different**, `f164f8c8` and
+  `be900948`, so the resume brought up a new pod rather than restarting the old one. The
   first of those is the UID step 7 read off the running pod.
 - **`notes_after_resume` holds the line the step wrote before the suspend**, read back off
   the workspace after it. Disk state survived; process memory did not. Note what it says:
-  `boot 5s old` is the age of the *first* guest, written into the file by the step that ran
+  `boot 7s old` is the age of the *first* guest, written into the file by the step that ran
   on it, and it is still that text after the resume.
 - **`write_step_attempts` is 2**, because the step failed on its first attempt on purpose
   and Temporal ran it again.
@@ -874,21 +880,9 @@ Read four things in that result.
   interrupted this run. Step 12 is the one where they differ.
 
 The delete is the last activity, so by the time the result comes back the `Sandbox` is gone
-and its pod and claim are being reclaimed with it:
-
-```text
-$ kubectl -n temporal-sandboxes get sandbox,pod,pvc
-NAME                                           READY   STATUS        RESTARTS   AGE
-pod/lifecycle                                  1/1     Terminating   0          14s
-pod/temporal-sandbox-worker-55c95d879c-b5mcq   1/1     Running       0          3m34s
-
-NAME                                        STATUS        VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
-persistentvolumeclaim/workspace-lifecycle   Terminating   pvc-d25315f3-fedf-47d5-8085-67ddcd798c7b   10Gi       RWOP           auto-ebs-sc    <unset>                 3m30s
-```
-
-No `Sandbox` is listed, which is the delete; the pod and the claim are `Terminating` a few
-seconds behind it, because the claim carries the `Sandbox` as its `ownerReference`. The
-clean up at the end of this page confirms the volume behind that claim is gone.
+(`"deleted": "sandbox/lifecycle deleted"`). Its pod and claim follow it, because the claim
+carries the `Sandbox` as its `ownerReference`, and the clean up at the end of this page
+confirms the volume behind that claim is gone.
 
 ## Step 10: The activity timeline, out of the durable history
 
@@ -902,8 +896,9 @@ and "2", suspend_sandbox, a long idle gap during the suspend, resume_sandbox, wh
 run_step, read_sandbox_signals and delete_sandbox, each against an elapsed-time
 axis.](images/temporal-ui-workflow-timeline.png)
 
-*The Timeline tab for the exact run this step's text history is taken from (Run ID
-`01a182bb-4f30-7e67-ad2f-113c77c2f752`, same start and end timestamps). The retried
+*The Timeline tab for an earlier run of this blueprint (Run ID
+`01a182bb-4f30-7e67-ad2f-113c77c2f752`), so its run id and timestamps differ from the text
+history below; the activities and their order are the same. The retried
 `run_step` shows as "2" on its bar, and the gap between `suspend_sandbox` and
 `resume_sandbox` is the server-side timer this step's notes explain below.*
 
@@ -915,52 +910,52 @@ The same timeline reads out of the server's history as text:
 
 ```text
 event  time                  type                               detail
-    1  2026-10-28T13:37:56Z  WORKFLOW_EXECUTION_STARTED         nitro-sandbox-lifecycle
-    3  2026-10-28T13:37:56Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-55c95d879c-b5mcq
-    5  2026-10-28T13:37:56Z  ACTIVITY_TASK_SCHEDULED            whoami
-    6  2026-10-28T13:37:56Z  ACTIVITY_TASK_STARTED              whoami attempt 1 on 1@temporal-sandbox-worker-55c95d879c-b5mcq
-    7  2026-10-28T13:37:56Z  ACTIVITY_TASK_COMPLETED            whoami
-    9  2026-10-28T13:37:56Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-55c95d879c-b5mcq
-   11  2026-10-28T13:37:56Z  ACTIVITY_TASK_SCHEDULED            provision_sandbox
-   12  2026-10-28T13:37:56Z  ACTIVITY_TASK_STARTED              provision_sandbox attempt 1 on 1@temporal-sandbox-worker-55c95d879c-b5mcq
-   13  2026-10-28T13:38:08Z  ACTIVITY_TASK_COMPLETED            provision_sandbox
-   15  2026-10-28T13:38:08Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-55c95d879c-b5mcq
-   17  2026-10-28T13:38:08Z  ACTIVITY_TASK_SCHEDULED            read_sandbox_signals
-   18  2026-10-28T13:38:08Z  ACTIVITY_TASK_STARTED              read_sandbox_signals attempt 1 on 1@temporal-sandbox-worker-55c95d879c-b5mcq
-   19  2026-10-28T13:38:08Z  ACTIVITY_TASK_COMPLETED            read_sandbox_signals
-   21  2026-10-28T13:38:08Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-55c95d879c-b5mcq
-   23  2026-10-28T13:38:08Z  ACTIVITY_TASK_SCHEDULED            run_step
-   24  2026-10-28T13:38:10Z  ACTIVITY_TASK_STARTED              run_step attempt 2 on 1@temporal-sandbox-worker-55c95d879c-b5mcq
-   25  2026-10-28T13:38:10Z  ACTIVITY_TASK_COMPLETED            run_step
-   27  2026-10-28T13:38:10Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-55c95d879c-b5mcq
-   29  2026-10-28T13:38:10Z  ACTIVITY_TASK_SCHEDULED            suspend_sandbox
-   30  2026-10-28T13:38:10Z  ACTIVITY_TASK_STARTED              suspend_sandbox attempt 1 on 1@temporal-sandbox-worker-55c95d879c-b5mcq
-   31  2026-10-28T13:38:42Z  ACTIVITY_TASK_COMPLETED            suspend_sandbox
-   33  2026-10-28T13:38:42Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-55c95d879c-b5mcq
-   35  2026-10-28T13:38:42Z  TIMER_STARTED                      0:02:30 server-side timer
-   36  2026-10-28T13:41:12Z  TIMER_FIRED
-   38  2026-10-28T13:41:12Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-55c95d879c-b5mcq
-   40  2026-10-28T13:41:12Z  ACTIVITY_TASK_SCHEDULED            resume_sandbox
-   41  2026-10-28T13:41:12Z  ACTIVITY_TASK_STARTED              resume_sandbox attempt 1 on 1@temporal-sandbox-worker-55c95d879c-b5mcq
-   42  2026-10-28T13:41:22Z  ACTIVITY_TASK_COMPLETED            resume_sandbox
-   44  2026-10-28T13:41:22Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-55c95d879c-b5mcq
-   46  2026-10-28T13:41:22Z  ACTIVITY_TASK_SCHEDULED            whoami
-   47  2026-10-28T13:41:22Z  ACTIVITY_TASK_STARTED              whoami attempt 1 on 1@temporal-sandbox-worker-55c95d879c-b5mcq
-   48  2026-10-28T13:41:22Z  ACTIVITY_TASK_COMPLETED            whoami
-   50  2026-10-28T13:41:22Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-55c95d879c-b5mcq
-   52  2026-10-28T13:41:22Z  ACTIVITY_TASK_SCHEDULED            run_step
-   53  2026-10-28T13:41:22Z  ACTIVITY_TASK_STARTED              run_step attempt 1 on 1@temporal-sandbox-worker-55c95d879c-b5mcq
-   54  2026-10-28T13:41:22Z  ACTIVITY_TASK_COMPLETED            run_step
-   56  2026-10-28T13:41:22Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-55c95d879c-b5mcq
-   58  2026-10-28T13:41:22Z  ACTIVITY_TASK_SCHEDULED            read_sandbox_signals
-   59  2026-10-28T13:41:22Z  ACTIVITY_TASK_STARTED              read_sandbox_signals attempt 1 on 1@temporal-sandbox-worker-55c95d879c-b5mcq
-   60  2026-10-28T13:41:23Z  ACTIVITY_TASK_COMPLETED            read_sandbox_signals
-   62  2026-10-28T13:41:23Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-55c95d879c-b5mcq
-   64  2026-10-28T13:41:23Z  ACTIVITY_TASK_SCHEDULED            delete_sandbox
-   65  2026-10-28T13:41:23Z  ACTIVITY_TASK_STARTED              delete_sandbox attempt 1 on 1@temporal-sandbox-worker-55c95d879c-b5mcq
-   66  2026-10-28T13:41:23Z  ACTIVITY_TASK_COMPLETED            delete_sandbox
-   68  2026-10-28T13:41:23Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-55c95d879c-b5mcq
-   70  2026-10-28T13:41:23Z  WORKFLOW_EXECUTION_COMPLETED
+    1  2026-11-07T05:36:24Z  WORKFLOW_EXECUTION_STARTED         nitro-sandbox-lifecycle
+    3  2026-11-07T05:36:24Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-k4kjb
+    5  2026-11-07T05:36:24Z  ACTIVITY_TASK_SCHEDULED            whoami
+    6  2026-11-07T05:36:24Z  ACTIVITY_TASK_STARTED              whoami attempt 1 on 1@temporal-sandbox-worker-766b45b67f-k4kjb
+    7  2026-11-07T05:36:24Z  ACTIVITY_TASK_COMPLETED            whoami
+    9  2026-11-07T05:36:24Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-k4kjb
+   11  2026-11-07T05:36:24Z  ACTIVITY_TASK_SCHEDULED            provision_sandbox
+   12  2026-11-07T05:36:24Z  ACTIVITY_TASK_STARTED              provision_sandbox attempt 1 on 1@temporal-sandbox-worker-766b45b67f-k4kjb
+   13  2026-11-07T05:37:00Z  ACTIVITY_TASK_COMPLETED            provision_sandbox
+   15  2026-11-07T05:37:00Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-k4kjb
+   17  2026-11-07T05:37:00Z  ACTIVITY_TASK_SCHEDULED            read_sandbox_signals
+   18  2026-11-07T05:37:00Z  ACTIVITY_TASK_STARTED              read_sandbox_signals attempt 1 on 1@temporal-sandbox-worker-766b45b67f-k4kjb
+   19  2026-11-07T05:37:00Z  ACTIVITY_TASK_COMPLETED            read_sandbox_signals
+   21  2026-11-07T05:37:00Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-k4kjb
+   23  2026-11-07T05:37:00Z  ACTIVITY_TASK_SCHEDULED            run_step
+   24  2026-11-07T05:37:02Z  ACTIVITY_TASK_STARTED              run_step attempt 2 on 1@temporal-sandbox-worker-766b45b67f-k4kjb
+   25  2026-11-07T05:37:03Z  ACTIVITY_TASK_COMPLETED            run_step
+   27  2026-11-07T05:37:03Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-k4kjb
+   29  2026-11-07T05:37:03Z  ACTIVITY_TASK_SCHEDULED            suspend_sandbox
+   30  2026-11-07T05:37:03Z  ACTIVITY_TASK_STARTED              suspend_sandbox attempt 1 on 1@temporal-sandbox-worker-766b45b67f-k4kjb
+   31  2026-11-07T05:37:35Z  ACTIVITY_TASK_COMPLETED            suspend_sandbox
+   33  2026-11-07T05:37:35Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-k4kjb
+   35  2026-11-07T05:37:35Z  TIMER_STARTED                      0:02:30 server-side timer
+   36  2026-11-07T05:40:05Z  TIMER_FIRED  
+   38  2026-11-07T05:40:05Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-k4kjb
+   40  2026-11-07T05:40:05Z  ACTIVITY_TASK_SCHEDULED            resume_sandbox
+   41  2026-11-07T05:40:05Z  ACTIVITY_TASK_STARTED              resume_sandbox attempt 1 on 1@temporal-sandbox-worker-766b45b67f-k4kjb
+   42  2026-11-07T05:40:21Z  ACTIVITY_TASK_COMPLETED            resume_sandbox
+   44  2026-11-07T05:40:21Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-k4kjb
+   46  2026-11-07T05:40:21Z  ACTIVITY_TASK_SCHEDULED            whoami
+   47  2026-11-07T05:40:21Z  ACTIVITY_TASK_STARTED              whoami attempt 1 on 1@temporal-sandbox-worker-766b45b67f-k4kjb
+   48  2026-11-07T05:40:21Z  ACTIVITY_TASK_COMPLETED            whoami
+   50  2026-11-07T05:40:21Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-k4kjb
+   52  2026-11-07T05:40:21Z  ACTIVITY_TASK_SCHEDULED            run_step
+   53  2026-11-07T05:40:21Z  ACTIVITY_TASK_STARTED              run_step attempt 1 on 1@temporal-sandbox-worker-766b45b67f-k4kjb
+   54  2026-11-07T05:40:21Z  ACTIVITY_TASK_COMPLETED            run_step
+   56  2026-11-07T05:40:21Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-k4kjb
+   58  2026-11-07T05:40:21Z  ACTIVITY_TASK_SCHEDULED            read_sandbox_signals
+   59  2026-11-07T05:40:21Z  ACTIVITY_TASK_STARTED              read_sandbox_signals attempt 1 on 1@temporal-sandbox-worker-766b45b67f-k4kjb
+   60  2026-11-07T05:40:21Z  ACTIVITY_TASK_COMPLETED            read_sandbox_signals
+   62  2026-11-07T05:40:21Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-k4kjb
+   64  2026-11-07T05:40:21Z  ACTIVITY_TASK_SCHEDULED            delete_sandbox
+   65  2026-11-07T05:40:21Z  ACTIVITY_TASK_STARTED              delete_sandbox attempt 1 on 1@temporal-sandbox-worker-766b45b67f-k4kjb
+   66  2026-11-07T05:40:21Z  ACTIVITY_TASK_COMPLETED            delete_sandbox
+   68  2026-11-07T05:40:21Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-k4kjb
+   70  2026-11-07T05:40:21Z  WORKFLOW_EXECUTION_COMPLETED  
 ```
 
 The workflow-task events are kept and the rest of the bookkeeping is filtered out, which is
@@ -971,7 +966,7 @@ are the point of putting Temporal here at all.
   another; the retry policy is what turned a failure into a second attempt instead of a
   failed run. The two-second gap between event 23 scheduling it and event 24 starting it is
   the retry policy's `initial_interval`. Note that the second `run_step`, the read-back at
-  event 53, is `attempt 1`: only the one the sample asks to fail does.
+  event 53, is `attempt 1`: only the one the blueprint asks to fail does.
 - **`TIMER_STARTED  0:02:30 server-side timer` at event 35.** The wait while the sandbox is
   suspended is the server's timer, not a sleeping process. Nothing of this workflow is in
   any process between events 35 and 36.
@@ -993,16 +988,16 @@ the single line `runtimeClassName: isolated-sandbox` left out, pinned to the sam
 ```
 
 ```text
-context: sandbox-demo (pinned)   namespace: temporal-sandboxes   region: us-west-2
+context: sandbox-demo (pinned)   namespace: temporal-sandboxes   region: us-east-1
 
 == create pod/ordinary-pod on node <NODE> ==
 pod/ordinary-pod created
 pod/ordinary-pod condition met
 
 == the same four readings, from an ordinary pod on node <NODE> ==
-read at 2026-10-28T13:41:31Z
-6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026
-5484.67 21584.07
+read at 2026-11-07T05:41:31Z
+6.18.56 #2 SMP PREEMPT_DYNAMIC Fri Oct 30 22:32:37 UTC 2026
+114.26 207.58
 dm-0
 loop0
 loop1
@@ -1014,11 +1009,11 @@ loop6
 loop7
 nvme0n1
 nvme1n1
-nvme2n1
+nvme3n1
 zram0
-m8i.xlarge
+c8a.large
 NAME           RUNTIMECLASS   NODE                  START
-ordinary-pod   <none>         <NODE>                2026-10-28T13:41:30Z
+ordinary-pod   <none>         <NODE>   2026-11-07T05:41:29Z
 
 == delete pod/ordinary-pod by name ==
 pod "ordinary-pod" deleted from temporal-sandboxes namespace
@@ -1026,41 +1021,43 @@ pod "ordinary-pod" deleted from temporal-sandboxes namespace
 pod/ordinary-pod is gone. Compare these readings with the signals the run returned.
 ```
 
-The sandbox column below is `signals_before_suspend` from the result in step 9, split out;
-the ordinary column is the block above.
+Pass the node the *resumed* pod reported. On EKS Auto Mode the node the run first created the
+sandbox on can be gone by the time you read the result, as it was in this run, and
+`compare-sandbox.sh` refuses a node that is not on the cluster. So the sandbox column below
+is `signals_after_resume` from the result in step 9, the reading from the pod on that same
+node, split out; the ordinary column is the block above.
 
 | Reading | The sandbox the workflow drove | Ordinary pod on the same node |
 |---|---|---|
-| `uname -rv` | `6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026` | `6.18.54 #2 SMP PREEMPT_DYNAMIC Thu Oct 22 00:16:59 UTC 2026` |
-| `cat /proc/uptime` | `3.42 1.41` | `5484.67 21584.07` |
-| `ls /sys/block` | `dm-0 vda vdb vdc vdd` | `dm-0 loop0 ... loop7 nvme0n1 nvme1n1 nvme2n1 zram0` |
-| `cat /sys/class/dmi/id/product_name` | `m8i.enclave` | `m8i.xlarge` |
-| pod `startTime`, and when the reading was taken | started `13:37:59Z`, read at `13:38:07Z` | started `13:41:30Z`, read at `13:41:31Z` |
+| `uname -rv` | `6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026` | `6.18.56 #2 SMP PREEMPT_DYNAMIC Fri Oct 30 22:32:37 UTC 2026` |
+| `cat /proc/uptime` | `5.35 3.06` | `114.26 207.58` |
+| `ls /sys/block` | `dm-0 vda vdb vdc vdd` | `dm-0 loop0 ... loop7 nvme0n1 nvme1n1 nvme3n1 zram0` |
+| `cat /sys/class/dmi/id/product_name` | `c8a.enclave` | `c8a.large` |
+| pod `startTime`, and when the reading was taken | started `05:40:05Z`, read at `05:40:21Z` | started `05:41:29Z`, read at `05:41:31Z` |
 | `.spec.runtimeClassName` | `isolated-sandbox` | `<none>` |
 
-The kernel **version** is the same, 6.18.54, which is exactly why `uname -r` on its own is
-not evidence. The **build** is not: `#1` built at 17:38 for the guest, `#2` built at 00:16
-for the node.
+The **kernel** differs in version and build: the guest runs `6.18.54 #1`, built on
+October 22, and the node runs `6.18.56 #2`, built on October 30.
 
 The **boot** is the clearest of the four, and the last row is what makes it readable. The
-ordinary pod was one second old when it was read and reported 5484.67 seconds of uptime, an
-hour and a half: that is its node's, because it shares the node's kernel. The sandboxed pod
-was eight seconds old and reported 3.42: that is its own guest's, because the guest booted
-as part of starting the pod. It is less than the pod's own age because the pod's `startTime`
-is when the kubelet began and the sandbox is created and boots its kernel after that, which
-the few seconds between the two account for.
+ordinary pod was two seconds old when it was read and reported 114.26 seconds of uptime:
+that is its node's, which had joined the cluster about two minutes earlier, because the pod
+shares the node's kernel. The sandboxed pod was 16 seconds old and reported 5.35: that is
+its own guest's, because the guest booted as part of starting the pod. It is less than the
+pod's own age because the pod's `startTime` is when the kubelet began and the sandbox is
+created and boots its kernel after that.
 
 The **block devices** are virtio `vd*` in the guest, where the ordinary pod sees the
 instance's `nvme*` devices along with the node's `loop*` and `zram0`. And the **product
-name** reads the VM in the sandbox, `m8i.enclave`, where the ordinary pod reads the EC2
-instance type, `m8i.xlarge`.
+name** reads the VM in the sandbox, `c8a.enclave`, where the ordinary pod reads the EC2
+instance type, `c8a.large`.
 
 The runtime class on the pod shows what was asked for rather than what ran, which is why
 the readings above come first; it is in the table as the last row for completeness.
 
 ## Step 12: Delete the Worker pod mid-run
 
-This is the one the whole sample is for. Start a run, and while the sandbox is suspended,
+This is the one the whole blueprint is for. Start a run, and while the sandbox is suspended,
 delete the Worker pod by its exact name.
 
 ```bash
@@ -1072,76 +1069,99 @@ kubectl --context "$KUBE_CONTEXT" -n temporal-sandboxes get pods
 ```
 
 ```text
-started workflow id sandbox-lifecycle-lifecycle, run id 01a182bf-21b6-7e2d-be25-cca35af2d84e
+started workflow id sandbox-lifecycle-lifecycle, run id 01a1b485-d3ac-7620-a227-74c3dd7dfe6a
 task queue          nitro-sandbox-lifecycle
 sandbox             lifecycle in the Worker's own namespace
 suspended for       240s
 
-the Worker pod the run started on: temporal-sandbox-worker-55c95d879c-b5mcq
-pod "temporal-sandbox-worker-55c95d879c-b5mcq" deleted from temporal-sandboxes namespace
+NAME                                       READY   STATUS        RESTARTS   AGE
+lifecycle                                  1/1     Terminating   0          2m34s
+temporal-sandbox-worker-766b45b67f-k4kjb   1/1     Running       0          7m8s
+
+pod "temporal-sandbox-worker-766b45b67f-k4kjb" deleted from temporal-sandboxes namespace
 
 NAME                                       READY   STATUS    RESTARTS   AGE
-temporal-sandbox-worker-55c95d879c-th4fj   1/1     Running   0          2s
+temporal-sandbox-worker-766b45b67f-knr5k   1/1     Running   0          18s
 ```
 
 Delete it by its exact name, as above, never with a label selector: on a shared cluster a
 selector meant for one pod has taken another workload's with it.
 
-Kubernetes starts another Worker, `-th4fj`, it replays the run from the history, and the
-same run completes:
+In this run the delete landed a little earlier than the timer: the `Sandbox` already read
+`SandboxSuspended`, but its pod was still `Terminating` and the `suspend_sandbox` activity
+was still waiting for it to go. Kubernetes starts another Worker, `-knr5k`, it replays the
+run from the history, and the same run completes:
 
 ```bash
 ./scripts/run-workflow.sh --result
 ```
 
 ```text
-  created sandbox/lifecycle: pod lifecycle uid 0b350246-0364-45c5-8498-6c49bccb10cf on node <NODE>
-  ran the write step in sandbox/lifecycle on attempt 2: step ran on kernel 6.18.54, boot 4s old
+  created sandbox/lifecycle: pod lifecycle uid 97fc1c26-b3d6-4602-90c6-98ddd7c5d298 on node <NODE>
+  ran the write step in sandbox/lifecycle on attempt 2: step ran on kernel 6.18.54, boot 6s old
   sandbox/lifecycle is suspended; its pod is gone and its workspace volume is kept
   waiting 240s with sandbox/lifecycle suspended; no pod and no Worker state are needed to hold this
-  resumed sandbox/lifecycle: pod lifecycle uid 14fd70c6-16a3-4fdb-b77d-0595f2002ef9 on node <NODE>
+  resumed sandbox/lifecycle: pod lifecycle uid bc893fb9-81a9-473e-a234-8a723ceb8085 on node <NODE>
   read /workspace/notes.log back from the resumed sandbox/lifecycle
   sandbox/lifecycle deleted
 
-  "notes_after_resume": "step ran on kernel 6.18.54, boot 4s old",
-  "worker_after_resume": "temporal-sandbox-worker-55c95d879c-th4fj",
-  "worker_at_start": "temporal-sandbox-worker-55c95d879c-b5mcq",
+  "notes_after_resume": "step ran on kernel 6.18.54, boot 6s old",
+  "worker_after_resume": "temporal-sandbox-worker-766b45b67f-knr5k",
+  "worker_at_start": "temporal-sandbox-worker-766b45b67f-k4kjb",
   "write_step_attempts": 2
 ```
 
 Abridged: the result holds the same fields as step 9, and the four that matter here are
-kept. `worker_at_start` is the pod that was deleted, `-b5mcq`, and `worker_after_resume` is
-the one Kubernetes replaced it with, `-th4fj`. The run that those two came from is one run,
+kept. `worker_at_start` is the pod that was deleted, `-k4kjb`, and `worker_after_resume` is
+the one Kubernetes replaced it with, `-knr5k`. The run that those two came from is one run,
 with one run id: the same workflow completed across two Worker pods.
 
-The history is where it is clearest. The identity column changes at exactly the point the
-timer fired, which is after the pod was deleted, and every event before it names the Worker
-that is now gone:
+The history is where it is clearest. The identity column changes at exactly the activity
+the deleted Worker was running, and every event before it names the Worker that is now
+gone:
 
 ```bash
 ./scripts/run-workflow.sh --history
 ```
 
 ```text
-    3  2026-10-28T13:42:06Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-55c95d879c-b5mcq
-   12  2026-10-28T13:42:06Z  ACTIVITY_TASK_STARTED              provision_sandbox attempt 1 on 1@temporal-sandbox-worker-55c95d879c-b5mcq
-   24  2026-10-28T13:42:24Z  ACTIVITY_TASK_STARTED              run_step attempt 2 on 1@temporal-sandbox-worker-55c95d879c-b5mcq
-   30  2026-10-28T13:42:24Z  ACTIVITY_TASK_STARTED              suspend_sandbox attempt 1 on 1@temporal-sandbox-worker-55c95d879c-b5mcq
-   33  2026-10-28T13:42:57Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-55c95d879c-b5mcq
-   35  2026-10-28T13:42:57Z  TIMER_STARTED                      0:04:00 server-side timer
-   36  2026-10-28T13:46:57Z  TIMER_FIRED
-   38  2026-10-28T13:46:57Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-55c95d879c-th4fj
-   41  2026-10-28T13:46:57Z  ACTIVITY_TASK_STARTED              resume_sandbox attempt 1 on 1@temporal-sandbox-worker-55c95d879c-th4fj
-   53  2026-10-28T13:47:09Z  ACTIVITY_TASK_STARTED              run_step attempt 1 on 1@temporal-sandbox-worker-55c95d879c-th4fj
-   65  2026-10-28T13:47:09Z  ACTIVITY_TASK_STARTED              delete_sandbox attempt 1 on 1@temporal-sandbox-worker-55c95d879c-th4fj
-   70  2026-10-28T13:47:09Z  WORKFLOW_EXECUTION_COMPLETED
+    1  2026-11-07T05:40:31Z  WORKFLOW_EXECUTION_STARTED         nitro-sandbox-lifecycle
+    3  2026-11-07T05:40:31Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-k4kjb
+    6  2026-11-07T05:40:31Z  ACTIVITY_TASK_STARTED              whoami attempt 1 on 1@temporal-sandbox-worker-766b45b67f-k4kjb
+    9  2026-11-07T05:40:31Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-k4kjb
+   12  2026-11-07T05:40:31Z  ACTIVITY_TASK_STARTED              provision_sandbox attempt 1 on 1@temporal-sandbox-worker-766b45b67f-k4kjb
+   15  2026-11-07T05:43:12Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-k4kjb
+   18  2026-11-07T05:43:12Z  ACTIVITY_TASK_STARTED              read_sandbox_signals attempt 1 on 1@temporal-sandbox-worker-766b45b67f-k4kjb
+   21  2026-11-07T05:43:12Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-k4kjb
+   24  2026-11-07T05:43:14Z  ACTIVITY_TASK_STARTED              run_step attempt 2 on 1@temporal-sandbox-worker-766b45b67f-k4kjb
+   27  2026-11-07T05:43:15Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-k4kjb
+   30  2026-11-07T05:43:32Z  ACTIVITY_TASK_STARTED              suspend_sandbox attempt 2 on 1@temporal-sandbox-worker-766b45b67f-knr5k
+   33  2026-11-07T05:43:46Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-knr5k
+   35  2026-11-07T05:43:46Z  TIMER_STARTED                      0:04:00 server-side timer
+   36  2026-11-07T05:47:46Z  TIMER_FIRED  
+   38  2026-11-07T05:47:46Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-knr5k
+   41  2026-11-07T05:47:46Z  ACTIVITY_TASK_STARTED              resume_sandbox attempt 1 on 1@temporal-sandbox-worker-766b45b67f-knr5k
+   44  2026-11-07T05:47:58Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-knr5k
+   47  2026-11-07T05:47:58Z  ACTIVITY_TASK_STARTED              whoami attempt 1 on 1@temporal-sandbox-worker-766b45b67f-knr5k
+   50  2026-11-07T05:47:58Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-knr5k
+   53  2026-11-07T05:47:58Z  ACTIVITY_TASK_STARTED              run_step attempt 1 on 1@temporal-sandbox-worker-766b45b67f-knr5k
+   56  2026-11-07T05:47:59Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-knr5k
+   59  2026-11-07T05:47:59Z  ACTIVITY_TASK_STARTED              read_sandbox_signals attempt 1 on 1@temporal-sandbox-worker-766b45b67f-knr5k
+   62  2026-11-07T05:47:59Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-knr5k
+   65  2026-11-07T05:47:59Z  ACTIVITY_TASK_STARTED              delete_sandbox attempt 1 on 1@temporal-sandbox-worker-766b45b67f-knr5k
+   68  2026-11-07T05:47:59Z  WORKFLOW_TASK_STARTED              1@temporal-sandbox-worker-766b45b67f-knr5k
+   70  2026-11-07T05:47:59Z  WORKFLOW_EXECUTION_COMPLETED  
 ```
 
 Abridged to the started events and the timer; the full output has every scheduled and
-completed event too. Events 3 to 35 ran on `-b5mcq`. The Worker pod was deleted while the
-timer was running, and from event 38 the same workflow carries on `-th4fj`, resumes the
-sandbox, reads the file back and deletes the sandbox. Nothing was re-run and nothing was
-lost, because the only state the workflow had was in these events.
+completed event too. Events 3 to 27 ran on `-k4kjb`. The Worker pod was deleted while
+`suspend_sandbox` was running on it, so that activity's first attempt never reported back;
+Temporal ran it again, and event 30 is `suspend_sandbox attempt 2` on `-knr5k`. From there
+the same workflow starts the timer, resumes the sandbox, reads the file back and deletes the
+sandbox, all on `-knr5k`. Only the interrupted activity ran twice, and nothing was lost,
+because the only state the workflow had was in these events. In an earlier run of
+this blueprint the Worker was deleted after the timer had started, and there the change fell
+at the timer, with no activity retried.
 
 **What this does and does not show.** It shows a Worker pod that goes away during a run
 being replaced, and the run finishing. It does not show a run surviving a Worker that is
@@ -1153,7 +1173,7 @@ see "Good to know".
 
 The Worker is the trusted orchestrator, so it is the one component here with Kubernetes
 permissions at all. It authenticates with the ServiceAccount token step 7 accounts for, and
-this `Role` in the sample's own namespace is what bounds that token. Every verb in it is one
+this `Role` in the blueprint's own namespace is what bounds that token. Every verb in it is one
 the provider's code calls, and the comments say which call wants it. The whole rule set,
 from [`deploy/rbac.yaml`](deploy/rbac.yaml):
 
@@ -1190,7 +1210,7 @@ rules:
     verbs: ["get", "create"]
 ```
 
-There is no `ClusterRole` and no `ClusterRoleBinding` anywhere in this sample. The
+There is no `ClusterRole` and no `ClusterRoleBinding` anywhere in this blueprint. The
 namespace the Worker acts in is taken from the pod itself rather than written into its
 configuration, so it cannot be pointed at a namespace its `Role` does not cover:
 
@@ -1216,7 +1236,7 @@ two together the stream opens. So a `Role` trimmed by reading the client code ra
 trying it refuses every step the workflow runs.
 
 The Worker holds no AWS credential and no model or API key, and the self-hosted Temporal
-server this sample uses has no authentication of its own, which is exactly why the page
+server this blueprint uses has no authentication of its own, which is exactly why the page
 keeps it on ClusterIP and reaches it only with a port-forward.
 
 ## Optional: Temporal Cloud instead of a self-hosted server
@@ -1226,10 +1246,10 @@ and the workflow, the activities and the provider in this folder are identical o
 changes is the three lines that say where the server is and how to authenticate to it: the
 Worker connects to a Cloud namespace endpoint with an API key or mTLS instead of to
 `temporal-frontend.temporal.svc:7233`, and you use Cloud's hosted Web UI instead of the
-port-forward in step 2. An API key would be a Secret the Worker reads, which this sample's
+port-forward in step 2. An API key would be a Secret the Worker reads, which this blueprint's
 Worker has none of.
 
-This sample self-hosts so that it runs on nothing beyond the Getting started cluster: no
+This blueprint self-hosts so that it runs on nothing beyond the Getting started cluster: no
 account, no external endpoint and no key. Moving it to Cloud is left as an exercise.
 
 ## Good to know
@@ -1243,7 +1263,7 @@ account, no external endpoint and no key. Moving it to Cloud is left as an exerc
   workspace. Because the workflow creates the object from the manifest in its own image, a
   change to `worker/sandbox.yaml` produces a new image tag and takes effect on the next
   run, not on a `Sandbox` that already exists.
-- **An `exec` under a retry policy is at-least-once.** The step this sample runs appends a
+- **An `exec` under a retry policy is at-least-once.** The step this blueprint runs appends a
   line to a file, so a retry after an exec that succeeded and lost its answer would append
   twice. That is harmless here and is why the deliberate failure is raised before the exec
   rather than after it. A production harness would make the step idempotent, or record a
@@ -1263,14 +1283,14 @@ account, no external endpoint and no key. Moving it to Cloud is left as an exerc
   still attached, which could stall the detach. The controller re-creates the pod on
   resume, so this does not prevent the suspend and resume cycle.
 - **The Temporal server's history is what you are keeping.** Its PostgreSQL holds every
-  run, which is the record this sample is about, so the clean up keeps the server by
+  run, which is the record this blueprint is about, so the clean up keeps the server by
   default and the commands to remove it are in the clean up's own output.
 
 ## Clean up
 
-Set the variables again if you are in a new shell, then remove everything the sample
+Set the variables again if you are in a new shell, then remove everything the blueprint
 created: the Worker and its RBAC, any `Sandbox` a run left behind with its workspace
-volume, the namespace, the sample's own `StorageClass` if setup made one, and the ECR
+volume, the namespace, the blueprint's own `StorageClass` if setup made one, and the ECR
 repository.
 
 ```bash
@@ -1279,7 +1299,7 @@ cp .env.example .env    # if you have not already; set KUBE_CONTEXT and NAMESPAC
 ```
 
 ```text
-context: sandbox-demo (pinned)   namespace: temporal-sandboxes   region: us-west-2
+context: sandbox-demo (pinned)   namespace: temporal-sandboxes   region: us-east-1
 namespace temporal-sandboxes carries app.kubernetes.io/managed-by=temporal; everything in it is the sample's
 
 == 1/6 delete the Worker, so nothing creates another Sandbox ==
@@ -1298,7 +1318,8 @@ namespace "temporal-sandboxes" deleted
   namespace temporal-sandboxes: gone
 
 == 5/6 delete the sample's own StorageClass, if setup made one ==
-  storageclass/temporal-sandboxes-gp3 not present (setup used the cluster default, or it was already removed)
+storageclass.storage.k8s.io "temporal-sandboxes-gp3" deleted
+  storageclass/temporal-sandboxes-gp3 deleted
 
 == 6/6 delete the ECR repository temporal-sandbox-worker ==
   ECR repository temporal-sandbox-worker is gone
@@ -1328,11 +1349,11 @@ What stays, and how to remove it:
 Step 2/6 says `not present` because the last run completed, and a completed run's `finally`
 block has already deleted its own `Sandbox`. On a run that was terminated, or whose Worker
 went away and was not replaced, that step is where the leftover is deleted by its exact
-name and its EBS volume confirmed gone. Step 5/6 says `not present` because this run used
-the cluster's default class and so created none; on a cluster with no fitting default it
-reads `storageclass/temporal-sandboxes-gp3 deleted`.
+name and its EBS volume confirmed gone. Step 5/6 deletes `storageclass/temporal-sandboxes-gp3`
+because this cluster had no fitting default class and setup made its own; on a cluster whose
+default fits, setup creates none and that step says `not present`.
 
-The clean up checks that the namespace carries the sample's label before it deletes
+The clean up checks that the namespace carries the blueprint's label before it deletes
 anything inside it, deletes the Worker first so nothing creates another `Sandbox` while it
 works, removes the helper pod by its exact name rather than by a label selector, reads a
 failed lookup as "could not determine" rather than as "gone", and exits non-zero if it
@@ -1340,13 +1361,13 @@ skipped something or could not confirm a delete. So an incomplete clean up is ne
 reported as done.
 
 **What stays.** The **agent-sandbox controller**, shared with the warm pool and the other
-agent-sandbox samples: to remove it, follow the
+agent-sandbox blueprints: to remove it, follow the
 [warm pool clean up](../../getting-started/warm-pool/README.md#clean-up). The **Temporal
 server**, because its PostgreSQL holds the durable history of every run. Check that nothing
 else on your cluster uses it (`helm list --namespace temporal`) before you remove it, and
 then the commands in the clean up's own output above do it, along with the Temporal
 namespace on it.
 
-If this is the only sample you ran, follow the
+If this is the only blueprint you ran, follow the
 [hello sandbox clean up](../../getting-started/hello-sandbox/README.md#clean-up) to remove
 the namespace and the cluster.
