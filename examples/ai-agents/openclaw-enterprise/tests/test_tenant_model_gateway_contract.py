@@ -9,6 +9,8 @@ import yaml
 SAMPLE = pathlib.Path(__file__).resolve().parent.parent
 TEMPLATE = SAMPLE / "deploy" / "tenant-model-gateway.yaml.tpl"
 SCRIPT = SAMPLE / "scripts" / "configure-tenant-model-gateway.sh"
+NETWORK_PROFILE_LABEL = "openclaw.dev/network-profile"
+NITRO_RESTRICTED_PROFILE = "nitro-central-gateway-v1"
 
 
 def _network_policies() -> list[dict]:
@@ -42,7 +44,11 @@ def test_default_deny_applies_to_every_tenant_pod() -> None:
 def test_dns_egress_is_explicitly_allowed() -> None:
     policy = _named("allow-dns")
 
-    assert policy["spec"]["podSelector"] == {}
+    assert policy["spec"]["podSelector"] == {
+        "matchLabels": {
+            NETWORK_PROFILE_LABEL: NITRO_RESTRICTED_PROFILE,
+        }
+    }
     assert policy["spec"]["egress"] == [
         {
             "to": [
@@ -68,6 +74,9 @@ def test_network_policy_limits_egress_to_private_agentgateway() -> None:
     assert policy["metadata"] == {
         "name": "allow-agentgateway",
         "namespace": "tenant-a",
+    }
+    assert policy["spec"]["podSelector"]["matchLabels"] == {
+        NETWORK_PROFILE_LABEL: NITRO_RESTRICTED_PROFILE,
     }
     assert policy["spec"]["podSelector"]["matchExpressions"] == [
         {

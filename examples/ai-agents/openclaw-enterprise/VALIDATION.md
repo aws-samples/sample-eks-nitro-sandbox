@@ -1,20 +1,16 @@
 # Scoped validation procedure
 
-Use this record to repeat the scoped checks against an existing OpenClaw
-Enterprise deployment. It does not yet provide a clean-account install and
-teardown path; that remains a publication blocker. Fresh validation of the
-hardened controller trust chain is pending. Record
-`<VALIDATED_SAMPLE_COMMIT>`, `<VALIDATED_OCE_COMMIT>`, and
-`<VALIDATION_DATE>` only after the full procedure completes.
+Use this procedure to repeat the scoped checks against an existing OpenClaw
+Enterprise deployment. This procedure does not cover clean-account installation
+or teardown.
 
-The commands use placeholders for account, cluster, namespace, Agent, endpoint,
-credential, and image digest values. Do not publish substituted values or
-command output without sanitizing it.
+The commands use placeholders for cluster, namespace, Agent, endpoint,
+credential, and image digest values. Sanitize substituted values and output
+before sharing them.
 
-Treat an adapter base-image refresh as a new validation candidate. Rebuild and
-rescan the adapter, deploy the new digest-qualified `ADAPTER_IMAGE`, then repeat
-this complete procedure. Evidence from the superseded adapter digest does not
-validate the replacement.
+After an adapter base-image refresh, rebuild and rescan the adapter, deploy the
+new digest-qualified `ADAPTER_IMAGE`, and repeat this complete procedure.
+Results from an earlier adapter digest do not validate its replacement.
 
 ## Prerequisites
 
@@ -28,18 +24,18 @@ validate the replacement.
 - Install `git`, `kubectl`, `jq`, `yq` 4, Python 3, and the AWS CLI.
 - Choose one explicit kube context and pass it to every cluster command.
 - Keep exact image references and credentials in your deployment environment,
-  not in this validation record.
+  not in source control.
 
 ## Validate the source and automated tests
 
-1. Clone the repository containing the candidate commit into a new directory,
-   then check out the candidate in detached mode. Do not switch an existing
+1. Clone the repository containing the revision under test into a new directory,
+   then check out that revision in detached mode. Do not switch an existing
    working tree that may contain local changes.
 
    ```bash
    git clone '<repository-url>' sample-eks-nitro-sandbox-validation
    cd sample-eks-nitro-sandbox-validation
-   validated_sample_commit='<VALIDATED_SAMPLE_COMMIT>'
+   validated_sample_commit='<full-commit-sha>'
    git switch --detach "$validated_sample_commit"
    test "$(git rev-parse HEAD)" = "$validated_sample_commit"
    ```
@@ -59,9 +55,6 @@ validate the replacement.
      examples/ai-agents/openclaw-enterprise/adapter \
      examples/ai-agents/openclaw-enterprise/tests
    ```
-
-Record the result as `<AUTOMATED_TEST_RESULT>` after running the checks against
-the final candidate. A previous count is not evidence for the hardened code.
 
 ## Set deployment placeholders
 
@@ -90,7 +83,7 @@ the final candidate. A previous count is not evidence for the hardened code.
 3. Keep tenant credentials and OCE endpoint values in your existing
    secret-management path. The current AgentGateway manifest fixes the Amazon
    Bedrock region and model; parameterize and review those settings before
-   publication.
+   deployment.
 
 Do not export secrets into shell history for this procedure.
 
@@ -128,8 +121,159 @@ Do not export secrets into shell history for this procedure.
      "$TENANT_B_NAMESPACE" "$TENANT_B_POD" "$TENANT_B_CONTAINER"
    ```
 
-Each command must return `true`. Record the inspected pod names and result as
-`<RUNTIME_SECURITY_RESULT>`.
+Each command must return `true`.
+
+## Validate network and credential isolation
+
+Run these checks from an adapted runtime pod. The runtime image includes
+Node.js, so the commands do not depend on `curl`, `wget`, or a debug sidecar.
+
+1. Confirm that the adapter replaced OCE's broad egress profile.
+
+   ```bash
+   kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_A_NAMESPACE" \
+     get pod "$TENANT_A_POD" -o json |
+     jq -e '
+       .metadata.labels["openclaw.dev/network-profile"]
+       == "nitro-central-gateway-v1"
+     '
+   ```
+
+2. Confirm that public TCP 443 and the EKS Pod Identity Agent endpoint are
+   denied.
+
+   ```bash
+   expect_tcp_denied() {
+     name="$1"
+     host="$2"
+     port="$3"
+
+     kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_A_NAMESPACE" \
+       exec -i "$TENANT_A_POD" --container "$TENANT_A_CONTAINER" -- \
+       node - "$name" "$host" "$port" <<'NODE'
+   const net = require("node:net");
+   const [name, host, port] = process.argv.slice(2);
+   let finished = false;
+   const socket = net.createConnection({host, port: Number(port)});
+   const finish = (success, detail) => {
+     if (finished) return;
+     finished = true;
+     socket.destroy();
+     console.log(`${name}: ${detail}`);
+     process.exitCode = success ? 0 : 1;
+   };
+   socket.setTimeout(5000);
+   socket.once("connect", () => finish(false, "unexpected connection"));
+   socket.once("timeout", () => finish(true, "denied"));
+   socket.once("error", () => finish(true, "denied"));
+   NODE
+   }
+
+   expect_tcp_denied "public HTTPS" "1.1.1.1" "443"
+   expect_tcp_denied "EKS Pod Identity Agent" "169.254.170.23" "80"
+   ```
+
+   Both commands must print `denied` and exit successfully.
+
+3. Confirm that the IMDS credential path returns no IAM role or credentials.
+
+   ```bash
+   kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_A_NAMESPACE" \
+     exec -i "$TENANT_A_POD" --container "$TENANT_A_CONTAINER" -- \
+     node <<'NODE'
+   const controller = new AbortController();
+   const timeout = setTimeout(() => controller.abort(), 5000);
+   (async () => {
+     try {
+       const response = await fetch(
+         "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+         {signal: controller.signal},
+       );
+       const body = (await response.text()).trim();
+       if (response.status === 200 && body) {
+         throw new Error("IMDS returned an IAM role");
+       }
+       console.log(`IMDS credential path: HTTP ${response.status}, no role`);
+     } finally {
+       clearTimeout(timeout);
+     }
+   })().catch((error) => {
+     console.error(`IMDS check failed: ${error.message}`);
+     process.exitCode = 1;
+   });
+   NODE
+   ```
+
+   This check requires an HTTP response from IMDS. It does not claim that IMDS
+   transport is blocked inside the Nitro guest.
+
+4. Send an OpenAI Responses request from the runtime pod to the central
+   AgentGateway Service.
+
+   ```bash
+   kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_A_NAMESPACE" \
+     exec -i "$TENANT_A_POD" --container "$TENANT_A_CONTAINER" -- \
+     node <<'NODE'
+   const https = require("node:https");
+   if (!process.env.OPENAI_API_KEY) {
+     console.error("AgentGateway request failed: OPENAI_API_KEY is not set");
+     process.exit(1);
+   }
+   const payload = JSON.stringify({
+     model: "claude-haiku",
+     input: "Reply with exactly OK.",
+     max_output_tokens: 16,
+   });
+   const request = https.request({
+     hostname: "agentgateway.openclaw-enterprise-agw.svc.cluster.local",
+     port: 443,
+     path: "/v1/responses",
+     method: "POST",
+     headers: {
+       authorization: `Bearer ${process.env.OPENAI_API_KEY || ""}`,
+       "content-type": "application/json",
+       "content-length": Buffer.byteLength(payload),
+     },
+     timeout: 30000,
+   }, (response) => {
+     let body = "";
+     response.setEncoding("utf8");
+     response.on("data", (chunk) => { body += chunk; });
+     response.on("end", () => {
+       if (response.statusCode < 200 || response.statusCode >= 300) {
+         console.error(`AgentGateway request failed: HTTP ${response.statusCode}`);
+         process.exitCode = 1;
+         return;
+       }
+       let result;
+       try {
+         result = JSON.parse(body);
+       } catch {
+         console.error("AgentGateway request failed: response was not JSON");
+         process.exitCode = 1;
+         return;
+       }
+       if (!result.id || !Array.isArray(result.output)) {
+         console.error("AgentGateway request failed: model output was absent");
+         process.exitCode = 1;
+         return;
+       }
+       console.log(`AgentGateway request: HTTP ${response.statusCode}`);
+     });
+   });
+   request.on("timeout", () => request.destroy(new Error("request timed out")));
+   request.on("error", (error) => {
+     console.error(`AgentGateway request failed: ${error.message}`);
+     process.exitCode = 1;
+   });
+   request.end(payload);
+   NODE
+   ```
+
+   The request must return HTTP `2xx`. This path uses the tenant bearer key
+   already injected into the runtime and the CA installed by the adapter. The
+   central AgentGateway uses its own EKS Pod Identity to invoke Amazon Bedrock;
+   the runtime pod receives no AWS identity.
 
 ## Validate native turns and tenant authorization
 
@@ -143,10 +287,9 @@ Each command must return `true`. Record the inspected pod names and result as
 5. Request the second tenant's Agent while authenticated as the first tenant.
 
 The expected result is two completed same-tenant requests and HTTP `403` for
-both cross-tenant requests. Record the sanitised result as
-`<TENANT_AUTHORIZATION_RESULT>`. Use the OCE interface supported by the pinned
-OCE revision. A direct request to AgentGateway does not validate OCE
-exact-resource authorization and cannot replace these checks.
+both cross-tenant requests. Use the OCE interface supported by the pinned OCE
+revision. A direct request to AgentGateway does not validate OCE exact-resource
+authorization and cannot replace these checks.
 
 ## Validate controller-driven admission and storage scope
 
@@ -258,7 +401,7 @@ The expected result is a persisted `.openclaw` marker, no generic `/home/node`
 marker, and a completed post-replacement turn. The ownership helper must skip
 an absent migration-only `.openclaw/control` directory on the clean PVC and
 repair it when present on the migrated PVC. Missing core runtime directories
-must still fail closed. Record the result as `<POD_REPLACEMENT_RESULT>`.
+must still fail closed.
 
 ## Validate negative admission controls
 
@@ -322,17 +465,16 @@ must still fail closed. Record the result as `<POD_REPLACEMENT_RESULT>`.
    ```
 
 The validating webhook must reject the `pods/ephemeralcontainers` update with
-the exact expected message. Record all negative checks as
-`<ADMISSION_DENIAL_RESULT>`.
+the exact expected message.
 
 ## Validate image findings
 
 1. Confirm that `adapter/Dockerfile` selects its base image with an exact
    `@sha256:<digest>` reference.
 2. Build the adapter, controller, ownership-helper, and runtime images from the
-   candidate source commits by following the
+   source revisions under test by following the
    [source-build procedure](build/README.md).
-3. If the candidate refreshes a vulnerable adapter base, confirm that
+3. If the revision refreshes an adapter base, confirm that
    `ADAPTER_IMAGE` has a new digest and that Inspector no longer reports the
    fixable finding against that replacement digest.
 4. Confirm that the build's exact-digest Inspector gate reports
@@ -340,12 +482,11 @@ the exact expected message. Record all negative checks as
 5. Confirm that Inspector coverage is active and successful for each exact
    repository and digest before accepting the result.
 
-Record the exact digests, scan time, and result as `<INSPECTOR_RESULT>`. A scan
-of earlier digests does not validate the final candidate.
+A scan of earlier digests does not validate the images under test.
 
-## Keep the evidence boundary
+## Understand the validation scope
 
-Do not use this record to claim validation of:
+This procedure does not validate:
 
 - Human SSO.
 - Sustained load or high availability.
@@ -354,5 +495,5 @@ Do not use this record to claim validation of:
 - An upstream-supported OCE contract for the private model gateway or
   VM-isolated runtime storage adaptation.
 
-Until every placeholder above is replaced with fresh evidence, the adapter
-remains an unvalidated sample-specific compatibility layer.
+The adapter remains a sample-specific compatibility layer. Repeat the complete
+procedure for every source revision and image digest that you deploy.

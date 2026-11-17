@@ -8,7 +8,6 @@ import unittest
 from unittest import mock
 
 import yaml
-
 from adapter import (
     AGW_CA_MOUNT_PATH,
     AGW_CA_PATH,
@@ -34,6 +33,9 @@ from adapter import (
 RUNTIME_IMAGE = f"example.invalid/oce@sha256:{'a' * 64}"
 OWNERSHIP_INIT_IMAGE_ENV = "OCE_OWNERSHIP_INIT_IMAGE"
 OWNERSHIP_INIT_IMAGE = f"example.invalid/ownership-helper@sha256:{'b' * 64}"
+NETWORK_PROFILE_LABEL = "openclaw.dev/network-profile"
+OCE_BROAD_EGRESS_PROFILE = "broad-egress-v1"
+NITRO_RESTRICTED_PROFILE = "nitro-central-gateway-v1"
 UNSAFE_GLIBC_ENV_NAMES = (
     "GCONV_PATH",
     "GLIBC_TUNABLES",
@@ -323,7 +325,10 @@ def admitted_target_pod() -> dict:
 def apply_patch(document: dict, patch: list[dict]) -> dict:
     result = copy.deepcopy(document)
     for operation in patch:
-        parts = operation["path"].strip("/").split("/")
+        parts = [
+            part.replace("~1", "/").replace("~0", "~")
+            for part in operation["path"].strip("/").split("/")
+        ]
         parent = result
         for part in parts[:-1]:
             parent = parent[int(part)] if isinstance(parent, list) else parent[part]
@@ -352,6 +357,38 @@ def apply_patch(document: dict, patch: list[dict]) -> dict:
     },
 )
 class BuildPatchTests(unittest.TestCase):
+    def test_replaces_oce_broad_egress_profile_with_restricted_nitro_profile(
+        self,
+    ) -> None:
+        pod = target_pod()
+        pod["metadata"]["labels"][NETWORK_PROFILE_LABEL] = OCE_BROAD_EGRESS_PROFILE
+
+        rendered = apply_patch(pod, build_patch(pod))
+
+        self.assertEqual(
+            rendered["metadata"]["labels"][NETWORK_PROFILE_LABEL],
+            NITRO_RESTRICTED_PROFILE,
+        )
+        validate_pod(rendered)
+
+    def test_adds_restricted_nitro_profile_when_oce_profile_is_absent(self) -> None:
+        pod = target_pod()
+
+        rendered = apply_patch(pod, build_patch(pod))
+
+        self.assertEqual(
+            rendered["metadata"]["labels"][NETWORK_PROFILE_LABEL],
+            NITRO_RESTRICTED_PROFILE,
+        )
+        validate_pod(rendered)
+
+    def test_refuses_unknown_network_profile(self) -> None:
+        pod = target_pod()
+        pod["metadata"]["labels"][NETWORK_PROFILE_LABEL] = "unexpected-profile"
+
+        with self.assertRaisesRegex(AdmissionError, "unsupported.*network-profile"):
+            build_patch(pod)
+
     def test_preinjected_agentgateway_ca_contract_is_idempotent(self) -> None:
         pod = target_pod()
         gateway = pod["spec"]["containers"][0]

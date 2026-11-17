@@ -1,45 +1,45 @@
 # OpenClaw Enterprise on EKS with Nitro sandboxes
 
-**Status: validation pending.** The hardened working tree has not been tied to
-a final sample commit or a fresh live validation run. Record
-`<VALIDATED_SAMPLE_COMMIT>` and `<VALIDATED_OCE_COMMIT>` only after the final
-procedure completes. This is not an upstream OpenClaw Enterprise (OCE) support
-statement.
+This sample adds an admission adapter and supporting infrastructure to run
+OpenClaw Enterprise (OCE) gateway workloads in Nitro sandboxes. It is a
+sample-specific compatibility layer, not an upstream OCE support statement.
 
-See [Scoped validation procedure](VALIDATION.md) for the required checks,
-expected denials, and evidence placeholders.
 See [Tenant isolation boundary](TENANT-ISOLATION.md) for the compute, storage,
 network, credential, gateway, and database controls—and their limits.
 
-## Outside the planned validation scope
+## Scope and limitations
 
-- Human SSO was not validated.
-- Sustained load and high availability were not validated.
-- Deliberate node drain was not validated. The test replaced a pod, not a node.
-- Nested OpenClaw exec isolation was not validated. Do not claim a second
-  sandbox boundary inside the Nitro sandbox.
-- OCE does not provide an upstream-supported contract for this private model
-  gateway and VM-isolated runtime storage adaptation. The adapter remains
-  sample-specific.
+- This sample does not cover human SSO, sustained-load testing, high
+  availability, or deliberate node-drain testing.
+- This sample does not add a second sandbox boundary for nested OpenClaw
+  execution inside the Nitro sandbox.
+- The private model gateway and VM-isolated runtime storage adaptation target
+  the documented OCE pod shape. Verify compatibility before changing OCE
+  versions.
 
-## Current design
+## Architecture
 
 - The [admission adapter](adapter/adapter.py) runs as the two fail-closed webhooks defined
   in [`deploy/adapter-webhook.yaml`](deploy/adapter-webhook.yaml). The mutating
   webhook receives every Pod creation request in OCE-managed namespaces,
   adapts the embedded `gateway` workload role, and rejects unsupported pod
-  shapes. The validating webhook rechecks the final stored Pod shape and
-  denies every ephemeral-container update in those namespaces.
+  shapes. It replaces OCE's
+  `openclaw.dev/network-profile=broad-egress-v1` label with
+  `nitro-central-gateway-v1`. The validating webhook rechecks the final stored
+  Pod shape and denies every ephemeral-container update in those namespaces.
 - The [CodeBuild source-build path](build/README.md) builds the adapter, a separate
   ownership helper, and pinned OCE controller and runtime source into four
   private ECR repositories. It waits for image scans and exports
   digest-qualified deployment references.
 - [`deploy/agentgateway.yaml`](deploy/agentgateway.yaml) exposes AgentGateway only
-  as an HTTPS ClusterIP Service. AgentGateway validates tenant keys and obtains
-  Amazon Bedrock credentials through EKS Pod Identity.
+  as an HTTPS ClusterIP Service. This central AgentGateway alone receives AWS
+  identity through EKS Pod Identity and invokes the centrally configured
+  Amazon Bedrock model.
 - [`scripts/configure-tenant-model-gateway.sh`](scripts/configure-tenant-model-gateway.sh)
   installs the AgentGateway CA as an immutable tenant ConfigMap and applies
-  default-deny, DNS and AgentGateway-only egress policies.
+  default-deny egress. Its allow policies select
+  `openclaw.dev/network-profile=nitro-central-gateway-v1` and permit only DNS
+  plus HTTPS to the central AgentGateway Service.
 
 ### Controller trust chain
 
@@ -62,15 +62,17 @@ shape, not an upstream OCE compatibility guarantee. It verifies the controller
 owner, labels, ServiceAccount, PVC, projected service-principal token, runtime
 image, two initial init containers, and final adapted Pod. It rejects sidecars,
 extra init containers, custom service-account token projections, and other
-unreviewed variants. Unrelated volumes may remain only when they do not violate
+unsupported variants. Unrelated volumes may remain only when they do not violate
 the protected state, path, token, or image contracts. For each compatible
 gateway pod, the adapter:
 
-- Selects the `isolated-sandbox` runtime class.
+- Selects the `isolated-sandbox` runtime class. It adds the restricted network
+  profile when the label is absent, replaces OCE's `broad-egress-v1` profile,
+  and rejects any other profile.
 - Rewrites the designated runtime's `runtime-state` layout for Nitro Pods. It
   replaces the `/home/node` `subPath: home` mount with a whole-volume mount,
   rebases nested `subPath` values from `home/<path>` to `<path>`, and patches
-  the validated `prepare-private-state` script to create those descendants at
+  the expected `prepare-private-state` script to create those descendants at
   the volume root.
 - Replaces OCE `openclaw-gateway-state` PVC `subPath` mounts below
   `/home/node/.openclaw` with one PVC-root mount at `/home/node/.openclaw`, so
@@ -144,9 +146,11 @@ image with ownership capabilities. The runtime still runs as non-root without
 Linux capabilities, but operators must build, scan, pin, and deploy the
 additional helper image correctly.
 
-The tenant script renders the current AgentGateway ClusterIP as an explicit
-`/32`. The generated policy permits HTTPS on TCP port 443 to that stable
-ClusterIP; it does not permit direct traffic to AgentGateway Pod IPs.
+The tenant allow policies select only the adapter's
+`nitro-central-gateway-v1` profile. Adapted runtime pods therefore do not match
+OCE's public HTTPS egress policy for `broad-egress-v1`. The tenant script
+resolves the AgentGateway ClusterIP and renders it as an explicit `/32`; it
+does not permit direct traffic to AgentGateway Pod IPs.
 
 ## One-time EKS Auto Mode prerequisite
 
@@ -162,46 +166,16 @@ kubectl --context "$KUBE_CONTEXT" --namespace kube-system \
   --patch '{"data":{"enable-network-policy":"true","enable-network-policy-controller":"true"}}'
 ```
 
-Schedule validation workloads on nodes created after this change. Existing
+Schedule workloads on nodes created after this change. Existing
 nodes do not gain network-policy enforcement in place.
 
 See [`scripts/README.md`](scripts/README.md) for tenant configuration and
 verification boundaries.
 
-## Upstream OCE mapping
-
-Carlos opened OCE issues
-[#4252](https://github.com/openclaw/openclaw-enterprise/issues/4252),
-[#4253](https://github.com/openclaw/openclaw-enterprise/issues/4253), and
-[#4254](https://github.com/openclaw/openclaw-enterprise/issues/4254).
-[PR #3893](https://github.com/openclaw/openclaw-enterprise/pull/3893) is closed
-without merge and covers only dedicated Harnesses.
-[PR #4528](https://github.com/openclaw/openclaw-enterprise/pull/4528) directly
-addresses the model-provider work tracked by #4254, and
-[PR #4866](https://github.com/openclaw/openclaw-enterprise/pull/4866) adds
-follow-on per-deployment overrides. Merged
-[PR #5346](https://github.com/openclaw/openclaw-enterprise/pull/5346),
-[PR #5333](https://github.com/openclaw/openclaw-enterprise/pull/5333), and open
-[PR #4432](https://github.com/openclaw/openclaw-enterprise/pull/4432) are
-adjacent potential native paths, not formal fixes for #4252 or #4253. This
-sample therefore remains a compatibility adapter, not evidence of upstream
-support.
-
-## Validation baseline
-
-Record the following only after completing a fresh run:
-
-- Sample commit: `<VALIDATED_SAMPLE_COMMIT>`
-- OCE commit: `<VALIDATED_OCE_COMMIT>`
-- Validation date: `<VALIDATION_DATE>`
-- Automated checks: `<AUTOMATED_TEST_RESULT>`
-- Live checks: `<LIVE_VALIDATION_RESULT>`
-- Image findings: `<INSPECTOR_RESULT>`
-
 Image digests, tenant identifiers, endpoints, credentials, and account details
-are deployment-specific and must not be published. The current AgentGateway
-manifest fixes the Amazon Bedrock region and model; parameterize and document
-those settings before publication.
+are deployment-specific. Do not commit them to source control. Configure the
+Amazon Bedrock region and model in the AgentGateway manifest for your
+deployment.
 
 ## Files
 
@@ -217,5 +191,5 @@ those settings before publication.
 | [`iam/bedrock-invoke.json`](iam/bedrock-invoke.json) | Restricted Amazon Bedrock invoke policy template. |
 | [`tests/test_adapter_contract.py`](tests/test_adapter_contract.py) | Static deployment and integration contracts; neighbouring files cover the build, gateway, and tenant configuration. |
 | [`tests/test_tenant_isolation_contract.py`](tests/test_tenant_isolation_contract.py) | Static contracts for compute, storage, network, credential, gateway, and documented database boundaries. |
-| [`TENANT-ISOLATION.md`](TENANT-ISOLATION.md) | Concise tenant isolation model, residual risks, and publication claim limits. |
-| [`VALIDATION.md`](VALIDATION.md) | Scoped validation procedure, expected results, and evidence placeholders. |
+| [`TENANT-ISOLATION.md`](TENANT-ISOLATION.md) | Tenant isolation model, residual risks, and claim limits. |
+| [`VALIDATION.md`](VALIDATION.md) | Reproducible source, admission, network, credential, and model-path checks. |

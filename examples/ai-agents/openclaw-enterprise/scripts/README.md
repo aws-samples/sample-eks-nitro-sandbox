@@ -2,8 +2,8 @@
 
 Use `configure-tenant-model-gateway.sh` after AgentGateway is ready and OCE has
 created the tenant namespace. This procedure configures the Pod Security
-profile, trust, and network isolation. Fresh validation is pending; repeat the
-procedure for each tenant namespace.
+profile, trust, and network isolation. Repeat the procedure for each tenant
+namespace, then run the checks in [`VALIDATION.md`](../VALIDATION.md).
 
 The separate admission adapter consumes the CA ConfigMap created here when it
 adapts the compatible OCE embedded-gateway pod. Treat that adapter as a
@@ -59,6 +59,11 @@ The script:
    AgentGateway ClusterIP. Direct traffic to AgentGateway Pod IPs is not
    allowed.
 
+The DNS and AgentGateway allow policies select
+`openclaw.dev/network-profile=nitro-central-gateway-v1`. The admission adapter
+replaces OCE's `broad-egress-v1` value with that profile, so adapted runtime
+pods do not match OCE's public HTTPS egress policy.
+
 Baseline is required because the adapter-generated ownership init container
 starts as UID and GID 0 with `allowPrivilegeEscalation: false` and only `CHOWN`,
 `DAC_OVERRIDE`, and `FOWNER`. Restricted requires non-root execution and
@@ -108,19 +113,13 @@ The adapter also rejects every volume mount path that is not a canonical
 absolute path, including paths with repeated separators or traversal segments.
 It requires digest-pinned workload images, rejects non-empty `envFrom` and
 explicit unsafe loader or shell-bootstrap variables, and rejects mounts over
-trusted bootstrap paths. These controls narrow the reviewed compatibility
+trusted bootstrap paths. These controls narrow the defined compatibility
 boundary; they do not turn this sample into a general OCE security profile.
 
 If an immutable CA ConfigMap already exists, the script stops when its
 certificate differs. Recreate that ConfigMap only as a deliberate CA rotation.
 
 The generated AgentGateway rule includes the Service ClusterIP as an explicit
-`/32` and permits HTTPS on TCP port 443 to that address. It does not permit
-direct traffic to AgentGateway Pod IPs.
-
-## Validation status
-
-Fresh evidence against `<VALIDATED_SAMPLE_COMMIT>` and
-`<VALIDATED_OCE_COMMIT>` is pending. Do not claim live tenant isolation,
-replacement recovery, model turns, or image-scan results until
-[`VALIDATION.md`](../VALIDATION.md) is complete.
+`/32`. The central AgentGateway alone receives AWS identity and invokes Amazon
+Bedrock; tenant runtime pods receive neither an IRSA role nor an EKS Pod
+Identity association.

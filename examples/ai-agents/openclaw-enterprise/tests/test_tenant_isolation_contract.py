@@ -1,4 +1,4 @@
-"""Publication contracts for tenant isolation around the central Bedrock gateway."""
+"""Security contracts for tenant isolation around the central Bedrock gateway."""
 
 from __future__ import annotations
 
@@ -264,7 +264,11 @@ def test_tenant_namespace_is_default_deny_with_only_dns_and_gateway_egress() -> 
     ]
 
     dns = _one(policies, "NetworkPolicy", "allow-dns")
-    assert dns["spec"]["podSelector"] == {}
+    assert dns["spec"]["podSelector"] == {
+        "matchLabels": {
+            "openclaw.dev/network-profile": "nitro-central-gateway-v1",
+        }
+    }
     assert {port["port"] for port in dns["spec"]["egress"][0]["ports"]} == {53}
 
 

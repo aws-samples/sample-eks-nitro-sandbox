@@ -14,7 +14,9 @@ metadata:
   name: allow-dns
   namespace: OCE_TENANT_NAMESPACE
 spec:
-  podSelector: {}
+  podSelector:
+    matchLabels:
+      openclaw.dev/network-profile: nitro-central-gateway-v1
   policyTypes:
     - Egress
   egress:
@@ -38,6 +40,8 @@ metadata:
   namespace: OCE_TENANT_NAMESPACE
 spec:
   podSelector:
+    matchLabels:
+      openclaw.dev/network-profile: nitro-central-gateway-v1
     matchExpressions:
       - key: openclaw.dev/workload-role
         operator: In
