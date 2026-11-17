@@ -33,7 +33,7 @@ The [shared prerequisites](../../README.md#prerequisites) (an AWS account, the A
 - **A standard (non-Auto-Mode) EKS cluster**, Kubernetes 1.36 or 1.37, with the managed
   `vpc-cni` add-on `ACTIVE` and the `isolated-sandbox` and `confidential-sandbox` RuntimeClass
   objects installed. Auto Mode already ships sandbox support, so this blueprint is for the
-  standard-cluster case. See the Amazon EKS User Guide, *Create and update a Nitro Sandbox AMI*.
+  standard-cluster case. See the Amazon EKS User Guide, [*Create and update a Nitro Sandbox AMI*](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-ami-create-update.html).
 - **An enclave-capable build instance type** (for example `m8i.4xlarge`). The build must run
   with Nitro Enclaves enabled; on `amazon-eks-ami` v20261112 and later the Packer template sets
   that on the builder for you when `enable_pod_isolation=true`, so an enclave-capable
