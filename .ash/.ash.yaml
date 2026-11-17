@@ -4,6 +4,8 @@ project_name: sample-eks-nitro-sandbox
 global_settings:
   severity_threshold: HIGH
   ignore_paths:
+    - path: .ash/**
+      reason: ASH configuration contains detector rule identifiers and suppression metadata, not deployable secrets
     - path: .claude/**
       reason: .claude/skills links to .agents/skills, which is scanned already
     - path: .kiro/**
@@ -22,6 +24,14 @@ global_settings:
   # UID, the poller and autoscaler, and destination pods with no policy of their own.
   # ---------------------------------------------------------------------------------------
   suppressions:
+    - rule_id: IAM_NO_INLINE_POLICY_CHECK
+      path: 'examples/ai-agents/openclaw-enterprise/build/template.yaml'
+      reason: 'These role-specific least-privilege policies are lifecycle-bound to single-purpose sample roles and are not reusable managed permissions'
+      expiration: '2027-12-31'
+    - rule_id: CKV_AWS_111
+      path: 'examples/ai-agents/openclaw-enterprise/build/template.yaml'
+      reason: 'Step Functions log delivery and X-Ray ingestion APIs do not support resource-level permissions; all other write actions remain resource-scoped'
+      expiration: '2027-12-31'
     # Reviewed Box process launches and synthetic credential-path fixture.
     - rule_id: B404
       path: "examples/subagent-security/strands-box/scripts/local_driver.py"
