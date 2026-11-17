@@ -19,8 +19,8 @@
 # Nothing here runs the checkout's own clean.sh or reads its tmp/signer-policy. Every case
 # copies the scripts into a fresh fixture under this checkout's gitignored tmp/, fills it
 # with inert marker files, runs it with env -i and a PATH of stubs and wrappers, and
-# compares metadata of this checkout (outside tmp/, plus tmp/signer-policy) before and
-# after, without opening any file in it.
+# compares metadata of this whole checkout (except this run's own fixture tree and output
+# files) before and after, without opening any file in it.
 #
 # Exit: 0 every case passed, 1 a case failed, 2 a case could not be checked.
 set -uo pipefail
@@ -148,11 +148,20 @@ done
 
 # --- the real checkout's guard: metadata only, never file contents -----------------------
 guard() {
-  { find "$checkout" -path "$checkout/tmp" -prune -o -printf '%y %m %s %T@ %p -> %l\n'
-    [[ ! -e "$checkout/tmp/signer-policy" && ! -L "$checkout/tmp/signer-policy" ]] ||
-      find "$checkout/tmp/signer-policy" -printf '%y %m %s %T@ %p -> %l\n'
-  } 2>&1 | LC_ALL=C sort
+  local ex=(-path "$base" -prune) f
+  for f in "${own_output[@]}"; do ex+=(-o -path "$f" -prune); done
+  find "$checkout" \( "${ex[@]}" \) -o -printf '%y %m %s %T@ %p -> %l\n' 2>&1 | LC_ALL=C sort
 }
+# Everything in the checkout is guarded except this run's own fixture tree and the files this
+# run's stdout and stderr are written to, when those are inside it.
+own_output=()
+for fd in 1 2; do
+  p="$(readlink -f "/proc/$$/fd/$fd" 2>/dev/null)" && [[ -f "$p" ]] && own_output+=("$p")
+done
+# A file the guard must see change, for the guard's own control case (G1).
+guard_control="$base.guard-control"
+: > "$guard_control"
+trap 'chmod -R u+rwx "$base" 2>/dev/null; "$RM_BIN" -rf -- "$base" "$guard_control"' EXIT
 
 # --- fixture --------------------------------------------------------------------------
 # A fresh case: C is its directory, R the fixture checkout, S the blueprint folder, T the run
@@ -185,7 +194,9 @@ new_case() {  # new_case <name> <sut dir>
   name="$1" sutdir="$2"
   C="$base/cases/$name.$RANDOM$RANDOM"
   R="$C/repo" S="$C/repo/$rel" T="$C/repo/tmp/signer-policy" O="$C/outside" CTL="$C/ctl"
-  mkdir -p "$C/home" "$CTL" "$O"
+  mkdir -p "$C/home" "$CTL" "$O" "$C/bin"
+  : > "$C/out"; : > "$C/err"
+  fp_norm=./.none
   : > "$CTL/calls.log"; : > "$CTL/rules"
   mkrepo "$R"
   creds "$T" both
@@ -195,7 +206,7 @@ new_case() {  # new_case <name> <sut dir>
   put "$T/sub/genpolicy-home/config.json"; put "$R/tmp/signer-policy-old/genpolicy-home/x"
   put "$R/tmp/other-sample/docker-config/config.json"; put "$S/docker-config/x"
   put "$O/target/.docker/config.json"; put "$O/file-target"
-  args=() xenv=() drop=() cwd="$S" invoke=./scripts/clean.sh pshell=bash
+  args=() xenv=() drop=() cwd="$S" invoke=./scripts/clean.sh pshell=bash between=""
   fails=() errors=()
 }
 rules() { printf '%s\n' "$@" >> "$CTL/rules"; }
@@ -240,7 +251,7 @@ NF_RULES=(
 # Run the scripts under test once, in the case as it stands.
 run() {
   local bin="$C/bin" t
-  if [[ ! -d "$bin" ]]; then
+  if [[ ! -e "$bin/bash" ]]; then
     mkdir -p "$bin"
     for t in "$proto"/*; do
       [[ " ${drop[*]} " == *" ${t##*/} "* ]] || ln -s "$t" "$bin/${t##*/}"
@@ -251,6 +262,7 @@ run() {
   ( cd "$cwd" && timeout 20 env -i HOME="$C/home" PATH="$bin" PWD="$cwd" LANG=C LC_ALL=C TZ=UTC \
       SPCT_CTL="$CTL" SPCT_CASE="$C" "${xenv[@]}" "$invoke" "${args[@]}" ) > "$C/out" 2> "$C/err"
   rc=$?
+  [[ -z "$between" ]] || "$between"
   post_fp="$(fp)" post_guard="$(guard)"
   [[ "$pre_guard" == "$post_guard" ]] || errors+=("REAL-CHECKOUT-CHANGED")
   [[ ! -s "$CTL/unlisted.log" ]] || errors+=("UNLISTED-STUB-CALL:$(head -1 "$CTL/unlisted.log")")
@@ -264,10 +276,11 @@ run() {
 # hashed), aws.err (rewritten by every --delete-aws-resources lookup) and the harness's own
 # files. A directory's own mtime is left out, so a removal shows only as the entry going.
 fp() {
+  local trel="./${T#"$C"/}"
   ( cd "$C" && find . \( -path ./ctl -o -path ./bin -o -path ./home -o -path ./out -o -path ./err \
-      -o -path "./${T#"$C"/}/genpolicy-home" -o -path "./${T#"$C"/}/docker-config" \
-      -o -path "./${T#"$C"/}/aws.err" \) -prune -o \
-      \( -type d -printf 'd %m %p\n' \) -o \( -printf '%y %m %s %T@ %p -> %l\n' \) \
+      -o -path "$trel/genpolicy-home" -o -path "$trel/docker-config" -o -path "$trel/aws.err" \) -prune -o \
+      \( -type d \( -path "$trel" -o -path "$fp_norm" \) -printf 'd %m %p (entries checked one by one)\n' \) -o \
+      \( -type d -printf 'd %m %s %T@ %p\n' \) -o \( -printf '%y %m %s %T@ %p -> %l\n' \) \
       \( -type f -exec sha256sum {} + -o -true \) ) 2>&1 | LC_ALL=C sort
 }
 
@@ -368,8 +381,23 @@ check_U1() { run; want_rc 2; gone genpolicy-home docker-config; no_remote; rm_ex
 case_ U1F; setup_U1F() { new_case U1F "$1"; rules "${H_RULES[@]}"; args=(--bogus); touch "$CTL/rm-fail-genpolicy-home"; }
 check_U1F() { run; want_rc 2; there genpolicy-home; gone docker-config; no_remote; rm_exact
   in_err "unknown argument: --bogus"; in_err "INCOMPLETE: could not remove $(cd -P "$T" && pwd -P)/genpolicy-home"; local_fail_footer; }
-case_ U2; setup_U2() { new_case U2 "$1"; rules "${H_RULES[@]}"; "$RM_BIN" -f "$S/.env"; }
+# A valid first argument followed by another one is still invalid usage.
+case_ U5; setup_U5() { new_case U5 "$1"; rules "${D_RULES[@]}"; args=(--delete-aws-resources --bogus); }
+check_U5() { run; want_rc 2; gone genpolicy-home docker-config; no_remote; rm_exact; not_out "Clean up complete."
+  [[ "$(cat "$C/err")" == "unknown argument: --bogus" ]] || fails+=("USAGE-STDERR"); [[ ! -s "$C/out" ]] || fails+=("USAGE-STDOUT"); }
+case_ U5a; setup_U5a() { new_case U5a "$1"; rules "${H_RULES[@]}"; args=("" --bogus); "$RM_BIN" -rf "$T/genpolicy-home" "$T/docker-config"; }
+check_U5a() { run; want_rc 2; gone genpolicy-home docker-config; no_remote; rm_exact; in_err "unknown argument: --bogus"; }
+case_ U5F; setup_U5F() { new_case U5F "$1"; rules "${D_RULES[@]}"; args=(--delete-aws-resources x); touch "$CTL/rm-fail-docker-config"; }
+check_U5F() { run; want_rc 2; gone genpolicy-home; there docker-config; no_remote; rm_exact
+  in_err "unknown argument: x"; in_err "/docker-config (a registry credential)"; local_fail_footer; }
 check_U2() { run; want_rc 1; gone genpolicy-home docker-config; in_err "no .env"; no_remote; same_as_baseline; }
+# The guard's own control: a guarded file changes during a run, and the run must be
+# reported as could-not-check. Here that is the expected result, so it passes.
+case_ G1; setup_G1() { new_case G1 "$1"; rules "${H_RULES[@]}"; between=touch_guard_control; }
+touch_guard_control() { sleep 0.01; printf 'changed\n' >> "$guard_control"; }
+check_G1() { run
+  if [[ " ${errors[*]} " == *" REAL-CHECKOUT-CHANGED "* ]]; then errors=(); else fails+=("GUARD-BLIND"); fi; }
+case_ U2; setup_U2() { new_case U2 "$1"; rules "${H_RULES[@]}"; "$RM_BIN" -f "$S/.env"; }
 for t in aws kubectl jq; do
   case_ "U3$t"; eval "setup_U3$t() { new_case U3$t \"\$1\"; rules \"\${H_RULES[@]}\"; drop=($t); }"
   eval "check_U3$t() { run; want_rc 1; gone genpolicy-home docker-config; in_err '$t is required'; no_remote; same_as_baseline; }"
@@ -416,10 +444,18 @@ make_parent() {
     dangling) "$RM_BIN" -rf "$p"; ln -s "$O/nowhere" "$p" ;;
     file) "$RM_BIN" -rf "$p"; put "$p" ;;
     fifo) "$RM_BIN" -rf "$p"; mkfifo "$p" ;;
+    socket) "$RM_BIN" -rf "$p"; mksock "$p" ;;
     unenterable) chmod 000 "$p" ;;
   esac
 }
-for k in link link-empty dangling file fifo unenterable; do
+# A Unix-domain socket entry, bound and closed at once: nothing listens on it. Bound by its
+# relative name, because a socket path is limited to about 100 bytes.
+mksock() {
+  ( cd "$(dirname -- "$1")" && python3 -c 'import socket, sys
+s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.close()' "${1##*/}" ) ||
+    errors+=("NO-SOCKET")
+}
+for k in link link-empty dangling file fifo socket unenterable; do
   parent_case "L_sp_$k" tmp/signer-policy "$k"
   parent_case "L_tmp_$k" tmp "$k"
 done
@@ -438,10 +474,11 @@ make_child() {
     dangling) ln -s "$O/nowhere" "$p" ;;
     file) put "$p" ;;
     fifo) mkfifo "$p" ;;
+    socket) mksock "$p" ;;
     inner-link) mkdir -p "$p"; ln -s "$O/target" "$p/.docker"; ln -s "$O/file-target" "$p/config.json" ;;
   esac
 }
-for k in dir-link dangling file fifo inner-link; do
+for k in dir-link dangling file fifo socket inner-link; do
   child_case "C_gh_$k" genpolicy-home "$k"
   child_case "C_dc_$k" docker-config "$k"
 done
@@ -479,9 +516,13 @@ case_ S1; setup_S1() { new_case S1 "$1"; rules "${H_RULES[@]}"; subst_values
   mkdir -p "$O/cdp/tmp/signer-policy" "$O/cdp/signer-policy"; creds "$O/cdp/signer-policy" both
   xenv=("${sv[@]}" CDPATH="$O/cdp" IFS=/); }
 check_S1() { run; want_rc 0; gone genpolicy-home docker-config; same_tree; rm_exact; }
-case_ S2; setup_S2() { new_case S2 "$1"; rules "${H_RULES[@]}"; subst_values; printf '%s\n' "${sv[@]}" >> "$S/.env"; }
+case_ S2; setup_S2() { new_case S2 "$1"; rules "${H_RULES[@]}"; subst_values
+  mkdir -p "$O/cdp/tmp/signer-policy" "$O/cdp/signer-policy"; creds "$O/cdp/signer-policy" both
+  printf '%s\n' "${sv[@]}" "CDPATH=$O/cdp" "IFS=/" >> "$S/.env"; }
 check_S2() { run; gone genpolicy-home docker-config; same_tree; rm_exact; }
-case_ S3; setup_S3() { new_case S3 "$1"; rules "${H_RULES[@]}"; subst_values; printf '%s\n' "${sv[@]}" >> "$T/state.env"; }
+case_ S3; setup_S3() { new_case S3 "$1"; rules "${H_RULES[@]}"; subst_values
+  mkdir -p "$O/cdp/tmp/signer-policy" "$O/cdp/signer-policy"; creds "$O/cdp/signer-policy" both
+  printf '%s\n' "${sv[@]}" "CDPATH=$O/cdp" "IFS=/" >> "$T/state.env"; }
 check_S3() { run; gone genpolicy-home docker-config; same_tree; rm_exact; }
 
 # Never reading the credentials: FIFOs block a reader until the timeout, mode 000 files
@@ -539,6 +580,7 @@ pcase() {  # pcase <name> <setup words>: one setup, then a run under each shell
   done
 }
 page_setup() {
+  fp_norm="./${R#"$C"/}/tmp"
   "$RM_BIN" -rf "$T/genpolicy-home" "$T/docker-config"
   printf '%s\n' "$P_TAG1" "$P_TAG2" registry.example.invalid/nitro-sample-signer-policy:other > "$CTL/images"
   state "$T/state.env" RELEASE_TWO=1.1.0
@@ -642,7 +684,8 @@ for c in "${CASES[@]}"; do
   "check_$c"
   report
 done
-[[ "$g0" == "$(guard)" ]] || { echo "ERROR the real checkout changed during the run" >&2; n_err=$((n_err + 1)); }
+[[ "$(grep -vF "$guard_control" <<<"$g0")" == "$(guard | grep -vF "$guard_control")" ]] ||
+  { echo "ERROR the real checkout changed during the run" >&2; n_err=$((n_err + 1)); }
 (( ${#notchecked[@]} == 0 )) || echo "NOT CHECKED (no --baseline): ${notchecked[*]}"
 echo "passed $n_pass, failed $n_fail, could not check $n_err"
 (( n_err == 0 && ${#notchecked[@]} == 0 )) || exit 2

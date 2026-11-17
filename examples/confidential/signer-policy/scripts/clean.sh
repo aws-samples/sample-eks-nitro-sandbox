@@ -42,6 +42,9 @@ case "${1:-}" in
   --delete-aws-resources) delete_aws=true ;;
   *) echo "unknown argument: $1" >&2; usage_rc=2 ;;
 esac
+if [[ "$usage_rc" == 0 && $# -gt 1 ]]; then
+  echo "unknown argument: $2" >&2; usage_rc=2
+fi
 
 # Run in a subshell, so the cd stays here. Each step's status is checked by hand, because
 # the caller's || turns set -e off inside it.
