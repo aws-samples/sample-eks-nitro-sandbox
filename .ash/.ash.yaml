@@ -678,7 +678,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_9
       path: 'examples/confidential/s3-encrypted-file/deploy/credentials-pod.yaml'
-      reason: 'One-shot pod with no port and no Service (credentials-pod.yaml:27,97-124); setup.sh reads its log marker, not Ready (setup.sh:907), so a readiness probe gates nothing'
+      reason: 'One-shot pod with no port and no Service (credentials-pod.yaml:27,97-124); setup.sh reads its log marker, not Ready (setup.sh:937), so a readiness probe gates nothing'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/confidential/s3-encrypted-file/deploy/pod.yaml'
@@ -690,7 +690,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_9
       path: 'examples/confidential/s3-encrypted-file/deploy/pod.yaml'
-      reason: 'Decrypts and exits with no port and no Service (pod.yaml:28-31); setup.sh waits for a terminal phase, not Ready (setup.sh:841), so a readiness probe gates nothing'
+      reason: 'Decrypts and exits with no port and no Service (pod.yaml:28-31); setup.sh waits for a terminal phase, not Ready (setup.sh:871), so a readiness probe gates nothing'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/confidential/secrets-manager-secret/deploy/plain-pod.yaml'
