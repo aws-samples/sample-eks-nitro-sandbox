@@ -1094,7 +1094,8 @@ su_state() { # su_state <with-vpc-cni: yes|no>
 import json, sys
 s = {"account": "111122223333", "eks": {"clusters": {"example-cluster": {"endpoint": "https://EXAMPLE0123.gr7.us-west-2.eks.amazonaws.com"}}}}
 if sys.argv[2] == "yes":
-    s["eks"]["addons"] = {"example-cluster/vpc-cni": {"status": "ACTIVE", "addonVersion": "v1.0.0-eksbuild.1", "configurationValues": "{\"enableNetworkPolicy\":\"true\"}"}}
+    s["eks"]["addons"] = {"example-cluster/vpc-cni": {"status": "ACTIVE", "addonVersion": "v1.0.0-eksbuild.1", "configurationValues": "{\"enableNetworkPolicy\":\"true\"}"},
+                          "example-cluster/kube-proxy": {"status": "ACTIVE", "addonVersion": "v1.36.0-eksbuild.1"}}
 json.dump(s, open(sys.argv[1], "w"))
 PY
 }
