@@ -200,7 +200,9 @@ fi
 # down, reset
 incomplete=0
 REMAINING="$RUN_STATE_DIR/ib-teardown-remaining.sh"; : > "$REMAINING"
-blocked() { printf '%s\n' "$1" >> "$REMAINING"; incomplete=1; warn "not deleted here; recorded in $REMAINING: $1"; }
+blocked() { # blocked <command...>: shell-quoted, so no value can add a command to the hand-off
+  local line; line=$(printf '%q ' "$@"); line=${line% }
+  printf '%s\n' "$line" >> "$REMAINING"; incomplete=1; warn "not deleted here; recorded in $REMAINING: $line"; }
 leave()   { warn "$1"; incomplete=1; }
 
 # Image Builder resources the driver recorded, dependents first. Each must carry this run's tags.
@@ -230,13 +232,17 @@ if [ "$mode" = reset ]; then
   echo "Image Builder resources of run $RUN_ID removed; the group and roles are kept."; exit 0
 fi
 
-# The build's log group, which Image Builder names after this run's own image (it has no tags).
-probe 'xxx-never' aw logs describe-log-groups --log-group-name-prefix "/aws/imagebuilder/$NAME" \
-  --query "logGroups[?logGroupName=='/aws/imagebuilder/$NAME'].logGroupName | [0]" --output text; rc=$?
+# The build's log group: the driver creates it, tagged, before the build writes to it.
+lg="/aws/imagebuilder/$NAME"
+probe 'xxx-never' aw logs describe-log-groups --log-group-name-prefix "$lg" \
+  --query "logGroups[?logGroupName=='$lg'].logGroupName | [0]" --output text; rc=$?
 case $rc in
-  0) aw logs delete-log-group --log-group-name "/aws/imagebuilder/$NAME" \
-       && log "deleted log group /aws/imagebuilder/$NAME" || leave "could not delete log group /aws/imagebuilder/$NAME" ;;
-  1) log "log group /aws/imagebuilder/$NAME not present" ;;
+  0) probe --tags 'ResourceNotFound' aw logs list-tags-log-group --log-group-name "$lg" --query tags --output json; trc=$?
+     if [ "$trc" = 0 ] && printf '%s' "$PROBE_OUT" | tags_match; then
+       aw logs delete-log-group --log-group-name "$lg" && log "deleted log group $lg" || leave "could not delete log group $lg"
+     elif [ "$trc" = 0 ]; then leave "log group $lg is not tagged for run $RUN_ID; leaving it"
+     else incomplete=1; fi ;;
+  1) log "log group $lg not present" ;;
   *) incomplete=1 ;;
 esac
 
@@ -257,15 +263,23 @@ case $rc in
   *) incomplete=1 ;;
 esac
 
-# IAM: the two roles and the instance profile.
+# IAM: the instance profile, on its own tags (whether or not its role is still there), then the roles.
+prof="$NAME-instance"
+probe 'NoSuchEntity' aws iam get-instance-profile --instance-profile-name "$prof" --query InstanceProfile --output json; rc=$?
+case $rc in
+  0) if printf '%s' "$PROBE_OUT" | jtags | tags_match; then
+       for pr in $(printf '%s' "$PROBE_OUT" | json_get '[x["RoleName"] for x in d.get("Roles") or []]'); do
+         aws iam remove-role-from-instance-profile --instance-profile-name "$prof" --role-name "$pr" || leave "could not remove $pr from $prof"
+       done
+       aws iam delete-instance-profile --instance-profile-name "$prof" && log "deleted instance profile $prof" || leave "could not delete instance profile $prof"
+     else leave "instance profile $prof is not tagged for run $RUN_ID; leaving it"; fi ;;
+  1) log "instance profile $prof not present" ;;
+  *) incomplete=1 ;;
+esac
 for r in "$NAME-exec" "$NAME-instance"; do
   probe --tags 'NoSuchEntity' aws iam list-role-tags --role-name "$r" --query Tags --output json; rc=$?
   case $rc in
     0) printf '%s' "$PROBE_OUT" | tags_match || { leave "IAM role $r is not tagged for run $RUN_ID; leaving it"; continue; }
-       if [ "$r" = "$NAME-instance" ]; then
-         aws iam remove-role-from-instance-profile --instance-profile-name "$r" --role-name "$r" 2>/dev/null
-         aws iam delete-instance-profile --instance-profile-name "$r" || leave "could not delete instance profile $r"
-       fi
        for p in $(aws iam list-role-policies --role-name "$r" --query 'PolicyNames[]' --output text); do
          aws iam delete-role-policy --role-name "$r" --policy-name "$p" || leave "could not delete policy $p of $r"; done
        for a in $(aws iam list-attached-role-policies --role-name "$r" --query 'AttachedPolicies[].PolicyArn' --output text); do
@@ -280,7 +294,7 @@ done
 probe 'NotFound' aw ec2 describe-launch-templates --launch-template-names "$NAME" --query 'LaunchTemplates[0]' --output json; rc=$?
 case $rc in
   0) if printf '%s' "$PROBE_OUT" | jtags | tags_match; then
-       blocked "aws ec2 delete-launch-template --region $AWS_REGION --launch-template-id $(printf '%s' "$PROBE_OUT" | json_get 'd["LaunchTemplateId"]')"
+       blocked aws ec2 delete-launch-template --region "$AWS_REGION" --launch-template-id "$(printf '%s' "$PROBE_OUT" | json_get 'd["LaunchTemplateId"]')"
      else leave "launch template $NAME is not tagged for run $RUN_ID; leaving it"; fi ;;
   1) log "launch template $NAME not present" ;;
   *) incomplete=1 ;;
@@ -289,7 +303,7 @@ sg=$(rec IB_SECURITY_GROUP_ID)
 if [ -n "$sg" ]; then
   probe 'InvalidGroup.NotFound' aw ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0]' --output json; rc=$?
   case $rc in
-    0) printf '%s' "$PROBE_OUT" | jtags | tags_match && blocked "aws ec2 delete-security-group --region $AWS_REGION --group-id $sg" \
+    0) printf '%s' "$PROBE_OUT" | jtags | tags_match && blocked aws ec2 delete-security-group --region "$AWS_REGION" --group-id "$sg" \
          || leave "security group $sg is not tagged for run $RUN_ID; leaving it" ;;
     1) log "security group $sg not present" ;;
     *) incomplete=1 ;;

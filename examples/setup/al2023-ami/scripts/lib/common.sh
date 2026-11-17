@@ -24,6 +24,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 [ -f "$SAMPLE_DIR/config.env" ] && . "$SAMPLE_DIR/config.env"
 
 : "${AWS_REGION:=us-west-2}"
+[[ "$AWS_REGION" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]+$ ]] || die "AWS_REGION '$AWS_REGION' is not a Region name like us-west-2"
 : "${CLUSTER_NAME:=sandbox-demo}"          # the home page's default; the shell's own value wins
 : "${KUBERNETES_VERSION:=1.36}"
 : "${RESOURCE_PREFIX:=al2023-ami}"

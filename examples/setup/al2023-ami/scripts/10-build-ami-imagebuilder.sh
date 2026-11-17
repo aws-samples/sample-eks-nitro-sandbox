@@ -43,7 +43,7 @@ for v in BUILD_ASG_NAME BUILD_SECURITY_GROUP_ID BUILD_INSTANCE_PROFILE BUILD_EXE
 done
 
 # These values are substituted into the component's shell commands, so accept only plain values.
-[[ "$KUBERNETES_VERSION" =~ ^1\.[0-9]{2}$ ]] || die "KUBERNETES_VERSION '$KUBERNETES_VERSION' must look like 1.36"
+case "$KUBERNETES_VERSION" in 1.36|1.37) ;; *) die "KUBERNETES_VERSION '$KUBERNETES_VERSION': the pod isolation runtime is published for 1.36 and 1.37 only" ;; esac
 [[ "$KUBERNETES_BUNDLE_VERSION" =~ ^1\.[0-9]{2}\.[0-9]{1,3}$ ]] && [ "${KUBERNETES_BUNDLE_VERSION%.*}" = "$KUBERNETES_VERSION" ] \
   || die "KUBERNETES_BUNDLE_VERSION '$KUBERNETES_BUNDLE_VERSION' must be a full version of $KUBERNETES_VERSION, like $KUBERNETES_VERSION.1"
 [[ "$KUBERNETES_BUILD_DATE" =~ ^[0-9A-Za-z._-]{1,32}$ ]] || die "KUBERNETES_BUILD_DATE '$KUBERNETES_BUILD_DATE' has characters outside [0-9A-Za-z._-]"
@@ -51,12 +51,18 @@ done
 [[ "$BUILD_EXECUTION_ROLE" =~ ^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$ ]] || die "BUILD_EXECUTION_ROLE '$BUILD_EXECUTION_ROLE' must be an IAM role ARN"
 mkdir -p "$EVIDENCE_DIR" "$LOG_DIR"
 
+# The account and Region ib-prereqs.sh recorded for the run.
+account=$(aw sts get-caller-identity --query Account --output text) || die "could not read the current AWS account"
+[ "$(rec ACCOUNT_ID | head -n 1)" = "$account" ] || die "credentials are for a different account than run $RUN_ID's prerequisites"
+[ "$(rec AWS_REGION | head -n 1)" = "$AWS_REGION" ] || die "AWS_REGION is '$AWS_REGION' but run $RUN_ID's prerequisites are in '$(rec AWS_REGION | head -n 1)'"
+
 # The group's launch template decides the build instance: check it has enclaves on and the
 # architecture NODE_ARCH asks for.
-lt=$(aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$BUILD_ASG_NAME" \
-  --query 'AutoScalingGroups[0].LaunchTemplate.LaunchTemplateName' --output text) || die "could not read Auto Scaling group $BUILD_ASG_NAME"
-[ -n "$lt" ] && [ "$lt" != None ] || die "Auto Scaling group $BUILD_ASG_NAME has no launch template"
-read -r itype enclave < <(aw ec2 describe-launch-template-versions --launch-template-name "$lt" --versions '$Latest' \
+# The version the group launches from, not the template's latest.
+read -r lt ltver < <(aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$BUILD_ASG_NAME" \
+  --query 'AutoScalingGroups[0].LaunchTemplate.[LaunchTemplateName,Version]' --output text) || die "could not read Auto Scaling group $BUILD_ASG_NAME"
+[ -n "${lt:-}" ] && [ "$lt" != None ] && [ -n "${ltver:-}" ] || die "Auto Scaling group $BUILD_ASG_NAME has no launch template"
+read -r itype enclave < <(aw ec2 describe-launch-template-versions --launch-template-name "$lt" --versions "$ltver" \
   --query 'LaunchTemplateVersions[0].LaunchTemplateData.[InstanceType,EnclaveOptions.Enabled]' --output text) \
   || die "could not read launch template $lt"
 [ "$enclave" = True ] || die "launch template $lt does not enable Nitro Enclaves; the build needs them"
@@ -72,6 +78,17 @@ name="${RESOURCE_PREFIX}-ib-${RUN_ID}"
 tags="$TAGS_OWNER_KEY=$TAGS_OWNER_VALUE,$TAGS_RUN_KEY=$RUN_ID,auto-delete=no"
 D="$SAMPLE_DIR/deploy/imagebuilder"
 tmpd=$(mktemp -d); trap 'rm -rf "$tmpd"' EXIT
+
+# The build's log group, created tagged before Image Builder writes to it, so clean up can check it.
+lg="/aws/imagebuilder/$name"
+found=$(aw logs describe-log-groups --log-group-name-prefix "$lg" --query "logGroups[?logGroupName=='$lg'].logGroupName | [0]" --output text) \
+  || die "could not determine whether log group $lg exists"
+if [ "$found" = "$lg" ]; then
+  aw logs list-tags-log-group --log-group-name "$lg" --query tags --output json | tags_match \
+    || die "log group $lg exists and is not run $RUN_ID's"
+else
+  aw logs create-log-group --log-group-name "$lg" --tags "$tags" || die "could not create log group $lg"
+fi
 
 sed -e "s|{{ KUBERNETES_VERSION }}|${KUBERNETES_VERSION}|g" \
     -e "s|{{ KUBERNETES_BUNDLE_VERSION }}|${KUBERNETES_BUNDLE_VERSION}|g" \

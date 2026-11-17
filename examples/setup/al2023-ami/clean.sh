@@ -36,10 +36,12 @@ act() { # act <description> <command...>; in dry-run only print
   log "$1"; shift
   "$@" || { warn "step failed: $*"; incomplete=1; }
 }
-note_blocked() { # an ec2 delete the host may block: record it for the ordered hand-off script
-  printf '%s\n' "$1" >> "$REMAINING"
+note_blocked() { # note_blocked <command...>: an ec2 delete the host may block, for the ordered
+  # hand-off script. Each argument is shell-quoted, so no value can add a command to it.
+  local line; line=$(printf '%q ' "$@"); line=${line% }
+  printf '%s\n' "$line" >> "$REMAINING"
   incomplete=1
-  warn "not deleted here; recorded in $REMAINING: $1"
+  warn "not deleted here; recorded in $REMAINING: $line"
 }
 # probe <not-found-regex> <command...>: 0 = found (output in PROBE_OUT), 1 = the API said not
 # found, 2 = could not determine (any other failure). Only 1 may be treated as "gone".
@@ -108,7 +110,7 @@ probe 'NotFoundException|NotFound' aws ec2 describe-launch-templates --region "$
 case $rc in
   0) if printf '%s' "$PROBE_OUT" | jfield 'd.get("Tags") or []' | tags_match; then
        lt_id=$(printf '%s' "$PROBE_OUT" | json_get 'd["LaunchTemplateId"]')
-       note_blocked "aws ec2 delete-launch-template --region $AWS_REGION --launch-template-id $lt_id"
+       note_blocked aws ec2 delete-launch-template --region "$AWS_REGION" --launch-template-id "$lt_id"
      else
        warn "launch template $LT_NAME is not tagged for run $RUN_ID; leaving it. Clean up incomplete."; incomplete=1
      fi ;;
@@ -116,19 +118,20 @@ case $rc in
   *) incomplete=1 ;;
 esac
 
-ami_id=$(sed -n 's/^AMI_ID=//p' "$RUN_STATE_DIR/run-state.env" 2>/dev/null | tail -n 1)
-if [ -n "$ami_id" ]; then
+# Every AMI the run recorded (a rebuilt run records more than one), each checked on its own.
+for ami_id in $(sed -n 's/^AMI_ID=//p' "$RUN_STATE_DIR/run-state.env" 2>/dev/null | awk '!seen[$0]++'); do
+  [[ "$ami_id" =~ ^ami-[0-9a-f]+$ ]] || { warn "run state records '$ami_id' as an AMI id; skipping it. Clean up incomplete."; incomplete=1; continue; }
   probe 'InvalidAMIID' aws ec2 describe-images --region "$AWS_REGION" --image-ids "$ami_id" --query 'Images[0]' --output json; rc=$?
   case $rc in
     0) if printf '%s' "$PROBE_OUT" | jfield 'd.get("Tags") or []' | tags_match; then
          snaps=$(printf '%s' "$PROBE_OUT" | json_get '[b["Ebs"]["SnapshotId"] for b in d.get("BlockDeviceMappings", []) if b.get("Ebs", {}).get("SnapshotId")]')
-         note_blocked "aws ec2 deregister-image --region $AWS_REGION --image-id $ami_id"
+         note_blocked aws ec2 deregister-image --region "$AWS_REGION" --image-id "$ami_id"
          # A snapshot is deleted only if it carries this run's own tags, checked one by one.
          for s in $snaps; do
            probe 'InvalidSnapshot' aws ec2 describe-snapshots --region "$AWS_REGION" --snapshot-ids "$s" --query 'Snapshots[0]' --output json; src=$?
            case $src in
              0) if printf '%s' "$PROBE_OUT" | jfield 'd.get("Tags") or []' | tags_match; then
-                  note_blocked "aws ec2 delete-snapshot --region $AWS_REGION --snapshot-id $s"
+                  note_blocked aws ec2 delete-snapshot --region "$AWS_REGION" --snapshot-id "$s"
                 else
                   warn "snapshot $s is not tagged for run $RUN_ID; leaving it. Clean up incomplete."; incomplete=1
                 fi ;;
@@ -142,7 +145,7 @@ if [ -n "$ami_id" ]; then
     1) log "AMI $ami_id not present" ;;
     *) incomplete=1 ;;
   esac
-fi
+done
 
 echo
 [ -s "$REMAINING" ] && { echo "Deletes the host may block are listed in order; run them yourself:"; echo "  $REMAINING"; }

@@ -425,15 +425,15 @@ does. `./clean.sh` removes the AMI and its snapshots with the rest of the run.
 ```bash
 RUN_ID=<id> ./clean.sh --dry-run   # preview
 RUN_ID=<id> ./clean.sh             # remove everything this run created
+RUN_ID=<id> ./scripts/ib-prereqs.sh down   # if the run used the Image Builder path
 ```
 
 `clean.sh` needs `KUBE_CONTEXT` set, like setup. It stops if the AWS account is not the one the run
 was created in. It deletes a resource only when it carries this run's mark: the
 `app.kubernetes.io/part-of=al2023-ami` and `app.kubernetes.io/instance=<id>` labels on the
 namespace, `NodePool` and `EC2NodeClass`, and the `ManagedBy=al2023-ami` and `RunId=<id>` tags on
-the node group, launch template, AMI and each of the AMI's snapshots (the build tags the
-snapshots too). A resource without the
-mark is left alone, and a lookup that fails is reported as "could not determine", never as gone.
+the node group, launch template, every AMI the run recorded and each of their snapshots (the build
+tags the snapshots too). A resource without the mark is left alone, and a lookup that fails is reported as "could not determine", never as gone.
 Either leaves the clean up incomplete and the script exits non-zero.
 
 The launch template, AMI and snapshot deletes (`ec2 delete-*`, `deregister-image`) are written to
