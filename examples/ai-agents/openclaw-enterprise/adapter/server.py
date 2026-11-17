@@ -148,15 +148,23 @@ def _validate_deployment(deployment: Any) -> None:
             raise AdmissionError(f"Deployment template has inconsistent {label}")
 
 
-def _validate_revision_configmap(configmap: Any) -> None:
+def _configmap_name(configmap: Any) -> str:
     configmap = _metadata(configmap, "ConfigMap")
     metadata = _metadata(configmap.get("metadata"), "ConfigMap.metadata")
     name = metadata.get("name")
+    if not isinstance(name, str) or not name:
+        raise AdmissionError("ConfigMap.metadata.name must be a non-empty string")
+    return name
+
+
+def _validate_revision_configmap(configmap: Any) -> None:
+    configmap = _metadata(configmap, "ConfigMap")
+    name = _configmap_name(configmap)
     if (
-        not isinstance(name, str)
-        or REVISION_CONFIGMAP_NAME_PATTERN.fullmatch(name) is None
+        REVISION_CONFIGMAP_NAME_PATTERN.fullmatch(name) is None
     ):
         raise AdmissionError("ConfigMap is not an OCE gateway revision")
+    metadata = _metadata(configmap.get("metadata"), "ConfigMap.metadata")
     labels = _metadata(metadata.get("labels"), "ConfigMap.metadata.labels")
     if labels.get("app.kubernetes.io/managed-by") != "openclaw-enterprise":
         raise AdmissionError("ConfigMap is not managed by OpenClaw Enterprise")
@@ -300,13 +308,16 @@ def validate(review: Any) -> dict[str, Any]:
             and operation in {"CREATE", "UPDATE", "DELETE"}
             and not subresource
         ):
-            _validate_admission_user(request, ALLOWED_DEPLOYMENT_USERS_ENV)
             configmap = (
                 request.get("oldObject")
                 if operation == "DELETE"
                 else request.get("object")
             )
-            _validate_revision_configmap(configmap)
+            name = _configmap_name(configmap)
+            if REVISION_CONFIGMAP_NAME_PATTERN.fullmatch(name) is not None:
+                _validate_admission_user(request, ALLOWED_DEPLOYMENT_USERS_ENV)
+                if operation != "DELETE":
+                    _validate_revision_configmap(configmap)
             response = {"uid": uid, "allowed": True}
         elif (
             resource == DEPLOYMENT_RESOURCE

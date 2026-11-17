@@ -157,6 +157,47 @@ class AdmitTests(unittest.TestCase):
         deletion["request"]["oldObject"] = deletion["request"].pop("object")
         self.assertTrue(validate(deletion)["response"]["allowed"])
 
+    def test_validation_allows_ordinary_configmaps(self) -> None:
+        configmap = {
+            "metadata": {"name": "agentgateway-ca"},
+            "immutable": True,
+            "data": {"ca.crt": "certificate"},
+        }
+        resource = {"group": "", "version": "v1", "resource": "configmaps"}
+        for operation in ("CREATE", "UPDATE", "DELETE"):
+            request = review(
+                copy.deepcopy(configmap),
+                operation=operation,
+                resource=resource,
+                username="tenant-user",
+            )
+            if operation == "DELETE":
+                request["request"]["oldObject"] = request["request"].pop("object")
+            with self.subTest(operation=operation):
+                self.assertTrue(validate(request)["response"]["allowed"])
+
+    def test_trusted_worker_can_delete_malformed_revision_configmap(self) -> None:
+        configmap = {
+            "metadata": {
+                "name": "gateway-b59473701485-rev-deadbeefcafe",
+                "labels": {},
+            },
+            "immutable": False,
+            "data": {"unexpected": "unsafe"},
+        }
+        deletion = review(
+            configmap,
+            operation="DELETE",
+            resource={"group": "", "version": "v1", "resource": "configmaps"},
+            username=DEPLOYMENT_USER,
+        )
+        deletion["request"]["oldObject"] = deletion["request"].pop("object")
+        self.assertTrue(validate(deletion)["response"]["allowed"])
+
+        untrusted = copy.deepcopy(deletion)
+        untrusted["request"]["userInfo"]["username"] = "tenant-user"
+        self.assertFalse(validate(untrusted)["response"]["allowed"])
+
     def test_returns_an_encoded_json_patch(self) -> None:
         response = admit(review(target_pod()))["response"]
         self.assertTrue(response["allowed"])

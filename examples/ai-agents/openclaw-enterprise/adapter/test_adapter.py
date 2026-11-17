@@ -1364,6 +1364,7 @@ class BuildPatchTests(unittest.TestCase):
 
     def test_rejects_aws_credential_environment(self) -> None:
         names = (
+            "AWS_ACCESS_KEY",
             "AWS_ACCESS_KEY_ID",
             "AWS_CREDENTIAL_PROFILES_FILE",
             "AWS_CONFIG_FILE",
@@ -1374,6 +1375,7 @@ class BuildPatchTests(unittest.TestCase):
             "AWS_DEFAULT_PROFILE",
             "AWS_PROFILE",
             "AWS_ROLE_ARN",
+            "AWS_SECRET_KEY",
             "AWS_SECRET_ACCESS_KEY",
             "AWS_SECURITY_TOKEN",
             "AWS_SESSION_TOKEN",
@@ -1396,6 +1398,50 @@ class BuildPatchTests(unittest.TestCase):
                         f"prohibited AWS credential environment {name}",
                     ):
                         build_patch(pod)
+
+    def test_rejects_revision_bound_legacy_aws_credential_environment(
+        self,
+    ) -> None:
+        for name in ("AWS_ACCESS_KEY", "AWS_SECRET_KEY"):
+            with self.subTest(name=name):
+                pod = target_pod()
+                pod["spec"]["volumes"].append(
+                    {
+                        "name": OCE_CONFIGURATION_VOLUME,
+                        "configMap": {
+                            "name": "gateway-a1b2c3d4e5f6-rev-012345abcdef",
+                            "items": [
+                                {"key": "openclaw.json", "path": "openclaw.json"}
+                            ],
+                        },
+                    }
+                )
+                pod["spec"]["containers"][-1].setdefault("env", []).extend(
+                    [
+                        {
+                            "name": name,
+                            "valueFrom": {
+                                "secretKeyRef": {
+                                    "name": (
+                                        "harness-secrets-"
+                                        "a1b2c3d4e5f6-012345abcdef"
+                                    ),
+                                    "key": name,
+                                }
+                            },
+                        },
+                        {
+                            "name": "OPENCLAW_HARNESS_CREDENTIAL_ENV",
+                            "value": name,
+                        },
+                    ]
+                )
+
+                with self.assertRaisesRegex(
+                    AdmissionError,
+                    f"prohibited AWS credential environment {name}",
+                ):
+                    build_patch(pod)
 
     def test_pins_runtime_home_environment(self) -> None:
         rendered = apply_patch(target_pod(), build_patch(target_pod()))

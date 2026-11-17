@@ -93,6 +93,7 @@ UNSAFE_BOOTSTRAP_ENV_NAMES = (
 )
 AWS_CREDENTIAL_ENV_NAMES = frozenset(
     {
+        "AWS_ACCESS_KEY",
         "AWS_ACCESS_KEY_ID",
         "AWS_CREDENTIAL_PROFILES_FILE",
         "AWS_CONFIG_FILE",
@@ -103,6 +104,7 @@ AWS_CREDENTIAL_ENV_NAMES = frozenset(
         "AWS_DEFAULT_PROFILE",
         "AWS_PROFILE",
         "AWS_ROLE_ARN",
+        "AWS_SECRET_KEY",
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SECURITY_TOKEN",
         "AWS_SESSION_TOKEN",
