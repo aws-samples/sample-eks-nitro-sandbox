@@ -1527,11 +1527,11 @@ global_settings:
     # the job pods are sandboxes. The GitLab single-container image has no non-root mode.
     - rule_id: CKV2_K8S_6
       path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'By design: ordinary GitLab pod behind a ClusterIP Service only (gitlab.yaml:37); a sample ships no network policy (AGENTS.md:556-562), and the page says this blueprint ships none and links the network policy blueprint (README.md:91-99)'
+      reason: 'By design: ordinary GitLab pod behind a ClusterIP Service only (gitlab.yaml:37); a sample ships no network policy (AGENTS.md:556-562), and the page says this blueprint ships none and links the network policy blueprint (README.md:94-102)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_22
       path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'By design: gitlab-ctl reconfigure rewrites the image install tree and its service accounts in /etc/passwd at every start, so the root filesystem stays writable (gitlab.yaml:86)'
+      reason: 'By design: the image runs gitlab-ctl reconfigure at every start, which writes service definitions and settings under /opt/gitlab and groups in /etc/group, so the root filesystem stays writable (gitlab.yaml:86)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_23
       path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
@@ -1547,7 +1547,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'By design: ordinary runner manager pod with no port and no Service, which only calls out to GitLab and the API server (runner.yaml:122); a sample ships no network policy (AGENTS.md:556-562), and the page says this blueprint ships none and links the network policy blueprint (README.md:91-99)'
+      reason: 'By design: ordinary runner manager pod with no port and no Service, which only calls out to GitLab and the API server (runner.yaml:122); a sample ships no network policy (AGENTS.md:556-562), and the page says this blueprint ships none and links the network policy blueprint (README.md:94-102)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_8
       path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
