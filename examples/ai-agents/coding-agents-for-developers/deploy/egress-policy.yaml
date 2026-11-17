@@ -1,6 +1,6 @@
 # Egress policy for the session sandbox pods, one per CLI. setup.sh renders it for each
-# CLI, filling <CLI>, <MOUNT_TARGET_CIDRS> (the S3 Files mount-target IPs, one ipBlock
-# each) and <AWS_REGION>. One ingress is allowed: the app's pods, to session-bridge on TCP
+# CLI, filling <CLI>, <COREDNS_IP> (the cluster's DNS address), <MOUNT_TARGET_CIDRS> (the
+# S3 Files mount-target IPs, one ipBlock each) and <AWS_REGION>. One ingress is allowed: the app's pods, to session-bridge on TCP
 # 7681. Everything else in is denied, including from other session pods.
 #
 # S3 Files cannot be used on a network-isolated pod (the mount needs a network), so these
@@ -29,16 +29,14 @@ spec:
       ports:
         - { protocol: TCP, port: 7681 }
   egress:
-    # DNS on port 53 to any address. This is a project choice to keep the sample simple:
-    # it does not depend on how a given cluster serves DNS (on EKS Auto Mode the resolver
-    # is node-local rather than a pod behind a ClusterIP). What it allows is wider than
-    # DNS resolution: any process in the sandbox can reach any host on UDP or TCP 53, so
-    # it can send data out over DNS or to anything listening on port 53. What it costs is
-    # that port-53 egress is not confined to the cluster's own resolver. It still opens
-    # only port 53; the allowed hosts below and the mount targets aside, everything else
-    # stays denied.
+    # DNS on port 53 to one address only: <COREDNS_IP>, the cluster's DNS address (the .10
+    # address of its service CIDR), which is the nameserver in every pod's resolv.conf. On
+    # EKS Auto Mode the node answers it; there is no kube-dns Service. setup.sh reads the
+    # service CIDR with aws eks describe-cluster and fills the address in. Port 53 to any
+    # address would let code in the sandbox reach any DNS server on the internet. That code
+    # could then send data out over DNS or reach a VPN listening on port 53 (#226).
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_IP>/32 }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
