@@ -364,6 +364,10 @@ global_settings:
       path: 'examples/isolation/sandbox-limits/deploy/probe-*.yaml'
       reason: 'Probe pods already carry a readiness probe; a liveness probe on a sleep loop gates nothing'
       expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/subagent-security/nono/deploy/analyst-pod.yaml'
+      reason: 'Idle exec target (sleep infinity, restartPolicy: Never, analyst-pod.yaml:33,54); the controller runs as a kubectl exec child whose exit status run.sh checks (run.sh:45-50), so a probe on the sleep process gates nothing'
+      expiration: '2027-12-31'
     # Poller and autoscaler: single-replica first-party pods, no port or Service.
     - rule_id: CKV_K8S_8
       path: 'examples/managed-agents/claude-managed-agents/deploy/*.yaml'
@@ -396,6 +400,10 @@ global_settings:
     - rule_id: CKV2_K8S_6
       path: 'examples/subagent-security/analyst/deploy/supplier-api.yaml'
       reason: 'By design: an ordinary synthetic supplier pod with ClusterIP Services only and no external endpoint (supplier-api.yaml:1-6,24,38), whose reach no policy restricts; a sample ships no network policy (AGENTS.md:556-562), and the section page says none of these blueprints adds one and links the network policy sample (subagent-security/README.md:125-131)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/subagent-security/nono/deploy/analyst-pod.yaml'
+      reason: 'By design: nono confines the tool processes inside the pod, not the pod; a sample ships no network policy (AGENTS.md:556-562), and the page says nothing in this blueprint bounds the pod egress and links the network policy sample (README.md:132-138,777-781)'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/agent-sandbox/brain-and-hands/deploy/brain.yaml'
@@ -1407,23 +1415,48 @@ global_settings:
       path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-reject.yaml'
       reason: 'Reject control: names an AppArmor profile the node never loaded, so it is refused and never runs (pod-apparmor-reject.yaml:1-5)'
       expiration: '2027-12-31'
-    # The AppArmor accept control writes to /etc as root to show the profile allows it (pod-apparmor-scoped.yaml:1-10).
+    # The AppArmor accept control writes to /etc as root to show the profile allows it (pod-apparmor-scoped.yaml:1-10),
+    # keeps the one capability its /etc/shadow write needs to reach the profile, and is a one-shot pod.
     - rule_id: CKV_K8S_22
       path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'The test writes to /etc as root to show the scoped profile allows it and denies /etc/shadow (pod-apparmor-scoped.yaml:4-6)'
+      reason: 'The test writes to /etc as root to show the scoped profile allows it and denies /etc/shadow (pod-apparmor-scoped.yaml:4-6,44)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_23
       path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'The test writes to /etc as root to show the scoped profile allows it and denies /etc/shadow (pod-apparmor-scoped.yaml:4-6)'
+      reason: 'The test writes to /etc as root to show the scoped profile allows it and denies /etc/shadow (pod-apparmor-scoped.yaml:4-6,44)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_40
       path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'The test writes to /etc as root to show the scoped profile allows it and denies /etc/shadow (pod-apparmor-scoped.yaml:4-6)'
+      reason: 'The test writes to /etc as root to show the scoped profile allows it and denies /etc/shadow (pod-apparmor-scoped.yaml:4-6,44)'
       expiration: '2027-12-31'
-    # Network-isolated sandbox: no network to restrict (AGENTS.md, Security rules).
+    - rule_id: CKV_K8S_25
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'Drops ALL and adds back only DAC_OVERRIDE: /etc/shadow has mode 0000, so without it the write is refused on the file mode before AppArmor is asked and no DENIED line is logged (pod-apparmor-scoped.yaml:44-52)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'The sample ships no network policy (AGENTS.md, Security rules); this one-shot AppArmor control listens on nothing (pod-apparmor-scoped.yaml:33-35,42-43)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'One-shot and serving nothing: test.sh waits for it to run, reads it and deletes it by name, so a probe would gate nothing (pod-apparmor-scoped.yaml:33-35)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'One-shot and serving nothing: test.sh waits for it to run, reads it and deletes it by name, so a probe would gate nothing (pod-apparmor-scoped.yaml:33-35)'
+      expiration: '2027-12-31'
+    # Network-isolated sandbox: no network to restrict or to probe over (AGENTS.md, Security rules).
     - rule_id: CKV2_K8S_6
       path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
       reason: 'Booted with sandbox.amazonaws.com/network-isolated: only loopback, no route (pod-isolated-sandbox.yaml:1-5,22)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Booted with no network, so kubelet has nothing to probe over; it only sleeps and test.sh drives it with kubectl exec (pod-isolated-sandbox.yaml:1-3,22,28-29)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Booted with no network, so kubelet has nothing to probe over; it only sleeps and test.sh drives it with kubectl exec (pod-isolated-sandbox.yaml:1-3,22,28-29)'
       expiration: '2027-12-31'
     # Cilium: the clients are selected by the CiliumNetworkPolicy in policy.yaml, which checkov does not read; the
     # rest are its destinations and the host-network probe the sample needs to show the socket load balancer.
@@ -1656,19 +1689,6 @@ global_settings:
     - rule_id: CKV_K8S_9
       path: 'examples/confidential/secrets-manager-secret/deploy/pod.yaml'
       reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in #145'
-      expiration: '2027-01-31'
-    # Baseline: subagent-security/nono
-    - rule_id: CKV2_K8S_6
-      path: 'examples/subagent-security/nono/deploy/analyst-pod.yaml'
-      reason: 'Baseline: subagent-security/nono merged before the ASH gate; hardening tracked in #143'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_40
-      path: 'examples/subagent-security/nono/deploy/analyst-pod.yaml'
-      reason: 'Baseline: subagent-security/nono merged before the ASH gate; hardening tracked in #143'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/subagent-security/nono/deploy/analyst-pod.yaml'
-      reason: 'Baseline: subagent-security/nono merged before the ASH gate; hardening tracked in #143'
       expiration: '2027-01-31'
     # Baseline: ci-cd/gitlab-ci
     - rule_id: CKV2_K8S_6
@@ -1906,79 +1926,6 @@ global_settings:
     - rule_id: CKV_DOCKER_3
       path: 'examples/subagent-security/openshell/supervisor/Dockerfile'
       reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in #152'
-      expiration: '2027-01-31'
-    # Baseline: setup/ubuntu-ami
-    - rule_id: CKV2_K8S_6
-      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_20
-      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_28
-      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_30
-      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_31
-      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_37
-      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_9
-      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_20
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_22
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_23
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_28
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_30
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_31
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_37
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_40
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_9
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
       expiration: '2027-01-31'
     # Strands Box: exact sample exceptions. Privileged Nitro configuration is a documented
     # demonstration tradeoff, not evidence that its capabilities are minimal. Revisit

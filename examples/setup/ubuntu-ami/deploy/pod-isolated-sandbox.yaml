@@ -22,9 +22,18 @@ metadata:
     sandbox.amazonaws.com/network-isolated: "true"   # <-- boot the VM with no network besides loopback
 spec:
   runtimeClassName: isolated-sandbox
+  # Beside Unconfined (see above), it runs as nobody (65534) with the runtime's default seccomp
+  # filter, no privilege escalation, no capabilities and a read-only root filesystem. Nothing
+  # test.sh runs in it (uname, cat, ls, the /proc/net and /sys/class/net reads, python3's
+  # connect) needs root, a writable root or a capability. It has no probes: it has no network for
+  # kubelet to reach and serves nothing, and test.sh drives it with kubectl exec.
   securityContext:
     appArmorProfile:
       type: Unconfined
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile: { type: RuntimeDefault }
   nodeSelector:
     eks.amazonaws.com/nodegroup: "@NODEGROUP@"
   tolerations:
@@ -47,6 +56,11 @@ spec:
           echo "Guest devices:"
           ls -1 /sys/block
           sleep infinity
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
       resources:
         requests:
           cpu: "1"
