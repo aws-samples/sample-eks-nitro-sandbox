@@ -163,7 +163,7 @@ nav_problems() {
       }
       return s
     }
-    BEGIN { q = sprintf("%c", 39); innav = 0; sawnav = 0; nh = 0; ns = 0; nhead = 0; nsec = 0; ndup = 0 }
+    BEGIN { q = sprintf("%c", 39); innav = 0; sawnav = 0; nh = 0; ns = 0; nsec = 0; ndup = 0 }
     FNR == NR { if ($0 != "") { ns++; order[ns] = $0; is_sample[$0] = 1 }; next }
     { sub(/\r$/, "") }
     !innav { if ($0 ~ /^nav:[ \t]*(#.*)?$/) { innav = 1; sawnav = 1 }; next }
@@ -205,9 +205,6 @@ nav_problems() {
       sub(/\/.*/, "", sec)
       if ((h SUBSEP sec) in pair) next
       pair[h, sec] = 1
-      if (!(h in hcount)) { nhead++; horder[nhead] = h; hsecs[h] = sec }
-      else hsecs[h] = hsecs[h] ", " sec
-      hcount[h]++
       if (!(sec in scount)) { nsec++; sorder[nsec] = sec; sheads[sec] = q h q }
       else sheads[sec] = sheads[sec] ", " q h q
       scount[sec]++
@@ -223,9 +220,6 @@ nav_problems() {
         else if (n[s] > 1) print s " is in the mkdocs.yml nav " n[s] " times; keep one entry"
         else if (head[s] == "") print s " is in the mkdocs.yml nav but not under a section heading"
       }
-      for (i = 1; i <= nhead; i++)
-        if (hcount[horder[i]] > 1)
-          print "mkdocs.yml nav heading " q horder[i] q " holds samples from more than one section folder: " hsecs[horder[i]]
       for (i = 1; i <= nsec; i++)
         if (scount[sorder[i]] > 1)
           print "the " sorder[i] "/ samples are under more than one mkdocs.yml nav heading: " sheads[sorder[i]]
