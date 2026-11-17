@@ -49,6 +49,14 @@ grep -qs '^JOIN_MODE=' "$STATE_FILE" || printf 'JOIN_MODE=%s\n' "$JOIN_MODE" >> 
 printf 'RUN_ID=%s\n' "$RUN_ID" > "$RUN_STATE_FILE"
 log "run id: $RUN_ID (mode: $mode, JOIN_MODE: $JOIN_MODE)"
 
+require_supported_k8s
+
+# --- Cluster prerequisites (full, join): read only, and before the long build -----------------
+if [ "$mode" != ami-only ]; then
+  log "=== checking cluster prerequisites (read only) ==="
+  RUN_ID="$RUN_ID" "$HERE/scripts/00c-check-cluster.sh"
+fi
+
 # --- Build the AMI (full, ami-only) ----------------------------------------------------------
 if [ "$mode" = full ] || [ "$mode" = ami-only ]; then
   log "=== building the AL2023 Nitro Sandbox AMI (upstream packer) ==="
@@ -64,9 +72,10 @@ if [ "$mode" = full ] || [ "$mode" = ami-only ]; then
   fi
 fi
 
-# --- Cluster prerequisites (full, join) ------------------------------------------------------
-log "=== checking cluster prerequisites (read only) ==="
-RUN_ID="$RUN_ID" "$HERE/scripts/00c-check-cluster.sh"
+# --- The AMI and the namespace ------------------------------------------------------------------
+# The AMI to join is the one this run recorded, checked before anything is created in the cluster.
+resolve_run_ami
+log "AMI for this run: $AMI_ID"
 
 # Ensure the namespace exists (create only when absent, per AGENTS.md), labelled as the blueprint's.
 # Only an explicit NotFound means absent; an existing namespace is reused only if it is this run's.
@@ -86,10 +95,6 @@ else
   msg=$(head -n 2 "$ns_err"); rm -f "$ns_err"; die "could not determine whether namespace $NAMESPACE exists: $msg"
 fi
 rm -f "$ns_err"
-
-: "${AMI_ID:=$(sed -n 's/^AMI_ID=//p' "$RUN_STATE_DIR/run-state.env" 2>/dev/null | tail -n 1)}"
-: "${AMI_ID:?no AMI_ID for this run; run ./setup.sh (full) or --ami-only first}"
-export AMI_ID
 
 # --- Join (full, join) -----------------------------------------------------------------------
 joined_nodegroup=0 joined_karpenter=0

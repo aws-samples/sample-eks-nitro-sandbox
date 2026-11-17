@@ -25,11 +25,14 @@ require_kube_context
 evidence() { [ -n "${EVIDENCE_DIR:-}" ] && { mkdir -p "$EVIDENCE_DIR"; printf '%s=%q\n' "$1" "$2" >> "$EVIDENCE_DIR/run-evidence.env"; } || true; }
 
 # --- 1. Standard (non-Auto-Mode) cluster -----------------------------------------------------
-auto=$(aws eks describe-cluster --region "$AWS_REGION" --name "$CLUSTER_NAME" --output json \
-  | json_get 'bool((d["cluster"].get("computeConfig") or {}).get("enabled"))')
-log "cluster $CLUSTER_NAME computeConfig.enabled=$auto"
+read -r auto cver < <(aws eks describe-cluster --region "$AWS_REGION" --name "$CLUSTER_NAME" --output json \
+  | json_get '[bool((d["cluster"].get("computeConfig") or {}).get("enabled")), d["cluster"]["version"]]' | paste -sd' ')
+[ -n "${auto:-}" ] && [ -n "${cver:-}" ] || die "could not read cluster $CLUSTER_NAME's Auto Mode setting and Kubernetes version (describe-cluster failed)"
+log "cluster $CLUSTER_NAME computeConfig.enabled=$auto version=$cver"
 evidence CLUSTER_AUTO_MODE "$auto"
 [ "$auto" = False ] || die "PREREQUISITE NOT MET: cluster $CLUSTER_NAME is EKS Auto Mode (computeConfig.enabled=true). This blueprint adds a managed node group and/or a Karpenter EC2NodeClass that run a custom AMI, which Auto Mode does not support. Use a standard (non-Auto-Mode) cluster."
+require_supported_k8s
+[ "$cver" = "$KUBERNETES_VERSION" ] || die "PREREQUISITE NOT MET: cluster $CLUSTER_NAME runs Kubernetes $cver but KUBERNETES_VERSION is $KUBERNETES_VERSION; the AMI is built for the cluster's version. Set KUBERNETES_VERSION=$cver (1.36 and 1.37 are supported)."
 
 # --- 2. vpc-cni add-on, ACTIVE ---------------------------------------------------------------
 create_cmd="aws eks create-addon --region $AWS_REGION --cluster-name $CLUSTER_NAME --addon-name vpc-cni --addon-version $VPC_CNI_ADDON_VERSION --resolve-conflicts NONE"
@@ -68,16 +71,17 @@ for rc in isolated-sandbox confidential-sandbox; do
 import json, sys
 rc = json.loads(sys.argv[1]); key, val = sys.argv[2], sys.argv[3]
 sel = (rc.get("scheduling") or {}).get("nodeSelector") or {}
-missing = [f"{k}={v}" for k, v in sorted(sel.items()) if not (k == key and v == val) and True]
-# a RuntimeClass that selects only the node label is satisfied; report any selector the node label does not provide
+# The RuntimeClass must select the node label the AMI registers, and nothing the node lacks.
 miss = [f"{k}={v}" for k, v in sorted(sel.items()) if (k, v) != (key, val)]
+if sel.get(key) != val:
+    miss.insert(0, f"(no {key}={val} selector)")
 print("handler=" + str(rc.get("handler")))
 print("missing=" + ",".join(miss))
 ' "$rc_json" "$label_key" "$label_val")
   handler=$(printf '%s\n' "$verdict" | sed -n 's/^handler=//p')
   missing=$(printf '%s\n' "$verdict" | sed -n 's/^missing=//p')
   [ "$handler" = "$rc" ] || die "RuntimeClass $rc has handler '$handler', not $rc; this is a question for the spec. The blueprint does not change a shared RuntimeClass."
-  [ -z "$missing" ] || die "RuntimeClass $rc selects $missing, which the blueprint's node label ($NODE_LABEL) does not provide. A question for the spec; the blueprint does not change a shared RuntimeClass."
+  [ -z "$missing" ] || die "RuntimeClass $rc: $missing. The RuntimeClass must select exactly the node label this blueprint's AMI registers ($NODE_LABEL). A question for the spec; the blueprint does not change a shared RuntimeClass."
   log "RuntimeClass $rc: handler=$handler nodeSelector satisfied by $NODE_LABEL"
   evidence "RUNTIMECLASS_${rc//-/_}" "handler=$handler"
 done

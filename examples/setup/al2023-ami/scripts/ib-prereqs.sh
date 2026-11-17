@@ -174,6 +174,13 @@ EOF
   ltver=$(aw ec2 describe-launch-templates --launch-template-names "$NAME" --query 'LaunchTemplates[0].LatestVersionNumber' --output text) \
     || die "could not read launch template $NAME"
   [[ "$ltver" =~ ^[0-9]+$ ]] || die "launch template $NAME reported version '$ltver', not a number"
+  # Record the image the template really launches (a reused template may predate today's lookup);
+  # the build driver checks the group's pinned version still launches exactly this image.
+  tpl_ami=$(aw ec2 describe-launch-template-versions --launch-template-name "$NAME" --versions "$ltver" \
+    --query 'LaunchTemplateVersions[0].LaunchTemplateData.ImageId' --output text) \
+    || die "could not read launch template $NAME version $ltver"
+  [[ "$tpl_ami" =~ ^ami-[0-9a-f]+$ ]] || die "launch template $NAME version $ltver names '$tpl_ami' as its image, not an AMI id"
+  record IB_PARENT_AMI "$tpl_ami"
   probe 'xxx-never' aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$NAME" \
     --query 'AutoScalingGroups[0].Tags[].{Key:Key,Value:Value}' --output json; rc=$?
   case $rc in
@@ -213,8 +220,10 @@ fi
 # down, reset
 incomplete=0
 REMAINING="$RUN_STATE_DIR/ib-teardown-remaining.sh"; : > "$REMAINING"
-blocked() { # blocked <command...>: shell-quoted, so no value can add a command to the hand-off
+blocked() { # blocked <command...>: shell-quoted, so no value can add a command to the hand-off.
+  # The script stops at the first failed delete, so a dependent is never deleted after its consumer.
   local line; line=$(printf '%q ' "$@"); line=${line% }
+  [ -s "$REMAINING" ] || printf '#!/usr/bin/env bash\nset -euo pipefail\n' > "$REMAINING"
   printf '%s\n' "$line" >> "$REMAINING"; incomplete=1; warn "not deleted here; recorded in $REMAINING: $line"; }
 leave()   { warn "$1"; incomplete=1; }
 
@@ -243,6 +252,12 @@ done
 if [ "$mode" = reset ]; then
   [ "$incomplete" = 0 ] || { echo "IMAGE BUILDER RESET INCOMPLETE: see the warnings above."; exit 1; }
   echo "Image Builder resources of run $RUN_ID removed; the group and roles are kept."; exit 0
+fi
+# The build group, roles, template and security group are what the Image Builder resources above
+# were made from. While one of those is still there, or could not be checked, keep them all.
+if [ "$incomplete" != 0 ]; then
+  echo "IMAGE BUILDER CLEAN UP INCOMPLETE: an Image Builder resource is still there or could not be checked, so the group, roles, template and security group are kept. Fix the warnings above and run down again."
+  exit 1
 fi
 
 # The build's log group: the driver creates it, tagged, before the build writes to it.

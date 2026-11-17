@@ -39,12 +39,21 @@ REMAINING="$RUN_STATE_DIR/teardown-remaining.sh"
 act() { # act <description> <command...>; in dry-run only print
   if [ "$DRY" = 1 ]; then printf '  would: %s\n' "$2 ${*:3}"; return 0; fi
   log "$1"; shift
-  "$@" || { warn "step failed: $*"; incomplete=1; }
+  "$@" || { warn "step failed: $*"; incomplete=1; return 1; }
 }
+# consumers_ok: 1 until a node group, NodePool or EC2NodeClass of this run is not confirmed gone.
+# The launch template, AMI and snapshots are what those consume, so none is queued while 0.
+consumers_ok=1
 note_blocked() { # note_blocked <command...>: an ec2 delete the host may block, for the ordered
-  # hand-off script. Each argument is shell-quoted, so no value can add a command to it.
+  # hand-off script. Each argument is shell-quoted, so no value can add a command to it. The
+  # script stops at its first failed delete.
   local line; line=$(printf '%q ' "$@"); line=${line% }
   if [ "$DRY" = 1 ]; then printf '  would hand off: %s\n' "$line"; return 0; fi
+  if [ "$consumers_ok" = 0 ]; then
+    warn "NOT queued, because a node group, NodePool or EC2NodeClass of this run was not confirmed removed: $line"
+    incomplete=1; return 0
+  fi
+  [ -s "$REMAINING" ] || printf '#!/usr/bin/env bash\nset -euo pipefail\n' > "$REMAINING"
   printf '%s\n' "$line" >> "$REMAINING"
   incomplete=1
   warn "not deleted here; recorded in $REMAINING: $line"
@@ -75,26 +84,27 @@ l = json.load(sys.stdin).get("metadata", {}).get("labels", {}) or {}
 sys.exit(0 if l.get("app.kubernetes.io/part-of") == sys.argv[1] and l.get("app.kubernetes.io/instance") == sys.argv[2] else 1)
 ' "$RESOURCE_PREFIX" "$RUN_ID"
 }
-delete_if_owned() { # delete_if_owned <kind> <name> [extra delete args]
+delete_if_owned() { # delete_if_owned <kind> <name> [extra delete args]; 0 = gone, 1 = not confirmed gone
   local kind="$1" name="$2"; shift 2
   probe 'Error from server \(NotFound\)' kc get "$kind" "$name" -o json; local rc=$?
   case $rc in
     0) if printf '%s' "$PROBE_OUT" | owned_by_run; then
-         act "deleting $kind $name (this run's)" kc delete "$kind" "$name" "$@"
+         act "deleting $kind $name (this run's)" kc delete "$kind" "$name" "$@"; return $?
        else
-         warn "$kind $name is not run $RUN_ID's; leaving it. Clean up incomplete."; incomplete=1
+         warn "$kind $name is not run $RUN_ID's; leaving it. Clean up incomplete."; incomplete=1; return 1
        fi ;;
     1) log "$kind $name not present" ;;
-    *) incomplete=1 ;;
+    *) incomplete=1; return 1 ;;
   esac
+  return 0
 }
 delete_if_owned namespace "$NAMESPACE" --wait=false
 probe 'Error from server \(NotFound\)' kc get crd ec2nodeclasses.karpenter.k8s.aws; rc=$?
 case $rc in
-  0) delete_if_owned nodepool al2023-nitro-sandbox
-     delete_if_owned ec2nodeclass al2023-nitro-sandbox ;;
+  0) delete_if_owned nodepool al2023-nitro-sandbox || consumers_ok=0
+     delete_if_owned ec2nodeclass al2023-nitro-sandbox || consumers_ok=0 ;;
   1) log "Karpenter CRDs not present; no NodePool or EC2NodeClass to delete" ;;
-  *) incomplete=1 ;;
+  *) incomplete=1; consumers_ok=0 ;;
 esac
 
 # --- Managed node group (only if it carries this run's tags) ------------------------------------
@@ -102,13 +112,13 @@ probe 'ResourceNotFoundException' aws eks describe-nodegroup --region "$AWS_REGI
   --nodegroup-name "$NODEGROUP_NAME" --query 'nodegroup.tags' --output json; rc=$?
 case $rc in
   0) if printf '%s' "$PROBE_OUT" | tags_match; then
-       act "deleting managed node group $NODEGROUP_NAME" aws eks delete-nodegroup --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --nodegroup-name "$NODEGROUP_NAME"
-       [ "$DRY" = 1 ] || act "waiting for node group deletion" aws eks wait nodegroup-deleted --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --nodegroup-name "$NODEGROUP_NAME"
+       act "deleting managed node group $NODEGROUP_NAME" aws eks delete-nodegroup --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --nodegroup-name "$NODEGROUP_NAME" || consumers_ok=0
+       [ "$DRY" = 1 ] || act "waiting for node group deletion" aws eks wait nodegroup-deleted --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --nodegroup-name "$NODEGROUP_NAME" || consumers_ok=0
      else
-       warn "node group $NODEGROUP_NAME is not tagged for run $RUN_ID; leaving it. Clean up incomplete."; incomplete=1
+       warn "node group $NODEGROUP_NAME is not tagged for run $RUN_ID; leaving it. Clean up incomplete."; incomplete=1; consumers_ok=0
      fi ;;
   1) log "node group $NODEGROUP_NAME not present" ;;
-  *) incomplete=1 ;;
+  *) incomplete=1; consumers_ok=0 ;;
 esac
 
 # --- Launch template, AMI, snapshot: ec2 deletes the host may block ------------------------------

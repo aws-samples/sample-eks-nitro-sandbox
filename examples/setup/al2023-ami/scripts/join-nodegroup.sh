@@ -13,15 +13,14 @@ require_run_id
 require_identity RESOURCE_PREFIX CLUSTER_NAME AWS_REGION NAMESPACE
 mkdir -p "$RUN_STATE_DIR" "$EVIDENCE_DIR" || die "could not create $EVIDENCE_DIR"
 
-# AMI_ID comes from the environment or the run record the build wrote.
-: "${AMI_ID:=$(sed -n 's/^AMI_ID=//p' "$RUN_STATE_DIR/run-state.env" 2>/dev/null | tail -n 1)}"
-: "${AMI_ID:?set AMI_ID (or run 10-build-ami-packer.sh first so the run record has it)}"
+# The AMI is the one the run's build recorded, checked for this run's tags and NODE_ARCH.
+resolve_run_ami
 
 # --- Render the AL2023 NodeConfig MIME user data from the cluster's own endpoint/CA/CIDR ------
 read -r endpoint ca cidr < <(aws eks describe-cluster --region "$AWS_REGION" --name "$CLUSTER_NAME" --output json \
   | json_get '[d["cluster"]["endpoint"], d["cluster"]["certificateAuthority"]["data"], d["cluster"].get("kubernetesNetworkConfig",{}).get("serviceIpv4Cidr","")]' | paste -sd' ')
 [ -n "$endpoint" ] && [ -n "$ca" ] || die "could not read cluster $CLUSTER_NAME endpoint/CA"
-: "${cidr:=10.100.0.0/16}"
+[ -n "$cidr" ] || die "cluster $CLUSTER_NAME reports no serviceIpv4Cidr (an IPv6 cluster?); this blueprint supports IPv4 clusters only"
 
 USER_DATA_FILE="$RUN_STATE_DIR/nodegroup-user-data.mime"
 mkdir -p "$RUN_STATE_DIR"

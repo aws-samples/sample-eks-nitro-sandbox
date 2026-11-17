@@ -23,6 +23,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/common.sh"
 require_run_id
 IDENTITY_MAY_BE_NEW="RESOURCE_PREFIX CLUSTER_NAME NAMESPACE" require_identity AWS_REGION RESOURCE_PREFIX CLUSTER_NAME NAMESPACE
+require_supported_k8s
 : "${EKS_AMI_REF:?set EKS_AMI_REF to the amazon-eks-ami tag/commit to build from (>= v20261112 for pod isolation)}"
 : "${BUILD_SUBNET_ID:?set BUILD_SUBNET_ID to a subnet in an AZ with enclave-capable capacity}"
 case "$NODE_ARCH" in amd64) : "${BUILD_INSTANCE_TYPE:=m8i.4xlarge}" ;; arm64) : "${BUILD_INSTANCE_TYPE:=m8g.4xlarge}" ;; esac
@@ -56,6 +57,8 @@ else
 fi
 
 build_log="$LOG_DIR/build-$RUN_ID.log"
+# The checkout is reused, so a manifest from an earlier build must not be mistaken for this one's.
+rm -f "$checkout/manifest.json" || die "could not remove the old $checkout/manifest.json"
 log "running packer build (log: $build_log); this takes ~20-30 min"
 set +e
 ( cd "$checkout" && make k8s="$KUBERNETES_VERSION" os_distro=al2023 enable_pod_isolation=true \
@@ -71,24 +74,23 @@ if [ "$rc" != 0 ]; then
   die "packer build failed (rc=$rc); see $build_log"
 fi
 
-# The AMI id is in the packer manifest (manifest.json: artifact_id is "<region>:<ami>") or, as
-# a fallback, the last ami- token in the build log.
-ami_id=""
-if [ -f "$checkout/manifest.json" ]; then
-  ami_id=$(AMI_MANIFEST="$checkout/manifest.json" python3 "$HERE/lib/read_manifest_ami.py" 2>/dev/null || true)
-fi
-[ -n "$ami_id" ] || ami_id=$(grep -oE 'ami-[0-9a-f]{8,}' "$build_log" | tail -n 1 || true)
-[ -n "$ami_id" ] || die "build finished but no AMI id found in manifest.json or $build_log"
-[[ "$ami_id" =~ ^ami-[0-9a-f]+$ ]] || die "the build reported '$ami_id', which is not an AMI id"
+# The AMI id is in the packer manifest this build wrote (artifact_id is "<region>:<ami>"). There
+# is no fallback to the build log: a token in a log is not proof the build made that image.
+[ -f "$checkout/manifest.json" ] || die "the build finished but wrote no $checkout/manifest.json; not guessing an AMI from the log"
+ami_id=$(AMI_MANIFEST="$checkout/manifest.json" AMI_REGION="$AWS_REGION" python3 "$HERE/lib/read_manifest_ami.py") \
+  || die "could not read an AMI for $AWS_REGION from $checkout/manifest.json"
+[[ "$ami_id" =~ ^ami-[0-9a-f]+$ ]] || die "the manifest names '$ami_id' for $AWS_REGION, which is not an AMI id"
+# Check the image is this build's before the run records it or tags it: in this account, built
+# with pod isolation, and of NODE_ARCH's architecture.
+img=$(aws ec2 describe-images --region "$AWS_REGION" --owners self --image-ids "$ami_id" \
+      --query 'Images[0].[Name,Architecture]' --output text) \
+  || die "could not read the built image $ami_id in $AWS_REGION; not recording or tagging it"
+read -r ami_name ami_arch <<<"$img"
+case "$ami_name" in *-pod-isolation*) ;; *) die "AMI $ami_id is named '$ami_name', without -pod-isolation; the build did not use enable_pod_isolation=true. Not recording or tagging it." ;; esac
+case "$NODE_ARCH:$ami_arch" in amd64:x86_64|arm64:arm64) ;; *) die "AMI $ami_id is $ami_arch but NODE_ARCH=$NODE_ARCH; the AMI's architecture follows the builder. Not recording or tagging it." ;; esac
 # Record the AMI now, before any tagging, so clean.sh can find it even if a later step fails.
 printf 'AMI_ID=%s\n' "$ami_id" >> "$RUN_STATE_DIR/run-state.env"
 
-# Confirm the name carries -pod-isolation and tag the AMI for this blueprint.
-ami_name=$(aws ec2 describe-images --region "$AWS_REGION" --image-ids "$ami_id" --query 'Images[0].Name' --output text)
-case "$ami_name" in
-  *-pod-isolation*) ;;
-  *) warn "AMI $ami_id name '$ami_name' has no -pod-isolation suffix; check the build used enable_pod_isolation=true" ;;
-esac
 aws ec2 create-tags --region "$AWS_REGION" --resources "$ami_id" \
   --tags "Key=$TAGS_OWNER_KEY,Value=$TAGS_OWNER_VALUE" "Key=$TAGS_RUN_KEY,Value=$RUN_ID" "Key=auto-delete,Value=no"
 # The AMI's snapshots carry the same mark, because clean.sh checks each snapshot's own tags.

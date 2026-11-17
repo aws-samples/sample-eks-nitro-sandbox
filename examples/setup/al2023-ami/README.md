@@ -412,8 +412,12 @@ does not stops before it changes anything.
   ≥ v20261112, or ensure the build instance is enclave-enabled yourself.
 - **Nodes must be in private subnets with a NAT route.** A managed node group in a public subnet
   hangs in `CREATING` forever (EKS nodes get no public IP). `scripts/join-nodegroup.sh` fails
-  fast if you point it at a public subnet.
-- **Supported Kubernetes versions are 1.36 and 1.37**; the build errors on anything else.
+  fast if you point it at a public subnet. The Karpenter path selects subnets that carry both
+  `karpenter.sh/discovery=<cluster>` and `kubernetes.io/role/internal-elb=1` (the tag EKS puts on
+  private subnets); if yours are tagged another way, change `subnetSelectorTerms` in
+  [`deploy/karpenter-ec2nodeclass.yaml`](deploy/karpenter-ec2nodeclass.yaml).
+- **Supported Kubernetes versions are 1.36 and 1.37**, and `KUBERNETES_VERSION` must equal the
+  cluster's version; `setup.sh` and the build scripts stop on anything else before they build.
 - **Give the Image Builder group more than one subnet.** The group launches the build instance
   itself, and a Graviton or other large type can be out of capacity in one Availability Zone while
   another has it. With one subnet the group retries the same zone and `ib-prereqs.sh up` stops

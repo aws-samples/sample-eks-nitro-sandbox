@@ -52,7 +52,7 @@ for v in BUILD_ASG_NAME BUILD_SECURITY_GROUP_ID BUILD_INSTANCE_PROFILE BUILD_EXE
 done
 
 # These values are substituted into the component's shell commands, so accept only plain values.
-case "$KUBERNETES_VERSION" in 1.36|1.37) ;; *) die "KUBERNETES_VERSION '$KUBERNETES_VERSION': the pod isolation runtime is published for 1.36 and 1.37 only" ;; esac
+require_supported_k8s
 [[ "$KUBERNETES_BUNDLE_VERSION" =~ ^1\.[0-9]{2}\.[0-9]{1,3}$ ]] && [ "${KUBERNETES_BUNDLE_VERSION%.*}" = "$KUBERNETES_VERSION" ] \
   || die "KUBERNETES_BUNDLE_VERSION '$KUBERNETES_BUNDLE_VERSION' must be a full version of $KUBERNETES_VERSION, like $KUBERNETES_VERSION.1"
 [[ "$KUBERNETES_BUILD_DATE" =~ ^[0-9A-Za-z._-]{1,32}$ ]] || die "KUBERNETES_BUILD_DATE '$KUBERNETES_BUILD_DATE' has characters outside [0-9A-Za-z._-]"
@@ -76,24 +76,53 @@ read -r lt ltver <<<"$info"
 [ -n "${lt:-}" ] && [ "$lt" != None ] || die "Auto Scaling group $BUILD_ASG_NAME has no launch template"
 [[ "${ltver:-}" =~ ^[0-9]+$ ]] || die "Auto Scaling group $BUILD_ASG_NAME launches from template version '${ltver:-}'; pin it to a version number, because \$Latest and \$Default can change"
 insts=$(aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$BUILD_ASG_NAME" \
-  --query "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].[LaunchTemplate.LaunchTemplateName,LaunchTemplate.Version]" --output text) \
+  --query "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].[LaunchTemplate.LaunchTemplateName,LaunchTemplate.Version,InstanceId]" --output text) \
   || die "could not read the instances of Auto Scaling group $BUILD_ASG_NAME"
 [ -n "$insts" ] || die "Auto Scaling group $BUILD_ASG_NAME has no InService instance for Image Builder to take"
-while read -r iname iver; do
+iids=""
+while read -r iname iver iid; do
   [ "$iname" = "$lt" ] && [ "$iver" = "$ltver" ] \
     || die "an InService instance of $BUILD_ASG_NAME was launched from template '$iname' version '$iver', not $lt version $ltver; wait for the group to replace it"
+  [[ "$iid" =~ ^i-[0-9a-f]+$ ]] || die "the group lists '$iid' as an instance id"
+  iids="$iids $iid"
 done <<<"$insts"
 info=$(aw ec2 describe-launch-template-versions --launch-template-name "$lt" --versions "$ltver" \
-  --query 'LaunchTemplateVersions[0].LaunchTemplateData.[InstanceType,EnclaveOptions.Enabled]' --output text) \
+  --query 'LaunchTemplateVersions[0].LaunchTemplateData' --output json) \
   || die "could not read launch template $lt version $ltver"
-read -r itype enclave <<<"$info"
-[ "$enclave" = True ] || die "launch template $lt does not enable Nitro Enclaves; the build needs them"
+# The build instance keeps what the group launched it with, so the group, its template and the
+# instances must all be this run's, and the template must be what `ib-prereqs.sh up` recorded.
+parent=$(rec IB_PARENT_AMI)
+[[ "$parent" =~ ^ami-[0-9a-f]+$ ]] || die "run $RUN_ID recorded no parent image (IB_PARENT_AMI); run scripts/ib-prereqs.sh up for this run first"
+itype=$(printf '%s' "$info" | python3 -c '
+import json, sys
+d = json.load(sys.stdin) or {}
+image, prof, sg, subnets = sys.argv[1:5]
+md = d.get("MetadataOptions") or {}
+bad = []
+if d.get("ImageId") != image: bad.append("image %s, not the recorded %s" % (d.get("ImageId"), image))
+if (d.get("IamInstanceProfile") or {}).get("Name") != prof: bad.append("instance profile %s, not %s" % ((d.get("IamInstanceProfile") or {}).get("Name"), prof))
+if sg not in (d.get("SecurityGroupIds") or []): bad.append("security groups %s, not %s" % (d.get("SecurityGroupIds"), sg))
+if md.get("HttpTokens") != "required" or md.get("HttpPutResponseHopLimit") != 1: bad.append("metadata options %s, not IMDSv2 with hop limit 1" % md)
+if not (d.get("EnclaveOptions") or {}).get("Enabled"): bad.append("Nitro Enclaves are not enabled")
+if bad: sys.exit("; ".join(bad))
+print(d.get("InstanceType", ""))
+' "$parent" "$BUILD_INSTANCE_PROFILE" "$BUILD_SECURITY_GROUP_ID" "$BUILD_SUBNET_ID") \
+  || die "launch template $lt version $ltver is not what ib-prereqs.sh up recorded for run $RUN_ID (see the line above)"
+aw ec2 describe-launch-templates --launch-template-names "$lt" --query 'LaunchTemplates[0].Tags' --output json | tags_match \
+  || die "launch template $lt is not tagged for run $RUN_ID; refusing to build on an instance it launches"
+aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$BUILD_ASG_NAME" \
+  --query 'AutoScalingGroups[0].Tags[].{Key:Key,Value:Value}' --output json | tags_match \
+  || die "Auto Scaling group $BUILD_ASG_NAME is not tagged for run $RUN_ID; refusing to take an instance from it"
+zones=$(aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$BUILD_ASG_NAME" \
+  --query 'AutoScalingGroups[0].VPCZoneIdentifier' --output text) || die "could not read the subnets of $BUILD_ASG_NAME"
+[ "$(printf '%s' "${zones//,/ }" | tr ' ' '\n' | sort | tr '\n' ' ')" = "$(printf '%s' "$BUILD_SUBNET_ID" | tr ' ' '\n' | sort | tr '\n' ' ')" ] \
+  || die "Auto Scaling group $BUILD_ASG_NAME uses subnets '$zones', not the recorded '$BUILD_SUBNET_ID'"
+for iid in $iids; do
+  aw ec2 describe-instances --instance-ids "$iid" --query 'Reservations[0].Instances[0].Tags' --output json | tags_match \
+    || die "instance $iid of $BUILD_ASG_NAME is not tagged for run $RUN_ID; Image Builder would take it"
+done
 arch_matches_type "$itype" || die "launch template $lt uses $itype, which is not a $NODE_ARCH instance type"
 case "$NODE_ARCH" in amd64) ssm_arch=x86_64 ;; arm64) ssm_arch=arm64 ;; esac
-parent=$(aw ssm get-parameter \
-  --name "/aws/service/eks/optimized-ami/${KUBERNETES_VERSION}/amazon-linux-2023/${ssm_arch}/standard/recommended/image_id" \
-  --query Parameter.Value --output text) || die "could not resolve the EKS-optimized AL2023 $ssm_arch image for Kubernetes $KUBERNETES_VERSION"
-[[ "$parent" =~ ^ami-[0-9a-f]+$ ]] || die "the parent image lookup returned '$parent', not an AMI id"
 log "group $BUILD_ASG_NAME: $itype from $lt, enclaves on; parent image $parent ($ssm_arch)"
 
 name="${RESOURCE_PREFIX}-ib-${RUN_ID}"

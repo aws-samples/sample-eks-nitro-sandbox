@@ -35,14 +35,15 @@ spec:
 
   # Select PRIVATE subnets only. A sandbox node must reach the EKS API to register, and an
   # EKS node gets no public IP by default, so a node launched into a public subnet (no NAT,
-  # no public IP) never registers and the launch hangs. Tag only your private subnets with
-  # karpenter.sh/discovery=<cluster> (not the public ones), OR select them by a tag you set
-  # on the private subnets, OR list their ids. The default eksctl tagging covers every subnet,
-  # so narrow it here.
+  # no public IP) never registers and the launch hangs. The default eksctl tagging puts
+  # karpenter.sh/discovery on every subnet, so this term also requires the
+  # kubernetes.io/role/internal-elb tag, which EKS-tagged private subnets carry and public ones
+  # do not. Tags inside one term are ANDed (Karpenter NodeClasses, spec.subnetSelectorTerms).
+  # If your private subnets are tagged another way, replace this term with your own tag or ids.
   subnetSelectorTerms:
     - tags:
         karpenter.sh/discovery: "@CLUSTER_NAME@"
-        # kubernetes.io/role/internal-elb: "1"   # uncomment to pin eksctl private subnets
+        kubernetes.io/role/internal-elb: "1"
   securityGroupSelectorTerms:
     - tags:
         karpenter.sh/discovery: "@CLUSTER_NAME@"

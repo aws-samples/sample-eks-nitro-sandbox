@@ -122,6 +122,40 @@ require_identity() {
   done
 }
 
+# The pod isolation runtime is published for these Kubernetes versions only.
+require_supported_k8s() {
+  case "$KUBERNETES_VERSION" in 1.36|1.37) ;; *) die "KUBERNETES_VERSION '$KUBERNETES_VERSION': the pod isolation runtime is published for 1.36 and 1.37 only" ;; esac
+}
+
+# resolve_run_ami: set and export AMI_ID to the AMI this run recorded, never one from the
+# environment, and only after the AMI itself checks out: it is in this account and Region, it
+# carries this run's tags, and its architecture is NODE_ARCH's. An AMI_ID in the environment must
+# equal the recorded one, so a stale variable cannot send a node group or Karpenter to another AMI.
+resolve_run_ami() {
+  local rec out
+  rec=$(sed -n 's/^AMI_ID=//p' "$RUN_STATE_DIR/run-state.env" 2>/dev/null | tail -n 1)
+  [ -n "$rec" ] || die "run $RUN_ID recorded no AMI; run ./setup.sh (full) or --ami-only first"
+  [[ "$rec" =~ ^ami-[0-9a-f]+$ ]] || die "run $RUN_ID recorded '$rec' as its AMI, which is not an AMI id"
+  if [ -n "${AMI_ID:-}" ] && [ "$AMI_ID" != "$rec" ]; then
+    die "AMI_ID is '$AMI_ID' but run $RUN_ID built '$rec'; unset AMI_ID, or use the run that built it"
+  fi
+  out=$(aws ec2 describe-images --region "$AWS_REGION" --owners self --image-ids "$rec" \
+        --query 'Images[0].{Tags:Tags,Arch:Architecture}' --output json) \
+    || die "could not read AMI $rec in $AWS_REGION (not found, or the lookup failed); refusing to use it"
+  printf '%s' "$out" | python3 -c '
+import json, sys
+d = json.load(sys.stdin) or {}
+t = {x.get("Key"): x.get("Value") for x in d.get("Tags") or []}
+want = {"amd64": "x86_64", "arm64": "arm64"}[sys.argv[5]]
+if t.get(sys.argv[1]) != sys.argv[2] or t.get(sys.argv[3]) != sys.argv[4]:
+    sys.exit("AMI is not tagged for this run")
+if d.get("Arch") != want:
+    sys.exit("AMI architecture is %s, but NODE_ARCH=%s needs %s" % (d.get("Arch"), sys.argv[5], want))
+' "$TAGS_OWNER_KEY" "$TAGS_OWNER_VALUE" "$TAGS_RUN_KEY" "$RUN_ID" "$NODE_ARCH" \
+    || die "AMI $rec cannot be used for run $RUN_ID (see the line above)"
+  AMI_ID=$rec; export AMI_ID
+}
+
 # Tag helpers (ManagedBy + RunId on everything the blueprint creates).
 run_tags_cli() { printf '{Key=%s,Value=%s},{Key=%s,Value=%s}' "$TAGS_OWNER_KEY" "$TAGS_OWNER_VALUE" "$TAGS_RUN_KEY" "$RUN_ID"; }
 tags_match() {
