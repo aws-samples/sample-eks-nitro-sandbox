@@ -49,8 +49,8 @@ RUN chmod 666 /opt/analyst/fixtures/case.json \
     && chmod 755 /protected && chmod 644 /protected/canary
 
 # The analyst runs as an ordinary user. OpenShell sets the restricted process's identity
-# itself, from process.run_as_user in the policy; this is the image's own default, which
-# the bridge pod also runs under.
+# itself, from process.run_as_user in the policy; this is the image's own default. The
+# bridge pod sets its own UID in deploy/bridge.yaml.
 RUN useradd --create-home --uid 1000 --user-group analyst
 
 # The interpreter path the policy's `binaries` rule names. Asserted here so a base-image

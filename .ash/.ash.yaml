@@ -406,6 +406,10 @@ global_settings:
       reason: 'By design: nono confines the tool processes inside the pod, not the pod; a sample ships no network policy (AGENTS.md:556-562), and the page says nothing in this blueprint bounds the pod egress and links the network policy sample (README.md:132-138,777-781)'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
+      path: 'examples/subagent-security/openshell/deploy/bridge.yaml'
+      reason: 'By design: the model bridge is an ordinary pod outside the sandbox behind a ClusterIP Service only (bridge.yaml:1-2,32); OpenShell governs the analyst requests it forwards, not this pod; a sample ships no network policy (AGENTS.md:546-552), and the page says nothing in this blueprint bounds the egress of its pods and links the network policy sample (README.md:230-236)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
       path: 'examples/agent-sandbox/brain-and-hands/deploy/brain.yaml'
       reason: 'First-party non-sandbox pod; the only network policy in the sample restricts the hands and admits only app=brain (warm-pool.yaml:53-55), a sample merged before 2026-10-26 keeps the policies it was proved with and adds none (AGENTS.md:556-562), and the manifest says nothing restricts where the brain connects (brain.yaml:13)'
       expiration: '2027-12-31'
@@ -1123,6 +1127,11 @@ global_settings:
       path: 'examples/subagent-security/openshell/supervisor/Dockerfile'
       reason: 'FROM ${SUPERVISOR_IMAGE}/${BASE_IMAGE}: setup.sh passes a digest and a fixed tag from versions.json:33,38'
       expiration: '2027-12-31'
+    # The supervisor's runtime identity is set by the OpenShell Kubernetes driver, not by the image.
+    - rule_id: CKV_DOCKER_3
+      path: 'examples/subagent-security/openshell/supervisor/Dockerfile'
+      reason: 'By design: the final stage is the pinned upstream supervisor (versions.json:23-24,33) with only its CA bundle replaced (supervisor/Dockerfile:28-35); upstream keeps user 0 and its Kubernetes driver runs the supervisor non-root as sandboxUid/sandboxGid 1000 (gateway-values.yaml:30-34)'
+      expiration: '2027-12-31'
     # Intentional all-interface bind, documented at the call site.
     - rule_id: python.lang.security.audit.network.bind.avoid-bind-to-all-interfaces
       path: 'examples/managed-agents/openai-managed-agents/src/launcher/serve.py'
@@ -1307,14 +1316,14 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/subagent-security/openshell/deploy/bridge.yaml'
-      line_start: 101
-      line_end: 101
+      line_start: 115
+      line_end: 115
       reason: 'secretName: references a Kubernetes Secret; the key is not in the file'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/subagent-security/openshell/deploy/bridge.yaml'
-      line_start: 103
-      line_end: 103
+      line_start: 117
+      line_end: 117
       reason: 'secretName: references a Kubernetes Secret; the key is not in the file'
       expiration: '2027-12-31'
     # ---- Round 3: main at a746109 (#82 ubuntu-ami, #83 cilium-ubuntu) ----
@@ -1962,27 +1971,6 @@ global_settings:
     - rule_id: CKV_K8S_8
       path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
       reason: 'Baseline: subagent-security/bubblewrap merged before the ASH gate; hardening tracked in #151'
-      expiration: '2027-01-31'
-    # Baseline: subagent-security/openshell
-    - rule_id: CKV2_K8S_6
-      path: 'examples/subagent-security/openshell/deploy/bridge.yaml'
-      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in #152'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_38
-      path: 'examples/subagent-security/openshell/deploy/bridge.yaml'
-      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in #152'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_40
-      path: 'examples/subagent-security/openshell/deploy/bridge.yaml'
-      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in #152'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/subagent-security/openshell/deploy/bridge.yaml'
-      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in #152'
-      expiration: '2027-01-31'
-    - rule_id: CKV_DOCKER_3
-      path: 'examples/subagent-security/openshell/supervisor/Dockerfile'
-      reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in #152'
       expiration: '2027-01-31'
     # Strands Box: exact sample exceptions. Privileged Nitro configuration is a documented
     # demonstration tradeoff, not evidence that its capabilities are minimal. Revisit

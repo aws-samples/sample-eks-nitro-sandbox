@@ -306,10 +306,11 @@ def denied_body(result, what):
                       f"JSON ({error}): {body[:400]!r}")
 
 
-# The trusted control, run in the model bridge pod. That pod runs the same image as the
-# analyst and the same uid 1000, and no OpenShell confinement, so it is what makes every
-# refusal in the sandbox attributable to OpenShell rather than to the image, the file modes,
-# the supplier API or the network.
+# The trusted file control, run in the analyst's own container through kubectl exec rather
+# than through OpenShell: the same image, the same uid 1000 and no OpenShell confinement,
+# so it is what makes every file refusal in the sandbox attributable to OpenShell rather
+# than to the image or the file modes. The network control below runs in the model bridge
+# pod instead.
 #
 # The key is read from the pod's own Secret mount inside the program. It is not in this
 # text, not in the argument list and not in the environment: `kubectl exec` puts its
@@ -1100,10 +1101,11 @@ class Walkthrough:
                    "filter")
 
     def check_the_trusted_control(self):
-        """The same operations, outside OpenShell's confinement, in the model bridge pod.
+        """The same operations, outside OpenShell's confinement.
 
-        This is what makes every refusal above attributable. The bridge pod runs the same
-        image as the analyst and the same uid 1000 with no OpenShell confinement, so each
+        This is what makes every refusal above attributable. The file operations run in
+        the analyst's own container at the same uid 1000, and the network ones in the
+        model bridge pod with the real key, neither under OpenShell's confinement, so each
         operation OpenShell refused is shown here to be one the image, the file modes, the
         supplier API and the network all allow.
 
