@@ -6,7 +6,7 @@
     "max_tokens": 2000,
     "model_attempts": 2,
     "sdk_attempts": 1,
-    "max_request_bytes": 40000,
+    "max_request_bytes": 65536,
     "evidence_tool_calls": 1
   },
   "reports": {

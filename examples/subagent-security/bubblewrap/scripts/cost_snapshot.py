@@ -4,26 +4,39 @@
       --cluster-name <cluster> --kube-context <context> --model-id <Bedrock model id>
 
 collect runs a fixed list of read-only AWS CLI and kubectl reads, in a fixed order, and
-saves each one's output unchanged under <folder>/raw/, with reads.json listing every read's
-exact command line and the sha256 of what it printed. Set COST_SNAPSHOT in .env to the
-folder. It needs read access to STS, EKS, EC2 (instance types, offerings, route tables) and
-the AWS Price List, and to the cluster's RuntimeClasses, NodePools, NodeClasses and NodeClaims.
+saves each one's output under <folder>/raw/, with reads.json listing every read's exact
+command line and the sha256 of what it saved. setup.sh runs it itself, into the run's own
+directory, just before its cost check; run it by hand only to see what a run would read.
+<folder> must be new and inside this repository's tmp/; it and everything in it are
+readable by you alone. Of the kube context it keeps only the context's name and its
+cluster's endpoint, never the credentials a kubeconfig holds. It needs read access to STS,
+EKS, ECR (the registry's settings), EC2 (instance types, offerings, route tables, VPC
+endpoints, subnets) and the AWS Price List, and to the cluster's RuntimeClasses, NodePools
+and NodeClasses.
 
-Nothing in the folder is typed by hand, and nothing is trusted because the folder says so:
 cost_gate.py rebuilds the snapshot from the raw reads with build() below every time it
 runs. build() refuses a folder whose reads are not exactly the list below for this
 account, Region, cluster and context (one omitted, added, reordered or with another
-command line), whose files do not match their sha256, whose cluster, endpoint, RuntimeClass,
-NodePools or NodeClasses do not check out, whose instance-type list is not the Region's
-whole list, or whose prices are not exactly one matching Price List record per item.
+command line), whose files do not match their sha256, whose identity, cluster, endpoint,
+RuntimeClass, NodePools or NodeClasses do not check out, whose instance-type list is not
+the Region's whole list, or whose prices are not exactly one matching Price List record
+per item.
 
-It also reads the route tables of every subnet the node can use. A node subnet that routes
-through a NAT gateway is refused: NAT processing is charged per byte, and nothing in this
-blueprint bounds the bytes a node sends, so no maximum can be proved for that path.
+Some paths are charged per byte, or per hour, and nothing in this blueprint bounds the
+bytes a node sends, so no maximum can be proved for them and build() refuses them rather
+than price them: a node-subnet route to anything but the VPC itself, an internet gateway
+(for IPv4, from a node with no public address) or a gateway endpoint; any interface or
+Gateway Load Balancer endpoint in the VPC; a node subnet or NodeClass that gives a node a
+public IPv4 address; and node and control-plane subnets in more than one Availability Zone,
+which is every cluster EKS creates today. It also refuses a registry that replicates images
+or scans them with Amazon Inspector, a NodePool that would not remove an empty node within
+ten minutes, and a NodeClass that provisions gp3 IOPS or throughput above the included
+baseline.
 """
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -57,6 +70,15 @@ BEDROCK_MODELS = {"global.anthropic.claude-sonnet-4-5-20250929-v1:0": "Claude So
 BEDROCK_ITEMS = {"bedrock_input_usd_per_million_tokens": "Input tokens",
                  "bedrock_output_usd_per_million_tokens": "Output tokens"}
 TOKEN_UNITS = {"1k tokens": 1000, "1m tokens": 1, "million tokens": 1, "tokens": 10 ** 6}
+# A NodePool must remove an empty node within this many seconds of it becoming empty.
+EMPTY_NODE_MAX_S = 600
+# gp3's included performance; anything above it is billed per IOPS-month and MiB/s-month.
+GP3_BASE = {"iops": 3000, "throughput": 125}
+# Every route target the EC2 API names. A node-subnet route may use only GatewayId, and only
+# for "local", an internet gateway (IPv4 destinations) or a gateway endpoint (prefix lists).
+ROUTE_TARGETS = ("GatewayId", "NatGatewayId", "TransitGatewayId", "InstanceId", "NetworkInterfaceId",
+                 "VpcPeeringConnectionId", "CarrierGatewayId", "LocalGatewayId", "CoreNetworkArn",
+                 "EgressOnlyInternetGatewayId", "OdbNetworkArn")
 
 
 class Bad(Exception):
@@ -100,6 +122,8 @@ def first_reads(region, cluster, context):
         ("sts", aws("sts", "get-caller-identity", "--region", region)),
         ("cluster", aws("eks", "describe-cluster", "--name", cluster, "--region", region)),
         ("kubeconfig", ["kubectl", "config", "view", "--minify", "--context", context, "-o", "json"]),
+        ("ecr_registry", aws("ecr", "describe-registry", "--region", region)),
+        ("ecr_scanning", aws("ecr", "get-registry-scanning-configuration", "--region", region)),
         ("runtimeclasses", kube(context, "get", "runtimeclasses")),
         ("nodepools", kube(context, "get", "nodepools.karpenter.sh")),
         ("nodeclasses", kube(context, "get", "nodeclasses.eks.amazonaws.com")),
@@ -110,11 +134,13 @@ def first_reads(region, cluster, context):
 
 
 def later_reads(region, model_id, vpc, types):
-    """The reads that depend on the first ones: the VPC's route tables, then every price."""
+    """The reads that depend on the first ones: the VPC's network, then every price."""
     if model_id not in BEDROCK_MODELS:
         raise Bad(f"no Price List name is known for the model {model_id!r}")
-    reads = [("route_tables", aws("ec2", "describe-route-tables", "--region", region,
-                                  "--filters", f"Name=vpc-id,Values={vpc}"))]
+    reads = [(name, aws("ec2", operation, "--region", region, "--filters", f"Name=vpc-id,Values={vpc}"))
+             for name, operation in (("route_tables", "describe-route-tables"),
+                                     ("vpc_endpoints", "describe-vpc-endpoints"),
+                                     ("subnets", "describe-subnets"))]
     for name in sorted(types):
         reads.append((f"price_ec2_{name}", pricing("AmazonEC2", {
             **EC2_FILTERS, "regionCode": region, "instanceType": name})))
@@ -142,8 +168,23 @@ def no_more_pages(raw, what, token="NextToken"):
         raise Bad(f"the {what} read is one page of several, not the whole list")
 
 
-def target(raws, account, region, cluster, context):
-    """The exact account, Region, cluster ARN and API endpoint the reads were made against."""
+def role_of(arn):
+    """The IAM role (or user) an STS caller ARN acts as: an assumed role's session is dropped."""
+    match = re.fullmatch(r"arn:([a-z-]+):sts::(\d{12}):assumed-role/([^/]+)/.+", str(arn))
+    return f"arn:{match.group(1)}:iam::{match.group(2)}:role/{match.group(3)}" if match else str(arn)
+
+
+def minimal_kubeconfig(view):
+    """Of a kubeconfig view, only the context's name and its cluster's endpoint."""
+    try:
+        return {"clusters": [{"cluster": {"server": c["cluster"]["server"]}} for c in view.get("clusters") or []],
+                "contexts": [{"name": c["name"]} for c in view.get("contexts") or []]}
+    except (KeyError, TypeError, AttributeError):
+        raise Bad("the kubeconfig read has no context name or cluster endpoint")
+
+
+def target(raws, account, region, cluster, context, identity=None):
+    """The exact account, role, Region, cluster ARN and API endpoint the reads were made against."""
     if raws["sts"].get("Account") != account:
         raise Bad(f"the reads were made as another account, not {account}")
     found = raws["cluster"].get("cluster") or {}
@@ -154,15 +195,55 @@ def target(raws, account, region, cluster, context):
         raise Bad("the cluster does not use EKS Auto Mode compute")
     endpoint = str(found.get("endpoint", ""))
     view = raws["kubeconfig"]
+    if view != minimal_kubeconfig(view):
+        raise Bad("the kubeconfig read holds more than the context's name and its cluster's endpoint")
     clusters, contexts = view.get("clusters") or [], view.get("contexts") or []
     if not endpoint.startswith("https://") or len(clusters) != 1 or len(contexts) != 1 or \
             contexts[0].get("name") != context or \
             norm_endpoint(clusters[0].get("cluster", {}).get("server")) != norm_endpoint(endpoint):
         raise Bad(f"the kube context {context} does not point at exactly the described cluster's endpoint")
+    if identity is not None:
+        found_identity = {"account": account, "role": role_of(raws["sts"].get("Arn")), "cluster_arn": arn,
+                          "endpoint": norm_endpoint(endpoint), "region": region, "context": context}
+        if dict(identity, endpoint=norm_endpoint(identity.get("endpoint", ""))) != found_identity:
+            raise Bad("the reads were not made as the account, role, cluster, endpoint, Region and context "
+                      "this run acts through")
     vpc = (found.get("resourcesVpcConfig") or {}).get("vpcId")
     if not isinstance(vpc, str) or not re.fullmatch(r"vpc-[0-9a-f]+", vpc):
         raise Bad("describe-cluster names no VPC")
     return vpc
+
+
+def seconds(text, what):
+    """A Kubernetes duration such as 30s, 5m or 1h30m, in seconds; refuses Never and anything else."""
+    match = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", str(text))
+    if not text or not match or not any(match.groups()):
+        raise Bad(f"{what} is {text!r}, not a duration this check can bound")
+    hours, minutes, secs = (int(g or 0) for g in match.groups())
+    return hours * 3600 + minutes * 60 + secs
+
+
+def empties_node(pool):
+    """The seconds after which this NodePool removes a node with no workload, or a refusal."""
+    name, disruption = pool["name"], pool["disruption"]
+    if disruption.get("consolidationPolicy") not in ("WhenEmpty", "WhenEmptyOrUnderutilized"):
+        raise Bad(f"NodePool {name} does not consolidate empty nodes")
+    after = seconds(disruption.get("consolidateAfter"), f"NodePool {name}'s consolidateAfter")
+    if after > EMPTY_NODE_MAX_S:
+        raise Bad(f"NodePool {name} waits {after}s before removing an empty node, more than {EMPTY_NODE_MAX_S}s")
+    for budget in disruption.get("budgets") or []:
+        if budget.get("schedule") or str(budget.get("nodes")).strip() in ("0", "0%"):
+            raise Bad(f"NodePool {name} has a disruption budget that can stop it removing an empty node")
+    return after
+
+
+def registry(raws):
+    """The account's registry must not copy or rescan what this run pushes, at a charge."""
+    if ((raws["ecr_registry"].get("replicationConfiguration") or {}).get("rules")) or []:
+        raise Bad("the ECR registry replicates images, which charges for each copy")
+    scan = (raws["ecr_scanning"].get("scanningConfiguration") or {}).get("scanType")
+    if scan != "BASIC":
+        raise Bad(f"the ECR registry's scan type is {scan!r}, not BASIC; enhanced scanning charges per image")
 
 
 def scheduling(raws):
@@ -177,11 +258,17 @@ def scheduling(raws):
     classes = {}
     for item in raws["nodeclasses"].get("items", []):
         name = item["metadata"]["name"]
-        size = re.fullmatch(r"(\d+)Gi", str((item.get("spec", {}).get("ephemeralStorage") or {}).get("size")))
+        storage = item.get("spec", {}).get("ephemeralStorage") or {}
+        size = re.fullmatch(r"(\d+)Gi", str(storage.get("size")))
         subnets = [s.get("id") for s in (item.get("status") or {}).get("subnets") or []]
         if not size or not subnets or not all(isinstance(s, str) and s.startswith("subnet-") for s in subnets):
             raise Bad(f"NodeClass {name} has no ephemeralStorage.size in Gi or no resolved subnets")
-        classes[name] = (int(size.group(1)), sorted(subnets))
+        for key, base in GP3_BASE.items():
+            if key in storage and not (str(storage[key]).isdigit() and int(storage[key]) <= base):
+                raise Bad(f"NodeClass {name} provisions gp3 {key} {storage[key]!r}, above the included "
+                          f"{base}, which this check does not price")
+        public = (item.get("spec", {}).get("advancedNetworking") or {}).get("associatePublicIPAddress")
+        classes[name] = (int(size.group(1)), sorted(subnets), public)
     pools = []
     for item in raws["nodepools"].get("items", []):
         spec = item["spec"]["template"]["spec"]
@@ -198,7 +285,7 @@ def scheduling(raws):
                 raise Bad(f"the RuntimeClass tolerates NodePool {name}'s taint, so a pool the "
                           "check treats as closed to the pod could take it")
         pools.append({"name": name, "taints": taints, "requirements": spec.get("requirements") or [],
-                      "node_class": ref["name"]})
+                      "node_class": ref["name"], "disruption": item["spec"].get("disruption") or {}})
     if not pools:
         raise Bad("the cluster has no NodePool")
     return pools, classes
@@ -225,21 +312,50 @@ def offered(raws, region):
     return found
 
 
-def nat_free(raw, subnets):
-    """Each node subnet's route table, and a refusal if any of them routes through NAT."""
-    no_more_pages(raw, "route tables")
-    tables = raw.get("RouteTables") or []
+def route_ok(route):
+    """Whether a route leads only to the VPC itself, an internet gateway (IPv4) or a gateway endpoint."""
+    targets = {key for key in ROUTE_TARGETS if route.get(key)}
+    gateway = str(route.get("GatewayId", ""))
+    return targets == {"GatewayId"} and (
+        gateway == "local"
+        or (gateway.startswith("igw-") and bool(route.get("DestinationCidrBlock")))
+        or (gateway.startswith("vpce-") and bool(route.get("DestinationPrefixListId"))))
+
+
+def egress(raws, subnets, public, cluster_subnets):
+    """Refuses every node path this check cannot price; the module docstring lists them."""
+    for name in ("route_tables", "vpc_endpoints", "subnets"):
+        no_more_pages(raws[name], name)
+    tables = raws["route_tables"].get("RouteTables") or []
     for subnet in subnets:
         explicit = [t for t in tables if any(a.get("SubnetId") == subnet for a in t.get("Associations") or [])]
         main = [t for t in tables if any(a.get("Main") is True for a in t.get("Associations") or [])]
         chosen = explicit or main
         if len(chosen) != 1:
             raise Bad(f"subnet {subnet} has {len(chosen)} route tables in the read, not one")
-        nat = [r.get("NatGatewayId") for r in chosen[0].get("Routes") or [] if r.get("NatGatewayId")]
-        if nat:
-            raise Bad(f"node subnet {subnet} routes through NAT gateway {nat[0]}; NAT processing is "
-                      "charged per byte and nothing bounds the bytes a node sends, so no maximum can "
-                      "be proved for this path")
+        for route in chosen[0].get("Routes") or []:
+            if not route_ok(route):
+                where = {k: route[k] for k in ROUTE_TARGETS if route.get(k)}
+                raise Bad(f"node subnet {subnet} has a route to {where}, a path charged per byte or per hour "
+                          "that nothing here bounds, so no maximum can be proved for it")
+    for endpoint in raws["vpc_endpoints"].get("VpcEndpoints") or []:
+        if endpoint.get("VpcEndpointType") != "Gateway" and endpoint.get("State") not in ("deleted", "rejected"):
+            raise Bad(f"the VPC has the {endpoint.get('VpcEndpointType')} endpoint {endpoint.get('VpcEndpointId')}, "
+                      "which charges per GB it processes, and nothing here bounds those bytes")
+    found = {s.get("SubnetId"): s for s in raws["subnets"].get("Subnets") or []}
+    zones = set()
+    for subnet in sorted(set(subnets) | set(cluster_subnets)):
+        if subnet not in found:
+            raise Bad(f"subnet {subnet} is not in the subnet read")
+        zones.add(found[subnet].get("AvailabilityZone"))
+    for subnet in subnets:
+        if public.get(subnet) is True or found[subnet].get("MapCustomerOwnedIpOnLaunch") or \
+                (public.get(subnet) is not False and found[subnet].get("MapPublicIpOnLaunch") is not False):
+            raise Bad(f"a node in subnet {subnet} gets a public IPv4 address, which is charged per hour and "
+                      "opens a path charged per byte")
+    if len(zones) != 1 or None in zones:
+        raise Bad(f"the node and control-plane subnets are in {len(zones)} Availability Zones; traffic between "
+                  "zones is charged per GB and nothing here bounds those bytes")
 
 
 def products(raw, what, filters):
@@ -284,7 +400,7 @@ def load(folder):
     return strict(data.decode("utf-8"), "reads.json"), sha(data)
 
 
-def build(folder, account, region, cluster, context, model_id, derive):
+def build(folder, account, region, cluster, context, model_id, derive, identity=None):
     """The snapshot cost_gate.py prices, rebuilt from the raw reads alone.
 
     derive(nodepools, offered) is cost_gate.derived_types, passed in so the price reads must
@@ -324,7 +440,8 @@ def build(folder, account, region, cluster, context, model_id, derive):
     plan = first_reads(region, cluster, context)
     for position, (name, argv) in enumerate(plan):
         check(position, name, argv)
-    vpc = target(raws, account, region, cluster, context)
+    vpc = target(raws, account, region, cluster, context, identity)
+    registry(raws)
     pools, classes = scheduling(raws)
     types = offered(raws, region)
     snapshot_pools = [{k: p[k] for k in ("name", "taints", "requirements")} for p in pools]
@@ -336,8 +453,13 @@ def build(folder, account, region, cluster, context, model_id, derive):
         raise Bad(f"reads.json lists {len(listed)} reads, not the {len(plan) + len(later)} expected")
     open_pools = [p for p in pools if not any(t.get("effect") in ("NoSchedule", "NoExecute")
                                               for t in p["taints"])]
+    empty_after = max((empties_node(p) for p in open_pools), default=0)
     subnets = sorted({s for p in open_pools for s in classes[p["node_class"]][1]})
-    nat_free(raws["route_tables"], subnets)
+    public = {s: classes[p["node_class"]][2] for p in open_pools for s in classes[p["node_class"]][1]}
+    cluster_subnets = ((raws["cluster"].get("cluster") or {}).get("resourcesVpcConfig") or {}).get("subnetIds")
+    if not cluster_subnets:
+        raise Bad("describe-cluster names no control-plane subnets")
+    egress(raws, subnets, public, cluster_subnets)
 
     prices = {}
     for name in sorted(derived):
@@ -376,7 +498,7 @@ def build(folder, account, region, cluster, context, model_id, derive):
     volume = max(classes[p["node_class"]][0] for p in open_pools) if open_pools else 0
     return {"captured_at": reads["captured_at"], "nodepools": snapshot_pools, "offered_instance_types": types,
             "node_class_volume_gib": volume, "node_subnets": subnets, "prices": prices,
-            "unit_prices": units}, fingerprint
+            "unit_prices": units, "empty_node_after_s": empty_after}, fingerprint
 
 
 def run_read(argv):
@@ -387,18 +509,40 @@ def run_read(argv):
     return result.stdout
 
 
+def private_folder(path):
+    """A new folder inside the repository's tmp/, and not outside it through a link, mode 0700."""
+    tmp = Path(__file__).resolve().parents[4] / "tmp"
+    given = Path(os.path.abspath(path))
+    out = Path(os.path.realpath(given.parent)) / given.name
+    if tmp not in out.parents:
+        raise Bad(f"{path} must be a new folder inside {tmp}")
+    if os.path.lexists(out):
+        raise Bad(f"{out} already exists; collect into a new folder")
+    out.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    out.mkdir(mode=0o700)
+    (out / "raw").mkdir(mode=0o700)
+    return out
+
+
+def write_private(path, data):
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(data)
+
+
 def collect(args):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import cost_gate
-    out = Path(args.out)
-    if out.exists():
-        raise Bad(f"{out} already exists; collect into a new folder")
-    (out / "raw").mkdir(parents=True)
+    os.umask(0o077)
+    out = private_folder(args.out)
     listed, raws = [], {}
 
     def save(name, argv):
         data = run_read(argv)
-        (out / "raw" / f"{name}.json").write_bytes(data)
+        if name == "kubeconfig":  # the context's name and endpoint, never its credentials
+            data = json.dumps(minimal_kubeconfig(strict(data.decode("utf-8"), "the kubeconfig read")),
+                              indent=1, sort_keys=True).encode()
+        write_private(out / "raw" / f"{name}.json", data)
         listed.append({"name": name, "argv": argv, "sha256": sha(data)})
         raws[name] = strict(data.decode("utf-8"), f"the {name} read")
 
@@ -412,11 +556,11 @@ def collect(args):
                                                      for p in pools], "offered_instance_types": types})
     for name, argv in later_reads(args.region, args.model_id, vpc, derived):
         save(name, argv)
-    (out / "reads.json").write_text(json.dumps({
+    write_private(out / "reads.json", (json.dumps({
         "schema": READS_SCHEMA, "captured_at": captured, "region": args.region,
         "cluster_name": args.cluster_name, "kube_context": args.kube_context,
-        "model_id": args.model_id, "reads": listed}, indent=1, sort_keys=True) + "\n")
-    print(f"collected {len(listed)} reads into {out}; set COST_SNAPSHOT={out} in .env")
+        "model_id": args.model_id, "reads": listed}, indent=1, sort_keys=True) + "\n").encode())
+    print(f"collected {len(listed)} reads into {out}")
 
 
 def main(argv=None):

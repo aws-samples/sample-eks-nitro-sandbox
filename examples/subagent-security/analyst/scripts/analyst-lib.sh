@@ -41,26 +41,34 @@ kc() {
 }
 
 # A lookup that cannot run is "could not determine", which is a failure, never "absent".
-# Absence is proved by the service's own not-found exception and nothing else; any other
-# error has to stop the script before it can create a duplicate of something already
-# there.
-#   lookup <not-found-exception> <aws args...>
+# Absence is proved by the service's own not-found error and nothing else: exit 254 (the
+# AWS CLI's "the service returned an error"), nothing on standard output, and one line on
+# standard error that is exactly "An error occurred (<code>) when calling the <Operation>
+# operation", with the operation named by the call itself. Any other error, including an
+# AccessDenied whose message happens to mention the code, has to stop the script before it
+# can create a duplicate of something already there.
+#   lookup <not-found-exception> <service> <cli operation> [args...]
 #     prints stdout and returns 0 when the resource is there
-#     returns 1 only when the named exception came back
+#     returns 1 only when exactly that error came back
 #     returns 2 when it could not be determined, having printed the AWS error
 #
 # It returns 2 rather than exiting, because callers run it inside a command substitution:
 # an exit there would leave the subshell only, and the caller would read the non-zero
 # status as "absent" and go on to create the resource.
 lookup() {
-  local notfound="$1"; shift
-  local out err rc=0
+  local code="$1" op out err rc=0
+  shift
+  op="$(awk -F- '{ for (i = 1; i <= NF; i++) printf "%s%s", toupper(substr($i, 1, 1)), substr($i, 2) }' <<<"$2")"
   out="$(mktemp "${TMPDIR:-/tmp}/analyst-out.XXXXXX")" || return 2
-  err="$(mktemp "${TMPDIR:-/tmp}/analyst-err.XXXXXX")" || return 2
+  err="$(mktemp "${TMPDIR:-/tmp}/analyst-err.XXXXXX")" || { rm -f "$out"; return 2; }
   aws "$@" >"$out" 2>"$err" || rc=$?
   if [[ "$rc" == 0 ]]; then cat "$out"; rm -f "$out" "$err"; return 0; fi
-  if grep -Fq "$notfound" "$err"; then rm -f "$out" "$err"; return 1; fi
-  echo "ERROR: 'aws $*' failed (exit $rc) and not with $notfound, so it is unknown whether the resource exists:" >&2
+  if [[ "$rc" == 254 && ! -s "$out" && "$(grep -c . "$err")" == 1 ]] &&
+     grep -Eq "^An error occurred \\($code\\) when calling the $op operation(: .*)?\$" "$err"; then
+    rm -f "$out" "$err"
+    return 1
+  fi
+  echo "ERROR: 'aws $*' failed (exit $rc) and not with exactly $code from $op, so it is unknown whether the resource exists:" >&2
   sed 's/^/  /' "$err" >&2
   rm -f "$out" "$err"
   return 2
@@ -306,9 +314,10 @@ analyst_image_build() {
 #   analyst_image <ecr-repository> <dockerfile, relative to SECTION_DIR> <input paths...>
 # When ANALYST_EXPECTED_IMAGE_ID is set, an image it builds must have that id, or nothing
 # is pushed: a caller that measured the image beforehand pushes exactly what it measured.
-# Prints nothing; sets ANALYST_IMAGE, IMAGE_REPOSITORY_CREATED (true or false) and
+# Prints nothing; sets ANALYST_IMAGE, IMAGE_REPOSITORY_CREATED (true or false),
 # IMAGE_LOCAL_ID, the local image id when this call built it and empty when it reused the
-# pushed tag, for the caller to record so a clean up can remove exactly that local image.
+# pushed tag, for the caller to record so a clean up can remove exactly that local image,
+# and IMAGE_DIGEST, the pushed image's sha256 digest.
 analyst_image() {
   local repo="$1" dockerfile="$2"; shift 2
   local tag registry existing rc
@@ -330,6 +339,15 @@ analyst_image() {
       die "could not read the tags on the ECR repository $repo, so it is unknown whether it is this sample's"
     require_managed_by "the ECR repository $repo" \
       "$(jq -r '.tags[]? | select(.Key=="ManagedBy") | .Value' <<<"$tags")"
+    # A reused repository gets the same checks as a new one: scan on push, and no policy.
+    expect "the ECR repository $repo" "$(jq -c '[(.repositories | length),
+        .repositories[0].imageScanningConfiguration.scanOnPush]' <<<"$existing")" '[1,true]' \
+      "pushing to $repo"
+    rc=0
+    lookup RepositoryPolicyNotFoundException ecr get-repository-policy \
+      --repository-name "$repo" >/dev/null || rc=$?
+    [[ "$rc" == 1 ]] ||
+      die "the ECR repository $repo has a repository policy, or it could not be read; stopped before pushing to $repo."
   else
     aws ecr create-repository --repository-name "$repo" \
       --image-scanning-configuration scanOnPush=true \
@@ -358,33 +376,51 @@ analyst_image() {
       die "the ECR repository $repo has a repository policy, or it could not be read; stopped before $next."
   fi
 
-  if aws ecr describe-images --repository-name "$repo" --image-ids "imageTag=$tag" \
-      >/dev/null 2>&1; then
+  # Only the exact ImageNotFoundException means "not pushed yet"; any other failure stops.
+  local image
+  rc=0
+  image="$(lookup ImageNotFoundException ecr describe-images --repository-name "$repo" \
+    --image-ids "imageTag=$tag" --output json)" || rc=$?
+  stop_if_undetermined "$rc" "the image $repo:$tag"
+  if [[ "$rc" == 0 ]]; then
     echo "  reusing $repo:$tag (the build inputs have not changed)"
-    return
+  else
+    # The registry credential lives in a Docker config of its own, which is removed on
+    # every path out of here, a failed sign-in, build or push included.
+    local docker_config why=""
+    docker_config="$(mktemp -d "${TMPDIR:-/tmp}/analyst-docker.XXXXXX")" ||
+      die "could not make a private Docker config"
+    # The registry password goes in on standard input, never on a command line.
+    if ! aws ecr get-login-password --region "$AWS_REGION" |
+        docker --config "$docker_config" login --username AWS --password-stdin "$registry" \
+          >/dev/null; then
+      why="could not sign in to $registry"
+    elif ! analyst_image_build "$dockerfile"; then
+      why="the image build failed"
+    elif ! IMAGE_LOCAL_ID="$(docker image inspect --format '{{.Id}}' "$ANALYST_IMAGE")"; then
+      why="could not read the id of the image just built, $ANALYST_IMAGE"
+    elif [[ -n "${ANALYST_EXPECTED_IMAGE_ID:-}" && "$IMAGE_LOCAL_ID" != "$ANALYST_EXPECTED_IMAGE_ID" ]]; then
+      why="the image built for $ANALYST_IMAGE is $IMAGE_LOCAL_ID, not the $ANALYST_EXPECTED_IMAGE_ID measured before the run; pushed nothing"
+    elif ! docker --config "$docker_config" push "$ANALYST_IMAGE" >/dev/null; then
+      why="could not push $ANALYST_IMAGE"
+    fi
+    rm -rf "$docker_config"
+    [[ -z "$why" ]] || die "$why"
+    echo "  built and pushed $repo:$tag"
+    image="$(aws ecr describe-images --repository-name "$repo" --image-ids "imageTag=$tag" \
+      --output json)" || die "could not read back the image $repo:$tag just pushed"
   fi
-  local docker_config
-  docker_config="$(mktemp -d "${TMPDIR:-/tmp}/analyst-docker.XXXXXX")"
-  # The registry password goes in on standard input, never on a command line.
-  aws ecr get-login-password --region "$AWS_REGION" |
-    docker --config "$docker_config" login --username AWS --password-stdin "$registry" \
-      >/dev/null ||
-    die "could not sign in to $registry"
-  analyst_image_build "$dockerfile" || die "the image build failed"
-  IMAGE_LOCAL_ID="$(docker image inspect --format '{{.Id}}' "$ANALYST_IMAGE")" ||
-    die "could not read the id of the image just built, $ANALYST_IMAGE"
-  [[ -z "${ANALYST_EXPECTED_IMAGE_ID:-}" || "$IMAGE_LOCAL_ID" == "$ANALYST_EXPECTED_IMAGE_ID" ]] ||
-    die "the image built for $ANALYST_IMAGE is $IMAGE_LOCAL_ID, not the $ANALYST_EXPECTED_IMAGE_ID measured before the run; pushed nothing"
-  docker --config "$docker_config" push "$ANALYST_IMAGE" >/dev/null ||
-    die "could not push $ANALYST_IMAGE"
-  rm -rf "$docker_config"
-  echo "  built and pushed $repo:$tag"
+  # Its digest, so a caller can name exactly this image rather than a tag that can move.
+  IMAGE_DIGEST="$(jq -r 'if (.imageDetails | length) == 1 then .imageDetails[0].imageDigest
+    else "" end' <<<"$image")"
+  [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+    die "the image $repo:$tag read back with no single sha256 digest"
 }
 
 analyst_supplier_api() {
   say "4/7 the synthetic supplier API"
   analyst_supplier_image
-  analyst_supplier_deploy ""
+  analyst_supplier_deploy
 }
 
 # The supplier API image alone: builds and pushes it, and records it in the run record.
@@ -394,36 +430,20 @@ analyst_supplier_image() {
     "${ANALYST_SUPPLIER_API_INPUTS[@]}"
   # shortcut: recorded after analyst_image returns, so a run that stops between the build
   # and this line leaves that local image unrecorded; upgrade if that case turns up.
-  SUPPLIER_API_IMAGE="$ANALYST_IMAGE"
+  SUPPLIER_API_IMAGE="$ANALYST_IMAGE" SUPPLIER_API_DIGEST="$IMAGE_DIGEST"
   state_put SUPPLIER_API_IMAGE "$SUPPLIER_API_IMAGE"
+  state_put SUPPLIER_API_DIGEST "$SUPPLIER_API_DIGEST"
   state_put SUPPLIER_API_REPOSITORY_CREATED "$IMAGE_REPOSITORY_CREATED"
   state_put SUPPLIER_API_LOCAL_IMAGE_ID "$IMAGE_LOCAL_ID"
 }
 
 # Starts the supplier API from the image analyst_supplier_image pushed.
-#   analyst_supplier_deploy [<node name>]
-# With a node name, its pod is bound to that node (nodeName), so the scheduler never places
-# it and nothing provisions a node for it; it must then be running on exactly that node.
 analyst_supplier_deploy() {
-  local node="${1:-}"
   analyst_render "$SECTION_DIR/analyst/deploy/supplier-api.yaml" "$TMP_DIR/supplier-api.yaml" \
     "s|<SUPPLIER_API_IMAGE>|$SUPPLIER_API_IMAGE|g"
-  if [[ -n "$node" ]]; then
-    [[ "$node" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || die "'$node' is not a node name"
-    awk -v node="$node" '{ print }
-      /^      automountServiceAccountToken: false$/ { print "      nodeName: " node; n++ }
-      END { exit n == 1 ? 0 : 1 }' "$TMP_DIR/supplier-api.yaml" > "$TMP_DIR/supplier-api.pinned.yaml" ||
-      die "could not bind the supplier API's pod to node $node in its manifest"
-    mv "$TMP_DIR/supplier-api.pinned.yaml" "$TMP_DIR/supplier-api.yaml"
-  fi
   kc apply -n "$NAMESPACE" -f "$TMP_DIR/supplier-api.yaml"
   kc rollout status deployment/supplier-api -n "$NAMESPACE" --timeout=5m ||
     die "the supplier API did not become ready"
-  if [[ -n "$node" ]]; then
-    [[ "$(kc get pods -n "$NAMESPACE" -l app=supplier-api -o json |
-      jq -c --arg n "$node" '[.items[].spec.nodeName] | (length > 0 and all(. == $n))')" == true ]] ||
-      die "the supplier API's pods are not all on node $node"
-  fi
 }
 
 # ---------------------------------------------------------------------------

@@ -72,6 +72,7 @@ from sandbox import (CHILD_ENVIRONMENT, HOSTNAME, NAMESPACES,  # noqa: E402
 
 ROOT = Path("/var/lib/analyst")
 ROLES = ("reader", "evaluator", "writer")
+MODEL_TURN_MARKER = ROOT / ".model-turn"
 
 # The run's finite bounds, read from the file setup's cost check reads too, so the two
 # cannot disagree: "model" is the model turn's envelope (analyst_agent.ENVELOPE_KEYS),
@@ -705,6 +706,13 @@ class Run:
         return comparison
 
     def model_turn(self, case, comparison):
+        # One model turn per pod, claimed before the first send: creating the marker fails if
+        # it is already there, so a second controller in this pod, from run.sh or by hand,
+        # stops here rather than paying for another turn. Printed only when it fails.
+        try:
+            os.close(os.open(MODEL_TURN_MARKER, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+        except FileExistsError:
+            self.check("this pod has not run a model turn before", False)
         turn = ModelTurn(case, comparison, envelope=RUN_ENVELOPE["model"])
         payload = turn.run()
         # Printed only when it fails, so a run inside its envelope prints what it always has.

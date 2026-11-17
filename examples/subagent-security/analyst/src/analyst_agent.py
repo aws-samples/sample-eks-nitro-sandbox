@@ -114,7 +114,38 @@ class _CountedModel(Model):
         self.turn.model_calls += 1
         self.turn.request_bytes = max(self.turn.request_bytes, size)
         async for event in self.inner.stream(messages, tool_specs, system_prompt, **kwargs):
+            if isinstance(event, dict) and "usage" in (event.get("metadata") or {}):
+                self.turn.usage_reports += 1
             yield event
+
+
+class _BedrockSends:
+    """Counts every HTTP request the Bedrock client itself sends, its own retries included.
+
+    Registered on the client's before-send event, so it sees exactly what goes on the wire:
+    the send after the last one the envelope allows, or a body larger than it allows, raises
+    here and is never sent. A body this cannot measure is refused too.
+    """
+
+    def __init__(self, turn):
+        self.turn = turn
+
+    def __call__(self, request, **_):
+        envelope = self.turn.envelope
+        allowed = envelope["turns"] * envelope["model_attempts"] * envelope["sdk_attempts"]
+        if self.turn.sends >= allowed:
+            raise EnvelopeExceeded(f"the turn already sent the {allowed} Bedrock requests its "
+                                   "envelope allows")
+        body = request.body
+        if isinstance(body, str):
+            body = body.encode()
+        if not isinstance(body, (bytes, bytearray)):
+            raise EnvelopeExceeded("a Bedrock request body this turn cannot measure")
+        if len(body) > envelope["max_request_bytes"]:
+            raise EnvelopeExceeded(f"the next Bedrock request is {len(body)} bytes on the wire, over "
+                                   f"the {envelope['max_request_bytes']} its envelope allows")
+        self.turn.sends += 1
+        self.turn.sent_bytes = max(self.turn.sent_bytes, len(body))
 
 
 class ModelTurn:
@@ -144,6 +175,9 @@ class ModelTurn:
         self.tool_calls = 0
         self.model_calls = 0
         self.request_bytes = 0
+        self.sends = 0
+        self.sent_bytes = 0
+        self.usage_reports = 0
         self.stop_reason = None
         self.refusal = None
 
@@ -178,9 +212,11 @@ class ModelTurn:
 
     def _run_in_envelope(self) -> dict:
         envelope = self.envelope
-        model = _CountedModel(BedrockModel(
+        bedrock = BedrockModel(
             model_id=self.model_id, region_name=self.region, max_tokens=envelope["max_tokens"],
-            boto_client_config=bedrock_client_config(envelope)), self)
+            boto_client_config=bedrock_client_config(envelope))
+        bedrock.client.meta.events.register("before-send.bedrock-runtime", _BedrockSends(self))
+        model = _CountedModel(bedrock, self)
         # Strands retries only throttling, which Bedrock does not bill; it is still counted
         # above. max_attempts=1 is how Strands spells "no retries".
         agent = Agent(
@@ -215,10 +251,21 @@ class ModelTurn:
         if self.tool_calls != envelope["evidence_tool_calls"]:
             problems.append(f"the evidence tool ran {self.tool_calls} times, not "
                             f"{envelope['evidence_tool_calls']}")
-        for key, cap in (("outputTokens", envelope["output_tokens"]),
+        # Bedrock bills what it reports, so usage that is missing, partial or not a count is a
+        # turn whose cost this cannot check: every model call must have reported usage, and
+        # the totals must be whole numbers inside the envelope.
+        if self.usage_reports != self.model_calls:
+            problems.append(f"{self.model_calls - self.usage_reports} of {self.model_calls} model "
+                            "calls reported no token usage")
+        for key, cap in (("inputTokens", envelope["total_tokens"]),
+                         ("outputTokens", envelope["output_tokens"]),
                          ("totalTokens", envelope["total_tokens"])):
-            if self.usage.get(key, 0) > cap:
-                problems.append(f"{key} {self.usage.get(key)} is over {cap}")
+            value = self.usage.get(key)
+            if type(value) is not int or not 0 < value <= cap:
+                problems.append(f"usage {key} is {value!r}, not a count from 1 to {cap}")
+        if self.usage.get("totalTokens") != sum(
+                v for k, v in self.usage.items() if k in ("inputTokens", "outputTokens") and type(v) is int):
+            problems.append("usage totalTokens is not inputTokens plus outputTokens")
         if problems:
             self.refusal = "; ".join(problems)
             return None

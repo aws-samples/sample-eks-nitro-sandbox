@@ -1,0 +1,57 @@
+# The synthetic supplier API as one bare pod on the analyst pod's own node, in place of the
+# Deployment the shared manifest (analyst/deploy/supplier-api.yaml) runs for the other
+# Subagent security samples. Its Services come from that shared manifest, and so does
+# everything inside spec below: setup.sh applies the two together.
+#
+# Why a pod and not a Deployment: a pod can stop itself at a deadline, and a Deployment's
+# pod template cannot. Both pods end at the run's clean-up deadline (activeDeadlineSeconds,
+# which setup.sh then lowers so it counts to that exact time), so a clean up that never runs
+# still leaves the node with no workload on it, and EKS Auto Mode removes an empty node.
+# nodeName binds it to the analyst pod's node, so nothing is launched for it.
+#
+# <NAMESPACE>, <MANAGED_BY>, <SUPPLIER_API_IMAGE>, <NODE_NAME> and <ACTIVE_DEADLINE_SECONDS>
+# are replaced at apply time by setup.sh.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: supplier-api
+  namespace: <NAMESPACE>
+  labels:
+    app: supplier-api
+    app.kubernetes.io/managed-by: <MANAGED_BY>
+spec:
+  nodeName: <NODE_NAME>
+  restartPolicy: Never
+  activeDeadlineSeconds: <ACTIVE_DEADLINE_SECONDS>
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+    seccompProfile: { type: RuntimeDefault }
+  containers:
+    - name: api
+      image: <SUPPLIER_API_IMAGE>
+      ports:
+        - { containerPort: 8443, protocol: TCP }
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      readinessProbe:
+        httpGet: { scheme: HTTPS, path: /healthz, port: 8443 }
+      livenessProbe:
+        httpGet: { scheme: HTTPS, path: /healthz, port: 8443 }
+      volumeMounts:
+        - { name: supplier-key, mountPath: /opt/supplier-key, readOnly: true }
+        - { name: supplier-tls, mountPath: /opt/supplier-tls, readOnly: true }
+        - { name: state, mountPath: /var/lib/supplier }
+  volumes:
+    - name: supplier-key
+      secret: { secretName: supplier-key, defaultMode: 0440 }
+    - name: supplier-tls
+      secret: { secretName: supplier-tls, defaultMode: 0440 }
+    - name: state
+      emptyDir: {}
