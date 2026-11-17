@@ -94,6 +94,7 @@ UNSAFE_BOOTSTRAP_ENV_NAMES = (
 AWS_CREDENTIAL_ENV_NAMES = frozenset(
     {
         "AWS_ACCESS_KEY_ID",
+        "AWS_CREDENTIAL_PROFILES_FILE",
         "AWS_CONFIG_FILE",
         "AWS_CONTAINER_AUTHORIZATION_TOKEN",
         "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
@@ -107,6 +108,7 @@ AWS_CREDENTIAL_ENV_NAMES = frozenset(
         "AWS_SESSION_TOKEN",
         "AWS_SHARED_CREDENTIALS_FILE",
         "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "BOTO_CONFIG",
     }
 )
 IMAGE_DIGEST_PATTERN = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
@@ -442,6 +444,8 @@ def _runtime_environment(
     container: dict[str, Any],
     location: str,
     *,
+    gateway_id: str | None = None,
+    revision_hash: str | None = None,
     require_runtime_values: bool = False,
 ) -> list[Any]:
     env_from = container.get("envFrom", [])
@@ -451,9 +455,37 @@ def _runtime_environment(
         raise AdmissionError(
             f"{location}.envFrom is not supported by the adapter contract"
         )
+    required = {
+        HOME_ENV: HOME_MOUNT_PATH,
+        NODE_CA_ENV: AGW_CA_PATH,
+        TMPDIR_ENV: TMPDIR_PATH,
+    }
     environment = container.get("env", [])
     if not isinstance(environment, list):
         raise AdmissionError(f"{location}.env must be a list")
+    environment_names = [
+        entry.get("name") for entry in environment if isinstance(entry, dict)
+    ]
+    duplicate_names = sorted(
+        {
+            name
+            for name in environment_names
+            if _is_nonempty_string(name) and environment_names.count(name) > 1
+        }
+    )
+    if duplicate_names:
+        raise AdmissionError(
+            f"{location} has duplicate environment entries: "
+            f"{', '.join(duplicate_names)}"
+        )
+    credential_names = [
+        entry.get("value")
+        for entry in environment
+        if isinstance(entry, dict)
+        and entry.get("name") == "OPENCLAW_HARNESS_CREDENTIAL_ENV"
+        and _is_nonempty_string(entry.get("value"))
+    ]
+    harness_credential_name = credential_names[0] if credential_names else None
     for entry in environment:
         if not isinstance(entry, dict):
             raise AdmissionError(f"{location}.env entries must be objects")
@@ -468,11 +500,50 @@ def _runtime_environment(
             raise AdmissionError(
                 f"{location} configures prohibited AWS credential environment {name}"
             )
-    required = {
-        HOME_ENV: HOME_MOUNT_PATH,
-        NODE_CA_ENV: AGW_CA_PATH,
-        TMPDIR_ENV: TMPDIR_PATH,
-    }
+        if name in required and entry != {"name": name, "value": required[name]}:
+            raise AdmissionError(f"{location} already configures {name}")
+        value_from = entry.get("valueFrom")
+        if value_from is None:
+            continue
+        allowed_value_from = entry == {
+            "name": "OPENCLAW_POD_UID",
+            "valueFrom": {
+                "fieldRef": {
+                    "apiVersion": "v1",
+                    "fieldPath": "metadata.uid",
+                }
+            },
+        }
+        if gateway_id is not None:
+            allowed_value_from = allowed_value_from or entry == {
+                "name": "OPENCLAW_GATEWAY_PASSWORD",
+                "valueFrom": {
+                    "secretKeyRef": {
+                        "key": "gateway-password",
+                        "name": f"gateway-password-{gateway_id}",
+                    }
+                },
+            }
+        if (
+            gateway_id is not None
+            and revision_hash is not None
+            and harness_credential_name is not None
+        ):
+            allowed_value_from = allowed_value_from or entry == {
+                "name": harness_credential_name,
+                "valueFrom": {
+                    "secretKeyRef": {
+                        "key": harness_credential_name,
+                        "name": (
+                            f"harness-secrets-{gateway_id}-{revision_hash}"
+                        ),
+                    }
+                },
+            }
+        if not allowed_value_from:
+            raise AdmissionError(
+                f"{location} configures an unsupported environment value source"
+            )
     for name, value in required.items():
         matches = [
             entry
@@ -483,8 +554,6 @@ def _runtime_environment(
             raise AdmissionError(f"{location} has duplicate {name} entries")
         if require_runtime_values and matches != [{"name": name, "value": value}]:
             raise AdmissionError(f"{location} must configure {name}={value}")
-        if matches and matches[0] != {"name": name, "value": value}:
-            raise AdmissionError(f"{location} already configures {name}")
     return environment
 
 
@@ -989,6 +1058,20 @@ def _is_oce_configuration_volume(volume: Any, gateway_id: str) -> bool:
     )
 
 
+def _oce_revision_hash(volumes: list[Any], gateway_id: str) -> str | None:
+    matches = [
+        volume
+        for volume in volumes
+        if isinstance(volume, dict)
+        and volume.get("name") == OCE_CONFIGURATION_VOLUME
+        and _is_oce_configuration_volume(volume, gateway_id)
+    ]
+    if len(matches) != 1:
+        return None
+    name = matches[0]["configMap"]["name"]
+    return name.rsplit("-", 1)[-1]
+
+
 def _is_oce_service_principal_volume(volume: Any) -> bool:
     if not isinstance(volume, dict) or set(volume) != {"name", "projected"}:
         return False
@@ -1110,6 +1193,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(volumes, list):
         raise AdmissionError("spec.volumes must be a list")
     gateway_id = _validate_provenance(pod, spec, volumes)
+    revision_hash = _oce_revision_hash(volumes, gateway_id)
     init_containers, containers = _container_groups(spec)
     for index, container in enumerate(init_containers):
         if isinstance(container, dict) and container.get("restartPolicy") == "Always":
@@ -1295,7 +1379,12 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
             )
         if index == designated_index:
             designated_runtime_image = runtime_image
-        _runtime_environment(container, location)
+        _runtime_environment(
+            container,
+            location,
+            gateway_id=gateway_id,
+            revision_hash=revision_hash,
+        )
         _validate_trusted_mounts(container, location)
         runtime_patches.append(
             {
@@ -1549,7 +1638,10 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                             }
                         )
                     environment = _runtime_environment(
-                        container, f"spec.{group_name}[{index}]"
+                        container,
+                        f"spec.{group_name}[{index}]",
+                        gateway_id=gateway_id,
+                        revision_hash=revision_hash,
                     )
                     required_environment = [
                         {"name": HOME_ENV, "value": HOME_MOUNT_PATH},
@@ -1780,6 +1872,7 @@ def validate_pod(pod: dict[str, Any]) -> None:
     if not isinstance(volumes, list):
         raise AdmissionError("spec.volumes must be a list")
     gateway_id = _validate_provenance(pod, spec, volumes)
+    revision_hash = _oce_revision_hash(volumes, gateway_id)
     labels = pod["metadata"]["labels"]
     if labels.get(NETWORK_PROFILE_LABEL) != NITRO_RESTRICTED_PROFILE:
         raise AdmissionError(
@@ -1822,6 +1915,8 @@ def validate_pod(pod: dict[str, Any]) -> None:
     _runtime_environment(
         gateway,
         "spec.containers[0]",
+        gateway_id=gateway_id,
+        revision_hash=revision_hash,
         require_runtime_values=True,
     )
     _validate_trusted_mounts(gateway, "spec.containers[0]")

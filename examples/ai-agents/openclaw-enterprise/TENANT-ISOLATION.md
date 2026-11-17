@@ -20,10 +20,13 @@ does not modify upstream OCE.
   match OCE's public HTTPS egress policy. These controls require a
   network-policy implementation that enforces Kubernetes `NetworkPolicy`.
 - **No AWS credential injection by the adapter:** it rejects common AWS
-  credential environment variables and pins `HOME=/home/node`. It also rejects
-  unrecognized volume sources. It allows only empty scratch volumes, the
-  verified agent-state claim, and the exact OCE configuration, audience-scoped
-  service-principal token, and AgentGateway CA inputs. Operators must also
+  credential environment variables, arbitrary environment value sources, and
+  duplicate variable names, and pins `HOME=/home/node`. It allows only the
+  OCE-generated Pod UID, gateway password, and revision-bound harness secret
+  references. It also rejects unrecognized volume sources and allows only empty
+  scratch volumes, the verified agent-state claim, and the exact OCE
+  configuration, audience-scoped service-principal token, and AgentGateway CA
+  inputs. Operators must also
   verify that tenant ServiceAccounts have no IRSA
   annotation or EKS Pod Identity association. The tenant policy denies the EKS
   Pod Identity Agent endpoint. A Nitro guest can still receive an HTTP response

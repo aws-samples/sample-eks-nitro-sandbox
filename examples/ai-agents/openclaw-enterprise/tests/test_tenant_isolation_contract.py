@@ -128,6 +128,19 @@ def _retarget_gateway(pod: dict[str, Any], gateway_id: str) -> None:
         if volume["name"] == "openclaw-gateway-state"
     )
     state["persistentVolumeClaim"]["claimName"] = f"gateway-state-{gateway_id}"
+    configuration = next(
+        volume
+        for volume in pod["spec"]["volumes"]
+        if volume["name"] == "openclaw-configuration"
+    )
+    configuration["configMap"]["name"] = configuration["configMap"]["name"].replace(
+        old_gateway_id, gateway_id
+    )
+    gateway = pod["spec"]["containers"][0]
+    for entry in gateway["env"]:
+        secret = entry.get("valueFrom", {}).get("secretKeyRef")
+        if isinstance(secret, dict) and "name" in secret:
+            secret["name"] = secret["name"].replace(old_gateway_id, gateway_id)
 
 
 def test_admitted_agent_has_a_nitro_boundary_and_no_credential_injection(

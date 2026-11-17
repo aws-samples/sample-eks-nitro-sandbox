@@ -618,11 +618,25 @@ class BuildPatchTests(unittest.TestCase):
         )
         self.assertEqual(
             {entry["name"] for entry in gateway["env"]},
-            {"OPENAI_API_KEY", HOME_ENV, NODE_CA_ENV, TMPDIR_ENV},
+            {
+                "OPENAI_API_KEY",
+                "OPENCLAW_GATEWAY_PASSWORD",
+                "OPENCLAW_HARNESS_CREDENTIAL_ENV",
+                "OPENCLAW_POD_UID",
+                HOME_ENV,
+                NODE_CA_ENV,
+                TMPDIR_ENV,
+            },
         )
         self.assertEqual(
             {mount["name"] for mount in gateway["volumeMounts"]},
-            {RUNTIME_VOLUME, "workspace", STATE_VOLUME, AGW_CA_VOLUME},
+            {
+                RUNTIME_VOLUME,
+                "workspace",
+                STATE_VOLUME,
+                AGW_CA_VOLUME,
+                OCE_CONFIGURATION_VOLUME,
+            },
         )
 
         ownership = next(
@@ -1351,6 +1365,7 @@ class BuildPatchTests(unittest.TestCase):
     def test_rejects_aws_credential_environment(self) -> None:
         names = (
             "AWS_ACCESS_KEY_ID",
+            "AWS_CREDENTIAL_PROFILES_FILE",
             "AWS_CONFIG_FILE",
             "AWS_CONTAINER_AUTHORIZATION_TOKEN",
             "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
@@ -1364,6 +1379,7 @@ class BuildPatchTests(unittest.TestCase):
             "AWS_SESSION_TOKEN",
             "AWS_SHARED_CREDENTIALS_FILE",
             "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "BOTO_CONFIG",
         )
         for value_source in (
             {"value": "attacker-controlled"},
@@ -1401,6 +1417,128 @@ class BuildPatchTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(AdmissionError, HOME_ENV):
                     build_patch(pod)
+
+    def test_rejects_unsupported_environment_value_sources(self) -> None:
+        sources = (
+            {"secretKeyRef": {"name": "tenant-secret", "key": "value"}},
+            {"configMapKeyRef": {"name": "tenant-config", "key": "value"}},
+            {"fieldRef": {"apiVersion": "v1", "fieldPath": "metadata.labels"}},
+            {
+                "resourceFieldRef": {
+                    "containerName": "gateway",
+                    "resource": "limits.cpu",
+                }
+            },
+        )
+        for source in sources:
+            with self.subTest(source=source):
+                pod = target_pod()
+                pod["spec"]["containers"][-1].setdefault("env", []).append(
+                    {"name": "UNTRUSTED_VALUE", "valueFrom": source}
+                )
+                with self.assertRaisesRegex(
+                    AdmissionError, "unsupported environment value source"
+                ):
+                    build_patch(pod)
+
+    def test_accepts_exact_oce_environment_value_sources(self) -> None:
+        pod = target_pod()
+        pod["spec"]["volumes"].append(
+            {
+                "name": OCE_CONFIGURATION_VOLUME,
+                "configMap": {
+                    "name": "gateway-a1b2c3d4e5f6-rev-012345abcdef",
+                    "items": [{"key": "openclaw.json", "path": "openclaw.json"}],
+                },
+            }
+        )
+        pod["spec"]["containers"][-1].setdefault("env", []).extend(
+            [
+                {
+                    "name": "OPENCLAW_POD_UID",
+                    "valueFrom": {
+                        "fieldRef": {
+                            "apiVersion": "v1",
+                            "fieldPath": "metadata.uid",
+                        }
+                    },
+                },
+                {
+                    "name": "OPENCLAW_GATEWAY_PASSWORD",
+                    "valueFrom": {
+                        "secretKeyRef": {
+                            "name": "gateway-password-a1b2c3d4e5f6",
+                            "key": "gateway-password",
+                        }
+                    },
+                },
+                {
+                    "name": "OPENAI_API_KEY",
+                    "valueFrom": {
+                        "secretKeyRef": {
+                            "name": (
+                                "harness-secrets-a1b2c3d4e5f6-012345abcdef"
+                            ),
+                            "key": "OPENAI_API_KEY",
+                        }
+                    },
+                },
+                {
+                    "name": "OPENCLAW_HARNESS_CREDENTIAL_ENV",
+                    "value": "OPENAI_API_KEY",
+                },
+            ]
+        )
+
+        rendered = apply_patch(pod, build_patch(pod))
+        validate_pod(rendered)
+
+    def test_rejects_oce_secret_reference_not_bound_to_gateway_revision(
+        self,
+    ) -> None:
+        pod = target_pod()
+        pod["spec"]["volumes"].append(
+            {
+                "name": OCE_CONFIGURATION_VOLUME,
+                "configMap": {
+                    "name": "gateway-a1b2c3d4e5f6-rev-012345abcdef",
+                    "items": [{"key": "openclaw.json", "path": "openclaw.json"}],
+                },
+            }
+        )
+        pod["spec"]["containers"][-1].setdefault("env", []).extend(
+            [
+                {
+                    "name": "OPENAI_API_KEY",
+                    "valueFrom": {
+                        "secretKeyRef": {
+                            "name": "harness-secrets-other-tenant-deadbeefcafe",
+                            "key": "OPENAI_API_KEY",
+                        }
+                    },
+                },
+                {
+                    "name": "OPENCLAW_HARNESS_CREDENTIAL_ENV",
+                    "value": "OPENAI_API_KEY",
+                },
+            ]
+        )
+
+        with self.assertRaisesRegex(
+            AdmissionError, "unsupported environment value source"
+        ):
+            build_patch(pod)
+
+    def test_rejects_duplicate_environment_names(self) -> None:
+        pod = target_pod()
+        pod["spec"]["containers"][-1]["env"] = [
+            {"name": "DUPLICATE", "value": "first"},
+            {"name": "DUPLICATE", "value": "second"},
+        ]
+        with self.assertRaisesRegex(
+            AdmissionError, "duplicate environment entries: DUPLICATE"
+        ):
+            build_patch(pod)
 
     def test_rejects_file_backed_aws_credentials(self) -> None:
         for volume_source in (

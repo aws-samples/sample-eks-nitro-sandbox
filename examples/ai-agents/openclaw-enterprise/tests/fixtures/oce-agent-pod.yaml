@@ -96,11 +96,23 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       env:
+        - name: OPENCLAW_POD_UID
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.uid
+        - name: OPENCLAW_GATEWAY_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: gateway-password-a1b2c3d4e5f6
+              key: gateway-password
         - name: OPENAI_API_KEY
           valueFrom:
             secretKeyRef:
-              name: agentgateway-client
-              key: key
+              name: harness-secrets-a1b2c3d4e5f6-012345abcdef
+              key: OPENAI_API_KEY
+        - name: OPENCLAW_HARNESS_CREDENTIAL_ENV
+          value: OPENAI_API_KEY
       volumeMounts:
         - name: runtime-state
           mountPath: /home/node
@@ -120,6 +132,9 @@ spec:
         - name: openclaw-gateway-state
           mountPath: /home/node/.openclaw/sessions
           subPath: sessions
+        - name: openclaw-configuration
+          mountPath: /etc/openclaw
+          readOnly: true
   volumes:
     - name: runtime-state
       emptyDir: {}
@@ -141,3 +156,9 @@ spec:
               audience: openclaw-enterprise
               expirationSeconds: 900
               path: token
+    - name: openclaw-configuration
+      configMap:
+        name: gateway-a1b2c3d4e5f6-rev-012345abcdef
+        items:
+          - key: openclaw.json
+            path: openclaw.json

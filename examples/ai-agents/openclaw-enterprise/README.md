@@ -124,7 +124,9 @@ gateway pod, the adapter:
   adapter blocks matching Pod creation and ephemeral-container updates.
 - Requires exact `repository@sha256:<digest>` image references. The adapter
   rejects `envFrom` and explicit unsafe loader or shell-bootstrap variables on
-  adapted runtime containers.
+  adapted runtime containers. It also rejects arbitrary environment value
+  sources and accepts only OCE's Pod UID, gateway password, and
+  revision-bound harness secret references.
 
 Nitro presents OCE's `/tmp` `subPath` mount as group- and world-writable without
 the sticky bit, which OpenClaw's secure temporary-directory check rejects. The
