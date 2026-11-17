@@ -50,9 +50,9 @@ spec:
           type: RuntimeDefault
       # No liveness or readiness probe, and no port: the Worker is one process
       # that polls the Temporal task queue. No Service sends it traffic, so
-      # readiness would gate nothing, and when the process exits Kubernetes
-      # restarts the container. Detecting a hung Worker would need a heartbeat
-      # the harness does not expose.
+      # readiness would gate no Service traffic. When the process exits
+      # Kubernetes restarts the container; detecting a hung Worker would need
+      # a heartbeat the harness does not expose.
       containers:
         - name: worker
           image: __WORKER_IMAGE__

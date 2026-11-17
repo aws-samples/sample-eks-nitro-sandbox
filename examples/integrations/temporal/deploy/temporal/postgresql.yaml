@@ -9,10 +9,10 @@
 #
 # The password is NOT in this file. It comes from a Secret named
 # `temporal-postgresql`, key `password`, which the page has you create from
-# standard input so the password never appears on a command line. PostgreSQL
-# reads it as a read-only file (POSTGRES_PASSWORD_FILE), not from an
-# environment variable. The Temporal chart reads the same Secret through
-# `existingSecret`.
+# standard input so the password never appears on a command line. Kubernetes
+# gives it to PostgreSQL as a read-only mounted file (POSTGRES_PASSWORD_FILE),
+# not as an environment variable in the PodSpec. The Temporal chart reads the
+# same Secret through `existingSecret`.
 #
 # The Temporal Helm chart installs only the server roles and bundles no
 # database, so this is the lightest viable one: a single replica, SQL visibility
@@ -94,8 +94,8 @@ spec:
               value: temporal
             - name: POSTGRES_DB
               value: temporal
-            # The image reads the password from this file, the Secret mounted
-            # below, so it is never in the container's environment.
+            # Kubernetes supplies the password as this file, the Secret mounted
+            # below, rather than as an environment variable in the PodSpec.
             - name: POSTGRES_PASSWORD_FILE
               value: /run/secrets/postgresql/password
             # The data directory has to be a subdirectory of the mount, because

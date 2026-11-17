@@ -215,8 +215,8 @@ kubectl -n temporal apply -f deploy/temporal/postgresql.yaml
 kubectl -n temporal rollout status statefulset/temporal-postgresql
 ```
 
-PostgreSQL reads that password as a file, not from an environment variable: the manifest
-mounts the Secret read-only at `/run/secrets/postgresql` and points
+Kubernetes hands PostgreSQL that password as a file, not as an environment variable in the
+pod spec: the manifest mounts the Secret read-only at `/run/secrets/postgresql` and points
 `POSTGRES_PASSWORD_FILE` at the file in it. It runs as the image's own non-root `postgres`
 user, UID and GID 70, with a read-only root filesystem, every capability dropped, privilege
 escalation off, the `RuntimeDefault` seccomp profile and no ServiceAccount token. Its only
@@ -1295,9 +1295,9 @@ account, no external endpoint and no key. Moving it to Cloud is left as an exerc
   still attached, which could stall the detach. The controller re-creates the pod on
   resume, so this does not prevent the suspend and resume cycle.
 - **The Worker has no liveness or readiness probe.** It is one process polling the task
-  queue, and no Service sends it traffic, so readiness would gate nothing. When the process
-  exits, Kubernetes restarts the container. A Worker that hangs without exiting is not
-  detected: that would need a heartbeat the harness does not expose.
+  queue, and no Service sends it traffic, so readiness would gate no Service traffic. When
+  the process exits, Kubernetes restarts the container. A Worker that hangs without exiting
+  is not detected: that would need a heartbeat the harness does not expose.
 - **The Temporal server's history is what you are keeping.** Its PostgreSQL holds every
   run, which is the record this blueprint is about, so the clean up keeps the server by
   default and the commands to remove it are in the clean up's own output.

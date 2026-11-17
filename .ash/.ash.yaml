@@ -395,7 +395,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_9
       path: 'examples/integrations/temporal/deploy/worker.yaml'
-      reason: 'Task-queue Worker with no Service and no port, so a readiness probe gates no traffic (worker.yaml:51-56; README.md:1297-1300)'
+      reason: 'Task-queue Worker with no Service and no port, so a readiness probe gates no Service traffic (worker.yaml:51-56; README.md:1297-1300)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_38
       path: 'examples/integrations/temporal/deploy/worker.yaml'
@@ -419,7 +419,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
-      reason: 'By design: PostgreSQL is reached only through a ClusterIP Service (postgresql.yaml:28-33); a sample ships no network policy (AGENTS.md:546-552), and the page says the Temporal server and its PostgreSQL are unrestricted on the wire and links the network policy sample (README.md:80-87)'
+      reason: 'By design: the blueprint exposes PostgreSQL only through a ClusterIP Service, with no Ingress, LoadBalancer, NodePort, host port or host network (postgresql.yaml:28-33); a sample ships no network policy (AGENTS.md:546-552), and the page says the Temporal server and its PostgreSQL are unrestricted on the wire and links the network policy sample (README.md:80-87)'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/integrations/temporal/deploy/worker.yaml'
