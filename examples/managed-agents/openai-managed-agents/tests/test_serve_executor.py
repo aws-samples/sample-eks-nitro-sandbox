@@ -445,6 +445,10 @@ def test_serve_main_refuses_a_credentials_path_before_any_side_effect(effects, m
     (config.ENV_SESSION_ID, "bad id", "session id or environment id is malformed"),
     (config.ENV_ENVIRONMENT_ID, "env/../x", "session id or environment id is malformed"),
     (config.ENV_REMOTE_URL, "http://codex-cloud-environments.chatgpt.com/e/env_1", "remote URL is malformed or not https"),
+    # A terminal line feed, which a pattern ending in $ alone would let through.
+    (config.ENV_SESSION_ID, DISPATCH["session_id"] + "\n", "session id or environment id is malformed"),
+    (config.ENV_ENVIRONMENT_ID, DISPATCH["environment_id"] + "\n", "session id or environment id is malformed"),
+    (config.ENV_REMOTE_URL, REMOTE + "\n", "remote URL is malformed or not https"),
 ])
 def test_serve_main_refuses_a_malformed_claim_before_any_side_effect(effects, monkeypatch, name, bad, message):
     for claim_name, claim_value in _CLAIM_VALUES.items():

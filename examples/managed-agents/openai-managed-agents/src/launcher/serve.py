@@ -68,9 +68,9 @@ def _read_dispatch() -> dict[str, str]:
         "environment_id": config.require(config.ENV_ENVIRONMENT_ID),
         "remote_url": config.require(config.ENV_REMOTE_URL),
     }
-    if not (ID_RE.match(dispatch["session_id"]) and ID_RE.match(dispatch["environment_id"])):
+    if not (ID_RE.fullmatch(dispatch["session_id"]) and ID_RE.fullmatch(dispatch["environment_id"])):
         raise RuntimeError("the injected session id or environment id is malformed")
-    if not URL_RE.match(dispatch["remote_url"]):
+    if not URL_RE.fullmatch(dispatch["remote_url"]):
         raise RuntimeError("the injected remote URL is malformed or not https")
     return dispatch
 

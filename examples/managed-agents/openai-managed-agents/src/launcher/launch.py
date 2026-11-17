@@ -91,7 +91,7 @@ class _Handler(BaseHTTPRequestHandler):
             session_id = body["session_id"]
             environment_id = body["environment_id"]
             remote_url = body["remote_url"]
-            if not (ID_RE.match(session_id) and ID_RE.match(environment_id) and URL_RE.match(remote_url)):
+            if not (ID_RE.fullmatch(session_id) and ID_RE.fullmatch(environment_id) and URL_RE.fullmatch(remote_url)):
                 raise ValueError("invalid field")
         except Exception:
             self._json(400, {"error": "bad request"})
@@ -116,7 +116,7 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             body = self._body()
             session_id = body["session_id"]
-            if not ID_RE.match(session_id):
+            if not ID_RE.fullmatch(session_id):
                 raise ValueError("invalid field")
         except Exception:
             self._json(400, {"error": "bad request"})

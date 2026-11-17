@@ -137,6 +137,30 @@ def test_bad_field_is_400(server):
     assert status == 400
 
 
+# A pattern ending in $ also matches just before a final line feed, so each
+# field is validated as a whole. The fake dispatcher raises if it is reached,
+# so a value that got past validation would also put its line feed in the log.
+@pytest.mark.parametrize("field", ["session_id", "environment_id", "remote_url"])
+def test_dispatch_refuses_a_terminal_line_feed(server, caplog, field):
+    base, d = server
+    caplog.set_level(logging.DEBUG)
+    d.raise_on_dispatch = RuntimeError("reached the dispatcher")
+    status, body = _req(base, "/sessions", {**_GOOD, field: _GOOD[field] + "\n"}, token=TOKEN)
+    assert (status, body) == (400, {"error": "bad request"})
+    assert d.dispatched_with is None
+    assert not any("\n" in record.getMessage() for record in caplog.records)
+
+
+def test_claim_delete_refuses_a_terminal_line_feed(server, caplog):
+    base, d = server
+    caplog.set_level(logging.DEBUG)
+    d.raise_on_delete = RuntimeError("reached the dispatcher")
+    status, body = _req(base, "/sessions/claim-delete", {"session_id": "sesn_a\n"}, token=TOKEN)
+    assert (status, body) == (400, {"error": "bad request"})
+    assert d.deleted_session is None
+    assert not any("\n" in record.getMessage() for record in caplog.records)
+
+
 def test_unknown_path_is_404(server):
     base, _ = server
     status, _ = _req(base, "/nope", _GOOD, token=TOKEN)
