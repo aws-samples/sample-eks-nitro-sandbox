@@ -25,6 +25,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 require_run_id
 STATE="$RUN_STATE_DIR/run-state.env"
 rec()    { sed -n "s/^$1=//p" "$STATE" 2>/dev/null | tail -n 1; }
+rec1()   { sed -n "s/^$1=//p" "$STATE" 2>/dev/null | head -n 1; }   # identity: the first record is the run's
 record() { printf '%s=%s\n' "$1" "$2" >> "$STATE"; }
 aw()     { aws --region "$AWS_REGION" "$@"; }
 
@@ -53,18 +54,30 @@ mkdir -p "$EVIDENCE_DIR" "$LOG_DIR"
 
 # The account and Region ib-prereqs.sh recorded for the run.
 account=$(aw sts get-caller-identity --query Account --output text) || die "could not read the current AWS account"
-[ "$(rec ACCOUNT_ID | head -n 1)" = "$account" ] || die "credentials are for a different account than run $RUN_ID's prerequisites"
-[ "$(rec AWS_REGION | head -n 1)" = "$AWS_REGION" ] || die "AWS_REGION is '$AWS_REGION' but run $RUN_ID's prerequisites are in '$(rec AWS_REGION | head -n 1)'"
+[ "$(rec1 ACCOUNT_ID)" = "$account" ] || die "credentials are for a different account than run $RUN_ID's prerequisites"
+[ "$(rec1 AWS_REGION)" = "$AWS_REGION" ] || die "AWS_REGION is '$AWS_REGION' but run $RUN_ID's prerequisites are in '$(rec1 AWS_REGION)'"
 
-# The group's launch template decides the build instance: check it has enclaves on and the
-# architecture NODE_ARCH asks for.
-# The version the group launches from, not the template's latest.
-read -r lt ltver < <(aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$BUILD_ASG_NAME" \
-  --query 'AutoScalingGroups[0].LaunchTemplate.[LaunchTemplateName,Version]' --output text) || die "could not read Auto Scaling group $BUILD_ASG_NAME"
-[ -n "${lt:-}" ] && [ "$lt" != None ] && [ -n "${ltver:-}" ] || die "Auto Scaling group $BUILD_ASG_NAME has no launch template"
-read -r itype enclave < <(aw ec2 describe-launch-template-versions --launch-template-name "$lt" --versions "$ltver" \
+# The group's launch template decides the build instance. Image Builder takes any InService
+# instance of the group, so check the numbered template version the group is pinned to (never
+# $Latest or $Default, which can move), that every InService instance was launched from that
+# version, and that the version has enclaves on and the architecture NODE_ARCH asks for.
+info=$(aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$BUILD_ASG_NAME" \
+  --query 'AutoScalingGroups[0].LaunchTemplate.[LaunchTemplateName,Version]' --output text) \
+  || die "could not read Auto Scaling group $BUILD_ASG_NAME"
+read -r lt ltver <<<"$info"
+[ -n "${lt:-}" ] && [ "$lt" != None ] || die "Auto Scaling group $BUILD_ASG_NAME has no launch template"
+[[ "${ltver:-}" =~ ^[0-9]+$ ]] || die "Auto Scaling group $BUILD_ASG_NAME launches from template version '${ltver:-}'; pin it to a version number, because \$Latest and \$Default can change"
+vers=$(aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$BUILD_ASG_NAME" \
+  --query "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].LaunchTemplate.Version" --output text) \
+  || die "could not read the instances of Auto Scaling group $BUILD_ASG_NAME"
+[ -n "$vers" ] || die "Auto Scaling group $BUILD_ASG_NAME has no InService instance for Image Builder to take"
+for v in $vers; do
+  [ "$v" = "$ltver" ] || die "an InService instance of $BUILD_ASG_NAME was launched from template version '$v', not the pinned $ltver; wait for the group to replace it"
+done
+info=$(aw ec2 describe-launch-template-versions --launch-template-name "$lt" --versions "$ltver" \
   --query 'LaunchTemplateVersions[0].LaunchTemplateData.[InstanceType,EnclaveOptions.Enabled]' --output text) \
-  || die "could not read launch template $lt"
+  || die "could not read launch template $lt version $ltver"
+read -r itype enclave <<<"$info"
 [ "$enclave" = True ] || die "launch template $lt does not enable Nitro Enclaves; the build needs them"
 arch_matches_type "$itype" || die "launch template $lt uses $itype, which is not a $NODE_ARCH instance type"
 case "$NODE_ARCH" in amd64) ssm_arch=x86_64 ;; arm64) ssm_arch=arm64 ;; esac
@@ -157,10 +170,21 @@ ami=$(aw imagebuilder get-image --image-build-version-arn "$image" \
   --query "image.outputResources.amis[?region=='$AWS_REGION'].image | [0]" --output text)
 [[ "$ami" =~ ^ami-[0-9a-f]+$ ]] || die "the build reported '$ami', which is not an AMI id"
 record AMI_ID "$ami"   # before tagging, so clean.sh can find it even if a later step fails
-read -r ami_name ami_arch < <(aw ec2 describe-images --image-ids "$ami" --query 'Images[0].[Name,Architecture]' --output text)
+# Each lookup is captured first: a failure inside a `for` list or a process substitution would
+# not stop the script.
+info=$(aw ec2 describe-images --image-ids "$ami" --query 'Images[0].[Name,Architecture]' --output text) \
+  || die "could not read AMI $ami"
+read -r ami_name ami_arch <<<"$info"
+snap_ids=$(aw ec2 describe-images --image-ids "$ami" --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' --output text) \
+  || die "could not read the snapshots of $ami"
+for snap in $snap_ids; do
+  [ "$snap" = None ] && continue
+  [[ "$snap" =~ ^snap-[0-9a-f]+$ ]] || die "AMI $ami lists '$snap', which is not a snapshot id"
+  record SNAPSHOT_ID "$snap"   # before tagging: clean up finds it even after the AMI is deregistered
+done
 aw ec2 create-tags --resources "$ami" \
   --tags "Key=$TAGS_OWNER_KEY,Value=$TAGS_OWNER_VALUE" "Key=$TAGS_RUN_KEY,Value=$RUN_ID" "Key=auto-delete,Value=no"
-for snap in $(aw ec2 describe-images --image-ids "$ami" --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' --output text); do
+for snap in $snap_ids; do
   [ "$snap" = None ] && continue
   aw ec2 create-tags --resources "$snap" \
     --tags "Key=$TAGS_OWNER_KEY,Value=$TAGS_OWNER_VALUE" "Key=$TAGS_RUN_KEY,Value=$RUN_ID" "Key=auto-delete,Value=no"

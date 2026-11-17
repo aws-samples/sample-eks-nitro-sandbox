@@ -13,7 +13,7 @@ metadata:
   name: al2023-nitro-sandbox
   # The ownership mark clean.sh checks before it deletes this object.
   labels:
-    app.kubernetes.io/part-of: al2023-ami
+    app.kubernetes.io/part-of: "@RESOURCE_PREFIX@"
     app.kubernetes.io/instance: "@RUN_ID@"
 spec:
   template:

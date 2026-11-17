@@ -10,14 +10,14 @@
 # A pod-isolation node needs only this AMI plus enclaveOptions.enabled; the baked
 # nitro_enclaves.mempool reservation is what the sandbox runtime uses.
 #
-# setup.sh renders @AMI_ID@, @CLUSTER_NAME@ and @NODE_ROLE@ from the run before applying.
+# setup.sh renders @AMI_ID@, @CLUSTER_NAME@, @NODE_ROLE@ and @RESOURCE_PREFIX@ from the run before applying.
 apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass
 metadata:
   name: al2023-nitro-sandbox
   # The ownership mark clean.sh checks before it deletes this object.
   labels:
-    app.kubernetes.io/part-of: al2023-ami
+    app.kubernetes.io/part-of: "@RESOURCE_PREFIX@"
     app.kubernetes.io/instance: "@RUN_ID@"
 spec:
   # Enables AWS Nitro Enclaves on every instance Karpenter launches for this node class.
@@ -55,5 +55,5 @@ spec:
     httpPutResponseHopLimit: 1
 
   tags:
-    ManagedBy: al2023-ami
+    ManagedBy: "@RESOURCE_PREFIX@"
     RunId: "@RUN_ID@"

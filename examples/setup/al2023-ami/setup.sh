@@ -29,16 +29,22 @@ if [ "$mode" = full ] || [ "$mode" = ami-only ]; then
 fi
 require_run_id
 mkdir -p "$RUN_STATE_DIR" "$EVIDENCE_DIR"
-# Record run identity for resume/join/clean.
-{ printf 'RUN_ID=%s\n' "$RUN_ID"
-  printf 'RESOURCE_PREFIX=%s\n' "$RESOURCE_PREFIX"
-  printf 'CLUSTER_NAME=%s\n' "$CLUSTER_NAME"
-  printf 'AWS_REGION=%s\n' "$AWS_REGION"
-  printf 'NAMESPACE=%s\n' "$NAMESPACE"
-  printf 'JOIN_MODE=%s\n' "$JOIN_MODE"
-  # The account the run is created in; clean.sh refuses to delete from any other.
-  printf 'ACCOUNT_ID=%s\n' "$(aws sts get-caller-identity --query Account --output text)"
-} >> "$RUN_STATE_DIR/run-state.env"
+# Record the run's identity once, for resume/join/clean. A later command (a resume, --join) must
+# match it, and never adds a second record: clean.sh reads the first and refuses any other.
+STATE_FILE="$RUN_STATE_DIR/run-state.env"
+account=$(aws sts get-caller-identity --query Account --output text) \
+  || die "could not read the current AWS account (sts get-caller-identity failed); nothing was changed"
+[[ "$account" =~ ^[0-9]{12}$ ]] || die "sts get-caller-identity returned '$account', not an account id; nothing was changed"
+identity() { # identity <KEY> <VALUE>: record it if the run has none, otherwise it must match
+  local have; have=$(sed -n "s/^$1=//p" "$STATE_FILE" 2>/dev/null | head -n 1)
+  if [ -z "$have" ]; then printf '%s=%s\n' "$1" "$2" >> "$STATE_FILE"
+  elif [ "$have" != "$2" ]; then die "$1 is '$2' but run $RUN_ID recorded '$have'; refusing to continue. Use the recorded value, or start a new run."; fi
+}
+for kv in "ACCOUNT_ID=$account" "RUN_ID=$RUN_ID" "RESOURCE_PREFIX=$RESOURCE_PREFIX" "CLUSTER_NAME=$CLUSTER_NAME" \
+          "AWS_REGION=$AWS_REGION" "NAMESPACE=$NAMESPACE"; do
+  identity "${kv%%=*}" "${kv#*=}"
+done
+grep -q '^JOIN_MODE=' "$STATE_FILE" || printf 'JOIN_MODE=%s\n' "$JOIN_MODE" >> "$STATE_FILE"
 printf 'RUN_ID=%s\n' "$RUN_ID" > "$RUN_STATE_FILE"
 log "run id: $RUN_ID (mode: $mode, JOIN_MODE: $JOIN_MODE)"
 

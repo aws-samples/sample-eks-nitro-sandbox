@@ -31,6 +31,7 @@ STATE="$RUN_STATE_DIR/run-state.env"
 mkdir -p "$RUN_STATE_DIR"
 TAGS_CLI="Key=$TAGS_OWNER_KEY,Value=$TAGS_OWNER_VALUE Key=$TAGS_RUN_KEY,Value=$RUN_ID Key=auto-delete,Value=no"
 rec()    { sed -n "s/^$1=//p" "$STATE" 2>/dev/null | tail -n 1; }
+rec1()   { sed -n "s/^$1=//p" "$STATE" 2>/dev/null | head -n 1; }   # identity: the first record is the run's
 record() { printf '%s=%s\n' "$1" "$2" >> "$STATE"; }
 aw()     { aws --region "$AWS_REGION" "$@"; }
 jtags()  { python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("Tags") or []))'; }
@@ -54,14 +55,14 @@ probe() {
 
 # Same account the run was created in (recorded at the first `up`).
 account=$(aw sts get-caller-identity --query Account --output text) || die "could not read the current AWS account"
-recorded=$(rec ACCOUNT_ID)
+recorded=$(rec1 ACCOUNT_ID)
 if [ -z "$recorded" ]; then
   [ "$mode" = up ] || die "run $RUN_ID recorded no ACCOUNT_ID; refusing to delete anything"
   record ACCOUNT_ID "$account"; record AWS_REGION "$AWS_REGION"; record RESOURCE_PREFIX "$RESOURCE_PREFIX"
 elif [ "$recorded" != "$account" ]; then
   die "credentials are for a different account than run $RUN_ID was created in; refusing"
 fi
-[ "$(rec AWS_REGION)" = "$AWS_REGION" ] || die "AWS_REGION is '$AWS_REGION' but run $RUN_ID recorded '$(rec AWS_REGION)'"
+[ "$(rec1 AWS_REGION)" = "$AWS_REGION" ] || die "AWS_REGION is '$AWS_REGION' but run $RUN_ID recorded '$(rec1 AWS_REGION)'"
 
 # --------------------------------------------------------------------------------------------
 if [ "$mode" = up ]; then
@@ -164,13 +165,18 @@ EOF
   esac
   log "launch template $NAME ($ami, $BUILD_INSTANCE_TYPE, enclaves on)"
 
-  # Auto Scaling group of one. Image Builder detaches its instance; the group launches another.
+  # Auto Scaling group of one, pinned to the template's version NUMBER (never $Latest, which can move
+  # under an instance that is already running). Image Builder detaches its instance; the group
+  # launches another.
+  ltver=$(aw ec2 describe-launch-templates --launch-template-names "$NAME" --query 'LaunchTemplates[0].LatestVersionNumber' --output text) \
+    || die "could not read launch template $NAME"
+  [[ "$ltver" =~ ^[0-9]+$ ]] || die "launch template $NAME reported version '$ltver', not a number"
   probe 'xxx-never' aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$NAME" \
     --query 'AutoScalingGroups[0].Tags[].{Key:Key,Value:Value}' --output json; rc=$?
   case $rc in
     0) printf '%s' "$PROBE_OUT" | tags_match || die "Auto Scaling group $NAME exists and is not run $RUN_ID's" ;;
     1) aw autoscaling create-auto-scaling-group --auto-scaling-group-name "$NAME" \
-         --launch-template "LaunchTemplateName=$NAME,Version=\$Latest" --min-size 1 --max-size 1 --desired-capacity 1 \
+         --launch-template "LaunchTemplateName=$NAME,Version=$ltver" --min-size 1 --max-size 1 --desired-capacity 1 \
          --vpc-zone-identifier "$BUILD_SUBNET_ID" \
          --tags "ResourceId=$NAME,ResourceType=auto-scaling-group,Key=$TAGS_OWNER_KEY,Value=$TAGS_OWNER_VALUE,PropagateAtLaunch=false" \
                 "ResourceId=$NAME,ResourceType=auto-scaling-group,Key=$TAGS_RUN_KEY,Value=$RUN_ID,PropagateAtLaunch=false" \

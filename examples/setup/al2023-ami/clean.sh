@@ -55,7 +55,7 @@ probe() {
 jfield() { python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps(eval(sys.argv[1], {"d": d})))' "$1"; }
 
 # --- Account: the one the run was created in ----------------------------------------------------
-recorded=$(sed -n 's/^ACCOUNT_ID=//p' "$RUN_STATE_DIR/run-state.env" 2>/dev/null | tail -n 1)
+recorded=$(rec ACCOUNT_ID)
 [ -n "$recorded" ] || die "run state has no ACCOUNT_ID, so the account cannot be confirmed; refusing to delete anything"
 current=$(aws sts get-caller-identity --query Account --output text 2>/dev/null) \
   || die "could not read the current AWS account (sts get-caller-identity failed); refusing to delete anything"
@@ -119,6 +119,9 @@ case $rc in
 esac
 
 # Every AMI the run recorded (a rebuilt run records more than one), each checked on its own.
+# Snapshots are collected here and checked below: the build records each snapshot id, so one is
+# still found after its AMI has been deregistered.
+snap_list=$(sed -n 's/^SNAPSHOT_ID=//p' "$RUN_STATE_DIR/run-state.env" 2>/dev/null)
 for ami_id in $(sed -n 's/^AMI_ID=//p' "$RUN_STATE_DIR/run-state.env" 2>/dev/null | awk '!seen[$0]++'); do
   [[ "$ami_id" =~ ^ami-[0-9a-f]+$ ]] || { warn "run state records '$ami_id' as an AMI id; skipping it. Clean up incomplete."; incomplete=1; continue; }
   probe 'InvalidAMIID' aws ec2 describe-images --region "$AWS_REGION" --image-ids "$ami_id" --query 'Images[0]' --output json; rc=$?
@@ -126,23 +129,26 @@ for ami_id in $(sed -n 's/^AMI_ID=//p' "$RUN_STATE_DIR/run-state.env" 2>/dev/nul
     0) if printf '%s' "$PROBE_OUT" | jfield 'd.get("Tags") or []' | tags_match; then
          snaps=$(printf '%s' "$PROBE_OUT" | json_get '[b["Ebs"]["SnapshotId"] for b in d.get("BlockDeviceMappings", []) if b.get("Ebs", {}).get("SnapshotId")]')
          note_blocked aws ec2 deregister-image --region "$AWS_REGION" --image-id "$ami_id"
-         # A snapshot is deleted only if it carries this run's own tags, checked one by one.
-         for s in $snaps; do
-           probe 'InvalidSnapshot' aws ec2 describe-snapshots --region "$AWS_REGION" --snapshot-ids "$s" --query 'Snapshots[0]' --output json; src=$?
-           case $src in
-             0) if printf '%s' "$PROBE_OUT" | jfield 'd.get("Tags") or []' | tags_match; then
-                  note_blocked aws ec2 delete-snapshot --region "$AWS_REGION" --snapshot-id "$s"
-                else
-                  warn "snapshot $s is not tagged for run $RUN_ID; leaving it. Clean up incomplete."; incomplete=1
-                fi ;;
-             1) log "snapshot $s not present" ;;
-             *) incomplete=1 ;;
-           esac
-         done
+         snap_list="$snap_list $snaps"
        else
          warn "AMI $ami_id is not tagged for run $RUN_ID; leaving it. Clean up incomplete."; incomplete=1
        fi ;;
     1) log "AMI $ami_id not present" ;;
+    *) incomplete=1 ;;
+  esac
+done
+
+# Each snapshot is deleted only if it carries this run's own tags, checked one by one.
+for s in $(printf '%s\n' $snap_list | awk 'NF && !seen[$0]++'); do
+  [[ "$s" =~ ^snap-[0-9a-f]+$ ]] || { warn "run state records '$s' as a snapshot id; skipping it. Clean up incomplete."; incomplete=1; continue; }
+  probe 'InvalidSnapshot' aws ec2 describe-snapshots --region "$AWS_REGION" --snapshot-ids "$s" --query 'Snapshots[0]' --output json; src=$?
+  case $src in
+    0) if printf '%s' "$PROBE_OUT" | jfield 'd.get("Tags") or []' | tags_match; then
+         note_blocked aws ec2 delete-snapshot --region "$AWS_REGION" --snapshot-id "$s"
+       else
+         warn "snapshot $s is not tagged for run $RUN_ID; leaving it. Clean up incomplete."; incomplete=1
+       fi ;;
+    1) log "snapshot $s not present" ;;
     *) incomplete=1 ;;
   esac
 done

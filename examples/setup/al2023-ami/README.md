@@ -267,22 +267,22 @@ it. This requires **Karpenter ≥ v1.15.2** (the v1 `EC2NodeClass`/`NodePool` AP
 landed in v1.15.1), installed on a cluster that already has nodes (Karpenter's controller needs a
 node to run on).
 
-!!! note "Scheduling a sandbox pod onto a Karpenter node needs more than the node"
-
-    A pod that sets `runtimeClassName: isolated-sandbox` carries a per-pod overhead of
-    `eks.amazonaws.com/nitro-sandbox: "1"` from the RuntimeClass. No EC2 instance type advertises
-    that resource until a node has booted, so self-managed Karpenter's scheduler reports
-    `label eks.amazonaws.com/nitro-sandbox does not have known values` and does not provision a
-    node for the pod. This is an open upstream limitation tracked in
-    [aws/karpenter-provider-aws#9904](https://github.com/aws/karpenter-provider-aws/issues/9904).
-
-    The forward path is the alpha **NodeOverlay**
-    ([`deploy/karpenter-nodeoverlay.yaml`](deploy/karpenter-nodeoverlay.yaml), behind the
-    `nodeOverlay` feature gate), which advertises the slot capacity to the scheduler. On the
-    versions available while this blueprint was written, applying it (Ready and validated) did not
-    yet make a sandbox pod schedulable, so **run sandbox pods via the managed node group**, or on
-    EKS Auto Mode, which models this natively. Use Karpenter here to provision the enclave-capable
-    nodes; schedule the sandbox pods through the node group until #9904 ships.
+> **Scheduling a sandbox pod onto a Karpenter node needs more than the node**
+>
+> A pod that sets `runtimeClassName: isolated-sandbox` carries a per-pod overhead of
+> `eks.amazonaws.com/nitro-sandbox: "1"` from the RuntimeClass. No EC2 instance type advertises
+> that resource until a node has booted, so self-managed Karpenter's scheduler reports
+> `label eks.amazonaws.com/nitro-sandbox does not have known values` and does not provision a
+> node for the pod. This is an open upstream limitation tracked in
+> [aws/karpenter-provider-aws#9904](https://github.com/aws/karpenter-provider-aws/issues/9904).
+>
+> The forward path is the alpha **NodeOverlay**
+> ([`deploy/karpenter-nodeoverlay.yaml`](deploy/karpenter-nodeoverlay.yaml), behind the
+> `nodeOverlay` feature gate), which advertises the slot capacity to the scheduler. On the
+> versions available while this blueprint was written, applying it (Ready and validated) did not
+> yet make a sandbox pod schedulable, so **run sandbox pods via the managed node group**, or on
+> EKS Auto Mode, which models this natively. Use Karpenter here to provision the enclave-capable
+> nodes; schedule the sandbox pods through the node group until #9904 ships.
 
 ## Optional: build with EC2 Image Builder
 

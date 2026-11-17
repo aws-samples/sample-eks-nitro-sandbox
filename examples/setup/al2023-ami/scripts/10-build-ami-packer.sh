@@ -89,6 +89,11 @@ snap_ids=$(aws ec2 describe-images --region "$AWS_REGION" --image-ids "$ami_id" 
   --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' --output text) || die "could not read the snapshots of $ami_id"
 for snap in $snap_ids; do
   [ "$snap" = None ] && continue
+  [[ "$snap" =~ ^snap-[0-9a-f]+$ ]] || die "AMI $ami_id lists '$snap', which is not a snapshot id"
+  printf 'SNAPSHOT_ID=%s\n' "$snap" >> "$RUN_STATE_DIR/run-state.env"   # before tagging, for clean.sh
+done
+for snap in $snap_ids; do
+  [ "$snap" = None ] && continue
   aws ec2 create-tags --region "$AWS_REGION" --resources "$snap" \
     --tags "Key=$TAGS_OWNER_KEY,Value=$TAGS_OWNER_VALUE" "Key=$TAGS_RUN_KEY,Value=$RUN_ID" "Key=auto-delete,Value=no"
 done
