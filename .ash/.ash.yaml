@@ -391,15 +391,15 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_8
       path: 'examples/integrations/temporal/deploy/worker.yaml'
-      reason: 'One task-queue Worker process (worker/Dockerfile:38; worker/harness/worker.py:91-100); when it exits Kubernetes restarts the container, and detecting a hang would need a heartbeat the harness does not expose (worker.yaml:51-55; README.md:1297-1300)'
+      reason: 'One task-queue Worker process (worker/Dockerfile:38; worker/harness/worker.py:91-100); when it exits Kubernetes restarts the container, and detecting a hang would need a heartbeat the harness does not expose (worker.yaml:51-55; README.md:1301-1304)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_9
       path: 'examples/integrations/temporal/deploy/worker.yaml'
-      reason: 'Task-queue Worker with no Service and no port, so a readiness probe gates no Service traffic (worker.yaml:51-56; README.md:1297-1300)'
+      reason: 'Task-queue Worker with no Service and no port, so a readiness probe gates no Service traffic (worker.yaml:51-56; README.md:1301-1304)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_38
       path: 'examples/integrations/temporal/deploy/worker.yaml'
-      reason: 'The Worker calls the Kubernetes API with its ServiceAccount token (worker.yaml:36-40); the namespace-scoped Role allows only sandboxes get/create/patch/delete, pods get and pods/exec get/create (rbac.yaml:20-50), and the page discloses the token (README.md:751-755)'
+      reason: 'The Worker calls the Kubernetes API with its ServiceAccount token (worker.yaml:36-40); the namespace-scoped Role allows only sandboxes get/create/patch/delete, pods get and pods/exec get/create (rbac.yaml:20-50), and the page discloses the token (README.md:755-759)'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/managed-agents/claude-managed-agents/deploy/*.yaml'
@@ -419,7 +419,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
-      reason: 'By design: the blueprint exposes PostgreSQL only through a ClusterIP Service, with no Ingress, LoadBalancer, NodePort, host port or host network (postgresql.yaml:28-33); a sample ships no network policy (AGENTS.md:546-552), and the page says the Temporal server and its PostgreSQL are unrestricted on the wire and links the network policy sample (README.md:80-87)'
+      reason: 'By design: the blueprint exposes PostgreSQL only through a ClusterIP Service, with no Ingress, LoadBalancer, NodePort, host port or host network (postgresql.yaml:29-34); a sample ships no network policy (AGENTS.md:546-552), and the page says the Temporal server and its PostgreSQL are unrestricted on the wire and links the network policy sample (README.md:80-87)'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/integrations/temporal/deploy/worker.yaml'
@@ -446,7 +446,7 @@ global_settings:
     # UID 70 is the official PostgreSQL image's own non-root postgres user.
     - rule_id: CKV_K8S_40
       path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
-      reason: 'UID/GID 70 is the non-root postgres user of the pinned official postgres:17-alpine image; the pod sets runAsNonRoot with runAsUser, runAsGroup and fsGroup 70, drops every capability, blocks privilege escalation and keeps the root filesystem read-only (postgresql.yaml:73-82,87,105-109)'
+      reason: 'UID/GID 70 is the non-root postgres user of the pinned official postgres:17-alpine image; the pod sets runAsNonRoot with runAsUser, runAsGroup and fsGroup 70, drops every capability, blocks privilege escalation and keeps the root filesystem read-only (postgresql.yaml:74-83,88,106-110)'
       expiration: '2027-12-31'
     # Destination pod with no policy of its own: the target an egress policy allows or denies.
     - rule_id: CKV2_K8S_6
@@ -1116,7 +1116,7 @@ global_settings:
     # Namespace is set at apply time.
     - rule_id: CKV_K8S_21
       path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
-      reason: 'Applied with kubectl -n (README.md:214, scripts/common.sh:270)'
+      reason: 'Namespace set at install time: the page creates it with kubectl -n (README.md:214), and the install command setup prints applies it with kubectl -n (scripts/common.sh:270)'
       expiration: '2027-12-31'
     # bubblewrap needs a privileged root init container and a privileged working container (analyst-pod.yaml:20-30).
     - rule_id: CKV_K8S_16

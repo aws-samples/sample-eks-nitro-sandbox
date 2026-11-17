@@ -4,8 +4,9 @@
 # This file is part of the Temporal server install, which is the reader's step
 # and not something this sample's scripts do: a Temporal server is a shared
 # install, so if one is already on your cluster, use it as it is and skip this.
-# Apply it with `kubectl -n <your temporal namespace> apply -f`, so the
-# namespace is yours to choose and is not written in here.
+# Create it with `kubectl -n <your temporal namespace> create -f`, so the
+# namespace is yours to choose and is not written in here. Create, not apply:
+# an object that already exists stops the install instead of being changed.
 #
 # The password is NOT in this file. It comes from a Secret named
 # `temporal-postgresql`, key `password`, which the page has you create from

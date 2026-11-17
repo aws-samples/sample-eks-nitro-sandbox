@@ -211,9 +211,13 @@ kubectl create namespace temporal
 openssl rand -base64 24 | tr -d '\n' \
   | kubectl -n temporal create secret generic temporal-postgresql --from-file=password=/dev/stdin
 kubectl get storageclass temporal-postgresql-gp3 || kubectl create -f deploy/temporal/storage-class.yaml
-kubectl -n temporal apply -f deploy/temporal/postgresql.yaml
+kubectl -n temporal create -f deploy/temporal/postgresql.yaml
 kubectl -n temporal rollout status statefulset/temporal-postgresql
 ```
+
+The manifest is created, not applied: in the namespace you have just made, its Service,
+ConfigMap and StatefulSet must all be new, and `kubectl create` stops on one that already
+exists instead of changing it.
 
 Kubernetes hands PostgreSQL that password as a file, not as an environment variable in the
 pod spec: the manifest mounts the Secret read-only at `/run/secrets/postgresql` and points
