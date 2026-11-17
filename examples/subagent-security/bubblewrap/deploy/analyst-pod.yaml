@@ -30,6 +30,10 @@
 # own doing and the run reads it from /proc: UID/GID 1000, an empty capability bounding
 # set, no_new_privs, and a seccomp filter this application compiled.
 #
+# Privilege does not need a writable image, so both containers keep a read-only root
+# filesystem. The init container writes only the guest's procfs, and the controller's run
+# directories and temporary files go to the emptyDir volumes at /var/lib/analyst and /tmp.
+#
 # It sets CPU and memory requests, which most samples here do not. A pod with no requests
 # gets a small default VM of about 130 MiB, and this one has to hold a Python interpreter,
 # the Strands Agents and AWS SDK packages and a short-lived tool process at once; without
@@ -77,6 +81,7 @@ spec:
       # alone. It is not a node setting and no other pod on the node is affected.
       securityContext:
         privileged: true
+        readOnlyRootFilesystem: true
         runAsUser: 0
         runAsGroup: 0
         runAsNonRoot: false
@@ -89,6 +94,7 @@ spec:
       command: ["sleep", "infinity"]
       securityContext:
         privileged: true
+        readOnlyRootFilesystem: true
       env:
         - { name: AWS_REGION, value: "<AWS_REGION>" }
         - { name: AWS_DEFAULT_REGION, value: "<AWS_REGION>" }

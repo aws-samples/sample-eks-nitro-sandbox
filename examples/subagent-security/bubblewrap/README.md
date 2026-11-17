@@ -159,7 +159,9 @@ procfs in the guest without it. That rules out `allowPrivilegeEscalation: false`
 leaves the container's own seccomp profile unconfined, and the run prints both facts about
 the controller rather than glossing them. What the *tool processes* get instead is
 bubblewrap's own doing, and the run reads it from `/proc`: UID 1000, an empty capability
-bounding set, `no_new_privs`, and a seccomp filter. Step 5 has the detail.
+bounding set, `no_new_privs`, and a seccomp filter. Privilege does not cost the pod a
+read-only root filesystem, though: both containers keep `readOnlyRootFilesystem: true`.
+Step 5 has the detail.
 
 ## Steps
 
@@ -487,6 +489,7 @@ spec:
           test "$(cat /proc/sys/user/max_user_namespaces)" = 128
       securityContext:
         privileged: true
+        readOnlyRootFilesystem: true
         runAsUser: 0
         runAsGroup: 0
         runAsNonRoot: false
@@ -495,7 +498,13 @@ spec:
       image: <ANALYST_IMAGE>
       securityContext:
         privileged: true
+        readOnlyRootFilesystem: true
 ```
+
+Neither container needs a writable image to do this, so both keep a read-only root
+filesystem. The init container's one write is to `/proc/sys`, in the guest's procfs, and
+the controller writes its run directories to `/var/lib/analyst` and its temporary files to
+`/tmp`, the two `emptyDir` volumes the pod mounts.
 
 Both privileges reach the guest's own kernel and stop there: the guest is the lightweight VM
 that holds this pod's containers, and the node's kernel is on the other side of the Nitro
