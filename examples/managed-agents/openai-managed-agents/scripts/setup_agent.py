@@ -27,7 +27,7 @@ stops, naming the error by its exception class and, when it has one, its HTTP
 status, and nothing the server sent.
 
 Every value this step interpolates into what it prints is checked before it is
-printed. The line it prints is pasted into .env and loaded with
+printed, including the exception class name in the message below. The line it prints is pasted into .env and loaded with
 `set -a; . ./.env; set +a`, which parses the file as shell code, so an expansion
 or a command in a value may run rather than being assigned. Quoting hides this: a
 value can sit inertly in .env and still run once printed back unquoted, or add a
@@ -48,12 +48,11 @@ line to this step's own output.
 A refusal never repeats the offending value, since that would put the same string
 on your terminal.
 
-Two things that reach your terminal are not interpolated values and are handled
-their own way: a failure inside a dependency, whose traceback could carry text
-from .env or from whatever OPENAI_BASE_URL points at, so main() is wrapped below
-and shows only an exception class name; and the SDK's own debug logging, which
-scripts/_client.py turns off before importing it, because at debug level it
-writes response headers out verbatim.
+One thing that reaches your terminal is not an interpolated value and is handled
+its own way: a failure inside a dependency, whose traceback could carry text from
+.env or from whatever OPENAI_BASE_URL points at, so main() is wrapped below and
+shows only an exception class name. The SDK's own logging is a separate matter,
+held down by scripts/_client.py; see its comment and tests/test_client.py.
 
 Choosing the model
 ------------------
@@ -170,7 +169,7 @@ DISPLAYABLE_MODEL = re.compile(r"\A[A-Za-z0-9._:/-]{1,64}\Z")
 UNEXPECTED_FAILURE_MESSAGE = """\
 This step stopped on an unexpected {kind}, and the details are not shown: a
 failure deep in a dependency can carry text from .env or from whatever
-OPENAI_BASE_URL points at, and this step will not put either on your terminal.
+OPENAI_BASE_URL points at, and this step does not repeat what the failure said.
 Check OPENAI_BASE_URL, OPENAI_API_KEY and the rest of .env, then run it again."""
 
 NO_CREATED_ID_MESSAGE = """\
@@ -300,4 +299,11 @@ if __name__ == "__main__":
         # which comes from installed code rather than from either of those.
         # SystemExit and KeyboardInterrupt are not Exception, so a refusal above
         # and a reader's Ctrl-C both still behave as they did.
-        sys.exit(UNEXPECTED_FAILURE_MESSAGE.format(kind=type(exc).__name__))
+        # The class name comes from installed code, not from .env or the endpoint,
+        # and no SDK route was found by which either controls it. Constrained to an
+        # identifier anyway, rather than trusted: a dynamically built class can be
+        # named anything, and this is the one value left in a refusal message.
+        kind = type(exc).__name__
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", kind):
+            kind = "error"
+        sys.exit(UNEXPECTED_FAILURE_MESSAGE.format(kind=kind))

@@ -34,6 +34,9 @@
 # The fake keeps a JSON state file per case and logs every call. Poll intervals are 0 here.
 # The account id is the AWS documentation's example id.
 set -uo pipefail
+# A reader's own config.env (in the sample folder or ~/ubuntu-ami/) must not change what this suite
+# tests: scripts/lib/common.sh skips it while this test hook is set.
+export UBUNTU_AMI_TESTS_IGNORE_CONFIG_ENV=1
 export PYTHONDONTWRITEBYTECODE=1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAMPLE="$(cd "$HERE/.." && pwd)"
@@ -229,7 +232,7 @@ s["ec2"]["instances"] = []
 s["image"] = {"pending_reads": 3}'
 su() { # su <case> [args]: the real setup.sh with the fixture inputs, plus SU_ENV
   local c="$1"; shift
-  env LOCK_FILE="$WORK/fixture.lock" RUNTIME_ARTIFACT_FILE=fixture.zip BUILD_SUBNET_ID=subnet-0example1 \
+  env LOCK_FILE="$WORK/fixture.lock" BUILD_SUBNET_ID=subnet-0example1 \
     NODE_SUBNET_IDS=subnet-0example2 SSM_ONLINE_TRIES=2 "${SU_ENV[@]}" bash "$SAMPLE/setup.sh" "$@" > "$WORK/$c.log" 2>&1 < /dev/null
 }
 SU_ENV=()
@@ -301,7 +304,8 @@ join_state() {
 import json, sys
 s = json.load(open(sys.argv[1]))
 s["eks"]["addons"] = {"example-cluster/vpc-cni": {"status": "ACTIVE", "addonVersion": "v1.0.0-eksbuild.1",
-                                                  "configurationValues": "{\"enableNetworkPolicy\":\"true\"}"}}
+                                                  "configurationValues": "{\"enableNetworkPolicy\":\"true\"}"},
+                      "example-cluster/kube-proxy": {"status": "ACTIVE", "addonVersion": "v1.36.0-eksbuild.1"}}
 img = [i for i in s["ec2"]["images"] if i["ImageId"] == "ami-0fa002"][0]
 exec(sys.argv[3], {"s": s, "img": img})
 json.dump(s, open(sys.argv[2], "w"))
@@ -323,6 +327,8 @@ join_state j-foreign '[t.update(Value="otherrun1") for t in img["Tags"] if t["Ke
 join_reject j-foreign "REJECT --join with an AMI tagged for another run" "does not carry ManagedBy=ubuntu-ami-sample and RunId=$RUNID"
 join_state j-nocni 'del s["eks"]["addons"]'
 join_reject j-nocni "REJECT --join on a cluster with no vpc-cni" 'PREREQUISITE NOT MET: cluster example-cluster has no managed vpc-cni add-on'
+join_state j-nokubeproxy 'del s["eks"]["addons"]["example-cluster/kube-proxy"]'
+join_reject j-nokubeproxy "REJECT --join on a cluster with no kube-proxy" 'PREREQUISITE NOT MET: cluster example-cluster has no managed kube-proxy add-on'
 join_state j-noami
 sed -i '/^AMI_ID=/d' "$ISSUE10_RUN_DIR/out/runs/$RUNID/run-state.env"
 join_reject j-noami "REJECT --join for a run with no AMI recorded" 'has no AMI_ID'

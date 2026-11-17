@@ -364,6 +364,10 @@ global_settings:
       path: 'examples/isolation/sandbox-limits/deploy/probe-*.yaml'
       reason: 'Probe pods already carry a readiness probe; a liveness probe on a sleep loop gates nothing'
       expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/subagent-security/nono/deploy/analyst-pod.yaml'
+      reason: 'Idle exec target (sleep infinity, restartPolicy: Never, analyst-pod.yaml:33,54); the controller runs as a kubectl exec child whose exit status run.sh checks (run.sh:45-50), so a probe on the sleep process gates nothing'
+      expiration: '2027-12-31'
     # Poller and autoscaler: single-replica first-party pods, no port or Service.
     - rule_id: CKV_K8S_8
       path: 'examples/managed-agents/claude-managed-agents/deploy/*.yaml'
@@ -396,6 +400,10 @@ global_settings:
     - rule_id: CKV2_K8S_6
       path: 'examples/subagent-security/analyst/deploy/supplier-api.yaml'
       reason: 'By design: an ordinary synthetic supplier pod with ClusterIP Services only and no external endpoint (supplier-api.yaml:1-6,24,38), whose reach no policy restricts; a sample ships no network policy (AGENTS.md:556-562), and the section page says none of these blueprints adds one and links the network policy sample (subagent-security/README.md:125-131)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/subagent-security/nono/deploy/analyst-pod.yaml'
+      reason: 'By design: nono confines the tool processes inside the pod, not the pod; a sample ships no network policy (AGENTS.md:556-562), and the page says nothing in this blueprint bounds the pod egress and links the network policy sample (README.md:132-138,777-781)'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/agent-sandbox/brain-and-hands/deploy/brain.yaml'
@@ -1138,6 +1146,20 @@ global_settings:
       path: 'examples/managed-agents/openai-managed-agents/tests/*.py'
       reason: 'pytest asserts by design; nothing under tests/ ships in the image (Dockerfile:38-39 copies pyproject.toml and src/ only)'
       expiration: '2027-12-31'
+    # Scoped to the one file that makes these calls, not to the folder: the B101
+    # entry above is folder-wide because pytest asserts are everywhere, which is not
+    # the same justification. Not pinned to lines either, because this file is edited
+    # every review round and a line pin breaks on each edit. Added for #230, whose
+    # tests have to run the interpreter in a child process because what they test is
+    # import-time and logger state, which a test inside the pytest process cannot see.
+    - rule_id: B404
+      path: 'examples/managed-agents/openai-managed-agents/tests/test_client.py'
+      reason: 'Subprocess import is required to run this interpreter on a driver the test writes itself; the import executes no command, and nothing under tests/ ships in the image (Dockerfile:38-39 copies pyproject.toml and src/ only)'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/managed-agents/openai-managed-agents/tests/test_client.py'
+      reason: 'Fixed argument list and no shell: [sys.executable, <driver the test wrote into its own pytest tmp_path>], with the environment built by the test. No value from a reader, a network response or the repository reaches the argument list'
+      expiration: '2027-12-31'
     - rule_id: B404
       path: 'examples/managed-agents/openai-managed-agents/src/launcher/serve.py'
       line_start: 45
@@ -1393,23 +1415,48 @@ global_settings:
       path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-reject.yaml'
       reason: 'Reject control: names an AppArmor profile the node never loaded, so it is refused and never runs (pod-apparmor-reject.yaml:1-5)'
       expiration: '2027-12-31'
-    # The AppArmor accept control writes to /etc as root to show the profile allows it (pod-apparmor-scoped.yaml:1-10).
+    # The AppArmor accept control writes to /etc as root to show the profile allows it (pod-apparmor-scoped.yaml:1-10),
+    # keeps the one capability its /etc/shadow write needs to reach the profile, and is a one-shot pod.
     - rule_id: CKV_K8S_22
       path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'The test writes to /etc as root to show the scoped profile allows it and denies /etc/shadow (pod-apparmor-scoped.yaml:4-6)'
+      reason: 'The test writes to /etc as root to show the scoped profile allows it and denies /etc/shadow (pod-apparmor-scoped.yaml:4-6,44)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_23
       path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'The test writes to /etc as root to show the scoped profile allows it and denies /etc/shadow (pod-apparmor-scoped.yaml:4-6)'
+      reason: 'The test writes to /etc as root to show the scoped profile allows it and denies /etc/shadow (pod-apparmor-scoped.yaml:4-6,44)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_40
       path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'The test writes to /etc as root to show the scoped profile allows it and denies /etc/shadow (pod-apparmor-scoped.yaml:4-6)'
+      reason: 'The test writes to /etc as root to show the scoped profile allows it and denies /etc/shadow (pod-apparmor-scoped.yaml:4-6,44)'
       expiration: '2027-12-31'
-    # Network-isolated sandbox: no network to restrict (AGENTS.md, Security rules).
+    - rule_id: CKV_K8S_25
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'Drops ALL and adds back only DAC_OVERRIDE: /etc/shadow has mode 0000, so without it the write is refused on the file mode before AppArmor is asked and no DENIED line is logged (pod-apparmor-scoped.yaml:44-52)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'The sample ships no network policy (AGENTS.md, Security rules); this one-shot AppArmor control listens on nothing (pod-apparmor-scoped.yaml:33-35,42-43)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'One-shot and serving nothing: test.sh waits for it to run, reads it and deletes it by name, so a probe would gate nothing (pod-apparmor-scoped.yaml:33-35)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
+      reason: 'One-shot and serving nothing: test.sh waits for it to run, reads it and deletes it by name, so a probe would gate nothing (pod-apparmor-scoped.yaml:33-35)'
+      expiration: '2027-12-31'
+    # Network-isolated sandbox: no network to restrict or to probe over (AGENTS.md, Security rules).
     - rule_id: CKV2_K8S_6
       path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
       reason: 'Booted with sandbox.amazonaws.com/network-isolated: only loopback, no route (pod-isolated-sandbox.yaml:1-5,22)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Booted with no network, so kubelet has nothing to probe over; it only sleeps and test.sh drives it with kubectl exec (pod-isolated-sandbox.yaml:1-3,22,28-29)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Booted with no network, so kubelet has nothing to probe over; it only sleeps and test.sh drives it with kubectl exec (pod-isolated-sandbox.yaml:1-3,22,28-29)'
       expiration: '2027-12-31'
     # Cilium: the clients are selected by the CiliumNetworkPolicy in policy.yaml, which checkov does not read; the
     # rest are its destinations and the host-network probe the sample needs to show the socket load balancer.
@@ -1421,42 +1468,150 @@ global_settings:
       path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
       reason: 'node-probe uses hostNetwork on purpose: the node namespace is where Cilium serves Services (workloads.yaml:10-11)'
       expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
+      reason: 'Only node-probe has none: an idle host-network pod (sleep loop) driven by kubectl exec; a probe gates nothing (workloads.yaml:169-170). The six httpd pods have HTTP probes'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
+      reason: 'Only node-probe has none: an idle host-network pod (sleep loop) driven by kubectl exec; a probe gates nothing (workloads.yaml:169-170). The six httpd pods have HTTP probes'
+      expiration: '2027-12-31'
     # Pinned lines: test fixtures (a fake commit SHA, env-record strings with placeholder values).
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/packages/test-inputs.sh'
-      line_start: 149
-      line_end: 149
+      line_start: 308
+      line_end: 308
       reason: 'Fake commit SHA in a test fixture, not a secret'
       expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/scripts/test-apparmor-checks.sh'
-      line_start: 329
-      line_end: 329
-      reason: 'Test fixture: a run-state record of placeholder names and Region, not a secret'
+      line_start: 336
+      line_end: 336
+      reason: 'Test fixture: a run-state record of placeholder names, Region and AMI id, not a secret'
       expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/scripts/test-run-scope.sh'
-      line_start: 768
-      line_end: 768
+      line_start: 771
+      line_end: 771
       reason: 'Test fixture: a run-state record of placeholder names and Region, not a secret'
-      expiration: '2027-12-31'
-    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
-      path: 'examples/setup/ubuntu-ami/scripts/test-run-scope.sh'
-      line_start: 1072
-      line_end: 1072
-      reason: 'Fake commit SHA in a test fixture, not a secret'
       expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/scripts/test-setup-flow.sh'
-      line_start: 406
-      line_end: 406
+      line_start: 412
+      line_end: 412
       reason: 'Test fixture: a run-state record of placeholder names and Region, not a secret'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/scripts/testlib/fixture_inputs.py'
-      line_start: 30
-      line_end: 30
+      line_start: 29
+      line_end: 29
       reason: 'Fake commit SHA in a test fixture, not a secret'
+      expiration: '2027-12-31'
+    # ubuntu-ami runtime verification: curl and openssl run with fixed argument lists, no shell.
+    - rule_id: B404
+      path: 'examples/setup/ubuntu-ami/packages/lib/runtime_verify.py'
+      line_start: 50
+      line_end: 50
+      reason: 'Imports subprocess to run curl and openssl with fixed argument lists; the import runs nothing'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/setup/ubuntu-ami/packages/lib/runtime_verify.py'
+      line_start: 159
+      line_end: 160
+      reason: 'curl with a fixed argument list and no shell; the URL and the output path come from packages/sources.lock and the helper''s own folder'
+      expiration: '2027-12-31'
+    - rule_id: B607
+      path: 'examples/setup/ubuntu-ami/packages/lib/runtime_verify.py'
+      line_start: 159
+      line_end: 160
+      reason: 'curl is taken from PATH on purpose, as the sample''s shell helpers take it'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/setup/ubuntu-ami/packages/lib/runtime_verify.py'
+      line_start: 198
+      line_end: 199
+      reason: 'openssl dgst with a fixed argument list and no shell; its files are the committed key and the downloaded manifest and signature'
+      expiration: '2027-12-31'
+    - rule_id: B607
+      path: 'examples/setup/ubuntu-ami/packages/lib/runtime_verify.py'
+      line_start: 198
+      line_end: 199
+      reason: 'openssl is taken from PATH on purpose, as the Amazon EKS User Guide''s own verification command does'
+      expiration: '2027-12-31'
+    - rule_id: B404
+      path: 'examples/setup/ubuntu-ami/scripts/testlib/fixture_inputs.py'
+      line_start: 25
+      line_end: 25
+      reason: 'Test fixture: imports subprocess to run openssl with fixed arguments; the import runs nothing'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/setup/ubuntu-ami/scripts/testlib/fixture_inputs.py'
+      line_start: 54
+      line_end: 54
+      reason: 'Test fixture: openssl with fixed arguments and no shell makes the clusterless tests'' key pair and signature'
+      expiration: '2027-12-31'
+    - rule_id: B607
+      path: 'examples/setup/ubuntu-ami/scripts/testlib/fixture_inputs.py'
+      line_start: 54
+      line_end: 54
+      reason: 'Test fixture: openssl is taken from PATH on purpose, as the tests'' other tools are'
+      expiration: '2027-12-31'
+    # ---- integrations/istio: pods are plain on purpose ----
+    # workloads.yaml holds four pods: echo, client-a and client-b in Nitro sandboxes (runtimeClassName
+    # isolated-sandbox), and client-plain, an ordinary pod with no sandbox and no sidecar, the plaintext
+    # contrast. The lesson is Istio sidecar injection, so none of them carries hardening the page would
+    # have to explain. Istio adds istio-init and istio-proxy at admission; they are not in this file.
+    - rule_id: CKV_K8S_8
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Liveness: client-a, client-b and client-plain run sleep infinity and are driven by kubectl exec, and echo is a demo HTTP server; restarting one on a hang adds nothing the page shows (workloads.yaml:28-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Readiness: setup.sh waits for each rollout and for client-plain Ready (setup.sh step 3), which without a probe means the containers started; the page checks traffic itself rather than readiness (README.md, Good to know: Check traffic, not readiness)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_38
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'Plain on purpose for all four pods: three sandboxed workloads and the ordinary client-plain contrast pod; the sample shows Istio injection and adds no securityContext the page would have to explain (workloads.yaml:1-10,103-117)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/integrations/istio/deploy/workloads.yaml'
+      reason: 'A sample ships no network policy (AGENTS.md, Security rules); the page says nothing restricts pod connectivity and links the network policy blueprint (README.md, Good to know)'
       expiration: '2027-12-31'
     # ---- Baseline: hardening not done yet. Each expires 2027-01-31, so CI fails again ----
     # ---- unless the sample follow-up PR fixes the finding and deletes its entry. ----
@@ -1591,19 +1746,6 @@ global_settings:
     - rule_id: CKV_K8S_9
       path: 'examples/confidential/secrets-manager-secret/deploy/pod.yaml'
       reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in #145'
-      expiration: '2027-01-31'
-    # Baseline: subagent-security/nono
-    - rule_id: CKV2_K8S_6
-      path: 'examples/subagent-security/nono/deploy/analyst-pod.yaml'
-      reason: 'Baseline: subagent-security/nono merged before the ASH gate; hardening tracked in #143'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_40
-      path: 'examples/subagent-security/nono/deploy/analyst-pod.yaml'
-      reason: 'Baseline: subagent-security/nono merged before the ASH gate; hardening tracked in #143'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/subagent-security/nono/deploy/analyst-pod.yaml'
-      reason: 'Baseline: subagent-security/nono merged before the ASH gate; hardening tracked in #143'
       expiration: '2027-01-31'
     # Baseline: ci-cd/gitlab-ci
     - rule_id: CKV2_K8S_6
@@ -1841,124 +1983,6 @@ global_settings:
     - rule_id: CKV_DOCKER_3
       path: 'examples/subagent-security/openshell/supervisor/Dockerfile'
       reason: 'Baseline: subagent-security/openshell merged before the ASH gate; hardening tracked in #152'
-      expiration: '2027-01-31'
-    # Baseline: setup/cilium-ubuntu
-    - rule_id: CKV_K8S_20
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_22
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_23
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_28
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_29
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_30
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_31
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_37
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_40
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_9
-      path: 'examples/setup/cilium-ubuntu/deploy/workloads.yaml'
-      reason: 'Baseline: setup/cilium-ubuntu merged before the ASH gate; hardening tracked in #155'
-      expiration: '2027-01-31'
-    # Baseline: setup/ubuntu-ami
-    - rule_id: CKV2_K8S_6
-      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_20
-      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_28
-      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_30
-      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_31
-      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_37
-      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_9
-      path: 'examples/setup/ubuntu-ami/deploy/pod-apparmor-scoped.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_20
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_22
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_23
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_28
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_30
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_31
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_37
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_40
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_9
-      path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
-      reason: 'Baseline: setup/ubuntu-ami merged before the ASH gate; hardening tracked in #154'
       expiration: '2027-01-31'
     # Strands Box: exact sample exceptions. Privileged Nitro configuration is a documented
     # demonstration tradeoff, not evidence that its capabilities are minimal. Revisit

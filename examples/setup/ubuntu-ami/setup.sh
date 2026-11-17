@@ -9,8 +9,9 @@
 # below), never at create-image time (step 8) and never when verification fails. See
 # scripts/verify-fresh-instance.sh and scripts/lib/btf-tag.sh for exactly where and how.
 #
-#   ./setup.sh --prepare     # preflight only: verify every pinned input and the runtime
-#                            #   archive locally; create nothing
+#   ./setup.sh --prepare     # preflight only: verify every pinned input this workstation can
+#                            #   reach (the runtime release's signed manifest and the published
+#                            #   sidecars, not the large files); create nothing
 #   ./setup.sh --dry-run     # alias of --prepare (kept for older docs)
 #   ./setup.sh               # run the whole build and join
 #   ./setup.sh --ami-only    # steps 1 to 9 only: build, verify and tag the AMI; no cluster read,
@@ -27,10 +28,11 @@
 # id and the new kernel release before the next stage runs.
 #
 # This script does not SSH anywhere: the build host is reached through AWS Systems Manager Run
-# Command, and the build security group carries no inbound rule. Files reach the build host
-# through a per-run S3 staging bucket (scripts/00b-stage-bucket.sh), never through an SSM shell.
-# The local preflight STOPS (exit 3) with the documented prerequisite when the operator-supplied
-# runtime archive is not present; it never substitutes an internal source tree or a private URL.
+# Command, and the build security group carries no inbound rule. The sample's scripts reach the
+# build host through a per-run S3 staging bucket (scripts/00b-stage-bucket.sh), never through an
+# SSM shell. The build host downloads the runtime release, the guest image and Firecracker from
+# their public locations itself and verifies them against packages/sources.lock
+# (scripts/30-runtime-install.sh).
 #
 # Private run evidence (the resolved base AMI and its serial, the observed containerd version,
 # each stage's output) is written under $OUT_DIR/runs/<run-id>/evidence, the repository's
@@ -140,24 +142,18 @@ if [ "$MODE" = join ]; then
   exit 0
 fi
 
-# --- Step 1: local preflight (no cloud calls) ---------------------------------------------
-log "Step 1/10: local preflight (lock file, pinned public inputs, the operator-supplied runtime archive)"
+# --- Step 1: local preflight (no AWS call) -------------------------------------------------
+log "Step 1/10: local preflight (lock file, pinned public inputs, the runtime release's signed manifest and the published sidecars)"
 [[ -f "$LOCK_FILE" ]] || die "missing $LOCK_FILE"
-rc=0
-bash "$SAMPLE_DIR/packages/fetch-runtime-artifacts.sh" || rc=$?
-if [[ "$rc" == 3 ]]; then
-  log "setup.sh STOPS here: the documented runtime-archive prerequisite is not met."
-  exit 3
-fi
-[[ "$rc" == 0 ]] || die "the runtime archive did not verify (exit $rc); see the FATAL line above"
+bash "$SAMPLE_DIR/packages/fetch-runtime-artifacts.sh" --check \
+  || die "the published runtime inputs did not verify against packages/sources.lock; see the FATAL line above"
 bash "$SAMPLE_DIR/packages/fetch-kernel.sh" "$RUNTIME_ARTIFACTS_DIR" >/dev/null
 bash "$SAMPLE_DIR/packages/fetch-kernel-patch.sh" "$RUNTIME_ARTIFACTS_DIR" >/dev/null
 bash "$SAMPLE_DIR/packages/fetch-erofs-utils.sh" "$RUNTIME_ARTIFACTS_DIR" >/dev/null
-RUNTIME_ZIP="$RUNTIME_ARTIFACTS_DIR/${RUNTIME_ARTIFACT_FILE:-$(lock_field runtime-archive file)}"
-log "all pinned public inputs verified; runtime archive and its eight payloads verified."
+log "all pinned public inputs verified; the build host downloads and verifies the runtime release, the guest image and Firecracker itself."
 
 if [[ "$PREPARE_ONLY" == 1 ]]; then
-  log "--prepare: inputs verified, pins resolved, runtime prerequisite satisfied. No AWS resources created."
+  log "--prepare: inputs verified, pins resolved. No AWS resources created."
   log "Re-run without --prepare to build, bake, verify and join."
   exit 0
 fi
@@ -225,16 +221,15 @@ record BASE_AMI_CREATION_DATE "$BASE_AMI_CREATED"
 record BASE_AMI_OWNER "$BASE_AMI_OWNER"
 
 # --- Step 4: the per-run S3 staging bucket ---------------------------------------------------
-log "Step 4/10: per-run S3 staging bucket for the sample's scripts and the runtime archive (scripts/00b-stage-bucket.sh)"
+log "Step 4/10: per-run S3 staging bucket for the sample's scripts (scripts/00b-stage-bucket.sh)"
 STAGE_TARBALL="$RUN_STATE_DIR/ubuntu-ami-sample-${RUN_ID}.tar.gz"
 (cd "$SAMPLE_DIR" && tar -czf "$STAGE_TARBALL" scripts packages manifests deploy config.env.example)
 TARBALL_SHA=$(sha256sum "$STAGE_TARBALL" | awk '{print $1}')
-ZIP_SHA=$(lock_field runtime-archive sha256)
-bash "$SAMPLE_DIR/scripts/00b-stage-bucket.sh" create "$STAGE_TARBALL" "$RUNTIME_ZIP"
+bash "$SAMPLE_DIR/scripts/00b-stage-bucket.sh" create "$STAGE_TARBALL"
 # shellcheck source=/dev/null
 . "$RUN_STATE_DIR/stage.env"
-# Until the revocation in step 6, any exit revokes the staged objects and the build role's read.
-arm_staging_revoke "$STAGE_BUCKET" "$(basename "$STAGE_TARBALL")" "$(basename "$RUNTIME_ZIP")"
+# Until the revocation in step 6, any exit revokes the staged object and the build role's read.
+arm_staging_revoke "$STAGE_BUCKET" "$(basename "$STAGE_TARBALL")"
 record STAGE_BUCKET "$STAGE_BUCKET"
 
 # --- Step 5: build security group (no inbound rule) and the build host, reached via SSM ----
@@ -322,32 +317,28 @@ run_ssm() { # run_ssm <instance-id> <timeout-seconds> <shell-command>
   send_and_wait "$1" "$2" AWS-RunShellScript "{\"commands\":[$(json_str "$3")],\"executionTimeout\":[\"$2\"]}"
 }
 
-# --- Step 6: stage this run's files onto the build host from S3, and verify them there ------
+# --- Step 6: stage this run's scripts onto the build host from S3, and verify them there ----
 # AWS-RunRemoteScript downloads with the build host's instance profile (the per-run read
-# 00b-stage-bucket.sh granted); the hashes it is checked against come from THIS workstation
+# 00b-stage-bucket.sh granted); the hash it is checked against comes from THIS workstation
 # over the SSM command channel, not from the bucket.
 HOST_BASE=/var/lib/ubuntu-ami-sample
 HOST_STAGE="$HOST_BASE/stage"
 REMOTE_DIR=/usr/local/share/ubuntu-ami-sample
-log "Step 6/10: download the staged files on $build_id from s3://$STAGE_BUCKET/$RUN_ID/ and verify their SHA-256 there"
+log "Step 6/10: download the staged scripts on $build_id from s3://$STAGE_BUCKET/$RUN_ID/ and verify their SHA-256 there"
 run_ssm "$build_id" 120 "install -d -m 0700 $HOST_BASE $HOST_STAGE"
-for f in "$STAGE_TARBALL" "$RUNTIME_ZIP"; do
-  url="https://s3.${AWS_REGION}.amazonaws.com/${STAGE_BUCKET}/${RUN_ID}/$(basename "$f")"
-  send_and_wait "$build_id" 1800 AWS-RunRemoteScript \
-    "{\"sourceType\":[\"S3\"],\"sourceInfo\":[$(json_str "{\"path\":\"$url\"}")],\"commandLine\":[$(json_str "sha256sum $(basename "$f")")],\"workingDirectory\":[\"$HOST_STAGE\"],\"executionTimeout\":[\"1800\"]}"
-done
+url="https://s3.${AWS_REGION}.amazonaws.com/${STAGE_BUCKET}/${RUN_ID}/$(basename "$STAGE_TARBALL")"
+send_and_wait "$build_id" 1800 AWS-RunRemoteScript \
+  "{\"sourceType\":[\"S3\"],\"sourceInfo\":[$(json_str "{\"path\":\"$url\"}")],\"commandLine\":[$(json_str "sha256sum $(basename "$STAGE_TARBALL")")],\"workingDirectory\":[\"$HOST_STAGE\"],\"executionTimeout\":[\"1800\"]}"
 run_ssm "$build_id" 900 "set -e
 cd $HOST_STAGE
-printf '%s  %s\n' $TARBALL_SHA $(basename "$STAGE_TARBALL") $ZIP_SHA $(basename "$RUNTIME_ZIP") | sha256sum -c --strict -
+printf '%s  %s\n' $TARBALL_SHA $(basename "$STAGE_TARBALL") | sha256sum -c --strict -
 mkdir -p $REMOTE_DIR $HOST_BASE/run/runtime
 tar -xzf $(basename "$STAGE_TARBALL") -C $REMOTE_DIR
-mv -f $(basename "$RUNTIME_ZIP") $HOST_BASE/run/runtime/
 echo staged-and-verified"
-# Fails (and so stops this run) unless the staged objects and the build role's read are
+# Fails (and so stops this run) unless the staged object and the build role's read are
 # confirmed gone; any residue is recorded in $RUN_STATE_DIR/stage-residue.txt.
 disarm_staging_revoke
-bash "$SAMPLE_DIR/scripts/00b-stage-bucket.sh" revoke "$STAGE_BUCKET" \
-  "$(basename "$STAGE_TARBALL")" "$(basename "$RUNTIME_ZIP")"
+bash "$SAMPLE_DIR/scripts/00b-stage-bucket.sh" revoke "$STAGE_BUCKET" "$(basename "$STAGE_TARBALL")"
 
 # --- Step 7: run the numbered build stages on the build host, in order ---------------------
 log "Step 7/10: run the build stages on $build_id in order (00 -> 10 -> reboot -> 00 -> 20 -> 30 -> 31 -> 35 -> 36 -> 40 -> verify-image)"

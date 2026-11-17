@@ -1,0 +1,117 @@
+# Three meshed workloads in Nitro sandboxes, and one pod outside the mesh.
+#
+#   echo      a small HTTP server that answers on port 8080 (Service port 8000)
+#   client-a  a caller the AuthorizationPolicy admits
+#   client-b  a caller the AuthorizationPolicy denies
+#   client-plain  an ordinary pod with no sidecar, for the plaintext check
+#
+# The namespace's istio-injection label does the injection: nothing here names
+# istio-init or istio-proxy. The only line that puts a pod in a sandbox is
+# `runtimeClassName: isolated-sandbox`.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: echo
+  namespace: <NAMESPACE>
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: client-a
+  namespace: <NAMESPACE>
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: client-b
+  namespace: <NAMESPACE>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo
+  namespace: <NAMESPACE>
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: echo }
+  template:
+    metadata:
+      labels: { app: echo }
+    spec:
+      runtimeClassName: isolated-sandbox
+      serviceAccountName: echo
+      containers:
+        - name: httpbin
+          image: docker.io/mccutchen/go-httpbin:2.25.0
+          ports:
+            - name: http
+              containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo
+  namespace: <NAMESPACE>
+spec:
+  selector: { app: echo }
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client-a
+  namespace: <NAMESPACE>
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: client-a }
+  template:
+    metadata:
+      labels: { app: client-a }
+    spec:
+      runtimeClassName: isolated-sandbox
+      serviceAccountName: client-a
+      containers:
+        - name: curl
+          image: docker.io/curlimages/curl:8.10.1
+          command: ["sleep", "infinity"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client-b
+  namespace: <NAMESPACE>
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: client-b }
+  template:
+    metadata:
+      labels: { app: client-b }
+    spec:
+      runtimeClassName: isolated-sandbox
+      serviceAccountName: client-b
+      containers:
+        - name: curl
+          image: docker.io/curlimages/curl:8.10.1
+          command: ["sleep", "infinity"]
+---
+# Outside the mesh: an ordinary pod (no runtimeClassName) with injection turned
+# off, so it has no sidecar and no mesh identity.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client-plain
+  namespace: <NAMESPACE>
+  labels: { app: client-plain }
+  annotations:
+    sidecar.istio.io/inject: "false"
+spec:
+  containers:
+    - name: curl
+      image: docker.io/curlimages/curl:8.10.1
+      command: ["sleep", "infinity"]

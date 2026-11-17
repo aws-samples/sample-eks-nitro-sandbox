@@ -38,7 +38,9 @@ _REQUEST = httpx.Request("GET", f"https://api.openai.example/v1/agents/{KEPT_ID}
 def _response(status: int, planted: bool) -> httpx.Response:
     """The httpx response an SDK error carries.
 
-    Planted, the body goes in the response *content* as well as the headers.
+    Planted, the body goes in the response *content*, and the x-request-id header
+    carries its own separate sentinel -- the two are different values on purpose, so
+    that observing one cannot be satisfied by the other.
     Round 10 found that it previously went only in the x-request-id header and in
     the error's `body` attribute, with the response body itself empty, so
     `exc.response.text` held nothing: a mutation writing
@@ -126,8 +128,11 @@ _ERROR_BUILDERS = {
         lambda planted: openai.APIResponseValidationError(_response(200, planted), _body(planted)),
         frozenset({RESPONSE_TEXT}),
     ),
-    # Fixed message ("OAuth authentication error.") so the body never reaches
-    # str(exc), but it is an APIStatusError, so the header does reach request_id.
+    # Writes its own message rather than using the body wholesale -- but it builds
+    # that message from body["error_description"], so a body planting that field does
+    # reach str(exc). It is an APIStatusError, so the header reaches request_id too,
+    # and it carries the response, so all three channels are exposed. Round 10 had
+    # this declared header-only, on the strength of a body that planted "error" alone.
     "oauth": (
         openai.OAuthError,
         lambda planted: openai.OAuthError(response=_response(401, planted), body=_body(planted)),

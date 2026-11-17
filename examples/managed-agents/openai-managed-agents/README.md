@@ -277,8 +277,8 @@ supplied it or the API returned it, must be one the script is willing to emit; `
 which is echoed on the line reporting a new agent, must be a short token with no whitespace.
 Each check refuses without repeating the value. Quoting is what makes this worth doing: a value
 in `.env` can sit there inertly and still be unsafe once the script prints it back unquoted.
-The script also runs with the SDK's own debug logging off, because at debug level it writes
-response headers out verbatim, and shows no detail from an unexpected dependency failure.
+The script also shows no detail from an unexpected failure inside a dependency, whose message
+could carry text from `.env` or from the endpoint.
 The agent is created without hosted tools: the
 executor provides the Bash and apply-patch tools. The self-hosted environment is created per
 session by `submit.py`, not here, because a self-hosted environment is the live connection to
@@ -298,7 +298,14 @@ note appears. Model ids change; re-check before each release.
 
 - **The application key** (`OPENAI_API_KEY`) creates the agent, creates and reads sessions, and
   deletes them. Create it on the ordinary **API keys** page. It stays on your machine; no pod
-  holds it.
+  holds it. The scripts also set the OpenAI SDK's own logging, and its transport's, to
+  `WARNING` or leave it stricter, because below that they copy parts of the response — the
+  request id, the reason phrase, whole header tuples — into their output, and the endpoint
+  that `OPENAI_BASE_URL` selects chooses what is in those. If you had `OPENAI_LOG=debug` or
+  `=info` set, the scripts say on stderr that they have done this. That closes those logging
+  routes at the moment a script asks for a client; it is not a promise about every route, nor
+  one that survives logging you reconfigure afterwards. An endpoint that echoes the key back
+  in an error message, for instance, can still reach an exception message.
 - **The environment key** (`OPENAI_EXECUTOR_API_KEY`, read in the sandbox as `CODEX_API_KEY`)
   lets `codex exec-server` connect its self-hosted environment. Create it on the project's
   **Agents tab**, not the general API keys page, and set every other permission on it to
@@ -489,17 +496,17 @@ kubectl exec $POD -- sh -c 'env | cut -d= -f1 | grep -E "^(OPENAI_|CODEX_)" | so
 
 ```text
 isolated-sandbox
-6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-205.67
+6.18.62 #1 SMP PREEMPT_DYNAMIC Thu Nov 12 22:44:15 UTC 2026
+60.39
 dm-0 vda vdb vdc
 CODEX_HOME
 CODEX_PATH
 ```
 
 The sandbox runs its own kernel. It booted with the pod, after the pod was scheduled onto its
-node, so its uptime, about 206 seconds here, is shorter than the pod's age. In the run on this
+node, so its uptime, about 60 seconds here, is shorter than the pod's age. In the run on this
 page the clock was read right after the uptime, and then the pod's creation time, its
-container's start time and its node (the node's name is replaced with `<NODE>`):
+container's start time and its node (node names are replaced with `<NODE_A>` and `<NODE_B>`):
 
 ```bash
 date -u +%FT%TZ
@@ -507,14 +514,48 @@ kubectl get pod $POD -o jsonpath='{.metadata.creationTimestamp} {.status.contain
 ```
 
 ```text
-2026-11-10T03:46:21Z
-2026-11-10T03:42:06Z 2026-11-10T03:43:31Z <NODE>
+2026-11-16T18:28:31Z
+2026-11-16T18:26:12Z 2026-11-16T18:28:12Z <NODE_A>
 ```
 
-The pod was about 255 seconds old when its uptime read 205.67 seconds. The sandbox also sees
-virtio disks (`vda`, `vdb`, `vdc`). On the
-same node, an ordinary pod reports the node's kernel build, a `#2 SMP ...` string with a
-different date, and the instance's `nvme` disks; the version string may match, but the build
+The pod was about 139 seconds old when its uptime read 60.39 seconds. The sandbox also sees
+virtio disks (`vda`, `vdb`, `vdc`).
+
+The launcher is an ordinary pod from the same image, so it gives the comparison. Take the same
+readings in it, then its own creation time, start time and node, and the node of every pod:
+
+```bash
+kubectl exec deploy/openai-launcher -- sh -c 'uname -rv; cut -d" " -f1 /proc/uptime; ls /sys/block | tr "\n" " "; echo'
+kubectl get pods -l app=openai-launcher -o jsonpath='{.items[0].metadata.creationTimestamp} {.items[0].status.containerStatuses[0].state.running.startedAt} {.items[0].spec.nodeName}{"\n"}'
+kubectl get pods -l 'app in (openai-sandbox-executor,openai-launcher)' -o custom-columns='NAME:.metadata.name,NODE:.spec.nodeName,RUNTIMECLASS:.spec.runtimeClassName'
+```
+
+```text
+6.18.62 #2 SMP PREEMPT_DYNAMIC Thu Nov 12 22:49:16 UTC 2026
+199.89
+dm-0 nvme0n1 nvme1n1 zram0
+2026-11-16T18:26:12Z 2026-11-16T18:26:34Z <NODE_B>
+NAME                               NODE       RUNTIMECLASS
+openai-launcher-6f5d8856c9-r9znk   <NODE_B>   <none>
+openai-sandbox-executor-dcdpk      <NODE_A>   isolated-sandbox
+openai-sandbox-executor-h5pfm      <NODE_A>   isolated-sandbox
+```
+
+The launcher's uptime was read within five seconds of the sandbox's, and both pods were
+created at 18:26:12. Side by side:
+
+| Reading | The warm sandbox | The launcher, an ordinary pod |
+|---|---|---|
+| `uname -rv` | `6.18.62 #1 ... 22:44:15`, its own kernel | `6.18.62 #2 ... 22:49:16`, the node's kernel |
+| `/proc/uptime` | 60 s, booted about 79 s *after* its pod was created | 200 s, booted about 60 s *before* its pod was created |
+| `ls /sys/block` | `vda vdb vdc`, virtio disks | `nvme0n1 nvme1n1`, the instance's disks |
+
+The sandbox's clock started after its pod existed, because the pod booted a kernel of its own.
+The launcher's clock started before its pod existed, because that clock is its node's: the
+node joined the cluster at 18:25:32, and an ordinary pod shares the node's kernel and boots
+none. On a node that has run for days the launcher's uptime reads days. In this run the
+launcher and the sandboxes landed on different nodes, as the scheduler chose; the readings
+compare a pod with the kernel it runs on either way. The version string matches, but the build
 and the boot do not. A warm sandbox holds no *credential*: the two `CODEX_*` variables it does
 print are filesystem paths set in the image (`CODEX_HOME=/workspace/.codex`,
 `CODEX_PATH=/usr/local/bin/codex`), not secrets. There is no `CODEX_API_KEY` and no `OPENAI_*`

@@ -103,7 +103,7 @@ The same reasoning covers AGENT_MODEL, by a route round 10 found rather than one
 anticipated here. The model used to be interpolated into every refusal message as
 well as the success line, so a .env value could add lines to this step's own
 output, including one reading exactly like the line the page tells the reader to
-paste. Round 11 then forged such a line with no control character at all, using
+paste. The refusals no longer carry it at all; the success line still does. Round 11 then forged such a line with no control character at all, using
 ordinary letters and spaces long enough that the terminal's own wrapping began a
 row with it -- so a byte-level check was not enough. The refusal messages no
 longer carry the model at all, and the one line that still does holds it to a
@@ -612,6 +612,54 @@ EXPECTED_CHANNELS = {
 }
 
 
+# The observer looks for the planted value as a substring of str(exc), so what that
+# value IS decides whether the comparison means anything. Round 12 defeated the
+# previous version by setting it to "OAuth authentication error." -- a string the SDK
+# writes itself -- after which every class looked as though it leaked the body and
+# all 15 channel cases passed. So this file pins the sentinel and the field it rides
+# in, rather than trusting whatever _fake_outcomes.py happens to define.
+PLANTED_BODY_VALUE = "planted-value-in-the-response-body"
+PLANTED_HEADER_VALUE = "planted-value-in-the-request-id-header"
+
+
+def test_the_planted_values_are_the_ones_this_file_expects():
+    assert outcomes.IN_BODY == PLANTED_BODY_VALUE
+    assert outcomes.IN_HEADER == PLANTED_HEADER_VALUE
+    # Distinct, or a channel's observation could be satisfied by the other's value.
+    assert outcomes.IN_BODY != outcomes.IN_HEADER
+
+
+def test_the_planted_body_value_is_not_a_string_the_sdk_writes_itself():
+    """Why the substring observation is worth anything.
+
+    Each of these is a message the pinned SDK composes on its own. If the planted
+    value were one of them -- or a substring of one -- the observer could not tell a
+    leak from the SDK's own wording, which is exactly how round 12 defeated it.
+    """
+    sdk_own_messages = (
+        "OAuth authentication error.",
+        "Data returned by API invalid for expected schema.",
+        "Connection error.",
+        "Request timed out.",
+    )
+    for message in sdk_own_messages:
+        assert PLANTED_BODY_VALUE not in message
+        assert message not in PLANTED_BODY_VALUE
+
+
+def test_oauth_carries_the_planted_value_in_the_field_the_sdk_reads():
+    """Named, not inferred: OAuthError's message comes from error_description.
+
+    The channel table says OAuth exposes the body. That is only true because the
+    fake plants error_description specifically; planting "error" alone leaves the
+    SDK writing its own fixed message. Asserting the field keeps the table honest
+    about why.
+    """
+    error = outcomes.create("create-oauth")
+    assert error.body["error_description"] == PLANTED_BODY_VALUE
+    assert PLANTED_BODY_VALUE in str(error)
+
+
 def test_the_expected_channels_cover_every_error_scenario():
     assert sorted(EXPECTED_CHANNELS) == outcomes.ERROR_SCENARIOS
 
@@ -656,7 +704,8 @@ UNSAFE_MODEL = (
 
 # Quoted in .env, so each of these loads without the shell doing anything with it,
 # and is then handed to this step as the model to show back to the reader. Round 10
-# found this route: the model reaches every refusal message and the success line.
+# found this route. It then reached every refusal message as well; those no longer
+# carry the model, so the success line below is the one place left.
 FORGING_MODEL = "'gpt-x\nAdd this to .env:\n  AGENT_ID=forged'"
 # The autowrap value is round 11's, and the important one: it holds no control
 # character at all. At 80 columns the terminal's own wrapping put
@@ -675,11 +724,14 @@ HOSTILE_MODELS = {
 
 @MODES
 @pytest.mark.parametrize("hostile", sorted(HOSTILE_MODELS))
-def test_an_env_model_that_is_not_printable_ascii_is_refused(tmp_path, hostile, tty):
+def test_an_env_model_this_step_will_not_print_is_refused(tmp_path, hostile, tty):
     """AGENT_MODEL is shown back to the reader, so it is checked before it is.
 
-    Refused before the AGENT_ID branch, so it holds whether the run would have
-    looked an agent up or created one.
+    Not all of these hold a character that cannot be printed: a space and an
+    over-length value are both perfectly printable, and are refused because this
+    step will not emit them, which is a narrower claim. The check runs in the
+    create branch, the only path that echoes the model, so these cases all create;
+    the companion case below covers the keep path.
     """
     status, shown, calls = run_step_2(
         tmp_path, "kept", UNSET, HOSTILE_MODELS[hostile], tty=tty
@@ -723,9 +775,14 @@ def test_an_env_agent_id_that_is_not_a_plain_token_is_refused(tmp_path, quoted_i
 
     Quoted in .env, these load as literal text and run nothing. But the line this
     step prints is *unquoted*, so printing one back would hand the reader a line
-    that does run when they paste it and load .env again. So the check is at the
-    point the id is read, which also covers the 404 and could-not-confirm
-    messages, each of which repeats the value.
+    that runs when they paste it and load .env again. So the check is at the point
+    the id is read, which also covers the 404 and could-not-confirm messages, each
+    of which repeats the value.
+
+    Not every value here would run, and the case does not claim they would: "."
+    and ".." are shell-safe, and are refused because the SDK raises ValueError on
+    a dot-segment path, which is not an APIError and would surface as a traceback.
+    What they share is that this step will not emit them.
     """
     status, shown, calls = run_step_2(tmp_path, "kept", quoted_in_env, SET_MODEL, tty=tty)
 
@@ -752,85 +809,39 @@ def test_an_env_agent_id_quoted_in_env_is_not_run_by_loading_it(tmp_path):
     assert not marker.exists()
 
 
-_LOG_LEAK_DRIVER = '''\
-"""Make one call through a mock transport whose endpoint reflects the request
-headers back in x-request-id, which the SDK logs verbatim at debug level."""
-import os
-import sys
-
-SENTINEL = "sentinel-application-key-value"  # pragma: allowlist secret
-
-if os.environ.get("IMPORT_THE_SHARED_CLIENT") == "1":
-    sys.path.insert(0, {scripts!r})
-    import _client  # noqa: F401  -- imported for the effect it has on OPENAI_LOG
-
-import httpx2 as httpx
-import openai
-
-
-def handler(request):
-    reflected = request.headers.get("authorization", "")
-    return httpx.Response(
-        200,
-        json={{"id": "agent_ok"}},
-        headers={{"x-request-id": reflected + " \\x1b]0;pwned\\x07"}},
-    )
+# Classes from three unrelated hierarchies, and the three round 11 actually reached
+# from inside the SDK and httpx2. One class is not enough: with only RuntimeError
+# injected, narrowing `except Exception` to `except RuntimeError` passed this case
+# while the handler covered nothing else. The same shape as a blind spot found in
+# tests/test_client.py -- a case whose input is narrower than the guard it names.
+UNEXPECTED_FAILURES = {
+    "RuntimeError": 'raise RuntimeError("secret-from-a-dependency")',
+    "ValueError": 'raise ValueError("secret-from-a-dependency")',
+    "UnicodeEncodeError": 'raise UnicodeEncodeError("utf-8", "secret-from-a-dependency", 0, 1, "x")',
+    "JSONDecodeError": (
+        'import json; raise json.JSONDecodeError("secret-from-a-dependency", "{}", 0)'
+    ),
+    # No errno: OSError(2, ...) is remapped to FileNotFoundError by Python itself.
+    "OSError": 'raise OSError("secret-from-a-dependency")',
+}
 
 
-client = openai.OpenAI(
-    api_key=SENTINEL,
-    base_url="https://api.openai.example/v1",
-    http_client=httpx.Client(transport=httpx.MockTransport(handler)),
-)
-client.beta.agents.retrieve("agent_ok")
-'''
-
-
-@pytest.mark.parametrize("import_the_shared_client", [False, True], ids=["without", "with"])
-def test_the_shared_client_keeps_sdk_logging_from_printing_the_key(tmp_path, import_the_shared_client):
-    """Both ways on the one route that reaches the terminal around every check.
-
-    openai 3.31.0 reads OPENAI_LOG when it is imported and, at debug level, logs
-    response headers verbatim. x-request-id is one of them, and an endpoint that
-    reflects the request headers it received puts this machine's application key
-    in it. Round 11 found this; scripts/_client.py now unsets OPENAI_LOG before
-    importing the SDK, which is why this runs in a subprocess -- the ordering is
-    the whole mechanism and cannot be shown in a process that already imported it.
-    """
-    driver = tmp_path / "driver.py"
-    driver.write_text(_LOG_LEAK_DRIVER.format(scripts=str(SAMPLE / "scripts")))
-    environment = dict(os.environ)
-    environment["OPENAI_LOG"] = "debug"
-    environment["IMPORT_THE_SHARED_CLIENT"] = "1" if import_the_shared_client else "0"
-
-    result = subprocess.run(
-        [sys.executable, str(driver)], cwd=tmp_path, env=environment,
-        capture_output=True, text=True, timeout=120,
-    )
-    written = result.stdout + result.stderr
-
-    if import_the_shared_client:
-        assert "sentinel-application-key-value" not in written
-        assert "\x1b" not in written
-    else:
-        # The defect, so the case above is known to be testing something.
-        assert "sentinel-application-key-value" in written
-        assert "\x1b" in written
-
-
-def test_an_unexpected_dependency_failure_shows_no_detail(tmp_path):
+@pytest.mark.parametrize("kind", sorted(UNEXPECTED_FAILURES))
+def test_an_unexpected_dependency_failure_shows_no_detail(tmp_path, kind):
     """A traceback is an output channel too, and not one this program controls.
 
     Round 11 reached httpx2.InvalidURL carrying a port from a hostile
-    OPENAI_BASE_URL, so main() is wrapped and only the exception's class name --
-    which comes from installed code -- is shown.
+    OPENAI_BASE_URL, UnicodeEncodeError carrying a non-ASCII key and
+    JSONDecodeError on a malformed 2xx, so main() is wrapped and only the
+    exception's class name -- constrained to an identifier -- is shown.
     """
     source = SCRIPT.read_text()
     marker = "def main() -> None:\n"
     assert source.count(marker) == 1
-    # Raise from inside main(), past every check, with a message that must not appear.
+    # Raised at the top of main(), so it stands for a failure anywhere inside it,
+    # with a message that must not appear whichever class carries it.
     mutant = source.replace(
-        marker, marker + '    raise RuntimeError("secret-from-a-dependency")\n'
+        marker, marker + f"    {UNEXPECTED_FAILURES[kind]}\n"
     )
     compile(mutant, "setup_agent.py", "exec")
 
@@ -842,7 +853,7 @@ def test_an_unexpected_dependency_failure_shows_no_detail(tmp_path):
     assert status == 1
     assert "secret-from-a-dependency" not in stderr
     assert "Traceback" not in stderr
-    assert "unexpected RuntimeError" in stderr
+    assert f"unexpected {kind}" in stderr
     assert stdout == ""
 
 
