@@ -1168,9 +1168,9 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: B108
       path: 'examples/managed-agents/openai-managed-agents/tests/test_manifests.py'
-      line_start: 438
+      line_start: 435
       line_end: 438
-      reason: 'The /tmp string is a mountPath the overlap check must find clear of the credentials path; the test creates no file there'
+      reason: 'The /tmp string is a mountPath the overlap check must find clear of the credentials path; the test creates no file there. One parametrize statement: ASH bandit reports its first line, bandit 1.9.4 the literal line'
       expiration: '2027-12-31'
     - rule_id: B404
       path: 'examples/managed-agents/openai-managed-agents/src/launcher/serve.py'
