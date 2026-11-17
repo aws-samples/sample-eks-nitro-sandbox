@@ -89,7 +89,7 @@ for an existing cluster, not creating or managing the cluster itself.
   image 1.36.5/2026-11-06 and Firecracker v1.18.0 from the locations the Amazon EKS User Guide
   names. Spec: [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10); moved to
   the public releases in [#218](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/218).
-- [al2023-ami](../examples/setup/al2023-ami/README.md): build a custom Amazon Linux 2023 node
+- [al2023-ami](../examples/setup/al2023-ami/README.md) (available now): build a custom Amazon Linux 2023 node
   AMI for EKS Pod Isolation with the upstream `amazon-eks-ami` Packer flow
   (`enable_pod_isolation=true`), and add it to an existing standard (non-Auto-Mode) cluster two
   ways: a Karpenter `EC2NodeClass` and a managed node group, each enabling Nitro via the enclave
