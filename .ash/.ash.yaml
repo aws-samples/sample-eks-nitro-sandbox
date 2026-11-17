@@ -1116,7 +1116,7 @@ global_settings:
     # Namespace is set at apply time.
     - rule_id: CKV_K8S_21
       path: 'examples/integrations/temporal/deploy/temporal/postgresql.yaml'
-      reason: 'Namespace set at install time: the page creates it with kubectl -n (README.md:214), and the install command setup prints applies it with kubectl -n (scripts/common.sh:270)'
+      reason: 'Created with kubectl -n, on the page and in the install command setup prints (README.md:214, scripts/common.sh:270)'
       expiration: '2027-12-31'
     # bubblewrap needs a privileged root init container and a privileged working container (analyst-pod.yaml:20-30).
     - rule_id: CKV_K8S_16
