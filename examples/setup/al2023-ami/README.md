@@ -229,12 +229,12 @@ it is a separate VM with its own kernel and virtual disks. (Captured from a live
 standard EKS 1.37 cluster; the ordinary pod shares the node kernel.)
 
 Because the isolated pod is booted with `sandbox.amazonaws.com/network-isolated: "true"`, it has
-no network besides loopback, no route and no DNS. `./test.sh` reads this back from the running
-pod.
+no network besides loopback, no route and no DNS. `./test.sh` reads this back from the guest's own
+kernel tables, `/proc/net/fib_trie` and `/proc/net/route`, so it needs no tool in the image.
 
 ```text
 $ ./test.sh
-[2026-11-17T03:01:50Z] kube context <KUBE_CONTEXT> is cluster <CLUSTER_NAME> (<API_ENDPOINT>)
+[2026-11-17T04:18:55Z] kube context <KUBE_CONTEXT> is cluster <CLUSTER_NAME> (<API_ENDPOINT>)
 == 1/5 the sandbox node is Ready and carries eks.amazonaws.com/nitro-sandbox=true ==
   node: ip-10-0-0-1.ec2.internal  Ready: True
   PASS  the sandbox node is Ready
@@ -249,13 +249,14 @@ $ ./test.sh
   isolated pod /sys/block: dm-0 vda vdb vdc
   PASS  the isolated pod has virtio disks (vda, vdb, ...), not the host's nvme
 == 4/5 the isolated pod has its own boot clock: a younger uptime than the ordinary pod's node ==
-  isolated pod boot uptime (s): 12.67   ordinary pod (its node's) uptime (s): 109.46
+  isolated pod boot uptime (s): 27.84   ordinary pod (its node's) uptime (s): 137.96
   PASS  the isolated pod's uptime is shorter than the ordinary pod's (its own boot, after the node's)
 == 5/5 the network-isolated pod has only loopback ==
-  interfaces with an address: <none>  routes: <none>
-  PASS  the network-isolated pod has no default route
+  local IPv4 addresses: 127.0.0.1   IPv4 routes: none (header line only)
+  PASS  the network-isolated pod's only IPv4 address is loopback (127.0.0.1)
+  PASS  the network-isolated pod has no route
 
-== summary: 7 passed, 0 failed ==
+== summary: 8 passed, 0 failed ==
 ```
 
 This run used the x86_64 AMI from the Image Builder section below, joined with `./setup.sh --join`
@@ -373,8 +374,10 @@ Zones in `BUILD_SUBNET_ID`:
 ```
 
 Join the AMI exactly as in Step 2 (`RUN_ID=<id> ./setup.sh --join`); the build recorded its id for
-the run. Each Image Builder AMI ran the isolated pod in its own guest, abridged, with the node name
-replaced:
+the run. Each Image Builder AMI ran the isolated pod in its own guest. These blocks are abridged to
+the node, kernel and disk lines, with the node name replaced; they come from the runs that built the
+AMIs, before `test.sh` read the network from the guest's `/proc/net`. The x86_64 AMI's full run of
+the current `test.sh`, network check included, is the block in Step 3:
 
 ```text
 $ ./test.sh                                  # x86_64 Image Builder AMI
@@ -383,8 +386,6 @@ $ ./test.sh                                  # x86_64 Image Builder AMI
   isolated pod kernel: 6.18.56
   ordinary pod kernel: 6.18.62-127.179.amzn2023.x86_64
   isolated pod /sys/block: dm-0 vda vdb vdc
-  interfaces with an address: <none>  routes: <none>
-== summary: 7 passed, 0 failed ==
 
 $ ./test.sh                                  # arm64 Image Builder AMI
   node: ip-10-0-0-1.ec2.internal  Ready: True
@@ -392,8 +393,6 @@ $ ./test.sh                                  # arm64 Image Builder AMI
   isolated pod kernel: 6.18.56
   ordinary pod kernel: 6.18.62-127.179.amzn2023.aarch64
   isolated pod /sys/block: dm-0 vda vdb vdc
-  interfaces with an address: <none>  routes: <none>
-== summary: 7 passed, 0 failed ==
 ```
 
 To build again with the same prerequisites, `RUN_ID=<id> ./scripts/ib-prereqs.sh reset` removes
