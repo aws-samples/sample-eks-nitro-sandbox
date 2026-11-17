@@ -58,6 +58,25 @@ sandboxed workload pod, one supervisor pod, one supplier API pod and one bridge 
 running until you clean up, plus two EBS volumes: the gateway's 1 GiB database volume and the
 workload pod's 2 GiB workspace volume.
 
+**The `isolated-sandbox` RuntimeClass must already carry `openshell.ai/sandbox-attachable=true`.**
+OpenShell attaches only a RuntimeClass that an operator approved with this label. The
+RuntimeClass is shared by every workload on the cluster, and every OpenShell gateway on the
+cluster reads the same label, so the label is a shared prerequisite that the cluster owner
+sets, outside this blueprint. The blueprint's scripts only read it: `setup.sh` stops before it
+creates anything unless the value is exactly `true`, and no script adds, changes or removes
+it. To read it, with your own kube context in place of `<context>`:
+
+```bash
+kubectl --context <context> get runtimeclass isolated-sandbox -o jsonpath="{.metadata.labels['openshell\.ai/sandbox-attachable']}"
+```
+
+The prerequisite is met when this prints `true`. If you own the cluster and decide that
+OpenShell sandboxes may use this RuntimeClass, you set the label yourself:
+
+```bash
+kubectl --context <context> label runtimeclass isolated-sandbox openshell.ai/sandbox-attachable=true
+```
+
 Every output block on this page is from one real run of this blueprint, run id
 `286b39b900024323a25e1f067b11a385`. Values from the account it ran on are replaced by
 placeholders, because this repository is public: `<ACCOUNT_ID>`, and `<NODE_NAME>` and
@@ -255,9 +274,10 @@ $EDITOR .env
 
 **Step 2: Build the images and create everything the blueprint needs.** One script. It reuses
 the agent-sandbox controller already on the cluster rather than installing or upgrading it,
-and stops with the command if it is absent. It also leaves the `isolated-sandbox`
-RuntimeClass alone when it already carries OpenShell's approval label, which it did here,
-because every OpenShell gateway on a cluster shares that label.
+and stops with the command if it is absent. It also reads the `isolated-sandbox` RuntimeClass
+and stops before it creates anything unless it already carries OpenShell's approval label,
+as the prerequisites above say. On this run it did. The script never adds, changes or
+removes that label, because every OpenShell gateway on a cluster shares it.
 
 **It also chooses the StorageClass, and never changes one.** The gateway makes two claims,
 one for its own database and one for each sandbox's workspace, and the chart names no
@@ -1001,9 +1021,9 @@ kubectl delete pod ordinary-comparison -n $NAMESPACE
   does not read the runtime's command line or seccomp profile directly. Its comments also record a third adjustment that was tried and removed, because the API server
   cannot marshal a typed `resources` block into a JSON patch.
 - **The `openshell.ai/sandbox-attachable` label on the RuntimeClass is shared.** Every
-  OpenShell gateway on a cluster reads the same label, so `setup.sh` adds it only when it is
-  absent and `clean.sh` never removes it, printing the command instead. On the run above it
-  was already there.
+  OpenShell gateway on a cluster reads the same label, so it is the cluster owner's to set
+  and to remove. `setup.sh` only reads it and stops when it is not exactly `true`, and
+  neither script adds, changes or removes it. On the run above it was already there.
 - **This blueprint creates up to five cluster-scoped objects**, which is unusual for a blueprint
   here and worth knowing before you run it on a cluster you share. When no default
   StorageClass fits, its own StorageClass, `subagent-security-openshell-gp3`, which is not a
@@ -1138,21 +1158,16 @@ a failed uninstall would leave them and the next install of the same release nam
 them.
 
 **What stays, and why.** Two things this blueprint needs are shared with anything else on the
-cluster, so `clean.sh` never removes them and prints the command for each:
+cluster, so `clean.sh` never removes them:
 
 - The `openshell.ai/sandbox-attachable=true` label on the `isolated-sandbox` RuntimeClass.
   Every OpenShell gateway on the cluster reads it, so removing it would break another
-  gateway's sandboxes. The script says whether this run was the one that added it, and
-  prints the command below when it was. On the run above the label was already there, so
-  it is not this blueprint's to remove. If you added it and no other OpenShell gateway needs
-  it:
+  gateway's sandboxes. It was on the RuntimeClass before setup ran, as the prerequisites
+  say, and neither script adds, changes or removes it. Whether to remove it is the cluster
+  owner's decision.
 
-  ```bash
-  kubectl label runtimeclass isolated-sandbox openshell.ai/sandbox-attachable-
-  ```
-
-- The agent-sandbox controller, which `setup.sh` reused and changed nothing about. If
-  nothing else on the cluster uses it:
+- The agent-sandbox controller, which `setup.sh` reused and changed nothing about. `clean.sh`
+  prints the command to remove it. If nothing else on the cluster uses it:
 
   ```bash
   kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml
