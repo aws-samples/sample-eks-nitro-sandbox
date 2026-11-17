@@ -7,7 +7,7 @@ admission_policy: |+
       resource == Workload::Container::"main"
   )
   when {
-      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:3a814fee227d2df52e90774a37ab3410ede230b8010156fe1c092365e50ab3ca" &&
+      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:6294ee145dd8c95c6babf31c256ab6760e9d0af0dc3440613250bbbf80d4b60f" &&
       context.working_dir == "/app" &&
       context.run_as_user == 65534 &&
       context.run_as_group == 65534 &&
@@ -90,17 +90,15 @@ admission_policy: |+
                            {"name": "AWS_REGION", "value": "us-west-2"},
                            {"name": "AWS_DEFAULT_REGION", "value": "us-west-2"},
                            {"name": "SECRET_ID",
-                            "value": "arn:aws:secretsmanager:us-west-2:<ACCOUNT_ID>:secret:secrets-manager-secret-sample-rPeKf0"},
+                            "value": "arn:aws:secretsmanager:us-west-2:<ACCOUNT_ID>:secret:secrets-manager-secret-sample-<SECRET_SUFFIX>"},
                            {"name": "KMS_KEY_ARN",
-                            "value": "arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/29cf5d0b-3042-49ea-8f3c-a2ea33b10d17"},
+                            "value": "arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/<KMS_KEY_ID>"},
                            {"name": "EXPECTED_LENGTH", "value": "64"},
                            {"name": "EXPECTED_SHA256",
-                            "value": "8ad93a5f0ede70677bb580a4dcbc30f04993f0a1ac2e0aa6753f203aa097bbbf"},
+                            "value": "c53281cd5211481d741a94b59a9ba5f2570caeb087b2bc88a5058746210a87c0"},
                            {"name": "DEMO_VARIANT", "value": "approved"},
                            {"name": "AWS_STS_REGIONAL_ENDPOINTS",
                             "value": "regional"},
-                           {"name": "AWS_CONTAINER_CREDENTIALS_FULL_URI",
-                            "value": "http://169.254.170.23/v1/credentials"},
                            {"name": "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
                             "value": "/var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token"}]) &&
       context.env_names == ["PATH", "LANG", "GPG_KEY", "PYTHON_VERSION",
@@ -109,17 +107,19 @@ admission_policy: |+
                         "AWS_DEFAULT_REGION", "SECRET_ID", "KMS_KEY_ARN",
                         "EXPECTED_LENGTH", "EXPECTED_SHA256", "DEMO_VARIANT",
                         "AWS_STS_REGIONAL_ENDPOINTS",
-                        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
                         "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
                         "KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT",
                         "KUBERNETES_SERVICE_PORT_HTTPS", "KUBERNETES_PORT",
                         "KUBERNETES_PORT_443_TCP",
                         "KUBERNETES_PORT_443_TCP_PROTO",
                         "KUBERNETES_PORT_443_TCP_PORT",
-                        "KUBERNETES_PORT_443_TCP_ADDR"]
+                        "KUBERNETES_PORT_443_TCP_ADDR",
+                        "AWS_CONTAINER_CREDENTIALS_FULL_URI"] &&
+      (context.env.contains({"name": "AWS_CONTAINER_CREDENTIALS_FULL_URI", "value": "http://169.254.170.23/v1/credentials"}) ||
+       context.env.contains({"name": "AWS_CONTAINER_CREDENTIALS_FULL_URI", "value": "http://[fd00:ec2::23]/v1/credentials"}))
   };
-  
-  
+
+
   // Admission: the ECS execute-command annotation (sandbox.amazonaws.com/ecs-exec-enabled) is
   // forbidden on EKS. It drives SSM binary mount injection in the
   // guest agent, which EKS never uses.
@@ -131,20 +131,20 @@ admission_policy: |+
   when {
       context.ecs_exec_enabled
   };
-  
-  // PrepareImage: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:3a814fee227d2df52e90774a37ab3410ede230b8010156fe1c092365e50ab3ca
+
+  // PrepareImage: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:6294ee145dd8c95c6babf31c256ab6760e9d0af0dc3440613250bbbf80d4b60f
   permit(
       principal,
       action == Agent::Action::"PrepareImage",
       resource
   )
   when {
-      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:3a814fee227d2df52e90774a37ab3410ede230b8010156fe1c092365e50ab3ca"
+      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/secrets-manager-secret-sample@sha256:6294ee145dd8c95c6babf31c256ab6760e9d0af0dc3440613250bbbf80d4b60f"
   };
-  
-  
+
+
   // Admission: host image mounting is disabled (no permit policy)
-  
+
 runtime_policy: |+
   // Runtime: stdin writes are denied (no permit policy)
   // Blocks: kubectl attach -i, kubectl exec -i, kubectl cp (to pod)
@@ -152,7 +152,7 @@ runtime_policy: |+
   // Blocks: kubectl exec, kubectl cp
   // Runtime: agent log streaming is disabled (no permit policy)
   // Runtime: SetupVolume is denied (no CSI volumes)
-  
+
   // Runtime: allow log reading
   permit(
       principal,
@@ -211,7 +211,7 @@ runtime_policy: |+
       // the agent creates exactly the pod's mounted emptyDir volumes
       context.volume_paths.isEmpty()
   };
-  
+
   // Runtime: allow OOM event watching
   permit(
       principal,
@@ -234,4 +234,3 @@ runtime_policy: |+
       context.binary_logger_path == "" &&
       context.binary_logger_args.isEmpty()
   };
-  
