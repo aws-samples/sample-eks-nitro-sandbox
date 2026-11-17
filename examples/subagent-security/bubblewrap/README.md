@@ -1173,9 +1173,11 @@ Clean up complete.
 It deletes in reverse order of creation, starting with the sandboxed pod, which is what
 holds sandbox capacity other workloads on the cluster share. It touches a namespace only
 when that namespace carries this blueprint's `app.kubernetes.io/managed-by` label, and an AWS
-resource only when it carries `ManagedBy=bubblewrap`. A lookup that fails counts as "could
-not determine" rather than "already gone", so anything it could not delete or confirm is
-named at the end and makes it exit non-zero.
+resource only when it carries `ManagedBy=bubblewrap`. The Pod Identity association must also
+be the one the run record names, with the same role, and a local image is removed only by
+the exact reference and image id the run recorded when it built it. A lookup that fails
+counts as "could not determine" rather than "already gone", so anything it could not delete
+or confirm is named at the end and makes it exit non-zero.
 
 Without `--delete-aws` it removes the cluster objects and the Pod Identity association and
 keeps the S3 bucket, the IAM role and the images, so a second run skips the build. It keeps

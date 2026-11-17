@@ -76,6 +76,32 @@ require_managed_by() { # <description> <actual-tag-value>
     die "$1 already exists and is not this sample's (ManagedBy='$2', expected '$SAMPLE'); created and changed nothing. Delete it, or set a new name in .env."
 }
 
+# What a run has just created is read back before the next step builds on it, and a value
+# that is not the one expected stops the run there. Silent when everything matches.
+expect() { # <what> <actual> <expected> <the step it stops before>
+  [[ "$2" == "$3" ]] || die "$1 read back as '$2', not '$3'; stopped before $4."
+}
+
+# A read-back of something just created. IAM and EKS can take a moment to show a new
+# object, so only the service's own not-found answer is retried, a few times; any other
+# failure, or running out of retries, returns non-zero for the caller to stop on.
+readback() { # <not-found-exception> <aws args...>   prints stdout
+  local _ rc
+  for _ in 1 2 3 4 5; do
+    rc=0; lookup "$@" || rc=$?
+    [[ "$rc" == 1 ]] || return "$rc"
+    sleep 2
+  done
+  return 1
+}
+
+# One read-back call and one value from it, compared as compact JSON or a raw string.
+expect_aws() { # <what> <the step it stops before> <jq filter> <expected> <aws args...>
+  local what="$1" next="$2" filter="$3" want="$4" out; shift 4
+  out="$(aws "$@" --output json)" || die "could not read back $what; stopped before $next."
+  expect "$what" "$(jq -cr "$filter" <<<"$out")" "$want" "$next"
+}
+
 # Renders a shared manifest with this run's names. Never edits a file in place, and never
 # applies a manifest that hard-codes a default: a NAMESPACE a reader changed in .env has
 # to reach every object the run applies.
@@ -163,7 +189,10 @@ analyst_namespace() {
     die "could not determine whether namespace $NAMESPACE exists (the kubectl lookup failed; check the context and your permissions); created nothing in the cluster"
   fi
   if [[ -z "$exists" ]]; then
-    kc apply -f "$TMP_DIR/namespace.yaml"
+    # create, not apply: a namespace someone made since the lookup above makes create
+    # fail, where apply would put this sample's mark on it.
+    kc create -f "$TMP_DIR/namespace.yaml" ||
+      die "could not create namespace $NAMESPACE; created nothing in it"
     state_put NAMESPACE_CREATED true
   elif [[ "$label" != "$SAMPLE" ]]; then
     die "namespace $NAMESPACE already exists and is not this sample's (managed-by='$label'); created nothing in it. Delete it, or set a new NAMESPACE in .env."
@@ -171,6 +200,17 @@ analyst_namespace() {
     echo "  reusing namespace $NAMESPACE (it carries this sample's managed-by label)"
     state_put NAMESPACE_CREATED false
   fi
+  # Read it back before anything goes in it: its name, both labels, and the uid the run
+  # record keeps as its identity.
+  local ns_json next="creating anything in namespace $NAMESPACE"
+  ns_json="$(kc get namespace "$NAMESPACE" -o json)" ||
+    die "could not read back namespace $NAMESPACE; stopped before $next."
+  expect "namespace $NAMESPACE's name and labels" "$(jq -c '.metadata | [.name,
+      .labels["app.kubernetes.io/managed-by"], .labels["app.kubernetes.io/part-of"]]' <<<"$ns_json")" \
+    "$(jq -cn --arg n "$NAMESPACE" --arg m "$SAMPLE" '[$n, $m, "subagent-security"]')" "$next"
+  NAMESPACE_UID="$(jq -r '.metadata.uid // ""' <<<"$ns_json")"
+  [[ -n "$NAMESPACE_UID" ]] || die "namespace $NAMESPACE read back with no uid; stopped before $next."
+  state_put NAMESPACE_UID "$NAMESPACE_UID"
   kc apply -f "$TMP_DIR/service-account.yaml"
 }
 
@@ -244,10 +284,13 @@ analyst_supplier_secrets() {
 
 # Builds and pushes one image, reusing the pushed tag when the inputs have not changed.
 #   analyst_image <ecr-repository> <dockerfile, relative to SECTION_DIR> <input paths...>
-# Prints nothing; sets ANALYST_IMAGE.
+# Prints nothing; sets ANALYST_IMAGE, IMAGE_REPOSITORY_CREATED (true or false) and
+# IMAGE_LOCAL_ID, the local image id when this call built it and empty when it reused the
+# pushed tag, for the caller to record so a clean up can remove exactly that local image.
 analyst_image() {
   local repo="$1" dockerfile="$2"; shift 2
   local tag registry existing rc
+  IMAGE_REPOSITORY_CREATED=false IMAGE_LOCAL_ID=""
   # The tag is a digest of the build inputs, so a changed file always means a new tag and
   # a pod can never run yesterday's code under today's name.
   tag="$( (cd "$SECTION_DIR" && cat "$dockerfile" "$@" | sha256sum) | cut -c1-20)"
@@ -272,7 +315,28 @@ analyst_image() {
     aws ecr create-repository --repository-name "$repo" \
       --image-scanning-configuration scanOnPush=true \
       --tags "Key=ManagedBy,Value=$SAMPLE" >/dev/null
+    IMAGE_REPOSITORY_CREATED=true
     echo "  created the ECR repository $repo"
+
+    # Read it back before anything is pushed to it: this account and Region, scan on
+    # push, this sample's tag, and no repository policy that could share it.
+    local got arn next="pushing to $repo"
+    arn="arn:aws:ecr:$AWS_REGION:$ACCOUNT_ID:repository/$repo"
+    got="$(readback RepositoryNotFoundException ecr describe-repositories \
+      --repository-names "$repo" --output json)" ||
+      die "could not read back the ECR repository $repo; stopped before $next."
+    expect "the ECR repository's ARN" \
+      "$(jq -r '.repositories[0].repositoryArn // ""' <<<"$got")" "$arn" "$next"
+    expect "scan on push for $repo" \
+      "$(jq -r '.repositories[0].imageScanningConfiguration.scanOnPush' <<<"$got")" true "$next"
+    expect_aws "the ManagedBy tag on $repo" "$next" \
+      '[.tags[]? | select(.Key=="ManagedBy") | .Value] | join(",")' "$SAMPLE" \
+      ecr list-tags-for-resource --resource-arn "$arn"
+    rc=0
+    lookup RepositoryPolicyNotFoundException ecr get-repository-policy \
+      --repository-name "$repo" >/dev/null || rc=$?
+    [[ "$rc" == 1 ]] ||
+      die "the ECR repository $repo has a repository policy, or it could not be read; stopped before $next."
   fi
 
   if aws ecr describe-images --repository-name "$repo" --image-ids "imageTag=$tag" \
@@ -290,6 +354,8 @@ analyst_image() {
   ( cd "$SECTION_DIR" &&
     docker build --platform linux/amd64 -f "$dockerfile" -t "$ANALYST_IMAGE" . ) ||
     die "the image build failed"
+  IMAGE_LOCAL_ID="$(docker image inspect --format '{{.Id}}' "$ANALYST_IMAGE")" ||
+    die "could not read the id of the image just built, $ANALYST_IMAGE"
   docker --config "$docker_config" push "$ANALYST_IMAGE" >/dev/null ||
     die "could not push $ANALYST_IMAGE"
   rm -rf "$docker_config"
@@ -301,6 +367,11 @@ analyst_supplier_api() {
   analyst_image "$SUPPLIER_API_REPOSITORY" analyst/supplier-api/Dockerfile \
     analyst/supplier-api/supplier_api.py analyst/src/business.py \
     analyst/fixtures/case.json analyst/fixtures/availability.json
+  # shortcut: recorded after analyst_image returns, so a run that stops between the build
+  # and this line leaves that local image unrecorded; upgrade if that case turns up.
+  state_put SUPPLIER_API_IMAGE "$ANALYST_IMAGE"
+  state_put SUPPLIER_API_REPOSITORY_CREATED "$IMAGE_REPOSITORY_CREATED"
+  state_put SUPPLIER_API_LOCAL_IMAGE_ID "$IMAGE_LOCAL_ID"
   analyst_render "$SECTION_DIR/analyst/deploy/supplier-api.yaml" "$TMP_DIR/supplier-api.yaml" \
     "s|<SUPPLIER_API_IMAGE>|$ANALYST_IMAGE|g"
   kc apply -n "$NAMESPACE" -f "$TMP_DIR/supplier-api.yaml"
@@ -328,6 +399,7 @@ analyst_bucket() {
   if [[ "$rc" == 0 ]]; then
     require_managed_by "the bucket $BUCKET" \
       "$(jq -r '.TagSet[]? | select(.Key=="ManagedBy") | .Value' "$TMP_DIR/bucket-tags.json")"
+    state_put BUCKET_CREATED false
     echo "  reusing the bucket $BUCKET"
   else
     # get-bucket-tagging answers NoSuchTagSet for a bucket that exists with no tags, and
@@ -355,6 +427,27 @@ analyst_bucket() {
   aws s3api put-bucket-encryption --bucket "$BUCKET" \
     --server-side-encryption-configuration \
     '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+
+  # Read the bucket back while it is still empty: this sample's tag, all four Block Public
+  # Access settings, SSE-S3, no bucket policy, and an ACL that grants only the owner.
+  local next="uploading to $BUCKET"
+  expect_aws "the ManagedBy tag on $BUCKET" "$next" \
+    '[.TagSet[]? | select(.Key=="ManagedBy") | .Value] | join(",")' "$SAMPLE" \
+    s3api get-bucket-tagging --bucket "$BUCKET"
+  expect_aws "Block Public Access on $BUCKET" "$next" '.PublicAccessBlockConfiguration
+    | [.BlockPublicAcls, .IgnorePublicAcls, .BlockPublicPolicy, .RestrictPublicBuckets]' \
+    '[true,true,true,true]' s3api get-public-access-block --bucket "$BUCKET"
+  expect_aws "the default encryption on $BUCKET" "$next" \
+    '[.ServerSideEncryptionConfiguration.Rules[].ApplyServerSideEncryptionByDefault.SSEAlgorithm]' \
+    '["AES256"]' s3api get-bucket-encryption --bucket "$BUCKET"
+  # shellcheck disable=SC2016  # $owner is a jq variable, not a shell one
+  expect_aws "the ACL grants on $BUCKET" "$next" \
+    '.Owner.ID as $owner | [.Grants[] | [.Grantee.Type, .Grantee.ID == $owner, .Permission]]' \
+    '[["CanonicalUser",true,"FULL_CONTROL"]]' s3api get-bucket-acl --bucket "$BUCKET"
+  rc=0
+  lookup NoSuchBucketPolicy s3api get-bucket-policy --bucket "$BUCKET" >/dev/null || rc=$?
+  [[ "$rc" == 1 ]] ||
+    die "the bucket $BUCKET has a bucket policy, or it could not be read; stopped before $next."
 
   local f
   aws s3api put-object --bucket "$BUCKET" --key "proposals/$ANALYST_CASE/case.json" \
@@ -415,40 +508,85 @@ analyst_role() {
     aws iam update-assume-role-policy --role-name "$ROLE_NAME" \
       --policy-document "file://$TMP_DIR/role-trust-policy.json"
     ROLE_ARN="$(jq -r '.Role.Arn' <<<"$existing")"
+    state_put ROLE_CREATED false
+    state_put ROLE_ARN "$ROLE_ARN"
     echo "  reusing the IAM role $ROLE_NAME (it carries only this sample's analyst policy)"
+    aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name analyst \
+      --policy-document "file://$TMP_DIR/permissions-policy.json"
   else
-    ROLE_ARN="$(aws iam create-role --role-name "$ROLE_NAME" \
+    local created role next="granting the IAM role $ROLE_NAME its policy"
+    created="$(aws iam create-role --role-name "$ROLE_NAME" \
       --assume-role-policy-document "file://$TMP_DIR/role-trust-policy.json" \
-      --tags "Key=ManagedBy,Value=$SAMPLE" --query Role.Arn --output text)" ||
+      --tags "Key=ManagedBy,Value=$SAMPLE" --output json)" ||
       die "could not create the IAM role $ROLE_NAME"
+    ROLE_ARN="$(jq -r '.Role.Arn // ""' <<<"$created")"
     state_put ROLE_CREATED true
+    state_put ROLE_ARN "$ROLE_ARN"
+    state_put ROLE_ID "$(jq -r '.Role.RoleId // ""' <<<"$created")"
     echo "  created the IAM role $ROLE_NAME"
+
+    # Read the new role back before granting it anything: the ARN, id and path it was
+    # created with, this sample's tag, no permissions boundary, the trust policy rendered
+    # above, and no managed policy. The inline list is read after the put below.
+    role="$(readback NoSuchEntity iam get-role --role-name "$ROLE_NAME" --output json)" ||
+      die "could not read back the IAM role $ROLE_NAME; stopped before $next."
+    expect "the IAM role $ROLE_NAME" "$(jq -c '.Role | [.Arn, .RoleId, .Path,
+        ([.Tags[]? | select(.Key=="ManagedBy") | .Value] | join(",")),
+        (.PermissionsBoundary.PermissionsBoundaryArn // "")]' <<<"$role")" \
+      "$(jq -c --arg arn "arn:aws:iam::$ACCOUNT_ID:role/$ROLE_NAME" --arg sample "$SAMPLE" \
+        '[$arn, .Role.RoleId, "/", $sample, ""]' <<<"$created")" "$next"
+    expect "the trust policy on $ROLE_NAME" "$(jq -cS '.Role.AssumeRolePolicyDocument' <<<"$role")" \
+      "$(jq -cS . "$TMP_DIR/role-trust-policy.json")" "$next"
+    expect_aws "the managed policies attached to $ROLE_NAME" "$next" '.AttachedPolicies' '[]' \
+      iam list-attached-role-policies --role-name "$ROLE_NAME"
+
+    aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name analyst \
+      --policy-document "file://$TMP_DIR/permissions-policy.json"
+    # And the policy back, exactly as rendered, before the association can use the role.
+    next="creating the Pod Identity association"
+    role="$(readback NoSuchEntity iam get-role-policy --role-name "$ROLE_NAME" \
+      --policy-name analyst --output json)" ||
+      die "could not read back the analyst policy on $ROLE_NAME; stopped before $next."
+    expect "the analyst policy on $ROLE_NAME" "$(jq -cS '.PolicyDocument' <<<"$role")" \
+      "$(jq -cS . "$TMP_DIR/permissions-policy.json")" "$next"
+    expect_aws "the inline policies on $ROLE_NAME" "$next" '.PolicyNames' '["analyst"]' \
+      iam list-role-policies --role-name "$ROLE_NAME"
   fi
-  aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name analyst \
-    --policy-document "file://$TMP_DIR/permissions-policy.json"
-  state_put ROLE_ARN "$ROLE_ARN"
 
   # An association is identified by cluster, namespace and service account, not by a name.
-  local assoc assoc_role
+  # Its id goes in the run record either way, because the clean up deletes only that one.
+  local assoc detail id reused=false
   assoc="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" \
     --namespace "$NAMESPACE" --service-account "$ANALYST_SA" --output json)" ||
     die "could not list the Pod Identity associations for $NAMESPACE/$ANALYST_SA on $CLUSTER_NAME"
-  if [[ "$(jq '.associations | length' <<<"$assoc")" != 0 ]]; then
-    local id
-    id="$(jq -r '.associations[0].associationId' <<<"$assoc")"
-    assoc_role="$(aws eks describe-pod-identity-association --cluster-name "$CLUSTER_NAME" \
-      --association-id "$id" --query association.roleArn --output text)" ||
-      die "could not read the existing Pod Identity association $id"
-    [[ "$assoc_role" == "$ROLE_ARN" ]] ||
-      die "the Pod Identity association for $NAMESPACE/$ANALYST_SA points at $assoc_role, not $ROLE_ARN; changed nothing. Remove it, or set a new NAMESPACE in .env."
-    echo "  reusing the Pod Identity association $id"
-  else
-    local id
-    id="$(aws eks create-pod-identity-association --cluster-name "$CLUSTER_NAME" \
-      --namespace "$NAMESPACE" --service-account "$ANALYST_SA" --role-arn "$ROLE_ARN" \
-      --tags "ManagedBy=$SAMPLE" --query association.associationId --output text)" ||
-      die "could not create the Pod Identity association"
+  case "$(jq '.associations | length' <<<"$assoc")" in
+    0)
+      id="$(aws eks create-pod-identity-association --cluster-name "$CLUSTER_NAME" \
+        --namespace "$NAMESPACE" --service-account "$ANALYST_SA" --role-arn "$ROLE_ARN" \
+        --tags "ManagedBy=$SAMPLE" --query association.associationId --output text)" ||
+        die "could not create the Pod Identity association"
+      state_put POD_IDENTITY_ASSOCIATION "$id"
+      state_put POD_IDENTITY_ASSOCIATION_CREATED true
+      echo "  created the Pod Identity association $id" ;;
+    1)
+      id="$(jq -r '.associations[0].associationId' <<<"$assoc")"
+      reused=true ;;
+    *) die "found more than one Pod Identity association for $NAMESPACE/$ANALYST_SA on $CLUSTER_NAME, or could not count them; changed nothing." ;;
+  esac
+  # Read it back before any pod can use it: the id, cluster, namespace, service account,
+  # role and this sample's tag. For a reused one this is also the check that it is ours,
+  # so only then does its id go in the run record.
+  detail="$(readback ResourceNotFoundException eks describe-pod-identity-association \
+    --cluster-name "$CLUSTER_NAME" --association-id "$id" --output json)" ||
+    die "could not read back the Pod Identity association $id; stopped before starting a pod that uses it."
+  expect "the Pod Identity association $id" "$(jq -c '.association | [.associationId, .clusterName,
+      .namespace, .serviceAccount, .roleArn, (.tags.ManagedBy // "")]' <<<"$detail")" \
+    "$(jq -cn --arg i "$id" --arg c "$CLUSTER_NAME" --arg n "$NAMESPACE" --arg s "$ANALYST_SA" \
+      --arg r "$ROLE_ARN" --arg m "$SAMPLE" '[$i, $c, $n, $s, $r, $m]')" \
+    "starting a pod that uses it. Remove it, or set a new NAMESPACE in .env"
+  if [[ "$reused" == true ]]; then
     state_put POD_IDENTITY_ASSOCIATION "$id"
-    echo "  created the Pod Identity association $id"
+    state_put POD_IDENTITY_ASSOCIATION_CREATED false
+    echo "  reusing the Pod Identity association $id"
   fi
 }

@@ -53,6 +53,10 @@ def error(code, operation):
     sys.exit(254)
 
 if tool == "docker":
+    if "--password-stdin" in args:
+        # docker login reads the password to the end of standard input. Not reading it let
+        # the writing side of the pipe fail with a broken pipe, depending on timing.
+        sys.stdin.read()
     if "push" in args:
         state["images"].append(args[-1].split(".amazonaws.com/")[-1].rsplit(":", 1)[0])
     if "inspect" in args:
@@ -78,14 +82,25 @@ if tool == "kubectl":
             output("")
         form = option("-o")
         if form == "json":
-            output({"metadata": {"labels": {"app.kubernetes.io/managed-by": state["namespace_owner"]}}})
+            output({"metadata": {"name": state.get("namespace_name", "synthetic-namespace"),
+                                 "uid": "synthetic-namespace-uid",
+                                 "labels": {"app.kubernetes.io/managed-by": state["namespace_owner"],
+                                            "app.kubernetes.io/part-of": state.get("namespace_part_of")}}})
         if form == "name":
             output("namespace/synthetic-namespace")
         output(state["namespace_owner"])
-    if args[:1] == ["apply"]:
+    if args[:1] in (["apply"], ["create"]):
         text = Path(option("-f")).read_text()
         if re.search(r"^kind: Namespace$", text, re.M):
+            if args[0] == "create" and state["namespace_owner"]:
+                print("Error from server (AlreadyExists): namespaces already exists", file=sys.stderr)
+                sys.exit(1)
             state["namespace_owner"] = re.search(r"app.kubernetes.io/managed-by: (\S+)", text).group(1)
+            state["namespace_name"] = re.search(r"^  name: (\S+)$", text, re.M).group(1)
+            state["namespace_part_of"] = re.search(r"app.kubernetes.io/part-of: (\S+)", text).group(1)
+        elif args[0] == "create":
+            print("Unexpected kubectl call", args, file=sys.stderr)
+            sys.exit(99)
         output("applied")
     if args[:1] == ["delete"]:
         if args[1] == "namespace":
@@ -109,9 +124,18 @@ if command == "eks list-pod-identity-associations":
 if command == "eks describe-pod-identity-association":
     if "--query" in args:
         output(state["role_arn"])
-    output({"association": {"roleArn": state["role_arn"], "tags": {"ManagedBy": state["owner"]}}})
+    if not state["association"]:
+        error("ResourceNotFoundException", "DescribePodIdentityAssociation")
+    created = state.get("association_created", {})
+    output({"association": {"associationId": "synthetic-id", "clusterName": created.get("cluster"),
+                            "namespace": created.get("namespace"), "serviceAccount": created.get("account"),
+                            "roleArn": created.get("role", state["role_arn"]),
+                            "tags": {"ManagedBy": created.get("owner", state["owner"])}}})
 if command == "eks create-pod-identity-association":
     state["association"] = True
+    state["association_created"] = {"cluster": option("--cluster-name"), "namespace": option("--namespace"),
+                                     "account": option("--service-account"), "role": option("--role-arn"),
+                                     "owner": option("--tags").split("ManagedBy=", 1)[1]}
     output("synthetic-id")
 if command == "eks delete-pod-identity-association":
     state["association"] = False
@@ -176,16 +200,34 @@ if command in ("s3api put-public-access-block", "s3api put-bucket-encryption", "
 if command == "iam get-role":
     if not state["role"]:
         error("NoSuchEntity", "GetRole")
-    output({"Role": {"Arn": state["role_arn"], "Tags": [{"Key": "ManagedBy", "Value": state["owner"]}]}})
+    output({"Role": {"Arn": state["role_arn"], "RoleId": "synthetic-role-id", "Path": "/",
+                     "Tags": [{"Key": "ManagedBy", "Value": state.get("role_owner", state["owner"])}],
+                     "AssumeRolePolicyDocument": state.get("trust")}})
 if command == "iam create-role":
     state["role"] = True
     state["role_arn"] = "arn:aws:iam::111111111111:role/" + option("--role-name")
-    output(state["role_arn"])
+    state["role_owner"] = option("--tags").split("Value=", 1)[1]
+    state["trust"] = json.loads(Path(option("--assume-role-policy-document")[len("file://"):]).read_text())
+    if "--query" in args:
+        output(state["role_arn"])
+    output({"Role": {"Arn": state["role_arn"], "RoleId": "synthetic-role-id", "Path": "/"}})
+if command == "iam get-role-policy":
+    if option("--policy-name") not in state.get("inline", {}):
+        error("NoSuchEntity", "GetRolePolicy")
+    output({"PolicyName": option("--policy-name"), "PolicyDocument": state["inline"][option("--policy-name")]})
 if command == "iam list-role-policies":
     output({"PolicyNames": ["analyst"]})
 if command == "iam list-attached-role-policies":
     output({"AttachedPolicies": []})
-if command in ("iam put-role-policy", "iam update-assume-role-policy", "iam delete-role-policy"):
+if command == "iam put-role-policy":
+    document = json.loads(Path(option("--policy-document")[len("file://"):]).read_text())
+    state.setdefault("inline", {})[option("--policy-name")] = document
+    output({})
+if command == "iam update-assume-role-policy":
+    state["trust"] = json.loads(Path(option("--policy-document")[len("file://"):]).read_text())
+    output({})
+if command == "iam delete-role-policy":
+    state.setdefault("inline", {}).pop(option("--policy-name"), None)
     output({})
 if command == "iam delete-role":
     state["role"] = False

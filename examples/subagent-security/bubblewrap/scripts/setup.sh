@@ -146,6 +146,8 @@ analyst_image "$ANALYST_REPOSITORY" bubblewrap/Dockerfile \
   analyst/fixtures/proposals/cedar.json
 ANALYST_POD_IMAGE="$ANALYST_IMAGE"
 state_put ANALYST_IMAGE "$ANALYST_POD_IMAGE"
+state_put ANALYST_REPOSITORY_CREATED "$IMAGE_REPOSITORY_CREATED"
+state_put ANALYST_LOCAL_IMAGE_ID "$IMAGE_LOCAL_ID"
 
 analyst_render "$SAMPLE_DIR/deploy/analyst-pod.yaml" "$TMP_DIR/analyst-pod.yaml" \
   "s|<ANALYST_IMAGE>|$ANALYST_POD_IMAGE|g" \

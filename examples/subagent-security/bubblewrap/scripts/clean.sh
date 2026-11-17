@@ -3,7 +3,8 @@
 #
 # Usage:
 #   ./scripts/clean.sh                      # the cluster objects and the namespace
-#   ./scripts/clean.sh --delete-aws         # also the bucket, the IAM role and the images
+#   ./scripts/clean.sh --delete-aws         # also the bucket, the IAM role, the ECR
+#                                           # repositories and the local images it built
 #
 # It reads the same run record setup.sh wrote, so there is nothing to set again.
 #
@@ -11,7 +12,8 @@
 # which is a failure and never "already gone": anything it could not delete or confirm is
 # named at the end and makes it exit non-zero. It touches a resource only when that
 # resource carries this sample's ManagedBy tag, or sits inside a namespace carrying this
-# sample's managed-by label, and leaves anything else alone.
+# sample's managed-by label, and leaves anything else alone. The Pod Identity association
+# and the local images must also be the exact ones the run record names.
 #
 # It never removes a shared install or a cluster-wide setting; this sample changes none, so
 # there is nothing of that kind to undo. What stays is listed at the end.
@@ -27,7 +29,7 @@ delete_aws=false
 for arg in "$@"; do
   case "$arg" in
     --delete-aws) delete_aws=true ;;
-    --help|-h) sed -n '2,20p' "$0"; exit 0 ;;
+    --help|-h) sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -120,23 +122,37 @@ esac
 
 say "2/4 the EKS Pod Identity association"
 
+# Only the association the run record names, and only while it is still exactly that one:
+# the one association for this namespace and service account, with the recorded id, this
+# cluster, the recorded role and this sample's tag. Anything else is left in place.
+saved_id="${POD_IDENTITY_ASSOCIATION:-}"
 if [[ -z "$CLUSTER_NAME" ]]; then
   note_fail "CLUSTER_NAME is not set, so the Pod Identity association could not be looked up or removed"
 else
   assoc="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" \
     --namespace "$NAMESPACE" --service-account analyst --output json 2>/dev/null)"
-  if [[ -z "$assoc" ]]; then
+  count="$(jq '.associations | length' <<<"$assoc" 2>/dev/null)"
+  if [[ -z "$assoc" || -z "$count" ]]; then
     note_fail "could not list the Pod Identity associations for $NAMESPACE/analyst on $CLUSTER_NAME"
-  elif [[ "$(jq '.associations | length' <<<"$assoc")" == 0 ]]; then
+  elif [[ "$count" == 0 ]]; then
     echo "  no association for $NAMESPACE/analyst; already gone."
+  elif [[ "$count" != 1 ]]; then
+    note_fail "there are $count Pod Identity associations for $NAMESPACE/analyst on $CLUSTER_NAME, not the one this run recorded; left them in place"
+  elif [[ -z "$saved_id" ]]; then
+    note_fail "the run record names no Pod Identity association, so the one for $NAMESPACE/analyst was left in place"
   else
     id="$(jq -r '.associations[0].associationId' <<<"$assoc")"
     detail="$(aws eks describe-pod-identity-association --cluster-name "$CLUSTER_NAME" \
-      --association-id "$id" --output json 2>/dev/null)"
-    if [[ -z "$detail" ]]; then
+      --association-id "$saved_id" --output json 2>/dev/null)"
+    want="$(jq -cn --arg i "$saved_id" --arg c "$CLUSTER_NAME" --arg n "$NAMESPACE" \
+      --arg r "${ROLE_ARN:-}" --arg m "$SAMPLE" '[$i, $c, $n, "analyst", $r, $m]')"
+    if [[ "$id" != "$saved_id" ]]; then
+      note_fail "the Pod Identity association for $NAMESPACE/analyst is $id, not the $saved_id this run recorded; left it in place"
+    elif [[ -z "$detail" ]]; then
       note_fail "could not read the Pod Identity association $id, so it was left in place"
-    elif [[ "$(jq -r '.association.tags.ManagedBy // ""' <<<"$detail")" != "$SAMPLE" ]]; then
-      note_fail "the Pod Identity association $id does not carry ManagedBy=$SAMPLE; left it alone"
+    elif [[ "$(jq -c '.association | [.associationId, .clusterName, .namespace,
+               .serviceAccount, .roleArn, (.tags.ManagedBy // "")]' <<<"$detail" 2>/dev/null)" != "$want" ]]; then
+      note_fail "the Pod Identity association $id no longer matches the run record (its cluster, namespace, service account, role or ManagedBy=$SAMPLE tag); left it in place"
     else
       aws eks delete-pod-identity-association --cluster-name "$CLUSTER_NAME" \
         --association-id "$id" >/dev/null 2>&1 ||
@@ -255,6 +271,39 @@ else
       note_fail "could not determine whether the ECR repository $repo exists; left it alone"
     fi
   done
+
+  # The local images this run built, each by the exact reference the run record holds, and
+  # only while that reference still names the image id recorded when it was built. An empty
+  # id means the run reused an image already in ECR and built nothing here.
+  if ! docker_err="$(mktemp "${TMPDIR:-/tmp}/bubblewrap-docker.XXXXXX")"; then
+    note_fail "could not make a scratch file, so the local images were not checked or removed"
+  else
+    for pair in "${SUPPLIER_API_IMAGE:-}|${SUPPLIER_API_LOCAL_IMAGE_ID:-}" \
+                "${ANALYST_IMAGE:-}|${ANALYST_LOCAL_IMAGE_ID:-}"; do
+      ref="${pair%%|*}" want="${pair#*|}"
+      [[ -n "$want" ]] || continue
+      if [[ -z "$ref" ]]; then
+        note_fail "the run record has a local image id ($want) with no reference; left it alone"
+      elif have="$(docker image inspect --format '{{.Id}}' "$ref" 2>"$docker_err")"; then
+        if [[ "$have" != "$want" ]]; then
+          note_fail "the local image $ref is now $have, not the $want this run built; left it alone"
+        elif ! docker image rm "$ref" >/dev/null 2>&1; then
+          note_fail "could not remove the local image $ref"
+        elif docker image inspect "$ref" >/dev/null 2>"$docker_err"; then
+          note_fail "the local image $ref is still present after the remove"
+        elif grep -q 'No such image' "$docker_err"; then
+          echo "  removed the local image $ref."
+        else
+          note_fail "could not confirm the local image $ref was removed"
+        fi
+      elif grep -q 'No such image' "$docker_err"; then
+        echo "  the local image $ref is already gone."
+      else
+        note_fail "could not determine whether the local image $ref exists; left it alone"
+      fi
+    done
+    rm -f "$docker_err"
+  fi
 fi
 
 say "4/4 the local run files"
