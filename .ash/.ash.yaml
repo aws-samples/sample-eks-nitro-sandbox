@@ -687,6 +687,31 @@ global_settings:
       path: 'examples/confidential/secrets-manager-secret/deploy/plain-pod.yaml'
       reason: 'Ordinary control pod: same image and readings as the sandboxed pod; plain on purpose (plain-pod.yaml:12)'
       expiration: '2027-12-31'
+    # secrets-manager-secret run-to-completion pods (#145): no probe to gate and no network policy, by design.
+    - rule_id: CKV2_K8S_6
+      path: 'examples/confidential/secrets-manager-secret/deploy/credentials-pod.yaml'
+      reason: 'Ordinary control must reach STS, Secrets Manager and KMS to show attestation, not credentials, is the boundary (credentials-pod.yaml:14-24,39-48; no_attestation.py:61-74); the blueprint ships no network policy (AGENTS.md, Security rules)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/confidential/secrets-manager-secret/deploy/credentials-pod.yaml'
+      reason: 'One-shot control (restartPolicy: Never, credentials-pod.yaml:25) runs a bounded four-attempt flow and exits with a decision marker (no_attestation.py:51-52,92-150); a liveness kill would end it Failed before the answer'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/confidential/secrets-manager-secret/deploy/credentials-pod.yaml'
+      reason: 'One-shot control serves no port and exits after its result (credentials-pod.yaml:25,35-58; no_attestation.py:144-150); setup.sh waits for terminal phase and validates the log result, not Ready (setup.sh:683-694,740-774)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/confidential/secrets-manager-secret/deploy/pod.yaml'
+      reason: 'Confidential workload must reach Secrets Manager and KMS using Pod Identity to read and decrypt (pod.yaml:19-20,52-61; app.py:66,94-98,128-131); the blueprint ships no network policy (AGENTS.md, Security rules)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/confidential/secrets-manager-secret/deploy/pod.yaml'
+      reason: 'One-shot decrypt workload (restartPolicy: Never, pod.yaml:21-24; app.py:114-141) uses terminal success as the result; setup.sh requires Succeeded and the exact validation marker (setup.sh:697-710), so a liveness kill would turn the result into Failed'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/confidential/secrets-manager-secret/deploy/pod.yaml'
+      reason: 'One-shot decrypt workload serves no port and exits (pod.yaml:21-24,42-88; app.py:114-141); setup.sh waits for terminal Succeeded, not Ready (setup.sh:683-710), so a readiness probe gates nothing'
+      expiration: '2027-12-31'
     # Image is a placeholder the scripts substitute with the built image and tag before apply.
     - rule_id: CKV_K8S_14
       path: 'examples/agent-sandbox/brain-and-hands/deploy/brain.yaml'
@@ -1671,31 +1696,6 @@ global_settings:
     - rule_id: CKV_K8S_9
       path: 'examples/confidential/s3-encrypted-file/deploy/pod.yaml'
       reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in #144'
-      expiration: '2027-01-31'
-    # Baseline: confidential/secrets-manager-secret
-    - rule_id: CKV2_K8S_6
-      path: 'examples/confidential/secrets-manager-secret/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in #145'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/confidential/secrets-manager-secret/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in #145'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_9
-      path: 'examples/confidential/secrets-manager-secret/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in #145'
-      expiration: '2027-01-31'
-    - rule_id: CKV2_K8S_6
-      path: 'examples/confidential/secrets-manager-secret/deploy/pod.yaml'
-      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in #145'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/confidential/secrets-manager-secret/deploy/pod.yaml'
-      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in #145'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_9
-      path: 'examples/confidential/secrets-manager-secret/deploy/pod.yaml'
-      reason: 'Baseline: confidential/secrets-manager-secret merged before the ASH gate; hardening tracked in #145'
       expiration: '2027-01-31'
     # Baseline: ci-cd/gitlab-ci
     - rule_id: CKV2_K8S_6
