@@ -38,6 +38,19 @@ Amazon ECR, and one of those builds bubblewrap from source, so the first build t
 minute or two longer than a plain image. A run costs one Bedrock turn, a few small Amazon S3
 objects, and one sandboxed pod plus one small ordinary pod kept running until you clean up.
 
+The cluster must use EKS Auto Mode: the analyst pod asks for an xlarge node by the label EKS
+Auto Mode puts on its nodes, and the clean up finds the node through its NodeClaim. Before
+`setup.sh` creates anything, it checks the most one run can cost, through a clean up that
+deletes the run's node, against a cost snapshot you collect and name in `.env`
+(`COST_SNAPSHOT`). [`scripts/cost_gate.py`](scripts/cost_gate.py) describes the snapshot: the
+Region's on-demand and EKS Auto Mode prices for every C, M and R xlarge type it offers, the
+other rates a run pays, the cluster's NodePools, and where each came from, all from read-only
+calls. Setup refuses to start, and so does `run.sh`, when that worst case is USD 5 or more, or
+when the snapshot is missing, incomplete or more than a day old. `run.sh` also refuses more
+than an hour after setup started. The bound assumes you run
+`./scripts/clean.sh --delete-aws --delete-node` when the run ends: until the clean up deletes
+the node, it keeps billing.
+
 Every output block on this page is from one real run of this blueprint, run id
 `0eb808c7a8244688b2ceb854d71ed07a`. Values from the account and cluster it ran on are
 replaced by the same placeholders the commands use, because this repository is public:
@@ -121,11 +134,13 @@ blueprints and listed on the [section page](../README.md#the-shared-files). This
 | [`src/filters.py`](src/filters.py) | The seccomp filters the application compiles with libseccomp |
 | [`src/toolbox.py`](src/toolbox.py) | The program bubblewrap starts: the shared worker plus this blueprint's probes |
 | [`src/preflight.py`](src/preflight.py) | Starts one tool process, so setup fails clearly on a guest that cannot run one |
+| [`src/run_envelope.json`](src/run_envelope.json) | The run's fixed bounds: model calls, tokens, request size, retries, and the report objects |
 | [`deploy/analyst-pod.yaml`](deploy/analyst-pod.yaml) | The sandboxed pod, with the init container the guest needs |
 | [`deploy/ordinary-pod.yaml`](deploy/ordinary-pod.yaml) | An ordinary pod on the same node, for the comparison in step 11 |
 | [`scripts/setup.sh`](scripts/setup.sh) | Builds the images and creates everything the blueprint needs |
 | [`scripts/run.sh`](scripts/run.sh) | Runs one procurement case and copies its result out |
 | [`scripts/correlate.py`](scripts/correlate.py) | Checks the run's record against the supplier API's own request log |
+| [`scripts/cost_gate.py`](scripts/cost_gate.py) | The most one run can cost, from your cost snapshot; setup and run refuse at USD 5 or more |
 | [`scripts/clean.sh`](scripts/clean.sh) | Removes what this blueprint created, and says what stays |
 | [`.env.example`](.env.example) | The local values the blueprint needs; copy to `.env`, which git ignores |
 
@@ -197,6 +212,12 @@ NAMESPACE=subagent-security-bubblewrap
 # The Amazon Bedrock inference profile the analyst's model turn uses. The run on the page
 # used this one.
 BEDROCK_MODEL_ID=global.anthropic.claude-sonnet-4-5-20250929-v1:0
+
+# Required. The cost snapshot setup.sh checks before it creates anything: a JSON file you
+# collect with read-only calls and keep outside this repository, described at the top of
+# scripts/cost_gate.py. setup.sh and run.sh refuse to start if one run could cost USD 5 or
+# more, or if the snapshot is missing, incomplete or more than a day old.
+COST_SNAPSHOT=
 
 # Optional. Left empty, setup.sh names the bucket and the role for this sample and your
 # account id. Set them to run a second copy beside the first.
@@ -1122,6 +1143,17 @@ copy.
   all. Its limits are higher than its requests on purpose: the requests size the sandbox, and
   the two need not match (Amazon EKS User Guide, *Isolated and confidential pods
   limitations*).
+- **The node is an xlarge or nothing.** The pod selects `eks.amazonaws.com/instance-size:
+  xlarge`, so the node EKS Auto Mode launches for it is never larger, which is what lets the
+  cost check bound a run before it starts. If no xlarge node can be launched for it, the pod
+  stays Pending and `setup.sh` stops after its ten-minute wait; it never falls back to a
+  bigger size.
+- **The model turn has fixed bounds.** [`src/run_envelope.json`](src/run_envelope.json) caps
+  it at three model calls (the evidence tool call, the structured answer, and one forced
+  retry of that answer), two tries per call, 4,000 output and 24,000 total tokens, and
+  40,000 bytes per request. A turn that goes past any of them, or stops for any other
+  reason, fails the run rather than producing a recommendation. The cost check prices the
+  most those bounds allow.
 - **Everything about the supplier is synthetic.** The proposals are invented, the supplier
   API holds no real records, and a purchase order against it orders nothing. The proposals
   hold no customer data.
@@ -1178,6 +1210,18 @@ be the one the run record names, with the same role, and a local image is remove
 the exact reference and image id the run recorded when it built it. A lookup that fails
 counts as "could not determine" rather than "already gone", so anything it could not delete
 or confirm is named at the end and makes it exit non-zero.
+
+With `--delete-aws --delete-node` it also deletes the sandbox node the run's pod was given,
+through its NodeClaim, which is how EKS Auto Mode removes a node, and waits until its EC2
+instance is terminated. It does that only after the namespace is gone, only for the node and
+NodeClaim the run record names, with the same uid, provider id, creation time and NodePool,
+only if both appeared after the run started, and only while nothing but DaemonSet and static
+pods runs on the node. If any of that does not hold it leaves the node alone and says so. If
+the NodeClaim delete does not finish in ten minutes, `--allow-instance-termination` lets it
+terminate the instance directly, once a dry run shows the call is allowed, and after checking
+every one of those again and the instance's own tags. Without `--delete-node` the node is left
+to EKS Auto Mode, which removes it once nothing runs on it but gives no deadline for that, so
+the cost check's bound assumes `--delete-node`.
 
 Without `--delete-aws` it removes the cluster objects and the Pod Identity association and
 keeps the S3 bucket, the IAM role and the images, so a second run skips the build. It keeps

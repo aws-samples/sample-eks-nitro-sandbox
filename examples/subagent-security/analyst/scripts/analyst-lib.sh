@@ -282,8 +282,30 @@ analyst_supplier_secrets() {
   echo "  created a 30-day sample certificate authority and the supplier-tls Secret"
 }
 
+# The supplier API image's build inputs, beside its Dockerfile. A digest of them is its tag.
+ANALYST_SUPPLIER_API_INPUTS=(analyst/supplier-api/supplier_api.py analyst/src/business.py
+  analyst/fixtures/case.json analyst/fixtures/availability.json)
+
+# Sets ANALYST_IMAGE to the reference analyst_image would push, and calls nothing: the tag
+# is a digest of the build inputs, so a changed file always means a new tag and a pod can
+# never run yesterday's code under today's name.
+#   analyst_image_ref <ecr-repository> <dockerfile, relative to SECTION_DIR> <input paths...>
+analyst_image_ref() {
+  local repo="$1" dockerfile="$2" tag; shift 2
+  tag="$( (cd "$SECTION_DIR" && cat "$dockerfile" "$@" | sha256sum) | cut -c1-20)"
+  ANALYST_IMAGE="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$repo:$tag"
+}
+
+# Builds ANALYST_IMAGE locally from <dockerfile>; writes nothing anywhere else.
+analyst_image_build() {
+  ( cd "$SECTION_DIR" &&
+    docker build --platform linux/amd64 -f "$1" -t "$ANALYST_IMAGE" . )
+}
+
 # Builds and pushes one image, reusing the pushed tag when the inputs have not changed.
 #   analyst_image <ecr-repository> <dockerfile, relative to SECTION_DIR> <input paths...>
+# When ANALYST_EXPECTED_IMAGE_ID is set, an image it builds must have that id, or nothing
+# is pushed: a caller that measured the image beforehand pushes exactly what it measured.
 # Prints nothing; sets ANALYST_IMAGE, IMAGE_REPOSITORY_CREATED (true or false) and
 # IMAGE_LOCAL_ID, the local image id when this call built it and empty when it reused the
 # pushed tag, for the caller to record so a clean up can remove exactly that local image.
@@ -291,11 +313,8 @@ analyst_image() {
   local repo="$1" dockerfile="$2"; shift 2
   local tag registry existing rc
   IMAGE_REPOSITORY_CREATED=false IMAGE_LOCAL_ID=""
-  # The tag is a digest of the build inputs, so a changed file always means a new tag and
-  # a pod can never run yesterday's code under today's name.
-  tag="$( (cd "$SECTION_DIR" && cat "$dockerfile" "$@" | sha256sum) | cut -c1-20)"
-  registry="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
-  ANALYST_IMAGE="$registry/$repo:$tag"
+  analyst_image_ref "$repo" "$dockerfile" "$@"
+  tag="${ANALYST_IMAGE##*:}" registry="${ANALYST_IMAGE%%/*}"
 
   # "|| rc=$?" and not "; rc=$?": a failing assignment is not a tested context, so under
   # set -e the shell would exit before rc could be read, and a not-found lookup would
@@ -325,10 +344,10 @@ analyst_image() {
     got="$(readback RepositoryNotFoundException ecr describe-repositories \
       --repository-names "$repo" --output json)" ||
       die "could not read back the ECR repository $repo; stopped before $next."
-    expect "the ECR repository's ARN" \
-      "$(jq -r '.repositories[0].repositoryArn // ""' <<<"$got")" "$arn" "$next"
-    expect "scan on push for $repo" \
-      "$(jq -r '.repositories[0].imageScanningConfiguration.scanOnPush' <<<"$got")" true "$next"
+    expect "the ECR repository $repo" "$(jq -c '[(.repositories | length),
+        .repositories[0].repositoryName, .repositories[0].repositoryArn,
+        .repositories[0].imageScanningConfiguration.scanOnPush]' <<<"$got")" \
+      "$(jq -cn --arg n "$repo" --arg a "$arn" '[1, $n, $a, true]')" "$next"
     expect_aws "the ManagedBy tag on $repo" "$next" \
       '[.tags[]? | select(.Key=="ManagedBy") | .Value] | join(",")' "$SAMPLE" \
       ecr list-tags-for-resource --resource-arn "$arn"
@@ -351,11 +370,11 @@ analyst_image() {
     docker --config "$docker_config" login --username AWS --password-stdin "$registry" \
       >/dev/null ||
     die "could not sign in to $registry"
-  ( cd "$SECTION_DIR" &&
-    docker build --platform linux/amd64 -f "$dockerfile" -t "$ANALYST_IMAGE" . ) ||
-    die "the image build failed"
+  analyst_image_build "$dockerfile" || die "the image build failed"
   IMAGE_LOCAL_ID="$(docker image inspect --format '{{.Id}}' "$ANALYST_IMAGE")" ||
     die "could not read the id of the image just built, $ANALYST_IMAGE"
+  [[ -z "${ANALYST_EXPECTED_IMAGE_ID:-}" || "$IMAGE_LOCAL_ID" == "$ANALYST_EXPECTED_IMAGE_ID" ]] ||
+    die "the image built for $ANALYST_IMAGE is $IMAGE_LOCAL_ID, not the $ANALYST_EXPECTED_IMAGE_ID measured before the run; pushed nothing"
   docker --config "$docker_config" push "$ANALYST_IMAGE" >/dev/null ||
     die "could not push $ANALYST_IMAGE"
   rm -rf "$docker_config"
@@ -365,8 +384,7 @@ analyst_image() {
 analyst_supplier_api() {
   say "4/7 the synthetic supplier API"
   analyst_image "$SUPPLIER_API_REPOSITORY" analyst/supplier-api/Dockerfile \
-    analyst/supplier-api/supplier_api.py analyst/src/business.py \
-    analyst/fixtures/case.json analyst/fixtures/availability.json
+    "${ANALYST_SUPPLIER_API_INPUTS[@]}"
   # shortcut: recorded after analyst_image returns, so a run that stops between the build
   # and this line leaves that local image unrecorded; upgrade if that case turns up.
   state_put SUPPLIER_API_IMAGE "$ANALYST_IMAGE"
@@ -520,25 +538,29 @@ analyst_role() {
       --tags "Key=ManagedBy,Value=$SAMPLE" --output json)" ||
       die "could not create the IAM role $ROLE_NAME"
     ROLE_ARN="$(jq -r '.Role.Arn // ""' <<<"$created")"
+    ROLE_ID="$(jq -r '.Role.RoleId // ""' <<<"$created")"
     state_put ROLE_CREATED true
     state_put ROLE_ARN "$ROLE_ARN"
-    state_put ROLE_ID "$(jq -r '.Role.RoleId // ""' <<<"$created")"
+    state_put ROLE_ID "$ROLE_ID"
     echo "  created the IAM role $ROLE_NAME"
+    [[ -n "$ROLE_ID" ]] || die "creating the IAM role $ROLE_NAME returned no RoleId; stopped before $next."
 
     # Read the new role back before granting it anything: the ARN, id and path it was
     # created with, this sample's tag, no permissions boundary, the trust policy rendered
-    # above, and no managed policy. The inline list is read after the put below.
+    # above, and no policy of either kind yet.
     role="$(readback NoSuchEntity iam get-role --role-name "$ROLE_NAME" --output json)" ||
       die "could not read back the IAM role $ROLE_NAME; stopped before $next."
     expect "the IAM role $ROLE_NAME" "$(jq -c '.Role | [.Arn, .RoleId, .Path,
         ([.Tags[]? | select(.Key=="ManagedBy") | .Value] | join(",")),
         (.PermissionsBoundary.PermissionsBoundaryArn // "")]' <<<"$role")" \
-      "$(jq -c --arg arn "arn:aws:iam::$ACCOUNT_ID:role/$ROLE_NAME" --arg sample "$SAMPLE" \
-        '[$arn, .Role.RoleId, "/", $sample, ""]' <<<"$created")" "$next"
+      "$(jq -cn --arg arn "arn:aws:iam::$ACCOUNT_ID:role/$ROLE_NAME" --arg id "$ROLE_ID" \
+        --arg sample "$SAMPLE" '[$arn, $id, "/", $sample, ""]')" "$next"
     expect "the trust policy on $ROLE_NAME" "$(jq -cS '.Role.AssumeRolePolicyDocument' <<<"$role")" \
       "$(jq -cS . "$TMP_DIR/role-trust-policy.json")" "$next"
     expect_aws "the managed policies attached to $ROLE_NAME" "$next" '.AttachedPolicies' '[]' \
       iam list-attached-role-policies --role-name "$ROLE_NAME"
+    expect_aws "the inline policies on $ROLE_NAME" "$next" '.PolicyNames' '[]' \
+      iam list-role-policies --role-name "$ROLE_NAME"
 
     aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name analyst \
       --policy-document "file://$TMP_DIR/permissions-policy.json"

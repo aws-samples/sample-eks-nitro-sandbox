@@ -5,6 +5,11 @@
 #   ./scripts/clean.sh                      # the cluster objects and the namespace
 #   ./scripts/clean.sh --delete-aws         # also the bucket, the IAM role, the ECR
 #                                           # repositories and the local images it built
+#   ./scripts/clean.sh --delete-aws --delete-node
+#                                           # also the sandbox node the run's pod was given
+#   ./scripts/clean.sh --delete-aws --delete-node --allow-instance-termination
+#                                           # and, if deleting it through EKS fails,
+#                                           # terminate its EC2 instance directly
 #
 # It reads the same run record setup.sh wrote, so there is nothing to set again.
 #
@@ -12,11 +17,12 @@
 # which is a failure and never "already gone": anything it could not delete or confirm is
 # named at the end and makes it exit non-zero. It touches a resource only when that
 # resource carries this sample's ManagedBy tag, or sits inside a namespace carrying this
-# sample's managed-by label, and leaves anything else alone. The Pod Identity association
-# and the local images must also be the exact ones the run record names.
+# sample's managed-by label, and leaves anything else alone. The Pod Identity association,
+# the local images and the node must also be the exact ones the run record names.
 #
 # It never removes a shared install or a cluster-wide setting; this sample changes none, so
-# there is nothing of that kind to undo. What stays is listed at the end.
+# there is nothing of that kind to undo. What stays is listed at the end. It needs no cost
+# snapshot: refusing to clean up would only leave billing running.
 set -uo pipefail
 
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -25,14 +31,21 @@ SAMPLE="bubblewrap"
 TMP_DIR="$REPO_ROOT/tmp/$SAMPLE"
 STATE_FILE="$TMP_DIR/state.env"
 
-delete_aws=false
+delete_aws=false delete_node=false allow_terminate=false
 for arg in "$@"; do
   case "$arg" in
     --delete-aws) delete_aws=true ;;
-    --help|-h) sed -n '2,19p' "$0"; exit 0 ;;
+    --delete-node) delete_node=true ;;
+    --allow-instance-termination) allow_terminate=true ;;
+    --help|-h) sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
+
+[[ "$delete_node" != true || "$delete_aws" == true ]] ||
+  { echo "--delete-node also needs --delete-aws" >&2; exit 2; }
+[[ "$allow_terminate" != true || "$delete_node" == true ]] ||
+  { echo "--allow-instance-termination also needs --delete-node" >&2; exit 2; }
 
 failed=0
 note_fail() { echo "INCOMPLETE: $*" >&2; failed=1; }
@@ -45,6 +58,9 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 # send this script after a namespace and a bucket that were never created and leave the
 # real ones behind.
 if [[ -f "$SAMPLE_DIR/.env" ]]; then set -a; . "$SAMPLE_DIR/.env"; set +a; fi
+# Which node is the run's comes from the run record alone, never from .env.
+unset NODE_NAME NODE_UID NODE_PROVIDER_ID NODE_CREATED_AT NODE_POOL NODE_AT_START \
+  NODECLAIM_NAME NODECLAIM_UID NODECLAIM_CREATED_AT NODECLAIM_POOL RUN_STARTED_AT
 if [[ -f "$STATE_FILE" ]]; then set -a; . "$STATE_FILE"; set +a; fi
 
 NAMESPACE="${NAMESPACE:-subagent-security-bubblewrap}"
@@ -57,7 +73,7 @@ CLUSTER_NAME="${CLUSTER_NAME:-}"
 # report resources as "already gone" and exit 0 while they are still there.
 [[ -n "$AWS_REGION" ]] ||
   die "AWS_REGION is not set, so a lookup could run in the wrong Region and report a resource that still exists as already gone. Set it in .env, or run ./scripts/setup.sh first so the run record has it."
-export AWS_REGION AWS_DEFAULT_REGION="$AWS_REGION"
+export AWS_REGION AWS_DEFAULT_REGION="$AWS_REGION" AWS_MAX_ATTEMPTS=3 AWS_RETRY_MODE=standard
 
 for c in aws jq kubectl; do
   command -v "$c" >/dev/null 2>&1 || die "$c is required"
@@ -83,10 +99,10 @@ lookup() {
   return 2
 }
 
-say "1/4 the namespace's own objects"
+say "1/5 the namespace's own objects"
 
 # Four states, and only one of them lets anything inside the namespace be deleted.
-ns_state=unknown
+ns_state=unknown ns_gone=false
 if ns_json="$(kc get namespace "$NAMESPACE" --ignore-not-found -o json 2>/dev/null)"; then
   if [[ -z "$ns_json" ]]; then
     ns_state=absent
@@ -97,7 +113,7 @@ if ns_json="$(kc get namespace "$NAMESPACE" --ignore-not-found -o json 2>/dev/nu
   fi
 fi
 case "$ns_state" in
-  absent) echo "  namespace $NAMESPACE is already gone." ;;
+  absent) echo "  namespace $NAMESPACE is already gone."; ns_gone=true ;;
   foreign) note_fail "namespace $NAMESPACE is not this sample's (its managed-by label is not '$SAMPLE'); deleted nothing in it" ;;
   unknown) note_fail "could not determine whether namespace $NAMESPACE exists or whose it is; deleted nothing in it" ;;
   owned)
@@ -113,14 +129,130 @@ case "$ns_state" in
     kc delete namespace "$NAMESPACE" --wait=true --timeout=5m ||
       note_fail "could not delete namespace $NAMESPACE"
     if still="$(kc get namespace "$NAMESPACE" --ignore-not-found -o name 2>/dev/null)"; then
-      [[ -z "$still" ]] || note_fail "namespace $NAMESPACE is still present after the delete"
+      if [[ -z "$still" ]]; then ns_gone=true
+      else note_fail "namespace $NAMESPACE is still present after the delete"; fi
     else
       note_fail "could not confirm namespace $NAMESPACE was deleted"
     fi
     ;;
 esac
 
-say "2/4 the EKS Pod Identity association"
+say "2/5 the run's own sandbox node"
+
+# Only with --delete-aws --delete-node, only after the namespace is confirmed gone, and only
+# the one node the run record names. Every identity in the record must still hold: the
+# Node's name, uid, provider id, creation time and NodePool, the same for its NodeClaim,
+# and a timeline in which both appeared after the run started and the Node was not on the
+# cluster when it did. A pod other than a DaemonSet's or a static one on the node means
+# someone else's work is on it, and the node is left alone. Deleting the NodeClaim is the
+# EKS Auto Mode way to remove a node; terminating the instance directly happens only with
+# --allow-instance-termination, after that fails, and after every check again.
+node_why=""
+node_matches() { # fresh reads of the Node, its NodeClaim and the pods on it
+  local node claim pods foreign want
+  if node="$(kc get node "$NODE_NAME" --ignore-not-found -o json 2>/dev/null)"; then :
+  else node_why="could not read node $NODE_NAME"; return 1; fi
+  if [[ -n "$node" ]]; then
+    want="$(jq -cn --arg a "$NODE_UID" --arg b "$NODE_PROVIDER_ID" --arg c "$NODE_CREATED_AT" \
+      --arg d "$NODE_POOL" '[$a, $b, $c, $d]')"
+    [[ "$(jq -c '[.metadata.uid, .spec.providerID, .metadata.creationTimestamp,
+        .metadata.labels["karpenter.sh/nodepool"]]' <<<"$node" 2>/dev/null)" == "$want" ]] ||
+      { node_why="node $NODE_NAME no longer matches the run record"; return 1; }
+  fi
+  if claim="$(kc get nodeclaim "$NODECLAIM_NAME" --ignore-not-found -o json 2>/dev/null)"; then :
+  else node_why="could not read NodeClaim $NODECLAIM_NAME"; return 1; fi
+  if [[ -n "$claim" ]]; then
+    want="$(jq -cn --arg a "$NODECLAIM_UID" --arg b "$NODE_PROVIDER_ID" \
+      --arg c "$NODECLAIM_CREATED_AT" --arg d "$NODECLAIM_POOL" '[$a, $b, $c, $d]')"
+    [[ "$(jq -c '[.metadata.uid, .status.providerID, .metadata.creationTimestamp,
+        .metadata.labels["karpenter.sh/nodepool"]]' <<<"$claim" 2>/dev/null)" == "$want" ]] ||
+      { node_why="NodeClaim $NODECLAIM_NAME no longer matches the run record"; return 1; }
+  fi
+  if pods="$(kc get pods -A --field-selector "spec.nodeName=$NODE_NAME" -o json 2>/dev/null)" &&
+     foreign="$(jq -er '[.items[] | select(.status.phase != "Succeeded" and .status.phase != "Failed")
+       | select(((.metadata.ownerReferences // []) | map(.kind) | index("DaemonSet")) == null)
+       | select((.metadata.annotations // {})["kubernetes.io/config.mirror"] == null)
+       | "\(.metadata.namespace)/\(.metadata.name)"] | join(" ")' <<<"$pods")"; then :
+  else node_why="could not list the pods on node $NODE_NAME"; return 1; fi
+  [[ -z "$foreign" ]] || { node_why="other workloads run on node $NODE_NAME: $foreign"; return 1; }
+}
+instance_state() { # prints the instance's state name, or nothing if it could not be read
+  aws ec2 describe-instances --instance-ids "$instance" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null
+}
+instance_matches() { # the instance's own tags name this cluster, the NodeClaim and its pool
+  local tags
+  tags="$(aws ec2 describe-instances --instance-ids "$instance" --output json 2>/dev/null |
+    jq -c '[.Reservations[0].Instances[0].Tags // [] | from_entries
+      | .["eks:eks-cluster-name"], .["karpenter.sh/nodeclaim"], .["karpenter.sh/nodepool"]]')"
+  [[ "$tags" == "$(jq -cn --arg a "$CLUSTER_NAME" --arg b "$NODECLAIM_NAME" \
+      --arg c "$NODECLAIM_POOL" '[$a, $b, $c]')" ]] ||
+    { node_why="instance $instance does not carry the tags of this cluster's NodeClaim $NODECLAIM_NAME"; return 1; }
+}
+wait_terminated() { # up to 60 checks, ten seconds apart
+  local _ state
+  for _ in $(seq 60); do
+    state="$(instance_state)"
+    [[ "$state" == terminated ]] && return 0
+    sleep 10
+  done
+  node_why="instance $instance is ${state:-unreadable}, not terminated, after ten minutes"
+  return 1
+}
+delete_run_node() {
+  local field instance _ gone=false dry
+  for field in NODE_NAME NODE_UID NODE_PROVIDER_ID NODE_CREATED_AT NODE_POOL NODE_AT_START \
+      NODECLAIM_NAME NODECLAIM_UID NODECLAIM_CREATED_AT NODECLAIM_POOL RUN_STARTED_AT CLUSTER_NAME; do
+    [[ -n "${!field:-}" ]] ||
+      { note_fail "the run record has no $field, so no node was deleted"; return; }
+  done
+  [[ "$NODE_AT_START" == false && "$NODE_POOL" == "$NODECLAIM_POOL" &&
+     "$RUN_STARTED_AT" < "$NODECLAIM_CREATED_AT" && ! "$NODE_CREATED_AT" < "$NODECLAIM_CREATED_AT" ]] ||
+    { note_fail "the run record does not show node $NODE_NAME appearing after the run started, so it was left in place"; return; }
+  [[ "$NODE_PROVIDER_ID" =~ ^aws:///[a-z0-9-]+/(i-[0-9a-f]{8,17})$ ]] ||
+    { note_fail "node $NODE_NAME's provider id is not an EC2 instance; left it in place"; return; }
+  instance="${BASH_REMATCH[1]}"
+  node_matches || { note_fail "$node_why; left it in place"; return; }
+
+  kc delete nodeclaim "$NODECLAIM_NAME" --ignore-not-found --wait=false >/dev/null 2>&1 ||
+    echo "  the NodeClaim delete was not accepted; waiting to see whether the node goes anyway"
+  for _ in $(seq 60); do
+    if [[ -z "$(kc get nodeclaim "$NODECLAIM_NAME" --ignore-not-found -o name 2>/dev/null || echo unknown)" &&
+          -z "$(kc get node "$NODE_NAME" --ignore-not-found -o name 2>/dev/null || echo unknown)" ]]; then
+      gone=true; break
+    fi
+    sleep 10
+  done
+  if [[ "$gone" == true ]] && wait_terminated; then
+    echo "  deleted node $NODE_NAME through its NodeClaim; instance $instance is terminated."
+    return
+  fi
+  [[ "$gone" == true ]] || node_why="NodeClaim $NODECLAIM_NAME and node $NODE_NAME are still there after ten minutes"
+  if [[ "$allow_terminate" != true ]]; then
+    note_fail "$node_why; pass --allow-instance-termination to terminate the instance directly"
+    return
+  fi
+  dry="$(aws ec2 terminate-instances --instance-ids "$instance" --dry-run 2>&1)"
+  grep -q 'DryRunOperation' <<<"$dry" ||
+    { note_fail "$node_why, and terminating instance $instance directly is not permitted here; left it"; return; }
+  if ! { node_matches && instance_matches; }; then
+    note_fail "$node_why; left instance $instance in place"
+    return
+  fi
+  aws ec2 terminate-instances --instance-ids "$instance" >/dev/null 2>&1 ||
+    { note_fail "could not terminate instance $instance"; return; }
+  wait_terminated || { note_fail "$node_why"; return; }
+  echo "  terminated instance $instance directly, after the NodeClaim delete did not finish."
+}
+if [[ "$delete_node" != true ]]; then
+  echo "  left the node to EKS Auto Mode, which removes it once it is empty; --delete-node deletes it now."
+elif [[ "$ns_gone" != true ]]; then
+  note_fail "namespace $NAMESPACE is not confirmed gone, so no node was deleted"
+else
+  delete_run_node
+fi
+
+say "3/5 the EKS Pod Identity association"
 
 # Only the association the run record names, and only while it is still exactly that one:
 # the one association for this namespace and service account, with the recorded id, this
@@ -170,7 +302,7 @@ else
   fi
 fi
 
-say "3/4 the AWS resources"
+say "4/5 the AWS resources"
 
 if [[ "$delete_aws" != true ]]; then
   echo "  kept the bucket, the IAM role and the images; pass --delete-aws to remove them."
@@ -306,7 +438,7 @@ else
   fi
 fi
 
-say "4/4 the local run files"
+say "5/5 the local run files"
 
 if [[ "$failed" == 0 && "$delete_aws" == true ]]; then
   rm -rf "$TMP_DIR"

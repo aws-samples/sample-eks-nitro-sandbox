@@ -56,9 +56,24 @@ AWS_REGION="${AWS_REGION:-}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 NAMESPACE="${NAMESPACE:-subagent-security-bubblewrap}"
 BEDROCK_MODEL_ID="${BEDROCK_MODEL_ID:-global.anthropic.claude-sonnet-4-5-20250929-v1:0}"
+COST_SNAPSHOT="${COST_SNAPSHOT:-}"
+# A finite number of tries for every AWS CLI request, which the cost check counts on.
+export AWS_MAX_ATTEMPTS=3 AWS_RETRY_MODE=standard
+
+# The analyst image's build inputs, beside its Dockerfile. A digest of them is its tag.
+ANALYST_IMAGE_INPUTS=(bubblewrap/src/controller.py bubblewrap/src/sandbox.py
+  bubblewrap/src/filters.py bubblewrap/src/toolbox.py bubblewrap/src/preflight.py
+  bubblewrap/src/run_envelope.json analyst/requirements.txt analyst/src/business.py
+  analyst/src/worker.py analyst/src/analyst_agent.py analyst/fixtures/case.json
+  analyst/fixtures/availability.json analyst/fixtures/proposals/northstar.json
+  analyst/fixtures/proposals/harbor.json analyst/fixtures/proposals/cedar.json)
 
 # shellcheck source=../../analyst/scripts/analyst-lib.sh
 . "$SECTION_DIR/analyst/scripts/analyst-lib.sh"
+
+# No run without a cost bound: scripts/cost_gate.py says what the snapshot holds.
+[[ -n "$COST_SNAPSHOT" && -f "$COST_SNAPSHOT" && "$COST_SNAPSHOT" =~ ^[A-Za-z0-9_./-]+$ ]] ||
+  die "COST_SNAPSHOT is not set in .env, names no file, or has a character other than letters, digits and _./- in its path. Collect a cost snapshot as scripts/cost_gate.py describes and set COST_SNAPSHOT to its path; created nothing."
 
 # Nothing from here down to the run record below creates anything, which is the point of
 # the order. The record is the only place the names of what a run created are written down
@@ -73,6 +88,43 @@ BUCKET="${BUCKET:-subagent-analyst-$SAMPLE-$ACCOUNT_ID}"
 ROLE_NAME="${ROLE_NAME:-subagent-analyst-$SAMPLE}"
 SUPPLIER_API_REPOSITORY="pod-isolation/subagent-analyst-$SAMPLE-supplier-api"
 ANALYST_REPOSITORY="pod-isolation/subagent-analyst-$SAMPLE"
+
+# The most one run can cost, checked before the first write to AWS or the cluster. Both
+# images are built here first, on this machine only, so the check has their real sizes,
+# and their ids are what the push later has to match. Silent when it passes; its terms go
+# in the run record below.
+cost_build_log="$(mktemp "${TMPDIR:-/tmp}/bubblewrap-build.XXXXXX")" ||
+  die "could not make a scratch file for the image builds; created nothing"
+measure_image() { # <repository> <dockerfile> <inputs...>; sets MEASURED_ID MEASURED_BYTES
+  analyst_image_ref "$@"
+  analyst_image_build "$2" >"$cost_build_log" 2>&1 ||
+    { cat "$cost_build_log" >&2; die "the image $ANALYST_IMAGE did not build; created nothing"; }
+  MEASURED_ID="" MEASURED_BYTES=""
+  read -r MEASURED_ID MEASURED_BYTES < <(docker image inspect --format '{{.Id}} {{.Size}}' \
+    "$ANALYST_IMAGE") || true
+  [[ -n "$MEASURED_ID" && "$MEASURED_BYTES" =~ ^[0-9]+$ ]] ||
+    die "could not read the id and size of $ANALYST_IMAGE; created nothing"
+}
+measure_image "$SUPPLIER_API_REPOSITORY" analyst/supplier-api/Dockerfile \
+  "${ANALYST_SUPPLIER_API_INPUTS[@]}"
+SUPPLIER_API_EXPECTED_ID="$MEASURED_ID" SUPPLIER_API_IMAGE_BYTES="$MEASURED_BYTES"
+measure_image "$ANALYST_REPOSITORY" bubblewrap/Dockerfile "${ANALYST_IMAGE_INPUTS[@]}"
+ANALYST_EXPECTED_ID="$MEASURED_ID" ANALYST_IMAGE_BYTES="$MEASURED_BYTES"
+rm -f "$cost_build_log"
+cost_gate() { # the same check run.sh repeats before the model turn
+  python3 "$SAMPLE_DIR/scripts/cost_gate.py" --snapshot "$COST_SNAPSHOT" \
+    --manifest "$SAMPLE_DIR/deploy/analyst-pod.yaml" \
+    --envelope "$SAMPLE_DIR/src/run_envelope.json" --region "$AWS_REGION" \
+    --model-id "$BEDROCK_MODEL_ID" --image "supplier-api=$SUPPLIER_API_IMAGE_BYTES" \
+    --image "analyst=$ANALYST_IMAGE_BYTES" \
+    --seed-object "$SECTION_DIR/analyst/fixtures/case.json" \
+    --seed-object "$SECTION_DIR/analyst/fixtures/proposals/northstar.json" \
+    --seed-object "$SECTION_DIR/analyst/fixtures/proposals/harbor.json" \
+    --seed-object "$SECTION_DIR/analyst/fixtures/proposals/cedar.json"
+}
+cost_terms="$(cost_gate)" ||
+  die "the cost check refused this run, for the reason above; created nothing in AWS or the cluster"
+COST_SNAPSHOT_SHA256="$(sha256sum "$COST_SNAPSHOT" | cut -d' ' -f1)"
 
 # The run record is the only place the names of what an earlier run created are written
 # down, so this refuses to overwrite one that names something different rather than
@@ -124,7 +176,23 @@ state_put AWS_REGION "$AWS_REGION"
 state_put KUBE_CONTEXT "$KUBE_CONTEXT"
 state_put SUPPLIER_API_REPOSITORY "$SUPPLIER_API_REPOSITORY"
 state_put ANALYST_REPOSITORY "$ANALYST_REPOSITORY"
+state_put COST_SNAPSHOT "$COST_SNAPSHOT"
+state_put BEDROCK_MODEL_ID "$BEDROCK_MODEL_ID"
+state_put COST_SNAPSHOT_SHA256 "$COST_SNAPSHOT_SHA256"
+state_put SUPPLIER_API_IMAGE_BYTES "$SUPPLIER_API_IMAGE_BYTES"
+state_put ANALYST_IMAGE_BYTES "$ANALYST_IMAGE_BYTES"
+state_put COST_WORST_USD "$(jq -r '.worst_case_usd' <<<"$cost_terms")"
+printf '%s\n' "$cost_terms" > "$TMP_DIR/cost-gate.json"
 
+# When the run started, and which nodes the cluster already had: the clean up deletes the
+# node this run's pod lands on only if it appeared after this and is none of these.
+state_put RUN_STARTED_AT "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+if ! kc get nodes -o json | jq -c '[.items[].metadata.uid]' > "$TMP_DIR/nodes-at-start.json" ||
+  [[ "$(jq -r 'type' "$TMP_DIR/nodes-at-start.json")" != array ]]; then
+  die "could not list the cluster's nodes before the run; created nothing in AWS or the cluster"
+fi
+
+export ANALYST_EXPECTED_IMAGE_ID="$SUPPLIER_API_EXPECTED_ID"
 analyst_namespace
 analyst_supplier_secrets
 analyst_supplier_api
@@ -137,13 +205,9 @@ analyst_role
 
 say "7/7 the bubblewrap analyst image and its sandboxed pod"
 
-analyst_image "$ANALYST_REPOSITORY" bubblewrap/Dockerfile \
-  bubblewrap/src/controller.py bubblewrap/src/sandbox.py bubblewrap/src/filters.py \
-  bubblewrap/src/toolbox.py bubblewrap/src/preflight.py \
-  analyst/requirements.txt analyst/src/business.py analyst/src/worker.py \
-  analyst/src/analyst_agent.py analyst/fixtures/case.json analyst/fixtures/availability.json \
-  analyst/fixtures/proposals/northstar.json analyst/fixtures/proposals/harbor.json \
-  analyst/fixtures/proposals/cedar.json
+export ANALYST_EXPECTED_IMAGE_ID="$ANALYST_EXPECTED_ID"
+analyst_image "$ANALYST_REPOSITORY" bubblewrap/Dockerfile "${ANALYST_IMAGE_INPUTS[@]}"
+unset ANALYST_EXPECTED_IMAGE_ID
 ANALYST_POD_IMAGE="$ANALYST_IMAGE"
 state_put ANALYST_IMAGE "$ANALYST_POD_IMAGE"
 state_put ANALYST_REPOSITORY_CREATED "$IMAGE_REPOSITORY_CREATED"
@@ -156,13 +220,46 @@ analyst_render "$SAMPLE_DIR/deploy/analyst-pod.yaml" "$TMP_DIR/analyst-pod.yaml"
   "s|<ROLE_NAME>|$ROLE_NAME|g" \
   "s|<BEDROCK_MODEL_ID>|$BEDROCK_MODEL_ID|g"
 
+# Which node the pod landed on, and whether this run is what made it, read now while it is
+# certain: the clean up deletes that node (--delete-node) only if every one of these still
+# matches and the node appeared after the run started.
+record_node() {
+  local pod node claims claim name
+  pod="$(kc get pod analyst -n "$NAMESPACE" -o json)" || return 1
+  name="$(jq -r '.spec.nodeName // ""' <<<"$pod")"
+  [[ -n "$name" ]] || return 1
+  node="$(kc get node "$name" -o json)" || return 1
+  claims="$(kc get nodeclaims -o json)" || return 1
+  claim="$(jq -c --arg p "$(jq -r '.spec.providerID // ""' <<<"$node")" \
+    '[.items[] | select(.status.providerID == $p and $p != "")]' <<<"$claims")"
+  [[ "$(jq 'length' <<<"$claim")" == 1 ]] || return 1
+  state_put NODE_NAME "$name"
+  state_put NODE_UID "$(jq -r '.metadata.uid' <<<"$node")"
+  state_put NODE_PROVIDER_ID "$(jq -r '.spec.providerID' <<<"$node")"
+  state_put NODE_CREATED_AT "$(jq -r '.metadata.creationTimestamp' <<<"$node")"
+  state_put NODE_POOL "$(jq -r '.metadata.labels["karpenter.sh/nodepool"] // ""' <<<"$node")"
+  state_put NODECLAIM_NAME "$(jq -r '.[0].metadata.name' <<<"$claim")"
+  state_put NODECLAIM_UID "$(jq -r '.[0].metadata.uid' <<<"$claim")"
+  state_put NODECLAIM_CREATED_AT "$(jq -r '.[0].metadata.creationTimestamp' <<<"$claim")"
+  state_put NODECLAIM_POOL "$(jq -r '.[0].metadata.labels["karpenter.sh/nodepool"] // ""' <<<"$claim")"
+  state_put NODE_AT_START "$(jq --arg u "$(jq -r '.metadata.uid' <<<"$node")" \
+    'index($u) != null' "$TMP_DIR/nodes-at-start.json")"
+}
+
 # Replace this sample's own pod rather than adopting it, so an image, identity or
 # environment change can never be hidden by a pod that was already running. The pod is
 # in this sample's own namespace, which the steps above confirmed carries its label.
 kc delete pod analyst -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=3m
 kc apply -f "$TMP_DIR/analyst-pod.yaml"
-kc wait --for=condition=Ready pod/analyst -n "$NAMESPACE" --timeout=10m ||
-  die "the analyst pod did not become ready; 'kubectl describe pod analyst -n $NAMESPACE' says why"
+if ! kc wait --for=condition=Ready pod/analyst -n "$NAMESPACE" --timeout=10m; then
+  # A pod that was placed but never became ready still has a node: recording it is what
+  # lets the clean up delete that node. A Pending pod has none, and records nothing.
+  record_node || true
+  die "the analyst pod did not become ready; 'kubectl describe pod analyst -n $NAMESPACE' says why. If it is Pending, no xlarge Nitro sandbox node could be launched for it: the pod asks for that size and never a larger one. Nothing more was started; ./scripts/clean.sh --delete-aws --delete-node removes what this run created."
+fi
+
+record_node ||
+  die "could not record which node and NodeClaim the analyst pod is on, so the run stops here. ./scripts/clean.sh --delete-aws removes what it created except that node, which it cannot then identify as this run's: EKS Auto Mode removes it once it is empty, with no deadline, and 'kubectl get nodeclaims' shows it until then"
 
 # One real tool process, through the same launcher the controller uses. bubblewrap needs
 # a user namespace and a private procfs inside the guest, and neither is available there

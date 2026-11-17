@@ -216,7 +216,7 @@ if command == "iam get-role-policy":
         error("NoSuchEntity", "GetRolePolicy")
     output({"PolicyName": option("--policy-name"), "PolicyDocument": state["inline"][option("--policy-name")]})
 if command == "iam list-role-policies":
-    output({"PolicyNames": ["analyst"]})
+    output({"PolicyNames": sorted(state.get("inline", {}))})
 if command == "iam list-attached-role-policies":
     output({"AttachedPolicies": []})
 if command == "iam put-role-policy":

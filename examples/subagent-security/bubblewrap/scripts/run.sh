@@ -39,6 +39,25 @@ live_image="$(kc get pod analyst -n "$NAMESPACE" -o jsonpath='{.spec.containers[
 [[ "$(kc get pod analyst -n "$NAMESPACE" -o jsonpath='{.spec.runtimeClassName}')" == "isolated-sandbox" ]] ||
   die "the analyst pod is not using the isolated-sandbox runtime class"
 
+# The same cost bound setup checked, again before the model turn: the very snapshot setup
+# read, still fresh, with the image sizes setup measured, and no later than an hour after
+# setup started. Silent when it passes.
+[[ -n "${COST_SNAPSHOT:-}" && -f "$COST_SNAPSHOT" ]] ||
+  die "the run record names no cost snapshot, or its file is gone; run ./scripts/setup.sh"
+[[ "$(sha256sum "$COST_SNAPSHOT" | cut -d' ' -f1)" == "${COST_SNAPSHOT_SHA256:-}" ]] ||
+  die "the cost snapshot $COST_SNAPSHOT changed after setup checked it; nothing was run"
+SECTION_DIR="$SAMPLE_DIR/.."
+python3 "$SAMPLE_DIR/scripts/cost_gate.py" --snapshot "$COST_SNAPSHOT" \
+  --manifest "$SAMPLE_DIR/deploy/analyst-pod.yaml" \
+  --envelope "$SAMPLE_DIR/src/run_envelope.json" --region "$AWS_REGION" \
+  --model-id "${BEDROCK_MODEL_ID:-}" --image "supplier-api=${SUPPLIER_API_IMAGE_BYTES:-}" \
+  --image "analyst=${ANALYST_IMAGE_BYTES:-}" --started-at "${RUN_STARTED_AT:-}" \
+  --seed-object "$SECTION_DIR/analyst/fixtures/case.json" \
+  --seed-object "$SECTION_DIR/analyst/fixtures/proposals/northstar.json" \
+  --seed-object "$SECTION_DIR/analyst/fixtures/proposals/harbor.json" \
+  --seed-object "$SECTION_DIR/analyst/fixtures/proposals/cedar.json" >/dev/null ||
+  die "the cost check refused this run, for the reason above; nothing was run"
+
 mkdir -p "$TMP_DIR"
 printf '\n==> running one procurement case in the sandbox\n'
 set +e
