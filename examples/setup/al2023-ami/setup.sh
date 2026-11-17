@@ -110,12 +110,13 @@ if [[ "$JOIN_MODE" == karpenter || "$JOIN_MODE" == both ]]; then
 fi
 
 # --- Run the proof pods ----------------------------------------------------------------------
-# Target the node brought up by whichever path ran. Prefer the node group (a concrete node
-# exists); for karpenter-only, the NodePool label selects and a node is provisioned on demand.
-if [ "$joined_nodegroup" = 1 ]; then
-  sel_key="eks.amazonaws.com/nodegroup"; sel_val="$NODEGROUP_NAME"
-else
+# Target the node brought up by whichever path ran. Karpenter creates a node only when a pod
+# is waiting for one, so whenever the Karpenter path ran the proof pods select its NodePool
+# (JOIN_MODE=both included); the managed node group is then checked separately below.
+if [ "$joined_karpenter" = 1 ]; then
   sel_key="sandbox.blueprint/al2023-ami"; sel_val="true"
+else
+  sel_key="eks.amazonaws.com/nodegroup"; sel_val="$NODEGROUP_NAME"
 fi
 log "=== applying the hello-world isolated pod and the ordinary contrast pod ==="
 render_pod() {
@@ -133,6 +134,39 @@ done
 if [ "$not_ready" = 1 ]; then
   kc get pods -n "$NAMESPACE" -o wide || true
   die "a proof pod did not become Ready, so the setup did not complete; look at the pod's events with kubectl describe"
+fi
+
+# Each consumer must have produced a node from this run's AMI. The isolated pod proves the node
+# it ran on; in JOIN_MODE=both that is the Karpenter node, so the node group gets its own check.
+node_ami() { # node_ami <node>: the AMI of the node's EC2 instance
+  local pid iid
+  pid=$(kc get node "$1" -o jsonpath='{.spec.providerID}') || return 1
+  iid=${pid##*/}; [[ "$iid" =~ ^i-[0-9a-f]+$ ]] || return 1
+  aws ec2 describe-instances --region "$AWS_REGION" --instance-ids "$iid" \
+    --query 'Reservations[0].Instances[0].ImageId' --output text
+}
+check_node_ami() { # check_node_ami <what> <node>
+  local got
+  got=$(node_ami "$2") || die "could not read the AMI of $1 node $2"
+  [ "$got" = "$AMI_ID" ] || die "$1 node $2 runs $got, not this run's AMI $AMI_ID"
+  log "$1 node $2 runs this run's AMI $AMI_ID"
+}
+if [ "$joined_karpenter" = 1 ]; then
+  pod_node=$(kc get pod -n "$NAMESPACE" isolated-sandbox-hello -o jsonpath='{.spec.nodeName}') \
+    || die "could not read the node of the isolated pod"
+  [ -n "$pod_node" ] || die "the isolated pod has no node"
+  check_node_ami Karpenter "$pod_node"
+fi
+if [ "$joined_nodegroup" = 1 ]; then
+  ng_nodes=$(kc get nodes -l "eks.amazonaws.com/nodegroup=$NODEGROUP_NAME,eks.amazonaws.com/nitro-sandbox=true" -o json \
+    | python3 -c '
+import json, sys
+for n in json.load(sys.stdin)["items"]:
+    if any(c.get("type") == "Ready" and c.get("status") == "True" for c in n.get("status", {}).get("conditions", [])):
+        print(n["metadata"]["name"])
+') || die "could not list the node group's nodes"
+  [ -n "$ng_nodes" ] || die "node group $NODEGROUP_NAME has no Ready node labelled eks.amazonaws.com/nitro-sandbox=true"
+  for n in $ng_nodes; do check_node_ami "managed node group" "$n"; done
 fi
 
 echo
