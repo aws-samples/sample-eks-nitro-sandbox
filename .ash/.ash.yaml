@@ -2097,6 +2097,116 @@ global_settings:
       line_end: 17
       reason: 'The synthetic HTTP fixture must accept requests through its ClusterIP service. It has no real supplier data, API key, or purchasing integration. This sample provides no pod-wide network restriction'
       expiration: '2027-01-31'
+    # OpenClaw Enterprise: exact exceptions for source templates, pre-admission
+    # fixtures, fixed image-build inputs, and Kubernetes object names. Deployable
+    # manifests are rendered with digest-qualified images and the adapter validates
+    # the controller-created runtime before Nitro Pods admits it.
+    - rule_id: CKV2_K8S_6
+      path: 'examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
+      reason: 'Pre-admission test fixture, not a deployed workload; the adapter tests transform it and verify the tenant NetworkPolicy contract'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
+      reason: 'Pre-admission OCE controller fixture; the adapter injects the Nitro-compatible security context and tests assert the result'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_35
+      path: 'examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
+      reason: 'Pre-admission fixture preserves the upstream OCE Secret reference so the adapter credential-source rejection can be tested'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_38
+      path: 'examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
+      reason: 'Pre-admission fixture; the adapter rejects projected service-account tokens and the admitted runtime disables token mounting'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
+      reason: 'Pre-admission fixture mirrors upstream OCE; the adapter validates the configured non-root runtime UID before admission'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
+      reason: 'Pre-admission fixture; the adapter preserves and validates the OCE liveness probe in the admitted runtime'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
+      reason: 'Pre-admission fixture; the adapter preserves and validates the OCE readiness probe in the admitted runtime'
+      expiration: '2027-12-31'
+    - rule_id: CKV_DOCKER_2
+      path: 'examples/ai-agents/openclaw-enterprise/build/controller-runtime.Dockerfile'
+      reason: 'Kubernetes owns controller health through startup, readiness, and liveness probes; a Docker HEALTHCHECK is not consumed by the deployment'
+      expiration: '2027-12-31'
+    - rule_id: CKV_DOCKER_3
+      path: 'examples/ai-agents/openclaw-enterprise/ownership-helper/Dockerfile'
+      reason: 'Minimal scratch init image must run as root inside the Nitro guest to repair ownership on exact PVC paths, then exits'
+      expiration: '2027-12-31'
+    - rule_id: CKV_DOCKER_7
+      path: 'examples/ai-agents/openclaw-enterprise/build/controller-runtime.Dockerfile'
+      reason: 'Both build arguments are required digest-qualified image references; build-images.sh validates their immutable SHA-256 form'
+      expiration: '2027-12-31'
+    - rule_id: CKV_DOCKER_7
+      path: 'examples/ai-agents/openclaw-enterprise/ownership-helper/Dockerfile'
+      reason: 'Builder image is pinned to an exact SHA-256 digest; Checkov reports the visible version tag despite the digest'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_14
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/adapter-webhook.yaml'
+      reason: 'Source template intentionally contains a rejected placeholder; render-adapter-manifest.sh requires and injects exact distinct SHA-256 image digests before apply'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_35
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/agentgateway.yaml'
+      reason: 'AgentGateway reads tenant key hashes and its session key from environment variables backed by Kubernetes Secrets; no plaintext secret is stored in this manifest'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_build_contract.py'
+      line_start: 120
+      line_end: 120
+      reason: 'Public pinned upstream OCE Git commit used as a test assertion, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_tenant_isolation_contract.py'
+      line_start: 197
+      line_end: 197
+      reason: 'Synthetic short gateway identifier used to prove tenant PVC derivation, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/adapter/test_adapter.py'
+      line_start: 1591
+      line_end: 1591
+      reason: 'Synthetic Kubernetes Secret object used to test rejection of file-backed AWS credentials; contains no secret value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/adapter/test_adapter.py'
+      line_start: 1620
+      line_end: 1620
+      reason: 'Synthetic Kubernetes Secret object used to test rejection of credential-capable mounts; contains no secret value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/adapter-webhook.yaml'
+      line_start: 32
+      line_end: 32
+      reason: 'cert-manager Certificate output Secret name, not a credential value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/agentgateway.yaml'
+      line_start: 36
+      line_end: 36
+      reason: 'cert-manager CA Certificate output Secret name, not a credential value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/agentgateway.yaml'
+      line_start: 56
+      line_end: 56
+      reason: 'cert-manager serving Certificate output Secret name, not a credential value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_agentgateway_contract.py'
+      line_start: 76
+      line_end: 76
+      reason: 'Test assertion for a Kubernetes Secret object name, not a credential value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_agentgateway_contract.py'
+      line_start: 83
+      line_end: 83
+      reason: 'Test assertion for a Kubernetes Secret object name, not a credential value'
+      expiration: '2027-12-31'
 scanners:
   cdk-nag:
     enabled: false  # no CloudFormation or CDK here; it fails to parse the multi-document Kubernetes manifests

@@ -238,10 +238,28 @@ def test_buildspec_replaces_and_locks_environment_overrides_after_start() -> Non
 
 
 def test_repository_encryption_key_rotates() -> None:
-    keys = _resources("AWS::KMS::Key")
+    key = _template()["Resources"]["ImageEncryptionKey"]
 
-    assert len(keys) == 1
-    assert keys[0]["Properties"]["EnableKeyRotation"] is True
+    assert key["Type"] == "AWS::KMS::Key"
+    assert key["Properties"]["EnableKeyRotation"] is True
+
+
+def test_build_log_groups_use_a_rotating_customer_managed_key() -> None:
+    template = _template()
+    key = template["Resources"]["BuildEncryptionKey"]
+    log_groups = _resources("AWS::Logs::LogGroup")
+
+    assert key["Type"] == "AWS::KMS::Key"
+    assert key["Properties"]["EnableKeyRotation"] is True
+    assert {
+        log_group["Properties"]["LogGroupName"] for log_group in log_groups
+    } == {
+        "/aws/codebuild/openclaw-enterprise-images",
+        "/aws/vendedlogs/states/openclaw-enterprise-image-build",
+    }
+    for log_group in log_groups:
+        assert log_group["Properties"]["KmsKeyId"] == "BuildEncryptionKey.Arn"
+        assert log_group["Properties"]["RetentionInDays"] == 365
 
 
 def test_codebuild_role_is_scoped_to_builder_logs_scans_and_release_repositories() -> (
@@ -267,7 +285,6 @@ def test_codebuild_role_is_scoped_to_builder_logs_scans_and_release_repositories
     }
 
     assert actions == {
-        "logs:CreateLogGroup",
         "logs:CreateLogStream",
         "logs:PutLogEvents",
         "ecr:GetAuthorizationToken",
@@ -462,6 +479,58 @@ def test_fixed_workflow_cannot_forward_adversarial_start_build_overrides() -> No
         "GIT_CONFIG_VALUE_0",
     ):
         assert bootstrap_variable not in serialized
+
+
+def test_fixed_workflow_logs_all_events_and_publishes_xray_traces() -> None:
+    template = _template()
+    state_machine = template["Resources"]["ImageBuildStateMachine"]["Properties"]
+    workflow_role = template["Resources"]["ImageBuildWorkflowRole"]
+    statements = workflow_role["Properties"]["Policies"][0]["PolicyDocument"][
+        "Statement"
+    ]
+
+    assert state_machine["LoggingConfiguration"] == {
+        "Destinations": [
+            {
+                "CloudWatchLogsLogGroup": {
+                    "LogGroupArn": "${ImageBuildStateMachineLogGroup.Arn}:*"
+                }
+            }
+        ],
+        "IncludeExecutionData": False,
+        "Level": "ALL",
+    }
+    assert state_machine["TracingConfiguration"] == {"Enabled": True}
+
+    logging = next(
+        statement for statement in statements if statement["Sid"] == "DeliverWorkflowLogs"
+    )
+    assert set(logging["Action"]) == {
+        "logs:CreateLogDelivery",
+        "logs:CreateLogStream",
+        "logs:DeleteLogDelivery",
+        "logs:DescribeLogGroups",
+        "logs:DescribeResourcePolicies",
+        "logs:GetLogDelivery",
+        "logs:ListLogDeliveries",
+        "logs:PutLogEvents",
+        "logs:PutResourcePolicy",
+        "logs:UpdateLogDelivery",
+    }
+    assert logging["Resource"] == "*"
+
+    tracing = next(
+        statement
+        for statement in statements
+        if statement["Sid"] == "PublishWorkflowTraces"
+    )
+    assert set(tracing["Action"]) == {
+        "xray:GetSamplingRules",
+        "xray:GetSamplingTargets",
+        "xray:PutTelemetryRecords",
+        "xray:PutTraceSegments",
+    }
+    assert tracing["Resource"] == "*"
 
 
 def test_readme_states_direct_start_build_is_a_fail_closed_deployment_contract() -> (

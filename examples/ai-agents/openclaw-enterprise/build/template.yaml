@@ -65,6 +65,64 @@ Resources:
         - Key: ManagedBy
           Value: openclaw-enterprise-sample
 
+  BuildEncryptionKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Encrypts CodeBuild data and build workflow CloudWatch Logs.
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnableAccountPermissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: "*"
+          - Sid: AllowCloudWatchLogsEncryption
+            Effect: Allow
+            Principal:
+              Service: !Sub logs.${AWS::Region}.${AWS::URLSuffix}
+            Action:
+              - kms:Decrypt
+              - kms:DescribeKey
+              - kms:Encrypt
+              - kms:GenerateDataKey
+              - kms:GenerateDataKeyWithoutPlaintext
+              - kms:ReEncryptFrom
+              - kms:ReEncryptTo
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                kms:EncryptionContext:aws:logs:arn:
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/openclaw-enterprise-images
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/vendedlogs/states/openclaw-enterprise-image-build
+      Tags:
+        - Key: ManagedBy
+          Value: openclaw-enterprise-sample
+
+  ImageBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/codebuild/openclaw-enterprise-images
+      KmsKeyId: !GetAtt BuildEncryptionKey.Arn
+      RetentionInDays: 365
+      Tags:
+        - Key: ManagedBy
+          Value: openclaw-enterprise-sample
+
+  ImageBuildStateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/vendedlogs/states/openclaw-enterprise-image-build
+      KmsKeyId: !GetAtt BuildEncryptionKey.Arn
+      RetentionInDays: 365
+      Tags:
+        - Key: ManagedBy
+          Value: openclaw-enterprise-sample
+
   AdapterRepository:
     Type: AWS::ECR::Repository
     Properties:
@@ -139,7 +197,6 @@ Resources:
               - Sid: WriteBuildLogs
                 Effect: Allow
                 Action:
-                  - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource:
@@ -270,6 +327,30 @@ Resources:
                   - events:PutRule
                   - events:PutTargets
                 Resource: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventForCodeBuildStartBuildRule
+              # CloudWatch Logs delivery APIs do not support resource-level permissions.
+              - Sid: DeliverWorkflowLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:CreateLogStream
+                  - logs:DeleteLogDelivery
+                  - logs:DescribeLogGroups
+                  - logs:DescribeResourcePolicies
+                  - logs:GetLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:PutLogEvents
+                  - logs:PutResourcePolicy
+                  - logs:UpdateLogDelivery
+                Resource: "*"
+              # X-Ray ingestion and sampling APIs do not support resource-level permissions.
+              - Sid: PublishWorkflowTraces
+                Effect: Allow
+                Action:
+                  - xray:GetSamplingRules
+                  - xray:GetSamplingTargets
+                  - xray:PutTelemetryRecords
+                  - xray:PutTraceSegments
+                Resource: "*"
 
   ImageBuildStateMachine:
     Type: AWS::StepFunctions::StateMachine
@@ -277,6 +358,14 @@ Resources:
       StateMachineName: openclaw-enterprise-image-build
       RoleArn: !GetAtt ImageBuildWorkflowRole.Arn
       StateMachineType: STANDARD
+      LoggingConfiguration:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !Sub ${ImageBuildStateMachineLogGroup.Arn}:*
+        IncludeExecutionData: false
+        Level: ALL
+      TracingConfiguration:
+        Enabled: true
       Definition:
         Comment: Fixed, input-independent invocation of the trusted privileged image build.
         StartAt: RunTrustedImageBuild

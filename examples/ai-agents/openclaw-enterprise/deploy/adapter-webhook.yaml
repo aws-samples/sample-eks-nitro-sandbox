@@ -157,6 +157,26 @@ spec:
       targetPort: https
       protocol: TCP
 ---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: restrict-openclaw-enterprise-nitro-adapter
+  namespace: openclaw-enterprise-adapter
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise-nitro-adapter
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # The Kubernetes API server must reach the admission webhook. NetworkPolicy
+    # cannot identify it portably, so permit only the webhook TLS port.
+    - ports:
+        - protocol: TCP
+          port: 8443
+  egress: []
+---
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:

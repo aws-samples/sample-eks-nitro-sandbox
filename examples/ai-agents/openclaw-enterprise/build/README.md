@@ -2,9 +2,11 @@
 
 This stack creates four private ECR repositories, one CodeBuild project, and a
 fixed Step Functions invocation path. The repositories use immutable tags, a
-customer managed KMS key, and scan every pushed image. CodeBuild clones this
-sample and OpenClaw Enterprise (OCE) at full commit SHAs, builds all four images
-from source, waits for their ECR scans, and exports digest-qualified image
+rotating customer managed KMS key, and scan every pushed image. The explicit
+CodeBuild and Step Functions CloudWatch log groups use a separate rotating
+customer managed KMS key. CodeBuild clones this sample
+and OpenClaw Enterprise (OCE) at full commit SHAs, builds all four images from
+source, waits for their ECR scans, and exports digest-qualified image
 references.
 
 The default OCE revision is
@@ -76,7 +78,9 @@ aws cloudformation deploy \
 Assume the generated invocation role and start the fixed workflow. Its definition
 passes only `ProjectName` to CodeBuild and ignores execution input, so callers
 cannot supply `buildspecOverride`, `imageOverride`, source overrides, or
-environment overrides such as `BASH_ENV` and `GIT_CONFIG_*`.
+environment overrides such as `BASH_ENV` and `GIT_CONFIG_*`. The workflow logs
+all Step Functions events without execution payloads and publishes traces to
+X-Ray.
 
 ```bash
 invocation_role_arn="$(
