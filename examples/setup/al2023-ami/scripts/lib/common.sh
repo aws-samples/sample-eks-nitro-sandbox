@@ -30,6 +30,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 : "${RESOURCE_PREFIX:=al2023-ami}"
 : "${NAMESPACE:=al2023-ami-sample}"
 : "${JOIN_MODE:=both}"                      # nodegroup | karpenter | both
+case "$JOIN_MODE" in nodegroup|karpenter|both) ;; *) die "JOIN_MODE must be nodegroup, karpenter or both, got '$JOIN_MODE'" ;; esac
 # Architecture: amd64 (x86_64) by default, or arm64 (Graviton). NODE_ARCH must match the AMI's
 # architecture, which follows the instance the Packer build ran on, and the node instance type.
 : "${NODE_ARCH:=amd64}"
@@ -92,6 +93,22 @@ derive_run_names() {
 require_run_id() {
   load_run_id || die "no RUN_ID: no environment variable and no run state at $RUN_STATE_FILE. Pass RUN_ID=<id> or run ./setup.sh first."
   derive_run_names
+}
+# require_identity [KEY ...]: the run's recorded values (first record wins) must equal what this
+# command was given, so a script run directly cannot act on another cluster, Region or prefix than
+# the run was made for. A key the run has not recorded yet fails, unless it is listed in
+# $IDENTITY_MAY_BE_NEW (the command that first records it).
+require_identity() {
+  local k have want
+  for k in "$@"; do
+    have=$(sed -n "s/^$k=//p" "$RUN_STATE_DIR/run-state.env" 2>/dev/null | head -n 1)
+    want=${!k:-}
+    if [ -z "$have" ]; then
+      case " ${IDENTITY_MAY_BE_NEW:-} " in *" $k "*) continue ;; esac
+      die "run $RUN_ID has no recorded $k; run ./setup.sh (or ib-prereqs.sh up) for this run first"
+    fi
+    [ "$have" = "$want" ] || die "$k is '$want' but run $RUN_ID recorded '$have'; use the recorded value, or start a new run"
+  done
 }
 
 # Tag helpers (ManagedBy + RunId on everything the blueprint creates).

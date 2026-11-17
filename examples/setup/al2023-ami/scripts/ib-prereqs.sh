@@ -62,7 +62,7 @@ if [ -z "$recorded" ]; then
 elif [ "$recorded" != "$account" ]; then
   die "credentials are for a different account than run $RUN_ID was created in; refusing"
 fi
-[ "$(rec1 AWS_REGION)" = "$AWS_REGION" ] || die "AWS_REGION is '$AWS_REGION' but run $RUN_ID recorded '$(rec1 AWS_REGION)'"
+IDENTITY_MAY_BE_NEW="" require_identity AWS_REGION RESOURCE_PREFIX
 
 # --------------------------------------------------------------------------------------------
 if [ "$mode" = up ]; then

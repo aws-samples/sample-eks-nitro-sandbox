@@ -38,7 +38,7 @@ assert "the node carries $NODE_LABEL" "$([ "$has_label" = "$LABEL_VAL" ]; echo $
 echo "== 2/5 the node advertises sandbox capacity =="
 cap=$(kc get node "$node" -o json | json_get "d['status']['allocatable'].get('eks.amazonaws.com/nitro-sandbox','0')")
 echo "  eks.amazonaws.com/nitro-sandbox allocatable: ${cap:-0}"
-assert "allocatable eks.amazonaws.com/nitro-sandbox > 0" "$([ "${cap:-0}" != 0 ] && [ -n "$cap" ]; echo $?)"
+assert "allocatable eks.amazonaws.com/nitro-sandbox > 0" "$([[ "${cap:-}" =~ ^[1-9][0-9]*$ ]]; echo $?)"
 
 echo "== 3/5 the isolated pod runs in a sandbox: its own guest kernel and virtio disks =="
 iso_kernel=$(kc exec -n "$NAMESPACE" "$ISO_POD" -- uname -r 2>/dev/null)
@@ -49,13 +49,16 @@ assert "the isolated pod's kernel differs from the ordinary pod's (its own guest
   "$([ -n "$iso_kernel" ] && [ -n "$ord_kernel" ] && [ "$iso_kernel" != "$ord_kernel" ]; echo $?)"
 iso_blk=$(kc exec -n "$NAMESPACE" "$ISO_POD" -- sh -c 'ls -1 /sys/block' 2>/dev/null | tr '\n' ' ')
 echo "  isolated pod /sys/block: ${iso_blk:-<none>}"
-assert "the isolated pod has virtio disks (vd*), not the host's nvme" \
-  "$(printf '%s' "$iso_blk" | grep -q 'vd' && ! printf '%s' "$iso_blk" | grep -q 'nvme'; echo $?)"
+assert "the isolated pod has virtio disks (vda, vdb, ...), not the host's nvme" \
+  "$(printf '%s\n' $iso_blk | grep -Eq '^vd[a-z]+$' && ! printf '%s\n' $iso_blk | grep -Eq '^nvme'; echo $?)"
 
-echo "== 4/5 the isolated pod boots fresh (low uptime) =="
+echo "== 4/5 the isolated pod has its own boot clock: a younger uptime than the ordinary pod's node =="
 iso_up=$(kc exec -n "$NAMESPACE" "$ISO_POD" -- sh -c "awk '{print \$1}' /proc/uptime" 2>/dev/null)
-echo "  isolated pod boot uptime (s): ${iso_up:-<none>}"
-assert "the isolated pod reports a boot uptime (fresh guest boot)" "$([ -n "$iso_up" ]; echo $?)"
+ord_up=$(kc exec -n "$NAMESPACE" "$ORD_POD" -- sh -c "awk '{print \$1}' /proc/uptime" 2>/dev/null)
+echo "  isolated pod boot uptime (s): ${iso_up:-<none>}   ordinary pod (its node's) uptime (s): ${ord_up:-<none>}"
+num='^[0-9]+([.][0-9]+)?$'
+assert "the isolated pod's uptime is shorter than the ordinary pod's (its own boot, after the node's)" \
+  "$([[ "${iso_up:-}" =~ $num ]] && [[ "${ord_up:-}" =~ $num ]] && awk -v a="$iso_up" -v b="$ord_up" 'BEGIN{exit !(a<b)}'; echo $?)"
 
 echo "== 5/5 the network-isolated pod has only loopback =="
 # The isolated pod is booted sandbox.amazonaws.com/network-isolated=true, so it has no route.

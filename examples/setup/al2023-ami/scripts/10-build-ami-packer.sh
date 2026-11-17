@@ -22,6 +22,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/common.sh"
 require_run_id
+IDENTITY_MAY_BE_NEW="RESOURCE_PREFIX CLUSTER_NAME NAMESPACE" require_identity AWS_REGION RESOURCE_PREFIX CLUSTER_NAME NAMESPACE
 : "${EKS_AMI_REF:?set EKS_AMI_REF to the amazon-eks-ami tag/commit to build from (>= v20261112 for pod isolation)}"
 : "${BUILD_SUBNET_ID:?set BUILD_SUBNET_ID to a subnet in an AZ with enclave-capable capacity}"
 case "$NODE_ARCH" in amd64) : "${BUILD_INSTANCE_TYPE:=m8i.4xlarge}" ;; arm64) : "${BUILD_INSTANCE_TYPE:=m8g.4xlarge}" ;; esac
@@ -36,7 +37,12 @@ if [ ! -d "$checkout/.git" ]; then
   git clone --depth 1 --branch "$EKS_AMI_REF" https://github.com/awslabs/amazon-eks-ami.git "$checkout" \
     || die "clone of amazon-eks-ami@$EKS_AMI_REF failed; is the ref a tag/branch? (a bare commit needs a full clone)"
 fi
-built_ref=$(git -C "$checkout" rev-parse HEAD)
+built_ref=$(git -C "$checkout" rev-parse HEAD) || die "could not read the commit of the checkout $checkout"
+# The checkout is reused across runs; building from it is only right if it is the requested ref.
+want_ref=$(git -C "$checkout" rev-parse --verify --quiet "refs/tags/$EKS_AMI_REF^{commit}" 2>/dev/null \
+  || git -C "$checkout" rev-parse --verify --quiet "$EKS_AMI_REF^{commit}" 2>/dev/null || true)
+[ -n "$want_ref" ] && [ "$want_ref" = "$built_ref" ] \
+  || die "the checkout $checkout is at $built_ref, not $EKS_AMI_REF${want_ref:+ ($want_ref)}; remove that directory so the next run clones $EKS_AMI_REF"
 log "building from amazon-eks-ami $EKS_AMI_REF ($built_ref)"
 
 # Record whether this ref auto-enables enclaves on the builder, so the evidence says which case this run is.

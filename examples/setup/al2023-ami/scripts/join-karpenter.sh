@@ -14,7 +14,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/common.sh"
 require_run_id
+require_identity RESOURCE_PREFIX CLUSTER_NAME AWS_REGION NAMESPACE
 require_kube_context
+mkdir -p "$RUN_STATE_DIR" "$EVIDENCE_DIR" || die "could not create $EVIDENCE_DIR"
 : "${AMI_ID:=$(sed -n 's/^AMI_ID=//p' "$RUN_STATE_DIR/run-state.env" 2>/dev/null | tail -n 1)}"
 : "${AMI_ID:?set AMI_ID (or run 10-build-ami-packer.sh first)}"
 : "${NODE_ROLE:?set NODE_ROLE to the Karpenter node IAM role name (e.g. KarpenterNodeRole-\$CLUSTER_NAME)}"

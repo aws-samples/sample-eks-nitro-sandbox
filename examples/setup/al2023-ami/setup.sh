@@ -68,12 +68,23 @@ log "=== checking cluster prerequisites (read only) ==="
 RUN_ID="$RUN_ID" "$HERE/scripts/00c-check-cluster.sh"
 
 # Ensure the namespace exists (create only when absent, per AGENTS.md), labelled as the blueprint's.
-if ! kc get namespace "$NAMESPACE" >/dev/null 2>&1; then
-  kc create namespace "$NAMESPACE"
-  kc label namespace "$NAMESPACE" "app.kubernetes.io/part-of=$RESOURCE_PREFIX" "app.kubernetes.io/instance=$RUN_ID" --overwrite
+# Only an explicit NotFound means absent; an existing namespace is reused only if it is this run's.
+ns_err=$(mktemp)
+if ns_json=$(kc get namespace "$NAMESPACE" -o json 2>"$ns_err"); then
+  printf '%s' "$ns_json" | python3 -c '
+import json, sys
+l = json.load(sys.stdin).get("metadata", {}).get("labels", {}) or {}
+sys.exit(0 if l.get("app.kubernetes.io/part-of") == sys.argv[1] and l.get("app.kubernetes.io/instance") == sys.argv[2] else 1)
+' "$RESOURCE_PREFIX" "$RUN_ID" || { rm -f "$ns_err"; die "namespace $NAMESPACE exists and is not run $RUN_ID's (labels part-of/instance); use another NAMESPACE"; }
+  log "namespace $NAMESPACE is this run's; reusing it"
+elif grep -Eq 'NotFound|not found' "$ns_err"; then
+  kc create namespace "$NAMESPACE" || die "could not create namespace $NAMESPACE"
+  kc label namespace "$NAMESPACE" "app.kubernetes.io/part-of=$RESOURCE_PREFIX" "app.kubernetes.io/instance=$RUN_ID" --overwrite \
+    || die "could not label namespace $NAMESPACE"
 else
-  log "namespace $NAMESPACE already exists; reusing it (checking its label before anything is deleted is clean.sh's job)"
+  msg=$(head -n 2 "$ns_err"); rm -f "$ns_err"; die "could not determine whether namespace $NAMESPACE exists: $msg"
 fi
+rm -f "$ns_err"
 
 : "${AMI_ID:=$(sed -n 's/^AMI_ID=//p' "$RUN_STATE_DIR/run-state.env" 2>/dev/null | tail -n 1)}"
 : "${AMI_ID:?no AMI_ID for this run; run ./setup.sh (full) or --ami-only first}"
@@ -109,8 +120,14 @@ render_pod "$SAMPLE_DIR/deploy/pod-isolated-sandbox.yaml" | kc apply -n "$NAMESP
 render_pod "$SAMPLE_DIR/deploy/pod-ordinary.yaml"         | kc apply -n "$NAMESPACE" -f -
 
 log "waiting for the isolated pod to run"
-kc wait -n "$NAMESPACE" --for=condition=Ready pod/isolated-sandbox-hello --timeout=300s || true
-kc wait -n "$NAMESPACE" --for=condition=Ready pod/ordinary-hello --timeout=300s || true
+not_ready=0
+for pod in isolated-sandbox-hello ordinary-hello; do
+  kc wait -n "$NAMESPACE" --for=condition=Ready "pod/$pod" --timeout=300s || { warn "pod $pod did not become Ready"; not_ready=1; }
+done
+if [ "$not_ready" = 1 ]; then
+  kc get pods -n "$NAMESPACE" -o wide || true
+  die "a proof pod did not become Ready, so the setup did not complete; look at the pod's events with kubectl describe"
+fi
 
 echo
 echo "=== setup complete (RunId=$RUN_ID) ==="
