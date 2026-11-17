@@ -4,8 +4,9 @@
 #   scripts/lib/common.sh            require_kube_context: KUBE_CONTEXT required, its server must be
 #                                    CLUSTER_NAME's endpoint; every kubectl call names it (H6)
 #   scripts/00c-check-cluster.sh     the reader's vpc-cni add-on (ACTIVE; its network policy
-#                                    setting on or off, which the sample does not need), and the
-#                                    shared isolated-sandbox RuntimeClass (read only)
+#                                    setting on or off, which the sample does not need), the
+#                                    reader's kube-proxy add-on (ACTIVE), and the shared
+#                                    isolated-sandbox RuntimeClass (read only)
 #   scripts/join-nodegroup.sh        the launch template user data: comments stripped, ONE active
 #                                    bootstrap.sh command whose --kubelet-extra-args carry all three
 #                                    labels and the taint (M3)
@@ -223,7 +224,7 @@ echo "== 1/5 cluster prerequisites: scripts/00c-check-cluster.sh ===============
 cc() { env STUB_ADDON="$2" STUB_RC="$3" STUB_KP="${4:-active}" bash "$HERE/00c-check-cluster.sh" > "$WORK/cc-$1.log" 2>&1; }
 OK_RX='CLUSTER PREREQUISITES OK: vpc-cni v1\.0\.0-eksbuild\.1 ACTIVE; kube-proxy v1\.36\.0-eksbuild\.1 ACTIVE; RuntimeClass isolated-sandbox reused as it is'
 rc=0; cc ok on one || rc=$?
-check "ACCEPT vpc-cni ACTIVE (network policy on) and a RuntimeClass selecting eks.amazonaws.com/nitro-sandbox=true" 0 "$rc" "$WORK/cc-ok.log" "$OK_RX"
+check "ACCEPT vpc-cni ACTIVE (network policy on), kube-proxy ACTIVE and a RuntimeClass selecting eks.amazonaws.com/nitro-sandbox=true" 0 "$rc" "$WORK/cc-ok.log" "$OK_RX"
 rc=0; cc yaml yaml-on two || rc=$?
 check "ACCEPT a RuntimeClass selecting both labels the node registers with (add-on values given as YAML)" 0 "$rc" "$WORK/cc-yaml.log" "$OK_RX"
 # The validation sandbox boots with no network, and the sample ships no network policy, so the

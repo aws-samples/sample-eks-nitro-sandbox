@@ -1491,14 +1491,14 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/scripts/test-run-scope.sh'
-      line_start: 771
-      line_end: 771
+      line_start: 792
+      line_end: 792
       reason: 'Test fixture: a run-state record of placeholder names and Region, not a secret'
       expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/scripts/test-setup-flow.sh'
-      line_start: 412
-      line_end: 412
+      line_start: 431
+      line_end: 431
       reason: 'Test fixture: a run-state record of placeholder names and Region, not a secret'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
