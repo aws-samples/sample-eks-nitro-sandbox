@@ -62,11 +62,43 @@ assert "the isolated pod's uptime is shorter than the ordinary pod's (its own bo
   "$([[ "${iso_up:-}" =~ $num ]] && [[ "${ord_up:-}" =~ $num ]] && awk -v a="$iso_up" -v b="$ord_up" 'BEGIN{exit !(a<b)}'; echo $?)"
 
 echo "== 5/5 the network-isolated pod has only loopback =="
-# The isolated pod is booted sandbox.amazonaws.com/network-isolated=true, so it has no route.
-routes=$(kc exec -n "$NAMESPACE" "$ISO_POD" -- sh -c 'ip route 2>/dev/null || true' 2>/dev/null)
-addrs=$(kc exec -n "$NAMESPACE" "$ISO_POD" -- sh -c 'ip -o addr show 2>/dev/null | awk "{print \$2}" | sort -u' 2>/dev/null | tr '\n' ' ')
-echo "  interfaces with an address: ${addrs:-<none>}  routes: ${routes:-<none>}"
-assert "the network-isolated pod has no default route" "$([ -z "$routes" ]; echo $?)"
+# The isolated pod is booted sandbox.amazonaws.com/network-isolated=true. The guest's own kernel
+# tables show it: the local IPv4 addresses in /proc/net/fib_trie are 127.0.0.1 only, and
+# /proc/net/route has its header line and no route. The image has no `ip`, so the files are read
+# directly; each must be read to its end marker, and an exec that fails fails both checks.
+NET_READ='for f in /proc/net/fib_trie /proc/net/route; do
+  if [ -r "$f" ]; then echo "BEGIN $f"; cat "$f" || echo "READ-ERROR $f"; echo "END $f"; else echo "MISSING $f"; fi
+done; echo NET-READ-END'
+net_rc=0
+net_out=$(kc exec -n "$NAMESPACE" "$ISO_POD" -- sh -c "$NET_READ" 2>/dev/null) || net_rc=$?
+net=$(printf '%s\n' "$net_out" | python3 -c '
+import re, sys
+lines = sys.stdin.read().split("\n")
+sec, cur, ok = {}, None, "NET-READ-END" in lines
+for l in lines:
+    if cur is not None:
+        if l == "END " + cur: cur = None
+        elif l == "READ-ERROR " + cur: ok = False
+        else: sec[cur].append(l)
+    elif l.startswith("BEGIN "): cur = l[6:]; sec[cur] = []
+    elif l.startswith("MISSING "): ok = False
+if cur is not None: ok = False
+fib, leaf, a4 = sec.get("/proc/net/fib_trie"), None, set()
+for x in fib or []:
+    m = re.match(r"\s*\|-- (\S+)$", x)
+    if m: leaf = m.group(1)
+    elif re.match(r"\s*/32 host\b", x) and leaf: a4.add(leaf)
+rt = [x for x in sec.get("/proc/net/route") or [] if x.strip()]
+print("addr4=" + (" ".join(sorted(a4)) or "<none>"))
+print("addr4_ok=" + ("yes" if ok and fib and a4 == {"127.0.0.1"} else "no"))
+print("route=" + ("none (header line only)" if len(rt) == 1 and rt[0].startswith("Iface") else str(len(rt) - 1) + " entries" if rt else "<unreadable>"))
+print("route_ok=" + ("yes" if ok and len(rt) == 1 and rt[0].startswith("Iface") else "no"))
+')
+kv() { printf '%s\n' "$net" | sed -n "s/^$1=//p"; }
+[ "$net_rc" = 0 ] || echo "  could not read the guest's network tables (kubectl exec exit $net_rc)"
+echo "  local IPv4 addresses: $(kv addr4)   IPv4 routes: $(kv route)"
+assert "the network-isolated pod's only IPv4 address is loopback (127.0.0.1)" "$([ "$net_rc" = 0 ] && [ "$(kv addr4_ok)" = yes ]; echo $?)"
+assert "the network-isolated pod has no route" "$([ "$net_rc" = 0 ] && [ "$(kv route_ok)" = yes ]; echo $?)"
 
 echo
 echo "== summary: $pass passed, $fail failed =="

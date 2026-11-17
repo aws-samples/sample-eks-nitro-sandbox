@@ -99,7 +99,17 @@ require_run_id() {
 # the run was made for. A key the run has not recorded yet fails, unless it is listed in
 # $IDENTITY_MAY_BE_NEW (the command that first records it).
 require_identity() {
-  local k have want
+  local k have want acct
+  # The account first: a helper run directly must not act in another account than the run's.
+  have=""
+  [ -f "$RUN_STATE_DIR/run-state.env" ] && have=$(sed -n "s/^ACCOUNT_ID=//p" "$RUN_STATE_DIR/run-state.env" | head -n 1)
+  if [ -n "$have" ]; then
+    acct=$(aws sts get-caller-identity --region "$AWS_REGION" --query Account --output text) \
+      || die "could not read the current AWS account (sts get-caller-identity failed); refusing to continue"
+    [ "$acct" = "$have" ] || die "the credentials are for another AWS account than run $RUN_ID was created in; refusing to continue"
+  else
+    case " ${IDENTITY_MAY_BE_NEW:-} " in *" ACCOUNT_ID "*) ;; *) die "run $RUN_ID has no recorded ACCOUNT_ID; run ./setup.sh (or ib-prereqs.sh up) for this run first" ;; esac
+  fi
   for k in "$@"; do
     have=""
     [ -f "$RUN_STATE_DIR/run-state.env" ] && have=$(sed -n "s/^$k=//p" "$RUN_STATE_DIR/run-state.env" | head -n 1)

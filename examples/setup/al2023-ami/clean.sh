@@ -26,7 +26,11 @@ done
 
 require_kube_context
 
-DRY=0; [ "${1:-}" = --dry-run ] && DRY=1
+case "$#:${1:-}" in
+  0:) DRY=0 ;;
+  1:--dry-run) DRY=1 ;;
+  *) die "usage: clean.sh [--dry-run]; got: $*" ;;
+esac
 incomplete=0
 REMAINING="$RUN_STATE_DIR/teardown-remaining.sh"
 # A dry run only prints: it leaves the previous hand-off list and the run state as they are.
@@ -73,7 +77,7 @@ sys.exit(0 if l.get("app.kubernetes.io/part-of") == sys.argv[1] and l.get("app.k
 }
 delete_if_owned() { # delete_if_owned <kind> <name> [extra delete args]
   local kind="$1" name="$2"; shift 2
-  probe 'NotFound|not found' kc get "$kind" "$name" -o json; local rc=$?
+  probe 'Error from server \(NotFound\)' kc get "$kind" "$name" -o json; local rc=$?
   case $rc in
     0) if printf '%s' "$PROBE_OUT" | owned_by_run; then
          act "deleting $kind $name (this run's)" kc delete "$kind" "$name" "$@"
@@ -85,7 +89,7 @@ delete_if_owned() { # delete_if_owned <kind> <name> [extra delete args]
   esac
 }
 delete_if_owned namespace "$NAMESPACE" --wait=false
-probe 'NotFound|not found' kc get crd ec2nodeclasses.karpenter.k8s.aws; rc=$?
+probe 'Error from server \(NotFound\)' kc get crd ec2nodeclasses.karpenter.k8s.aws; rc=$?
 case $rc in
   0) delete_if_owned nodepool al2023-nitro-sandbox
      delete_if_owned ec2nodeclass al2023-nitro-sandbox ;;

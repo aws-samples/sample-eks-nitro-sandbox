@@ -58,7 +58,7 @@ for rc in isolated-sandbox confidential-sandbox; do
   rc_err=$(mktemp)
   if ! rc_json=$(kc get runtimeclass "$rc" -o json 2>"$rc_err"); then
     msg=$(cat "$rc_err"); rm -f "$rc_err"
-    if [[ "$msg" == *NotFound* || "$msg" == *"not found"* ]]; then
+    if [[ "$msg" == *"Error from server (NotFound)"* ]]; then
       die "PREREQUISITE NOT MET: the cluster has no $rc RuntimeClass. Install the isolated-sandbox and confidential-sandbox RuntimeClass objects once (Amazon EKS User Guide, Create and update a Nitro Sandbox AMI > Install the RuntimeClass objects). This blueprint reuses them and never creates or changes them."
     fi
     die "could not read RuntimeClass $rc (could not determine): $msg"
@@ -84,7 +84,16 @@ done
 
 # --- 4. Karpenter, when the karpenter join path is selected ----------------------------------
 if [[ "$JOIN_MODE" == karpenter || "$JOIN_MODE" == both ]]; then
-  if kc get crd ec2nodeclasses.karpenter.k8s.aws >/dev/null 2>&1 && kc get crd nodepools.karpenter.sh >/dev/null 2>&1; then
+  crd_missing=""
+  for crd in ec2nodeclasses.karpenter.k8s.aws nodepools.karpenter.sh; do
+    crd_err=$(mktemp)
+    if ! kc get crd "$crd" >/dev/null 2>"$crd_err"; then
+      if grep -q 'Error from server (NotFound)' "$crd_err"; then crd_missing="$crd_missing $crd"
+      else msg=$(head -n 2 "$crd_err"); rm -f "$crd_err"; die "could not read the Karpenter CRD $crd (could not determine): $msg"; fi
+    fi
+    rm -f "$crd_err"
+  done
+  if [ -z "$crd_missing" ]; then
     kver=$(kc get deployment -n "${KARPENTER_NAMESPACE:-kube-system}" karpenter -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo unknown)
     log "Karpenter present (ec2nodeclasses + nodepools CRDs): $kver"
     evidence KARPENTER "$kver"

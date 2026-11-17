@@ -78,7 +78,7 @@ l = json.load(sys.stdin).get("metadata", {}).get("labels", {}) or {}
 sys.exit(0 if l.get("app.kubernetes.io/part-of") == sys.argv[1] and l.get("app.kubernetes.io/instance") == sys.argv[2] else 1)
 ' "$RESOURCE_PREFIX" "$RUN_ID" || { rm -f "$ns_err"; die "namespace $NAMESPACE exists and is not run $RUN_ID's (labels part-of/instance); use another NAMESPACE"; }
   log "namespace $NAMESPACE is this run's; reusing it"
-elif grep -Eq 'NotFound|not found' "$ns_err"; then
+elif grep -Eq 'Error from server \(NotFound\)' "$ns_err"; then
   kc create namespace "$NAMESPACE" || die "could not create namespace $NAMESPACE"
   kc label namespace "$NAMESPACE" "app.kubernetes.io/part-of=$RESOURCE_PREFIX" "app.kubernetes.io/instance=$RUN_ID" --overwrite \
     || die "could not label namespace $NAMESPACE"

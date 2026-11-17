@@ -48,7 +48,7 @@ for kind in nodepool ec2nodeclass; do
   err=$(mktemp)
   if existing=$(kc get "$kind" al2023-nitro-sandbox -o jsonpath='{.metadata.labels.app\.kubernetes\.io/part-of}/{.metadata.labels.app\.kubernetes\.io/instance}' 2>"$err"); then
     [ "$existing" = "$RESOURCE_PREFIX/$RUN_ID" ] || die "$kind al2023-nitro-sandbox already exists and is not run $RUN_ID's (labels '$existing'); not applying over it"
-  elif ! grep -Eq 'NotFound|not found' "$err"; then
+  elif ! grep -Eq 'Error from server \(NotFound\)' "$err"; then
     msg=$(head -n 2 "$err"); rm -f "$err"; die "could not determine whether $kind al2023-nitro-sandbox exists: $msg"
   fi
   rm -f "$err"

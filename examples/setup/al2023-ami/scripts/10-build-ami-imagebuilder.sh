@@ -36,7 +36,8 @@ for pair in BUILD_ASG_NAME:IB_ASG_NAME BUILD_SECURITY_GROUP_ID:IB_SECURITY_GROUP
             BUILD_INSTANCE_PROFILE:IB_INSTANCE_PROFILE BUILD_EXECUTION_ROLE:IB_EXECUTION_ROLE \
             BUILD_SUBNET_ID:BUILD_SUBNET_ID NODE_ARCH:NODE_ARCH; do
   v=${pair%%:*}; k=${pair#*:}; r=$(rec "$k")
-  if [ -n "$r" ] && [ -n "${!v:-}" ] && [ "${!v}" != "$r" ]; then
+  [ -n "$r" ] || die "run $RUN_ID has no recorded $k; run scripts/ib-prereqs.sh up for this run first"
+  if [ -n "${!v:-}" ] && [ "${!v}" != "$r" ]; then
     die "$v is '${!v}' but run $RUN_ID's prerequisites recorded '$r'; unset it, or use the run it belongs to"
   fi
   [ -n "${!v:-}" ] || printf -v "$v" '%s' "$r"
