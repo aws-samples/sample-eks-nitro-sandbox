@@ -184,6 +184,16 @@ expect_refused() { # label text check-args...
 d=$(new_repo accept-plain)
 expect_ok "accept: the plain layout" "OK, 2 sample(s)" "$d"
 
+d=$(new_repo accept-heading-two-folders)
+mkdir -p "$d/examples/other/cedar"
+printf '# Cedar\n' >"$d/examples/other/cedar/README.md"
+git -C "$d" add examples/other/cedar/README.md
+replace_line "$d/mkdocs.yml" "Signing: policy" "      - Signing: policy/signing/README.md" "      - Cedar: other/cedar/README.md"
+append_lines "$d/docs/ROADMAP.md" "- [cedar](../examples/other/cedar/README.md) (available now): a Cedar policy."
+append_lines "$d/README.md" "- [Cedar](examples/other/cedar/README.md): a Cedar policy."
+expect_ok "accept: one nav heading listing samples from two section folders, each folder under one heading" \
+  "OK, 3 sample(s)" "$d"
+
 d=$(new_repo "accept with spaces")
 expect_ok "accept: a repository path with spaces" "OK, 2 sample(s)" "$d"
 
@@ -319,8 +329,7 @@ replace_line "$d/mkdocs.yml" "Hello: getting-started" \
   "      - Hello: getting-started/hello/README.md" "      - Signing: policy/signing/README.md"
 append_lines "$d/docs/ROADMAP.md" "- [cedar](../examples/policy/cedar/README.md) (available now): a Cedar policy."
 append_lines "$d/README.md" "- [Cedar](examples/policy/cedar/README.md): a Cedar policy."
-expect_findings "reject: a sample under another section's nav heading" "$d" \
-  "mkdocs.yml nav heading 'Getting started' holds samples from more than one section folder: getting-started, policy" \
+expect_findings "reject: one section folder split across nav headings" "$d" \
   "the policy/ samples are under more than one mkdocs.yml nav heading: 'Getting started', 'Policy'"
 
 d=$(new_repo reject-nav-heading-twice)
