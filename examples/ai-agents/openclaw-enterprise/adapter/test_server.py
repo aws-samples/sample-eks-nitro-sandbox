@@ -113,6 +113,50 @@ class AdmitTests(unittest.TestCase):
             self.assertFalse(response["allowed"])
             self.assertIn("controller identity", response["status"]["message"])
 
+    def test_validation_protects_gateway_revision_configmaps(self) -> None:
+        configmap = {
+            "metadata": {
+                "name": "gateway-b59473701485-rev-deadbeefcafe",
+                "labels": {
+                    "app.kubernetes.io/managed-by": "openclaw-enterprise",
+                    "openclaw.dev/agent": "agt_test",
+                    "openclaw.dev/namespace": "ns_test",
+                },
+            },
+            "immutable": True,
+            "data": {"openclaw.json": "{}"},
+        }
+        resource = {"group": "", "version": "v1", "resource": "configmaps"}
+        accepted = review(
+            configmap,
+            resource=resource,
+            username=DEPLOYMENT_USER,
+        )
+        self.assertTrue(validate(accepted)["response"]["allowed"])
+
+        forged = copy.deepcopy(accepted)
+        forged["request"]["userInfo"]["username"] = "tenant-user"
+        response = validate(forged)["response"]
+        self.assertFalse(response["allowed"])
+        self.assertIn("controller identity", response["status"]["message"])
+
+        mutable = copy.deepcopy(accepted)
+        mutable["request"]["object"]["immutable"] = False
+        response = validate(mutable)["response"]
+        self.assertFalse(response["allowed"])
+        self.assertIn("must be immutable", response["status"]["message"])
+
+        unexpected_key = copy.deepcopy(accepted)
+        unexpected_key["request"]["object"]["data"]["extra"] = "unsafe"
+        response = validate(unexpected_key)["response"]
+        self.assertFalse(response["allowed"])
+        self.assertIn("only openclaw.json", response["status"]["message"])
+
+        deletion = copy.deepcopy(accepted)
+        deletion["request"]["operation"] = "DELETE"
+        deletion["request"]["oldObject"] = deletion["request"].pop("object")
+        self.assertTrue(validate(deletion)["response"]["allowed"])
+
     def test_returns_an_encoded_json_patch(self) -> None:
         response = admit(review(target_pod()))["response"]
         self.assertTrue(response["allowed"])

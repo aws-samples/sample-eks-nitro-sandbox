@@ -96,9 +96,20 @@ def test_controller_chain_and_ephemeral_updates_are_validated_fail_closed() -> N
         "ValidatingWebhookConfiguration",
         "openclaw-enterprise-nitro-policy",
     )
-    controller_webhook, pod_webhook = webhook_configuration["webhooks"]
+    webhooks = {
+        webhook["name"]: webhook for webhook in webhook_configuration["webhooks"]
+    }
+    controller_webhook = webhooks[
+        "validate-controller-chain.openclaw-enterprise.sandbox.eks.amazonaws.com"
+    ]
+    pod_webhook = webhooks[
+        "deny-ephemeral-containers.openclaw-enterprise.sandbox.eks.amazonaws.com"
+    ]
+    configmap_webhook = webhooks[
+        "protect-revision-configmaps.openclaw-enterprise.sandbox.eks.amazonaws.com"
+    ]
 
-    for webhook in (controller_webhook, pod_webhook):
+    for webhook in (controller_webhook, pod_webhook, configmap_webhook):
         assert webhook["failurePolicy"] == "Fail"
         assert webhook["sideEffects"] == "None"
         assert webhook["clientConfig"]["service"]["path"] == "/validate"
@@ -132,6 +143,15 @@ def test_controller_chain_and_ephemeral_updates_are_validated_fail_closed() -> N
             "resources": ["pods/ephemeralcontainers"],
             "scope": "Namespaced",
         },
+    ]
+    assert configmap_webhook["rules"] == [
+        {
+            "apiGroups": [""],
+            "apiVersions": ["v1"],
+            "operations": ["CREATE", "UPDATE", "DELETE"],
+            "resources": ["configmaps"],
+            "scope": "Namespaced",
+        }
     ]
 
 

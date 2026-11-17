@@ -21,6 +21,7 @@ MAX_CONCURRENT_REQUESTS = 32
 SOCKET_TIMEOUT_SECONDS = 5.0
 LOG = logging.getLogger("oce-nitro-adapter")
 POD_RESOURCE = {"group": "", "version": "v1", "resource": "pods"}
+CONFIGMAP_RESOURCE = {"group": "", "version": "v1", "resource": "configmaps"}
 DEPLOYMENT_RESOURCE = {
     "group": "apps",
     "version": "v1",
@@ -35,6 +36,9 @@ ALLOWED_ADMISSION_USERS_ENV = "OCE_ALLOWED_ADMISSION_USERS"
 ALLOWED_DEPLOYMENT_USERS_ENV = "OCE_ALLOWED_DEPLOYMENT_USERS"
 ALLOWED_REPLICASET_USERS_ENV = "OCE_ALLOWED_REPLICASET_USERS"
 GATEWAY_NAME_PATTERN = re.compile(r"^gateway-[0-9a-f]{12}$")
+REVISION_CONFIGMAP_NAME_PATTERN = re.compile(
+    r"^gateway-[0-9a-f]{12}-rev-[0-9a-f]{12}$"
+)
 REPLICASET_NAME_PATTERN = re.compile(r"^(gateway-[0-9a-f]{12})-[a-z0-9]{8,10}$")
 OCE_LABELS = (
     "app.kubernetes.io/managed-by",
@@ -142,6 +146,32 @@ def _validate_deployment(deployment: Any) -> None:
     ):
         if template_labels.get(label) != labels.get(label):
             raise AdmissionError(f"Deployment template has inconsistent {label}")
+
+
+def _validate_revision_configmap(configmap: Any) -> None:
+    configmap = _metadata(configmap, "ConfigMap")
+    metadata = _metadata(configmap.get("metadata"), "ConfigMap.metadata")
+    name = metadata.get("name")
+    if (
+        not isinstance(name, str)
+        or REVISION_CONFIGMAP_NAME_PATTERN.fullmatch(name) is None
+    ):
+        raise AdmissionError("ConfigMap is not an OCE gateway revision")
+    labels = _metadata(metadata.get("labels"), "ConfigMap.metadata.labels")
+    if labels.get("app.kubernetes.io/managed-by") != "openclaw-enterprise":
+        raise AdmissionError("ConfigMap is not managed by OpenClaw Enterprise")
+    for label in ("openclaw.dev/agent", "openclaw.dev/namespace"):
+        if not isinstance(labels.get(label), str) or not labels[label]:
+            raise AdmissionError(f"ConfigMap is missing {label}")
+    if configmap.get("immutable") is not True:
+        raise AdmissionError("OCE gateway revision ConfigMap must be immutable")
+    data = _metadata(configmap.get("data"), "ConfigMap.data")
+    if set(data) != {"openclaw.json"} or not isinstance(data["openclaw.json"], str):
+        raise AdmissionError(
+            "OCE gateway revision ConfigMap must contain only openclaw.json"
+        )
+    if configmap.get("binaryData") not in (None, {}):
+        raise AdmissionError("OCE gateway revision ConfigMap must not use binaryData")
 
 
 def _validate_replicaset(replicaset: Any) -> None:
@@ -265,6 +295,19 @@ def validate(review: Any) -> dict[str, Any]:
                     ),
                 },
             }
+        elif (
+            resource == CONFIGMAP_RESOURCE
+            and operation in {"CREATE", "UPDATE", "DELETE"}
+            and not subresource
+        ):
+            _validate_admission_user(request, ALLOWED_DEPLOYMENT_USERS_ENV)
+            configmap = (
+                request.get("oldObject")
+                if operation == "DELETE"
+                else request.get("object")
+            )
+            _validate_revision_configmap(configmap)
+            response = {"uid": uid, "allowed": True}
         elif (
             resource == DEPLOYMENT_RESOURCE
             and operation in {"CREATE", "UPDATE"}

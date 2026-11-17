@@ -405,7 +405,23 @@ must still fail closed.
 
 ## Validate negative admission controls
 
-1. Attempt to create a Pod directly with trusted-looking OCE labels. Assert the
+1. Attempt to create a forged gateway revision ConfigMap. Assert that the
+   adapter rejects the caller before the data can become a runtime input.
+
+   ```bash
+   configmap_error="$(
+     kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_A_NAMESPACE" \
+       create configmap gateway-deadbeefcafe-rev-deadbeefcafe \
+       --from-literal=openclaw.json='{}' 2>&1 || true
+   )"
+   if [[ "$configmap_error" != *"controller identity"* ]]; then
+     printf '%s\n' "$configmap_error" >&2
+     echo 'ERROR: forged revision ConfigMap was not denied' >&2
+     exit 1
+   fi
+   ```
+
+2. Attempt to create a Pod directly with trusted-looking OCE labels. Assert the
    complete expected denial message; any other failure is not a pass.
 
    ```bash
@@ -430,7 +446,7 @@ must still fail closed.
    This proves that copying the namespace and workload labels does not let a
    tenant bypass the controller trust chain.
 
-2. Run the automated admission contracts that assert exact denials for an
+3. Run the automated admission contracts that assert exact denials for an
    unpinned runtime, spoofed OCE provenance, sidecars, extra init containers,
    service-account token projections, and post-mutation tampering.
 
@@ -444,7 +460,7 @@ must still fail closed.
    `validate` functions packaged in the adapter image. They complement, but do
    not replace, the controller-created live replacement check.
 
-3. Attempt to add an ephemeral debugger to one managed runtime. Assert the
+4. Attempt to add an ephemeral debugger to one managed runtime. Assert the
    complete expected denial message.
 
    ```bash

@@ -93,6 +93,8 @@ gateway pod, the adapter:
   `runtime-temporary` mount at `/tmp`, requires a read-only root filesystem,
   and sets `TMPDIR=/dev/shm`. It rejects other mounts that overlap `/tmp` or
   `/dev/shm`.
+- Protects immutable `gateway-*-rev-*` ConfigMaps so only the OCE worker can
+  create, update, or delete the configuration mounted by a runtime.
 - Adds a dedicated root init container from the separately configured
   `OCE_OWNERSHIP_INIT_IMAGE`. The adapter requires an exact digest, rejects the
   workload runtime image as the helper, and denies the pod when the setting is

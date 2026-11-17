@@ -264,3 +264,31 @@ webhooks:
         resources:
           - pods/ephemeralcontainers
         scope: Namespaced
+  - name: protect-revision-configmaps.openclaw-enterprise.sandbox.eks.amazonaws.com
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    timeoutSeconds: 5
+    clientConfig:
+      service:
+        namespace: openclaw-enterprise-adapter
+        name: openclaw-enterprise-nitro-adapter
+        path: /validate
+        port: 443
+    namespaceSelector:
+      matchLabels:
+        app.kubernetes.io/managed-by: openclaw-enterprise
+    rules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+        resources:
+          - configmaps
+        scope: Namespaced
