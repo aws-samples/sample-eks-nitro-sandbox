@@ -9,8 +9,10 @@
 #
 # The password is NOT in this file. It comes from a Secret named
 # `temporal-postgresql`, key `password`, which the page has you create from
-# standard input so the password never appears on a command line. The Temporal
-# chart reads the same Secret through `existingSecret`.
+# standard input so the password never appears on a command line. PostgreSQL
+# reads it as a read-only file (POSTGRES_PASSWORD_FILE), not from an
+# environment variable. The Temporal chart reads the same Secret through
+# `existingSecret`.
 #
 # The Temporal Helm chart installs only the server roles and bundles no
 # database, so this is the lightest viable one: a single replica, SQL visibility
@@ -23,9 +25,11 @@ metadata:
   labels:
     app.kubernetes.io/name: temporal-postgresql
 spec:
-  # ClusterIP, reached only from inside the cluster. Never a LoadBalancer or a
-  # NodePort: Temporal's own guidance is to keep the server and its datastore
-  # off the public internet, like any database.
+  # ClusterIP: the Service has no address outside the cluster. Never a
+  # LoadBalancer or a NodePort: Temporal's own guidance is to keep the server
+  # and its datastore off the public internet, like any database. This
+  # blueprint ships no network policy, so nothing here limits which pods in the
+  # cluster can connect to it.
   type: ClusterIP
   selector:
     app.kubernetes.io/name: temporal-postgresql
@@ -63,10 +67,19 @@ spec:
       labels:
         app.kubernetes.io/name: temporal-postgresql
     spec:
+      # PostgreSQL never calls the Kubernetes API, so it gets no ServiceAccount
+      # token.
+      automountServiceAccountToken: false
+      # UID and GID 70 are the image's own non-root postgres user, the one the
+      # official image defines and runs PostgreSQL as. fsGroup 70 gives that
+      # group the data volume, the runtime directory and the password file.
       securityContext:
+        runAsNonRoot: true
         runAsUser: 70
         runAsGroup: 70
         fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: postgresql
           # PostgreSQL 17.11, pinned by digest so a re-install gets the image
@@ -81,31 +94,62 @@ spec:
               value: temporal
             - name: POSTGRES_DB
               value: temporal
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: temporal-postgresql
-                  key: password
+            # The image reads the password from this file, the Secret mounted
+            # below, so it is never in the container's environment.
+            - name: POSTGRES_PASSWORD_FILE
+              value: /run/secrets/postgresql/password
             # The data directory has to be a subdirectory of the mount, because
             # the EBS volume's lost+found would otherwise make initdb refuse.
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          # The root filesystem is read-only. The two writable mounts are the
+          # data volume and the runtime directory for the socket and lock
+          # file. The init script and the password are mounted read-only.
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            - name: run
+              mountPath: /var/run/postgresql
             - name: initdb
               mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            - name: password
+              mountPath: /run/secrets/postgresql
+              readOnly: true
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "temporal", "-d", "temporal"]
             initialDelaySeconds: 10
             periodSeconds: 5
+          # The same check: the server answers on its socket. It reads no
+          # password. A first start runs initdb before the server listens, so
+          # the window before a restart is generous.
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "temporal", "-d", "temporal"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
           resources:
             requests: { cpu: 250m, memory: 512Mi }
       volumes:
+        - name: run
+          emptyDir: {}
         - name: initdb
           configMap:
             name: temporal-postgresql-initdb
+        - name: password
+          secret:
+            secretName: temporal-postgresql  # pragma: allowlist secret -- the Secret's name, not a value
+            items:
+              - key: password
+                path: password
   volumeClaimTemplates:
     - metadata:
         name: data
